@@ -1,0 +1,11 @@
+[package]
+name = "quanta-compiler"
+version = "0.1.0"
+edition = "2024"
+description = "Quanta kernel compiler — KernelIR to GPU ISA (AMD, NVIDIA, MSL, WGSL)"
+
+[dependencies]
+quanta-ir = { path = "../quanta-ir" }
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+inkwell = { version = "0.5", features = ["llvm18-0"] }

@@ -1,0 +1,15 @@
+[package]
+name = "quanta-macros"
+version = "0.1.0"
+edition = "2024"
+description = "Proc macros for Quanta GPU kernels — #[quanta::kernel]"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+quanta-ir = { path = "../quanta-ir" }
+bincode = "1"

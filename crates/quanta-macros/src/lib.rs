@@ -1,0 +1,147 @@
+//! Proc macros for Quanta GPU kernels.
+
+extern crate proc_macro;
+
+mod compiler;
+mod parse;
+mod validate;
+
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{Expr, ItemFn, Lit, parse_macro_input};
+
+/// Mark a function as a GPU kernel.
+///
+/// ```ignore
+/// #[quanta::kernel]                  // default: O3
+/// #[quanta::kernel(opt = "O2")]      // explicit O2
+/// #[quanta::kernel(opt = "O0")]      // no optimization (debug)
+/// ```
+#[proc_macro_attribute]
+pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+
+    // Parse optimization level from attribute
+    let opt_level = parse_opt_level(attr);
+
+    if let Err(err) = validate::validate_kernel(&func) {
+        return err.to_compile_error().into();
+    }
+
+    let mut kernel_def = match parse::parse_kernel(&func) {
+        Ok(def) => def,
+        Err(err) => return err.to_compile_error().into(),
+    };
+    kernel_def.opt_level = opt_level;
+
+    let outputs = match compiler::compile_kernel(&kernel_def) {
+        Ok(outputs) => outputs,
+        Err(err) => {
+            let msg = format!("quanta compiler error: {}", err);
+            return syn::Error::new_spanned(&func.sig.ident, msg)
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let func_name = &func.sig.ident;
+    let binary_name = syn::Ident::new(
+        &format!("{}_BINARY", func_name.to_string().to_uppercase()),
+        func_name.span(),
+    );
+
+    let msl_expr = match &outputs.msl {
+        Some(s) => {
+            let s = s.as_str();
+            quote! { Some(#s) }
+        }
+        None => quote! { None },
+    };
+    let wgsl_expr = match &outputs.wgsl {
+        Some(s) => {
+            let s = s.as_str();
+            quote! { Some(#s) }
+        }
+        None => quote! { None },
+    };
+    let nvidia_expr = match &outputs.nvidia {
+        Some(bytes) => {
+            let lit = proc_macro2::Literal::byte_string(bytes);
+            quote! { Some(#lit as &[u8]) }
+        }
+        None => quote! { None },
+    };
+    let amd_expr = match &outputs.amd {
+        Some(bytes) => {
+            let lit = proc_macro2::Literal::byte_string(bytes);
+            quote! { Some(#lit as &[u8]) }
+        }
+        None => quote! { None },
+    };
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
+            amd: #amd_expr,
+            nvidia: #nvidia_expr,
+            msl: #msl_expr,
+            wgsl: #wgsl_expr,
+            llvm_ir: None,
+        };
+
+        pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
+            let binary = #binary_name.for_vendor(device.caps().vendor)
+                .ok_or(::quanta::QuantaError::CompilationFailed(
+                    format!("no compiled kernel for vendor {:?}", device.caps().vendor)
+                ))?;
+            device.wave(binary)
+        }
+    };
+
+    expanded.into()
+}
+
+/// Mark a function as a GPU device function (callable from kernels).
+///
+/// ```ignore
+/// #[quanta::device]
+/// fn activate(x: f32, threshold: f32) -> f32 {
+///     if x > threshold { x } else { x * 0.99 }
+/// }
+/// ```
+///
+/// Device functions are inlined into kernels by LLVM.
+/// They cannot be launched from CPU — only called from `#[quanta::kernel]` functions.
+#[proc_macro_attribute]
+pub fn device(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // For now, device functions are passed through unchanged.
+    // The MSL/WGSL emitters include them as regular functions in the GPU source.
+    // The LLVM backend emits them as internal functions that get inlined at O3.
+    //
+    // Future: parse into KernelOps, store in a device function registry,
+    // and inline into kernel IR before emission.
+    item
+}
+
+/// Parse `opt = "O2"` from the attribute.
+/// Default: 3 (O3).
+fn parse_opt_level(attr: TokenStream) -> u8 {
+    if attr.is_empty() {
+        return 3; // default O3
+    }
+
+    let parsed: Result<syn::MetaNameValue, _> = syn::parse(attr);
+    if let Ok(nv) = parsed
+        && nv.path.is_ident("opt")
+        && let Expr::Lit(expr_lit) = &nv.value
+        && let Lit::Str(s) = &expr_lit.lit
+    {
+        return match s.value().as_str() {
+            "O0" | "0" => 0,
+            "O1" | "1" => 1,
+            "O2" | "2" => 2,
+            "O3" | "3" => 3,
+            _ => 3,
+        };
+    }
+    3
+}

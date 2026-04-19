@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -e
+
+echo "fmt check..."
+cargo fmt --all -- --check
+
+echo "clippy..."
+cargo clippy --workspace -- -D warnings
