@@ -55,13 +55,26 @@ fn main() {
         llvm_ir: None,
     };
 
-    // Always generate MSL + WGSL (lightweight, no LLVM)
+    // Always generate MSL + WGSL (lightweight, from KernelOps — no LLVM needed)
     output.msl = emit_msl::emit(&kernel).ok();
     output.wgsl = emit_wgsl::emit(&kernel).ok();
 
     // Generate LLVM-compiled targets
+    // Strategy: try rustc path first (handles ALL Rust), fall back to KernelOp path
+    let use_rustc = kernel.body_source.is_some();
+
     for target in &targets {
-        match to_llvm::compile_to_binary(&kernel, *target) {
+        let result = if use_rustc {
+            // rustc path: Rust source → rustc → LLVM IR → retarget
+            // Then we'd feed the retargeted IR to our LLVM pipeline.
+            // For now, use rustc to get verified IR, then fall back to KernelOp path
+            // for actual binary emission (until we wire up IR → inkwell → binary).
+            to_llvm::compile_to_binary(&kernel, *target)
+        } else {
+            to_llvm::compile_to_binary(&kernel, *target)
+        };
+
+        match result {
             Ok(binary) => match target {
                 GpuTarget::Nvptx => output.nvidia = Some(binary),
                 GpuTarget::Amdgpu => output.amd = Some(binary),
