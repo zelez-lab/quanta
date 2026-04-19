@@ -1,21 +1,24 @@
 //! Metal driver for macOS/iOS.
 
 use crate::{
-    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture, Vendor,
-    Wave,
+    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture,
+    TextureDesc, TextureUsage, Vendor, Wave, render_pass::RenderOp,
 };
 use metal as mtl;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 /// Metal-backed GPU device.
 pub struct MetalDevice {
     device: mtl::Device,
     queue: mtl::CommandQueue,
     caps: Caps,
-    buffers: Arc<Mutex<HashMap<u64, mtl::Buffer>>>,
-    pipelines: Arc<Mutex<HashMap<u64, mtl::ComputePipelineState>>>,
-    next_handle: Arc<Mutex<u64>>,
+    // Resource storage — keyed by handle
+    buffers: Mutex<HashMap<u64, mtl::Buffer>>,
+    textures: Mutex<HashMap<u64, mtl::Texture>>,
+    compute_pipelines: Mutex<HashMap<u64, mtl::ComputePipelineState>>,
+    render_pipelines: Mutex<HashMap<u64, mtl::RenderPipelineState>>,
+    next_handle: Mutex<u64>,
 }
 
 impl MetalDevice {
@@ -33,9 +36,6 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
     };
 
     let name = device.name().to_string();
-
-    // Apple doesn't expose exact CU/core counts via Metal API.
-    // We estimate from the device family and max threads.
     let max_threads = device.max_threads_per_threadgroup();
     let caps = Caps {
         nuclei: (max_threads.width / 32).max(1) as u32,
@@ -54,9 +54,11 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         device,
         queue,
         caps,
-        buffers: Arc::new(Mutex::new(HashMap::new())),
-        pipelines: Arc::new(Mutex::new(HashMap::new())),
-        next_handle: Arc::new(Mutex::new(0)),
+        buffers: Mutex::new(HashMap::new()),
+        textures: Mutex::new(HashMap::new()),
+        compute_pipelines: Mutex::new(HashMap::new()),
+        render_pipelines: Mutex::new(HashMap::new()),
+        next_handle: Mutex::new(0),
     })]
 }
 
@@ -65,16 +67,14 @@ impl GpuDevice for MetalDevice {
         &self.caps
     }
 
+    // === Fields ===
+
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {
-        // Pick storage mode based on usage:
-        // - TRANSFER set → CPU needs access → StorageModeShared
-        // - No TRANSFER  → GPU only → StorageModePrivate (faster VRAM access)
         let options = if usage.has(FieldUsage::TRANSFER) {
             mtl::MTLResourceOptions::StorageModeShared
         } else {
             mtl::MTLResourceOptions::StorageModePrivate
         };
-
         let buffer = self.device.new_buffer(size as u64, options);
         let handle = self.alloc_handle();
         self.buffers.lock().unwrap().insert(handle, buffer);
@@ -91,8 +91,7 @@ impl GpuDevice for MetalDevice {
             .get(&handle)
             .ok_or(QuantaError::InvalidParam("bad field handle"))?;
         unsafe {
-            let ptr = buffer.contents() as *mut u8;
-            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+            std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.contents() as *mut u8, data.len());
         }
         Ok(())
     }
@@ -104,8 +103,11 @@ impl GpuDevice for MetalDevice {
             .ok_or(QuantaError::InvalidParam("bad field handle"))?;
         let mut result = vec![0u8; size];
         unsafe {
-            let ptr = buffer.contents() as *const u8;
-            std::ptr::copy_nonoverlapping(ptr, result.as_mut_ptr(), size);
+            std::ptr::copy_nonoverlapping(
+                buffer.contents() as *const u8,
+                result.as_mut_ptr(),
+                size,
+            );
         }
         Ok(result)
     }
@@ -118,17 +120,18 @@ impl GpuDevice for MetalDevice {
         let dst_buf = buffers
             .get(&dst)
             .ok_or(QuantaError::InvalidParam("bad dst handle"))?;
-
-        let cmd_buffer = self.queue.new_command_buffer();
-        let blit = cmd_buffer.new_blit_command_encoder();
+        let cmd = self.queue.new_command_buffer();
+        let blit = cmd.new_blit_command_encoder();
         blit.copy_from_buffer(src_buf, 0, dst_buf, 0, size as u64);
         blit.end_encoding();
-        cmd_buffer.commit();
-        cmd_buffer.wait_until_completed();
+        cmd.commit();
+        cmd.wait_until_completed();
         Ok(())
     }
 
-    fn texture_create(&self, desc: &crate::TextureDesc) -> Result<Texture, QuantaError> {
+    // === Textures ===
+
+    fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
         let mtl_desc = mtl::TextureDescriptor::new();
         mtl_desc.set_width(desc.width as u64);
         mtl_desc.set_height(desc.height as u64);
@@ -136,13 +139,13 @@ impl GpuDevice for MetalDevice {
         mtl_desc.set_sample_count(desc.sample_count as u64);
 
         let mut usage = mtl::MTLTextureUsage::empty();
-        if desc.usage.has(crate::TextureUsage::SHADER_READ) {
+        if desc.usage.has(TextureUsage::SHADER_READ) {
             usage |= mtl::MTLTextureUsage::ShaderRead;
         }
-        if desc.usage.has(crate::TextureUsage::SHADER_WRITE) {
+        if desc.usage.has(TextureUsage::SHADER_WRITE) {
             usage |= mtl::MTLTextureUsage::ShaderWrite;
         }
-        if desc.usage.has(crate::TextureUsage::RENDER_TARGET) {
+        if desc.usage.has(TextureUsage::RENDER_TARGET) {
             usage |= mtl::MTLTextureUsage::RenderTarget;
         }
         if usage.is_empty() {
@@ -150,8 +153,8 @@ impl GpuDevice for MetalDevice {
         }
         mtl_desc.set_usage(usage);
 
-        if desc.usage.has(crate::TextureUsage::RENDER_TARGET)
-            && !desc.usage.has(crate::TextureUsage::SHADER_READ)
+        // Storage mode: Private for render-only, Shared if CPU needs access
+        if desc.usage.has(TextureUsage::RENDER_TARGET) && !desc.usage.has(TextureUsage::SHADER_READ)
         {
             mtl_desc.set_storage_mode(mtl::MTLStorageMode::Private);
         } else {
@@ -162,8 +165,9 @@ impl GpuDevice for MetalDevice {
             mtl_desc.set_texture_type(mtl::MTLTextureType::D2Multisample);
         }
 
-        let _tex = self.device.new_texture(&mtl_desc);
+        let tex = self.device.new_texture(&mtl_desc);
         let handle = self.alloc_handle();
+        self.textures.lock().unwrap().insert(handle, tex);
 
         Ok(Texture {
             handle,
@@ -174,45 +178,59 @@ impl GpuDevice for MetalDevice {
         })
     }
 
-    fn texture_write(&self, _texture: &Texture, _data: &[u8]) -> Result<(), QuantaError> {
-        // TODO: blit encoder to upload pixel data
+    fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
+        let textures = self.textures.lock().unwrap();
+        let tex = textures
+            .get(&texture.handle())
+            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let bytes_per_pixel = format_bytes_per_pixel(texture.format());
+        let region = mtl::MTLRegion::new_2d(0, 0, texture.width() as u64, texture.height() as u64);
+        let bytes_per_row = texture.width() as u64 * bytes_per_pixel as u64;
+        tex.replace_region(region, 0, data.as_ptr() as *const _, bytes_per_row);
         Ok(())
     }
 
-    fn texture_read(&self, _texture: &Texture) -> Result<Vec<u8>, QuantaError> {
-        // TODO: blit encoder to read back pixel data
-        Ok(Vec::new())
+    fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
+        let textures = self.textures.lock().unwrap();
+        let tex = textures
+            .get(&texture.handle())
+            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let bytes_per_pixel = format_bytes_per_pixel(texture.format());
+        let size = (texture.width() * texture.height()) as usize * bytes_per_pixel;
+        let mut result = vec![0u8; size];
+        let region = mtl::MTLRegion::new_2d(0, 0, texture.width() as u64, texture.height() as u64);
+        let bytes_per_row = texture.width() as u64 * bytes_per_pixel as u64;
+        tex.get_bytes(result.as_mut_ptr() as *mut _, bytes_per_row, region, 0);
+        Ok(result)
     }
 
+    // === Compute ===
+
     fn wave(&self, kernel_source: &[u8]) -> Result<Wave, QuantaError> {
-        // kernel_source is MSL source string for Metal
         let source = std::str::from_utf8(kernel_source)
             .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in MSL source".into()))?;
-
         let opts = mtl::CompileOptions::new();
         let library = self
             .device
             .new_library_with_source(source, &opts)
             .map_err(|e| QuantaError::CompilationFailed(e.to_string()))?;
-
-        // Get the first function (convention: kernel function named "main0" or the only one)
         let func_names = library.function_names();
         let func_name = func_names
             .first()
             .ok_or_else(|| QuantaError::CompilationFailed("no functions in kernel".into()))?;
-
         let func = library
             .get_function(func_name, None)
             .map_err(|e| QuantaError::CompilationFailed(e.to_string()))?;
-
         let pipeline = self
             .device
             .new_compute_pipeline_state_with_function(&func)
             .map_err(|e| QuantaError::CompilationFailed(e.to_string()))?;
 
         let handle = self.alloc_handle();
-        self.pipelines.lock().unwrap().insert(handle, pipeline);
-
+        self.compute_pipelines
+            .lock()
+            .unwrap()
+            .insert(handle, pipeline);
         Ok(Wave {
             handle,
             bindings: Vec::new(),
@@ -222,25 +240,21 @@ impl GpuDevice for MetalDevice {
     }
 
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
-        let cmd_buffer = self.queue.new_command_buffer();
-        let encoder = cmd_buffer.new_compute_command_encoder();
+        let cmd = self.queue.new_command_buffer();
+        let encoder = cmd.new_compute_command_encoder();
 
-        // Bind pipeline
-        let pipelines = self.pipelines.lock().unwrap();
+        let pipelines = self.compute_pipelines.lock().unwrap();
         let pipeline = pipelines
             .get(&wave.handle)
             .ok_or(QuantaError::InvalidParam("bad wave handle"))?;
         encoder.set_compute_pipeline_state(pipeline);
 
-        // Bind fields
         let buffers = self.buffers.lock().unwrap();
-        for binding in &wave.bindings {
-            if let Some(buf) = buffers.get(&binding.field_handle) {
-                encoder.set_buffer(binding.slot as u64, Some(buf), 0);
+        for b in &wave.bindings {
+            if let Some(buf) = buffers.get(&b.field_handle) {
+                encoder.set_buffer(b.slot as u64, Some(buf), 0);
             }
         }
-
-        // Bind push constants
         for pc in &wave.push_constants {
             encoder.set_bytes(
                 pc.slot as u64,
@@ -249,32 +263,27 @@ impl GpuDevice for MetalDevice {
             );
         }
 
-        // Dispatch
-        let threads_per_group = mtl::MTLSize::new(64, 1, 1);
-        let grid_size = mtl::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
-        encoder.dispatch_threads(grid_size, threads_per_group);
+        let grid = mtl::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
+        let group_size = mtl::MTLSize::new(64, 1, 1);
+        encoder.dispatch_threads(grid, group_size);
         encoder.end_encoding();
+        cmd.commit();
 
-        cmd_buffer.commit();
-
-        let handle = self.alloc_handle();
-        // Clone the command buffer reference for the wait closure
-        let cmd_buf_clone = cmd_buffer.to_owned();
-
+        let cmd_clone = cmd.to_owned();
         Ok(Pulse {
-            handle,
+            handle: self.alloc_handle(),
             wait_fn: Some(Box::new(move |_| {
-                cmd_buf_clone.wait_until_completed();
+                cmd_clone.wait_until_completed();
                 Ok(())
             })),
             poll_fn: None,
         })
     }
 
-    fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
-        // Compile vertex + fragment shaders from MSL source
-        let opts = mtl::CompileOptions::new();
+    // === Render ===
 
+    fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
+        let opts = mtl::CompileOptions::new();
         let vert_src = std::str::from_utf8(desc.vertex)
             .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in vertex shader".into()))?;
         let frag_src = std::str::from_utf8(desc.fragment).map_err(|_| {
@@ -292,26 +301,15 @@ impl GpuDevice for MetalDevice {
 
         let vert_fn = vert_lib
             .get_function(desc.vertex_entry, None)
-            .map_err(|e| {
-                QuantaError::CompilationFailed(format!(
-                    "vertex entry '{}': {}",
-                    desc.vertex_entry, e
-                ))
-            })?;
+            .map_err(|e| QuantaError::CompilationFailed(format!("vertex fn: {}", e)))?;
         let frag_fn = frag_lib
             .get_function(desc.fragment_entry, None)
-            .map_err(|e| {
-                QuantaError::CompilationFailed(format!(
-                    "fragment entry '{}': {}",
-                    desc.fragment_entry, e
-                ))
-            })?;
+            .map_err(|e| QuantaError::CompilationFailed(format!("fragment fn: {}", e)))?;
 
         let pipe_desc = mtl::RenderPipelineDescriptor::new();
         pipe_desc.set_vertex_function(Some(&vert_fn));
         pipe_desc.set_fragment_function(Some(&frag_fn));
 
-        // Color attachment
         let color_attach = pipe_desc.color_attachments().object_at(0).unwrap();
         color_attach.set_pixel_format(format_to_metal(desc.color_format));
 
@@ -327,43 +325,204 @@ impl GpuDevice for MetalDevice {
             color_attach.set_alpha_blend_operation(blend_op_to_metal(desc.blend.op_alpha));
         }
 
-        // Depth
         if let Some(depth_fmt) = desc.depth_format {
             pipe_desc.set_depth_attachment_pixel_format(format_to_metal(depth_fmt));
         }
 
-        // MSAA
         pipe_desc.set_sample_count(desc.sample_count as u64);
 
-        let _pipeline_state = self
+        let pipeline_state = self
             .device
             .new_render_pipeline_state(&pipe_desc)
             .map_err(|e| QuantaError::CompilationFailed(format!("render pipeline: {}", e)))?;
 
         let handle = self.alloc_handle();
-        // TODO: store _pipeline_state for use in render_begin/render_end
+        self.render_pipelines
+            .lock()
+            .unwrap()
+            .insert(handle, pipeline_state);
         Ok(Pipeline {
             handle,
             drop_fn: None,
         })
     }
 
-    fn render_begin(&self, _target: &Texture) -> Result<RenderPass, QuantaError> {
-        let handle = self.alloc_handle();
+    fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
+        // Store target handle — render_end will use it
         Ok(RenderPass {
-            handle,
+            handle: target.handle(),
             ops: Vec::new(),
         })
     }
 
-    fn render_end(&self, _pass: RenderPass) -> Result<Pulse, QuantaError> {
-        // TODO: encode render commands and submit
+    fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
+        let textures = self.textures.lock().unwrap();
+        let target = textures
+            .get(&pass.handle)
+            .ok_or(QuantaError::InvalidParam("render target not found"))?;
+
+        // Create render pass descriptor
+        let rpd = mtl::RenderPassDescriptor::new();
+        let color_attach = rpd.color_attachments().object_at(0).unwrap();
+        color_attach.set_texture(Some(target));
+        color_attach.set_load_action(mtl::MTLLoadAction::Clear);
+        color_attach.set_store_action(mtl::MTLStoreAction::Store);
+        color_attach.set_clear_color(mtl::MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
+
+        let cmd = self.queue.new_command_buffer();
+        let encoder = cmd.new_render_command_encoder(rpd);
+
+        let buffers = self.buffers.lock().unwrap();
+        let render_pipelines = self.render_pipelines.lock().unwrap();
+
+        for op in &pass.ops {
+            match op {
+                RenderOp::SetPipeline(handle) => {
+                    if let Some(ps) = render_pipelines.get(handle) {
+                        encoder.set_render_pipeline_state(ps);
+                    }
+                }
+                RenderOp::BindVertices {
+                    slot,
+                    handle,
+                    offset,
+                } => {
+                    if let Some(buf) = buffers.get(handle) {
+                        encoder.set_vertex_buffer(*slot as u64, Some(buf), *offset);
+                    }
+                }
+                RenderOp::BindIndices { .. } => {
+                    // Index buffer is bound at draw_indexed time in Metal
+                }
+                RenderOp::SetField { slot, handle } => {
+                    if let Some(buf) = buffers.get(handle) {
+                        encoder.set_vertex_buffer(*slot as u64, Some(buf), 0);
+                    }
+                }
+                RenderOp::SetTexture { slot, handle } => {
+                    if let Some(tex) = textures.get(handle) {
+                        encoder.set_fragment_texture(*slot as u64, Some(tex));
+                    }
+                }
+                RenderOp::SetValue { slot, data } => {
+                    encoder.set_vertex_bytes(
+                        *slot as u64,
+                        data.len() as u64,
+                        data.as_ptr() as *const _,
+                    );
+                }
+                RenderOp::Draw {
+                    vertex_count,
+                    instance_count,
+                } => {
+                    if *instance_count <= 1 {
+                        encoder.draw_primitives(
+                            mtl::MTLPrimitiveType::Triangle,
+                            0,
+                            *vertex_count as u64,
+                        );
+                    } else {
+                        encoder.draw_primitives_instanced(
+                            mtl::MTLPrimitiveType::Triangle,
+                            0,
+                            *vertex_count as u64,
+                            *instance_count as u64,
+                        );
+                    }
+                }
+                RenderOp::DrawIndexed {
+                    index_count,
+                    instance_count,
+                } => {
+                    // Find the last BindIndices op to get the index buffer
+                    let idx_handle = pass.ops.iter().rev().find_map(|op| {
+                        if let RenderOp::BindIndices { handle, .. } = op {
+                            Some(*handle)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(ih) = idx_handle
+                        && let Some(idx_buf) = buffers.get(&ih)
+                    {
+                        if *instance_count <= 1 {
+                            encoder.draw_indexed_primitives(
+                                mtl::MTLPrimitiveType::Triangle,
+                                *index_count as u64,
+                                mtl::MTLIndexType::UInt32,
+                                idx_buf,
+                                0,
+                            );
+                        } else {
+                            encoder.draw_indexed_primitives_instanced(
+                                mtl::MTLPrimitiveType::Triangle,
+                                *index_count as u64,
+                                mtl::MTLIndexType::UInt32,
+                                idx_buf,
+                                0,
+                                *instance_count as u64,
+                            );
+                        }
+                    }
+                }
+                RenderOp::SetScissor {
+                    x,
+                    y,
+                    width,
+                    height,
+                } => {
+                    encoder.set_scissor_rect(mtl::MTLScissorRect {
+                        x: *x as u64,
+                        y: *y as u64,
+                        width: *width as u64,
+                        height: *height as u64,
+                    });
+                }
+                RenderOp::SetViewport {
+                    x,
+                    y,
+                    width,
+                    height,
+                    min_depth,
+                    max_depth,
+                } => {
+                    encoder.set_viewport(mtl::MTLViewport {
+                        originX: *x as f64,
+                        originY: *y as f64,
+                        width: *width as f64,
+                        height: *height as f64,
+                        znear: *min_depth as f64,
+                        zfar: *max_depth as f64,
+                    });
+                }
+                RenderOp::Clear(_color) => {
+                    // Clear is handled by load action on the render pass descriptor.
+                    // Dynamic clear within a pass would need a new encoder — skip for now.
+                }
+                RenderOp::ClearDepth(_depth) => {
+                    // Same — handled by render pass descriptor load action.
+                }
+                RenderOp::SetSampler { .. } => {
+                    // TODO: create MTLSamplerState and bind to fragment
+                }
+            }
+        }
+
+        encoder.end_encoding();
+        cmd.commit();
+
+        let cmd_clone = cmd.to_owned();
         Ok(Pulse {
             handle: self.alloc_handle(),
-            wait_fn: Some(Box::new(|_| Ok(()))),
+            wait_fn: Some(Box::new(move |_| {
+                cmd_clone.wait_until_completed();
+                Ok(())
+            })),
             poll_fn: None,
         })
     }
+
+    // === Sync ===
 
     fn pulse_wait(&self, pulse: Pulse) -> Result<(), QuantaError> {
         pulse.wait()
@@ -373,6 +532,10 @@ impl GpuDevice for MetalDevice {
         pulse.is_done()
     }
 }
+
+// ============================================================================
+// Metal type conversions
+// ============================================================================
 
 fn format_to_metal(format: Format) -> mtl::MTLPixelFormat {
     match format {
@@ -385,6 +548,17 @@ fn format_to_metal(format: Format) -> mtl::MTLPixelFormat {
         Format::RGBA16Float => mtl::MTLPixelFormat::RGBA16Float,
         Format::RGBA32Float => mtl::MTLPixelFormat::RGBA32Float,
         Format::Depth32Float => mtl::MTLPixelFormat::Depth32Float,
+    }
+}
+
+fn format_bytes_per_pixel(format: Format) -> usize {
+    match format {
+        Format::R8 => 1,
+        Format::R16Float => 2,
+        Format::R32Float | Format::RGBA8 | Format::BGRA8 => 4,
+        Format::RG32Float | Format::RGBA16Float => 8,
+        Format::RGBA32Float => 16,
+        Format::Depth32Float => 4,
     }
 }
 
