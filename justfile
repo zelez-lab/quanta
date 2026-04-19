@@ -10,6 +10,9 @@ build-release:
 build-compiler:
     cargo build -p quanta-compiler --release
 
+build-vulkan:
+    cargo build --features vulkan --no-default-features
+
 # Test
 test:
     cargo test --all
@@ -17,21 +20,24 @@ test:
 test-ir:
     cargo test -p quanta-ir
 
+test-conformance:
+    cargo test --test conformance_test
+
+test-conformance-validate:
+    QUANTA_VALIDATE=1 cargo test --test conformance_test
+
 # Run examples
-example-vector-add:
-    cargo run --example vector_add
+example-hello:
+    cargo run --example hello_quanta
 
-example-kernel-macro:
-    cargo run --example kernel_macro
+example-bench-compute:
+    cargo run --example bench_compute --release
 
-example-bench-heavy:
-    cargo run --example bench_heavy --release
+example-bench-mandelbrot:
+    cargo run --example bench_mandelbrot --release
 
-example-bench-real:
-    cargo run --example bench_real_world --release
-
-example-bench-o2-o3:
-    cargo run --example bench_o2_vs_o3 --release
+example-bench-nbody:
+    cargo run --example bench_nbody --release
 
 # Compiler tests
 test-ptx:
@@ -46,11 +52,38 @@ test-complex:
 test-ir-gen:
     cargo run -p quanta-compiler -- --test-ir
 
+# RPi 5 testing (Vulkan on real hardware)
+# Set PI_HOST in env or pass as: just test-pi PI_HOST=pi@192.168.1.x
+PI_HOST := env("PI_HOST", "pi@rpi5.local")
+
+build-pi:
+    cross build --target aarch64-unknown-linux-gnu --features vulkan --no-default-features --release
+
+test-pi: build-pi
+    scp target/aarch64-unknown-linux-gnu/release/examples/hello_quanta {{PI_HOST}}:/tmp/
+    ssh {{PI_HOST}} "cd /tmp && ./hello_quanta"
+
+# Vulkan CTS (dEQP) — run subset on Pi
+# Requires dEQP installed on the Pi: sudo apt install vulkan-tools deqp-vk
+test-deqp:
+    ssh {{PI_HOST}} "deqp-vk --deqp-case=dEQP-VK.api.device_init.create_device_simple"
+
+test-deqp-compute:
+    ssh {{PI_HOST}} "deqp-vk --deqp-case=dEQP-VK.compute.*"
+
+test-deqp-memory:
+    ssh {{PI_HOST}} "deqp-vk --deqp-case=dEQP-VK.memory.*"
+
 # Quality
 fmt:
     cargo fmt --all
 
 clippy:
-    cargo clippy --all
+    cargo clippy --all -- -D warnings
 
-quality: fmt clippy test
+clippy-vulkan:
+    cargo clippy --features vulkan -- -D warnings
+
+quality: fmt clippy test-conformance
+
+verify: quality clippy-vulkan test
