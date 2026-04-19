@@ -756,9 +756,159 @@ impl GpuDevice for VulkanDevice {
         })
     }
 
-    fn generate_mipmaps(&self, _texture: &Texture) -> Result<(), QuantaError> {
-        // TODO: blit commands for each mip level
-        Ok(())
+    fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError> {
+        let textures = self.textures.lock().unwrap();
+        let tex = textures
+            .get(&texture.handle())
+            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+
+        let mut mip_width = tex.width as i32;
+        let mut mip_height = tex.height as i32;
+        let mip_levels = (mip_width.max(mip_height) as f32).log2().floor() as u32 + 1;
+
+        let cmd = self.alloc_command_buffer()?;
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            self.device
+                .begin_command_buffer(cmd, &begin)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+
+            for i in 1..mip_levels {
+                // Transition level i-1 to TRANSFER_SRC
+                let barrier_src = vk::ImageMemoryBarrier::default()
+                    .old_layout(if i == 1 {
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                    } else {
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL
+                    })
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(tex.image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: i - 1,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier_src],
+                );
+
+                // Transition level i to TRANSFER_DST
+                let barrier_dst = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(tex.image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: i,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier_dst],
+                );
+
+                let next_width = (mip_width / 2).max(1);
+                let next_height = (mip_height / 2).max(1);
+
+                let blit = vk::ImageBlit::default()
+                    .src_offsets([
+                        vk::Offset3D { x: 0, y: 0, z: 0 },
+                        vk::Offset3D {
+                            x: mip_width,
+                            y: mip_height,
+                            z: 1,
+                        },
+                    ])
+                    .src_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: i - 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .dst_offsets([
+                        vk::Offset3D { x: 0, y: 0, z: 0 },
+                        vk::Offset3D {
+                            x: next_width,
+                            y: next_height,
+                            z: 1,
+                        },
+                    ])
+                    .dst_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: i,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+
+                self.device.cmd_blit_image(
+                    cmd,
+                    tex.image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    tex.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[blit],
+                    vk::Filter::LINEAR,
+                );
+
+                mip_width = next_width;
+                mip_height = next_height;
+            }
+
+            // Transition all levels to SHADER_READ
+            let final_barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(tex.image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: mip_levels,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[final_barrier],
+            );
+
+            self.device
+                .end_command_buffer(cmd)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+        }
+        drop(textures);
+        self.submit_and_wait(cmd)
     }
 
     // === Compute ===
@@ -965,37 +1115,264 @@ impl GpuDevice for VulkanDevice {
 
     fn wave_dispatch_indirect(
         &self,
-        _wave: &Wave,
-        _buffer: u64,
-        _offset: u64,
+        wave: &Wave,
+        buffer: u64,
+        offset: u64,
     ) -> Result<Pulse, QuantaError> {
-        Err(QuantaError::InvalidParam(
-            "Vulkan indirect dispatch not yet implemented",
-        ))
+        let compute_pipelines = self.compute_pipelines.lock().unwrap();
+        let cp = compute_pipelines
+            .get(&wave.handle)
+            .ok_or(QuantaError::InvalidParam("bad wave handle"))?;
+
+        // Create descriptor pool + set (same as wave_dispatch)
+        let pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(16);
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(std::slice::from_ref(&pool_size));
+        let descriptor_pool = unsafe {
+            self.device
+                .create_descriptor_pool(&pool_info, None)
+                .map_err(|_| QuantaError::SubmitFailed)?
+        };
+
+        let layouts = [cp.descriptor_set_layout];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&layouts);
+        let descriptor_sets = unsafe {
+            self.device
+                .allocate_descriptor_sets(&alloc_info)
+                .map_err(|_| QuantaError::SubmitFailed)?
+        };
+        let ds = descriptor_sets[0];
+
+        let buffers = self.buffers.lock().unwrap();
+        let mut writes = Vec::new();
+        let mut buffer_infos: Vec<vk::DescriptorBufferInfo> = Vec::new();
+        for binding in &wave.bindings {
+            if let Some(buf) = buffers.get(&binding.field_handle) {
+                buffer_infos.push(
+                    vk::DescriptorBufferInfo::default()
+                        .buffer(buf.buffer)
+                        .offset(0)
+                        .range(vk::WHOLE_SIZE),
+                );
+            }
+        }
+        for (i, binding) in wave.bindings.iter().enumerate() {
+            if i < buffer_infos.len() {
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(ds)
+                        .dst_binding(binding.slot)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(std::slice::from_ref(&buffer_infos[i])),
+                );
+            }
+        }
+        if !writes.is_empty() {
+            unsafe {
+                self.device.update_descriptor_sets(&writes, &[]);
+            }
+        }
+
+        let indirect_buf = buffers
+            .get(&buffer)
+            .ok_or(QuantaError::InvalidParam("bad indirect buffer"))?;
+
+        let cmd = self.alloc_command_buffer()?;
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            self.device
+                .begin_command_buffer(cmd, &begin)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+            self.device
+                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cp.pipeline);
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                cp.layout,
+                0,
+                &[ds],
+                &[],
+            );
+            self.device
+                .cmd_dispatch_indirect(cmd, indirect_buf.buffer, offset);
+            self.device
+                .end_command_buffer(cmd)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+        }
+        drop(buffers);
+        drop(compute_pipelines);
+        self.submit_and_wait(cmd)?;
+
+        unsafe {
+            self.device.destroy_descriptor_pool(descriptor_pool, None);
+        }
+
+        Ok(Pulse {
+            handle: self.alloc_handle(),
+            wait_fn: Some(Box::new(|_| Ok(()))),
+            poll_fn: None,
+        })
     }
 
     // === Render ===
 
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
-        // Convert WGSL vertex + fragment shaders to SPIR-V
         let vert_wgsl = std::str::from_utf8(desc.vertex)
             .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in vertex shader".into()))?;
         let frag_wgsl = std::str::from_utf8(desc.fragment).map_err(|_| {
             QuantaError::CompilationFailed("invalid UTF-8 in fragment shader".into())
         })?;
 
-        let _vert_spirv =
+        let vert_spirv =
             super::spirv::wgsl_to_spirv(vert_wgsl).map_err(QuantaError::CompilationFailed)?;
-        let _frag_spirv =
+        let frag_spirv =
             super::spirv::wgsl_to_spirv(frag_wgsl).map_err(QuantaError::CompilationFailed)?;
 
-        // TODO: create VkRenderPass, VkPipeline from SPIR-V modules
-        // This requires: render pass compatible format info, vertex input state,
-        // viewport/scissor state, rasterization state, multisample state,
-        // depth/stencil state, color blend state — all from PipelineDesc.
-        // Deferred to when Dija integration is tested on Linux.
+        let vert_module_info = vk::ShaderModuleCreateInfo::default().code(&vert_spirv);
+        let frag_module_info = vk::ShaderModuleCreateInfo::default().code(&frag_spirv);
+        let vert_module = unsafe {
+            self.device
+                .create_shader_module(&vert_module_info, None)
+                .map_err(|e| QuantaError::CompilationFailed(format!("vert module: {:?}", e)))?
+        };
+        let frag_module = unsafe {
+            self.device
+                .create_shader_module(&frag_module_info, None)
+                .map_err(|e| QuantaError::CompilationFailed(format!("frag module: {:?}", e)))?
+        };
+
+        // Create VkRenderPass
+        let color_format = desc
+            .color_formats
+            .first()
+            .copied()
+            .unwrap_or(crate::Format::BGRA8);
+        let color_attachment = vk::AttachmentDescription::default()
+            .format(format_to_vulkan(color_format))
+            .samples(sample_count_to_vk(desc.sample_count))
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let color_ref = vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let subpass = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(std::slice::from_ref(&color_ref));
+
+        let render_pass_info = vk::RenderPassCreateInfo::default()
+            .attachments(std::slice::from_ref(&color_attachment))
+            .subpasses(std::slice::from_ref(&subpass));
+
+        let render_pass = unsafe {
+            self.device
+                .create_render_pass(&render_pass_info, None)
+                .map_err(|e| QuantaError::CompilationFailed(format!("render pass: {:?}", e)))?
+        };
+
+        // Pipeline layout (empty for now — no descriptors for render)
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout = unsafe {
+            self.device
+                .create_pipeline_layout(&pipeline_layout_info, None)
+                .map_err(|e| QuantaError::CompilationFailed(format!("layout: {:?}", e)))?
+        };
+
+        let entry_name = CString::new("main").unwrap();
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_module)
+                .name(&entry_name),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_module)
+                .name(&entry_name),
+        ];
+
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+
+        let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(match desc.cull_mode {
+                crate::CullMode::None => vk::CullModeFlags::NONE,
+                crate::CullMode::Front => vk::CullModeFlags::FRONT,
+                crate::CullMode::Back => vk::CullModeFlags::BACK,
+            })
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(sample_count_to_vk(desc.sample_count));
+
+        let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(desc.blend.enabled)
+            .src_color_blend_factor(blend_factor_to_vk(desc.blend.src_rgb))
+            .dst_color_blend_factor(blend_factor_to_vk(desc.blend.dst_rgb))
+            .color_blend_op(blend_op_to_vk(desc.blend.op_rgb))
+            .src_alpha_blend_factor(blend_factor_to_vk(desc.blend.src_alpha))
+            .dst_alpha_blend_factor(blend_factor_to_vk(desc.blend.dst_alpha))
+            .alpha_blend_op(blend_op_to_vk(desc.blend.op_alpha))
+            .color_write_mask(vk::ColorComponentFlags::RGBA);
+
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(std::slice::from_ref(&blend_attachment));
+
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization)
+            .multisample_state(&multisample)
+            .color_blend_state(&color_blend)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let pipeline = unsafe {
+            self.device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .map_err(|e| {
+                    QuantaError::CompilationFailed(format!("graphics pipeline: {:?}", e.1))
+                })?[0]
+        };
+
+        unsafe {
+            self.device.destroy_shader_module(vert_module, None);
+            self.device.destroy_shader_module(frag_module, None);
+            // Note: render_pass is needed for framebuffer creation in render_end
+            // Store it alongside the pipeline — for now, leak it (TODO: proper storage)
+        }
 
         let handle = self.alloc_handle();
+        self.render_pipelines.lock().unwrap().insert(
+            handle,
+            VkRenderPipeline {
+                pipeline,
+                layout: pipeline_layout,
+            },
+        );
         Ok(Pipeline {
             handle,
             drop_fn: None,
@@ -1010,10 +1387,24 @@ impl GpuDevice for VulkanDevice {
     }
 
     fn render_end(&self, _pass: RenderPass) -> Result<Pulse, QuantaError> {
-        // TODO: encode RenderOps into Vulkan command buffer
-        // Requires: VkRenderPass begin/end, VkFramebuffer from target texture,
-        // layout transitions, draw commands.
-        // Deferred to when Dija integration is tested on Linux.
+        // For now, render_end submits an empty command buffer.
+        // Full RenderOp encoding requires VkFramebuffer creation from the target texture,
+        // which needs the VkRenderPass stored from pipeline_create.
+        // TODO: store render_pass handle and create framebuffer here.
+        let cmd = self.alloc_command_buffer()?;
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            self.device
+                .begin_command_buffer(cmd, &begin)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+            // TODO: begin render pass, encode ops, end render pass
+            self.device
+                .end_command_buffer(cmd)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+        }
+        self.submit_and_wait(cmd)?;
+
         Ok(Pulse {
             handle: self.alloc_handle(),
             wait_fn: Some(Box::new(|_| Ok(()))),
@@ -1102,6 +1493,33 @@ fn format_bytes_per_pixel_vk(format: Format) -> usize {
         Format::RG32Float | Format::RGBA16Float => 8,
         Format::RGBA32Float => 16,
         Format::Depth32Float => 4,
+    }
+}
+
+fn blend_factor_to_vk(f: crate::BlendFactor) -> vk::BlendFactor {
+    use crate::BlendFactor::*;
+    match f {
+        Zero => vk::BlendFactor::ZERO,
+        One => vk::BlendFactor::ONE,
+        SrcAlpha => vk::BlendFactor::SRC_ALPHA,
+        OneMinusSrcAlpha => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        DstAlpha => vk::BlendFactor::DST_ALPHA,
+        OneMinusDstAlpha => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
+        SrcColor => vk::BlendFactor::SRC_COLOR,
+        OneMinusSrcColor => vk::BlendFactor::ONE_MINUS_SRC_COLOR,
+        DstColor => vk::BlendFactor::DST_COLOR,
+        OneMinusDstColor => vk::BlendFactor::ONE_MINUS_DST_COLOR,
+    }
+}
+
+fn blend_op_to_vk(op: crate::BlendOp) -> vk::BlendOp {
+    use crate::BlendOp::*;
+    match op {
+        Add => vk::BlendOp::ADD,
+        Subtract => vk::BlendOp::SUBTRACT,
+        ReverseSubtract => vk::BlendOp::REVERSE_SUBTRACT,
+        Min => vk::BlendOp::MIN,
+        Max => vk::BlendOp::MAX,
     }
 }
 
