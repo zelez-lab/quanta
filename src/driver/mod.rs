@@ -2,6 +2,8 @@
 pub mod metal;
 
 #[cfg(feature = "vulkan")]
+pub mod spirv;
+#[cfg(feature = "vulkan")]
 pub mod vulkan;
 
 #[cfg(feature = "software")]
