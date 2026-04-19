@@ -1,8 +1,6 @@
-use crate::{Color, Field, Pipeline};
+use crate::{Color, Field, Pipeline, Texture};
 
-/// An active render pass — draw commands between begin and end.
-///
-/// Created via [`GpuDevice::render_begin`]. Draw geometry, then end.
+/// An active render pass — record draw commands, then submit.
 #[allow(dead_code)]
 pub struct RenderPass {
     pub(crate) handle: u64,
@@ -11,33 +9,143 @@ pub struct RenderPass {
 
 #[allow(dead_code)]
 pub(crate) enum RenderOp {
+    // Pipeline
     SetPipeline(u64),
-    BindVertices(u64),
-    BindIndices(u64),
-    SetField { slot: u32, handle: u64 },
-    SetValue { slot: u32, data: [u8; 16] },
-    Draw { vertex_count: u32 },
-    DrawIndexed { index_count: u32 },
+
+    // Vertex/index buffers
+    BindVertices {
+        slot: u32,
+        handle: u64,
+        offset: u64,
+    },
+    BindIndices {
+        handle: u64,
+        offset: u64,
+    },
+
+    // Shader resources
+    SetField {
+        slot: u32,
+        handle: u64,
+    },
+    SetTexture {
+        slot: u32,
+        handle: u64,
+    },
+    SetSampler {
+        slot: u32,
+        sampler: SamplerDesc,
+    },
+    SetValue {
+        slot: u32,
+        data: Vec<u8>,
+    },
+
+    // Draw
+    Draw {
+        vertex_count: u32,
+        instance_count: u32,
+    },
+    DrawIndexed {
+        index_count: u32,
+        instance_count: u32,
+    },
+
+    // Render state
     Clear(Color),
+    ClearDepth(f32),
+    SetScissor {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
+    SetViewport {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        min_depth: f32,
+        max_depth: f32,
+    },
+}
+
+/// Texture sampling configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct SamplerDesc {
+    pub min_filter: Filter,
+    pub mag_filter: Filter,
+    pub mip_filter: Filter,
+    pub address_u: AddressMode,
+    pub address_v: AddressMode,
+    pub max_anisotropy: u8,
+}
+
+impl Default for SamplerDesc {
+    fn default() -> Self {
+        Self {
+            min_filter: Filter::Linear,
+            mag_filter: Filter::Linear,
+            mip_filter: Filter::Nearest,
+            address_u: AddressMode::ClampToEdge,
+            address_v: AddressMode::ClampToEdge,
+            max_anisotropy: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filter {
+    Nearest,
+    Linear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressMode {
+    ClampToEdge,
+    Repeat,
+    MirrorRepeat,
 }
 
 impl RenderPass {
+    // === Pipeline ===
+
     /// Bind a render pipeline.
     pub fn set_pipeline(&mut self, pipeline: &Pipeline) {
         self.ops.push(RenderOp::SetPipeline(pipeline.handle()));
     }
 
-    /// Bind vertex data.
-    pub fn bind_vertices<T: Copy>(&mut self, field: &Field<T>) {
-        self.ops.push(RenderOp::BindVertices(field.handle()));
+    // === Vertex/Index data ===
+
+    /// Bind a vertex buffer at a slot (0 = vertices, 1 = instances, etc.).
+    pub fn bind_vertices<T: Copy>(&mut self, slot: u32, field: &Field<T>) {
+        self.ops.push(RenderOp::BindVertices {
+            slot,
+            handle: field.handle(),
+            offset: 0,
+        });
     }
 
-    /// Bind index data.
+    /// Bind a vertex buffer at a slot with a byte offset.
+    pub fn bind_vertices_offset<T: Copy>(&mut self, slot: u32, field: &Field<T>, offset: u64) {
+        self.ops.push(RenderOp::BindVertices {
+            slot,
+            handle: field.handle(),
+            offset,
+        });
+    }
+
+    /// Bind an index buffer (u32 indices).
     pub fn bind_indices(&mut self, field: &Field<u32>) {
-        self.ops.push(RenderOp::BindIndices(field.handle()));
+        self.ops.push(RenderOp::BindIndices {
+            handle: field.handle(),
+            offset: 0,
+        });
     }
 
-    /// Bind a field at a shader slot.
+    // === Shader resources ===
+
+    /// Bind a field at a shader buffer slot.
     pub fn set_field<T: Copy>(&mut self, slot: u32, field: &Field<T>) {
         self.ops.push(RenderOp::SetField {
             slot,
@@ -45,32 +153,114 @@ impl RenderPass {
         });
     }
 
-    /// Set a push constant value.
-    pub fn set_value<V: Copy>(&mut self, slot: u32, value: V) {
-        assert!(size_of::<V>() <= 16, "push constant must be ≤ 16 bytes");
-        let mut data = [0u8; 16];
+    /// Bind a texture at a shader texture slot.
+    pub fn set_texture(&mut self, slot: u32, texture: &Texture) {
+        self.ops.push(RenderOp::SetTexture {
+            slot,
+            handle: texture.handle(),
+        });
+    }
+
+    /// Set sampler state for a texture slot.
+    pub fn set_sampler(&mut self, slot: u32, sampler: SamplerDesc) {
+        self.ops.push(RenderOp::SetSampler { slot, sampler });
+    }
+
+    /// Set push constant / uniform data at a slot (any size).
+    pub fn set_value<V: Copy>(&mut self, slot: u32, value: &V) {
+        let size = size_of::<V>();
+        let mut data = vec![0u8; size];
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                &value as *const V as *const u8,
-                data.as_mut_ptr(),
-                size_of::<V>(),
-            );
+            core::ptr::copy_nonoverlapping(value as *const V as *const u8, data.as_mut_ptr(), size);
         }
         self.ops.push(RenderOp::SetValue { slot, data });
     }
 
-    /// Draw vertices.
+    // === Draw commands ===
+
+    /// Draw vertices (non-indexed, non-instanced).
     pub fn draw(&mut self, vertex_count: u32) {
-        self.ops.push(RenderOp::Draw { vertex_count });
+        self.ops.push(RenderOp::Draw {
+            vertex_count,
+            instance_count: 1,
+        });
     }
 
-    /// Draw indexed geometry.
+    /// Draw instanced (Dija's primary draw call).
+    pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32) {
+        self.ops.push(RenderOp::Draw {
+            vertex_count,
+            instance_count,
+        });
+    }
+
+    /// Draw indexed geometry (tessellated paths, 3D meshes).
     pub fn draw_indexed(&mut self, index_count: u32) {
-        self.ops.push(RenderOp::DrawIndexed { index_count });
+        self.ops.push(RenderOp::DrawIndexed {
+            index_count,
+            instance_count: 1,
+        });
     }
 
-    /// Clear the render target.
+    /// Draw indexed + instanced.
+    pub fn draw_indexed_instanced(&mut self, index_count: u32, instance_count: u32) {
+        self.ops.push(RenderOp::DrawIndexed {
+            index_count,
+            instance_count,
+        });
+    }
+
+    // === Render state ===
+
+    /// Clear the color attachment.
     pub fn clear(&mut self, color: Color) {
         self.ops.push(RenderOp::Clear(color));
+    }
+
+    /// Clear the depth attachment.
+    pub fn clear_depth(&mut self, depth: f32) {
+        self.ops.push(RenderOp::ClearDepth(depth));
+    }
+
+    /// Set scissor rectangle (pixel coordinates).
+    pub fn set_scissor(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        self.ops.push(RenderOp::SetScissor {
+            x,
+            y,
+            width,
+            height,
+        });
+    }
+
+    /// Set viewport (normalized device coordinates mapping).
+    pub fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32) {
+        self.ops.push(RenderOp::SetViewport {
+            x,
+            y,
+            width,
+            height,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        });
+    }
+
+    /// Set viewport with depth range.
+    pub fn set_viewport_depth(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        min_depth: f32,
+        max_depth: f32,
+    ) {
+        self.ops.push(RenderOp::SetViewport {
+            x,
+            y,
+            width,
+            height,
+            min_depth,
+            max_depth,
+        });
     }
 }

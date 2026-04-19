@@ -128,22 +128,48 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
-    fn texture(&self, width: u32, height: u32, format: Format) -> Result<Texture, QuantaError> {
-        let desc = mtl::TextureDescriptor::new();
-        desc.set_width(width as u64);
-        desc.set_height(height as u64);
-        desc.set_pixel_format(format_to_metal(format));
-        desc.set_usage(mtl::MTLTextureUsage::ShaderRead | mtl::MTLTextureUsage::RenderTarget);
-        desc.set_storage_mode(mtl::MTLStorageMode::Private);
+    fn texture_create(&self, desc: &crate::TextureDesc) -> Result<Texture, QuantaError> {
+        let mtl_desc = mtl::TextureDescriptor::new();
+        mtl_desc.set_width(desc.width as u64);
+        mtl_desc.set_height(desc.height as u64);
+        mtl_desc.set_pixel_format(format_to_metal(desc.format));
+        mtl_desc.set_sample_count(desc.sample_count as u64);
 
-        let _tex = self.device.new_texture(&desc);
+        let mut usage = mtl::MTLTextureUsage::empty();
+        if desc.usage.has(crate::TextureUsage::SHADER_READ) {
+            usage |= mtl::MTLTextureUsage::ShaderRead;
+        }
+        if desc.usage.has(crate::TextureUsage::SHADER_WRITE) {
+            usage |= mtl::MTLTextureUsage::ShaderWrite;
+        }
+        if desc.usage.has(crate::TextureUsage::RENDER_TARGET) {
+            usage |= mtl::MTLTextureUsage::RenderTarget;
+        }
+        if usage.is_empty() {
+            usage = mtl::MTLTextureUsage::ShaderRead;
+        }
+        mtl_desc.set_usage(usage);
+
+        if desc.usage.has(crate::TextureUsage::RENDER_TARGET)
+            && !desc.usage.has(crate::TextureUsage::SHADER_READ)
+        {
+            mtl_desc.set_storage_mode(mtl::MTLStorageMode::Private);
+        } else {
+            mtl_desc.set_storage_mode(mtl::MTLStorageMode::Shared);
+        }
+
+        if desc.sample_count > 1 {
+            mtl_desc.set_texture_type(mtl::MTLTextureType::D2Multisample);
+        }
+
+        let _tex = self.device.new_texture(&mtl_desc);
         let handle = self.alloc_handle();
 
         Ok(Texture {
             handle,
-            width,
-            height,
-            format,
+            width: desc.width,
+            height: desc.height,
+            format: desc.format,
             drop_fn: None,
         })
     }
@@ -245,9 +271,77 @@ impl GpuDevice for MetalDevice {
         })
     }
 
-    fn pipeline(&self, _desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
-        // TODO: render pipeline (vertex + fragment)
+    fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
+        // Compile vertex + fragment shaders from MSL source
+        let opts = mtl::CompileOptions::new();
+
+        let vert_src = std::str::from_utf8(desc.vertex)
+            .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in vertex shader".into()))?;
+        let frag_src = std::str::from_utf8(desc.fragment).map_err(|_| {
+            QuantaError::CompilationFailed("invalid UTF-8 in fragment shader".into())
+        })?;
+
+        let vert_lib = self
+            .device
+            .new_library_with_source(vert_src, &opts)
+            .map_err(|e| QuantaError::CompilationFailed(format!("vertex: {}", e)))?;
+        let frag_lib = self
+            .device
+            .new_library_with_source(frag_src, &opts)
+            .map_err(|e| QuantaError::CompilationFailed(format!("fragment: {}", e)))?;
+
+        let vert_fn = vert_lib
+            .get_function(desc.vertex_entry, None)
+            .map_err(|e| {
+                QuantaError::CompilationFailed(format!(
+                    "vertex entry '{}': {}",
+                    desc.vertex_entry, e
+                ))
+            })?;
+        let frag_fn = frag_lib
+            .get_function(desc.fragment_entry, None)
+            .map_err(|e| {
+                QuantaError::CompilationFailed(format!(
+                    "fragment entry '{}': {}",
+                    desc.fragment_entry, e
+                ))
+            })?;
+
+        let pipe_desc = mtl::RenderPipelineDescriptor::new();
+        pipe_desc.set_vertex_function(Some(&vert_fn));
+        pipe_desc.set_fragment_function(Some(&frag_fn));
+
+        // Color attachment
+        let color_attach = pipe_desc.color_attachments().object_at(0).unwrap();
+        color_attach.set_pixel_format(format_to_metal(desc.color_format));
+
+        if desc.blend.enabled {
+            color_attach.set_blending_enabled(true);
+            color_attach.set_source_rgb_blend_factor(blend_factor_to_metal(desc.blend.src_rgb));
+            color_attach
+                .set_destination_rgb_blend_factor(blend_factor_to_metal(desc.blend.dst_rgb));
+            color_attach.set_source_alpha_blend_factor(blend_factor_to_metal(desc.blend.src_alpha));
+            color_attach
+                .set_destination_alpha_blend_factor(blend_factor_to_metal(desc.blend.dst_alpha));
+            color_attach.set_rgb_blend_operation(blend_op_to_metal(desc.blend.op_rgb));
+            color_attach.set_alpha_blend_operation(blend_op_to_metal(desc.blend.op_alpha));
+        }
+
+        // Depth
+        if let Some(depth_fmt) = desc.depth_format {
+            pipe_desc.set_depth_attachment_pixel_format(format_to_metal(depth_fmt));
+        }
+
+        // MSAA
+        pipe_desc.set_sample_count(desc.sample_count as u64);
+
+        let _pipeline_state = self
+            .device
+            .new_render_pipeline_state(&pipe_desc)
+            .map_err(|e| QuantaError::CompilationFailed(format!("render pipeline: {}", e)))?;
+
         let handle = self.alloc_handle();
+        // TODO: store _pipeline_state for use in render_begin/render_end
         Ok(Pipeline {
             handle,
             drop_fn: None,
@@ -291,5 +385,32 @@ fn format_to_metal(format: Format) -> mtl::MTLPixelFormat {
         Format::RGBA16Float => mtl::MTLPixelFormat::RGBA16Float,
         Format::RGBA32Float => mtl::MTLPixelFormat::RGBA32Float,
         Format::Depth32Float => mtl::MTLPixelFormat::Depth32Float,
+    }
+}
+
+fn blend_factor_to_metal(f: crate::BlendFactor) -> mtl::MTLBlendFactor {
+    use crate::BlendFactor::*;
+    match f {
+        Zero => mtl::MTLBlendFactor::Zero,
+        One => mtl::MTLBlendFactor::One,
+        SrcAlpha => mtl::MTLBlendFactor::SourceAlpha,
+        OneMinusSrcAlpha => mtl::MTLBlendFactor::OneMinusSourceAlpha,
+        DstAlpha => mtl::MTLBlendFactor::DestinationAlpha,
+        OneMinusDstAlpha => mtl::MTLBlendFactor::OneMinusDestinationAlpha,
+        SrcColor => mtl::MTLBlendFactor::SourceColor,
+        OneMinusSrcColor => mtl::MTLBlendFactor::OneMinusSourceColor,
+        DstColor => mtl::MTLBlendFactor::DestinationColor,
+        OneMinusDstColor => mtl::MTLBlendFactor::OneMinusDestinationColor,
+    }
+}
+
+fn blend_op_to_metal(op: crate::BlendOp) -> mtl::MTLBlendOperation {
+    use crate::BlendOp::*;
+    match op {
+        Add => mtl::MTLBlendOperation::Add,
+        Subtract => mtl::MTLBlendOperation::Subtract,
+        ReverseSubtract => mtl::MTLBlendOperation::ReverseSubtract,
+        Min => mtl::MTLBlendOperation::Min,
+        Max => mtl::MTLBlendOperation::Max,
     }
 }

@@ -9,13 +9,13 @@ pub mod texture;
 pub mod types;
 pub mod wave;
 
-pub use device::{GpuDevice, GpuDeviceExt, PipelineDesc};
+pub use device::GpuDevice;
 pub use error::QuantaError;
 pub use field::Field;
 pub use gpu::Gpu;
-pub use pipeline::Pipeline;
+pub use pipeline::*;
 pub use pulse::Pulse;
-pub use render_pass::RenderPass;
-pub use texture::Texture;
+pub use render_pass::*;
+pub use texture::*;
 pub use types::*;
 pub use wave::Wave;
