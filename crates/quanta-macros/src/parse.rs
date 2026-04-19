@@ -92,6 +92,33 @@ impl EmitCtx {
         self.next_reg += 1;
         r
     }
+
+    /// Create a child context for loop/branch bodies that shares variables by reference.
+    /// After emitting the body, call `merge_child` to propagate register count and var updates.
+    fn child(&self) -> Self {
+        Self {
+            ops: Vec::new(),
+            next_reg: self.next_reg,
+            vars: self.vars.clone(),
+            params: self.params.clone(),
+            next_shared: self.next_shared,
+        }
+    }
+
+    /// Merge child context back: take its ops, update next_reg, propagate var remappings.
+    fn merge_child(&mut self, child: Self) -> Vec<KernelOp> {
+        self.next_reg = child.next_reg;
+        // Propagate variable reassignments from child back to parent
+        for (name, (reg, ty)) in &child.vars {
+            if let Some((parent_reg, _)) = self.vars.get(name)
+                && reg != parent_reg
+            {
+                // Variable was reassigned inside child scope — update parent
+                self.vars.insert(name.clone(), (*reg, *ty));
+            }
+        }
+        child.ops
+    }
 }
 
 /// Parse a Rust function into KernelDef with populated body ops.
@@ -134,23 +161,7 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
 
 fn emit_stmt(stmt: &Stmt, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
     match stmt {
-        Stmt::Local(local) => {
-            let var_name = match &local.pat {
-                Pat::Ident(ident) => ident.ident.to_string(),
-                _ => {
-                    return Err(syn::Error::new_spanned(
-                        &local.pat,
-                        "unsupported pattern in let binding",
-                    ));
-                }
-            };
-
-            if let Some(init) = &local.init {
-                let (reg, ty) = emit_expr(&init.expr, ctx)?;
-                ctx.vars.insert(var_name, (reg, ty));
-            }
-            Ok(())
-        }
+        Stmt::Local(local) => emit_local(local, ctx),
         Stmt::Expr(expr, _semi) => {
             emit_expr_stmt(expr, ctx)?;
             Ok(())
@@ -162,30 +173,74 @@ fn emit_stmt(stmt: &Stmt, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
     }
 }
 
+/// Emit a let binding, handling simple idents and tuple patterns.
+fn emit_local(local: &syn::Local, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+    match &local.pat {
+        Pat::Ident(ident) => {
+            let var_name = ident.ident.to_string();
+            if let Some(init) = &local.init {
+                let (reg, ty) = emit_expr(&init.expr, ctx)?;
+                ctx.vars.insert(var_name, (reg, ty));
+            }
+            Ok(())
+        }
+        // Tuple pattern: let (mut x, mut y) = (expr1, expr2)
+        Pat::Tuple(tuple) => {
+            if let Some(init) = &local.init {
+                // The RHS must be a tuple expression
+                if let Expr::Tuple(rhs_tuple) = init.expr.as_ref() {
+                    if tuple.elems.len() != rhs_tuple.elems.len() {
+                        return Err(syn::Error::new_spanned(
+                            &local.pat,
+                            "tuple pattern length mismatch",
+                        ));
+                    }
+                    for (pat, expr) in tuple.elems.iter().zip(rhs_tuple.elems.iter()) {
+                        let var_name = match pat {
+                            Pat::Ident(ident) => ident.ident.to_string(),
+                            _ => {
+                                return Err(syn::Error::new_spanned(
+                                    pat,
+                                    "unsupported pattern in tuple binding",
+                                ));
+                            }
+                        };
+                        let (reg, ty) = emit_expr(expr, ctx)?;
+                        ctx.vars.insert(var_name, (reg, ty));
+                    }
+                    Ok(())
+                } else {
+                    Err(syn::Error::new_spanned(
+                        &init.expr,
+                        "tuple pattern requires tuple expression on RHS",
+                    ))
+                }
+            } else {
+                Err(syn::Error::new_spanned(
+                    &local.pat,
+                    "tuple binding requires initializer",
+                ))
+            }
+        }
+        _ => Err(syn::Error::new_spanned(
+            &local.pat,
+            "unsupported pattern in let binding",
+        )),
+    }
+}
+
 /// Emit an expression used as a statement (e.g., assignment, function call).
 fn emit_expr_stmt(expr: &Expr, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
     match expr {
-        // result[i] = value
+        // result[i] = value  OR  x = value (local variable reassignment)
         Expr::Assign(assign) => {
-            let (src_reg, _) = emit_expr(&assign.right, ctx)?;
-            emit_store(&assign.left, src_reg, ctx)?;
+            let (src_reg, src_ty) = emit_expr(&assign.right, ctx)?;
+            emit_store_or_reassign(&assign.left, src_reg, src_ty, ctx)?;
             Ok(())
         }
-        // Compound assignment: result[i] += value
+        // Compound assignment: result[i] += value  OR  x += value (local)
         Expr::Binary(bin) if is_assign_op(&bin.op) => {
-            // Desugar a += b to a = a + b
-            let (left_reg, ty) = emit_expr(&bin.left, ctx)?;
-            let (right_reg, _) = emit_expr(&bin.right, ctx)?;
-            let op = assign_op_to_binop(&bin.op)?;
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::BinOp {
-                dst,
-                a: left_reg,
-                b: right_reg,
-                op,
-                ty,
-            });
-            emit_store(&bin.left, dst, ctx)?;
+            emit_compound_assign(bin, ctx)?;
             Ok(())
         }
         // if/else as statement
@@ -201,6 +256,11 @@ fn emit_expr_stmt(expr: &Expr, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
         // while loop
         Expr::While(while_loop) => {
             emit_while_loop(while_loop, ctx)?;
+            Ok(())
+        }
+        // break
+        Expr::Break(_) => {
+            ctx.ops.push(KernelOp::Break);
             Ok(())
         }
         // Expression with side effects (function calls like barrier())
@@ -258,6 +318,12 @@ fn emit_expr(expr: &Expr, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::E
 
         // Cast: x as f32
         Expr::Cast(cast) => emit_cast(cast, ctx),
+
+        // Tuple: (expr1, expr2) — used in tuple destructuring RHS
+        Expr::Tuple(_) => Err(syn::Error::new_spanned(
+            expr,
+            "tuple expression only supported in let binding RHS",
+        )),
 
         // Block: { stmts; final_expr }
         Expr::Block(block) => {
@@ -367,6 +433,37 @@ fn emit_path(path: &syn::ExprPath, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
 }
 
 fn emit_binary(bin: &syn::ExprBinary, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
+    // Handle logical AND/OR with short-circuit semantics modeled as bitwise on bools
+    match &bin.op {
+        SynBinOp::And(_) => {
+            let (a, _) = emit_expr(&bin.left, ctx)?;
+            let (b, _) = emit_expr(&bin.right, ctx)?;
+            let dst = ctx.alloc_reg();
+            ctx.ops.push(KernelOp::BinOp {
+                dst,
+                a,
+                b,
+                op: BinOp::BitAnd,
+                ty: ScalarType::Bool,
+            });
+            return Ok((dst, ScalarType::Bool));
+        }
+        SynBinOp::Or(_) => {
+            let (a, _) = emit_expr(&bin.left, ctx)?;
+            let (b, _) = emit_expr(&bin.right, ctx)?;
+            let dst = ctx.alloc_reg();
+            ctx.ops.push(KernelOp::BinOp {
+                dst,
+                a,
+                b,
+                op: BinOp::BitOr,
+                ty: ScalarType::Bool,
+            });
+            return Ok((dst, ScalarType::Bool));
+        }
+        _ => {}
+    }
+
     let (a, ty_a) = emit_expr(&bin.left, ctx)?;
     let (b, _ty_b) = emit_expr(&bin.right, ctx)?;
     let dst = ctx.alloc_reg();
@@ -427,6 +524,7 @@ fn emit_index(index: &syn::ExprIndex, ctx: &mut EmitCtx) -> Result<(Reg, ScalarT
         })?
         .clone();
 
+    // Index can be any expression (including complex ones like i * 4 + 1)
     let (idx_reg, _) = emit_expr(&index.index, ctx)?;
     let dst = ctx.alloc_reg();
     ctx.ops.push(KernelOp::Load {
@@ -631,29 +729,16 @@ fn emit_if(if_expr: &syn::ExprIf, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType)
     let (cond_reg, _) = emit_expr(&if_expr.cond, ctx)?;
 
     // Then branch
-    let mut then_ctx = EmitCtx {
-        ops: Vec::new(),
-        next_reg: ctx.next_reg,
-        vars: ctx.vars.clone(),
-        params: ctx.params.clone(),
-        next_shared: ctx.next_shared,
-    };
+    let mut then_ctx = ctx.child();
     for stmt in &if_expr.then_branch.stmts {
         emit_stmt(stmt, &mut then_ctx)?;
     }
-    let then_ops = then_ctx.ops;
-    ctx.next_reg = then_ctx.next_reg;
+    let then_ops = ctx.merge_child(then_ctx);
 
     // Else branch
     let mut else_ops = Vec::new();
     if let Some((_, else_expr)) = &if_expr.else_branch {
-        let mut else_ctx = EmitCtx {
-            ops: Vec::new(),
-            next_reg: ctx.next_reg,
-            vars: ctx.vars.clone(),
-            params: ctx.params.clone(),
-            next_shared: ctx.next_shared,
-        };
+        let mut else_ctx = ctx.child();
         match else_expr.as_ref() {
             Expr::Block(block) => {
                 for stmt in &block.block.stmts {
@@ -667,8 +752,7 @@ fn emit_if(if_expr: &syn::ExprIf, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType)
                 emit_expr_stmt(else_expr, &mut else_ctx)?;
             }
         }
-        else_ops = else_ctx.ops;
-        ctx.next_reg = else_ctx.next_reg;
+        else_ops = ctx.merge_child(else_ctx);
     }
 
     ctx.ops.push(KernelOp::Branch {
@@ -682,12 +766,14 @@ fn emit_if(if_expr: &syn::ExprIf, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType)
 
 fn emit_for_loop(for_loop: &syn::ExprForLoop, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
     // for i in 0..N { body }
+    // Accept simple idents AND underscore/wildcard patterns
     let iter_name = match &*for_loop.pat {
         Pat::Ident(ident) => ident.ident.to_string(),
+        Pat::Wild(_) => "_".to_string(),
         _ => {
             return Err(syn::Error::new_spanned(
                 &for_loop.pat,
-                "for loop variable must be a simple name",
+                "for loop variable must be a simple name or _",
             ));
         }
     };
@@ -714,21 +800,37 @@ fn emit_for_loop(for_loop: &syn::ExprForLoop, ctx: &mut EmitCtx) -> Result<(), s
     };
 
     let iter_reg = ctx.alloc_reg();
-    ctx.vars.insert(iter_name, (iter_reg, ScalarType::U32));
+    // Only register the iteration variable if it's not a wildcard
+    if iter_name != "_" {
+        ctx.vars.insert(iter_name, (iter_reg, ScalarType::U32));
+    }
+
+    // Snapshot variable registers before the loop body
+    let vars_before: HashMap<String, (Reg, ScalarType)> = ctx.vars.clone();
 
     // Body
-    let mut body_ctx = EmitCtx {
-        ops: Vec::new(),
-        next_reg: ctx.next_reg,
-        vars: ctx.vars.clone(),
-        params: ctx.params.clone(),
-        next_shared: ctx.next_shared,
-    };
+    let mut body_ctx = ctx.child();
     for stmt in &for_loop.body.stmts {
         emit_stmt(stmt, &mut body_ctx)?;
     }
-    let body_ops = body_ctx.ops;
-    ctx.next_reg = body_ctx.next_reg;
+
+    // Emit copies for loop-carried variables: copy new register back to original
+    for (name, (orig_reg, ty)) in &vars_before {
+        if let Some(&(new_reg, _)) = body_ctx.vars.get(name)
+            && new_reg != *orig_reg
+        {
+            body_ctx.ops.push(KernelOp::Copy {
+                dst: *orig_reg,
+                src: new_reg,
+                ty: *ty,
+            });
+            // Reset the child's var mapping to the original register
+            // so that merge_child doesn't change the parent's mapping
+            body_ctx.vars.insert(name.clone(), (*orig_reg, *ty));
+        }
+    }
+
+    let body_ops = ctx.merge_child(body_ctx);
 
     ctx.ops.push(KernelOp::Loop {
         count: count_reg,
@@ -738,18 +840,79 @@ fn emit_for_loop(for_loop: &syn::ExprForLoop, ctx: &mut EmitCtx) -> Result<(), s
     Ok(())
 }
 
-fn emit_while_loop(while_loop: &syn::ExprWhile, _ctx: &mut EmitCtx) -> Result<(), syn::Error> {
-    // while cond { body } — emit as Loop with a large count + break on !cond
-    // Simplified: emit as a bounded loop (GPU kernels must be bounded)
-    Err(syn::Error::new_spanned(
-        while_loop,
-        "while loops not yet supported — use for loops with bounded ranges",
-    ))
+fn emit_while_loop(while_loop: &syn::ExprWhile, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+    // while cond { body } → for (_w = 0; _w < 10000; _w++) { if !cond { break; } body; }
+    // GPU kernels must be bounded, so we use a max iteration count as a safety limit.
+    let max_iter = 10000u32;
+    let max_reg = ctx.alloc_reg();
+    ctx.ops.push(KernelOp::Const {
+        dst: max_reg,
+        value: ConstValue::U32(max_iter),
+    });
+
+    let iter_reg = ctx.alloc_reg();
+
+    // Snapshot variable registers before the loop body
+    let vars_before: HashMap<String, (Reg, ScalarType)> = ctx.vars.clone();
+
+    // Build the body: first check condition, break if false, then run actual body
+    let mut body_ctx = ctx.child();
+
+    // Emit condition check
+    let (cond_reg, _) = emit_expr(&while_loop.cond, &mut body_ctx)?;
+
+    // if !cond { break; }
+    let not_cond = body_ctx.alloc_reg();
+    body_ctx.ops.push(KernelOp::UnaryOp {
+        dst: not_cond,
+        a: cond_reg,
+        op: UnaryOp::LogicalNot,
+        ty: ScalarType::Bool,
+    });
+    body_ctx.ops.push(KernelOp::Branch {
+        cond: not_cond,
+        then_ops: vec![KernelOp::Break],
+        else_ops: vec![],
+    });
+
+    // Emit actual body
+    for stmt in &while_loop.body.stmts {
+        emit_stmt(stmt, &mut body_ctx)?;
+    }
+
+    // Emit copies for loop-carried variables: copy new register back to original
+    for (name, (orig_reg, ty)) in &vars_before {
+        if let Some(&(new_reg, _)) = body_ctx.vars.get(name)
+            && new_reg != *orig_reg
+        {
+            body_ctx.ops.push(KernelOp::Copy {
+                dst: *orig_reg,
+                src: new_reg,
+                ty: *ty,
+            });
+            body_ctx.vars.insert(name.clone(), (*orig_reg, *ty));
+        }
+    }
+
+    let body_ops = ctx.merge_child(body_ctx);
+
+    ctx.ops.push(KernelOp::Loop {
+        count: max_reg,
+        iter_reg,
+        body: body_ops,
+    });
+    Ok(())
 }
 
-/// Emit a store to a field: field[index] = value
-fn emit_store(target: &Expr, src_reg: Reg, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+/// Store to a field[index] or reassign a local variable.
+fn emit_store_or_reassign(
+    target: &Expr,
+    src_reg: Reg,
+    src_ty: ScalarType,
+    ctx: &mut EmitCtx,
+) -> Result<(), syn::Error> {
     match target {
+        // field[index] = value
         Expr::Index(index) => {
             let arr_name = expr_to_name(&index.expr).ok_or_else(|| {
                 syn::Error::new_spanned(&index.expr, "store target must be a field name")
@@ -770,9 +933,82 @@ fn emit_store(target: &Expr, src_reg: Reg, ctx: &mut EmitCtx) -> Result<(), syn:
             });
             Ok(())
         }
+        // x = value (local variable reassignment)
+        Expr::Path(path) => {
+            let name = path
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            match ctx.vars.entry(name) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    e.insert((src_reg, src_ty));
+                    Ok(())
+                }
+                std::collections::hash_map::Entry::Vacant(e) => Err(syn::Error::new_spanned(
+                    target,
+                    format!("cannot assign to undefined variable: {}", e.key()),
+                )),
+            }
+        }
         _ => Err(syn::Error::new_spanned(
             target,
-            "store target must be field[index]",
+            "assignment target must be field[index] or a local variable",
+        )),
+    }
+}
+
+/// Handle compound assignment: a[i] += expr  OR  x += expr
+fn emit_compound_assign(bin: &syn::ExprBinary, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+    let op = assign_op_to_binop(&bin.op)?;
+
+    match &*bin.left {
+        // Compound assignment on a local variable: x += expr
+        Expr::Path(path) => {
+            let name = path
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            if let Some(&(left_reg, ty)) = ctx.vars.get(&name) {
+                let (right_reg, _) = emit_expr(&bin.right, ctx)?;
+                let dst = ctx.alloc_reg();
+                ctx.ops.push(KernelOp::BinOp {
+                    dst,
+                    a: left_reg,
+                    b: right_reg,
+                    op,
+                    ty,
+                });
+                ctx.vars.insert(name, (dst, ty));
+                Ok(())
+            } else {
+                Err(syn::Error::new_spanned(
+                    &bin.left,
+                    format!("undefined variable for compound assignment: {}", name),
+                ))
+            }
+        }
+        // Compound assignment on an indexed field: a[i] += expr
+        Expr::Index(_) => {
+            let (left_reg, ty) = emit_expr(&bin.left, ctx)?;
+            let (right_reg, _) = emit_expr(&bin.right, ctx)?;
+            let dst = ctx.alloc_reg();
+            ctx.ops.push(KernelOp::BinOp {
+                dst,
+                a: left_reg,
+                b: right_reg,
+                op,
+                ty,
+            });
+            emit_store_or_reassign(&bin.left, dst, ty, ctx)?;
+            Ok(())
+        }
+        _ => Err(syn::Error::new_spanned(
+            &bin.left,
+            "compound assignment target must be a local variable or field[index]",
         )),
     }
 }

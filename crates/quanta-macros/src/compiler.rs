@@ -361,6 +361,12 @@ fn emit_msl_op(
                 src.0
             ));
         }
+        Copy { dst, src, .. } => {
+            out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
+        }
+        Break => {
+            out.push_str(&format!("{}break;\n", pad));
+        }
         Barrier => {
             out.push_str(&format!(
                 "{}threadgroup_barrier(mem_flags::mem_threadgroup);\n",
@@ -614,6 +620,87 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
                 }
             }
             out.push_str(&format!("{}}}\n", pad));
+        }
+        Loop {
+            count,
+            iter_reg,
+            body,
+        } => {
+            out.push_str(&format!(
+                "{}for (var r{}: u32 = 0u; r{} < r{}; r{} = r{} + 1u) {{\n",
+                pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0, iter_reg.0
+            ));
+            for op in body {
+                emit_wgsl_op(out, op, indent + 1);
+            }
+            out.push_str(&format!("{}}}\n", pad));
+        }
+        Cmp { dst, a, b, op, .. } => {
+            let op_str = match op {
+                quanta_ir::CmpOp::Eq => "==",
+                quanta_ir::CmpOp::Ne => "!=",
+                quanta_ir::CmpOp::Lt => "<",
+                quanta_ir::CmpOp::Le => "<=",
+                quanta_ir::CmpOp::Gt => ">",
+                quanta_ir::CmpOp::Ge => ">=",
+            };
+            out.push_str(&format!(
+                "{}let r{} = (r{} {} r{});\n",
+                pad, dst.0, a.0, op_str, b.0
+            ));
+        }
+        Cast { dst, src, to, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = {}(r{});\n",
+                pad,
+                dst.0,
+                to.wgsl_name(),
+                src.0
+            ));
+        }
+        MathCall {
+            dst, func, args, ..
+        } => {
+            let f = match func {
+                quanta_ir::MathFn::Sin => "sin",
+                quanta_ir::MathFn::Cos => "cos",
+                quanta_ir::MathFn::Sqrt => "sqrt",
+                quanta_ir::MathFn::Abs => "abs",
+                quanta_ir::MathFn::Min => "min",
+                quanta_ir::MathFn::Max => "max",
+                quanta_ir::MathFn::Floor => "floor",
+                quanta_ir::MathFn::Ceil => "ceil",
+                quanta_ir::MathFn::Round => "round",
+                quanta_ir::MathFn::Exp => "exp",
+                quanta_ir::MathFn::Log => "log",
+                quanta_ir::MathFn::Pow => "pow",
+                quanta_ir::MathFn::Clamp => "clamp",
+                quanta_ir::MathFn::Fma => "fma",
+                quanta_ir::MathFn::Rsqrt => "inverseSqrt",
+                _ => "/* unsupported */",
+            };
+            let a: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}let r{} = {}({});\n",
+                pad,
+                dst.0,
+                f,
+                a.join(", ")
+            ));
+        }
+        UnaryOp { dst, a, op, .. } => {
+            let op_str = match op {
+                quanta_ir::UnaryOp::Neg => "-",
+                quanta_ir::UnaryOp::BitNot => "~",
+                quanta_ir::UnaryOp::LogicalNot => "!",
+            };
+            out.push_str(&format!("{}let r{} = {}r{};\n", pad, dst.0, op_str, a.0));
+        }
+        Copy { dst, src, .. } => {
+            out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
+        }
+        Break => {
+            out.push_str(&format!("{}break;\n", pad));
         }
         _ => {
             out.push_str(&format!("{}// TODO: {:?}\n", pad, op));

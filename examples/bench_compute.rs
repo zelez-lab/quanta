@@ -7,23 +7,15 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-// Heavy compute uses loop variable mutation and complex store patterns.
-// Use MSL directly until AST parser supports these.
-const HEAVY_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-kernel void heavy_compute(
-    device const float* input [[buffer(0)]],
-    device float* output      [[buffer(1)]],
-    uint idx [[thread_position_in_grid]]
-) {
-    float x = input[idx];
-    for (int i = 0; i < 1000; i++) {
-        x = sin(x) * cos(x) + sqrt(abs(x) + 1.0);
+#[quanta::kernel]
+fn heavy_compute(input: &[f32], output: &mut [f32]) {
+    let i = quark_id();
+    let mut x = input[i];
+    for _ in 0..1000 {
+        x = (x.sin() * x.cos()) + (x.abs() + 1.0f32).sqrt();
     }
-    output[idx] = x;
+    output[i] = x;
 }
-"#;
 
 fn main() {
     let gpu = quanta::init().expect("no GPU found");
@@ -36,7 +28,7 @@ fn main() {
         let fo = gpu.compute_field::<f32>(count).unwrap();
         gpu.write_field(&fi, &input).unwrap();
 
-        let mut wave = gpu.wave(HEAVY_MSL.as_bytes()).unwrap();
+        let mut wave = heavy_compute(&gpu).expect("create wave");
         wave.bind(0, &fi);
         wave.bind(1, &fo);
 

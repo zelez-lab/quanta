@@ -7,30 +7,23 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-const MANDELBROT_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-kernel void mandelbrot(
-    device uint* output [[buffer(0)]],
-    constant uint& width [[buffer(1)]],
-    constant uint& height [[buffer(2)]],
-    uint idx [[thread_position_in_grid]]
-) {
-    uint px = idx % width;
-    uint py = idx / width;
-    float x0 = ((float)px / (float)width) * 3.5 - 2.5;
-    float y0 = ((float)py / (float)height) * 2.0 - 1.0;
-    float x = 0.0, y = 0.0;
-    uint iter = 0;
-    while (x*x + y*y <= 4.0 && iter < 1000) {
-        float tmp = x*x - y*y + x0;
-        y = 2.0*x*y + y0;
+#[quanta::kernel]
+fn mandelbrot(output: &mut [u32], width: u32, height: u32) {
+    let idx = quark_id();
+    let px = idx % width;
+    let py = idx / width;
+    let x0 = (px as f32 / width as f32) * 3.5f32 - 2.5f32;
+    let y0 = (py as f32 / height as f32) * 2.0f32 - 1.0f32;
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    let mut iter = 0u32;
+    while x * x + y * y <= 4.0f32 && iter < 1000u32 {
+        let tmp = x * x - y * y + x0;
+        y = 2.0f32 * x * y + y0;
         x = tmp;
-        iter++;
+        iter += 1u32;
     }
     output[idx] = iter;
 }
-"#;
 
 fn main() {
     let gpu = quanta::init().expect("no GPU found");
@@ -41,7 +34,7 @@ fn main() {
     let count = (width * height) as usize;
 
     let fo = gpu.compute_field::<u32>(count).unwrap();
-    let mut wave = gpu.wave(MANDELBROT_MSL.as_bytes()).unwrap();
+    let mut wave = mandelbrot(&gpu).expect("create wave");
     wave.bind(0, &fo);
     wave.set_value(1, width);
     wave.set_value(2, height);

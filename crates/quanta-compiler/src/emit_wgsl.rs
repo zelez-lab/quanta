@@ -186,6 +186,10 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize) {
             }
             out.push_str(&format!("{}}}\n", pad));
         }
+        KernelOp::Copy { dst, src, .. } => {
+            out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
+        }
+        KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!("{}workgroupBarrier();\n", pad)),
         _ => out.push_str(&format!("{}// TODO: {:?}\n", pad, op)),
     }

@@ -218,6 +218,10 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             }
             out.push_str(&format!("{}}}\n", pad));
         }
+        KernelOp::Copy { dst, src, .. } => {
+            out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
+        }
+        KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!(
             "{}threadgroup_barrier(mem_flags::mem_threadgroup);\n",
             pad

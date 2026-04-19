@@ -343,6 +343,16 @@ pub enum KernelOp {
         texture: u32,
     },
 
+    // Register copy (for loop-carried variable updates)
+    Copy {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+
+    // Control flow
+    Break,
+
     // Dynamic parallelism
     Dispatch {
         wave: Reg,
