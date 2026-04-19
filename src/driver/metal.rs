@@ -163,8 +163,37 @@ impl GpuDevice for MetalDevice {
             mtl_desc.set_storage_mode(mtl::MTLStorageMode::Shared);
         }
 
-        if desc.sample_count > 1 {
-            mtl_desc.set_texture_type(mtl::MTLTextureType::D2Multisample);
+        // Texture type
+        use crate::TextureKind;
+        match desc.kind {
+            TextureKind::D2 if desc.sample_count > 1 => {
+                mtl_desc.set_texture_type(mtl::MTLTextureType::D2Multisample);
+            }
+            TextureKind::D2 => {} // default
+            TextureKind::D3 => {
+                mtl_desc.set_texture_type(mtl::MTLTextureType::D3);
+                mtl_desc.set_depth(desc.depth as u64);
+            }
+            TextureKind::Cube => {
+                mtl_desc.set_texture_type(mtl::MTLTextureType::Cube);
+            }
+            TextureKind::Array2D => {
+                mtl_desc.set_texture_type(mtl::MTLTextureType::D2Array);
+                mtl_desc.set_array_length(desc.array_length as u64);
+            }
+            TextureKind::ArrayCube => {
+                mtl_desc.set_texture_type(mtl::MTLTextureType::CubeArray);
+                mtl_desc.set_array_length(desc.array_length as u64);
+            }
+        }
+
+        if desc.mip_levels > 1 {
+            mtl_desc.set_mipmap_level_count(desc.mip_levels as u64);
+        } else if desc.mip_levels == 0 {
+            // Auto-calculate: floor(log2(max(w,h))) + 1
+            let max_dim = desc.width.max(desc.height);
+            let levels = (max_dim as f32).log2().floor() as u64 + 1;
+            mtl_desc.set_mipmap_level_count(levels);
         }
 
         let tex = self.device.new_texture(&mtl_desc);
@@ -204,6 +233,43 @@ impl GpuDevice for MetalDevice {
         let bytes_per_row = texture.width() as u64 * bytes_per_pixel as u64;
         tex.get_bytes(result.as_mut_ptr() as *mut _, bytes_per_row, region, 0);
         Ok(result)
+    }
+
+    fn sampler_create(
+        &self,
+        desc: &crate::render_pass::SamplerDesc,
+    ) -> Result<crate::Sampler, QuantaError> {
+        let sd = mtl::SamplerDescriptor::new();
+        sd.set_min_filter(filter_to_metal(desc.min_filter));
+        sd.set_mag_filter(filter_to_metal(desc.mag_filter));
+        sd.set_mip_filter(match desc.mip_filter {
+            crate::render_pass::Filter::Nearest => mtl::MTLSamplerMipFilter::Nearest,
+            crate::render_pass::Filter::Linear => mtl::MTLSamplerMipFilter::Linear,
+        });
+        sd.set_address_mode_s(address_to_metal(desc.address_u));
+        sd.set_address_mode_t(address_to_metal(desc.address_v));
+        sd.set_max_anisotropy(desc.max_anisotropy as u64);
+        let _sampler = self.device.new_sampler(&sd);
+        let handle = self.alloc_handle();
+        // TODO: store sampler for binding
+        Ok(crate::Sampler {
+            handle,
+            drop_fn: None,
+        })
+    }
+
+    fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError> {
+        let textures = self.textures.lock().unwrap();
+        let tex = textures
+            .get(&texture.handle())
+            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let cmd = self.queue.new_command_buffer();
+        let blit = cmd.new_blit_command_encoder();
+        blit.generate_mipmaps(tex);
+        blit.end_encoding();
+        cmd.commit();
+        cmd.wait_until_completed();
+        Ok(())
     }
 
     // === Compute ===
@@ -603,6 +669,21 @@ fn format_bytes_per_pixel(format: Format) -> usize {
         Format::RG32Float | Format::RGBA16Float => 8,
         Format::RGBA32Float => 16,
         Format::Depth32Float => 4,
+    }
+}
+
+fn filter_to_metal(f: crate::render_pass::Filter) -> mtl::MTLSamplerMinMagFilter {
+    match f {
+        crate::render_pass::Filter::Nearest => mtl::MTLSamplerMinMagFilter::Nearest,
+        crate::render_pass::Filter::Linear => mtl::MTLSamplerMinMagFilter::Linear,
+    }
+}
+
+fn address_to_metal(a: crate::render_pass::AddressMode) -> mtl::MTLSamplerAddressMode {
+    match a {
+        crate::render_pass::AddressMode::ClampToEdge => mtl::MTLSamplerAddressMode::ClampToEdge,
+        crate::render_pass::AddressMode::Repeat => mtl::MTLSamplerAddressMode::Repeat,
+        crate::render_pass::AddressMode::MirrorRepeat => mtl::MTLSamplerAddressMode::MirrorRepeat,
     }
 }
 

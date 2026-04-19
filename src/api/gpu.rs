@@ -158,6 +158,19 @@ impl Gpu {
         self.inner.texture_read(texture)
     }
 
+    /// Create a reusable sampler.
+    pub fn sampler(
+        &self,
+        desc: &crate::render_pass::SamplerDesc,
+    ) -> Result<crate::Sampler, QuantaError> {
+        self.inner.sampler_create(desc)
+    }
+
+    /// Generate mipmaps for a texture.
+    pub fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError> {
+        self.inner.generate_mipmaps(texture)
+    }
+
     // === Compute ===
 
     pub fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {

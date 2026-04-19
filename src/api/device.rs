@@ -24,6 +24,11 @@ pub trait GpuDevice {
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError>;
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError>;
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError>;
+    fn sampler_create(
+        &self,
+        desc: &crate::render_pass::SamplerDesc,
+    ) -> Result<crate::Sampler, QuantaError>;
+    fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError>;
 
     // === Compute ===
 
