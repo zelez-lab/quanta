@@ -61,6 +61,9 @@ pub fn devices() -> Vec<Gpu> {
     #[cfg(feature = "metal")]
     devs.extend(driver::metal::discover());
 
+    #[cfg(feature = "vulkan")]
+    devs.extend(driver::vulkan::discover());
+
     #[cfg(feature = "software")]
     devs.extend(driver::software::discover());
 
