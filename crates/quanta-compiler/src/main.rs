@@ -459,8 +459,8 @@ fn test_rustc() {
     ];
 
     let body = r#"
-    let i = quark_id() as usize;
-    *result.add(i) = *a.add(i) + *b.add(i);
+    let i = quark_id();
+    result[i] = a[i] + b[i];
 "#;
 
     println!("=== Rust source → rustc → LLVM IR ===\n");
