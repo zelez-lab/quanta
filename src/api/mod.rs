@@ -10,7 +10,7 @@ pub mod types;
 pub mod wave;
 
 pub use device::GpuDevice;
-pub use error::QuantaError;
+pub use error::{QuantaError, QuantaErrorKind};
 pub use field::Field;
 pub use gpu::Gpu;
 pub use pipeline::*;

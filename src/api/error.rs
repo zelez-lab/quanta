@@ -1,6 +1,13 @@
 /// Errors returned by Quanta operations.
+#[derive(Debug, Clone)]
+pub struct QuantaError {
+    pub kind: QuantaErrorKind,
+    pub context: Option<String>,
+}
+
+/// The category of error.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QuantaError {
+pub enum QuantaErrorKind {
     /// No GPU device found at the given index.
     NoDevice,
     /// GPU memory allocation failed.
@@ -17,16 +24,88 @@ pub enum QuantaError {
     InvalidParam(&'static str),
 }
 
+impl QuantaError {
+    /// Attach context to this error (e.g. which operation produced it).
+    pub fn with_context(mut self, ctx: &str) -> Self {
+        self.context = Some(ctx.to_string());
+        self
+    }
+
+    // --- Convenience constructors (keep call-sites concise) ---
+
+    pub fn no_device() -> Self {
+        Self {
+            kind: QuantaErrorKind::NoDevice,
+            context: None,
+        }
+    }
+
+    pub fn out_of_memory() -> Self {
+        Self {
+            kind: QuantaErrorKind::OutOfMemory,
+            context: None,
+        }
+    }
+
+    pub fn compilation_failed(msg: impl Into<String>) -> Self {
+        Self {
+            kind: QuantaErrorKind::CompilationFailed(msg.into()),
+            context: None,
+        }
+    }
+
+    pub fn submit_failed() -> Self {
+        Self {
+            kind: QuantaErrorKind::SubmitFailed,
+            context: None,
+        }
+    }
+
+    pub fn timeout() -> Self {
+        Self {
+            kind: QuantaErrorKind::Timeout,
+            context: None,
+        }
+    }
+
+    pub fn device_lost() -> Self {
+        Self {
+            kind: QuantaErrorKind::DeviceLost,
+            context: None,
+        }
+    }
+
+    pub fn invalid_param(msg: &'static str) -> Self {
+        Self {
+            kind: QuantaErrorKind::InvalidParam(msg),
+            context: None,
+        }
+    }
+}
+
+impl PartialEq for QuantaError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Eq for QuantaError {}
+
 impl core::fmt::Display for QuantaError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NoDevice => write!(f, "no GPU device found"),
-            Self::OutOfMemory => write!(f, "GPU out of memory"),
-            Self::CompilationFailed(msg) => write!(f, "compilation failed: {msg}"),
-            Self::SubmitFailed => write!(f, "command submission failed"),
-            Self::Timeout => write!(f, "GPU operation timed out"),
-            Self::DeviceLost => write!(f, "GPU device lost"),
-            Self::InvalidParam(msg) => write!(f, "invalid parameter: {msg}"),
+        let base = match &self.kind {
+            QuantaErrorKind::NoDevice => "no GPU device found".to_string(),
+            QuantaErrorKind::OutOfMemory => "GPU out of memory".to_string(),
+            QuantaErrorKind::CompilationFailed(msg) => format!("compilation failed: {msg}"),
+            QuantaErrorKind::SubmitFailed => "command submission failed".to_string(),
+            QuantaErrorKind::Timeout => "GPU operation timed out".to_string(),
+            QuantaErrorKind::DeviceLost => "GPU device lost".to_string(),
+            QuantaErrorKind::InvalidParam(msg) => format!("invalid parameter: {msg}"),
+        };
+        if let Some(ctx) = &self.context {
+            write!(f, "{base} [{ctx}]")
+        } else {
+            write!(f, "{base}")
         }
     }
 }

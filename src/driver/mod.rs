@@ -8,3 +8,5 @@ pub mod vulkan;
 
 #[cfg(feature = "software")]
 pub mod software;
+
+pub mod validation;

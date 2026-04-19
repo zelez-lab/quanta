@@ -85,7 +85,7 @@ impl VulkanDevice {
                 return Ok(i);
             }
         }
-        Err(QuantaError::OutOfMemory)
+        Err(QuantaError::out_of_memory())
     }
 
     fn alloc_command_buffer(&self) -> Result<vk::CommandBuffer, QuantaError> {
@@ -96,7 +96,7 @@ impl VulkanDevice {
         let bufs = unsafe {
             self.device
                 .allocate_command_buffers(&alloc_info)
-                .map_err(|_| QuantaError::SubmitFailed)?
+                .map_err(|_| QuantaError::submit_failed())?
         };
         Ok(bufs[0])
     }
@@ -107,10 +107,10 @@ impl VulkanDevice {
         unsafe {
             self.device
                 .queue_submit(self.queue, &[submit], vk::Fence::null())
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
             self.device
                 .queue_wait_idle(self.queue)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
             self.device.free_command_buffers(self.command_pool, &[cmd]);
         }
         Ok(())
@@ -257,7 +257,7 @@ impl GpuDevice for VulkanDevice {
         let buffer = unsafe {
             self.device
                 .create_buffer(&buf_info, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
 
         let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(buffer) };
@@ -277,13 +277,13 @@ impl GpuDevice for VulkanDevice {
         let memory = unsafe {
             self.device
                 .allocate_memory(&alloc_info, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
 
         unsafe {
             self.device
                 .bind_buffer_memory(buffer, memory, 0)
-                .map_err(|_| QuantaError::OutOfMemory)?;
+                .map_err(|_| QuantaError::out_of_memory())?;
         }
 
         let handle = self.alloc_handle();
@@ -309,9 +309,10 @@ impl GpuDevice for VulkanDevice {
 
     fn field_write_bytes(&self, handle: u64, data: &[u8]) -> Result<(), QuantaError> {
         let buffers = self.buffers.lock().unwrap();
-        let buf = buffers
-            .get(&handle)
-            .ok_or(QuantaError::InvalidParam("bad field handle"))?;
+        let buf = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_write_bytes: handle {handle}"))
+        })?;
         unsafe {
             let ptr = self
                 .device
@@ -321,8 +322,10 @@ impl GpuDevice for VulkanDevice {
                     data.len() as u64,
                     vk::MemoryMapFlags::empty(),
                 )
-                .map_err(|_| QuantaError::InvalidParam("map failed"))?
-                as *mut u8;
+                .map_err(|_| {
+                    QuantaError::invalid_param("map failed")
+                        .with_context(&format!("field_write_bytes: handle {handle}"))
+                })? as *mut u8;
             std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
             self.device.unmap_memory(buf.memory);
         }
@@ -331,16 +334,19 @@ impl GpuDevice for VulkanDevice {
 
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError> {
         let buffers = self.buffers.lock().unwrap();
-        let buf = buffers
-            .get(&handle)
-            .ok_or(QuantaError::InvalidParam("bad field handle"))?;
+        let buf = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_read_bytes: handle {handle}"))
+        })?;
         let mut result = vec![0u8; size];
         unsafe {
             let ptr = self
                 .device
                 .map_memory(buf.memory, 0, size as u64, vk::MemoryMapFlags::empty())
-                .map_err(|_| QuantaError::InvalidParam("map failed"))?
-                as *const u8;
+                .map_err(|_| {
+                    QuantaError::invalid_param("map failed")
+                        .with_context(&format!("field_read_bytes: handle {handle}"))
+                })? as *const u8;
             std::ptr::copy_nonoverlapping(ptr, result.as_mut_ptr(), size);
             self.device.unmap_memory(buf.memory);
         }
@@ -349,12 +355,14 @@ impl GpuDevice for VulkanDevice {
 
     fn field_copy_bytes(&self, dst: u64, src: u64, size: usize) -> Result<(), QuantaError> {
         let buffers = self.buffers.lock().unwrap();
-        let src_buf = buffers
-            .get(&src)
-            .ok_or(QuantaError::InvalidParam("bad src"))?;
-        let dst_buf = buffers
-            .get(&dst)
-            .ok_or(QuantaError::InvalidParam("bad dst"))?;
+        let src_buf = buffers.get(&src).ok_or_else(|| {
+            QuantaError::invalid_param("bad src handle")
+                .with_context(&format!("field_copy_bytes: src handle {src}"))
+        })?;
+        let dst_buf = buffers.get(&dst).ok_or_else(|| {
+            QuantaError::invalid_param("bad dst handle")
+                .with_context(&format!("field_copy_bytes: dst handle {dst}"))
+        })?;
 
         let cmd = self.alloc_command_buffer()?;
         let begin = vk::CommandBufferBeginInfo::default()
@@ -362,13 +370,13 @@ impl GpuDevice for VulkanDevice {
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
             let region = vk::BufferCopy::default().size(size as u64);
             self.device
                 .cmd_copy_buffer(cmd, src_buf.buffer, dst_buf.buffer, &[region]);
             self.device
                 .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
         }
         drop(buffers);
         self.submit_and_wait(cmd)
@@ -412,7 +420,7 @@ impl GpuDevice for VulkanDevice {
         let image = unsafe {
             self.device
                 .create_image(&image_info, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
 
         let mem_reqs = unsafe { self.device.get_image_memory_requirements(image) };
@@ -426,12 +434,12 @@ impl GpuDevice for VulkanDevice {
         let memory = unsafe {
             self.device
                 .allocate_memory(&alloc, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
         unsafe {
             self.device
                 .bind_image_memory(image, memory, 0)
-                .map_err(|_| QuantaError::OutOfMemory)?;
+                .map_err(|_| QuantaError::out_of_memory())?;
         }
 
         let aspect = if matches!(desc.format, Format::Depth32Float) {
@@ -455,7 +463,7 @@ impl GpuDevice for VulkanDevice {
         let view = unsafe {
             self.device
                 .create_image_view(&view_info, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
 
         let handle = self.alloc_handle();
@@ -482,9 +490,10 @@ impl GpuDevice for VulkanDevice {
 
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
         let textures = self.textures.lock().unwrap();
-        let tex = textures
-            .get(&texture.handle())
-            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let tex = textures.get(&texture.handle()).ok_or_else(|| {
+            QuantaError::invalid_param("bad texture handle")
+                .with_context(&format!("texture_write: handle {}", texture.handle()))
+        })?;
 
         // Create staging buffer
         let staging_info = vk::BufferCreateInfo::default()
@@ -494,7 +503,7 @@ impl GpuDevice for VulkanDevice {
         let staging_buf = unsafe {
             self.device
                 .create_buffer(&staging_info, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
         let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
         let mem_type = self.find_memory_type(
@@ -507,12 +516,12 @@ impl GpuDevice for VulkanDevice {
         let staging_mem = unsafe {
             self.device
                 .allocate_memory(&alloc, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
         unsafe {
             self.device
                 .bind_buffer_memory(staging_buf, staging_mem, 0)
-                .map_err(|_| QuantaError::OutOfMemory)?;
+                .map_err(|_| QuantaError::out_of_memory())?;
             let ptr = self
                 .device
                 .map_memory(
@@ -521,8 +530,10 @@ impl GpuDevice for VulkanDevice {
                     data.len() as u64,
                     vk::MemoryMapFlags::empty(),
                 )
-                .map_err(|_| QuantaError::InvalidParam("map failed"))?
-                as *mut u8;
+                .map_err(|_| {
+                    QuantaError::invalid_param("map failed")
+                        .with_context("texture_write: staging map")
+                })? as *mut u8;
             std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
             self.device.unmap_memory(staging_mem);
         }
@@ -534,7 +545,7 @@ impl GpuDevice for VulkanDevice {
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
 
             // Transition: UNDEFINED → TRANSFER_DST
             let barrier = vk::ImageMemoryBarrier::default()
@@ -610,7 +621,7 @@ impl GpuDevice for VulkanDevice {
 
             self.device
                 .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
         }
         drop(textures);
         self.submit_and_wait(cmd)?;
@@ -625,9 +636,10 @@ impl GpuDevice for VulkanDevice {
 
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
         let textures = self.textures.lock().unwrap();
-        let tex = textures
-            .get(&texture.handle())
-            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let tex = textures.get(&texture.handle()).ok_or_else(|| {
+            QuantaError::invalid_param("bad texture handle")
+                .with_context(&format!("texture_read: handle {}", texture.handle()))
+        })?;
 
         let bpp = format_bytes_per_pixel_vk(texture.format());
         let size = (tex.width * tex.height) as usize * bpp;
@@ -640,7 +652,7 @@ impl GpuDevice for VulkanDevice {
         let staging_buf = unsafe {
             self.device
                 .create_buffer(&staging_info, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
         let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
         let mem_type = self.find_memory_type(
@@ -653,12 +665,12 @@ impl GpuDevice for VulkanDevice {
         let staging_mem = unsafe {
             self.device
                 .allocate_memory(&alloc, None)
-                .map_err(|_| QuantaError::OutOfMemory)?
+                .map_err(|_| QuantaError::out_of_memory())?
         };
         unsafe {
             self.device
                 .bind_buffer_memory(staging_buf, staging_mem, 0)
-                .map_err(|_| QuantaError::OutOfMemory)?;
+                .map_err(|_| QuantaError::out_of_memory())?;
         }
 
         // Transition + copy
@@ -668,7 +680,7 @@ impl GpuDevice for VulkanDevice {
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
 
             let barrier = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -717,7 +729,7 @@ impl GpuDevice for VulkanDevice {
 
             self.device
                 .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
         }
         drop(textures);
         self.submit_and_wait(cmd)?;
@@ -728,8 +740,10 @@ impl GpuDevice for VulkanDevice {
             let ptr = self
                 .device
                 .map_memory(staging_mem, 0, size as u64, vk::MemoryMapFlags::empty())
-                .map_err(|_| QuantaError::InvalidParam("map failed"))?
-                as *const u8;
+                .map_err(|_| {
+                    QuantaError::invalid_param("map failed")
+                        .with_context("texture_read: staging map")
+                })? as *const u8;
             std::ptr::copy_nonoverlapping(ptr, result.as_mut_ptr(), size);
             self.device.unmap_memory(staging_mem);
             self.device.destroy_buffer(staging_buf, None);
@@ -758,9 +772,10 @@ impl GpuDevice for VulkanDevice {
 
     fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError> {
         let textures = self.textures.lock().unwrap();
-        let tex = textures
-            .get(&texture.handle())
-            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let tex = textures.get(&texture.handle()).ok_or_else(|| {
+            QuantaError::invalid_param("bad texture handle")
+                .with_context(&format!("generate_mipmaps: handle {}", texture.handle()))
+        })?;
 
         let mut mip_width = tex.width as i32;
         let mut mip_height = tex.height as i32;
@@ -772,7 +787,7 @@ impl GpuDevice for VulkanDevice {
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
 
             for i in 1..mip_levels {
                 // Transition level i-1 to TRANSFER_SRC
@@ -905,7 +920,7 @@ impl GpuDevice for VulkanDevice {
 
             self.device
                 .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
         }
         drop(textures);
         self.submit_and_wait(cmd)
@@ -916,17 +931,17 @@ impl GpuDevice for VulkanDevice {
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
         // kernel is WGSL source — convert to SPIR-V via naga
         let wgsl = std::str::from_utf8(kernel)
-            .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in WGSL source".into()))?;
+            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in WGSL source"))?;
 
         let spirv_words =
-            super::spirv::wgsl_to_spirv(wgsl).map_err(QuantaError::CompilationFailed)?;
+            super::spirv::wgsl_to_spirv(wgsl).map_err(QuantaError::compilation_failed)?;
 
         // Create shader module
         let module_info = vk::ShaderModuleCreateInfo::default().code(&spirv_words);
         let shader_module = unsafe {
             self.device
                 .create_shader_module(&module_info, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("shader module: {:?}", e)))?
+                .map_err(|e| QuantaError::compilation_failed(format!("shader module: {:?}", e)))?
         };
 
         // Descriptor set layout — one storage buffer per binding
@@ -945,7 +960,7 @@ impl GpuDevice for VulkanDevice {
         let descriptor_set_layout = unsafe {
             self.device
                 .create_descriptor_set_layout(&ds_layout_info, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("ds layout: {:?}", e)))?
+                .map_err(|e| QuantaError::compilation_failed(format!("ds layout: {:?}", e)))?
         };
 
         let layouts = [descriptor_set_layout];
@@ -953,7 +968,7 @@ impl GpuDevice for VulkanDevice {
         let pipeline_layout = unsafe {
             self.device
                 .create_pipeline_layout(&pipeline_layout_info, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("pipeline layout: {:?}", e)))?
+                .map_err(|e| QuantaError::compilation_failed(format!("pipeline layout: {:?}", e)))?
         };
 
         let entry_name = CString::new("main").unwrap();
@@ -970,7 +985,7 @@ impl GpuDevice for VulkanDevice {
             self.device
                 .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
                 .map_err(|e| {
-                    QuantaError::CompilationFailed(format!("compute pipeline: {:?}", e.1))
+                    QuantaError::compilation_failed(format!("compute pipeline: {:?}", e.1))
                 })?[0]
         };
 
@@ -999,9 +1014,10 @@ impl GpuDevice for VulkanDevice {
 
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
         let compute_pipelines = self.compute_pipelines.lock().unwrap();
-        let cp = compute_pipelines
-            .get(&wave.handle)
-            .ok_or(QuantaError::InvalidParam("bad wave handle"))?;
+        let cp = compute_pipelines.get(&wave.handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad wave handle")
+                .with_context(&format!("wave_dispatch: handle {}", wave.handle))
+        })?;
 
         // Create descriptor pool + set for buffer bindings
         let pool_size = vk::DescriptorPoolSize::default()
@@ -1013,7 +1029,7 @@ impl GpuDevice for VulkanDevice {
         let descriptor_pool = unsafe {
             self.device
                 .create_descriptor_pool(&pool_info, None)
-                .map_err(|_| QuantaError::SubmitFailed)?
+                .map_err(|_| QuantaError::submit_failed())?
         };
 
         let layouts = [cp.descriptor_set_layout];
@@ -1023,7 +1039,7 @@ impl GpuDevice for VulkanDevice {
         let descriptor_sets = unsafe {
             self.device
                 .allocate_descriptor_sets(&alloc_info)
-                .map_err(|_| QuantaError::SubmitFailed)?
+                .map_err(|_| QuantaError::submit_failed())?
         };
         let ds = descriptor_sets[0];
 
@@ -1068,7 +1084,7 @@ impl GpuDevice for VulkanDevice {
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
             self.device
                 .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cp.pipeline);
             self.device.cmd_bind_descriptor_sets(
@@ -1095,7 +1111,7 @@ impl GpuDevice for VulkanDevice {
                 .cmd_dispatch(cmd, groups[0], groups[1], groups[2]);
             self.device
                 .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
         }
         drop(buffers);
         drop(compute_pipelines);
@@ -1120,9 +1136,10 @@ impl GpuDevice for VulkanDevice {
         offset: u64,
     ) -> Result<Pulse, QuantaError> {
         let compute_pipelines = self.compute_pipelines.lock().unwrap();
-        let cp = compute_pipelines
-            .get(&wave.handle)
-            .ok_or(QuantaError::InvalidParam("bad wave handle"))?;
+        let cp = compute_pipelines.get(&wave.handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad wave handle")
+                .with_context(&format!("wave_dispatch_indirect: handle {}", wave.handle))
+        })?;
 
         // Create descriptor pool + set (same as wave_dispatch)
         let pool_size = vk::DescriptorPoolSize::default()
@@ -1134,7 +1151,7 @@ impl GpuDevice for VulkanDevice {
         let descriptor_pool = unsafe {
             self.device
                 .create_descriptor_pool(&pool_info, None)
-                .map_err(|_| QuantaError::SubmitFailed)?
+                .map_err(|_| QuantaError::submit_failed())?
         };
 
         let layouts = [cp.descriptor_set_layout];
@@ -1144,7 +1161,7 @@ impl GpuDevice for VulkanDevice {
         let descriptor_sets = unsafe {
             self.device
                 .allocate_descriptor_sets(&alloc_info)
-                .map_err(|_| QuantaError::SubmitFailed)?
+                .map_err(|_| QuantaError::submit_failed())?
         };
         let ds = descriptor_sets[0];
 
@@ -1178,9 +1195,10 @@ impl GpuDevice for VulkanDevice {
             }
         }
 
-        let indirect_buf = buffers
-            .get(&buffer)
-            .ok_or(QuantaError::InvalidParam("bad indirect buffer"))?;
+        let indirect_buf = buffers.get(&buffer).ok_or_else(|| {
+            QuantaError::invalid_param("bad indirect buffer")
+                .with_context(&format!("wave_dispatch_indirect: buffer handle {buffer}"))
+        })?;
 
         let cmd = self.alloc_command_buffer()?;
         let begin = vk::CommandBufferBeginInfo::default()
@@ -1188,7 +1206,7 @@ impl GpuDevice for VulkanDevice {
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
             self.device
                 .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cp.pipeline);
             self.device.cmd_bind_descriptor_sets(
@@ -1203,7 +1221,7 @@ impl GpuDevice for VulkanDevice {
                 .cmd_dispatch_indirect(cmd, indirect_buf.buffer, offset);
             self.device
                 .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
         }
         drop(buffers);
         drop(compute_pipelines);
@@ -1224,27 +1242,26 @@ impl GpuDevice for VulkanDevice {
 
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
         let vert_wgsl = std::str::from_utf8(desc.vertex)
-            .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in vertex shader".into()))?;
-        let frag_wgsl = std::str::from_utf8(desc.fragment).map_err(|_| {
-            QuantaError::CompilationFailed("invalid UTF-8 in fragment shader".into())
-        })?;
+            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in vertex shader"))?;
+        let frag_wgsl = std::str::from_utf8(desc.fragment)
+            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in fragment shader"))?;
 
         let vert_spirv =
-            super::spirv::wgsl_to_spirv(vert_wgsl).map_err(QuantaError::CompilationFailed)?;
+            super::spirv::wgsl_to_spirv(vert_wgsl).map_err(QuantaError::compilation_failed)?;
         let frag_spirv =
-            super::spirv::wgsl_to_spirv(frag_wgsl).map_err(QuantaError::CompilationFailed)?;
+            super::spirv::wgsl_to_spirv(frag_wgsl).map_err(QuantaError::compilation_failed)?;
 
         let vert_module_info = vk::ShaderModuleCreateInfo::default().code(&vert_spirv);
         let frag_module_info = vk::ShaderModuleCreateInfo::default().code(&frag_spirv);
         let vert_module = unsafe {
             self.device
                 .create_shader_module(&vert_module_info, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("vert module: {:?}", e)))?
+                .map_err(|e| QuantaError::compilation_failed(format!("vert module: {:?}", e)))?
         };
         let frag_module = unsafe {
             self.device
                 .create_shader_module(&frag_module_info, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("frag module: {:?}", e)))?
+                .map_err(|e| QuantaError::compilation_failed(format!("frag module: {:?}", e)))?
         };
 
         // Create VkRenderPass
@@ -1276,7 +1293,7 @@ impl GpuDevice for VulkanDevice {
         let render_pass = unsafe {
             self.device
                 .create_render_pass(&render_pass_info, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("render pass: {:?}", e)))?
+                .map_err(|e| QuantaError::compilation_failed(format!("render pass: {:?}", e)))?
         };
 
         // Pipeline layout (empty for now — no descriptors for render)
@@ -1284,7 +1301,7 @@ impl GpuDevice for VulkanDevice {
         let pipeline_layout = unsafe {
             self.device
                 .create_pipeline_layout(&pipeline_layout_info, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("layout: {:?}", e)))?
+                .map_err(|e| QuantaError::compilation_failed(format!("layout: {:?}", e)))?
         };
 
         let entry_name = CString::new("main").unwrap();
@@ -1354,7 +1371,7 @@ impl GpuDevice for VulkanDevice {
             self.device
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
                 .map_err(|e| {
-                    QuantaError::CompilationFailed(format!("graphics pipeline: {:?}", e.1))
+                    QuantaError::compilation_failed(format!("graphics pipeline: {:?}", e.1))
                 })?[0]
         };
 
@@ -1397,11 +1414,11 @@ impl GpuDevice for VulkanDevice {
         unsafe {
             self.device
                 .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
             // TODO: begin render pass, encode ops, end render pass
             self.device
                 .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::SubmitFailed)?;
+                .map_err(|_| QuantaError::submit_failed())?;
         }
         self.submit_and_wait(cmd)?;
 

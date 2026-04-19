@@ -90,7 +90,7 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
             let binary = #binary_name.for_vendor(device.caps().vendor)
-                .ok_or(::quanta::QuantaError::CompilationFailed(
+                .ok_or_else(|| ::quanta::QuantaError::compilation_failed(
                     format!("no compiled kernel for vendor {:?}", device.caps().vendor)
                 ))?;
             device.wave(binary)

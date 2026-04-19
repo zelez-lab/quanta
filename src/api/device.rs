@@ -57,7 +57,7 @@ pub trait GpuDevice {
 
     /// Create a timestamp query set.
     fn query_set_create(&self, _count: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::InvalidParam("queries not supported"))
+        Err(QuantaError::invalid_param("queries not supported"))
     }
 
     /// Read query results.
@@ -67,7 +67,19 @@ pub trait GpuDevice {
         _first: u32,
         _count: u32,
     ) -> Result<Vec<u64>, QuantaError> {
-        Err(QuantaError::InvalidParam("queries not supported"))
+        Err(QuantaError::invalid_param("queries not supported"))
+    }
+
+    // === Timestamps ===
+
+    /// Create a timestamp query set with `count` slots.
+    fn timestamp_query_create(&self, _count: u32) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param("timestamps not supported"))
+    }
+
+    /// Read timestamp values from a query set.
+    fn timestamp_query_read(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
+        Err(QuantaError::invalid_param("timestamps not supported"))
     }
 
     // === Debug ===

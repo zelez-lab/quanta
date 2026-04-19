@@ -89,9 +89,10 @@ impl GpuDevice for MetalDevice {
 
     fn field_write_bytes(&self, handle: u64, data: &[u8]) -> Result<(), QuantaError> {
         let buffers = self.buffers.lock().unwrap();
-        let buffer = buffers
-            .get(&handle)
-            .ok_or(QuantaError::InvalidParam("bad field handle"))?;
+        let buffer = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_write_bytes: handle {handle}"))
+        })?;
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.contents() as *mut u8, data.len());
         }
@@ -100,9 +101,10 @@ impl GpuDevice for MetalDevice {
 
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError> {
         let buffers = self.buffers.lock().unwrap();
-        let buffer = buffers
-            .get(&handle)
-            .ok_or(QuantaError::InvalidParam("bad field handle"))?;
+        let buffer = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_read_bytes: handle {handle}"))
+        })?;
         let mut result = vec![0u8; size];
         unsafe {
             std::ptr::copy_nonoverlapping(
@@ -116,12 +118,14 @@ impl GpuDevice for MetalDevice {
 
     fn field_copy_bytes(&self, dst: u64, src: u64, size: usize) -> Result<(), QuantaError> {
         let buffers = self.buffers.lock().unwrap();
-        let src_buf = buffers
-            .get(&src)
-            .ok_or(QuantaError::InvalidParam("bad src handle"))?;
-        let dst_buf = buffers
-            .get(&dst)
-            .ok_or(QuantaError::InvalidParam("bad dst handle"))?;
+        let src_buf = buffers.get(&src).ok_or_else(|| {
+            QuantaError::invalid_param("bad src handle")
+                .with_context(&format!("field_copy_bytes: src handle {src}"))
+        })?;
+        let dst_buf = buffers.get(&dst).ok_or_else(|| {
+            QuantaError::invalid_param("bad dst handle")
+                .with_context(&format!("field_copy_bytes: dst handle {dst}"))
+        })?;
         let cmd = self.queue.new_command_buffer();
         let blit = cmd.new_blit_command_encoder();
         blit.copy_from_buffer(src_buf, 0, dst_buf, 0, size as u64);
@@ -211,9 +215,10 @@ impl GpuDevice for MetalDevice {
 
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
         let textures = self.textures.lock().unwrap();
-        let tex = textures
-            .get(&texture.handle())
-            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let tex = textures.get(&texture.handle()).ok_or_else(|| {
+            QuantaError::invalid_param("bad texture handle")
+                .with_context(&format!("texture_write: handle {}", texture.handle()))
+        })?;
         let bytes_per_pixel = format_bytes_per_pixel(texture.format());
         let region = mtl::MTLRegion::new_2d(0, 0, texture.width() as u64, texture.height() as u64);
         let bytes_per_row = texture.width() as u64 * bytes_per_pixel as u64;
@@ -223,9 +228,10 @@ impl GpuDevice for MetalDevice {
 
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
         let textures = self.textures.lock().unwrap();
-        let tex = textures
-            .get(&texture.handle())
-            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let tex = textures.get(&texture.handle()).ok_or_else(|| {
+            QuantaError::invalid_param("bad texture handle")
+                .with_context(&format!("texture_read: handle {}", texture.handle()))
+        })?;
         let bytes_per_pixel = format_bytes_per_pixel(texture.format());
         let size = (texture.width() * texture.height()) as usize * bytes_per_pixel;
         let mut result = vec![0u8; size];
@@ -260,9 +266,10 @@ impl GpuDevice for MetalDevice {
 
     fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError> {
         let textures = self.textures.lock().unwrap();
-        let tex = textures
-            .get(&texture.handle())
-            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+        let tex = textures.get(&texture.handle()).ok_or_else(|| {
+            QuantaError::invalid_param("bad texture handle")
+                .with_context(&format!("generate_mipmaps: handle {}", texture.handle()))
+        })?;
         let cmd = self.queue.new_command_buffer();
         let blit = cmd.new_blit_command_encoder();
         blit.generate_mipmaps(tex);
@@ -276,23 +283,23 @@ impl GpuDevice for MetalDevice {
 
     fn wave(&self, kernel_source: &[u8]) -> Result<Wave, QuantaError> {
         let source = std::str::from_utf8(kernel_source)
-            .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in MSL source".into()))?;
+            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in MSL source"))?;
         let opts = mtl::CompileOptions::new();
         let library = self
             .device
             .new_library_with_source(source, &opts)
-            .map_err(|e| QuantaError::CompilationFailed(e.to_string()))?;
+            .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
         let func_names = library.function_names();
         let func_name = func_names
             .first()
-            .ok_or_else(|| QuantaError::CompilationFailed("no functions in kernel".into()))?;
+            .ok_or_else(|| QuantaError::compilation_failed("no functions in kernel"))?;
         let func = library
             .get_function(func_name, None)
-            .map_err(|e| QuantaError::CompilationFailed(e.to_string()))?;
+            .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
         let pipeline = self
             .device
             .new_compute_pipeline_state_with_function(&func)
-            .map_err(|e| QuantaError::CompilationFailed(e.to_string()))?;
+            .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
 
         let handle = self.alloc_handle();
         self.compute_pipelines
@@ -312,9 +319,10 @@ impl GpuDevice for MetalDevice {
         let encoder = cmd.new_compute_command_encoder();
 
         let pipelines = self.compute_pipelines.lock().unwrap();
-        let pipeline = pipelines
-            .get(&wave.handle)
-            .ok_or(QuantaError::InvalidParam("bad wave handle"))?;
+        let pipeline = pipelines.get(&wave.handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad wave handle")
+                .with_context(&format!("wave_dispatch: handle {}", wave.handle))
+        })?;
         encoder.set_compute_pipeline_state(pipeline);
 
         let buffers = self.buffers.lock().unwrap();
@@ -358,9 +366,10 @@ impl GpuDevice for MetalDevice {
         let encoder = cmd.new_compute_command_encoder();
 
         let pipelines = self.compute_pipelines.lock().unwrap();
-        let pipeline = pipelines
-            .get(&wave.handle)
-            .ok_or(QuantaError::InvalidParam("bad wave handle"))?;
+        let pipeline = pipelines.get(&wave.handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad wave handle")
+                .with_context(&format!("wave_dispatch_indirect: handle {}", wave.handle))
+        })?;
         encoder.set_compute_pipeline_state(pipeline);
 
         let buffers = self.buffers.lock().unwrap();
@@ -377,9 +386,10 @@ impl GpuDevice for MetalDevice {
             );
         }
 
-        let indirect_buf = buffers
-            .get(&buffer)
-            .ok_or(QuantaError::InvalidParam("bad indirect buffer"))?;
+        let indirect_buf = buffers.get(&buffer).ok_or_else(|| {
+            QuantaError::invalid_param("bad indirect buffer")
+                .with_context(&format!("wave_dispatch_indirect: buffer handle {buffer}"))
+        })?;
         let group_size = mtl::MTLSize::new(64, 1, 1);
         encoder.dispatch_thread_groups_indirect(indirect_buf, offset, group_size);
         encoder.end_encoding();
@@ -403,44 +413,41 @@ impl GpuDevice for MetalDevice {
 
         // Support combined source or separate vertex/fragment sources
         let (vert_fn, frag_fn) = if let Some(combined) = desc.source {
-            let src = std::str::from_utf8(combined).map_err(|_| {
-                QuantaError::CompilationFailed("invalid UTF-8 in shader source".into())
-            })?;
+            let src = std::str::from_utf8(combined)
+                .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in shader source"))?;
             let lib = self
                 .device
                 .new_library_with_source(src, &opts)
-                .map_err(|e| QuantaError::CompilationFailed(format!("shader: {}", e)))?;
+                .map_err(|e| QuantaError::compilation_failed(format!("shader: {}", e)))?;
             let vf = lib.get_function(desc.vertex_entry, None).map_err(|e| {
-                QuantaError::CompilationFailed(format!("vertex fn '{}': {}", desc.vertex_entry, e))
+                QuantaError::compilation_failed(format!("vertex fn '{}': {}", desc.vertex_entry, e))
             })?;
             let ff = lib.get_function(desc.fragment_entry, None).map_err(|e| {
-                QuantaError::CompilationFailed(format!(
+                QuantaError::compilation_failed(format!(
                     "fragment fn '{}': {}",
                     desc.fragment_entry, e
                 ))
             })?;
             (vf, ff)
         } else {
-            let vert_src = std::str::from_utf8(desc.vertex).map_err(|_| {
-                QuantaError::CompilationFailed("invalid UTF-8 in vertex shader".into())
-            })?;
-            let frag_src = std::str::from_utf8(desc.fragment).map_err(|_| {
-                QuantaError::CompilationFailed("invalid UTF-8 in fragment shader".into())
-            })?;
+            let vert_src = std::str::from_utf8(desc.vertex)
+                .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in vertex shader"))?;
+            let frag_src = std::str::from_utf8(desc.fragment)
+                .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in fragment shader"))?;
             let vert_lib = self
                 .device
                 .new_library_with_source(vert_src, &opts)
-                .map_err(|e| QuantaError::CompilationFailed(format!("vertex: {}", e)))?;
+                .map_err(|e| QuantaError::compilation_failed(format!("vertex: {}", e)))?;
             let frag_lib = self
                 .device
                 .new_library_with_source(frag_src, &opts)
-                .map_err(|e| QuantaError::CompilationFailed(format!("fragment: {}", e)))?;
+                .map_err(|e| QuantaError::compilation_failed(format!("fragment: {}", e)))?;
             let vf = vert_lib
                 .get_function(desc.vertex_entry, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("vertex fn: {}", e)))?;
+                .map_err(|e| QuantaError::compilation_failed(format!("vertex fn: {}", e)))?;
             let ff = frag_lib
                 .get_function(desc.fragment_entry, None)
-                .map_err(|e| QuantaError::CompilationFailed(format!("fragment fn: {}", e)))?;
+                .map_err(|e| QuantaError::compilation_failed(format!("fragment fn: {}", e)))?;
             (vf, ff)
         };
 
@@ -471,7 +478,7 @@ impl GpuDevice for MetalDevice {
         let pipeline_state = self
             .device
             .new_render_pipeline_state(&pipe_desc)
-            .map_err(|e| QuantaError::CompilationFailed(format!("render pipeline: {}", e)))?;
+            .map_err(|e| QuantaError::compilation_failed(format!("render pipeline: {}", e)))?;
 
         // Create depth/stencil state
         let ds_desc = mtl::DepthStencilDescriptor::new();
@@ -526,9 +533,10 @@ impl GpuDevice for MetalDevice {
 
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         let textures = self.textures.lock().unwrap();
-        let target = textures
-            .get(&pass.handle)
-            .ok_or(QuantaError::InvalidParam("render target not found"))?;
+        let target = textures.get(&pass.handle).ok_or_else(|| {
+            QuantaError::invalid_param("render target not found")
+                .with_context(&format!("render_end: target handle {}", pass.handle))
+        })?;
 
         // Create render pass descriptor
         let rpd = mtl::RenderPassDescriptor::new();

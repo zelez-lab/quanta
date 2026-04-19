@@ -54,6 +54,22 @@ pub use kernel::{GpuType, KernelBinary};
 pub use quanta_macros::device;
 pub use quanta_macros::kernel;
 
+/// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
+fn validation_enabled() -> bool {
+    std::env::var("QUANTA_VALIDATE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+/// Optionally wrap a device in the validation layer.
+fn maybe_validate(dev: Box<dyn GpuDevice>) -> Box<dyn GpuDevice> {
+    if validation_enabled() {
+        driver::validation::ValidationDevice::wrap(dev)
+    } else {
+        dev
+    }
+}
+
 /// Discover available GPU devices.
 pub fn devices() -> Vec<Gpu> {
     let mut devs: Vec<Box<dyn GpuDevice>> = Vec::new();
@@ -67,14 +83,14 @@ pub fn devices() -> Vec<Gpu> {
     #[cfg(feature = "software")]
     devs.extend(driver::software::discover());
 
-    devs.into_iter().map(Gpu::new).collect()
+    devs.into_iter().map(maybe_validate).map(Gpu::new).collect()
 }
 
 /// Initialize the first available GPU device.
 pub fn init() -> Result<Gpu, QuantaError> {
     let mut devs = devices();
     if devs.is_empty() {
-        Err(QuantaError::NoDevice)
+        Err(QuantaError::no_device())
     } else {
         Ok(devs.remove(0))
     }

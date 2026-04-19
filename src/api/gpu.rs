@@ -261,6 +261,33 @@ impl Gpu {
         self.inner.query_set_read(handle, first, count)
     }
 
+    // === Timestamps ===
+
+    /// Create a timestamp query set with `count` slots.
+    pub fn timestamp_query_create(&self, count: u32) -> Result<u64, QuantaError> {
+        self.inner.timestamp_query_create(count)
+    }
+
+    /// Read timestamp values from a query set.
+    pub fn timestamp_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
+        self.inner.timestamp_query_read(handle)
+    }
+
+    // === Hot reload ===
+
+    /// Replace a wave's kernel while preserving its bindings and push constants.
+    ///
+    /// Compiles `kernel` into a new wave, transfers all bindings and push constants
+    /// from `wave` to the new wave, then replaces `wave`'s handle.
+    pub fn reload_wave(&self, wave: &mut Wave, kernel: &[u8]) -> Result<(), QuantaError> {
+        let mut new_wave = self.inner.wave(kernel)?;
+        new_wave.bindings = std::mem::take(&mut wave.bindings);
+        new_wave.push_constants = std::mem::take(&mut wave.push_constants);
+        // Swap: the old handle gets dropped via new_wave's eventual drop
+        std::mem::swap(wave, &mut new_wave);
+        Ok(())
+    }
+
     // === Debug ===
 
     /// Push a debug group label (visible in GPU profilers like Xcode GPU Capture).

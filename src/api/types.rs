@@ -12,6 +12,20 @@ pub enum Format {
     Depth32Float,
 }
 
+impl Format {
+    /// Bytes per pixel for this format.
+    pub const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::R8 => 1,
+            Self::R16Float => 2,
+            Self::RGBA8 | Self::BGRA8 | Self::R32Float | Self::Depth32Float => 4,
+            Self::RG32Float => 8,
+            Self::RGBA16Float => 8,
+            Self::RGBA32Float => 16,
+        }
+    }
+}
+
 /// How a field will be used. Drivers optimize placement based on usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldUsage(u8);
