@@ -1,4 +1,4 @@
-use crate::Field;
+use crate::{Field, Texture};
 
 /// A compute dispatch binding — kernel + fields, ready to dispatch.
 ///
@@ -7,6 +7,7 @@ pub struct Wave {
     pub(crate) handle: u64,
     pub(crate) bindings: Vec<WaveBinding>,
     pub(crate) push_constants: Vec<PushConstant>,
+    pub(crate) texture_bindings: Vec<TextureBinding>,
     pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
 }
 
@@ -18,6 +19,11 @@ pub(crate) struct WaveBinding {
 pub(crate) struct PushConstant {
     pub slot: u32,
     pub data: Vec<u8>,
+}
+
+pub(crate) struct TextureBinding {
+    pub slot: u32,
+    pub texture_handle: u64,
 }
 
 impl Wave {
@@ -51,6 +57,15 @@ impl Wave {
         self.push_constants.push(PushConstant {
             slot,
             data: data.to_vec(),
+        });
+    }
+
+    /// Bind a read-only texture at the given slot for compute access.
+    pub fn bind_texture(&mut self, slot: u32, texture: &Texture) {
+        self.texture_bindings.retain(|b| b.slot != slot);
+        self.texture_bindings.push(TextureBinding {
+            slot,
+            texture_handle: texture.handle(),
         });
     }
 

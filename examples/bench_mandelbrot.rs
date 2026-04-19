@@ -47,8 +47,8 @@ fn main() {
     wave.set_value(2, height);
 
     let start = Instant::now();
-    let p = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(p).unwrap();
+    let mut p = gpu.dispatch(&wave, count as u32).unwrap();
+    gpu.wait(&mut p).unwrap();
     let gpu_time = start.elapsed();
 
     // CPU

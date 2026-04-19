@@ -1,5 +1,6 @@
 use crate::{
-    Caps, FieldUsage, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc, Wave,
+    Caps, FieldUsage, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc, Timeline,
+    Wave,
 };
 
 /// Core trait — every GPU driver implements this.
@@ -50,7 +51,7 @@ pub trait GpuDevice {
 
     // === Sync ===
 
-    fn pulse_wait(&self, pulse: Pulse) -> Result<(), QuantaError>;
+    fn pulse_wait(&self, pulse: &mut Pulse) -> Result<(), QuantaError>;
     fn pulse_poll(&self, pulse: &Pulse) -> bool;
 
     // === Queries ===
@@ -80,6 +81,46 @@ pub trait GpuDevice {
     /// Read timestamp values from a query set.
     fn timestamp_query_read(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
         Err(QuantaError::invalid_param("timestamps not supported"))
+    }
+
+    // === Async compute ===
+
+    /// Whether this device supports a dedicated async compute queue.
+    fn supports_async_compute(&self) -> bool {
+        false
+    }
+
+    /// Dispatch a compute wave on the async compute queue.
+    /// Returns immediately; the returned Pulse signals completion.
+    fn async_compute_dispatch(
+        &self,
+        _wave: &Wave,
+        _groups: [u32; 3],
+    ) -> Result<Pulse, QuantaError> {
+        Err(QuantaError::invalid_param("async compute not supported"))
+    }
+
+    // === Timeline semaphores ===
+
+    /// Create a timeline semaphore (monotonic u64 counter for multi-frame sync).
+    fn timeline_create(&self) -> Result<Timeline, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "timeline semaphores not supported",
+        ))
+    }
+
+    /// Signal a timeline to the given value.
+    fn timeline_signal(&self, _timeline: &Timeline, _value: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "timeline semaphores not supported",
+        ))
+    }
+
+    /// Block until a timeline reaches at least the given value.
+    fn timeline_wait(&self, _timeline: &Timeline, _value: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "timeline semaphores not supported",
+        ))
     }
 
     // === Debug ===

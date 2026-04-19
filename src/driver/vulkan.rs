@@ -30,6 +30,10 @@ pub struct VulkanDevice {
     compute_pipelines: Mutex<HashMap<u64, VkComputePipeline>>,
     render_pipelines: Mutex<HashMap<u64, VkRenderPipeline>>,
     next_handle: Mutex<u64>,
+    /// Pool of reusable command buffers. Instead of allocating and freeing
+    /// command buffers per submission, completed buffers are reset and returned
+    /// here. `alloc_command_buffer` draws from this pool first.
+    cmd_buffer_pool: Mutex<Vec<vk::CommandBuffer>>,
 }
 
 #[allow(dead_code)]
@@ -89,6 +93,16 @@ impl VulkanDevice {
     }
 
     fn alloc_command_buffer(&self) -> Result<vk::CommandBuffer, QuantaError> {
+        // Try to reuse a previously returned command buffer from the pool.
+        if let Some(cmd) = self.cmd_buffer_pool.lock().unwrap().pop() {
+            unsafe {
+                self.device
+                    .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+                    .map_err(|_| QuantaError::submit_failed())?;
+            }
+            return Ok(cmd);
+        }
+        // Pool empty — allocate a fresh one.
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(self.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -111,8 +125,9 @@ impl VulkanDevice {
             self.device
                 .queue_wait_idle(self.queue)
                 .map_err(|_| QuantaError::submit_failed())?;
-            self.device.free_command_buffers(self.command_pool, &[cmd]);
         }
+        // Return to pool for reuse instead of freeing.
+        self.cmd_buffer_pool.lock().unwrap().push(cmd);
         Ok(())
     }
 }
@@ -223,6 +238,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             compute_pipelines: Mutex::new(HashMap::new()),
             render_pipelines: Mutex::new(HashMap::new()),
             next_handle: Mutex::new(0),
+            cmd_buffer_pool: Mutex::new(Vec::new()),
         }));
 
         break; // Use first suitable device
@@ -1008,6 +1024,7 @@ impl GpuDevice for VulkanDevice {
             handle,
             bindings: Vec::new(),
             push_constants: Vec::new(),
+            texture_bindings: Vec::new(),
             drop_fn: None,
         })
     }
@@ -1126,6 +1143,7 @@ impl GpuDevice for VulkanDevice {
             handle: self.alloc_handle(),
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
+            completed: false,
         })
     }
 
@@ -1235,6 +1253,7 @@ impl GpuDevice for VulkanDevice {
             handle: self.alloc_handle(),
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
+            completed: false,
         })
     }
 
@@ -1426,12 +1445,13 @@ impl GpuDevice for VulkanDevice {
             handle: self.alloc_handle(),
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
+            completed: false,
         })
     }
 
     // === Sync ===
 
-    fn pulse_wait(&self, pulse: Pulse) -> Result<(), QuantaError> {
+    fn pulse_wait(&self, pulse: &mut Pulse) -> Result<(), QuantaError> {
         pulse.wait()
     }
 
@@ -1464,6 +1484,12 @@ impl Drop for VulkanDevice {
             for (_, rp) in self.render_pipelines.lock().unwrap().drain() {
                 self.device.destroy_pipeline(rp.pipeline, None);
                 self.device.destroy_pipeline_layout(rp.layout, None);
+            }
+
+            // Free pooled command buffers before destroying the pool.
+            let pooled: Vec<_> = self.cmd_buffer_pool.lock().unwrap().drain(..).collect();
+            if !pooled.is_empty() {
+                self.device.free_command_buffers(self.command_pool, &pooled);
             }
 
             self.device.destroy_command_pool(self.command_pool, None);

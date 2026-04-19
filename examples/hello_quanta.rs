@@ -38,8 +38,8 @@ fn main() {
     wave.bind(2, &result);
 
     // Dispatch 1M quarks and wait
-    let pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(pulse).unwrap();
+    let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
+    gpu.wait(&mut pulse).unwrap();
 
     let output = gpu.read_field(&result).unwrap();
 

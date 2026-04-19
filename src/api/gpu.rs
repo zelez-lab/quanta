@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 
 use crate::{
     Caps, Field, FieldUsage, Format, GpuDevice, Pipeline, PipelineDesc, Pulse, QuantaError,
-    RenderPass, Texture, TextureDesc, TextureUsage, Wave,
+    RenderPass, Texture, TextureDesc, TextureUsage, Timeline, Wave,
 };
 
 /// A GPU device handle. The main entry point for Quanta.
@@ -236,12 +236,52 @@ impl Gpu {
 
     // === Sync ===
 
-    pub fn wait(&self, pulse: Pulse) -> Result<(), QuantaError> {
+    pub fn wait(&self, pulse: &mut Pulse) -> Result<(), QuantaError> {
         self.inner.pulse_wait(pulse)
+    }
+
+    /// Wait for a pulse, then reset it for reuse.
+    pub fn wait_and_reset(&self, pulse: &mut Pulse) -> Result<(), QuantaError> {
+        self.inner.pulse_wait(pulse)?;
+        pulse.reset();
+        Ok(())
     }
 
     pub fn poll(&self, pulse: &Pulse) -> bool {
         self.inner.pulse_poll(pulse)
+    }
+
+    // === Async compute ===
+
+    /// Whether this device supports a dedicated async compute queue.
+    pub fn supports_async_compute(&self) -> bool {
+        self.inner.supports_async_compute()
+    }
+
+    /// Dispatch a compute wave on the async compute queue.
+    pub fn async_compute_dispatch(
+        &self,
+        wave: &Wave,
+        groups: [u32; 3],
+    ) -> Result<Pulse, QuantaError> {
+        self.inner.async_compute_dispatch(wave, groups)
+    }
+
+    // === Timeline semaphores ===
+
+    /// Create a timeline semaphore for multi-frame synchronization.
+    pub fn timeline_create(&self) -> Result<Timeline, QuantaError> {
+        self.inner.timeline_create()
+    }
+
+    /// Signal a timeline to the given value.
+    pub fn timeline_signal(&self, timeline: &Timeline, value: u64) -> Result<(), QuantaError> {
+        self.inner.timeline_signal(timeline, value)
+    }
+
+    /// Block until a timeline reaches at least the given value.
+    pub fn timeline_wait(&self, timeline: &Timeline, value: u64) -> Result<(), QuantaError> {
+        self.inner.timeline_wait(timeline, value)
     }
 
     // === Queries ===
@@ -283,6 +323,7 @@ impl Gpu {
         let mut new_wave = self.inner.wave(kernel)?;
         new_wave.bindings = std::mem::take(&mut wave.bindings);
         new_wave.push_constants = std::mem::take(&mut wave.push_constants);
+        new_wave.texture_bindings = std::mem::take(&mut wave.texture_bindings);
         // Swap: the old handle gets dropped via new_wave's eventual drop
         std::mem::swap(wave, &mut new_wave);
         Ok(())

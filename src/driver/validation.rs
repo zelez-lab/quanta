@@ -8,7 +8,7 @@
 
 use crate::{
     Caps, FieldUsage, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc,
-    Wave,
+    Timeline, Wave,
 };
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -181,7 +181,7 @@ impl GpuDevice for ValidationDevice {
 
     // === Sync ===
 
-    fn pulse_wait(&self, pulse: Pulse) -> Result<(), QuantaError> {
+    fn pulse_wait(&self, pulse: &mut Pulse) -> Result<(), QuantaError> {
         self.inner.pulse_wait(pulse)
     }
 
@@ -207,6 +207,30 @@ impl GpuDevice for ValidationDevice {
 
     fn timestamp_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
         self.inner.timestamp_query_read(handle)
+    }
+
+    // === Async compute ===
+
+    fn supports_async_compute(&self) -> bool {
+        self.inner.supports_async_compute()
+    }
+
+    fn async_compute_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
+        self.inner.async_compute_dispatch(wave, groups)
+    }
+
+    // === Timeline semaphores ===
+
+    fn timeline_create(&self) -> Result<Timeline, QuantaError> {
+        self.inner.timeline_create()
+    }
+
+    fn timeline_signal(&self, timeline: &Timeline, value: u64) -> Result<(), QuantaError> {
+        self.inner.timeline_signal(timeline, value)
+    }
+
+    fn timeline_wait(&self, timeline: &Timeline, value: u64) -> Result<(), QuantaError> {
+        self.inner.timeline_wait(timeline, value)
     }
 
     // === Debug ===

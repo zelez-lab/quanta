@@ -41,12 +41,12 @@ fn main() {
         wave.bind(1, &fo);
 
         // Warm up
-        let p = gpu.dispatch(&wave, count as u32).unwrap();
-        gpu.wait(p).unwrap();
+        let mut p = gpu.dispatch(&wave, count as u32).unwrap();
+        gpu.wait(&mut p).unwrap();
 
         let start = Instant::now();
-        let p = gpu.dispatch(&wave, count as u32).unwrap();
-        gpu.wait(p).unwrap();
+        let mut p = gpu.dispatch(&wave, count as u32).unwrap();
+        gpu.wait(&mut p).unwrap();
         let _result = gpu.read_field(&fo).unwrap();
         let gpu_time = start.elapsed();
 

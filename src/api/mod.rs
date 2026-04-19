@@ -14,7 +14,7 @@ pub use error::{QuantaError, QuantaErrorKind};
 pub use field::Field;
 pub use gpu::Gpu;
 pub use pipeline::*;
-pub use pulse::Pulse;
+pub use pulse::{Pulse, Timeline};
 pub use render_pass::*;
 pub use texture::*;
 pub use types::*;

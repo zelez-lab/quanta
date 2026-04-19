@@ -310,11 +310,15 @@ impl GpuDevice for MetalDevice {
             handle,
             bindings: Vec::new(),
             push_constants: Vec::new(),
+            texture_bindings: Vec::new(),
             drop_fn: None,
         })
     }
 
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
+        // Note: Metal's CommandQueue.new_command_buffer() internally pools command
+        // buffers. There is no need for an explicit pool — Metal manages reuse
+        // automatically when command buffers complete.
         let cmd = self.queue.new_command_buffer();
         let encoder = cmd.new_compute_command_encoder();
 
@@ -339,6 +343,15 @@ impl GpuDevice for MetalDevice {
             );
         }
 
+        // Bind textures for compute access
+        let textures = self.textures.lock().unwrap();
+        for tb in &wave.texture_bindings {
+            if let Some(tex) = textures.get(&tb.texture_handle) {
+                encoder.set_texture(tb.slot as u64, Some(tex));
+            }
+        }
+        drop(textures);
+
         let grid = mtl::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
         let group_size = mtl::MTLSize::new(64, 1, 1);
         encoder.dispatch_threads(grid, group_size);
@@ -353,6 +366,7 @@ impl GpuDevice for MetalDevice {
                 Ok(())
             })),
             poll_fn: None,
+            completed: false,
         })
     }
 
@@ -403,6 +417,7 @@ impl GpuDevice for MetalDevice {
                 Ok(())
             })),
             poll_fn: None,
+            completed: false,
         })
     }
 
@@ -742,12 +757,13 @@ impl GpuDevice for MetalDevice {
                 Ok(())
             })),
             poll_fn: None,
+            completed: false,
         })
     }
 
     // === Sync ===
 
-    fn pulse_wait(&self, pulse: Pulse) -> Result<(), QuantaError> {
+    fn pulse_wait(&self, pulse: &mut Pulse) -> Result<(), QuantaError> {
         pulse.wait()
     }
 
