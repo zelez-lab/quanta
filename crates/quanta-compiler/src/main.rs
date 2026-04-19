@@ -6,6 +6,7 @@
 
 mod emit_msl;
 mod emit_wgsl;
+mod rustc_compile;
 mod targets;
 mod to_llvm;
 
@@ -32,6 +33,11 @@ fn main() {
 
     if args.iter().any(|a| a == "--test-complex") {
         test_complex();
+        return;
+    }
+
+    if args.iter().any(|a| a == "--test-rustc") {
+        test_rustc();
         return;
     }
 
@@ -429,5 +435,40 @@ fn test_ir() {
     match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Amdgpu) {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("AMDGPU error: {}", e),
+    }
+}
+
+/// Test: compile Rust source via rustc → LLVM IR.
+fn test_rustc() {
+    let params = vec![
+        KernelParam::FieldRead {
+            name: "a".into(),
+            slot: 0,
+            scalar_type: ScalarType::F32,
+        },
+        KernelParam::FieldRead {
+            name: "b".into(),
+            slot: 1,
+            scalar_type: ScalarType::F32,
+        },
+        KernelParam::FieldWrite {
+            name: "result".into(),
+            slot: 2,
+            scalar_type: ScalarType::F32,
+        },
+    ];
+
+    let body = r#"
+    let i = quark_id() as usize;
+    *result.add(i) = *a.add(i) + *b.add(i);
+"#;
+
+    println!("=== Rust source → rustc → LLVM IR ===\n");
+    match rustc_compile::rust_to_llvm_ir("vector_add", &params, body) {
+        Ok(ir) => {
+            println!("{}", ir);
+            println!("\n=== Success: {} bytes of LLVM IR ===", ir.len());
+        }
+        Err(e) => eprintln!("Error: {}", e),
     }
 }
