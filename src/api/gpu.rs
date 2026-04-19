@@ -186,6 +186,17 @@ impl Gpu {
         self.inner.wave_dispatch(wave, [quarks, 1, 1])
     }
 
+    /// Dispatch with group counts from a GPU buffer (GPU-driven).
+    pub fn dispatch_indirect<T: Copy>(
+        &self,
+        wave: &Wave,
+        buffer: &Field<T>,
+        offset: u64,
+    ) -> Result<Pulse, QuantaError> {
+        self.inner
+            .wave_dispatch_indirect(wave, buffer.handle(), offset)
+    }
+
     // === Render ===
 
     /// Create a render pipeline from a descriptor.

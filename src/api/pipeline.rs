@@ -32,8 +32,9 @@ pub struct PipelineDesc<'a> {
     pub fragment_entry: &'a str,
     /// Vertex buffer layouts.
     pub vertex_layouts: &'a [VertexLayout],
-    /// Color attachment format.
-    pub color_format: Format,
+    /// Color attachment formats (MRT — multiple render targets).
+    /// First entry is the primary color format.
+    pub color_formats: Vec<Format>,
     /// Depth attachment format (None = no depth buffer).
     pub depth_format: Option<Format>,
     /// MSAA sample count (1 = no MSAA, 4 = 4x MSAA).
@@ -56,7 +57,7 @@ impl<'a> Default for PipelineDesc<'a> {
             vertex_entry: "vertex_main",
             fragment_entry: "fragment_main",
             vertex_layouts: &[],
-            color_format: Format::BGRA8,
+            color_formats: vec![Format::BGRA8],
             depth_format: None,
             sample_count: 1,
             blend: BlendState::PREMULTIPLIED_ALPHA,

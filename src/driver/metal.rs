@@ -348,6 +348,54 @@ impl GpuDevice for MetalDevice {
         })
     }
 
+    fn wave_dispatch_indirect(
+        &self,
+        wave: &Wave,
+        buffer: u64,
+        offset: u64,
+    ) -> Result<Pulse, QuantaError> {
+        let cmd = self.queue.new_command_buffer();
+        let encoder = cmd.new_compute_command_encoder();
+
+        let pipelines = self.compute_pipelines.lock().unwrap();
+        let pipeline = pipelines
+            .get(&wave.handle)
+            .ok_or(QuantaError::InvalidParam("bad wave handle"))?;
+        encoder.set_compute_pipeline_state(pipeline);
+
+        let buffers = self.buffers.lock().unwrap();
+        for b in &wave.bindings {
+            if let Some(buf) = buffers.get(&b.field_handle) {
+                encoder.set_buffer(b.slot as u64, Some(buf), 0);
+            }
+        }
+        for pc in &wave.push_constants {
+            encoder.set_bytes(
+                pc.slot as u64,
+                pc.data.len() as u64,
+                pc.data.as_ptr() as *const _,
+            );
+        }
+
+        let indirect_buf = buffers
+            .get(&buffer)
+            .ok_or(QuantaError::InvalidParam("bad indirect buffer"))?;
+        let group_size = mtl::MTLSize::new(64, 1, 1);
+        encoder.dispatch_thread_groups_indirect(indirect_buf, offset, group_size);
+        encoder.end_encoding();
+        cmd.commit();
+
+        let cmd_clone = cmd.to_owned();
+        Ok(Pulse {
+            handle: self.alloc_handle(),
+            wait_fn: Some(Box::new(move |_| {
+                cmd_clone.wait_until_completed();
+                Ok(())
+            })),
+            poll_fn: None,
+        })
+    }
+
     // === Render ===
 
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
@@ -378,19 +426,18 @@ impl GpuDevice for MetalDevice {
         pipe_desc.set_vertex_function(Some(&vert_fn));
         pipe_desc.set_fragment_function(Some(&frag_fn));
 
-        let color_attach = pipe_desc.color_attachments().object_at(0).unwrap();
-        color_attach.set_pixel_format(format_to_metal(desc.color_format));
-
-        if desc.blend.enabled {
-            color_attach.set_blending_enabled(true);
-            color_attach.set_source_rgb_blend_factor(blend_factor_to_metal(desc.blend.src_rgb));
-            color_attach
-                .set_destination_rgb_blend_factor(blend_factor_to_metal(desc.blend.dst_rgb));
-            color_attach.set_source_alpha_blend_factor(blend_factor_to_metal(desc.blend.src_alpha));
-            color_attach
-                .set_destination_alpha_blend_factor(blend_factor_to_metal(desc.blend.dst_alpha));
-            color_attach.set_rgb_blend_operation(blend_op_to_metal(desc.blend.op_rgb));
-            color_attach.set_alpha_blend_operation(blend_op_to_metal(desc.blend.op_alpha));
+        for (i, fmt) in desc.color_formats.iter().enumerate() {
+            let ca = pipe_desc.color_attachments().object_at(i as u64).unwrap();
+            ca.set_pixel_format(format_to_metal(*fmt));
+            if desc.blend.enabled {
+                ca.set_blending_enabled(true);
+                ca.set_source_rgb_blend_factor(blend_factor_to_metal(desc.blend.src_rgb));
+                ca.set_destination_rgb_blend_factor(blend_factor_to_metal(desc.blend.dst_rgb));
+                ca.set_source_alpha_blend_factor(blend_factor_to_metal(desc.blend.src_alpha));
+                ca.set_destination_alpha_blend_factor(blend_factor_to_metal(desc.blend.dst_alpha));
+                ca.set_rgb_blend_operation(blend_op_to_metal(desc.blend.op_rgb));
+                ca.set_alpha_blend_operation(blend_op_to_metal(desc.blend.op_alpha));
+            }
         }
 
         if let Some(depth_fmt) = desc.depth_format {
@@ -611,6 +658,36 @@ impl GpuDevice for MetalDevice {
                 }
                 RenderOp::ClearStencil(_) => {
                     // Handled by render pass descriptor load action
+                }
+                RenderOp::DrawIndirect {
+                    buffer_handle,
+                    offset,
+                } => {
+                    if let Some(buf) = buffers.get(buffer_handle) {
+                        encoder.draw_primitives_indirect(
+                            mtl::MTLPrimitiveType::Triangle,
+                            buf,
+                            *offset,
+                        );
+                    }
+                }
+                RenderOp::DrawIndexedIndirect {
+                    buffer_handle,
+                    offset,
+                    index_handle,
+                } => {
+                    if let Some(buf) = buffers.get(buffer_handle)
+                        && let Some(idx_buf) = buffers.get(index_handle)
+                    {
+                        encoder.draw_indexed_primitives_indirect(
+                            mtl::MTLPrimitiveType::Triangle,
+                            mtl::MTLIndexType::UInt32,
+                            idx_buf,
+                            0,
+                            buf,
+                            *offset,
+                        );
+                    }
                 }
                 RenderOp::SetSampler { .. } => {
                     // TODO: create MTLSamplerState and bind to fragment

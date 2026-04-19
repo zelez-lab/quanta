@@ -34,6 +34,13 @@ pub trait GpuDevice {
 
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError>;
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError>;
+    /// Dispatch with group counts from a GPU buffer (GPU decides grid size).
+    fn wave_dispatch_indirect(
+        &self,
+        wave: &Wave,
+        buffer: u64,
+        offset: u64,
+    ) -> Result<Pulse, QuantaError>;
 
     // === Render ===
 

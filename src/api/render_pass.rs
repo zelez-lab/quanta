@@ -56,6 +56,17 @@ pub(crate) enum RenderOp {
     ClearDepth(f32),
     ClearStencil(u32),
     SetStencilRef(u32),
+
+    // Indirect
+    DrawIndirect {
+        buffer_handle: u64,
+        offset: u64,
+    },
+    DrawIndexedIndirect {
+        buffer_handle: u64,
+        offset: u64,
+        index_handle: u64,
+    },
     SetScissor {
         x: u32,
         y: u32,
@@ -253,6 +264,30 @@ impl RenderPass {
             height,
             min_depth: 0.0,
             max_depth: 1.0,
+        });
+    }
+
+    /// Draw with arguments from a GPU buffer (GPU-driven rendering).
+    /// The buffer contains: [vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32]
+    pub fn draw_indirect<T: Copy>(&mut self, buffer: &Field<T>, offset: u64) {
+        self.ops.push(RenderOp::DrawIndirect {
+            buffer_handle: buffer.handle(),
+            offset,
+        });
+    }
+
+    /// Draw indexed with arguments from a GPU buffer.
+    /// The buffer contains: [index_count: u32, instance_count: u32, first_index: u32, base_vertex: i32, first_instance: u32]
+    pub fn draw_indexed_indirect<T: Copy>(
+        &mut self,
+        buffer: &Field<T>,
+        offset: u64,
+        indices: &Field<u32>,
+    ) {
+        self.ops.push(RenderOp::DrawIndexedIndirect {
+            buffer_handle: buffer.handle(),
+            offset,
+            index_handle: indices.handle(),
         });
     }
 
