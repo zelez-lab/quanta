@@ -27,6 +27,8 @@ impl FieldUsage {
     pub const RENDER: Self = Self(1 << 3);
     /// Field will be transferred to/from CPU.
     pub const TRANSFER: Self = Self(1 << 4);
+    /// Field will be used as a uniform buffer.
+    pub const UNIFORM: Self = Self(1 << 5);
 
     /// Combine usage flags.
     pub const fn union(self, other: Self) -> Self {
@@ -41,6 +43,11 @@ impl FieldUsage {
     /// Default: read + render + transfer.
     pub const fn default_render() -> Self {
         Self(Self::READ.0 | Self::RENDER.0 | Self::TRANSFER.0)
+    }
+
+    /// Default: uniform buffer (read + uniform + transfer).
+    pub const fn default_uniform() -> Self {
+        Self(Self::READ.0 | Self::UNIFORM.0 | Self::TRANSFER.0)
     }
 
     /// Check if a usage flag is set.

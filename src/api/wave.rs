@@ -2,11 +2,7 @@ use crate::Field;
 
 /// A compute dispatch binding — kernel + fields, ready to dispatch.
 ///
-/// Created via [`GpuDevice::wave`]. Bind fields, then dispatch.
 /// Reusable: rebind fields and dispatch again with different data.
-///
-/// Named after quantum wave — a wave carries energy through a field.
-/// A Wave carries computation through Fields.
 pub struct Wave {
     pub(crate) handle: u64,
     pub(crate) bindings: Vec<WaveBinding>,
@@ -21,13 +17,12 @@ pub(crate) struct WaveBinding {
 
 pub(crate) struct PushConstant {
     pub slot: u32,
-    pub data: [u8; 16],
+    pub data: Vec<u8>,
 }
 
 impl Wave {
     /// Bind a field at the given slot.
     pub fn bind<T: Copy>(&mut self, slot: u32, field: &Field<T>) {
-        // Remove existing binding at this slot if any.
         self.bindings.retain(|b| b.slot != slot);
         self.bindings.push(WaveBinding {
             slot,
@@ -35,19 +30,28 @@ impl Wave {
         });
     }
 
-    /// Set a push constant value at the given slot (up to 16 bytes).
+    /// Set a push constant value at the given slot (any size).
     pub fn set_value<V: Copy>(&mut self, slot: u32, value: V) {
-        assert!(size_of::<V>() <= 16, "push constant must be ≤ 16 bytes");
-        let mut data = [0u8; 16];
+        let size = size_of::<V>();
+        let mut data = vec![0u8; size];
         unsafe {
             core::ptr::copy_nonoverlapping(
                 &value as *const V as *const u8,
                 data.as_mut_ptr(),
-                size_of::<V>(),
+                size,
             );
         }
         self.push_constants.retain(|p| p.slot != slot);
         self.push_constants.push(PushConstant { slot, data });
+    }
+
+    /// Set raw bytes as push constant data at the given slot.
+    pub fn set_bytes(&mut self, slot: u32, data: &[u8]) {
+        self.push_constants.retain(|p| p.slot != slot);
+        self.push_constants.push(PushConstant {
+            slot,
+            data: data.to_vec(),
+        });
     }
 
     pub fn handle(&self) -> u64 {

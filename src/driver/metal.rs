@@ -400,27 +400,49 @@ impl GpuDevice for MetalDevice {
 
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
         let opts = mtl::CompileOptions::new();
-        let vert_src = std::str::from_utf8(desc.vertex)
-            .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in vertex shader".into()))?;
-        let frag_src = std::str::from_utf8(desc.fragment).map_err(|_| {
-            QuantaError::CompilationFailed("invalid UTF-8 in fragment shader".into())
-        })?;
 
-        let vert_lib = self
-            .device
-            .new_library_with_source(vert_src, &opts)
-            .map_err(|e| QuantaError::CompilationFailed(format!("vertex: {}", e)))?;
-        let frag_lib = self
-            .device
-            .new_library_with_source(frag_src, &opts)
-            .map_err(|e| QuantaError::CompilationFailed(format!("fragment: {}", e)))?;
-
-        let vert_fn = vert_lib
-            .get_function(desc.vertex_entry, None)
-            .map_err(|e| QuantaError::CompilationFailed(format!("vertex fn: {}", e)))?;
-        let frag_fn = frag_lib
-            .get_function(desc.fragment_entry, None)
-            .map_err(|e| QuantaError::CompilationFailed(format!("fragment fn: {}", e)))?;
+        // Support combined source or separate vertex/fragment sources
+        let (vert_fn, frag_fn) = if let Some(combined) = desc.source {
+            let src = std::str::from_utf8(combined).map_err(|_| {
+                QuantaError::CompilationFailed("invalid UTF-8 in shader source".into())
+            })?;
+            let lib = self
+                .device
+                .new_library_with_source(src, &opts)
+                .map_err(|e| QuantaError::CompilationFailed(format!("shader: {}", e)))?;
+            let vf = lib.get_function(desc.vertex_entry, None).map_err(|e| {
+                QuantaError::CompilationFailed(format!("vertex fn '{}': {}", desc.vertex_entry, e))
+            })?;
+            let ff = lib.get_function(desc.fragment_entry, None).map_err(|e| {
+                QuantaError::CompilationFailed(format!(
+                    "fragment fn '{}': {}",
+                    desc.fragment_entry, e
+                ))
+            })?;
+            (vf, ff)
+        } else {
+            let vert_src = std::str::from_utf8(desc.vertex).map_err(|_| {
+                QuantaError::CompilationFailed("invalid UTF-8 in vertex shader".into())
+            })?;
+            let frag_src = std::str::from_utf8(desc.fragment).map_err(|_| {
+                QuantaError::CompilationFailed("invalid UTF-8 in fragment shader".into())
+            })?;
+            let vert_lib = self
+                .device
+                .new_library_with_source(vert_src, &opts)
+                .map_err(|e| QuantaError::CompilationFailed(format!("vertex: {}", e)))?;
+            let frag_lib = self
+                .device
+                .new_library_with_source(frag_src, &opts)
+                .map_err(|e| QuantaError::CompilationFailed(format!("fragment: {}", e)))?;
+            let vf = vert_lib
+                .get_function(desc.vertex_entry, None)
+                .map_err(|e| QuantaError::CompilationFailed(format!("vertex fn: {}", e)))?;
+            let ff = frag_lib
+                .get_function(desc.fragment_entry, None)
+                .map_err(|e| QuantaError::CompilationFailed(format!("fragment fn: {}", e)))?;
+            (vf, ff)
+        };
 
         let pipe_desc = mtl::RenderPipelineDescriptor::new();
         pipe_desc.set_vertex_function(Some(&vert_fn));
@@ -545,7 +567,7 @@ impl GpuDevice for MetalDevice {
                 RenderOp::BindIndices { .. } => {
                     // Index buffer is bound at draw_indexed time in Metal
                 }
-                RenderOp::SetField { slot, handle } => {
+                RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
                     if let Some(buf) = buffers.get(handle) {
                         encoder.set_vertex_buffer(*slot as u64, Some(buf), 0);
                     }

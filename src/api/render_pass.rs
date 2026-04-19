@@ -28,6 +28,10 @@ pub(crate) enum RenderOp {
         slot: u32,
         handle: u64,
     },
+    SetUniform {
+        slot: u32,
+        handle: u64,
+    },
     SetTexture {
         slot: u32,
         handle: u64,
@@ -162,9 +166,17 @@ impl RenderPass {
 
     // === Shader resources ===
 
-    /// Bind a field at a shader buffer slot.
+    /// Bind a storage buffer at a shader slot.
     pub fn set_field<T: Copy>(&mut self, slot: u32, field: &Field<T>) {
         self.ops.push(RenderOp::SetField {
+            slot,
+            handle: field.handle(),
+        });
+    }
+
+    /// Bind a uniform buffer at a shader slot.
+    pub fn set_uniform<T: Copy>(&mut self, slot: u32, field: &Field<T>) {
+        self.ops.push(RenderOp::SetUniform {
             slot,
             handle: field.handle(),
         });

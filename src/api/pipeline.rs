@@ -23,9 +23,15 @@ impl Drop for Pipeline {
 /// Describes how to create a render pipeline.
 pub struct PipelineDesc<'a> {
     /// Vertex shader source (MSL, WGSL, or compiled binary).
+    /// If `source` is set, this is ignored.
     pub vertex: &'a [u8],
     /// Fragment shader source.
+    /// If `source` is set, this is ignored.
     pub fragment: &'a [u8],
+    /// Combined shader source containing both vertex and fragment functions.
+    /// When set, `vertex` and `fragment` fields are ignored.
+    /// The driver finds functions by `vertex_entry` and `fragment_entry` names.
+    pub source: Option<&'a [u8]>,
     /// Vertex shader entry point name.
     pub vertex_entry: &'a str,
     /// Fragment shader entry point name.
@@ -54,6 +60,7 @@ impl<'a> Default for PipelineDesc<'a> {
         Self {
             vertex: &[],
             fragment: &[],
+            source: None,
             vertex_entry: "vertex_main",
             fragment_entry: "fragment_main",
             vertex_layouts: &[],

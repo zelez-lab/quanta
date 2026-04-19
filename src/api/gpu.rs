@@ -71,6 +71,11 @@ impl Gpu {
         self.field(count, FieldUsage::default_render())
     }
 
+    /// Allocate a uniform buffer field (read + uniform + transfer).
+    pub fn uniform_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
+        self.field(count, FieldUsage::default_uniform())
+    }
+
     pub fn write_field<T: Copy>(&self, field: &Field<T>, data: &[T]) -> Result<(), QuantaError> {
         let bytes = unsafe {
             core::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
@@ -91,6 +96,21 @@ impl Gpu {
             );
         }
         Ok(result)
+    }
+
+    /// Resize a field. Allocates a new field, copies existing data, returns new field.
+    /// The old field remains valid until dropped.
+    pub fn resize_field<T: Copy>(
+        &self,
+        old: &Field<T>,
+        new_count: usize,
+        usage: FieldUsage,
+    ) -> Result<Field<T>, QuantaError> {
+        let new = self.field::<T>(new_count, usage)?;
+        let copy_size = old.byte_size().min(new.byte_size());
+        self.inner
+            .field_copy_bytes(new.handle(), old.handle(), copy_size)?;
+        Ok(new)
     }
 
     pub fn copy_field<T: Copy>(&self, dst: &Field<T>, src: &Field<T>) -> Result<(), QuantaError> {
