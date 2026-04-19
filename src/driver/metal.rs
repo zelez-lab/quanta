@@ -18,6 +18,7 @@ pub struct MetalDevice {
     textures: Mutex<HashMap<u64, mtl::Texture>>,
     compute_pipelines: Mutex<HashMap<u64, mtl::ComputePipelineState>>,
     render_pipelines: Mutex<HashMap<u64, mtl::RenderPipelineState>>,
+    depth_stencil_states: Mutex<HashMap<u64, mtl::DepthStencilState>>,
     next_handle: Mutex<u64>,
 }
 
@@ -58,6 +59,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         textures: Mutex::new(HashMap::new()),
         compute_pipelines: Mutex::new(HashMap::new()),
         render_pipelines: Mutex::new(HashMap::new()),
+        depth_stencil_states: Mutex::new(HashMap::new()),
         next_handle: Mutex::new(0),
     })]
 }
@@ -336,11 +338,43 @@ impl GpuDevice for MetalDevice {
             .new_render_pipeline_state(&pipe_desc)
             .map_err(|e| QuantaError::CompilationFailed(format!("render pipeline: {}", e)))?;
 
+        // Create depth/stencil state
+        let ds_desc = mtl::DepthStencilDescriptor::new();
+        if desc.depth_stencil.depth_test {
+            ds_desc.set_depth_compare_function(compare_to_metal(desc.depth_stencil.depth_compare));
+            ds_desc.set_depth_write_enabled(desc.depth_stencil.depth_write);
+        }
+        if let Some(ref front) = desc.depth_stencil.stencil_front {
+            let s = mtl::StencilDescriptor::new();
+            s.set_stencil_failure_operation(stencil_op_to_metal(front.fail));
+            s.set_depth_failure_operation(stencil_op_to_metal(front.depth_fail));
+            s.set_depth_stencil_pass_operation(stencil_op_to_metal(front.pass));
+            s.set_stencil_compare_function(compare_to_metal(front.compare));
+            s.set_read_mask(front.read_mask);
+            s.set_write_mask(front.write_mask);
+            ds_desc.set_front_face_stencil(Some(&s));
+        }
+        if let Some(ref back) = desc.depth_stencil.stencil_back {
+            let s = mtl::StencilDescriptor::new();
+            s.set_stencil_failure_operation(stencil_op_to_metal(back.fail));
+            s.set_depth_failure_operation(stencil_op_to_metal(back.depth_fail));
+            s.set_depth_stencil_pass_operation(stencil_op_to_metal(back.pass));
+            s.set_stencil_compare_function(compare_to_metal(back.compare));
+            s.set_read_mask(back.read_mask);
+            s.set_write_mask(back.write_mask);
+            ds_desc.set_back_face_stencil(Some(&s));
+        }
+        let ds_state = self.device.new_depth_stencil_state(&ds_desc);
+
         let handle = self.alloc_handle();
         self.render_pipelines
             .lock()
             .unwrap()
             .insert(handle, pipeline_state);
+        self.depth_stencil_states
+            .lock()
+            .unwrap()
+            .insert(handle, ds_state);
         Ok(Pipeline {
             handle,
             drop_fn: None,
@@ -380,6 +414,10 @@ impl GpuDevice for MetalDevice {
                 RenderOp::SetPipeline(handle) => {
                     if let Some(ps) = render_pipelines.get(handle) {
                         encoder.set_render_pipeline_state(ps);
+                    }
+                    let ds_states = self.depth_stencil_states.lock().unwrap();
+                    if let Some(ds) = ds_states.get(handle) {
+                        encoder.set_depth_stencil_state(ds);
                     }
                 }
                 RenderOp::BindVertices {
@@ -502,6 +540,12 @@ impl GpuDevice for MetalDevice {
                 RenderOp::ClearDepth(_depth) => {
                     // Same — handled by render pass descriptor load action.
                 }
+                RenderOp::SetStencilRef(value) => {
+                    encoder.set_stencil_reference_value(*value);
+                }
+                RenderOp::ClearStencil(_) => {
+                    // Handled by render pass descriptor load action
+                }
                 RenderOp::SetSampler { .. } => {
                     // TODO: create MTLSamplerState and bind to fragment
                 }
@@ -559,6 +603,34 @@ fn format_bytes_per_pixel(format: Format) -> usize {
         Format::RG32Float | Format::RGBA16Float => 8,
         Format::RGBA32Float => 16,
         Format::Depth32Float => 4,
+    }
+}
+
+fn compare_to_metal(f: crate::CompareFunc) -> mtl::MTLCompareFunction {
+    use crate::CompareFunc::*;
+    match f {
+        Never => mtl::MTLCompareFunction::Never,
+        Less => mtl::MTLCompareFunction::Less,
+        Equal => mtl::MTLCompareFunction::Equal,
+        LessEqual => mtl::MTLCompareFunction::LessEqual,
+        Greater => mtl::MTLCompareFunction::Greater,
+        NotEqual => mtl::MTLCompareFunction::NotEqual,
+        GreaterEqual => mtl::MTLCompareFunction::GreaterEqual,
+        Always => mtl::MTLCompareFunction::Always,
+    }
+}
+
+fn stencil_op_to_metal(op: crate::StencilOp) -> mtl::MTLStencilOperation {
+    use crate::StencilOp::*;
+    match op {
+        Keep => mtl::MTLStencilOperation::Keep,
+        Zero => mtl::MTLStencilOperation::Zero,
+        Replace => mtl::MTLStencilOperation::Replace,
+        IncrementClamp => mtl::MTLStencilOperation::IncrementClamp,
+        DecrementClamp => mtl::MTLStencilOperation::DecrementClamp,
+        Invert => mtl::MTLStencilOperation::Invert,
+        IncrementWrap => mtl::MTLStencilOperation::IncrementWrap,
+        DecrementWrap => mtl::MTLStencilOperation::DecrementWrap,
     }
 }
 

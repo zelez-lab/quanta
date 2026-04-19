@@ -54,6 +54,8 @@ pub(crate) enum RenderOp {
     // Render state
     Clear(Color),
     ClearDepth(f32),
+    ClearStencil(u32),
+    SetStencilRef(u32),
     SetScissor {
         x: u32,
         y: u32,
@@ -220,6 +222,16 @@ impl RenderPass {
     /// Clear the depth attachment.
     pub fn clear_depth(&mut self, depth: f32) {
         self.ops.push(RenderOp::ClearDepth(depth));
+    }
+
+    /// Clear the stencil attachment.
+    pub fn clear_stencil(&mut self, value: u32) {
+        self.ops.push(RenderOp::ClearStencil(value));
+    }
+
+    /// Set the stencil reference value for comparison.
+    pub fn set_stencil_ref(&mut self, value: u32) {
+        self.ops.push(RenderOp::SetStencilRef(value));
     }
 
     /// Set scissor rectangle (pixel coordinates).

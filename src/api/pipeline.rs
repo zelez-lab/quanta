@@ -44,6 +44,8 @@ pub struct PipelineDesc<'a> {
     pub cull_mode: CullMode,
     /// Primitive topology.
     pub primitive: Primitive,
+    /// Depth/stencil state.
+    pub depth_stencil: DepthStencilState,
 }
 
 impl<'a> Default for PipelineDesc<'a> {
@@ -60,8 +62,109 @@ impl<'a> Default for PipelineDesc<'a> {
             blend: BlendState::PREMULTIPLIED_ALPHA,
             cull_mode: CullMode::None,
             primitive: Primitive::Triangle,
+            depth_stencil: DepthStencilState::NONE,
         }
     }
+}
+
+/// Depth and stencil testing configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct DepthStencilState {
+    /// Enable depth testing.
+    pub depth_test: bool,
+    /// Enable depth writing.
+    pub depth_write: bool,
+    /// Depth comparison function.
+    pub depth_compare: CompareFunc,
+    /// Front face stencil operations.
+    pub stencil_front: Option<StencilState>,
+    /// Back face stencil operations.
+    pub stencil_back: Option<StencilState>,
+}
+
+impl DepthStencilState {
+    /// No depth or stencil testing (2D rendering).
+    pub const NONE: Self = Self {
+        depth_test: false,
+        depth_write: false,
+        depth_compare: CompareFunc::Always,
+        stencil_front: None,
+        stencil_back: None,
+    };
+
+    /// Standard 3D depth testing — closer fragments win.
+    pub const DEPTH_LESS: Self = Self {
+        depth_test: true,
+        depth_write: true,
+        depth_compare: CompareFunc::Less,
+        stencil_front: None,
+        stencil_back: None,
+    };
+
+    /// Depth test without writing — for transparent objects after opaques.
+    pub const DEPTH_READ_ONLY: Self = Self {
+        depth_test: true,
+        depth_write: false,
+        depth_compare: CompareFunc::Less,
+        stencil_front: None,
+        stencil_back: None,
+    };
+}
+
+/// Per-face stencil operations.
+#[derive(Debug, Clone, Copy)]
+pub struct StencilState {
+    /// What to do when stencil test fails.
+    pub fail: StencilOp,
+    /// What to do when stencil passes but depth fails.
+    pub depth_fail: StencilOp,
+    /// What to do when both stencil and depth pass.
+    pub pass: StencilOp,
+    /// Stencil comparison function.
+    pub compare: CompareFunc,
+    /// Read mask for stencil value.
+    pub read_mask: u32,
+    /// Write mask for stencil value.
+    pub write_mask: u32,
+}
+
+impl Default for StencilState {
+    fn default() -> Self {
+        Self {
+            fail: StencilOp::Keep,
+            depth_fail: StencilOp::Keep,
+            pass: StencilOp::Keep,
+            compare: CompareFunc::Always,
+            read_mask: 0xFF,
+            write_mask: 0xFF,
+        }
+    }
+}
+
+/// Comparison function for depth and stencil tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareFunc {
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always,
+}
+
+/// Stencil operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StencilOp {
+    Keep,
+    Zero,
+    Replace,
+    IncrementClamp,
+    DecrementClamp,
+    Invert,
+    IncrementWrap,
+    DecrementWrap,
 }
 
 /// Describes vertex buffer layout — how to read vertex/instance data.
