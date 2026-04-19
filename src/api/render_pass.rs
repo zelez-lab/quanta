@@ -57,6 +57,10 @@ pub(crate) enum RenderOp {
     ClearStencil(u32),
     SetStencilRef(u32),
 
+    // Debug
+    DebugPush(String),
+    DebugPop,
+
     // Indirect
     DrawIndirect {
         buffer_handle: u64,
@@ -289,6 +293,16 @@ impl RenderPass {
             offset,
             index_handle: indices.handle(),
         });
+    }
+
+    /// Push a debug label for this section of the render pass.
+    pub fn debug_push(&mut self, label: &str) {
+        self.ops.push(RenderOp::DebugPush(label.to_string()));
+    }
+
+    /// Pop a debug label.
+    pub fn debug_pop(&mut self) {
+        self.ops.push(RenderOp::DebugPop);
     }
 
     /// Set viewport with depth range.

@@ -223,4 +223,33 @@ impl Gpu {
     pub fn poll(&self, pulse: &Pulse) -> bool {
         self.inner.pulse_poll(pulse)
     }
+
+    // === Queries ===
+
+    /// Create a timestamp query set.
+    pub fn query_set(&self, count: u32) -> Result<u64, QuantaError> {
+        self.inner.query_set_create(count)
+    }
+
+    /// Read query results.
+    pub fn read_queries(
+        &self,
+        handle: u64,
+        first: u32,
+        count: u32,
+    ) -> Result<Vec<u64>, QuantaError> {
+        self.inner.query_set_read(handle, first, count)
+    }
+
+    // === Debug ===
+
+    /// Push a debug group label (visible in GPU profilers like Xcode GPU Capture).
+    pub fn debug_push(&self, label: &str) {
+        self.inner.debug_push(label);
+    }
+
+    /// Pop a debug group label.
+    pub fn debug_pop(&self) {
+        self.inner.debug_pop();
+    }
 }

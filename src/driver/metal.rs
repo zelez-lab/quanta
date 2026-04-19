@@ -689,6 +689,12 @@ impl GpuDevice for MetalDevice {
                         );
                     }
                 }
+                RenderOp::DebugPush(label) => {
+                    encoder.push_debug_group(label);
+                }
+                RenderOp::DebugPop => {
+                    encoder.pop_debug_group();
+                }
                 RenderOp::SetSampler { .. } => {
                     // TODO: create MTLSamplerState and bind to fragment
                 }

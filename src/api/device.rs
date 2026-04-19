@@ -52,4 +52,29 @@ pub trait GpuDevice {
 
     fn pulse_wait(&self, pulse: Pulse) -> Result<(), QuantaError>;
     fn pulse_poll(&self, pulse: &Pulse) -> bool;
+
+    // === Queries ===
+
+    /// Create a timestamp query set.
+    fn query_set_create(&self, _count: u32) -> Result<u64, QuantaError> {
+        Err(QuantaError::InvalidParam("queries not supported"))
+    }
+
+    /// Read query results.
+    fn query_set_read(
+        &self,
+        _handle: u64,
+        _first: u32,
+        _count: u32,
+    ) -> Result<Vec<u64>, QuantaError> {
+        Err(QuantaError::InvalidParam("queries not supported"))
+    }
+
+    // === Debug ===
+
+    /// Push a debug group label (shows in GPU profilers).
+    fn debug_push(&self, _label: &str) {}
+
+    /// Pop a debug group label.
+    fn debug_pop(&self) {}
 }
