@@ -480,14 +480,262 @@ impl GpuDevice for VulkanDevice {
         })
     }
 
-    fn texture_write(&self, _texture: &Texture, _data: &[u8]) -> Result<(), QuantaError> {
-        // TODO: staging buffer + copy + layout transitions
+    fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
+        let textures = self.textures.lock().unwrap();
+        let tex = textures
+            .get(&texture.handle())
+            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+
+        // Create staging buffer
+        let staging_info = vk::BufferCreateInfo::default()
+            .size(data.len() as u64)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let staging_buf = unsafe {
+            self.device
+                .create_buffer(&staging_info, None)
+                .map_err(|_| QuantaError::OutOfMemory)?
+        };
+        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
+        let mem_type = self.find_memory_type(
+            mem_reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+        let alloc = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_reqs.size)
+            .memory_type_index(mem_type);
+        let staging_mem = unsafe {
+            self.device
+                .allocate_memory(&alloc, None)
+                .map_err(|_| QuantaError::OutOfMemory)?
+        };
+        unsafe {
+            self.device
+                .bind_buffer_memory(staging_buf, staging_mem, 0)
+                .map_err(|_| QuantaError::OutOfMemory)?;
+            let ptr = self
+                .device
+                .map_memory(
+                    staging_mem,
+                    0,
+                    data.len() as u64,
+                    vk::MemoryMapFlags::empty(),
+                )
+                .map_err(|_| QuantaError::InvalidParam("map failed"))?
+                as *mut u8;
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+            self.device.unmap_memory(staging_mem);
+        }
+
+        // Transition image layout + copy
+        let cmd = self.alloc_command_buffer()?;
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            self.device
+                .begin_command_buffer(cmd, &begin)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+
+            // Transition: UNDEFINED → TRANSFER_DST
+            let barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(tex.image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
+
+            // Copy buffer → image
+            let region = vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_extent(vk::Extent3D {
+                    width: tex.width,
+                    height: tex.height,
+                    depth: 1,
+                });
+            self.device.cmd_copy_buffer_to_image(
+                cmd,
+                staging_buf,
+                tex.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+
+            // Transition: TRANSFER_DST → SHADER_READ
+            let barrier2 = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(tex.image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier2],
+            );
+
+            self.device
+                .end_command_buffer(cmd)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+        }
+        drop(textures);
+        self.submit_and_wait(cmd)?;
+
+        // Clean up staging
+        unsafe {
+            self.device.destroy_buffer(staging_buf, None);
+            self.device.free_memory(staging_mem, None);
+        }
         Ok(())
     }
 
-    fn texture_read(&self, _texture: &Texture) -> Result<Vec<u8>, QuantaError> {
-        // TODO: layout transition + copy to staging + read
-        Ok(Vec::new())
+    fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
+        let textures = self.textures.lock().unwrap();
+        let tex = textures
+            .get(&texture.handle())
+            .ok_or(QuantaError::InvalidParam("bad texture handle"))?;
+
+        let bpp = format_bytes_per_pixel_vk(texture.format());
+        let size = (tex.width * tex.height) as usize * bpp;
+
+        // Create staging buffer
+        let staging_info = vk::BufferCreateInfo::default()
+            .size(size as u64)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let staging_buf = unsafe {
+            self.device
+                .create_buffer(&staging_info, None)
+                .map_err(|_| QuantaError::OutOfMemory)?
+        };
+        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
+        let mem_type = self.find_memory_type(
+            mem_reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+        let alloc = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_reqs.size)
+            .memory_type_index(mem_type);
+        let staging_mem = unsafe {
+            self.device
+                .allocate_memory(&alloc, None)
+                .map_err(|_| QuantaError::OutOfMemory)?
+        };
+        unsafe {
+            self.device
+                .bind_buffer_memory(staging_buf, staging_mem, 0)
+                .map_err(|_| QuantaError::OutOfMemory)?;
+        }
+
+        // Transition + copy
+        let cmd = self.alloc_command_buffer()?;
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            self.device
+                .begin_command_buffer(cmd, &begin)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+
+            let barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(tex.image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::SHADER_READ)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
+
+            let region = vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_extent(vk::Extent3D {
+                    width: tex.width,
+                    height: tex.height,
+                    depth: 1,
+                });
+            self.device.cmd_copy_image_to_buffer(
+                cmd,
+                tex.image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                staging_buf,
+                &[region],
+            );
+
+            self.device
+                .end_command_buffer(cmd)
+                .map_err(|_| QuantaError::SubmitFailed)?;
+        }
+        drop(textures);
+        self.submit_and_wait(cmd)?;
+
+        // Read from staging
+        let mut result = vec![0u8; size];
+        unsafe {
+            let ptr = self
+                .device
+                .map_memory(staging_mem, 0, size as u64, vk::MemoryMapFlags::empty())
+                .map_err(|_| QuantaError::InvalidParam("map failed"))?
+                as *const u8;
+            std::ptr::copy_nonoverlapping(ptr, result.as_mut_ptr(), size);
+            self.device.unmap_memory(staging_mem);
+            self.device.destroy_buffer(staging_buf, None);
+            self.device.free_memory(staging_mem, None);
+        }
+        Ok(result)
     }
 
     fn sampler_create(
@@ -728,11 +976,30 @@ impl GpuDevice for VulkanDevice {
 
     // === Render ===
 
-    fn pipeline_create(&self, _desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
-        // TODO: create VkRenderPass, VkPipeline from SPIR-V shaders
-        Err(QuantaError::CompilationFailed(
-            "Vulkan render pipeline not yet implemented".into(),
-        ))
+    fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
+        // Convert WGSL vertex + fragment shaders to SPIR-V
+        let vert_wgsl = std::str::from_utf8(desc.vertex)
+            .map_err(|_| QuantaError::CompilationFailed("invalid UTF-8 in vertex shader".into()))?;
+        let frag_wgsl = std::str::from_utf8(desc.fragment).map_err(|_| {
+            QuantaError::CompilationFailed("invalid UTF-8 in fragment shader".into())
+        })?;
+
+        let _vert_spirv =
+            super::spirv::wgsl_to_spirv(vert_wgsl).map_err(QuantaError::CompilationFailed)?;
+        let _frag_spirv =
+            super::spirv::wgsl_to_spirv(frag_wgsl).map_err(QuantaError::CompilationFailed)?;
+
+        // TODO: create VkRenderPass, VkPipeline from SPIR-V modules
+        // This requires: render pass compatible format info, vertex input state,
+        // viewport/scissor state, rasterization state, multisample state,
+        // depth/stencil state, color blend state — all from PipelineDesc.
+        // Deferred to when Dija integration is tested on Linux.
+
+        let handle = self.alloc_handle();
+        Ok(Pipeline {
+            handle,
+            drop_fn: None,
+        })
     }
 
     fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
@@ -743,7 +1010,10 @@ impl GpuDevice for VulkanDevice {
     }
 
     fn render_end(&self, _pass: RenderPass) -> Result<Pulse, QuantaError> {
-        // TODO: encode all RenderOps into Vulkan command buffer
+        // TODO: encode RenderOps into Vulkan command buffer
+        // Requires: VkRenderPass begin/end, VkFramebuffer from target texture,
+        // layout transitions, draw commands.
+        // Deferred to when Dija integration is tested on Linux.
         Ok(Pulse {
             handle: self.alloc_handle(),
             wait_fn: Some(Box::new(|_| Ok(()))),
@@ -821,6 +1091,17 @@ fn sample_count_to_vk(count: u32) -> vk::SampleCountFlags {
         8 => vk::SampleCountFlags::TYPE_8,
         16 => vk::SampleCountFlags::TYPE_16,
         _ => vk::SampleCountFlags::TYPE_1,
+    }
+}
+
+fn format_bytes_per_pixel_vk(format: Format) -> usize {
+    match format {
+        Format::R8 => 1,
+        Format::R16Float => 2,
+        Format::R32Float | Format::RGBA8 | Format::BGRA8 => 4,
+        Format::RG32Float | Format::RGBA16Float => 8,
+        Format::RGBA32Float => 16,
+        Format::Depth32Float => 4,
     }
 }
 
