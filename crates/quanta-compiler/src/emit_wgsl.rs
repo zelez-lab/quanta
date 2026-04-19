@@ -1,9 +1,11 @@
 //! KernelDef → WebGPU Shading Language.
 
 use quanta_ir::*;
+use std::collections::HashMap;
 
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     let mut out = String::new();
+    let mut slot_names: HashMap<u32, String> = HashMap::new();
 
     for param in &kernel.params {
         match param {
@@ -18,6 +20,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                     name,
                     scalar_type.wgsl_name()
                 ));
+                slot_names.insert(*slot, name.clone());
             }
             KernelParam::FieldWrite {
                 name,
@@ -30,12 +33,14 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                     name,
                     scalar_type.wgsl_name()
                 ));
+                slot_names.insert(*slot, name.clone());
             }
             KernelParam::Constant {
                 name,
                 slot,
                 scalar_type,
             } => {
+                slot_names.insert(*slot, name.clone());
                 out.push_str(&format!(
                     "@group(0) @binding({}) var<uniform> {}: {};\n",
                     slot,
@@ -52,14 +57,14 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
         kernel.name));
 
     for op in &kernel.body {
-        emit_op(&mut out, op, 1);
+        emit_op(&mut out, op, 1, &slot_names);
     }
 
     out.push_str("}\n");
     Ok(out)
 }
 
-fn emit_op(out: &mut String, op: &KernelOp, indent: usize) {
+fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, String>) {
     let pad = "    ".repeat(indent);
     match op {
         KernelOp::Const { dst, value } => {
@@ -75,19 +80,14 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize) {
         KernelOp::Load {
             dst, field, index, ..
         } => {
-            // TODO: use param names
-            out.push_str(&format!(
-                "{}let r{} = field_{}[r{}];\n",
-                pad, dst.0, field, index.0
-            ));
+            let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
+            out.push_str(&format!("{}let r{} = {}[r{}];\n", pad, dst.0, n, index.0));
         }
         KernelOp::Store {
             field, index, src, ..
         } => {
-            out.push_str(&format!(
-                "{}field_{}[r{}] = r{};\n",
-                pad, field, index.0, src.0
-            ));
+            let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
+            out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
         }
         KernelOp::BinOp { dst, a, b, op, .. } => {
             let o = match op {
@@ -162,12 +162,12 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize) {
         } => {
             out.push_str(&format!("{}if r{} {{\n", pad, cond.0));
             for op in then_ops {
-                emit_op(out, op, indent + 1);
+                emit_op(out, op, indent + 1, names);
             }
             if !else_ops.is_empty() {
                 out.push_str(&format!("{}}} else {{\n", pad));
                 for op in else_ops {
-                    emit_op(out, op, indent + 1);
+                    emit_op(out, op, indent + 1, names);
                 }
             }
             out.push_str(&format!("{}}}\n", pad));
@@ -182,7 +182,7 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize) {
                 pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0, iter_reg.0
             ));
             for op in body {
-                emit_op(out, op, indent + 1);
+                emit_op(out, op, indent + 1, names);
             }
             out.push_str(&format!("{}}}\n", pad));
         }

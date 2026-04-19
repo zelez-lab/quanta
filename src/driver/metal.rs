@@ -282,12 +282,33 @@ impl GpuDevice for MetalDevice {
     // === Compute ===
 
     fn wave(&self, kernel_source: &[u8]) -> Result<Wave, QuantaError> {
-        let source = std::str::from_utf8(kernel_source)
-            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in MSL source"))?;
+        let source_str = std::str::from_utf8(kernel_source)
+            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in shader source"))?;
+
+        // Accept either MSL or WGSL — convert WGSL to MSL via naga if needed
+        let msl_source = if source_str.contains("#include <metal_stdlib>")
+            || source_str.contains("kernel void")
+        {
+            source_str.to_string() // Already MSL
+        } else {
+            // Assume WGSL — convert via naga
+            #[cfg(feature = "naga-shaders")]
+            {
+                super::shader_convert::wgsl_to_msl(source_str)
+                    .map_err(|e| QuantaError::compilation_failed(format!("WGSL→MSL: {}", e)))?
+            }
+            #[cfg(not(feature = "naga-shaders"))]
+            {
+                return Err(QuantaError::compilation_failed(
+                    "WGSL source requires naga-shaders feature",
+                ));
+            }
+        };
+
         let opts = mtl::CompileOptions::new();
         let library = self
             .device
-            .new_library_with_source(source, &opts)
+            .new_library_with_source(&msl_source, &opts)
             .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
         let func_names = library.function_names();
         let func_name = func_names

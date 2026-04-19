@@ -1,6 +1,10 @@
 #[cfg(feature = "metal")]
 pub mod metal;
 
+#[cfg(feature = "naga-shaders")]
+#[allow(dead_code)]
+pub mod shader_convert;
+
 #[cfg(feature = "vulkan")]
 pub mod spirv;
 #[cfg(feature = "vulkan")]

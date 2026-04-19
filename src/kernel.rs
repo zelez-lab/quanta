@@ -113,13 +113,14 @@ pub struct KernelBinary {
 
 impl KernelBinary {
     /// Select the best binary for the given vendor.
+    /// Apple uses MSL. Vulkan uses WGSL (converted to SPIR-V by driver).
     pub fn for_vendor(&self, vendor: crate::Vendor) -> Option<&[u8]> {
         match vendor {
             crate::Vendor::Amd => self.amd,
             crate::Vendor::Nvidia => self.nvidia,
             crate::Vendor::Apple => self.msl.map(|s| s.as_bytes()),
             crate::Vendor::Intel => self.amd.or(self.llvm_ir),
-            _ => self.llvm_ir,
+            _ => self.wgsl.map(|s| s.as_bytes()).or(self.llvm_ir),
         }
     }
 }
