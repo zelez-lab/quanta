@@ -113,6 +113,46 @@ pub struct KernelBinary {
     pub llvm_ir: Option<&'static [u8]>,
 }
 
+/// Shader stage — vertex or fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderStage {
+    Vertex,
+    Fragment,
+}
+
+/// A compiled shader binary — output of `#[quanta::vertex]` or `#[quanta::fragment]`.
+///
+/// Contains MSL and WGSL source text compiled at build time from annotated
+/// Rust functions. The driver selects the appropriate format at pipeline
+/// creation time (MSL for Metal, WGSL for WebGPU/Vulkan).
+pub struct ShaderBinary {
+    /// Metal Shading Language source.
+    pub msl: Option<&'static str>,
+    /// WebGPU Shading Language source.
+    pub wgsl: Option<&'static str>,
+    /// Pre-compiled SPIR-V binary (reserved for future use).
+    pub spirv: Option<&'static [u8]>,
+    /// Shader entry point name.
+    pub entry_point: &'static str,
+    /// Shader stage (vertex or fragment).
+    pub stage: ShaderStage,
+}
+
+impl ShaderBinary {
+    /// Select the best shader source for the given vendor.
+    ///
+    /// Apple: MSL text. Vulkan/WebGPU: WGSL text (or SPIR-V if available).
+    pub fn for_vendor(&self, vendor: crate::Vendor) -> Option<&[u8]> {
+        match vendor {
+            crate::Vendor::Apple => self.msl.map(|s| s.as_bytes()),
+            _ => self
+                .spirv
+                .or(self.wgsl.map(|s| s.as_bytes()))
+                .or(self.msl.map(|s| s.as_bytes())),
+        }
+    }
+}
+
 impl KernelBinary {
     /// Select the best binary for the given vendor.
     /// Apple: metallib binary (pre-compiled), fallback to MSL text.

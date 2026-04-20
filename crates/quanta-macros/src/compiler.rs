@@ -973,3 +973,528 @@ fn translate_device_fn_to_wgsl_fallback(rust_source: &str) -> String {
     s = s.replace(" as u32", "");
     s
 }
+
+// ============================================================================
+// Shader (vertex / fragment) parameter parsing and MSL/WGSL emitters
+// ============================================================================
+
+/// A parsed shader parameter — either a vertex/fragment attribute or a uniform.
+pub(crate) struct ShaderParam {
+    pub(crate) name: String,
+    pub(crate) ty: ShaderType,
+    pub(crate) is_uniform: bool,
+}
+
+/// Shader types understood by the vertex/fragment emitters.
+#[derive(Clone, Copy)]
+pub(crate) enum ShaderType {
+    F32,
+    Vec2,
+    Vec3,
+    Vec4,
+    Mat4,
+    Mat3,
+}
+
+impl ShaderType {
+    fn msl_name(self) -> &'static str {
+        match self {
+            Self::F32 => "float",
+            Self::Vec2 => "float2",
+            Self::Vec3 => "float3",
+            Self::Vec4 => "float4",
+            Self::Mat4 => "float4x4",
+            Self::Mat3 => "float3x3",
+        }
+    }
+
+    fn wgsl_name(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::Vec2 => "vec2<f32>",
+            Self::Vec3 => "vec3<f32>",
+            Self::Vec4 => "vec4<f32>",
+            Self::Mat4 => "mat4x4<f32>",
+            Self::Mat3 => "mat3x3<f32>",
+        }
+    }
+}
+
+fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
+    match name {
+        "f32" => Ok(ShaderType::F32),
+        "Vec2" => Ok(ShaderType::Vec2),
+        "Vec3" => Ok(ShaderType::Vec3),
+        "Vec4" => Ok(ShaderType::Vec4),
+        "Mat4" => Ok(ShaderType::Mat4),
+        "Mat3" => Ok(ShaderType::Mat3),
+        other => Err(format!("unsupported shader type: {}", other)),
+    }
+}
+
+/// Parse function parameters into shader params.
+///
+/// Value params (Vec2, Vec3, Vec4, f32) become attributes/inputs.
+/// Reference params (&T) become uniform buffer bindings.
+pub(crate) fn parse_shader_params(func: &syn::ItemFn) -> Result<Vec<ShaderParam>, syn::Error> {
+    let mut params = Vec::new();
+
+    for arg in &func.sig.inputs {
+        if let syn::FnArg::Typed(pat_type) = arg {
+            let name = match pat_type.pat.as_ref() {
+                syn::Pat::Ident(ident) => ident.ident.to_string(),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &pat_type.pat,
+                        "shader parameter must be a simple identifier",
+                    ));
+                }
+            };
+
+            let (ty, is_uniform) = parse_shader_type(&pat_type.ty)?;
+            params.push(ShaderParam {
+                name,
+                ty,
+                is_uniform,
+            });
+        }
+    }
+
+    Ok(params)
+}
+
+/// Parse a type into (ShaderType, is_uniform).
+/// `&T` → uniform, `T` → attribute/input.
+fn parse_shader_type(ty: &syn::Type) -> Result<(ShaderType, bool), syn::Error> {
+    match ty {
+        syn::Type::Reference(ref_ty) => {
+            let inner = parse_shader_type_inner(&ref_ty.elem)?;
+            Ok((inner, true))
+        }
+        _ => {
+            let inner = parse_shader_type_inner(ty)?;
+            Ok((inner, false))
+        }
+    }
+}
+
+fn parse_shader_type_inner(ty: &syn::Type) -> Result<ShaderType, syn::Error> {
+    match ty {
+        syn::Type::Path(path) => {
+            let ident = path
+                .path
+                .segments
+                .last()
+                .ok_or_else(|| syn::Error::new_spanned(path, "empty type path"))?;
+            shader_type_from_ident(&ident.ident.to_string())
+                .map_err(|msg| syn::Error::new_spanned(&ident.ident, msg))
+        }
+        _ => Err(syn::Error::new_spanned(ty, "unsupported shader type")),
+    }
+}
+
+/// Parse the return type of a shader function.
+pub(crate) fn parse_return_type(func: &syn::ItemFn) -> Result<ShaderType, syn::Error> {
+    match &func.sig.output {
+        syn::ReturnType::Type(_, ty) => parse_shader_type_inner(ty),
+        syn::ReturnType::Default => Err(syn::Error::new_spanned(
+            &func.sig.ident,
+            "shader must have a return type",
+        )),
+    }
+}
+
+/// Extract the function body as a source string for text-based translation.
+pub(crate) fn extract_body_source(func: &syn::ItemFn) -> String {
+    use quote::ToTokens;
+    let mut body = String::new();
+    for stmt in &func.block.stmts {
+        body.push_str(&stmt.to_token_stream().to_string());
+        body.push('\n');
+    }
+    body
+}
+
+/// Translate a Rust shader body to MSL.
+///
+/// Applies the same text substitutions as the kernel fallback path, plus
+/// shader-specific vector/matrix type replacements.
+fn translate_body_to_msl_shader(src: &str, _params: &[ShaderParam]) -> String {
+    let mut s = src.to_string();
+
+    // Replace Quanta vector constructors with MSL equivalents
+    s = s.replace("Vec4 :: new", "float4");
+    s = s.replace("Vec4::new", "float4");
+    s = s.replace("Vec3 :: new", "float3");
+    s = s.replace("Vec3::new", "float3");
+    s = s.replace("Vec2 :: new", "float2");
+    s = s.replace("Vec2::new", "float2");
+
+    // Replace type casts
+    s = s.replace(" as f32", "");
+    s = s.replace(" as u32", "");
+    s = s.replace(" as i32", "");
+
+    // Replace let bindings
+    s = s.replace("let mut ", "auto ");
+    s = s.replace("let ", "auto ");
+
+    // Replace parameter references — uniform params are accessed via their
+    // MSL name directly (they are in scope as function parameters).
+    // Attribute params accessed via their name directly as well.
+    // No renaming needed.
+
+    s
+}
+
+/// Translate a Rust shader body to WGSL.
+fn translate_body_to_wgsl_shader(src: &str, params: &[ShaderParam], _is_vertex: bool) -> String {
+    let mut s = src.to_string();
+
+    // Replace Quanta vector constructors with WGSL equivalents
+    s = s.replace("Vec4 :: new", "vec4<f32>");
+    s = s.replace("Vec4::new", "vec4<f32>");
+    s = s.replace("Vec3 :: new", "vec3<f32>");
+    s = s.replace("Vec3::new", "vec3<f32>");
+    s = s.replace("Vec2 :: new", "vec2<f32>");
+    s = s.replace("Vec2::new", "vec2<f32>");
+
+    // Replace type casts
+    s = s.replace(" as f32", "");
+    s = s.replace(" as u32", "");
+
+    // Replace let bindings
+    s = s.replace("let mut ", "var ");
+
+    // Replace attribute param names with struct member access (in.name)
+    for p in params {
+        if !p.is_uniform {
+            let from = &p.name;
+            let to = format!("in.{}", p.name);
+            // Only replace bare identifiers, not already-qualified ones.
+            // Simple heuristic: replace "p.name" when not preceded by '.'
+            s = s.replace(from, &to);
+        }
+    }
+
+    s
+}
+
+// ============================================================================
+// Vertex shader MSL emitter
+// ============================================================================
+
+pub(crate) fn emit_vertex_msl(
+    name: &str,
+    params: &[ShaderParam],
+    return_ty: &ShaderType,
+    body_source: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+
+    // Build parameter list
+    let mut param_lines = Vec::new();
+    let mut attr_idx = 0u32;
+    let mut buf_idx = 0u32;
+
+    for p in params {
+        if p.is_uniform {
+            param_lines.push(format!(
+                "    constant {}&{} [[buffer({})]]",
+                p.ty.msl_name(),
+                if p.name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", p.name)
+                },
+                buf_idx
+            ));
+            buf_idx += 1;
+        } else {
+            param_lines.push(format!(
+                "    {} {} [[attribute({})]]",
+                p.ty.msl_name(),
+                p.name,
+                attr_idx
+            ));
+            attr_idx += 1;
+        }
+    }
+
+    out.push_str(&format!(
+        "vertex {} {}(\n{}\n) {{\n",
+        return_ty.msl_name(),
+        name,
+        param_lines.join(",\n")
+    ));
+
+    let body = translate_body_to_msl_shader(body_source, params);
+    // Indent body and wrap the last expression as return
+    let body = indent_and_return_msl(&body);
+    out.push_str(&body);
+
+    out.push_str("}\n");
+    out
+}
+
+// ============================================================================
+// Fragment shader MSL emitter
+// ============================================================================
+
+pub(crate) fn emit_fragment_msl(
+    name: &str,
+    params: &[ShaderParam],
+    return_ty: &ShaderType,
+    body_source: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+
+    // Fragment inputs come as a struct with [[stage_in]]
+    let stage_in_params: Vec<&ShaderParam> = params.iter().filter(|p| !p.is_uniform).collect();
+    let uniform_params: Vec<&ShaderParam> = params.iter().filter(|p| p.is_uniform).collect();
+
+    // Emit stage_in struct if there are interpolated inputs
+    if !stage_in_params.is_empty() {
+        out.push_str(&format!("struct {}_Input {{\n", name));
+        for (i, p) in stage_in_params.iter().enumerate() {
+            out.push_str(&format!(
+                "    {} {} [[user(loc{})]];\n",
+                p.ty.msl_name(),
+                p.name,
+                i
+            ));
+        }
+        out.push_str("};\n\n");
+    }
+
+    // Build parameter list
+    let mut param_lines = Vec::new();
+    if !stage_in_params.is_empty() {
+        param_lines.push(format!("    {}_Input in [[stage_in]]", name));
+    }
+    for (i, p) in uniform_params.iter().enumerate() {
+        param_lines.push(format!(
+            "    constant {}&{} [[buffer({})]]",
+            p.ty.msl_name(),
+            if p.name.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", p.name)
+            },
+            i
+        ));
+    }
+
+    out.push_str(&format!(
+        "fragment {} {}(\n{}\n) {{\n",
+        return_ty.msl_name(),
+        name,
+        param_lines.join(",\n")
+    ));
+
+    // Unpack stage_in members into local variables
+    for p in &stage_in_params {
+        out.push_str(&format!(
+            "    {} {} = in.{};\n",
+            p.ty.msl_name(),
+            p.name,
+            p.name
+        ));
+    }
+
+    let body = translate_body_to_msl_shader(body_source, params);
+    let body = indent_and_return_msl(&body);
+    out.push_str(&body);
+
+    out.push_str("}\n");
+    out
+}
+
+/// Indent body lines and convert a trailing expression into a return statement.
+fn indent_and_return_msl(body: &str) -> String {
+    let lines: Vec<&str> = body.trim().lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if i == lines.len() - 1 && !trimmed.is_empty() {
+            // Last line: if it doesn't end with ';' or start with 'return',
+            // wrap it as a return statement.
+            if !trimmed.ends_with(';') && !trimmed.starts_with("return") {
+                out.push_str(&format!("    return {};\n", trimmed));
+            } else if !trimmed.starts_with("return") && !trimmed.contains("return ") {
+                // Already has semicolon but no return — check if it looks like
+                // a bare expression (no '=' assignment).
+                let without_semi = trimmed.trim_end_matches(';').trim();
+                if !without_semi.contains('=')
+                    && !without_semi.starts_with("auto ")
+                    && !without_semi.starts_with("if ")
+                    && !without_semi.starts_with("for ")
+                {
+                    out.push_str(&format!("    return {};\n", without_semi));
+                } else {
+                    out.push_str(&format!("    {}\n", trimmed));
+                }
+            } else {
+                out.push_str(&format!("    {}\n", trimmed));
+            }
+        } else {
+            out.push_str(&format!("    {}\n", trimmed));
+        }
+    }
+    out
+}
+
+// ============================================================================
+// Vertex shader WGSL emitter
+// ============================================================================
+
+pub(crate) fn emit_vertex_wgsl(
+    name: &str,
+    params: &[ShaderParam],
+    return_ty: &ShaderType,
+    body_source: &str,
+) -> String {
+    let mut out = String::new();
+
+    let attr_params: Vec<&ShaderParam> = params.iter().filter(|p| !p.is_uniform).collect();
+    let uniform_params: Vec<&ShaderParam> = params.iter().filter(|p| p.is_uniform).collect();
+
+    // Emit uniform bindings
+    for (i, p) in uniform_params.iter().enumerate() {
+        out.push_str(&format!(
+            "@group(0) @binding({}) var<uniform> {}: {};\n",
+            i,
+            p.name,
+            p.ty.wgsl_name()
+        ));
+    }
+    if !uniform_params.is_empty() {
+        out.push('\n');
+    }
+
+    // Emit vertex input struct
+    if !attr_params.is_empty() {
+        out.push_str("struct VertexInput {\n");
+        for (i, p) in attr_params.iter().enumerate() {
+            out.push_str(&format!(
+                "    @location({}) {}: {},\n",
+                i,
+                p.name,
+                p.ty.wgsl_name()
+            ));
+        }
+        out.push_str("};\n\n");
+    }
+
+    // Function signature
+    out.push_str(&format!(
+        "@vertex\nfn {}(in: VertexInput) -> @builtin(position) {} {{\n",
+        name,
+        return_ty.wgsl_name()
+    ));
+
+    let body = translate_body_to_wgsl_shader(body_source, params, true);
+    let body = indent_and_return_wgsl(&body);
+    out.push_str(&body);
+
+    out.push_str("}\n");
+    out
+}
+
+// ============================================================================
+// Fragment shader WGSL emitter
+// ============================================================================
+
+pub(crate) fn emit_fragment_wgsl(
+    name: &str,
+    params: &[ShaderParam],
+    return_ty: &ShaderType,
+    body_source: &str,
+) -> String {
+    let mut out = String::new();
+
+    let stage_in_params: Vec<&ShaderParam> = params.iter().filter(|p| !p.is_uniform).collect();
+    let uniform_params: Vec<&ShaderParam> = params.iter().filter(|p| p.is_uniform).collect();
+
+    // Emit uniform bindings
+    for (i, p) in uniform_params.iter().enumerate() {
+        out.push_str(&format!(
+            "@group(0) @binding({}) var<uniform> {}: {};\n",
+            i,
+            p.name,
+            p.ty.wgsl_name()
+        ));
+    }
+    if !uniform_params.is_empty() {
+        out.push('\n');
+    }
+
+    // Emit fragment input struct
+    if !stage_in_params.is_empty() {
+        out.push_str("struct FragmentInput {\n");
+        for (i, p) in stage_in_params.iter().enumerate() {
+            out.push_str(&format!(
+                "    @location({}) {}: {},\n",
+                i,
+                p.name,
+                p.ty.wgsl_name()
+            ));
+        }
+        out.push_str("};\n\n");
+    }
+
+    // Function signature
+    out.push_str(&format!(
+        "@fragment\nfn {}(in: FragmentInput) -> @location(0) {} {{\n",
+        name,
+        return_ty.wgsl_name()
+    ));
+
+    let body = translate_body_to_wgsl_shader(body_source, params, false);
+    let body = indent_and_return_wgsl(&body);
+    out.push_str(&body);
+
+    out.push_str("}\n");
+    out
+}
+
+/// Indent body lines and convert trailing expression to return (WGSL).
+fn indent_and_return_wgsl(body: &str) -> String {
+    let lines: Vec<&str> = body.trim().lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if i == lines.len() - 1 && !trimmed.is_empty() {
+            if !trimmed.ends_with(';') && !trimmed.starts_with("return") {
+                out.push_str(&format!("    return {};\n", trimmed));
+            } else if !trimmed.starts_with("return") && !trimmed.contains("return ") {
+                let without_semi = trimmed.trim_end_matches(';').trim();
+                if !without_semi.contains('=')
+                    && !without_semi.starts_with("var ")
+                    && !without_semi.starts_with("let ")
+                    && !without_semi.starts_with("if ")
+                    && !without_semi.starts_with("for ")
+                {
+                    out.push_str(&format!("    return {};\n", without_semi));
+                } else {
+                    out.push_str(&format!("    {}\n", trimmed));
+                }
+            } else {
+                out.push_str(&format!("    {}\n", trimmed));
+            }
+        } else {
+            out.push_str(&format!("    {}\n", trimmed));
+        }
+    }
+    out
+}

@@ -173,6 +173,10 @@ pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Mark a function as a vertex shader.
 ///
+/// Compiles the function to MSL and WGSL at build time and embeds both as a
+/// `ShaderBinary` static. Value parameters become vertex attributes;
+/// reference parameters (`&T`) become uniform buffer bindings.
+///
 /// ```ignore
 /// #[quanta::vertex]
 /// fn transform(
@@ -183,11 +187,6 @@ pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
 /// }
 /// ```
-///
-/// Vertex shaders are paired with fragment shaders to form a render pipeline.
-/// The macro captures the function source and emits a constant
-/// `__QUANTA_VERTEX_{NAME_UPPERCASE}` for the driver to compile at pipeline
-/// creation time.
 #[proc_macro_attribute]
 pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -202,17 +201,41 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let func_name = &func.sig.ident;
-    let source = func.to_token_stream().to_string();
-    let const_name = syn::Ident::new(
-        &format!("__QUANTA_VERTEX_{}", func_name.to_string().to_uppercase()),
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
 
-    let expanded = quote! {
-        pub const #const_name: &str = #source;
+    let params = match compiler::parse_shader_params(&func) {
+        Ok(p) => p,
+        Err(e) => return e.to_compile_error().into(),
+    };
 
-        pub fn #func_name() -> &'static str {
-            #source
+    let return_ty = match compiler::parse_return_type(&func) {
+        Ok(t) => t,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    let body_source = compiler::extract_body_source(&func);
+
+    let msl = compiler::emit_vertex_msl(&func_name_str, &params, &return_ty, &body_source);
+    let wgsl = compiler::emit_vertex_wgsl(&func_name_str, &params, &return_ty, &body_source);
+
+    let msl_str = msl.as_str();
+    let wgsl_str = wgsl.as_str();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#msl_str),
+            wgsl: Some(#wgsl_str),
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::Vertex,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
         }
     };
     expanded.into()
@@ -220,21 +243,19 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Mark a function as a fragment shader.
 ///
+/// Compiles the function to MSL and WGSL at build time and embeds both as a
+/// `ShaderBinary` static. Value parameters become fragment stage inputs
+/// (interpolated varyings); reference parameters become uniform/texture bindings.
+///
 /// ```ignore
 /// #[quanta::fragment]
 /// fn shade(
 ///     uv: Vec2,
 ///     color: Vec4,
-///     albedo: &Texture2D,
 /// ) -> Vec4 {
-///     albedo.sample(uv) * color
+///     color * Vec4::new(uv.x, uv.y, 0.0, 1.0)
 /// }
 /// ```
-///
-/// Fragment shaders receive interpolated outputs from the vertex stage and
-/// produce a color per fragment. The macro captures the function source and
-/// emits a constant `__QUANTA_FRAGMENT_{NAME_UPPERCASE}` for the driver to
-/// compile at pipeline creation time.
 #[proc_macro_attribute]
 pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -249,17 +270,41 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let func_name = &func.sig.ident;
-    let source = func.to_token_stream().to_string();
-    let const_name = syn::Ident::new(
-        &format!("__QUANTA_FRAGMENT_{}", func_name.to_string().to_uppercase()),
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
 
-    let expanded = quote! {
-        pub const #const_name: &str = #source;
+    let params = match compiler::parse_shader_params(&func) {
+        Ok(p) => p,
+        Err(e) => return e.to_compile_error().into(),
+    };
 
-        pub fn #func_name() -> &'static str {
-            #source
+    let return_ty = match compiler::parse_return_type(&func) {
+        Ok(t) => t,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    let body_source = compiler::extract_body_source(&func);
+
+    let msl = compiler::emit_fragment_msl(&func_name_str, &params, &return_ty, &body_source);
+    let wgsl = compiler::emit_fragment_wgsl(&func_name_str, &params, &return_ty, &body_source);
+
+    let msl_str = msl.as_str();
+    let wgsl_str = wgsl.as_str();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#msl_str),
+            wgsl: Some(#wgsl_str),
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::Fragment,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
         }
     };
     expanded.into()
