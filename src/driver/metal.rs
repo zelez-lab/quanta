@@ -1,5 +1,12 @@
 //! Metal driver for macOS/iOS.
 
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::{
     Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture,
     TextureDesc, TextureUsage, Vendor, Wave, render_pass::RenderOp,

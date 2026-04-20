@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::marker::PhantomData;
 
 /// GPU-resident typed buffer. Data that quarks operate on.

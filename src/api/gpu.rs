@@ -1,3 +1,6 @@
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::{
@@ -20,6 +23,7 @@ pub struct Gpu {
 }
 
 impl Gpu {
+    #[allow(dead_code)]
     pub(crate) fn new(inner: Box<dyn GpuDevice>) -> Self {
         Self { inner }
     }
@@ -78,7 +82,7 @@ impl Gpu {
 
     pub fn write_field<T: Copy>(&self, field: &Field<T>, data: &[T]) -> Result<(), QuantaError> {
         let bytes = unsafe {
-            core::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
+            core::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
         };
         self.inner.field_write_bytes(field.handle(), bytes)
     }
@@ -321,11 +325,11 @@ impl Gpu {
     /// from `wave` to the new wave, then replaces `wave`'s handle.
     pub fn reload_wave(&self, wave: &mut Wave, kernel: &[u8]) -> Result<(), QuantaError> {
         let mut new_wave = self.inner.wave(kernel)?;
-        new_wave.bindings = std::mem::take(&mut wave.bindings);
-        new_wave.push_constants = std::mem::take(&mut wave.push_constants);
-        new_wave.texture_bindings = std::mem::take(&mut wave.texture_bindings);
+        new_wave.bindings = core::mem::take(&mut wave.bindings);
+        new_wave.push_constants = core::mem::take(&mut wave.push_constants);
+        new_wave.texture_bindings = core::mem::take(&mut wave.texture_bindings);
         // Swap: the old handle gets dropped via new_wave's eventual drop
-        std::mem::swap(wave, &mut new_wave);
+        core::mem::swap(wave, &mut new_wave);
         Ok(())
     }
 

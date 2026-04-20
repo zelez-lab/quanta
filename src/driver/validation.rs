@@ -6,11 +6,15 @@
 //! - dispatch with no bindings emits a warning
 //! - texture_write with wrong data size panics
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use std::eprintln;
+
 use crate::{
     Caps, FieldUsage, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc,
     Timeline, Wave,
 };
-use std::collections::HashSet;
+use hashbrown::HashSet;
 use std::sync::Mutex;
 
 /// A validation layer that wraps any `GpuDevice`.

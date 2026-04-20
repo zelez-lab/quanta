@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use crate::QuantaError;
 
 type WaitFn = Box<dyn FnOnce(u64) -> Result<(), QuantaError>>;

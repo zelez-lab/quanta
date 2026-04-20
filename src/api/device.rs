@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::{
     Caps, FieldUsage, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc, Timeline,
     Wave,

@@ -1,3 +1,5 @@
+use alloc::string::String;
+
 /// Pixel/data format for textures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {

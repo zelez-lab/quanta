@@ -40,6 +40,13 @@
 //!
 //! No SPIR-V. No intermediate representation. Direct to target.
 
+#![no_std]
+
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
+
 mod api;
 mod driver;
 pub mod kernel;
@@ -55,6 +62,7 @@ pub use quanta_macros::device;
 pub use quanta_macros::kernel;
 
 /// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
+#[cfg(feature = "std")]
 fn validation_enabled() -> bool {
     std::env::var("QUANTA_VALIDATE")
         .map(|v| v == "1")
@@ -62,7 +70,8 @@ fn validation_enabled() -> bool {
 }
 
 /// Optionally wrap a device in the validation layer.
-fn maybe_validate(dev: Box<dyn GpuDevice>) -> Box<dyn GpuDevice> {
+#[cfg(feature = "std")]
+fn maybe_validate(dev: alloc::boxed::Box<dyn GpuDevice>) -> alloc::boxed::Box<dyn GpuDevice> {
     if validation_enabled() {
         driver::validation::ValidationDevice::wrap(dev)
     } else {
@@ -71,8 +80,9 @@ fn maybe_validate(dev: Box<dyn GpuDevice>) -> Box<dyn GpuDevice> {
 }
 
 /// Discover available GPU devices.
-pub fn devices() -> Vec<Gpu> {
-    let mut devs: Vec<Box<dyn GpuDevice>> = Vec::new();
+#[cfg(feature = "std")]
+pub fn devices() -> alloc::vec::Vec<Gpu> {
+    let mut devs: alloc::vec::Vec<alloc::boxed::Box<dyn GpuDevice>> = alloc::vec::Vec::new();
 
     #[cfg(feature = "metal")]
     devs.extend(driver::metal::discover());
@@ -87,6 +97,7 @@ pub fn devices() -> Vec<Gpu> {
 }
 
 /// Initialize the first available GPU device.
+#[cfg(feature = "std")]
 pub fn init() -> Result<Gpu, QuantaError> {
     let mut devs = devices();
     if devs.is_empty() {

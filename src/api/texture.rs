@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use crate::Format;
 
 /// GPU-resident 2D image.

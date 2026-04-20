@@ -4,6 +4,12 @@
 //! Covers compute dispatch, render pass execution, texture management,
 //! depth/stencil, instanced/indexed/indirect draw, MRT, and debug labels.
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::{
     Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture,
     TextureDesc, TextureUsage, Vendor, Wave,

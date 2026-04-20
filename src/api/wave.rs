@@ -1,3 +1,7 @@
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::{Field, Texture};
 
 /// A compute dispatch binding — kernel + fields, ready to dispatch.
@@ -11,16 +15,19 @@ pub struct Wave {
     pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
 }
 
+#[allow(dead_code)]
 pub(crate) struct WaveBinding {
     pub slot: u32,
     pub field_handle: u64,
 }
 
+#[allow(dead_code)]
 pub(crate) struct PushConstant {
     pub slot: u32,
     pub data: Vec<u8>,
 }
 
+#[allow(dead_code)]
 pub(crate) struct TextureBinding {
     pub slot: u32,
     pub texture_handle: u64,

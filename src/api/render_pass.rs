@@ -1,3 +1,7 @@
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::{Color, Field, Pipeline, Texture};
 
 /// An active render pass — record draw commands, then submit.

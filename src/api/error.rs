@@ -1,3 +1,6 @@
+use alloc::format;
+use alloc::string::String;
+
 /// Errors returned by Quanta operations.
 #[derive(Debug, Clone)]
 pub struct QuantaError {
@@ -27,7 +30,7 @@ pub enum QuantaErrorKind {
 impl QuantaError {
     /// Attach context to this error (e.g. which operation produced it).
     pub fn with_context(mut self, ctx: &str) -> Self {
-        self.context = Some(ctx.to_string());
+        self.context = Some(String::from(ctx));
         self
     }
 
@@ -94,12 +97,12 @@ impl Eq for QuantaError {}
 impl core::fmt::Display for QuantaError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let base = match &self.kind {
-            QuantaErrorKind::NoDevice => "no GPU device found".to_string(),
-            QuantaErrorKind::OutOfMemory => "GPU out of memory".to_string(),
+            QuantaErrorKind::NoDevice => String::from("no GPU device found"),
+            QuantaErrorKind::OutOfMemory => String::from("GPU out of memory"),
             QuantaErrorKind::CompilationFailed(msg) => format!("compilation failed: {msg}"),
-            QuantaErrorKind::SubmitFailed => "command submission failed".to_string(),
-            QuantaErrorKind::Timeout => "GPU operation timed out".to_string(),
-            QuantaErrorKind::DeviceLost => "GPU device lost".to_string(),
+            QuantaErrorKind::SubmitFailed => String::from("command submission failed"),
+            QuantaErrorKind::Timeout => String::from("GPU operation timed out"),
+            QuantaErrorKind::DeviceLost => String::from("GPU device lost"),
             QuantaErrorKind::InvalidParam(msg) => format!("invalid parameter: {msg}"),
         };
         if let Some(ctx) = &self.context {

@@ -8,6 +8,10 @@
 //!
 //! This eliminates custom emitters. One source (WGSL), all targets via naga.
 
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 #[cfg(feature = "naga-shaders")]
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 
@@ -101,5 +105,5 @@ pub fn spirv_to_wgsl(spirv: &[u32]) -> Result<String, String> {
 
 #[cfg(feature = "naga-shaders")]
 fn bytemuck_slice(words: &[u32]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 4) }
+    unsafe { core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 4) }
 }
