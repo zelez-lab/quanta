@@ -71,6 +71,7 @@ fn roundtrip_compiler_output() {
     let output = CompilerOutput {
         amd: Some(vec![0x7f, 0x45, 0x4c, 0x46]),
         nvidia: Some(b".visible .entry test()".to_vec()),
+        spirv: None,
         msl: Some("kernel void test() {}".to_string()),
         wgsl: Some("@compute fn test() {}".to_string()),
         llvm_ir: None,

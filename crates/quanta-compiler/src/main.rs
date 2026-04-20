@@ -36,6 +36,11 @@ fn main() {
         return;
     }
 
+    if args.iter().any(|a| a == "--test-spirv") {
+        test_spirv();
+        return;
+    }
+
     if args.iter().any(|a| a == "--test-rustc") {
         test_rustc();
         return;
@@ -50,6 +55,7 @@ fn main() {
     let mut output = CompilerOutput {
         amd: None,
         nvidia: None,
+        spirv: None,
         msl: None,
         wgsl: None,
         llvm_ir: None,
@@ -78,6 +84,7 @@ fn main() {
             Ok(binary) => match target {
                 GpuTarget::Nvptx => output.nvidia = Some(binary),
                 GpuTarget::Amdgpu => output.amd = Some(binary),
+                GpuTarget::Spirv => output.spirv = Some(binary),
             },
             Err(e) => {
                 eprintln!("Error compiling for {:?}: {}", target, e);
@@ -99,6 +106,7 @@ fn parse_targets(args: &[String]) -> Vec<GpuTarget> {
                 .filter_map(|s| match s.trim() {
                     "nvptx" => Some(GpuTarget::Nvptx),
                     "amdgpu" => Some(GpuTarget::Amdgpu),
+                    "spirv" => Some(GpuTarget::Spirv),
                     _ => None,
                 })
                 .collect();
@@ -448,6 +456,48 @@ fn test_ir() {
     match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Amdgpu) {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("AMDGPU error: {}", e),
+    }
+
+    println!("\n=== SPIR-V LLVM IR ===");
+    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
+        Ok(ir) => println!("{}", ir),
+        Err(e) => eprintln!("SPIR-V error: {}", e),
+    }
+}
+
+/// Test: compile vector_add to SPIR-V binary.
+fn test_spirv() {
+    let kernel = make_test_kernel();
+
+    println!("=== SPIR-V LLVM IR ===\n");
+    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
+        Ok(ir) => println!("{}", ir),
+        Err(e) => eprintln!("SPIR-V IR error: {}", e),
+    }
+
+    println!("\n=== Compiling vector_add to SPIR-V binary ===\n");
+    match to_llvm::compile_to_binary(&kernel, GpuTarget::Spirv) {
+        Ok(spirv) => {
+            println!("SPIR-V binary size: {} bytes", spirv.len());
+            // SPIR-V magic number: 0x07230203
+            if spirv.len() >= 4 {
+                print!("Header: ");
+                for b in spirv.iter().take(20) {
+                    print!("{:02x} ", b);
+                }
+                println!();
+                let magic = u32::from_le_bytes([spirv[0], spirv[1], spirv[2], spirv[3]]);
+                if magic == 0x07230203 {
+                    println!("Valid SPIR-V binary (magic: 0x07230203)");
+                } else {
+                    println!(
+                        "Header magic: 0x{:08x} (expected 0x07230203 for SPIR-V)",
+                        magic
+                    );
+                }
+            }
+        }
+        Err(e) => eprintln!("SPIR-V error: {}", e),
     }
 }
 

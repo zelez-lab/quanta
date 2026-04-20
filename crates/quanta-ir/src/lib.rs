@@ -379,6 +379,7 @@ pub struct KernelDef {
 pub struct CompilerOutput {
     pub amd: Option<Vec<u8>>,
     pub nvidia: Option<Vec<u8>>,
+    pub spirv: Option<Vec<u8>>,
     pub msl: Option<String>,
     pub wgsl: Option<String>,
     pub llvm_ir: Option<Vec<u8>>,

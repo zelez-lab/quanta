@@ -15,6 +15,7 @@ use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 
 use crate::targets::amdgpu::AmdgpuTarget;
 use crate::targets::nvptx::NvptxTarget;
+use crate::targets::spirv::SpirvTarget;
 use crate::targets::{GpuIntrinsics, GpuTarget};
 use quanta_ir::*;
 
@@ -78,6 +79,7 @@ pub fn compile_to_binary(kernel: &KernelDef, target: GpuTarget) -> Result<Vec<u8
     let file_type = match target {
         GpuTarget::Nvptx => FileType::Assembly, // PTX is text assembly
         GpuTarget::Amdgpu => FileType::Object,  // AMD is ELF object
+        GpuTarget::Spirv => FileType::Object,   // SPIR-V binary (magic 0x07230203)
     };
 
     let buf = target_machine
@@ -95,8 +97,25 @@ fn build_module<'ctx>(
     let module = context.create_module(&kernel.name);
     let builder = context.create_builder();
 
+    // Initialize target and set data layout BEFORE building the kernel.
+    // AMDGPU requires addrspace(5) for allocas — this is encoded in the data layout.
+    target.initialize();
     let triple = TargetTriple::create(target.triple());
     module.set_triple(&triple);
+
+    let llvm_target = Target::from_triple(&triple)
+        .map_err(|e| format!("target from triple: {}", e.to_string()))?;
+    let target_machine = llvm_target
+        .create_target_machine(
+            &triple,
+            target.cpu(),
+            target.features(),
+            OptimizationLevel::None,
+            RelocMode::Default,
+            CodeModel::Default,
+        )
+        .ok_or("failed to create target machine for data layout")?;
+    module.set_data_layout(&target_machine.get_target_data().get_data_layout());
 
     match target {
         GpuTarget::Nvptx => {
@@ -104,6 +123,9 @@ fn build_module<'ctx>(
         }
         GpuTarget::Amdgpu => {
             build_kernel(context, &module, &builder, kernel, &AmdgpuTarget, target)?;
+        }
+        GpuTarget::Spirv => {
+            build_kernel(context, &module, &builder, kernel, &SpirvTarget, target)?;
         }
     }
 
@@ -896,7 +918,7 @@ fn emit_math_direct<'ctx>(
         .build_call(func_val, &call_args, "math")
         .map_err(|e| e.to_string())?
         .try_as_basic_value()
-        .left()
+        .basic()
         .ok_or("math function returned void")?;
 
     Ok(result)

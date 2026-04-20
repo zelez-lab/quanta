@@ -106,6 +106,7 @@ impl GpuType for i8 {
 pub struct KernelBinary {
     pub amd: Option<&'static [u8]>,
     pub nvidia: Option<&'static [u8]>,
+    pub spirv: Option<&'static [u8]>,
     pub msl: Option<&'static str>,
     pub wgsl: Option<&'static str>,
     pub llvm_ir: Option<&'static [u8]>,
@@ -113,14 +114,17 @@ pub struct KernelBinary {
 
 impl KernelBinary {
     /// Select the best binary for the given vendor.
-    /// Apple uses MSL. Vulkan uses WGSL (converted to SPIR-V by driver).
+    /// Apple uses MSL. Vulkan uses SPIR-V directly (or WGSL converted at runtime).
     pub fn for_vendor(&self, vendor: crate::Vendor) -> Option<&[u8]> {
         match vendor {
-            crate::Vendor::Amd => self.amd,
-            crate::Vendor::Nvidia => self.nvidia,
+            crate::Vendor::Amd => self.amd.or(self.spirv),
+            crate::Vendor::Nvidia => self.nvidia.or(self.spirv),
             crate::Vendor::Apple => self.msl.map(|s| s.as_bytes()),
-            crate::Vendor::Intel => self.amd.or(self.llvm_ir),
-            _ => self.wgsl.map(|s| s.as_bytes()).or(self.llvm_ir),
+            crate::Vendor::Intel => self.spirv.or(self.amd).or(self.llvm_ir),
+            _ => self
+                .spirv
+                .or(self.wgsl.map(|s| s.as_bytes()))
+                .or(self.llvm_ir),
         }
     }
 }

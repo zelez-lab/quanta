@@ -2,6 +2,7 @@
 
 pub mod amdgpu;
 pub mod nvptx;
+pub mod spirv;
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -13,6 +14,7 @@ use inkwell::values::IntValue;
 pub enum GpuTarget {
     Nvptx,
     Amdgpu,
+    Spirv,
 }
 
 impl GpuTarget {
@@ -20,6 +22,7 @@ impl GpuTarget {
         match self {
             Self::Nvptx => "nvptx64-nvidia-cuda",
             Self::Amdgpu => "amdgcn-amd-amdhsa",
+            Self::Spirv => "spirv64-unknown-unknown",
         }
     }
 
@@ -27,6 +30,7 @@ impl GpuTarget {
         match self {
             Self::Nvptx => "sm_50",
             Self::Amdgpu => "gfx900",
+            Self::Spirv => "",
         }
     }
 
@@ -34,6 +38,7 @@ impl GpuTarget {
         match self {
             Self::Nvptx => "+ptx60",
             Self::Amdgpu => "",
+            Self::Spirv => "",
         }
     }
 
@@ -42,6 +47,11 @@ impl GpuTarget {
         match self {
             Self::Nvptx => Target::initialize_nvptx(&InitializationConfig::default()),
             Self::Amdgpu => Target::initialize_amd_gpu(&InitializationConfig::default()),
+            Self::Spirv => {
+                // SPIR-V backend — available in LLVM 19+
+                // Try to initialize; if not available, will fail at compilation
+                Target::initialize_all(&InitializationConfig::default());
+            }
         }
     }
 }

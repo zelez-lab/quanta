@@ -25,7 +25,7 @@ impl AmdgpuTarget {
             .build_call(func, &[], "")
             .unwrap()
             .try_as_basic_value()
-            .left()
+            .basic()
             .unwrap()
             .into_int_value()
     }
