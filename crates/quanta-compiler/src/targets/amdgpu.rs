@@ -4,7 +4,7 @@ use super::GpuIntrinsics;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::values::IntValue;
+use inkwell::values::{BasicValueEnum, IntValue};
 
 pub struct AmdgpuTarget;
 
@@ -209,5 +209,133 @@ impl<'ctx> GpuIntrinsics<'ctx> for AmdgpuTarget {
         builder
             .build_int_z_extend(cmp, i32_type, "all_i32")
             .unwrap()
+    }
+
+    fn texture_sample_2d(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        texture_handle: IntValue<'ctx>,
+        x: BasicValueEnum<'ctx>,
+        y: BasicValueEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let f32_type = context.f32_type();
+        let i32_type = context.i32_type();
+        let vec4_type = f32_type.vec_type(4);
+        let fn_type =
+            vec4_type.fn_type(&[i32_type.into(), f32_type.into(), f32_type.into()], false);
+        let func = module
+            .get_function("__quanta_tex_sample_2d")
+            .unwrap_or_else(|| module.add_function("__quanta_tex_sample_2d", fn_type, None));
+        builder
+            .build_call(func, &[texture_handle.into(), x.into(), y.into()], "tex2d")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+    }
+
+    fn texture_sample_3d(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        texture_handle: IntValue<'ctx>,
+        x: BasicValueEnum<'ctx>,
+        y: BasicValueEnum<'ctx>,
+        z: BasicValueEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let f32_type = context.f32_type();
+        let i32_type = context.i32_type();
+        let vec4_type = f32_type.vec_type(4);
+        let fn_type = vec4_type.fn_type(
+            &[
+                i32_type.into(),
+                f32_type.into(),
+                f32_type.into(),
+                f32_type.into(),
+            ],
+            false,
+        );
+        let func = module
+            .get_function("__quanta_tex_sample_3d")
+            .unwrap_or_else(|| module.add_function("__quanta_tex_sample_3d", fn_type, None));
+        builder
+            .build_call(
+                func,
+                &[texture_handle.into(), x.into(), y.into(), z.into()],
+                "tex3d",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+    }
+
+    fn texture_write_2d(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        texture_handle: IntValue<'ctx>,
+        x: IntValue<'ctx>,
+        y: IntValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
+    ) {
+        let f32_type = context.f32_type();
+        let i32_type = context.i32_type();
+        let vec4_type = f32_type.vec_type(4);
+        let void_type = context.void_type();
+        let fn_type = void_type.fn_type(
+            &[
+                i32_type.into(),
+                i32_type.into(),
+                i32_type.into(),
+                vec4_type.into(),
+            ],
+            false,
+        );
+        let func = module
+            .get_function("__quanta_tex_write_2d")
+            .unwrap_or_else(|| module.add_function("__quanta_tex_write_2d", fn_type, None));
+        builder
+            .build_call(
+                func,
+                &[texture_handle.into(), x.into(), y.into(), value.into()],
+                "",
+            )
+            .unwrap();
+    }
+
+    fn texture_size_2d(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        texture_handle: IntValue<'ctx>,
+    ) -> (IntValue<'ctx>, IntValue<'ctx>) {
+        let i32_type = context.i32_type();
+        let i64_type = context.i64_type();
+        let fn_type = i64_type.fn_type(&[i32_type.into()], false);
+        let func = module
+            .get_function("__quanta_tex_size_2d")
+            .unwrap_or_else(|| module.add_function("__quanta_tex_size_2d", fn_type, None));
+        let packed = builder
+            .build_call(func, &[texture_handle.into()], "texsize")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let width = builder
+            .build_int_truncate(packed, i32_type, "tex_w")
+            .unwrap();
+        let shift = i64_type.const_int(32, false);
+        let hi = builder
+            .build_right_shift(packed, shift, false, "tex_hi")
+            .unwrap();
+        let height = builder.build_int_truncate(hi, i32_type, "tex_h").unwrap();
+        (width, height)
     }
 }

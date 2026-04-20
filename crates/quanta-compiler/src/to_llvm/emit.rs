@@ -41,7 +41,12 @@ pub(crate) fn build_kernel<'ctx>(
             KernelParam::Constant { scalar_type, .. } => {
                 param_types.push(scalar_to_llvm_type(context, scalar_type));
             }
-            _ => {} // textures -- TODO
+            KernelParam::Texture2DRead { scalar_type: _, .. }
+            | KernelParam::Texture2DWrite { scalar_type: _, .. }
+            | KernelParam::Texture3DRead { scalar_type: _, .. } => {
+                // Texture handles are passed as i32 descriptor indices
+                param_types.push(context.i32_type().into());
+            }
         }
     }
 
@@ -101,7 +106,18 @@ pub(crate) fn build_kernel<'ctx>(
                 slot_to_const.insert(*slot, (val, *scalar_type));
                 arg_idx += 1;
             }
-            _ => {
+            KernelParam::Texture2DRead {
+                slot, scalar_type, ..
+            }
+            | KernelParam::Texture2DWrite {
+                slot, scalar_type, ..
+            }
+            | KernelParam::Texture3DRead {
+                slot, scalar_type, ..
+            } => {
+                // Texture handles are i32 values, store as scalar constants
+                let val = function.get_nth_param(arg_idx).unwrap();
+                slot_to_const.insert(*slot, (val, *scalar_type));
                 arg_idx += 1;
             }
         }
@@ -955,20 +971,286 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                 .map_err(|e| e.to_string())?;
             reg_store(ectx.context, ectx.builder, ectx.reg_slots, dst.0, elem, *ty)?;
         }
-        KernelOp::MatMul { .. } => {
-            return Err("MatMul: use explicit multiply-accumulate loops for now".into());
+        KernelOp::MatMul {
+            dst,
+            a,
+            b,
+            size,
+            ty,
+        } => {
+            let n = *size as u32;
+            let n2 = n * n;
+
+            // Load source matrices (flat vectors of n*n elements)
+            let (a_ptr, a_scalar) = ectx
+                .reg_slots
+                .get(&a.0)
+                .ok_or_else(|| format!("register r{} not allocated (MatMul a)", a.0))?;
+            let a_scalar_llvm = scalar_to_llvm_type(ectx.context, a_scalar);
+            let a_vec_ty = make_vec_type(a_scalar_llvm, n2);
+            let a_vec = ectx
+                .builder
+                .build_load(a_vec_ty, *a_ptr, "matmul_a")
+                .map_err(|e| e.to_string())?
+                .into_vector_value();
+
+            let (b_ptr, b_scalar) = ectx
+                .reg_slots
+                .get(&b.0)
+                .ok_or_else(|| format!("register r{} not allocated (MatMul b)", b.0))?;
+            let b_scalar_llvm = scalar_to_llvm_type(ectx.context, b_scalar);
+            let b_vec_ty = make_vec_type(b_scalar_llvm, n2);
+            let b_vec = ectx
+                .builder
+                .build_load(b_vec_ty, *b_ptr, "matmul_b")
+                .map_err(|e| e.to_string())?
+                .into_vector_value();
+
+            // Build result vector: result[i*n+j] = sum_k(a[i*n+k] * b[k*n+j])
+            let scalar_llvm = scalar_to_llvm_type(ectx.context, ty);
+            let result_vec_ty = make_vec_type(scalar_llvm, n2);
+            let is_float = is_float_type(ty);
+            let i32_ty = ectx.context.i32_type();
+
+            let mut result_vec = result_vec_ty.get_undef();
+
+            for i in 0..n {
+                for j in 0..n {
+                    // Accumulate: sum = a[i*n+0]*b[0*n+j] + a[i*n+1]*b[1*n+j] + ...
+                    let mut acc: Option<BasicValueEnum<'ctx>> = None;
+                    for k in 0..n {
+                        let a_idx = i32_ty.const_int((i * n + k) as u64, false);
+                        let b_idx = i32_ty.const_int((k * n + j) as u64, false);
+
+                        let a_elem = ectx
+                            .builder
+                            .build_extract_element(a_vec, a_idx, "a_elem")
+                            .map_err(|e| e.to_string())?;
+                        let b_elem = ectx
+                            .builder
+                            .build_extract_element(b_vec, b_idx, "b_elem")
+                            .map_err(|e| e.to_string())?;
+
+                        let prod = if is_float {
+                            ectx.builder
+                                .build_float_mul(
+                                    a_elem.into_float_value(),
+                                    b_elem.into_float_value(),
+                                    "mul",
+                                )
+                                .map_err(|e| e.to_string())?
+                                .into()
+                        } else {
+                            ectx.builder
+                                .build_int_mul(
+                                    a_elem.into_int_value(),
+                                    b_elem.into_int_value(),
+                                    "mul",
+                                )
+                                .map_err(|e| e.to_string())?
+                                .into()
+                        };
+
+                        acc = Some(match acc {
+                            None => prod,
+                            Some(prev) => {
+                                if is_float {
+                                    ectx.builder
+                                        .build_float_add(
+                                            prev.into_float_value(),
+                                            prod.into_float_value(),
+                                            "acc",
+                                        )
+                                        .map_err(|e| e.to_string())?
+                                        .into()
+                                } else {
+                                    ectx.builder
+                                        .build_int_add(
+                                            prev.into_int_value(),
+                                            prod.into_int_value(),
+                                            "acc",
+                                        )
+                                        .map_err(|e| e.to_string())?
+                                        .into()
+                                }
+                            }
+                        });
+                    }
+
+                    let r_idx = i32_ty.const_int((i * n + j) as u64, false);
+                    result_vec = ectx
+                        .builder
+                        .build_insert_element(result_vec, acc.unwrap(), r_idx, "")
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+
+            // Store result as a vector-typed alloca
+            let alloca = ectx
+                .builder
+                .build_alloca(result_vec_ty, &format!("r{}", dst.0))
+                .map_err(|e| e.to_string())?;
+            ectx.builder
+                .build_store(alloca, result_vec)
+                .map_err(|e| e.to_string())?;
+            ectx.reg_slots.insert(dst.0, (alloca, *ty));
         }
-        KernelOp::TextureSample2D { .. } => {
-            return Err("TextureSample2D not yet implemented in LLVM emitter".into());
+
+        KernelOp::TextureSample2D {
+            dst,
+            texture,
+            x,
+            y,
+            ty,
+        } => {
+            // Get texture handle (i32) from slot_to_const
+            let tex_handle = ectx
+                .slot_to_const
+                .get(texture)
+                .ok_or_else(|| format!("texture slot {} not bound", texture))?
+                .0
+                .into_int_value();
+
+            let x_val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, x.0)?;
+            let y_val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, y.0)?;
+
+            let result = ectx.intrinsics.texture_sample_2d(
+                ectx.context,
+                ectx.module,
+                ectx.builder,
+                tex_handle,
+                x_val,
+                y_val,
+            );
+
+            // Result is vec4. Store as a vector-typed alloca so VecExtract can read it.
+            let f32_type = ectx.context.f32_type();
+            let vec4_ty = f32_type.vec_type(4);
+            let alloca = ectx
+                .builder
+                .build_alloca(vec4_ty, &format!("r{}", dst.0))
+                .map_err(|e| e.to_string())?;
+            ectx.builder
+                .build_store(alloca, result)
+                .map_err(|e| e.to_string())?;
+            ectx.reg_slots.insert(dst.0, (alloca, *ty));
         }
-        KernelOp::TextureSample3D { .. } => {
-            return Err("TextureSample3D not yet implemented in LLVM emitter".into());
+
+        KernelOp::TextureSample3D {
+            dst,
+            texture,
+            x,
+            y,
+            z,
+            ty,
+        } => {
+            let tex_handle = ectx
+                .slot_to_const
+                .get(texture)
+                .ok_or_else(|| format!("texture slot {} not bound", texture))?
+                .0
+                .into_int_value();
+
+            let x_val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, x.0)?;
+            let y_val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, y.0)?;
+            let z_val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, z.0)?;
+
+            let result = ectx.intrinsics.texture_sample_3d(
+                ectx.context,
+                ectx.module,
+                ectx.builder,
+                tex_handle,
+                x_val,
+                y_val,
+                z_val,
+            );
+
+            let f32_type = ectx.context.f32_type();
+            let vec4_ty = f32_type.vec_type(4);
+            let alloca = ectx
+                .builder
+                .build_alloca(vec4_ty, &format!("r{}", dst.0))
+                .map_err(|e| e.to_string())?;
+            ectx.builder
+                .build_store(alloca, result)
+                .map_err(|e| e.to_string())?;
+            ectx.reg_slots.insert(dst.0, (alloca, *ty));
         }
-        KernelOp::TextureWrite2D { .. } => {
-            return Err("TextureWrite2D not yet implemented in LLVM emitter".into());
+
+        KernelOp::TextureWrite2D {
+            texture,
+            x,
+            y,
+            value,
+            ty: _,
+        } => {
+            let tex_handle = ectx
+                .slot_to_const
+                .get(texture)
+                .ok_or_else(|| format!("texture slot {} not bound", texture))?
+                .0
+                .into_int_value();
+
+            let x_val = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, x)?;
+            let y_val = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, y)?;
+
+            // Load the vec4 value from the source register
+            let (val_ptr, val_scalar) = ectx.reg_slots.get(&value.0).ok_or_else(|| {
+                format!("register r{} not allocated (TextureWrite2D value)", value.0)
+            })?;
+            let val_scalar_llvm = scalar_to_llvm_type(ectx.context, val_scalar);
+            let vec4_ty = make_vec_type(val_scalar_llvm, 4);
+            let vec_val = ectx
+                .builder
+                .build_load(vec4_ty, *val_ptr, "tex_write_val")
+                .map_err(|e| e.to_string())?;
+
+            ectx.intrinsics.texture_write_2d(
+                ectx.context,
+                ectx.module,
+                ectx.builder,
+                tex_handle,
+                x_val,
+                y_val,
+                vec_val,
+            );
         }
-        KernelOp::TextureSize { .. } => {
-            return Err("TextureSize not yet implemented in LLVM emitter".into());
+
+        KernelOp::TextureSize {
+            dst_w,
+            dst_h,
+            texture,
+        } => {
+            let tex_handle = ectx
+                .slot_to_const
+                .get(texture)
+                .ok_or_else(|| format!("texture slot {} not bound", texture))?
+                .0
+                .into_int_value();
+
+            let (width, height) = ectx.intrinsics.texture_size_2d(
+                ectx.context,
+                ectx.module,
+                ectx.builder,
+                tex_handle,
+            );
+
+            reg_store(
+                ectx.context,
+                ectx.builder,
+                ectx.reg_slots,
+                dst_w.0,
+                width.into(),
+                ScalarType::U32,
+            )?;
+            reg_store(
+                ectx.context,
+                ectx.builder,
+                ectx.reg_slots,
+                dst_h.0,
+                height.into(),
+                ScalarType::U32,
+            )?;
         }
         KernelOp::Dispatch { .. } => {
             return Err("dynamic parallelism (Dispatch) not supported".into());

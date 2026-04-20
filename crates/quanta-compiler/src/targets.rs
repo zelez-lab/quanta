@@ -7,7 +7,7 @@ pub mod spirv;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::values::IntValue;
+use inkwell::values::{BasicValueEnum, IntValue};
 
 /// Which GPU target to compile for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ impl GpuTarget {
 }
 
 /// Target-specific intrinsic helpers.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub trait GpuIntrinsics<'ctx> {
     fn thread_id_x(
         &self,
@@ -119,4 +119,51 @@ pub trait GpuIntrinsics<'ctx> {
         builder: &Builder<'ctx>,
         predicate: IntValue<'ctx>,
     ) -> IntValue<'ctx>;
+
+    // Texture intrinsics — resolved by the target-specific backend (PTX/AMD/SPIR-V).
+    // All targets use extern function stubs; the driver/linker binds them to hardware ops.
+
+    /// Sample a 2D texture at floating-point coordinates. Returns vec4 (<4 x float>).
+    fn texture_sample_2d(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        texture_handle: IntValue<'ctx>,
+        x: BasicValueEnum<'ctx>,
+        y: BasicValueEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx>;
+
+    /// Sample a 3D texture at floating-point coordinates. Returns vec4 (<4 x float>).
+    fn texture_sample_3d(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        texture_handle: IntValue<'ctx>,
+        x: BasicValueEnum<'ctx>,
+        y: BasicValueEnum<'ctx>,
+        z: BasicValueEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx>;
+
+    /// Write a vec4 value to a 2D texture at integer coordinates.
+    fn texture_write_2d(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        texture_handle: IntValue<'ctx>,
+        x: IntValue<'ctx>,
+        y: IntValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
+    );
+
+    /// Query the dimensions of a 2D texture. Returns (width, height) as i32 pair.
+    fn texture_size_2d(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        texture_handle: IntValue<'ctx>,
+    ) -> (IntValue<'ctx>, IntValue<'ctx>);
 }
