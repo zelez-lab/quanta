@@ -7,6 +7,7 @@
 mod compute;
 mod memory;
 mod render;
+mod sync;
 mod texture;
 
 use alloc::boxed::Box;
@@ -14,8 +15,8 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::{
-    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture,
-    TextureDesc, Vendor, Wave,
+    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
+    Texture, TextureDesc, Vendor, Wave,
 };
 use ash::vk;
 use std::collections::HashMap;
@@ -332,6 +333,30 @@ impl GpuDevice for VulkanDevice {
 
     fn pulse_poll(&self, pulse: &Pulse) -> bool {
         pulse.is_done()
+    }
+
+    // === Barriers ===
+
+    fn barrier(&self) -> Result<(), QuantaError> {
+        self.barrier_impl()
+    }
+
+    fn barrier_buffer(
+        &self,
+        handle: u64,
+        from: ResourceState,
+        to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        self.barrier_buffer_impl(handle, from, to)
+    }
+
+    fn barrier_texture(
+        &self,
+        texture: &Texture,
+        from: ResourceState,
+        to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        self.barrier_texture_impl(texture, from, to)
     }
 }
 

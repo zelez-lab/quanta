@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use crate::{
-    Caps, FieldUsage, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc, Timeline,
-    Wave,
+    Caps, FieldUsage, Pipeline, Pulse, QuantaError, RenderPass, ResourceState, Texture,
+    TextureDesc, Timeline, Wave,
 };
 
 /// Core trait — every GPU driver implements this.
@@ -123,6 +123,42 @@ pub trait GpuDevice {
         Err(QuantaError::invalid_param(
             "timeline semaphores not supported",
         ))
+    }
+
+    // === Barriers ===
+
+    /// Full pipeline barrier — wait for all prior GPU work to complete.
+    ///
+    /// This is a heavyweight synchronization point. Prefer `barrier_buffer`
+    /// or `barrier_texture` for fine-grained transitions when possible.
+    fn barrier(&self) -> Result<(), QuantaError> {
+        Ok(()) // default no-op for drivers that don't need explicit barriers
+    }
+
+    /// Transition a buffer between resource states.
+    ///
+    /// On Vulkan, this inserts a `VkBufferMemoryBarrier2` with the appropriate
+    /// stage and access masks. On Metal, this is a no-op (hazard tracking).
+    fn barrier_buffer(
+        &self,
+        _handle: u64,
+        _from: ResourceState,
+        _to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    /// Transition a texture (image) between resource states.
+    ///
+    /// On Vulkan, this inserts a `VkImageMemoryBarrier2` with the appropriate
+    /// layout transition. On Metal, this is a no-op (hazard tracking).
+    fn barrier_texture(
+        &self,
+        _texture: &Texture,
+        _from: ResourceState,
+        _to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        Ok(())
     }
 
     // === Debug ===

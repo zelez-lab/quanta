@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 
 use crate::{
     Caps, Field, FieldUsage, Format, GpuDevice, Pipeline, PipelineDesc, Pulse, QuantaError,
-    RenderPass, Texture, TextureDesc, TextureUsage, Timeline, Wave,
+    RenderPass, ResourceState, Texture, TextureDesc, TextureUsage, Timeline, Wave,
 };
 
 /// A GPU device handle. The main entry point for Quanta.
@@ -286,6 +286,42 @@ impl Gpu {
     /// Block until a timeline reaches at least the given value.
     pub fn timeline_wait(&self, timeline: &Timeline, value: u64) -> Result<(), QuantaError> {
         self.inner.timeline_wait(timeline, value)
+    }
+
+    // === Barriers ===
+
+    /// Full pipeline barrier — wait for all prior GPU work to complete.
+    ///
+    /// This is a heavyweight synchronization point. Prefer `barrier_buffer`
+    /// or `barrier_texture` for fine-grained resource transitions.
+    pub fn barrier(&self) -> Result<(), QuantaError> {
+        self.inner.barrier()
+    }
+
+    /// Transition a buffer between resource states.
+    ///
+    /// On Vulkan, this inserts pipeline barriers with correct stage/access masks.
+    /// On Metal, this is a no-op (automatic hazard tracking).
+    pub fn barrier_buffer<T: Copy>(
+        &self,
+        field: &Field<T>,
+        from: ResourceState,
+        to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        self.inner.barrier_buffer(field.handle(), from, to)
+    }
+
+    /// Transition a texture between resource states.
+    ///
+    /// On Vulkan, this inserts an image layout transition.
+    /// On Metal, this is a no-op (automatic hazard tracking).
+    pub fn barrier_texture(
+        &self,
+        texture: &Texture,
+        from: ResourceState,
+        to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        self.inner.barrier_texture(texture, from, to)
     }
 
     // === Queries ===

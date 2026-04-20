@@ -15,8 +15,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
-    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture,
-    TextureDesc, Vendor, Wave,
+    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
+    Texture, TextureDesc, Vendor, Wave,
 };
 use metal as mtl;
 use std::collections::HashMap;
@@ -177,6 +177,38 @@ impl GpuDevice for MetalDevice {
 
     fn pulse_poll(&self, pulse: &Pulse) -> bool {
         pulse.is_done()
+    }
+
+    // === Barriers ===
+
+    fn barrier(&self) -> Result<(), QuantaError> {
+        // Metal handles most barriers implicitly via hazard tracking.
+        // A full barrier submits an empty command buffer and waits for completion,
+        // ensuring all prior GPU work has finished.
+        let cmd = self.queue.new_command_buffer();
+        cmd.commit();
+        cmd.wait_until_completed();
+        Ok(())
+    }
+
+    fn barrier_buffer(
+        &self,
+        _handle: u64,
+        _from: ResourceState,
+        _to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        // Metal's hazard tracking handles buffer state transitions automatically.
+        Ok(())
+    }
+
+    fn barrier_texture(
+        &self,
+        _texture: &Texture,
+        _from: ResourceState,
+        _to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        // Metal's hazard tracking handles texture layout transitions automatically.
+        Ok(())
     }
 }
 

@@ -154,6 +154,32 @@ pub enum Vendor {
     Unknown,
 }
 
+/// Resource state for barrier transitions.
+///
+/// Tracks how a resource is being used so the driver can insert
+/// the correct synchronization between pipeline stages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceState {
+    /// General-purpose layout (suboptimal but always valid).
+    General,
+    /// Written by a compute shader.
+    ComputeWrite,
+    /// Read by a compute shader.
+    ComputeRead,
+    /// Used as a render target (color attachment).
+    RenderTarget,
+    /// Used as a depth/stencil attachment.
+    DepthStencil,
+    /// Read by a shader (sampled image or storage buffer read).
+    ShaderRead,
+    /// Source of a transfer/copy operation.
+    TransferSrc,
+    /// Destination of a transfer/copy operation.
+    TransferDst,
+    /// Ready for presentation to a swapchain.
+    Present,
+}
+
 /// Kernel binary format — compiled output from #[quanta::kernel].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelFormat {
