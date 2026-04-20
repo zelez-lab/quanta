@@ -60,3 +60,24 @@ pub struct Timeline {
     #[allow(dead_code)]
     pub(crate) handle: u64,
 }
+
+/// A set of GPU timestamp query slots.
+///
+/// Write timestamps at specific pipeline points, then read them
+/// to measure GPU execution time.
+pub struct TimestampQuery {
+    pub(crate) handle: u64,
+    pub(crate) count: u32,
+}
+
+impl TimestampQuery {
+    /// The underlying query set handle.
+    pub fn handle(&self) -> u64 {
+        self.handle
+    }
+
+    /// Number of timestamp slots in this query set.
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}

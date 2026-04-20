@@ -4,8 +4,9 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::{
-    Caps, Field, FieldUsage, Format, GpuDevice, Pipeline, PipelineDesc, Pulse, QuantaError,
-    RenderPass, ResourceState, Texture, TextureDesc, TextureUsage, Timeline, Wave,
+    Caps, Field, FieldUsage, Format, GpuDevice, MappedField, Pipeline, PipelineDesc, Pulse,
+    QuantaError, RenderPass, ResourceState, Texture, TextureDesc, TextureUsage, Timeline,
+    TimestampQuery, Wave,
 };
 
 /// A GPU device handle. The main entry point for Quanta.
@@ -123,6 +124,24 @@ impl Gpu {
             .field_copy_bytes(dst.handle(), src.handle(), size)
     }
 
+    /// Create a GPU buffer permanently mapped into CPU address space.
+    ///
+    /// Enables zero-copy writes: data written to the returned `MappedField`
+    /// is immediately visible to the GPU (on unified memory architectures)
+    /// or automatically synchronized on the next dispatch.
+    pub fn field_mapped<T: Copy>(&self, count: usize) -> Result<MappedField<T>, QuantaError> {
+        let size = count * size_of::<T>();
+        let usage = FieldUsage::default_compute();
+        let (handle, ptr) = self.inner.field_create_mapped(size, usage)?;
+        Ok(MappedField {
+            handle,
+            ptr,
+            count,
+            drop_fn: None,
+            _marker: PhantomData,
+        })
+    }
+
     // === Textures ===
 
     /// Create a texture from a descriptor (full control).
@@ -193,6 +212,19 @@ impl Gpu {
     /// Generate mipmaps for a texture.
     pub fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError> {
         self.inner.generate_mipmaps(texture)
+    }
+
+    /// Resolve an MSAA texture to a single-sample texture.
+    ///
+    /// The source must be a multi-sampled render target, and the destination
+    /// must be a single-sample texture of the same dimensions and format.
+    pub fn resolve_texture(
+        &self,
+        msaa_src: &Texture,
+        resolve_dst: &Texture,
+    ) -> Result<(), QuantaError> {
+        self.inner
+            .resolve_texture(msaa_src.handle(), resolve_dst.handle())
     }
 
     // === Compute ===
@@ -351,6 +383,33 @@ impl Gpu {
     /// Read timestamp values from a query set.
     pub fn timestamp_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
         self.inner.timestamp_query_read(handle)
+    }
+
+    /// Create a `TimestampQuery` object wrapping a query set handle.
+    pub fn timestamp_query(&self, count: u32) -> Result<TimestampQuery, QuantaError> {
+        let handle = self.inner.timestamp_query_create(count)?;
+        Ok(TimestampQuery { handle, count })
+    }
+
+    /// Write a timestamp at the given index in the query set.
+    pub fn write_timestamp(&self, query: &TimestampQuery, index: u32) -> Result<(), QuantaError> {
+        self.inner.timestamp_write(query.handle, index)
+    }
+
+    /// Read all timestamps from a query set.
+    pub fn read_timestamps(&self, query: &TimestampQuery) -> Result<Vec<u64>, QuantaError> {
+        self.inner.timestamp_query_read(query.handle)
+    }
+
+    /// Convert raw timestamp ticks to nanoseconds using the device frequency.
+    pub fn timestamp_to_ns(&self, ticks: u64) -> u64 {
+        let freq = self.inner.timestamp_frequency();
+        if freq == 0 || freq == 1_000_000_000 {
+            ticks
+        } else {
+            // ticks * 1_000_000_000 / freq, but avoid overflow with u128
+            ((ticks as u128 * 1_000_000_000) / freq as u128) as u64
+        }
     }
 
     // === Hot reload ===

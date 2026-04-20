@@ -11,10 +11,10 @@ pub mod wave;
 
 pub use device::GpuDevice;
 pub use error::{QuantaError, QuantaErrorKind};
-pub use field::Field;
+pub use field::{Field, MappedField};
 pub use gpu::Gpu;
 pub use pipeline::*;
-pub use pulse::{Pulse, Timeline};
+pub use pulse::{Pulse, Timeline, TimestampQuery};
 pub use render_pass::*;
 pub use texture::*;
 pub use types::*;

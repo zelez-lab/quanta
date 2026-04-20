@@ -180,6 +180,41 @@ pub enum ResourceState {
     Present,
 }
 
+/// Load operation for a render target attachment.
+#[derive(Debug, Clone, Copy)]
+pub enum LoadOp {
+    /// Clear the attachment to a specific color at the start.
+    Clear(Color),
+    /// Preserve existing contents.
+    Load,
+    /// Contents are undefined — driver may optimize away a load.
+    DontCare,
+}
+
+/// Store operation for a render target attachment.
+#[derive(Debug, Clone, Copy)]
+pub enum StoreOp {
+    /// Write results back to memory.
+    Store,
+    /// Results are not needed — driver may discard.
+    DontCare,
+    /// Resolve MSAA samples to the given texture handle.
+    Resolve(u64),
+}
+
+/// Comparison operation for depth/stencil testing and comparison samplers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareOp {
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always,
+}
+
 /// Kernel binary format — compiled output from #[quanta::kernel].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelFormat {

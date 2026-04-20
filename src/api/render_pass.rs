@@ -2,13 +2,41 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::{Color, Field, Pipeline, Texture};
+use crate::{Color, CompareOp, Field, LoadOp, Pipeline, StoreOp, Texture};
+
+/// A color attachment target with load/store operations.
+pub struct ColorTarget {
+    /// Texture handle for this color attachment.
+    pub texture: u64,
+    /// What to do with existing contents at pass start.
+    pub load_op: LoadOp,
+    /// What to do with results at pass end.
+    pub store_op: StoreOp,
+}
+
+/// A depth/stencil attachment target with load/store operations.
+pub struct DepthTarget {
+    /// Texture handle for the depth/stencil attachment.
+    pub texture: u64,
+    /// Depth load operation.
+    pub load_op: LoadOp,
+    /// Depth store operation.
+    pub store_op: StoreOp,
+    /// Stencil load operation.
+    pub stencil_load_op: LoadOp,
+    /// Stencil store operation.
+    pub stencil_store_op: StoreOp,
+}
 
 /// An active render pass — record draw commands, then submit.
 #[allow(dead_code)]
 pub struct RenderPass {
     pub(crate) handle: u64,
     pub(crate) ops: Vec<RenderOp>,
+    /// Color attachment targets (MRT support).
+    pub(crate) color_targets: Vec<ColorTarget>,
+    /// Depth/stencil attachment target.
+    pub(crate) depth_target: Option<DepthTarget>,
 }
 
 #[allow(dead_code)]
@@ -104,6 +132,8 @@ pub struct SamplerDesc {
     pub address_u: AddressMode,
     pub address_v: AddressMode,
     pub max_anisotropy: u8,
+    /// Comparison function for depth/shadow samplers. None = regular sampler.
+    pub compare: Option<CompareOp>,
 }
 
 impl Default for SamplerDesc {
@@ -115,6 +145,7 @@ impl Default for SamplerDesc {
             address_u: AddressMode::ClampToEdge,
             address_v: AddressMode::ClampToEdge,
             max_anisotropy: 1,
+            compare: None,
         }
     }
 }
@@ -339,5 +370,18 @@ impl RenderPass {
             min_depth,
             max_depth,
         });
+    }
+
+    // === Multiple Render Targets (MRT) ===
+
+    /// Set the color attachment targets for this render pass.
+    /// Enables multiple render targets (MRT) — drivers read these when executing.
+    pub fn set_color_targets(&mut self, targets: Vec<ColorTarget>) {
+        self.color_targets = targets;
+    }
+
+    /// Set the depth/stencil attachment target for this render pass.
+    pub fn set_depth_target(&mut self, target: DepthTarget) {
+        self.depth_target = Some(target);
     }
 }

@@ -218,6 +218,8 @@ impl VulkanDevice {
         Ok(RenderPass {
             handle: target.handle(),
             ops: Vec::new(),
+            color_targets: Vec::new(),
+            depth_target: None,
         })
     }
 

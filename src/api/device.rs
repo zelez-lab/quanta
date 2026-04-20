@@ -22,6 +22,26 @@ pub trait GpuDevice {
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError>;
     fn field_copy_bytes(&self, dst: u64, src: u64, size: usize) -> Result<(), QuantaError>;
 
+    /// Map a GPU buffer into CPU address space for direct read/write access.
+    fn field_map(&self, _handle: u64, _size: usize) -> Result<*mut u8, QuantaError> {
+        Err(QuantaError::invalid_param("mapped buffers not supported"))
+    }
+
+    /// Unmap a previously mapped GPU buffer.
+    fn field_unmap(&self, _handle: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("mapped buffers not supported"))
+    }
+
+    /// Create a buffer that is permanently mapped into CPU address space.
+    /// Returns (handle, pointer) — the pointer remains valid until the buffer is freed.
+    fn field_create_mapped(
+        &self,
+        _size: usize,
+        _usage: FieldUsage,
+    ) -> Result<(u64, *mut u8), QuantaError> {
+        Err(QuantaError::invalid_param("mapped buffers not supported"))
+    }
+
     // === Textures ===
 
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError>;
@@ -80,9 +100,19 @@ pub trait GpuDevice {
         Err(QuantaError::invalid_param("timestamps not supported"))
     }
 
+    /// Write a timestamp at the given index in the query set.
+    fn timestamp_write(&self, _query_handle: u64, _index: u32) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("timestamps not supported"))
+    }
+
     /// Read timestamp values from a query set.
     fn timestamp_query_read(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
         Err(QuantaError::invalid_param("timestamps not supported"))
+    }
+
+    /// GPU timestamp counter frequency in Hz. Default: 1 GHz (timestamps in nanoseconds).
+    fn timestamp_frequency(&self) -> u64 {
+        1_000_000_000
     }
 
     // === Async compute ===
@@ -159,6 +189,13 @@ pub trait GpuDevice {
         _to: ResourceState,
     ) -> Result<(), QuantaError> {
         Ok(())
+    }
+
+    // === MSAA Resolve ===
+
+    /// Resolve an MSAA texture to a single-sample texture.
+    fn resolve_texture(&self, _src_handle: u64, _dst_handle: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("MSAA resolve not supported"))
     }
 
     // === Debug ===
