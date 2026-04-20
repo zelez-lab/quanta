@@ -71,6 +71,7 @@ struct VkComputePipeline {
 struct VkRenderPipeline {
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
+    render_pass: vk::RenderPass,
 }
 
 impl VulkanDevice {
@@ -355,6 +356,7 @@ impl Drop for VulkanDevice {
             for (_, rp) in self.render_pipelines.lock().unwrap().drain() {
                 self.device.destroy_pipeline(rp.pipeline, None);
                 self.device.destroy_pipeline_layout(rp.layout, None);
+                self.device.destroy_render_pass(rp.render_pass, None);
             }
 
             // Free pooled command buffers before destroying the pool.

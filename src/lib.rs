@@ -59,7 +59,9 @@ pub use kernel::{GpuType, KernelBinary};
 
 // Re-export proc macros
 pub use quanta_macros::device;
+pub use quanta_macros::fragment;
 pub use quanta_macros::kernel;
+pub use quanta_macros::vertex;
 
 /// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
 #[cfg(feature = "std")]

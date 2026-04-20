@@ -171,6 +171,100 @@ pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
+/// Mark a function as a vertex shader.
+///
+/// ```ignore
+/// #[quanta::vertex]
+/// fn transform(
+///     pos: Vec3,
+///     normal: Vec3,
+///     mvp: &Mat4,
+/// ) -> Vec4 {
+///     mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
+/// }
+/// ```
+///
+/// Vertex shaders are paired with fragment shaders to form a render pipeline.
+/// The macro captures the function source and emits a constant
+/// `__QUANTA_VERTEX_{NAME_UPPERCASE}` for the driver to compile at pipeline
+/// creation time.
+#[proc_macro_attribute]
+pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+
+    if matches!(func.sig.output, syn::ReturnType::Default) {
+        return syn::Error::new_spanned(
+            &func.sig.ident,
+            "vertex shader must have a return type (clip-space position)",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let func_name = &func.sig.ident;
+    let source = func.to_token_stream().to_string();
+    let const_name = syn::Ident::new(
+        &format!("__QUANTA_VERTEX_{}", func_name.to_string().to_uppercase()),
+        func_name.span(),
+    );
+
+    let expanded = quote! {
+        pub const #const_name: &str = #source;
+
+        pub fn #func_name() -> &'static str {
+            #source
+        }
+    };
+    expanded.into()
+}
+
+/// Mark a function as a fragment shader.
+///
+/// ```ignore
+/// #[quanta::fragment]
+/// fn shade(
+///     uv: Vec2,
+///     color: Vec4,
+///     albedo: &Texture2D,
+/// ) -> Vec4 {
+///     albedo.sample(uv) * color
+/// }
+/// ```
+///
+/// Fragment shaders receive interpolated outputs from the vertex stage and
+/// produce a color per fragment. The macro captures the function source and
+/// emits a constant `__QUANTA_FRAGMENT_{NAME_UPPERCASE}` for the driver to
+/// compile at pipeline creation time.
+#[proc_macro_attribute]
+pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+
+    if matches!(func.sig.output, syn::ReturnType::Default) {
+        return syn::Error::new_spanned(
+            &func.sig.ident,
+            "fragment shader must have a return type (output color)",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let func_name = &func.sig.ident;
+    let source = func.to_token_stream().to_string();
+    let const_name = syn::Ident::new(
+        &format!("__QUANTA_FRAGMENT_{}", func_name.to_string().to_uppercase()),
+        func_name.span(),
+    );
+
+    let expanded = quote! {
+        pub const #const_name: &str = #source;
+
+        pub fn #func_name() -> &'static str {
+            #source
+        }
+    };
+    expanded.into()
+}
+
 /// Parse `opt = "O2"` from the attribute.
 /// Default: 3 (O3).
 fn parse_opt_level(attr: TokenStream) -> u8 {
