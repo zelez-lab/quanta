@@ -951,12 +951,16 @@ impl GpuDevice for VulkanDevice {
     // === Compute ===
 
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
-        // kernel is WGSL source — convert to SPIR-V via naga
-        let wgsl = std::str::from_utf8(kernel)
-            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in WGSL source"))?;
-
-        let spirv_words =
-            super::spirv::wgsl_to_spirv(wgsl).map_err(QuantaError::compilation_failed)?;
+        // The compiler produces SPIR-V binary directly — interpret bytes as u32 words.
+        if kernel.len() % 4 != 0 {
+            return Err(QuantaError::compilation_failed(
+                "SPIR-V binary length must be a multiple of 4",
+            ));
+        }
+        let spirv_words: Vec<u32> = kernel
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
 
         // Create shader module
         let module_info = vk::ShaderModuleCreateInfo::default().code(&spirv_words);
