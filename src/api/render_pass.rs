@@ -219,7 +219,7 @@ impl RenderPass {
         });
     }
 
-    /// Draw instanced (Dija's primary draw call).
+    /// Draw instanced geometry.
     pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32) {
         self.ops.push(RenderOp::Draw {
             vertex_count,

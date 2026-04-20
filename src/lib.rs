@@ -3,8 +3,8 @@
 //! Quarks, protons, nuclei, fields, waves, pulses.
 //!
 //! One API (~20 functions), any GPU. Drivers are thin translation layers
-//! to platform-specific backends (compiled drivers on Zelez, Metal on macOS,
-//! Vulkan on Linux/Windows, WebGPU in browsers).
+//! to platform-specific backends (Metal on macOS/iOS, Vulkan on Linux/Android/Windows,
+//! WebGPU in browsers).
 //!
 //! ## Naming (subatomic physics)
 //!
@@ -91,9 +91,6 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
 
     #[cfg(feature = "vulkan")]
     devs.extend(driver::vulkan::discover());
-
-    #[cfg(feature = "software")]
-    devs.extend(driver::software::discover());
 
     devs.into_iter().map(maybe_validate).map(Gpu::new).collect()
 }

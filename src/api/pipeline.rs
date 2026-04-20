@@ -248,7 +248,7 @@ impl BlendState {
         op_alpha: BlendOp::Add,
     };
 
-    /// Premultiplied alpha blending (what Dija uses).
+    /// Premultiplied alpha blending.
     pub const PREMULTIPLIED_ALPHA: Self = Self {
         enabled: true,
         src_rgb: BlendFactor::One,
