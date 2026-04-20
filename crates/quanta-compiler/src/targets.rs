@@ -85,4 +85,38 @@ pub trait GpuIntrinsics<'ctx> {
     ) -> IntValue<'ctx>;
     fn barrier(&self, context: &'ctx Context, module: &Module<'ctx>, builder: &Builder<'ctx>);
     fn kernel_calling_convention(&self) -> u32;
+
+    // Wave/subgroup intrinsics
+    fn wave_shuffle(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        src: IntValue<'ctx>,
+        lane_delta: IntValue<'ctx>,
+    ) -> IntValue<'ctx>;
+
+    fn wave_ballot(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        predicate: IntValue<'ctx>,
+    ) -> IntValue<'ctx>;
+
+    fn wave_any(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        predicate: IntValue<'ctx>,
+    ) -> IntValue<'ctx>;
+
+    fn wave_all(
+        &self,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        predicate: IntValue<'ctx>,
+    ) -> IntValue<'ctx>;
 }

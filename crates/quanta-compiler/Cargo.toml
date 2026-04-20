@@ -1,9 +1,13 @@
 [package]
 name = "quanta-compiler"
-version = "0.1.0"
-edition = "2024"
-description = "Quanta kernel compiler — KernelIR to GPU ISA (AMD, NVIDIA, SPIR-V, MSL)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Quanta kernel compiler — KernelIR to GPU ISA (AMD GCN, NVIDIA PTX, SPIR-V, MSL, WGSL)"
+keywords = ["gpu", "compiler", "shader", "llvm", "ptx"]
+categories = ["compilers", "command-line-utilities"]
 
 [dependencies]
-quanta-ir = { path = "../quanta-ir" }
+quanta-ir.workspace = true
 inkwell = { version = "0.9", features = ["llvm22-1-force-dynamic"] }

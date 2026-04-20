@@ -447,6 +447,39 @@ fn emit_msl_op(
                 val.0
             ));
         }
+        WaveShuffle {
+            dst,
+            src,
+            lane_delta,
+            ty,
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_shuffle_xor(r{}, r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0,
+                lane_delta.0
+            ));
+        }
+        WaveBallot { dst, predicate } => {
+            out.push_str(&format!(
+                "{}uint r{} = simd_ballot(r{} != 0).x;\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        WaveAny { dst, predicate } => {
+            out.push_str(&format!(
+                "{}uint r{} = uint(simd_any(r{} != 0));\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        WaveAll { dst, predicate } => {
+            out.push_str(&format!(
+                "{}uint r{} = uint(simd_all(r{} != 0));\n",
+                pad, dst.0, predicate.0
+            ));
+        }
         _ => {
             out.push_str(&format!("{}/* TODO: {:?} */\n", pad, op));
         }
@@ -753,6 +786,35 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
             out.push_str(&format!(
                 "{}shared_{}[r{}] = r{};\n",
                 pad, id, index.0, src.0
+            ));
+        }
+        WaveShuffle {
+            dst,
+            src,
+            lane_delta,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupShuffleXor(r{}, r{});\n",
+                pad, dst.0, src.0, lane_delta.0
+            ));
+        }
+        WaveBallot { dst, predicate } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupBallot(r{} != 0u);\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        WaveAny { dst, predicate } => {
+            out.push_str(&format!(
+                "{}let r{} = select(0u, 1u, subgroupAny(r{} != 0u));\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        WaveAll { dst, predicate } => {
+            out.push_str(&format!(
+                "{}let r{} = select(0u, 1u, subgroupAll(r{} != 0u));\n",
+                pad, dst.0, predicate.0
             ));
         }
         _ => {

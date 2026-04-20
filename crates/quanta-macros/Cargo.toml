@@ -1,8 +1,12 @@
 [package]
 name = "quanta-macros"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Proc macros for Quanta GPU kernels — #[quanta::kernel]"
+keywords = ["gpu", "compute", "kernel", "macro", "shader"]
+categories = ["graphics", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
@@ -11,4 +15,4 @@ proc-macro = true
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
-quanta-ir = { path = "../quanta-ir" }
+quanta-ir.workspace = true

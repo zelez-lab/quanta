@@ -7,7 +7,7 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, PointerValue};
-use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use inkwell::{AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate};
 
 use crate::targets::{GpuIntrinsics, GpuTarget};
 use quanta_ir::*;
@@ -536,23 +536,360 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             // Break is handled at the Loop level — no-op here
         }
 
-        KernelOp::AtomicOp { .. } => {
-            return Err("AtomicOp not yet implemented in LLVM emitter".into());
+        KernelOp::AtomicOp {
+            dst,
+            field,
+            index,
+            val,
+            op,
+            ty,
+        } => {
+            if let Some((ptr, scalar_ty)) = ectx.slot_to_arg.get(field) {
+                let idx = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, index)?;
+                let elem_ty = scalar_to_llvm_type(ectx.context, scalar_ty);
+                let gep = unsafe {
+                    ectx.builder
+                        .build_gep(elem_ty, *ptr, &[idx], "atomic_ptr")
+                        .map_err(|e| e.to_string())?
+                };
+
+                let is_float = is_float_type(ty);
+
+                if *op == quanta_ir::AtomicOp::CompareExchange {
+                    // CompareExchange via atomicrmw is not standard; use cmpxchg.
+                    // For AtomicOp::CompareExchange, `val` holds expected, but we
+                    // don't have a separate desired. Treat as exchange (xchg) instead.
+                    // The proper CAS path is KernelOp::AtomicCas.
+                    let value = reg_load(ectx.context, ectx.builder, ectx.reg_slots, val.0)?;
+                    if is_float {
+                        let int_ty = match ty {
+                            ScalarType::F32 => ectx.context.i32_type(),
+                            ScalarType::F64 => ectx.context.i64_type(),
+                            _ => ectx.context.i16_type(), // F16
+                        };
+                        let val_as_int = ectx
+                            .builder
+                            .build_bit_cast(value, int_ty, "atomic_f2i")
+                            .map_err(|e| e.to_string())?
+                            .into_int_value();
+                        let result = ectx
+                            .builder
+                            .build_atomicrmw(
+                                AtomicRMWBinOp::Xchg,
+                                gep,
+                                val_as_int,
+                                AtomicOrdering::Monotonic,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        let result_float = ectx
+                            .builder
+                            .build_bit_cast(result, elem_ty, "atomic_i2f")
+                            .map_err(|e| e.to_string())?;
+                        reg_store(
+                            ectx.context,
+                            ectx.builder,
+                            ectx.reg_slots,
+                            dst.0,
+                            result_float,
+                            *ty,
+                        )?;
+                    } else {
+                        let val_int = value.into_int_value();
+                        let result = ectx
+                            .builder
+                            .build_atomicrmw(
+                                AtomicRMWBinOp::Xchg,
+                                gep,
+                                val_int,
+                                AtomicOrdering::Monotonic,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        reg_store(
+                            ectx.context,
+                            ectx.builder,
+                            ectx.reg_slots,
+                            dst.0,
+                            result.into(),
+                            *ty,
+                        )?;
+                    }
+                } else if is_float {
+                    // Float atomics: use FAdd/FSub for add/sub, bitcast for others
+                    let value = reg_load(ectx.context, ectx.builder, ectx.reg_slots, val.0)?;
+                    let int_ty = match ty {
+                        ScalarType::F32 => ectx.context.i32_type(),
+                        ScalarType::F64 => ectx.context.i64_type(),
+                        _ => ectx.context.i16_type(), // F16
+                    };
+
+                    match op {
+                        quanta_ir::AtomicOp::Add | quanta_ir::AtomicOp::Sub => {
+                            // inkwell's build_atomicrmw only takes IntValue, so for
+                            // float add/sub we bitcast to int, issue the op, bitcast back.
+                            // LLVM itself supports atomicrmw fadd/fsub on float types,
+                            // but inkwell's Rust API restricts to IntValue.
+                            let val_as_int = ectx
+                                .builder
+                                .build_bit_cast(value, int_ty, "atomic_f2i")
+                                .map_err(|e| e.to_string())?
+                                .into_int_value();
+                            let rmw_op = if *op == quanta_ir::AtomicOp::Add {
+                                AtomicRMWBinOp::FAdd
+                            } else {
+                                AtomicRMWBinOp::FSub
+                            };
+                            let result = ectx
+                                .builder
+                                .build_atomicrmw(rmw_op, gep, val_as_int, AtomicOrdering::Monotonic)
+                                .map_err(|e| e.to_string())?;
+                            let result_float = ectx
+                                .builder
+                                .build_bit_cast(result, elem_ty, "atomic_i2f")
+                                .map_err(|e| e.to_string())?;
+                            reg_store(
+                                ectx.context,
+                                ectx.builder,
+                                ectx.reg_slots,
+                                dst.0,
+                                result_float,
+                                *ty,
+                            )?;
+                        }
+                        quanta_ir::AtomicOp::Exchange => {
+                            let val_as_int = ectx
+                                .builder
+                                .build_bit_cast(value, int_ty, "atomic_f2i")
+                                .map_err(|e| e.to_string())?
+                                .into_int_value();
+                            let result = ectx
+                                .builder
+                                .build_atomicrmw(
+                                    AtomicRMWBinOp::Xchg,
+                                    gep,
+                                    val_as_int,
+                                    AtomicOrdering::Monotonic,
+                                )
+                                .map_err(|e| e.to_string())?;
+                            let result_float = ectx
+                                .builder
+                                .build_bit_cast(result, elem_ty, "atomic_i2f")
+                                .map_err(|e| e.to_string())?;
+                            reg_store(
+                                ectx.context,
+                                ectx.builder,
+                                ectx.reg_slots,
+                                dst.0,
+                                result_float,
+                                *ty,
+                            )?;
+                        }
+                        _ => {
+                            return Err(format!("AtomicOp {:?} not supported on float types", op));
+                        }
+                    }
+                } else {
+                    // Integer atomics
+                    let value = reg_load(ectx.context, ectx.builder, ectx.reg_slots, val.0)?;
+                    let val_int = value.into_int_value();
+                    let is_signed = matches!(
+                        ty,
+                        ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
+                    );
+                    let rmw_op = match op {
+                        quanta_ir::AtomicOp::Add => AtomicRMWBinOp::Add,
+                        quanta_ir::AtomicOp::Sub => AtomicRMWBinOp::Sub,
+                        quanta_ir::AtomicOp::Min => {
+                            if is_signed {
+                                AtomicRMWBinOp::Min
+                            } else {
+                                AtomicRMWBinOp::UMin
+                            }
+                        }
+                        quanta_ir::AtomicOp::Max => {
+                            if is_signed {
+                                AtomicRMWBinOp::Max
+                            } else {
+                                AtomicRMWBinOp::UMax
+                            }
+                        }
+                        quanta_ir::AtomicOp::And => AtomicRMWBinOp::And,
+                        quanta_ir::AtomicOp::Or => AtomicRMWBinOp::Or,
+                        quanta_ir::AtomicOp::Xor => AtomicRMWBinOp::Xor,
+                        quanta_ir::AtomicOp::Exchange => AtomicRMWBinOp::Xchg,
+                        quanta_ir::AtomicOp::CompareExchange => unreachable!(),
+                    };
+                    let result = ectx
+                        .builder
+                        .build_atomicrmw(rmw_op, gep, val_int, AtomicOrdering::Monotonic)
+                        .map_err(|e| e.to_string())?;
+                    reg_store(
+                        ectx.context,
+                        ectx.builder,
+                        ectx.reg_slots,
+                        dst.0,
+                        result.into(),
+                        *ty,
+                    )?;
+                }
+            }
         }
-        KernelOp::AtomicCas { .. } => {
-            return Err("AtomicCas not yet implemented in LLVM emitter".into());
+
+        KernelOp::AtomicCas {
+            dst,
+            field,
+            index,
+            expected,
+            desired,
+            ty,
+        } => {
+            if let Some((ptr, scalar_ty)) = ectx.slot_to_arg.get(field) {
+                let idx = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, index)?;
+                let elem_ty = scalar_to_llvm_type(ectx.context, scalar_ty);
+                let gep = unsafe {
+                    ectx.builder
+                        .build_gep(elem_ty, *ptr, &[idx], "cas_ptr")
+                        .map_err(|e| e.to_string())?
+                };
+
+                let exp_val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, expected.0)?;
+                let des_val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, desired.0)?;
+
+                if is_float_type(ty) {
+                    // cmpxchg requires integer or pointer operands; bitcast floats
+                    let int_ty = match ty {
+                        ScalarType::F32 => ectx.context.i32_type(),
+                        ScalarType::F64 => ectx.context.i64_type(),
+                        _ => ectx.context.i16_type(), // F16
+                    };
+                    let exp_int = ectx
+                        .builder
+                        .build_bit_cast(exp_val, int_ty, "cas_exp_f2i")
+                        .map_err(|e| e.to_string())?
+                        .into_int_value();
+                    let des_int = ectx
+                        .builder
+                        .build_bit_cast(des_val, int_ty, "cas_des_f2i")
+                        .map_err(|e| e.to_string())?
+                        .into_int_value();
+                    let result = ectx
+                        .builder
+                        .build_cmpxchg(
+                            gep,
+                            exp_int,
+                            des_int,
+                            AtomicOrdering::Monotonic,
+                            AtomicOrdering::Monotonic,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let old_int = ectx
+                        .builder
+                        .build_extract_value(result, 0, "cas_old")
+                        .map_err(|e| e.to_string())?;
+                    let old_float = ectx
+                        .builder
+                        .build_bit_cast(old_int, elem_ty, "cas_i2f")
+                        .map_err(|e| e.to_string())?;
+                    reg_store(
+                        ectx.context,
+                        ectx.builder,
+                        ectx.reg_slots,
+                        dst.0,
+                        old_float,
+                        *ty,
+                    )?;
+                } else {
+                    let exp_int = exp_val.into_int_value();
+                    let des_int = des_val.into_int_value();
+                    let result = ectx
+                        .builder
+                        .build_cmpxchg(
+                            gep,
+                            exp_int,
+                            des_int,
+                            AtomicOrdering::Monotonic,
+                            AtomicOrdering::Monotonic,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let old_val = ectx
+                        .builder
+                        .build_extract_value(result, 0, "cas_old")
+                        .map_err(|e| e.to_string())?;
+                    reg_store(
+                        ectx.context,
+                        ectx.builder,
+                        ectx.reg_slots,
+                        dst.0,
+                        old_val,
+                        *ty,
+                    )?;
+                }
+            }
         }
-        KernelOp::WaveShuffle { .. } => {
-            return Err("WaveShuffle not yet implemented in LLVM emitter".into());
+        KernelOp::WaveShuffle {
+            dst,
+            src,
+            lane_delta,
+            ty,
+        } => {
+            let src_val = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, src)?;
+            let delta_val = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, lane_delta)?;
+            let result = ectx.intrinsics.wave_shuffle(
+                ectx.context,
+                ectx.module,
+                ectx.builder,
+                src_val,
+                delta_val,
+            );
+            reg_store(
+                ectx.context,
+                ectx.builder,
+                ectx.reg_slots,
+                dst.0,
+                result.into(),
+                *ty,
+            )?;
         }
-        KernelOp::WaveBallot { .. } => {
-            return Err("WaveBallot not yet implemented in LLVM emitter".into());
+        KernelOp::WaveBallot { dst, predicate } => {
+            let pred_val = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, predicate)?;
+            let result =
+                ectx.intrinsics
+                    .wave_ballot(ectx.context, ectx.module, ectx.builder, pred_val);
+            reg_store(
+                ectx.context,
+                ectx.builder,
+                ectx.reg_slots,
+                dst.0,
+                result.into(),
+                ScalarType::U32,
+            )?;
         }
-        KernelOp::WaveAny { .. } => {
-            return Err("WaveAny not yet implemented in LLVM emitter".into());
+        KernelOp::WaveAny { dst, predicate } => {
+            let pred_val = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, predicate)?;
+            let result =
+                ectx.intrinsics
+                    .wave_any(ectx.context, ectx.module, ectx.builder, pred_val);
+            reg_store(
+                ectx.context,
+                ectx.builder,
+                ectx.reg_slots,
+                dst.0,
+                result.into(),
+                ScalarType::U32,
+            )?;
         }
-        KernelOp::WaveAll { .. } => {
-            return Err("WaveAll not yet implemented in LLVM emitter".into());
+        KernelOp::WaveAll { dst, predicate } => {
+            let pred_val = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, predicate)?;
+            let result =
+                ectx.intrinsics
+                    .wave_all(ectx.context, ectx.module, ectx.builder, pred_val);
+            reg_store(
+                ectx.context,
+                ectx.builder,
+                ectx.reg_slots,
+                dst.0,
+                result.into(),
+                ScalarType::U32,
+            )?;
         }
         KernelOp::VecConstruct { .. } => {
             return Err("VecConstruct not yet implemented in LLVM emitter".into());

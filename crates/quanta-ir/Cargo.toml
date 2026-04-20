@@ -1,7 +1,11 @@
 [package]
 name = "quanta-ir"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Quanta kernel intermediate representation — shared between proc macro and compiler"
+keywords = ["gpu", "compiler", "ir", "shader", "kernel"]
+categories = ["compilers", "graphics"]
 
 [dependencies]

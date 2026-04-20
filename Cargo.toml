@@ -1,13 +1,22 @@
 [workspace]
 members = [".", "crates/quanta-ir", "crates/quanta-macros", "crates/quanta-compiler"]
 
-[package]
-name = "quanta"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "GPU compute and rendering API — quarks, protons, nuclei, fields"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/nicmusic/quanta"
+repository = "https://github.com/zelez-lab/quanta"
+
+[workspace.dependencies]
+quanta-ir = { path = "crates/quanta-ir", version = "0.1.0" }
+
+[package]
+name = "quanta"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GPU compute and rendering API — quarks, protons, nuclei, fields"
 keywords = ["gpu", "compute", "shader", "metal", "vulkan"]
 categories = ["graphics", "hardware-support"]
 readme = "README.md"
@@ -22,5 +31,5 @@ vulkan = ["dep:ash", "std"]
 metal = { version = "0.33.0", optional = true }
 objc = { version = "0.2.7", optional = true }
 ash = { version = "0.38.0", optional = true }
-quanta-macros = { path = "crates/quanta-macros" }
-quanta-ir = { path = "crates/quanta-ir" }
+quanta-macros = { path = "crates/quanta-macros", version = "0.1.0" }
+quanta-ir.workspace = true

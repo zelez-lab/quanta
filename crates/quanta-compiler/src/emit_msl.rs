@@ -273,6 +273,39 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 val.0
             ));
         }
+        KernelOp::WaveShuffle {
+            dst,
+            src,
+            lane_delta,
+            ty,
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_shuffle_xor(r{}, r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0,
+                lane_delta.0
+            ));
+        }
+        KernelOp::WaveBallot { dst, predicate } => {
+            out.push_str(&format!(
+                "{}uint r{} = simd_ballot(r{} != 0).x;\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        KernelOp::WaveAny { dst, predicate } => {
+            out.push_str(&format!(
+                "{}uint r{} = uint(simd_any(r{} != 0));\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        KernelOp::WaveAll { dst, predicate } => {
+            out.push_str(&format!(
+                "{}uint r{} = uint(simd_all(r{} != 0));\n",
+                pad, dst.0, predicate.0
+            ));
+        }
         _ => out.push_str(&format!("{}/* TODO: {:?} */\n", pad, op)),
     }
 }
