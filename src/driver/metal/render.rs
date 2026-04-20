@@ -338,6 +338,12 @@ impl MetalDevice {
                     let samp = self.device.new_sampler(&sd);
                     encoder.set_fragment_sampler_state(*slot as u64, Some(&samp));
                 }
+                // M2+ render ops — not yet implemented in the Metal driver.
+                // Fall through silently so the API surface exists without crashing.
+                RenderOp::BeginOcclusionQuery { .. }
+                | RenderOp::EndOcclusionQuery { .. }
+                | RenderOp::SetShadingRate(_)
+                | RenderOp::SetShadingRateImage { .. } => {}
             }
         }
 

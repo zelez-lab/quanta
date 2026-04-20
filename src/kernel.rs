@@ -113,11 +113,25 @@ pub struct KernelBinary {
     pub llvm_ir: Option<&'static [u8]>,
 }
 
-/// Shader stage — vertex or fragment.
+/// Shader stage — which programmable pipeline stage this shader runs in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderStage {
     Vertex,
     Fragment,
+    /// Tessellation control (hull) shader.
+    TessControl,
+    /// Tessellation evaluation (domain) shader.
+    TessEval,
+    /// Task (amplification) shader — launches mesh shader threadgroups.
+    Task,
+    /// Mesh shader — generates vertices and primitives.
+    Mesh,
+    /// Ray generation shader.
+    RayGen,
+    /// Closest-hit shader.
+    ClosestHit,
+    /// Miss shader.
+    Miss,
 }
 
 /// A compiled shader binary — output of `#[quanta::vertex]` or `#[quanta::fragment]`.

@@ -718,6 +718,12 @@ impl VulkanDevice {
                     RenderOp::DebugPop => {
                         // VK_EXT_debug_utils: vkCmdEndDebugUtilsLabelEXT
                     }
+
+                    // M2+ render ops — not yet implemented in the Vulkan driver.
+                    RenderOp::BeginOcclusionQuery { .. }
+                    | RenderOp::EndOcclusionQuery { .. }
+                    | RenderOp::SetShadingRate(_)
+                    | RenderOp::SetShadingRateImage { .. } => {}
                 }
             }
 

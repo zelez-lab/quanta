@@ -310,6 +310,291 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
     expanded.into()
 }
 
+// === Tessellation shader macros (M4.1) ===
+
+/// Mark a function as a tessellation control (hull) shader.
+///
+/// The function defines per-control-point logic and sets tessellation factors.
+/// Source is captured at build time for MSL/WGSL emission.
+///
+/// ```ignore
+/// #[quanta::tess_control]
+/// fn hull(patch_id: u32) -> TessFactors {
+///     TessFactors { edge: [4.0; 4], inside: [4.0; 2] }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn tess_control(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
+        func_name.span(),
+    );
+    let source = func.to_token_stream().to_string();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#source),
+            wgsl: None,
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::TessControl,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
+        }
+    };
+    expanded.into()
+}
+
+/// Mark a function as a tessellation evaluation (domain) shader.
+///
+/// Runs once per generated vertex after tessellation. Reads patch data
+/// and barycentric coordinates to compute final vertex positions.
+///
+/// ```ignore
+/// #[quanta::tess_eval]
+/// fn domain(uv: Vec2, patch: &[Vec3; 4]) -> Vec4 {
+///     // Bilinear interpolation of control points
+///     let p = mix(mix(patch[0], patch[1], uv.x), mix(patch[2], patch[3], uv.x), uv.y);
+///     Vec4::new(p.x, p.y, p.z, 1.0)
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn tess_eval(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
+        func_name.span(),
+    );
+    let source = func.to_token_stream().to_string();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#source),
+            wgsl: None,
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::TessEval,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
+        }
+    };
+    expanded.into()
+}
+
+// === Mesh shader macros (M4.2) ===
+
+/// Mark a function as a task (amplification) shader.
+///
+/// The task shader performs coarse-grained culling and determines how many
+/// mesh shader threadgroups to launch. Optional — mesh shaders can be
+/// dispatched directly without a task shader.
+///
+/// ```ignore
+/// #[quanta::task]
+/// fn cull(group_id: u32, instances: &[BoundingBox]) {
+///     if is_visible(instances[group_id]) {
+///         emit_mesh_threadgroups(1);
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
+        func_name.span(),
+    );
+    let source = func.to_token_stream().to_string();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#source),
+            wgsl: None,
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::Task,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
+        }
+    };
+    expanded.into()
+}
+
+/// Mark a function as a mesh shader.
+///
+/// Replaces the vertex + input assembly stages. The mesh shader generates
+/// vertices and primitives directly, enabling GPU-driven geometry processing.
+///
+/// ```ignore
+/// #[quanta::mesh]
+/// fn generate(group_id: u32) {
+///     // Emit vertices and triangle indices directly
+///     set_vertex(0, Vec4::new(-1.0, -1.0, 0.0, 1.0));
+///     set_vertex(1, Vec4::new( 1.0, -1.0, 0.0, 1.0));
+///     set_vertex(2, Vec4::new( 0.0,  1.0, 0.0, 1.0));
+///     set_primitive(0, [0, 1, 2]);
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn mesh(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
+        func_name.span(),
+    );
+    let source = func.to_token_stream().to_string();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#source),
+            wgsl: None,
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::Mesh,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
+        }
+    };
+    expanded.into()
+}
+
+// === Ray tracing shader macros (M4.3) ===
+
+/// Mark a function as a ray generation shader.
+///
+/// The entry point for ray tracing — launched once per pixel (or per ray).
+/// Uses `trace_ray()` to fire rays into the acceleration structure.
+///
+/// ```ignore
+/// #[quanta::ray_gen]
+/// fn camera_rays(pixel: UVec2, scene: &AccelerationStructure) {
+///     let ray = compute_ray(pixel);
+///     trace_ray(scene, ray, 0, 1000.0);
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn ray_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
+        func_name.span(),
+    );
+    let source = func.to_token_stream().to_string();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#source),
+            wgsl: None,
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::RayGen,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
+        }
+    };
+    expanded.into()
+}
+
+/// Mark a function as a closest-hit shader.
+///
+/// Invoked when a ray intersects the nearest surface. Computes the shading
+/// result (color, material response) and may fire secondary rays (reflections).
+///
+/// ```ignore
+/// #[quanta::closest_hit]
+/// fn shade(hit: HitInfo, ray: Ray) -> Vec4 {
+///     let normal = hit.normal;
+///     let color = sample_texture(hit.uv);
+///     color * dot(normal, light_dir).max(0.0)
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn closest_hit(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
+        func_name.span(),
+    );
+    let source = func.to_token_stream().to_string();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#source),
+            wgsl: None,
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::ClosestHit,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
+        }
+    };
+    expanded.into()
+}
+
+/// Mark a function as a miss shader.
+///
+/// Invoked when a ray does not intersect any geometry. Typically returns
+/// a sky/environment color.
+///
+/// ```ignore
+/// #[quanta::miss]
+/// fn sky(ray: Ray) -> Vec4 {
+///     let t = 0.5 * (ray.direction.y + 1.0);
+///     Vec4::lerp(Vec4::splat(1.0), Vec4::new(0.5, 0.7, 1.0, 1.0), t)
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let func_name_str = func_name.to_string();
+    let binary_name = syn::Ident::new(
+        &format!("{}_SHADER", func_name_str.to_uppercase()),
+        func_name.span(),
+    );
+    let source = func.to_token_stream().to_string();
+
+    let expanded = quote! {
+        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+            msl: Some(#source),
+            wgsl: None,
+            spirv: None,
+            entry_point: #func_name_str,
+            stage: ::quanta::ShaderStage::Miss,
+        };
+
+        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+            &#binary_name
+        }
+    };
+    expanded.into()
+}
+
 /// Parse `opt = "O2"` from the attribute.
 /// Default: 3 (O3).
 fn parse_opt_level(attr: TokenStream) -> u8 {

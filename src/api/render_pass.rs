@@ -2,7 +2,9 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::{Color, CompareOp, Field, LoadOp, Pipeline, StoreOp, Texture};
+use crate::{
+    Color, CompareOp, Field, LoadOp, OcclusionQuery, Pipeline, ShadingRate, StoreOp, Texture,
+};
 
 /// A color attachment target with load/store operations.
 pub struct ColorTarget {
@@ -120,6 +122,22 @@ pub(crate) enum RenderOp {
         height: f32,
         min_depth: f32,
         max_depth: f32,
+    },
+
+    // Occlusion queries (M3.3)
+    BeginOcclusionQuery {
+        handle: u64,
+        index: u32,
+    },
+    EndOcclusionQuery {
+        handle: u64,
+        index: u32,
+    },
+
+    // Variable-rate shading (M4.4)
+    SetShadingRate(ShadingRate),
+    SetShadingRateImage {
+        texture_handle: u64,
     },
 }
 
@@ -369,6 +387,44 @@ impl RenderPass {
             height,
             min_depth,
             max_depth,
+        });
+    }
+
+    // === Occlusion Queries (M3.3) ===
+
+    /// Begin an occlusion query at the given index.
+    ///
+    /// All fragments drawn between begin and end are counted. A result
+    /// of zero means every fragment was culled by depth/stencil.
+    pub fn begin_occlusion_query(&mut self, query: &OcclusionQuery, index: u32) {
+        self.ops.push(RenderOp::BeginOcclusionQuery {
+            handle: query.handle(),
+            index,
+        });
+    }
+
+    /// End an occlusion query at the given index.
+    pub fn end_occlusion_query(&mut self, query: &OcclusionQuery, index: u32) {
+        self.ops.push(RenderOp::EndOcclusionQuery {
+            handle: query.handle(),
+            index,
+        });
+    }
+
+    // === Variable-Rate Shading (M4.4) ===
+
+    /// Set a uniform shading rate for subsequent draw calls.
+    pub fn set_shading_rate(&mut self, rate: ShadingRate) {
+        self.ops.push(RenderOp::SetShadingRate(rate));
+    }
+
+    /// Set a per-pixel shading rate from a shading rate image.
+    ///
+    /// The texture must contain shading rate values; each texel
+    /// controls the rate for a screen-space tile.
+    pub fn set_shading_rate_image(&mut self, texture: &Texture) {
+        self.ops.push(RenderOp::SetShadingRateImage {
+            texture_handle: texture.handle(),
         });
     }
 

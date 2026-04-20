@@ -1,8 +1,10 @@
+use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
-    Caps, FieldUsage, Pipeline, Pulse, QuantaError, RenderPass, ResourceState, Texture,
-    TextureDesc, Timeline, Wave,
+    Caps, FieldUsage, Format, FormatCaps, Pipeline, Pulse, QuantaError, QueueFamily, QueueType,
+    RenderPass, ResourceState, Texture, TextureDesc, TextureViewDesc, Timeline, Wave,
 };
 
 /// Core trait — every GPU driver implements this.
@@ -196,6 +198,197 @@ pub trait GpuDevice {
     /// Resolve an MSAA texture to a single-sample texture.
     fn resolve_texture(&self, _src_handle: u64, _dst_handle: u64) -> Result<(), QuantaError> {
         Err(QuantaError::invalid_param("MSAA resolve not supported"))
+    }
+
+    // === M2.2: Format capability queries ===
+
+    /// Query what a given format can do on this device.
+    fn format_caps(&self, _format: Format) -> FormatCaps {
+        FormatCaps {
+            filterable: true,
+            renderable: true,
+            storage: true,
+            blendable: true,
+            msaa: true,
+            depth: false,
+        }
+    }
+
+    // === M2.3: Texture views ===
+
+    /// Create a view into an existing texture (sub-range of mips/layers).
+    fn texture_view_create(
+        &self,
+        _texture: u64,
+        _desc: &TextureViewDesc,
+    ) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param("texture views not supported"))
+    }
+
+    /// Destroy a texture view.
+    fn texture_view_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("texture views not supported"))
+    }
+
+    // === M2.6: Stencil read-back ===
+
+    /// Read stencil buffer contents from a depth/stencil texture.
+    fn stencil_read(&self, _texture: u64) -> Result<Vec<u8>, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "stencil read-back not supported",
+        ))
+    }
+
+    // === M3.1: Multi-queue ===
+
+    /// List available queue families on this device.
+    fn queue_families(&self) -> Vec<QueueFamily> {
+        vec![QueueFamily {
+            queue_type: QueueType::Graphics,
+            count: 1,
+        }]
+    }
+
+    /// Create a queue of the given type.
+    fn create_queue(&self, _queue_type: QueueType) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param("multi-queue not supported"))
+    }
+
+    /// Submit a compute dispatch to a specific queue.
+    fn queue_dispatch(
+        &self,
+        _queue: u64,
+        _wave: &Wave,
+        _groups: [u32; 3],
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("multi-queue not supported"))
+    }
+
+    /// Signal a semaphore from a queue.
+    fn queue_signal(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("multi-queue not supported"))
+    }
+
+    /// Wait on a semaphore before executing more work on a queue.
+    fn queue_wait(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("multi-queue not supported"))
+    }
+
+    // === M3.3: Occlusion queries ===
+
+    /// Create an occlusion query set with `count` slots.
+    fn occlusion_query_create(&self, _count: u32) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "occlusion queries not supported",
+        ))
+    }
+
+    /// Read results from an occlusion query set (fragment counts per slot).
+    fn occlusion_query_read(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "occlusion queries not supported",
+        ))
+    }
+
+    // === M4.2: Mesh shaders ===
+
+    /// Dispatch a mesh shader pipeline.
+    fn dispatch_mesh(&self, _pipeline: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("mesh shaders not supported"))
+    }
+
+    // === M4.3: Ray tracing ===
+
+    /// Build a bottom-level acceleration structure from geometry.
+    fn build_acceleration_structure(&self, _geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param("ray tracing not supported"))
+    }
+
+    /// Create a ray tracing pipeline from shader stages.
+    fn create_ray_tracing_pipeline(
+        &self,
+        _desc: &RayTracingPipelineDesc,
+    ) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param("ray tracing not supported"))
+    }
+
+    /// Dispatch rays through a ray tracing pipeline.
+    fn dispatch_rays(&self, _pipeline: u64, _width: u32, _height: u32) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("ray tracing not supported"))
+    }
+
+    /// Destroy an acceleration structure.
+    fn destroy_acceleration_structure(&self, _handle: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("ray tracing not supported"))
+    }
+
+    // === M5.1: Sparse textures ===
+
+    /// Create a sparse (virtual) texture — memory is not committed until tiles are mapped.
+    fn sparse_texture_create(&self, _desc: &TextureDesc) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param("sparse textures not supported"))
+    }
+
+    /// Map a physical backing page to a sparse texture tile.
+    fn sparse_map_tile(
+        &self,
+        _texture: u64,
+        _mip: u32,
+        _x: u32,
+        _y: u32,
+        _backing: u64,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("sparse textures not supported"))
+    }
+
+    /// Unmap a sparse texture tile (release backing memory).
+    fn sparse_unmap_tile(
+        &self,
+        _texture: u64,
+        _mip: u32,
+        _x: u32,
+        _y: u32,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param("sparse textures not supported"))
+    }
+
+    // === M5.2: Indirect command buffers ===
+
+    /// Create an indirect command buffer (GPU-driven draw/dispatch).
+    fn indirect_buffer_create(&self, _max_commands: u32) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "indirect command buffers not supported",
+        ))
+    }
+
+    /// Execute commands from an indirect command buffer.
+    fn indirect_buffer_execute(&self, _handle: u64, _count: u32) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "indirect command buffers not supported",
+        ))
+    }
+
+    /// Destroy an indirect command buffer.
+    fn indirect_buffer_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "indirect command buffers not supported",
+        ))
+    }
+
+    // === M5.3: Bindless resources ===
+
+    /// Create a bindless texture array (all textures accessible by index in shaders).
+    fn bind_texture_array(&self, _textures: &[u64]) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "bindless resources not supported",
+        ))
+    }
+
+    /// Create a bindless buffer array (all buffers accessible by index in shaders).
+    fn bind_buffer_array(&self, _buffers: &[u64]) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "bindless resources not supported",
+        ))
     }
 
     // === Debug ===

@@ -81,3 +81,25 @@ impl TimestampQuery {
         self.count
     }
 }
+
+/// A set of occlusion query slots (M3.3).
+///
+/// Records how many fragments pass the depth/stencil test within a
+/// begin/end bracket during a render pass. Used for visibility culling:
+/// if zero fragments passed, the object is fully occluded.
+pub struct OcclusionQuery {
+    pub(crate) handle: u64,
+    pub(crate) count: u32,
+}
+
+impl OcclusionQuery {
+    /// The underlying query set handle.
+    pub fn handle(&self) -> u64 {
+        self.handle
+    }
+
+    /// Number of occlusion query slots.
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}

@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use core::ops::Range;
 
 use crate::Format;
 
@@ -102,6 +103,42 @@ impl TextureUsage {
 
     pub const fn has(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0
+    }
+}
+
+// === M2.3: Texture Views ===
+
+/// Describes how to create a view into a texture (sub-range of mips/layers,
+/// possibly reinterpreted format).
+pub struct TextureViewDesc {
+    /// Format override. `None` means use the parent texture's format.
+    pub format: Option<Format>,
+    /// Range of mip levels visible through this view.
+    pub mip_range: Range<u32>,
+    /// Range of array layers visible through this view.
+    pub layer_range: Range<u32>,
+}
+
+/// A view into a texture — sub-range of mips/layers, possibly reinterpreted format.
+///
+/// Texture views allow shaders to access a portion of a texture array or mip chain
+/// without creating a separate allocation.
+pub struct TextureView {
+    pub(crate) handle: u64,
+    pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
+}
+
+impl TextureView {
+    pub fn handle(&self) -> u64 {
+        self.handle
+    }
+}
+
+impl Drop for TextureView {
+    fn drop(&mut self) {
+        if let Some(f) = self.drop_fn.take() {
+            f(self.handle);
+        }
     }
 }
 

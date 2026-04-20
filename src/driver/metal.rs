@@ -229,6 +229,17 @@ pub(crate) fn format_to_metal(format: Format) -> mtl::MTLPixelFormat {
         Format::RGBA16Float => mtl::MTLPixelFormat::RGBA16Float,
         Format::RGBA32Float => mtl::MTLPixelFormat::RGBA32Float,
         Format::Depth32Float => mtl::MTLPixelFormat::Depth32Float,
+        // Compressed formats — map to Metal's compressed pixel formats.
+        // Apple supports BC on macOS and ASTC/ETC2 on iOS/Apple Silicon.
+        Format::Bc1Rgba => mtl::MTLPixelFormat::BC1_RGBA,
+        Format::Bc3Rgba => mtl::MTLPixelFormat::BC3_RGBA,
+        Format::Bc5Rg => mtl::MTLPixelFormat::BC5_RGSnorm,
+        Format::Bc7Rgba => mtl::MTLPixelFormat::BC7_RGBAUnorm,
+        Format::Astc4x4 => mtl::MTLPixelFormat::ASTC_4x4_LDR,
+        Format::Astc6x6 => mtl::MTLPixelFormat::ASTC_6x6_LDR,
+        Format::Astc8x8 => mtl::MTLPixelFormat::ASTC_8x8_LDR,
+        Format::Etc2Rgb8 => mtl::MTLPixelFormat::ETC2_RGB8,
+        Format::Etc2Rgba8 => mtl::MTLPixelFormat::EAC_RGBA8,
     }
 }
 
@@ -240,6 +251,10 @@ pub(crate) fn format_bytes_per_pixel(format: Format) -> usize {
         Format::RG32Float | Format::RGBA16Float => 8,
         Format::RGBA32Float => 16,
         Format::Depth32Float => 4,
+        // Compressed: report block size in bytes (not per-pixel).
+        Format::Bc1Rgba | Format::Etc2Rgb8 => 8, // 8 bytes per 4x4 block
+        Format::Bc3Rgba | Format::Bc5Rg | Format::Bc7Rgba | Format::Etc2Rgba8 => 16,
+        Format::Astc4x4 | Format::Astc6x6 | Format::Astc8x8 => 16,
     }
 }
 

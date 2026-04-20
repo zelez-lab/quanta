@@ -420,6 +420,16 @@ fn format_to_vulkan(format: Format) -> vk::Format {
         Format::RGBA16Float => vk::Format::R16G16B16A16_SFLOAT,
         Format::RGBA32Float => vk::Format::R32G32B32A32_SFLOAT,
         Format::Depth32Float => vk::Format::D32_SFLOAT,
+        // Compressed formats
+        Format::Bc1Rgba => vk::Format::BC1_RGBA_UNORM_BLOCK,
+        Format::Bc3Rgba => vk::Format::BC3_UNORM_BLOCK,
+        Format::Bc5Rg => vk::Format::BC5_SNORM_BLOCK,
+        Format::Bc7Rgba => vk::Format::BC7_UNORM_BLOCK,
+        Format::Astc4x4 => vk::Format::ASTC_4X4_UNORM_BLOCK,
+        Format::Astc6x6 => vk::Format::ASTC_6X6_UNORM_BLOCK,
+        Format::Astc8x8 => vk::Format::ASTC_8X8_UNORM_BLOCK,
+        Format::Etc2Rgb8 => vk::Format::ETC2_R8G8B8_UNORM_BLOCK,
+        Format::Etc2Rgba8 => vk::Format::ETC2_R8G8B8A8_UNORM_BLOCK,
     }
 }
 
@@ -442,6 +452,10 @@ fn format_bytes_per_pixel_vk(format: Format) -> usize {
         Format::RG32Float | Format::RGBA16Float => 8,
         Format::RGBA32Float => 16,
         Format::Depth32Float => 4,
+        // Compressed: block size in bytes
+        Format::Bc1Rgba | Format::Etc2Rgb8 => 8,
+        Format::Bc3Rgba | Format::Bc5Rg | Format::Bc7Rgba | Format::Etc2Rgba8 => 16,
+        Format::Astc4x4 | Format::Astc6x6 | Format::Astc8x8 => 16,
     }
 }
 

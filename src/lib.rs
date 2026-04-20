@@ -63,6 +63,19 @@ pub use quanta_macros::fragment;
 pub use quanta_macros::kernel;
 pub use quanta_macros::vertex;
 
+// M4.1: Tessellation shader macros
+pub use quanta_macros::tess_control;
+pub use quanta_macros::tess_eval;
+
+// M4.2: Mesh shader macros
+pub use quanta_macros::mesh;
+pub use quanta_macros::task;
+
+// M4.3: Ray tracing shader macros
+pub use quanta_macros::closest_hit;
+pub use quanta_macros::miss;
+pub use quanta_macros::ray_gen;
+
 /// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
 #[cfg(feature = "std")]
 fn validation_enabled() -> bool {

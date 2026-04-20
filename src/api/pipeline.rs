@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -49,14 +50,28 @@ pub struct PipelineDesc<'a> {
     pub depth_format: Option<Format>,
     /// MSAA sample count (1 = no MSAA, 4 = 4x MSAA).
     pub sample_count: u32,
-    /// Blend state for color attachment.
+    /// Blend state for color attachment (legacy — single attachment).
     pub blend: BlendState,
+    /// Per-attachment blend states (M2.5).
+    /// One entry per color attachment. If shorter than `color_formats`,
+    /// the last entry is reused for remaining attachments.
+    /// Empty means use `blend` field for all attachments.
+    pub blend_states: Vec<BlendState>,
     /// Face culling mode.
     pub cull_mode: CullMode,
     /// Primitive topology.
     pub primitive: Primitive,
     /// Depth/stencil state.
     pub depth_stencil: DepthStencilState,
+    /// Specialization constants (M2.1) — override shader constants at pipeline creation.
+    pub specialization: Vec<SpecConstant>,
+    /// Tessellation configuration (M4.1). `None` = no tessellation.
+    pub tessellation: Option<TessellationDesc>,
+    /// Mesh shader configuration (M4.2). `None` = standard vertex pipeline.
+    pub mesh_shader: Option<MeshShaderDesc<'a>>,
+    /// Enable conservative rasterization (M4.5).
+    /// When true, any pixel touched by a primitive is considered covered.
+    pub conservative_rasterization: bool,
 }
 
 impl<'a> Default for PipelineDesc<'a> {
@@ -72,9 +87,14 @@ impl<'a> Default for PipelineDesc<'a> {
             depth_format: None,
             sample_count: 1,
             blend: BlendState::PREMULTIPLIED_ALPHA,
+            blend_states: Vec::new(),
             cull_mode: CullMode::None,
             primitive: Primitive::Triangle,
             depth_stencil: DepthStencilState::NONE,
+            specialization: Vec::new(),
+            tessellation: None,
+            mesh_shader: None,
+            conservative_rasterization: false,
         }
     }
 }
@@ -321,4 +341,78 @@ pub enum Primitive {
     LineStrip,
     Triangle,
     TriangleStrip,
+}
+
+// === M2.1: Specialization Constants ===
+
+/// A named constant that can be overridden at pipeline creation time.
+///
+/// Allows a single compiled shader to behave differently depending on
+/// compile-time constants (e.g. tile size, feature toggles), avoiding
+/// the cost of maintaining multiple shader variants.
+pub struct SpecConstant {
+    /// Name matching the constant in the shader source.
+    pub name: String,
+    /// The value to substitute.
+    pub value: SpecValue,
+}
+
+/// Specialization constant value.
+#[derive(Debug, Clone, Copy)]
+pub enum SpecValue {
+    U32(u32),
+    I32(i32),
+    F32(f32),
+    Bool(bool),
+}
+
+// === M4.1: Tessellation ===
+
+/// Tessellation stage configuration.
+pub struct TessellationDesc {
+    /// Number of control points per patch.
+    pub patch_size: u32,
+    /// How the tessellator subdivides edges.
+    pub spacing: TessSpacing,
+    /// Triangle winding order for generated primitives.
+    pub winding: TessWinding,
+}
+
+/// Tessellation edge subdivision mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TessSpacing {
+    /// Integer subdivision levels.
+    Equal,
+    /// Smooth transitions using fractional odd levels.
+    FractionalOdd,
+    /// Smooth transitions using fractional even levels.
+    FractionalEven,
+}
+
+/// Winding order for tessellation-generated triangles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TessWinding {
+    /// Clockwise.
+    Cw,
+    /// Counter-clockwise.
+    Ccw,
+}
+
+// === M4.2: Mesh Shaders ===
+
+/// Mesh shader pipeline configuration.
+///
+/// Replaces the traditional vertex input assembly with a programmable
+/// mesh generation stage. The task shader (optional) does coarse culling
+/// and launches mesh shader threadgroups; the mesh shader emits vertices
+/// and primitives directly.
+pub struct MeshShaderDesc<'a> {
+    /// Task (amplification) shader binary. `None` = no task shader.
+    pub task_shader: Option<&'a [u8]>,
+    /// Mesh shader binary (required).
+    pub mesh_shader: &'a [u8],
+    /// Maximum vertices the mesh shader can emit per threadgroup.
+    pub max_vertices: u32,
+    /// Maximum primitives the mesh shader can emit per threadgroup.
+    pub max_primitives: u32,
 }

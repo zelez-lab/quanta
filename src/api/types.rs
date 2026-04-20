@@ -12,10 +12,34 @@ pub enum Format {
     RGBA16Float,
     RGBA32Float,
     Depth32Float,
+
+    // Compressed formats (M2.4)
+    /// BC1 (DXT1) with alpha — 8:1 compression, 4x4 blocks.
+    Bc1Rgba,
+    /// BC3 (DXT5) — 4:1 compression with full alpha, 4x4 blocks.
+    Bc3Rgba,
+    /// BC5 (2-channel) — normal maps, 4x4 blocks.
+    Bc5Rg,
+    /// BC7 — high quality 4:1, all channel configs, 4x4 blocks.
+    Bc7Rgba,
+    /// ASTC 4x4 — mobile/desktop, high quality.
+    Astc4x4,
+    /// ASTC 6x6 — higher compression, lower quality.
+    Astc6x6,
+    /// ASTC 8x8 — maximum compression.
+    Astc8x8,
+    /// ETC2 RGB8 — mobile baseline.
+    Etc2Rgb8,
+    /// ETC2 RGBA8 — mobile baseline with alpha.
+    Etc2Rgba8,
 }
 
 impl Format {
     /// Bytes per pixel for this format.
+    ///
+    /// For block-compressed formats this returns the average bytes per pixel
+    /// (block size / pixels-per-block), which is useful for estimating
+    /// uncompressed buffer sizes. Exact storage requires block math.
     pub const fn bytes_per_pixel(self) -> usize {
         match self {
             Self::R8 => 1,
@@ -24,6 +48,15 @@ impl Format {
             Self::RG32Float => 8,
             Self::RGBA16Float => 8,
             Self::RGBA32Float => 16,
+            // Block-compressed: report the block size in bytes (not per-pixel).
+            // BC1/ETC2-RGB: 8 bytes per 4x4 block = 0.5 bpp, round up to 1.
+            Self::Bc1Rgba | Self::Etc2Rgb8 => 1,
+            // BC3/BC5/BC7/ETC2-RGBA: 16 bytes per 4x4 block = 1 bpp.
+            Self::Bc3Rgba | Self::Bc5Rg | Self::Bc7Rgba | Self::Etc2Rgba8 => 1,
+            // ASTC: 16 bytes per block regardless of block size.
+            Self::Astc4x4 => 1,
+            Self::Astc6x6 => 1,
+            Self::Astc8x8 => 1,
         }
     }
 }
@@ -228,4 +261,68 @@ pub enum KernelFormat {
     Wgsl,
     /// Platform-agnostic IR (fallback — driver compiles at load time).
     LlvmIr,
+}
+
+// === M2.2: Format Capability Queries ===
+
+/// What a given format supports on this device.
+#[derive(Debug, Clone, Copy)]
+pub struct FormatCaps {
+    /// Can be used with a filtering sampler (linear/mip).
+    pub filterable: bool,
+    /// Can be used as a color render target.
+    pub renderable: bool,
+    /// Can be used as a storage texture (read-write from shaders).
+    pub storage: bool,
+    /// Supports blending when used as a render target.
+    pub blendable: bool,
+    /// Supports multisampled rendering.
+    pub msaa: bool,
+    /// Can be used as a depth/stencil attachment.
+    pub depth: bool,
+}
+
+// === M3.1: Multi-Queue ===
+
+/// GPU queue family type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueType {
+    /// Full graphics + compute + transfer.
+    Graphics,
+    /// Compute + transfer only (async compute).
+    Compute,
+    /// Transfer/DMA only.
+    Transfer,
+}
+
+/// Describes one family of queues on the device.
+pub struct QueueFamily {
+    /// What kind of work this family can execute.
+    pub queue_type: QueueType,
+    /// Number of queues available in this family.
+    pub count: u32,
+}
+
+// === M4.4: Variable Rate Shading ===
+
+/// Shading rate — controls how many pixels share a single fragment invocation.
+///
+/// Lower rates (e.g. 4x4) reduce shading cost for areas that don't need
+/// per-pixel detail (distant geometry, motion-blurred regions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadingRate {
+    /// One fragment invocation per pixel (full rate).
+    Rate1x1,
+    /// 1x2 coarse pixels.
+    Rate1x2,
+    /// 2x1 coarse pixels.
+    Rate2x1,
+    /// 2x2 coarse pixels.
+    Rate2x2,
+    /// 2x4 coarse pixels.
+    Rate2x4,
+    /// 4x2 coarse pixels.
+    Rate4x2,
+    /// 4x4 coarse pixels (maximum coarseness).
+    Rate4x4,
 }
