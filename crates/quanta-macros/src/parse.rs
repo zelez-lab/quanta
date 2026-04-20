@@ -1,31 +1,31 @@
 //! Parse a validated Rust function into KernelDef.
 //!
-//! Phase 2: full AST → KernelOp walking via recursive emit_expr/emit_stmt.
+//! Phase 2: full AST -> KernelOp walking via recursive emit_expr/emit_stmt.
 
-use quanta_ir::{
-    AtomicOp, BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType,
-    UnaryOp,
-};
+mod expr;
+mod stmt;
+
+use quanta_ir::{BinOp, CmpOp, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType};
 use std::collections::HashMap;
-use syn::{BinOp as SynBinOp, Expr, FnArg, ItemFn, Pat, Stmt, Type, UnOp as SynUnOp};
+use syn::{BinOp as SynBinOp, Expr, FnArg, ItemFn, Pat, Type};
 
 /// Emission context — tracks registers, variables, and parameters.
-struct EmitCtx {
-    ops: Vec<KernelOp>,
-    next_reg: u32,
-    /// Variable name → (register, type)
-    vars: HashMap<String, (Reg, ScalarType)>,
-    /// Parameter name → (slot, kind, type)
-    params: HashMap<String, ParamInfo>,
+pub(crate) struct EmitCtx {
+    pub(crate) ops: Vec<KernelOp>,
+    pub(crate) next_reg: u32,
+    /// Variable name -> (register, type)
+    pub(crate) vars: HashMap<String, (Reg, ScalarType)>,
+    /// Parameter name -> (slot, kind, type)
+    pub(crate) params: HashMap<String, ParamInfo>,
     /// Shared memory counter
-    next_shared: u32,
+    pub(crate) next_shared: u32,
 }
 
 #[derive(Clone)]
-struct ParamInfo {
-    slot: u32,
-    is_const: bool,
-    scalar_type: ScalarType,
+pub(crate) struct ParamInfo {
+    pub(crate) slot: u32,
+    pub(crate) is_const: bool,
+    pub(crate) scalar_type: ScalarType,
 }
 
 impl EmitCtx {
@@ -87,7 +87,7 @@ impl EmitCtx {
         }
     }
 
-    fn alloc_reg(&mut self) -> Reg {
+    pub(crate) fn alloc_reg(&mut self) -> Reg {
         let r = Reg(self.next_reg);
         self.next_reg += 1;
         r
@@ -95,7 +95,7 @@ impl EmitCtx {
 
     /// Create a child context for loop/branch bodies that shares variables by reference.
     /// After emitting the body, call `merge_child` to propagate register count and var updates.
-    fn child(&self) -> Self {
+    pub(crate) fn child(&self) -> Self {
         Self {
             ops: Vec::new(),
             next_reg: self.next_reg,
@@ -106,7 +106,7 @@ impl EmitCtx {
     }
 
     /// Merge child context back: take its ops, update next_reg, propagate var remappings.
-    fn merge_child(&mut self, child: Self) -> Vec<KernelOp> {
+    pub(crate) fn merge_child(&mut self, child: Self) -> Vec<KernelOp> {
         self.next_reg = child.next_reg;
         // Propagate variable reassignments from child back to parent
         for (name, (reg, ty)) in &child.vars {
@@ -141,8 +141,8 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
 
     let mut ctx = EmitCtx::new(&params);
 
-    for stmt in &func.block.stmts {
-        emit_stmt(stmt, &mut ctx)?;
+    for s in &func.block.stmts {
+        stmt::emit_stmt(s, &mut ctx)?;
     }
 
     Ok(KernelDef {
@@ -156,875 +156,17 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
 }
 
 // ============================================================================
-// Statement emission
-// ============================================================================
-
-fn emit_stmt(stmt: &Stmt, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
-    match stmt {
-        Stmt::Local(local) => emit_local(local, ctx),
-        Stmt::Expr(expr, _semi) => {
-            emit_expr_stmt(expr, ctx)?;
-            Ok(())
-        }
-        _ => Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "unsupported statement in GPU kernel",
-        )),
-    }
-}
-
-/// Emit a let binding, handling simple idents and tuple patterns.
-fn emit_local(local: &syn::Local, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
-    match &local.pat {
-        Pat::Ident(ident) => {
-            let var_name = ident.ident.to_string();
-            if let Some(init) = &local.init {
-                let (reg, ty) = emit_expr(&init.expr, ctx)?;
-                ctx.vars.insert(var_name, (reg, ty));
-            }
-            Ok(())
-        }
-        // Tuple pattern: let (mut x, mut y) = (expr1, expr2)
-        Pat::Tuple(tuple) => {
-            if let Some(init) = &local.init {
-                // The RHS must be a tuple expression
-                if let Expr::Tuple(rhs_tuple) = init.expr.as_ref() {
-                    if tuple.elems.len() != rhs_tuple.elems.len() {
-                        return Err(syn::Error::new_spanned(
-                            &local.pat,
-                            "tuple pattern length mismatch",
-                        ));
-                    }
-                    for (pat, expr) in tuple.elems.iter().zip(rhs_tuple.elems.iter()) {
-                        let var_name = match pat {
-                            Pat::Ident(ident) => ident.ident.to_string(),
-                            _ => {
-                                return Err(syn::Error::new_spanned(
-                                    pat,
-                                    "unsupported pattern in tuple binding",
-                                ));
-                            }
-                        };
-                        let (reg, ty) = emit_expr(expr, ctx)?;
-                        ctx.vars.insert(var_name, (reg, ty));
-                    }
-                    Ok(())
-                } else {
-                    Err(syn::Error::new_spanned(
-                        &init.expr,
-                        "tuple pattern requires tuple expression on RHS",
-                    ))
-                }
-            } else {
-                Err(syn::Error::new_spanned(
-                    &local.pat,
-                    "tuple binding requires initializer",
-                ))
-            }
-        }
-        _ => Err(syn::Error::new_spanned(
-            &local.pat,
-            "unsupported pattern in let binding",
-        )),
-    }
-}
-
-/// Emit an expression used as a statement (e.g., assignment, function call).
-fn emit_expr_stmt(expr: &Expr, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
-    match expr {
-        // result[i] = value  OR  x = value (local variable reassignment)
-        Expr::Assign(assign) => {
-            let (src_reg, src_ty) = emit_expr(&assign.right, ctx)?;
-            emit_store_or_reassign(&assign.left, src_reg, src_ty, ctx)?;
-            Ok(())
-        }
-        // Compound assignment: result[i] += value  OR  x += value (local)
-        Expr::Binary(bin) if is_assign_op(&bin.op) => {
-            emit_compound_assign(bin, ctx)?;
-            Ok(())
-        }
-        // if/else as statement
-        Expr::If(if_expr) => {
-            emit_if(if_expr, ctx)?;
-            Ok(())
-        }
-        // for loop
-        Expr::ForLoop(for_loop) => {
-            emit_for_loop(for_loop, ctx)?;
-            Ok(())
-        }
-        // while loop
-        Expr::While(while_loop) => {
-            emit_while_loop(while_loop, ctx)?;
-            Ok(())
-        }
-        // break
-        Expr::Break(_) => {
-            ctx.ops.push(KernelOp::Break);
-            Ok(())
-        }
-        // Expression with side effects (function calls like barrier())
-        Expr::Call(call) => {
-            emit_call(call, ctx)?;
-            Ok(())
-        }
-        // Block expression
-        Expr::Block(block) => {
-            for stmt in &block.block.stmts {
-                emit_stmt(stmt, ctx)?;
-            }
-            Ok(())
-        }
-        _ => {
-            // Try as a general expression (discard result)
-            emit_expr(expr, ctx)?;
-            Ok(())
-        }
-    }
-}
-
-// ============================================================================
-// Expression emission — returns (register, type)
-// ============================================================================
-
-fn emit_expr(expr: &Expr, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    match expr {
-        // Literal: 42, 0.99, true
-        Expr::Lit(lit) => emit_literal(lit, ctx),
-
-        // Variable reference: i, x, threshold
-        Expr::Path(path) => emit_path(path, ctx),
-
-        // Binary: a + b, x > threshold
-        Expr::Binary(bin) => emit_binary(bin, ctx),
-
-        // Unary: -x, !flag
-        Expr::Unary(unary) => emit_unary(unary, ctx),
-
-        // Index: a[i]
-        Expr::Index(index) => emit_index(index, ctx),
-
-        // Function call: quark_id(), sin(x), atomic_add(...)
-        Expr::Call(call) => emit_call(call, ctx),
-
-        // Method call: x.sin(), x.sqrt()
-        Expr::MethodCall(mc) => emit_method_call(mc, ctx),
-
-        // If expression: if cond { a } else { b }
-        Expr::If(if_expr) => emit_if(if_expr, ctx),
-
-        // Parenthesized: (a + b)
-        Expr::Paren(paren) => emit_expr(&paren.expr, ctx),
-
-        // Cast: x as f32
-        Expr::Cast(cast) => emit_cast(cast, ctx),
-
-        // Tuple: (expr1, expr2) — used in tuple destructuring RHS
-        Expr::Tuple(_) => Err(syn::Error::new_spanned(
-            expr,
-            "tuple expression only supported in let binding RHS",
-        )),
-
-        // Block: { stmts; final_expr }
-        Expr::Block(block) => {
-            let mut last = None;
-            for stmt in &block.block.stmts {
-                match stmt {
-                    Stmt::Expr(e, None) => last = Some(emit_expr(e, ctx)?),
-                    _ => {
-                        emit_stmt(stmt, ctx)?;
-                    }
-                }
-            }
-            last.ok_or_else(|| syn::Error::new_spanned(expr, "empty block expression"))
-        }
-
-        _ => Err(syn::Error::new_spanned(
-            expr,
-            "unsupported expression in GPU kernel",
-        )),
-    }
-}
-
-fn emit_literal(lit: &syn::ExprLit, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    let dst = ctx.alloc_reg();
-    let (value, ty) = match &lit.lit {
-        syn::Lit::Float(f) => {
-            let v: f64 = f
-                .base10_parse()
-                .map_err(|e| syn::Error::new_spanned(f, e))?;
-            // Check suffix
-            let s = f.to_string();
-            if s.ends_with("f32") || !s.ends_with("f64") {
-                (ConstValue::F32(v as f32), ScalarType::F32)
-            } else {
-                (ConstValue::F64(v), ScalarType::F64)
-            }
-        }
-        syn::Lit::Int(i) => {
-            let s = i.to_string();
-            if s.ends_with("u32") {
-                let v: u32 = i
-                    .base10_parse()
-                    .map_err(|e| syn::Error::new_spanned(i, e))?;
-                (ConstValue::U32(v), ScalarType::U32)
-            } else if s.ends_with("u64") {
-                let v: u64 = i
-                    .base10_parse()
-                    .map_err(|e| syn::Error::new_spanned(i, e))?;
-                (ConstValue::U64(v), ScalarType::U64)
-            } else if s.ends_with("i64") {
-                let v: i64 = i
-                    .base10_parse()
-                    .map_err(|e| syn::Error::new_spanned(i, e))?;
-                (ConstValue::I64(v), ScalarType::I64)
-            } else {
-                // Default integer → i32
-                let v: i32 = i
-                    .base10_parse()
-                    .map_err(|e| syn::Error::new_spanned(i, e))?;
-                (ConstValue::I32(v), ScalarType::I32)
-            }
-        }
-        syn::Lit::Bool(b) => (ConstValue::Bool(b.value), ScalarType::Bool),
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &lit.lit,
-                "unsupported literal type",
-            ));
-        }
-    };
-    ctx.ops.push(KernelOp::Const { dst, value });
-    Ok((dst, ty))
-}
-
-fn emit_path(path: &syn::ExprPath, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    let name = path
-        .path
-        .segments
-        .last()
-        .ok_or_else(|| syn::Error::new_spanned(path, "empty path"))?
-        .ident
-        .to_string();
-
-    // Check local variables first
-    if let Some(&(reg, ty)) = ctx.vars.get(&name) {
-        return Ok((reg, ty));
-    }
-
-    // Check push constant parameters
-    if let Some(info) = ctx.params.get(&name).cloned()
-        && info.is_const
-    {
-        let dst = ctx.alloc_reg();
-        ctx.ops.push(KernelOp::Load {
-            dst,
-            field: info.slot,
-            index: Reg(u32::MAX),
-            ty: info.scalar_type,
-        });
-        return Ok((dst, info.scalar_type));
-    }
-
-    Err(syn::Error::new_spanned(
-        path,
-        format!("undefined variable: {}", name),
-    ))
-}
-
-fn emit_binary(bin: &syn::ExprBinary, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    // Handle logical AND/OR with short-circuit semantics modeled as bitwise on bools
-    match &bin.op {
-        SynBinOp::And(_) => {
-            let (a, _) = emit_expr(&bin.left, ctx)?;
-            let (b, _) = emit_expr(&bin.right, ctx)?;
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::BinOp {
-                dst,
-                a,
-                b,
-                op: BinOp::BitAnd,
-                ty: ScalarType::Bool,
-            });
-            return Ok((dst, ScalarType::Bool));
-        }
-        SynBinOp::Or(_) => {
-            let (a, _) = emit_expr(&bin.left, ctx)?;
-            let (b, _) = emit_expr(&bin.right, ctx)?;
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::BinOp {
-                dst,
-                a,
-                b,
-                op: BinOp::BitOr,
-                ty: ScalarType::Bool,
-            });
-            return Ok((dst, ScalarType::Bool));
-        }
-        _ => {}
-    }
-
-    let (a, ty_a) = emit_expr(&bin.left, ctx)?;
-    let (b, _ty_b) = emit_expr(&bin.right, ctx)?;
-    let dst = ctx.alloc_reg();
-
-    // Check if it's a comparison
-    if let Some(cmp) = syn_binop_to_cmp(&bin.op) {
-        ctx.ops.push(KernelOp::Cmp {
-            dst,
-            a,
-            b,
-            op: cmp,
-            ty: ty_a,
-        });
-        return Ok((dst, ScalarType::Bool));
-    }
-
-    // Arithmetic/bitwise
-    let op = syn_binop_to_ir(&bin.op)?;
-    ctx.ops.push(KernelOp::BinOp {
-        dst,
-        a,
-        b,
-        op,
-        ty: ty_a,
-    });
-    Ok((dst, ty_a))
-}
-
-fn emit_unary(unary: &syn::ExprUnary, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    let (a, ty) = emit_expr(&unary.expr, ctx)?;
-    let dst = ctx.alloc_reg();
-    let op = match unary.op {
-        SynUnOp::Neg(_) => UnaryOp::Neg,
-        SynUnOp::Not(_) => {
-            if ty == ScalarType::Bool {
-                UnaryOp::LogicalNot
-            } else {
-                UnaryOp::BitNot
-            }
-        }
-        _ => return Err(syn::Error::new_spanned(unary, "unsupported unary operator")),
-    };
-    ctx.ops.push(KernelOp::UnaryOp { dst, a, op, ty });
-    Ok((dst, ty))
-}
-
-fn emit_index(index: &syn::ExprIndex, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    // arr[idx] — arr must be a parameter (field)
-    let arr_name = expr_to_name(&index.expr).ok_or_else(|| {
-        syn::Error::new_spanned(&index.expr, "indexing target must be a parameter name")
-    })?;
-
-    let info = ctx
-        .params
-        .get(&arr_name)
-        .ok_or_else(|| {
-            syn::Error::new_spanned(&index.expr, format!("unknown field: {}", arr_name))
-        })?
-        .clone();
-
-    // Index can be any expression (including complex ones like i * 4 + 1)
-    let (idx_reg, _) = emit_expr(&index.index, ctx)?;
-    let dst = ctx.alloc_reg();
-    ctx.ops.push(KernelOp::Load {
-        dst,
-        field: info.slot,
-        index: idx_reg,
-        ty: info.scalar_type,
-    });
-    Ok((dst, info.scalar_type))
-}
-
-fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    let func_name = expr_to_name(&call.func).ok_or_else(|| {
-        syn::Error::new_spanned(&call.func, "function call must be a simple name")
-    })?;
-
-    match func_name.as_str() {
-        // Thread indexing
-        "quark_id" => {
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::QuarkId { dst });
-            Ok((dst, ScalarType::U32))
-        }
-        "quark_count" => {
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::QuarkCount { dst });
-            Ok((dst, ScalarType::U32))
-        }
-        "local_id" => {
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::LocalId { dst });
-            Ok((dst, ScalarType::U32))
-        }
-        "group_id" => {
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::GroupId { dst });
-            Ok((dst, ScalarType::U32))
-        }
-        "group_size" => {
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::GroupSize { dst });
-            Ok((dst, ScalarType::U32))
-        }
-
-        // Synchronization
-        "barrier" => {
-            ctx.ops.push(KernelOp::Barrier);
-            Ok((Reg(u32::MAX), ScalarType::Bool))
-        }
-
-        // Atomics: atomic_add(&mut arr[i], val)
-        "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
-        | "atomic_xor" | "atomic_exchange" => emit_atomic_call(&func_name, call, ctx),
-
-        // Math: sin(x), cos(x), sqrt(x), etc.
-        _ => {
-            if let Some(math_fn) = name_to_math_fn(&func_name) {
-                let mut args = Vec::new();
-                let mut ty = ScalarType::F32;
-                for arg in &call.args {
-                    let (r, t) = emit_expr(arg, ctx)?;
-                    args.push(r);
-                    ty = t;
-                }
-                let dst = ctx.alloc_reg();
-                ctx.ops.push(KernelOp::MathCall {
-                    dst,
-                    func: math_fn,
-                    args,
-                    ty,
-                });
-                Ok((dst, ty))
-            } else {
-                Err(syn::Error::new_spanned(
-                    &call.func,
-                    format!("unknown GPU function: {}", func_name),
-                ))
-            }
-        }
-    }
-}
-
-fn emit_atomic_call(
-    name: &str,
-    call: &syn::ExprCall,
-    ctx: &mut EmitCtx,
-) -> Result<(Reg, ScalarType), syn::Error> {
-    // atomic_add(&mut arr[i], val)
-    if call.args.len() != 2 {
-        return Err(syn::Error::new_spanned(
-            call,
-            format!("{} requires 2 arguments", name),
-        ));
-    }
-
-    // First arg: &mut arr[idx]
-    let target = &call.args[0];
-    let (field_slot, idx_reg, ty) = parse_atomic_target(target, ctx)?;
-
-    // Second arg: value
-    let (val_reg, _) = emit_expr(&call.args[1], ctx)?;
-
-    let op = match name {
-        "atomic_add" => AtomicOp::Add,
-        "atomic_sub" => AtomicOp::Sub,
-        "atomic_min" => AtomicOp::Min,
-        "atomic_max" => AtomicOp::Max,
-        "atomic_and" => AtomicOp::And,
-        "atomic_or" => AtomicOp::Or,
-        "atomic_xor" => AtomicOp::Xor,
-        "atomic_exchange" => AtomicOp::Exchange,
-        _ => return Err(syn::Error::new_spanned(call, "unknown atomic op")),
-    };
-
-    let dst = ctx.alloc_reg();
-    ctx.ops.push(KernelOp::AtomicOp {
-        dst,
-        field: field_slot,
-        index: idx_reg,
-        val: val_reg,
-        op,
-        ty,
-    });
-    Ok((dst, ty))
-}
-
-fn parse_atomic_target(
-    expr: &Expr,
-    ctx: &mut EmitCtx,
-) -> Result<(u32, Reg, ScalarType), syn::Error> {
-    // Expect &mut arr[idx]
-    match expr {
-        Expr::Reference(ref_expr) => match ref_expr.expr.as_ref() {
-            Expr::Index(index) => {
-                let arr_name = expr_to_name(&index.expr).ok_or_else(|| {
-                    syn::Error::new_spanned(&index.expr, "atomic target must be a field")
-                })?;
-                let info = ctx
-                    .params
-                    .get(&arr_name)
-                    .ok_or_else(|| {
-                        syn::Error::new_spanned(&index.expr, format!("unknown field: {}", arr_name))
-                    })?
-                    .clone();
-                let (idx_reg, _) = emit_expr(&index.index, ctx)?;
-                Ok((info.slot, idx_reg, info.scalar_type))
-            }
-            _ => Err(syn::Error::new_spanned(
-                expr,
-                "atomic target must be &mut field[index]",
-            )),
-        },
-        _ => Err(syn::Error::new_spanned(
-            expr,
-            "atomic target must be &mut field[index]",
-        )),
-    }
-}
-
-fn emit_method_call(
-    mc: &syn::ExprMethodCall,
-    ctx: &mut EmitCtx,
-) -> Result<(Reg, ScalarType), syn::Error> {
-    let method = mc.method.to_string();
-
-    // x.sin(), x.cos(), x.sqrt(), x.abs()
-    if let Some(math_fn) = name_to_math_fn(&method) {
-        let (receiver, ty) = emit_expr(&mc.receiver, ctx)?;
-        let mut args = vec![receiver];
-        for arg in &mc.args {
-            let (r, _) = emit_expr(arg, ctx)?;
-            args.push(r);
-        }
-        let dst = ctx.alloc_reg();
-        ctx.ops.push(KernelOp::MathCall {
-            dst,
-            func: math_fn,
-            args,
-            ty,
-        });
-        Ok((dst, ty))
-    } else {
-        Err(syn::Error::new_spanned(
-            &mc.method,
-            format!("unknown GPU method: {}", method),
-        ))
-    }
-}
-
-fn emit_cast(cast: &syn::ExprCast, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    let (src, from) = emit_expr(&cast.expr, ctx)?;
-    let to = match cast.ty.as_ref() {
-        Type::Path(path) => scalar_type_from_path(path)?,
-        _ => return Err(syn::Error::new_spanned(&cast.ty, "unsupported cast target")),
-    };
-    let dst = ctx.alloc_reg();
-    ctx.ops.push(KernelOp::Cast { dst, src, from, to });
-    Ok((dst, to))
-}
-
-fn emit_if(if_expr: &syn::ExprIf, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    let (cond_reg, _) = emit_expr(&if_expr.cond, ctx)?;
-
-    // Then branch
-    let mut then_ctx = ctx.child();
-    for stmt in &if_expr.then_branch.stmts {
-        emit_stmt(stmt, &mut then_ctx)?;
-    }
-    let then_ops = ctx.merge_child(then_ctx);
-
-    // Else branch
-    let mut else_ops = Vec::new();
-    if let Some((_, else_expr)) = &if_expr.else_branch {
-        let mut else_ctx = ctx.child();
-        match else_expr.as_ref() {
-            Expr::Block(block) => {
-                for stmt in &block.block.stmts {
-                    emit_stmt(stmt, &mut else_ctx)?;
-                }
-            }
-            Expr::If(nested_if) => {
-                let _ = emit_if(nested_if, &mut else_ctx)?;
-            }
-            _ => {
-                emit_expr_stmt(else_expr, &mut else_ctx)?;
-            }
-        }
-        else_ops = ctx.merge_child(else_ctx);
-    }
-
-    ctx.ops.push(KernelOp::Branch {
-        cond: cond_reg,
-        then_ops,
-        else_ops,
-    });
-    // If used as expression, we'd need phi — for now return a dummy
-    Ok((Reg(u32::MAX), ScalarType::Bool))
-}
-
-fn emit_for_loop(for_loop: &syn::ExprForLoop, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
-    // for i in 0..N { body }
-    // Accept simple idents AND underscore/wildcard patterns
-    let iter_name = match &*for_loop.pat {
-        Pat::Ident(ident) => ident.ident.to_string(),
-        Pat::Wild(_) => "_".to_string(),
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &for_loop.pat,
-                "for loop variable must be a simple name or _",
-            ));
-        }
-    };
-
-    // Parse range: 0..N
-    let count_reg = match &*for_loop.expr {
-        Expr::Range(range) => {
-            if let Some(end) = &range.end {
-                let (r, _) = emit_expr(end, ctx)?;
-                r
-            } else {
-                return Err(syn::Error::new_spanned(
-                    &for_loop.expr,
-                    "for loop requires a bounded range (0..N)",
-                ));
-            }
-        }
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &for_loop.expr,
-                "for loop must use a range (0..N)",
-            ));
-        }
-    };
-
-    let iter_reg = ctx.alloc_reg();
-    // Only register the iteration variable if it's not a wildcard
-    if iter_name != "_" {
-        ctx.vars.insert(iter_name, (iter_reg, ScalarType::U32));
-    }
-
-    // Snapshot variable registers before the loop body
-    let vars_before: HashMap<String, (Reg, ScalarType)> = ctx.vars.clone();
-
-    // Body
-    let mut body_ctx = ctx.child();
-    for stmt in &for_loop.body.stmts {
-        emit_stmt(stmt, &mut body_ctx)?;
-    }
-
-    // Emit copies for loop-carried variables: copy new register back to original
-    for (name, (orig_reg, ty)) in &vars_before {
-        if let Some(&(new_reg, _)) = body_ctx.vars.get(name)
-            && new_reg != *orig_reg
-        {
-            body_ctx.ops.push(KernelOp::Copy {
-                dst: *orig_reg,
-                src: new_reg,
-                ty: *ty,
-            });
-            // Reset the child's var mapping to the original register
-            // so that merge_child doesn't change the parent's mapping
-            body_ctx.vars.insert(name.clone(), (*orig_reg, *ty));
-        }
-    }
-
-    let body_ops = ctx.merge_child(body_ctx);
-
-    ctx.ops.push(KernelOp::Loop {
-        count: count_reg,
-        iter_reg,
-        body: body_ops,
-    });
-    Ok(())
-}
-
-fn emit_while_loop(while_loop: &syn::ExprWhile, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
-    // while cond { body } → for (_w = 0; _w < 10000; _w++) { if !cond { break; } body; }
-    // GPU kernels must be bounded, so we use a max iteration count as a safety limit.
-    let max_iter = 10000u32;
-    let max_reg = ctx.alloc_reg();
-    ctx.ops.push(KernelOp::Const {
-        dst: max_reg,
-        value: ConstValue::U32(max_iter),
-    });
-
-    let iter_reg = ctx.alloc_reg();
-
-    // Snapshot variable registers before the loop body
-    let vars_before: HashMap<String, (Reg, ScalarType)> = ctx.vars.clone();
-
-    // Build the body: first check condition, break if false, then run actual body
-    let mut body_ctx = ctx.child();
-
-    // Emit condition check
-    let (cond_reg, _) = emit_expr(&while_loop.cond, &mut body_ctx)?;
-
-    // if !cond { break; }
-    let not_cond = body_ctx.alloc_reg();
-    body_ctx.ops.push(KernelOp::UnaryOp {
-        dst: not_cond,
-        a: cond_reg,
-        op: UnaryOp::LogicalNot,
-        ty: ScalarType::Bool,
-    });
-    body_ctx.ops.push(KernelOp::Branch {
-        cond: not_cond,
-        then_ops: vec![KernelOp::Break],
-        else_ops: vec![],
-    });
-
-    // Emit actual body
-    for stmt in &while_loop.body.stmts {
-        emit_stmt(stmt, &mut body_ctx)?;
-    }
-
-    // Emit copies for loop-carried variables: copy new register back to original
-    for (name, (orig_reg, ty)) in &vars_before {
-        if let Some(&(new_reg, _)) = body_ctx.vars.get(name)
-            && new_reg != *orig_reg
-        {
-            body_ctx.ops.push(KernelOp::Copy {
-                dst: *orig_reg,
-                src: new_reg,
-                ty: *ty,
-            });
-            body_ctx.vars.insert(name.clone(), (*orig_reg, *ty));
-        }
-    }
-
-    let body_ops = ctx.merge_child(body_ctx);
-
-    ctx.ops.push(KernelOp::Loop {
-        count: max_reg,
-        iter_reg,
-        body: body_ops,
-    });
-    Ok(())
-}
-
-/// Store to a field[index] or reassign a local variable.
-fn emit_store_or_reassign(
-    target: &Expr,
-    src_reg: Reg,
-    src_ty: ScalarType,
-    ctx: &mut EmitCtx,
-) -> Result<(), syn::Error> {
-    match target {
-        // field[index] = value
-        Expr::Index(index) => {
-            let arr_name = expr_to_name(&index.expr).ok_or_else(|| {
-                syn::Error::new_spanned(&index.expr, "store target must be a field name")
-            })?;
-            let info = ctx
-                .params
-                .get(&arr_name)
-                .ok_or_else(|| {
-                    syn::Error::new_spanned(&index.expr, format!("unknown field: {}", arr_name))
-                })?
-                .clone();
-            let (idx_reg, _) = emit_expr(&index.index, ctx)?;
-            ctx.ops.push(KernelOp::Store {
-                field: info.slot,
-                index: idx_reg,
-                src: src_reg,
-                ty: info.scalar_type,
-            });
-            Ok(())
-        }
-        // x = value (local variable reassignment)
-        Expr::Path(path) => {
-            let name = path
-                .path
-                .segments
-                .last()
-                .map(|s| s.ident.to_string())
-                .unwrap_or_default();
-            match ctx.vars.entry(name) {
-                std::collections::hash_map::Entry::Occupied(mut e) => {
-                    e.insert((src_reg, src_ty));
-                    Ok(())
-                }
-                std::collections::hash_map::Entry::Vacant(e) => Err(syn::Error::new_spanned(
-                    target,
-                    format!("cannot assign to undefined variable: {}", e.key()),
-                )),
-            }
-        }
-        _ => Err(syn::Error::new_spanned(
-            target,
-            "assignment target must be field[index] or a local variable",
-        )),
-    }
-}
-
-/// Handle compound assignment: a[i] += expr  OR  x += expr
-fn emit_compound_assign(bin: &syn::ExprBinary, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
-    let op = assign_op_to_binop(&bin.op)?;
-
-    match &*bin.left {
-        // Compound assignment on a local variable: x += expr
-        Expr::Path(path) => {
-            let name = path
-                .path
-                .segments
-                .last()
-                .map(|s| s.ident.to_string())
-                .unwrap_or_default();
-            if let Some(&(left_reg, ty)) = ctx.vars.get(&name) {
-                let (right_reg, _) = emit_expr(&bin.right, ctx)?;
-                let dst = ctx.alloc_reg();
-                ctx.ops.push(KernelOp::BinOp {
-                    dst,
-                    a: left_reg,
-                    b: right_reg,
-                    op,
-                    ty,
-                });
-                ctx.vars.insert(name, (dst, ty));
-                Ok(())
-            } else {
-                Err(syn::Error::new_spanned(
-                    &bin.left,
-                    format!("undefined variable for compound assignment: {}", name),
-                ))
-            }
-        }
-        // Compound assignment on an indexed field: a[i] += expr
-        Expr::Index(_) => {
-            let (left_reg, ty) = emit_expr(&bin.left, ctx)?;
-            let (right_reg, _) = emit_expr(&bin.right, ctx)?;
-            let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::BinOp {
-                dst,
-                a: left_reg,
-                b: right_reg,
-                op,
-                ty,
-            });
-            emit_store_or_reassign(&bin.left, dst, ty, ctx)?;
-            Ok(())
-        }
-        _ => Err(syn::Error::new_spanned(
-            &bin.left,
-            "compound assignment target must be a local variable or field[index]",
-        )),
-    }
-}
-
-// ============================================================================
 // Helpers
 // ============================================================================
 
-fn expr_to_name(expr: &Expr) -> Option<String> {
+pub(crate) fn expr_to_name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Path(path) => path.path.segments.last().map(|s| s.ident.to_string()),
         _ => None,
     }
 }
 
-fn syn_binop_to_ir(op: &SynBinOp) -> Result<BinOp, syn::Error> {
+pub(crate) fn syn_binop_to_ir(op: &SynBinOp) -> Result<BinOp, syn::Error> {
     match op {
         SynBinOp::Add(_) => Ok(BinOp::Add),
         SynBinOp::Sub(_) => Ok(BinOp::Sub),
@@ -1043,7 +185,7 @@ fn syn_binop_to_ir(op: &SynBinOp) -> Result<BinOp, syn::Error> {
     }
 }
 
-fn syn_binop_to_cmp(op: &SynBinOp) -> Option<CmpOp> {
+pub(crate) fn syn_binop_to_cmp(op: &SynBinOp) -> Option<CmpOp> {
     match op {
         SynBinOp::Eq(_) => Some(CmpOp::Eq),
         SynBinOp::Ne(_) => Some(CmpOp::Ne),
@@ -1055,7 +197,7 @@ fn syn_binop_to_cmp(op: &SynBinOp) -> Option<CmpOp> {
     }
 }
 
-fn is_assign_op(op: &SynBinOp) -> bool {
+pub(crate) fn is_assign_op(op: &SynBinOp) -> bool {
     matches!(
         op,
         SynBinOp::AddAssign(_)
@@ -1066,7 +208,7 @@ fn is_assign_op(op: &SynBinOp) -> bool {
     )
 }
 
-fn assign_op_to_binop(op: &SynBinOp) -> Result<BinOp, syn::Error> {
+pub(crate) fn assign_op_to_binop(op: &SynBinOp) -> Result<BinOp, syn::Error> {
     match op {
         SynBinOp::AddAssign(_) => Ok(BinOp::Add),
         SynBinOp::SubAssign(_) => Ok(BinOp::Sub),
@@ -1080,7 +222,7 @@ fn assign_op_to_binop(op: &SynBinOp) -> Result<BinOp, syn::Error> {
     }
 }
 
-fn name_to_math_fn(name: &str) -> Option<MathFn> {
+pub(crate) fn name_to_math_fn(name: &str) -> Option<MathFn> {
     match name {
         "sin" => Some(MathFn::Sin),
         "cos" => Some(MathFn::Cos),
@@ -1109,7 +251,7 @@ fn name_to_math_fn(name: &str) -> Option<MathFn> {
 }
 
 // ============================================================================
-// Parameter parsing (unchanged from Phase 1)
+// Parameter parsing
 // ============================================================================
 
 fn parse_param_type(name: &str, ty: &Type, slot: u32) -> Result<KernelParam, syn::Error> {
@@ -1158,7 +300,7 @@ fn scalar_type_from_type(ty: &Type) -> Result<ScalarType, syn::Error> {
     }
 }
 
-fn scalar_type_from_path(path: &syn::TypePath) -> Result<ScalarType, syn::Error> {
+pub(crate) fn scalar_type_from_path(path: &syn::TypePath) -> Result<ScalarType, syn::Error> {
     let ident = path
         .path
         .segments
