@@ -233,10 +233,23 @@ fn emit_unary(unary: &syn::ExprUnary, ctx: &mut EmitCtx) -> Result<(Reg, ScalarT
 }
 
 fn emit_index(index: &syn::ExprIndex, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    // arr[idx] — arr must be a parameter (field)
+    // arr[idx] — arr can be a parameter (field) or a shared variable
     let arr_name = expr_to_name(&index.expr).ok_or_else(|| {
         syn::Error::new_spanned(&index.expr, "indexing target must be a parameter name")
     })?;
+
+    // Check shared variables first
+    if let Some(&(shared_id, scalar_ty)) = ctx.shared_vars.get(&arr_name) {
+        let (idx_reg, _) = emit_expr(&index.index, ctx)?;
+        let dst = ctx.alloc_reg();
+        ctx.ops.push(KernelOp::SharedLoad {
+            dst,
+            id: shared_id,
+            index: idx_reg,
+            ty: scalar_ty,
+        });
+        return Ok((dst, scalar_ty));
+    }
 
     let info = ctx
         .params

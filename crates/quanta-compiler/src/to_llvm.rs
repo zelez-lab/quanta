@@ -156,6 +156,8 @@ pub(crate) struct EmitCtx<'a, 'ctx> {
     pub(crate) slot_to_const: &'a HashMap<u32, (BasicValueEnum<'ctx>, ScalarType)>,
     pub(crate) intrinsics: &'a dyn GpuIntrinsics<'ctx>,
     pub(crate) _target: GpuTarget,
+    /// Shared (workgroup) memory globals: shared_id -> pointer to the global array.
+    pub(crate) shared_globals: &'a mut HashMap<u32, PointerValue<'ctx>>,
 }
 
 /// Write a value to a register slot (alloca store).

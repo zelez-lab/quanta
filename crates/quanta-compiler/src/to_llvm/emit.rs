@@ -107,6 +107,9 @@ pub(crate) fn build_kernel<'ctx>(
         }
     }
 
+    // Shared memory globals (populated by SharedDecl ops)
+    let mut shared_globals: HashMap<u32, PointerValue<'ctx>> = HashMap::new();
+
     // Emit ops
     let mut ectx = EmitCtx {
         context,
@@ -118,6 +121,7 @@ pub(crate) fn build_kernel<'ctx>(
         slot_to_const: &slot_to_const,
         intrinsics,
         _target: target,
+        shared_globals: &mut shared_globals,
     };
     emit_ops(&mut ectx, &kernel.body)?;
 
@@ -446,8 +450,79 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             )?;
         }
 
+        KernelOp::SharedDecl { id, ty, count } => {
+            // Create a global variable in address space 3 (shared/local memory)
+            let elem_type = scalar_to_llvm_type(ectx.context, ty);
+            let array_type = elem_type.array_type(*count);
+            let global = ectx.module.add_global(
+                array_type,
+                Some(AddressSpace::from(3u16)),
+                &format!("shared_{}", id),
+            );
+            global.set_initializer(&array_type.const_zero());
+            ectx.shared_globals.insert(*id, global.as_pointer_value());
+        }
+
+        KernelOp::SharedLoad { dst, id, index, ty } => {
+            let shared_ptr = ectx
+                .shared_globals
+                .get(id)
+                .copied()
+                .ok_or("shared memory not declared")?;
+            let idx = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, index)?;
+            let elem_type = scalar_to_llvm_type(ectx.context, ty);
+            let gep = unsafe {
+                ectx.builder
+                    .build_gep(
+                        elem_type,
+                        shared_ptr,
+                        &[ectx.context.i32_type().const_zero(), idx],
+                        "shared_gep",
+                    )
+                    .map_err(|e| e.to_string())?
+            };
+            let val = ectx
+                .builder
+                .build_load(elem_type, gep, "shared_load")
+                .map_err(|e| e.to_string())?;
+            reg_store(ectx.context, ectx.builder, ectx.reg_slots, dst.0, val, *ty)?;
+        }
+
+        KernelOp::SharedStore { id, index, src, ty } => {
+            let shared_ptr = ectx
+                .shared_globals
+                .get(id)
+                .copied()
+                .ok_or("shared memory not declared")?;
+            let idx = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, index)?;
+            let val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, src.0)?;
+            let elem_type = scalar_to_llvm_type(ectx.context, ty);
+            let gep = unsafe {
+                ectx.builder
+                    .build_gep(
+                        elem_type,
+                        shared_ptr,
+                        &[ectx.context.i32_type().const_zero(), idx],
+                        "shared_gep",
+                    )
+                    .map_err(|e| e.to_string())?
+            };
+            ectx.builder
+                .build_store(gep, val)
+                .map_err(|e| e.to_string())?;
+        }
+
+        KernelOp::Copy { dst, src, ty } => {
+            let val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, src.0)?;
+            reg_store(ectx.context, ectx.builder, ectx.reg_slots, dst.0, val, *ty)?;
+        }
+
+        KernelOp::Break => {
+            // Break is handled at the Loop level — no-op here
+        }
+
         _ => {
-            // TODO: SharedDecl, SharedLoad, SharedStore, AtomicOp, WaveShuffle, VecConstruct, Texture, Dispatch
+            // TODO: AtomicOp, WaveShuffle, VecConstruct, Texture, Dispatch
         }
     }
     Ok(())

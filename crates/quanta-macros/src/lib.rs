@@ -7,7 +7,7 @@ mod parse;
 mod validate;
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::{Expr, ItemFn, Lit, parse_macro_input};
 
 /// Mark a function as a GPU kernel.
@@ -127,14 +127,47 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Device functions are inlined into kernels by LLVM.
 /// They cannot be launched from CPU — only called from `#[quanta::kernel]` functions.
+///
+/// The proc macro captures the function source and emits a hidden constant
+/// `__QUANTA_DEVICE_{NAME_UPPERCASE}` containing the source text. Kernel
+/// compilation picks this up so MSL/WGSL emitters can prepend it as a regular
+/// helper function.
 #[proc_macro_attribute]
 pub fn device(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // For now, device functions are passed through unchanged.
-    // The MSL/WGSL emitters include them as regular functions in the GPU source.
-    // The LLVM backend emits them as internal functions that get inlined at O3.
-    //
-    // Future: parse into KernelOps, store in a device function registry,
-    // and inline into kernel IR before emission.
+    let func = parse_macro_input!(item as ItemFn);
+    let source = func.to_token_stream().to_string();
+    let fn_name = &func.sig.ident;
+    let const_name = syn::Ident::new(
+        &format!("__QUANTA_DEVICE_{}", fn_name.to_string().to_uppercase()),
+        fn_name.span(),
+    );
+
+    let expanded = quote! {
+        pub const #const_name: &str = #source;
+    };
+    expanded.into()
+}
+
+/// Mark a variable as shared (workgroup-local) memory inside a kernel.
+///
+/// ```ignore
+/// #[quanta::kernel]
+/// fn reduce(data: &[f32], result: &mut [f32]) {
+///     #[quanta::shared] let local: [f32; 256];
+///     let lid = local_id();
+///     local[lid] = data[quark_id()];
+///     barrier();
+/// }
+/// ```
+///
+/// When used inside a `#[quanta::kernel]` body, the kernel parser handles
+/// this attribute directly — it emits `SharedDecl`, `SharedLoad`, and
+/// `SharedStore` ops in the IR.
+///
+/// The proc macro itself is a no-op pass-through; the real work happens
+/// in the kernel parser which inspects `let` attributes.
+#[proc_macro_attribute]
+pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 

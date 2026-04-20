@@ -19,6 +19,8 @@ pub(crate) struct EmitCtx {
     pub(crate) params: HashMap<String, ParamInfo>,
     /// Shared memory counter
     pub(crate) next_shared: u32,
+    /// Shared variable name -> (shared_id, element_type)
+    pub(crate) shared_vars: HashMap<String, (u32, ScalarType)>,
 }
 
 #[derive(Clone)]
@@ -84,6 +86,7 @@ impl EmitCtx {
             vars: HashMap::new(),
             params: param_map,
             next_shared: 0,
+            shared_vars: HashMap::new(),
         }
     }
 
@@ -102,6 +105,7 @@ impl EmitCtx {
             vars: self.vars.clone(),
             params: self.params.clone(),
             next_shared: self.next_shared,
+            shared_vars: self.shared_vars.clone(),
         }
     }
 

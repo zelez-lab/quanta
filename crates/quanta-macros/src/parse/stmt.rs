@@ -2,10 +2,10 @@
 
 use quanta_ir::{ConstValue, KernelOp, Reg, ScalarType, UnaryOp};
 use std::collections::HashMap;
-use syn::{Expr, Pat, Stmt};
+use syn::{Expr, Pat, Stmt, Type};
 
 use super::expr::{emit_expr, emit_expr_stmt};
-use super::{EmitCtx, assign_op_to_binop, expr_to_name};
+use super::{EmitCtx, assign_op_to_binop, expr_to_name, scalar_type_from_path};
 
 pub(crate) fn emit_stmt(stmt: &Stmt, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
     match stmt {
@@ -21,8 +21,68 @@ pub(crate) fn emit_stmt(stmt: &Stmt, ctx: &mut EmitCtx) -> Result<(), syn::Error
     }
 }
 
-/// Emit a let binding, handling simple idents and tuple patterns.
+/// Check if a `let` statement has a `#[quanta::shared]` (or `#[shared]`) attribute.
+fn has_shared_attr(local: &syn::Local) -> bool {
+    local.attrs.iter().any(|attr| {
+        let path = attr.path();
+        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        // Match both #[quanta::shared] and #[shared]
+        match segments.as_slice() {
+            [single] => single == "shared",
+            [ns, name] => ns == "quanta" && name == "shared",
+            _ => false,
+        }
+    })
+}
+
+/// Parse an array type `[ScalarType; count]` from a `syn::Type`.
+fn parse_shared_array_type(ty: &Type) -> Result<(ScalarType, u32), syn::Error> {
+    match ty {
+        Type::Array(array) => {
+            let elem_ty = match array.elem.as_ref() {
+                Type::Path(path) => scalar_type_from_path(path)?,
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &array.elem,
+                        "shared memory element must be a scalar type",
+                    ));
+                }
+            };
+            let count = match &array.len {
+                syn::Expr::Lit(lit) => match &lit.lit {
+                    syn::Lit::Int(i) => i
+                        .base10_parse::<u32>()
+                        .map_err(|e| syn::Error::new_spanned(i, e))?,
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            &array.len,
+                            "shared memory size must be an integer literal",
+                        ));
+                    }
+                },
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &array.len,
+                        "shared memory size must be an integer literal",
+                    ));
+                }
+            };
+            Ok((elem_ty, count))
+        }
+        _ => Err(syn::Error::new_spanned(
+            ty,
+            "shared memory must be declared as [Type; count]",
+        )),
+    }
+}
+
+/// Emit a let binding, handling simple idents, tuple patterns, and shared memory declarations.
 fn emit_local(local: &syn::Local, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+    // Check for #[quanta::shared] attribute
+    if has_shared_attr(local) {
+        return emit_shared_decl(local, ctx);
+    }
+
     match &local.pat {
         Pat::Ident(ident) => {
             let var_name = ident.ident.to_string();
@@ -75,6 +135,54 @@ fn emit_local(local: &syn::Local, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
             "unsupported pattern in let binding",
         )),
     }
+}
+
+/// Emit a shared memory declaration: `#[quanta::shared] let local: [f32; 256];`
+fn emit_shared_decl(local: &syn::Local, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+    let var_name = match &local.pat {
+        Pat::Ident(ident) => ident.ident.to_string(),
+        Pat::Type(pat_type) => match pat_type.pat.as_ref() {
+            Pat::Ident(ident) => ident.ident.to_string(),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &local.pat,
+                    "shared memory variable must be a simple name",
+                ));
+            }
+        },
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &local.pat,
+                "shared memory variable must be a simple name",
+            ));
+        }
+    };
+
+    // Extract the type annotation — either from Pat::Type or from Local::ty (if present)
+    let ty_ref = match &local.pat {
+        Pat::Type(pat_type) => Some(pat_type.ty.as_ref()),
+        _ => None,
+    };
+
+    let ty = ty_ref.ok_or_else(|| {
+        syn::Error::new_spanned(
+            &local.pat,
+            "shared memory must have a type annotation: #[quanta::shared] let name: [Type; count];",
+        )
+    })?;
+
+    let (scalar_ty, count) = parse_shared_array_type(ty)?;
+    let id = ctx.next_shared;
+    ctx.next_shared += 1;
+
+    ctx.ops.push(KernelOp::SharedDecl {
+        id,
+        ty: scalar_ty,
+        count,
+    });
+    ctx.shared_vars.insert(var_name, (id, scalar_ty));
+
+    Ok(())
 }
 
 pub(crate) fn emit_for_loop(
@@ -223,7 +331,7 @@ pub(crate) fn emit_while_loop(
     Ok(())
 }
 
-/// Store to a field[index] or reassign a local variable.
+/// Store to a field[index], shared[index], or reassign a local variable.
 pub(crate) fn emit_store_or_reassign(
     target: &Expr,
     src_reg: Reg,
@@ -231,11 +339,24 @@ pub(crate) fn emit_store_or_reassign(
     ctx: &mut EmitCtx,
 ) -> Result<(), syn::Error> {
     match target {
-        // field[index] = value
+        // field[index] = value  OR  shared[index] = value
         Expr::Index(index) => {
             let arr_name = expr_to_name(&index.expr).ok_or_else(|| {
                 syn::Error::new_spanned(&index.expr, "store target must be a field name")
             })?;
+
+            // Check shared variables first
+            if let Some(&(shared_id, scalar_ty)) = ctx.shared_vars.get(&arr_name) {
+                let (idx_reg, _) = emit_expr(&index.index, ctx)?;
+                ctx.ops.push(KernelOp::SharedStore {
+                    id: shared_id,
+                    index: idx_reg,
+                    src: src_reg,
+                    ty: scalar_ty,
+                });
+                return Ok(());
+            }
+
             let info = ctx
                 .params
                 .get(&arr_name)

@@ -545,6 +545,11 @@ fn emit_wgsl(kernel: &KernelDef) -> Result<String, String> {
         }
     }
 
+    // Pre-pass: collect SharedDecl ops and emit them as module-level declarations
+    if !kernel.body.is_empty() {
+        collect_shared_decls_wgsl(&mut out, &kernel.body);
+    }
+
     out.push_str(&format!(
         "\n@compute @workgroup_size(64)\nfn {}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n",
         kernel.name
@@ -563,6 +568,34 @@ fn emit_wgsl(kernel: &KernelDef) -> Result<String, String> {
 
     out.push_str("}\n");
     Ok(out)
+}
+
+/// Recursively collect SharedDecl ops from the kernel body and emit them
+/// as WGSL module-level `var<workgroup>` declarations.
+fn collect_shared_decls_wgsl(out: &mut String, ops: &[quanta_ir::KernelOp]) {
+    use quanta_ir::KernelOp::*;
+    for op in ops {
+        match op {
+            SharedDecl { id, ty, count } => {
+                out.push_str(&format!(
+                    "var<workgroup> shared_{}: array<{}, {}>;\n",
+                    id,
+                    ty.wgsl_name(),
+                    count
+                ));
+            }
+            Branch {
+                then_ops, else_ops, ..
+            } => {
+                collect_shared_decls_wgsl(out, then_ops);
+                collect_shared_decls_wgsl(out, else_ops);
+            }
+            Loop { body, .. } => {
+                collect_shared_decls_wgsl(out, body);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
@@ -703,6 +736,24 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
         }
         Break => {
             out.push_str(&format!("{}break;\n", pad));
+        }
+        Barrier => {
+            out.push_str(&format!("{}workgroupBarrier();\n", pad));
+        }
+        SharedDecl { .. } => {
+            // Already emitted at module level by collect_shared_decls_wgsl
+        }
+        SharedLoad { dst, id, index, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = shared_{}[r{}];\n",
+                pad, dst.0, id, index.0
+            ));
+        }
+        SharedStore { id, index, src, .. } => {
+            out.push_str(&format!(
+                "{}shared_{}[r{}] = r{};\n",
+                pad, id, index.0, src.0
+            ));
         }
         _ => {
             out.push_str(&format!("{}// TODO: {:?}\n", pad, op));
