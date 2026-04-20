@@ -5,6 +5,13 @@ use std::collections::HashMap;
 
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     let mut out = String::new();
+
+    // Emit device helper functions (from inner fn definitions)
+    for src in &kernel.device_sources {
+        out.push_str(&translate_device_fn_to_wgsl(src));
+        out.push('\n');
+    }
+
     let mut slot_names: HashMap<u32, String> = HashMap::new();
 
     for param in &kernel.params {
@@ -191,6 +198,21 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
         }
         KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!("{}workgroupBarrier();\n", pad)),
+        KernelOp::DeviceCall {
+            dst,
+            func_name,
+            args,
+            ..
+        } => {
+            let a: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}let r{} = {}({});\n",
+                pad,
+                dst.0,
+                func_name,
+                a.join(", ")
+            ));
+        }
         _ => out.push_str(&format!("{}// TODO: {:?}\n", pad, op)),
     }
 }
@@ -203,4 +225,15 @@ fn const_wgsl(v: &ConstValue) -> String {
         ConstValue::Bool(x) => format!("{}", x),
         _ => "/* unsupported const */".to_string(),
     }
+}
+
+/// Translate a Rust device function source to WGSL.
+/// WGSL uses `fn name(...) -> type` — same syntax as Rust for function
+/// signatures, so only body-level translations are needed.
+fn translate_device_fn_to_wgsl(rust_source: &str) -> String {
+    let mut s = rust_source.to_string();
+    s = s.replace("let mut ", "var ");
+    s = s.replace(" as f32", "");
+    s = s.replace(" as u32", "");
+    s
 }

@@ -358,6 +358,14 @@ pub enum KernelOp {
         wave: Reg,
         groups: [Reg; 3],
     },
+
+    // Device function call (user-defined helper)
+    DeviceCall {
+        dst: Reg,
+        func_name: String,
+        args: Vec<Reg>,
+        ty: ScalarType,
+    },
 }
 
 /// Complete kernel definition in IR form.
@@ -372,6 +380,11 @@ pub struct KernelDef {
     pub next_reg: u32,
     /// Optimization level: 0 (none), 1, 2, 3 (aggressive). Default: 3.
     pub opt_level: u8,
+    /// Source text of `#[quanta::device]` helper functions used by this kernel.
+    /// Each entry is the original Rust source of an inner `fn` defined in the
+    /// kernel body. The MSL/WGSL emitters prepend these as GPU helper functions;
+    /// the rustc compilation path includes them in the generated crate.
+    pub device_sources: Vec<String>,
 }
 
 /// Compiler output — compiled kernel for all targets.

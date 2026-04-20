@@ -10,7 +10,11 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     let mut out = String::new();
     out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
 
-    // Device helper functions would go here (from #[quanta::device])
+    // Emit device helper functions (from inner fn definitions)
+    for src in &kernel.device_sources {
+        out.push_str(&translate_device_fn_to_msl(src));
+        out.push('\n');
+    }
 
     // Kernel signature
     out.push_str(&format!("kernel void {}(\n", kernel.name));
@@ -306,6 +310,22 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 pad, dst.0, predicate.0
             ));
         }
+        KernelOp::DeviceCall {
+            dst,
+            func_name,
+            args,
+            ty,
+        } => {
+            let a: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}{} r{} = {}({});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                func_name,
+                a.join(", ")
+            ));
+        }
         _ => out.push_str(&format!("{}/* TODO: {:?} */\n", pad, op)),
     }
 }
@@ -391,4 +411,60 @@ fn atomic_fn_str(op: &AtomicOp) -> &'static str {
         AtomicOp::Exchange => "atomic_exchange_explicit",
         AtomicOp::CompareExchange => "atomic_compare_exchange_weak_explicit",
     }
+}
+
+/// Translate a Rust device function source to MSL.
+///
+/// Rewrites the function signature (return type, parameter types) and body
+/// using string substitutions. This is the Phase 1 text-based approach;
+/// Phase 2 will walk KernelOps for device function bodies too.
+fn translate_device_fn_to_msl(rust_source: &str) -> String {
+    // Map Rust return types to MSL return types. The `fn name(...) -> T` form
+    // becomes `T name(...)` in MSL.
+    let type_map: &[(&str, &str)] = &[
+        ("f32", "float"),
+        ("f64", "double"),
+        ("u32", "uint"),
+        ("u64", "ulong"),
+        ("i32", "int"),
+        ("i64", "long"),
+        ("bool", "bool"),
+    ];
+
+    let mut s = rust_source.to_string();
+
+    // Replace return type: "-> f32" → "" (moved to front)
+    let mut ret_msl = "void";
+    for &(rust_ty, msl_ty) in type_map {
+        let arrow = format!("-> {}", rust_ty);
+        if s.contains(&arrow) {
+            ret_msl = msl_ty;
+            s = s.replace(&arrow, "");
+            break;
+        }
+    }
+
+    // Replace "fn name" with "inline <ret_type> name"
+    if let Some(pos) = s.find("fn ") {
+        s = format!("{}inline {} {}", &s[..pos], ret_msl, &s[pos + 3..]);
+    }
+
+    // Replace parameter types
+    for &(rust_ty, msl_ty) in type_map {
+        let param_pattern = format!(": {}", rust_ty);
+        let param_replacement = format!(": {}", msl_ty);
+        // Only replace parameter annotations (": type" patterns), not
+        // occurrences inside the body. Since parameter annotations come before
+        // the opening brace, this is safe with a simple replace.
+        s = s.replace(&param_pattern, &param_replacement);
+    }
+
+    // Body translations
+    s = s.replace("let mut ", "auto ");
+    s = s.replace("let ", "auto ");
+    s = s.replace(" as f32", "");
+    s = s.replace(" as u32", "");
+    s = s.replace(" as i32", "");
+
+    s
 }

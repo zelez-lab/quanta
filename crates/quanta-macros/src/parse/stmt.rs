@@ -1,11 +1,12 @@
 //! Statement emission — emit_stmt, loops, assignments.
 
 use quanta_ir::{ConstValue, KernelOp, Reg, ScalarType, UnaryOp};
+use quote::ToTokens;
 use std::collections::HashMap;
-use syn::{Expr, Pat, Stmt, Type};
+use syn::{Expr, FnArg, Item, Pat, Stmt, Type};
 
 use super::expr::{emit_expr, emit_expr_stmt};
-use super::{EmitCtx, assign_op_to_binop, expr_to_name, scalar_type_from_path};
+use super::{DeviceFnInfo, EmitCtx, assign_op_to_binop, expr_to_name, scalar_type_from_path};
 
 pub(crate) fn emit_stmt(stmt: &Stmt, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
     match stmt {
@@ -14,11 +15,77 @@ pub(crate) fn emit_stmt(stmt: &Stmt, ctx: &mut EmitCtx) -> Result<(), syn::Error
             emit_expr_stmt(expr, ctx)?;
             Ok(())
         }
+        Stmt::Item(item) => emit_item(item, ctx),
         _ => Err(syn::Error::new(
             proc_macro2::Span::call_site(),
             "unsupported statement in GPU kernel",
         )),
     }
+}
+
+/// Handle item statements inside a kernel body. The only supported item is
+/// inner function definitions, which become device functions.
+fn emit_item(item: &Item, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+    match item {
+        Item::Fn(func) => emit_device_fn(func, ctx),
+        _ => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "only inner function definitions are supported inside GPU kernels",
+        )),
+    }
+}
+
+/// Process an inner `fn` definition as a device function.
+/// Captures its source text and registers its signature so call sites can
+/// resolve return types.
+fn emit_device_fn(func: &syn::ItemFn, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+    let fn_name = func.sig.ident.to_string();
+
+    // Parse parameter types
+    let mut param_types = Vec::new();
+    for arg in &func.sig.inputs {
+        if let FnArg::Typed(pat_type) = arg {
+            let ty = match pat_type.ty.as_ref() {
+                Type::Path(path) => scalar_type_from_path(path)?,
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &pat_type.ty,
+                        "device function parameters must be scalar types",
+                    ));
+                }
+            };
+            param_types.push(ty);
+        }
+    }
+
+    // Parse return type
+    let return_type = match &func.sig.output {
+        syn::ReturnType::Default => ScalarType::Bool, // void-ish, shouldn't be called for value
+        syn::ReturnType::Type(_, ty) => match ty.as_ref() {
+            Type::Path(path) => scalar_type_from_path(path)?,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    "device function return type must be a scalar type",
+                ));
+            }
+        },
+    };
+
+    // Register the function signature for call resolution
+    ctx.device_fns.insert(
+        fn_name,
+        DeviceFnInfo {
+            param_types,
+            return_type,
+        },
+    );
+
+    // Capture the full source text for MSL/WGSL emission
+    let source = func.to_token_stream().to_string();
+    ctx.device_sources.push(source);
+
+    Ok(())
 }
 
 /// Check if a `let` statement has a `#[quanta::shared]` (or `#[shared]`) attribute.

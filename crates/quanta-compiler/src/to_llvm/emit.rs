@@ -973,6 +973,13 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
         KernelOp::Dispatch { .. } => {
             return Err("dynamic parallelism (Dispatch) not supported".into());
         }
+        KernelOp::DeviceCall { .. } => {
+            // DeviceCall is handled by the text-based MSL/WGSL emitters.
+            // In the LLVM path, device functions are compiled from their Rust source
+            // via the rustc path and inlined by LLVM. The KernelOp IR path should not
+            // see DeviceCall ops — they are resolved at the source level.
+            return Err("DeviceCall not supported in LLVM KernelOp path (use rustc path)".into());
+        }
     }
     Ok(())
 }

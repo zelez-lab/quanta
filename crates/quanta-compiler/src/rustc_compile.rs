@@ -15,10 +15,22 @@ use std::process::Command;
 ///
 /// `rust_body` is the original function body as written by the user,
 /// using `a[i]` syntax on slice-like parameters and `quark_id()` etc.
+/// `device_sources` contains Rust source for inner device functions that
+/// should be included in the generated crate so rustc can resolve calls.
 pub fn rust_to_llvm_ir(
     kernel_name: &str,
     params: &[KernelParam],
     rust_body: &str,
+) -> Result<String, String> {
+    rust_to_llvm_ir_with_devices(kernel_name, params, rust_body, &[])
+}
+
+/// Full version with device function support.
+pub fn rust_to_llvm_ir_with_devices(
+    kernel_name: &str,
+    params: &[KernelParam],
+    rust_body: &str,
+    device_sources: &[String],
 ) -> Result<String, String> {
     let tmp_dir = std::env::temp_dir().join("quanta_rustc");
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("mkdir: {}", e))?;
@@ -26,7 +38,7 @@ pub fn rust_to_llvm_ir(
     let src_path = tmp_dir.join(format!("{}.rs", kernel_name));
     let ir_path = tmp_dir.join(format!("{}.ll", kernel_name));
 
-    let source = generate_kernel_source(kernel_name, params, rust_body);
+    let source = generate_kernel_source(kernel_name, params, rust_body, device_sources);
     std::fs::write(&src_path, &source).map_err(|e| format!("write: {}", e))?;
 
     let output = Command::new("rustc")
@@ -59,7 +71,12 @@ pub fn rust_to_llvm_ir(
 ///
 /// Key: GpuSlice<T> wrapper provides `a[i]` indexing on raw pointers,
 /// so the user's kernel body works unchanged.
-fn generate_kernel_source(kernel_name: &str, params: &[KernelParam], rust_body: &str) -> String {
+fn generate_kernel_source(
+    kernel_name: &str,
+    params: &[KernelParam],
+    rust_body: &str,
+    device_sources: &[String],
+) -> String {
     let mut src = String::new();
 
     src.push_str("#![no_std]\n");
@@ -174,6 +191,15 @@ impl GpuFloat for f32 {
 }
 ",
     );
+
+    // === Device functions (inner helper functions from the kernel body) ===
+    for device_src in device_sources {
+        // Emit as module-level functions. The Rust source from the proc macro
+        // is already valid Rust — just prefix with #[inline(always)].
+        src.push_str("#[inline(always)]\n");
+        src.push_str(device_src);
+        src.push_str("\n\n");
+    }
 
     // === The kernel function ===
     src.push_str("#[unsafe(no_mangle)]\n");
@@ -330,7 +356,7 @@ mod tests {
         ];
 
         let body = "    let i = quark_id();\n    result[i] = a[i] + 1.0;";
-        let source = generate_kernel_source("test_kernel", &params, body);
+        let source = generate_kernel_source("test_kernel", &params, body, &[]);
 
         // Verify GpuSlice wrapper is present
         assert!(source.contains("struct GpuSlice"));

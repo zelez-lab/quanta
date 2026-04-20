@@ -224,6 +224,7 @@ fn make_test_kernel() -> KernelDef {
         body_source: None,
         next_reg: 4,
         opt_level: 3,
+        device_sources: Vec::new(),
     }
 }
 
@@ -470,6 +471,7 @@ fn test_complex() {
         body_source: None,
         next_reg: 21,
         opt_level: 3,
+        device_sources: Vec::new(),
     };
 
     println!("=== NVIDIA PTX (neuron_activate, O3) ===\n");

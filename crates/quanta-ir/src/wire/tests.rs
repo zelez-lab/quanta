@@ -10,6 +10,7 @@ fn roundtrip_empty_kernel() {
         body_source: None,
         next_reg: 0,
         opt_level: 3,
+        device_sources: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -19,6 +20,7 @@ fn roundtrip_empty_kernel() {
     assert!(k2.body_source.is_none());
     assert_eq!(k2.next_reg, 0);
     assert_eq!(k2.opt_level, 3);
+    assert!(k2.device_sources.is_empty());
 }
 
 #[test]
@@ -34,6 +36,7 @@ fn roundtrip_kernel_with_body_source() {
         body_source: Some(String::from("let x = input[gid];")),
         next_reg: 5,
         opt_level: 2,
+        device_sources: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -89,6 +92,7 @@ fn roundtrip_kernel_ops() {
         body_source: None,
         next_reg: 4,
         opt_level: 3,
+        device_sources: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -119,6 +123,7 @@ fn roundtrip_branch_and_loop() {
         body_source: None,
         next_reg: 4,
         opt_level: 0,
+        device_sources: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -170,6 +175,7 @@ fn trailing_bytes_rejected() {
         body_source: None,
         next_reg: 0,
         opt_level: 0,
+        device_sources: Vec::new(),
     };
     let mut bytes = serialize_kernel(&k);
     bytes.push(0xFF);
@@ -233,6 +239,7 @@ fn dispatch_roundtrip() {
         body_source: None,
         next_reg: 11,
         opt_level: 0,
+        device_sources: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -280,6 +287,7 @@ fn all_kernel_params_roundtrip() {
         body_source: None,
         next_reg: 0,
         opt_level: 1,
+        device_sources: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -324,6 +332,7 @@ fn texture_ops_roundtrip() {
         body_source: None,
         next_reg: 12,
         opt_level: 3,
+        device_sources: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -359,8 +368,30 @@ fn wave_ops_roundtrip() {
         body_source: None,
         next_reg: 9,
         opt_level: 0,
+        device_sources: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
     assert_eq!(k2.body.len(), 4);
+}
+
+#[test]
+fn roundtrip_device_sources() {
+    let k = KernelDef {
+        name: String::from("with_device"),
+        params: Vec::new(),
+        body: Vec::new(),
+        body_source: None,
+        next_reg: 0,
+        opt_level: 3,
+        device_sources: vec![
+            String::from("fn activate(x: f32, t: f32) -> f32 { if x > t { x } else { x * 0.99 } }"),
+            String::from("fn helper(a: f32) -> f32 { a + 1.0 }"),
+        ],
+    };
+    let bytes = serialize_kernel(&k);
+    let k2 = deserialize_kernel(&bytes).unwrap();
+    assert_eq!(k2.device_sources.len(), 2);
+    assert!(k2.device_sources[0].contains("activate"));
+    assert!(k2.device_sources[1].contains("helper"));
 }

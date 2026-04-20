@@ -710,6 +710,24 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
             })
         }
 
+        // 35 — DeviceCall
+        35 => {
+            let dst = read_reg(r)?;
+            let func_name = r.str()?;
+            let len = r.u32()? as usize;
+            let mut args = Vec::with_capacity(len);
+            for _ in 0..len {
+                args.push(read_reg(r)?);
+            }
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::DeviceCall {
+                dst,
+                func_name,
+                args,
+                ty,
+            })
+        }
+
         _ => Err("invalid KernelOp tag"),
     }
 }
@@ -742,6 +760,18 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
     let body_source = r.option_str()?;
     let next_reg = r.u32()?;
     let opt_level = r.u8()?;
+    // device_sources: Vec<String> — appended after opt_level.
+    // If there are no remaining bytes (old format), default to empty.
+    let device_sources = if r.remaining() > 0 {
+        let count = r.u32()? as usize;
+        let mut v = Vec::with_capacity(count);
+        for _ in 0..count {
+            v.push(r.str()?);
+        }
+        v
+    } else {
+        Vec::new()
+    };
     Ok(KernelDef {
         name,
         params,
@@ -749,6 +779,7 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
         body_source,
         next_reg,
         opt_level,
+        device_sources,
     })
 }
 

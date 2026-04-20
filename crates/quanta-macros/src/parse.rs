@@ -9,6 +9,15 @@ use quanta_ir::{BinOp, CmpOp, KernelDef, KernelOp, KernelParam, MathFn, Reg, Sca
 use std::collections::HashMap;
 use syn::{BinOp as SynBinOp, Expr, FnArg, ItemFn, Pat, Type};
 
+/// Parsed device function signature — enough to type-check calls.
+#[derive(Clone)]
+pub(crate) struct DeviceFnInfo {
+    /// Parameter types (stored for future arity/type validation at call sites).
+    #[allow(dead_code)]
+    pub(crate) param_types: Vec<ScalarType>,
+    pub(crate) return_type: ScalarType,
+}
+
 /// Emission context — tracks registers, variables, and parameters.
 pub(crate) struct EmitCtx {
     pub(crate) ops: Vec<KernelOp>,
@@ -21,6 +30,11 @@ pub(crate) struct EmitCtx {
     pub(crate) next_shared: u32,
     /// Shared variable name -> (shared_id, element_type)
     pub(crate) shared_vars: HashMap<String, (u32, ScalarType)>,
+    /// Device functions defined inside the kernel body (inner `fn` items).
+    /// Maps function name -> signature info for call-site type resolution.
+    pub(crate) device_fns: HashMap<String, DeviceFnInfo>,
+    /// Collected source text of device functions, for MSL/WGSL emitters.
+    pub(crate) device_sources: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -87,6 +101,8 @@ impl EmitCtx {
             params: param_map,
             next_shared: 0,
             shared_vars: HashMap::new(),
+            device_fns: HashMap::new(),
+            device_sources: Vec::new(),
         }
     }
 
@@ -106,6 +122,8 @@ impl EmitCtx {
             params: self.params.clone(),
             next_shared: self.next_shared,
             shared_vars: self.shared_vars.clone(),
+            device_fns: self.device_fns.clone(),
+            device_sources: Vec::new(), // collected at top level only
         }
     }
 
@@ -156,6 +174,7 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
         body_source: None,
         next_reg: ctx.next_reg,
         opt_level: 3, // overridden by proc macro attribute
+        device_sources: ctx.device_sources,
     })
 }
 

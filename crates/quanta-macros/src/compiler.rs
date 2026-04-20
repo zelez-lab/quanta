@@ -1,6 +1,6 @@
 //! Call the quanta-compiler binary or use built-in emitters.
 
-use quanta_ir::{CompilerOutput, KernelDef, KernelParam};
+use quanta_ir::{CompilerOutput, KernelDef, KernelOp, KernelParam};
 use std::collections::HashMap;
 
 /// Compile a KernelDef to all available targets.
@@ -119,6 +119,13 @@ fn find_compiler_binary() -> Option<String> {
 fn emit_msl(kernel: &KernelDef) -> Result<String, String> {
     let mut out = String::new();
     out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+
+    // Emit device helper functions
+    for src in &kernel.device_sources {
+        out.push_str(&translate_device_fn_to_msl_fallback(src));
+        out.push('\n');
+    }
+
     out.push_str(&format!("kernel void {}(\n", kernel.name));
 
     let mut param_lines = Vec::new();
@@ -480,6 +487,22 @@ fn emit_msl_op(
                 pad, dst.0, predicate.0
             ));
         }
+        KernelOp::DeviceCall {
+            dst,
+            func_name,
+            args,
+            ty,
+        } => {
+            let arg_strs: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}{} r{} = {}({});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                func_name,
+                arg_strs.join(", ")
+            ));
+        }
         _ => {
             out.push_str(&format!("{}/* TODO: {:?} */\n", pad, op));
         }
@@ -535,6 +558,12 @@ fn math_fn_msl(func: &quanta_ir::MathFn) -> &'static str {
 
 fn emit_wgsl(kernel: &KernelDef) -> Result<String, String> {
     let mut out = String::new();
+
+    // Emit device helper functions
+    for src in &kernel.device_sources {
+        out.push_str(&translate_device_fn_to_wgsl_fallback(src));
+        out.push('\n');
+    }
 
     for param in &kernel.params {
         match param {
@@ -817,6 +846,21 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
                 pad, dst.0, predicate.0
             ));
         }
+        KernelOp::DeviceCall {
+            dst,
+            func_name,
+            args,
+            ..
+        } => {
+            let arg_strs: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}let r{} = {}({});\n",
+                pad,
+                dst.0,
+                func_name,
+                arg_strs.join(", ")
+            ));
+        }
         _ => {
             out.push_str(&format!("{}// TODO: {:?}\n", pad, op));
         }
@@ -871,4 +915,61 @@ fn const_to_wgsl(value: &quanta_ir::ConstValue) -> String {
         quanta_ir::ConstValue::Bool(v) => format!("{}", v),
         _ => "/* unsupported const */".to_string(),
     }
+}
+
+/// Translate a Rust device function source to MSL (fallback emitter).
+fn translate_device_fn_to_msl_fallback(rust_source: &str) -> String {
+    let type_map: &[(&str, &str)] = &[
+        ("f32", "float"),
+        ("f64", "double"),
+        ("u32", "uint"),
+        ("u64", "ulong"),
+        ("i32", "int"),
+        ("i64", "long"),
+        ("bool", "bool"),
+    ];
+
+    let mut s = rust_source.to_string();
+
+    // Extract return type and replace arrow
+    let mut ret_msl = "void";
+    for &(rust_ty, msl_ty) in type_map {
+        let arrow = format!("-> {}", rust_ty);
+        if s.contains(&arrow) {
+            ret_msl = msl_ty;
+            s = s.replace(&arrow, "");
+            break;
+        }
+    }
+
+    // Replace "fn name" with "inline <ret_type> name"
+    if let Some(pos) = s.find("fn ") {
+        s = format!("{}inline {} {}", &s[..pos], ret_msl, &s[pos + 3..]);
+    }
+
+    // Replace parameter types
+    for &(rust_ty, msl_ty) in type_map {
+        let param_pattern = format!(": {}", rust_ty);
+        let param_replacement = format!(": {}", msl_ty);
+        s = s.replace(&param_pattern, &param_replacement);
+    }
+
+    // Body translations
+    s = s.replace("let mut ", "auto ");
+    s = s.replace("let ", "auto ");
+    s = s.replace(" as f32", "");
+    s = s.replace(" as u32", "");
+    s = s.replace(" as i32", "");
+
+    s
+}
+
+/// Translate a Rust device function source to WGSL (fallback emitter).
+fn translate_device_fn_to_wgsl_fallback(rust_source: &str) -> String {
+    // WGSL uses `fn name(...) -> type` — similar to Rust syntax
+    let mut s = rust_source.to_string();
+    s = s.replace("let mut ", "var ");
+    s = s.replace(" as f32", "");
+    s = s.replace(" as u32", "");
+    s
 }

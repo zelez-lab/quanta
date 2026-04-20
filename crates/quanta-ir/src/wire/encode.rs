@@ -391,6 +391,7 @@ fn write_kernel_param(w: &mut Writer, p: &KernelParam) {
 //  32  Copy
 //  33  Break
 //  34  Dispatch
+//  35  DeviceCall
 
 fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
     match op {
@@ -768,6 +769,23 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             write_reg(w, &groups[1]);
             write_reg(w, &groups[2]);
         }
+
+        // 35 — DeviceCall { dst, func_name, args, ty }
+        KernelOp::DeviceCall {
+            dst,
+            func_name,
+            args,
+            ty,
+        } => {
+            w.u8(35);
+            write_reg(w, dst);
+            w.str(func_name);
+            w.u32(args.len() as u32);
+            for arg in args {
+                write_reg(w, arg);
+            }
+            write_scalar_type(w, ty);
+        }
     }
 }
 
@@ -796,6 +814,11 @@ pub(crate) fn write_kernel_def(w: &mut Writer, k: &KernelDef) {
     w.option_str(&k.body_source);
     w.u32(k.next_reg);
     w.u8(k.opt_level);
+    // device_sources: Vec<String>
+    w.u32(k.device_sources.len() as u32);
+    for s in &k.device_sources {
+        w.str(s);
+    }
 }
 
 // ---------------------------------------------------------------------------

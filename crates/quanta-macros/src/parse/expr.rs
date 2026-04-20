@@ -315,6 +315,7 @@ fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
         | "atomic_xor" | "atomic_exchange" => emit_atomic_call(&func_name, call, ctx),
 
         // Math: sin(x), cos(x), sqrt(x), etc.
+        // Device functions: user-defined inner functions
         _ => {
             if let Some(math_fn) = name_to_math_fn(&func_name) {
                 let mut args = Vec::new();
@@ -332,6 +333,23 @@ fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
                     ty,
                 });
                 Ok((dst, ty))
+            } else if let Some(device_fn) = ctx.device_fns.get(&func_name).cloned() {
+                // Device function call: emit args, then a DeviceCall op.
+                // For the KernelOp IR path, we emit individual arg registers
+                // and a DeviceCall op that references the function by name.
+                let mut arg_regs = Vec::new();
+                for arg in &call.args {
+                    let (r, _) = emit_expr(arg, ctx)?;
+                    arg_regs.push(r);
+                }
+                let dst = ctx.alloc_reg();
+                ctx.ops.push(KernelOp::DeviceCall {
+                    dst,
+                    func_name: func_name.clone(),
+                    args: arg_regs,
+                    ty: device_fn.return_type,
+                });
+                Ok((dst, device_fn.return_type))
             } else {
                 Err(syn::Error::new_spanned(
                     &call.func,
