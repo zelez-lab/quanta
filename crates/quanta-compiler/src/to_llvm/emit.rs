@@ -221,6 +221,21 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             )?;
         }
 
+        KernelOp::QuarkCount { dst } => {
+            // Total threads = block_dim (approximate). Most kernels use quark_id() not quark_count().
+            let bdim = ectx
+                .intrinsics
+                .block_dim_x(ectx.context, ectx.module, ectx.builder);
+            reg_store(
+                ectx.context,
+                ectx.builder,
+                ectx.reg_slots,
+                dst.0,
+                bdim.into(),
+                ScalarType::U32,
+            )?;
+        }
+
         KernelOp::Load {
             dst,
             field,
@@ -521,8 +536,47 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             // Break is handled at the Loop level — no-op here
         }
 
-        _ => {
-            // TODO: AtomicOp, WaveShuffle, VecConstruct, Texture, Dispatch
+        KernelOp::AtomicOp { .. } => {
+            return Err("AtomicOp not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::AtomicCas { .. } => {
+            return Err("AtomicCas not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::WaveShuffle { .. } => {
+            return Err("WaveShuffle not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::WaveBallot { .. } => {
+            return Err("WaveBallot not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::WaveAny { .. } => {
+            return Err("WaveAny not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::WaveAll { .. } => {
+            return Err("WaveAll not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::VecConstruct { .. } => {
+            return Err("VecConstruct not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::VecExtract { .. } => {
+            return Err("VecExtract not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::MatMul { .. } => {
+            return Err("MatMul not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::TextureSample2D { .. } => {
+            return Err("TextureSample2D not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::TextureSample3D { .. } => {
+            return Err("TextureSample3D not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::TextureWrite2D { .. } => {
+            return Err("TextureWrite2D not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::TextureSize { .. } => {
+            return Err("TextureSize not yet implemented in LLVM emitter".into());
+        }
+        KernelOp::Dispatch { .. } => {
+            return Err("dynamic parallelism (Dispatch) not supported".into());
         }
     }
     Ok(())

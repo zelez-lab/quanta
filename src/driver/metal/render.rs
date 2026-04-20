@@ -325,8 +325,18 @@ impl MetalDevice {
                 RenderOp::DebugPop => {
                     encoder.pop_debug_group();
                 }
-                RenderOp::SetSampler { .. } => {
-                    // TODO: create MTLSamplerState and bind to fragment
+                RenderOp::SetSampler {
+                    slot,
+                    sampler: desc,
+                } => {
+                    let sd = mtl::SamplerDescriptor::new();
+                    sd.set_min_filter(super::filter_to_metal(desc.min_filter));
+                    sd.set_mag_filter(super::filter_to_metal(desc.mag_filter));
+                    sd.set_address_mode_s(super::address_to_metal(desc.address_u));
+                    sd.set_address_mode_t(super::address_to_metal(desc.address_v));
+                    sd.set_max_anisotropy(desc.max_anisotropy as u64);
+                    let samp = self.device.new_sampler(&sd);
+                    encoder.set_fragment_sampler_state(*slot as u64, Some(&samp));
                 }
             }
         }

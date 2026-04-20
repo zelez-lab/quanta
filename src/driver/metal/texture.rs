@@ -133,9 +133,9 @@ impl MetalDevice {
         sd.set_address_mode_s(address_to_metal(desc.address_u));
         sd.set_address_mode_t(address_to_metal(desc.address_v));
         sd.set_max_anisotropy(desc.max_anisotropy as u64);
-        let _sampler = self.device.new_sampler(&sd);
+        let sampler = self.device.new_sampler(&sd);
         let handle = self.alloc_handle();
-        // TODO: store sampler for binding
+        self.samplers.lock().unwrap().insert(handle, sampler);
         Ok(crate::Sampler {
             handle,
             drop_fn: None,

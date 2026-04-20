@@ -33,6 +33,7 @@ pub struct MetalDevice {
     pub(crate) compute_pipelines: Mutex<HashMap<u64, mtl::ComputePipelineState>>,
     pub(crate) render_pipelines: Mutex<HashMap<u64, mtl::RenderPipelineState>>,
     pub(crate) depth_stencil_states: Mutex<HashMap<u64, mtl::DepthStencilState>>,
+    pub(crate) samplers: Mutex<HashMap<u64, mtl::SamplerState>>,
     pub(crate) next_handle: Mutex<u64>,
 }
 
@@ -74,6 +75,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         compute_pipelines: Mutex::new(HashMap::new()),
         render_pipelines: Mutex::new(HashMap::new()),
         depth_stencil_states: Mutex::new(HashMap::new()),
+        samplers: Mutex::new(HashMap::new()),
         next_handle: Mutex::new(0),
     })]
 }
