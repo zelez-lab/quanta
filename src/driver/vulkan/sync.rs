@@ -1,41 +1,57 @@
 //! Memory barriers and resource state transitions for Vulkan.
 //!
-//! Vulkan requires explicit synchronization between pipeline stages.
-//! These implementations insert `VkMemoryBarrier2`, `VkBufferMemoryBarrier2`,
-//! and `VkImageMemoryBarrier2` via the Synchronization2 API (Vulkan 1.3 core).
+//! Uses Synchronization2 API (Vulkan 1.3 core) via raw FFI.
 
 use crate::{QuantaError, ResourceState, Texture};
-use ash::vk;
 
 use super::VulkanDevice;
+use super::ffi;
 
 impl VulkanDevice {
     pub(crate) fn barrier_impl(&self) -> Result<(), QuantaError> {
         let cmd = self.alloc_command_buffer()?;
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin_info)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin_info);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
 
-        let memory_barrier = vk::MemoryBarrier2::default()
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE);
+        let memory_barrier = ffi::VkMemoryBarrier2 {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            p_next: core::ptr::null(),
+            src_stage_mask: ffi::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            src_access_mask: ffi::VK_ACCESS_2_MEMORY_WRITE_BIT,
+            dst_stage_mask: ffi::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            dst_access_mask: ffi::VK_ACCESS_2_MEMORY_READ_BIT | ffi::VK_ACCESS_2_MEMORY_WRITE_BIT,
+        };
 
-        let dep_info =
-            vk::DependencyInfo::default().memory_barriers(core::slice::from_ref(&memory_barrier));
+        let dep_info = ffi::VkDependencyInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            p_next: core::ptr::null(),
+            dependency_flags: 0,
+            memory_barrier_count: 1,
+            p_memory_barriers: &memory_barrier,
+            buffer_memory_barrier_count: 0,
+            p_buffer_memory_barriers: core::ptr::null(),
+            image_memory_barrier_count: 0,
+            p_image_memory_barriers: core::ptr::null(),
+        };
         unsafe {
-            self.device.cmd_pipeline_barrier2(cmd, &dep_info);
+            ffi::vkCmdPipelineBarrier2(cmd, &dep_info);
         }
 
         unsafe {
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
         self.submit_and_wait(cmd)
     }
@@ -52,35 +68,54 @@ impl VulkanDevice {
             .ok_or_else(|| QuantaError::invalid_param("buffer not found"))?;
 
         let cmd = self.alloc_command_buffer()?;
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin_info)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin_info);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
 
-        let buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(buf.buffer)
-            .offset(0)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(state_to_stage(from))
-            .src_access_mask(state_to_access_write(from))
-            .dst_stage_mask(state_to_stage(to))
-            .dst_access_mask(state_to_access_read(to));
+        let buffer_barrier = ffi::VkBufferMemoryBarrier2 {
+            s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            p_next: core::ptr::null(),
+            src_stage_mask: state_to_stage(from),
+            src_access_mask: state_to_access_write(from),
+            dst_stage_mask: state_to_stage(to),
+            dst_access_mask: state_to_access_read(to),
+            src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+            buffer: buf.buffer,
+            offset: 0,
+            size: ffi::VK_WHOLE_SIZE,
+        };
 
-        let dep_info = vk::DependencyInfo::default()
-            .buffer_memory_barriers(core::slice::from_ref(&buffer_barrier));
+        let dep_info = ffi::VkDependencyInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            p_next: core::ptr::null(),
+            dependency_flags: 0,
+            memory_barrier_count: 0,
+            p_memory_barriers: core::ptr::null(),
+            buffer_memory_barrier_count: 1,
+            p_buffer_memory_barriers: &buffer_barrier,
+            image_memory_barrier_count: 0,
+            p_image_memory_barriers: core::ptr::null(),
+        };
         unsafe {
-            self.device.cmd_pipeline_barrier2(cmd, &dep_info);
+            ffi::vkCmdPipelineBarrier2(cmd, &dep_info);
         }
 
         unsafe {
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
-        // Drop the lock before submitting to avoid holding it across GPU wait.
         drop(buffers);
         self.submit_and_wait(cmd)
     }
@@ -97,108 +132,133 @@ impl VulkanDevice {
             .ok_or_else(|| QuantaError::invalid_param("texture not found"))?;
 
         let cmd = self.alloc_command_buffer()?;
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin_info)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin_info);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
 
-        let image_barrier = vk::ImageMemoryBarrier2::default()
-            .image(tex.image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
+        let image_barrier = ffi::VkImageMemoryBarrier2 {
+            s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            p_next: core::ptr::null(),
+            src_stage_mask: state_to_stage(from),
+            src_access_mask: state_to_access_write(from),
+            dst_stage_mask: state_to_stage(to),
+            dst_access_mask: state_to_access_read(to),
+            old_layout: state_to_layout(from),
+            new_layout: state_to_layout(to),
+            src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+            image: tex.image,
+            subresource_range: ffi::VkImageSubresourceRange {
+                aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                 base_mip_level: 0,
-                level_count: vk::REMAINING_MIP_LEVELS,
+                level_count: ffi::VK_REMAINING_MIP_LEVELS,
                 base_array_layer: 0,
-                layer_count: vk::REMAINING_ARRAY_LAYERS,
-            })
-            .old_layout(state_to_layout(from))
-            .new_layout(state_to_layout(to))
-            .src_stage_mask(state_to_stage(from))
-            .src_access_mask(state_to_access_write(from))
-            .dst_stage_mask(state_to_stage(to))
-            .dst_access_mask(state_to_access_read(to));
+                layer_count: ffi::VK_REMAINING_ARRAY_LAYERS,
+            },
+        };
 
-        let dep_info = vk::DependencyInfo::default()
-            .image_memory_barriers(core::slice::from_ref(&image_barrier));
+        let dep_info = ffi::VkDependencyInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            p_next: core::ptr::null(),
+            dependency_flags: 0,
+            memory_barrier_count: 0,
+            p_memory_barriers: core::ptr::null(),
+            buffer_memory_barrier_count: 0,
+            p_buffer_memory_barriers: core::ptr::null(),
+            image_memory_barrier_count: 1,
+            p_image_memory_barriers: &image_barrier,
+        };
         unsafe {
-            self.device.cmd_pipeline_barrier2(cmd, &dep_info);
+            ffi::vkCmdPipelineBarrier2(cmd, &dep_info);
         }
 
         unsafe {
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
-        // Drop the lock before submitting to avoid holding it across GPU wait.
         drop(textures);
         self.submit_and_wait(cmd)
     }
 }
 
 // ============================================================================
-// ResourceState → Vulkan mapping helpers
+// ResourceState -> Vulkan mapping helpers
 // ============================================================================
 
-fn state_to_layout(state: ResourceState) -> vk::ImageLayout {
+fn state_to_layout(state: ResourceState) -> u32 {
     match state {
-        ResourceState::General => vk::ImageLayout::GENERAL,
-        ResourceState::ComputeWrite | ResourceState::ComputeRead => vk::ImageLayout::GENERAL,
-        ResourceState::RenderTarget => vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        ResourceState::DepthStencil => vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        ResourceState::ShaderRead => vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        ResourceState::TransferSrc => vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-        ResourceState::TransferDst => vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        ResourceState::Present => vk::ImageLayout::PRESENT_SRC_KHR,
+        ResourceState::General => ffi::VK_IMAGE_LAYOUT_GENERAL,
+        ResourceState::ComputeWrite | ResourceState::ComputeRead => ffi::VK_IMAGE_LAYOUT_GENERAL,
+        ResourceState::RenderTarget => ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        ResourceState::DepthStencil => ffi::VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        ResourceState::ShaderRead => ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        ResourceState::TransferSrc => ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        ResourceState::TransferDst => ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        ResourceState::Present => ffi::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
     }
 }
 
-fn state_to_stage(state: ResourceState) -> vk::PipelineStageFlags2 {
+fn state_to_stage(state: ResourceState) -> u64 {
     match state {
         ResourceState::ComputeWrite | ResourceState::ComputeRead => {
-            vk::PipelineStageFlags2::COMPUTE_SHADER
+            ffi::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
         }
-        ResourceState::RenderTarget => vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        ResourceState::RenderTarget => ffi::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         ResourceState::DepthStencil => {
-            vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS
+            ffi::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                | ffi::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
         }
         ResourceState::ShaderRead => {
-            vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER
+            ffi::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                | ffi::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
         }
         ResourceState::TransferSrc | ResourceState::TransferDst => {
-            vk::PipelineStageFlags2::TRANSFER
+            ffi::VK_PIPELINE_STAGE_2_TRANSFER_BIT
         }
-        ResourceState::General | ResourceState::Present => vk::PipelineStageFlags2::ALL_COMMANDS,
+        ResourceState::General | ResourceState::Present => {
+            ffi::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+        }
     }
 }
 
-fn state_to_access_write(state: ResourceState) -> vk::AccessFlags2 {
+fn state_to_access_write(state: ResourceState) -> u64 {
     match state {
-        ResourceState::ComputeWrite => vk::AccessFlags2::SHADER_WRITE,
-        ResourceState::RenderTarget => vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-        ResourceState::DepthStencil => vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-        ResourceState::TransferDst => vk::AccessFlags2::TRANSFER_WRITE,
-        ResourceState::General => vk::AccessFlags2::MEMORY_WRITE,
-        // Read-only states produce no writes.
+        ResourceState::ComputeWrite => ffi::VK_ACCESS_2_SHADER_WRITE_BIT,
+        ResourceState::RenderTarget => ffi::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        ResourceState::DepthStencil => ffi::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        ResourceState::TransferDst => ffi::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        ResourceState::General => ffi::VK_ACCESS_2_MEMORY_WRITE_BIT,
         ResourceState::ComputeRead
         | ResourceState::ShaderRead
         | ResourceState::TransferSrc
-        | ResourceState::Present => vk::AccessFlags2::NONE,
+        | ResourceState::Present => ffi::VK_ACCESS_2_NONE,
     }
 }
 
-fn state_to_access_read(state: ResourceState) -> vk::AccessFlags2 {
+fn state_to_access_read(state: ResourceState) -> u64 {
     match state {
-        ResourceState::ComputeRead | ResourceState::ComputeWrite => vk::AccessFlags2::SHADER_READ,
-        ResourceState::ShaderRead => vk::AccessFlags2::SHADER_READ,
-        ResourceState::RenderTarget => vk::AccessFlags2::COLOR_ATTACHMENT_READ,
-        ResourceState::DepthStencil => vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
-        ResourceState::TransferSrc => vk::AccessFlags2::TRANSFER_READ,
-        ResourceState::TransferDst => vk::AccessFlags2::TRANSFER_WRITE,
-        ResourceState::Present => vk::AccessFlags2::NONE,
-        ResourceState::General => vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
+        ResourceState::ComputeRead | ResourceState::ComputeWrite => {
+            ffi::VK_ACCESS_2_SHADER_READ_BIT
+        }
+        ResourceState::ShaderRead => ffi::VK_ACCESS_2_SHADER_READ_BIT,
+        ResourceState::RenderTarget => ffi::VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+        ResourceState::DepthStencil => ffi::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+        ResourceState::TransferSrc => ffi::VK_ACCESS_2_TRANSFER_READ_BIT,
+        ResourceState::TransferDst => ffi::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        ResourceState::Present => ffi::VK_ACCESS_2_NONE,
+        ResourceState::General => {
+            ffi::VK_ACCESS_2_MEMORY_READ_BIT | ffi::VK_ACCESS_2_MEMORY_WRITE_BIT
+        }
     }
 }

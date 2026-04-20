@@ -3,10 +3,11 @@
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::ffi::c_void;
 
 use crate::{Format, QuantaError, Texture, TextureDesc, TextureUsage};
-use ash::vk;
 
+use super::ffi;
 use super::{
     VkTexture, VulkanDevice, format_bytes_per_pixel_vk, format_to_vulkan, sample_count_to_vk,
 };
@@ -15,84 +16,104 @@ impl VulkanDevice {
     pub(crate) fn texture_create_impl(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
         let vk_format = format_to_vulkan(desc.format);
 
-        let mut vk_usage = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST;
+        let mut vk_usage =
+            ffi::VK_IMAGE_USAGE_TRANSFER_SRC_BIT | ffi::VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if desc.usage.has(TextureUsage::SHADER_READ) {
-            vk_usage |= vk::ImageUsageFlags::SAMPLED;
+            vk_usage |= ffi::VK_IMAGE_USAGE_SAMPLED_BIT;
         }
         if desc.usage.has(TextureUsage::SHADER_WRITE) {
-            vk_usage |= vk::ImageUsageFlags::STORAGE;
+            vk_usage |= ffi::VK_IMAGE_USAGE_STORAGE_BIT;
         }
         if desc.usage.has(TextureUsage::RENDER_TARGET) {
             if matches!(desc.format, Format::Depth32Float) {
-                vk_usage |= vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+                vk_usage |= ffi::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
             } else {
-                vk_usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
+                vk_usage |= ffi::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
             }
         }
 
-        let image_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk_format)
-            .extent(vk::Extent3D {
+        let image_info = ffi::VkImageCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            image_type: ffi::VK_IMAGE_TYPE_2D,
+            format: vk_format,
+            extent: ffi::VkExtent3D {
                 width: desc.width,
                 height: desc.height,
                 depth: desc.depth.max(1),
-            })
-            .mip_levels(desc.mip_levels.max(1))
-            .array_layers(desc.array_length.max(1))
-            .samples(sample_count_to_vk(desc.sample_count))
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk_usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let image = unsafe {
-            self.device
-                .create_image(&image_info, None)
-                .map_err(|_| QuantaError::out_of_memory())?
+            },
+            mip_levels: desc.mip_levels.max(1),
+            array_layers: desc.array_length.max(1),
+            samples: sample_count_to_vk(desc.sample_count),
+            tiling: ffi::VK_IMAGE_TILING_OPTIMAL,
+            usage: vk_usage,
+            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: core::ptr::null(),
+            initial_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
         };
 
-        let mem_reqs = unsafe { self.device.get_image_memory_requirements(image) };
+        let mut image = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkCreateImage(self.device, &image_info, core::ptr::null(), &mut image) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+
+        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
+        unsafe { ffi::vkGetImageMemoryRequirements(self.device, image, &mut mem_reqs) };
         let mem_type = self.find_memory_type(
             mem_reqs.memory_type_bits,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ffi::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         )?;
-        let alloc = vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_reqs.size)
-            .memory_type_index(mem_type);
-        let memory = unsafe {
-            self.device
-                .allocate_memory(&alloc, None)
-                .map_err(|_| QuantaError::out_of_memory())?
+        let alloc = ffi::VkMemoryAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            allocation_size: mem_reqs.size,
+            memory_type_index: mem_type,
         };
-        unsafe {
-            self.device
-                .bind_image_memory(image, memory, 0)
-                .map_err(|_| QuantaError::out_of_memory())?;
+        let mut memory = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkAllocateMemory(self.device, &alloc, core::ptr::null(), &mut memory) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+        let result = unsafe { ffi::vkBindImageMemory(self.device, image, memory, 0) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
         }
 
         let aspect = if matches!(desc.format, Format::Depth32Float) {
-            vk::ImageAspectFlags::DEPTH
+            ffi::VK_IMAGE_ASPECT_DEPTH_BIT
         } else {
-            vk::ImageAspectFlags::COLOR
+            ffi::VK_IMAGE_ASPECT_COLOR_BIT
         };
 
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk_format)
-            .subresource_range(vk::ImageSubresourceRange {
+        let view_info = ffi::VkImageViewCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            image,
+            view_type: ffi::VK_IMAGE_VIEW_TYPE_2D,
+            format: vk_format,
+            components: ffi::VkComponentMapping::default(),
+            subresource_range: ffi::VkImageSubresourceRange {
                 aspect_mask: aspect,
                 base_mip_level: 0,
                 level_count: desc.mip_levels.max(1),
                 base_array_layer: 0,
                 layer_count: desc.array_length.max(1),
-            });
-
-        let view = unsafe {
-            self.device
-                .create_image_view(&view_info, None)
-                .map_err(|_| QuantaError::out_of_memory())?
+            },
         };
+
+        let mut view = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateImageView(self.device, &view_info, core::ptr::null(), &mut view)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
 
         let handle = self.alloc_handle();
         self.textures.lock().unwrap().insert(
@@ -128,140 +149,180 @@ impl VulkanDevice {
         })?;
 
         // Create staging buffer
-        let staging_info = vk::BufferCreateInfo::default()
-            .size(data.len() as u64)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let staging_buf = unsafe {
-            self.device
-                .create_buffer(&staging_info, None)
-                .map_err(|_| QuantaError::out_of_memory())?
+        let staging_info = ffi::VkBufferCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            size: data.len() as u64,
+            usage: ffi::VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: core::ptr::null(),
         };
-        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
+        let mut staging_buf = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateBuffer(
+                self.device,
+                &staging_info,
+                core::ptr::null(),
+                &mut staging_buf,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+
+        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
+        unsafe { ffi::vkGetBufferMemoryRequirements(self.device, staging_buf, &mut mem_reqs) };
         let mem_type = self.find_memory_type(
             mem_reqs.memory_type_bits,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ffi::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | ffi::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
         )?;
-        let alloc = vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_reqs.size)
-            .memory_type_index(mem_type);
-        let staging_mem = unsafe {
-            self.device
-                .allocate_memory(&alloc, None)
-                .map_err(|_| QuantaError::out_of_memory())?
+        let alloc = ffi::VkMemoryAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            allocation_size: mem_reqs.size,
+            memory_type_index: mem_type,
         };
+        let mut staging_mem = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkAllocateMemory(self.device, &alloc, core::ptr::null(), &mut staging_mem)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
         unsafe {
-            self.device
-                .bind_buffer_memory(staging_buf, staging_mem, 0)
-                .map_err(|_| QuantaError::out_of_memory())?;
-            let ptr = self
-                .device
-                .map_memory(
-                    staging_mem,
-                    0,
-                    data.len() as u64,
-                    vk::MemoryMapFlags::empty(),
-                )
-                .map_err(|_| {
-                    QuantaError::invalid_param("map failed")
-                        .with_context("texture_write: staging map")
-                })? as *mut u8;
-            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
-            self.device.unmap_memory(staging_mem);
+            let r = ffi::vkBindBufferMemory(self.device, staging_buf, staging_mem, 0);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::out_of_memory());
+            }
+            let mut ptr: *mut c_void = core::ptr::null_mut();
+            let r = ffi::vkMapMemory(self.device, staging_mem, 0, data.len() as u64, 0, &mut ptr);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::invalid_param("map failed")
+                    .with_context("texture_write: staging map"));
+            }
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
+            ffi::vkUnmapMemory(self.device, staging_mem);
         }
 
         // Transition image layout + copy
         let cmd = self.alloc_command_buffer()?;
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
 
             // Transition: UNDEFINED -> TRANSFER_DST
-            let barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(tex.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
+            let barrier = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: 0,
+                dst_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: tex.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
                     layer_count: 1,
-                })
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-            self.device.cmd_pipeline_barrier(
+                },
+            };
+            ffi::vkCmdPipelineBarrier(
                 cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
+                ffi::VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                1,
+                &barrier,
             );
 
             // Copy buffer -> image
-            let region = vk::BufferImageCopy::default()
-                .image_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
+            let region = ffi::VkBufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: ffi::VkImageSubresourceLayers {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                     mip_level: 0,
                     base_array_layer: 0,
                     layer_count: 1,
-                })
-                .image_extent(vk::Extent3D {
+                },
+                image_offset: ffi::VkOffset3D { x: 0, y: 0, z: 0 },
+                image_extent: ffi::VkExtent3D {
                     width: tex.width,
                     height: tex.height,
                     depth: 1,
-                });
-            self.device.cmd_copy_buffer_to_image(
+                },
+            };
+            ffi::vkCmdCopyBufferToImage(
                 cmd,
                 staging_buf,
                 tex.image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[region],
+                ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &region,
             );
 
             // Transition: TRANSFER_DST -> SHADER_READ
-            let barrier2 = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(tex.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
+            let barrier2 = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                new_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: tex.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
                     layer_count: 1,
-                })
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ);
-            self.device.cmd_pipeline_barrier(
+                },
+            };
+            ffi::vkCmdPipelineBarrier(
                 cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier2],
+                ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                ffi::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                1,
+                &barrier2,
             );
 
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
         drop(textures);
         self.submit_and_wait(cmd)?;
 
         // Clean up staging
         unsafe {
-            self.device.destroy_buffer(staging_buf, None);
-            self.device.free_memory(staging_mem, None);
+            ffi::vkDestroyBuffer(self.device, staging_buf, core::ptr::null());
+            ffi::vkFreeMemory(self.device, staging_mem, core::ptr::null());
         }
         Ok(())
     }
@@ -277,91 +338,128 @@ impl VulkanDevice {
         let size = (tex.width * tex.height) as usize * bpp;
 
         // Create staging buffer
-        let staging_info = vk::BufferCreateInfo::default()
-            .size(size as u64)
-            .usage(vk::BufferUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let staging_buf = unsafe {
-            self.device
-                .create_buffer(&staging_info, None)
-                .map_err(|_| QuantaError::out_of_memory())?
+        let staging_info = ffi::VkBufferCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            size: size as u64,
+            usage: ffi::VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: core::ptr::null(),
         };
-        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
+        let mut staging_buf = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateBuffer(
+                self.device,
+                &staging_info,
+                core::ptr::null(),
+                &mut staging_buf,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+
+        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
+        unsafe { ffi::vkGetBufferMemoryRequirements(self.device, staging_buf, &mut mem_reqs) };
         let mem_type = self.find_memory_type(
             mem_reqs.memory_type_bits,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ffi::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | ffi::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
         )?;
-        let alloc = vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_reqs.size)
-            .memory_type_index(mem_type);
-        let staging_mem = unsafe {
-            self.device
-                .allocate_memory(&alloc, None)
-                .map_err(|_| QuantaError::out_of_memory())?
+        let alloc = ffi::VkMemoryAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            allocation_size: mem_reqs.size,
+            memory_type_index: mem_type,
         };
-        unsafe {
-            self.device
-                .bind_buffer_memory(staging_buf, staging_mem, 0)
-                .map_err(|_| QuantaError::out_of_memory())?;
+        let mut staging_mem = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkAllocateMemory(self.device, &alloc, core::ptr::null(), &mut staging_mem)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+        let result = unsafe { ffi::vkBindBufferMemory(self.device, staging_buf, staging_mem, 0) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
         }
 
         // Transition + copy
         let cmd = self.alloc_command_buffer()?;
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
 
-            let barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(tex.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
+            let barrier = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                dst_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: tex.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
                     layer_count: 1,
-                })
-                .src_access_mask(vk::AccessFlags::SHADER_READ)
-                .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
-            self.device.cmd_pipeline_barrier(
+                },
+            };
+            ffi::vkCmdPipelineBarrier(
                 cmd,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
+                ffi::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                1,
+                &barrier,
             );
 
-            let region = vk::BufferImageCopy::default()
-                .image_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
+            let region = ffi::VkBufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: ffi::VkImageSubresourceLayers {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                     mip_level: 0,
                     base_array_layer: 0,
                     layer_count: 1,
-                })
-                .image_extent(vk::Extent3D {
+                },
+                image_offset: ffi::VkOffset3D { x: 0, y: 0, z: 0 },
+                image_extent: ffi::VkExtent3D {
                     width: tex.width,
                     height: tex.height,
                     depth: 1,
-                });
-            self.device.cmd_copy_image_to_buffer(
+                },
+            };
+            ffi::vkCmdCopyImageToBuffer(
                 cmd,
                 tex.image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 staging_buf,
-                &[region],
+                1,
+                &region,
             );
 
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
         drop(textures);
         self.submit_and_wait(cmd)?;
@@ -369,17 +467,16 @@ impl VulkanDevice {
         // Read from staging
         let mut result = vec![0u8; size];
         unsafe {
-            let ptr = self
-                .device
-                .map_memory(staging_mem, 0, size as u64, vk::MemoryMapFlags::empty())
-                .map_err(|_| {
-                    QuantaError::invalid_param("map failed")
-                        .with_context("texture_read: staging map")
-                })? as *const u8;
-            std::ptr::copy_nonoverlapping(ptr, result.as_mut_ptr(), size);
-            self.device.unmap_memory(staging_mem);
-            self.device.destroy_buffer(staging_buf, None);
-            self.device.free_memory(staging_mem, None);
+            let mut ptr: *mut c_void = core::ptr::null_mut();
+            let r = ffi::vkMapMemory(self.device, staging_mem, 0, size as u64, 0, &mut ptr);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::invalid_param("map failed")
+                    .with_context("texture_read: staging map"));
+            }
+            std::ptr::copy_nonoverlapping(ptr as *const u8, result.as_mut_ptr(), size);
+            ffi::vkUnmapMemory(self.device, staging_mem);
+            ffi::vkDestroyBuffer(self.device, staging_buf, core::ptr::null());
+            ffi::vkFreeMemory(self.device, staging_mem, core::ptr::null());
         }
         Ok(result)
     }
@@ -388,26 +485,36 @@ impl VulkanDevice {
         &self,
         desc: &crate::render_pass::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
-        let info = vk::SamplerCreateInfo::default()
-            .min_filter(super::filter_to_vk(desc.min_filter))
-            .mag_filter(super::filter_to_vk(desc.mag_filter))
-            .mipmap_mode(match desc.mip_filter {
-                crate::render_pass::Filter::Nearest => vk::SamplerMipmapMode::NEAREST,
-                crate::render_pass::Filter::Linear => vk::SamplerMipmapMode::LINEAR,
-            })
-            .address_mode_u(super::address_to_vk(desc.address_u))
-            .address_mode_v(super::address_to_vk(desc.address_v))
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .max_anisotropy(desc.max_anisotropy as f32)
-            .anisotropy_enable(desc.max_anisotropy > 1)
-            .min_lod(0.0)
-            .max_lod(vk::LOD_CLAMP_NONE);
-        let sampler = unsafe {
-            self.device.create_sampler(&info, None).map_err(|e| {
-                QuantaError::invalid_param("sampler creation failed")
-                    .with_context(&format!("create_sampler: {:?}", e))
-            })?
+        let info = ffi::VkSamplerCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            mag_filter: super::filter_to_vk(desc.mag_filter),
+            min_filter: super::filter_to_vk(desc.min_filter),
+            mipmap_mode: match desc.mip_filter {
+                crate::render_pass::Filter::Nearest => ffi::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                crate::render_pass::Filter::Linear => ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR,
+            },
+            address_mode_u: super::address_to_vk(desc.address_u),
+            address_mode_v: super::address_to_vk(desc.address_v),
+            address_mode_w: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            mip_lod_bias: 0.0,
+            anisotropy_enable: if desc.max_anisotropy > 1 { 1 } else { 0 },
+            max_anisotropy: desc.max_anisotropy as f32,
+            compare_enable: 0,
+            compare_op: 0,
+            min_lod: 0.0,
+            max_lod: ffi::VK_LOD_CLAMP_NONE,
+            border_color: 0,
+            unnormalized_coordinates: 0,
         };
+        let mut sampler = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkCreateSampler(self.device, &info, core::ptr::null(), &mut sampler) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::invalid_param("sampler creation failed")
+                .with_context(&format!("create_sampler: VkResult {}", result)));
+        }
         let handle = self.alloc_handle();
         self.samplers.lock().unwrap().insert(handle, sampler);
         Ok(crate::Sampler {
@@ -428,110 +535,130 @@ impl VulkanDevice {
         let mip_levels = (mip_width.max(mip_height) as f32).log2().floor() as u32 + 1;
 
         let cmd = self.alloc_command_buffer()?;
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
 
             for i in 1..mip_levels {
                 // Transition level i-1 to TRANSFER_SRC
-                let barrier_src = vk::ImageMemoryBarrier::default()
-                    .old_layout(if i == 1 {
-                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                let barrier_src = ffi::VkImageMemoryBarrier {
+                    s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    p_next: core::ptr::null(),
+                    src_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                    dst_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
+                    old_layout: if i == 1 {
+                        ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                     } else {
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL
-                    })
-                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .image(tex.image)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                    },
+                    new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    image: tex.image,
+                    subresource_range: ffi::VkImageSubresourceRange {
+                        aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                         base_mip_level: i - 1,
                         level_count: 1,
                         base_array_layer: 0,
                         layer_count: 1,
-                    })
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
-                self.device.cmd_pipeline_barrier(
+                    },
+                };
+                ffi::vkCmdPipelineBarrier(
                     cmd,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier_src],
+                    ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    1,
+                    &barrier_src,
                 );
 
                 // Transition level i to TRANSFER_DST
-                let barrier_dst = vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .image(tex.image)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                let barrier_dst = ffi::VkImageMemoryBarrier {
+                    s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    p_next: core::ptr::null(),
+                    src_access_mask: 0,
+                    dst_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                    old_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                    new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    image: tex.image,
+                    subresource_range: ffi::VkImageSubresourceRange {
+                        aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                         base_mip_level: i,
                         level_count: 1,
                         base_array_layer: 0,
                         layer_count: 1,
-                    })
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-                self.device.cmd_pipeline_barrier(
+                    },
+                };
+                ffi::vkCmdPipelineBarrier(
                     cmd,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier_dst],
+                    ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    1,
+                    &barrier_dst,
                 );
 
                 let next_width = (mip_width / 2).max(1);
                 let next_height = (mip_height / 2).max(1);
 
-                let blit = vk::ImageBlit::default()
-                    .src_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
+                let blit = ffi::VkImageBlit {
+                    src_subresource: ffi::VkImageSubresourceLayers {
+                        aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                        mip_level: i - 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    src_offsets: [
+                        ffi::VkOffset3D { x: 0, y: 0, z: 0 },
+                        ffi::VkOffset3D {
                             x: mip_width,
                             y: mip_height,
                             z: 1,
                         },
-                    ])
-                    .src_subresource(vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: i - 1,
+                    ],
+                    dst_subresource: ffi::VkImageSubresourceLayers {
+                        aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                        mip_level: i,
                         base_array_layer: 0,
                         layer_count: 1,
-                    })
-                    .dst_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
+                    },
+                    dst_offsets: [
+                        ffi::VkOffset3D { x: 0, y: 0, z: 0 },
+                        ffi::VkOffset3D {
                             x: next_width,
                             y: next_height,
                             z: 1,
                         },
-                    ])
-                    .dst_subresource(vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: i,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    });
+                    ],
+                };
 
-                self.device.cmd_blit_image(
+                ffi::vkCmdBlitImage(
                     cmd,
                     tex.image,
-                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     tex.image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[blit],
-                    vk::Filter::LINEAR,
+                    ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &blit,
+                    ffi::VK_FILTER_LINEAR,
                 );
 
                 mip_width = next_width;
@@ -539,34 +666,41 @@ impl VulkanDevice {
             }
 
             // Transition all levels to SHADER_READ
-            let final_barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(tex.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
+            let final_barrier = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
+                dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                new_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: tex.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                     base_mip_level: 0,
                     level_count: mip_levels,
                     base_array_layer: 0,
                     layer_count: 1,
-                })
-                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ);
-            self.device.cmd_pipeline_barrier(
+                },
+            };
+            ffi::vkCmdPipelineBarrier(
                 cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[final_barrier],
+                ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                ffi::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                1,
+                &final_barrier,
             );
 
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
         drop(textures);
         self.submit_and_wait(cmd)

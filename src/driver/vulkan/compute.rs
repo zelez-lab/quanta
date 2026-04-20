@@ -3,11 +3,12 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
+use core::ffi::c_void;
 
 use crate::{Pulse, QuantaError, Wave};
-use ash::vk;
 use std::ffi::CString;
 
+use super::ffi;
 use super::{VkComputePipeline, VulkanDevice};
 
 impl VulkanDevice {
@@ -24,61 +25,130 @@ impl VulkanDevice {
             .collect();
 
         // Create shader module
-        let module_info = vk::ShaderModuleCreateInfo::default().code(&spirv_words);
-        let shader_module = unsafe {
-            self.device
-                .create_shader_module(&module_info, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("shader module: {:?}", e)))?
+        let module_info = ffi::VkShaderModuleCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            code_size: kernel.len(),
+            p_code: spirv_words.as_ptr(),
         };
+        let mut shader_module = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateShaderModule(
+                self.device,
+                &module_info,
+                core::ptr::null(),
+                &mut shader_module,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "shader module: VkResult {}",
+                result
+            )));
+        }
 
-        // Descriptor set layout -- one storage buffer per binding
-        // For now, create a layout with 16 bindings (max fields)
+        // Descriptor set layout -- one storage buffer per binding (16 max)
         let mut bindings = Vec::new();
         for i in 0..16u32 {
-            bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(i)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            );
+            bindings.push(ffi::VkDescriptorSetLayoutBinding {
+                binding: i,
+                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: ffi::VK_SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: core::ptr::null(),
+            });
         }
-        let ds_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        let descriptor_set_layout = unsafe {
-            self.device
-                .create_descriptor_set_layout(&ds_layout_info, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("ds layout: {:?}", e)))?
+        let ds_layout_info = ffi::VkDescriptorSetLayoutCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            binding_count: bindings.len() as u32,
+            p_bindings: bindings.as_ptr(),
         };
+        let mut descriptor_set_layout = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateDescriptorSetLayout(
+                self.device,
+                &ds_layout_info,
+                core::ptr::null(),
+                &mut descriptor_set_layout,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "ds layout: VkResult {}",
+                result
+            )));
+        }
 
-        let layouts = [descriptor_set_layout];
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
-        let pipeline_layout = unsafe {
-            self.device
-                .create_pipeline_layout(&pipeline_layout_info, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("pipeline layout: {:?}", e)))?
+        let pipeline_layout_info = ffi::VkPipelineLayoutCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            set_layout_count: 1,
+            p_set_layouts: &descriptor_set_layout,
+            push_constant_range_count: 0,
+            p_push_constant_ranges: core::ptr::null(),
         };
+        let mut pipeline_layout = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreatePipelineLayout(
+                self.device,
+                &pipeline_layout_info,
+                core::ptr::null(),
+                &mut pipeline_layout,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "pipeline layout: VkResult {}",
+                result
+            )));
+        }
 
         let entry_name = CString::new("main").unwrap();
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(shader_module)
-            .name(&entry_name);
-
-        let pipeline_info = vk::ComputePipelineCreateInfo::default()
-            .stage(stage)
-            .layout(pipeline_layout);
-
-        let pipeline = unsafe {
-            self.device
-                .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
-                .map_err(|e| {
-                    QuantaError::compilation_failed(format!("compute pipeline: {:?}", e.1))
-                })?[0]
+        let stage = ffi::VkPipelineShaderStageCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            stage: ffi::VK_SHADER_STAGE_COMPUTE_BIT,
+            module: shader_module,
+            p_name: entry_name.as_ptr(),
+            p_specialization_info: core::ptr::null(),
         };
+
+        let pipeline_info = ffi::VkComputePipelineCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            stage,
+            layout: pipeline_layout,
+            base_pipeline_handle: ffi::null_handle(),
+            base_pipeline_index: -1,
+        };
+
+        let mut pipeline = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateComputePipelines(
+                self.device,
+                ffi::null_handle(),
+                1,
+                &pipeline_info,
+                core::ptr::null(),
+                &mut pipeline,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "compute pipeline: VkResult {}",
+                result
+            )));
+        }
 
         // Clean up shader module (pipeline owns the code now)
         unsafe {
-            self.device.destroy_shader_module(shader_module, None);
+            ffi::vkDestroyShaderModule(self.device, shader_module, core::ptr::null());
         }
 
         let handle = self.alloc_handle();
@@ -112,98 +182,131 @@ impl VulkanDevice {
         })?;
 
         // Create descriptor pool + set for buffer bindings
-        let pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(16);
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(1)
-            .pool_sizes(std::slice::from_ref(&pool_size));
-        let descriptor_pool = unsafe {
-            self.device
-                .create_descriptor_pool(&pool_info, None)
-                .map_err(|_| QuantaError::submit_failed())?
+        let pool_size = ffi::VkDescriptorPoolSize {
+            ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            descriptor_count: 16,
         };
+        let pool_info = ffi::VkDescriptorPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            max_sets: 1,
+            pool_size_count: 1,
+            p_pool_sizes: &pool_size,
+        };
+        let mut descriptor_pool = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateDescriptorPool(
+                self.device,
+                &pool_info,
+                core::ptr::null(),
+                &mut descriptor_pool,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
 
-        let layouts = [cp.descriptor_set_layout];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&layouts);
-        let descriptor_sets = unsafe {
-            self.device
-                .allocate_descriptor_sets(&alloc_info)
-                .map_err(|_| QuantaError::submit_failed())?
+        let alloc_info = ffi::VkDescriptorSetAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            descriptor_pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &cp.descriptor_set_layout,
         };
-        let ds = descriptor_sets[0];
+        let mut ds = ffi::null_handle();
+        let result = unsafe { ffi::vkAllocateDescriptorSets(self.device, &alloc_info, &mut ds) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
 
         // Update descriptor set with buffer bindings
         let buffers = self.buffers.lock().unwrap();
-        let mut writes = Vec::new();
-        let mut buffer_infos: Vec<vk::DescriptorBufferInfo> = Vec::new();
+        let mut buffer_infos: Vec<ffi::VkDescriptorBufferInfo> = Vec::new();
+        let mut writes: Vec<ffi::VkWriteDescriptorSet> = Vec::new();
 
         for binding in &wave.bindings {
             if let Some(buf) = buffers.get(&binding.field_handle) {
-                buffer_infos.push(
-                    vk::DescriptorBufferInfo::default()
-                        .buffer(buf.buffer)
-                        .offset(0)
-                        .range(vk::WHOLE_SIZE),
-                );
+                buffer_infos.push(ffi::VkDescriptorBufferInfo {
+                    buffer: buf.buffer,
+                    offset: 0,
+                    range: ffi::VK_WHOLE_SIZE,
+                });
             }
         }
 
         for (i, binding) in wave.bindings.iter().enumerate() {
             if i < buffer_infos.len() {
-                writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(ds)
-                        .dst_binding(binding.slot)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(std::slice::from_ref(&buffer_infos[i])),
-                );
+                writes.push(ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: ds,
+                    dst_binding: binding.slot,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    p_image_info: core::ptr::null(),
+                    p_buffer_info: &buffer_infos[i],
+                    p_texel_buffer_view: core::ptr::null(),
+                });
             }
         }
 
         if !writes.is_empty() {
             unsafe {
-                self.device.update_descriptor_sets(&writes, &[]);
+                ffi::vkUpdateDescriptorSets(
+                    self.device,
+                    writes.len() as u32,
+                    writes.as_ptr(),
+                    0,
+                    core::ptr::null(),
+                );
             }
         }
 
         // Record and submit command buffer
         let cmd = self.alloc_command_buffer()?;
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::submit_failed())?;
-            self.device
-                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cp.pipeline);
-            self.device.cmd_bind_descriptor_sets(
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            ffi::vkCmdBindPipeline(cmd, ffi::VK_PIPELINE_BIND_POINT_COMPUTE, cp.pipeline);
+            ffi::vkCmdBindDescriptorSets(
                 cmd,
-                vk::PipelineBindPoint::COMPUTE,
+                ffi::VK_PIPELINE_BIND_POINT_COMPUTE,
                 cp.layout,
                 0,
-                &[ds],
-                &[],
+                1,
+                &ds,
+                0,
+                core::ptr::null(),
             );
 
             // Push constants
             for pc in &wave.push_constants {
-                self.device.cmd_push_constants(
+                let size = (std::mem::size_of::<u32>()).min(pc.data.len()) as u32;
+                ffi::vkCmdPushConstants(
                     cmd,
                     cp.layout,
-                    vk::ShaderStageFlags::COMPUTE,
-                    pc.slot * 4, // offset in bytes
-                    &pc.data[..std::mem::size_of::<u32>().min(pc.data.len())],
+                    ffi::VK_SHADER_STAGE_COMPUTE_BIT,
+                    pc.slot * 4,
+                    size,
+                    pc.data.as_ptr() as *const c_void,
                 );
             }
 
-            self.device
-                .cmd_dispatch(cmd, groups[0], groups[1], groups[2]);
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            ffi::vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
         drop(buffers);
         drop(compute_pipelines);
@@ -211,7 +314,7 @@ impl VulkanDevice {
 
         // Clean up descriptor pool
         unsafe {
-            self.device.destroy_descriptor_pool(descriptor_pool, None);
+            ffi::vkDestroyDescriptorPool(self.device, descriptor_pool, core::ptr::null());
         }
 
         Ok(Pulse {
@@ -235,56 +338,81 @@ impl VulkanDevice {
         })?;
 
         // Create descriptor pool + set (same as wave_dispatch)
-        let pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(16);
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(1)
-            .pool_sizes(std::slice::from_ref(&pool_size));
-        let descriptor_pool = unsafe {
-            self.device
-                .create_descriptor_pool(&pool_info, None)
-                .map_err(|_| QuantaError::submit_failed())?
+        let pool_size = ffi::VkDescriptorPoolSize {
+            ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            descriptor_count: 16,
         };
+        let pool_info = ffi::VkDescriptorPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            max_sets: 1,
+            pool_size_count: 1,
+            p_pool_sizes: &pool_size,
+        };
+        let mut descriptor_pool = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateDescriptorPool(
+                self.device,
+                &pool_info,
+                core::ptr::null(),
+                &mut descriptor_pool,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
 
-        let layouts = [cp.descriptor_set_layout];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&layouts);
-        let descriptor_sets = unsafe {
-            self.device
-                .allocate_descriptor_sets(&alloc_info)
-                .map_err(|_| QuantaError::submit_failed())?
+        let alloc_info = ffi::VkDescriptorSetAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            descriptor_pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &cp.descriptor_set_layout,
         };
-        let ds = descriptor_sets[0];
+        let mut ds = ffi::null_handle();
+        let result = unsafe { ffi::vkAllocateDescriptorSets(self.device, &alloc_info, &mut ds) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
 
         let buffers = self.buffers.lock().unwrap();
-        let mut writes = Vec::new();
-        let mut buffer_infos: Vec<vk::DescriptorBufferInfo> = Vec::new();
+        let mut buffer_infos: Vec<ffi::VkDescriptorBufferInfo> = Vec::new();
+        let mut writes: Vec<ffi::VkWriteDescriptorSet> = Vec::new();
         for binding in &wave.bindings {
             if let Some(buf) = buffers.get(&binding.field_handle) {
-                buffer_infos.push(
-                    vk::DescriptorBufferInfo::default()
-                        .buffer(buf.buffer)
-                        .offset(0)
-                        .range(vk::WHOLE_SIZE),
-                );
+                buffer_infos.push(ffi::VkDescriptorBufferInfo {
+                    buffer: buf.buffer,
+                    offset: 0,
+                    range: ffi::VK_WHOLE_SIZE,
+                });
             }
         }
         for (i, binding) in wave.bindings.iter().enumerate() {
             if i < buffer_infos.len() {
-                writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(ds)
-                        .dst_binding(binding.slot)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(std::slice::from_ref(&buffer_infos[i])),
-                );
+                writes.push(ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: ds,
+                    dst_binding: binding.slot,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    p_image_info: core::ptr::null(),
+                    p_buffer_info: &buffer_infos[i],
+                    p_texel_buffer_view: core::ptr::null(),
+                });
             }
         }
         if !writes.is_empty() {
             unsafe {
-                self.device.update_descriptor_sets(&writes, &[]);
+                ffi::vkUpdateDescriptorSets(
+                    self.device,
+                    writes.len() as u32,
+                    writes.as_ptr(),
+                    0,
+                    core::ptr::null(),
+                );
             }
         }
 
@@ -294,34 +422,40 @@ impl VulkanDevice {
         })?;
 
         let cmd = self.alloc_command_buffer()?;
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin)
-                .map_err(|_| QuantaError::submit_failed())?;
-            self.device
-                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cp.pipeline);
-            self.device.cmd_bind_descriptor_sets(
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            ffi::vkCmdBindPipeline(cmd, ffi::VK_PIPELINE_BIND_POINT_COMPUTE, cp.pipeline);
+            ffi::vkCmdBindDescriptorSets(
                 cmd,
-                vk::PipelineBindPoint::COMPUTE,
+                ffi::VK_PIPELINE_BIND_POINT_COMPUTE,
                 cp.layout,
                 0,
-                &[ds],
-                &[],
+                1,
+                &ds,
+                0,
+                core::ptr::null(),
             );
-            self.device
-                .cmd_dispatch_indirect(cmd, indirect_buf.buffer, offset);
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            ffi::vkCmdDispatchIndirect(cmd, indirect_buf.buffer, offset);
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
         drop(buffers);
         drop(compute_pipelines);
         self.submit_and_wait(cmd)?;
 
         unsafe {
-            self.device.destroy_descriptor_pool(descriptor_pool, None);
+            ffi::vkDestroyDescriptorPool(self.device, descriptor_pool, core::ptr::null());
         }
 
         Ok(Pulse {

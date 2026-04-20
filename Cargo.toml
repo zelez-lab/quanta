@@ -25,9 +25,8 @@ readme = "README.md"
 default = ["metal"]
 std = []
 metal = ["std"]
-vulkan = ["dep:ash", "std"]
+vulkan = ["std"]
 
 [dependencies]
-ash = { version = "0.38.0", optional = true }
 quanta-macros = { path = "crates/quanta-macros", version = "0.1.0" }
 quanta-ir.workspace = true

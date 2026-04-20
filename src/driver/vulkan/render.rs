@@ -3,12 +3,13 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
+use core::ffi::c_void;
 
 use crate::render_pass::RenderOp;
 use crate::{Pipeline, Pulse, QuantaError, RenderPass, Texture};
-use ash::vk;
 use std::ffi::CString;
 
+use super::ffi;
 use super::{
     VkRenderPipeline, VulkanDevice, blend_factor_to_vk, blend_op_to_vk, format_to_vulkan,
     sample_count_to_vk,
@@ -19,8 +20,6 @@ impl VulkanDevice {
         &self,
         desc: &crate::PipelineDesc,
     ) -> Result<Pipeline, QuantaError> {
-        // Shader bytes are pre-compiled SPIR-V (same as compute path).
-        // Interpret raw bytes as u32 words.
         if desc.vertex.len() % 4 != 0 {
             return Err(QuantaError::compilation_failed(
                 "vertex SPIR-V binary length must be a multiple of 4",
@@ -42,18 +41,52 @@ impl VulkanDevice {
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
-        let vert_module_info = vk::ShaderModuleCreateInfo::default().code(&vert_spirv);
-        let frag_module_info = vk::ShaderModuleCreateInfo::default().code(&frag_spirv);
-        let vert_module = unsafe {
-            self.device
-                .create_shader_module(&vert_module_info, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("vert module: {:?}", e)))?
+        let vert_module_info = ffi::VkShaderModuleCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            code_size: desc.vertex.len(),
+            p_code: vert_spirv.as_ptr(),
         };
-        let frag_module = unsafe {
-            self.device
-                .create_shader_module(&frag_module_info, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("frag module: {:?}", e)))?
+        let frag_module_info = ffi::VkShaderModuleCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            code_size: desc.fragment.len(),
+            p_code: frag_spirv.as_ptr(),
         };
+
+        let mut vert_module = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateShaderModule(
+                self.device,
+                &vert_module_info,
+                core::ptr::null(),
+                &mut vert_module,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "vert module: VkResult {}",
+                result
+            )));
+        }
+
+        let mut frag_module = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateShaderModule(
+                self.device,
+                &frag_module_info,
+                core::ptr::null(),
+                &mut frag_module,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "frag module: VkResult {}",
+                result
+            )));
+        }
 
         // Create VkRenderPass
         let color_format = desc
@@ -61,141 +94,293 @@ impl VulkanDevice {
             .first()
             .copied()
             .unwrap_or(crate::Format::BGRA8);
-        let color_attachment = vk::AttachmentDescription::default()
-            .format(format_to_vulkan(color_format))
-            .samples(sample_count_to_vk(desc.sample_count))
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
-        let color_ref = vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
-        let subpass = vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(std::slice::from_ref(&color_ref));
-
-        let render_pass_info = vk::RenderPassCreateInfo::default()
-            .attachments(std::slice::from_ref(&color_attachment))
-            .subpasses(std::slice::from_ref(&subpass));
-
-        let render_pass = unsafe {
-            self.device
-                .create_render_pass(&render_pass_info, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("render pass: {:?}", e)))?
+        let color_attachment = ffi::VkAttachmentDescription {
+            flags: 0,
+            format: format_to_vulkan(color_format),
+            samples: sample_count_to_vk(desc.sample_count),
+            load_op: ffi::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            store_op: ffi::VK_ATTACHMENT_STORE_OP_STORE,
+            stencil_load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            stencil_store_op: ffi::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            initial_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+            final_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
+
+        let color_ref = ffi::VkAttachmentReference {
+            attachment: 0,
+            layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+
+        let subpass = ffi::VkSubpassDescription {
+            flags: 0,
+            pipeline_bind_point: ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
+            input_attachment_count: 0,
+            p_input_attachments: core::ptr::null(),
+            color_attachment_count: 1,
+            p_color_attachments: &color_ref,
+            p_resolve_attachments: core::ptr::null(),
+            p_depth_stencil_attachment: core::ptr::null(),
+            preserve_attachment_count: 0,
+            p_preserve_attachments: core::ptr::null(),
+        };
+
+        let render_pass_info = ffi::VkRenderPassCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            attachment_count: 1,
+            p_attachments: &color_attachment,
+            subpass_count: 1,
+            p_subpasses: &subpass,
+            dependency_count: 0,
+            p_dependencies: core::ptr::null(),
+        };
+
+        let mut render_pass = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateRenderPass(
+                self.device,
+                &render_pass_info,
+                core::ptr::null(),
+                &mut render_pass,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "render pass: VkResult {}",
+                result
+            )));
+        }
 
         // Descriptor set layout: 8 storage buffers (0-7) + 8 combined image samplers (8-15)
         let mut ds_bindings = Vec::new();
         for i in 0..8u32 {
-            ds_bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(i)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-            );
+            ds_bindings.push(ffi::VkDescriptorSetLayoutBinding {
+                binding: i,
+                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: ffi::VK_SHADER_STAGE_VERTEX_BIT | ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
+                p_immutable_samplers: core::ptr::null(),
+            });
         }
         for i in 8..16u32 {
-            ds_bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(i)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            );
+            ds_bindings.push(ffi::VkDescriptorSetLayoutBinding {
+                binding: i,
+                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                descriptor_count: 1,
+                stage_flags: ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
+                p_immutable_samplers: core::ptr::null(),
+            });
         }
-        let ds_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&ds_bindings);
-        let descriptor_set_layout = unsafe {
-            self.device
-                .create_descriptor_set_layout(&ds_layout_info, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("ds layout: {:?}", e)))?
+        let ds_layout_info = ffi::VkDescriptorSetLayoutCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            binding_count: ds_bindings.len() as u32,
+            p_bindings: ds_bindings.as_ptr(),
         };
+        let mut descriptor_set_layout = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateDescriptorSetLayout(
+                self.device,
+                &ds_layout_info,
+                core::ptr::null(),
+                &mut descriptor_set_layout,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "ds layout: VkResult {}",
+                result
+            )));
+        }
 
-        let ds_layouts = [descriptor_set_layout];
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&ds_layouts);
-        let pipeline_layout = unsafe {
-            self.device
-                .create_pipeline_layout(&pipeline_layout_info, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("layout: {:?}", e)))?
+        let pipeline_layout_info = ffi::VkPipelineLayoutCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            set_layout_count: 1,
+            p_set_layouts: &descriptor_set_layout,
+            push_constant_range_count: 0,
+            p_push_constant_ranges: core::ptr::null(),
         };
+        let mut pipeline_layout = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreatePipelineLayout(
+                self.device,
+                &pipeline_layout_info,
+                core::ptr::null(),
+                &mut pipeline_layout,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "layout: VkResult {}",
+                result
+            )));
+        }
 
         let entry_name = CString::new("main").unwrap();
         let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert_module)
-                .name(&entry_name),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(frag_module)
-                .name(&entry_name),
+            ffi::VkPipelineShaderStageCreateInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                p_next: core::ptr::null(),
+                flags: 0,
+                stage: ffi::VK_SHADER_STAGE_VERTEX_BIT,
+                module: vert_module,
+                p_name: entry_name.as_ptr(),
+                p_specialization_info: core::ptr::null(),
+            },
+            ffi::VkPipelineShaderStageCreateInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                p_next: core::ptr::null(),
+                flags: 0,
+                stage: ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
+                module: frag_module,
+                p_name: entry_name.as_ptr(),
+                p_specialization_info: core::ptr::null(),
+            },
         ];
 
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-
-        let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(match desc.cull_mode {
-                crate::CullMode::None => vk::CullModeFlags::NONE,
-                crate::CullMode::Front => vk::CullModeFlags::FRONT,
-                crate::CullMode::Back => vk::CullModeFlags::BACK,
-            })
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .line_width(1.0);
-
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(sample_count_to_vk(desc.sample_count));
-
-        let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .blend_enable(desc.blend.enabled)
-            .src_color_blend_factor(blend_factor_to_vk(desc.blend.src_rgb))
-            .dst_color_blend_factor(blend_factor_to_vk(desc.blend.dst_rgb))
-            .color_blend_op(blend_op_to_vk(desc.blend.op_rgb))
-            .src_alpha_blend_factor(blend_factor_to_vk(desc.blend.src_alpha))
-            .dst_alpha_blend_factor(blend_factor_to_vk(desc.blend.dst_alpha))
-            .alpha_blend_op(blend_op_to_vk(desc.blend.op_alpha))
-            .color_write_mask(vk::ColorComponentFlags::RGBA);
-
-        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
-            .attachments(std::slice::from_ref(&blend_attachment));
-
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state =
-            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-
-        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterization)
-            .multisample_state(&multisample)
-            .color_blend_state(&color_blend)
-            .dynamic_state(&dynamic_state)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0);
-
-        let pipeline = unsafe {
-            self.device
-                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
-                .map_err(|e| {
-                    QuantaError::compilation_failed(format!("graphics pipeline: {:?}", e.1))
-                })?[0]
+        let vertex_input = ffi::VkPipelineVertexInputStateCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            vertex_binding_description_count: 0,
+            p_vertex_binding_descriptions: core::ptr::null(),
+            vertex_attribute_description_count: 0,
+            p_vertex_attribute_descriptions: core::ptr::null(),
         };
 
+        let input_assembly = ffi::VkPipelineInputAssemblyStateCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            topology: ffi::VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            primitive_restart_enable: 0,
+        };
+
+        let viewport_state = ffi::VkPipelineViewportStateCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            viewport_count: 1,
+            p_viewports: core::ptr::null(),
+            scissor_count: 1,
+            p_scissors: core::ptr::null(),
+        };
+
+        let cull_mode = match desc.cull_mode {
+            crate::CullMode::None => ffi::VK_CULL_MODE_NONE,
+            crate::CullMode::Front => ffi::VK_CULL_MODE_FRONT_BIT,
+            crate::CullMode::Back => ffi::VK_CULL_MODE_BACK_BIT,
+        };
+
+        let rasterization = ffi::VkPipelineRasterizationStateCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            depth_clamp_enable: 0,
+            rasterizer_discard_enable: 0,
+            polygon_mode: ffi::VK_POLYGON_MODE_FILL,
+            cull_mode,
+            front_face: ffi::VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            depth_bias_enable: 0,
+            depth_bias_constant_factor: 0.0,
+            depth_bias_clamp: 0.0,
+            depth_bias_slope_factor: 0.0,
+            line_width: 1.0,
+        };
+
+        let multisample = ffi::VkPipelineMultisampleStateCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            rasterization_samples: sample_count_to_vk(desc.sample_count),
+            sample_shading_enable: 0,
+            min_sample_shading: 0.0,
+            p_sample_mask: core::ptr::null(),
+            alpha_to_coverage_enable: 0,
+            alpha_to_one_enable: 0,
+        };
+
+        let blend_attachment = ffi::VkPipelineColorBlendAttachmentState {
+            blend_enable: if desc.blend.enabled { 1 } else { 0 },
+            src_color_blend_factor: blend_factor_to_vk(desc.blend.src_rgb),
+            dst_color_blend_factor: blend_factor_to_vk(desc.blend.dst_rgb),
+            color_blend_op: blend_op_to_vk(desc.blend.op_rgb),
+            src_alpha_blend_factor: blend_factor_to_vk(desc.blend.src_alpha),
+            dst_alpha_blend_factor: blend_factor_to_vk(desc.blend.dst_alpha),
+            alpha_blend_op: blend_op_to_vk(desc.blend.op_alpha),
+            color_write_mask: ffi::VK_COLOR_COMPONENT_RGBA,
+        };
+
+        let color_blend = ffi::VkPipelineColorBlendStateCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            logic_op_enable: 0,
+            logic_op: 0,
+            attachment_count: 1,
+            p_attachments: &blend_attachment,
+            blend_constants: [0.0; 4],
+        };
+
+        let dynamic_states = [
+            ffi::VK_DYNAMIC_STATE_VIEWPORT,
+            ffi::VK_DYNAMIC_STATE_SCISSOR,
+        ];
+        let dynamic_state = ffi::VkPipelineDynamicStateCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            dynamic_state_count: dynamic_states.len() as u32,
+            p_dynamic_states: dynamic_states.as_ptr(),
+        };
+
+        let pipeline_info = ffi::VkGraphicsPipelineCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            stage_count: 2,
+            p_stages: stages.as_ptr(),
+            p_vertex_input_state: &vertex_input,
+            p_input_assembly_state: &input_assembly,
+            p_tessellation_state: core::ptr::null(),
+            p_viewport_state: &viewport_state,
+            p_rasterization_state: &rasterization,
+            p_multisample_state: &multisample,
+            p_depth_stencil_state: core::ptr::null(),
+            p_color_blend_state: &color_blend,
+            p_dynamic_state: &dynamic_state,
+            layout: pipeline_layout,
+            render_pass,
+            subpass: 0,
+            base_pipeline_handle: ffi::null_handle(),
+            base_pipeline_index: -1,
+        };
+
+        let mut pipeline = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateGraphicsPipelines(
+                self.device,
+                ffi::null_handle(),
+                1,
+                &pipeline_info,
+                core::ptr::null(),
+                &mut pipeline,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "graphics pipeline: VkResult {}",
+                result
+            )));
+        }
+
         unsafe {
-            self.device.destroy_shader_module(vert_module, None);
-            self.device.destroy_shader_module(frag_module, None);
+            ffi::vkDestroyShaderModule(self.device, vert_module, core::ptr::null());
+            ffi::vkDestroyShaderModule(self.device, frag_module, core::ptr::null());
         }
 
         let handle = self.alloc_handle();
@@ -224,7 +409,6 @@ impl VulkanDevice {
     }
 
     pub(crate) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
-        // Find the pipeline handle from ops to get the VkRenderPass object.
         let pipeline_handle = pass.ops.iter().find_map(|op| {
             if let RenderOp::SetPipeline(h) = op {
                 Some(*h)
@@ -243,8 +427,6 @@ impl VulkanDevice {
                 .with_context(&format!("render_end: target handle {}", pass.handle))
         })?;
 
-        // Get the render pass object from the pipeline. If no pipeline was set,
-        // create a transient render pass for the target format.
         let (vk_render_pass, pipeline_ref) = if let Some(ph) = pipeline_handle {
             let rp = render_pipelines.get(&ph).ok_or_else(|| {
                 QuantaError::invalid_param("pipeline not found")
@@ -252,152 +434,214 @@ impl VulkanDevice {
             })?;
             (rp.render_pass, Some(rp))
         } else {
-            // No pipeline bound -- create a transient render pass for clear-only usage.
-            let color_attachment = vk::AttachmentDescription::default()
-                .format(target_tex.format)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
-            let color_ref = vk::AttachmentReference::default()
-                .attachment(0)
-                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
-            let subpass = vk::SubpassDescription::default()
-                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                .color_attachments(std::slice::from_ref(&color_ref));
-
-            let rp_info = vk::RenderPassCreateInfo::default()
-                .attachments(std::slice::from_ref(&color_attachment))
-                .subpasses(std::slice::from_ref(&subpass));
-
-            let transient_rp = unsafe {
-                self.device
-                    .create_render_pass(&rp_info, None)
-                    .map_err(|_| QuantaError::submit_failed())?
+            // Create a transient render pass for clear-only usage.
+            let color_attachment = ffi::VkAttachmentDescription {
+                flags: 0,
+                format: target_tex.format,
+                samples: ffi::VK_SAMPLE_COUNT_1_BIT,
+                load_op: ffi::VK_ATTACHMENT_LOAD_OP_CLEAR,
+                store_op: ffi::VK_ATTACHMENT_STORE_OP_STORE,
+                stencil_load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                stencil_store_op: ffi::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                initial_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                final_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             };
+            let color_ref = ffi::VkAttachmentReference {
+                attachment: 0,
+                layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            };
+            let subpass = ffi::VkSubpassDescription {
+                flags: 0,
+                pipeline_bind_point: ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                input_attachment_count: 0,
+                p_input_attachments: core::ptr::null(),
+                color_attachment_count: 1,
+                p_color_attachments: &color_ref,
+                p_resolve_attachments: core::ptr::null(),
+                p_depth_stencil_attachment: core::ptr::null(),
+                preserve_attachment_count: 0,
+                p_preserve_attachments: core::ptr::null(),
+            };
+            let rp_info = ffi::VkRenderPassCreateInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                p_next: core::ptr::null(),
+                flags: 0,
+                attachment_count: 1,
+                p_attachments: &color_attachment,
+                subpass_count: 1,
+                p_subpasses: &subpass,
+                dependency_count: 0,
+                p_dependencies: core::ptr::null(),
+            };
+            let mut transient_rp = ffi::null_handle();
+            let result = unsafe {
+                ffi::vkCreateRenderPass(self.device, &rp_info, core::ptr::null(), &mut transient_rp)
+            };
+            if result != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
             (transient_rp, None)
         };
 
-        // Create framebuffer from the target texture's image view.
+        // Create framebuffer
         let attachments = [target_tex.view];
-        let fb_info = vk::FramebufferCreateInfo::default()
-            .render_pass(vk_render_pass)
-            .attachments(&attachments)
-            .width(target_tex.width)
-            .height(target_tex.height)
-            .layers(1);
-
-        let framebuffer = unsafe {
-            self.device
-                .create_framebuffer(&fb_info, None)
-                .map_err(|_| QuantaError::submit_failed())?
+        let fb_info = ffi::VkFramebufferCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            render_pass: vk_render_pass,
+            attachment_count: 1,
+            p_attachments: attachments.as_ptr(),
+            width: target_tex.width,
+            height: target_tex.height,
+            layers: 1,
         };
+        let mut framebuffer = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateFramebuffer(self.device, &fb_info, core::ptr::null(), &mut framebuffer)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
 
         // --- Descriptor set allocation and update ---
-        // If a pipeline is bound, allocate a descriptor set and pre-populate it
-        // with all SetField/SetTexture/SetSampler ops before recording commands.
         let descriptor_pool;
         let descriptor_set;
 
         if let Some(rp) = pipeline_ref {
-            // Create descriptor pool: 8 storage buffers + 8 combined image samplers
             let pool_sizes = [
-                vk::DescriptorPoolSize::default()
-                    .ty(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(8),
-                vk::DescriptorPoolSize::default()
-                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(8),
+                ffi::VkDescriptorPoolSize {
+                    ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    descriptor_count: 8,
+                },
+                ffi::VkDescriptorPoolSize {
+                    ty: ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 8,
+                },
             ];
-            let pool_info = vk::DescriptorPoolCreateInfo::default()
-                .max_sets(1)
-                .pool_sizes(&pool_sizes);
-            descriptor_pool = Some(unsafe {
-                self.device
-                    .create_descriptor_pool(&pool_info, None)
-                    .map_err(|_| QuantaError::submit_failed())?
-            });
-
-            let layouts = [rp.descriptor_set_layout];
-            let alloc_info = vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(descriptor_pool.unwrap())
-                .set_layouts(&layouts);
-            let sets = unsafe {
-                self.device
-                    .allocate_descriptor_sets(&alloc_info)
-                    .map_err(|_| QuantaError::submit_failed())?
+            let pool_info = ffi::VkDescriptorPoolCreateInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                p_next: core::ptr::null(),
+                flags: 0,
+                max_sets: 1,
+                pool_size_count: 2,
+                p_pool_sizes: pool_sizes.as_ptr(),
             };
-            descriptor_set = Some(sets[0]);
-
-            // Walk ops to collect descriptor writes.
-            // We need stable references for the Vulkan write structs, so collect
-            // buffer/image info into Vecs first.
-            let mut buffer_infos: Vec<(u32, vk::DescriptorBufferInfo)> = Vec::new();
-            let mut image_infos: Vec<(u32, vk::DescriptorImageInfo)> = Vec::new();
-
-            // Track per-slot sampler overrides. SetSampler ops before a SetTexture
-            // apply to that texture slot.
-            let mut sampler_for_slot: [Option<vk::Sampler>; 8] = [None; 8];
-
-            // Create a default sampler for textures that don't have an explicit one.
-            let default_sampler_info = vk::SamplerCreateInfo::default()
-                .min_filter(vk::Filter::LINEAR)
-                .mag_filter(vk::Filter::LINEAR)
-                .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                .min_lod(0.0)
-                .max_lod(vk::LOD_CLAMP_NONE);
-            let default_sampler = unsafe {
-                self.device
-                    .create_sampler(&default_sampler_info, None)
-                    .map_err(|_| QuantaError::submit_failed())?
+            let mut pool = ffi::null_handle();
+            let result = unsafe {
+                ffi::vkCreateDescriptorPool(self.device, &pool_info, core::ptr::null(), &mut pool)
             };
+            if result != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            descriptor_pool = Some(pool);
+
+            let alloc_info = ffi::VkDescriptorSetAllocateInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                p_next: core::ptr::null(),
+                descriptor_pool: pool,
+                descriptor_set_count: 1,
+                p_set_layouts: &rp.descriptor_set_layout,
+            };
+            let mut ds = ffi::null_handle();
+            let result =
+                unsafe { ffi::vkAllocateDescriptorSets(self.device, &alloc_info, &mut ds) };
+            if result != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            descriptor_set = Some(ds);
+
+            // Collect buffer/image info for descriptor writes.
+            let mut buffer_infos: Vec<(u32, ffi::VkDescriptorBufferInfo)> = Vec::new();
+            let mut image_infos: Vec<(u32, ffi::VkDescriptorImageInfo)> = Vec::new();
+            let mut sampler_for_slot: [Option<ffi::VkSampler>; 8] = [None; 8];
+
+            // Default sampler
+            let default_sampler_info = ffi::VkSamplerCreateInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                p_next: core::ptr::null(),
+                flags: 0,
+                mag_filter: ffi::VK_FILTER_LINEAR,
+                min_filter: ffi::VK_FILTER_LINEAR,
+                mipmap_mode: ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                address_mode_u: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                address_mode_v: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                address_mode_w: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                mip_lod_bias: 0.0,
+                anisotropy_enable: 0,
+                max_anisotropy: 1.0,
+                compare_enable: 0,
+                compare_op: 0,
+                min_lod: 0.0,
+                max_lod: ffi::VK_LOD_CLAMP_NONE,
+                border_color: 0,
+                unnormalized_coordinates: 0,
+            };
+            let mut default_sampler = ffi::null_handle();
+            unsafe {
+                ffi::vkCreateSampler(
+                    self.device,
+                    &default_sampler_info,
+                    core::ptr::null(),
+                    &mut default_sampler,
+                );
+            }
 
             // First pass: collect sampler assignments
             for op in &pass.ops {
                 if let RenderOp::SetSampler { slot, sampler } = op {
                     let idx = *slot as usize;
                     if idx < 8 {
-                        // Create an inline sampler from the desc
-                        let info = vk::SamplerCreateInfo::default()
-                            .min_filter(super::filter_to_vk(sampler.min_filter))
-                            .mag_filter(super::filter_to_vk(sampler.mag_filter))
-                            .mipmap_mode(match sampler.mip_filter {
+                        let info = ffi::VkSamplerCreateInfo {
+                            s_type: ffi::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                            p_next: core::ptr::null(),
+                            flags: 0,
+                            mag_filter: super::filter_to_vk(sampler.mag_filter),
+                            min_filter: super::filter_to_vk(sampler.min_filter),
+                            mipmap_mode: match sampler.mip_filter {
                                 crate::render_pass::Filter::Nearest => {
-                                    vk::SamplerMipmapMode::NEAREST
+                                    ffi::VK_SAMPLER_MIPMAP_MODE_NEAREST
                                 }
-                                crate::render_pass::Filter::Linear => vk::SamplerMipmapMode::LINEAR,
-                            })
-                            .address_mode_u(super::address_to_vk(sampler.address_u))
-                            .address_mode_v(super::address_to_vk(sampler.address_v))
-                            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                            .max_anisotropy(sampler.max_anisotropy as f32)
-                            .anisotropy_enable(sampler.max_anisotropy > 1)
-                            .min_lod(0.0)
-                            .max_lod(vk::LOD_CLAMP_NONE);
-                        if let Ok(s) = unsafe { self.device.create_sampler(&info, None) } {
+                                crate::render_pass::Filter::Linear => {
+                                    ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR
+                                }
+                            },
+                            address_mode_u: super::address_to_vk(sampler.address_u),
+                            address_mode_v: super::address_to_vk(sampler.address_v),
+                            address_mode_w: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                            mip_lod_bias: 0.0,
+                            anisotropy_enable: if sampler.max_anisotropy > 1 { 1 } else { 0 },
+                            max_anisotropy: sampler.max_anisotropy as f32,
+                            compare_enable: 0,
+                            compare_op: 0,
+                            min_lod: 0.0,
+                            max_lod: ffi::VK_LOD_CLAMP_NONE,
+                            border_color: 0,
+                            unnormalized_coordinates: 0,
+                        };
+                        let mut s = ffi::null_handle();
+                        let r = unsafe {
+                            ffi::vkCreateSampler(self.device, &info, core::ptr::null(), &mut s)
+                        };
+                        if r == ffi::VK_SUCCESS {
                             sampler_for_slot[idx] = Some(s);
                         }
                     }
                 }
             }
 
-            // Second pass: collect buffer and image bindings
+            // Second pass: buffer and image bindings
             for op in &pass.ops {
                 match op {
                     RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
                         if let Some(buf) = buffers.get(handle) {
                             buffer_infos.push((
                                 *slot,
-                                vk::DescriptorBufferInfo::default()
-                                    .buffer(buf.buffer)
-                                    .offset(0)
-                                    .range(vk::WHOLE_SIZE),
+                                ffi::VkDescriptorBufferInfo {
+                                    buffer: buf.buffer,
+                                    offset: 0,
+                                    range: ffi::VK_WHOLE_SIZE,
+                                },
                             ));
                         }
                     }
@@ -411,10 +655,11 @@ impl VulkanDevice {
                             };
                             image_infos.push((
                                 *slot,
-                                vk::DescriptorImageInfo::default()
-                                    .image_view(tex.view)
-                                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                    .sampler(sampler),
+                                ffi::VkDescriptorImageInfo {
+                                    sampler,
+                                    image_view: tex.view,
+                                    image_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                },
                             ));
                         }
                     }
@@ -422,30 +667,46 @@ impl VulkanDevice {
                 }
             }
 
-            // Build write descriptor sets
-            let mut writes: Vec<vk::WriteDescriptorSet> = Vec::new();
+            // Build descriptor writes
+            let mut writes: Vec<ffi::VkWriteDescriptorSet> = Vec::new();
             for (slot, info) in &buffer_infos {
-                writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(descriptor_set.unwrap())
-                        .dst_binding(*slot)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(std::slice::from_ref(info)),
-                );
+                writes.push(ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: ds,
+                    dst_binding: *slot,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    p_image_info: core::ptr::null(),
+                    p_buffer_info: info,
+                    p_texel_buffer_view: core::ptr::null(),
+                });
             }
             for (slot, info) in &image_infos {
-                writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(descriptor_set.unwrap())
-                        .dst_binding(8 + *slot)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(std::slice::from_ref(info)),
-                );
+                writes.push(ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: ds,
+                    dst_binding: 8 + *slot,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    p_image_info: info,
+                    p_buffer_info: core::ptr::null(),
+                    p_texel_buffer_view: core::ptr::null(),
+                });
             }
 
             if !writes.is_empty() {
                 unsafe {
-                    self.device.update_descriptor_sets(&writes, &[]);
+                    ffi::vkUpdateDescriptorSets(
+                        self.device,
+                        writes.len() as u32,
+                        writes.as_ptr(),
+                        0,
+                        core::ptr::null(),
+                    );
                 }
             }
         } else {
@@ -453,14 +714,14 @@ impl VulkanDevice {
             descriptor_set = None;
         }
 
-        // Determine clear color from ops (first Clear op or default black).
+        // Clear color
         let clear_color = pass
             .ops
             .iter()
             .find_map(|op| {
                 if let RenderOp::Clear(c) = op {
-                    Some(vk::ClearValue {
-                        color: vk::ClearColorValue {
+                    Some(ffi::VkClearValue {
+                        color: ffi::VkClearColorValue {
                             float32: [c.r, c.g, c.b, c.a],
                         },
                     })
@@ -468,8 +729,8 @@ impl VulkanDevice {
                     None
                 }
             })
-            .unwrap_or(vk::ClearValue {
-                color: vk::ClearColorValue {
+            .unwrap_or(ffi::VkClearValue {
+                color: ffi::VkClearColorValue {
                     float32: [0.0, 0.0, 0.0, 1.0],
                 },
             });
@@ -477,76 +738,91 @@ impl VulkanDevice {
 
         // Allocate command buffer and begin recording.
         let cmd = self.alloc_command_buffer()?;
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
 
         unsafe {
-            self.device
-                .begin_command_buffer(cmd, &begin_info)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin_info);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
 
             // Transition target image to COLOR_ATTACHMENT_OPTIMAL.
-            let barrier = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(target_tex.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
+            let barrier = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: 0,
+                dst_access_mask: ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                new_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: target_tex.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
                     layer_count: 1,
-                })
-                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
-            self.device.cmd_pipeline_barrier(
+                },
+            };
+            ffi::vkCmdPipelineBarrier(
                 cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
+                ffi::VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                1,
+                &barrier,
             );
 
             // Begin render pass.
-            let rp_begin = vk::RenderPassBeginInfo::default()
-                .render_pass(vk_render_pass)
-                .framebuffer(framebuffer)
-                .render_area(vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: vk::Extent2D {
+            let rp_begin = ffi::VkRenderPassBeginInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                p_next: core::ptr::null(),
+                render_pass: vk_render_pass,
+                framebuffer,
+                render_area: ffi::VkRect2D {
+                    offset: ffi::VkOffset2D { x: 0, y: 0 },
+                    extent: ffi::VkExtent2D {
                         width: target_tex.width,
                         height: target_tex.height,
                     },
-                })
-                .clear_values(&clear_values);
-            self.device
-                .cmd_begin_render_pass(cmd, &rp_begin, vk::SubpassContents::INLINE);
+                },
+                clear_value_count: clear_values.len() as u32,
+                p_clear_values: clear_values.as_ptr(),
+            };
+            ffi::vkCmdBeginRenderPass(cmd, &rp_begin, ffi::VK_SUBPASS_CONTENTS_INLINE);
 
-            // Track last bound index buffer for DrawIndexedIndirect rebind detection.
-            let mut current_index_buffer: Option<vk::Buffer> = None;
+            let mut current_index_buffer: Option<ffi::VkBuffer> = None;
 
             // Encode each RenderOp.
             for op in &pass.ops {
                 match op {
                     RenderOp::SetPipeline(handle) => {
                         if let Some(rp) = render_pipelines.get(handle) {
-                            self.device.cmd_bind_pipeline(
+                            ffi::vkCmdBindPipeline(
                                 cmd,
-                                vk::PipelineBindPoint::GRAPHICS,
+                                ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 rp.pipeline,
                             );
-                            // Bind the descriptor set immediately after the pipeline.
                             if let Some(ds) = descriptor_set {
-                                self.device.cmd_bind_descriptor_sets(
+                                ffi::vkCmdBindDescriptorSets(
                                     cmd,
-                                    vk::PipelineBindPoint::GRAPHICS,
+                                    ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     rp.layout,
                                     0,
-                                    &[ds],
-                                    &[],
+                                    1,
+                                    &ds,
+                                    0,
+                                    core::ptr::null(),
                                 );
                             }
                         }
@@ -559,22 +835,23 @@ impl VulkanDevice {
                     } => {
                         if let Some(buf) = buffers.get(handle) {
                             let offsets = [*offset];
-                            self.device.cmd_bind_vertex_buffers(
+                            ffi::vkCmdBindVertexBuffers(
                                 cmd,
                                 *slot,
-                                &[buf.buffer],
-                                &offsets,
+                                1,
+                                &buf.buffer,
+                                offsets.as_ptr(),
                             );
                         }
                     }
 
                     RenderOp::BindIndices { handle, offset } => {
                         if let Some(buf) = buffers.get(handle) {
-                            self.device.cmd_bind_index_buffer(
+                            ffi::vkCmdBindIndexBuffer(
                                 cmd,
                                 buf.buffer,
                                 *offset,
-                                vk::IndexType::UINT32,
+                                ffi::VK_INDEX_TYPE_UINT32,
                             );
                             current_index_buffer = Some(buf.buffer);
                         }
@@ -588,14 +865,14 @@ impl VulkanDevice {
                     }
 
                     RenderOp::SetValue { slot, data } => {
-                        // Push constants -- use the pipeline layout's push constant range.
                         if let Some(rp) = pipeline_ref {
-                            self.device.cmd_push_constants(
+                            ffi::vkCmdPushConstants(
                                 cmd,
                                 rp.layout,
-                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                                (*slot * 16) as u32, // 16-byte aligned offset per slot
-                                data,
+                                ffi::VK_SHADER_STAGE_VERTEX_BIT | ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
+                                (*slot * 16) as u32,
+                                data.len() as u32,
+                                data.as_ptr() as *const c_void,
                             );
                         }
                     }
@@ -604,16 +881,14 @@ impl VulkanDevice {
                         vertex_count,
                         instance_count,
                     } => {
-                        self.device
-                            .cmd_draw(cmd, *vertex_count, *instance_count, 0, 0);
+                        ffi::vkCmdDraw(cmd, *vertex_count, *instance_count, 0, 0);
                     }
 
                     RenderOp::DrawIndexed {
                         index_count,
                         instance_count,
                     } => {
-                        self.device
-                            .cmd_draw_indexed(cmd, *index_count, *instance_count, 0, 0, 0);
+                        ffi::vkCmdDrawIndexed(cmd, *index_count, *instance_count, 0, 0, 0);
                     }
 
                     RenderOp::SetViewport {
@@ -624,7 +899,7 @@ impl VulkanDevice {
                         min_depth,
                         max_depth,
                     } => {
-                        let viewport = vk::Viewport {
+                        let viewport = ffi::VkViewport {
                             x: *x,
                             y: *y,
                             width: *width,
@@ -632,7 +907,7 @@ impl VulkanDevice {
                             min_depth: *min_depth,
                             max_depth: *max_depth,
                         };
-                        self.device.cmd_set_viewport(cmd, 0, &[viewport]);
+                        ffi::vkCmdSetViewport(cmd, 0, 1, &viewport);
                     }
 
                     RenderOp::SetScissor {
@@ -641,23 +916,23 @@ impl VulkanDevice {
                         width,
                         height,
                     } => {
-                        let scissor = vk::Rect2D {
-                            offset: vk::Offset2D {
+                        let scissor = ffi::VkRect2D {
+                            offset: ffi::VkOffset2D {
                                 x: *x as i32,
                                 y: *y as i32,
                             },
-                            extent: vk::Extent2D {
+                            extent: ffi::VkExtent2D {
                                 width: *width,
                                 height: *height,
                             },
                         };
-                        self.device.cmd_set_scissor(cmd, 0, &[scissor]);
+                        ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
                     }
 
                     RenderOp::SetStencilRef(value) => {
-                        self.device.cmd_set_stencil_reference(
+                        ffi::vkCmdSetStencilReference(
                             cmd,
-                            vk::StencilFaceFlags::FRONT_AND_BACK,
+                            ffi::VK_STENCIL_FACE_FRONT_AND_BACK,
                             *value,
                         );
                     }
@@ -667,8 +942,7 @@ impl VulkanDevice {
                         offset,
                     } => {
                         if let Some(buf) = buffers.get(buffer_handle) {
-                            self.device
-                                .cmd_draw_indirect(cmd, buf.buffer, *offset, 1, 0);
+                            ffi::vkCmdDrawIndirect(cmd, buf.buffer, *offset, 1, 0);
                         }
                     }
 
@@ -677,49 +951,27 @@ impl VulkanDevice {
                         offset,
                         index_handle,
                     } => {
-                        // Bind index buffer if different from current.
                         if let Some(idx_buf) = buffers.get(index_handle) {
                             let needs_rebind = current_index_buffer
                                 .map(|b| b != idx_buf.buffer)
                                 .unwrap_or(true);
                             if needs_rebind {
-                                self.device.cmd_bind_index_buffer(
+                                ffi::vkCmdBindIndexBuffer(
                                     cmd,
                                     idx_buf.buffer,
                                     0,
-                                    vk::IndexType::UINT32,
+                                    ffi::VK_INDEX_TYPE_UINT32,
                                 );
                                 current_index_buffer = Some(idx_buf.buffer);
                             }
                         }
                         if let Some(buf) = buffers.get(buffer_handle) {
-                            self.device
-                                .cmd_draw_indexed_indirect(cmd, buf.buffer, *offset, 1, 0);
+                            ffi::vkCmdDrawIndexedIndirect(cmd, buf.buffer, *offset, 1, 0);
                         }
                     }
 
-                    RenderOp::Clear(_) => {
-                        // Handled by render pass load action (clear values above).
-                    }
-
-                    RenderOp::ClearDepth(_) => {
-                        // Handled by render pass load action for depth attachment.
-                    }
-
-                    RenderOp::ClearStencil(_) => {
-                        // Handled by render pass load action for stencil attachment.
-                    }
-
-                    RenderOp::DebugPush(_label) => {
-                        // VK_EXT_debug_utils: vkCmdBeginDebugUtilsLabelEXT
-                        // Requires extension — skip for now.
-                    }
-
-                    RenderOp::DebugPop => {
-                        // VK_EXT_debug_utils: vkCmdEndDebugUtilsLabelEXT
-                    }
-
-                    // M2+ render ops — not yet implemented in the Vulkan driver.
+                    RenderOp::Clear(_) | RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {}
+                    RenderOp::DebugPush(_) | RenderOp::DebugPop => {}
                     RenderOp::BeginOcclusionQuery { .. }
                     | RenderOp::EndOcclusionQuery { .. }
                     | RenderOp::SetShadingRate(_)
@@ -727,16 +979,13 @@ impl VulkanDevice {
                 }
             }
 
-            // End render pass.
-            self.device.cmd_end_render_pass(cmd);
-
-            // End command buffer.
-            self.device
-                .end_command_buffer(cmd)
-                .map_err(|_| QuantaError::submit_failed())?;
+            ffi::vkCmdEndRenderPass(cmd);
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
 
-        // Release locks before submit (submit_and_wait acquires none).
         let transient_rp = if pipeline_handle.is_none() {
             Some(vk_render_pass)
         } else {
@@ -749,15 +998,13 @@ impl VulkanDevice {
 
         self.submit_and_wait(cmd)?;
 
-        // Clean up framebuffer, transient render pass, and descriptor pool.
         unsafe {
-            self.device.destroy_framebuffer(framebuffer, None);
+            ffi::vkDestroyFramebuffer(self.device, framebuffer, core::ptr::null());
             if let Some(rp) = transient_rp {
-                self.device.destroy_render_pass(rp, None);
+                ffi::vkDestroyRenderPass(self.device, rp, core::ptr::null());
             }
             if let Some(pool) = descriptor_pool {
-                // Destroying the pool frees all descriptor sets allocated from it.
-                self.device.destroy_descriptor_pool(pool, None);
+                ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
             }
         }
 

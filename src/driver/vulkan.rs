@@ -1,10 +1,11 @@
-//! Vulkan driver for Linux, Android, and Windows.
+//! Vulkan driver for Linux, Android, Windows, and macOS (via MoltenVK).
 //!
-//! Uses the `ash` crate for raw Vulkan bindings.
+//! Uses raw FFI bindings (no `ash` dependency).
 //! Covers compute dispatch, render pass execution, texture management,
 //! depth/stencil, instanced/indexed/indirect draw, MRT, and debug labels.
 
 mod compute;
+pub(crate) mod ffi;
 mod memory;
 mod render;
 mod sync;
@@ -12,69 +13,65 @@ mod texture;
 
 use alloc::boxed::Box;
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
     Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
     Texture, TextureDesc, Vendor, Wave,
 };
-use ash::vk;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::sync::Mutex;
 
 /// Vulkan-backed GPU device.
 pub struct VulkanDevice {
-    _entry: ash::Entry,
-    instance: ash::Instance,
-    physical_device: vk::PhysicalDevice,
-    device: ash::Device,
-    queue: vk::Queue,
+    instance: ffi::VkInstance,
+    physical_device: ffi::VkPhysicalDevice,
+    device: ffi::VkDevice,
+    queue: ffi::VkQueue,
     #[allow(dead_code)]
     queue_family: u32,
-    command_pool: vk::CommandPool,
+    command_pool: ffi::VkCommandPool,
     caps: Caps,
     // Resource storage
     buffers: Mutex<HashMap<u64, VkBuffer>>,
     textures: Mutex<HashMap<u64, VkTexture>>,
     compute_pipelines: Mutex<HashMap<u64, VkComputePipeline>>,
     render_pipelines: Mutex<HashMap<u64, VkRenderPipeline>>,
-    samplers: Mutex<HashMap<u64, vk::Sampler>>,
+    samplers: Mutex<HashMap<u64, ffi::VkSampler>>,
     next_handle: Mutex<u64>,
-    /// Pool of reusable command buffers. Instead of allocating and freeing
-    /// command buffers per submission, completed buffers are reset and returned
-    /// here. `alloc_command_buffer` draws from this pool first.
-    cmd_buffer_pool: Mutex<Vec<vk::CommandBuffer>>,
+    /// Pool of reusable command buffers.
+    cmd_buffer_pool: Mutex<Vec<ffi::VkCommandBuffer>>,
 }
 
 #[allow(dead_code)]
 struct VkBuffer {
-    buffer: vk::Buffer,
-    memory: vk::DeviceMemory,
+    buffer: ffi::VkBuffer,
+    memory: ffi::VkDeviceMemory,
     size: u64,
 }
 
 #[allow(dead_code)]
 struct VkTexture {
-    image: vk::Image,
-    view: vk::ImageView,
-    memory: vk::DeviceMemory,
+    image: ffi::VkImage,
+    view: ffi::VkImageView,
+    memory: ffi::VkDeviceMemory,
     width: u32,
     height: u32,
-    format: vk::Format,
+    format: u32,
 }
 
 struct VkComputePipeline {
-    pipeline: vk::Pipeline,
-    layout: vk::PipelineLayout,
-    descriptor_set_layout: vk::DescriptorSetLayout,
+    pipeline: ffi::VkPipeline,
+    layout: ffi::VkPipelineLayout,
+    descriptor_set_layout: ffi::VkDescriptorSetLayout,
 }
 
 struct VkRenderPipeline {
-    pipeline: vk::Pipeline,
-    layout: vk::PipelineLayout,
-    render_pass: vk::RenderPass,
-    descriptor_set_layout: vk::DescriptorSetLayout,
+    pipeline: ffi::VkPipeline,
+    layout: ffi::VkPipelineLayout,
+    render_pass: ffi::VkRenderPass,
+    descriptor_set_layout: ffi::VkDescriptorSetLayout,
 }
 
 impl VulkanDevice {
@@ -84,39 +81,52 @@ impl VulkanDevice {
         *h
     }
 
-    fn alloc_command_buffer(&self) -> Result<vk::CommandBuffer, QuantaError> {
+    fn alloc_command_buffer(&self) -> Result<ffi::VkCommandBuffer, QuantaError> {
         // Try to reuse a previously returned command buffer from the pool.
         if let Some(cmd) = self.cmd_buffer_pool.lock().unwrap().pop() {
-            unsafe {
-                self.device
-                    .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
-                    .map_err(|_| QuantaError::submit_failed())?;
+            let result = unsafe { ffi::vkResetCommandBuffer(cmd, 0) };
+            if result != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
             }
             return Ok(cmd);
         }
         // Pool empty -- allocate a fresh one.
-        let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        let bufs = unsafe {
-            self.device
-                .allocate_command_buffers(&alloc_info)
-                .map_err(|_| QuantaError::submit_failed())?
+        let alloc_info = ffi::VkCommandBufferAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            command_pool: self.command_pool,
+            level: ffi::VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            command_buffer_count: 1,
         };
-        Ok(bufs[0])
+        let mut cmd = ffi::null_handle();
+        let result = unsafe { ffi::vkAllocateCommandBuffers(self.device, &alloc_info, &mut cmd) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
+        Ok(cmd)
     }
 
-    fn submit_and_wait(&self, cmd: vk::CommandBuffer) -> Result<(), QuantaError> {
-        let cmd_bufs = [cmd];
-        let submit = vk::SubmitInfo::default().command_buffers(&cmd_bufs);
+    fn submit_and_wait(&self, cmd: ffi::VkCommandBuffer) -> Result<(), QuantaError> {
+        let submit = ffi::VkSubmitInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            p_next: core::ptr::null(),
+            wait_semaphore_count: 0,
+            p_wait_semaphores: core::ptr::null(),
+            p_wait_dst_stage_mask: core::ptr::null(),
+            command_buffer_count: 1,
+            p_command_buffers: &cmd,
+            signal_semaphore_count: 0,
+            p_signal_semaphores: core::ptr::null(),
+        };
         unsafe {
-            self.device
-                .queue_submit(self.queue, &[submit], vk::Fence::null())
-                .map_err(|_| QuantaError::submit_failed())?;
-            self.device
-                .queue_wait_idle(self.queue)
-                .map_err(|_| QuantaError::submit_failed())?;
+            let r = ffi::vkQueueSubmit(self.queue, 1, &submit, ffi::null_handle());
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            let r = ffi::vkQueueWaitIdle(self.queue);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
         }
         // Return to pool for reuse instead of freeing.
         self.cmd_buffer_pool.lock().unwrap().push(cmd);
@@ -126,40 +136,71 @@ impl VulkanDevice {
 
 /// Discover Vulkan devices on this system.
 pub fn discover() -> Vec<Box<dyn GpuDevice>> {
-    let entry = match unsafe { ash::Entry::load() } {
-        Ok(e) => e,
-        Err(_) => return Vec::new(), // Vulkan not available
+    let app_info = ffi::VkApplicationInfo {
+        s_type: ffi::VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        p_next: core::ptr::null(),
+        p_application_name: core::ptr::null(),
+        application_version: 0,
+        p_engine_name: core::ptr::null(),
+        engine_version: 0,
+        api_version: ffi::make_api_version(0, 1, 3, 0),
     };
 
-    let app_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
-
-    let layer_names: Vec<CString> = Vec::new();
-    let layer_ptrs: Vec<*const i8> = layer_names.iter().map(|n| n.as_ptr()).collect();
-
-    let create_info = vk::InstanceCreateInfo::default()
-        .application_info(&app_info)
-        .enabled_layer_names(&layer_ptrs);
-
-    let instance = match unsafe { entry.create_instance(&create_info, None) } {
-        Ok(i) => i,
-        Err(_) => return Vec::new(),
+    let create_info = ffi::VkInstanceCreateInfo {
+        s_type: ffi::VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        p_next: core::ptr::null(),
+        flags: 0,
+        p_application_info: &app_info,
+        enabled_layer_count: 0,
+        pp_enabled_layer_names: core::ptr::null(),
+        enabled_extension_count: 0,
+        pp_enabled_extension_names: core::ptr::null(),
     };
 
-    let physical_devices = match unsafe { instance.enumerate_physical_devices() } {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
+    let mut instance = ffi::null_handle();
+    let result = unsafe { ffi::vkCreateInstance(&create_info, core::ptr::null(), &mut instance) };
+    if result != ffi::VK_SUCCESS {
+        return Vec::new();
+    }
+
+    let mut count = 0u32;
+    let result =
+        unsafe { ffi::vkEnumeratePhysicalDevices(instance, &mut count, core::ptr::null_mut()) };
+    if result != ffi::VK_SUCCESS || count == 0 {
+        return Vec::new();
+    }
+
+    let mut physical_devices = vec![ffi::null_handle(); count as usize];
+    let result = unsafe {
+        ffi::vkEnumeratePhysicalDevices(instance, &mut count, physical_devices.as_mut_ptr())
     };
+    if result != ffi::VK_SUCCESS {
+        return Vec::new();
+    }
 
     let mut devices: Vec<Box<dyn GpuDevice>> = Vec::new();
 
     for pd in physical_devices {
-        let props = unsafe { instance.get_physical_device_properties(pd) };
-        let queue_families = unsafe { instance.get_physical_device_queue_family_properties(pd) };
+        let mut props = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceProperties>() };
+        unsafe { ffi::vkGetPhysicalDeviceProperties(pd, &mut props) };
+
+        let mut qf_count = 0u32;
+        unsafe {
+            ffi::vkGetPhysicalDeviceQueueFamilyProperties(pd, &mut qf_count, core::ptr::null_mut())
+        };
+        let mut queue_families = vec![ffi::VkQueueFamilyProperties::default(); qf_count as usize];
+        unsafe {
+            ffi::vkGetPhysicalDeviceQueueFamilyProperties(
+                pd,
+                &mut qf_count,
+                queue_families.as_mut_ptr(),
+            )
+        };
 
         // Find a queue family that supports compute + graphics
         let queue_family = queue_families.iter().enumerate().find(|(_, qf)| {
-            qf.queue_flags
-                .contains(vk::QueueFlags::COMPUTE | vk::QueueFlags::GRAPHICS)
+            (qf.queue_flags & ffi::VK_QUEUE_GRAPHICS_BIT) != 0
+                && (qf.queue_flags & ffi::VK_QUEUE_COMPUTE_BIT) != 0
         });
 
         let Some((qf_index, _)) = queue_family else {
@@ -167,34 +208,56 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         };
 
         let queue_priorities = [1.0f32];
-        let queue_create = vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(qf_index as u32)
-            .queue_priorities(&queue_priorities);
-
-        let device_create =
-            vk::DeviceCreateInfo::default().queue_create_infos(std::slice::from_ref(&queue_create));
-
-        let device = match unsafe { instance.create_device(pd, &device_create, None) } {
-            Ok(d) => d,
-            Err(_) => continue,
+        let queue_create = ffi::VkDeviceQueueCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            queue_family_index: qf_index as u32,
+            queue_count: 1,
+            p_queue_priorities: queue_priorities.as_ptr(),
         };
 
-        let queue = unsafe { device.get_device_queue(qf_index as u32, 0) };
+        let device_create = ffi::VkDeviceCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            queue_create_info_count: 1,
+            p_queue_create_infos: &queue_create,
+            enabled_layer_count: 0,
+            pp_enabled_layer_names: core::ptr::null(),
+            enabled_extension_count: 0,
+            pp_enabled_extension_names: core::ptr::null(),
+            p_enabled_features: core::ptr::null(),
+        };
+
+        let mut device = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkCreateDevice(pd, &device_create, core::ptr::null(), &mut device) };
+        if result != ffi::VK_SUCCESS {
+            continue;
+        }
+
+        let mut queue = ffi::null_handle();
+        unsafe { ffi::vkGetDeviceQueue(device, qf_index as u32, 0, &mut queue) };
 
         // Command pool
-        let pool_info = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(qf_index as u32)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-
-        let command_pool = match unsafe { device.create_command_pool(&pool_info, None) } {
-            Ok(p) => p,
-            Err(_) => continue,
+        let pool_info = ffi::VkCommandPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            queue_family_index: qf_index as u32,
         };
+        let mut command_pool = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateCommandPool(device, &pool_info, core::ptr::null(), &mut command_pool)
+        };
+        if result != ffi::VK_SUCCESS {
+            continue;
+        }
 
         let name = unsafe {
-            std::ffi::CStr::from_ptr(props.device_name.as_ptr())
-                .to_string_lossy()
-                .to_string()
+            let cstr = std::ffi::CStr::from_ptr(props.device_name.as_ptr() as *const i8);
+            cstr.to_string_lossy().to_string()
         };
 
         let vendor = match props.vendor_id {
@@ -209,7 +272,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             nuclei: props.limits.max_compute_work_group_count[0].min(1024),
             protons_per_nucleus: 1,
             quarks_per_proton: props.limits.max_compute_work_group_size[0],
-            memory_bytes: 0, // Would need VK_EXT_memory_budget
+            memory_bytes: 0,
             max_quarks_per_dispatch: props.limits.max_compute_work_group_invocations,
             max_groups: props.limits.max_compute_work_group_count,
             vendor,
@@ -217,8 +280,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         };
 
         devices.push(Box::new(VulkanDevice {
-            _entry: entry.clone(),
-            instance: instance.clone(),
+            instance,
             physical_device: pd,
             device,
             queue,
@@ -363,44 +425,55 @@ impl GpuDevice for VulkanDevice {
 impl Drop for VulkanDevice {
     fn drop(&mut self) {
         unsafe {
-            self.device.device_wait_idle().ok();
+            ffi::vkDeviceWaitIdle(self.device);
 
             // Clean up resources
             for (_, buf) in self.buffers.lock().unwrap().drain() {
-                self.device.destroy_buffer(buf.buffer, None);
-                self.device.free_memory(buf.memory, None);
+                ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
+                ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
             }
             for (_, tex) in self.textures.lock().unwrap().drain() {
-                self.device.destroy_image_view(tex.view, None);
-                self.device.destroy_image(tex.image, None);
-                self.device.free_memory(tex.memory, None);
+                ffi::vkDestroyImageView(self.device, tex.view, core::ptr::null());
+                ffi::vkDestroyImage(self.device, tex.image, core::ptr::null());
+                ffi::vkFreeMemory(self.device, tex.memory, core::ptr::null());
             }
             for (_, cp) in self.compute_pipelines.lock().unwrap().drain() {
-                self.device.destroy_pipeline(cp.pipeline, None);
-                self.device.destroy_pipeline_layout(cp.layout, None);
-                self.device
-                    .destroy_descriptor_set_layout(cp.descriptor_set_layout, None);
+                ffi::vkDestroyPipeline(self.device, cp.pipeline, core::ptr::null());
+                ffi::vkDestroyPipelineLayout(self.device, cp.layout, core::ptr::null());
+                ffi::vkDestroyDescriptorSetLayout(
+                    self.device,
+                    cp.descriptor_set_layout,
+                    core::ptr::null(),
+                );
             }
             for (_, rp) in self.render_pipelines.lock().unwrap().drain() {
-                self.device.destroy_pipeline(rp.pipeline, None);
-                self.device.destroy_pipeline_layout(rp.layout, None);
-                self.device.destroy_render_pass(rp.render_pass, None);
-                self.device
-                    .destroy_descriptor_set_layout(rp.descriptor_set_layout, None);
+                ffi::vkDestroyPipeline(self.device, rp.pipeline, core::ptr::null());
+                ffi::vkDestroyPipelineLayout(self.device, rp.layout, core::ptr::null());
+                ffi::vkDestroyRenderPass(self.device, rp.render_pass, core::ptr::null());
+                ffi::vkDestroyDescriptorSetLayout(
+                    self.device,
+                    rp.descriptor_set_layout,
+                    core::ptr::null(),
+                );
             }
             for (_, sampler) in self.samplers.lock().unwrap().drain() {
-                self.device.destroy_sampler(sampler, None);
+                ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
             }
 
             // Free pooled command buffers before destroying the pool.
             let pooled: Vec<_> = self.cmd_buffer_pool.lock().unwrap().drain(..).collect();
             if !pooled.is_empty() {
-                self.device.free_command_buffers(self.command_pool, &pooled);
+                ffi::vkFreeCommandBuffers(
+                    self.device,
+                    self.command_pool,
+                    pooled.len() as u32,
+                    pooled.as_ptr(),
+                );
             }
 
-            self.device.destroy_command_pool(self.command_pool, None);
-            self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
+            ffi::vkDestroyCommandPool(self.device, self.command_pool, core::ptr::null());
+            ffi::vkDestroyDevice(self.device, core::ptr::null());
+            ffi::vkDestroyInstance(self.instance, core::ptr::null());
         }
     }
 }
@@ -409,38 +482,38 @@ impl Drop for VulkanDevice {
 // Vulkan type conversions
 // ============================================================================
 
-fn format_to_vulkan(format: Format) -> vk::Format {
+fn format_to_vulkan(format: Format) -> u32 {
     match format {
-        Format::RGBA8 => vk::Format::R8G8B8A8_UNORM,
-        Format::BGRA8 => vk::Format::B8G8R8A8_UNORM,
-        Format::R8 => vk::Format::R8_UNORM,
-        Format::R16Float => vk::Format::R16_SFLOAT,
-        Format::R32Float => vk::Format::R32_SFLOAT,
-        Format::RG32Float => vk::Format::R32G32_SFLOAT,
-        Format::RGBA16Float => vk::Format::R16G16B16A16_SFLOAT,
-        Format::RGBA32Float => vk::Format::R32G32B32A32_SFLOAT,
-        Format::Depth32Float => vk::Format::D32_SFLOAT,
+        Format::RGBA8 => ffi::VK_FORMAT_R8G8B8A8_UNORM,
+        Format::BGRA8 => ffi::VK_FORMAT_B8G8R8A8_UNORM,
+        Format::R8 => ffi::VK_FORMAT_R8_UNORM,
+        Format::R16Float => ffi::VK_FORMAT_R16_SFLOAT,
+        Format::R32Float => ffi::VK_FORMAT_R32_SFLOAT,
+        Format::RG32Float => ffi::VK_FORMAT_R32G32_SFLOAT,
+        Format::RGBA16Float => ffi::VK_FORMAT_R16G16B16A16_SFLOAT,
+        Format::RGBA32Float => ffi::VK_FORMAT_R32G32B32A32_SFLOAT,
+        Format::Depth32Float => ffi::VK_FORMAT_D32_SFLOAT,
         // Compressed formats
-        Format::Bc1Rgba => vk::Format::BC1_RGBA_UNORM_BLOCK,
-        Format::Bc3Rgba => vk::Format::BC3_UNORM_BLOCK,
-        Format::Bc5Rg => vk::Format::BC5_SNORM_BLOCK,
-        Format::Bc7Rgba => vk::Format::BC7_UNORM_BLOCK,
-        Format::Astc4x4 => vk::Format::ASTC_4X4_UNORM_BLOCK,
-        Format::Astc6x6 => vk::Format::ASTC_6X6_UNORM_BLOCK,
-        Format::Astc8x8 => vk::Format::ASTC_8X8_UNORM_BLOCK,
-        Format::Etc2Rgb8 => vk::Format::ETC2_R8G8B8_UNORM_BLOCK,
-        Format::Etc2Rgba8 => vk::Format::ETC2_R8G8B8A8_UNORM_BLOCK,
+        Format::Bc1Rgba => ffi::VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+        Format::Bc3Rgba => ffi::VK_FORMAT_BC3_UNORM_BLOCK,
+        Format::Bc5Rg => ffi::VK_FORMAT_BC5_SNORM_BLOCK,
+        Format::Bc7Rgba => ffi::VK_FORMAT_BC7_UNORM_BLOCK,
+        Format::Astc4x4 => ffi::VK_FORMAT_ASTC_4X4_UNORM_BLOCK,
+        Format::Astc6x6 => ffi::VK_FORMAT_ASTC_6X6_UNORM_BLOCK,
+        Format::Astc8x8 => ffi::VK_FORMAT_ASTC_8X8_UNORM_BLOCK,
+        Format::Etc2Rgb8 => ffi::VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK,
+        Format::Etc2Rgba8 => ffi::VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
     }
 }
 
-fn sample_count_to_vk(count: u32) -> vk::SampleCountFlags {
+fn sample_count_to_vk(count: u32) -> u32 {
     match count {
-        1 => vk::SampleCountFlags::TYPE_1,
-        2 => vk::SampleCountFlags::TYPE_2,
-        4 => vk::SampleCountFlags::TYPE_4,
-        8 => vk::SampleCountFlags::TYPE_8,
-        16 => vk::SampleCountFlags::TYPE_16,
-        _ => vk::SampleCountFlags::TYPE_1,
+        1 => ffi::VK_SAMPLE_COUNT_1_BIT,
+        2 => ffi::VK_SAMPLE_COUNT_2_BIT,
+        4 => ffi::VK_SAMPLE_COUNT_4_BIT,
+        8 => ffi::VK_SAMPLE_COUNT_8_BIT,
+        16 => ffi::VK_SAMPLE_COUNT_16_BIT,
+        _ => ffi::VK_SAMPLE_COUNT_1_BIT,
     }
 }
 
@@ -459,44 +532,46 @@ fn format_bytes_per_pixel_vk(format: Format) -> usize {
     }
 }
 
-fn blend_factor_to_vk(f: crate::BlendFactor) -> vk::BlendFactor {
+fn blend_factor_to_vk(f: crate::BlendFactor) -> u32 {
     use crate::BlendFactor::*;
     match f {
-        Zero => vk::BlendFactor::ZERO,
-        One => vk::BlendFactor::ONE,
-        SrcAlpha => vk::BlendFactor::SRC_ALPHA,
-        OneMinusSrcAlpha => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-        DstAlpha => vk::BlendFactor::DST_ALPHA,
-        OneMinusDstAlpha => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
-        SrcColor => vk::BlendFactor::SRC_COLOR,
-        OneMinusSrcColor => vk::BlendFactor::ONE_MINUS_SRC_COLOR,
-        DstColor => vk::BlendFactor::DST_COLOR,
-        OneMinusDstColor => vk::BlendFactor::ONE_MINUS_DST_COLOR,
+        Zero => ffi::VK_BLEND_FACTOR_ZERO,
+        One => ffi::VK_BLEND_FACTOR_ONE,
+        SrcAlpha => ffi::VK_BLEND_FACTOR_SRC_ALPHA,
+        OneMinusSrcAlpha => ffi::VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        DstAlpha => ffi::VK_BLEND_FACTOR_DST_ALPHA,
+        OneMinusDstAlpha => ffi::VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
+        SrcColor => ffi::VK_BLEND_FACTOR_SRC_COLOR,
+        OneMinusSrcColor => ffi::VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
+        DstColor => ffi::VK_BLEND_FACTOR_DST_COLOR,
+        OneMinusDstColor => ffi::VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,
     }
 }
 
-fn blend_op_to_vk(op: crate::BlendOp) -> vk::BlendOp {
+fn blend_op_to_vk(op: crate::BlendOp) -> u32 {
     use crate::BlendOp::*;
     match op {
-        Add => vk::BlendOp::ADD,
-        Subtract => vk::BlendOp::SUBTRACT,
-        ReverseSubtract => vk::BlendOp::REVERSE_SUBTRACT,
-        Min => vk::BlendOp::MIN,
-        Max => vk::BlendOp::MAX,
+        Add => ffi::VK_BLEND_OP_ADD,
+        Subtract => ffi::VK_BLEND_OP_SUBTRACT,
+        ReverseSubtract => ffi::VK_BLEND_OP_REVERSE_SUBTRACT,
+        Min => ffi::VK_BLEND_OP_MIN,
+        Max => ffi::VK_BLEND_OP_MAX,
     }
 }
 
-fn filter_to_vk(f: crate::render_pass::Filter) -> vk::Filter {
+fn filter_to_vk(f: crate::render_pass::Filter) -> u32 {
     match f {
-        crate::render_pass::Filter::Nearest => vk::Filter::NEAREST,
-        crate::render_pass::Filter::Linear => vk::Filter::LINEAR,
+        crate::render_pass::Filter::Nearest => ffi::VK_FILTER_NEAREST,
+        crate::render_pass::Filter::Linear => ffi::VK_FILTER_LINEAR,
     }
 }
 
-fn address_to_vk(a: crate::render_pass::AddressMode) -> vk::SamplerAddressMode {
+fn address_to_vk(a: crate::render_pass::AddressMode) -> u32 {
     match a {
-        crate::render_pass::AddressMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
-        crate::render_pass::AddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
-        crate::render_pass::AddressMode::MirrorRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
+        crate::render_pass::AddressMode::ClampToEdge => ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        crate::render_pass::AddressMode::Repeat => ffi::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        crate::render_pass::AddressMode::MirrorRepeat => {
+            ffi::VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
+        }
     }
 }
