@@ -98,7 +98,7 @@ fn main() {
         }
     }
 
-    let out_bytes = quanta_ir::serialize_output(&output).unwrap();
+    let out_bytes = quanta_ir::serialize_output(&output);
     std::io::Write::write_all(&mut std::io::stdout(), &out_bytes).unwrap();
 }
 

@@ -14,7 +14,7 @@ use crate::{
     Caps, FieldUsage, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc,
     Timeline, Wave,
 };
-use hashbrown::HashSet;
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 /// A validation layer that wraps any `GpuDevice`.

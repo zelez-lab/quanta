@@ -4,10 +4,10 @@
 //! (`quanta-compiler`). Defines the platform-agnostic IR that represents
 //! GPU kernels between parsing and code generation.
 
-use serde::{Deserialize, Serialize};
+pub mod wire;
 
 /// Scalar types supported in GPU kernels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarType {
     F16,
     F32,
@@ -24,11 +24,11 @@ pub enum ScalarType {
 }
 
 /// Virtual register (SSA-style).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Reg(pub u32);
 
 /// Constant value.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum ConstValue {
     F16(u16),
     F32(f32),
@@ -41,7 +41,7 @@ pub enum ConstValue {
 }
 
 /// Kernel parameter — how function arguments map to GPU bindings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum KernelParam {
     FieldRead {
         name: String,
@@ -76,7 +76,7 @@ pub enum KernelParam {
 }
 
 /// Binary operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
     Sub,
@@ -91,7 +91,7 @@ pub enum BinOp {
 }
 
 /// Unary operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Neg,
     BitNot,
@@ -99,7 +99,7 @@ pub enum UnaryOp {
 }
 
 /// Comparison operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpOp {
     Eq,
     Ne,
@@ -110,7 +110,7 @@ pub enum CmpOp {
 }
 
 /// Atomic operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtomicOp {
     Add,
     Sub,
@@ -124,7 +124,7 @@ pub enum AtomicOp {
 }
 
 /// Built-in math functions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MathFn {
     Sin,
     Cos,
@@ -151,7 +151,7 @@ pub enum MathFn {
 }
 
 /// A single kernel IR operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum KernelOp {
     // Memory
     Load {
@@ -361,7 +361,7 @@ pub enum KernelOp {
 }
 
 /// Complete kernel definition in IR form.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct KernelDef {
     pub name: String,
     pub params: Vec<KernelParam>,
@@ -375,7 +375,7 @@ pub struct KernelDef {
 }
 
 /// Compiler output — compiled kernel for all targets.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CompilerOutput {
     pub amd: Option<Vec<u8>>,
     pub nvidia: Option<Vec<u8>>,
@@ -386,24 +386,24 @@ pub struct CompilerOutput {
     pub llvm_ir: Option<Vec<u8>>,
 }
 
-/// Serialize a KernelDef to bincode bytes.
-pub fn serialize_kernel(kernel: &KernelDef) -> Result<Vec<u8>, bincode::Error> {
-    bincode::serialize(kernel)
+/// Serialize a KernelDef to binary bytes.
+pub fn serialize_kernel(kernel: &KernelDef) -> Vec<u8> {
+    wire::serialize_kernel(kernel)
 }
 
-/// Deserialize a KernelDef from bincode bytes.
-pub fn deserialize_kernel(bytes: &[u8]) -> Result<KernelDef, bincode::Error> {
-    bincode::deserialize(bytes)
+/// Deserialize a KernelDef from binary bytes.
+pub fn deserialize_kernel(bytes: &[u8]) -> Result<KernelDef, &'static str> {
+    wire::deserialize_kernel(bytes)
 }
 
-/// Serialize a CompilerOutput to bincode bytes.
-pub fn serialize_output(output: &CompilerOutput) -> Result<Vec<u8>, bincode::Error> {
-    bincode::serialize(output)
+/// Serialize a CompilerOutput to binary bytes.
+pub fn serialize_output(output: &CompilerOutput) -> Vec<u8> {
+    wire::serialize_output(output)
 }
 
-/// Deserialize a CompilerOutput from bincode bytes.
-pub fn deserialize_output(bytes: &[u8]) -> Result<CompilerOutput, bincode::Error> {
-    bincode::deserialize(bytes)
+/// Deserialize a CompilerOutput from binary bytes.
+pub fn deserialize_output(bytes: &[u8]) -> Result<CompilerOutput, &'static str> {
+    wire::deserialize_output(bytes)
 }
 
 impl ScalarType {

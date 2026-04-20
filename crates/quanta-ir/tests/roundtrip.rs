@@ -56,7 +56,7 @@ fn roundtrip_vector_add() {
         opt_level: 3,
     };
 
-    let bytes = serialize_kernel(&kernel).unwrap();
+    let bytes = serialize_kernel(&kernel);
     let restored = deserialize_kernel(&bytes).unwrap();
 
     assert_eq!(restored.name, "vector_add");
@@ -78,7 +78,7 @@ fn roundtrip_compiler_output() {
         llvm_ir: None,
     };
 
-    let bytes = serialize_output(&output).unwrap();
+    let bytes = serialize_output(&output);
     let restored = deserialize_output(&bytes).unwrap();
 
     assert_eq!(
@@ -119,7 +119,7 @@ fn roundtrip_all_scalar_types() {
             next_reg: 0,
             opt_level: 3,
         };
-        let bytes = serialize_kernel(&kernel).unwrap();
+        let bytes = serialize_kernel(&kernel);
         let restored = deserialize_kernel(&bytes).unwrap();
         assert_eq!(restored.params.len(), 1);
     }
@@ -156,7 +156,7 @@ fn roundtrip_all_ops() {
         opt_level: 2,
     };
 
-    let bytes = serialize_kernel(&kernel).unwrap();
+    let bytes = serialize_kernel(&kernel);
     let restored = deserialize_kernel(&bytes).unwrap();
     assert_eq!(restored.body.len(), 8);
     assert_eq!(restored.opt_level, 2);

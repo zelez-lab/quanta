@@ -5,5 +5,3 @@ edition = "2024"
 description = "Quanta kernel intermediate representation — shared between proc macro and compiler"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-bincode = "1"

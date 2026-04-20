@@ -35,7 +35,7 @@ fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
     // Compiler binary found
 
     // Serialize KernelDef to bincode
-    let input = quanta_ir::serialize_kernel(kernel).ok()?;
+    let input = quanta_ir::serialize_kernel(kernel);
 
     // Call the binary: stdin = KernelDef, stdout = CompilerOutput
     let result = std::process::Command::new(&binary)
