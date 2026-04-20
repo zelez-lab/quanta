@@ -38,6 +38,7 @@ pub struct VulkanDevice {
     textures: Mutex<HashMap<u64, VkTexture>>,
     compute_pipelines: Mutex<HashMap<u64, VkComputePipeline>>,
     render_pipelines: Mutex<HashMap<u64, VkRenderPipeline>>,
+    samplers: Mutex<HashMap<u64, vk::Sampler>>,
     next_handle: Mutex<u64>,
     /// Pool of reusable command buffers. Instead of allocating and freeing
     /// command buffers per submission, completed buffers are reset and returned
@@ -72,6 +73,7 @@ struct VkRenderPipeline {
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
     render_pass: vk::RenderPass,
+    descriptor_set_layout: vk::DescriptorSetLayout,
 }
 
 impl VulkanDevice {
@@ -226,6 +228,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             textures: Mutex::new(HashMap::new()),
             compute_pipelines: Mutex::new(HashMap::new()),
             render_pipelines: Mutex::new(HashMap::new()),
+            samplers: Mutex::new(HashMap::new()),
             next_handle: Mutex::new(0),
             cmd_buffer_pool: Mutex::new(Vec::new()),
         }));
@@ -357,6 +360,11 @@ impl Drop for VulkanDevice {
                 self.device.destroy_pipeline(rp.pipeline, None);
                 self.device.destroy_pipeline_layout(rp.layout, None);
                 self.device.destroy_render_pass(rp.render_pass, None);
+                self.device
+                    .destroy_descriptor_set_layout(rp.descriptor_set_layout, None);
+            }
+            for (_, sampler) in self.samplers.lock().unwrap().drain() {
+                self.device.destroy_sampler(sampler, None);
             }
 
             // Free pooled command buffers before destroying the pool.

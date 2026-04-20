@@ -388,16 +388,30 @@ impl VulkanDevice {
         &self,
         desc: &crate::render_pass::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
-        let _info = vk::SamplerCreateInfo::default()
+        let info = vk::SamplerCreateInfo::default()
             .min_filter(super::filter_to_vk(desc.min_filter))
             .mag_filter(super::filter_to_vk(desc.mag_filter))
+            .mipmap_mode(match desc.mip_filter {
+                crate::render_pass::Filter::Nearest => vk::SamplerMipmapMode::NEAREST,
+                crate::render_pass::Filter::Linear => vk::SamplerMipmapMode::LINEAR,
+            })
             .address_mode_u(super::address_to_vk(desc.address_u))
             .address_mode_v(super::address_to_vk(desc.address_v))
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .max_anisotropy(desc.max_anisotropy as f32)
-            .anisotropy_enable(desc.max_anisotropy > 1);
-        // TODO: create and store sampler
+            .anisotropy_enable(desc.max_anisotropy > 1)
+            .min_lod(0.0)
+            .max_lod(vk::LOD_CLAMP_NONE);
+        let sampler = unsafe {
+            self.device.create_sampler(&info, None).map_err(|e| {
+                QuantaError::invalid_param("sampler creation failed")
+                    .with_context(&format!("create_sampler: {:?}", e))
+            })?
+        };
+        let handle = self.alloc_handle();
+        self.samplers.lock().unwrap().insert(handle, sampler);
         Ok(crate::Sampler {
-            handle: self.alloc_handle(),
+            handle,
             drop_fn: None,
         })
     }

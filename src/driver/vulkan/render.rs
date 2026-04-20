@@ -77,8 +77,35 @@ impl VulkanDevice {
                 .map_err(|e| QuantaError::compilation_failed(format!("render pass: {:?}", e)))?
         };
 
-        // Pipeline layout (empty for now -- no descriptors for render)
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        // Descriptor set layout: 8 storage buffers (0-7) + 8 combined image samplers (8-15)
+        let mut ds_bindings = Vec::new();
+        for i in 0..8u32 {
+            ds_bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(i)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            );
+        }
+        for i in 8..16u32 {
+            ds_bindings.push(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(i)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            );
+        }
+        let ds_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&ds_bindings);
+        let descriptor_set_layout = unsafe {
+            self.device
+                .create_descriptor_set_layout(&ds_layout_info, None)
+                .map_err(|e| QuantaError::compilation_failed(format!("ds layout: {:?}", e)))?
+        };
+
+        let ds_layouts = [descriptor_set_layout];
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&ds_layouts);
         let pipeline_layout = unsafe {
             self.device
                 .create_pipeline_layout(&pipeline_layout_info, None)
@@ -168,6 +195,7 @@ impl VulkanDevice {
                 pipeline,
                 layout: pipeline_layout,
                 render_pass,
+                descriptor_set_layout,
             },
         );
         Ok(Pipeline {
@@ -196,6 +224,7 @@ impl VulkanDevice {
         let render_pipelines = self.render_pipelines.lock().unwrap();
         let textures = self.textures.lock().unwrap();
         let buffers = self.buffers.lock().unwrap();
+        let samplers = self.samplers.lock().unwrap();
 
         let target_tex = textures.get(&pass.handle).ok_or_else(|| {
             QuantaError::invalid_param("render target not found")
@@ -254,6 +283,163 @@ impl VulkanDevice {
                 .create_framebuffer(&fb_info, None)
                 .map_err(|_| QuantaError::submit_failed())?
         };
+
+        // --- Descriptor set allocation and update ---
+        // If a pipeline is bound, allocate a descriptor set and pre-populate it
+        // with all SetField/SetTexture/SetSampler ops before recording commands.
+        let descriptor_pool;
+        let descriptor_set;
+
+        if let Some(rp) = pipeline_ref {
+            // Create descriptor pool: 8 storage buffers + 8 combined image samplers
+            let pool_sizes = [
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(8),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(8),
+            ];
+            let pool_info = vk::DescriptorPoolCreateInfo::default()
+                .max_sets(1)
+                .pool_sizes(&pool_sizes);
+            descriptor_pool = Some(unsafe {
+                self.device
+                    .create_descriptor_pool(&pool_info, None)
+                    .map_err(|_| QuantaError::submit_failed())?
+            });
+
+            let layouts = [rp.descriptor_set_layout];
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(descriptor_pool.unwrap())
+                .set_layouts(&layouts);
+            let sets = unsafe {
+                self.device
+                    .allocate_descriptor_sets(&alloc_info)
+                    .map_err(|_| QuantaError::submit_failed())?
+            };
+            descriptor_set = Some(sets[0]);
+
+            // Walk ops to collect descriptor writes.
+            // We need stable references for the Vulkan write structs, so collect
+            // buffer/image info into Vecs first.
+            let mut buffer_infos: Vec<(u32, vk::DescriptorBufferInfo)> = Vec::new();
+            let mut image_infos: Vec<(u32, vk::DescriptorImageInfo)> = Vec::new();
+
+            // Track per-slot sampler overrides. SetSampler ops before a SetTexture
+            // apply to that texture slot.
+            let mut sampler_for_slot: [Option<vk::Sampler>; 8] = [None; 8];
+
+            // Create a default sampler for textures that don't have an explicit one.
+            let default_sampler_info = vk::SamplerCreateInfo::default()
+                .min_filter(vk::Filter::LINEAR)
+                .mag_filter(vk::Filter::LINEAR)
+                .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .min_lod(0.0)
+                .max_lod(vk::LOD_CLAMP_NONE);
+            let default_sampler = unsafe {
+                self.device
+                    .create_sampler(&default_sampler_info, None)
+                    .map_err(|_| QuantaError::submit_failed())?
+            };
+
+            // First pass: collect sampler assignments
+            for op in &pass.ops {
+                if let RenderOp::SetSampler { slot, sampler } = op {
+                    let idx = *slot as usize;
+                    if idx < 8 {
+                        // Create an inline sampler from the desc
+                        let info = vk::SamplerCreateInfo::default()
+                            .min_filter(super::filter_to_vk(sampler.min_filter))
+                            .mag_filter(super::filter_to_vk(sampler.mag_filter))
+                            .mipmap_mode(match sampler.mip_filter {
+                                crate::render_pass::Filter::Nearest => {
+                                    vk::SamplerMipmapMode::NEAREST
+                                }
+                                crate::render_pass::Filter::Linear => vk::SamplerMipmapMode::LINEAR,
+                            })
+                            .address_mode_u(super::address_to_vk(sampler.address_u))
+                            .address_mode_v(super::address_to_vk(sampler.address_v))
+                            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                            .max_anisotropy(sampler.max_anisotropy as f32)
+                            .anisotropy_enable(sampler.max_anisotropy > 1)
+                            .min_lod(0.0)
+                            .max_lod(vk::LOD_CLAMP_NONE);
+                        if let Ok(s) = unsafe { self.device.create_sampler(&info, None) } {
+                            sampler_for_slot[idx] = Some(s);
+                        }
+                    }
+                }
+            }
+
+            // Second pass: collect buffer and image bindings
+            for op in &pass.ops {
+                match op {
+                    RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
+                        if let Some(buf) = buffers.get(handle) {
+                            buffer_infos.push((
+                                *slot,
+                                vk::DescriptorBufferInfo::default()
+                                    .buffer(buf.buffer)
+                                    .offset(0)
+                                    .range(vk::WHOLE_SIZE),
+                            ));
+                        }
+                    }
+                    RenderOp::SetTexture { slot, handle } => {
+                        if let Some(tex) = textures.get(handle) {
+                            let idx = *slot as usize;
+                            let sampler = if idx < 8 {
+                                sampler_for_slot[idx].unwrap_or(default_sampler)
+                            } else {
+                                default_sampler
+                            };
+                            image_infos.push((
+                                *slot,
+                                vk::DescriptorImageInfo::default()
+                                    .image_view(tex.view)
+                                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                    .sampler(sampler),
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Build write descriptor sets
+            let mut writes: Vec<vk::WriteDescriptorSet> = Vec::new();
+            for (slot, info) in &buffer_infos {
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set.unwrap())
+                        .dst_binding(*slot)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(std::slice::from_ref(info)),
+                );
+            }
+            for (slot, info) in &image_infos {
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set.unwrap())
+                        .dst_binding(8 + *slot)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(std::slice::from_ref(info)),
+                );
+            }
+
+            if !writes.is_empty() {
+                unsafe {
+                    self.device.update_descriptor_sets(&writes, &[]);
+                }
+            }
+        } else {
+            descriptor_pool = None;
+            descriptor_set = None;
+        }
 
         // Determine clear color from ops (first Clear op or default black).
         let clear_color = pass
@@ -340,6 +526,17 @@ impl VulkanDevice {
                                 vk::PipelineBindPoint::GRAPHICS,
                                 rp.pipeline,
                             );
+                            // Bind the descriptor set immediately after the pipeline.
+                            if let Some(ds) = descriptor_set {
+                                self.device.cmd_bind_descriptor_sets(
+                                    cmd,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    rp.layout,
+                                    0,
+                                    &[ds],
+                                    &[],
+                                );
+                            }
                         }
                     }
 
@@ -371,19 +568,11 @@ impl VulkanDevice {
                         }
                     }
 
-                    RenderOp::SetField { slot: _, handle: _ }
-                    | RenderOp::SetUniform { slot: _, handle: _ } => {
-                        // Descriptor set binding would go here. For now, storage/uniform
-                        // buffers require descriptor sets which need layout integration.
-                        // TODO: implement descriptor set updates for render resources.
-                    }
-
-                    RenderOp::SetTexture { slot: _, handle: _ } => {
-                        // TODO: bind texture via descriptor set update.
-                    }
-
-                    RenderOp::SetSampler { .. } => {
-                        // TODO: bind sampler via descriptor set update.
+                    RenderOp::SetField { .. }
+                    | RenderOp::SetUniform { .. }
+                    | RenderOp::SetTexture { .. }
+                    | RenderOp::SetSampler { .. } => {
+                        // Already handled via descriptor set update above.
                     }
 
                     RenderOp::SetValue { slot, data } => {
@@ -535,17 +724,22 @@ impl VulkanDevice {
         } else {
             None
         };
+        drop(samplers);
         drop(buffers);
         drop(textures);
         drop(render_pipelines);
 
         self.submit_and_wait(cmd)?;
 
-        // Clean up framebuffer and transient render pass.
+        // Clean up framebuffer, transient render pass, and descriptor pool.
         unsafe {
             self.device.destroy_framebuffer(framebuffer, None);
             if let Some(rp) = transient_rp {
                 self.device.destroy_render_pass(rp, None);
+            }
+            if let Some(pool) = descriptor_pool {
+                // Destroying the pool frees all descriptor sets allocated from it.
+                self.device.destroy_descriptor_pool(pool, None);
             }
         }
 
