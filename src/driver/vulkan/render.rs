@@ -19,18 +19,28 @@ impl VulkanDevice {
         &self,
         desc: &crate::PipelineDesc,
     ) -> Result<Pipeline, QuantaError> {
-        let vert_wgsl = std::str::from_utf8(desc.vertex)
-            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in vertex shader"))?;
-        let frag_wgsl = std::str::from_utf8(desc.fragment)
-            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in fragment shader"))?;
-
-        // NOTE: super::super resolves to crate::driver -- same as the original
-        // super::spirv path from the flat vulkan.rs file. The spirv module does
-        // not exist yet; this will fail to compile until it is added.
-        let vert_spirv = super::super::spirv::wgsl_to_spirv(vert_wgsl)
-            .map_err(QuantaError::compilation_failed)?;
-        let frag_spirv = super::super::spirv::wgsl_to_spirv(frag_wgsl)
-            .map_err(QuantaError::compilation_failed)?;
+        // Shader bytes are pre-compiled SPIR-V (same as compute path).
+        // Interpret raw bytes as u32 words.
+        if desc.vertex.len() % 4 != 0 {
+            return Err(QuantaError::compilation_failed(
+                "vertex SPIR-V binary length must be a multiple of 4",
+            ));
+        }
+        if desc.fragment.len() % 4 != 0 {
+            return Err(QuantaError::compilation_failed(
+                "fragment SPIR-V binary length must be a multiple of 4",
+            ));
+        }
+        let vert_spirv: Vec<u32> = desc
+            .vertex
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let frag_spirv: Vec<u32> = desc
+            .fragment
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
 
         let vert_module_info = vk::ShaderModuleCreateInfo::default().code(&vert_spirv);
         let frag_module_info = vk::ShaderModuleCreateInfo::default().code(&frag_spirv);

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::BasicType;
+use inkwell::types::{BasicType, BasicTypeEnum, VectorType};
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::{AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntPredicate};
 
@@ -891,14 +891,72 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                 ScalarType::U32,
             )?;
         }
-        KernelOp::VecConstruct { .. } => {
-            return Err("VecConstruct not yet implemented in LLVM emitter".into());
+        KernelOp::VecConstruct {
+            dst,
+            components,
+            ty,
+        } => {
+            let n = components.len() as u32;
+            let scalar_llvm = scalar_to_llvm_type(ectx.context, ty);
+            let vec_ty = make_vec_type(scalar_llvm, n);
+
+            // Start with undef and insert each component
+            let mut vec_val = vec_ty.get_undef();
+            for (i, comp) in components.iter().enumerate() {
+                let comp_val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, comp.0)?;
+                let idx = ectx.context.i32_type().const_int(i as u64, false);
+                vec_val = ectx
+                    .builder
+                    .build_insert_element(vec_val, comp_val, idx, "")
+                    .map_err(|e| e.to_string())?;
+            }
+
+            // Create a vector-typed alloca and store the constructed vector
+            let alloca = ectx
+                .builder
+                .build_alloca(vec_ty, &format!("r{}", dst.0))
+                .map_err(|e| e.to_string())?;
+            ectx.builder
+                .build_store(alloca, vec_val)
+                .map_err(|e| e.to_string())?;
+            ectx.reg_slots.insert(dst.0, (alloca, *ty));
         }
-        KernelOp::VecExtract { .. } => {
-            return Err("VecExtract not yet implemented in LLVM emitter".into());
+        KernelOp::VecExtract {
+            dst,
+            vec,
+            component,
+            ty,
+        } => {
+            // Load the vector value from the source register's alloca.
+            // The alloca was created by VecConstruct and holds a vector type.
+            let (vec_ptr, scalar_ty) = ectx
+                .reg_slots
+                .get(&vec.0)
+                .ok_or_else(|| format!("register r{} not allocated (VecExtract source)", vec.0))?;
+            let scalar_llvm = scalar_to_llvm_type(ectx.context, scalar_ty);
+            // Determine vector width from the component index.  VecConstruct
+            // created the alloca with the exact width, but we don't store that
+            // width in reg_slots.  Use component+1 as a lower bound, clamped
+            // to the common GPU vector sizes (2, 3, 4).
+            let vec_width = if *component < 2 {
+                2
+            } else {
+                (*component as u32) + 1
+            };
+            let vec_ty = make_vec_type(scalar_llvm, vec_width);
+            let vec_val = ectx
+                .builder
+                .build_load(vec_ty, *vec_ptr, "vec_load")
+                .map_err(|e| e.to_string())?;
+            let idx = ectx.context.i32_type().const_int(*component as u64, false);
+            let elem = ectx
+                .builder
+                .build_extract_element(vec_val.into_vector_value(), idx, "vec_extract")
+                .map_err(|e| e.to_string())?;
+            reg_store(ectx.context, ectx.builder, ectx.reg_slots, dst.0, elem, *ty)?;
         }
         KernelOp::MatMul { .. } => {
-            return Err("MatMul not yet implemented in LLVM emitter".into());
+            return Err("MatMul: use explicit multiply-accumulate loops for now".into());
         }
         KernelOp::TextureSample2D { .. } => {
             return Err("TextureSample2D not yet implemented in LLVM emitter".into());
@@ -1152,4 +1210,16 @@ pub(crate) fn emit_math_direct<'ctx>(
         .ok_or("math function returned void")?;
 
     Ok(result)
+}
+
+/// Create a fixed-width LLVM vector type from a scalar BasicTypeEnum.
+fn make_vec_type<'ctx>(scalar: BasicTypeEnum<'ctx>, size: u32) -> VectorType<'ctx> {
+    match scalar {
+        BasicTypeEnum::FloatType(t) => t.vec_type(size),
+        BasicTypeEnum::IntType(t) => t.vec_type(size),
+        BasicTypeEnum::PointerType(t) => t.vec_type(size),
+        // Structs/arrays/vectors cannot form vector elements in LLVM --
+        // this arm should never be reached for valid GPU IR.
+        _ => panic!("unsupported scalar type for vector construction"),
+    }
 }
