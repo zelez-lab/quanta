@@ -85,12 +85,20 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
         None => quote! { None },
     };
+    let metallib_expr = match &outputs.metallib {
+        Some(bytes) => {
+            let lit = proc_macro2::Literal::byte_string(bytes);
+            quote! { Some(#lit as &[u8]) }
+        }
+        None => quote! { None },
+    };
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
             amd: #amd_expr,
             nvidia: #nvidia_expr,
             spirv: #spirv_expr,
+            metallib: #metallib_expr,
             msl: #msl_expr,
             wgsl: #wgsl_expr,
             llvm_ir: None,

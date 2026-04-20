@@ -289,17 +289,21 @@ impl GpuDevice for MetalDevice {
     // === Compute ===
 
     fn wave(&self, kernel_source: &[u8]) -> Result<Wave, QuantaError> {
-        let source_str = std::str::from_utf8(kernel_source)
-            .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in shader source"))?;
-
-        // The compiler produces MSL directly — no runtime conversion needed.
-        let msl_source = source_str.to_string();
-
-        let opts = mtl::CompileOptions::new();
-        let library = self
-            .device
-            .new_library_with_source(&msl_source, &opts)
-            .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
+        // Try pre-compiled metallib binary first, fall back to MSL text compilation.
+        let library = if kernel_source.len() >= 4 && &kernel_source[..4] == b"MTLB" {
+            // Pre-compiled metallib binary — load directly, zero runtime compilation.
+            self.device
+                .new_library_with_data(kernel_source)
+                .map_err(|e| QuantaError::compilation_failed(e.to_string()))?
+        } else {
+            // MSL text — compile at runtime (fallback when xcrun was not available).
+            let source_str = std::str::from_utf8(kernel_source)
+                .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in shader source"))?;
+            let opts = mtl::CompileOptions::new();
+            self.device
+                .new_library_with_source(source_str, &opts)
+                .map_err(|e| QuantaError::compilation_failed(e.to_string()))?
+        };
         let func_names = library.function_names();
         let func_name = func_names
             .first()

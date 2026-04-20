@@ -22,6 +22,7 @@ pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
         amd: None,
         nvidia: None,
         spirv: None,
+        metallib: None,
         msl: Some(msl),
         wgsl: Some(wgsl),
         llvm_ir: None,

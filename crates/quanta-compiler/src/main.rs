@@ -56,6 +56,7 @@ fn main() {
         amd: None,
         nvidia: None,
         spirv: None,
+        metallib: None,
         msl: None,
         wgsl: None,
         llvm_ir: None,
@@ -64,6 +65,11 @@ fn main() {
     // Always generate MSL + WGSL (lightweight, from KernelOps — no LLVM needed)
     output.msl = emit_msl::emit(&kernel).ok();
     output.wgsl = emit_wgsl::emit(&kernel).ok();
+
+    // Compile MSL → metallib via xcrun (if available)
+    if let Some(ref msl) = output.msl {
+        output.metallib = compile_msl_to_metallib(msl);
+    }
 
     // Generate LLVM-compiled targets
     // Strategy: try rustc path first (handles ALL Rust), fall back to KernelOp path
@@ -94,6 +100,57 @@ fn main() {
 
     let out_bytes = quanta_ir::serialize_output(&output).unwrap();
     std::io::Write::write_all(&mut std::io::stdout(), &out_bytes).unwrap();
+}
+
+/// Compile MSL source to metallib binary via xcrun metal + xcrun metallib.
+/// Returns None if xcrun is not available (e.g., cross-compiling from Linux).
+fn compile_msl_to_metallib(msl_source: &str) -> Option<Vec<u8>> {
+    let tmp_dir = std::env::temp_dir().join("quanta_metal");
+    std::fs::create_dir_all(&tmp_dir).ok()?;
+
+    let msl_path = tmp_dir.join("kernel.metal");
+    let air_path = tmp_dir.join("kernel.air");
+    let lib_path = tmp_dir.join("kernel.metallib");
+
+    std::fs::write(&msl_path, msl_source).ok()?;
+
+    // MSL → AIR
+    let air_result = std::process::Command::new("xcrun")
+        .args(["metal", "-c", "-target", "air64-apple-macos14.0.0"])
+        .arg(&msl_path)
+        .arg("-o")
+        .arg(&air_path)
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    match air_result {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            eprintln!("[quanta] xcrun metal failed: {}", err);
+            return None;
+        }
+        Err(_) => return None, // xcrun not found
+    };
+
+    // AIR → metallib
+    let lib_result = std::process::Command::new("xcrun")
+        .args(["metallib"])
+        .arg(&air_path)
+        .arg("-o")
+        .arg(&lib_path)
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    match lib_result {
+        Ok(o) if o.status.success() => std::fs::read(&lib_path).ok(),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            eprintln!("[quanta] xcrun metallib failed: {}", err);
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 fn parse_targets(args: &[String]) -> Vec<GpuTarget> {
