@@ -1,44 +1,95 @@
 //! Compute dispatch operations for Metal.
 
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::{Pulse, QuantaError, Wave};
-use metal as mtl;
 
 use super::MetalDevice;
+use super::ffi;
 
 impl MetalDevice {
     pub(crate) fn wave_impl(&self, kernel_source: &[u8]) -> Result<Wave, QuantaError> {
-        // Try pre-compiled metallib binary first, fall back to MSL text compilation.
-        let library = if kernel_source.len() >= 4 && &kernel_source[..4] == b"MTLB" {
-            // Pre-compiled metallib binary — load directly, zero runtime compilation.
-            self.device
-                .new_library_with_data(kernel_source)
-                .map_err(|e| QuantaError::compilation_failed(e.to_string()))?
-        } else {
-            // MSL text — compile at runtime (fallback when xcrun was not available).
-            let source_str = std::str::from_utf8(kernel_source)
-                .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in shader source"))?;
-            let opts = mtl::CompileOptions::new();
-            self.device
-                .new_library_with_source(source_str, &opts)
-                .map_err(|e| QuantaError::compilation_failed(e.to_string()))?
+        let library = unsafe {
+            if kernel_source.len() >= 4 && &kernel_source[..4] == b"MTLB" {
+                // Pre-compiled metallib binary — load directly via dispatch_data.
+                let (lib, error) = ffi::msg_new_library_with_data(
+                    self.device,
+                    kernel_source.as_ptr() as *const _,
+                    kernel_source.len() as u64,
+                );
+                if lib.is_null() {
+                    let msg = if !error.is_null() {
+                        let desc = ffi::msg_id(error, b"localizedDescription\0");
+                        let cstr = ffi::msg_utf8_string(desc);
+                        std::ffi::CStr::from_ptr(cstr as *const _)
+                            .to_string_lossy()
+                            .into_owned()
+                    } else {
+                        "unknown metallib error".into()
+                    };
+                    return Err(QuantaError::compilation_failed(msg));
+                }
+                lib
+            } else {
+                // MSL text — compile at runtime.
+                let source_str = std::str::from_utf8(kernel_source).map_err(|_| {
+                    QuantaError::compilation_failed("invalid UTF-8 in shader source")
+                })?;
+                let mut src_bytes: Vec<u8> = source_str.bytes().collect();
+                src_bytes.push(0);
+                let ns_source = ffi::nsstring(&src_bytes);
+                let (lib, error) =
+                    ffi::msg_new_library_with_source(self.device, ns_source, ffi::NIL);
+                if lib.is_null() {
+                    let msg = if !error.is_null() {
+                        let desc = ffi::msg_id(error, b"localizedDescription\0");
+                        let cstr = ffi::msg_utf8_string(desc);
+                        std::ffi::CStr::from_ptr(cstr as *const _)
+                            .to_string_lossy()
+                            .into_owned()
+                    } else {
+                        "unknown compilation error".into()
+                    };
+                    return Err(QuantaError::compilation_failed(msg));
+                }
+                lib
+            }
         };
-        let func_names = library.function_names();
-        let func_name = func_names
-            .first()
-            .ok_or_else(|| QuantaError::compilation_failed("no functions in kernel"))?;
-        let func = library
-            .get_function(func_name, None)
-            .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
-        let pipeline = self
-            .device
-            .new_compute_pipeline_state_with_function(&func)
-            .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
+
+        // Get first function name from the library.
+        let func_name = unsafe {
+            let names = ffi::msg_function_names(library);
+            let count = ffi::msg_array_count(names);
+            if count == 0 {
+                return Err(QuantaError::compilation_failed("no functions in kernel"));
+            }
+            ffi::msg_array_object_at(names, 0)
+        };
+
+        let func = unsafe { ffi::msg_get_function(library, func_name) };
+        if func.is_null() {
+            return Err(QuantaError::compilation_failed(
+                "failed to get kernel function",
+            ));
+        }
+
+        let (pipeline, error) = unsafe { ffi::msg_new_compute_pipeline(self.device, func) };
+        if pipeline.is_null() {
+            let msg = unsafe {
+                if !error.is_null() {
+                    let desc = ffi::msg_id(error, b"localizedDescription\0");
+                    let cstr = ffi::msg_utf8_string(desc);
+                    std::ffi::CStr::from_ptr(cstr as *const _)
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    "unknown pipeline error".into()
+                }
+            };
+            return Err(QuantaError::compilation_failed(msg));
+        }
 
         let handle = self.alloc_handle();
         self.compute_pipelines
@@ -59,53 +110,67 @@ impl MetalDevice {
         wave: &Wave,
         groups: [u32; 3],
     ) -> Result<Pulse, QuantaError> {
-        // Note: Metal's CommandQueue.new_command_buffer() internally pools command
-        // buffers. There is no need for an explicit pool — Metal manages reuse
-        // automatically when command buffers complete.
-        let cmd = self.queue.new_command_buffer();
-        let encoder = cmd.new_compute_command_encoder();
+        let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
+        let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
 
         let pipelines = self.compute_pipelines.lock().unwrap();
         let pipeline = pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
                 .with_context(&format!("wave_dispatch: handle {}", wave.handle))
         })?;
-        encoder.set_compute_pipeline_state(pipeline);
+        unsafe {
+            ffi::msg_void_id(encoder, b"setComputePipelineState:\0", *pipeline);
+        }
 
         let buffers = self.buffers.lock().unwrap();
         for b in &wave.bindings {
             if let Some(buf) = buffers.get(&b.field_handle) {
-                encoder.set_buffer(b.slot as u64, Some(buf), 0);
+                unsafe {
+                    ffi::msg_set_buffer(
+                        encoder,
+                        b"setBuffer:offset:atIndex:\0",
+                        *buf,
+                        0,
+                        b.slot as u64,
+                    );
+                }
             }
         }
         for pc in &wave.push_constants {
-            encoder.set_bytes(
-                pc.slot as u64,
-                pc.data.len() as u64,
-                pc.data.as_ptr() as *const _,
-            );
+            unsafe {
+                ffi::msg_set_bytes(
+                    encoder,
+                    b"setBytes:length:atIndex:\0",
+                    pc.data.as_ptr() as *const _,
+                    pc.data.len() as u64,
+                    pc.slot as u64,
+                );
+            }
         }
 
         // Bind textures for compute access
         let textures = self.textures.lock().unwrap();
         for tb in &wave.texture_bindings {
             if let Some(tex) = textures.get(&tb.texture_handle) {
-                encoder.set_texture(tb.slot as u64, Some(tex));
+                unsafe {
+                    ffi::msg_set_texture(encoder, b"setTexture:atIndex:\0", *tex, tb.slot as u64);
+                }
             }
         }
         drop(textures);
 
-        let grid = mtl::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
-        let group_size = mtl::MTLSize::new(64, 1, 1);
-        encoder.dispatch_threads(grid, group_size);
-        encoder.end_encoding();
-        cmd.commit();
+        let grid = ffi::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
+        let group_size = ffi::MTLSize::new(64, 1, 1);
+        unsafe {
+            ffi::msg_dispatch_threads(encoder, grid, group_size);
+            ffi::msg_void(encoder, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+        }
 
-        let cmd_clone = cmd.to_owned();
         Ok(Pulse {
             handle: self.alloc_handle(),
             wait_fn: Some(Box::new(move |_| {
-                cmd_clone.wait_until_completed();
+                unsafe { ffi::msg_void(cmd, b"waitUntilCompleted\0") };
                 Ok(())
             })),
             poll_fn: None,
@@ -119,44 +184,59 @@ impl MetalDevice {
         buffer: u64,
         offset: u64,
     ) -> Result<Pulse, QuantaError> {
-        let cmd = self.queue.new_command_buffer();
-        let encoder = cmd.new_compute_command_encoder();
+        let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
+        let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
 
         let pipelines = self.compute_pipelines.lock().unwrap();
         let pipeline = pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
                 .with_context(&format!("wave_dispatch_indirect: handle {}", wave.handle))
         })?;
-        encoder.set_compute_pipeline_state(pipeline);
+        unsafe {
+            ffi::msg_void_id(encoder, b"setComputePipelineState:\0", *pipeline);
+        }
 
         let buffers = self.buffers.lock().unwrap();
         for b in &wave.bindings {
             if let Some(buf) = buffers.get(&b.field_handle) {
-                encoder.set_buffer(b.slot as u64, Some(buf), 0);
+                unsafe {
+                    ffi::msg_set_buffer(
+                        encoder,
+                        b"setBuffer:offset:atIndex:\0",
+                        *buf,
+                        0,
+                        b.slot as u64,
+                    );
+                }
             }
         }
         for pc in &wave.push_constants {
-            encoder.set_bytes(
-                pc.slot as u64,
-                pc.data.len() as u64,
-                pc.data.as_ptr() as *const _,
-            );
+            unsafe {
+                ffi::msg_set_bytes(
+                    encoder,
+                    b"setBytes:length:atIndex:\0",
+                    pc.data.as_ptr() as *const _,
+                    pc.data.len() as u64,
+                    pc.slot as u64,
+                );
+            }
         }
 
         let indirect_buf = buffers.get(&buffer).ok_or_else(|| {
             QuantaError::invalid_param("bad indirect buffer")
                 .with_context(&format!("wave_dispatch_indirect: buffer handle {buffer}"))
         })?;
-        let group_size = mtl::MTLSize::new(64, 1, 1);
-        encoder.dispatch_thread_groups_indirect(indirect_buf, offset, group_size);
-        encoder.end_encoding();
-        cmd.commit();
+        let group_size = ffi::MTLSize::new(64, 1, 1);
+        unsafe {
+            ffi::msg_dispatch_threadgroups_indirect(encoder, *indirect_buf, offset, group_size);
+            ffi::msg_void(encoder, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+        }
 
-        let cmd_clone = cmd.to_owned();
         Ok(Pulse {
             handle: self.alloc_handle(),
             wait_fn: Some(Box::new(move |_| {
-                cmd_clone.wait_until_completed();
+                unsafe { ffi::msg_void(cmd, b"waitUntilCompleted\0") };
                 Ok(())
             })),
             poll_fn: None,

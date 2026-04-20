@@ -1,12 +1,13 @@
 //! Render pipeline and pass execution for Metal.
 
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::{Pipeline, Pulse, QuantaError, RenderPass, render_pass::RenderOp};
-use metal as mtl;
 
+use super::ffi;
 use super::{
     MetalDevice, blend_factor_to_metal, blend_op_to_metal, compare_to_metal, format_to_metal,
     stencil_op_to_metal,
@@ -17,118 +18,212 @@ impl MetalDevice {
         &self,
         desc: &crate::PipelineDesc,
     ) -> Result<Pipeline, QuantaError> {
-        let opts = mtl::CompileOptions::new();
+        // Compile shader source(s) into Metal library/libraries.
+        let (vert_fn, frag_fn) = unsafe {
+            if let Some(combined) = desc.source {
+                let src = std::str::from_utf8(combined).map_err(|_| {
+                    QuantaError::compilation_failed("invalid UTF-8 in shader source")
+                })?;
+                let mut src_bytes: Vec<u8> = src.bytes().collect();
+                src_bytes.push(0);
+                let ns_src = ffi::nsstring(&src_bytes);
+                let (lib, error) = ffi::msg_new_library_with_source(self.device, ns_src, ffi::NIL);
+                if lib.is_null() {
+                    let msg = error_string(error);
+                    return Err(QuantaError::compilation_failed(format!("shader: {msg}")));
+                }
+                let vf = get_named_function(lib, desc.vertex_entry)?;
+                let ff = get_named_function(lib, desc.fragment_entry)?;
+                (vf, ff)
+            } else {
+                let vert_src = std::str::from_utf8(desc.vertex).map_err(|_| {
+                    QuantaError::compilation_failed("invalid UTF-8 in vertex shader")
+                })?;
+                let frag_src = std::str::from_utf8(desc.fragment).map_err(|_| {
+                    QuantaError::compilation_failed("invalid UTF-8 in fragment shader")
+                })?;
 
-        // Support combined source or separate vertex/fragment sources
-        let (vert_fn, frag_fn) = if let Some(combined) = desc.source {
-            let src = std::str::from_utf8(combined)
-                .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in shader source"))?;
-            let lib = self
-                .device
-                .new_library_with_source(src, &opts)
-                .map_err(|e| QuantaError::compilation_failed(format!("shader: {}", e)))?;
-            let vf = lib.get_function(desc.vertex_entry, None).map_err(|e| {
-                QuantaError::compilation_failed(format!("vertex fn '{}': {}", desc.vertex_entry, e))
-            })?;
-            let ff = lib.get_function(desc.fragment_entry, None).map_err(|e| {
-                QuantaError::compilation_failed(format!(
-                    "fragment fn '{}': {}",
-                    desc.fragment_entry, e
-                ))
-            })?;
-            (vf, ff)
-        } else {
-            let vert_src = std::str::from_utf8(desc.vertex)
-                .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in vertex shader"))?;
-            let frag_src = std::str::from_utf8(desc.fragment)
-                .map_err(|_| QuantaError::compilation_failed("invalid UTF-8 in fragment shader"))?;
-            let vert_lib = self
-                .device
-                .new_library_with_source(vert_src, &opts)
-                .map_err(|e| QuantaError::compilation_failed(format!("vertex: {}", e)))?;
-            let frag_lib = self
-                .device
-                .new_library_with_source(frag_src, &opts)
-                .map_err(|e| QuantaError::compilation_failed(format!("fragment: {}", e)))?;
-            let vf = vert_lib
-                .get_function(desc.vertex_entry, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("vertex fn: {}", e)))?;
-            let ff = frag_lib
-                .get_function(desc.fragment_entry, None)
-                .map_err(|e| QuantaError::compilation_failed(format!("fragment fn: {}", e)))?;
-            (vf, ff)
+                let mut vb: Vec<u8> = vert_src.bytes().collect();
+                vb.push(0);
+                let ns_vert = ffi::nsstring(&vb);
+                let (vert_lib, err) =
+                    ffi::msg_new_library_with_source(self.device, ns_vert, ffi::NIL);
+                if vert_lib.is_null() {
+                    let msg = error_string(err);
+                    return Err(QuantaError::compilation_failed(format!("vertex: {msg}")));
+                }
+
+                let mut fb: Vec<u8> = frag_src.bytes().collect();
+                fb.push(0);
+                let ns_frag = ffi::nsstring(&fb);
+                let (frag_lib, err) =
+                    ffi::msg_new_library_with_source(self.device, ns_frag, ffi::NIL);
+                if frag_lib.is_null() {
+                    let msg = error_string(err);
+                    return Err(QuantaError::compilation_failed(format!("fragment: {msg}")));
+                }
+
+                let vf = get_named_function(vert_lib, desc.vertex_entry)?;
+                let ff = get_named_function(frag_lib, desc.fragment_entry)?;
+                (vf, ff)
+            }
         };
 
-        let pipe_desc = mtl::RenderPipelineDescriptor::new();
-        pipe_desc.set_vertex_function(Some(&vert_fn));
-        pipe_desc.set_fragment_function(Some(&frag_fn));
+        unsafe {
+            let pipe_desc = ffi::msg_id(
+                ffi::cls(b"MTLRenderPipelineDescriptor\0") as ffi::Id,
+                b"new\0",
+            );
+            ffi::msg_void_id(pipe_desc, b"setVertexFunction:\0", vert_fn);
+            ffi::msg_void_id(pipe_desc, b"setFragmentFunction:\0", frag_fn);
 
-        for (i, fmt) in desc.color_formats.iter().enumerate() {
-            let ca = pipe_desc.color_attachments().object_at(i as u64).unwrap();
-            ca.set_pixel_format(format_to_metal(*fmt));
-            if desc.blend.enabled {
-                ca.set_blending_enabled(true);
-                ca.set_source_rgb_blend_factor(blend_factor_to_metal(desc.blend.src_rgb));
-                ca.set_destination_rgb_blend_factor(blend_factor_to_metal(desc.blend.dst_rgb));
-                ca.set_source_alpha_blend_factor(blend_factor_to_metal(desc.blend.src_alpha));
-                ca.set_destination_alpha_blend_factor(blend_factor_to_metal(desc.blend.dst_alpha));
-                ca.set_rgb_blend_operation(blend_op_to_metal(desc.blend.op_rgb));
-                ca.set_alpha_blend_operation(blend_op_to_metal(desc.blend.op_alpha));
+            // Color attachments
+            let attachments = ffi::msg_id(pipe_desc, b"colorAttachments\0");
+            for (i, fmt) in desc.color_formats.iter().enumerate() {
+                let ca = ffi::msg_id_u64(attachments, b"objectAtIndexedSubscript:\0", i as u64);
+                ffi::msg_void_u64(ca, b"setPixelFormat:\0", format_to_metal(*fmt));
+                if desc.blend.enabled {
+                    ffi::msg_void_bool(ca, b"setBlendingEnabled:\0", true);
+                    ffi::msg_void_u64(
+                        ca,
+                        b"setSourceRGBBlendFactor:\0",
+                        blend_factor_to_metal(desc.blend.src_rgb),
+                    );
+                    ffi::msg_void_u64(
+                        ca,
+                        b"setDestinationRGBBlendFactor:\0",
+                        blend_factor_to_metal(desc.blend.dst_rgb),
+                    );
+                    ffi::msg_void_u64(
+                        ca,
+                        b"setSourceAlphaBlendFactor:\0",
+                        blend_factor_to_metal(desc.blend.src_alpha),
+                    );
+                    ffi::msg_void_u64(
+                        ca,
+                        b"setDestinationAlphaBlendFactor:\0",
+                        blend_factor_to_metal(desc.blend.dst_alpha),
+                    );
+                    ffi::msg_void_u64(
+                        ca,
+                        b"setRgbBlendOperation:\0",
+                        blend_op_to_metal(desc.blend.op_rgb),
+                    );
+                    ffi::msg_void_u64(
+                        ca,
+                        b"setAlphaBlendOperation:\0",
+                        blend_op_to_metal(desc.blend.op_alpha),
+                    );
+                }
             }
-        }
 
-        if let Some(depth_fmt) = desc.depth_format {
-            pipe_desc.set_depth_attachment_pixel_format(format_to_metal(depth_fmt));
-        }
+            if let Some(depth_fmt) = desc.depth_format {
+                ffi::msg_void_u64(
+                    pipe_desc,
+                    b"setDepthAttachmentPixelFormat:\0",
+                    format_to_metal(depth_fmt),
+                );
+            }
 
-        pipe_desc.set_sample_count(desc.sample_count as u64);
+            ffi::msg_void_u64(pipe_desc, b"setSampleCount:\0", desc.sample_count as u64);
 
-        let pipeline_state = self
-            .device
-            .new_render_pipeline_state(&pipe_desc)
-            .map_err(|e| QuantaError::compilation_failed(format!("render pipeline: {}", e)))?;
+            let (pipeline_state, error) = ffi::msg_new_render_pipeline(self.device, pipe_desc);
+            if pipeline_state.is_null() {
+                let msg = error_string(error);
+                return Err(QuantaError::compilation_failed(format!(
+                    "render pipeline: {msg}"
+                )));
+            }
 
-        // Create depth/stencil state
-        let ds_desc = mtl::DepthStencilDescriptor::new();
-        if desc.depth_stencil.depth_test {
-            ds_desc.set_depth_compare_function(compare_to_metal(desc.depth_stencil.depth_compare));
-            ds_desc.set_depth_write_enabled(desc.depth_stencil.depth_write);
-        }
-        if let Some(ref front) = desc.depth_stencil.stencil_front {
-            let s = mtl::StencilDescriptor::new();
-            s.set_stencil_failure_operation(stencil_op_to_metal(front.fail));
-            s.set_depth_failure_operation(stencil_op_to_metal(front.depth_fail));
-            s.set_depth_stencil_pass_operation(stencil_op_to_metal(front.pass));
-            s.set_stencil_compare_function(compare_to_metal(front.compare));
-            s.set_read_mask(front.read_mask);
-            s.set_write_mask(front.write_mask);
-            ds_desc.set_front_face_stencil(Some(&s));
-        }
-        if let Some(ref back) = desc.depth_stencil.stencil_back {
-            let s = mtl::StencilDescriptor::new();
-            s.set_stencil_failure_operation(stencil_op_to_metal(back.fail));
-            s.set_depth_failure_operation(stencil_op_to_metal(back.depth_fail));
-            s.set_depth_stencil_pass_operation(stencil_op_to_metal(back.pass));
-            s.set_stencil_compare_function(compare_to_metal(back.compare));
-            s.set_read_mask(back.read_mask);
-            s.set_write_mask(back.write_mask);
-            ds_desc.set_back_face_stencil(Some(&s));
-        }
-        let ds_state = self.device.new_depth_stencil_state(&ds_desc);
+            // Depth/stencil state
+            let ds_desc = ffi::msg_id(
+                ffi::cls(b"MTLDepthStencilDescriptor\0") as ffi::Id,
+                b"new\0",
+            );
+            if desc.depth_stencil.depth_test {
+                ffi::msg_void_u64(
+                    ds_desc,
+                    b"setDepthCompareFunction:\0",
+                    compare_to_metal(desc.depth_stencil.depth_compare),
+                );
+                ffi::msg_void_bool(
+                    ds_desc,
+                    b"setDepthWriteEnabled:\0",
+                    desc.depth_stencil.depth_write,
+                );
+            }
+            if let Some(ref front) = desc.depth_stencil.stencil_front {
+                let s = ffi::msg_id(ffi::cls(b"MTLStencilDescriptor\0") as ffi::Id, b"new\0");
+                ffi::msg_void_u64(
+                    s,
+                    b"setStencilFailureOperation:\0",
+                    stencil_op_to_metal(front.fail),
+                );
+                ffi::msg_void_u64(
+                    s,
+                    b"setDepthFailureOperation:\0",
+                    stencil_op_to_metal(front.depth_fail),
+                );
+                ffi::msg_void_u64(
+                    s,
+                    b"setDepthStencilPassOperation:\0",
+                    stencil_op_to_metal(front.pass),
+                );
+                ffi::msg_void_u64(
+                    s,
+                    b"setStencilCompareFunction:\0",
+                    compare_to_metal(front.compare),
+                );
+                ffi::msg_void_u32(s, b"setReadMask:\0", front.read_mask);
+                ffi::msg_void_u32(s, b"setWriteMask:\0", front.write_mask);
+                ffi::msg_void_id(ds_desc, b"setFrontFaceStencil:\0", s);
+            }
+            if let Some(ref back) = desc.depth_stencil.stencil_back {
+                let s = ffi::msg_id(ffi::cls(b"MTLStencilDescriptor\0") as ffi::Id, b"new\0");
+                ffi::msg_void_u64(
+                    s,
+                    b"setStencilFailureOperation:\0",
+                    stencil_op_to_metal(back.fail),
+                );
+                ffi::msg_void_u64(
+                    s,
+                    b"setDepthFailureOperation:\0",
+                    stencil_op_to_metal(back.depth_fail),
+                );
+                ffi::msg_void_u64(
+                    s,
+                    b"setDepthStencilPassOperation:\0",
+                    stencil_op_to_metal(back.pass),
+                );
+                ffi::msg_void_u64(
+                    s,
+                    b"setStencilCompareFunction:\0",
+                    compare_to_metal(back.compare),
+                );
+                ffi::msg_void_u32(s, b"setReadMask:\0", back.read_mask);
+                ffi::msg_void_u32(s, b"setWriteMask:\0", back.write_mask);
+                ffi::msg_void_id(ds_desc, b"setBackFaceStencil:\0", s);
+            }
+            let ds_state = ffi::msg_id_id(
+                self.device,
+                b"newDepthStencilStateWithDescriptor:\0",
+                ds_desc,
+            );
 
-        let handle = self.alloc_handle();
-        self.render_pipelines
-            .lock()
-            .unwrap()
-            .insert(handle, pipeline_state);
-        self.depth_stencil_states
-            .lock()
-            .unwrap()
-            .insert(handle, ds_state);
-        Ok(Pipeline {
-            handle,
-            drop_fn: None,
-        })
+            let handle = self.alloc_handle();
+            self.render_pipelines
+                .lock()
+                .unwrap()
+                .insert(handle, pipeline_state);
+            self.depth_stencil_states
+                .lock()
+                .unwrap()
+                .insert(handle, ds_state);
+            Ok(Pipeline {
+                handle,
+                drop_fn: None,
+            })
+        }
     }
 
     pub(crate) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
@@ -138,227 +233,319 @@ impl MetalDevice {
                 .with_context(&format!("render_end: target handle {}", pass.handle))
         })?;
 
-        // Create render pass descriptor
-        let rpd = mtl::RenderPassDescriptor::new();
-        let color_attach = rpd.color_attachments().object_at(0).unwrap();
-        color_attach.set_texture(Some(target));
-        color_attach.set_load_action(mtl::MTLLoadAction::Clear);
-        color_attach.set_store_action(mtl::MTLStoreAction::Store);
-        color_attach.set_clear_color(mtl::MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
+        unsafe {
+            // Create render pass descriptor
+            let rpd = ffi::msg_id(ffi::cls(b"MTLRenderPassDescriptor\0") as ffi::Id, b"new\0");
+            let color_attachments = ffi::msg_id(rpd, b"colorAttachments\0");
+            let color_attach =
+                ffi::msg_id_u64(color_attachments, b"objectAtIndexedSubscript:\0", 0);
+            ffi::msg_void_id(color_attach, b"setTexture:\0", *target);
+            ffi::msg_void_u64(
+                color_attach,
+                b"setLoadAction:\0",
+                ffi::MTL_LOAD_ACTION_CLEAR,
+            );
+            ffi::msg_void_u64(
+                color_attach,
+                b"setStoreAction:\0",
+                ffi::MTL_STORE_ACTION_STORE,
+            );
+            ffi::msg_set_clear_color(color_attach, ffi::MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
 
-        let cmd = self.queue.new_command_buffer();
-        let encoder = cmd.new_render_command_encoder(rpd);
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            let encoder = ffi::msg_new_render_encoder(cmd, rpd);
 
-        let buffers = self.buffers.lock().unwrap();
-        let render_pipelines = self.render_pipelines.lock().unwrap();
+            let buffers = self.buffers.lock().unwrap();
+            let render_pipelines = self.render_pipelines.lock().unwrap();
 
-        for op in &pass.ops {
-            match op {
-                RenderOp::SetPipeline(handle) => {
-                    if let Some(ps) = render_pipelines.get(handle) {
-                        encoder.set_render_pipeline_state(ps);
-                    }
-                    let ds_states = self.depth_stencil_states.lock().unwrap();
-                    if let Some(ds) = ds_states.get(handle) {
-                        encoder.set_depth_stencil_state(ds);
-                    }
-                }
-                RenderOp::BindVertices {
-                    slot,
-                    handle,
-                    offset,
-                } => {
-                    if let Some(buf) = buffers.get(handle) {
-                        encoder.set_vertex_buffer(*slot as u64, Some(buf), *offset);
-                    }
-                }
-                RenderOp::BindIndices { .. } => {
-                    // Index buffer is bound at draw_indexed time in Metal
-                }
-                RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
-                    if let Some(buf) = buffers.get(handle) {
-                        encoder.set_vertex_buffer(*slot as u64, Some(buf), 0);
-                    }
-                }
-                RenderOp::SetTexture { slot, handle } => {
-                    if let Some(tex) = textures.get(handle) {
-                        encoder.set_fragment_texture(*slot as u64, Some(tex));
-                    }
-                }
-                RenderOp::SetValue { slot, data } => {
-                    encoder.set_vertex_bytes(
-                        *slot as u64,
-                        data.len() as u64,
-                        data.as_ptr() as *const _,
-                    );
-                }
-                RenderOp::Draw {
-                    vertex_count,
-                    instance_count,
-                } => {
-                    if *instance_count <= 1 {
-                        encoder.draw_primitives(
-                            mtl::MTLPrimitiveType::Triangle,
-                            0,
-                            *vertex_count as u64,
-                        );
-                    } else {
-                        encoder.draw_primitives_instanced(
-                            mtl::MTLPrimitiveType::Triangle,
-                            0,
-                            *vertex_count as u64,
-                            *instance_count as u64,
-                        );
-                    }
-                }
-                RenderOp::DrawIndexed {
-                    index_count,
-                    instance_count,
-                } => {
-                    // Find the last BindIndices op to get the index buffer
-                    let idx_handle = pass.ops.iter().rev().find_map(|op| {
-                        if let RenderOp::BindIndices { handle, .. } = op {
-                            Some(*handle)
-                        } else {
-                            None
+            for op in &pass.ops {
+                match op {
+                    RenderOp::SetPipeline(handle) => {
+                        if let Some(ps) = render_pipelines.get(handle) {
+                            ffi::msg_void_id(encoder, b"setRenderPipelineState:\0", *ps);
                         }
-                    });
-                    if let Some(ih) = idx_handle
-                        && let Some(idx_buf) = buffers.get(&ih)
-                    {
-                        if *instance_count <= 1 {
-                            encoder.draw_indexed_primitives(
-                                mtl::MTLPrimitiveType::Triangle,
-                                *index_count as u64,
-                                mtl::MTLIndexType::UInt32,
-                                idx_buf,
+                        let ds_states = self.depth_stencil_states.lock().unwrap();
+                        if let Some(ds) = ds_states.get(handle) {
+                            ffi::msg_void_id(encoder, b"setDepthStencilState:\0", *ds);
+                        }
+                    }
+                    RenderOp::BindVertices {
+                        slot,
+                        handle,
+                        offset,
+                    } => {
+                        if let Some(buf) = buffers.get(handle) {
+                            ffi::msg_set_buffer(
+                                encoder,
+                                b"setVertexBuffer:offset:atIndex:\0",
+                                *buf,
+                                *offset,
+                                *slot as u64,
+                            );
+                        }
+                    }
+                    RenderOp::BindIndices { .. } => {
+                        // Index buffer is bound at draw_indexed time in Metal
+                    }
+                    RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
+                        if let Some(buf) = buffers.get(handle) {
+                            ffi::msg_set_buffer(
+                                encoder,
+                                b"setVertexBuffer:offset:atIndex:\0",
+                                *buf,
                                 0,
+                                *slot as u64,
+                            );
+                        }
+                    }
+                    RenderOp::SetTexture { slot, handle } => {
+                        if let Some(tex) = textures.get(handle) {
+                            ffi::msg_set_texture(
+                                encoder,
+                                b"setFragmentTexture:atIndex:\0",
+                                *tex,
+                                *slot as u64,
+                            );
+                        }
+                    }
+                    RenderOp::SetValue { slot, data } => {
+                        ffi::msg_set_bytes(
+                            encoder,
+                            b"setVertexBytes:length:atIndex:\0",
+                            data.as_ptr() as *const _,
+                            data.len() as u64,
+                            *slot as u64,
+                        );
+                    }
+                    RenderOp::Draw {
+                        vertex_count,
+                        instance_count,
+                    } => {
+                        if *instance_count <= 1 {
+                            ffi::msg_draw_primitives(
+                                encoder,
+                                ffi::MTL_PRIMITIVE_TYPE_TRIANGLE,
+                                0,
+                                *vertex_count as u64,
                             );
                         } else {
-                            encoder.draw_indexed_primitives_instanced(
-                                mtl::MTLPrimitiveType::Triangle,
-                                *index_count as u64,
-                                mtl::MTLIndexType::UInt32,
-                                idx_buf,
+                            ffi::msg_draw_primitives_instanced(
+                                encoder,
+                                ffi::MTL_PRIMITIVE_TYPE_TRIANGLE,
                                 0,
+                                *vertex_count as u64,
                                 *instance_count as u64,
                             );
                         }
                     }
-                }
-                RenderOp::SetScissor {
-                    x,
-                    y,
-                    width,
-                    height,
-                } => {
-                    encoder.set_scissor_rect(mtl::MTLScissorRect {
-                        x: *x as u64,
-                        y: *y as u64,
-                        width: *width as u64,
-                        height: *height as u64,
-                    });
-                }
-                RenderOp::SetViewport {
-                    x,
-                    y,
-                    width,
-                    height,
-                    min_depth,
-                    max_depth,
-                } => {
-                    encoder.set_viewport(mtl::MTLViewport {
-                        originX: *x as f64,
-                        originY: *y as f64,
-                        width: *width as f64,
-                        height: *height as f64,
-                        znear: *min_depth as f64,
-                        zfar: *max_depth as f64,
-                    });
-                }
-                RenderOp::Clear(_color) => {
-                    // Clear is handled by load action on the render pass descriptor.
-                    // Dynamic clear within a pass would need a new encoder — skip for now.
-                }
-                RenderOp::ClearDepth(_depth) => {
-                    // Same — handled by render pass descriptor load action.
-                }
-                RenderOp::SetStencilRef(value) => {
-                    encoder.set_stencil_reference_value(*value);
-                }
-                RenderOp::ClearStencil(_) => {
-                    // Handled by render pass descriptor load action
-                }
-                RenderOp::DrawIndirect {
-                    buffer_handle,
-                    offset,
-                } => {
-                    if let Some(buf) = buffers.get(buffer_handle) {
-                        encoder.draw_primitives_indirect(
-                            mtl::MTLPrimitiveType::Triangle,
-                            buf,
-                            *offset,
+                    RenderOp::DrawIndexed {
+                        index_count,
+                        instance_count,
+                    } => {
+                        let idx_handle = pass.ops.iter().rev().find_map(|op| {
+                            if let RenderOp::BindIndices { handle, .. } = op {
+                                Some(*handle)
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(ih) = idx_handle
+                            && let Some(idx_buf) = buffers.get(&ih)
+                        {
+                            if *instance_count <= 1 {
+                                ffi::msg_draw_indexed(
+                                    encoder,
+                                    ffi::MTL_PRIMITIVE_TYPE_TRIANGLE,
+                                    *index_count as u64,
+                                    ffi::MTL_INDEX_TYPE_UINT32,
+                                    *idx_buf,
+                                    0,
+                                );
+                            } else {
+                                ffi::msg_draw_indexed_instanced(
+                                    encoder,
+                                    ffi::MTL_PRIMITIVE_TYPE_TRIANGLE,
+                                    *index_count as u64,
+                                    ffi::MTL_INDEX_TYPE_UINT32,
+                                    *idx_buf,
+                                    0,
+                                    *instance_count as u64,
+                                );
+                            }
+                        }
+                    }
+                    RenderOp::SetScissor {
+                        x,
+                        y,
+                        width,
+                        height,
+                    } => {
+                        ffi::msg_set_scissor_rect(
+                            encoder,
+                            ffi::MTLScissorRect {
+                                x: *x as u64,
+                                y: *y as u64,
+                                width: *width as u64,
+                                height: *height as u64,
+                            },
                         );
                     }
-                }
-                RenderOp::DrawIndexedIndirect {
-                    buffer_handle,
-                    offset,
-                    index_handle,
-                } => {
-                    if let Some(buf) = buffers.get(buffer_handle)
-                        && let Some(idx_buf) = buffers.get(index_handle)
-                    {
-                        encoder.draw_indexed_primitives_indirect(
-                            mtl::MTLPrimitiveType::Triangle,
-                            mtl::MTLIndexType::UInt32,
-                            idx_buf,
-                            0,
-                            buf,
-                            *offset,
+                    RenderOp::SetViewport {
+                        x,
+                        y,
+                        width,
+                        height,
+                        min_depth,
+                        max_depth,
+                    } => {
+                        ffi::msg_set_viewport(
+                            encoder,
+                            ffi::MTLViewport {
+                                origin_x: *x as f64,
+                                origin_y: *y as f64,
+                                width: *width as f64,
+                                height: *height as f64,
+                                znear: *min_depth as f64,
+                                zfar: *max_depth as f64,
+                            },
                         );
                     }
+                    RenderOp::Clear(_color) => {
+                        // Clear is handled by load action on the render pass descriptor.
+                    }
+                    RenderOp::ClearDepth(_depth) => {
+                        // Handled by render pass descriptor load action.
+                    }
+                    RenderOp::SetStencilRef(value) => {
+                        ffi::msg_set_stencil_ref(encoder, *value);
+                    }
+                    RenderOp::ClearStencil(_) => {
+                        // Handled by render pass descriptor load action
+                    }
+                    RenderOp::DrawIndirect {
+                        buffer_handle,
+                        offset,
+                    } => {
+                        if let Some(buf) = buffers.get(buffer_handle) {
+                            ffi::msg_draw_primitives_indirect(
+                                encoder,
+                                ffi::MTL_PRIMITIVE_TYPE_TRIANGLE,
+                                *buf,
+                                *offset,
+                            );
+                        }
+                    }
+                    RenderOp::DrawIndexedIndirect {
+                        buffer_handle,
+                        offset,
+                        index_handle,
+                    } => {
+                        if let Some(buf) = buffers.get(buffer_handle)
+                            && let Some(idx_buf) = buffers.get(index_handle)
+                        {
+                            ffi::msg_draw_indexed_indirect(
+                                encoder,
+                                ffi::MTL_PRIMITIVE_TYPE_TRIANGLE,
+                                ffi::MTL_INDEX_TYPE_UINT32,
+                                *idx_buf,
+                                0,
+                                *buf,
+                                *offset,
+                            );
+                        }
+                    }
+                    RenderOp::DebugPush(label) => {
+                        ffi::msg_push_debug_group(encoder, label);
+                    }
+                    RenderOp::DebugPop => {
+                        ffi::msg_pop_debug_group(encoder);
+                    }
+                    RenderOp::SetSampler {
+                        slot,
+                        sampler: sdesc,
+                    } => {
+                        let sd =
+                            ffi::msg_id(ffi::cls(b"MTLSamplerDescriptor\0") as ffi::Id, b"new\0");
+                        ffi::msg_void_u64(
+                            sd,
+                            b"setMinFilter:\0",
+                            super::filter_to_metal(sdesc.min_filter),
+                        );
+                        ffi::msg_void_u64(
+                            sd,
+                            b"setMagFilter:\0",
+                            super::filter_to_metal(sdesc.mag_filter),
+                        );
+                        ffi::msg_void_u64(
+                            sd,
+                            b"setSAddressMode:\0",
+                            super::address_to_metal(sdesc.address_u),
+                        );
+                        ffi::msg_void_u64(
+                            sd,
+                            b"setTAddressMode:\0",
+                            super::address_to_metal(sdesc.address_v),
+                        );
+                        ffi::msg_void_u64(sd, b"setMaxAnisotropy:\0", sdesc.max_anisotropy as u64);
+                        let samp =
+                            ffi::msg_id_id(self.device, b"newSamplerStateWithDescriptor:\0", sd);
+                        ffi::msg_set_sampler(
+                            encoder,
+                            b"setFragmentSamplerState:atIndex:\0",
+                            samp,
+                            *slot as u64,
+                        );
+                    }
+                    // M2+ render ops — not yet implemented.
+                    RenderOp::BeginOcclusionQuery { .. }
+                    | RenderOp::EndOcclusionQuery { .. }
+                    | RenderOp::SetShadingRate(_)
+                    | RenderOp::SetShadingRateImage { .. } => {}
                 }
-                RenderOp::DebugPush(label) => {
-                    encoder.push_debug_group(label);
-                }
-                RenderOp::DebugPop => {
-                    encoder.pop_debug_group();
-                }
-                RenderOp::SetSampler {
-                    slot,
-                    sampler: desc,
-                } => {
-                    let sd = mtl::SamplerDescriptor::new();
-                    sd.set_min_filter(super::filter_to_metal(desc.min_filter));
-                    sd.set_mag_filter(super::filter_to_metal(desc.mag_filter));
-                    sd.set_address_mode_s(super::address_to_metal(desc.address_u));
-                    sd.set_address_mode_t(super::address_to_metal(desc.address_v));
-                    sd.set_max_anisotropy(desc.max_anisotropy as u64);
-                    let samp = self.device.new_sampler(&sd);
-                    encoder.set_fragment_sampler_state(*slot as u64, Some(&samp));
-                }
-                // M2+ render ops — not yet implemented in the Metal driver.
-                // Fall through silently so the API surface exists without crashing.
-                RenderOp::BeginOcclusionQuery { .. }
-                | RenderOp::EndOcclusionQuery { .. }
-                | RenderOp::SetShadingRate(_)
-                | RenderOp::SetShadingRateImage { .. } => {}
             }
+
+            ffi::msg_void(encoder, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+
+            Ok(Pulse {
+                handle: self.alloc_handle(),
+                wait_fn: Some(Box::new(move |_| {
+                    ffi::msg_void(cmd, b"waitUntilCompleted\0");
+                    Ok(())
+                })),
+                poll_fn: None,
+                completed: false,
+            })
         }
-
-        encoder.end_encoding();
-        cmd.commit();
-
-        let cmd_clone = cmd.to_owned();
-        Ok(Pulse {
-            handle: self.alloc_handle(),
-            wait_fn: Some(Box::new(move |_| {
-                cmd_clone.wait_until_completed();
-                Ok(())
-            })),
-            poll_fn: None,
-            completed: false,
-        })
     }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+unsafe fn error_string(error: ffi::Id) -> String {
+    if !error.is_null() {
+        unsafe {
+            let desc = ffi::msg_id(error, b"localizedDescription\0");
+            let cstr = ffi::msg_utf8_string(desc);
+            std::ffi::CStr::from_ptr(cstr as *const _)
+                .to_string_lossy()
+                .into_owned()
+        }
+    } else {
+        "unknown error".into()
+    }
+}
+
+unsafe fn get_named_function(library: ffi::Id, name: &str) -> Result<ffi::Id, QuantaError> {
+    let mut name_bytes: Vec<u8> = name.bytes().collect();
+    name_bytes.push(0);
+    let ns_name = ffi::nsstring(&name_bytes);
+    let func = unsafe { ffi::msg_get_function(library, ns_name) };
+    if func.is_null() {
+        return Err(QuantaError::compilation_failed(format!(
+            "function '{}' not found",
+            name
+        )));
+    }
+    Ok(func)
 }

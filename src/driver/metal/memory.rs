@@ -5,9 +5,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{FieldUsage, QuantaError};
-use metal as mtl;
 
 use super::MetalDevice;
+use super::ffi;
 
 impl MetalDevice {
     pub(crate) fn field_alloc_impl(
@@ -16,11 +16,11 @@ impl MetalDevice {
         usage: FieldUsage,
     ) -> Result<u64, QuantaError> {
         let options = if usage.has(FieldUsage::TRANSFER) {
-            mtl::MTLResourceOptions::StorageModeShared
+            ffi::MTL_RESOURCE_STORAGE_MODE_SHARED
         } else {
-            mtl::MTLResourceOptions::StorageModePrivate
+            ffi::MTL_RESOURCE_STORAGE_MODE_PRIVATE
         };
-        let buffer = self.device.new_buffer(size as u64, options);
+        let buffer = unsafe { ffi::msg_new_buffer(self.device, size as u64, options) };
         let handle = self.alloc_handle();
         self.buffers.lock().unwrap().insert(handle, buffer);
         Ok(handle)
@@ -41,7 +41,8 @@ impl MetalDevice {
                 .with_context(&format!("field_write_bytes: handle {handle}"))
         })?;
         unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.contents() as *mut u8, data.len());
+            let contents = ffi::msg_ptr(*buffer, b"contents\0");
+            std::ptr::copy_nonoverlapping(data.as_ptr(), contents, data.len());
         }
         Ok(())
     }
@@ -58,11 +59,8 @@ impl MetalDevice {
         })?;
         let mut result = vec![0u8; size];
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                buffer.contents() as *const u8,
-                result.as_mut_ptr(),
-                size,
-            );
+            let contents = ffi::msg_ptr(*buffer, b"contents\0");
+            std::ptr::copy_nonoverlapping(contents, result.as_mut_ptr(), size);
         }
         Ok(result)
     }
@@ -82,12 +80,14 @@ impl MetalDevice {
             QuantaError::invalid_param("bad dst handle")
                 .with_context(&format!("field_copy_bytes: dst handle {dst}"))
         })?;
-        let cmd = self.queue.new_command_buffer();
-        let blit = cmd.new_blit_command_encoder();
-        blit.copy_from_buffer(src_buf, 0, dst_buf, 0, size as u64);
-        blit.end_encoding();
-        cmd.commit();
-        cmd.wait_until_completed();
+        unsafe {
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            let blit = ffi::msg_id(cmd, b"blitCommandEncoder\0");
+            ffi::msg_copy_buffer(blit, *src_buf, 0, *dst_buf, 0, size as u64);
+            ffi::msg_void(blit, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
+        }
         Ok(())
     }
 }
