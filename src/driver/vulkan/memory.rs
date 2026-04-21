@@ -169,6 +169,115 @@ impl VulkanDevice {
         Ok(result)
     }
 
+    pub(crate) fn field_create_mapped_impl(
+        &self,
+        size: usize,
+        _usage: FieldUsage,
+    ) -> Result<(u64, *mut u8), QuantaError> {
+        let vk_usage = ffi::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+            | ffi::VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+            | ffi::VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+        let buf_info = ffi::VkBufferCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            size: size as u64,
+            usage: vk_usage,
+            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: core::ptr::null(),
+        };
+
+        let mut buffer = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkCreateBuffer(self.device, &buf_info, core::ptr::null(), &mut buffer) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+
+        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
+        unsafe { ffi::vkGetBufferMemoryRequirements(self.device, buffer, &mut mem_reqs) };
+
+        let mem_type = self.find_memory_type(
+            mem_reqs.memory_type_bits,
+            ffi::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | ffi::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        )?;
+
+        let alloc_info = ffi::VkMemoryAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            allocation_size: mem_reqs.size,
+            memory_type_index: mem_type,
+        };
+
+        let mut memory = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkAllocateMemory(self.device, &alloc_info, core::ptr::null(), &mut memory)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+
+        let result = unsafe { ffi::vkBindBufferMemory(self.device, buffer, memory, 0) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+
+        // Map permanently
+        let mut ptr: *mut c_void = core::ptr::null_mut();
+        let result = unsafe { ffi::vkMapMemory(self.device, memory, 0, size as u64, 0, &mut ptr) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::invalid_param("map failed")
+                .with_context("field_create_mapped: persistent map"));
+        }
+
+        let handle = self.alloc_handle();
+        self.buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::VkBuffer {
+                    buffer,
+                    memory,
+                    size: size as u64,
+                },
+            );
+        Ok((handle, ptr as *mut u8))
+    }
+
+    pub(crate) fn field_map_impl(&self, handle: u64, _size: usize) -> Result<*mut u8, QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_map: handle {handle}"))
+        })?;
+        let mut ptr: *mut c_void = core::ptr::null_mut();
+        let result = unsafe { ffi::vkMapMemory(self.device, buf.memory, 0, buf.size, 0, &mut ptr) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::invalid_param("map failed")
+                .with_context(&format!("field_map: handle {handle}")));
+        }
+        Ok(ptr as *mut u8)
+    }
+
+    pub(crate) fn field_unmap_impl(&self, handle: u64) -> Result<(), QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_unmap: handle {handle}"))
+        })?;
+        unsafe { ffi::vkUnmapMemory(self.device, buf.memory) };
+        Ok(())
+    }
+
     pub(crate) fn field_copy_bytes_impl(
         &self,
         dst: u64,

@@ -40,9 +40,15 @@ pub struct VulkanDevice {
     compute_pipelines: RwLock<HashMap<u64, VkComputePipeline>>,
     render_pipelines: RwLock<HashMap<u64, VkRenderPipeline>>,
     samplers: RwLock<HashMap<u64, ffi::VkSampler>>,
+    query_pools: RwLock<HashMap<u64, VkQueryPool>>,
     next_handle: AtomicU64,
     /// Pool of reusable command buffers — Mutex since push/pop are always writes.
     cmd_buffer_pool: Mutex<Vec<ffi::VkCommandBuffer>>,
+}
+
+struct VkQueryPool {
+    pool: ffi::VkQueryPool,
+    count: u32,
 }
 
 #[allow(dead_code)]
@@ -299,6 +305,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             compute_pipelines: RwLock::new(HashMap::new()),
             render_pipelines: RwLock::new(HashMap::new()),
             samplers: RwLock::new(HashMap::new()),
+            query_pools: RwLock::new(HashMap::new()),
             next_handle: AtomicU64::new(0),
             cmd_buffer_pool: Mutex::new(Vec::new()),
         }));
@@ -404,6 +411,44 @@ impl GpuDevice for VulkanDevice {
         pulse.is_done()
     }
 
+    // === Mapped buffers ===
+
+    fn field_map(&self, handle: u64, size: usize) -> Result<*mut u8, QuantaError> {
+        self.field_map_impl(handle, size)
+    }
+
+    fn field_unmap(&self, handle: u64) -> Result<(), QuantaError> {
+        self.field_unmap_impl(handle)
+    }
+
+    fn field_create_mapped(
+        &self,
+        size: usize,
+        usage: FieldUsage,
+    ) -> Result<(u64, *mut u8), QuantaError> {
+        self.field_create_mapped_impl(size, usage)
+    }
+
+    // === Timestamps ===
+
+    fn timestamp_query_create(&self, count: u32) -> Result<u64, QuantaError> {
+        self.timestamp_query_create_impl(count)
+    }
+
+    fn timestamp_write(&self, query_handle: u64, index: u32) -> Result<(), QuantaError> {
+        self.timestamp_write_impl(query_handle, index)
+    }
+
+    fn timestamp_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
+        self.timestamp_query_read_impl(handle)
+    }
+
+    // === MSAA Resolve ===
+
+    fn resolve_texture(&self, src_handle: u64, dst_handle: u64) -> Result<(), QuantaError> {
+        self.resolve_texture_impl(src_handle, dst_handle)
+    }
+
     // === Barriers ===
 
     fn barrier(&self) -> Result<(), QuantaError> {
@@ -474,6 +519,11 @@ impl Drop for VulkanDevice {
             if let Ok(mut samplers) = self.samplers.write() {
                 for (_, sampler) in samplers.drain() {
                     ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
+                }
+            }
+            if let Ok(mut pools) = self.query_pools.write() {
+                for (_, qp) in pools.drain() {
+                    ffi::vkDestroyQueryPool(self.device, qp.pool, core::ptr::null());
                 }
             }
 
@@ -577,6 +627,20 @@ fn blend_op_to_vk(op: crate::BlendOp) -> u32 {
         ReverseSubtract => ffi::VK_BLEND_OP_REVERSE_SUBTRACT,
         Min => ffi::VK_BLEND_OP_MIN,
         Max => ffi::VK_BLEND_OP_MAX,
+    }
+}
+
+fn compare_op_to_vk(op: crate::CompareOp) -> u32 {
+    use crate::CompareOp::*;
+    match op {
+        Never => 0,
+        Less => 1,
+        Equal => 2,
+        LessEqual => 3,
+        Greater => 4,
+        NotEqual => 5,
+        GreaterEqual => 6,
+        Always => 7,
     }
 }
 

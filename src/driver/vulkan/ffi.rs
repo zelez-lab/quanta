@@ -331,6 +331,12 @@ pub const VK_REMAINING_MIP_LEVELS: u32 = !0u32;
 pub const VK_REMAINING_ARRAY_LAYERS: u32 = !0u32;
 pub const VK_LOD_CLAMP_NONE: f32 = 1000.0;
 
+// ─── Query type ────────────────────────────────────────────────────────────
+
+pub const VK_QUERY_TYPE_TIMESTAMP: u32 = 2;
+pub const VK_QUERY_RESULT_64_BIT: u32 = 0x00000001;
+pub const VK_QUERY_RESULT_WAIT_BIT: u32 = 0x00000002;
+
 // ─── Stencil face flags ─────────────────────────────────────────────────────
 
 pub const VK_STENCIL_FACE_FRONT_AND_BACK: u32 = 0x00000003;
@@ -887,6 +893,31 @@ pub struct VkImageBlit {
     pub src_offsets: [VkOffset3D; 2],
     pub dst_subresource: VkImageSubresourceLayers,
     pub dst_offsets: [VkOffset3D; 2],
+}
+
+#[repr(C)]
+pub struct VkImageResolve {
+    pub src_subresource: VkImageSubresourceLayers,
+    pub src_offset: VkOffset3D,
+    pub dst_subresource: VkImageSubresourceLayers,
+    pub dst_offset: VkOffset3D,
+    pub extent: VkExtent3D,
+}
+
+// ─── Query pool ────────────────────────────────────────────────────────────
+
+pub const VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO: u32 = 11;
+
+pub type VkQueryPool = *mut c_void;
+
+#[repr(C)]
+pub struct VkQueryPoolCreateInfo {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub query_type: u32,
+    pub query_count: u32,
+    pub pipeline_statistics: u32,
 }
 
 // ─── Graphics pipeline create info and sub-structures ───────────────────────
@@ -1571,6 +1602,44 @@ unsafe extern "C" {
         p_image_memory_barriers: *const VkImageMemoryBarrier,
     );
     pub fn vkCmdPipelineBarrier2(cmd_buf: VkCommandBuffer, dep_info: *const VkDependencyInfo);
+    pub fn vkCreateQueryPool(
+        device: VkDevice,
+        create_info: *const VkQueryPoolCreateInfo,
+        allocator: *const c_void,
+        query_pool: *mut VkQueryPool,
+    ) -> VkResult;
+    pub fn vkDestroyQueryPool(device: VkDevice, query_pool: VkQueryPool, allocator: *const c_void);
+    pub fn vkCmdResetQueryPool(
+        cmd_buf: VkCommandBuffer,
+        query_pool: VkQueryPool,
+        first_query: u32,
+        query_count: u32,
+    );
+    pub fn vkCmdWriteTimestamp(
+        cmd_buf: VkCommandBuffer,
+        pipeline_stage: u32,
+        query_pool: VkQueryPool,
+        query: u32,
+    );
+    pub fn vkGetQueryPoolResults(
+        device: VkDevice,
+        query_pool: VkQueryPool,
+        first_query: u32,
+        query_count: u32,
+        data_size: usize,
+        p_data: *mut c_void,
+        stride: VkDeviceSize,
+        flags: u32,
+    ) -> VkResult;
+    pub fn vkCmdResolveImage(
+        cmd_buf: VkCommandBuffer,
+        src_image: VkImage,
+        src_image_layout: u32,
+        dst_image: VkImage,
+        dst_image_layout: u32,
+        region_count: u32,
+        p_regions: *const VkImageResolve,
+    );
 }
 
 // ─── macOS (MoltenVK or Vulkan loader) ──────────────────────────────────────
@@ -1946,6 +2015,44 @@ unsafe extern "C" {
         p_image_memory_barriers: *const VkImageMemoryBarrier,
     );
     pub fn vkCmdPipelineBarrier2(cmd_buf: VkCommandBuffer, dep_info: *const VkDependencyInfo);
+    pub fn vkCreateQueryPool(
+        device: VkDevice,
+        create_info: *const VkQueryPoolCreateInfo,
+        allocator: *const c_void,
+        query_pool: *mut VkQueryPool,
+    ) -> VkResult;
+    pub fn vkDestroyQueryPool(device: VkDevice, query_pool: VkQueryPool, allocator: *const c_void);
+    pub fn vkCmdResetQueryPool(
+        cmd_buf: VkCommandBuffer,
+        query_pool: VkQueryPool,
+        first_query: u32,
+        query_count: u32,
+    );
+    pub fn vkCmdWriteTimestamp(
+        cmd_buf: VkCommandBuffer,
+        pipeline_stage: u32,
+        query_pool: VkQueryPool,
+        query: u32,
+    );
+    pub fn vkGetQueryPoolResults(
+        device: VkDevice,
+        query_pool: VkQueryPool,
+        first_query: u32,
+        query_count: u32,
+        data_size: usize,
+        p_data: *mut c_void,
+        stride: VkDeviceSize,
+        flags: u32,
+    ) -> VkResult;
+    pub fn vkCmdResolveImage(
+        cmd_buf: VkCommandBuffer,
+        src_image: VkImage,
+        src_image_layout: u32,
+        dst_image: VkImage,
+        dst_image_layout: u32,
+        region_count: u32,
+        p_regions: *const VkImageResolve,
+    );
 }
 
 // ─── Windows (vulkan-1.dll) ─────────────────────────────────────────────────
@@ -2321,4 +2428,42 @@ unsafe extern "C" {
         p_image_memory_barriers: *const VkImageMemoryBarrier,
     );
     pub fn vkCmdPipelineBarrier2(cmd_buf: VkCommandBuffer, dep_info: *const VkDependencyInfo);
+    pub fn vkCreateQueryPool(
+        device: VkDevice,
+        create_info: *const VkQueryPoolCreateInfo,
+        allocator: *const c_void,
+        query_pool: *mut VkQueryPool,
+    ) -> VkResult;
+    pub fn vkDestroyQueryPool(device: VkDevice, query_pool: VkQueryPool, allocator: *const c_void);
+    pub fn vkCmdResetQueryPool(
+        cmd_buf: VkCommandBuffer,
+        query_pool: VkQueryPool,
+        first_query: u32,
+        query_count: u32,
+    );
+    pub fn vkCmdWriteTimestamp(
+        cmd_buf: VkCommandBuffer,
+        pipeline_stage: u32,
+        query_pool: VkQueryPool,
+        query: u32,
+    );
+    pub fn vkGetQueryPoolResults(
+        device: VkDevice,
+        query_pool: VkQueryPool,
+        first_query: u32,
+        query_count: u32,
+        data_size: usize,
+        p_data: *mut c_void,
+        stride: VkDeviceSize,
+        flags: u32,
+    ) -> VkResult;
+    pub fn vkCmdResolveImage(
+        cmd_buf: VkCommandBuffer,
+        src_image: VkImage,
+        src_image_layout: u32,
+        dst_image: VkImage,
+        dst_image_layout: u32,
+        region_count: u32,
+        p_regions: *const VkImageResolve,
+    );
 }

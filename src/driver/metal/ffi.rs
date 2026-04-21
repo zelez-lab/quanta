@@ -71,8 +71,12 @@ pub const MTL_TEXTURE_TYPE_3D: NSUInteger = 7;
 
 // ─── Metal load/store actions ───────────────────────────────────────────────
 
+pub const MTL_LOAD_ACTION_DONT_CARE: NSUInteger = 0;
+pub const MTL_LOAD_ACTION_LOAD: NSUInteger = 1;
 pub const MTL_LOAD_ACTION_CLEAR: NSUInteger = 2;
+pub const MTL_STORE_ACTION_DONT_CARE: NSUInteger = 0;
 pub const MTL_STORE_ACTION_STORE: NSUInteger = 1;
+pub const MTL_STORE_ACTION_MULTISAMPLE_RESOLVE: NSUInteger = 2;
 
 // ─── Metal primitive types ──────────────────────────────────────────────────
 
@@ -316,6 +320,12 @@ pub unsafe fn msg_void_u64(obj: Id, name: &[u8], v: u64) {
 /// Send message with one u32 argument, returning void.
 pub unsafe fn msg_void_u32(obj: Id, name: &[u8], v: u32) {
     let f: unsafe extern "C" fn(Id, Sel, u32) = mem::transmute(objc_msgSend as *const c_void);
+    f(obj, sel(name), v)
+}
+
+/// Send message with one f64 argument, returning void.
+pub unsafe fn msg_void_f64(obj: Id, name: &[u8], v: f64) {
+    let f: unsafe extern "C" fn(Id, Sel, f64) = mem::transmute(objc_msgSend as *const c_void);
     f(obj, sel(name), v)
 }
 
@@ -754,6 +764,18 @@ pub unsafe fn msg_pop_debug_group(encoder: Id) {
 /// generateMipmapsForTexture: on blit encoder
 pub unsafe fn msg_generate_mipmaps(blit: Id, texture: Id) {
     msg_void_id(blit, b"generateMipmapsForTexture:\0", texture)
+}
+
+/// sampleTimestamps:gpuTimestamp: on device
+pub unsafe fn msg_sample_timestamps(device: Id, cpu_ts: *mut u64, gpu_ts: *mut u64) {
+    let f: unsafe extern "C" fn(Id, Sel, *mut u64, *mut u64) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        device,
+        sel(b"sampleTimestamps:gpuTimestamp:\0"),
+        cpu_ts,
+        gpu_ts,
+    );
 }
 
 // ─── dispatch_data ──────────────────────────────────────────────────────────

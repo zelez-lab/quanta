@@ -8,7 +8,9 @@ use crate::{QuantaError, Texture, TextureDesc, TextureUsage};
 
 use super::MetalDevice;
 use super::ffi;
-use super::{address_to_metal, filter_to_metal, format_bytes_per_pixel, format_to_metal};
+use super::{
+    address_to_metal, compare_op_to_metal, filter_to_metal, format_bytes_per_pixel, format_to_metal,
+};
 
 impl MetalDevice {
     pub(crate) fn texture_create_impl(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
@@ -172,6 +174,12 @@ impl MetalDevice {
             ffi::msg_void_u64(sd, b"setSAddressMode:\0", address_to_metal(desc.address_u));
             ffi::msg_void_u64(sd, b"setTAddressMode:\0", address_to_metal(desc.address_v));
             ffi::msg_void_u64(sd, b"setMaxAnisotropy:\0", desc.max_anisotropy as u64);
+
+            // Comparison function for depth/shadow samplers
+            if let Some(cmp) = desc.compare {
+                ffi::msg_void_u64(sd, b"setCompareFunction:\0", compare_op_to_metal(cmp));
+            }
+
             let sampler = ffi::msg_id_id(self.device, b"newSamplerStateWithDescriptor:\0", sd);
             let handle = self.alloc_handle();
             self.samplers

@@ -4,7 +4,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::{Pipeline, Pulse, QuantaError, RenderPass, render_pass::RenderOp};
+use crate::{LoadOp, Pipeline, Pulse, QuantaError, RenderPass, StoreOp, render_pass::RenderOp};
 
 use super::ffi;
 use super::{
@@ -239,20 +239,206 @@ impl MetalDevice {
             // Create render pass descriptor
             let rpd = ffi::msg_id(ffi::cls(b"MTLRenderPassDescriptor\0") as ffi::Id, b"new\0");
             let color_attachments = ffi::msg_id(rpd, b"colorAttachments\0");
-            let color_attach =
-                ffi::msg_id_u64(color_attachments, b"objectAtIndexedSubscript:\0", 0);
-            ffi::msg_void_id(color_attach, b"setTexture:\0", *target);
-            ffi::msg_void_u64(
-                color_attach,
-                b"setLoadAction:\0",
-                ffi::MTL_LOAD_ACTION_CLEAR,
-            );
-            ffi::msg_void_u64(
-                color_attach,
-                b"setStoreAction:\0",
-                ffi::MTL_STORE_ACTION_STORE,
-            );
-            ffi::msg_set_clear_color(color_attach, ffi::MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
+
+            if pass.color_targets.is_empty() {
+                // Legacy single-target path: use pass.handle as the target
+                let color_attach =
+                    ffi::msg_id_u64(color_attachments, b"objectAtIndexedSubscript:\0", 0);
+                ffi::msg_void_id(color_attach, b"setTexture:\0", *target);
+                ffi::msg_void_u64(
+                    color_attach,
+                    b"setLoadAction:\0",
+                    ffi::MTL_LOAD_ACTION_CLEAR,
+                );
+                ffi::msg_void_u64(
+                    color_attach,
+                    b"setStoreAction:\0",
+                    ffi::MTL_STORE_ACTION_STORE,
+                );
+                ffi::msg_set_clear_color(color_attach, ffi::MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
+            } else {
+                // MRT path: configure each color target with load/store ops
+                for (i, ct) in pass.color_targets.iter().enumerate() {
+                    let ca = ffi::msg_id_u64(
+                        color_attachments,
+                        b"objectAtIndexedSubscript:\0",
+                        i as u64,
+                    );
+                    let ct_tex = textures.get(&ct.texture).ok_or_else(|| {
+                        QuantaError::invalid_param("color target texture not found")
+                    })?;
+                    ffi::msg_void_id(ca, b"setTexture:\0", *ct_tex);
+
+                    // Load action
+                    match ct.load_op {
+                        LoadOp::Clear(color) => {
+                            ffi::msg_void_u64(ca, b"setLoadAction:\0", ffi::MTL_LOAD_ACTION_CLEAR);
+                            ffi::msg_set_clear_color(
+                                ca,
+                                ffi::MTLClearColor::new(
+                                    color.r as f64,
+                                    color.g as f64,
+                                    color.b as f64,
+                                    color.a as f64,
+                                ),
+                            );
+                        }
+                        LoadOp::Load => {
+                            ffi::msg_void_u64(ca, b"setLoadAction:\0", ffi::MTL_LOAD_ACTION_LOAD);
+                        }
+                        LoadOp::DontCare => {
+                            ffi::msg_void_u64(
+                                ca,
+                                b"setLoadAction:\0",
+                                ffi::MTL_LOAD_ACTION_DONT_CARE,
+                            );
+                        }
+                    }
+
+                    // Store action
+                    match ct.store_op {
+                        StoreOp::Store => {
+                            ffi::msg_void_u64(
+                                ca,
+                                b"setStoreAction:\0",
+                                ffi::MTL_STORE_ACTION_STORE,
+                            );
+                        }
+                        StoreOp::DontCare => {
+                            ffi::msg_void_u64(
+                                ca,
+                                b"setStoreAction:\0",
+                                ffi::MTL_STORE_ACTION_DONT_CARE,
+                            );
+                        }
+                        StoreOp::Resolve(resolve_handle) => {
+                            ffi::msg_void_u64(
+                                ca,
+                                b"setStoreAction:\0",
+                                ffi::MTL_STORE_ACTION_MULTISAMPLE_RESOLVE,
+                            );
+                            if let Some(resolve_tex) = textures.get(&resolve_handle) {
+                                ffi::msg_void_id(ca, b"setResolveTexture:\0", *resolve_tex);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Depth/stencil target
+            if let Some(ref dt) = pass.depth_target {
+                let depth_attach = ffi::msg_id(rpd, b"depthAttachment\0");
+                let dt_tex = textures
+                    .get(&dt.texture)
+                    .ok_or_else(|| QuantaError::invalid_param("depth target texture not found"))?;
+                ffi::msg_void_id(depth_attach, b"setTexture:\0", *dt_tex);
+
+                // Depth load action
+                match dt.load_op {
+                    LoadOp::Clear(color) => {
+                        ffi::msg_void_u64(
+                            depth_attach,
+                            b"setLoadAction:\0",
+                            ffi::MTL_LOAD_ACTION_CLEAR,
+                        );
+                        ffi::msg_void_f64(depth_attach, b"setClearDepth:\0", color.r as f64);
+                    }
+                    LoadOp::Load => {
+                        ffi::msg_void_u64(
+                            depth_attach,
+                            b"setLoadAction:\0",
+                            ffi::MTL_LOAD_ACTION_LOAD,
+                        );
+                    }
+                    LoadOp::DontCare => {
+                        ffi::msg_void_u64(
+                            depth_attach,
+                            b"setLoadAction:\0",
+                            ffi::MTL_LOAD_ACTION_DONT_CARE,
+                        );
+                    }
+                }
+
+                // Depth store action
+                match dt.store_op {
+                    StoreOp::Store => {
+                        ffi::msg_void_u64(
+                            depth_attach,
+                            b"setStoreAction:\0",
+                            ffi::MTL_STORE_ACTION_STORE,
+                        );
+                    }
+                    StoreOp::DontCare => {
+                        ffi::msg_void_u64(
+                            depth_attach,
+                            b"setStoreAction:\0",
+                            ffi::MTL_STORE_ACTION_DONT_CARE,
+                        );
+                    }
+                    StoreOp::Resolve(resolve_handle) => {
+                        ffi::msg_void_u64(
+                            depth_attach,
+                            b"setStoreAction:\0",
+                            ffi::MTL_STORE_ACTION_MULTISAMPLE_RESOLVE,
+                        );
+                        if let Some(resolve_tex) = textures.get(&resolve_handle) {
+                            ffi::msg_void_id(depth_attach, b"setResolveTexture:\0", *resolve_tex);
+                        }
+                    }
+                }
+
+                // Stencil attachment (shares the same texture for depth/stencil formats)
+                let stencil_attach = ffi::msg_id(rpd, b"stencilAttachment\0");
+                ffi::msg_void_id(stencil_attach, b"setTexture:\0", *dt_tex);
+
+                match dt.stencil_load_op {
+                    LoadOp::Clear(_) => {
+                        ffi::msg_void_u64(
+                            stencil_attach,
+                            b"setLoadAction:\0",
+                            ffi::MTL_LOAD_ACTION_CLEAR,
+                        );
+                    }
+                    LoadOp::Load => {
+                        ffi::msg_void_u64(
+                            stencil_attach,
+                            b"setLoadAction:\0",
+                            ffi::MTL_LOAD_ACTION_LOAD,
+                        );
+                    }
+                    LoadOp::DontCare => {
+                        ffi::msg_void_u64(
+                            stencil_attach,
+                            b"setLoadAction:\0",
+                            ffi::MTL_LOAD_ACTION_DONT_CARE,
+                        );
+                    }
+                }
+
+                match dt.stencil_store_op {
+                    StoreOp::Store => {
+                        ffi::msg_void_u64(
+                            stencil_attach,
+                            b"setStoreAction:\0",
+                            ffi::MTL_STORE_ACTION_STORE,
+                        );
+                    }
+                    StoreOp::DontCare => {
+                        ffi::msg_void_u64(
+                            stencil_attach,
+                            b"setStoreAction:\0",
+                            ffi::MTL_STORE_ACTION_DONT_CARE,
+                        );
+                    }
+                    StoreOp::Resolve(_) => {
+                        ffi::msg_void_u64(
+                            stencil_attach,
+                            b"setStoreAction:\0",
+                            ffi::MTL_STORE_ACTION_STORE,
+                        );
+                    }
+                }
+            }
 
             let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
             let encoder = ffi::msg_new_render_encoder(cmd, rpd);

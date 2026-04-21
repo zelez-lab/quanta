@@ -494,6 +494,11 @@ impl VulkanDevice {
         &self,
         desc: &crate::render_pass::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
+        let (compare_enable, compare_op) = if let Some(cmp) = desc.compare {
+            (1u32, super::compare_op_to_vk(cmp))
+        } else {
+            (0u32, 0u32)
+        };
         let info = ffi::VkSamplerCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             p_next: core::ptr::null(),
@@ -510,8 +515,8 @@ impl VulkanDevice {
             mip_lod_bias: 0.0,
             anisotropy_enable: if desc.max_anisotropy > 1 { 1 } else { 0 },
             max_anisotropy: desc.max_anisotropy as f32,
-            compare_enable: 0,
-            compare_op: 0,
+            compare_enable,
+            compare_op,
             min_lod: 0.0,
             max_lod: ffi::VK_LOD_CLAMP_NONE,
             border_color: 0,

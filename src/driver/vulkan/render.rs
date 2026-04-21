@@ -1,11 +1,12 @@
 //! Render pipeline and render pass operations for Vulkan.
 
 use alloc::format;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 
 use crate::render_pass::RenderOp;
-use crate::{Pipeline, Pulse, QuantaError, RenderPass, Texture};
+use crate::{LoadOp, Pipeline, Pulse, QuantaError, RenderPass, StoreOp, Texture};
 use std::ffi::CString;
 
 use super::ffi;
@@ -441,12 +442,121 @@ impl VulkanDevice {
                 .with_context(&format!("render_end: target handle {}", pass.handle))
         })?;
 
+        // Determine if we have MRT color targets or just the single target.
+        let has_mrt = !pass.color_targets.is_empty();
+
         let (vk_render_pass, pipeline_ref) = if let Some(ph) = pipeline_handle {
             let rp = render_pipelines.get(&ph).ok_or_else(|| {
                 QuantaError::invalid_param("pipeline not found")
                     .with_context(&format!("render_end: pipeline handle {}", ph))
             })?;
             (rp.render_pass, Some(rp))
+        } else if has_mrt {
+            // MRT: create a transient render pass with per-target load/store ops.
+            let mut attachments = Vec::new();
+            let mut color_refs = Vec::new();
+            let mut resolve_refs = Vec::new();
+            let mut has_resolve = false;
+
+            for (i, ct) in pass.color_targets.iter().enumerate() {
+                let ct_tex = textures.get(&ct.texture).ok_or_else(|| {
+                    QuantaError::invalid_param("color target texture not found")
+                        .with_context(&format!("render_end: color target {i}"))
+                })?;
+                let load_op = match ct.load_op {
+                    LoadOp::Clear(_) => ffi::VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    LoadOp::Load => ffi::VK_ATTACHMENT_LOAD_OP_LOAD,
+                    LoadOp::DontCare => ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                };
+                let (store_op, resolve_handle) = match ct.store_op {
+                    StoreOp::Store => (ffi::VK_ATTACHMENT_STORE_OP_STORE, None),
+                    StoreOp::DontCare => (ffi::VK_ATTACHMENT_STORE_OP_DONT_CARE, None),
+                    StoreOp::Resolve(h) => (ffi::VK_ATTACHMENT_STORE_OP_STORE, Some(h)),
+                };
+                let initial_layout = match ct.load_op {
+                    LoadOp::Load => ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    _ => ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                };
+                attachments.push(ffi::VkAttachmentDescription {
+                    flags: 0,
+                    format: ct_tex.format,
+                    samples: ffi::VK_SAMPLE_COUNT_1_BIT,
+                    load_op,
+                    store_op,
+                    stencil_load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                    stencil_store_op: ffi::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                    initial_layout,
+                    final_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                });
+                color_refs.push(ffi::VkAttachmentReference {
+                    attachment: i as u32,
+                    layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                });
+                if let Some(rh) = resolve_handle {
+                    has_resolve = true;
+                    let resolve_tex = textures.get(&rh).ok_or_else(|| {
+                        QuantaError::invalid_param("resolve target texture not found")
+                            .with_context(&format!("render_end: resolve target for attachment {i}"))
+                    })?;
+                    let resolve_idx = attachments.len() as u32;
+                    attachments.push(ffi::VkAttachmentDescription {
+                        flags: 0,
+                        format: resolve_tex.format,
+                        samples: ffi::VK_SAMPLE_COUNT_1_BIT,
+                        load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                        store_op: ffi::VK_ATTACHMENT_STORE_OP_STORE,
+                        stencil_load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                        stencil_store_op: ffi::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                        initial_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                        final_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    });
+                    resolve_refs.push(ffi::VkAttachmentReference {
+                        attachment: resolve_idx,
+                        layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    });
+                } else {
+                    resolve_refs.push(ffi::VkAttachmentReference {
+                        attachment: !0u32, // VK_ATTACHMENT_UNUSED
+                        layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                    });
+                }
+            }
+            let p_resolve = if has_resolve {
+                resolve_refs.as_ptr()
+            } else {
+                core::ptr::null()
+            };
+            let subpass = ffi::VkSubpassDescription {
+                flags: 0,
+                pipeline_bind_point: ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                input_attachment_count: 0,
+                p_input_attachments: core::ptr::null(),
+                color_attachment_count: color_refs.len() as u32,
+                p_color_attachments: color_refs.as_ptr(),
+                p_resolve_attachments: p_resolve,
+                p_depth_stencil_attachment: core::ptr::null(),
+                preserve_attachment_count: 0,
+                p_preserve_attachments: core::ptr::null(),
+            };
+            let rp_info = ffi::VkRenderPassCreateInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                p_next: core::ptr::null(),
+                flags: 0,
+                attachment_count: attachments.len() as u32,
+                p_attachments: attachments.as_ptr(),
+                subpass_count: 1,
+                p_subpasses: &subpass,
+                dependency_count: 0,
+                p_dependencies: core::ptr::null(),
+            };
+            let mut transient_rp = ffi::null_handle();
+            let result = unsafe {
+                ffi::vkCreateRenderPass(self.device, &rp_info, core::ptr::null(), &mut transient_rp)
+            };
+            if result != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            (transient_rp, None)
         } else {
             // Create a transient render pass for clear-only usage.
             let color_attachment = ffi::VkAttachmentDescription {
@@ -497,15 +607,31 @@ impl VulkanDevice {
             (transient_rp, None)
         };
 
-        // Create framebuffer
-        let attachments = [target_tex.view];
+        // Create framebuffer — MRT uses multiple image views.
+        let fb_attachments: Vec<ffi::VkImageView> = if has_mrt {
+            let mut views = Vec::new();
+            for ct in &pass.color_targets {
+                if let Some(tex) = textures.get(&ct.texture) {
+                    views.push(tex.view);
+                }
+                // If this target has a resolve attachment, add the resolve view too.
+                if let StoreOp::Resolve(rh) = ct.store_op
+                    && let Some(tex) = textures.get(&rh)
+                {
+                    views.push(tex.view);
+                }
+            }
+            views
+        } else {
+            vec![target_tex.view]
+        };
         let fb_info = ffi::VkFramebufferCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
             render_pass: vk_render_pass,
-            attachment_count: 1,
-            p_attachments: attachments.as_ptr(),
+            attachment_count: fb_attachments.len() as u32,
+            p_attachments: fb_attachments.as_ptr(),
             width: target_tex.width,
             height: target_tex.height,
             layers: 1,
@@ -728,27 +854,55 @@ impl VulkanDevice {
             descriptor_set = None;
         }
 
-        // Clear color
-        let clear_color = pass
-            .ops
-            .iter()
-            .find_map(|op| {
-                if let RenderOp::Clear(c) = op {
-                    Some(ffi::VkClearValue {
+        // Clear values — one per attachment (MRT: per color target + resolve slots).
+        let clear_values: Vec<ffi::VkClearValue> = if has_mrt {
+            let mut cvs = Vec::new();
+            for ct in &pass.color_targets {
+                let cv = match ct.load_op {
+                    LoadOp::Clear(c) => ffi::VkClearValue {
                         color: ffi::VkClearColorValue {
                             float32: [c.r, c.g, c.b, c.a],
                         },
-                    })
-                } else {
-                    None
+                    },
+                    _ => ffi::VkClearValue {
+                        color: ffi::VkClearColorValue {
+                            float32: [0.0, 0.0, 0.0, 1.0],
+                        },
+                    },
+                };
+                cvs.push(cv);
+                // Resolve attachments need a clear value slot too.
+                if let StoreOp::Resolve(_) = ct.store_op {
+                    cvs.push(ffi::VkClearValue {
+                        color: ffi::VkClearColorValue {
+                            float32: [0.0, 0.0, 0.0, 1.0],
+                        },
+                    });
                 }
-            })
-            .unwrap_or(ffi::VkClearValue {
-                color: ffi::VkClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
-                },
-            });
-        let clear_values = [clear_color];
+            }
+            cvs
+        } else {
+            let clear_color = pass
+                .ops
+                .iter()
+                .find_map(|op| {
+                    if let RenderOp::Clear(c) = op {
+                        Some(ffi::VkClearValue {
+                            color: ffi::VkClearColorValue {
+                                float32: [c.r, c.g, c.b, c.a],
+                            },
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(ffi::VkClearValue {
+                    color: ffi::VkClearColorValue {
+                        float32: [0.0, 0.0, 0.0, 1.0],
+                    },
+                });
+            vec![clear_color]
+        };
 
         // Allocate command buffer and begin recording.
         let cmd = self.alloc_command_buffer()?;
@@ -1026,5 +1180,282 @@ impl VulkanDevice {
             handle: self.alloc_handle(),
             completed: true,
         })
+    }
+
+    // === Timestamp queries (Step 011) ===
+
+    pub(crate) fn timestamp_query_create_impl(&self, count: u32) -> Result<u64, QuantaError> {
+        let pool_info = ffi::VkQueryPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            query_type: ffi::VK_QUERY_TYPE_TIMESTAMP,
+            query_count: count,
+            pipeline_statistics: 0,
+        };
+        let mut pool = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateQueryPool(self.device, &pool_info, core::ptr::null(), &mut pool)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::invalid_param("query pool creation failed")
+                .with_context(&format!("timestamp_query_create: VkResult {result}")));
+        }
+        let handle = self.alloc_handle();
+        self.query_pools
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, super::VkQueryPool { pool, count });
+        Ok(handle)
+    }
+
+    pub(crate) fn timestamp_write_impl(
+        &self,
+        query_handle: u64,
+        index: u32,
+    ) -> Result<(), QuantaError> {
+        let pools = self
+            .query_pools
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let qp = pools.get(&query_handle).ok_or_else(|| {
+            QuantaError::invalid_param("query pool not found")
+                .with_context(&format!("timestamp_write: handle {query_handle}"))
+        })?;
+
+        let cmd = self.alloc_command_buffer()?;
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
+        unsafe {
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            ffi::vkCmdResetQueryPool(cmd, qp.pool, index, 1);
+            ffi::vkCmdWriteTimestamp(
+                cmd,
+                ffi::VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                qp.pool,
+                index,
+            );
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        drop(pools);
+        self.submit_and_wait(cmd)
+    }
+
+    pub(crate) fn timestamp_query_read_impl(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
+        let pools = self
+            .query_pools
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let qp = pools.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("query pool not found")
+                .with_context(&format!("timestamp_query_read: handle {handle}"))
+        })?;
+
+        let count = qp.count as usize;
+        let mut results = vec![0u64; count];
+        let result = unsafe {
+            ffi::vkGetQueryPoolResults(
+                self.device,
+                qp.pool,
+                0,
+                qp.count,
+                count * core::mem::size_of::<u64>(),
+                results.as_mut_ptr() as *mut c_void,
+                core::mem::size_of::<u64>() as u64,
+                ffi::VK_QUERY_RESULT_64_BIT | ffi::VK_QUERY_RESULT_WAIT_BIT,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::invalid_param("query read failed")
+                .with_context(&format!("timestamp_query_read: VkResult {result}")));
+        }
+        Ok(results)
+    }
+
+    // === MSAA Resolve (Step 012) ===
+
+    pub(crate) fn resolve_texture_impl(
+        &self,
+        src_handle: u64,
+        dst_handle: u64,
+    ) -> Result<(), QuantaError> {
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let src = textures.get(&src_handle).ok_or_else(|| {
+            QuantaError::invalid_param("source texture not found")
+                .with_context(&format!("resolve_texture: src handle {src_handle}"))
+        })?;
+        let dst = textures.get(&dst_handle).ok_or_else(|| {
+            QuantaError::invalid_param("destination texture not found")
+                .with_context(&format!("resolve_texture: dst handle {dst_handle}"))
+        })?;
+
+        let cmd = self.alloc_command_buffer()?;
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
+        unsafe {
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+
+            // Transition src to TRANSFER_SRC
+            let barrier_src = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                dst_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: src.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            };
+            // Transition dst to TRANSFER_DST
+            let barrier_dst = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: 0,
+                dst_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: dst.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            };
+            let barriers = [barrier_src, barrier_dst];
+            ffi::vkCmdPipelineBarrier(
+                cmd,
+                ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                2,
+                barriers.as_ptr(),
+            );
+
+            // Resolve
+            let region = ffi::VkImageResolve {
+                src_subresource: ffi::VkImageSubresourceLayers {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                src_offset: ffi::VkOffset3D { x: 0, y: 0, z: 0 },
+                dst_subresource: ffi::VkImageSubresourceLayers {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                dst_offset: ffi::VkOffset3D { x: 0, y: 0, z: 0 },
+                extent: ffi::VkExtent3D {
+                    width: src.width,
+                    height: src.height,
+                    depth: 1,
+                },
+            };
+            ffi::vkCmdResolveImage(
+                cmd,
+                src.image,
+                ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                dst.image,
+                ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &region,
+            );
+
+            // Transition both back to shader-read
+            let barrier_src_back = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
+                dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                new_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: src.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            };
+            let barrier_dst_back = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                new_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: dst.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            };
+            let barriers_back = [barrier_src_back, barrier_dst_back];
+            ffi::vkCmdPipelineBarrier(
+                cmd,
+                ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                ffi::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                2,
+                barriers_back.as_ptr(),
+            );
+
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        drop(textures);
+        self.submit_and_wait(cmd)
     }
 }

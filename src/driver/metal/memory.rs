@@ -76,6 +76,45 @@ impl MetalDevice {
         Ok(result)
     }
 
+    pub(crate) fn field_create_mapped_impl(
+        &self,
+        size: usize,
+        _usage: FieldUsage,
+    ) -> Result<(u64, *mut u8), QuantaError> {
+        let buf = unsafe {
+            ffi::msg_new_buffer(
+                self.device,
+                size as u64,
+                ffi::MTL_RESOURCE_STORAGE_MODE_SHARED,
+            )
+        };
+        let ptr = unsafe { ffi::msg_ptr(buf, b"contents\0") };
+        let handle = self.alloc_handle();
+        self.buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, buf);
+        Ok((handle, ptr))
+    }
+
+    pub(crate) fn field_map_impl(&self, handle: u64, _size: usize) -> Result<*mut u8, QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_map: handle {handle}"))
+        })?;
+        let ptr = unsafe { ffi::msg_ptr(*buf, b"contents\0") };
+        Ok(ptr)
+    }
+
+    pub(crate) fn field_unmap_impl(&self, _handle: u64) -> Result<(), QuantaError> {
+        // Metal shared buffers are coherent — no explicit flush needed.
+        Ok(())
+    }
+
     pub(crate) fn field_copy_bytes_impl(
         &self,
         dst: u64,

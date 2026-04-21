@@ -116,6 +116,22 @@ impl GpuDevice for MetalDevice {
         self.field_copy_bytes_impl(dst, src, size)
     }
 
+    fn field_create_mapped(
+        &self,
+        size: usize,
+        usage: FieldUsage,
+    ) -> Result<(u64, *mut u8), QuantaError> {
+        self.field_create_mapped_impl(size, usage)
+    }
+
+    fn field_map(&self, handle: u64, size: usize) -> Result<*mut u8, QuantaError> {
+        self.field_map_impl(handle, size)
+    }
+
+    fn field_unmap(&self, handle: u64) -> Result<(), QuantaError> {
+        self.field_unmap_impl(handle)
+    }
+
     // === Textures ===
 
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
@@ -217,6 +233,104 @@ impl GpuDevice for MetalDevice {
     ) -> Result<(), QuantaError> {
         Ok(())
     }
+
+    // === Timestamps ===
+
+    fn timestamp_query_create(&self, count: u32) -> Result<u64, QuantaError> {
+        // Allocate a shared buffer to store u64 timestamp values.
+        let size = count as usize * 8;
+        let buf = unsafe {
+            ffi::msg_new_buffer(
+                self.device,
+                size as u64,
+                ffi::MTL_RESOURCE_STORAGE_MODE_SHARED,
+            )
+        };
+        let handle = self.alloc_handle();
+        self.buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, buf);
+        Ok(handle)
+    }
+
+    fn timestamp_write(&self, query_handle: u64, index: u32) -> Result<(), QuantaError> {
+        // Metal does not support inline GPU timestamp writes like Vulkan.
+        // Use sampleTimestamps:gpuTimestamp: for a CPU-side approximation.
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers
+            .get(&query_handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad query handle"))?;
+        unsafe {
+            let ptr = ffi::msg_ptr(*buf, b"contents\0") as *mut u64;
+            let mut cpu_ts: u64 = 0;
+            let mut gpu_ts: u64 = 0;
+            ffi::msg_sample_timestamps(self.device, &mut cpu_ts, &mut gpu_ts);
+            *ptr.add(index as usize) = gpu_ts;
+        }
+        Ok(())
+    }
+
+    fn timestamp_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers
+            .get(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad query handle"))?;
+        unsafe {
+            let ptr = ffi::msg_ptr(*buf, b"contents\0") as *const u64;
+            let size = ffi::msg_u64(*buf, b"length\0") as usize / 8;
+            let mut result = Vec::with_capacity(size);
+            for i in 0..size {
+                result.push(*ptr.add(i));
+            }
+            Ok(result)
+        }
+    }
+
+    // === MSAA Resolve ===
+
+    fn resolve_texture(&self, src_handle: u64, dst_handle: u64) -> Result<(), QuantaError> {
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let src = textures
+            .get(&src_handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad src texture handle"))?;
+        let dst = textures
+            .get(&dst_handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad dst texture handle"))?;
+
+        unsafe {
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            let rpd = ffi::msg_id(
+                ffi::cls(b"MTLRenderPassDescriptor\0") as ffi::Id,
+                b"renderPassDescriptor\0",
+            );
+            let color_attachments = ffi::msg_id(rpd, b"colorAttachments\0");
+            let color0 = ffi::msg_id_u64(color_attachments, b"objectAtIndexedSubscript:\0", 0);
+            ffi::msg_void_id(color0, b"setTexture:\0", *src);
+            ffi::msg_void_id(color0, b"setResolveTexture:\0", *dst);
+            ffi::msg_void_u64(color0, b"setLoadAction:\0", ffi::MTL_LOAD_ACTION_LOAD);
+            ffi::msg_void_u64(
+                color0,
+                b"setStoreAction:\0",
+                ffi::MTL_STORE_ACTION_MULTISAMPLE_RESOLVE,
+            );
+
+            let encoder = ffi::msg_new_render_encoder(cmd, rpd);
+            ffi::msg_void(encoder, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
+        }
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -280,6 +394,20 @@ pub(crate) fn address_to_metal(a: crate::render_pass::AddressMode) -> ffi::NSUIn
 pub(crate) fn compare_to_metal(f: crate::CompareFunc) -> ffi::NSUInteger {
     use crate::CompareFunc::*;
     match f {
+        Never => ffi::MTL_COMPARE_NEVER,
+        Less => ffi::MTL_COMPARE_LESS,
+        Equal => ffi::MTL_COMPARE_EQUAL,
+        LessEqual => ffi::MTL_COMPARE_LESS_EQUAL,
+        Greater => ffi::MTL_COMPARE_GREATER,
+        NotEqual => ffi::MTL_COMPARE_NOT_EQUAL,
+        GreaterEqual => ffi::MTL_COMPARE_GREATER_EQUAL,
+        Always => ffi::MTL_COMPARE_ALWAYS,
+    }
+}
+
+pub(crate) fn compare_op_to_metal(op: crate::CompareOp) -> ffi::NSUInteger {
+    use crate::CompareOp::*;
+    match op {
         Never => ffi::MTL_COMPARE_NEVER,
         Less => ffi::MTL_COMPARE_LESS,
         Equal => ffi::MTL_COMPARE_EQUAL,
