@@ -5,7 +5,7 @@
 
 #![allow(non_camel_case_types, dead_code)]
 
-use core::ffi::c_void;
+use core::ffi::{c_char, c_void};
 
 // ─── Handle types ───────────────────────────────────────────────────────────
 // Dispatchable handles are `*mut c_void` on 64-bit platforms.
@@ -365,9 +365,9 @@ pub const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) 
 pub struct VkApplicationInfo {
     pub s_type: u32,
     pub p_next: *const c_void,
-    pub p_application_name: *const i8,
+    pub p_application_name: *const c_char,
     pub application_version: u32,
-    pub p_engine_name: *const i8,
+    pub p_engine_name: *const c_char,
     pub engine_version: u32,
     pub api_version: u32,
 }
@@ -379,9 +379,9 @@ pub struct VkInstanceCreateInfo {
     pub flags: u32,
     pub p_application_info: *const VkApplicationInfo,
     pub enabled_layer_count: u32,
-    pub pp_enabled_layer_names: *const *const i8,
+    pub pp_enabled_layer_names: *const *const c_char,
     pub enabled_extension_count: u32,
-    pub pp_enabled_extension_names: *const *const i8,
+    pub pp_enabled_extension_names: *const *const c_char,
 }
 
 #[repr(C)]
@@ -402,9 +402,9 @@ pub struct VkDeviceCreateInfo {
     pub queue_create_info_count: u32,
     pub p_queue_create_infos: *const VkDeviceQueueCreateInfo,
     pub enabled_layer_count: u32,
-    pub pp_enabled_layer_names: *const *const i8,
+    pub pp_enabled_layer_names: *const *const c_char,
     pub enabled_extension_count: u32,
-    pub pp_enabled_extension_names: *const *const i8,
+    pub pp_enabled_extension_names: *const *const c_char,
     pub p_enabled_features: *const c_void,
 }
 
@@ -617,7 +617,7 @@ pub struct VkPipelineShaderStageCreateInfo {
     pub flags: u32,
     pub stage: u32,
     pub module: VkShaderModule,
-    pub p_name: *const i8,
+    pub p_name: *const c_char,
     pub p_specialization_info: *const c_void,
 }
 

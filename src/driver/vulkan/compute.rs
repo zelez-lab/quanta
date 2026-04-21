@@ -13,6 +13,20 @@ use super::{VkComputePipeline, VulkanDevice};
 impl VulkanDevice {
     pub(crate) fn wave_impl(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
         // The compiler produces SPIR-V binary directly -- interpret bytes as u32 words.
+        // Check for SPIR-V magic number (0x07230203). If absent, this is likely
+        // WGSL text from the fallback emitter — reject with a clear error.
+        if kernel.len() < 4 {
+            return Err(QuantaError::compilation_failed(
+                "kernel binary too short for SPIR-V",
+            ));
+        }
+        let magic = u32::from_le_bytes([kernel[0], kernel[1], kernel[2], kernel[3]]);
+        if magic != 0x07230203 {
+            return Err(QuantaError::compilation_failed(
+                "Vulkan requires SPIR-V binary (magic 0x07230203). Got text shader — \
+                 install quanta-compiler or build with LLVM for SPIR-V output.",
+            ));
+        }
         if kernel.len() % 4 != 0 {
             return Err(QuantaError::compilation_failed(
                 "SPIR-V binary length must be a multiple of 4",

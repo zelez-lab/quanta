@@ -311,7 +311,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         }
 
         let name = unsafe {
-            let cstr = std::ffi::CStr::from_ptr(props.device_name.as_ptr() as *const i8);
+            let cstr =
+                std::ffi::CStr::from_ptr(props.device_name.as_ptr() as *const core::ffi::c_char);
             cstr.to_string_lossy().to_string()
         };
 
@@ -323,11 +324,19 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             _ => Vendor::Unknown,
         };
 
+        // Query total device memory from the largest heap
+        let mut mem_props = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceMemoryProperties>() };
+        unsafe { ffi::vkGetPhysicalDeviceMemoryProperties(pd, &mut mem_props) };
+        let total_memory = (0..mem_props.memory_heap_count as usize)
+            .map(|i| mem_props.memory_heaps[i].size)
+            .max()
+            .unwrap_or(0);
+
         let caps = Caps {
             nuclei: props.limits.max_compute_work_group_count[0].min(1024),
             protons_per_nucleus: 1,
             quarks_per_proton: props.limits.max_compute_work_group_size[0],
-            memory_bytes: 0,
+            memory_bytes: total_memory,
             max_quarks_per_dispatch: props.limits.max_compute_work_group_invocations,
             max_groups: props.limits.max_compute_work_group_count,
             vendor,
