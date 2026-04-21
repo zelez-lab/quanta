@@ -320,7 +320,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             0x1002 => Vendor::Amd,
             0x10DE => Vendor::Nvidia,
             0x8086 => Vendor::Intel,
-            0x13B5 => Vendor::Broadcom,
+            0x13B5 | 0x14E4 => Vendor::Broadcom,
             _ => Vendor::Unknown,
         };
 

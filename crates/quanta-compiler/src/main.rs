@@ -74,7 +74,10 @@ fn main() {
 
     // Emit Vulkan SPIR-V directly from KernelOps (Shader capability, GLCompute).
     // Our own emitter — no naga, no LLVM spirv64 backend.
-    output.spirv = emit_spirv::emit(&kernel).ok();
+    match emit_spirv::emit(&kernel) {
+        Ok(spirv) => output.spirv = Some(spirv),
+        Err(e) => eprintln!("[quanta] SPIR-V emitter error: {}", e),
+    }
 
     // Generate LLVM-compiled targets
     // Strategy: try rustc path first (handles ALL Rust), fall back to KernelOp path
@@ -593,6 +596,116 @@ fn test_spirv() {
     match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("SPIR-V IR error: {}", e),
+    }
+
+    // Test shared memory + loop kernel
+    println!("\n=== Direct SPIR-V (shared_sum) ===\n");
+    let shared_kernel = KernelDef {
+        name: "shared_sum".to_string(),
+        params: vec![
+            KernelParam::FieldRead {
+                name: "data".into(),
+                slot: 0,
+                scalar_type: ScalarType::F32,
+            },
+            KernelParam::FieldWrite {
+                name: "result".into(),
+                slot: 1,
+                scalar_type: ScalarType::F32,
+            },
+        ],
+        body: vec![
+            KernelOp::SharedDecl {
+                id: 0,
+                ty: ScalarType::F32,
+                count: 64,
+            },
+            KernelOp::LocalId { dst: Reg(0) },
+            KernelOp::QuarkId { dst: Reg(1) },
+            KernelOp::Load {
+                dst: Reg(2),
+                field: 0,
+                index: Reg(1),
+                ty: ScalarType::F32,
+            },
+            KernelOp::SharedStore {
+                id: 0,
+                index: Reg(0),
+                src: Reg(2),
+                ty: ScalarType::F32,
+            },
+            KernelOp::Barrier,
+            KernelOp::Const {
+                dst: Reg(3),
+                value: ConstValue::U32(0),
+            },
+            KernelOp::Cmp {
+                dst: Reg(4),
+                a: Reg(0),
+                b: Reg(3),
+                op: CmpOp::Eq,
+                ty: ScalarType::U32,
+            },
+            KernelOp::Branch {
+                cond: Reg(4),
+                then_ops: vec![
+                    KernelOp::Const {
+                        dst: Reg(5),
+                        value: ConstValue::F32(0.0),
+                    },
+                    KernelOp::Const {
+                        dst: Reg(6),
+                        value: ConstValue::U32(64),
+                    },
+                    KernelOp::Loop {
+                        count: Reg(6),
+                        iter_reg: Reg(7),
+                        body: vec![
+                            KernelOp::SharedLoad {
+                                dst: Reg(8),
+                                id: 0,
+                                index: Reg(7),
+                                ty: ScalarType::F32,
+                            },
+                            KernelOp::BinOp {
+                                dst: Reg(5),
+                                a: Reg(5),
+                                b: Reg(8),
+                                op: BinOp::Add,
+                                ty: ScalarType::F32,
+                            },
+                        ],
+                    },
+                    KernelOp::GroupId { dst: Reg(9) },
+                    KernelOp::Store {
+                        field: 1,
+                        index: Reg(9),
+                        src: Reg(5),
+                        ty: ScalarType::F32,
+                    },
+                ],
+                else_ops: vec![],
+            },
+        ],
+        body_source: None,
+        next_reg: 10,
+        opt_level: 0,
+        device_sources: vec![],
+    };
+    match emit_spirv::emit(&shared_kernel) {
+        Ok(spirv) => {
+            println!("SPIR-V binary size: {} bytes", spirv.len());
+            let path = std::env::temp_dir().join("quanta_shared.spv");
+            if std::fs::write(&path, &spirv).is_ok() {
+                let val = std::process::Command::new("spirv-val").arg(&path).output();
+                match val {
+                    Ok(o) if o.status.success() => println!("spirv-val: PASS"),
+                    Ok(o) => println!("spirv-val: FAIL\n{}", String::from_utf8_lossy(&o.stderr)),
+                    Err(_) => println!("spirv-val not found"),
+                }
+            }
+        }
+        Err(e) => eprintln!("Direct SPIR-V error: {}", e),
     }
 }
 
