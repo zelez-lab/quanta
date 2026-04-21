@@ -3,6 +3,7 @@
 extern crate proc_macro;
 
 mod compiler;
+mod gpu_type;
 mod parse;
 mod validate;
 
@@ -593,6 +594,35 @@ pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
     expanded.into()
+}
+
+/// Mark a struct as GPU-compatible.
+///
+/// Generates `#[repr(C)]`, `#[derive(Copy, Clone)]`, `GpuType` impl,
+/// field metadata (`GPU_SIZE`, `GPU_FIELDS`), and MSL/WGSL struct declarations.
+///
+/// ```ignore
+/// #[quanta::gpu_type]
+/// struct Particle {
+///     pos: [f32; 3],
+///     vel: [f32; 3],
+///     mass: f32,
+/// }
+/// ```
+///
+/// Generates:
+/// - `Particle::GPU_SIZE` — byte size of the struct
+/// - `Particle::GPU_FIELDS` — `&[(&str, &str, usize)]` of (name, type, byte_offset)
+/// - `impl GpuType for Particle`
+/// - `__QUANTA_GPU_TYPE_PARTICLE` — MSL struct declaration string
+/// - `__QUANTA_GPU_TYPE_PARTICLE_WGSL` — WGSL struct declaration string
+#[proc_macro_attribute]
+pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemStruct);
+    match gpu_type::expand_gpu_type(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
 }
 
 /// Parse `opt = "O2"` from the attribute.

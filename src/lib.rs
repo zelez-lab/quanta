@@ -55,11 +55,12 @@ pub mod kernel;
 pub use api::*;
 
 // Re-export kernel types
-pub use kernel::{GpuType, KernelBinary, ShaderBinary, ShaderStage};
+pub use kernel::{GpuType, KernelBinary, ScalarType, ShaderBinary, ShaderStage};
 
 // Re-export proc macros
 pub use quanta_macros::device;
 pub use quanta_macros::fragment;
+pub use quanta_macros::gpu_type;
 pub use quanta_macros::kernel;
 pub use quanta_macros::vertex;
 
