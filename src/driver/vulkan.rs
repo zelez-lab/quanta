@@ -18,8 +18,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
-    Texture, TextureDesc, TextureViewDesc, Vendor, Wave,
+    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, QueueFamily, QueueType,
+    RenderPass, ResourceState, Texture, TextureDesc, TextureViewDesc, Vendor, Wave,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
@@ -43,6 +43,7 @@ pub struct VulkanDevice {
     /// Standalone image views created via texture_view_create (not tied to a full VkTexture).
     image_views: RwLock<HashMap<u64, ffi::VkImageView>>,
     query_pools: RwLock<HashMap<u64, VkQueryPool>>,
+    queues: RwLock<HashMap<u64, ffi::VkQueue>>,
     next_handle: AtomicU64,
     /// Pool of reusable command buffers — Mutex since push/pop are always writes.
     cmd_buffer_pool: Mutex<Vec<ffi::VkCommandBuffer>>,
@@ -309,6 +310,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             samplers: RwLock::new(HashMap::new()),
             image_views: RwLock::new(HashMap::new()),
             query_pools: RwLock::new(HashMap::new()),
+            queues: RwLock::new(HashMap::new()),
             next_handle: AtomicU64::new(0),
             cmd_buffer_pool: Mutex::new(Vec::new()),
         }));
@@ -550,6 +552,128 @@ impl GpuDevice for VulkanDevice {
         to: ResourceState,
     ) -> Result<(), QuantaError> {
         self.barrier_texture_impl(texture, from, to)
+    }
+
+    // === Multi-queue (M3.1) ===
+
+    fn queue_families(&self) -> Vec<QueueFamily> {
+        let mut qf_count = 0u32;
+        unsafe {
+            ffi::vkGetPhysicalDeviceQueueFamilyProperties(
+                self.physical_device,
+                &mut qf_count,
+                core::ptr::null_mut(),
+            )
+        };
+        let mut props = vec![ffi::VkQueueFamilyProperties::default(); qf_count as usize];
+        unsafe {
+            ffi::vkGetPhysicalDeviceQueueFamilyProperties(
+                self.physical_device,
+                &mut qf_count,
+                props.as_mut_ptr(),
+            )
+        };
+
+        props
+            .iter()
+            .map(|qf| {
+                let queue_type = if (qf.queue_flags & ffi::VK_QUEUE_GRAPHICS_BIT) != 0 {
+                    QueueType::Graphics
+                } else if (qf.queue_flags & ffi::VK_QUEUE_COMPUTE_BIT) != 0 {
+                    QueueType::Compute
+                } else {
+                    QueueType::Transfer
+                };
+                QueueFamily {
+                    queue_type,
+                    count: qf.queue_count,
+                }
+            })
+            .collect()
+    }
+
+    fn create_queue(&self, _queue_type: QueueType) -> Result<u64, QuantaError> {
+        // Get queue index 0 from the device's queue family.
+        // A full implementation would track per-family queue indices.
+        let mut queue = ffi::null_handle();
+        unsafe { ffi::vkGetDeviceQueue(self.device, self.queue_family, 0, &mut queue) };
+        if queue.is_null() {
+            return Err(QuantaError::internal("failed to get Vulkan queue"));
+        }
+        let handle = self.alloc_handle();
+        self.queues
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, queue);
+        Ok(handle)
+    }
+
+    fn queue_signal(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
+        // Full implementation would use VkSemaphore for cross-queue sync.
+        // Single-queue signal is implicit in Vulkan submit ordering.
+        Ok(())
+    }
+
+    fn queue_wait(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
+        // Single-queue wait is implicit in Vulkan submit ordering.
+        Ok(())
+    }
+
+    // === Occlusion queries (M3.3) ===
+
+    fn occlusion_query_create(&self, count: u32) -> Result<u64, QuantaError> {
+        let pool_info = ffi::VkQueryPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            query_type: ffi::VK_QUERY_TYPE_OCCLUSION,
+            query_count: count,
+            pipeline_statistics: 0,
+        };
+        let mut pool = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateQueryPool(self.device, &pool_info, core::ptr::null(), &mut pool)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::invalid_param(
+                "occlusion query pool creation failed",
+            ));
+        }
+        let handle = self.alloc_handle();
+        self.query_pools
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, VkQueryPool { pool, count });
+        Ok(handle)
+    }
+
+    fn occlusion_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
+        let pools = self
+            .query_pools
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let qp = pools
+            .get(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("occlusion query pool not found"))?;
+
+        let count = qp.count as usize;
+        let mut results = vec![0u64; count];
+        let result = unsafe {
+            ffi::vkGetQueryPoolResults(
+                self.device,
+                qp.pool,
+                0,
+                qp.count,
+                count * core::mem::size_of::<u64>(),
+                results.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<u64>() as u64,
+                ffi::VK_QUERY_RESULT_64_BIT | ffi::VK_QUERY_RESULT_WAIT_BIT,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::invalid_param("occlusion query read failed"));
+        }
+        Ok(results)
     }
 }
 

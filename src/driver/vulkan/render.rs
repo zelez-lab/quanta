@@ -1198,10 +1198,30 @@ impl VulkanDevice {
 
                     RenderOp::Clear(_) | RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {}
                     RenderOp::DebugPush(_) | RenderOp::DebugPop => {}
-                    RenderOp::BeginOcclusionQuery { .. }
-                    | RenderOp::EndOcclusionQuery { .. }
-                    | RenderOp::SetShadingRate(_)
-                    | RenderOp::SetShadingRateImage { .. } => {}
+
+                    // Occlusion queries (M3.3)
+                    RenderOp::BeginOcclusionQuery { handle, index } => {
+                        let pools = self
+                            .query_pools
+                            .read()
+                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                        if let Some(qp) = pools.get(handle) {
+                            ffi::vkCmdResetQueryPool(cmd, qp.pool, *index, 1);
+                            ffi::vkCmdBeginQuery(cmd, qp.pool, *index, 0);
+                        }
+                    }
+                    RenderOp::EndOcclusionQuery { handle, index } => {
+                        let pools = self
+                            .query_pools
+                            .read()
+                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                        if let Some(qp) = pools.get(handle) {
+                            ffi::vkCmdEndQuery(cmd, qp.pool, *index);
+                        }
+                    }
+
+                    // M4+ render ops — not yet implemented.
+                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {}
                 }
             }
 

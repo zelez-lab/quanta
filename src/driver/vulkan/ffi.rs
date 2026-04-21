@@ -231,6 +231,7 @@ pub const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: u32 = 0x00000002;
 
 pub const VK_QUEUE_GRAPHICS_BIT: u32 = 0x00000001;
 pub const VK_QUEUE_COMPUTE_BIT: u32 = 0x00000002;
+pub const VK_QUEUE_TRANSFER_BIT: u32 = 0x00000004;
 
 // ─── Pipeline bind point ────────────────────────────────────────────────────
 
@@ -333,6 +334,7 @@ pub const VK_LOD_CLAMP_NONE: f32 = 1000.0;
 
 // ─── Query type ────────────────────────────────────────────────────────────
 
+pub const VK_QUERY_TYPE_OCCLUSION: u32 = 0;
 pub const VK_QUERY_TYPE_TIMESTAMP: u32 = 2;
 pub const VK_QUERY_RESULT_64_BIT: u32 = 0x00000001;
 pub const VK_QUERY_RESULT_WAIT_BIT: u32 = 0x00000002;
@@ -1658,6 +1660,13 @@ unsafe extern "C" {
         region_count: u32,
         p_regions: *const VkImageResolve,
     );
+    pub fn vkCmdBeginQuery(
+        cmd_buf: VkCommandBuffer,
+        query_pool: VkQueryPool,
+        query: u32,
+        flags: u32,
+    );
+    pub fn vkCmdEndQuery(cmd_buf: VkCommandBuffer, query_pool: VkQueryPool, query: u32);
 }
 
 // ─── macOS (MoltenVK or Vulkan loader) ──────────────────────────────────────
@@ -2071,6 +2080,13 @@ unsafe extern "C" {
         region_count: u32,
         p_regions: *const VkImageResolve,
     );
+    pub fn vkCmdBeginQuery(
+        cmd_buf: VkCommandBuffer,
+        query_pool: VkQueryPool,
+        query: u32,
+        flags: u32,
+    );
+    pub fn vkCmdEndQuery(cmd_buf: VkCommandBuffer, query_pool: VkQueryPool, query: u32);
 }
 
 // ─── Windows (vulkan-1.dll) ─────────────────────────────────────────────────
@@ -2484,4 +2500,11 @@ unsafe extern "C" {
         region_count: u32,
         p_regions: *const VkImageResolve,
     );
+    pub fn vkCmdBeginQuery(
+        cmd_buf: VkCommandBuffer,
+        query_pool: VkQueryPool,
+        query: u32,
+        flags: u32,
+    );
+    pub fn vkCmdEndQuery(cmd_buf: VkCommandBuffer, query_pool: VkQueryPool, query: u32);
 }

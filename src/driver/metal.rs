@@ -16,8 +16,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
-    Texture, TextureDesc, TextureViewDesc, Vendor, Wave,
+    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, QueueFamily, QueueType,
+    RenderPass, ResourceState, Texture, TextureDesc, TextureViewDesc, Vendor, Wave,
 };
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -35,6 +35,7 @@ pub struct MetalDevice {
     pub(crate) render_pipelines: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) depth_stencil_states: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) samplers: RwLock<HashMap<u64, ffi::Id>>,
+    pub(crate) queues: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) next_handle: AtomicU64,
 }
 
@@ -85,6 +86,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         render_pipelines: RwLock::new(HashMap::new()),
         depth_stencil_states: RwLock::new(HashMap::new()),
         samplers: RwLock::new(HashMap::new()),
+        queues: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
     })]
 }
@@ -396,6 +398,87 @@ impl GpuDevice for MetalDevice {
             ffi::msg_void(cmd, b"waitUntilCompleted\0");
         }
         Ok(())
+    }
+
+    // === Multi-queue (M3.1) ===
+
+    fn queue_families(&self) -> Vec<QueueFamily> {
+        // Metal has one universal queue family that supports everything.
+        vec![QueueFamily {
+            queue_type: QueueType::Graphics,
+            count: 4,
+        }]
+    }
+
+    fn create_queue(&self, _queue_type: QueueType) -> Result<u64, QuantaError> {
+        let queue = unsafe { ffi::msg_id(self.device, b"newCommandQueue\0") };
+        if queue.is_null() {
+            return Err(QuantaError::internal(
+                "failed to create Metal command queue",
+            ));
+        }
+        let handle = self.alloc_handle();
+        self.queues
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, queue);
+        Ok(handle)
+    }
+
+    fn queue_signal(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
+        // Metal command buffers within the same queue are ordered.
+        // Cross-queue sync would use MTLSharedEvent; for now this is a no-op.
+        Ok(())
+    }
+
+    fn queue_wait(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
+        // Same-queue ordering is implicit in Metal.
+        Ok(())
+    }
+
+    // === Occlusion queries (M3.3) ===
+
+    fn occlusion_query_create(&self, count: u32) -> Result<u64, QuantaError> {
+        // Allocate a shared buffer to hold u64 visibility results.
+        let size = count as u64 * 8;
+        let buf = unsafe {
+            ffi::msg_new_buffer(self.device, size, ffi::MTL_RESOURCE_STORAGE_MODE_SHARED)
+        };
+        if buf.is_null() {
+            return Err(QuantaError::internal(
+                "failed to create occlusion query buffer",
+            ));
+        }
+        // Zero-initialize the buffer.
+        unsafe {
+            let ptr = ffi::msg_ptr(buf, b"contents\0");
+            core::ptr::write_bytes(ptr, 0, size as usize);
+        }
+        let handle = self.alloc_handle();
+        self.buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, buf);
+        Ok(handle)
+    }
+
+    fn occlusion_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers
+            .get(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad occlusion query handle"))?;
+        unsafe {
+            let ptr = ffi::msg_ptr(*buf, b"contents\0") as *const u64;
+            let size = ffi::msg_u64(*buf, b"length\0") as usize / 8;
+            let mut results = Vec::with_capacity(size);
+            for i in 0..size {
+                results.push(*ptr.add(i));
+            }
+            Ok(results)
+        }
     }
 }
 

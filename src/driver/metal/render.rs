@@ -492,13 +492,23 @@ impl MetalDevice {
                 }
             }
 
-            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
-            let encoder = ffi::msg_new_render_encoder(cmd, rpd);
-
+            // Set visibility result buffer if any occlusion query ops are present.
             let buffers = self
                 .buffers
                 .read()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            for op in &pass.ops {
+                if let RenderOp::BeginOcclusionQuery { handle, .. } = op
+                    && let Some(vis_buf) = buffers.get(handle)
+                {
+                    ffi::msg_void_id(rpd, b"setVisibilityResultBuffer:\0", *vis_buf);
+                    break;
+                }
+            }
+
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            let encoder = ffi::msg_new_render_encoder(cmd, rpd);
+
             let render_pipelines = self
                 .render_pipelines
                 .read()
@@ -745,11 +755,26 @@ impl MetalDevice {
                             *slot as u64,
                         );
                     }
-                    // M2+ render ops — not yet implemented.
-                    RenderOp::BeginOcclusionQuery { .. }
-                    | RenderOp::EndOcclusionQuery { .. }
-                    | RenderOp::SetShadingRate(_)
-                    | RenderOp::SetShadingRateImage { .. } => {}
+                    // Occlusion queries (M3.3)
+                    RenderOp::BeginOcclusionQuery { handle, index } => {
+                        if buffers.contains_key(handle) {
+                            ffi::msg_set_visibility_result_mode(
+                                encoder,
+                                ffi::MTL_VISIBILITY_RESULT_MODE_COUNTING,
+                                (*index as u64) * 8,
+                            );
+                        }
+                    }
+                    RenderOp::EndOcclusionQuery { .. } => {
+                        ffi::msg_set_visibility_result_mode(
+                            encoder,
+                            ffi::MTL_VISIBILITY_RESULT_MODE_DISABLED,
+                            0,
+                        );
+                    }
+
+                    // M4+ render ops — not yet implemented.
+                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {}
                 }
             }
 

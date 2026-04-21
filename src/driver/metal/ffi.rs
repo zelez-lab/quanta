@@ -861,6 +861,24 @@ pub unsafe fn msg_new_texture_view(
     )
 }
 
+// ─── Metal visibility result modes (occlusion queries) ─────────────────────
+
+pub const MTL_VISIBILITY_RESULT_MODE_DISABLED: NSUInteger = 0;
+pub const MTL_VISIBILITY_RESULT_MODE_BOOLEAN: NSUInteger = 1;
+pub const MTL_VISIBILITY_RESULT_MODE_COUNTING: NSUInteger = 2;
+
+/// setVisibilityResultMode:offset: on render encoder
+pub unsafe fn msg_set_visibility_result_mode(encoder: Id, mode: NSUInteger, offset: u64) {
+    let f: unsafe extern "C" fn(Id, Sel, NSUInteger, u64) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        encoder,
+        sel(b"setVisibilityResultMode:offset:\0"),
+        mode,
+        offset,
+    )
+}
+
 // ─── dispatch_data ──────────────────────────────────────────────────────────
 
 #[link(name = "System", kind = "dylib")]
