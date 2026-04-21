@@ -5,6 +5,7 @@
 //!   quanta-compiler --test-ir    # test with a built-in vector_add kernel
 
 mod emit_msl;
+mod emit_spirv;
 mod emit_wgsl;
 mod rustc_compile;
 mod targets;
@@ -71,6 +72,10 @@ fn main() {
         output.metallib = compile_msl_to_metallib(msl);
     }
 
+    // Emit Vulkan SPIR-V directly from KernelOps (Shader capability, GLCompute).
+    // Our own emitter — no naga, no LLVM spirv64 backend.
+    output.spirv = emit_spirv::emit(&kernel).ok();
+
     // Generate LLVM-compiled targets
     // Strategy: try rustc path first (handles ALL Rust), fall back to KernelOp path
     let use_rustc = kernel.body_source.is_some();
@@ -89,6 +94,8 @@ fn main() {
         match result {
             Ok(binary) => match target {
                 GpuTarget::Nvptx => output.nvidia = Some(binary),
+                // Don't overwrite direct/naga SPIR-V with LLVM's OpenCL-style SPIR-V
+                GpuTarget::Spirv if output.spirv.is_some() => {}
                 GpuTarget::Amdgpu => output.amd = Some(binary),
                 GpuTarget::Spirv => output.spirv = Some(binary),
             },
@@ -499,6 +506,27 @@ fn test_complex() {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("Error: {}", e),
     }
+
+    println!("\n=== Direct SPIR-V (neuron_activate) ===\n");
+    match emit_spirv::emit(&kernel) {
+        Ok(spirv) => {
+            println!("SPIR-V binary size: {} bytes", spirv.len());
+            let path = std::env::temp_dir().join("quanta_complex.spv");
+            if std::fs::write(&path, &spirv).is_ok() {
+                println!("Written to: {}", path.display());
+                let val = std::process::Command::new("spirv-val").arg(&path).output();
+                match val {
+                    Ok(o) if o.status.success() => println!("spirv-val: PASS"),
+                    Ok(o) => {
+                        let err = String::from_utf8_lossy(&o.stderr);
+                        println!("spirv-val: FAIL\n{}", err);
+                    }
+                    Err(_) => println!("spirv-val not found"),
+                }
+            }
+        }
+        Err(e) => eprintln!("Direct SPIR-V error: {}", e),
+    }
 }
 
 /// Test: compile vector_add to LLVM IR text and print it.
@@ -528,17 +556,10 @@ fn test_ir() {
 fn test_spirv() {
     let kernel = make_test_kernel();
 
-    println!("=== SPIR-V LLVM IR ===\n");
-    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
-        Ok(ir) => println!("{}", ir),
-        Err(e) => eprintln!("SPIR-V IR error: {}", e),
-    }
-
-    println!("\n=== Compiling vector_add to SPIR-V binary ===\n");
-    match to_llvm::compile_to_binary(&kernel, GpuTarget::Spirv) {
+    println!("=== Direct SPIR-V emitter (Vulkan compute) ===\n");
+    match emit_spirv::emit(&kernel) {
         Ok(spirv) => {
             println!("SPIR-V binary size: {} bytes", spirv.len());
-            // SPIR-V magic number: 0x07230203
             if spirv.len() >= 4 {
                 print!("Header: ");
                 for b in spirv.iter().take(20) {
@@ -547,16 +568,31 @@ fn test_spirv() {
                 println!();
                 let magic = u32::from_le_bytes([spirv[0], spirv[1], spirv[2], spirv[3]]);
                 if magic == 0x07230203 {
-                    println!("Valid SPIR-V binary (magic: 0x07230203)");
-                } else {
-                    println!(
-                        "Header magic: 0x{:08x} (expected 0x07230203 for SPIR-V)",
-                        magic
-                    );
+                    println!("Valid SPIR-V magic");
+                }
+            }
+            // Write to tmp for spirv-val
+            let path = std::env::temp_dir().join("quanta_test.spv");
+            if std::fs::write(&path, &spirv).is_ok() {
+                println!("Written to: {}", path.display());
+                let val = std::process::Command::new("spirv-val").arg(&path).output();
+                match val {
+                    Ok(o) if o.status.success() => println!("spirv-val: PASS"),
+                    Ok(o) => {
+                        let err = String::from_utf8_lossy(&o.stderr);
+                        println!("spirv-val: FAIL\n{}", err);
+                    }
+                    Err(_) => println!("spirv-val not found"),
                 }
             }
         }
-        Err(e) => eprintln!("SPIR-V error: {}", e),
+        Err(e) => eprintln!("Direct SPIR-V error: {}", e),
+    }
+
+    println!("\n=== SPIR-V LLVM IR (reference) ===\n");
+    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
+        Ok(ir) => println!("{}", ir),
+        Err(e) => eprintln!("SPIR-V IR error: {}", e),
     }
 }
 

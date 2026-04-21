@@ -86,9 +86,9 @@ impl<'ctx> GpuIntrinsics<'ctx> for SpirvTarget {
     }
 
     fn kernel_calling_convention(&self) -> u32 {
-        // SPIR-V kernels use the default calling convention.
-        // The kernel entry point is marked via SPIR-V metadata.
-        0
+        // SPIR_KERNEL calling convention (76) marks the function as a
+        // compute kernel entry point in LLVM's SPIR-V backend.
+        76
     }
 
     fn wave_shuffle(

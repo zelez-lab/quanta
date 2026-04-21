@@ -27,11 +27,8 @@ impl VulkanDevice {
                  install quanta-compiler or build with LLVM for SPIR-V output.",
             ));
         }
-        if kernel.len() % 4 != 0 {
-            return Err(QuantaError::compilation_failed(
-                "SPIR-V binary length must be a multiple of 4",
-            ));
-        }
+        // LLVM's SPIR-V backend may emit a trailing byte — truncate to word boundary.
+        let kernel = &kernel[..kernel.len() & !3];
         let spirv_words: Vec<u32> = kernel
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))

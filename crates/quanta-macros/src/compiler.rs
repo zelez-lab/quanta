@@ -40,7 +40,7 @@ fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
     // Call the binary: stdin = KernelDef, stdout = CompilerOutput
     let result = std::process::Command::new(&binary)
         .arg("--targets")
-        .arg("nvptx,amdgpu,spirv")
+        .arg("nvptx,amdgpu")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

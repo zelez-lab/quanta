@@ -21,3 +21,15 @@ pub(crate) fn add_nvptx_kernel_metadata<'ctx>(
         .add_global_metadata("nvvm.annotations", &md_node)
         .unwrap_or(());
 }
+
+pub(crate) fn add_spirv_compute_metadata<'ctx>(
+    context: &'ctx Context,
+    function: &FunctionValue<'ctx>,
+) {
+    // Vulkan SPIR-V requires "hlsl.shader" attribute set to "compute" on the entry point.
+    // This tells LLVM's SPIR-V backend to emit OpEntryPoint GLCompute.
+    function.add_attribute(
+        inkwell::attributes::AttributeLoc::Function,
+        context.create_string_attribute("hlsl.shader", "compute"),
+    );
+}

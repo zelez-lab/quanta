@@ -12,7 +12,7 @@ use inkwell::{AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate, IntP
 use crate::targets::{GpuIntrinsics, GpuTarget};
 use quanta_ir::*;
 
-use super::metadata::add_nvptx_kernel_metadata;
+use super::metadata::{add_nvptx_kernel_metadata, add_spirv_compute_metadata};
 use super::{
     EmitCtx, const_scalar_type, const_to_llvm, is_float_type, reg_load, reg_load_int, reg_store,
     scalar_to_llvm_type,
@@ -144,9 +144,11 @@ pub(crate) fn build_kernel<'ctx>(
     // Return void
     builder.build_return(None).map_err(|e| e.to_string())?;
 
-    // Add NVPTX kernel metadata
+    // Add target-specific kernel metadata
     if target == GpuTarget::Nvptx {
         add_nvptx_kernel_metadata(context, module, &function);
+    } else if target == GpuTarget::Spirv {
+        add_spirv_compute_metadata(context, &function);
     }
 
     Ok(())
