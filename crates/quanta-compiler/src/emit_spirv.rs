@@ -252,6 +252,9 @@ struct SpvEmitter {
     // GLSL.std.450 extended instruction set ID
     glsl_ext_id: Option<u32>,
 
+    // Stack of loop merge labels for Break support
+    loop_merge_stack: Vec<u32>,
+
     // Register → SPIR-V ID mapping (function-scoped variables)
     reg_ids: HashMap<u32, u32>,
     // Register → type ID (so we know what type a register holds)
@@ -299,6 +302,7 @@ impl SpvEmitter {
             type_cache: HashMap::new(),
             const_cache: HashMap::new(),
             glsl_ext_id: None,
+            loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
             field_vars: HashMap::new(),
@@ -1512,7 +1516,9 @@ impl SpvEmitter {
 
                 // Body block
                 Self::emit_op(&mut self.sec_function, OP_LABEL, &[body_label]);
+                self.loop_merge_stack.push(merge_label);
                 self.emit_ops(body, gid_var, local_id_var, group_id_var, num_wg_var)?;
+                self.loop_merge_stack.pop();
                 Self::emit_op(&mut self.sec_function, OP_BRANCH, &[continue_label]);
 
                 // Continue block: copy carried values, increment counter
@@ -1659,12 +1665,16 @@ impl SpvEmitter {
             }
 
             KernelOp::Break => {
-                // In structured SPIR-V, break = branch to the loop merge block.
-                // This is tricky because we don't track the current merge target.
-                // For now, emit OpReturn as a placeholder (correct break requires
-                // tracking the merge label stack).
-                // TODO: proper break support with merge label tracking
-                return Err("Break outside of tracked loop context".to_string());
+                // Branch to the current loop's merge block.
+                if let Some(&merge_label) = self.loop_merge_stack.last() {
+                    Self::emit_op(&mut self.sec_function, OP_BRANCH, &[merge_label]);
+                    // After a break, we need a new label for any following ops
+                    // (SPIR-V requires every instruction to be in a block).
+                    let dead_label = self.alloc_id();
+                    Self::emit_op(&mut self.sec_function, OP_LABEL, &[dead_label]);
+                } else {
+                    return Err("Break outside of loop context".to_string());
+                }
             }
 
             KernelOp::VecConstruct {
