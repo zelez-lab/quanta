@@ -99,6 +99,19 @@ const OP_SLESS_THAN_EQUAL: u16 = 179;
 // Extended instruction opcodes (GLSL.std.450)
 const OP_EXT_INST: u16 = 12;
 
+// Atomic opcodes
+const OP_ATOMIC_IADD: u16 = 234;
+const OP_ATOMIC_ISUB: u16 = 237;
+const OP_ATOMIC_SMIN: u16 = 238;
+const OP_ATOMIC_UMIN: u16 = 239;
+const OP_ATOMIC_SMAX: u16 = 240;
+const OP_ATOMIC_UMAX: u16 = 241;
+const OP_ATOMIC_AND: u16 = 242;
+const OP_ATOMIC_OR: u16 = 243;
+const OP_ATOMIC_XOR: u16 = 244;
+const OP_ATOMIC_EXCHANGE: u16 = 229;
+const OP_ATOMIC_COMPARE_EXCHANGE: u16 = 230;
+
 // ── Storage classes ─────────────────────────────────────────────────────────
 
 const STORAGE_CLASS_INPUT: u32 = 1;
@@ -1731,9 +1744,7 @@ impl SpvEmitter {
                 op,
                 ty,
             } => {
-                // Atomic operations require the Vulkan memory model extension
-                // for full support. For now, emit a regular load-op-store
-                // sequence as a fallback.
+                // Real SPIR-V atomic instructions (OpAtomicIAdd, etc.)
                 let (var_id, elem_ty, _) = *self
                     .field_vars
                     .get(field)
@@ -1749,42 +1760,49 @@ impl SpvEmitter {
                     OP_ACCESS_CHAIN,
                     &[ptr_elem, chain, var_id, zero, idx],
                 );
-                // Load current value
-                let old_val = self.alloc_id();
-                Self::emit_op(
-                    &mut self.sec_function,
-                    OP_LOAD,
-                    &[result_ty, old_val, chain],
+
+                // Scope: Device (1). Semantics: None (0x0 = relaxed).
+                let scope = self.emit_constant_u32(1);
+                let semantics = self.emit_constant_u32(0);
+
+                let is_signed = matches!(
+                    ty,
+                    ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
                 );
-                // Compute new value
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
-                let new_val = self.alloc_id();
-                let bin_opcode = match op {
-                    AtomicOp::Add if is_float => OP_FADD,
-                    AtomicOp::Add => OP_IADD,
-                    AtomicOp::Sub if is_float => OP_FSUB,
-                    AtomicOp::Sub => OP_ISUB,
-                    AtomicOp::Min | AtomicOp::Max => {
-                        // Use select-based min/max
-                        OP_IADD // placeholder — will be overridden below
-                    }
-                    AtomicOp::And => OP_BITWISE_AND,
-                    AtomicOp::Or => OP_BITWISE_OR,
-                    AtomicOp::Xor => OP_BITWISE_XOR,
-                    AtomicOp::Exchange | AtomicOp::CompareExchange => {
-                        // Exchange: just store val, return old
-                        Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, val_id]);
-                        self.set_reg(*dst, old_val, result_ty);
-                        return Ok(());
-                    }
+                let atomic_opcode = match op {
+                    AtomicOp::Add => OP_ATOMIC_IADD,
+                    AtomicOp::Sub => OP_ATOMIC_ISUB,
+                    AtomicOp::Min if is_signed => OP_ATOMIC_SMIN,
+                    AtomicOp::Min => OP_ATOMIC_UMIN,
+                    AtomicOp::Max if is_signed => OP_ATOMIC_SMAX,
+                    AtomicOp::Max => OP_ATOMIC_UMAX,
+                    AtomicOp::And => OP_ATOMIC_AND,
+                    AtomicOp::Or => OP_ATOMIC_OR,
+                    AtomicOp::Xor => OP_ATOMIC_XOR,
+                    AtomicOp::Exchange => OP_ATOMIC_EXCHANGE,
+                    AtomicOp::CompareExchange => OP_ATOMIC_COMPARE_EXCHANGE,
                 };
-                Self::emit_op(
-                    &mut self.sec_function,
-                    bin_opcode,
-                    &[result_ty, new_val, old_val, val_id],
-                );
-                Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, new_val]);
-                self.set_reg(*dst, old_val, result_ty);
+
+                let result_id = self.alloc_id();
+                if matches!(op, AtomicOp::CompareExchange) {
+                    // OpAtomicCompareExchange: result_type, result, pointer, scope, equal_sem, unequal_sem, value, comparator
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        atomic_opcode,
+                        &[
+                            result_ty, result_id, chain, scope, semantics, semantics, val_id,
+                            val_id,
+                        ],
+                    );
+                } else {
+                    // OpAtomicIAdd etc: result_type, result, pointer, scope, semantics, value
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        atomic_opcode,
+                        &[result_ty, result_id, chain, scope, semantics, val_id],
+                    );
+                }
+                self.set_reg(*dst, result_id, result_ty);
             }
 
             KernelOp::AtomicCas {
