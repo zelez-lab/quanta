@@ -1248,6 +1248,86 @@ pub fn find_memory_type(
 }
 
 // ============================================================================
+// Extension property and device feature structs
+// ============================================================================
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct VkExtensionProperties {
+    pub extension_name: [u8; 256],
+    pub spec_version: u32,
+}
+
+impl Default for VkExtensionProperties {
+    fn default() -> Self {
+        Self {
+            extension_name: [0u8; 256],
+            spec_version: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct VkPhysicalDeviceFeatures {
+    pub robust_buffer_access: u32,
+    pub full_draw_index_uint32: u32,
+    pub image_cube_array: u32,
+    pub independent_blend: u32,
+    pub geometry_shader: u32,
+    pub tessellation_shader: u32,
+    pub sample_rate_shading: u32,
+    pub dual_src_blend: u32,
+    pub logic_op: u32,
+    pub multi_draw_indirect: u32,
+    pub draw_indirect_first_instance: u32,
+    pub depth_clamp: u32,
+    pub depth_bias_clamp: u32,
+    pub fill_mode_non_solid: u32,
+    pub depth_bounds: u32,
+    pub wide_lines: u32,
+    pub large_points: u32,
+    pub alpha_to_one: u32,
+    pub multi_viewport: u32,
+    pub sampler_anisotropy: u32,
+    pub texture_compression_etc2: u32,
+    pub texture_compression_astc_ldr: u32,
+    pub texture_compression_bc: u32,
+    pub occlusion_query_precise: u32,
+    pub pipeline_statistics_query: u32,
+    pub vertex_pipeline_stores_and_atomics: u32,
+    pub fragment_stores_and_atomics: u32,
+    pub shader_tessellation_and_geometry_point_size: u32,
+    pub shader_image_gather_extended: u32,
+    pub shader_storage_image_extended_formats: u32,
+    pub shader_storage_image_multisample: u32,
+    pub shader_storage_image_read_without_format: u32,
+    pub shader_storage_image_write_without_format: u32,
+    pub shader_uniform_buffer_array_dynamic_indexing: u32,
+    pub shader_sampled_image_array_dynamic_indexing: u32,
+    pub shader_storage_buffer_array_dynamic_indexing: u32,
+    pub shader_storage_image_array_dynamic_indexing: u32,
+    pub shader_clip_distance: u32,
+    pub shader_cull_distance: u32,
+    pub shader_float64: u32,
+    pub shader_int64: u32,
+    pub shader_int16: u32,
+    pub shader_resource_residency: u32,
+    pub shader_resource_min_lod: u32,
+    pub sparse_binding: u32,
+    pub sparse_residency_buffer: u32,
+    pub sparse_residency_image2d: u32,
+    pub sparse_residency_image3d: u32,
+    pub sparse_residency_2_samples: u32,
+    pub sparse_residency_4_samples: u32,
+    pub sparse_residency_8_samples: u32,
+    pub sparse_residency_16_samples: u32,
+    pub sparse_residency_aliased: u32,
+    pub variable_multisample_rate: u32,
+    pub inherited_queries: u32,
+}
+
+// ============================================================================
 // Extern function declarations — platform-gated
 // ============================================================================
 
@@ -1667,6 +1747,16 @@ unsafe extern "C" {
         flags: u32,
     );
     pub fn vkCmdEndQuery(cmd_buf: VkCommandBuffer, query_pool: VkQueryPool, query: u32);
+    pub fn vkEnumerateDeviceExtensionProperties(
+        physical_device: VkPhysicalDevice,
+        p_layer_name: *const u8,
+        p_property_count: *mut u32,
+        p_properties: *mut VkExtensionProperties,
+    ) -> VkResult;
+    pub fn vkGetPhysicalDeviceFeatures(
+        physical_device: VkPhysicalDevice,
+        p_features: *mut VkPhysicalDeviceFeatures,
+    );
 }
 
 // ─── macOS (MoltenVK or Vulkan loader) ──────────────────────────────────────
@@ -2087,6 +2177,16 @@ unsafe extern "C" {
         flags: u32,
     );
     pub fn vkCmdEndQuery(cmd_buf: VkCommandBuffer, query_pool: VkQueryPool, query: u32);
+    pub fn vkEnumerateDeviceExtensionProperties(
+        physical_device: VkPhysicalDevice,
+        p_layer_name: *const u8,
+        p_property_count: *mut u32,
+        p_properties: *mut VkExtensionProperties,
+    ) -> VkResult;
+    pub fn vkGetPhysicalDeviceFeatures(
+        physical_device: VkPhysicalDevice,
+        p_features: *mut VkPhysicalDeviceFeatures,
+    );
 }
 
 // ─── Windows (vulkan-1.dll) ─────────────────────────────────────────────────
@@ -2507,4 +2607,14 @@ unsafe extern "C" {
         flags: u32,
     );
     pub fn vkCmdEndQuery(cmd_buf: VkCommandBuffer, query_pool: VkQueryPool, query: u32);
+    pub fn vkEnumerateDeviceExtensionProperties(
+        physical_device: VkPhysicalDevice,
+        p_layer_name: *const u8,
+        p_property_count: *mut u32,
+        p_properties: *mut VkExtensionProperties,
+    ) -> VkResult;
+    pub fn vkGetPhysicalDeviceFeatures(
+        physical_device: VkPhysicalDevice,
+        p_features: *mut VkPhysicalDeviceFeatures,
+    );
 }

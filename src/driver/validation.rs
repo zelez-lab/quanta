@@ -10,9 +10,10 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use std::eprintln;
 
+use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
     Caps, FieldUsage, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc,
-    Timeline, Wave,
+    TextureViewDesc, Timeline, Wave,
 };
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -235,6 +236,154 @@ impl GpuDevice for ValidationDevice {
 
     fn timeline_wait(&self, timeline: &Timeline, value: u64) -> Result<(), QuantaError> {
         self.inner.timeline_wait(timeline, value)
+    }
+
+    // === Texture views ===
+
+    fn texture_view_create(
+        &self,
+        texture: u64,
+        desc: &TextureViewDesc,
+    ) -> Result<u64, QuantaError> {
+        self.inner.texture_view_create(texture, desc)
+    }
+
+    fn texture_view_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.texture_view_destroy(handle)
+    }
+
+    // === Barriers ===
+
+    fn barrier(&self) -> Result<(), QuantaError> {
+        self.inner.barrier()
+    }
+
+    fn barrier_buffer(
+        &self,
+        handle: u64,
+        from: crate::ResourceState,
+        to: crate::ResourceState,
+    ) -> Result<(), QuantaError> {
+        self.inner.barrier_buffer(handle, from, to)
+    }
+
+    fn barrier_texture(
+        &self,
+        texture: &Texture,
+        from: crate::ResourceState,
+        to: crate::ResourceState,
+    ) -> Result<(), QuantaError> {
+        self.inner.barrier_texture(texture, from, to)
+    }
+
+    // === MSAA Resolve ===
+
+    fn resolve_texture(&self, src_handle: u64, dst_handle: u64) -> Result<(), QuantaError> {
+        self.inner.resolve_texture(src_handle, dst_handle)
+    }
+
+    // === Multi-queue ===
+
+    fn queue_families(&self) -> Vec<crate::QueueFamily> {
+        self.inner.queue_families()
+    }
+
+    fn create_queue(&self, queue_type: crate::QueueType) -> Result<u64, QuantaError> {
+        self.inner.create_queue(queue_type)
+    }
+
+    fn queue_dispatch(&self, queue: u64, wave: &Wave, groups: [u32; 3]) -> Result<(), QuantaError> {
+        self.inner.queue_dispatch(queue, wave, groups)
+    }
+
+    fn queue_signal(&self, queue: u64, semaphore: u64) -> Result<(), QuantaError> {
+        self.inner.queue_signal(queue, semaphore)
+    }
+
+    fn queue_wait(&self, queue: u64, semaphore: u64) -> Result<(), QuantaError> {
+        self.inner.queue_wait(queue, semaphore)
+    }
+
+    // === Occlusion queries ===
+
+    fn occlusion_query_create(&self, count: u32) -> Result<u64, QuantaError> {
+        self.inner.occlusion_query_create(count)
+    }
+
+    fn occlusion_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
+        self.inner.occlusion_query_read(handle)
+    }
+
+    // === Mesh shaders ===
+
+    fn dispatch_mesh(&self, pipeline: u64, groups: [u32; 3]) -> Result<(), QuantaError> {
+        self.inner.dispatch_mesh(pipeline, groups)
+    }
+
+    // === Ray tracing ===
+
+    fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
+        self.inner.build_acceleration_structure(geometry)
+    }
+
+    fn create_ray_tracing_pipeline(
+        &self,
+        desc: &RayTracingPipelineDesc,
+    ) -> Result<u64, QuantaError> {
+        self.inner.create_ray_tracing_pipeline(desc)
+    }
+
+    fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError> {
+        self.inner.dispatch_rays(pipeline, width, height)
+    }
+
+    fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.destroy_acceleration_structure(handle)
+    }
+
+    // === Sparse textures ===
+
+    fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError> {
+        self.inner.sparse_texture_create(desc)
+    }
+
+    fn sparse_map_tile(
+        &self,
+        texture: u64,
+        mip: u32,
+        x: u32,
+        y: u32,
+        backing: u64,
+    ) -> Result<(), QuantaError> {
+        self.inner.sparse_map_tile(texture, mip, x, y, backing)
+    }
+
+    fn sparse_unmap_tile(&self, texture: u64, mip: u32, x: u32, y: u32) -> Result<(), QuantaError> {
+        self.inner.sparse_unmap_tile(texture, mip, x, y)
+    }
+
+    // === Indirect command buffers ===
+
+    fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        self.inner.indirect_buffer_create(max_commands)
+    }
+
+    fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
+        self.inner.indirect_buffer_execute(handle, count)
+    }
+
+    fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.indirect_buffer_destroy(handle)
+    }
+
+    // === Bindless resources ===
+
+    fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
+        self.inner.bind_texture_array(textures)
+    }
+
+    fn bind_buffer_array(&self, buffers: &[u64]) -> Result<u64, QuantaError> {
+        self.inner.bind_buffer_array(buffers)
     }
 
     // === Debug ===

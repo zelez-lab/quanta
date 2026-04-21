@@ -299,103 +299,61 @@ pub trait GpuDevice {
     // === M4.2: Mesh shaders ===
 
     /// Dispatch a mesh shader pipeline.
-    fn dispatch_mesh(&self, _pipeline: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("mesh shaders not supported"))
-    }
+    fn dispatch_mesh(&self, pipeline: u64, groups: [u32; 3]) -> Result<(), QuantaError>;
 
     // === M4.3: Ray tracing ===
 
     /// Build a bottom-level acceleration structure from geometry.
-    fn build_acceleration_structure(&self, _geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param("ray tracing not supported"))
-    }
+    fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError>;
 
     /// Create a ray tracing pipeline from shader stages.
     fn create_ray_tracing_pipeline(
         &self,
-        _desc: &RayTracingPipelineDesc,
-    ) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param("ray tracing not supported"))
-    }
+        desc: &RayTracingPipelineDesc,
+    ) -> Result<u64, QuantaError>;
 
     /// Dispatch rays through a ray tracing pipeline.
-    fn dispatch_rays(&self, _pipeline: u64, _width: u32, _height: u32) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("ray tracing not supported"))
-    }
+    fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError>;
 
     /// Destroy an acceleration structure.
-    fn destroy_acceleration_structure(&self, _handle: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("ray tracing not supported"))
-    }
+    fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError>;
 
     // === M5.1: Sparse textures ===
 
     /// Create a sparse (virtual) texture — memory is not committed until tiles are mapped.
-    fn sparse_texture_create(&self, _desc: &TextureDesc) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param("sparse textures not supported"))
-    }
+    fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError>;
 
     /// Map a physical backing page to a sparse texture tile.
     fn sparse_map_tile(
         &self,
-        _texture: u64,
-        _mip: u32,
-        _x: u32,
-        _y: u32,
-        _backing: u64,
-    ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("sparse textures not supported"))
-    }
+        texture: u64,
+        mip: u32,
+        x: u32,
+        y: u32,
+        backing: u64,
+    ) -> Result<(), QuantaError>;
 
     /// Unmap a sparse texture tile (release backing memory).
-    fn sparse_unmap_tile(
-        &self,
-        _texture: u64,
-        _mip: u32,
-        _x: u32,
-        _y: u32,
-    ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("sparse textures not supported"))
-    }
+    fn sparse_unmap_tile(&self, texture: u64, mip: u32, x: u32, y: u32) -> Result<(), QuantaError>;
 
     // === M5.2: Indirect command buffers ===
 
     /// Create an indirect command buffer (GPU-driven draw/dispatch).
-    fn indirect_buffer_create(&self, _max_commands: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "indirect command buffers not supported",
-        ))
-    }
+    fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError>;
 
     /// Execute commands from an indirect command buffer.
-    fn indirect_buffer_execute(&self, _handle: u64, _count: u32) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
-            "indirect command buffers not supported",
-        ))
-    }
+    fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError>;
 
     /// Destroy an indirect command buffer.
-    fn indirect_buffer_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
-            "indirect command buffers not supported",
-        ))
-    }
+    fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError>;
 
     // === M5.3: Bindless resources ===
 
     /// Create a bindless texture array (all textures accessible by index in shaders).
-    fn bind_texture_array(&self, _textures: &[u64]) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "bindless resources not supported",
-        ))
-    }
+    fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError>;
 
     /// Create a bindless buffer array (all buffers accessible by index in shaders).
-    fn bind_buffer_array(&self, _buffers: &[u64]) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "bindless resources not supported",
-        ))
-    }
+    fn bind_buffer_array(&self, buffers: &[u64]) -> Result<u64, QuantaError>;
 
     // === Debug ===
 
