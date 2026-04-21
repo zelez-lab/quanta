@@ -1,6 +1,6 @@
 # Macro Reference
 
-All 12 `#[quanta::*]` proc macros.
+All 13 `#[quanta::*]` proc macros.
 
 ---
 
@@ -419,4 +419,85 @@ fn sky_gradient(ray: Ray) -> Vec4 {
     let t = 0.5 * (ray.direction.y + 1.0);
     lerp(vec4(1.0, 1.0, 1.0, 1.0), vec4(0.5, 0.7, 1.0, 1.0), t)
 }
+```
+
+---
+
+## `#[quanta::gpu_type]`
+
+Mark a struct as GPU-compatible. Generates layout metadata, shader declarations,
+and a `GpuType` trait impl.
+
+### Syntax
+
+```rust
+#[quanta::gpu_type]
+struct Name {
+    field1: Type1,
+    field2: Type2,
+    // ...
+}
+```
+
+### Produces
+
+- `#[repr(C)]` attribute (if not already present)
+- `#[derive(Copy, Clone)]` (if not already present)
+- `impl GpuType for Name` -- enables `gpu.compute_field::<Name>(n)`
+- `Name::GPU_SIZE: usize` -- compile-time struct size
+- `Name::GPU_FIELDS: &[(&str, &str, usize)]` -- (name, type, byte_offset) tuples
+- `const __QUANTA_GPU_TYPE_NAME: &str` -- MSL struct declaration
+- `const __QUANTA_GPU_TYPE_NAME_WGSL: &str` -- WGSL struct declaration
+
+### Supported field types
+
+| Rust type | MSL | WGSL |
+|-----------|-----|------|
+| `f32` | `float` | `f32` |
+| `f64` | `double` | `f64` |
+| `u32` | `uint` | `u32` |
+| `i32` | `int` | `i32` |
+| `u8` | `uint8_t` | `u32` |
+| `u16` | `ushort` | `u32` |
+| `u64` | `ulong` | `u32` |
+| `bool` | `bool` | `bool` |
+| `[f32; 2]` | `float2` | `vec2<f32>` |
+| `[f32; 3]` | `float3` | `vec3<f32>` |
+| `[f32; 4]` | `float4` | `vec4<f32>` |
+| `[u32; 4]` | `uint4` | `vec4<u32>` |
+| `[f32; 9]` | `float3x3` | `mat3x3<f32>` |
+| `[f32; 16]` | `float4x4` | `mat4x4<f32>` |
+| `[T; N]` (other) | `T [N]` | `array<T, N>` |
+
+### Constraints
+
+- Only named-field structs (no tuples, no enums)
+- All fields must be scalar, fixed-size array, or another `#[quanta::gpu_type]` struct
+- No `String`, `Vec`, `Box`, or other heap types (use offset+length pattern)
+
+### Example
+
+```rust
+#[quanta::gpu_type]
+struct Body {
+    pos: [f32; 3],
+    vel: [f32; 3],
+    mass: f32,
+}
+
+// Use in a field
+let bodies = gpu.compute_field::<Body>(65536)?;
+
+// Inspect generated metadata
+assert_eq!(Body::GPU_SIZE, 28);
+assert_eq!(Body::GPU_FIELDS[0], ("pos", "[f32; 3]", 0));
+assert_eq!(Body::GPU_FIELDS[1], ("vel", "[f32; 3]", 12));
+assert_eq!(Body::GPU_FIELDS[2], ("mass", "f32", 24));
+
+// MSL declaration is available at compile time:
+// struct Body {
+//     float3 pos;
+//     float3 vel;
+//     float mass;
+// };
 ```

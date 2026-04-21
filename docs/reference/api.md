@@ -291,3 +291,41 @@ Compiled kernel output from `#[quanta::kernel]`.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `for_vendor(vendor)` | `Option<&[u8]>` | Select best format for vendor |
+
+---
+
+## `GpuType` trait
+
+Marker trait for types usable in GPU fields. Implemented for all scalar types
+(`f32`, `u32`, `i32`, `f64`, `u64`, `i64`, `u16`, `i16`, `u8`, `i8`).
+
+```rust
+pub trait GpuType: Copy + 'static {
+    fn gpu_size() -> usize;
+    fn scalar_type() -> ScalarType;
+}
+```
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `gpu_size()` | `usize` | Size in bytes of one element |
+| `scalar_type()` | `ScalarType` | Enum variant for this type |
+
+### Automatic implementation
+
+`#[quanta::gpu_type]` implements `GpuType` automatically for user-defined structs:
+
+```rust
+#[quanta::gpu_type]
+struct Particle {
+    pos: [f32; 3],
+    vel: [f32; 3],
+    mass: f32,
+}
+
+// Now valid:
+let particles = gpu.compute_field::<Particle>(1000)?;
+```
+
+Manual `GpuType` implementation is possible but not recommended -- the macro
+handles `repr(C)` layout, shader declarations, and field metadata automatically.

@@ -6,8 +6,7 @@ Demonstrates the compute-to-render workflow.
 ## Data layout
 
 ```rust
-#[repr(C)]
-#[derive(Copy, Clone)]
+#[quanta::gpu_type]
 struct Particle {
     x: f32,
     y: f32,
@@ -18,6 +17,11 @@ struct Particle {
     life: f32,
     _pad: f32,
 }
+```
+
+`#[quanta::gpu_type]` replaces the manual `#[repr(C)]` + `#[derive(Copy, Clone)]`.
+It also generates MSL/WGSL struct declarations and implements `GpuType`, so the
+struct can be used directly with `gpu.compute_field::<Particle>(n)`.
 ```
 
 ## Compute kernel (update physics)

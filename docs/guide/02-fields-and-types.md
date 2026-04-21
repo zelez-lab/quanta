@@ -168,6 +168,67 @@ let vy = gpu.compute_field::<f32>(1000)?;
 SOA typically gives better GPU memory coalescing when kernels access one
 component at a time. AOS is simpler when kernels access all components together.
 
+## User-defined structs (`#[quanta::gpu_type]`)
+
+For multi-component data, define a GPU-compatible struct with `#[quanta::gpu_type]`:
+
+```rust
+#[quanta::gpu_type]
+struct Particle {
+    pos: [f32; 3],
+    vel: [f32; 3],
+    mass: f32,
+}
+```
+
+The macro generates:
+
+1. **`#[repr(C)]`** -- deterministic memory layout matching GPU expectations
+2. **`Copy + Clone`** -- required for GPU data transfer
+3. **`GpuType` impl** -- enables use in `compute_field::<Particle>(n)`
+4. **MSL declaration** -- e.g., `struct Particle { float3 pos; float3 vel; float mass; };`
+5. **WGSL declaration** -- e.g., `struct Particle { pos: vec3<f32>, vel: vec3<f32>, mass: f32, };`
+6. **`GPU_FIELDS`** -- field name, type, and byte offset metadata
+7. **`GPU_SIZE`** -- compile-time struct size constant
+
+### Using gpu_type structs in fields
+
+```rust
+let particles = gpu.compute_field::<Particle>(10_000)?;
+
+let data = vec![Particle { pos: [0.0; 3], vel: [1.0, 0.0, 0.0], mass: 1.0 }; 10_000];
+gpu.write_field(&particles, &data)?;
+```
+
+### Supported field types
+
+| Type | GPU representation |
+|------|--------------------|
+| `f32`, `u32`, `i32` | Scalar |
+| `f64`, `u64`, `i64` | 64-bit scalar |
+| `u8`, `i8`, `u16`, `i16` | Narrow scalar |
+| `[f32; 2]`, `[f32; 3]`, `[f32; 4]` | float2/3/4 (vec2/3/4) |
+| `[u32; 2]`, `[u32; 3]`, `[u32; 4]` | uint2/3/4 |
+| `[f32; 9]` | float3x3 (mat3x3) |
+| `[f32; 16]` | float4x4 (mat4x4) |
+| `[T; N]` (other sizes) | Plain array |
+
+### Variable-length data
+
+GPU structs must have fixed size. For variable-length data (strings, dynamic
+arrays), use the **offset + length** pattern:
+
+```rust
+#[quanta::gpu_type]
+struct TextSpan {
+    offset: u32,    // byte offset into a separate data field
+    length: u32,    // number of bytes/elements
+}
+```
+
+Store the variable data in a separate `Field<u8>` or `Field<f32>`, and index
+into it using the offset and length from your struct.
+
 ## Lifetime
 
 Fields are freed when dropped. The GPU handle is released and memory is

@@ -100,6 +100,38 @@ fn main() -> Result<(), QuantaError> {
 No shader files. No intermediate representations. No runtime compilation.
 The GPU binary is baked into your Rust binary at `cargo build`.
 
+Quanta has **zero runtime dependencies** -- no `metal-rs`, no `ash`, no `objc` crate.
+Drivers use raw FFI (`objc_msgSend`, `extern "C"` Vulkan functions) for minimal
+binary size and maximum build speed.
+
+## Structured GPU data
+
+For kernels that operate on multi-field data (particles, vertices, game entities),
+use `#[quanta::gpu_type]` to define a GPU-compatible struct:
+
+```rust
+#[quanta::gpu_type]
+struct Particle {
+    pos: [f32; 3],
+    vel: [f32; 3],
+    mass: f32,
+}
+```
+
+The macro generates:
+- `#[repr(C)]` + `Copy` + `Clone` (safe GPU layout)
+- A `GpuType` impl (so you can use `gpu.compute_field::<Particle>(n)`)
+- MSL and WGSL struct declarations (for shader code generation)
+- Field metadata (`GPU_FIELDS`, `GPU_SIZE`) for reflection
+
+Then use it like any scalar type:
+
+```rust
+let particles = gpu.compute_field::<Particle>(10_000)?;
+```
+
+See [Fields and types](guide/02-fields-and-types.md) for the full reference.
+
 ## Next
 
 - [Compute basics](guide/01-compute-basics.md) -- execution model, error handling, optimization

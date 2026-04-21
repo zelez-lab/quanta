@@ -36,6 +36,7 @@ quanta/                         Main library (no_std, zero external deps)
 |   |   |   +-- sync.rs         Fences, semaphores, barriers
 |   |   +-- validation.rs       Debug validation layer (wraps any driver)
 |   +-- kernel.rs               KernelBinary, ShaderBinary, GpuType trait
+|   +-- gpu_type.rs             #[quanta::gpu_type] runtime support
 
 crates/quanta-ir/               Shared IR definition (zero external deps)
 +-- src/
@@ -51,7 +52,9 @@ crates/quanta-macros/           Proc macros (depends on syn + quote)
 |   |                           #[vertex], #[fragment],
 |   |                           #[tess_control], #[tess_eval],
 |   |                           #[task], #[mesh],
-|   |                           #[ray_gen], #[closest_hit], #[miss]
+|   |                           #[ray_gen], #[closest_hit], #[miss],
+|   |                           #[gpu_type]
+|   +-- gpu_type.rs             #[gpu_type] expansion (repr(C), GpuType impl, MSL/WGSL)
 |   +-- parse.rs                Rust AST -> KernelDef (with parse/expr.rs, parse/stmt.rs)
 |   +-- compiler.rs             Orchestrates compilation, shader emitters
 |   +-- validate.rs             Pre-parse validation rules
@@ -173,3 +176,31 @@ vulkan = ["std"]       # Linux/Android/Windows
 ```
 
 Without `std`, only types and the kernel language are available (for `no_std` environments).
+
+## Dependency philosophy
+
+The `quanta` runtime crate has **zero external dependencies** (aside from its own
+workspace crates `quanta-macros` and `quanta-ir`). GPU drivers use raw FFI:
+
+- **Metal**: `objc_msgSend` / `sel_registerName` / `objc_getClass` via `extern "C"`
+- **Vulkan**: `vkCreateInstance` / `vkCreateBuffer` / etc. via `#[link(name = "vulkan")]`
+
+No `metal-rs`, no `ash`, no `objc` crate. This pattern comes from the Dija UI
+framework (Zelez project) and gives minimal binary size, fast builds, and total ABI control.
+
+Only `quanta-macros` depends on `syn` + `quote` (proc-macro requirements), and
+`quanta-compiler` depends on `inkwell` / LLVM 22 (build-time only).
+
+## Math-first internals
+
+The runtime follows a math-first discipline:
+
+- **Zero heap allocation on hot paths** -- dispatch, bind, and wait touch no allocator
+- **AtomicU64 handles** -- GPU resource handles are atomic integers, not Arc/Rc
+- **RwLock for device state** -- readers (dispatch) never block each other
+- **Inline arrays** -- binding slots, push constants stored in fixed-size arrays
+- **Result propagation** -- all driver calls return `Result`, no mutex unwrap panics
+
+## Line count
+
+~24,700 lines of Rust across all workspace crates (runtime + IR + macros + compiler).

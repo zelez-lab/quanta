@@ -3,6 +3,20 @@
 N-body gravity using shared memory tiling. Each particle interacts with
 every other particle (O(N^2) complexity), making this ideal for GPU parallelism.
 
+## Body type
+
+```rust
+#[quanta::gpu_type]
+struct Body {
+    pos: [f32; 3],
+    mass: f32,
+}
+```
+
+The `Body` struct can be used for host-side initialization and non-tiled kernels.
+The tiled kernel below uses flat `&[f32]` arrays for shared memory compatibility
+(shared memory requires fixed-size scalar arrays, not structs).
+
 ## Kernel
 
 ```rust

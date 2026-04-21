@@ -127,3 +127,53 @@ gpu.render_end(pass)?;
 
 On Vulkan, this inserts a pipeline barrier with correct stage/access masks.
 On Metal, this is a no-op (Metal tracks hazards automatically).
+
+## Structured data (`#[quanta::gpu_type]`)
+
+Fields can hold user-defined structs, not just scalars:
+
+```rust
+#[quanta::gpu_type]
+struct Particle {
+    pos: [f32; 3],
+    vel: [f32; 3],
+    mass: f32,
+}
+
+let particles = gpu.compute_field::<Particle>(100_000)?;
+```
+
+The struct is laid out with `#[repr(C)]` -- contiguous, deterministic, matching
+the GPU's expected layout. The macro also generates MSL and WGSL struct
+declarations so kernel compilation can reference the type.
+
+In GPU memory, 3 particles look like:
+
+```
+[pos.x][pos.y][pos.z][vel.x][vel.y][vel.z][mass] [pos.x][pos.y][pos.z]...
+ 0     4      8      12     16     20     24      28    ...
+```
+
+This is AOS (Array of Structures) layout. For SOA, use separate scalar fields instead.
+
+## Variable-length data
+
+GPU structs must be fixed-size. For data with variable length (strings, dynamic
+arrays, adjacency lists), use the **offset + length** pattern:
+
+```rust
+#[quanta::gpu_type]
+struct StringRef {
+    offset: u32,    // byte offset into a data field
+    length: u32,    // byte count
+}
+
+// String refs (fixed-size, one per element)
+let refs = gpu.compute_field::<StringRef>(1000)?;
+
+// Packed string bytes (variable-length data, concatenated)
+let data = gpu.compute_field::<u8>(total_bytes)?;
+```
+
+Inside the kernel, read `data[offset .. offset + length]` to access each string.
+The same pattern works for variable-length arrays, graphs, or any dynamically-sized data.

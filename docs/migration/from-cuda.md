@@ -16,6 +16,7 @@
 |------|--------|
 | `__global__ void kernel(...)` | `#[quanta::kernel] fn kernel(...)` |
 | `__device__ void helper(...)` | `#[quanta::device] fn helper(...)` |
+| `struct` in device code | `#[quanta::gpu_type] struct` |
 | `__shared__ float s[256]` | `#[quanta::shared] let s: [f32; 256]` |
 | `threadIdx.x` | `local_id()` |
 | `blockIdx.x` | `group_id()` |
@@ -158,6 +159,41 @@ fn reduce(data: &[f32], result: &mut [f32]) {
     }
 }
 ```
+
+## Structured data
+
+### CUDA
+```c
+struct Particle {
+    float3 pos;
+    float3 vel;
+    float mass;
+};
+
+__global__ void update(Particle *particles, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) {
+        particles[i].pos.x += particles[i].vel.x * dt;
+        // ...
+    }
+}
+```
+
+### Quanta
+```rust
+#[quanta::gpu_type]
+struct Particle {
+    pos: [f32; 3],
+    vel: [f32; 3],
+    mass: f32,
+}
+
+let particles = gpu.compute_field::<Particle>(n)?;
+```
+
+`#[quanta::gpu_type]` is the Quanta equivalent of a CUDA `struct` used in device
+code. It ensures `repr(C)` layout matching GPU expectations and generates
+MSL/WGSL struct declarations automatically. No separate `.cuh` header needed.
 
 ## What you won't miss
 
