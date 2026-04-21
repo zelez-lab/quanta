@@ -13,6 +13,7 @@ mod texture;
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
     Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
@@ -33,17 +34,12 @@ pub struct MetalDevice {
     pub(crate) render_pipelines: Mutex<HashMap<u64, ffi::Id>>,
     pub(crate) depth_stencil_states: Mutex<HashMap<u64, ffi::Id>>,
     pub(crate) samplers: Mutex<HashMap<u64, ffi::Id>>,
-    pub(crate) next_handle: Mutex<u64>,
+    pub(crate) next_handle: AtomicU64,
 }
 
 impl MetalDevice {
-    pub(crate) fn alloc_handle(&self) -> Result<u64, QuantaError> {
-        let mut h = self
-            .next_handle
-            .lock()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        *h += 1;
-        Ok(*h)
+    pub(crate) fn alloc_handle(&self) -> u64 {
+        self.next_handle.fetch_add(1, Ordering::Relaxed) + 1
     }
 }
 
@@ -88,7 +84,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         render_pipelines: Mutex::new(HashMap::new()),
         depth_stencil_states: Mutex::new(HashMap::new()),
         samplers: Mutex::new(HashMap::new()),
-        next_handle: Mutex::new(0),
+        next_handle: AtomicU64::new(0),
     })]
 }
 

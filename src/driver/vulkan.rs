@@ -15,6 +15,7 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
     Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
@@ -39,7 +40,7 @@ pub struct VulkanDevice {
     compute_pipelines: Mutex<HashMap<u64, VkComputePipeline>>,
     render_pipelines: Mutex<HashMap<u64, VkRenderPipeline>>,
     samplers: Mutex<HashMap<u64, ffi::VkSampler>>,
-    next_handle: Mutex<u64>,
+    next_handle: AtomicU64,
     /// Pool of reusable command buffers.
     cmd_buffer_pool: Mutex<Vec<ffi::VkCommandBuffer>>,
 }
@@ -75,13 +76,8 @@ struct VkRenderPipeline {
 }
 
 impl VulkanDevice {
-    fn alloc_handle(&self) -> Result<u64, QuantaError> {
-        let mut h = self
-            .next_handle
-            .lock()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        *h += 1;
-        Ok(*h)
+    fn alloc_handle(&self) -> u64 {
+        self.next_handle.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     fn alloc_command_buffer(&self) -> Result<ffi::VkCommandBuffer, QuantaError> {
@@ -303,7 +299,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             compute_pipelines: Mutex::new(HashMap::new()),
             render_pipelines: Mutex::new(HashMap::new()),
             samplers: Mutex::new(HashMap::new()),
-            next_handle: Mutex::new(0),
+            next_handle: AtomicU64::new(0),
             cmd_buffer_pool: Mutex::new(Vec::new()),
         }));
 

@@ -21,7 +21,7 @@ impl MetalDevice {
             ffi::MTL_RESOURCE_STORAGE_MODE_PRIVATE
         };
         let buffer = unsafe { ffi::msg_new_buffer(self.device, size as u64, options) };
-        let handle = self.alloc_handle()?;
+        let handle = self.alloc_handle();
         self.buffers
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?

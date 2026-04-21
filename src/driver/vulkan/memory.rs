@@ -86,7 +86,7 @@ impl VulkanDevice {
             return Err(QuantaError::out_of_memory());
         }
 
-        let handle = self.alloc_handle()?;
+        let handle = self.alloc_handle();
         self.buffers
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?

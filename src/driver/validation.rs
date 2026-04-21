@@ -143,7 +143,7 @@ impl GpuDevice for ValidationDevice {
     }
 
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
-        if wave.bindings.is_empty() {
+        if wave.binding_count == 0 {
             eprintln!(
                 "QUANTA_VALIDATE warning: wave_dispatch with no bindings \
                  (handle {}). Did you forget to call wave.bind()?",
@@ -159,7 +159,7 @@ impl GpuDevice for ValidationDevice {
         buffer: u64,
         offset: u64,
     ) -> Result<Pulse, QuantaError> {
-        if wave.bindings.is_empty() {
+        if wave.binding_count == 0 {
             eprintln!(
                 "QUANTA_VALIDATE warning: wave_dispatch_indirect with no bindings \
                  (handle {}). Did you forget to call wave.bind()?",

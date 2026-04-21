@@ -594,9 +594,13 @@ impl Gpu {
     /// from `wave` to the new wave, then replaces `wave`'s handle.
     pub fn reload_wave(&self, wave: &mut Wave, kernel: &[u8]) -> Result<(), QuantaError> {
         let mut new_wave = self.inner.wave(kernel)?;
-        new_wave.bindings = core::mem::take(&mut wave.bindings);
-        new_wave.push_constants = core::mem::take(&mut wave.push_constants);
-        new_wave.texture_bindings = core::mem::take(&mut wave.texture_bindings);
+        new_wave.bindings = wave.bindings;
+        new_wave.binding_count = wave.binding_count;
+        new_wave.texture_bindings = wave.texture_bindings;
+        new_wave.texture_count = wave.texture_count;
+        new_wave.push_data = wave.push_data;
+        new_wave.push_len = wave.push_len;
+        new_wave.push_mask = wave.push_mask;
         // Swap: the old handle gets dropped via new_wave's eventual drop
         core::mem::swap(wave, &mut new_wave);
         Ok(())

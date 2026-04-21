@@ -92,7 +92,7 @@ impl MetalDevice {
             }
 
             let tex = ffi::msg_id_id(self.device, b"newTextureWithDescriptor:\0", mtl_desc);
-            let handle = self.alloc_handle()?;
+            let handle = self.alloc_handle();
             self.textures
                 .lock()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
@@ -173,7 +173,7 @@ impl MetalDevice {
             ffi::msg_void_u64(sd, b"setTAddressMode:\0", address_to_metal(desc.address_v));
             ffi::msg_void_u64(sd, b"setMaxAnisotropy:\0", desc.max_anisotropy as u64);
             let sampler = ffi::msg_id_id(self.device, b"newSamplerStateWithDescriptor:\0", sd);
-            let handle = self.alloc_handle()?;
+            let handle = self.alloc_handle();
             self.samplers
                 .lock()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?

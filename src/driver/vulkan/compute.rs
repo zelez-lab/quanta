@@ -151,7 +151,7 @@ impl VulkanDevice {
             ffi::vkDestroyShaderModule(self.device, shader_module, core::ptr::null());
         }
 
-        let handle = self.alloc_handle()?;
+        let handle = self.alloc_handle();
         self.compute_pipelines
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
@@ -166,9 +166,13 @@ impl VulkanDevice {
 
         Ok(Wave {
             handle,
-            bindings: Vec::new(),
-            push_constants: Vec::new(),
-            texture_bindings: Vec::new(),
+            bindings: [0u64; 16],
+            binding_count: 0,
+            texture_bindings: [0u64; 16],
+            texture_count: 0,
+            push_data: [0u8; 256],
+            push_len: 0,
+            push_mask: 0,
             drop_fn: None,
         })
     }
@@ -226,46 +230,46 @@ impl VulkanDevice {
             return Err(QuantaError::submit_failed());
         }
 
-        // Update descriptor set with buffer bindings
-        let buffers = self
+        // Update descriptor set with buffer bindings (inline arrays)
+        let buffers_guard = self
             .buffers
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        let mut buffer_infos: Vec<ffi::VkDescriptorBufferInfo> = Vec::new();
-        let mut writes: Vec<ffi::VkWriteDescriptorSet> = Vec::new();
+        let mut buffer_infos: [ffi::VkDescriptorBufferInfo; 16] = unsafe { core::mem::zeroed() };
+        let mut writes: [ffi::VkWriteDescriptorSet; 16] = unsafe { core::mem::zeroed() };
+        let mut write_count = 0usize;
 
-        for binding in &wave.bindings {
-            if let Some(buf) = buffers.get(&binding.field_handle) {
-                buffer_infos.push(ffi::VkDescriptorBufferInfo {
-                    buffer: buf.buffer,
-                    offset: 0,
-                    range: ffi::VK_WHOLE_SIZE,
-                });
+        for slot in 0..wave.binding_count as usize {
+            let handle = wave.bindings[slot];
+            if handle != 0 {
+                if let Some(buf) = buffers_guard.get(&handle) {
+                    buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
+                        buffer: buf.buffer,
+                        offset: 0,
+                        range: ffi::VK_WHOLE_SIZE,
+                    };
+                    writes[write_count] = ffi::VkWriteDescriptorSet {
+                        s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                        p_next: core::ptr::null(),
+                        dst_set: ds,
+                        dst_binding: slot as u32,
+                        dst_array_element: 0,
+                        descriptor_count: 1,
+                        descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                        p_image_info: core::ptr::null(),
+                        p_buffer_info: &buffer_infos[write_count],
+                        p_texel_buffer_view: core::ptr::null(),
+                    };
+                    write_count += 1;
+                }
             }
         }
 
-        for (i, binding) in wave.bindings.iter().enumerate() {
-            if i < buffer_infos.len() {
-                writes.push(ffi::VkWriteDescriptorSet {
-                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    p_next: core::ptr::null(),
-                    dst_set: ds,
-                    dst_binding: binding.slot,
-                    dst_array_element: 0,
-                    descriptor_count: 1,
-                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    p_image_info: core::ptr::null(),
-                    p_buffer_info: &buffer_infos[i],
-                    p_texel_buffer_view: core::ptr::null(),
-                });
-            }
-        }
-
-        if !writes.is_empty() {
+        if write_count > 0 {
             unsafe {
                 ffi::vkUpdateDescriptorSets(
                     self.device,
-                    writes.len() as u32,
+                    write_count as u32,
                     writes.as_ptr(),
                     0,
                     core::ptr::null(),
@@ -298,16 +302,15 @@ impl VulkanDevice {
                 core::ptr::null(),
             );
 
-            // Push constants
-            for pc in &wave.push_constants {
-                let size = (std::mem::size_of::<u32>()).min(pc.data.len()) as u32;
+            // Push constants from inline buffer
+            if wave.push_len > 0 {
                 ffi::vkCmdPushConstants(
                     cmd,
                     cp.layout,
                     ffi::VK_SHADER_STAGE_COMPUTE_BIT,
-                    pc.slot * 4,
-                    size,
-                    pc.data.as_ptr() as *const c_void,
+                    0,
+                    wave.push_len as u32,
+                    wave.push_data.as_ptr() as *const c_void,
                 );
             }
 
@@ -317,7 +320,7 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
-        drop(buffers);
+        drop(buffers_guard);
         drop(compute_pipelines);
         self.submit_and_wait(cmd)?;
 
@@ -327,7 +330,7 @@ impl VulkanDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle()?,
+            handle: self.alloc_handle(),
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
             completed: false,
@@ -388,42 +391,44 @@ impl VulkanDevice {
             return Err(QuantaError::submit_failed());
         }
 
-        let buffers = self
+        let buffers_guard = self
             .buffers
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        let mut buffer_infos: Vec<ffi::VkDescriptorBufferInfo> = Vec::new();
-        let mut writes: Vec<ffi::VkWriteDescriptorSet> = Vec::new();
-        for binding in &wave.bindings {
-            if let Some(buf) = buffers.get(&binding.field_handle) {
-                buffer_infos.push(ffi::VkDescriptorBufferInfo {
-                    buffer: buf.buffer,
-                    offset: 0,
-                    range: ffi::VK_WHOLE_SIZE,
-                });
+        let mut buffer_infos: [ffi::VkDescriptorBufferInfo; 16] = unsafe { core::mem::zeroed() };
+        let mut writes: [ffi::VkWriteDescriptorSet; 16] = unsafe { core::mem::zeroed() };
+        let mut write_count = 0usize;
+
+        for slot in 0..wave.binding_count as usize {
+            let handle = wave.bindings[slot];
+            if handle != 0 {
+                if let Some(buf) = buffers_guard.get(&handle) {
+                    buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
+                        buffer: buf.buffer,
+                        offset: 0,
+                        range: ffi::VK_WHOLE_SIZE,
+                    };
+                    writes[write_count] = ffi::VkWriteDescriptorSet {
+                        s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                        p_next: core::ptr::null(),
+                        dst_set: ds,
+                        dst_binding: slot as u32,
+                        dst_array_element: 0,
+                        descriptor_count: 1,
+                        descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                        p_image_info: core::ptr::null(),
+                        p_buffer_info: &buffer_infos[write_count],
+                        p_texel_buffer_view: core::ptr::null(),
+                    };
+                    write_count += 1;
+                }
             }
         }
-        for (i, binding) in wave.bindings.iter().enumerate() {
-            if i < buffer_infos.len() {
-                writes.push(ffi::VkWriteDescriptorSet {
-                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    p_next: core::ptr::null(),
-                    dst_set: ds,
-                    dst_binding: binding.slot,
-                    dst_array_element: 0,
-                    descriptor_count: 1,
-                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    p_image_info: core::ptr::null(),
-                    p_buffer_info: &buffer_infos[i],
-                    p_texel_buffer_view: core::ptr::null(),
-                });
-            }
-        }
-        if !writes.is_empty() {
+        if write_count > 0 {
             unsafe {
                 ffi::vkUpdateDescriptorSets(
                     self.device,
-                    writes.len() as u32,
+                    write_count as u32,
                     writes.as_ptr(),
                     0,
                     core::ptr::null(),
@@ -431,7 +436,7 @@ impl VulkanDevice {
             }
         }
 
-        let indirect_buf = buffers.get(&buffer).ok_or_else(|| {
+        let indirect_buf = buffers_guard.get(&buffer).ok_or_else(|| {
             QuantaError::invalid_param("bad indirect buffer")
                 .with_context(&format!("wave_dispatch_indirect: buffer handle {buffer}"))
         })?;
@@ -465,7 +470,7 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
-        drop(buffers);
+        drop(buffers_guard);
         drop(compute_pipelines);
         self.submit_and_wait(cmd)?;
 
@@ -474,7 +479,7 @@ impl VulkanDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle()?,
+            handle: self.alloc_handle(),
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
             completed: false,

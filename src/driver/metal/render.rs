@@ -210,7 +210,7 @@ impl MetalDevice {
                 ds_desc,
             );
 
-            let handle = self.alloc_handle()?;
+            let handle = self.alloc_handle();
             self.render_pipelines
                 .lock()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
@@ -520,7 +520,7 @@ impl MetalDevice {
             ffi::msg_void(cmd, b"commit\0");
 
             Ok(Pulse {
-                handle: self.alloc_handle()?,
+                handle: self.alloc_handle(),
                 wait_fn: Some(Box::new(move |_| {
                     ffi::msg_void(cmd, b"waitUntilCompleted\0");
                     Ok(())

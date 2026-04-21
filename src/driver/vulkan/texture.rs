@@ -115,7 +115,7 @@ impl VulkanDevice {
             return Err(QuantaError::out_of_memory());
         }
 
-        let handle = self.alloc_handle()?;
+        let handle = self.alloc_handle();
         self.textures
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
@@ -524,7 +524,7 @@ impl VulkanDevice {
             return Err(QuantaError::invalid_param("sampler creation failed")
                 .with_context(&format!("create_sampler: VkResult {}", result)));
         }
-        let handle = self.alloc_handle()?;
+        let handle = self.alloc_handle();
         self.samplers
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?

@@ -383,7 +383,7 @@ impl VulkanDevice {
             ffi::vkDestroyShaderModule(self.device, frag_module, core::ptr::null());
         }
 
-        let handle = self.alloc_handle()?;
+        let handle = self.alloc_handle();
         self.render_pipelines
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
@@ -1024,7 +1024,7 @@ impl VulkanDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle()?,
+            handle: self.alloc_handle(),
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
             completed: false,

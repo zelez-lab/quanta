@@ -91,16 +91,20 @@ impl MetalDevice {
             return Err(QuantaError::compilation_failed(msg));
         }
 
-        let handle = self.alloc_handle()?;
+        let handle = self.alloc_handle();
         self.compute_pipelines
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .insert(handle, pipeline);
         Ok(Wave {
             handle,
-            bindings: Vec::new(),
-            push_constants: Vec::new(),
-            texture_bindings: Vec::new(),
+            bindings: [0u64; 16],
+            binding_count: 0,
+            texture_bindings: [0u64; 16],
+            texture_count: 0,
+            push_data: [0u8; 256],
+            push_len: 0,
+            push_mask: 0,
             drop_fn: None,
         })
     }
@@ -129,28 +133,42 @@ impl MetalDevice {
             .buffers
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        for b in &wave.bindings {
-            if let Some(buf) = buffers.get(&b.field_handle) {
+        for slot in 0..wave.binding_count as usize {
+            let handle = wave.bindings[slot];
+            if handle != 0
+                && let Some(buf) = buffers.get(&handle)
+            {
                 unsafe {
                     ffi::msg_set_buffer(
                         encoder,
                         b"setBuffer:offset:atIndex:\0",
                         *buf,
                         0,
-                        b.slot as u64,
+                        slot as u64,
                     );
                 }
             }
         }
-        for pc in &wave.push_constants {
-            unsafe {
-                ffi::msg_set_bytes(
-                    encoder,
-                    b"setBytes:length:atIndex:\0",
-                    pc.data.as_ptr() as *const _,
-                    pc.data.len() as u64,
-                    pc.slot as u64,
-                );
+
+        // Push constants: send each occupied slot at its Metal buffer index.
+        // Only send slots marked in the bitmask to avoid overwriting buffer bindings.
+        {
+            let mut mask = wave.push_mask;
+            while mask != 0 {
+                let slot = mask.trailing_zeros() as usize;
+                let offset = slot * 16;
+                let remaining = wave.push_len as usize - offset;
+                let len = remaining.min(16);
+                unsafe {
+                    ffi::msg_set_bytes(
+                        encoder,
+                        b"setBytes:length:atIndex:\0",
+                        wave.push_data[offset..].as_ptr() as *const _,
+                        len as u64,
+                        slot as u64,
+                    );
+                }
+                mask &= mask - 1; // clear lowest set bit
             }
         }
 
@@ -159,10 +177,13 @@ impl MetalDevice {
             .textures
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        for tb in &wave.texture_bindings {
-            if let Some(tex) = textures.get(&tb.texture_handle) {
+        for slot in 0..wave.texture_count as usize {
+            let handle = wave.texture_bindings[slot];
+            if handle != 0
+                && let Some(tex) = textures.get(&handle)
+            {
                 unsafe {
-                    ffi::msg_set_texture(encoder, b"setTexture:atIndex:\0", *tex, tb.slot as u64);
+                    ffi::msg_set_texture(encoder, b"setTexture:atIndex:\0", *tex, slot as u64);
                 }
             }
         }
@@ -177,7 +198,7 @@ impl MetalDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle()?,
+            handle: self.alloc_handle(),
             wait_fn: Some(Box::new(move |_| {
                 unsafe { ffi::msg_void(cmd, b"waitUntilCompleted\0") };
                 Ok(())
@@ -212,28 +233,40 @@ impl MetalDevice {
             .buffers
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        for b in &wave.bindings {
-            if let Some(buf) = buffers.get(&b.field_handle) {
+        for slot in 0..wave.binding_count as usize {
+            let handle = wave.bindings[slot];
+            if handle != 0
+                && let Some(buf) = buffers.get(&handle)
+            {
                 unsafe {
                     ffi::msg_set_buffer(
                         encoder,
                         b"setBuffer:offset:atIndex:\0",
                         *buf,
                         0,
-                        b.slot as u64,
+                        slot as u64,
                     );
                 }
             }
         }
-        for pc in &wave.push_constants {
-            unsafe {
-                ffi::msg_set_bytes(
-                    encoder,
-                    b"setBytes:length:atIndex:\0",
-                    pc.data.as_ptr() as *const _,
-                    pc.data.len() as u64,
-                    pc.slot as u64,
-                );
+
+        {
+            let mut mask = wave.push_mask;
+            while mask != 0 {
+                let slot = mask.trailing_zeros() as usize;
+                let offset = slot * 16;
+                let remaining = wave.push_len as usize - offset;
+                let len = remaining.min(16);
+                unsafe {
+                    ffi::msg_set_bytes(
+                        encoder,
+                        b"setBytes:length:atIndex:\0",
+                        wave.push_data[offset..].as_ptr() as *const _,
+                        len as u64,
+                        slot as u64,
+                    );
+                }
+                mask &= mask - 1;
             }
         }
 
@@ -249,7 +282,7 @@ impl MetalDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle()?,
+            handle: self.alloc_handle(),
             wait_fn: Some(Box::new(move |_| {
                 unsafe { ffi::msg_void(cmd, b"waitUntilCompleted\0") };
                 Ok(())
