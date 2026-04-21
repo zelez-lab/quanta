@@ -210,14 +210,14 @@ impl MetalDevice {
                 ds_desc,
             );
 
-            let handle = self.alloc_handle();
+            let handle = self.alloc_handle()?;
             self.render_pipelines
                 .lock()
-                .unwrap()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .insert(handle, pipeline_state);
             self.depth_stencil_states
                 .lock()
-                .unwrap()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .insert(handle, ds_state);
             Ok(Pipeline {
                 handle,
@@ -227,7 +227,10 @@ impl MetalDevice {
     }
 
     pub(crate) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
-        let textures = self.textures.lock().unwrap();
+        let textures = self
+            .textures
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let target = textures.get(&pass.handle).ok_or_else(|| {
             QuantaError::invalid_param("render target not found")
                 .with_context(&format!("render_end: target handle {}", pass.handle))
@@ -255,8 +258,14 @@ impl MetalDevice {
             let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
             let encoder = ffi::msg_new_render_encoder(cmd, rpd);
 
-            let buffers = self.buffers.lock().unwrap();
-            let render_pipelines = self.render_pipelines.lock().unwrap();
+            let buffers = self
+                .buffers
+                .lock()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let render_pipelines = self
+                .render_pipelines
+                .lock()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
 
             for op in &pass.ops {
                 match op {
@@ -264,7 +273,10 @@ impl MetalDevice {
                         if let Some(ps) = render_pipelines.get(handle) {
                             ffi::msg_void_id(encoder, b"setRenderPipelineState:\0", *ps);
                         }
-                        let ds_states = self.depth_stencil_states.lock().unwrap();
+                        let ds_states = self
+                            .depth_stencil_states
+                            .lock()
+                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
                         if let Some(ds) = ds_states.get(handle) {
                             ffi::msg_void_id(encoder, b"setDepthStencilState:\0", *ds);
                         }
@@ -508,7 +520,7 @@ impl MetalDevice {
             ffi::msg_void(cmd, b"commit\0");
 
             Ok(Pulse {
-                handle: self.alloc_handle(),
+                handle: self.alloc_handle()?,
                 wait_fn: Some(Box::new(move |_| {
                     ffi::msg_void(cmd, b"waitUntilCompleted\0");
                     Ok(())

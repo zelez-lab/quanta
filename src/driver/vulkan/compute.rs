@@ -151,15 +151,18 @@ impl VulkanDevice {
             ffi::vkDestroyShaderModule(self.device, shader_module, core::ptr::null());
         }
 
-        let handle = self.alloc_handle();
-        self.compute_pipelines.lock().unwrap().insert(
-            handle,
-            VkComputePipeline {
-                pipeline,
-                layout: pipeline_layout,
-                descriptor_set_layout,
-            },
-        );
+        let handle = self.alloc_handle()?;
+        self.compute_pipelines
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                VkComputePipeline {
+                    pipeline,
+                    layout: pipeline_layout,
+                    descriptor_set_layout,
+                },
+            );
 
         Ok(Wave {
             handle,
@@ -175,7 +178,10 @@ impl VulkanDevice {
         wave: &Wave,
         groups: [u32; 3],
     ) -> Result<Pulse, QuantaError> {
-        let compute_pipelines = self.compute_pipelines.lock().unwrap();
+        let compute_pipelines = self
+            .compute_pipelines
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let cp = compute_pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
                 .with_context(&format!("wave_dispatch: handle {}", wave.handle))
@@ -221,7 +227,10 @@ impl VulkanDevice {
         }
 
         // Update descriptor set with buffer bindings
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let mut buffer_infos: Vec<ffi::VkDescriptorBufferInfo> = Vec::new();
         let mut writes: Vec<ffi::VkWriteDescriptorSet> = Vec::new();
 
@@ -318,7 +327,7 @@ impl VulkanDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle(),
+            handle: self.alloc_handle()?,
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
             completed: false,
@@ -331,7 +340,10 @@ impl VulkanDevice {
         buffer: u64,
         offset: u64,
     ) -> Result<Pulse, QuantaError> {
-        let compute_pipelines = self.compute_pipelines.lock().unwrap();
+        let compute_pipelines = self
+            .compute_pipelines
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let cp = compute_pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
                 .with_context(&format!("wave_dispatch_indirect: handle {}", wave.handle))
@@ -376,7 +388,10 @@ impl VulkanDevice {
             return Err(QuantaError::submit_failed());
         }
 
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let mut buffer_infos: Vec<ffi::VkDescriptorBufferInfo> = Vec::new();
         let mut writes: Vec<ffi::VkWriteDescriptorSet> = Vec::new();
         for binding in &wave.bindings {
@@ -459,7 +474,7 @@ impl VulkanDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle(),
+            handle: self.alloc_handle()?,
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
             completed: false,

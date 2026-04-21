@@ -91,10 +91,10 @@ impl MetalDevice {
             return Err(QuantaError::compilation_failed(msg));
         }
 
-        let handle = self.alloc_handle();
+        let handle = self.alloc_handle()?;
         self.compute_pipelines
             .lock()
-            .unwrap()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
             .insert(handle, pipeline);
         Ok(Wave {
             handle,
@@ -113,7 +113,10 @@ impl MetalDevice {
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
 
-        let pipelines = self.compute_pipelines.lock().unwrap();
+        let pipelines = self
+            .compute_pipelines
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipeline = pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
                 .with_context(&format!("wave_dispatch: handle {}", wave.handle))
@@ -122,7 +125,10 @@ impl MetalDevice {
             ffi::msg_void_id(encoder, b"setComputePipelineState:\0", *pipeline);
         }
 
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         for b in &wave.bindings {
             if let Some(buf) = buffers.get(&b.field_handle) {
                 unsafe {
@@ -149,7 +155,10 @@ impl MetalDevice {
         }
 
         // Bind textures for compute access
-        let textures = self.textures.lock().unwrap();
+        let textures = self
+            .textures
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         for tb in &wave.texture_bindings {
             if let Some(tex) = textures.get(&tb.texture_handle) {
                 unsafe {
@@ -168,7 +177,7 @@ impl MetalDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle(),
+            handle: self.alloc_handle()?,
             wait_fn: Some(Box::new(move |_| {
                 unsafe { ffi::msg_void(cmd, b"waitUntilCompleted\0") };
                 Ok(())
@@ -187,7 +196,10 @@ impl MetalDevice {
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
 
-        let pipelines = self.compute_pipelines.lock().unwrap();
+        let pipelines = self
+            .compute_pipelines
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipeline = pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
                 .with_context(&format!("wave_dispatch_indirect: handle {}", wave.handle))
@@ -196,7 +208,10 @@ impl MetalDevice {
             ffi::msg_void_id(encoder, b"setComputePipelineState:\0", *pipeline);
         }
 
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         for b in &wave.bindings {
             if let Some(buf) = buffers.get(&b.field_handle) {
                 unsafe {
@@ -234,7 +249,7 @@ impl MetalDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle(),
+            handle: self.alloc_handle()?,
             wait_fn: Some(Box::new(move |_| {
                 unsafe { ffi::msg_void(cmd, b"waitUntilCompleted\0") };
                 Ok(())

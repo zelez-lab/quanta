@@ -101,9 +101,10 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
         KernelOp::GroupSize { dst } => {
             out.push_str(&format!("{}uint r{} = _group_size;\n", pad, dst.0))
         }
-        KernelOp::QuarkCount { dst } => {
-            out.push_str(&format!("{}uint r{} = _quark_id; /* TODO */\n", pad, dst.0))
-        }
+        KernelOp::QuarkCount { dst } => out.push_str(&format!(
+            "{}uint r{} = _group_id * _group_size + _group_size;\n",
+            pad, dst.0
+        )),
         KernelOp::Load {
             dst,
             field,
@@ -326,7 +327,153 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 a.join(", ")
             ));
         }
-        _ => out.push_str(&format!("{}/* TODO: {:?} */\n", pad, op)),
+        KernelOp::TextureSample2D {
+            dst,
+            texture,
+            x,
+            y,
+            ty,
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = tex_{}.sample(samp_{}, float2(r{}, r{}));\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                texture,
+                texture,
+                x.0,
+                y.0
+            ));
+        }
+        KernelOp::TextureSample3D {
+            dst,
+            texture,
+            x,
+            y,
+            z,
+            ty,
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = tex_{}.sample(samp_{}, float3(r{}, r{}, r{}));\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                texture,
+                texture,
+                x.0,
+                y.0,
+                z.0
+            ));
+        }
+        KernelOp::TextureWrite2D {
+            texture,
+            x,
+            y,
+            value,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}tex_{}.write(r{}, uint2(r{}, r{}));\n",
+                pad, texture, value.0, x.0, y.0
+            ));
+        }
+        KernelOp::TextureSize {
+            dst_w,
+            dst_h,
+            texture,
+        } => {
+            out.push_str(&format!(
+                "{}uint r{} = tex_{}.get_width();\n",
+                pad, dst_w.0, texture
+            ));
+            out.push_str(&format!(
+                "{}uint r{} = tex_{}.get_height();\n",
+                pad, dst_h.0, texture
+            ));
+        }
+        KernelOp::VecConstruct {
+            dst,
+            components,
+            ty,
+        } => {
+            let n = components.len();
+            let comps: Vec<String> = components.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}{}{} r{} = {}{}({});\n",
+                pad,
+                ty.msl_name(),
+                n,
+                dst.0,
+                ty.msl_name(),
+                n,
+                comps.join(", ")
+            ));
+        }
+        KernelOp::VecExtract {
+            dst,
+            vec,
+            component,
+            ty,
+        } => {
+            let swizzle = match component {
+                0 => "x",
+                1 => "y",
+                2 => "z",
+                _ => "w",
+            };
+            out.push_str(&format!(
+                "{}{} r{} = r{}.{};\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                vec.0,
+                swizzle
+            ));
+        }
+        KernelOp::MatMul { dst, a, b, ty, .. } => {
+            out.push_str(&format!(
+                "{}{} r{} = r{} * r{};\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                a.0,
+                b.0
+            ));
+        }
+        KernelOp::Dispatch { .. } => {
+            out.push_str(&format!(
+                "{}/* error: dynamic parallelism not supported in MSL */\n",
+                pad
+            ));
+        }
+        KernelOp::AtomicCas {
+            dst,
+            field,
+            index,
+            expected,
+            desired,
+            ty,
+        } => {
+            let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
+            out.push_str(&format!(
+                "{}{} r{}_expected = r{};\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                expected.0
+            ));
+            out.push_str(&format!(
+                "{}atomic_compare_exchange_weak_explicit((device atomic_{}*)&{}[r{}], &r{}_expected, r{}, memory_order_relaxed, memory_order_relaxed);\n",
+                pad, ty.msl_name(), n, index.0, dst.0, desired.0
+            ));
+            out.push_str(&format!(
+                "{}{} r{} = r{}_expected;\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                dst.0
+            ));
+        }
     }
 }
 

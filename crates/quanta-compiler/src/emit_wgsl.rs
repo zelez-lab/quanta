@@ -213,7 +213,193 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 a.join(", ")
             ));
         }
-        _ => out.push_str(&format!("{}// TODO: {:?}\n", pad, op)),
+        KernelOp::QuarkCount { dst } => {
+            out.push_str(&format!(
+                "{}let r{} = gid.x; // total quark count unavailable in WGSL\n",
+                pad, dst.0
+            ));
+        }
+        KernelOp::GroupSize { dst } => {
+            out.push_str(&format!("{}let r{} = 64u; // workgroup_size\n", pad, dst.0));
+        }
+        KernelOp::UnaryOp { dst, a, op, .. } => {
+            let o = match op {
+                UnaryOp::Neg => "-",
+                UnaryOp::BitNot => "~",
+                UnaryOp::LogicalNot => "!",
+            };
+            out.push_str(&format!("{}let r{} = {}r{};\n", pad, dst.0, o, a.0));
+        }
+        KernelOp::SharedDecl { .. } => {
+            // WGSL shared memory must be at module scope -- emit separately.
+        }
+        KernelOp::SharedLoad { dst, id, index, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = shared_{}[r{}];\n",
+                pad, dst.0, id, index.0
+            ));
+        }
+        KernelOp::SharedStore { id, index, src, .. } => {
+            out.push_str(&format!(
+                "{}shared_{}[r{}] = r{};\n",
+                pad, id, index.0, src.0
+            ));
+        }
+        KernelOp::AtomicOp {
+            dst,
+            field,
+            index,
+            val,
+            op,
+            ..
+        } => {
+            let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
+            let f = match op {
+                AtomicOp::Add => "atomicAdd",
+                AtomicOp::Sub => "atomicSub",
+                AtomicOp::Min => "atomicMin",
+                AtomicOp::Max => "atomicMax",
+                AtomicOp::And => "atomicAnd",
+                AtomicOp::Or => "atomicOr",
+                AtomicOp::Xor => "atomicXor",
+                AtomicOp::Exchange => "atomicExchange",
+                AtomicOp::CompareExchange => "atomicCompareExchangeWeak",
+            };
+            out.push_str(&format!(
+                "{}let r{} = {}(&{}[r{}], r{});\n",
+                pad, dst.0, f, n, index.0, val.0
+            ));
+        }
+        KernelOp::AtomicCas {
+            dst,
+            field,
+            index,
+            expected,
+            desired,
+            ..
+        } => {
+            let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
+            out.push_str(&format!(
+                "{}let r{} = atomicCompareExchangeWeak(&{}[r{}], r{}, r{}).old_value;\n",
+                pad, dst.0, n, index.0, expected.0, desired.0
+            ));
+        }
+        KernelOp::WaveShuffle {
+            dst,
+            src,
+            lane_delta,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupShuffleXor(r{}, r{});\n",
+                pad, dst.0, src.0, lane_delta.0
+            ));
+        }
+        KernelOp::WaveBallot { dst, predicate } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupBallot(r{} != 0u);\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        KernelOp::WaveAny { dst, predicate } => {
+            out.push_str(&format!(
+                "{}let r{} = select(0u, 1u, subgroupAny(r{} != 0u));\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        KernelOp::WaveAll { dst, predicate } => {
+            out.push_str(&format!(
+                "{}let r{} = select(0u, 1u, subgroupAll(r{} != 0u));\n",
+                pad, dst.0, predicate.0
+            ));
+        }
+        KernelOp::TextureSample2D {
+            dst, texture, x, y, ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{} = textureSample(tex_{}, samp_{}, vec2<f32>(r{}, r{}));\n",
+                pad, dst.0, texture, texture, x.0, y.0
+            ));
+        }
+        KernelOp::TextureSample3D {
+            dst,
+            texture,
+            x,
+            y,
+            z,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{} = textureSample(tex_{}, samp_{}, vec3<f32>(r{}, r{}, r{}));\n",
+                pad, dst.0, texture, texture, x.0, y.0, z.0
+            ));
+        }
+        KernelOp::TextureWrite2D {
+            texture,
+            x,
+            y,
+            value,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}textureStore(tex_{}, vec2<i32>(r{}, r{}), r{});\n",
+                pad, texture, x.0, y.0, value.0
+            ));
+        }
+        KernelOp::TextureSize {
+            dst_w,
+            dst_h,
+            texture,
+        } => {
+            out.push_str(&format!(
+                "{}let _dim_{} = textureDimensions(tex_{});\n",
+                pad, texture, texture
+            ));
+            out.push_str(&format!("{}let r{} = _dim_{}.x;\n", pad, dst_w.0, texture));
+            out.push_str(&format!("{}let r{} = _dim_{}.y;\n", pad, dst_h.0, texture));
+        }
+        KernelOp::VecConstruct {
+            dst,
+            components,
+            ty,
+        } => {
+            let n = components.len();
+            let comps: Vec<String> = components.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}let r{} = vec{}<{}>({});\n",
+                pad,
+                dst.0,
+                n,
+                ty.wgsl_name(),
+                comps.join(", ")
+            ));
+        }
+        KernelOp::VecExtract {
+            dst,
+            vec,
+            component,
+            ..
+        } => {
+            let swizzle = match component {
+                0 => "x",
+                1 => "y",
+                2 => "z",
+                _ => "w",
+            };
+            out.push_str(&format!(
+                "{}let r{} = r{}.{};\n",
+                pad, dst.0, vec.0, swizzle
+            ));
+        }
+        KernelOp::MatMul { dst, a, b, .. } => {
+            out.push_str(&format!("{}let r{} = r{} * r{};\n", pad, dst.0, a.0, b.0));
+        }
+        KernelOp::Dispatch { .. } => {
+            out.push_str(&format!(
+                "{}// error: dynamic parallelism not supported in WGSL\n",
+                pad
+            ));
+        }
     }
 }
 

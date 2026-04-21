@@ -37,10 +37,13 @@ pub struct MetalDevice {
 }
 
 impl MetalDevice {
-    pub(crate) fn alloc_handle(&self) -> u64 {
-        let mut h = self.next_handle.lock().unwrap();
+    pub(crate) fn alloc_handle(&self) -> Result<u64, QuantaError> {
+        let mut h = self
+            .next_handle
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         *h += 1;
-        *h
+        Ok(*h)
     }
 }
 

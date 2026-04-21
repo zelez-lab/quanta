@@ -86,20 +86,23 @@ impl VulkanDevice {
             return Err(QuantaError::out_of_memory());
         }
 
-        let handle = self.alloc_handle();
-        self.buffers.lock().unwrap().insert(
-            handle,
-            super::VkBuffer {
-                buffer,
-                memory,
-                size: size as u64,
-            },
-        );
+        let handle = self.alloc_handle()?;
+        self.buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::VkBuffer {
+                    buffer,
+                    memory,
+                    size: size as u64,
+                },
+            );
         Ok(handle)
     }
 
     pub(crate) fn field_free_impl(&self, handle: u64) {
-        if let Some(buf) = self.buffers.lock().unwrap().remove(&handle) {
+        if let Some(buf) = self.buffers.lock().ok().and_then(|mut b| b.remove(&handle)) {
             unsafe {
                 ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
                 ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
@@ -112,7 +115,10 @@ impl VulkanDevice {
         handle: u64,
         data: &[u8],
     ) -> Result<(), QuantaError> {
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buf = buffers.get(&handle).ok_or_else(|| {
             QuantaError::invalid_param("bad field handle")
                 .with_context(&format!("field_write_bytes: handle {handle}"))
@@ -136,7 +142,10 @@ impl VulkanDevice {
         handle: u64,
         size: usize,
     ) -> Result<Vec<u8>, QuantaError> {
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buf = buffers.get(&handle).ok_or_else(|| {
             QuantaError::invalid_param("bad field handle")
                 .with_context(&format!("field_read_bytes: handle {handle}"))
@@ -161,7 +170,10 @@ impl VulkanDevice {
         src: u64,
         size: usize,
     ) -> Result<(), QuantaError> {
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let src_buf = buffers.get(&src).ok_or_else(|| {
             QuantaError::invalid_param("bad src handle")
                 .with_context(&format!("field_copy_bytes: src handle {src}"))

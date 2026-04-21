@@ -21,13 +21,18 @@ impl MetalDevice {
             ffi::MTL_RESOURCE_STORAGE_MODE_PRIVATE
         };
         let buffer = unsafe { ffi::msg_new_buffer(self.device, size as u64, options) };
-        let handle = self.alloc_handle();
-        self.buffers.lock().unwrap().insert(handle, buffer);
+        let handle = self.alloc_handle()?;
+        self.buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, buffer);
         Ok(handle)
     }
 
     pub(crate) fn field_free_impl(&self, handle: u64) {
-        self.buffers.lock().unwrap().remove(&handle);
+        if let Ok(mut buffers) = self.buffers.lock() {
+            buffers.remove(&handle);
+        }
     }
 
     pub(crate) fn field_write_bytes_impl(
@@ -35,7 +40,10 @@ impl MetalDevice {
         handle: u64,
         data: &[u8],
     ) -> Result<(), QuantaError> {
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buffer = buffers.get(&handle).ok_or_else(|| {
             QuantaError::invalid_param("bad field handle")
                 .with_context(&format!("field_write_bytes: handle {handle}"))
@@ -52,7 +60,10 @@ impl MetalDevice {
         handle: u64,
         size: usize,
     ) -> Result<Vec<u8>, QuantaError> {
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buffer = buffers.get(&handle).ok_or_else(|| {
             QuantaError::invalid_param("bad field handle")
                 .with_context(&format!("field_read_bytes: handle {handle}"))
@@ -71,7 +82,10 @@ impl MetalDevice {
         src: u64,
         size: usize,
     ) -> Result<(), QuantaError> {
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let src_buf = buffers.get(&src).ok_or_else(|| {
             QuantaError::invalid_param("bad src handle")
                 .with_context(&format!("field_copy_bytes: src handle {src}"))

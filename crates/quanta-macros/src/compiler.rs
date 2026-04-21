@@ -167,7 +167,24 @@ fn emit_msl(kernel: &KernelDef) -> Result<String, String> {
                     slot
                 ));
             }
-            _ => {} // textures — TODO
+            KernelParam::Texture2DRead { name, slot, .. } => {
+                param_lines.push(format!(
+                    "    texture2d<float, access::sample> {} [[texture({})]]",
+                    name, slot
+                ));
+            }
+            KernelParam::Texture2DWrite { name, slot, .. } => {
+                param_lines.push(format!(
+                    "    texture2d<float, access::write> {} [[texture({})]]",
+                    name, slot
+                ));
+            }
+            KernelParam::Texture3DRead { name, slot, .. } => {
+                param_lines.push(format!(
+                    "    texture3d<float, access::sample> {} [[texture({})]]",
+                    name, slot
+                ));
+            }
         }
     }
     param_lines.push("    uint _quark_id [[thread_position_in_grid]]".to_string());
@@ -224,7 +241,7 @@ fn emit_msl_op(
         }
         QuarkCount { dst } => {
             out.push_str(&format!(
-                "{}uint r{} = _quark_id; /* TODO: total count */\n",
+                "{}uint r{} = _group_id * _group_size + _group_size;\n",
                 pad, dst.0
             ));
         }
@@ -503,8 +520,152 @@ fn emit_msl_op(
                 arg_strs.join(", ")
             ));
         }
-        _ => {
-            out.push_str(&format!("{}/* TODO: {:?} */\n", pad, op));
+        TextureSample2D {
+            dst,
+            texture,
+            x,
+            y,
+            ty,
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = tex_{}.sample(samp_{}, float2(r{}, r{}));\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                texture,
+                texture,
+                x.0,
+                y.0
+            ));
+        }
+        TextureSample3D {
+            dst,
+            texture,
+            x,
+            y,
+            z,
+            ty,
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = tex_{}.sample(samp_{}, float3(r{}, r{}, r{}));\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                texture,
+                texture,
+                x.0,
+                y.0,
+                z.0
+            ));
+        }
+        TextureWrite2D {
+            texture,
+            x,
+            y,
+            value,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}tex_{}.write(r{}, uint2(r{}, r{}));\n",
+                pad, texture, value.0, x.0, y.0
+            ));
+        }
+        TextureSize {
+            dst_w,
+            dst_h,
+            texture,
+        } => {
+            out.push_str(&format!(
+                "{}uint r{} = tex_{}.get_width();\n",
+                pad, dst_w.0, texture
+            ));
+            out.push_str(&format!(
+                "{}uint r{} = tex_{}.get_height();\n",
+                pad, dst_h.0, texture
+            ));
+        }
+        VecConstruct {
+            dst,
+            components,
+            ty,
+        } => {
+            let n = components.len();
+            let comps: Vec<String> = components.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}{}{} r{} = {}{}({});\n",
+                pad,
+                ty.msl_name(),
+                n,
+                dst.0,
+                ty.msl_name(),
+                n,
+                comps.join(", ")
+            ));
+        }
+        VecExtract {
+            dst,
+            vec,
+            component,
+            ty,
+        } => {
+            let swizzle = match component {
+                0 => "x",
+                1 => "y",
+                2 => "z",
+                _ => "w",
+            };
+            out.push_str(&format!(
+                "{}{} r{} = r{}.{};\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                vec.0,
+                swizzle
+            ));
+        }
+        MatMul { dst, a, b, ty, .. } => {
+            out.push_str(&format!(
+                "{}{} r{} = r{} * r{};\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                a.0,
+                b.0
+            ));
+        }
+        Dispatch { .. } => {
+            out.push_str(&format!(
+                "{}/* error: dynamic parallelism not supported in MSL */\n",
+                pad
+            ));
+        }
+        AtomicCas {
+            dst,
+            field,
+            index,
+            expected,
+            desired,
+            ty,
+        } => {
+            let fname = names.get(field).map(|s| s.as_str()).unwrap_or("field");
+            out.push_str(&format!(
+                "{}{} r{}_expected = r{};\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                expected.0
+            ));
+            out.push_str(&format!(
+                "{}atomic_compare_exchange_weak_explicit((device atomic_{}*)&{}[r{}], &r{}_expected, r{}, memory_order_relaxed, memory_order_relaxed);\n",
+                pad, ty.msl_name(), fname, index.0, dst.0, desired.0
+            ));
+            out.push_str(&format!(
+                "{}{} r{} = r{}_expected;\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                dst.0
+            ));
         }
     }
 }
@@ -861,8 +1022,144 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
                 arg_strs.join(", ")
             ));
         }
-        _ => {
-            out.push_str(&format!("{}// TODO: {:?}\n", pad, op));
+        LocalId { dst } => {
+            out.push_str(&format!("{}let r{} = gid.x; // local\n", pad, dst.0));
+        }
+        GroupId { dst } => {
+            out.push_str(&format!("{}let r{} = gid.x; // group\n", pad, dst.0));
+        }
+        QuarkCount { dst } => {
+            out.push_str(&format!(
+                "{}let r{} = gid.x; // total quark count unavailable in WGSL\n",
+                pad, dst.0
+            ));
+        }
+        GroupSize { dst } => {
+            out.push_str(&format!("{}let r{} = 64u; // workgroup_size\n", pad, dst.0));
+        }
+        AtomicOp {
+            dst,
+            field,
+            index,
+            val,
+            op,
+            ..
+        } => {
+            let f = match op {
+                quanta_ir::AtomicOp::Add => "atomicAdd",
+                quanta_ir::AtomicOp::Sub => "atomicSub",
+                quanta_ir::AtomicOp::Min => "atomicMin",
+                quanta_ir::AtomicOp::Max => "atomicMax",
+                quanta_ir::AtomicOp::And => "atomicAnd",
+                quanta_ir::AtomicOp::Or => "atomicOr",
+                quanta_ir::AtomicOp::Xor => "atomicXor",
+                quanta_ir::AtomicOp::Exchange => "atomicExchange",
+                quanta_ir::AtomicOp::CompareExchange => "atomicCompareExchangeWeak",
+            };
+            out.push_str(&format!(
+                "{}let r{} = {}(&field_{}[r{}], r{});\n",
+                pad, dst.0, f, field, index.0, val.0
+            ));
+        }
+        AtomicCas {
+            dst,
+            field,
+            index,
+            expected,
+            desired,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{} = atomicCompareExchangeWeak(&field_{}[r{}], r{}, r{}).old_value;\n",
+                pad, dst.0, field, index.0, expected.0, desired.0
+            ));
+        }
+        TextureSample2D {
+            dst, texture, x, y, ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{} = textureSample(tex_{}, samp_{}, vec2<f32>(r{}, r{}));\n",
+                pad, dst.0, texture, texture, x.0, y.0
+            ));
+        }
+        TextureSample3D {
+            dst,
+            texture,
+            x,
+            y,
+            z,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{} = textureSample(tex_{}, samp_{}, vec3<f32>(r{}, r{}, r{}));\n",
+                pad, dst.0, texture, texture, x.0, y.0, z.0
+            ));
+        }
+        TextureWrite2D {
+            texture,
+            x,
+            y,
+            value,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{}textureStore(tex_{}, vec2<i32>(r{}, r{}), r{});\n",
+                pad, texture, x.0, y.0, value.0
+            ));
+        }
+        TextureSize {
+            dst_w,
+            dst_h,
+            texture,
+        } => {
+            out.push_str(&format!(
+                "{}let _dim_{} = textureDimensions(tex_{});\n",
+                pad, texture, texture
+            ));
+            out.push_str(&format!("{}let r{} = _dim_{}.x;\n", pad, dst_w.0, texture));
+            out.push_str(&format!("{}let r{} = _dim_{}.y;\n", pad, dst_h.0, texture));
+        }
+        VecConstruct {
+            dst,
+            components,
+            ty,
+        } => {
+            let n = components.len();
+            let comps: Vec<String> = components.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}let r{} = vec{}<{}>({});\n",
+                pad,
+                dst.0,
+                n,
+                ty.wgsl_name(),
+                comps.join(", ")
+            ));
+        }
+        VecExtract {
+            dst,
+            vec,
+            component,
+            ..
+        } => {
+            let swizzle = match component {
+                0 => "x",
+                1 => "y",
+                2 => "z",
+                _ => "w",
+            };
+            out.push_str(&format!(
+                "{}let r{} = r{}.{};\n",
+                pad, dst.0, vec.0, swizzle
+            ));
+        }
+        MatMul { dst, a, b, .. } => {
+            out.push_str(&format!("{}let r{} = r{} * r{};\n", pad, dst.0, a.0, b.0));
+        }
+        Dispatch { .. } => {
+            out.push_str(&format!(
+                "{}// error: dynamic parallelism not supported in WGSL\n",
+                pad
+            ));
         }
     }
 }

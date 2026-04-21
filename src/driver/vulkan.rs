@@ -75,15 +75,23 @@ struct VkRenderPipeline {
 }
 
 impl VulkanDevice {
-    fn alloc_handle(&self) -> u64 {
-        let mut h = self.next_handle.lock().unwrap();
+    fn alloc_handle(&self) -> Result<u64, QuantaError> {
+        let mut h = self
+            .next_handle
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         *h += 1;
-        *h
+        Ok(*h)
     }
 
     fn alloc_command_buffer(&self) -> Result<ffi::VkCommandBuffer, QuantaError> {
         // Try to reuse a previously returned command buffer from the pool.
-        if let Some(cmd) = self.cmd_buffer_pool.lock().unwrap().pop() {
+        if let Some(cmd) = self
+            .cmd_buffer_pool
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .pop()
+        {
             let result = unsafe { ffi::vkResetCommandBuffer(cmd, 0) };
             if result != ffi::VK_SUCCESS {
                 return Err(QuantaError::submit_failed());
@@ -129,7 +137,10 @@ impl VulkanDevice {
             }
         }
         // Return to pool for reuse instead of freeing.
-        self.cmd_buffer_pool.lock().unwrap().push(cmd);
+        self.cmd_buffer_pool
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .push(cmd);
         Ok(())
     }
 }
@@ -428,40 +439,54 @@ impl Drop for VulkanDevice {
             ffi::vkDeviceWaitIdle(self.device);
 
             // Clean up resources
-            for (_, buf) in self.buffers.lock().unwrap().drain() {
-                ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
-                ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
+            if let Ok(mut buffers) = self.buffers.lock() {
+                for (_, buf) in buffers.drain() {
+                    ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
+                    ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
+                }
             }
-            for (_, tex) in self.textures.lock().unwrap().drain() {
-                ffi::vkDestroyImageView(self.device, tex.view, core::ptr::null());
-                ffi::vkDestroyImage(self.device, tex.image, core::ptr::null());
-                ffi::vkFreeMemory(self.device, tex.memory, core::ptr::null());
+            if let Ok(mut textures) = self.textures.lock() {
+                for (_, tex) in textures.drain() {
+                    ffi::vkDestroyImageView(self.device, tex.view, core::ptr::null());
+                    ffi::vkDestroyImage(self.device, tex.image, core::ptr::null());
+                    ffi::vkFreeMemory(self.device, tex.memory, core::ptr::null());
+                }
             }
-            for (_, cp) in self.compute_pipelines.lock().unwrap().drain() {
-                ffi::vkDestroyPipeline(self.device, cp.pipeline, core::ptr::null());
-                ffi::vkDestroyPipelineLayout(self.device, cp.layout, core::ptr::null());
-                ffi::vkDestroyDescriptorSetLayout(
-                    self.device,
-                    cp.descriptor_set_layout,
-                    core::ptr::null(),
-                );
+            if let Ok(mut pipelines) = self.compute_pipelines.lock() {
+                for (_, cp) in pipelines.drain() {
+                    ffi::vkDestroyPipeline(self.device, cp.pipeline, core::ptr::null());
+                    ffi::vkDestroyPipelineLayout(self.device, cp.layout, core::ptr::null());
+                    ffi::vkDestroyDescriptorSetLayout(
+                        self.device,
+                        cp.descriptor_set_layout,
+                        core::ptr::null(),
+                    );
+                }
             }
-            for (_, rp) in self.render_pipelines.lock().unwrap().drain() {
-                ffi::vkDestroyPipeline(self.device, rp.pipeline, core::ptr::null());
-                ffi::vkDestroyPipelineLayout(self.device, rp.layout, core::ptr::null());
-                ffi::vkDestroyRenderPass(self.device, rp.render_pass, core::ptr::null());
-                ffi::vkDestroyDescriptorSetLayout(
-                    self.device,
-                    rp.descriptor_set_layout,
-                    core::ptr::null(),
-                );
+            if let Ok(mut pipelines) = self.render_pipelines.lock() {
+                for (_, rp) in pipelines.drain() {
+                    ffi::vkDestroyPipeline(self.device, rp.pipeline, core::ptr::null());
+                    ffi::vkDestroyPipelineLayout(self.device, rp.layout, core::ptr::null());
+                    ffi::vkDestroyRenderPass(self.device, rp.render_pass, core::ptr::null());
+                    ffi::vkDestroyDescriptorSetLayout(
+                        self.device,
+                        rp.descriptor_set_layout,
+                        core::ptr::null(),
+                    );
+                }
             }
-            for (_, sampler) in self.samplers.lock().unwrap().drain() {
-                ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
+            if let Ok(mut samplers) = self.samplers.lock() {
+                for (_, sampler) in samplers.drain() {
+                    ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
+                }
             }
 
             // Free pooled command buffers before destroying the pool.
-            let pooled: Vec<_> = self.cmd_buffer_pool.lock().unwrap().drain(..).collect();
+            let pooled: Vec<_> = self
+                .cmd_buffer_pool
+                .lock()
+                .map(|mut pool| pool.drain(..).collect())
+                .unwrap_or_default();
             if !pooled.is_empty() {
                 ffi::vkFreeCommandBuffers(
                     self.device,

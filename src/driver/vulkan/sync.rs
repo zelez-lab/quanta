@@ -62,7 +62,10 @@ impl VulkanDevice {
         from: ResourceState,
         to: ResourceState,
     ) -> Result<(), QuantaError> {
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buf = buffers
             .get(&handle)
             .ok_or_else(|| QuantaError::invalid_param("buffer not found"))?;
@@ -126,7 +129,10 @@ impl VulkanDevice {
         from: ResourceState,
         to: ResourceState,
     ) -> Result<(), QuantaError> {
-        let textures = self.textures.lock().unwrap();
+        let textures = self
+            .textures
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures
             .get(&texture.handle())
             .ok_or_else(|| QuantaError::invalid_param("texture not found"))?;

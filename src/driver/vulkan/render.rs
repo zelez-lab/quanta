@@ -383,16 +383,19 @@ impl VulkanDevice {
             ffi::vkDestroyShaderModule(self.device, frag_module, core::ptr::null());
         }
 
-        let handle = self.alloc_handle();
-        self.render_pipelines.lock().unwrap().insert(
-            handle,
-            VkRenderPipeline {
-                pipeline,
-                layout: pipeline_layout,
-                render_pass,
-                descriptor_set_layout,
-            },
-        );
+        let handle = self.alloc_handle()?;
+        self.render_pipelines
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                VkRenderPipeline {
+                    pipeline,
+                    layout: pipeline_layout,
+                    render_pass,
+                    descriptor_set_layout,
+                },
+            );
         Ok(Pipeline {
             handle,
             drop_fn: None,
@@ -417,10 +420,22 @@ impl VulkanDevice {
             }
         });
 
-        let render_pipelines = self.render_pipelines.lock().unwrap();
-        let textures = self.textures.lock().unwrap();
-        let buffers = self.buffers.lock().unwrap();
-        let samplers = self.samplers.lock().unwrap();
+        let render_pipelines = self
+            .render_pipelines
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let textures = self
+            .textures
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let samplers = self
+            .samplers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
 
         let target_tex = textures.get(&pass.handle).ok_or_else(|| {
             QuantaError::invalid_param("render target not found")
@@ -1009,7 +1024,7 @@ impl VulkanDevice {
         }
 
         Ok(Pulse {
-            handle: self.alloc_handle(),
+            handle: self.alloc_handle()?,
             wait_fn: Some(Box::new(|_| Ok(()))),
             poll_fn: None,
             completed: false,

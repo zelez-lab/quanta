@@ -115,18 +115,21 @@ impl VulkanDevice {
             return Err(QuantaError::out_of_memory());
         }
 
-        let handle = self.alloc_handle();
-        self.textures.lock().unwrap().insert(
-            handle,
-            VkTexture {
-                image,
-                view,
-                memory,
-                width: desc.width,
-                height: desc.height,
-                format: vk_format,
-            },
-        );
+        let handle = self.alloc_handle()?;
+        self.textures
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                VkTexture {
+                    image,
+                    view,
+                    memory,
+                    width: desc.width,
+                    height: desc.height,
+                    format: vk_format,
+                },
+            );
 
         Ok(Texture {
             handle,
@@ -142,7 +145,10 @@ impl VulkanDevice {
         texture: &Texture,
         data: &[u8],
     ) -> Result<(), QuantaError> {
-        let textures = self.textures.lock().unwrap();
+        let textures = self
+            .textures
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures.get(&texture.handle()).ok_or_else(|| {
             QuantaError::invalid_param("bad texture handle")
                 .with_context(&format!("texture_write: handle {}", texture.handle()))
@@ -328,7 +334,10 @@ impl VulkanDevice {
     }
 
     pub(crate) fn texture_read_impl(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
-        let textures = self.textures.lock().unwrap();
+        let textures = self
+            .textures
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures.get(&texture.handle()).ok_or_else(|| {
             QuantaError::invalid_param("bad texture handle")
                 .with_context(&format!("texture_read: handle {}", texture.handle()))
@@ -515,8 +524,11 @@ impl VulkanDevice {
             return Err(QuantaError::invalid_param("sampler creation failed")
                 .with_context(&format!("create_sampler: VkResult {}", result)));
         }
-        let handle = self.alloc_handle();
-        self.samplers.lock().unwrap().insert(handle, sampler);
+        let handle = self.alloc_handle()?;
+        self.samplers
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, sampler);
         Ok(crate::Sampler {
             handle,
             drop_fn: None,
@@ -524,7 +536,10 @@ impl VulkanDevice {
     }
 
     pub(crate) fn generate_mipmaps_impl(&self, texture: &Texture) -> Result<(), QuantaError> {
-        let textures = self.textures.lock().unwrap();
+        let textures = self
+            .textures
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures.get(&texture.handle()).ok_or_else(|| {
             QuantaError::invalid_param("bad texture handle")
                 .with_context(&format!("generate_mipmaps: handle {}", texture.handle()))

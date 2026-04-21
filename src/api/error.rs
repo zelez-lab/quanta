@@ -25,6 +25,8 @@ pub enum QuantaErrorKind {
     DeviceLost,
     /// Invalid parameter.
     InvalidParam(&'static str),
+    /// Internal error (e.g. poisoned mutex).
+    Internal(&'static str),
 }
 
 impl QuantaError {
@@ -84,6 +86,13 @@ impl QuantaError {
             context: None,
         }
     }
+
+    pub fn internal(msg: &'static str) -> Self {
+        Self {
+            kind: QuantaErrorKind::Internal(msg),
+            context: None,
+        }
+    }
 }
 
 impl PartialEq for QuantaError {
@@ -104,6 +113,7 @@ impl core::fmt::Display for QuantaError {
             QuantaErrorKind::Timeout => String::from("GPU operation timed out"),
             QuantaErrorKind::DeviceLost => String::from("GPU device lost"),
             QuantaErrorKind::InvalidParam(msg) => format!("invalid parameter: {msg}"),
+            QuantaErrorKind::Internal(msg) => format!("internal error: {msg}"),
         };
         if let Some(ctx) = &self.context {
             write!(f, "{base} [{ctx}]")
