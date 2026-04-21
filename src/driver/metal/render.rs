@@ -4,7 +4,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::{LoadOp, Pipeline, Pulse, QuantaError, RenderPass, StoreOp, render_pass::RenderOp};
+use crate::{
+    LoadOp, Pipeline, Pulse, QuantaError, RenderPass, SpecValue, StoreOp, render_pass::RenderOp,
+};
 
 use super::ffi;
 use super::{
@@ -17,6 +19,56 @@ impl MetalDevice {
         &self,
         desc: &crate::PipelineDesc,
     ) -> Result<Pipeline, QuantaError> {
+        // Build MTLFunctionConstantValues if specialization constants are present.
+        let fcv = if !desc.specialization.is_empty() {
+            unsafe {
+                let fcv = ffi::msg_id(
+                    ffi::cls(b"MTLFunctionConstantValues\0") as ffi::Id,
+                    b"new\0",
+                );
+                for (index, sc) in desc.specialization.iter().enumerate() {
+                    match sc.value {
+                        SpecValue::F32(v) => {
+                            ffi::msg_set_constant_value(
+                                fcv,
+                                &v as *const f32 as *const _,
+                                ffi::MTL_DATA_TYPE_FLOAT,
+                                index as u64,
+                            );
+                        }
+                        SpecValue::I32(v) => {
+                            ffi::msg_set_constant_value(
+                                fcv,
+                                &v as *const i32 as *const _,
+                                ffi::MTL_DATA_TYPE_INT,
+                                index as u64,
+                            );
+                        }
+                        SpecValue::U32(v) => {
+                            ffi::msg_set_constant_value(
+                                fcv,
+                                &v as *const u32 as *const _,
+                                ffi::MTL_DATA_TYPE_UINT,
+                                index as u64,
+                            );
+                        }
+                        SpecValue::Bool(v) => {
+                            let b: u8 = if v { 1 } else { 0 };
+                            ffi::msg_set_constant_value(
+                                fcv,
+                                &b as *const u8 as *const _,
+                                ffi::MTL_DATA_TYPE_BOOL,
+                                index as u64,
+                            );
+                        }
+                    }
+                }
+                Some(fcv)
+            }
+        } else {
+            None
+        };
+
         // Compile shader source(s) into Metal library/libraries.
         let (vert_fn, frag_fn) = unsafe {
             if let Some(combined) = desc.source {
@@ -31,8 +83,8 @@ impl MetalDevice {
                     let msg = error_string(error);
                     return Err(QuantaError::compilation_failed(format!("shader: {msg}")));
                 }
-                let vf = get_named_function(lib, desc.vertex_entry)?;
-                let ff = get_named_function(lib, desc.fragment_entry)?;
+                let vf = get_function_maybe_specialized(lib, desc.vertex_entry, fcv)?;
+                let ff = get_function_maybe_specialized(lib, desc.fragment_entry, fcv)?;
                 (vf, ff)
             } else {
                 let vert_src = std::str::from_utf8(desc.vertex).map_err(|_| {
@@ -62,8 +114,8 @@ impl MetalDevice {
                     return Err(QuantaError::compilation_failed(format!("fragment: {msg}")));
                 }
 
-                let vf = get_named_function(vert_lib, desc.vertex_entry)?;
-                let ff = get_named_function(frag_lib, desc.fragment_entry)?;
+                let vf = get_function_maybe_specialized(vert_lib, desc.vertex_entry, fcv)?;
+                let ff = get_function_maybe_specialized(frag_lib, desc.fragment_entry, fcv)?;
                 (vf, ff)
             }
         };
@@ -741,4 +793,32 @@ unsafe fn get_named_function(library: ffi::Id, name: &str) -> Result<ffi::Id, Qu
         )));
     }
     Ok(func)
+}
+
+/// Get a function from a library, optionally with specialization constants.
+/// When `constants` is `Some`, uses `newFunctionWithName:constantValues:error:`.
+/// When `None`, falls back to `newFunctionWithName:`.
+unsafe fn get_function_maybe_specialized(
+    library: ffi::Id,
+    name: &str,
+    constants: Option<ffi::Id>,
+) -> Result<ffi::Id, QuantaError> {
+    match constants {
+        Some(fcv) => {
+            let mut name_bytes: Vec<u8> = name.bytes().collect();
+            name_bytes.push(0);
+            let ns_name = ffi::nsstring(&name_bytes);
+            let (func, error) =
+                unsafe { ffi::msg_new_function_with_constants(library, ns_name, fcv) };
+            if func.is_null() {
+                let msg = unsafe { error_string(error) };
+                return Err(QuantaError::compilation_failed(format!(
+                    "function '{}' with constants: {}",
+                    name, msg
+                )));
+            }
+            Ok(func)
+        }
+        None => unsafe { get_named_function(library, name) },
+    }
 }

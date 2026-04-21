@@ -19,7 +19,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
     Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
-    Texture, TextureDesc, Vendor, Wave,
+    Texture, TextureDesc, TextureViewDesc, Vendor, Wave,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
@@ -40,6 +40,8 @@ pub struct VulkanDevice {
     compute_pipelines: RwLock<HashMap<u64, VkComputePipeline>>,
     render_pipelines: RwLock<HashMap<u64, VkRenderPipeline>>,
     samplers: RwLock<HashMap<u64, ffi::VkSampler>>,
+    /// Standalone image views created via texture_view_create (not tied to a full VkTexture).
+    image_views: RwLock<HashMap<u64, ffi::VkImageView>>,
     query_pools: RwLock<HashMap<u64, VkQueryPool>>,
     next_handle: AtomicU64,
     /// Pool of reusable command buffers — Mutex since push/pop are always writes.
@@ -305,6 +307,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             compute_pipelines: RwLock::new(HashMap::new()),
             render_pipelines: RwLock::new(HashMap::new()),
             samplers: RwLock::new(HashMap::new()),
+            image_views: RwLock::new(HashMap::new()),
             query_pools: RwLock::new(HashMap::new()),
             next_handle: AtomicU64::new(0),
             cmd_buffer_pool: Mutex::new(Vec::new()),
@@ -449,6 +452,82 @@ impl GpuDevice for VulkanDevice {
         self.resolve_texture_impl(src_handle, dst_handle)
     }
 
+    // === Texture views ===
+
+    fn texture_view_create(
+        &self,
+        texture_handle: u64,
+        desc: &TextureViewDesc,
+    ) -> Result<u64, QuantaError> {
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let tex = textures
+            .get(&texture_handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad texture handle"))?;
+
+        let format = match desc.format {
+            Some(f) => format_to_vulkan(f),
+            None => tex.format,
+        };
+
+        let aspect_mask = if format == ffi::VK_FORMAT_D32_SFLOAT {
+            ffi::VK_IMAGE_ASPECT_DEPTH_BIT
+        } else {
+            ffi::VK_IMAGE_ASPECT_COLOR_BIT
+        };
+
+        let view_info = ffi::VkImageViewCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            image: tex.image,
+            view_type: ffi::VK_IMAGE_VIEW_TYPE_2D,
+            format,
+            components: ffi::VkComponentMapping::default(),
+            subresource_range: ffi::VkImageSubresourceRange {
+                aspect_mask,
+                base_mip_level: desc.mip_range.start,
+                level_count: desc.mip_range.end.saturating_sub(desc.mip_range.start),
+                base_array_layer: desc.layer_range.start,
+                layer_count: desc.layer_range.end.saturating_sub(desc.layer_range.start),
+            },
+        };
+
+        let mut view = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateImageView(self.device, &view_info, core::ptr::null(), &mut view)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::internal(
+                "vkCreateImageView failed for texture view",
+            ));
+        }
+
+        let handle = self.alloc_handle();
+        drop(textures);
+        self.image_views
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, view);
+        Ok(handle)
+    }
+
+    fn texture_view_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let view = self
+            .image_views
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(v) = view {
+            unsafe {
+                ffi::vkDestroyImageView(self.device, v, core::ptr::null());
+            }
+        }
+        Ok(())
+    }
+
     // === Barriers ===
 
     fn barrier(&self) -> Result<(), QuantaError> {
@@ -519,6 +598,11 @@ impl Drop for VulkanDevice {
             if let Ok(mut samplers) = self.samplers.write() {
                 for (_, sampler) in samplers.drain() {
                     ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
+                }
+            }
+            if let Ok(mut views) = self.image_views.write() {
+                for (_, view) in views.drain() {
+                    ffi::vkDestroyImageView(self.device, view, core::ptr::null());
                 }
             }
             if let Ok(mut pools) = self.query_pools.write() {

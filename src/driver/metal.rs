@@ -17,7 +17,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
     Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, ResourceState,
-    Texture, TextureDesc, Vendor, Wave,
+    Texture, TextureDesc, TextureViewDesc, Vendor, Wave,
 };
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -295,6 +295,68 @@ impl GpuDevice for MetalDevice {
             }
             Ok(result)
         }
+    }
+
+    // === Texture views ===
+
+    fn texture_view_create(
+        &self,
+        texture_handle: u64,
+        desc: &TextureViewDesc,
+    ) -> Result<u64, QuantaError> {
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let base = textures
+            .get(&texture_handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad texture handle"))?;
+
+        let format = match desc.format {
+            Some(f) => format_to_metal(f),
+            None => unsafe { ffi::msg_u64(*base, b"pixelFormat\0") },
+        };
+
+        let tex_type = unsafe { ffi::msg_u64(*base, b"textureType\0") };
+
+        let mip_count = desc.mip_range.end.saturating_sub(desc.mip_range.start);
+        let layer_count = desc.layer_range.end.saturating_sub(desc.layer_range.start);
+
+        let view = unsafe {
+            ffi::msg_new_texture_view(
+                *base,
+                format,
+                tex_type,
+                ffi::NSRange {
+                    location: desc.mip_range.start as u64,
+                    length: mip_count as u64,
+                },
+                ffi::NSRange {
+                    location: desc.layer_range.start as u64,
+                    length: layer_count as u64,
+                },
+            )
+        };
+
+        if view.is_null() {
+            return Err(QuantaError::internal("Metal newTextureView returned nil"));
+        }
+
+        let handle = self.alloc_handle();
+        drop(textures); // release read lock before taking write lock
+        self.textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, view);
+        Ok(handle)
+    }
+
+    fn texture_view_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        Ok(())
     }
 
     // === MSAA Resolve ===

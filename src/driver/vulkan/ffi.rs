@@ -619,6 +619,24 @@ pub struct VkPipelineShaderStageCreateInfo {
     pub p_specialization_info: *const c_void,
 }
 
+// ─── Specialization constants ──────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VkSpecializationMapEntry {
+    pub constant_id: u32,
+    pub offset: u32,
+    pub size: usize,
+}
+
+#[repr(C)]
+pub struct VkSpecializationInfo {
+    pub map_entry_count: u32,
+    pub p_map_entries: *const VkSpecializationMapEntry,
+    pub data_size: usize,
+    pub p_data: *const c_void,
+}
+
 #[repr(C)]
 pub struct VkComputePipelineCreateInfo {
     pub s_type: u32,

@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 use crate::render_pass::RenderOp;
-use crate::{LoadOp, Pipeline, Pulse, QuantaError, RenderPass, StoreOp, Texture};
+use crate::{LoadOp, Pipeline, Pulse, QuantaError, RenderPass, SpecValue, StoreOp, Texture};
 use std::ffi::CString;
 
 use super::ffi;
@@ -220,6 +220,64 @@ impl VulkanDevice {
             )));
         }
 
+        // Build specialization info if constants are present.
+        // Pack values into a contiguous byte buffer with map entries describing layout.
+        let mut spec_data: Vec<u8> = Vec::new();
+        let mut spec_entries: Vec<ffi::VkSpecializationMapEntry> = Vec::new();
+        for (i, sc) in desc.specialization.iter().enumerate() {
+            let offset = spec_data.len() as u32;
+            match sc.value {
+                SpecValue::F32(v) => {
+                    spec_data.extend_from_slice(&v.to_ne_bytes());
+                    spec_entries.push(ffi::VkSpecializationMapEntry {
+                        constant_id: i as u32,
+                        offset,
+                        size: 4,
+                    });
+                }
+                SpecValue::I32(v) => {
+                    spec_data.extend_from_slice(&v.to_ne_bytes());
+                    spec_entries.push(ffi::VkSpecializationMapEntry {
+                        constant_id: i as u32,
+                        offset,
+                        size: 4,
+                    });
+                }
+                SpecValue::U32(v) => {
+                    spec_data.extend_from_slice(&v.to_ne_bytes());
+                    spec_entries.push(ffi::VkSpecializationMapEntry {
+                        constant_id: i as u32,
+                        offset,
+                        size: 4,
+                    });
+                }
+                SpecValue::Bool(v) => {
+                    // Vulkan VK_BOOL32 is a u32
+                    let b: u32 = if v { 1 } else { 0 };
+                    spec_data.extend_from_slice(&b.to_ne_bytes());
+                    spec_entries.push(ffi::VkSpecializationMapEntry {
+                        constant_id: i as u32,
+                        offset,
+                        size: 4,
+                    });
+                }
+            }
+        }
+        let spec_info = if !spec_entries.is_empty() {
+            Some(ffi::VkSpecializationInfo {
+                map_entry_count: spec_entries.len() as u32,
+                p_map_entries: spec_entries.as_ptr(),
+                data_size: spec_data.len(),
+                p_data: spec_data.as_ptr() as *const c_void,
+            })
+        } else {
+            None
+        };
+        let spec_ptr = match spec_info {
+            Some(ref info) => info as *const ffi::VkSpecializationInfo as *const c_void,
+            None => core::ptr::null(),
+        };
+
         let entry_name = CString::new("main").unwrap();
         let stages = [
             ffi::VkPipelineShaderStageCreateInfo {
@@ -229,7 +287,7 @@ impl VulkanDevice {
                 stage: ffi::VK_SHADER_STAGE_VERTEX_BIT,
                 module: vert_module,
                 p_name: entry_name.as_ptr(),
-                p_specialization_info: core::ptr::null(),
+                p_specialization_info: spec_ptr,
             },
             ffi::VkPipelineShaderStageCreateInfo {
                 s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -238,7 +296,7 @@ impl VulkanDevice {
                 stage: ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
                 module: frag_module,
                 p_name: entry_name.as_ptr(),
-                p_specialization_info: core::ptr::null(),
+                p_specialization_info: spec_ptr,
             },
         ];
 

@@ -790,6 +790,77 @@ pub unsafe fn msg_sample_timestamps(device: Id, cpu_ts: *mut u64, gpu_ts: *mut u
     );
 }
 
+// ─── Metal data types (for function constants) ────────────────────────────
+
+pub const MTL_DATA_TYPE_FLOAT: NSUInteger = 3;
+pub const MTL_DATA_TYPE_INT: NSUInteger = 29;
+pub const MTL_DATA_TYPE_UINT: NSUInteger = 30;
+pub const MTL_DATA_TYPE_BOOL: NSUInteger = 53;
+
+// ─── Function constant helpers ─────────────────────────────────────────────
+
+/// MTLFunctionConstantValues setConstantValue:type:atIndex:
+pub unsafe fn msg_set_constant_value(
+    fcv: Id,
+    value_ptr: *const c_void,
+    ty: NSUInteger,
+    index: u64,
+) {
+    let f: unsafe extern "C" fn(Id, Sel, *const c_void, NSUInteger, u64) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        fcv,
+        sel(b"setConstantValue:type:atIndex:\0"),
+        value_ptr,
+        ty,
+        index,
+    );
+}
+
+/// MTLLibrary newFunctionWithName:constantValues:error:
+pub unsafe fn msg_new_function_with_constants(library: Id, name: Id, constants: Id) -> (Id, Id) {
+    let f: unsafe extern "C" fn(Id, Sel, Id, Id, *mut Id) -> Id =
+        mem::transmute(objc_msgSend as *const c_void);
+    let mut error: Id = NIL;
+    let func = f(
+        library,
+        sel(b"newFunctionWithName:constantValues:error:\0"),
+        name,
+        constants,
+        &mut error,
+    );
+    (func, error)
+}
+
+// ─── Texture view helpers ──────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct NSRange {
+    pub location: u64,
+    pub length: u64,
+}
+
+/// newTextureViewWithPixelFormat:textureType:levels:slices:
+pub unsafe fn msg_new_texture_view(
+    texture: Id,
+    format: NSUInteger,
+    tex_type: NSUInteger,
+    levels: NSRange,
+    slices: NSRange,
+) -> Id {
+    let f: unsafe extern "C" fn(Id, Sel, NSUInteger, NSUInteger, NSRange, NSRange) -> Id =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        texture,
+        sel(b"newTextureViewWithPixelFormat:textureType:levels:slices:\0"),
+        format,
+        tex_type,
+        levels,
+        slices,
+    )
+}
+
 // ─── dispatch_data ──────────────────────────────────────────────────────────
 
 #[link(name = "System", kind = "dylib")]
