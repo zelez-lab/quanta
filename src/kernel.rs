@@ -177,10 +177,9 @@ impl KernelBinary {
             crate::Vendor::Nvidia => self.nvidia.or(self.spirv),
             crate::Vendor::Apple => self.metallib.or(self.msl.map(|s| s.as_bytes())),
             crate::Vendor::Intel => self.spirv.or(self.amd).or(self.llvm_ir),
-            _ => self
-                .spirv
-                .or(self.wgsl.map(|s| s.as_bytes()))
-                .or(self.llvm_ir),
+            // All Vulkan drivers (Broadcom, Qualcomm, etc.) need SPIR-V binary.
+            // Never fall back to WGSL text — it would segfault the driver.
+            _ => self.spirv,
         }
     }
 }

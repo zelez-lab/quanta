@@ -834,10 +834,10 @@ impl SpvEmitter {
         let void_ty = self.ensure_type_void();
         let func_ty = self.ensure_type_function(void_ty, &[]);
         let main_id = self.alloc_id();
-        self.emit_name(main_id, &kernel.name);
+        self.emit_name(main_id, "main");
 
         {
-            let name_words = Self::string_words(&kernel.name);
+            let name_words = Self::string_words("main");
             let mut ops = vec![EXECUTION_MODEL_GLCOMPUTE, main_id];
             ops.extend_from_slice(&name_words);
             ops.extend_from_slice(&interface_ids);
