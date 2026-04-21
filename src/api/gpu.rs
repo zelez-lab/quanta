@@ -238,9 +238,11 @@ impl Gpu {
         self.inner.wave_dispatch(wave, groups)
     }
 
-    /// Dispatch a 1D wave (convenience).
+    /// Dispatch a 1D wave over exactly `quarks` threads.
+    /// Metal uses dispatchThreads (clips to exact count).
+    /// Vulkan uses dispatchGroups with ceil(quarks/64).
     pub fn dispatch(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
-        self.inner.wave_dispatch(wave, [quarks, 1, 1])
+        self.inner.wave_dispatch_threads(wave, quarks)
     }
 
     /// Dispatch with group counts from a GPU buffer (GPU-driven).

@@ -167,6 +167,10 @@ impl GpuDevice for MetalDevice {
         self.wave_dispatch_impl(wave, groups)
     }
 
+    fn wave_dispatch_threads(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
+        self.wave_dispatch_threads_impl(wave, quarks)
+    }
+
     fn wave_dispatch_indirect(
         &self,
         wave: &Wave,

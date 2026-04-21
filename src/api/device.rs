@@ -58,7 +58,13 @@ pub trait GpuDevice {
     // === Compute ===
 
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError>;
+    /// Dispatch by threadgroup count (e.g., [4, 1, 1] = 4 groups of 64 threads).
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError>;
+    /// Dispatch by total thread count (Metal clips, Vulkan computes groups).
+    fn wave_dispatch_threads(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
+        let groups = quarks.div_ceil(64);
+        self.wave_dispatch(wave, [groups, 1, 1])
+    }
     /// Dispatch with group counts from a GPU buffer (GPU decides grid size).
     fn wave_dispatch_indirect(
         &self,

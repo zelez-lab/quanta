@@ -203,6 +203,102 @@ impl MetalDevice {
         })
     }
 
+    /// Dispatch by total thread count — Metal clips to exact grid size.
+    pub(crate) fn wave_dispatch_threads_impl(
+        &self,
+        wave: &Wave,
+        quarks: u32,
+    ) -> Result<Pulse, QuantaError> {
+        // Reuse the same binding/setup as wave_dispatch_impl, but use dispatchThreads
+        let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
+        let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
+
+        let pipelines = self
+            .compute_pipelines
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipeline = pipelines
+            .get(&wave.handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad wave handle"))?;
+        unsafe {
+            ffi::msg_void_id(encoder, b"setComputePipelineState:\0", *pipeline);
+        }
+
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        for slot in 0..wave.binding_count as usize {
+            let handle = wave.bindings[slot];
+            if handle != 0
+                && let Some(buf) = buffers.get(&handle)
+            {
+                unsafe {
+                    ffi::msg_set_buffer(
+                        encoder,
+                        b"setBuffer:offset:atIndex:\0",
+                        *buf,
+                        0,
+                        slot as u64,
+                    );
+                }
+            }
+        }
+        drop(buffers);
+
+        // Push constants
+        {
+            let mut mask = wave.push_mask;
+            while mask != 0 {
+                let slot = mask.trailing_zeros() as usize;
+                let offset = slot * 16;
+                let remaining = wave.push_len as usize - offset;
+                let len = remaining.min(16);
+                unsafe {
+                    ffi::msg_set_bytes(
+                        encoder,
+                        b"setBytes:length:atIndex:\0",
+                        wave.push_data[offset..].as_ptr() as *const _,
+                        len as u64,
+                        slot as u64,
+                    );
+                }
+                mask &= mask - 1;
+            }
+        }
+
+        // Textures
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        for slot in 0..wave.texture_count as usize {
+            let handle = wave.texture_bindings[slot];
+            if handle != 0
+                && let Some(tex) = textures.get(&handle)
+            {
+                unsafe {
+                    ffi::msg_set_texture(encoder, b"setTexture:atIndex:\0", *tex, slot as u64);
+                }
+            }
+        }
+        drop(textures);
+
+        let grid = ffi::MTLSize::new(quarks as u64, 1, 1);
+        let group_size = ffi::MTLSize::new(64, 1, 1);
+        unsafe {
+            ffi::msg_dispatch_threads(encoder, grid, group_size);
+            ffi::msg_void(encoder, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
+        }
+
+        Ok(Pulse {
+            handle: self.alloc_handle(),
+            completed: true,
+        })
+    }
+
     pub(crate) fn wave_dispatch_indirect_impl(
         &self,
         wave: &Wave,
