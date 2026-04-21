@@ -102,9 +102,10 @@ const OP_EXT_INST: u16 = 12;
 // ── Storage classes ─────────────────────────────────────────────────────────
 
 const STORAGE_CLASS_INPUT: u32 = 1;
-const STORAGE_CLASS_UNIFORM: u32 = 2;
+// const STORAGE_CLASS_UNIFORM: u32 = 2;
 const STORAGE_CLASS_WORKGROUP: u32 = 4;
 // const STORAGE_CLASS_FUNCTION: u32 = 7;
+const STORAGE_CLASS_PUSH_CONSTANT: u32 = 9;
 const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
 
 // ── Decorations ─────────────────────────────────────────────────────────────
@@ -246,6 +247,11 @@ struct SpvEmitter {
     // Field slot → (variable_id, element_type_id, is_writable)
     field_vars: HashMap<u32, (u32, u32, bool)>,
 
+    // Track total push constant bytes needed
+    push_constant_size: u32,
+    // Which field slots are push constants (PushConstant storage class)
+    push_constant_slots: std::collections::HashSet<u32>,
+
     // Shared memory: id → (variable_id, element_type_id)
     shared_vars: HashMap<u32, (u32, u32)>,
 
@@ -283,6 +289,8 @@ impl SpvEmitter {
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
             field_vars: HashMap::new(),
+            push_constant_size: 0,
+            push_constant_slots: std::collections::HashSet::new(),
             shared_vars: HashMap::new(),
             decorated_stride: std::collections::HashSet::new(),
             decorated_block: std::collections::HashSet::new(),
@@ -799,27 +807,31 @@ impl SpvEmitter {
                     scalar_type,
                 } => {
                     let elem_ty = self.scalar_type_id(*scalar_type);
-                    // For uniform constants, wrap in a struct with Block decoration
+                    // Push constants: wrap in a struct with Block decoration,
+                    // use PushConstant storage class (matches vkCmdPushConstants).
                     let struct_ty = self.ensure_type_struct(&[elem_ty]);
                     if self.decorated_block.insert(struct_ty) {
                         self.decorate(struct_ty, DECORATION_BLOCK, &[]);
-                        self.member_decorate(struct_ty, 0, DECORATION_OFFSET, &[0]);
+                        self.member_decorate(struct_ty, 0, DECORATION_OFFSET, &[*slot * 16]);
                     }
 
-                    let ptr_struct = self.ensure_type_pointer(STORAGE_CLASS_UNIFORM, struct_ty);
+                    let ptr_struct =
+                        self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, struct_ty);
 
                     let var_id = self.alloc_id();
                     Self::emit_op(
                         &mut self.sec_global_var,
                         OP_VARIABLE,
-                        &[ptr_struct, var_id, STORAGE_CLASS_UNIFORM],
+                        &[ptr_struct, var_id, STORAGE_CLASS_PUSH_CONSTANT],
                     );
                     self.emit_name(var_id, name);
-                    self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
-                    self.decorate(var_id, DECORATION_BINDING, &[*slot]);
+                    // PushConstant doesn't use DescriptorSet/Binding — it's accessed
+                    // via the push constant range in the pipeline layout.
 
                     // Store as field_vars — Load with index=MAX will access member 0
                     self.field_vars.insert(*slot, (var_id, elem_ty, false));
+                    self.push_constant_slots.insert(*slot);
+                    self.push_constant_size += 16;
                 }
                 _ => {
                     // Texture params — not yet supported in SPIR-V emitter
@@ -1105,13 +1117,10 @@ impl SpvEmitter {
                 let result_ty = self.scalar_type_id(*ty);
 
                 if index.0 == u32::MAX {
-                    // Uniform constant: access member 0 of the struct
+                    // Push constant: access member 0 of the struct
                     let zero = self.emit_constant_u32(0);
-                    // Determine storage class based on field type
-                    // Constants use Uniform, fields use StorageBuffer
-                    let is_uniform = self.is_uniform_field(*field);
-                    let sc = if is_uniform {
-                        STORAGE_CLASS_UNIFORM
+                    let sc = if self.is_push_constant_field(*field) {
+                        STORAGE_CLASS_PUSH_CONSTANT
                     } else {
                         STORAGE_CLASS_STORAGE_BUFFER
                     };
@@ -1855,23 +1864,9 @@ impl SpvEmitter {
         Ok(())
     }
 
-    /// Check if a field slot is a Uniform (Constant param) rather than StorageBuffer.
-    fn is_uniform_field(&self, _slot: u32) -> bool {
-        // We don't store this info directly. Instead, check if the field's variable
-        // was created with Uniform storage class by checking the type pointer.
-        // For now, we use a heuristic: if the field is not writable and the
-        // element type is a scalar (not array), it might be uniform.
-        // Actually, we should track this explicitly. Let's use a separate map.
-        //
-        // For correctness, we'll check based on the variable's type pointer.
-        // Since we don't easily have that info, and Constant params use
-        // index == u32::MAX in Load, we can safely always use StorageBuffer
-        // for the access chain since that's what our globals use.
-        //
-        // Actually the real fix: Constant params store their var in field_vars
-        // and we created them with Uniform storage class. We need to remember this.
-        false // Conservative: always use StorageBuffer
-        // TODO: Track uniform vs storage buffer per field
+    /// Check if a field slot uses PushConstant storage class.
+    fn is_push_constant_field(&self, slot: u32) -> bool {
+        self.push_constant_slots.contains(&slot)
     }
 
     // ── Finalize: concatenate sections and emit header ──────────────────────

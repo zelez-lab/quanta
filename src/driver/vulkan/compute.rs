@@ -92,14 +92,21 @@ impl VulkanDevice {
             )));
         }
 
+        // Declare a push constant range (256 bytes matches Wave's inline push_data buffer).
+        // Kernels with Constant params use push constants in SPIR-V.
+        let push_range = ffi::VkPushConstantRange {
+            stage_flags: ffi::VK_SHADER_STAGE_COMPUTE_BIT,
+            offset: 0,
+            size: 256,
+        };
         let pipeline_layout_info = ffi::VkPipelineLayoutCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
             set_layout_count: 1,
             p_set_layouts: &descriptor_set_layout,
-            push_constant_range_count: 0,
-            p_push_constant_ranges: core::ptr::null(),
+            push_constant_range_count: 1,
+            p_push_constant_ranges: &push_range,
         };
         let mut pipeline_layout = ffi::null_handle();
         let result = unsafe {
