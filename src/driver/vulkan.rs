@@ -22,7 +22,7 @@ use crate::{
     Texture, TextureDesc, Vendor, Wave,
 };
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 /// Vulkan-backed GPU device.
 pub struct VulkanDevice {
@@ -34,14 +34,14 @@ pub struct VulkanDevice {
     queue_family: u32,
     command_pool: ffi::VkCommandPool,
     caps: Caps,
-    // Resource storage
-    buffers: Mutex<HashMap<u64, VkBuffer>>,
-    textures: Mutex<HashMap<u64, VkTexture>>,
-    compute_pipelines: Mutex<HashMap<u64, VkComputePipeline>>,
-    render_pipelines: Mutex<HashMap<u64, VkRenderPipeline>>,
-    samplers: Mutex<HashMap<u64, ffi::VkSampler>>,
+    // Resource storage — RwLock: dispatch/render paths take read locks; alloc/free take write locks.
+    buffers: RwLock<HashMap<u64, VkBuffer>>,
+    textures: RwLock<HashMap<u64, VkTexture>>,
+    compute_pipelines: RwLock<HashMap<u64, VkComputePipeline>>,
+    render_pipelines: RwLock<HashMap<u64, VkRenderPipeline>>,
+    samplers: RwLock<HashMap<u64, ffi::VkSampler>>,
     next_handle: AtomicU64,
-    /// Pool of reusable command buffers.
+    /// Pool of reusable command buffers — Mutex since push/pop are always writes.
     cmd_buffer_pool: Mutex<Vec<ffi::VkCommandBuffer>>,
 }
 
@@ -294,11 +294,11 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             queue_family: qf_index as u32,
             command_pool,
             caps,
-            buffers: Mutex::new(HashMap::new()),
-            textures: Mutex::new(HashMap::new()),
-            compute_pipelines: Mutex::new(HashMap::new()),
-            render_pipelines: Mutex::new(HashMap::new()),
-            samplers: Mutex::new(HashMap::new()),
+            buffers: RwLock::new(HashMap::new()),
+            textures: RwLock::new(HashMap::new()),
+            compute_pipelines: RwLock::new(HashMap::new()),
+            render_pipelines: RwLock::new(HashMap::new()),
+            samplers: RwLock::new(HashMap::new()),
             next_handle: AtomicU64::new(0),
             cmd_buffer_pool: Mutex::new(Vec::new()),
         }));
@@ -434,21 +434,21 @@ impl Drop for VulkanDevice {
         unsafe {
             ffi::vkDeviceWaitIdle(self.device);
 
-            // Clean up resources
-            if let Ok(mut buffers) = self.buffers.lock() {
+            // Clean up resources — write locks since we're draining.
+            if let Ok(mut buffers) = self.buffers.write() {
                 for (_, buf) in buffers.drain() {
                     ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
                     ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
                 }
             }
-            if let Ok(mut textures) = self.textures.lock() {
+            if let Ok(mut textures) = self.textures.write() {
                 for (_, tex) in textures.drain() {
                     ffi::vkDestroyImageView(self.device, tex.view, core::ptr::null());
                     ffi::vkDestroyImage(self.device, tex.image, core::ptr::null());
                     ffi::vkFreeMemory(self.device, tex.memory, core::ptr::null());
                 }
             }
-            if let Ok(mut pipelines) = self.compute_pipelines.lock() {
+            if let Ok(mut pipelines) = self.compute_pipelines.write() {
                 for (_, cp) in pipelines.drain() {
                     ffi::vkDestroyPipeline(self.device, cp.pipeline, core::ptr::null());
                     ffi::vkDestroyPipelineLayout(self.device, cp.layout, core::ptr::null());
@@ -459,7 +459,7 @@ impl Drop for VulkanDevice {
                     );
                 }
             }
-            if let Ok(mut pipelines) = self.render_pipelines.lock() {
+            if let Ok(mut pipelines) = self.render_pipelines.write() {
                 for (_, rp) in pipelines.drain() {
                     ffi::vkDestroyPipeline(self.device, rp.pipeline, core::ptr::null());
                     ffi::vkDestroyPipelineLayout(self.device, rp.layout, core::ptr::null());
@@ -471,7 +471,7 @@ impl Drop for VulkanDevice {
                     );
                 }
             }
-            if let Ok(mut samplers) = self.samplers.lock() {
+            if let Ok(mut samplers) = self.samplers.write() {
                 for (_, sampler) in samplers.drain() {
                     ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
                 }

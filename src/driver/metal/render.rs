@@ -1,6 +1,5 @@
 //! Render pipeline and pass execution for Metal.
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -212,11 +211,11 @@ impl MetalDevice {
 
             let handle = self.alloc_handle();
             self.render_pipelines
-                .lock()
+                .write()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .insert(handle, pipeline_state);
             self.depth_stencil_states
-                .lock()
+                .write()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .insert(handle, ds_state);
             Ok(Pipeline {
@@ -229,7 +228,7 @@ impl MetalDevice {
     pub(crate) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         let textures = self
             .textures
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let target = textures.get(&pass.handle).ok_or_else(|| {
             QuantaError::invalid_param("render target not found")
@@ -260,11 +259,11 @@ impl MetalDevice {
 
             let buffers = self
                 .buffers
-                .lock()
+                .read()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
             let render_pipelines = self
                 .render_pipelines
-                .lock()
+                .read()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
 
             for op in &pass.ops {
@@ -275,7 +274,7 @@ impl MetalDevice {
                         }
                         let ds_states = self
                             .depth_stencil_states
-                            .lock()
+                            .read()
                             .map_err(|_| QuantaError::internal("lock poisoned"))?;
                         if let Some(ds) = ds_states.get(handle) {
                             ffi::msg_void_id(encoder, b"setDepthStencilState:\0", *ds);
@@ -518,15 +517,11 @@ impl MetalDevice {
 
             ffi::msg_void(encoder, b"endEncoding\0");
             ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
 
             Ok(Pulse {
                 handle: self.alloc_handle(),
-                wait_fn: Some(Box::new(move |_| {
-                    ffi::msg_void(cmd, b"waitUntilCompleted\0");
-                    Ok(())
-                })),
-                poll_fn: None,
-                completed: false,
+                completed: true,
             })
         }
     }

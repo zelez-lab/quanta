@@ -94,7 +94,7 @@ impl MetalDevice {
             let tex = ffi::msg_id_id(self.device, b"newTextureWithDescriptor:\0", mtl_desc);
             let handle = self.alloc_handle();
             self.textures
-                .lock()
+                .write()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .insert(handle, tex);
 
@@ -115,7 +115,7 @@ impl MetalDevice {
     ) -> Result<(), QuantaError> {
         let textures = self
             .textures
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures.get(&texture.handle()).ok_or_else(|| {
             QuantaError::invalid_param("bad texture handle")
@@ -133,7 +133,7 @@ impl MetalDevice {
     pub(crate) fn texture_read_impl(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
         let textures = self
             .textures
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures.get(&texture.handle()).ok_or_else(|| {
             QuantaError::invalid_param("bad texture handle")
@@ -175,7 +175,7 @@ impl MetalDevice {
             let sampler = ffi::msg_id_id(self.device, b"newSamplerStateWithDescriptor:\0", sd);
             let handle = self.alloc_handle();
             self.samplers
-                .lock()
+                .write()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .insert(handle, sampler);
             Ok(crate::Sampler {
@@ -188,7 +188,7 @@ impl MetalDevice {
     pub(crate) fn generate_mipmaps_impl(&self, texture: &Texture) -> Result<(), QuantaError> {
         let textures = self
             .textures
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures.get(&texture.handle()).ok_or_else(|| {
             QuantaError::invalid_param("bad texture handle")

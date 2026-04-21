@@ -64,7 +64,7 @@ impl VulkanDevice {
     ) -> Result<(), QuantaError> {
         let buffers = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buf = buffers
             .get(&handle)
@@ -131,7 +131,7 @@ impl VulkanDevice {
     ) -> Result<(), QuantaError> {
         let textures = self
             .textures
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures
             .get(&texture.handle())

@@ -20,20 +20,21 @@ use crate::{
     Texture, TextureDesc, Vendor, Wave,
 };
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 /// Metal-backed GPU device.
 pub struct MetalDevice {
     pub(crate) device: ffi::Id,
     pub(crate) queue: ffi::Id,
     caps: Caps,
-    // Resource storage — keyed by handle
-    pub(crate) buffers: Mutex<HashMap<u64, ffi::Id>>,
-    pub(crate) textures: Mutex<HashMap<u64, ffi::Id>>,
-    pub(crate) compute_pipelines: Mutex<HashMap<u64, ffi::Id>>,
-    pub(crate) render_pipelines: Mutex<HashMap<u64, ffi::Id>>,
-    pub(crate) depth_stencil_states: Mutex<HashMap<u64, ffi::Id>>,
-    pub(crate) samplers: Mutex<HashMap<u64, ffi::Id>>,
+    // Resource storage — keyed by handle.
+    // RwLock: dispatch/render paths take read locks; alloc/free take write locks.
+    pub(crate) buffers: RwLock<HashMap<u64, ffi::Id>>,
+    pub(crate) textures: RwLock<HashMap<u64, ffi::Id>>,
+    pub(crate) compute_pipelines: RwLock<HashMap<u64, ffi::Id>>,
+    pub(crate) render_pipelines: RwLock<HashMap<u64, ffi::Id>>,
+    pub(crate) depth_stencil_states: RwLock<HashMap<u64, ffi::Id>>,
+    pub(crate) samplers: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) next_handle: AtomicU64,
 }
 
@@ -78,12 +79,12 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         device,
         queue,
         caps,
-        buffers: Mutex::new(HashMap::new()),
-        textures: Mutex::new(HashMap::new()),
-        compute_pipelines: Mutex::new(HashMap::new()),
-        render_pipelines: Mutex::new(HashMap::new()),
-        depth_stencil_states: Mutex::new(HashMap::new()),
-        samplers: Mutex::new(HashMap::new()),
+        buffers: RwLock::new(HashMap::new()),
+        textures: RwLock::new(HashMap::new()),
+        compute_pipelines: RwLock::new(HashMap::new()),
+        render_pipelines: RwLock::new(HashMap::new()),
+        depth_stencil_states: RwLock::new(HashMap::new()),
+        samplers: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
     })]
 }

@@ -1,6 +1,5 @@
 //! Compute dispatch operations for Vulkan.
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -153,7 +152,7 @@ impl VulkanDevice {
 
         let handle = self.alloc_handle();
         self.compute_pipelines
-            .lock()
+            .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .insert(
                 handle,
@@ -184,7 +183,7 @@ impl VulkanDevice {
     ) -> Result<Pulse, QuantaError> {
         let compute_pipelines = self
             .compute_pipelines
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let cp = compute_pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
@@ -233,7 +232,7 @@ impl VulkanDevice {
         // Update descriptor set with buffer bindings (inline arrays)
         let buffers_guard = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let mut buffer_infos: [ffi::VkDescriptorBufferInfo; 16] = unsafe { core::mem::zeroed() };
         let mut writes: [ffi::VkWriteDescriptorSet; 16] = unsafe { core::mem::zeroed() };
@@ -331,9 +330,7 @@ impl VulkanDevice {
 
         Ok(Pulse {
             handle: self.alloc_handle(),
-            wait_fn: Some(Box::new(|_| Ok(()))),
-            poll_fn: None,
-            completed: false,
+            completed: true,
         })
     }
 
@@ -345,7 +342,7 @@ impl VulkanDevice {
     ) -> Result<Pulse, QuantaError> {
         let compute_pipelines = self
             .compute_pipelines
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let cp = compute_pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
@@ -393,7 +390,7 @@ impl VulkanDevice {
 
         let buffers_guard = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let mut buffer_infos: [ffi::VkDescriptorBufferInfo; 16] = unsafe { core::mem::zeroed() };
         let mut writes: [ffi::VkWriteDescriptorSet; 16] = unsafe { core::mem::zeroed() };
@@ -480,9 +477,7 @@ impl VulkanDevice {
 
         Ok(Pulse {
             handle: self.alloc_handle(),
-            wait_fn: Some(Box::new(|_| Ok(()))),
-            poll_fn: None,
-            completed: false,
+            completed: true,
         })
     }
 }

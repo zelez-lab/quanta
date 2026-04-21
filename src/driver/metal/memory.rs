@@ -23,14 +23,14 @@ impl MetalDevice {
         let buffer = unsafe { ffi::msg_new_buffer(self.device, size as u64, options) };
         let handle = self.alloc_handle();
         self.buffers
-            .lock()
+            .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .insert(handle, buffer);
         Ok(handle)
     }
 
     pub(crate) fn field_free_impl(&self, handle: u64) {
-        if let Ok(mut buffers) = self.buffers.lock() {
+        if let Ok(mut buffers) = self.buffers.write() {
             buffers.remove(&handle);
         }
     }
@@ -42,7 +42,7 @@ impl MetalDevice {
     ) -> Result<(), QuantaError> {
         let buffers = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buffer = buffers.get(&handle).ok_or_else(|| {
             QuantaError::invalid_param("bad field handle")
@@ -62,7 +62,7 @@ impl MetalDevice {
     ) -> Result<Vec<u8>, QuantaError> {
         let buffers = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buffer = buffers.get(&handle).ok_or_else(|| {
             QuantaError::invalid_param("bad field handle")
@@ -84,7 +84,7 @@ impl MetalDevice {
     ) -> Result<(), QuantaError> {
         let buffers = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let src_buf = buffers.get(&src).ok_or_else(|| {
             QuantaError::invalid_param("bad src handle")

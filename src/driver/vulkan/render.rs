@@ -1,6 +1,5 @@
 //! Render pipeline and render pass operations for Vulkan.
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -385,7 +384,7 @@ impl VulkanDevice {
 
         let handle = self.alloc_handle();
         self.render_pipelines
-            .lock()
+            .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .insert(
                 handle,
@@ -422,19 +421,19 @@ impl VulkanDevice {
 
         let render_pipelines = self
             .render_pipelines
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let textures = self
             .textures
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buffers = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let samplers = self
             .samplers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
 
         let target_tex = textures.get(&pass.handle).ok_or_else(|| {
@@ -1025,9 +1024,7 @@ impl VulkanDevice {
 
         Ok(Pulse {
             handle: self.alloc_handle(),
-            wait_fn: Some(Box::new(|_| Ok(()))),
-            poll_fn: None,
-            completed: false,
+            completed: true,
         })
     }
 }

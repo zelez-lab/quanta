@@ -1,6 +1,5 @@
 //! Compute dispatch operations for Metal.
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 
@@ -93,7 +92,7 @@ impl MetalDevice {
 
         let handle = self.alloc_handle();
         self.compute_pipelines
-            .lock()
+            .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .insert(handle, pipeline);
         Ok(Wave {
@@ -119,7 +118,7 @@ impl MetalDevice {
 
         let pipelines = self
             .compute_pipelines
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipeline = pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
@@ -131,7 +130,7 @@ impl MetalDevice {
 
         let buffers = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         for slot in 0..wave.binding_count as usize {
             let handle = wave.bindings[slot];
@@ -175,7 +174,7 @@ impl MetalDevice {
         // Bind textures for compute access
         let textures = self
             .textures
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         for slot in 0..wave.texture_count as usize {
             let handle = wave.texture_bindings[slot];
@@ -195,16 +194,12 @@ impl MetalDevice {
             ffi::msg_dispatch_threads(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
             ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
         }
 
         Ok(Pulse {
             handle: self.alloc_handle(),
-            wait_fn: Some(Box::new(move |_| {
-                unsafe { ffi::msg_void(cmd, b"waitUntilCompleted\0") };
-                Ok(())
-            })),
-            poll_fn: None,
-            completed: false,
+            completed: true,
         })
     }
 
@@ -219,7 +214,7 @@ impl MetalDevice {
 
         let pipelines = self
             .compute_pipelines
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipeline = pipelines.get(&wave.handle).ok_or_else(|| {
             QuantaError::invalid_param("bad wave handle")
@@ -231,7 +226,7 @@ impl MetalDevice {
 
         let buffers = self
             .buffers
-            .lock()
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         for slot in 0..wave.binding_count as usize {
             let handle = wave.bindings[slot];
@@ -279,16 +274,12 @@ impl MetalDevice {
             ffi::msg_dispatch_threadgroups_indirect(encoder, *indirect_buf, offset, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
             ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
         }
 
         Ok(Pulse {
             handle: self.alloc_handle(),
-            wait_fn: Some(Box::new(move |_| {
-                unsafe { ffi::msg_void(cmd, b"waitUntilCompleted\0") };
-                Ok(())
-            })),
-            poll_fn: None,
-            completed: false,
+            completed: true,
         })
     }
 }
