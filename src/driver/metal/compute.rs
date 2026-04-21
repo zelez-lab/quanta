@@ -191,7 +191,7 @@ impl MetalDevice {
         let grid = ffi::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
         let group_size = ffi::MTLSize::new(64, 1, 1);
         unsafe {
-            ffi::msg_dispatch_threads(encoder, grid, group_size);
+            ffi::msg_dispatch_threadgroups(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
             ffi::msg_void(cmd, b"commit\0");
             ffi::msg_void(cmd, b"waitUntilCompleted\0");

@@ -486,6 +486,18 @@ pub unsafe fn msg_dispatch_threads(encoder: Id, grid: MTLSize, group: MTLSize) {
     )
 }
 
+/// dispatchThreadgroups:threadsPerThreadgroup: on compute encoder
+pub unsafe fn msg_dispatch_threadgroups(encoder: Id, groups: MTLSize, group_size: MTLSize) {
+    let f: unsafe extern "C" fn(Id, Sel, MTLSize, MTLSize) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        encoder,
+        sel(b"dispatchThreadgroups:threadsPerThreadgroup:\0"),
+        groups,
+        group_size,
+    )
+}
+
 /// dispatchThreadgroups:threadsPerThreadgroup: (indirect) on compute encoder
 pub unsafe fn msg_dispatch_threadgroups_indirect(
     encoder: Id,
