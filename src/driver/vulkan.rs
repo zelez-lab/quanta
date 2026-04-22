@@ -72,6 +72,7 @@ struct VkTexture {
     height: u32,
     format: u32,
     mip_levels: u32,
+    current_layout: std::sync::atomic::AtomicU32,
 }
 
 struct VkComputePipeline {

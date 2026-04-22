@@ -151,6 +151,14 @@ impl VulkanDevice {
             }
         }
 
+        // Use the tracked current layout instead of the caller's `from` state.
+        // This avoids validation errors when the image's actual layout differs
+        // from what the caller thinks it is.
+        let actual_layout = tex
+            .current_layout
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let new_layout = state_to_layout(to);
+
         let image_barrier = ffi::VkImageMemoryBarrier2 {
             s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             p_next: core::ptr::null(),
@@ -158,8 +166,8 @@ impl VulkanDevice {
             src_access_mask: state_to_access_write(from),
             dst_stage_mask: state_to_stage(to),
             dst_access_mask: state_to_access_read(to),
-            old_layout: state_to_layout(from),
-            new_layout: state_to_layout(to),
+            old_layout: actual_layout,
+            new_layout,
             src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
             dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
             image: tex.image,
@@ -193,6 +201,9 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
+        // Track the new layout
+        tex.current_layout
+            .store(new_layout, std::sync::atomic::Ordering::Relaxed);
         drop(textures);
         self.submit_and_wait(cmd)
     }

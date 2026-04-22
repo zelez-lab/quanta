@@ -129,6 +129,9 @@ impl VulkanDevice {
                     height: desc.height,
                     format: vk_format,
                     mip_levels: desc.mip_levels.max(1),
+                    current_layout: std::sync::atomic::AtomicU32::new(
+                        ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                    ),
                 },
             );
 
@@ -323,6 +326,11 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
+        // Track layout: texture_write leaves image in SHADER_READ_ONLY_OPTIMAL
+        tex.current_layout.store(
+            ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         drop(textures);
         self.submit_and_wait(cmd)?;
 
@@ -409,12 +417,16 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
 
+            // Use tracked layout instead of assuming SHADER_READ_ONLY
+            let actual_layout = tex
+                .current_layout
+                .load(std::sync::atomic::Ordering::Relaxed);
             let barrier = ffi::VkImageMemoryBarrier {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 p_next: core::ptr::null(),
-                src_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                src_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT | ffi::VK_ACCESS_MEMORY_WRITE_BIT,
                 dst_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
-                old_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                old_layout: actual_layout,
                 new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
