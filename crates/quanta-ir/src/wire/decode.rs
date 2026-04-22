@@ -328,7 +328,7 @@ fn read_kernel_param(r: &mut Reader) -> Result<KernelParam, &'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// KernelOp  (35 variants, tags 0..34)
+// KernelOp  (47 variants, tags 0..46)
 // ---------------------------------------------------------------------------
 
 fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
@@ -724,6 +724,111 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
                 dst,
                 func_name,
                 args,
+                ty,
+            })
+        }
+
+        // 36 — Bitcast
+        36 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let from = read_scalar_type(r)?;
+            let to = read_scalar_type(r)?;
+            Ok(KernelOp::Bitcast { dst, src, from, to })
+        }
+
+        // 37 — CountTrailingZeros
+        37 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::CountTrailingZeros { dst, src, ty })
+        }
+
+        // 38 — CountLeadingZeros
+        38 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::CountLeadingZeros { dst, src, ty })
+        }
+
+        // 39 — PopCount
+        39 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::PopCount { dst, src, ty })
+        }
+
+        // 40 — Dot
+        40 => {
+            let dst = read_reg(r)?;
+            let a = read_reg(r)?;
+            let b = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            let width = r.u8()?;
+            Ok(KernelOp::Dot {
+                dst,
+                a,
+                b,
+                ty,
+                width,
+            })
+        }
+
+        // 41 — SubgroupReduceAdd
+        41 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::SubgroupReduceAdd { dst, src, ty })
+        }
+
+        // 42 — SubgroupReduceMin
+        42 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::SubgroupReduceMin { dst, src, ty })
+        }
+
+        // 43 — SubgroupReduceMax
+        43 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::SubgroupReduceMax { dst, src, ty })
+        }
+
+        // 44 — SubgroupExclusiveAdd
+        44 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::SubgroupExclusiveAdd { dst, src, ty })
+        }
+
+        // 45 — SubgroupInclusiveAdd
+        45 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::SubgroupInclusiveAdd { dst, src, ty })
+        }
+
+        // 46 — TextureLoad2D
+        46 => {
+            let dst = read_reg(r)?;
+            let texture = r.u32()?;
+            let x = read_reg(r)?;
+            let y = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::TextureLoad2D {
+                dst,
+                texture,
+                x,
+                y,
                 ty,
             })
         }

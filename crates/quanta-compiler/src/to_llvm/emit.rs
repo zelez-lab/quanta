@@ -1264,6 +1264,22 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             // see DeviceCall ops — they are resolved at the source level.
             return Err("DeviceCall not supported in LLVM KernelOp path (use rustc path)".into());
         }
+        KernelOp::Bitcast { .. }
+        | KernelOp::CountTrailingZeros { .. }
+        | KernelOp::CountLeadingZeros { .. }
+        | KernelOp::PopCount { .. }
+        | KernelOp::Dot { .. }
+        | KernelOp::SubgroupReduceAdd { .. }
+        | KernelOp::SubgroupReduceMin { .. }
+        | KernelOp::SubgroupReduceMax { .. }
+        | KernelOp::SubgroupExclusiveAdd { .. }
+        | KernelOp::SubgroupInclusiveAdd { .. }
+        | KernelOp::TextureLoad2D { .. } => {
+            return Err(
+                "new IR ops (bitcast, CTZ/CLZ, popcount, dot, subgroup, texture load) not yet supported in LLVM path"
+                    .into(),
+            );
+        }
     }
     Ok(())
 }

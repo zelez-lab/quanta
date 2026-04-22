@@ -727,6 +727,115 @@ fn emit_msl_op(
                 b.0
             ));
         }
+        Bitcast { dst, src, to, .. } => {
+            out.push_str(&format!(
+                "{}{} r{} = as_type<{}>(r{});\n",
+                pad,
+                to.msl_name(),
+                dst.0,
+                to.msl_name(),
+                src.0
+            ));
+        }
+        CountTrailingZeros { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = ctz(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        CountLeadingZeros { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = clz(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        PopCount { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = popcount(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        Dot { dst, a, b, ty, .. } => {
+            out.push_str(&format!(
+                "{}{} r{} = dot(r{}, r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                a.0,
+                b.0
+            ));
+        }
+        SubgroupReduceAdd { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_sum(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        SubgroupReduceMin { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_min(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        SubgroupReduceMax { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_max(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        SubgroupExclusiveAdd { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_prefix_exclusive_sum(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        SubgroupInclusiveAdd { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_prefix_inclusive_sum(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        TextureLoad2D {
+            dst,
+            texture,
+            x,
+            y,
+            ty,
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = tex_{}.read(uint2(r{}, r{}));\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                texture,
+                x.0,
+                y.0
+            ));
+        }
         Dispatch { .. } => {
             out.push_str(&format!(
                 "{}/* error: dynamic parallelism not supported in MSL */\n",
@@ -1249,6 +1358,77 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
         }
         MatMul { dst, a, b, .. } => {
             out.push_str(&format!("{}let r{} = r{} * r{};\n", pad, dst.0, a.0, b.0));
+        }
+        Bitcast { dst, src, to, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = bitcast<{}>(r{});\n",
+                pad,
+                dst.0,
+                to.wgsl_name(),
+                src.0
+            ));
+        }
+        CountTrailingZeros { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = countTrailingZeros(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        CountLeadingZeros { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = countLeadingZeros(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        PopCount { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = countOneBits(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        Dot { dst, a, b, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = dot(r{}, r{});\n",
+                pad, dst.0, a.0, b.0
+            ));
+        }
+        SubgroupReduceAdd { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupAdd(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        SubgroupReduceMin { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupMin(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        SubgroupReduceMax { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupMax(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        SubgroupExclusiveAdd { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupExclusiveAdd(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        SubgroupInclusiveAdd { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupInclusiveAdd(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        TextureLoad2D {
+            dst, texture, x, y, ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{} = textureLoad(tex_{}, vec2<i32>(r{}, r{}), 0);\n",
+                pad, dst.0, texture, x.0, y.0
+            ));
         }
         Dispatch { .. } => {
             out.push_str(&format!(

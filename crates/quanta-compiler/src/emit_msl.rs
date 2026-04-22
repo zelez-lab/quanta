@@ -445,6 +445,115 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 b.0
             ));
         }
+        KernelOp::Bitcast { dst, src, to, .. } => {
+            out.push_str(&format!(
+                "{}{} r{} = as_type<{}>(r{});\n",
+                pad,
+                to.msl_name(),
+                dst.0,
+                to.msl_name(),
+                src.0
+            ));
+        }
+        KernelOp::CountTrailingZeros { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = ctz(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        KernelOp::CountLeadingZeros { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = clz(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        KernelOp::PopCount { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = popcount(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        KernelOp::Dot { dst, a, b, ty, .. } => {
+            out.push_str(&format!(
+                "{}{} r{} = dot(r{}, r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                a.0,
+                b.0
+            ));
+        }
+        KernelOp::SubgroupReduceAdd { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_sum(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        KernelOp::SubgroupReduceMin { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_min(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        KernelOp::SubgroupReduceMax { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_max(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        KernelOp::SubgroupExclusiveAdd { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_prefix_exclusive_sum(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        KernelOp::SubgroupInclusiveAdd { dst, src, ty } => {
+            out.push_str(&format!(
+                "{}{} r{} = simd_prefix_inclusive_sum(r{});\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                src.0
+            ));
+        }
+        KernelOp::TextureLoad2D {
+            dst,
+            texture,
+            x,
+            y,
+            ty,
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = tex_{}.read(uint2(r{}, r{}));\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                texture,
+                x.0,
+                y.0
+            ));
+        }
         KernelOp::Dispatch { .. } => {
             out.push_str(&format!(
                 "{}/* error: dynamic parallelism not supported in MSL */\n",

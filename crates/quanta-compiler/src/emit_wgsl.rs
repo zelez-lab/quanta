@@ -394,6 +394,78 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
         KernelOp::MatMul { dst, a, b, .. } => {
             out.push_str(&format!("{}let r{} = r{} * r{};\n", pad, dst.0, a.0, b.0));
         }
+        KernelOp::Bitcast { dst, src, to, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = bitcast<{}>(r{});\n",
+                pad,
+                dst.0,
+                to.wgsl_name(),
+                src.0
+            ));
+        }
+        KernelOp::CountTrailingZeros { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = countTrailingZeros(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        KernelOp::CountLeadingZeros { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = countLeadingZeros(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        KernelOp::PopCount { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = countOneBits(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        KernelOp::Dot { dst, a, b, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = dot(r{}, r{});\n",
+                pad, dst.0, a.0, b.0
+            ));
+        }
+        KernelOp::SubgroupReduceAdd { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupAdd(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        KernelOp::SubgroupReduceMin { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupMin(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        KernelOp::SubgroupReduceMax { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupMax(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        KernelOp::SubgroupExclusiveAdd { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupExclusiveAdd(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        KernelOp::SubgroupInclusiveAdd { dst, src, .. } => {
+            out.push_str(&format!(
+                "{}let r{} = subgroupInclusiveAdd(r{});\n",
+                pad, dst.0, src.0
+            ));
+        }
+        KernelOp::TextureLoad2D {
+            dst, texture, x, y, ..
+        } => {
+            let n = names.get(texture).map(|s| s.as_str()).unwrap_or("tex");
+            out.push_str(&format!(
+                "{}let r{} = textureLoad({}, vec2<i32>(r{}, r{}), 0);\n",
+                pad, dst.0, n, x.0, y.0
+            ));
+        }
         KernelOp::Dispatch { .. } => {
             out.push_str(&format!(
                 "{}// error: dynamic parallelism not supported in WGSL\n",

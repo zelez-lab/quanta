@@ -374,6 +374,74 @@ pub enum KernelOp {
         args: Vec<Reg>,
         ty: ScalarType,
     },
+
+    // Bit manipulation
+    Bitcast {
+        dst: Reg,
+        src: Reg,
+        from: ScalarType,
+        to: ScalarType,
+    },
+    CountTrailingZeros {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+    CountLeadingZeros {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+    PopCount {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+
+    // Dot product (vector)
+    Dot {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        ty: ScalarType,
+        width: u8,
+    },
+
+    // Subgroup scan/reduce
+    SubgroupReduceAdd {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+    SubgroupReduceMin {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+    SubgroupReduceMax {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+    SubgroupExclusiveAdd {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+    SubgroupInclusiveAdd {
+        dst: Reg,
+        src: Reg,
+        ty: ScalarType,
+    },
+
+    // Texture load without sampler
+    TextureLoad2D {
+        dst: Reg,
+        texture: u32,
+        x: Reg,
+        y: Reg,
+        ty: ScalarType,
+    },
 }
 
 /// A device function definition — parsed inner `fn` callable from a kernel.

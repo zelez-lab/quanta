@@ -632,3 +632,83 @@ fn roundtrip_workgroup_size_1d() {
     let k2 = deserialize_kernel(&bytes).unwrap();
     assert_eq!(k2.workgroup_size, [256, 1, 1]);
 }
+
+#[test]
+fn roundtrip_new_ops() {
+    let ops = vec![
+        KernelOp::Bitcast {
+            dst: Reg(0),
+            src: Reg(1),
+            from: ScalarType::U32,
+            to: ScalarType::F32,
+        },
+        KernelOp::CountTrailingZeros {
+            dst: Reg(2),
+            src: Reg(3),
+            ty: ScalarType::U32,
+        },
+        KernelOp::CountLeadingZeros {
+            dst: Reg(4),
+            src: Reg(5),
+            ty: ScalarType::U32,
+        },
+        KernelOp::PopCount {
+            dst: Reg(6),
+            src: Reg(7),
+            ty: ScalarType::U32,
+        },
+        KernelOp::Dot {
+            dst: Reg(8),
+            a: Reg(9),
+            b: Reg(10),
+            ty: ScalarType::F32,
+            width: 4,
+        },
+        KernelOp::SubgroupReduceAdd {
+            dst: Reg(11),
+            src: Reg(12),
+            ty: ScalarType::F32,
+        },
+        KernelOp::SubgroupReduceMin {
+            dst: Reg(13),
+            src: Reg(14),
+            ty: ScalarType::I32,
+        },
+        KernelOp::SubgroupReduceMax {
+            dst: Reg(15),
+            src: Reg(16),
+            ty: ScalarType::U32,
+        },
+        KernelOp::SubgroupExclusiveAdd {
+            dst: Reg(17),
+            src: Reg(18),
+            ty: ScalarType::F32,
+        },
+        KernelOp::SubgroupInclusiveAdd {
+            dst: Reg(19),
+            src: Reg(20),
+            ty: ScalarType::F32,
+        },
+        KernelOp::TextureLoad2D {
+            dst: Reg(21),
+            texture: 0,
+            x: Reg(22),
+            y: Reg(23),
+            ty: ScalarType::F32,
+        },
+    ];
+    let k = KernelDef {
+        name: String::from("new_ops"),
+        params: Vec::new(),
+        body: ops,
+        body_source: None,
+        next_reg: 24,
+        opt_level: 3,
+        device_sources: Vec::new(),
+        device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
+    };
+    let bytes = serialize_kernel(&k);
+    let k2 = deserialize_kernel(&bytes).unwrap();
+    assert_eq!(k2.body.len(), 11);
+}

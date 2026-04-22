@@ -352,7 +352,7 @@ fn write_kernel_param(w: &mut Writer, p: &KernelParam) {
 }
 
 // ---------------------------------------------------------------------------
-// KernelOp  (35 variants, tags 0..34)
+// KernelOp  (47 variants, tags 0..46)
 // ---------------------------------------------------------------------------
 //
 // Tag assignment (sequential):
@@ -392,6 +392,17 @@ fn write_kernel_param(w: &mut Writer, p: &KernelParam) {
 //  33  Break
 //  34  Dispatch
 //  35  DeviceCall
+//  36  Bitcast
+//  37  CountTrailingZeros
+//  38  CountLeadingZeros
+//  39  PopCount
+//  40  Dot
+//  41  SubgroupReduceAdd
+//  42  SubgroupReduceMin
+//  43  SubgroupReduceMax
+//  44  SubgroupExclusiveAdd
+//  45  SubgroupInclusiveAdd
+//  46  TextureLoad2D
 
 fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
     match op {
@@ -784,6 +795,111 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             for arg in args {
                 write_reg(w, arg);
             }
+            write_scalar_type(w, ty);
+        }
+
+        // 36 — Bitcast { dst, src, from, to }
+        KernelOp::Bitcast { dst, src, from, to } => {
+            w.u8(36);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, from);
+            write_scalar_type(w, to);
+        }
+
+        // 37 — CountTrailingZeros { dst, src, ty }
+        KernelOp::CountTrailingZeros { dst, src, ty } => {
+            w.u8(37);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
+
+        // 38 — CountLeadingZeros { dst, src, ty }
+        KernelOp::CountLeadingZeros { dst, src, ty } => {
+            w.u8(38);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
+
+        // 39 — PopCount { dst, src, ty }
+        KernelOp::PopCount { dst, src, ty } => {
+            w.u8(39);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
+
+        // 40 — Dot { dst, a, b, ty, width }
+        KernelOp::Dot {
+            dst,
+            a,
+            b,
+            ty,
+            width,
+        } => {
+            w.u8(40);
+            write_reg(w, dst);
+            write_reg(w, a);
+            write_reg(w, b);
+            write_scalar_type(w, ty);
+            w.u8(*width);
+        }
+
+        // 41 — SubgroupReduceAdd { dst, src, ty }
+        KernelOp::SubgroupReduceAdd { dst, src, ty } => {
+            w.u8(41);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
+
+        // 42 — SubgroupReduceMin { dst, src, ty }
+        KernelOp::SubgroupReduceMin { dst, src, ty } => {
+            w.u8(42);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
+
+        // 43 — SubgroupReduceMax { dst, src, ty }
+        KernelOp::SubgroupReduceMax { dst, src, ty } => {
+            w.u8(43);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
+
+        // 44 — SubgroupExclusiveAdd { dst, src, ty }
+        KernelOp::SubgroupExclusiveAdd { dst, src, ty } => {
+            w.u8(44);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
+
+        // 45 — SubgroupInclusiveAdd { dst, src, ty }
+        KernelOp::SubgroupInclusiveAdd { dst, src, ty } => {
+            w.u8(45);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
+
+        // 46 — TextureLoad2D { dst, texture, x, y, ty }
+        KernelOp::TextureLoad2D {
+            dst,
+            texture,
+            x,
+            y,
+            ty,
+        } => {
+            w.u8(46);
+            write_reg(w, dst);
+            w.u32(*texture);
+            write_reg(w, x);
+            write_reg(w, y);
             write_scalar_type(w, ty);
         }
     }

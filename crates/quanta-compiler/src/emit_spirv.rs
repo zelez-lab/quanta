@@ -163,6 +163,7 @@ const CAPABILITY_SHADER: u32 = 1;
 
 // ── Scope / memory semantics ────────────────────────────────────────────────
 
+const SCOPE_SUBGROUP: u32 = 3;
 const SCOPE_WORKGROUP: u32 = 2;
 const MEMORY_SEMANTICS_WORKGROUP: u32 = 0x100; // WorkgroupMemory
 const MEMORY_SEMANTICS_ACQ_REL: u32 = 0x8; // AcquireRelease
@@ -198,6 +199,32 @@ const GLSL_SCLAMP: u32 = 45;
 const GLSL_FMA: u32 = 50;
 const GLSL_POW: u32 = 26;
 const GLSL_ATAN2: u32 = 25;
+const GLSL_FIND_I_LSB: u32 = 73;
+const GLSL_FIND_U_MSB: u32 = 75;
+
+// ── Subgroup opcodes ───────────────────────────────────────────────────────
+
+const OP_BIT_COUNT: u16 = 205;
+const OP_DOT: u16 = 148;
+#[allow(dead_code)]
+const OP_IMAGE_FETCH: u16 = 164;
+const OP_GROUP_NON_UNIFORM_IADD: u16 = 349;
+const OP_GROUP_NON_UNIFORM_FADD: u16 = 350;
+const OP_GROUP_NON_UNIFORM_SMIN: u16 = 354;
+const OP_GROUP_NON_UNIFORM_UMIN: u16 = 355;
+const OP_GROUP_NON_UNIFORM_FMIN: u16 = 356;
+const OP_GROUP_NON_UNIFORM_SMAX: u16 = 357;
+const OP_GROUP_NON_UNIFORM_UMAX: u16 = 358;
+const OP_GROUP_NON_UNIFORM_FMAX: u16 = 359;
+
+// Group operation constants for subgroup ops
+const GROUP_OPERATION_REDUCE: u32 = 0;
+const GROUP_OPERATION_INCLUSIVE_SCAN: u32 = 1;
+const GROUP_OPERATION_EXCLUSIVE_SCAN: u32 = 2;
+
+// Additional capabilities
+const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
+const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
 
 // ── Function control ────────────────────────────────────────────────────────
 
@@ -835,7 +862,18 @@ impl SpvEmitter {
                 | KernelOp::SharedLoad { dst, .. }
                 | KernelOp::MathCall { dst, .. }
                 | KernelOp::Copy { dst, .. }
-                | KernelOp::DeviceCall { dst, .. } => Some(dst.0),
+                | KernelOp::DeviceCall { dst, .. }
+                | KernelOp::Bitcast { dst, .. }
+                | KernelOp::CountTrailingZeros { dst, .. }
+                | KernelOp::CountLeadingZeros { dst, .. }
+                | KernelOp::PopCount { dst, .. }
+                | KernelOp::Dot { dst, .. }
+                | KernelOp::SubgroupReduceAdd { dst, .. }
+                | KernelOp::SubgroupReduceMin { dst, .. }
+                | KernelOp::SubgroupReduceMax { dst, .. }
+                | KernelOp::SubgroupExclusiveAdd { dst, .. }
+                | KernelOp::SubgroupInclusiveAdd { dst, .. }
+                | KernelOp::TextureLoad2D { dst, .. } => Some(dst.0),
                 _ => None,
             };
             if let Some(reg_num) = dst_reg
@@ -849,6 +887,33 @@ impl SpvEmitter {
 
     // ── Main entry: emit a full kernel ──────────────────────────────────────
 
+    /// Check if any ops in the kernel body use subgroup operations.
+    fn uses_subgroup_ops(ops: &[KernelOp]) -> bool {
+        for op in ops {
+            match op {
+                KernelOp::SubgroupReduceAdd { .. }
+                | KernelOp::SubgroupReduceMin { .. }
+                | KernelOp::SubgroupReduceMax { .. }
+                | KernelOp::SubgroupExclusiveAdd { .. }
+                | KernelOp::SubgroupInclusiveAdd { .. } => return true,
+                KernelOp::Branch {
+                    then_ops, else_ops, ..
+                } => {
+                    if Self::uses_subgroup_ops(then_ops) || Self::uses_subgroup_ops(else_ops) {
+                        return true;
+                    }
+                }
+                KernelOp::Loop { body, .. } => {
+                    if Self::uses_subgroup_ops(body) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn emit_kernel(&mut self, kernel: &KernelDef) -> Result<(), String> {
         // 1. Capability
         Self::emit_op(
@@ -856,6 +921,20 @@ impl SpvEmitter {
             OP_CAPABILITY,
             &[CAPABILITY_SHADER],
         );
+
+        // Add subgroup capabilities if needed
+        if Self::uses_subgroup_ops(&kernel.body) {
+            Self::emit_op(
+                &mut self.sec_capability,
+                OP_CAPABILITY,
+                &[CAPABILITY_GROUP_NON_UNIFORM],
+            );
+            Self::emit_op(
+                &mut self.sec_capability,
+                OP_CAPABILITY,
+                &[CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC],
+            );
+        }
 
         // 2. Memory model
         Self::emit_op(
@@ -1098,7 +1177,18 @@ impl SpvEmitter {
                 | KernelOp::MatMul { dst, .. }
                 | KernelOp::DeviceCall { dst, .. }
                 | KernelOp::TextureSample2D { dst, .. }
-                | KernelOp::TextureSample3D { dst, .. } => {
+                | KernelOp::TextureSample3D { dst, .. }
+                | KernelOp::Bitcast { dst, .. }
+                | KernelOp::CountTrailingZeros { dst, .. }
+                | KernelOp::CountLeadingZeros { dst, .. }
+                | KernelOp::PopCount { dst, .. }
+                | KernelOp::Dot { dst, .. }
+                | KernelOp::SubgroupReduceAdd { dst, .. }
+                | KernelOp::SubgroupReduceMin { dst, .. }
+                | KernelOp::SubgroupReduceMax { dst, .. }
+                | KernelOp::SubgroupExclusiveAdd { dst, .. }
+                | KernelOp::SubgroupInclusiveAdd { dst, .. }
+                | KernelOp::TextureLoad2D { dst, .. } => {
                     dsts.push(dst.0);
                 }
                 KernelOp::TextureSize { dst_w, dst_h, .. } => {
@@ -2060,6 +2150,207 @@ impl SpvEmitter {
                 let zero = self.emit_constant_u32(0);
                 self.set_reg(*dst_w, zero, uint_ty);
                 self.set_reg(*dst_h, zero, uint_ty);
+            }
+
+            KernelOp::Bitcast { dst, src, to, .. } => {
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*to);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_BITCAST,
+                    &[result_ty, result, src_val],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::CountTrailingZeros { dst, src, ty } => {
+                // GLSL.std.450 FindILsb (ext inst 73) returns CTZ
+                let ext_id = self.ensure_glsl_ext();
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_EXT_INST,
+                    &[result_ty, result, ext_id, GLSL_FIND_I_LSB, src_val],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::CountLeadingZeros { dst, src, ty } => {
+                // GLSL.std.450 FindUMsb (ext inst 75) returns (bits-1 - MSB position).
+                // CLZ = 31 - FindUMsb(src) for 32-bit.
+                let ext_id = self.ensure_glsl_ext();
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let msb = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_EXT_INST,
+                    &[result_ty, msb, ext_id, GLSL_FIND_U_MSB, src_val],
+                );
+                let thirty_one = self.emit_constant_u32(31);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_ISUB,
+                    &[result_ty, result, thirty_one, msb],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::PopCount { dst, src, ty } => {
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_BIT_COUNT,
+                    &[result_ty, result, src_val],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::Dot { dst, a, b, ty, .. } => {
+                // OpDot requires vector operands. The a and b registers should
+                // already hold vectors (from VecConstruct).
+                let a_val = self.reg_value_id(*a)?;
+                let b_val = self.reg_value_id(*b)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_DOT,
+                    &[result_ty, result, a_val, b_val],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::SubgroupReduceAdd { dst, src, ty } => {
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let opcode = if is_float {
+                    OP_GROUP_NON_UNIFORM_FADD
+                } else {
+                    OP_GROUP_NON_UNIFORM_IADD
+                };
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    opcode,
+                    &[result_ty, result, scope, GROUP_OPERATION_REDUCE, src_val],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::SubgroupReduceMin { dst, src, ty } => {
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_signed = matches!(
+                    ty,
+                    ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
+                );
+                let opcode = if is_float {
+                    OP_GROUP_NON_UNIFORM_FMIN
+                } else if is_signed {
+                    OP_GROUP_NON_UNIFORM_SMIN
+                } else {
+                    OP_GROUP_NON_UNIFORM_UMIN
+                };
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    opcode,
+                    &[result_ty, result, scope, GROUP_OPERATION_REDUCE, src_val],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::SubgroupReduceMax { dst, src, ty } => {
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_signed = matches!(
+                    ty,
+                    ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
+                );
+                let opcode = if is_float {
+                    OP_GROUP_NON_UNIFORM_FMAX
+                } else if is_signed {
+                    OP_GROUP_NON_UNIFORM_SMAX
+                } else {
+                    OP_GROUP_NON_UNIFORM_UMAX
+                };
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    opcode,
+                    &[result_ty, result, scope, GROUP_OPERATION_REDUCE, src_val],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::SubgroupExclusiveAdd { dst, src, ty } => {
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let opcode = if is_float {
+                    OP_GROUP_NON_UNIFORM_FADD
+                } else {
+                    OP_GROUP_NON_UNIFORM_IADD
+                };
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    opcode,
+                    &[
+                        result_ty,
+                        result,
+                        scope,
+                        GROUP_OPERATION_EXCLUSIVE_SCAN,
+                        src_val,
+                    ],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::SubgroupInclusiveAdd { dst, src, ty } => {
+                let src_val = self.reg_value_id(*src)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let opcode = if is_float {
+                    OP_GROUP_NON_UNIFORM_FADD
+                } else {
+                    OP_GROUP_NON_UNIFORM_IADD
+                };
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    opcode,
+                    &[
+                        result_ty,
+                        result,
+                        scope,
+                        GROUP_OPERATION_INCLUSIVE_SCAN,
+                        src_val,
+                    ],
+                );
+                self.set_reg(*dst, result, result_ty);
+            }
+
+            KernelOp::TextureLoad2D { dst, ty, .. } => {
+                // Texture load not yet wired to image variables; placeholder zero.
+                let result_ty = self.scalar_type_id(*ty);
+                let zero = self.emit_constant_f32(0.0);
+                self.set_reg(*dst, zero, result_ty);
             }
 
             KernelOp::Dispatch { .. } => {
