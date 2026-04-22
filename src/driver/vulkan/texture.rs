@@ -128,6 +128,7 @@ impl VulkanDevice {
                     width: desc.width,
                     height: desc.height,
                     format: vk_format,
+                    mip_levels: desc.mip_levels.max(1),
                 },
             );
 
@@ -552,7 +553,11 @@ impl VulkanDevice {
 
         let mut mip_width = tex.width as i32;
         let mut mip_height = tex.height as i32;
-        let mip_levels = (mip_width.max(mip_height) as f32).log2().floor() as u32 + 1;
+        // Use the image's actual mip level count, not a computed value.
+        let mip_levels = tex.mip_levels;
+        if mip_levels <= 1 {
+            return Ok(()); // Nothing to generate — image has only 1 mip level
+        }
 
         let cmd = self.alloc_command_buffer()?;
         let begin = ffi::VkCommandBufferBeginInfo {

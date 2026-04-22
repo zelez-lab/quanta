@@ -71,6 +71,7 @@ struct VkTexture {
     width: u32,
     height: u32,
     format: u32,
+    mip_levels: u32,
 }
 
 struct VkComputePipeline {
@@ -273,9 +274,22 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             p_queue_priorities: queue_priorities.as_ptr(),
         };
 
+        // Enable synchronization2 (Vulkan 1.3 core) for vkCmdPipelineBarrier2
+        #[repr(C)]
+        struct VkPhysicalDeviceSynchronization2Features {
+            s_type: u32,
+            p_next: *const core::ffi::c_void,
+            synchronization2: u32,
+        }
+        let sync2_features = VkPhysicalDeviceSynchronization2Features {
+            s_type: 1000314007, // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES
+            p_next: core::ptr::null(),
+            synchronization2: 1, // VK_TRUE
+        };
+
         let device_create = ffi::VkDeviceCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            p_next: core::ptr::null(),
+            p_next: &sync2_features as *const _ as *const core::ffi::c_void,
             flags: 0,
             queue_create_info_count: 1,
             p_queue_create_infos: &queue_create,
