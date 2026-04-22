@@ -444,6 +444,11 @@ impl GpuDevice for VulkanDevice {
         self.wave_impl(kernel)
     }
 
+    #[cfg(feature = "jit")]
+    fn wave_jit(&self, kernel_def: &[u8]) -> Result<Wave, QuantaError> {
+        self.wave_jit_impl(kernel_def)
+    }
+
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
         self.wave_dispatch_impl(wave, groups)
     }

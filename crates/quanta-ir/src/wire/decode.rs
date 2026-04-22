@@ -6,8 +6,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::{
-    AtomicOp, BinOp, CmpOp, CompilerOutput, ConstValue, KernelDef, KernelOp, KernelParam, MathFn,
-    Reg, ScalarType, UnaryOp,
+    AtomicOp, BinOp, CmpOp, CompilerOutput, ConstValue, DeviceFnDef, KernelDef, KernelOp,
+    KernelParam, MathFn, Reg, ScalarType, UnaryOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -749,6 +749,31 @@ fn read_kernel_ops(r: &mut Reader) -> Result<Vec<KernelOp>, &'static str> {
 // KernelDef
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// DeviceFnDef
+// ---------------------------------------------------------------------------
+
+fn read_device_fn_def(r: &mut Reader) -> Result<DeviceFnDef, &'static str> {
+    let name = r.str()?;
+    let param_count = r.u32()? as usize;
+    let mut params = Vec::with_capacity(param_count);
+    for _ in 0..param_count {
+        let pname = r.str()?;
+        let ty = read_scalar_type(r)?;
+        params.push((pname, ty));
+    }
+    let return_type = read_scalar_type(r)?;
+    let body = read_kernel_ops(r)?;
+    let next_reg = r.u32()?;
+    Ok(DeviceFnDef {
+        name,
+        params,
+        return_type,
+        body,
+        next_reg,
+    })
+}
+
 pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str> {
     let name = r.str()?;
     let param_count = r.u32()? as usize;
@@ -772,6 +797,17 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
     } else {
         Vec::new()
     };
+    // device_functions: Vec<DeviceFnDef> — appended after device_sources.
+    let device_functions = if r.remaining() > 0 {
+        let count = r.u32()? as usize;
+        let mut v = Vec::with_capacity(count);
+        for _ in 0..count {
+            v.push(read_device_fn_def(r)?);
+        }
+        v
+    } else {
+        Vec::new()
+    };
     Ok(KernelDef {
         name,
         params,
@@ -780,6 +816,7 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
         next_reg,
         opt_level,
         device_sources,
+        device_functions,
     })
 }
 

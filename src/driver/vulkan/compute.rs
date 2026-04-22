@@ -11,6 +11,18 @@ use super::ffi;
 use super::{VkComputePipeline, VulkanDevice};
 
 impl VulkanDevice {
+    /// JIT-compile a kernel from serialized KernelDef IR.
+    ///
+    /// Deserializes the IR, emits SPIR-V binary, and creates a Vulkan pipeline.
+    #[cfg(feature = "jit")]
+    pub(crate) fn wave_jit_impl(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
+        let kernel = quanta_ir::deserialize_kernel(kernel_def_bytes)
+            .map_err(|e| QuantaError::compilation_failed(format!("JIT deserialize: {}", e)))?;
+        let spirv = quanta_ir::emit_spirv::emit(&kernel)
+            .map_err(|e| QuantaError::compilation_failed(format!("JIT SPIR-V emit: {}", e)))?;
+        self.wave_impl(&spirv)
+    }
+
     pub(crate) fn wave_impl(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
         // The compiler produces SPIR-V binary directly -- interpret bytes as u32 words.
         // Check for SPIR-V magic number (0x07230203). If absent, this is likely

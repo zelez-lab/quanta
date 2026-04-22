@@ -6,6 +6,14 @@
 
 pub mod wire;
 
+/// SPIR-V emitter for JIT compilation. Enabled by the `jit` feature.
+#[cfg(feature = "jit")]
+pub mod emit_spirv;
+
+/// MSL emitter for JIT compilation. Enabled by the `jit` feature.
+#[cfg(feature = "jit")]
+pub mod emit_msl;
+
 /// Scalar types supported in GPU kernels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarType {
@@ -368,6 +376,20 @@ pub enum KernelOp {
     },
 }
 
+/// A device function definition — parsed inner `fn` callable from a kernel.
+///
+/// Contains the function's name, parameter types, return type, and body as
+/// KernelOps. Used by the SPIR-V emitter to generate proper `OpFunction`/
+/// `OpFunctionCall` instructions.
+#[derive(Debug, Clone)]
+pub struct DeviceFnDef {
+    pub name: String,
+    pub params: Vec<(String, ScalarType)>,
+    pub return_type: ScalarType,
+    pub body: Vec<KernelOp>,
+    pub next_reg: u32,
+}
+
 /// Complete kernel definition in IR form.
 #[derive(Debug, Clone)]
 pub struct KernelDef {
@@ -385,6 +407,10 @@ pub struct KernelDef {
     /// kernel body. The MSL/WGSL emitters prepend these as GPU helper functions;
     /// the rustc compilation path includes them in the generated crate.
     pub device_sources: Vec<String>,
+    /// Parsed device function definitions with KernelOp bodies.
+    /// Populated by the parser for all inner `fn` definitions.
+    /// The SPIR-V emitter uses these to generate real function calls.
+    pub device_functions: Vec<DeviceFnDef>,
 }
 
 /// Compiler output — compiled kernel for all targets.

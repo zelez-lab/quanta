@@ -234,6 +234,14 @@ impl Gpu {
         self.inner.wave(kernel)
     }
 
+    /// JIT-compile a kernel from its serialized KernelDef at runtime.
+    ///
+    /// Used by `#[quanta::kernel(jit)]` — the kernel IR is embedded in the
+    /// binary and compiled to the appropriate GPU shader format at first use.
+    pub fn wave_jit(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
+        self.inner.wave_jit(kernel_def_bytes)
+    }
+
     pub fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
         self.inner.wave_dispatch(wave, groups)
     }

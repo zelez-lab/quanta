@@ -5,7 +5,9 @@
 mod expr;
 mod stmt;
 
-use quanta_ir::{BinOp, CmpOp, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType};
+use quanta_ir::{
+    BinOp, CmpOp, DeviceFnDef, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType,
+};
 use std::collections::HashMap;
 use syn::{BinOp as SynBinOp, Expr, FnArg, ItemFn, Pat, Type};
 
@@ -35,6 +37,8 @@ pub(crate) struct EmitCtx {
     pub(crate) device_fns: HashMap<String, DeviceFnInfo>,
     /// Collected source text of device functions, for MSL/WGSL emitters.
     pub(crate) device_sources: Vec<String>,
+    /// Parsed device function definitions with KernelOp bodies.
+    pub(crate) device_functions: Vec<DeviceFnDef>,
 }
 
 #[derive(Clone)]
@@ -103,6 +107,7 @@ impl EmitCtx {
             shared_vars: HashMap::new(),
             device_fns: HashMap::new(),
             device_sources: Vec::new(),
+            device_functions: Vec::new(),
         }
     }
 
@@ -123,7 +128,8 @@ impl EmitCtx {
             next_shared: self.next_shared,
             shared_vars: self.shared_vars.clone(),
             device_fns: self.device_fns.clone(),
-            device_sources: Vec::new(), // collected at top level only
+            device_sources: Vec::new(),   // collected at top level only
+            device_functions: Vec::new(), // collected at top level only
         }
     }
 
@@ -175,6 +181,7 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
         next_reg: ctx.next_reg,
         opt_level: 3, // overridden by proc macro attribute
         device_sources: ctx.device_sources,
+        device_functions: ctx.device_functions,
     })
 }
 

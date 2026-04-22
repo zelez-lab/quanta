@@ -1,6 +1,6 @@
 //! Statement emission — emit_stmt, loops, assignments.
 
-use quanta_ir::{ConstValue, KernelOp, Reg, ScalarType, UnaryOp};
+use quanta_ir::{ConstValue, DeviceFnDef, KernelOp, Reg, ScalarType, UnaryOp};
 use quote::ToTokens;
 use std::collections::HashMap;
 use syn::{Expr, FnArg, Item, Pat, Stmt, Type};
@@ -37,12 +37,14 @@ fn emit_item(item: &Item, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
 
 /// Process an inner `fn` definition as a device function.
 /// Captures its source text and registers its signature so call sites can
-/// resolve return types.
+/// resolve return types. Also parses the function body into KernelOps
+/// for the SPIR-V emitter to generate proper OpFunction/OpFunctionCall.
 fn emit_device_fn(func: &syn::ItemFn, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
     let fn_name = func.sig.ident.to_string();
 
-    // Parse parameter types
+    // Parse parameter types and names
     let mut param_types = Vec::new();
+    let mut param_names_types = Vec::new();
     for arg in &func.sig.inputs {
         if let FnArg::Typed(pat_type) = arg {
             let ty = match pat_type.ty.as_ref() {
@@ -54,7 +56,12 @@ fn emit_device_fn(func: &syn::ItemFn, ctx: &mut EmitCtx) -> Result<(), syn::Erro
                     ));
                 }
             };
+            let pname = match pat_type.pat.as_ref() {
+                Pat::Ident(ident) => ident.ident.to_string(),
+                _ => format!("_p{}", param_types.len()),
+            };
             param_types.push(ty);
+            param_names_types.push((pname, ty));
         }
     }
 
@@ -74,7 +81,7 @@ fn emit_device_fn(func: &syn::ItemFn, ctx: &mut EmitCtx) -> Result<(), syn::Erro
 
     // Register the function signature for call resolution
     ctx.device_fns.insert(
-        fn_name,
+        fn_name.clone(),
         DeviceFnInfo {
             param_types,
             return_type,
@@ -84,6 +91,27 @@ fn emit_device_fn(func: &syn::ItemFn, ctx: &mut EmitCtx) -> Result<(), syn::Erro
     // Capture the full source text for MSL/WGSL emission
     let source = func.to_token_stream().to_string();
     ctx.device_sources.push(source);
+
+    // Parse the function body into KernelOps for the SPIR-V emitter.
+    // We create a child context with the function's parameters as variables.
+    let mut fn_ctx = ctx.child();
+    for (pname, ty) in &param_names_types {
+        let reg = fn_ctx.alloc_reg();
+        fn_ctx.vars.insert(pname.clone(), (reg, *ty));
+    }
+    for stmt in &func.block.stmts {
+        emit_stmt(stmt, &mut fn_ctx)?;
+    }
+    let fn_next_reg = fn_ctx.next_reg;
+    let fn_body = ctx.merge_child(fn_ctx);
+
+    ctx.device_functions.push(DeviceFnDef {
+        name: fn_name,
+        params: param_names_types,
+        return_type,
+        body: fn_body,
+        next_reg: fn_next_reg,
+    });
 
     Ok(())
 }

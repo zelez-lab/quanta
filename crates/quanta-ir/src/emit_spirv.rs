@@ -6,7 +6,7 @@
 //!
 //! The output is a `Vec<u8>` ready for `vkCreateShaderModule`.
 
-use quanta_ir::*;
+use crate::*;
 use std::collections::HashMap;
 
 // ── SPIR-V opcodes ──────────────────────────────────────────────────────────
@@ -838,10 +838,10 @@ impl SpvEmitter {
                 | KernelOp::DeviceCall { dst, .. } => Some(dst.0),
                 _ => None,
             };
-            if let Some(reg_num) = dst_reg
-                && let Some(&id) = self.reg_ids.get(&reg_num)
-            {
-                return Some(id);
+            if let Some(reg_num) = dst_reg {
+                if let Some(&id) = self.reg_ids.get(&reg_num) {
+                    return Some(id);
+                }
             }
         }
         None
@@ -2114,30 +2114,30 @@ impl SpvEmitter {
     // ── Shader type helpers ────────────────────────────────────────────────
 
     /// Get the SPIR-V type ID for a ShaderType.
-    fn shader_type_id(&mut self, ty: quanta_ir::ShaderType) -> u32 {
+    fn shader_type_id(&mut self, ty: crate::ShaderType) -> u32 {
         let f32_ty = self.ensure_type_f32();
         match ty {
-            quanta_ir::ShaderType::F32 => f32_ty,
-            quanta_ir::ShaderType::Vec2 => self.ensure_type_vector(f32_ty, 2),
-            quanta_ir::ShaderType::Vec3 => self.ensure_type_vector(f32_ty, 3),
-            quanta_ir::ShaderType::Vec4 => self.ensure_type_vector(f32_ty, 4),
+            crate::ShaderType::F32 => f32_ty,
+            crate::ShaderType::Vec2 => self.ensure_type_vector(f32_ty, 2),
+            crate::ShaderType::Vec3 => self.ensure_type_vector(f32_ty, 3),
+            crate::ShaderType::Vec4 => self.ensure_type_vector(f32_ty, 4),
             // Mat4 = array of 4 vec4, Mat3 = array of 3 vec3
             // For push-constant usage, store as a flat struct member.
             // For now, treat as vec4 (uniform matrices need proper handling later).
-            quanta_ir::ShaderType::Mat4 => self.ensure_type_vector(f32_ty, 4),
-            quanta_ir::ShaderType::Mat3 => self.ensure_type_vector(f32_ty, 3),
+            crate::ShaderType::Mat4 => self.ensure_type_vector(f32_ty, 4),
+            crate::ShaderType::Mat3 => self.ensure_type_vector(f32_ty, 3),
         }
     }
 
     /// Number of f32 components in a ShaderType.
-    fn shader_type_components(ty: quanta_ir::ShaderType) -> u32 {
+    fn shader_type_components(ty: crate::ShaderType) -> u32 {
         match ty {
-            quanta_ir::ShaderType::F32 => 1,
-            quanta_ir::ShaderType::Vec2 => 2,
-            quanta_ir::ShaderType::Vec3 => 3,
-            quanta_ir::ShaderType::Vec4 => 4,
-            quanta_ir::ShaderType::Mat4 => 4,
-            quanta_ir::ShaderType::Mat3 => 3,
+            crate::ShaderType::F32 => 1,
+            crate::ShaderType::Vec2 => 2,
+            crate::ShaderType::Vec3 => 3,
+            crate::ShaderType::Vec4 => 4,
+            crate::ShaderType::Mat4 => 4,
+            crate::ShaderType::Mat3 => 3,
         }
     }
 
@@ -2149,7 +2149,7 @@ impl SpvEmitter {
     /// an Input variable with Location decoration. The first parameter is
     /// promoted to gl_Position output (expanded to vec4 with w=1.0).
     /// Uniform parameters are ignored for V1 (no push constant block yet).
-    fn emit_vertex_shader(&mut self, shader: &quanta_ir::ShaderDef) -> Result<(), String> {
+    fn emit_vertex_shader(&mut self, shader: &crate::ShaderDef) -> Result<(), String> {
         // 1. Capability + memory model
         Self::emit_op(
             &mut self.sec_capability,
@@ -2163,7 +2163,7 @@ impl SpvEmitter {
         );
 
         // 2. Declare Input variables for value params
-        let attr_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
+        let attr_params: Vec<(usize, &crate::ShaderParam)> = shader
             .params
             .iter()
             .enumerate()
@@ -2343,7 +2343,7 @@ impl SpvEmitter {
     /// Generates a passthrough fragment shader: each value parameter becomes
     /// an Input variable (interpolated varying) with Location decoration.
     /// The first input is passed through to Location(0) Output.
-    fn emit_fragment_shader(&mut self, shader: &quanta_ir::ShaderDef) -> Result<(), String> {
+    fn emit_fragment_shader(&mut self, shader: &crate::ShaderDef) -> Result<(), String> {
         // 1. Capability + memory model
         Self::emit_op(
             &mut self.sec_capability,
@@ -2357,7 +2357,7 @@ impl SpvEmitter {
         );
 
         // 2. Declare Input variables for value params
-        let stage_in_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
+        let stage_in_params: Vec<(usize, &crate::ShaderParam)> = shader
             .params
             .iter()
             .enumerate()
@@ -2533,14 +2533,14 @@ impl SpvEmitter {
 // ── Public API for vertex/fragment shader SPIR-V emission ──────────────────
 
 /// Emit SPIR-V for a vertex shader from a [`ShaderDef`].
-pub fn emit_vertex(shader: &quanta_ir::ShaderDef) -> Result<Vec<u8>, String> {
+pub fn emit_vertex(shader: &crate::ShaderDef) -> Result<Vec<u8>, String> {
     let mut e = SpvEmitter::new();
     e.emit_vertex_shader(shader)?;
     Ok(e.finalize())
 }
 
 /// Emit SPIR-V for a fragment shader from a [`ShaderDef`].
-pub fn emit_fragment(shader: &quanta_ir::ShaderDef) -> Result<Vec<u8>, String> {
+pub fn emit_fragment(shader: &crate::ShaderDef) -> Result<Vec<u8>, String> {
     let mut e = SpvEmitter::new();
     e.emit_fragment_shader(shader)?;
     Ok(e.finalize())

@@ -58,6 +58,18 @@ pub trait GpuDevice {
     // === Compute ===
 
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError>;
+
+    /// JIT-compile a kernel from its serialized KernelDef at runtime.
+    ///
+    /// Deserializes the IR, emits the appropriate shader format (MSL text for
+    /// Metal, SPIR-V binary for Vulkan), and compiles it. Requires the `jit`
+    /// feature on quanta-ir.
+    fn wave_jit(&self, _kernel_def: &[u8]) -> Result<Wave, QuantaError> {
+        Err(QuantaError::compilation_failed(
+            "JIT compilation not supported by this driver",
+        ))
+    }
+
     /// Dispatch by threadgroup count (e.g., [4, 1, 1] = 4 groups of 64 threads).
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError>;
     /// Dispatch by total thread count (Metal clips, Vulkan computes groups).

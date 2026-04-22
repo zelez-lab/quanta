@@ -8,6 +8,98 @@ use super::MetalDevice;
 use super::ffi;
 
 impl MetalDevice {
+    /// JIT-compile a kernel from serialized KernelDef IR.
+    ///
+    /// Deserializes the IR, emits MSL text, compiles via Metal runtime,
+    /// and creates a compute pipeline.
+    /// JIT-compile a kernel from serialized KernelDef IR.
+    ///
+    /// Deserializes the IR, emits MSL text, compiles via Metal runtime,
+    /// and creates a compute pipeline.
+    #[cfg(feature = "jit")]
+    pub(crate) fn wave_jit_impl(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
+        use alloc::vec::Vec;
+
+        let kernel = quanta_ir::deserialize_kernel(kernel_def_bytes)
+            .map_err(|e| QuantaError::compilation_failed(format!("JIT deserialize: {}", e)))?;
+        let msl = quanta_ir::emit_msl::emit(&kernel)
+            .map_err(|e| QuantaError::compilation_failed(format!("JIT MSL emit: {}", e)))?;
+
+        // Compile MSL text at runtime via Metal
+        let mut src_bytes: Vec<u8> = msl.bytes().collect();
+        src_bytes.push(0);
+        let ns_src = ffi::nsstring(&src_bytes);
+        let library = unsafe {
+            let (lib, error) = ffi::msg_new_library_with_source(self.device, ns_src, ffi::NIL);
+            if lib.is_null() {
+                let msg = if !error.is_null() {
+                    let desc = ffi::msg_id(error, b"localizedDescription\0");
+                    let cstr = ffi::msg_utf8_string(desc);
+                    std::ffi::CStr::from_ptr(cstr as *const _)
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    "unknown MSL compile error".into()
+                };
+                return Err(QuantaError::compilation_failed(format!(
+                    "JIT Metal: {}",
+                    msg
+                )));
+            }
+            lib
+        };
+
+        // Get the kernel function and create pipeline
+        let func_name = unsafe {
+            let names = ffi::msg_function_names(library);
+            let count = ffi::msg_array_count(names);
+            if count == 0 {
+                return Err(QuantaError::compilation_failed("JIT: no functions in MSL"));
+            }
+            ffi::msg_array_object_at(names, 0)
+        };
+
+        let func = unsafe { ffi::msg_get_function(library, func_name) };
+        if func.is_null() {
+            return Err(QuantaError::compilation_failed(
+                "JIT: failed to get kernel function",
+            ));
+        }
+
+        let (pipeline, error) = unsafe { ffi::msg_new_compute_pipeline(self.device, func) };
+        if pipeline.is_null() {
+            let msg = unsafe {
+                if !error.is_null() {
+                    let desc = ffi::msg_id(error, b"localizedDescription\0");
+                    let cstr = ffi::msg_utf8_string(desc);
+                    std::ffi::CStr::from_ptr(cstr as *const _)
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    "unknown pipeline error".into()
+                }
+            };
+            return Err(QuantaError::compilation_failed(format!("JIT: {}", msg)));
+        }
+
+        let handle = self.alloc_handle();
+        self.compute_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, pipeline);
+        Ok(Wave {
+            handle,
+            bindings: [0u64; 16],
+            binding_count: 0,
+            texture_bindings: [0u64; 16],
+            texture_count: 0,
+            push_data: [0u8; 256],
+            push_len: 0,
+            push_mask: 0,
+            drop_fn: None,
+        })
+    }
+
     pub(crate) fn wave_impl(&self, kernel_source: &[u8]) -> Result<Wave, QuantaError> {
         // Require pre-compiled metallib binary (MTLB magic header).
         if kernel_source.len() < 4 || &kernel_source[..4] != b"MTLB" {

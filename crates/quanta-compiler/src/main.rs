@@ -295,6 +295,7 @@ fn make_test_kernel() -> KernelDef {
         next_reg: 4,
         opt_level: 3,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     }
 }
 
@@ -542,6 +543,7 @@ fn test_complex() {
         next_reg: 21,
         opt_level: 3,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
 
     println!("=== NVIDIA PTX (neuron_activate, O3) ===\n");
@@ -751,6 +753,7 @@ fn test_spirv() {
         next_reg: 10,
         opt_level: 0,
         device_sources: vec![],
+        device_functions: vec![],
     };
     match emit_spirv::emit(&shared_kernel) {
         Ok(spirv) => {

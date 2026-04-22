@@ -18,13 +18,16 @@ use syn::{Expr, ItemFn, Lit, parse_macro_input};
 /// #[quanta::kernel]                  // default: O3
 /// #[quanta::kernel(opt = "O2")]      // explicit O2
 /// #[quanta::kernel(opt = "O0")]      // no optimization (debug)
+/// #[quanta::kernel(jit)]             // JIT: compile at runtime
 /// ```
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
 
-    // Parse optimization level from attribute
-    let opt_level = parse_opt_level(attr);
+    // Parse attributes: optimization level and jit flag
+    let attr_str = attr.to_string();
+    let is_jit = attr_str.contains("jit");
+    let opt_level = parse_opt_level(attr.clone());
 
     if let Err(err) = validate::validate_kernel(&func) {
         return err.to_compile_error().into();
@@ -35,6 +38,10 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(err) => return err.to_compile_error().into(),
     };
     kernel_def.opt_level = opt_level;
+
+    if is_jit {
+        return emit_jit_kernel(&func, &kernel_def);
+    }
 
     let outputs = match compiler::compile_kernel(&kernel_def) {
         Ok(outputs) => outputs,
@@ -95,6 +102,29 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
                     format!("no compiled kernel for vendor {:?}", device.caps().vendor)
                 ))?;
             device.wave(binary)
+        }
+    };
+
+    expanded.into()
+}
+
+/// Emit JIT kernel: serialize KernelDef and embed it, generate runtime
+/// compilation function via `wave_jit`.
+fn emit_jit_kernel(func: &ItemFn, kernel_def: &quanta_ir::KernelDef) -> TokenStream {
+    let func_name = &func.sig.ident;
+    let def_name = syn::Ident::new(
+        &format!("{}_DEF", func_name.to_string().to_uppercase()),
+        func_name.span(),
+    );
+
+    let serialized = quanta_ir::serialize_kernel(kernel_def);
+    let def_lit = proc_macro2::Literal::byte_string(&serialized);
+
+    let expanded = quote! {
+        pub static #def_name: &[u8] = #def_lit;
+
+        pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
+            device.wave_jit(#def_name)
         }
     };
 

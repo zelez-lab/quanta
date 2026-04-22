@@ -266,6 +266,7 @@ fn compiler_wire_protocol_spirv() {
         next_reg: 2,
         opt_level: 3,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
 
     let input_bytes = quanta_ir::serialize_kernel(&kernel);

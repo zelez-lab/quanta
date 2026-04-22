@@ -6,8 +6,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::{
-    AtomicOp, BinOp, CmpOp, CompilerOutput, ConstValue, KernelDef, KernelOp, KernelParam, MathFn,
-    Reg, ScalarType, UnaryOp,
+    AtomicOp, BinOp, CmpOp, CompilerOutput, ConstValue, DeviceFnDef, KernelDef, KernelOp,
+    KernelParam, MathFn, Reg, ScalarType, UnaryOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -804,6 +804,22 @@ fn write_kernel_ops(w: &mut Writer, ops: &[KernelOp]) {
 // KernelDef
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// DeviceFnDef
+// ---------------------------------------------------------------------------
+
+fn write_device_fn_def(w: &mut Writer, f: &DeviceFnDef) {
+    w.str(&f.name);
+    w.u32(f.params.len() as u32);
+    for (name, ty) in &f.params {
+        w.str(name);
+        write_scalar_type(w, ty);
+    }
+    write_scalar_type(w, &f.return_type);
+    write_kernel_ops(w, &f.body);
+    w.u32(f.next_reg);
+}
+
 pub(crate) fn write_kernel_def(w: &mut Writer, k: &KernelDef) {
     w.str(&k.name);
     w.u32(k.params.len() as u32);
@@ -818,6 +834,11 @@ pub(crate) fn write_kernel_def(w: &mut Writer, k: &KernelDef) {
     w.u32(k.device_sources.len() as u32);
     for s in &k.device_sources {
         w.str(s);
+    }
+    // device_functions: Vec<DeviceFnDef>
+    w.u32(k.device_functions.len() as u32);
+    for f in &k.device_functions {
+        write_device_fn_def(w, f);
     }
 }
 

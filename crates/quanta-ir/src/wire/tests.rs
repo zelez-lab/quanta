@@ -11,6 +11,7 @@ fn roundtrip_empty_kernel() {
         next_reg: 0,
         opt_level: 3,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -37,6 +38,7 @@ fn roundtrip_kernel_with_body_source() {
         next_reg: 5,
         opt_level: 2,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -93,6 +95,7 @@ fn roundtrip_kernel_ops() {
         next_reg: 4,
         opt_level: 3,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -124,6 +127,7 @@ fn roundtrip_branch_and_loop() {
         next_reg: 4,
         opt_level: 0,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -172,6 +176,7 @@ fn trailing_bytes_rejected() {
         next_reg: 0,
         opt_level: 0,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let mut bytes = serialize_kernel(&k);
     bytes.push(0xFF);
@@ -236,6 +241,7 @@ fn dispatch_roundtrip() {
         next_reg: 11,
         opt_level: 0,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -284,6 +290,7 @@ fn all_kernel_params_roundtrip() {
         next_reg: 0,
         opt_level: 1,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -329,6 +336,7 @@ fn texture_ops_roundtrip() {
         next_reg: 12,
         opt_level: 3,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -365,6 +373,7 @@ fn wave_ops_roundtrip() {
         next_reg: 9,
         opt_level: 0,
         device_sources: Vec::new(),
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -384,12 +393,58 @@ fn roundtrip_device_sources() {
             String::from("fn activate(x: f32, t: f32) -> f32 { if x > t { x } else { x * 0.99 } }"),
             String::from("fn helper(a: f32) -> f32 { a + 1.0 }"),
         ],
+        device_functions: Vec::new(),
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
     assert_eq!(k2.device_sources.len(), 2);
     assert!(k2.device_sources[0].contains("activate"));
     assert!(k2.device_sources[1].contains("helper"));
+}
+
+#[test]
+fn roundtrip_device_functions() {
+    use crate::DeviceFnDef;
+    let k = KernelDef {
+        name: String::from("with_device_fns"),
+        params: Vec::new(),
+        body: vec![KernelOp::DeviceCall {
+            dst: Reg(2),
+            func_name: String::from("add_one"),
+            args: vec![Reg(0)],
+            ty: ScalarType::F32,
+        }],
+        body_source: None,
+        next_reg: 3,
+        opt_level: 3,
+        device_sources: Vec::new(),
+        device_functions: vec![DeviceFnDef {
+            name: String::from("add_one"),
+            params: vec![(String::from("x"), ScalarType::F32)],
+            return_type: ScalarType::F32,
+            body: vec![
+                KernelOp::Const {
+                    dst: Reg(1),
+                    value: ConstValue::F32(1.0),
+                },
+                KernelOp::BinOp {
+                    dst: Reg(2),
+                    a: Reg(0),
+                    b: Reg(1),
+                    op: BinOp::Add,
+                    ty: ScalarType::F32,
+                },
+            ],
+            next_reg: 3,
+        }],
+    };
+    let bytes = serialize_kernel(&k);
+    let k2 = deserialize_kernel(&bytes).unwrap();
+    assert_eq!(k2.device_functions.len(), 1);
+    assert_eq!(k2.device_functions[0].name, "add_one");
+    assert_eq!(k2.device_functions[0].params.len(), 1);
+    assert_eq!(k2.device_functions[0].body.len(), 2);
+    assert_eq!(k2.device_functions[0].next_reg, 3);
 }
 
 // === ShaderDef / ShaderOutput roundtrip tests ===
