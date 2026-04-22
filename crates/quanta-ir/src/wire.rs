@@ -14,8 +14,10 @@ mod tests;
 
 use crate::*;
 
-use decode::{Reader, read_compiler_output, read_kernel_def};
-use encode::{Writer, write_compiler_output, write_kernel_def};
+use decode::{Reader, read_compiler_output, read_kernel_def, read_shader_def, read_shader_output};
+use encode::{
+    Writer, write_compiler_output, write_kernel_def, write_shader_def, write_shader_output,
+};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -51,6 +53,40 @@ pub fn deserialize_output(bytes: &[u8]) -> Result<CompilerOutput, &'static str> 
     let o = read_compiler_output(&mut r)?;
     if r.remaining() != 0 {
         return Err("trailing bytes after CompilerOutput");
+    }
+    Ok(o)
+}
+
+/// Serialize a [`ShaderDef`] to wire bytes.
+pub fn serialize_shader(shader: &ShaderDef) -> Vec<u8> {
+    let mut w = Writer::with_capacity(256);
+    write_shader_def(&mut w, shader);
+    w.finish()
+}
+
+/// Deserialize a [`ShaderDef`] from wire bytes.
+pub fn deserialize_shader(bytes: &[u8]) -> Result<ShaderDef, &'static str> {
+    let mut r = Reader::new(bytes);
+    let s = read_shader_def(&mut r)?;
+    if r.remaining() != 0 {
+        return Err("trailing bytes after ShaderDef");
+    }
+    Ok(s)
+}
+
+/// Serialize a [`ShaderOutput`] to wire bytes.
+pub fn serialize_shader_output(output: &ShaderOutput) -> Vec<u8> {
+    let mut w = Writer::with_capacity(256);
+    write_shader_output(&mut w, output);
+    w.finish()
+}
+
+/// Deserialize a [`ShaderOutput`] from wire bytes.
+pub fn deserialize_shader_output(bytes: &[u8]) -> Result<ShaderOutput, &'static str> {
+    let mut r = Reader::new(bytes);
+    let o = read_shader_output(&mut r)?;
+    if r.remaining() != 0 {
+        return Err("trailing bytes after ShaderOutput");
     }
     Ok(o)
 }

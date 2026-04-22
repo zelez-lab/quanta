@@ -117,6 +117,95 @@ fn find_compiler_binary() -> Option<String> {
 }
 
 // ============================================================================
+// Shader compilation (vertex / fragment) via compiler binary
+// ============================================================================
+
+/// Output from shader compilation — SPIR-V and metallib binaries.
+pub(crate) struct ShaderCompileOutput {
+    pub(crate) spirv: Option<Vec<u8>>,
+    pub(crate) metallib: Option<Vec<u8>>,
+}
+
+/// Compile a vertex or fragment shader via the quanta-compiler binary.
+///
+/// Serializes the ShaderDef to the compiler's stdin, reads ShaderOutput
+/// from stdout. Returns None if the compiler binary is not found.
+pub(crate) fn compile_shader(
+    name: &str,
+    stage: &str,
+    params: &[ShaderParam],
+    return_type: &ShaderType,
+    body_source: &str,
+) -> Option<ShaderCompileOutput> {
+    let binary = find_compiler_binary()?;
+
+    // Build ShaderDef from the parsed macro arguments
+    let shader_def = quanta_ir::ShaderDef {
+        name: name.to_string(),
+        stage: match stage {
+            "vertex" => quanta_ir::ShaderStage::Vertex,
+            "fragment" => quanta_ir::ShaderStage::Fragment,
+            _ => return None,
+        },
+        params: params
+            .iter()
+            .map(|p| quanta_ir::ShaderParam {
+                name: p.name.clone(),
+                ty: shader_type_to_ir(&p.ty),
+                is_uniform: p.is_uniform,
+            })
+            .collect(),
+        return_type: shader_type_to_ir(return_type),
+        body_source: body_source.to_string(),
+    };
+
+    let input = quanta_ir::serialize_shader(&shader_def);
+
+    let result = std::process::Command::new(&binary)
+        .arg("--shader-type")
+        .arg(stage)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let mut child = result.ok()?;
+
+    use std::io::Write;
+    {
+        let mut stdin = child.stdin.take()?;
+        if stdin.write_all(&input).is_err() {
+            let _ = child.kill();
+            return None;
+        }
+    }
+
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("[quanta] shader compiler failed: {}", stderr);
+        return None;
+    }
+
+    let shader_output = quanta_ir::deserialize_shader_output(&output.stdout).ok()?;
+    Some(ShaderCompileOutput {
+        spirv: shader_output.spirv,
+        metallib: shader_output.metallib,
+    })
+}
+
+fn shader_type_to_ir(ty: &ShaderType) -> quanta_ir::ShaderType {
+    match ty {
+        ShaderType::F32 => quanta_ir::ShaderType::F32,
+        ShaderType::Vec2 => quanta_ir::ShaderType::Vec2,
+        ShaderType::Vec3 => quanta_ir::ShaderType::Vec3,
+        ShaderType::Vec4 => quanta_ir::ShaderType::Vec4,
+        ShaderType::Mat4 => quanta_ir::ShaderType::Mat4,
+        ShaderType::Mat3 => quanta_ir::ShaderType::Mat3,
+    }
+}
+
+// ============================================================================
 // Built-in MSL emitter (kept for Phase 4 JIT migration)
 // ============================================================================
 

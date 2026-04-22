@@ -449,3 +449,68 @@ impl ScalarType {
         }
     }
 }
+
+// ── Shader (vertex/fragment) types ─────────────────────────────────────────
+
+/// Shader pipeline stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderStage {
+    Vertex = 0,
+    Fragment = 1,
+}
+
+/// Shader data types used in vertex/fragment parameters and return types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderType {
+    F32 = 0,
+    Vec2 = 1,
+    Vec3 = 2,
+    Vec4 = 3,
+    Mat4 = 4,
+    Mat3 = 5,
+}
+
+/// A parsed shader parameter (vertex attribute or uniform binding).
+#[derive(Debug, Clone)]
+pub struct ShaderParam {
+    pub name: String,
+    pub ty: ShaderType,
+    pub is_uniform: bool,
+}
+
+/// Complete shader definition — input to the compiler for vertex/fragment shaders.
+#[derive(Debug, Clone)]
+pub struct ShaderDef {
+    pub name: String,
+    pub stage: ShaderStage,
+    pub params: Vec<ShaderParam>,
+    pub return_type: ShaderType,
+    pub body_source: String,
+}
+
+/// Compiler output for shader stages — SPIR-V and metallib binaries.
+#[derive(Debug, Clone)]
+pub struct ShaderOutput {
+    pub spirv: Option<Vec<u8>>,
+    pub metallib: Option<Vec<u8>>,
+}
+
+/// Serialize a [`ShaderDef`] to wire bytes.
+pub fn serialize_shader(shader: &ShaderDef) -> Vec<u8> {
+    wire::serialize_shader(shader)
+}
+
+/// Deserialize a [`ShaderDef`] from wire bytes.
+pub fn deserialize_shader(bytes: &[u8]) -> Result<ShaderDef, &'static str> {
+    wire::deserialize_shader(bytes)
+}
+
+/// Serialize a [`ShaderOutput`] to wire bytes.
+pub fn serialize_shader_output(output: &ShaderOutput) -> Vec<u8> {
+    wire::serialize_shader_output(output)
+}
+
+/// Deserialize a [`ShaderOutput`] from wire bytes.
+pub fn deserialize_shader_output(bytes: &[u8]) -> Result<ShaderOutput, &'static str> {
+    wire::deserialize_shader_output(bytes)
+}

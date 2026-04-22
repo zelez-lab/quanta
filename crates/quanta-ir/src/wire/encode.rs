@@ -831,3 +831,25 @@ pub(crate) fn write_compiler_output(w: &mut Writer, o: &CompilerOutput) {
     w.option_bytes(&o.spirv);
     w.option_bytes(&o.metallib);
 }
+
+// ---------------------------------------------------------------------------
+// ShaderDef / ShaderOutput
+// ---------------------------------------------------------------------------
+
+pub(crate) fn write_shader_def(w: &mut Writer, s: &crate::ShaderDef) {
+    w.str(&s.name);
+    w.u8(s.stage as u8);
+    w.u32(s.params.len() as u32);
+    for p in &s.params {
+        w.str(&p.name);
+        w.u8(p.ty as u8);
+        w.bool_val(p.is_uniform);
+    }
+    w.u8(s.return_type as u8);
+    w.str(&s.body_source);
+}
+
+pub(crate) fn write_shader_output(w: &mut Writer, o: &crate::ShaderOutput) {
+    w.option_bytes(&o.spirv);
+    w.option_bytes(&o.metallib);
+}

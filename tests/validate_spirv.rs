@@ -278,7 +278,150 @@ fn identity_kernel() -> quanta_ir::KernelDef {
     }
 }
 
-// --- Tests ---
+// --- Shader (vertex/fragment) SPIR-V validation ---
+
+/// Validate vertex/fragment SPIR-V by writing it to a temp file and running spirv-val.
+fn validate_shader_spirv(spirv: &[u8], label: &str) {
+    assert!(
+        spirv.len() >= 20,
+        "[{}] SPIR-V binary too small: {} bytes",
+        label,
+        spirv.len(),
+    );
+
+    let magic = u32::from_le_bytes([spirv[0], spirv[1], spirv[2], spirv[3]]);
+    assert_eq!(
+        magic, 0x07230203,
+        "[{}] bad SPIR-V magic: 0x{:08x}",
+        label, magic,
+    );
+
+    assert_eq!(
+        spirv.len() % 4,
+        0,
+        "[{}] SPIR-V size {} not a multiple of 4",
+        label,
+        spirv.len(),
+    );
+
+    let tmp = std::env::temp_dir().join(format!("quanta_shader_{}.spv", label));
+    std::fs::write(&tmp, spirv).expect("failed to write temp .spv file");
+
+    let val = Command::new(SPIRV_VAL)
+        .arg(&tmp)
+        .output()
+        .expect("failed to run spirv-val");
+
+    let _ = std::fs::remove_file(&tmp);
+
+    if !val.status.success() {
+        let stderr = String::from_utf8_lossy(&val.stderr);
+        let stdout = String::from_utf8_lossy(&val.stdout);
+        panic!(
+            "[{}] spirv-val failed:\nstdout: {}\nstderr: {}",
+            label, stdout, stderr,
+        );
+    }
+}
+
+// Compile-time shader binaries from the proc macros
+
+#[quanta::vertex]
+fn val_simple_vert(pos: Vec4) -> Vec4 {
+    pos
+}
+
+#[quanta::vertex]
+fn val_vec3_vert(pos: Vec3) -> Vec4 {
+    Vec4::new(pos.x, pos.y, pos.z, 1.0)
+}
+
+#[quanta::vertex]
+fn val_vec2_vert(pos: Vec2) -> Vec4 {
+    Vec4::new(pos.x, pos.y, 0.0, 1.0)
+}
+
+#[quanta::fragment]
+fn val_solid_frag(uv: Vec2) -> Vec4 {
+    Vec4::new(1.0, 0.0, 0.0, 1.0)
+}
+
+#[quanta::fragment]
+fn val_passthrough_frag(color: Vec4) -> Vec4 {
+    color
+}
+
+#[test]
+#[ignore]
+fn spirv_val_vertex_simple() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_simple_vert();
+    let spirv = shader
+        .spirv
+        .expect("vertex shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "vertex_simple");
+}
+
+#[test]
+#[ignore]
+fn spirv_val_vertex_vec3() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_vec3_vert();
+    let spirv = shader
+        .spirv
+        .expect("vertex vec3 shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "vertex_vec3");
+}
+
+#[test]
+#[ignore]
+fn spirv_val_vertex_vec2() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_vec2_vert();
+    let spirv = shader
+        .spirv
+        .expect("vertex vec2 shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "vertex_vec2");
+}
+
+#[test]
+#[ignore]
+fn spirv_val_fragment_solid() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_solid_frag();
+    let spirv = shader
+        .spirv
+        .expect("fragment shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "fragment_solid");
+}
+
+#[test]
+#[ignore]
+fn spirv_val_fragment_passthrough() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_passthrough_frag();
+    let spirv = shader
+        .spirv
+        .expect("fragment passthrough shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "fragment_passthrough");
+}
+
+// --- Compute kernel tests ---
 
 #[test]
 #[ignore]

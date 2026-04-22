@@ -391,3 +391,141 @@ fn roundtrip_device_sources() {
     assert!(k2.device_sources[0].contains("activate"));
     assert!(k2.device_sources[1].contains("helper"));
 }
+
+// === ShaderDef / ShaderOutput roundtrip tests ===
+
+#[test]
+fn roundtrip_shader_def_vertex() {
+    use crate::*;
+    let s = ShaderDef {
+        name: "transform".to_string(),
+        stage: ShaderStage::Vertex,
+        params: vec![
+            ShaderParam {
+                name: "pos".to_string(),
+                ty: ShaderType::Vec3,
+                is_uniform: false,
+            },
+            ShaderParam {
+                name: "mvp".to_string(),
+                ty: ShaderType::Mat4,
+                is_uniform: true,
+            },
+        ],
+        return_type: ShaderType::Vec4,
+        body_source: "mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)".to_string(),
+    };
+    let bytes = serialize_shader(&s);
+    let s2 = deserialize_shader(&bytes).unwrap();
+    assert_eq!(s2.name, "transform");
+    assert_eq!(s2.stage, ShaderStage::Vertex);
+    assert_eq!(s2.params.len(), 2);
+    assert_eq!(s2.params[0].name, "pos");
+    assert_eq!(s2.params[0].ty, ShaderType::Vec3);
+    assert!(!s2.params[0].is_uniform);
+    assert_eq!(s2.params[1].name, "mvp");
+    assert_eq!(s2.params[1].ty, ShaderType::Mat4);
+    assert!(s2.params[1].is_uniform);
+    assert_eq!(s2.return_type, ShaderType::Vec4);
+    assert!(s2.body_source.contains("Vec4::new"));
+}
+
+#[test]
+fn roundtrip_shader_def_fragment() {
+    use crate::*;
+    let s = ShaderDef {
+        name: "shade".to_string(),
+        stage: ShaderStage::Fragment,
+        params: vec![ShaderParam {
+            name: "uv".to_string(),
+            ty: ShaderType::Vec2,
+            is_uniform: false,
+        }],
+        return_type: ShaderType::Vec4,
+        body_source: "Vec4::new(uv.x, uv.y, 0.0, 1.0)".to_string(),
+    };
+    let bytes = serialize_shader(&s);
+    let s2 = deserialize_shader(&bytes).unwrap();
+    assert_eq!(s2.name, "shade");
+    assert_eq!(s2.stage, ShaderStage::Fragment);
+    assert_eq!(s2.params.len(), 1);
+    assert_eq!(s2.return_type, ShaderType::Vec4);
+}
+
+#[test]
+fn roundtrip_shader_output_both() {
+    use crate::*;
+    let o = ShaderOutput {
+        spirv: Some(vec![0x03, 0x02, 0x23, 0x07, 0x00, 0x01, 0x03, 0x00]),
+        metallib: Some(vec![b'M', b'T', b'L', b'B', 0x01, 0x02]),
+    };
+    let bytes = serialize_shader_output(&o);
+    let o2 = deserialize_shader_output(&bytes).unwrap();
+    assert_eq!(o2.spirv.as_ref().unwrap().len(), 8);
+    assert_eq!(o2.metallib.as_ref().unwrap().len(), 6);
+}
+
+#[test]
+fn roundtrip_shader_output_none() {
+    use crate::*;
+    let o = ShaderOutput {
+        spirv: None,
+        metallib: None,
+    };
+    let bytes = serialize_shader_output(&o);
+    let o2 = deserialize_shader_output(&bytes).unwrap();
+    assert!(o2.spirv.is_none());
+    assert!(o2.metallib.is_none());
+}
+
+#[test]
+fn roundtrip_shader_def_all_types() {
+    use crate::*;
+    let s = ShaderDef {
+        name: "all_types".to_string(),
+        stage: ShaderStage::Fragment,
+        params: vec![
+            ShaderParam {
+                name: "a".into(),
+                ty: ShaderType::F32,
+                is_uniform: false,
+            },
+            ShaderParam {
+                name: "b".into(),
+                ty: ShaderType::Vec2,
+                is_uniform: false,
+            },
+            ShaderParam {
+                name: "c".into(),
+                ty: ShaderType::Vec3,
+                is_uniform: false,
+            },
+            ShaderParam {
+                name: "d".into(),
+                ty: ShaderType::Vec4,
+                is_uniform: false,
+            },
+            ShaderParam {
+                name: "e".into(),
+                ty: ShaderType::Mat3,
+                is_uniform: true,
+            },
+            ShaderParam {
+                name: "f".into(),
+                ty: ShaderType::Mat4,
+                is_uniform: true,
+            },
+        ],
+        return_type: ShaderType::Vec4,
+        body_source: "return d;".to_string(),
+    };
+    let bytes = serialize_shader(&s);
+    let s2 = deserialize_shader(&bytes).unwrap();
+    assert_eq!(s2.params.len(), 6);
+    assert_eq!(s2.params[0].ty, ShaderType::F32);
+    assert_eq!(s2.params[1].ty, ShaderType::Vec2);
+    assert_eq!(s2.params[2].ty, ShaderType::Vec3);
+    assert_eq!(s2.params[3].ty, ShaderType::Vec4);
+    assert_eq!(s2.params[4].ty, ShaderType::Mat3);
+    assert_eq!(s2.params[5].ty, ShaderType::Mat4);
+}

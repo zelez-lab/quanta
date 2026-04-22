@@ -192,13 +192,46 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
         func_name.span(),
     );
 
-    // TODO(Phase 4): compile shader to SPIR-V/metallib binary.
-    // For now, shaders produce empty binaries — JIT path will fill these.
+    // Parse shader params and body, then compile via the compiler binary.
+    let params = match compiler::parse_shader_params(&func) {
+        Ok(p) => p,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let return_ty = match compiler::parse_return_type(&func) {
+        Ok(t) => t,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    // Extract body source text for the compiler.
+    let body_source = func.block.to_token_stream().to_string();
+
+    let (spirv_expr, metallib_expr) =
+        match compiler::compile_shader(&func_name_str, "vertex", &params, &return_ty, &body_source)
+        {
+            Some(output) => {
+                let spirv = match &output.spirv {
+                    Some(bytes) => {
+                        let lit = proc_macro2::Literal::byte_string(bytes);
+                        quote! { Some(#lit as &[u8]) }
+                    }
+                    None => quote! { None },
+                };
+                let metallib = match &output.metallib {
+                    Some(bytes) => {
+                        let lit = proc_macro2::Literal::byte_string(bytes);
+                        quote! { Some(#lit as &[u8]) }
+                    }
+                    None => quote! { None },
+                };
+                (spirv, metallib)
+            }
+            None => (quote! { None }, quote! { None }),
+        };
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
+            spirv: #spirv_expr,
+            metallib: #metallib_expr,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Vertex,
         };
@@ -245,12 +278,49 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
         func_name.span(),
     );
 
-    // TODO(Phase 4): compile shader to SPIR-V/metallib binary.
+    // Parse shader params and body, then compile via the compiler binary.
+    let params = match compiler::parse_shader_params(&func) {
+        Ok(p) => p,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let return_ty = match compiler::parse_return_type(&func) {
+        Ok(t) => t,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    let body_source = func.block.to_token_stream().to_string();
+
+    let (spirv_expr, metallib_expr) = match compiler::compile_shader(
+        &func_name_str,
+        "fragment",
+        &params,
+        &return_ty,
+        &body_source,
+    ) {
+        Some(output) => {
+            let spirv = match &output.spirv {
+                Some(bytes) => {
+                    let lit = proc_macro2::Literal::byte_string(bytes);
+                    quote! { Some(#lit as &[u8]) }
+                }
+                None => quote! { None },
+            };
+            let metallib = match &output.metallib {
+                Some(bytes) => {
+                    let lit = proc_macro2::Literal::byte_string(bytes);
+                    quote! { Some(#lit as &[u8]) }
+                }
+                None => quote! { None },
+            };
+            (spirv, metallib)
+        }
+        None => (quote! { None }, quote! { None }),
+    };
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
+            spirv: #spirv_expr,
+            metallib: #metallib_expr,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Fragment,
         };

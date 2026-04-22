@@ -101,3 +101,98 @@ fn pos_only_vertex_2d() {
     assert_eq!(shader.entry_point, "pos_only");
     assert_eq!(shader.stage, quanta::ShaderStage::Vertex);
 }
+
+// === Phase 2: binary verification ===
+
+#[test]
+fn vertex_spirv_is_populated() {
+    let shader = simple_passthrough();
+    assert!(
+        shader.spirv.is_some(),
+        "vertex shader must produce SPIR-V binary",
+    );
+    let spirv = shader.spirv.unwrap();
+    assert!(
+        spirv.len() >= 20,
+        "SPIR-V binary too small: {} bytes",
+        spirv.len()
+    );
+    // Verify SPIR-V magic number
+    let magic = u32::from_le_bytes([spirv[0], spirv[1], spirv[2], spirv[3]]);
+    assert_eq!(magic, 0x07230203, "bad SPIR-V magic: 0x{:08x}", magic);
+}
+
+#[test]
+fn fragment_spirv_is_populated() {
+    let shader = solid_red();
+    assert!(
+        shader.spirv.is_some(),
+        "fragment shader must produce SPIR-V binary",
+    );
+    let spirv = shader.spirv.unwrap();
+    assert!(
+        spirv.len() >= 20,
+        "SPIR-V binary too small: {} bytes",
+        spirv.len()
+    );
+    let magic = u32::from_le_bytes([spirv[0], spirv[1], spirv[2], spirv[3]]);
+    assert_eq!(magic, 0x07230203, "bad SPIR-V magic: 0x{:08x}", magic);
+}
+
+#[test]
+fn vertex_metallib_is_populated_on_macos() {
+    let shader = simple_passthrough();
+    // metallib requires xcrun (macOS only)
+    if cfg!(target_os = "macos") {
+        assert!(
+            shader.metallib.is_some(),
+            "vertex shader must produce metallib on macOS",
+        );
+        let metallib = shader.metallib.unwrap();
+        assert!(metallib.len() >= 4, "metallib too small");
+        // Metal library magic: "MTLB"
+        assert_eq!(&metallib[..4], b"MTLB", "bad metallib magic");
+    }
+}
+
+#[test]
+fn fragment_metallib_is_populated_on_macos() {
+    let shader = solid_red();
+    if cfg!(target_os = "macos") {
+        assert!(
+            shader.metallib.is_some(),
+            "fragment shader must produce metallib on macOS",
+        );
+        let metallib = shader.metallib.unwrap();
+        assert!(metallib.len() >= 4, "metallib too small");
+        assert_eq!(&metallib[..4], b"MTLB", "bad metallib magic");
+    }
+}
+
+#[test]
+fn vertex_with_multiple_inputs_spirv() {
+    let shader = transform_mvp();
+    assert!(
+        shader.spirv.is_some(),
+        "vertex shader with uniform must produce SPIR-V",
+    );
+}
+
+#[test]
+fn fragment_with_multiple_inputs_spirv() {
+    let shader = shade_uv();
+    assert!(
+        shader.spirv.is_some(),
+        "fragment shader with multiple inputs must produce SPIR-V",
+    );
+}
+
+#[test]
+fn vertex_for_vendor_returns_binary() {
+    let shader = simple_passthrough();
+    // Nvidia/AMD/Intel use SPIR-V
+    assert!(
+        shader.for_vendor(quanta::Vendor::Nvidia).is_some(),
+        "vertex for_vendor(Nvidia) must return SPIR-V binary",
+    );
+}

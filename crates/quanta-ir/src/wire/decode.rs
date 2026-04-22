@@ -799,3 +799,59 @@ pub(crate) fn read_compiler_output(r: &mut Reader) -> Result<CompilerOutput, &'s
         metallib,
     })
 }
+
+// ---------------------------------------------------------------------------
+// ShaderDef / ShaderOutput
+// ---------------------------------------------------------------------------
+
+fn read_shader_stage(tag: u8) -> Result<crate::ShaderStage, &'static str> {
+    match tag {
+        0 => Ok(crate::ShaderStage::Vertex),
+        1 => Ok(crate::ShaderStage::Fragment),
+        _ => Err("invalid ShaderStage tag"),
+    }
+}
+
+fn read_shader_type(tag: u8) -> Result<crate::ShaderType, &'static str> {
+    match tag {
+        0 => Ok(crate::ShaderType::F32),
+        1 => Ok(crate::ShaderType::Vec2),
+        2 => Ok(crate::ShaderType::Vec3),
+        3 => Ok(crate::ShaderType::Vec4),
+        4 => Ok(crate::ShaderType::Mat4),
+        5 => Ok(crate::ShaderType::Mat3),
+        _ => Err("invalid ShaderType tag"),
+    }
+}
+
+pub(crate) fn read_shader_def(r: &mut Reader) -> Result<crate::ShaderDef, &'static str> {
+    let name = r.str()?;
+    let stage = read_shader_stage(r.u8()?)?;
+    let param_count = r.u32()? as usize;
+    let mut params = Vec::with_capacity(param_count);
+    for _ in 0..param_count {
+        let pname = r.str()?;
+        let ty = read_shader_type(r.u8()?)?;
+        let is_uniform = r.bool_val()?;
+        params.push(crate::ShaderParam {
+            name: pname,
+            ty,
+            is_uniform,
+        });
+    }
+    let return_type = read_shader_type(r.u8()?)?;
+    let body_source = r.str()?;
+    Ok(crate::ShaderDef {
+        name,
+        stage,
+        params,
+        return_type,
+        body_source,
+    })
+}
+
+pub(crate) fn read_shader_output(r: &mut Reader) -> Result<crate::ShaderOutput, &'static str> {
+    let spirv = r.option_bytes()?;
+    let metallib = r.option_bytes()?;
+    Ok(crate::ShaderOutput { spirv, metallib })
+}
