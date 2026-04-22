@@ -187,7 +187,9 @@ fn kernel_binary_for_vendor_intel_falls_back_to_amd_then_llvm() {
 }
 
 #[test]
-fn kernel_binary_for_vendor_unknown_prefers_spirv_then_wgsl() {
+fn kernel_binary_for_vendor_unknown_returns_spirv_only() {
+    // Unknown Vulkan vendors get SPIR-V only — no WGSL text fallback
+    // (WGSL text would segfault the Vulkan driver).
     let binary = KernelBinary {
         amd: None,
         nvidia: None,
@@ -199,9 +201,18 @@ fn kernel_binary_for_vendor_unknown_prefers_spirv_then_wgsl() {
     };
 
     let result = binary.for_vendor(Vendor::Unknown);
-    assert!(result.is_some());
-    let text = core::str::from_utf8(result.unwrap()).unwrap();
-    assert!(text.contains("@compute"));
+    assert!(
+        result.is_none(),
+        "unknown vendor without SPIR-V should return None"
+    );
+
+    // With SPIR-V available, it should work
+    let binary2 = KernelBinary {
+        spirv: Some(&[0x03, 0x02, 0x23, 0x07]),
+        ..binary
+    };
+    let result2 = binary2.for_vendor(Vendor::Unknown);
+    assert!(result2.is_some());
 }
 
 #[test]
