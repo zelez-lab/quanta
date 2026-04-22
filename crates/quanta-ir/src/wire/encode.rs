@@ -830,7 +830,4 @@ pub(crate) fn write_compiler_output(w: &mut Writer, o: &CompilerOutput) {
     w.option_bytes(&o.nvidia);
     w.option_bytes(&o.spirv);
     w.option_bytes(&o.metallib);
-    w.option_str(&o.msl);
-    w.option_str(&o.wgsl);
-    w.option_bytes(&o.llvm_ir);
 }

@@ -137,14 +137,13 @@ fn roundtrip_compiler_output_empty() {
         nvidia: None,
         spirv: None,
         metallib: None,
-        msl: None,
-        wgsl: None,
-        llvm_ir: None,
     };
     let bytes = serialize_output(&o);
     let o2 = deserialize_output(&bytes).unwrap();
     assert!(o2.amd.is_none());
-    assert!(o2.msl.is_none());
+    assert!(o2.nvidia.is_none());
+    assert!(o2.spirv.is_none());
+    assert!(o2.metallib.is_none());
 }
 
 #[test]
@@ -154,16 +153,13 @@ fn roundtrip_compiler_output_full() {
         nvidia: Some(vec![0xBE, 0xEF]),
         spirv: Some(vec![0x03, 0x02, 0x23, 0x07]),
         metallib: Some(vec![0x4D, 0x54]),
-        msl: Some(String::from("kernel void k() {}")),
-        wgsl: Some(String::from("@compute fn k() {}")),
-        llvm_ir: Some(vec![0xBC]),
     };
     let bytes = serialize_output(&o);
     let o2 = deserialize_output(&bytes).unwrap();
     assert_eq!(o2.amd, Some(vec![0xDE, 0xAD]));
     assert_eq!(o2.nvidia, Some(vec![0xBE, 0xEF]));
-    assert_eq!(o2.msl, Some(String::from("kernel void k() {}")));
-    assert_eq!(o2.wgsl, Some(String::from("@compute fn k() {}")));
+    assert_eq!(o2.spirv, Some(vec![0x03, 0x02, 0x23, 0x07]));
+    assert_eq!(o2.metallib, Some(vec![0x4D, 0x54]));
 }
 
 #[test]

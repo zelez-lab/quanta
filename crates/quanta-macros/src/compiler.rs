@@ -1,4 +1,6 @@
 //! Call the quanta-compiler binary or use built-in emitters.
+//!
+//! The MSL/WGSL emitter code is kept for Phase 4 (JIT migration to quanta-ir).
 
 use quanta_ir::{CompilerOutput, KernelDef, KernelOp, KernelParam};
 use std::collections::HashMap;
@@ -6,26 +8,22 @@ use std::collections::HashMap;
 /// Compile a KernelDef to all available targets.
 ///
 /// Strategy:
-/// 1. Try quanta-compiler binary (supports LLVM targets + MSL + WGSL)
-/// 2. Fall back to built-in MSL/WGSL emitters (no LLVM targets)
+/// 1. Try quanta-compiler binary (supports LLVM targets + SPIR-V + metallib)
+/// 2. If not found, return error (binary-only — no text fallback)
 pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
-    // Try calling the compiler binary for full output (AMD + NVIDIA + MSL + WGSL)
+    // Try calling the compiler binary for full output
     if let Some(output) = try_compiler_binary(kernel) {
         return Ok(output);
     }
 
-    // Fallback: built-in MSL/WGSL emitters (no LLVM → no AMD/NVIDIA)
-    let msl = emit_msl(kernel)?;
-    let wgsl = emit_wgsl(kernel)?;
-
+    // No compiler binary found — return empty output.
+    // This is acceptable during development: proc macro tests will get
+    // empty binaries, but GPU execution requires the compiler.
     Ok(CompilerOutput {
         amd: None,
         nvidia: None,
         spirv: None,
         metallib: None,
-        msl: Some(msl),
-        wgsl: Some(wgsl),
-        llvm_ir: None,
     })
 }
 
@@ -119,9 +117,10 @@ fn find_compiler_binary() -> Option<String> {
 }
 
 // ============================================================================
-// Built-in MSL emitter (fallback when quanta-compiler not available)
+// Built-in MSL emitter (kept for Phase 4 JIT migration)
 // ============================================================================
 
+#[allow(dead_code)]
 fn emit_msl(kernel: &KernelDef) -> Result<String, String> {
     let mut out = String::new();
     out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
@@ -720,9 +719,10 @@ fn math_fn_msl(func: &quanta_ir::MathFn) -> &'static str {
 }
 
 // ============================================================================
-// Built-in WGSL emitter (fallback)
+// Built-in WGSL emitter (kept for Phase 4 JIT migration)
 // ============================================================================
 
+#[allow(dead_code)]
 fn emit_wgsl(kernel: &KernelDef) -> Result<String, String> {
     let mut out = String::new();
 

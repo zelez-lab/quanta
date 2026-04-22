@@ -52,7 +52,7 @@ fn wave_alignment() {
 }
 
 // ===========================================================================
-// KernelBinary — for_vendor logic
+// KernelBinary — for_vendor logic (binary-only)
 // ===========================================================================
 
 #[test]
@@ -62,9 +62,6 @@ fn kernel_binary_for_vendor_amd_prefers_amd_then_spirv() {
         nvidia: Some(b"nvidia_binary"),
         spirv: Some(b"spirv_binary"),
         metallib: None,
-        msl: Some("msl source"),
-        wgsl: Some("wgsl source"),
-        llvm_ir: Some(b"llvm ir"),
     };
 
     let result = binary.for_vendor(Vendor::Amd);
@@ -78,9 +75,6 @@ fn kernel_binary_for_vendor_amd_falls_back_to_spirv() {
         nvidia: None,
         spirv: Some(b"spirv_binary"),
         metallib: None,
-        msl: Some("msl source"),
-        wgsl: Some("wgsl source"),
-        llvm_ir: None,
     };
 
     let result = binary.for_vendor(Vendor::Amd);
@@ -94,9 +88,6 @@ fn kernel_binary_for_vendor_nvidia_prefers_nvidia_then_spirv() {
         nvidia: Some(b"ptx_binary"),
         spirv: Some(b"spirv_binary"),
         metallib: None,
-        msl: None,
-        wgsl: None,
-        llvm_ir: None,
     };
 
     let result = binary.for_vendor(Vendor::Nvidia);
@@ -110,9 +101,6 @@ fn kernel_binary_for_vendor_nvidia_falls_back_to_spirv() {
         nvidia: None,
         spirv: Some(b"spirv_binary"),
         metallib: None,
-        msl: None,
-        wgsl: None,
-        llvm_ir: None,
     };
 
     let result = binary.for_vendor(Vendor::Nvidia);
@@ -120,15 +108,12 @@ fn kernel_binary_for_vendor_nvidia_falls_back_to_spirv() {
 }
 
 #[test]
-fn kernel_binary_for_vendor_apple_prefers_metallib_then_msl() {
+fn kernel_binary_for_vendor_apple_returns_metallib_only() {
     let binary = KernelBinary {
         amd: None,
         nvidia: None,
         spirv: None,
         metallib: Some(b"metallib_binary"),
-        msl: Some("msl source"),
-        wgsl: None,
-        llvm_ir: None,
     };
 
     let result = binary.for_vendor(Vendor::Apple);
@@ -136,21 +121,19 @@ fn kernel_binary_for_vendor_apple_prefers_metallib_then_msl() {
 }
 
 #[test]
-fn kernel_binary_for_vendor_apple_falls_back_to_msl_text() {
+fn kernel_binary_for_vendor_apple_returns_none_without_metallib() {
     let binary = KernelBinary {
         amd: None,
         nvidia: None,
-        spirv: None,
+        spirv: Some(b"spirv_binary"),
         metallib: None,
-        msl: Some("kernel void k() {}"),
-        wgsl: None,
-        llvm_ir: None,
     };
 
     let result = binary.for_vendor(Vendor::Apple);
-    assert!(result.is_some());
-    let text = core::str::from_utf8(result.unwrap()).unwrap();
-    assert_eq!(text, "kernel void k() {}");
+    assert!(
+        result.is_none(),
+        "Apple without metallib should return None"
+    );
 }
 
 #[test]
@@ -160,9 +143,6 @@ fn kernel_binary_for_vendor_intel_prefers_spirv() {
         nvidia: None,
         spirv: Some(b"spirv"),
         metallib: None,
-        msl: None,
-        wgsl: None,
-        llvm_ir: Some(b"llvm"),
     };
 
     let result = binary.for_vendor(Vendor::Intel);
@@ -170,34 +150,27 @@ fn kernel_binary_for_vendor_intel_prefers_spirv() {
 }
 
 #[test]
-fn kernel_binary_for_vendor_intel_falls_back_to_amd_then_llvm() {
+fn kernel_binary_for_vendor_intel_falls_back_to_amd() {
     let binary = KernelBinary {
         amd: Some(b"amd"),
         nvidia: None,
         spirv: None,
         metallib: None,
-        msl: None,
-        wgsl: None,
-        llvm_ir: Some(b"llvm"),
     };
 
-    // Intel prefers spirv, then amd, then llvm_ir
+    // Intel prefers spirv, then amd
     let result = binary.for_vendor(Vendor::Intel);
     assert_eq!(result, Some(b"amd" as &[u8]));
 }
 
 #[test]
 fn kernel_binary_for_vendor_unknown_returns_spirv_only() {
-    // Unknown Vulkan vendors get SPIR-V only — no WGSL text fallback
-    // (WGSL text would segfault the Vulkan driver).
+    // Unknown Vulkan vendors get SPIR-V only.
     let binary = KernelBinary {
         amd: None,
         nvidia: None,
         spirv: None,
         metallib: None,
-        msl: None,
-        wgsl: Some("@compute fn k() {}"),
-        llvm_ir: Some(b"llvm"),
     };
 
     let result = binary.for_vendor(Vendor::Unknown);
@@ -222,9 +195,6 @@ fn kernel_binary_for_vendor_none_returns_none() {
         nvidia: None,
         spirv: None,
         metallib: None,
-        msl: None,
-        wgsl: None,
-        llvm_ir: None,
     };
 
     assert_eq!(binary.for_vendor(Vendor::Amd), None);
@@ -234,52 +204,45 @@ fn kernel_binary_for_vendor_none_returns_none() {
 }
 
 // ===========================================================================
-// ShaderBinary — for_vendor logic
+// ShaderBinary �� for_vendor logic (binary-only)
 // ===========================================================================
 
 #[test]
-fn shader_binary_for_vendor_apple_returns_msl() {
+fn shader_binary_for_vendor_apple_returns_metallib() {
     let shader = ShaderBinary {
-        msl: Some("vertex float4 main() {}"),
-        wgsl: Some("@vertex fn main() {}"),
-        spirv: None,
+        spirv: Some(b"spirv_bytes"),
+        metallib: Some(b"MTLBmetallib_bytes"),
         entry_point: "main",
         stage: ShaderStage::Vertex,
     };
 
     let result = shader.for_vendor(Vendor::Apple);
-    assert!(result.is_some());
-    let text = core::str::from_utf8(result.unwrap()).unwrap();
-    assert!(text.contains("vertex float4"));
+    assert_eq!(result, Some(b"MTLBmetallib_bytes" as &[u8]));
 }
 
 #[test]
-fn shader_binary_for_vendor_nvidia_returns_wgsl() {
+fn shader_binary_for_vendor_nvidia_returns_spirv() {
     let shader = ShaderBinary {
-        msl: Some("vertex float4 main() {}"),
-        wgsl: Some("@vertex fn main() {}"),
-        spirv: None,
+        spirv: Some(b"spirv_bytes"),
+        metallib: Some(b"metallib_bytes"),
         entry_point: "main",
         stage: ShaderStage::Vertex,
     };
 
     let result = shader.for_vendor(Vendor::Nvidia);
-    assert!(result.is_some());
-    let text = core::str::from_utf8(result.unwrap()).unwrap();
-    assert!(text.contains("@vertex"));
+    assert_eq!(result, Some(b"spirv_bytes" as &[u8]));
 }
 
 #[test]
-fn shader_binary_for_vendor_prefers_spirv_over_wgsl() {
+fn shader_binary_for_vendor_apple_falls_back_to_spirv() {
     let shader = ShaderBinary {
-        msl: Some("msl"),
-        wgsl: Some("wgsl"),
         spirv: Some(b"spirv_bytes"),
+        metallib: None,
         entry_point: "main",
         stage: ShaderStage::Fragment,
     };
 
-    let result = shader.for_vendor(Vendor::Nvidia);
+    let result = shader.for_vendor(Vendor::Apple);
     assert_eq!(result, Some(b"spirv_bytes" as &[u8]));
 }
 
@@ -295,12 +258,6 @@ fn wave_test_kernel(data: &mut [f32]) {
 
 #[test]
 fn kernel_static_has_correct_fields() {
-    // The static should have MSL and WGSL populated by the proc macro
-    assert!(WAVE_TEST_KERNEL_BINARY.msl.is_some());
-    assert!(WAVE_TEST_KERNEL_BINARY.wgsl.is_some());
-    // No LLVM targets without quanta-compiler binary
-    // (These may or may not be populated depending on environment)
-
     // Verify the static is truly static (no runtime allocation)
     let _ref: &'static KernelBinary = &WAVE_TEST_KERNEL_BINARY;
 }

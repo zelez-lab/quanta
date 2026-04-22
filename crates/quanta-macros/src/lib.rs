@@ -2,6 +2,7 @@
 
 extern crate proc_macro;
 
+#[allow(dead_code)]
 mod compiler;
 mod gpu_type;
 mod parse;
@@ -51,20 +52,6 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
         func_name.span(),
     );
 
-    let msl_expr = match &outputs.msl {
-        Some(s) => {
-            let s = s.as_str();
-            quote! { Some(#s) }
-        }
-        None => quote! { None },
-    };
-    let wgsl_expr = match &outputs.wgsl {
-        Some(s) => {
-            let s = s.as_str();
-            quote! { Some(#s) }
-        }
-        None => quote! { None },
-    };
     let nvidia_expr = match &outputs.nvidia {
         Some(bytes) => {
             let lit = proc_macro2::Literal::byte_string(bytes);
@@ -100,9 +87,6 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
             nvidia: #nvidia_expr,
             spirv: #spirv_expr,
             metallib: #metallib_expr,
-            msl: #msl_expr,
-            wgsl: #wgsl_expr,
-            llvm_ir: None,
         };
 
         pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
@@ -208,29 +192,13 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
         func_name.span(),
     );
 
-    let params = match compiler::parse_shader_params(&func) {
-        Ok(p) => p,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    let return_ty = match compiler::parse_return_type(&func) {
-        Ok(t) => t,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    let body_source = compiler::extract_body_source(&func);
-
-    let msl = compiler::emit_vertex_msl(&func_name_str, &params, &return_ty, &body_source);
-    let wgsl = compiler::emit_vertex_wgsl(&func_name_str, &params, &return_ty, &body_source);
-
-    let msl_str = msl.as_str();
-    let wgsl_str = wgsl.as_str();
+    // TODO(Phase 4): compile shader to SPIR-V/metallib binary.
+    // For now, shaders produce empty binaries — JIT path will fill these.
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#msl_str),
-            wgsl: Some(#wgsl_str),
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Vertex,
         };
@@ -244,7 +212,7 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Mark a function as a fragment shader.
 ///
-/// Compiles the function to MSL and WGSL at build time and embeds both as a
+/// Compiles the function to GPU binary at build time and embeds it as a
 /// `ShaderBinary` static. Value parameters become fragment stage inputs
 /// (interpolated varyings); reference parameters become uniform/texture bindings.
 ///
@@ -277,29 +245,12 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
         func_name.span(),
     );
 
-    let params = match compiler::parse_shader_params(&func) {
-        Ok(p) => p,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    let return_ty = match compiler::parse_return_type(&func) {
-        Ok(t) => t,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    let body_source = compiler::extract_body_source(&func);
-
-    let msl = compiler::emit_fragment_msl(&func_name_str, &params, &return_ty, &body_source);
-    let wgsl = compiler::emit_fragment_wgsl(&func_name_str, &params, &return_ty, &body_source);
-
-    let msl_str = msl.as_str();
-    let wgsl_str = wgsl.as_str();
+    // TODO(Phase 4): compile shader to SPIR-V/metallib binary.
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#msl_str),
-            wgsl: Some(#wgsl_str),
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Fragment,
         };
@@ -333,13 +284,11 @@ pub fn tess_control(_attr: TokenStream, item: TokenStream) -> TokenStream {
         &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
-    let source = func.to_token_stream().to_string();
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#source),
-            wgsl: None,
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::TessControl,
         };
@@ -373,13 +322,11 @@ pub fn tess_eval(_attr: TokenStream, item: TokenStream) -> TokenStream {
         &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
-    let source = func.to_token_stream().to_string();
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#source),
-            wgsl: None,
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::TessEval,
         };
@@ -416,13 +363,11 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
         &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
-    let source = func.to_token_stream().to_string();
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#source),
-            wgsl: None,
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Task,
         };
@@ -458,13 +403,11 @@ pub fn mesh(_attr: TokenStream, item: TokenStream) -> TokenStream {
         &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
-    let source = func.to_token_stream().to_string();
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#source),
-            wgsl: None,
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Mesh,
         };
@@ -499,13 +442,11 @@ pub fn ray_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
         &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
-    let source = func.to_token_stream().to_string();
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#source),
-            wgsl: None,
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::RayGen,
         };
@@ -539,13 +480,11 @@ pub fn closest_hit(_attr: TokenStream, item: TokenStream) -> TokenStream {
         &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
-    let source = func.to_token_stream().to_string();
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#source),
-            wgsl: None,
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::ClosestHit,
         };
@@ -578,13 +517,11 @@ pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
         &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
-    let source = func.to_token_stream().to_string();
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            msl: Some(#source),
-            wgsl: None,
             spirv: None,
+            metallib: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Miss,
         };

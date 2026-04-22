@@ -6,6 +6,7 @@
 
 mod emit_msl;
 mod emit_spirv;
+#[allow(dead_code)]
 mod emit_wgsl;
 mod rustc_compile;
 mod targets;
@@ -58,18 +59,12 @@ fn main() {
         nvidia: None,
         spirv: None,
         metallib: None,
-        msl: None,
-        wgsl: None,
-        llvm_ir: None,
     };
 
-    // Always generate MSL + WGSL (lightweight, from KernelOps — no LLVM needed)
-    output.msl = emit_msl::emit(&kernel).ok();
-    output.wgsl = emit_wgsl::emit(&kernel).ok();
-
-    // Compile MSL → metallib via xcrun (if available)
-    if let Some(ref msl) = output.msl {
-        output.metallib = compile_msl_to_metallib(msl);
+    // Compile MSL → metallib via xcrun (if available).
+    // MSL is used only as an intermediate — not stored in the output.
+    if let Ok(msl) = emit_msl::emit(&kernel) {
+        output.metallib = compile_msl_to_metallib(&msl);
     }
 
     // Emit Vulkan SPIR-V directly from KernelOps (Shader capability, GLCompute).

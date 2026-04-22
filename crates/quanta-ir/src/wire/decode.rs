@@ -792,16 +792,10 @@ pub(crate) fn read_compiler_output(r: &mut Reader) -> Result<CompilerOutput, &'s
     let nvidia = r.option_bytes()?;
     let spirv = r.option_bytes()?;
     let metallib = r.option_bytes()?;
-    let msl = r.option_str()?;
-    let wgsl = r.option_str()?;
-    let llvm_ir = r.option_bytes()?;
     Ok(CompilerOutput {
         amd,
         nvidia,
         spirv,
         metallib,
-        msl,
-        wgsl,
-        llvm_ir,
     })
 }

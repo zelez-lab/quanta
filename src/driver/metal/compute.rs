@@ -1,7 +1,6 @@
 //! Compute dispatch operations for Metal.
 
 use alloc::format;
-use alloc::vec::Vec;
 
 use crate::{Pulse, QuantaError, Wave};
 
@@ -10,51 +9,32 @@ use super::ffi;
 
 impl MetalDevice {
     pub(crate) fn wave_impl(&self, kernel_source: &[u8]) -> Result<Wave, QuantaError> {
+        // Require pre-compiled metallib binary (MTLB magic header).
+        if kernel_source.len() < 4 || &kernel_source[..4] != b"MTLB" {
+            return Err(QuantaError::compilation_failed(
+                "Metal requires pre-compiled metallib binary",
+            ));
+        }
+
         let library = unsafe {
-            if kernel_source.len() >= 4 && &kernel_source[..4] == b"MTLB" {
-                // Pre-compiled metallib binary — load directly via dispatch_data.
-                let (lib, error) = ffi::msg_new_library_with_data(
-                    self.device,
-                    kernel_source.as_ptr() as *const _,
-                    kernel_source.len() as u64,
-                );
-                if lib.is_null() {
-                    let msg = if !error.is_null() {
-                        let desc = ffi::msg_id(error, b"localizedDescription\0");
-                        let cstr = ffi::msg_utf8_string(desc);
-                        std::ffi::CStr::from_ptr(cstr as *const _)
-                            .to_string_lossy()
-                            .into_owned()
-                    } else {
-                        "unknown metallib error".into()
-                    };
-                    return Err(QuantaError::compilation_failed(msg));
-                }
-                lib
-            } else {
-                // MSL text — compile at runtime.
-                let source_str = std::str::from_utf8(kernel_source).map_err(|_| {
-                    QuantaError::compilation_failed("invalid UTF-8 in shader source")
-                })?;
-                let mut src_bytes: Vec<u8> = source_str.bytes().collect();
-                src_bytes.push(0);
-                let ns_source = ffi::nsstring(&src_bytes);
-                let (lib, error) =
-                    ffi::msg_new_library_with_source(self.device, ns_source, ffi::NIL);
-                if lib.is_null() {
-                    let msg = if !error.is_null() {
-                        let desc = ffi::msg_id(error, b"localizedDescription\0");
-                        let cstr = ffi::msg_utf8_string(desc);
-                        std::ffi::CStr::from_ptr(cstr as *const _)
-                            .to_string_lossy()
-                            .into_owned()
-                    } else {
-                        "unknown compilation error".into()
-                    };
-                    return Err(QuantaError::compilation_failed(msg));
-                }
-                lib
+            let (lib, error) = ffi::msg_new_library_with_data(
+                self.device,
+                kernel_source.as_ptr() as *const _,
+                kernel_source.len() as u64,
+            );
+            if lib.is_null() {
+                let msg = if !error.is_null() {
+                    let desc = ffi::msg_id(error, b"localizedDescription\0");
+                    let cstr = ffi::msg_utf8_string(desc);
+                    std::ffi::CStr::from_ptr(cstr as *const _)
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    "unknown metallib error".into()
+                };
+                return Err(QuantaError::compilation_failed(msg));
             }
+            lib
         };
 
         // Get first function name from the library.

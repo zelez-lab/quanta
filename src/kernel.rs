@@ -108,9 +108,6 @@ pub struct KernelBinary {
     pub nvidia: Option<&'static [u8]>,
     pub spirv: Option<&'static [u8]>,
     pub metallib: Option<&'static [u8]>,
-    pub msl: Option<&'static str>,
-    pub wgsl: Option<&'static str>,
-    pub llvm_ir: Option<&'static [u8]>,
 }
 
 /// Shader stage — which programmable pipeline stage this shader runs in.
@@ -136,16 +133,13 @@ pub enum ShaderStage {
 
 /// A compiled shader binary — output of `#[quanta::vertex]` or `#[quanta::fragment]`.
 ///
-/// Contains MSL and WGSL source text compiled at build time from annotated
-/// Rust functions. The driver selects the appropriate format at pipeline
-/// creation time (MSL for Metal, WGSL for WebGPU/Vulkan).
+/// Contains pre-compiled binaries for each supported GPU vendor.
+/// The driver selects the appropriate binary at pipeline creation time.
 pub struct ShaderBinary {
-    /// Metal Shading Language source.
-    pub msl: Option<&'static str>,
-    /// WebGPU Shading Language source.
-    pub wgsl: Option<&'static str>,
-    /// Pre-compiled SPIR-V binary (reserved for future use).
+    /// Pre-compiled SPIR-V binary.
     pub spirv: Option<&'static [u8]>,
+    /// Pre-compiled Metal library binary.
+    pub metallib: Option<&'static [u8]>,
     /// Shader entry point name.
     pub entry_point: &'static str,
     /// Shader stage (vertex or fragment).
@@ -153,32 +147,26 @@ pub struct ShaderBinary {
 }
 
 impl ShaderBinary {
-    /// Select the best shader source for the given vendor.
+    /// Select the best shader binary for the given vendor.
     ///
-    /// Apple: MSL text. Vulkan/WebGPU: WGSL text (or SPIR-V if available).
+    /// Apple: metallib binary. All others: SPIR-V binary.
     pub fn for_vendor(&self, vendor: crate::Vendor) -> Option<&[u8]> {
         match vendor {
-            crate::Vendor::Apple => self.msl.map(|s| s.as_bytes()),
-            _ => self
-                .spirv
-                .or(self.wgsl.map(|s| s.as_bytes()))
-                .or(self.msl.map(|s| s.as_bytes())),
+            crate::Vendor::Apple => self.metallib.or(self.spirv),
+            _ => self.spirv,
         }
     }
 }
 
 impl KernelBinary {
     /// Select the best binary for the given vendor.
-    /// Apple: metallib binary (pre-compiled), fallback to MSL text.
-    /// Vulkan: SPIR-V binary. NVIDIA: PTX. AMD: GCN ELF.
+    /// Apple: metallib binary. Vulkan: SPIR-V. NVIDIA: PTX. AMD: GCN ELF.
     pub fn for_vendor(&self, vendor: crate::Vendor) -> Option<&[u8]> {
         match vendor {
             crate::Vendor::Amd => self.amd.or(self.spirv),
             crate::Vendor::Nvidia => self.nvidia.or(self.spirv),
-            crate::Vendor::Apple => self.metallib.or(self.msl.map(|s| s.as_bytes())),
-            crate::Vendor::Intel => self.spirv.or(self.amd).or(self.llvm_ir),
-            // All Vulkan drivers (Broadcom, Qualcomm, etc.) need SPIR-V binary.
-            // Never fall back to WGSL text — it would segfault the driver.
+            crate::Vendor::Apple => self.metallib,
+            crate::Vendor::Intel => self.spirv.or(self.amd),
             _ => self.spirv,
         }
     }

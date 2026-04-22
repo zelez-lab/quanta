@@ -323,13 +323,6 @@ fn roundtrip_compiler_output_all_fields() {
         nvidia: Some(vec![0x7F, 0x45, 0x4C, 0x46]),
         spirv: Some(vec![0x03, 0x02, 0x23, 0x07, 0x00, 0x01, 0x00, 0x00]),
         metallib: Some(vec![0x4D, 0x54, 0x4C, 0x42, 0x01, 0x00]),
-        msl: Some(String::from(
-            "#include <metal_stdlib>\nusing namespace metal;\n\nkernel void test(\n    device float* data [[buffer(0)]],\n    uint gid [[thread_position_in_grid]]\n) {\n    data[gid] = data[gid] * 2.0;\n}\n",
-        )),
-        wgsl: Some(String::from(
-            "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\n@compute @workgroup_size(64)\nfn test(@builtin(global_invocation_id) gid: vec3<u32>) {\n    data[gid.x] = data[gid.x] * 2.0;\n}\n",
-        )),
-        llvm_ir: Some(vec![0xBC, 0xC0, 0xDE, 0x21, 0x0C, 0x00, 0x00]),
     };
 
     let bytes = serialize_output(&o);
@@ -339,9 +332,6 @@ fn roundtrip_compiler_output_all_fields() {
     assert_eq!(o2.nvidia, o.nvidia);
     assert_eq!(o2.spirv, o.spirv);
     assert_eq!(o2.metallib, o.metallib);
-    assert_eq!(o2.msl, o.msl);
-    assert_eq!(o2.wgsl, o.wgsl);
-    assert_eq!(o2.llvm_ir, o.llvm_ir);
 }
 
 // ===========================================================================
@@ -476,9 +466,6 @@ fn invalid_trailing_bytes_output() {
         nvidia: None,
         spirv: None,
         metallib: None,
-        msl: None,
-        wgsl: None,
-        llvm_ir: None,
     };
     let mut bytes = serialize_output(&o);
     bytes.push(0xAB);

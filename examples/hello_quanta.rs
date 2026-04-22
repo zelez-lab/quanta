@@ -2,7 +2,7 @@
 //!
 //! Run: cargo run --example hello_quanta
 
-// Define a GPU kernel. The proc macro compiles it to MSL, WGSL, PTX, and AMD GCN.
+// Define a GPU kernel. The proc macro compiles it to metallib, SPIR-V, PTX, and AMD GCN.
 // The function is replaced with: fn vector_add(gpu: &Gpu) -> Result<Wave, QuantaError>
 #[quanta::kernel]
 fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
@@ -58,23 +58,23 @@ fn main() {
 
     println!("\nCompiled targets:");
     println!(
-        "  MSL:    {}",
-        if VECTOR_ADD_BINARY.msl.is_some() {
+        "  metallib: {}",
+        if VECTOR_ADD_BINARY.metallib.is_some() {
             "yes"
         } else {
             "no"
         }
     );
     println!(
-        "  WGSL:   {}",
-        if VECTOR_ADD_BINARY.wgsl.is_some() {
+        "  SPIR-V:   {}",
+        if VECTOR_ADD_BINARY.spirv.is_some() {
             "yes"
         } else {
             "no"
         }
     );
     println!(
-        "  NVIDIA: {}",
+        "  NVIDIA:   {}",
         if VECTOR_ADD_BINARY.nvidia.is_some() {
             "yes"
         } else {
@@ -82,7 +82,7 @@ fn main() {
         }
     );
     println!(
-        "  AMD:    {}",
+        "  AMD:      {}",
         if VECTOR_ADD_BINARY.amd.is_some() {
             "yes"
         } else {

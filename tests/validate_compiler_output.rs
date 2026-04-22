@@ -306,14 +306,9 @@ fn compiler_wire_protocol_spirv() {
     let magic = u32::from_le_bytes([spirv[0], spirv[1], spirv[2], spirv[3]]);
     assert_eq!(magic, 0x07230203, "bad SPIR-V magic: 0x{:08x}", magic);
 
-    // MSL and WGSL are always generated (lightweight, no LLVM)
-    assert!(co.msl.is_some(), "wire protocol should include MSL");
-    assert!(co.wgsl.is_some(), "wire protocol should include WGSL");
-
     eprintln!(
-        "Wire protocol validation passed (SPIR-V: {} bytes, MSL: {}, WGSL: {})",
+        "Wire protocol validation passed (SPIR-V: {} bytes, metallib: {})",
         spirv.len(),
-        co.msl.as_ref().map_or(0, |s| s.len()),
-        co.wgsl.as_ref().map_or(0, |s| s.len()),
+        co.metallib.as_ref().map_or(0, |b| b.len()),
     );
 }
