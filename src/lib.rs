@@ -50,6 +50,7 @@ extern crate std;
 mod api;
 mod driver;
 pub mod kernel;
+pub mod scan;
 
 // Re-export API types at crate root
 pub use api::*;
@@ -106,6 +107,17 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
     #[cfg(feature = "vulkan")]
     devs.extend(driver::vulkan::discover());
 
+    // Include CPU device if QUANTA_CPU=1 env var is set
+    #[cfg(feature = "software")]
+    {
+        if std::env::var("QUANTA_CPU")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            devs.extend(driver::cpu::discover());
+        }
+    }
+
     devs.into_iter().map(maybe_validate).map(Gpu::new).collect()
 }
 
@@ -118,4 +130,16 @@ pub fn init() -> Result<Gpu, QuantaError> {
     } else {
         Ok(devs.remove(0))
     }
+}
+
+/// Initialize a CPU software device for testing without GPU hardware.
+///
+/// The CPU device executes kernel IR (KernelDef) sequentially on CPU.
+/// Only supports the JIT path (`wave_jit`). Pre-compiled binaries
+/// (SPIR-V, metallib) are not supported.
+#[cfg(feature = "software")]
+pub fn init_cpu() -> Gpu {
+    let dev: alloc::boxed::Box<dyn GpuDevice> =
+        alloc::boxed::Box::new(driver::cpu::CpuDevice::new());
+    Gpu::new(maybe_validate(dev))
 }

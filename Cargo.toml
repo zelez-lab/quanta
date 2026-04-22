@@ -26,6 +26,8 @@ default = ["metal"]
 std = []
 metal = ["std"]
 vulkan = ["std"]
+## CPU software driver: execute KernelDef IR without GPU hardware.
+software = ["std", "jit"]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
 jit = ["quanta-ir/jit"]
 
