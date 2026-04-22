@@ -56,6 +56,7 @@ let gpu = quanta::init()?;
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `wave(kernel_bytes)` | `Result<Wave>` | Create wave from compiled kernel |
+| `wave_jit(kernel_def)` | `Result<Wave>` | JIT-compile a serialized KernelDef and create wave (requires `jit` feature) |
 | `dispatch(wave, quarks)` | `Result<Pulse>` | Dispatch 1D (convenience) |
 | `wave_dispatch(wave, [x,y,z])` | `Result<Pulse>` | Dispatch with group counts |
 | `dispatch_indirect(wave, buf, off)` | `Result<Pulse>` | GPU-driven dispatch |
@@ -259,12 +260,12 @@ Created via `gpu.pipeline(&PipelineDesc { ... })`.
 ## `ShaderBinary`
 
 Compiled shader output from `#[quanta::vertex]` or `#[quanta::fragment]`.
+Contains native binaries (SPIR-V + metallib), not text sources.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `msl` | `Option<&'static str>` | Metal Shading Language source |
-| `wgsl` | `Option<&'static str>` | WebGPU Shading Language source |
-| `spirv` | `Option<&'static [u8]>` | SPIR-V binary |
+| `spirv` | `Option<&'static [u8]>` | SPIR-V binary (vertex/fragment execution model) |
+| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib binary |
 | `entry_point` | `&'static str` | Shader entry point name |
 | `stage` | `ShaderStage` | Which pipeline stage |
 
@@ -276,16 +277,15 @@ Compiled shader output from `#[quanta::vertex]` or `#[quanta::fragment]`.
 
 ## `KernelBinary`
 
-Compiled kernel output from `#[quanta::kernel]`.
+Compiled kernel output from `#[quanta::kernel]`. All fields are native
+binaries -- no text sources (MSL/WGSL) are included in the build path.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `amd` | `Option<&'static [u8]>` | AMD GCN binary |
-| `nvidia` | `Option<&'static [u8]>` | NVIDIA PTX |
-| `spirv` | `Option<&'static [u8]>` | SPIR-V binary |
-| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib |
-| `msl` | `Option<&'static str>` | Metal source |
-| `wgsl` | `Option<&'static str>` | WGSL source |
+| `amd` | `Option<&'static [u8]>` | AMD GCN ELF binary |
+| `nvidia` | `Option<&'static [u8]>` | NVIDIA PTX binary |
+| `spirv` | `Option<&'static [u8]>` | SPIR-V binary (Vulkan) |
+| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib (Apple) |
 | `llvm_ir` | `Option<&'static [u8]>` | LLVM IR fallback |
 
 | Method | Returns | Description |
@@ -329,3 +329,32 @@ let particles = gpu.compute_field::<Particle>(1000)?;
 
 Manual `GpuType` implementation is possible but not recommended -- the macro
 handles `repr(C)` layout, shader declarations, and field metadata automatically.
+
+---
+
+## Free functions
+
+### Initialization
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `quanta::init()` | `Result<Gpu>` | Discover and initialize the first available GPU |
+| `quanta::init_cpu()` | `Gpu` | Create a CPU software executor (requires `software` feature) |
+| `quanta::devices()` | `Vec<Gpu>` | List all available GPUs |
+
+Set the environment variable `QUANTA_CPU=1` as an alternative to calling
+`init_cpu()`. When set, `init()` returns the CPU software executor.
+
+---
+
+## `quanta::scan` module
+
+Prefix sum utilities (requires `software` feature).
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `exclusive_scan_f32_bytes(input)` | `Vec<u8>` | Exclusive prefix sum on raw f32 byte slice |
+
+`exclusive_scan_f32_bytes` interprets the input byte slice as a contiguous
+`f32` array, computes the exclusive prefix sum, and returns the result as
+raw bytes. Useful for stream compaction and radix sort building blocks.

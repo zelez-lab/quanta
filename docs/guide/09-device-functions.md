@@ -65,19 +65,24 @@ Inner functions and `#[quanta::device]` functions both compile to the same GPU
 code. Use `#[quanta::device]` when you want to share the function across
 multiple kernels. Use inner `fn` when the helper is specific to one kernel.
 
-## How inlining works
+## How compilation works
 
-Device functions are always inlined by LLVM at the GPU ISA level. There is no
-function call overhead. The `#[quanta::device]` attribute does not prevent
-inlining -- it enables it by making the function's source available to the
-kernel compiler.
+Device functions compile to real GPU function calls or get inlined, depending
+on the backend.
 
-For the MSL and WGSL backends, the device function is emitted as a regular
-helper function above the kernel entry point. The GPU compiler (Metal, Naga)
-handles inlining decisions.
+**SPIR-V backend**: device functions are emitted as `OpFunction` definitions
+with their own `OpFunctionParameter` entries. Call sites emit `OpFunctionCall`.
+The SPIR-V optimizer may inline them, but the structure is preserved in the
+unoptimized output. This applies to both `#[quanta::device]` functions and
+inner `fn` definitions inside a kernel.
 
-For the LLVM backends (AMD, NVIDIA), the function is emitted as an
-`always_inline` LLVM function and is guaranteed to be inlined.
+**LLVM backends (AMD, NVIDIA)**: the function is emitted as an `always_inline`
+LLVM function and is guaranteed to be inlined at the ISA level. There is no
+function call overhead.
+
+**Metal backend**: the metallib binary is compiled from the SPIR-V
+representation, so device functions follow the same OpFunction structure
+before Metal's own optimizer runs.
 
 ## Example: reusable math utilities
 

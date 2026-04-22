@@ -74,6 +74,46 @@ fn fill_2d(output: &mut [f32], width: u32) {
 }
 ```
 
+## Workgroup size
+
+By default, the driver picks a workgroup size. To set it explicitly, use the
+`workgroup` attribute:
+
+```rust
+#[quanta::kernel(workgroup = [256, 1, 1])]
+fn scale(data: &mut [f32], factor: f32) {
+    let i = quark_id();
+    data[i] = data[i] * factor;
+}
+```
+
+The value is a 1D, 2D, or 3D array:
+
+```rust
+// 1D workgroup (256 quarks per group)
+#[quanta::kernel(workgroup = [256, 1, 1])]
+
+// 2D workgroup (16x16 = 256 quarks per group, good for image processing)
+#[quanta::kernel(workgroup = [16, 16, 1])]
+
+// 3D workgroup (8x8x4 = 256 quarks per group, good for volume processing)
+#[quanta::kernel(workgroup = [8, 8, 4])]
+```
+
+The workgroup size is baked into the compiled binary. Choose a size that is a
+multiple of the proton width (32 for NVIDIA/Apple, 64 for AMD) for best
+occupancy. When in doubt, `[256, 1, 1]` is a safe default for 1D work, and
+`[16, 16, 1]` for 2D.
+
+You can combine `workgroup` with `opt`:
+
+```rust
+#[quanta::kernel(workgroup = [16, 16, 1], opt = "O2")]
+fn blur(input: &[f32], output: &mut [f32], width: u32) {
+    // ...
+}
+```
+
 ## Thread indexing functions
 
 | Function        | Returns                                          |

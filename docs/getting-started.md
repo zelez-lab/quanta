@@ -26,9 +26,24 @@ fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
 `quark_id()` returns this thread's index. If you dispatch 1024 quarks,
 `quark_id()` ranges from 0 to 1023.
 
-The `#[quanta::kernel]` attribute compiles this function to GPU machine code
-at build time. On your CPU, `vector_add` becomes a function that creates a
-`Wave` (a bound, dispatchable kernel).
+The `#[quanta::kernel]` attribute compiles this function to native GPU machine
+code at build time -- SPIR-V, metallib, PTX, or GCN depending on the target.
+On your CPU, `vector_add` becomes a function that creates a `Wave` (a bound,
+dispatchable kernel). No text shaders (MSL/WGSL) are generated in the build
+path; all output is binary.
+
+You can also set the workgroup size explicitly:
+
+```rust
+#[quanta::kernel(workgroup = [256, 1, 1])]
+fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
+    let i = quark_id();
+    result[i] = a[i] + b[i];
+}
+```
+
+This controls how quarks are grouped into workgroups. See
+[Compute basics](guide/01-compute-basics.md) for details on 1D/2D/3D workgroup sizes.
 
 ## Run it
 
@@ -75,8 +90,10 @@ fn main() -> Result<(), QuantaError> {
 ## What happened
 
 1. **Build time**: `#[quanta::kernel]` compiled `vector_add` to native GPU binaries.
-   On Apple GPUs it generates MSL. On AMD it generates GCN machine code via LLVM.
-   On NVIDIA it generates PTX. All formats are embedded in your binary at compile time.
+   On Apple GPUs it generates pre-compiled metallib. On AMD it generates GCN machine
+   code via LLVM. On NVIDIA it generates PTX. For Vulkan it generates SPIR-V. All
+   formats are binary and embedded in your Rust binary at compile time. No text
+   shaders are produced in the build path.
 
 2. **`init()`**: Discovered the first available GPU and returned a `Gpu` handle.
 
@@ -121,7 +138,7 @@ struct Particle {
 The macro generates:
 - `#[repr(C)]` + `Copy` + `Clone` (safe GPU layout)
 - A `GpuType` impl (so you can use `gpu.compute_field::<Particle>(n)`)
-- MSL and WGSL struct declarations (for shader code generation)
+- Struct layout metadata for backend code generation
 - Field metadata (`GPU_FIELDS`, `GPU_SIZE`) for reflection
 
 Then use it like any scalar type:

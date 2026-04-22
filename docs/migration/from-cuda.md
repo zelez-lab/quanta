@@ -96,6 +96,49 @@ fn main() -> Result<(), quanta::QuantaError> {
 }
 ```
 
+## Workgroup (block) size
+
+CUDA uses `dim3` for block dimensions:
+```c
+dim3 block(16, 16, 1);
+dim3 grid((width + 15) / 16, (height + 15) / 16, 1);
+kernel<<<grid, block>>>(...);
+```
+
+Quanta uses the `workgroup` attribute:
+```rust
+#[quanta::kernel(workgroup = [16, 16, 1])]
+fn process_image(input: &[f32], output: &mut [f32], width: u32) {
+    let i = quark_id();
+    output[i] = input[i] * 2.0;
+}
+```
+
+| CUDA | Quanta |
+|------|--------|
+| `dim3 block(256)` | `#[quanta::kernel(workgroup = [256, 1, 1])]` |
+| `dim3 block(16, 16)` | `#[quanta::kernel(workgroup = [16, 16, 1])]` |
+| `dim3 block(8, 8, 4)` | `#[quanta::kernel(workgroup = [8, 8, 4])]` |
+
+## Subgroup (warp) operations
+
+CUDA warp intrinsics map directly to Quanta wave/subgroup operations:
+
+| CUDA | Quanta | Description |
+|------|--------|-------------|
+| `__shfl_xor_sync(mask, val, delta)` | `wave_shuffle(val, delta)` | Cross-lane exchange |
+| `__ballot_sync(mask, pred)` | `wave_ballot(pred)` | Lane predicate bitmask |
+| `__any_sync(mask, pred)` | `wave_any(pred)` | Any lane satisfies predicate |
+| `__all_sync(mask, pred)` | `wave_all(pred)` | All lanes satisfy predicate |
+| `__reduce_add_sync(mask, val)` | `wave_reduce_add(val)` | Sum across warp |
+| `__reduce_min_sync(mask, val)` | `wave_reduce_min(val)` | Min across warp |
+| `__reduce_max_sync(mask, val)` | `wave_reduce_max(val)` | Max across warp |
+| (manual scan loop) | `wave_exclusive_add(val)` | Exclusive prefix sum |
+| (manual scan loop) | `wave_inclusive_add(val)` | Inclusive prefix sum |
+
+Quanta does not require an explicit `mask` parameter -- all active lanes
+participate. This matches the SPIR-V and Metal subgroup model.
+
 ## Key differences
 
 **Build-time compilation.** CUDA compiles kernels with nvcc at build time (or PTX at runtime
@@ -103,7 +146,7 @@ via the driver). Quanta compiles at build time via proc macros — the kernel bi
 in your Rust binary. No CUDA toolkit needed at runtime.
 
 **Cross-vendor.** The same `#[quanta::kernel]` compiles to PTX (NVIDIA), GCN ELF (AMD),
-MSL (Apple), WGSL (browsers), and SPIR-V (Vulkan). One source, all GPUs.
+metallib (Apple), and SPIR-V (Vulkan). One source, all GPUs. All output is native binary.
 
 **No bounds checking in the example.** CUDA requires manual `if (i < n)` guards because
 you launch more threads than elements (grid must be a multiple of block size). Quanta

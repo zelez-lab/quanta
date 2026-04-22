@@ -40,7 +40,7 @@ quanta/                         Main library (no_std, zero external deps)
 
 crates/quanta-ir/               Shared IR definition (zero external deps)
 +-- src/
-|   +-- lib.rs                  KernelOp (36 variants), KernelDef, CompilerOutput
+|   +-- lib.rs                  KernelOp (47 variants), KernelDef, CompilerOutput
 |   +-- wire/                   Binary serialization (custom format, no serde)
 |       +-- encode.rs           KernelDef -> bytes
 |       +-- decode.rs           bytes -> KernelDef
@@ -99,12 +99,13 @@ Step 2: Serialize + invoke compiler (quanta-macros/compiler.rs)
     KernelDef -> quanta_ir::serialize_kernel() -> [u8]
     Pipe bytes to `quanta-compiler` binary via stdin
 
-Step 3: Compile to all targets (quanta-compiler)
+Step 3: Compile to all targets (quanta-compiler) — binary-only
     KernelOp -> LLVM IR -> PTX (NVIDIA)
     KernelOp -> LLVM IR -> GCN ELF (AMD)
     KernelOp -> LLVM IR -> SPIR-V (Vulkan)
-    KernelOp -> MSL source -> xcrun metal -> metallib (Apple)
-    KernelOp -> WGSL source (browsers)
+    KernelOp -> LLVM IR -> SPIR-V -> xcrun metal -> metallib (Apple)
+    No text output (MSL/WGSL) in the build path.
+    Text emitters (emit_msl.rs, emit_wgsl.rs) are reserved for the JIT path.
 
 Step 4: Embed (quanta-macros/lib.rs)
     CompilerOutput -> proc_macro TokenStream:
@@ -114,10 +115,12 @@ Step 4: Embed (quanta-macros/lib.rs)
         amd: Some(b"...elf..."),
         spirv: Some(b"..."),
         metallib: Some(b"..."),
-        msl: Some("..."),
-        wgsl: Some("..."),
         llvm_ir: None,
     };
+
+    For JIT kernels (#[quanta::kernel(jit)]), the KernelDef IR is
+    serialized and embedded instead:
+    pub static MY_KERNEL_KERNEL_DEF: &[u8] = b"...serialized IR...";
 
     pub fn my_kernel(device: &Gpu) -> Result<Wave, QuantaError> {
         let binary = MY_KERNEL_BINARY.for_vendor(device.caps().vendor)?;
@@ -129,13 +132,24 @@ Step 4: Embed (quanta-macros/lib.rs)
                     RUNTIME
                     =======
 
+    // Standard path: GPU hardware
     let gpu = quanta::init()?;
     //  -> discovers Metal or Vulkan device
     //  -> wraps in Gpu struct
 
+    // Alternative: CPU software executor (feature = "software")
+    let gpu = quanta::init_cpu();
+    //  -> creates CPU IR interpreter with barrier-correct workgroup execution
+    //  -> or set QUANTA_CPU=1 to make init() return the CPU executor
+
     let wave = my_kernel(&gpu)?;
     //  -> selects pre-compiled binary for this vendor
     //  -> creates pipeline state object (Metal) or compute pipeline (Vulkan)
+
+    // JIT path (feature = "jit"): compile IR at runtime
+    let wave = gpu.wave_jit(&MY_KERNEL_KERNEL_DEF)?;
+    //  -> deserializes KernelDef, compiles to current vendor's format
+    //  -> creates pipeline state object
 
     wave.bind(0, &input_field);
     //  -> records binding (slot -> field handle)
@@ -143,6 +157,7 @@ Step 4: Embed (quanta-macros/lib.rs)
     gpu.dispatch(&wave, 1024)?;
     //  -> Metal: encodes dispatch to command buffer, commits
     //  -> Vulkan: records dispatch, submits to queue
+    //  -> CPU: interprets IR sequentially per workgroup
 ```
 
 ## Driver interface
@@ -173,9 +188,15 @@ default = ["std", "metal"]
 std = []
 metal = ["std"]        # macOS/iOS only
 vulkan = ["std"]       # Linux/Android/Windows
+software = ["std"]     # CPU software executor (IR interpreter)
+jit = ["std"]          # Runtime JIT compilation via wave_jit()
 ```
 
 Without `std`, only types and the kernel language are available (for `no_std` environments).
+
+The `software` feature adds a full CPU executor that interprets kernel IR with
+barrier-correct workgroup execution. The `jit` feature enables `gpu.wave_jit()`
+for runtime compilation of serialized KernelDef IR.
 
 ## Dependency philosophy
 
@@ -203,4 +224,4 @@ The runtime follows a math-first discipline:
 
 ## Line count
 
-~24,700 lines of Rust across all workspace crates (runtime + IR + macros + compiler).
+~45,000 lines of Rust across all workspace crates (runtime + IR + macros + compiler).

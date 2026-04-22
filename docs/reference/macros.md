@@ -1,6 +1,7 @@
 # Macro Reference
 
-All 13 `#[quanta::*]` proc macros.
+All 13 `#[quanta::*]` proc macros. The `kernel` macro accepts additional
+attributes (`workgroup`, `jit`, `opt`) described below.
 
 ---
 
@@ -11,11 +12,24 @@ Compile a Rust function into a GPU compute kernel.
 ### Syntax
 
 ```rust
-#[quanta::kernel]                   // Default: O3 optimization
-#[quanta::kernel(opt = "O2")]       // Explicit optimization level
-#[quanta::kernel(opt = "O0")]       // No optimization (debug)
+#[quanta::kernel]                              // Default: O3, driver-chosen workgroup
+#[quanta::kernel(opt = "O2")]                  // Explicit optimization level
+#[quanta::kernel(opt = "O0")]                  // No optimization (debug)
+#[quanta::kernel(workgroup = [256, 1, 1])]     // 1D workgroup size
+#[quanta::kernel(workgroup = [16, 16, 1])]     // 2D workgroup size
+#[quanta::kernel(workgroup = [8, 8, 4])]       // 3D workgroup size
+#[quanta::kernel(jit)]                         // JIT: serialize IR, compile at runtime
+#[quanta::kernel(workgroup = [256, 1, 1], opt = "O2")]  // Combined attributes
 fn name(params...) { body }
 ```
+
+### Attributes
+
+| Attribute | Values | Default | Description |
+|-----------|--------|---------|-------------|
+| `opt` | `"O0"`, `"O1"`, `"O2"`, `"O3"` | `"O3"` | LLVM optimization level |
+| `workgroup` | `[x, y, z]` | driver-chosen | Workgroup dimensions (1D/2D/3D) |
+| `jit` | flag | off | Serialize KernelDef for runtime compilation |
 
 ### Parameters
 
@@ -25,8 +39,13 @@ fn name(params...) { body }
 
 ### Produces
 
-- `static NAME_BINARY: KernelBinary` — compiled kernel for all backends
+Without `jit`:
+- `static NAME_BINARY: KernelBinary` — compiled native binaries (SPIR-V, metallib, PTX, GCN) for all backends
 - `fn name(gpu: &Gpu) -> Result<Wave, QuantaError>` — creates a bound wave
+
+With `jit`:
+- `static NAME_KERNEL_DEF: &[u8]` — serialized KernelDef IR (compile at runtime via `gpu.wave_jit()`)
+- `fn name(gpu: &Gpu) -> Result<Wave, QuantaError>` — creates a bound wave (triggers runtime compilation)
 
 ### Built-in functions available in kernel body
 
@@ -170,7 +189,7 @@ fn name(attributes..., uniforms: &T) -> OutputType { body }
 
 ### Produces
 
-- `static NAME_SHADER: ShaderBinary` — compiled MSL + WGSL
+- `static NAME_SHADER: ShaderBinary` — compiled SPIR-V + metallib binaries
 - `fn name() -> &'static ShaderBinary` — accessor
 
 ### Example
@@ -203,7 +222,7 @@ fn name(varyings..., textures: &Texture2D, uniforms: &T) -> Vec4 { body }
 
 ### Produces
 
-- `static NAME_SHADER: ShaderBinary` — compiled MSL + WGSL
+- `static NAME_SHADER: ShaderBinary` — compiled SPIR-V + metallib binaries
 - `fn name() -> &'static ShaderBinary` — accessor
 
 ### Example

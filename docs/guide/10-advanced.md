@@ -292,3 +292,170 @@ gpu.timeline_wait(&timeline, frame_number - 2)?;
 
 Timelines increase monotonically. The GPU signals them after work completes;
 the CPU (or another queue) waits until the timeline reaches a threshold.
+
+---
+
+## JIT compilation
+
+For kernels that need to adapt at runtime (user-defined expressions, dynamic
+filter pipelines), use the `jit` attribute:
+
+```rust
+#[quanta::kernel(jit)]
+fn dynamic_filter(data: &mut [f32], threshold: f32) {
+    let i = quark_id();
+    if data[i] < threshold {
+        data[i] = 0.0;
+    }
+}
+```
+
+At build time, `#[quanta::kernel(jit)]` serializes the kernel's `KernelDef`
+(IR) into the binary instead of compiling it to GPU machine code. At runtime,
+call `gpu.wave_jit()` to compile and dispatch:
+
+```rust
+let wave = gpu.wave_jit(&DYNAMIC_FILTER_KERNEL_DEF)?;
+wave.bind(0, &data);
+wave.set_value(1, 0.5f32);
+let mut pulse = gpu.dispatch(&wave, n)?;
+gpu.wait(&mut pulse)?;
+```
+
+JIT compilation is feature-gated behind `jit`:
+
+```toml
+[dependencies]
+quanta = { version = "0.1", features = ["jit"] }
+```
+
+Use JIT when:
+- Kernel logic depends on runtime configuration
+- You need to generate kernels programmatically from IR
+- Hot-reload during development needs source-level changes
+
+For all other cases, prefer the default build-time compilation. It produces
+identical binaries with zero runtime compilation overhead.
+
+---
+
+## CPU software executor
+
+For testing and development without a GPU, Quanta provides a full CPU
+software executor that interprets the kernel IR:
+
+```rust
+// Initialize the CPU executor instead of a GPU
+let cpu = quanta::init_cpu();
+```
+
+Or set the environment variable:
+
+```sh
+QUANTA_CPU=1 cargo run --example my_compute
+```
+
+The CPU executor:
+- Interprets all KernelOp instructions
+- Emulates workgroup barriers correctly (all quarks in a workgroup reach
+  the barrier before any proceed past it)
+- Supports shared memory, atomics, and wave operations
+- Runs quarks sequentially within each workgroup, workgroups sequentially
+
+This is feature-gated behind `software`:
+
+```toml
+[dependencies]
+quanta = { version = "0.1", features = ["software"] }
+```
+
+The CPU executor is not designed for performance -- it is a correctness
+reference. Use it for:
+- CI/CD pipelines without GPU hardware
+- Debugging kernel logic with standard Rust tools
+- Validating results against a known-correct sequential execution
+
+---
+
+## Subgroup (wave) reduce and scan
+
+Subgroup operations perform reductions and scans across lanes within a proton
+(warp/SIMD group) without shared memory or barriers.
+
+### Reduce
+
+Combine a value across all lanes in the subgroup:
+
+```rust
+#[quanta::kernel]
+fn subgroup_sum(data: &[f32], result: &mut [f32]) {
+    let i = quark_id();
+    let val = data[i];
+
+    // Sum across all lanes in the proton
+    let sum = wave_reduce_add(val);
+
+    // Min/max variants
+    let min_val = wave_reduce_min(val);
+    let max_val = wave_reduce_max(val);
+
+    if local_id() == 0 {
+        result[group_id()] = sum;
+    }
+}
+```
+
+### Scan (prefix sum)
+
+Compute running totals across lanes:
+
+```rust
+#[quanta::kernel]
+fn compact(data: &[f32], output: &mut [f32], count: &mut [u32]) {
+    let i = quark_id();
+    let val = data[i];
+    let keep = if val > 0.0 { 1u32 } else { 0u32 };
+
+    // Exclusive prefix sum: each lane gets the sum of all preceding lanes
+    let offset = wave_exclusive_add(keep);
+
+    // Inclusive prefix sum: each lane gets the sum including itself
+    let inclusive = wave_inclusive_add(keep);
+
+    if keep == 1 {
+        output[offset] = val;
+    }
+}
+```
+
+Available subgroup operations:
+
+| Function | Description |
+|----------|-------------|
+| `wave_reduce_add(val)` | Sum across all lanes |
+| `wave_reduce_min(val)` | Minimum across all lanes |
+| `wave_reduce_max(val)` | Maximum across all lanes |
+| `wave_exclusive_add(val)` | Exclusive prefix sum (excludes current lane) |
+| `wave_inclusive_add(val)` | Inclusive prefix sum (includes current lane) |
+
+These compile to native subgroup instructions on all backends (SPIR-V
+`OpGroupNonUniform*`, Metal SIMD-group functions, PTX `redux`/`shfl`).
+
+---
+
+## Exclusive scan library
+
+For larger-than-subgroup prefix sums, Quanta provides a host-side scan utility:
+
+```rust
+use quanta::scan::exclusive_scan_f32_bytes;
+
+let input: &[u8] = /* serialized f32 array */;
+let output = exclusive_scan_f32_bytes(input);
+// output[i] = sum of input[0..i]
+```
+
+`exclusive_scan_f32_bytes` operates on raw byte slices (as returned by
+`gpu.read_field`) and produces an exclusive prefix sum of the `f32` values.
+Use this for stream compaction, histogram equalization, and radix sort
+building blocks.

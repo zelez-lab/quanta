@@ -5,21 +5,32 @@ The `quanta-compiler` binary reads a `KernelDef` from stdin and writes a
 
 ## Compilation pipeline
 
+The build-time pipeline produces only native binaries. Text emitters
+(`emit_msl.rs`, `emit_wgsl.rs`) exist but are reserved for the JIT path.
+
 ```
 KernelDef
     |
-    +-- emit_msl.rs ---------> MSL source string
-    |                              |
-    |                              +-- xcrun metal --> metallib binary
-    |
-    +-- emit_wgsl.rs --------> WGSL source string
-    |
     +-- to_llvm.rs ----------> LLVM Module
-                                   |
-                                   +-- NVPTX target --> PTX text
-                                   +-- AMDGPU target --> GCN ELF binary
-                                   +-- SPIR-V target --> SPIR-V binary
+    |                              |
+    |                              +-- NVPTX target --> PTX binary
+    |                              +-- AMDGPU target --> GCN ELF binary
+    |                              +-- SPIR-V target --> SPIR-V binary (compute)
+    |
+    +-- (SPIR-V) ------------> xcrun metal --> metallib binary (Apple)
+    |
+    +-- (JIT only) emit_msl.rs --> MSL source string
+    +-- (JIT only) emit_wgsl.rs -> WGSL source string
 ```
+
+### Vertex/fragment SPIR-V
+
+The SPIR-V emitter handles all execution models, not just `GLCompute`.
+Vertex shaders emit with `OpEntryPoint Vertex`, fragment shaders with
+`OpEntryPoint Fragment`. The same SPIR-V target generates both compute
+and graphics pipelines. On Apple, the SPIR-V output is compiled to
+metallib via `xcrun metal`, so vertex/fragment shaders also produce
+native metallib binaries.
 
 ## LLVM IR emission (`to_llvm/emit.rs`)
 
@@ -146,7 +157,9 @@ Key passes that run:
 
 ## MSL emitter (`emit_msl.rs`)
 
-Translates `KernelOp` directly to Metal Shading Language text. No LLVM involved.
+Reserved for the JIT path. Translates `KernelOp` directly to Metal Shading
+Language text. Not used in the standard build pipeline (which produces
+metallib via SPIR-V instead).
 
 ```
 KernelDef { name: "foo", params: [FieldRead("a", 0, F32), ...], body: [...] }
@@ -164,12 +177,10 @@ Emits:
     }
 ```
 
-MSL is also compiled to `.metallib` binary via `xcrun metal` + `xcrun metallib`
-when building on macOS. This avoids runtime shader compilation on Apple devices.
-
 ## WGSL emitter (`emit_wgsl.rs`)
 
-Same approach as MSL — direct text generation from `KernelOp`.
+Reserved for the JIT path. Same approach as MSL — direct text generation
+from `KernelOp`.
 
 ```wgsl
 @group(0) @binding(0) var<storage, read> a: array<f32>;
@@ -192,6 +203,36 @@ Rust source -> rustc (with custom target) -> LLVM IR -> retarget -> GPU binary
 
 This handles complex Rust features (generics, traits, closures) that the
 KernelOp parser does not yet support.
+
+## Device function inlining
+
+When a kernel calls `#[quanta::device]` functions or defines inner `fn` items,
+the compiler emits them as real function definitions in the target:
+
+**SPIR-V**: each device function becomes an `OpFunction` with its own
+`OpFunctionParameter` entries. Call sites emit `OpFunctionCall` referencing
+the function's `%id`. The SPIR-V optimizer (`OptimizerPass::Inline`) may
+inline them, but the unoptimized module preserves the call structure.
+
+```
+; Device function
+%relu = OpFunction %float None %relu_type
+%x = OpFunctionParameter %float
+       OpLabel
+       ; ... body ...
+       OpReturnValue %result
+       OpFunctionEnd
+
+; Call site inside kernel
+%val = OpFunctionCall %float %relu %input_val
+```
+
+**LLVM (PTX, GCN)**: device functions are emitted as `always_inline` functions.
+LLVM guarantees they are inlined during optimization, so the final binary has
+no function call overhead.
+
+**Metal**: since metallib is compiled from SPIR-V, the same OpFunction structure
+applies before Metal's optimizer runs.
 
 ## Adding a new KernelOp
 
