@@ -110,7 +110,14 @@ fn main() {
 /// Compile MSL source to metallib binary via xcrun metal + xcrun metallib.
 /// Returns None if xcrun is not available (e.g., cross-compiling from Linux).
 fn compile_msl_to_metallib(msl_source: &str) -> Option<Vec<u8>> {
-    let tmp_dir = std::env::temp_dir().join("quanta_metal");
+    // Use process ID + thread ID for unique temp files (avoids race when
+    // multiple proc macro expansions compile kernels in parallel).
+    let unique = format!(
+        "{}_{:x}",
+        std::process::id(),
+        msl_source.len() as u64 ^ (msl_source.as_ptr() as u64)
+    );
+    let tmp_dir = std::env::temp_dir().join(format!("quanta_metal_{}", unique));
     std::fs::create_dir_all(&tmp_dir).ok()?;
 
     let msl_path = tmp_dir.join("kernel.metal");
@@ -121,7 +128,7 @@ fn compile_msl_to_metallib(msl_source: &str) -> Option<Vec<u8>> {
 
     // MSL → AIR
     let air_result = std::process::Command::new("xcrun")
-        .args(["metal", "-c", "-target", "air64-apple-macos14.0.0"])
+        .args(["metal", "-c"])
         .arg(&msl_path)
         .arg("-o")
         .arg(&air_path)
