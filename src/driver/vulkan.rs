@@ -35,6 +35,7 @@ pub struct VulkanDevice {
     queue_family: u32,
     command_pool: ffi::VkCommandPool,
     caps: Caps,
+    max_push_constants_size: u32,
     // Resource storage — RwLock: dispatch/render paths take read locks; alloc/free take write locks.
     buffers: RwLock<HashMap<u64, VkBuffer>>,
     textures: RwLock<HashMap<u64, VkTexture>>,
@@ -351,6 +352,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             queue_family: qf_index as u32,
             command_pool,
             caps,
+            max_push_constants_size: props.limits.max_push_constants_size,
             buffers: RwLock::new(HashMap::new()),
             textures: RwLock::new(HashMap::new()),
             compute_pipelines: RwLock::new(HashMap::new()),

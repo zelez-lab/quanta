@@ -58,9 +58,10 @@ impl VulkanDevice {
             )));
         }
 
-        // Descriptor set layout -- one storage buffer per binding (16 max)
+        // Descriptor set layout -- one storage buffer per binding.
+        // Limit to 8 to stay within maxPerStageDescriptorStorageBuffers on mobile GPUs.
         let mut bindings = Vec::new();
-        for i in 0..16u32 {
+        for i in 0..8u32 {
             bindings.push(ffi::VkDescriptorSetLayoutBinding {
                 binding: i,
                 descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -92,12 +93,12 @@ impl VulkanDevice {
             )));
         }
 
-        // Declare a push constant range (256 bytes matches Wave's inline push_data buffer).
-        // Kernels with Constant params use push constants in SPIR-V.
+        // Declare a push constant range. Clamp to device limit (128 on mobile, 256 on desktop).
+        let push_size = self.max_push_constants_size.min(256);
         let push_range = ffi::VkPushConstantRange {
             stage_flags: ffi::VK_SHADER_STAGE_COMPUTE_BIT,
             offset: 0,
-            size: 256,
+            size: push_size,
         };
         let pipeline_layout_info = ffi::VkPipelineLayoutCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
