@@ -411,6 +411,9 @@ pub struct KernelDef {
     /// Populated by the parser for all inner `fn` definitions.
     /// The SPIR-V emitter uses these to generate real function calls.
     pub device_functions: Vec<DeviceFnDef>,
+    /// Workgroup (threadgroup) size: [x, y, z]. Default: [64, 1, 1].
+    /// Set via `#[quanta::kernel(workgroup = [256])]` or similar.
+    pub workgroup_size: [u32; 3],
 }
 
 /// Compiler output — compiled kernel for all targets.

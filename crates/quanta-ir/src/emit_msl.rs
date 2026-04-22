@@ -16,8 +16,13 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
         out.push('\n');
     }
 
-    // Kernel signature
-    out.push_str(&format!("kernel void {}(\n", kernel.name));
+    // Kernel signature with max_total_threads_per_threadgroup attribute
+    let max_threads =
+        kernel.workgroup_size[0] * kernel.workgroup_size[1] * kernel.workgroup_size[2];
+    out.push_str(&format!(
+        "[[max_total_threads_per_threadgroup({})]]\nkernel void {}(\n",
+        max_threads, kernel.name
+    ));
 
     let mut param_lines = Vec::new();
     let mut slot_names: HashMap<u32, String> = HashMap::new();

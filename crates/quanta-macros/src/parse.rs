@@ -182,6 +182,7 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
         opt_level: 3, // overridden by proc macro attribute
         device_sources: ctx.device_sources,
         device_functions: ctx.device_functions,
+        workgroup_size: [64, 1, 1], // overridden by proc macro attribute
     })
 }
 

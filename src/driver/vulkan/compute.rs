@@ -203,6 +203,7 @@ impl VulkanDevice {
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
+            workgroup_size: [64, 1, 1],
             drop_fn: None,
         })
     }

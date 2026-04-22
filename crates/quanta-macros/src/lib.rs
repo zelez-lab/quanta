@@ -10,24 +10,28 @@ mod validate;
 
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
-use syn::{Expr, ItemFn, Lit, parse_macro_input};
+use syn::{Expr, ItemFn, Lit, parse::Parser, parse_macro_input};
 
 /// Mark a function as a GPU kernel.
 ///
 /// ```ignore
-/// #[quanta::kernel]                  // default: O3
-/// #[quanta::kernel(opt = "O2")]      // explicit O2
-/// #[quanta::kernel(opt = "O0")]      // no optimization (debug)
-/// #[quanta::kernel(jit)]             // JIT: compile at runtime
+/// #[quanta::kernel]                                      // default: O3, workgroup [64,1,1]
+/// #[quanta::kernel(opt = "O2")]                          // explicit O2
+/// #[quanta::kernel(opt = "O0")]                          // no optimization (debug)
+/// #[quanta::kernel(workgroup = [256])]                   // [256, 1, 1]
+/// #[quanta::kernel(workgroup = [16, 16])]                // [16, 16, 1]
+/// #[quanta::kernel(workgroup = [16, 16, 1])]             // explicit 3D
+/// #[quanta::kernel(workgroup = [256], opt = "O2")]       // both
+/// #[quanta::kernel(jit)]                                 // JIT: compile at runtime
 /// ```
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
 
-    // Parse attributes: optimization level and jit flag
+    // Parse attributes: optimization level, workgroup size, and jit flag
     let attr_str = attr.to_string();
     let is_jit = attr_str.contains("jit");
-    let opt_level = parse_opt_level(attr.clone());
+    let kernel_attrs = parse_kernel_attrs(attr.clone());
 
     if let Err(err) = validate::validate_kernel(&func) {
         return err.to_compile_error().into();
@@ -37,7 +41,8 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(def) => def,
         Err(err) => return err.to_compile_error().into(),
     };
-    kernel_def.opt_level = opt_level;
+    kernel_def.opt_level = kernel_attrs.opt_level;
+    kernel_def.workgroup_size = kernel_attrs.workgroup_size;
 
     if is_jit {
         return emit_jit_kernel(&func, &kernel_def);
@@ -88,6 +93,10 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
         None => quote! { None },
     };
 
+    let wg_x = kernel_attrs.workgroup_size[0];
+    let wg_y = kernel_attrs.workgroup_size[1];
+    let wg_z = kernel_attrs.workgroup_size[2];
+
     let expanded = quote! {
         pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
             amd: #amd_expr,
@@ -101,7 +110,9 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .ok_or_else(|| ::quanta::QuantaError::compilation_failed(
                     format!("no compiled kernel for vendor {:?}", device.caps().vendor)
                 ))?;
-            device.wave(binary)
+            let mut wave = device.wave(binary)?;
+            wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
+            Ok(wave)
         }
     };
 
@@ -120,11 +131,17 @@ fn emit_jit_kernel(func: &ItemFn, kernel_def: &quanta_ir::KernelDef) -> TokenStr
     let serialized = quanta_ir::serialize_kernel(kernel_def);
     let def_lit = proc_macro2::Literal::byte_string(&serialized);
 
+    let wg_x = kernel_def.workgroup_size[0];
+    let wg_y = kernel_def.workgroup_size[1];
+    let wg_z = kernel_def.workgroup_size[2];
+
     let expanded = quote! {
         pub static #def_name: &[u8] = #def_lit;
 
         pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
-            device.wave_jit(#def_name)
+            let mut wave = device.wave_jit(#def_name)?;
+            wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
+            Ok(wave)
         }
     };
 
@@ -662,26 +679,108 @@ pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// Parse `opt = "O2"` from the attribute.
-/// Default: 3 (O3).
-fn parse_opt_level(attr: TokenStream) -> u8 {
+/// Parsed kernel attributes from `#[quanta::kernel(...)]`.
+struct KernelAttrs {
+    opt_level: u8,
+    workgroup_size: [u32; 3],
+}
+
+impl Default for KernelAttrs {
+    fn default() -> Self {
+        Self {
+            opt_level: 3,
+            workgroup_size: [64, 1, 1],
+        }
+    }
+}
+
+/// Parse kernel attributes: `opt = "O2"`, `workgroup = [16, 16, 1]`, `jit`.
+///
+/// Supports:
+/// - `#[quanta::kernel]`                           -> defaults
+/// - `#[quanta::kernel(opt = "O2")]`               -> opt only
+/// - `#[quanta::kernel(workgroup = [256])]`        -> [256, 1, 1]
+/// - `#[quanta::kernel(workgroup = [16, 16])]`     -> [16, 16, 1]
+/// - `#[quanta::kernel(workgroup = [16, 16, 1])]`  -> explicit 3D
+/// - `#[quanta::kernel(workgroup = [256], opt = "O2")]` -> both
+fn parse_kernel_attrs(attr: TokenStream) -> KernelAttrs {
+    let mut attrs = KernelAttrs::default();
+
     if attr.is_empty() {
-        return 3; // default O3
+        return attrs;
     }
 
-    let parsed: Result<syn::MetaNameValue, _> = syn::parse(attr);
-    if let Ok(nv) = parsed
-        && nv.path.is_ident("opt")
-        && let Expr::Lit(expr_lit) = &nv.value
-        && let Lit::Str(s) = &expr_lit.lit
-    {
-        return match s.value().as_str() {
-            "O0" | "0" => 0,
-            "O1" | "1" => 1,
-            "O2" | "2" => 2,
-            "O3" | "3" => 3,
-            _ => 3,
-        };
+    // Try parsing as a punctuated list of name = value pairs.
+    // We use syn to parse the token stream as comma-separated meta items.
+    let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
+    let parsed = match parser.parse(attr.clone()) {
+        Ok(p) => p,
+        Err(_) => {
+            // Fall back: might be just `jit` or a single `opt = "O2"`.
+            // Try single MetaNameValue parse for backward compat.
+            if let Ok(nv) = syn::parse::<syn::MetaNameValue>(attr)
+                && nv.path.is_ident("opt")
+                && let Expr::Lit(expr_lit) = &nv.value
+                && let Lit::Str(s) = &expr_lit.lit
+            {
+                attrs.opt_level = parse_opt_str(&s.value());
+            }
+            return attrs;
+        }
+    };
+
+    for meta in &parsed {
+        match meta {
+            syn::Meta::NameValue(nv) if nv.path.is_ident("opt") => {
+                if let Expr::Lit(expr_lit) = &nv.value
+                    && let Lit::Str(s) = &expr_lit.lit
+                {
+                    attrs.opt_level = parse_opt_str(&s.value());
+                }
+            }
+            syn::Meta::NameValue(nv) if nv.path.is_ident("workgroup") => {
+                if let Some(wg) = parse_workgroup_expr(&nv.value) {
+                    attrs.workgroup_size = wg;
+                }
+            }
+            _ => {} // ignore `jit` and unknown attrs
+        }
     }
-    3
+
+    attrs
+}
+
+fn parse_opt_str(s: &str) -> u8 {
+    match s {
+        "O0" | "0" => 0,
+        "O1" | "1" => 1,
+        "O2" | "2" => 2,
+        "O3" | "3" => 3,
+        _ => 3,
+    }
+}
+
+/// Parse `[256]`, `[16, 16]`, or `[16, 16, 1]` from an expression.
+fn parse_workgroup_expr(expr: &Expr) -> Option<[u32; 3]> {
+    if let Expr::Array(arr) = expr {
+        let elems: Vec<u32> = arr
+            .elems
+            .iter()
+            .filter_map(|e| {
+                if let Expr::Lit(lit) = e
+                    && let Lit::Int(int_lit) = &lit.lit
+                {
+                    return int_lit.base10_parse::<u32>().ok();
+                }
+                None
+            })
+            .collect();
+        match elems.len() {
+            1 => return Some([elems[0], 1, 1]),
+            2 => return Some([elems[0], elems[1], 1]),
+            3 => return Some([elems[0], elems[1], elems[2]]),
+            _ => {}
+        }
+    }
+    None
 }

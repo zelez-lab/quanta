@@ -189,6 +189,7 @@ fn vector_add_kernel() -> quanta_ir::KernelDef {
         opt_level: 3,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     }
 }
 
@@ -239,6 +240,7 @@ fn scalar_mul_kernel() -> quanta_ir::KernelDef {
         opt_level: 3,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     }
 }
 
@@ -278,6 +280,7 @@ fn identity_kernel() -> quanta_ir::KernelDef {
         opt_level: 3,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     }
 }
 

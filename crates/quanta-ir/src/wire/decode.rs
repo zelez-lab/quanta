@@ -808,6 +808,13 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
     } else {
         Vec::new()
     };
+    // workgroup_size: [u32; 3] — appended after device_functions.
+    // Default [64, 1, 1] for backward compatibility with old format.
+    let workgroup_size = if r.remaining() >= 12 {
+        [r.u32()?, r.u32()?, r.u32()?]
+    } else {
+        [64, 1, 1]
+    };
     Ok(KernelDef {
         name,
         params,
@@ -817,6 +824,7 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
         opt_level,
         device_sources,
         device_functions,
+        workgroup_size,
     })
 }
 

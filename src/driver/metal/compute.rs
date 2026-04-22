@@ -96,6 +96,7 @@ impl MetalDevice {
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
+            workgroup_size: [64, 1, 1],
             drop_fn: None,
         })
     }
@@ -176,6 +177,7 @@ impl MetalDevice {
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
+            workgroup_size: [64, 1, 1],
             drop_fn: None,
         })
     }
@@ -261,7 +263,11 @@ impl MetalDevice {
         drop(textures);
 
         let grid = ffi::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
-        let group_size = ffi::MTLSize::new(64, 1, 1);
+        let group_size = ffi::MTLSize::new(
+            wave.workgroup_size[0] as u64,
+            wave.workgroup_size[1] as u64,
+            wave.workgroup_size[2] as u64,
+        );
         unsafe {
             ffi::msg_dispatch_threadgroups(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
@@ -357,7 +363,11 @@ impl MetalDevice {
         drop(textures);
 
         let grid = ffi::MTLSize::new(quarks as u64, 1, 1);
-        let group_size = ffi::MTLSize::new(64, 1, 1);
+        let group_size = ffi::MTLSize::new(
+            wave.workgroup_size[0] as u64,
+            wave.workgroup_size[1] as u64,
+            wave.workgroup_size[2] as u64,
+        );
         unsafe {
             ffi::msg_dispatch_threads(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
@@ -437,7 +447,11 @@ impl MetalDevice {
             QuantaError::invalid_param("bad indirect buffer")
                 .with_context(&format!("wave_dispatch_indirect: buffer handle {buffer}"))
         })?;
-        let group_size = ffi::MTLSize::new(64, 1, 1);
+        let group_size = ffi::MTLSize::new(
+            wave.workgroup_size[0] as u64,
+            wave.workgroup_size[1] as u64,
+            wave.workgroup_size[2] as u64,
+        );
         unsafe {
             ffi::msg_dispatch_threadgroups_indirect(encoder, *indirect_buf, offset, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");

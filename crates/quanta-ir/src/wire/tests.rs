@@ -12,6 +12,7 @@ fn roundtrip_empty_kernel() {
         opt_level: 3,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -22,6 +23,7 @@ fn roundtrip_empty_kernel() {
     assert_eq!(k2.next_reg, 0);
     assert_eq!(k2.opt_level, 3);
     assert!(k2.device_sources.is_empty());
+    assert_eq!(k2.workgroup_size, [64, 1, 1]);
 }
 
 #[test]
@@ -39,6 +41,7 @@ fn roundtrip_kernel_with_body_source() {
         opt_level: 2,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -96,6 +99,7 @@ fn roundtrip_kernel_ops() {
         opt_level: 3,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -128,6 +132,7 @@ fn roundtrip_branch_and_loop() {
         opt_level: 0,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -177,6 +182,7 @@ fn trailing_bytes_rejected() {
         opt_level: 0,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let mut bytes = serialize_kernel(&k);
     bytes.push(0xFF);
@@ -242,6 +248,7 @@ fn dispatch_roundtrip() {
         opt_level: 0,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -291,6 +298,7 @@ fn all_kernel_params_roundtrip() {
         opt_level: 1,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -337,6 +345,7 @@ fn texture_ops_roundtrip() {
         opt_level: 3,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -374,6 +383,7 @@ fn wave_ops_roundtrip() {
         opt_level: 0,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -394,6 +404,7 @@ fn roundtrip_device_sources() {
             String::from("fn helper(a: f32) -> f32 { a + 1.0 }"),
         ],
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -437,6 +448,7 @@ fn roundtrip_device_functions() {
             ],
             next_reg: 3,
         }],
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -583,4 +595,40 @@ fn roundtrip_shader_def_all_types() {
     assert_eq!(s2.params[3].ty, ShaderType::Vec4);
     assert_eq!(s2.params[4].ty, ShaderType::Mat3);
     assert_eq!(s2.params[5].ty, ShaderType::Mat4);
+}
+
+#[test]
+fn roundtrip_workgroup_size() {
+    let k = KernelDef {
+        name: String::from("custom_wg"),
+        params: Vec::new(),
+        body: Vec::new(),
+        body_source: None,
+        next_reg: 0,
+        opt_level: 3,
+        device_sources: Vec::new(),
+        device_functions: Vec::new(),
+        workgroup_size: [16, 16, 1],
+    };
+    let bytes = serialize_kernel(&k);
+    let k2 = deserialize_kernel(&bytes).unwrap();
+    assert_eq!(k2.workgroup_size, [16, 16, 1]);
+}
+
+#[test]
+fn roundtrip_workgroup_size_1d() {
+    let k = KernelDef {
+        name: String::from("wg_1d"),
+        params: Vec::new(),
+        body: Vec::new(),
+        body_source: None,
+        next_reg: 0,
+        opt_level: 3,
+        device_sources: Vec::new(),
+        device_functions: Vec::new(),
+        workgroup_size: [256, 1, 1],
+    };
+    let bytes = serialize_kernel(&k);
+    let k2 = deserialize_kernel(&bytes).unwrap();
+    assert_eq!(k2.workgroup_size, [256, 1, 1]);
 }

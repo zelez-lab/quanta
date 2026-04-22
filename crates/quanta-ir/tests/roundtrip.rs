@@ -56,6 +56,7 @@ fn roundtrip_vector_add() {
         opt_level: 3,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
 
     let bytes = serialize_kernel(&kernel);
@@ -118,6 +119,7 @@ fn roundtrip_all_scalar_types() {
             opt_level: 3,
             device_sources: Vec::new(),
             device_functions: Vec::new(),
+            workgroup_size: [64, 1, 1],
         };
         let bytes = serialize_kernel(&kernel);
         let restored = deserialize_kernel(&bytes).unwrap();
@@ -156,6 +158,7 @@ fn roundtrip_all_ops() {
         opt_level: 2,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
 
     let bytes = serialize_kernel(&kernel);

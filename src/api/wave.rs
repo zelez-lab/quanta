@@ -26,6 +26,9 @@ pub struct Wave {
     pub(crate) push_len: u16,
     /// Bitmask: bit N set = push slot N has been written.
     pub(crate) push_mask: u16,
+    /// Workgroup (threadgroup) size [x, y, z]. Default: [64, 1, 1].
+    /// Set by the proc macro from `#[quanta::kernel(workgroup = [...])]`.
+    pub workgroup_size: [u32; 3],
     pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
 }
 

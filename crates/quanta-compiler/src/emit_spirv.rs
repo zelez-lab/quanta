@@ -1027,11 +1027,17 @@ impl SpvEmitter {
             Self::emit_op(&mut self.sec_entry_point, OP_ENTRY_POINT, &ops);
         }
 
-        // 7. Execution mode: LocalSize 64 1 1
+        // 7. Execution mode: LocalSize from kernel workgroup_size
         Self::emit_op(
             &mut self.sec_execution_mode,
             OP_EXECUTION_MODE,
-            &[main_id, EXECUTION_MODE_LOCAL_SIZE, 64, 1, 1],
+            &[
+                main_id,
+                EXECUTION_MODE_LOCAL_SIZE,
+                kernel.workgroup_size[0],
+                kernel.workgroup_size[1],
+                kernel.workgroup_size[2],
+            ],
         );
 
         // 8. Function body

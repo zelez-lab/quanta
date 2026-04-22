@@ -840,6 +840,10 @@ pub(crate) fn write_kernel_def(w: &mut Writer, k: &KernelDef) {
     for f in &k.device_functions {
         write_device_fn_def(w, f);
     }
+    // workgroup_size: [u32; 3]
+    w.u32(k.workgroup_size[0]);
+    w.u32(k.workgroup_size[1]);
+    w.u32(k.workgroup_size[2]);
 }
 
 // ---------------------------------------------------------------------------

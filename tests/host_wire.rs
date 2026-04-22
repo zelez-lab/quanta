@@ -21,6 +21,7 @@ fn wrap_ops(ops: Vec<KernelOp>) -> KernelDef {
         opt_level: 3,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     }
 }
 
@@ -292,6 +293,7 @@ fn roundtrip_kernel_def_with_device_sources() {
             String::from("fn identity(x: f32) -> f32 { x }"),
         ],
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
 
     let bytes = serialize_kernel(&k);
@@ -351,6 +353,7 @@ fn roundtrip_empty_body() {
         opt_level: 0,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -454,6 +457,7 @@ fn invalid_trailing_bytes_kernel() {
         opt_level: 0,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
     let mut bytes = serialize_kernel(&k);
     bytes.push(0xFF);
@@ -681,6 +685,7 @@ fn roundtrip_all_kernel_param_variants() {
         opt_level: 1,
         device_sources: Vec::new(),
         device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
     };
 
     let bytes = serialize_kernel(&k);

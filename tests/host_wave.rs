@@ -23,8 +23,9 @@ fn wave_struct_size_is_bounded() {
     // - push_data: [u8; 256] (256)
     // - push_len: u16 (2)
     // - push_mask: u16 (2)
+    // - workgroup_size: [u32; 3] (12)
     // - drop_fn: Option<Box<dyn FnOnce(u64)>> (16 on 64-bit)
-    // Total: ~542 + padding
+    // Total: ~554 + padding
     //
     // The key invariant: Wave is stack-allocated with inline arrays,
     // no heap allocation on the hot path.
