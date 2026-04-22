@@ -48,9 +48,15 @@ fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
 
     let mut child = result.ok()?;
 
-    // Write input
+    // Write input and explicitly close stdin before reading output
     use std::io::Write;
-    child.stdin.take()?.write_all(&input).ok()?;
+    {
+        let mut stdin = child.stdin.take()?;
+        if stdin.write_all(&input).is_err() {
+            let _ = child.kill();
+            return None;
+        }
+    } // stdin dropped here → pipe closed → child sees EOF
 
     // Read output
     let output = child.wait_with_output().ok()?;

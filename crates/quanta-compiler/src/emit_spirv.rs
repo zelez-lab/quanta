@@ -100,17 +100,17 @@ const OP_SLESS_THAN_EQUAL: u16 = 179;
 const OP_EXT_INST: u16 = 12;
 
 // Atomic opcodes
-const OP_ATOMIC_IADD: u16 = 234;
-const OP_ATOMIC_ISUB: u16 = 237;
-const OP_ATOMIC_SMIN: u16 = 238;
-const OP_ATOMIC_UMIN: u16 = 239;
-const OP_ATOMIC_SMAX: u16 = 240;
-const OP_ATOMIC_UMAX: u16 = 241;
-const OP_ATOMIC_AND: u16 = 242;
-const OP_ATOMIC_OR: u16 = 243;
-const OP_ATOMIC_XOR: u16 = 244;
 const OP_ATOMIC_EXCHANGE: u16 = 229;
 const OP_ATOMIC_COMPARE_EXCHANGE: u16 = 230;
+const OP_ATOMIC_IADD: u16 = 234;
+const OP_ATOMIC_ISUB: u16 = 235;
+const OP_ATOMIC_SMIN: u16 = 236;
+const OP_ATOMIC_UMIN: u16 = 237;
+const OP_ATOMIC_SMAX: u16 = 238;
+const OP_ATOMIC_UMAX: u16 = 239;
+const OP_ATOMIC_AND: u16 = 240;
+const OP_ATOMIC_OR: u16 = 241;
+const OP_ATOMIC_XOR: u16 = 242;
 
 // ── Storage classes ─────────────────────────────────────────────────────────
 

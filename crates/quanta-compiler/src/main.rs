@@ -15,6 +15,10 @@ use quanta_ir::*;
 use targets::GpuTarget;
 
 fn main() {
+    eprintln!(
+        "[quanta-compiler] v2 args={:?}",
+        std::env::args().collect::<Vec<_>>()
+    );
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--test-ir") {
