@@ -116,16 +116,40 @@ fn emit_device_fn(func: &syn::ItemFn, ctx: &mut EmitCtx) -> Result<(), syn::Erro
     Ok(())
 }
 
-/// Check if a `let` statement has a `#[quanta::shared]` (or `#[shared]`) attribute.
+/// Check if a `let` statement has a `#[quanta::shared]` or `#[quanta::shared(dyn)]`
+/// (or `#[shared]`/`#[shared(dyn)]`) attribute.
 fn has_shared_attr(local: &syn::Local) -> bool {
     local.attrs.iter().any(|attr| {
         let path = attr.path();
         let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-        // Match both #[quanta::shared] and #[shared]
+        // Match both #[quanta::shared] and #[shared], with optional (dyn) arg
         match segments.as_slice() {
             [single] => single == "shared",
             [ns, name] => ns == "quanta" && name == "shared",
             _ => false,
+        }
+    })
+}
+
+/// Check if a `let` statement has a `#[quanta::shared(dyn)]` or `#[shared(dyn)]` attribute.
+fn has_shared_dyn_attr(local: &syn::Local) -> bool {
+    local.attrs.iter().any(|attr| {
+        let path = attr.path();
+        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        let is_shared = match segments.as_slice() {
+            [single] => single == "shared",
+            [ns, name] => ns == "quanta" && name == "shared",
+            _ => false,
+        };
+        if !is_shared {
+            return false;
+        }
+        // Check for (dyn) argument
+        if let syn::Meta::List(list) = &attr.meta {
+            let tokens = list.tokens.to_string();
+            tokens.trim() == "dyn"
+        } else {
+            false
         }
     })
 }
@@ -173,7 +197,11 @@ fn parse_shared_array_type(ty: &Type) -> Result<(ScalarType, u32), syn::Error> {
 
 /// Emit a let binding, handling simple idents, tuple patterns, and shared memory declarations.
 fn emit_local(local: &syn::Local, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
-    // Check for #[quanta::shared] attribute
+    // Check for #[quanta::shared(dyn)] attribute first (dynamic shared memory)
+    if has_shared_dyn_attr(local) {
+        return emit_shared_dyn_decl(local, ctx);
+    }
+    // Check for #[quanta::shared] attribute (static shared memory)
     if has_shared_attr(local) {
         return emit_shared_decl(local, ctx);
     }
@@ -275,6 +303,81 @@ fn emit_shared_decl(local: &syn::Local, ctx: &mut EmitCtx) -> Result<(), syn::Er
         ty: scalar_ty,
         count,
     });
+    ctx.shared_vars.insert(var_name, (id, scalar_ty));
+
+    Ok(())
+}
+
+/// Emit a dynamic shared memory declaration: `#[quanta::shared(dyn)] let local: [f32];`
+///
+/// The slice type `[T]` (without size) indicates dynamic sizing. The actual size
+/// is determined at dispatch time via `wave.set_shared_memory(bytes)`.
+fn emit_shared_dyn_decl(local: &syn::Local, ctx: &mut EmitCtx) -> Result<(), syn::Error> {
+    let var_name = match &local.pat {
+        Pat::Ident(ident) => ident.ident.to_string(),
+        Pat::Type(pat_type) => match pat_type.pat.as_ref() {
+            Pat::Ident(ident) => ident.ident.to_string(),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &local.pat,
+                    "dynamic shared memory variable must be a simple name",
+                ));
+            }
+        },
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &local.pat,
+                "dynamic shared memory variable must be a simple name",
+            ));
+        }
+    };
+
+    // Extract the type annotation — either from Pat::Type or from Local::ty
+    let ty_ref = match &local.pat {
+        Pat::Type(pat_type) => Some(pat_type.ty.as_ref()),
+        _ => None,
+    };
+
+    let ty = ty_ref.ok_or_else(|| {
+        syn::Error::new_spanned(
+            &local.pat,
+            "dynamic shared memory must have a type annotation: #[quanta::shared(dyn)] let name: [Type];",
+        )
+    })?;
+
+    // Parse slice type [T] (without size) for dynamic shared memory
+    let scalar_ty = match ty {
+        Type::Slice(slice) => scalar_type_from_path(match slice.elem.as_ref() {
+            Type::Path(path) => path,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &slice.elem,
+                    "dynamic shared memory element must be a scalar type",
+                ));
+            }
+        })?,
+        // Also accept [T; N] form and treat as dynamic (ignoring N)
+        Type::Array(array) => scalar_type_from_path(match array.elem.as_ref() {
+            Type::Path(path) => path,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &array.elem,
+                    "dynamic shared memory element must be a scalar type",
+                ));
+            }
+        })?,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "dynamic shared memory must be declared as [Type] (slice without size)",
+            ));
+        }
+    };
+
+    let id = ctx.next_shared;
+    ctx.next_shared += 1;
+
+    ctx.ops.push(KernelOp::SharedDeclDyn { id, ty: scalar_ty });
     ctx.shared_vars.insert(var_name, (id, scalar_ty));
 
     Ok(())

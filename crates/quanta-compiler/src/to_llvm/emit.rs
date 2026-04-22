@@ -1274,9 +1274,12 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
         | KernelOp::SubgroupReduceMax { .. }
         | KernelOp::SubgroupExclusiveAdd { .. }
         | KernelOp::SubgroupInclusiveAdd { .. }
-        | KernelOp::TextureLoad2D { .. } => {
+        | KernelOp::TextureLoad2D { .. }
+        | KernelOp::SubgroupSize { .. }
+        | KernelOp::SharedDeclDyn { .. }
+        | KernelOp::DebugPrint { .. } => {
             return Err(
-                "new IR ops (bitcast, CTZ/CLZ, popcount, dot, subgroup, texture load) not yet supported in LLVM path"
+                "new IR ops (bitcast, CTZ/CLZ, popcount, dot, subgroup, texture load, shared dyn, debug print) not yet supported in LLVM path"
                     .into(),
             );
         }

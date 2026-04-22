@@ -460,6 +460,8 @@ fn build_exclusive_scan(ty: ScalarType, zero: ConstValue) -> KernelDef {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [SCAN_WORKGROUP_SIZE, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     }
 }
 

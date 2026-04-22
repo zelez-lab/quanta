@@ -472,6 +472,20 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 pad
             ));
         }
+        KernelOp::SubgroupSize { dst } => {
+            out.push_str(&format!("{}let r{} = subgroup_size;\n", pad, dst.0));
+        }
+        KernelOp::SharedDeclDyn { id, ty } => {
+            out.push_str(&format!(
+                "{}// dynamic shared_{}: {} — size set at dispatch\n",
+                pad,
+                id,
+                ty.wgsl_name(),
+            ));
+        }
+        KernelOp::DebugPrint { src, .. } => {
+            out.push_str(&format!("{}// gpu_print: r{}\n", pad, src.0,));
+        }
     }
 }
 

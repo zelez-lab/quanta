@@ -328,7 +328,7 @@ fn read_kernel_param(r: &mut Reader) -> Result<KernelParam, &'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// KernelOp  (47 variants, tags 0..46)
+// KernelOp  (50 variants, tags 0..49)
 // ---------------------------------------------------------------------------
 
 fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
@@ -833,6 +833,26 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
             })
         }
 
+        // 47 — SubgroupSize
+        47 => {
+            let dst = read_reg(r)?;
+            Ok(KernelOp::SubgroupSize { dst })
+        }
+
+        // 48 — SharedDeclDyn
+        48 => {
+            let id = r.u32()?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::SharedDeclDyn { id, ty })
+        }
+
+        // 49 — DebugPrint
+        49 => {
+            let src = read_reg(r)?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::DebugPrint { src, ty })
+        }
+
         _ => Err("invalid KernelOp tag"),
     }
 }
@@ -920,6 +940,19 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
     } else {
         [64, 1, 1]
     };
+    // subgroup_size: Option<u32> — appended after workgroup_size.
+    let subgroup_size = if r.remaining() > 0 {
+        let tag = r.u8()?;
+        match tag {
+            0 => None,
+            1 => Some(r.u32()?),
+            _ => return Err("invalid subgroup_size option tag"),
+        }
+    } else {
+        None
+    };
+    // dynamic_shared_bytes: u32 — appended after subgroup_size.
+    let dynamic_shared_bytes = if r.remaining() >= 4 { r.u32()? } else { 0 };
     Ok(KernelDef {
         name,
         params,
@@ -930,6 +963,8 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
         device_sources,
         device_functions,
         workgroup_size,
+        subgroup_size,
+        dynamic_shared_bytes,
     })
 }
 

@@ -22,6 +22,8 @@ fn wrap_ops(ops: Vec<KernelOp>) -> KernelDef {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     }
 }
 
@@ -294,6 +296,8 @@ fn roundtrip_kernel_def_with_device_sources() {
         ],
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
 
     let bytes = serialize_kernel(&k);
@@ -354,6 +358,8 @@ fn roundtrip_empty_body() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -458,6 +464,8 @@ fn invalid_trailing_bytes_kernel() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let mut bytes = serialize_kernel(&k);
     bytes.push(0xFF);
@@ -686,6 +694,8 @@ fn roundtrip_all_kernel_param_variants() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
 
     let bytes = serialize_kernel(&k);

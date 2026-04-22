@@ -303,6 +303,24 @@ fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
             ctx.ops.push(KernelOp::GroupSize { dst });
             Ok((dst, ScalarType::U32))
         }
+        "subgroup_size" => {
+            let dst = ctx.alloc_reg();
+            ctx.ops.push(KernelOp::SubgroupSize { dst });
+            Ok((dst, ScalarType::U32))
+        }
+
+        // GPU debug print
+        "gpu_print" => {
+            if call.args.len() != 1 {
+                return Err(syn::Error::new_spanned(
+                    call,
+                    "gpu_print requires exactly 1 argument",
+                ));
+            }
+            let (val, ty) = emit_expr(&call.args[0], ctx)?;
+            ctx.ops.push(KernelOp::DebugPrint { src: val, ty });
+            Ok((val, ty))
+        }
 
         // Synchronization
         "barrier" => {

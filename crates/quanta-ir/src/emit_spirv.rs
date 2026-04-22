@@ -873,7 +873,8 @@ impl SpvEmitter {
                 | KernelOp::SubgroupReduceMax { dst, .. }
                 | KernelOp::SubgroupExclusiveAdd { dst, .. }
                 | KernelOp::SubgroupInclusiveAdd { dst, .. }
-                | KernelOp::TextureLoad2D { dst, .. } => Some(dst.0),
+                | KernelOp::TextureLoad2D { dst, .. }
+                | KernelOp::SubgroupSize { dst, .. } => Some(dst.0),
                 _ => None,
             };
             if let Some(reg_num) = dst_reg {
@@ -1188,7 +1189,8 @@ impl SpvEmitter {
                 | KernelOp::SubgroupReduceMax { dst, .. }
                 | KernelOp::SubgroupExclusiveAdd { dst, .. }
                 | KernelOp::SubgroupInclusiveAdd { dst, .. }
-                | KernelOp::TextureLoad2D { dst, .. } => {
+                | KernelOp::TextureLoad2D { dst, .. }
+                | KernelOp::SubgroupSize { dst, .. } => {
                     dsts.push(dst.0);
                 }
                 KernelOp::TextureSize { dst_w, dst_h, .. } => {
@@ -1233,6 +1235,24 @@ impl SpvEmitter {
                         &[ptr_arr, var_id, STORAGE_CLASS_WORKGROUP],
                     );
                     self.emit_name(var_id, &format!("shared_{}", id));
+                    self.shared_vars.insert(*id, (var_id, elem_ty));
+                }
+                KernelOp::SharedDeclDyn { id, ty } => {
+                    let elem_ty = self.scalar_type_id(*ty);
+                    let default_count = self.emit_constant_u32(256);
+                    let arr_ty = self.ensure_type_array(elem_ty, default_count);
+                    let stride = Self::scalar_byte_size(*ty);
+                    if self.decorated_stride.insert(arr_ty) {
+                        self.decorate(arr_ty, DECORATION_ARRAY_STRIDE, &[stride]);
+                    }
+                    let ptr_arr = self.ensure_type_pointer(STORAGE_CLASS_WORKGROUP, arr_ty);
+                    let var_id = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_global_var,
+                        OP_VARIABLE,
+                        &[ptr_arr, var_id, STORAGE_CLASS_WORKGROUP],
+                    );
+                    self.emit_name(var_id, &format!("shared_dyn_{}", id));
                     self.shared_vars.insert(*id, (var_id, elem_ty));
                 }
                 KernelOp::Branch {
@@ -2346,6 +2366,21 @@ impl SpvEmitter {
                 let result_ty = self.scalar_type_id(*ty);
                 let zero = self.emit_constant_f32(0.0);
                 self.set_reg(*dst, zero, result_ty);
+            }
+
+            KernelOp::SubgroupSize { dst } => {
+                let uint_ty = self.ensure_type_u32();
+                let val = self.emit_constant_u32(32); // placeholder: common subgroup size
+                self.set_reg(*dst, val, uint_ty);
+            }
+
+            KernelOp::SharedDeclDyn { .. } => {
+                // Handled during shared decl scan phase.
+            }
+
+            KernelOp::DebugPrint { src, ty } => {
+                // Debug print: no-op in SPIR-V for now.
+                let _ = (src, ty);
             }
 
             KernelOp::Dispatch { .. } => {

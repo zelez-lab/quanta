@@ -71,10 +71,20 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
             _ => {}
         }
     }
+    // Check if kernel uses debug print — if so, add a debug buffer parameter
+    let uses_debug_print = kernel
+        .body
+        .iter()
+        .any(|op| matches!(op, KernelOp::DebugPrint { .. }));
+    if uses_debug_print {
+        param_lines.push("    device uint* _debug_buf [[buffer(30)]]".to_string());
+    }
+
     param_lines.push("    uint _quark_id [[thread_position_in_grid]]".to_string());
     param_lines.push("    uint _local_id [[thread_position_in_threadgroup]]".to_string());
     param_lines.push("    uint _group_id [[threadgroup_position_in_grid]]".to_string());
     param_lines.push("    uint _group_size [[threads_per_threadgroup]]".to_string());
+    param_lines.push("    uint _simd_width [[threads_per_simdgroup]]".to_string());
 
     out.push_str(&param_lines.join(",\n"));
     out.push_str("\n) {\n");
@@ -552,6 +562,40 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 texture,
                 x.0,
                 y.0
+            ));
+        }
+        KernelOp::SubgroupSize { dst } => {
+            out.push_str(&format!("{}uint r{} = _simd_width;\n", pad, dst.0));
+        }
+        KernelOp::SharedDeclDyn { id, ty } => {
+            out.push_str(&format!(
+                "{}/* dynamic shared_{}: threadgroup {}[] — size set at dispatch */\n",
+                pad,
+                id,
+                ty.msl_name(),
+            ));
+            out.push_str(&format!(
+                "{}threadgroup {}* shared_{} = (threadgroup {}*)_dynamic_shared;\n",
+                pad,
+                ty.msl_name(),
+                id,
+                ty.msl_name(),
+            ));
+        }
+        KernelOp::DebugPrint { src, ty } => {
+            let val_expr = match ty {
+                ScalarType::F32 => format!("as_type<uint>(r{})", src.0),
+                ScalarType::U32 => format!("r{}", src.0),
+                ScalarType::I32 => format!("as_type<uint>(r{})", src.0),
+                _ => format!("uint(r{})", src.0),
+            };
+            out.push_str(&format!(
+                "{}{{ uint _dbg_off = atomic_fetch_add_explicit((device atomic_uint*)&_debug_buf[0], 2u, memory_order_relaxed); ",
+                pad,
+            ));
+            out.push_str(&format!(
+                "if (_dbg_off + 2u < 16384u) {{ _debug_buf[_dbg_off + 1u] = _quark_id; _debug_buf[_dbg_off + 2u] = {}; }} }}\n",
+                val_expr,
             ));
         }
         KernelOp::Dispatch { .. } => {

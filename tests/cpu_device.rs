@@ -92,6 +92,8 @@ fn build_add_one_kernel() -> Vec<u8> {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     quanta_ir::serialize_kernel(&def)
 }
@@ -175,6 +177,8 @@ fn build_vector_add_kernel() -> Vec<u8> {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     quanta_ir::serialize_kernel(&def)
 }
@@ -264,6 +268,8 @@ fn build_threshold_kernel() -> Vec<u8> {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     quanta_ir::serialize_kernel(&def)
 }
@@ -333,6 +339,8 @@ fn build_loop_sum_kernel() -> Vec<u8> {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     quanta_ir::serialize_kernel(&def)
 }
@@ -411,6 +419,8 @@ fn build_identity_kernel() -> Vec<u8> {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     quanta_ir::serialize_kernel(&def)
 }
@@ -472,6 +482,8 @@ fn build_sqrt_kernel() -> Vec<u8> {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     quanta_ir::serialize_kernel(&def)
 }
@@ -529,6 +541,8 @@ fn build_atomic_add_kernel() -> Vec<u8> {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     quanta_ir::serialize_kernel(&def)
 }
@@ -650,6 +664,8 @@ fn build_shared_sum_kernel() -> Vec<u8> {
         device_sources: vec![],
         device_functions: vec![],
         workgroup_size: [4, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     quanta_ir::serialize_kernel(&def)
 }

@@ -13,6 +13,8 @@ fn roundtrip_empty_kernel() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -24,6 +26,8 @@ fn roundtrip_empty_kernel() {
     assert_eq!(k2.opt_level, 3);
     assert!(k2.device_sources.is_empty());
     assert_eq!(k2.workgroup_size, [64, 1, 1]);
+    assert_eq!(k2.subgroup_size, None);
+    assert_eq!(k2.dynamic_shared_bytes, 0);
 }
 
 #[test]
@@ -42,6 +46,8 @@ fn roundtrip_kernel_with_body_source() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -100,6 +106,8 @@ fn roundtrip_kernel_ops() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -133,6 +141,8 @@ fn roundtrip_branch_and_loop() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -183,6 +193,8 @@ fn trailing_bytes_rejected() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let mut bytes = serialize_kernel(&k);
     bytes.push(0xFF);
@@ -249,6 +261,8 @@ fn dispatch_roundtrip() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -299,6 +313,8 @@ fn all_kernel_params_roundtrip() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -346,6 +362,8 @@ fn texture_ops_roundtrip() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -384,6 +402,8 @@ fn wave_ops_roundtrip() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -405,6 +425,8 @@ fn roundtrip_device_sources() {
         ],
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -449,6 +471,8 @@ fn roundtrip_device_functions() {
             next_reg: 3,
         }],
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -609,6 +633,8 @@ fn roundtrip_workgroup_size() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [16, 16, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -627,6 +653,8 @@ fn roundtrip_workgroup_size_1d() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [256, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
@@ -707,8 +735,63 @@ fn roundtrip_new_ops() {
         device_sources: Vec::new(),
         device_functions: Vec::new(),
         workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
     assert_eq!(k2.body.len(), 11);
+}
+
+#[test]
+fn roundtrip_subgroup_size_and_dynamic_shared() {
+    let k = KernelDef {
+        name: String::from("subgroup_test"),
+        params: Vec::new(),
+        body: vec![
+            KernelOp::SubgroupSize { dst: Reg(0) },
+            KernelOp::SharedDeclDyn {
+                id: 0,
+                ty: ScalarType::F32,
+            },
+            KernelOp::DebugPrint {
+                src: Reg(0),
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 1,
+        opt_level: 3,
+        device_sources: Vec::new(),
+        device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
+        subgroup_size: Some(32),
+        dynamic_shared_bytes: 4096,
+    };
+    let bytes = serialize_kernel(&k);
+    let k2 = deserialize_kernel(&bytes).unwrap();
+    assert_eq!(k2.body.len(), 3);
+    assert_eq!(k2.subgroup_size, Some(32));
+    assert_eq!(k2.dynamic_shared_bytes, 4096);
+}
+
+#[test]
+fn roundtrip_subgroup_size_none() {
+    let k = KernelDef {
+        name: String::from("no_subgroup"),
+        params: Vec::new(),
+        body: Vec::new(),
+        body_source: None,
+        next_reg: 0,
+        opt_level: 3,
+        device_sources: Vec::new(),
+        device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    };
+    let bytes = serialize_kernel(&k);
+    let k2 = deserialize_kernel(&bytes).unwrap();
+    assert_eq!(k2.subgroup_size, None);
+    assert_eq!(k2.dynamic_shared_bytes, 0);
 }

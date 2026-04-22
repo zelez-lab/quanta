@@ -183,6 +183,8 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
         device_sources: ctx.device_sources,
         device_functions: ctx.device_functions,
         workgroup_size: [64, 1, 1], // overridden by proc macro attribute
+        subgroup_size: None,        // overridden by proc macro attribute
+        dynamic_shared_bytes: 0,    // set by dispatch API
     })
 }
 

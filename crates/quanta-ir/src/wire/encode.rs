@@ -403,6 +403,9 @@ fn write_kernel_param(w: &mut Writer, p: &KernelParam) {
 //  44  SubgroupExclusiveAdd
 //  45  SubgroupInclusiveAdd
 //  46  TextureLoad2D
+//  47  SubgroupSize
+//  48  SharedDeclDyn
+//  49  DebugPrint
 
 fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
     match op {
@@ -902,6 +905,26 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             write_reg(w, y);
             write_scalar_type(w, ty);
         }
+
+        // 47 — SubgroupSize { dst }
+        KernelOp::SubgroupSize { dst } => {
+            w.u8(47);
+            write_reg(w, dst);
+        }
+
+        // 48 — SharedDeclDyn { id, ty }
+        KernelOp::SharedDeclDyn { id, ty } => {
+            w.u8(48);
+            w.u32(*id);
+            write_scalar_type(w, ty);
+        }
+
+        // 49 — DebugPrint { src, ty }
+        KernelOp::DebugPrint { src, ty } => {
+            w.u8(49);
+            write_reg(w, src);
+            write_scalar_type(w, ty);
+        }
     }
 }
 
@@ -960,6 +983,16 @@ pub(crate) fn write_kernel_def(w: &mut Writer, k: &KernelDef) {
     w.u32(k.workgroup_size[0]);
     w.u32(k.workgroup_size[1]);
     w.u32(k.workgroup_size[2]);
+    // subgroup_size: Option<u32>
+    match k.subgroup_size {
+        None => w.u8(0),
+        Some(s) => {
+            w.u8(1);
+            w.u32(s);
+        }
+    }
+    // dynamic_shared_bytes: u32
+    w.u32(k.dynamic_shared_bytes);
 }
 
 // ---------------------------------------------------------------------------

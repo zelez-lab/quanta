@@ -407,6 +407,11 @@ pub enum KernelOp {
         width: u8,
     },
 
+    // Subgroup
+    SubgroupSize {
+        dst: Reg,
+    },
+
     // Subgroup scan/reduce
     SubgroupReduceAdd {
         dst: Reg,
@@ -440,6 +445,18 @@ pub enum KernelOp {
         texture: u32,
         x: Reg,
         y: Reg,
+        ty: ScalarType,
+    },
+
+    // Dynamic shared memory declaration (size determined at dispatch)
+    SharedDeclDyn {
+        id: u32,
+        ty: ScalarType,
+    },
+
+    // GPU debug print (writes value + thread_id to a debug buffer)
+    DebugPrint {
+        src: Reg,
         ty: ScalarType,
     },
 }
@@ -482,6 +499,11 @@ pub struct KernelDef {
     /// Workgroup (threadgroup) size: [x, y, z]. Default: [64, 1, 1].
     /// Set via `#[quanta::kernel(workgroup = [256])]` or similar.
     pub workgroup_size: [u32; 3],
+    /// Required subgroup (warp/simd) size. None = use hardware default.
+    /// Set via `#[quanta::kernel(subgroup = 32)]`.
+    pub subgroup_size: Option<u32>,
+    /// Dynamic shared memory size in bytes, set by dispatch API. 0 = none.
+    pub dynamic_shared_bytes: u32,
 }
 
 /// Compiler output — compiled kernel for all targets.

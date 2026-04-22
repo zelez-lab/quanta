@@ -22,6 +22,7 @@ use syn::{Expr, ItemFn, Lit, parse::Parser, parse_macro_input};
 /// #[quanta::kernel(workgroup = [16, 16])]                // [16, 16, 1]
 /// #[quanta::kernel(workgroup = [16, 16, 1])]             // explicit 3D
 /// #[quanta::kernel(workgroup = [256], opt = "O2")]       // both
+/// #[quanta::kernel(subgroup = 32)]                       // require subgroup size 32
 /// #[quanta::kernel(jit)]                                 // JIT: compile at runtime
 /// ```
 #[proc_macro_attribute]
@@ -43,6 +44,7 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     kernel_def.opt_level = kernel_attrs.opt_level;
     kernel_def.workgroup_size = kernel_attrs.workgroup_size;
+    kernel_def.subgroup_size = kernel_attrs.subgroup_size;
 
     if is_jit {
         return emit_jit_kernel(&func, &kernel_def);
@@ -683,6 +685,7 @@ pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
 struct KernelAttrs {
     opt_level: u8,
     workgroup_size: [u32; 3],
+    subgroup_size: Option<u32>,
 }
 
 impl Default for KernelAttrs {
@@ -690,6 +693,7 @@ impl Default for KernelAttrs {
         Self {
             opt_level: 3,
             workgroup_size: [64, 1, 1],
+            subgroup_size: None,
         }
     }
 }
@@ -741,6 +745,14 @@ fn parse_kernel_attrs(attr: TokenStream) -> KernelAttrs {
             syn::Meta::NameValue(nv) if nv.path.is_ident("workgroup") => {
                 if let Some(wg) = parse_workgroup_expr(&nv.value) {
                     attrs.workgroup_size = wg;
+                }
+            }
+            syn::Meta::NameValue(nv) if nv.path.is_ident("subgroup") => {
+                if let Expr::Lit(expr_lit) = &nv.value
+                    && let Lit::Int(i) = &expr_lit.lit
+                    && let Ok(v) = i.base10_parse::<u32>()
+                {
+                    attrs.subgroup_size = Some(v);
                 }
             }
             _ => {} // ignore `jit` and unknown attrs

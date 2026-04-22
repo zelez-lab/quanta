@@ -870,6 +870,25 @@ fn emit_msl_op(
                 dst.0
             ));
         }
+        SubgroupSize { dst } => {
+            out.push_str(&format!("{}uint r{} = _simd_width;\n", pad, dst.0));
+        }
+        SharedDeclDyn { id, ty } => {
+            out.push_str(&format!(
+                "{}/* dynamic shared_{}: threadgroup {}[] */\n",
+                pad,
+                id,
+                ty.msl_name(),
+            ));
+        }
+        DebugPrint { src, ty } => {
+            let val_expr = match ty {
+                quanta_ir::ScalarType::F32 => format!("as_type<uint>(r{})", src.0),
+                quanta_ir::ScalarType::U32 => format!("r{}", src.0),
+                _ => format!("uint(r{})", src.0),
+            };
+            out.push_str(&format!("{}/* gpu_print: {} */\n", pad, val_expr,));
+        }
     }
 }
 
@@ -1435,6 +1454,20 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
                 "{}// error: dynamic parallelism not supported in WGSL\n",
                 pad
             ));
+        }
+        SubgroupSize { dst } => {
+            out.push_str(&format!("{}let r{} = subgroup_size;\n", pad, dst.0));
+        }
+        SharedDeclDyn { id, ty } => {
+            out.push_str(&format!(
+                "{}// dynamic shared_{}: {} — size set at dispatch\n",
+                pad,
+                id,
+                ty.wgsl_name(),
+            ));
+        }
+        DebugPrint { src, .. } => {
+            out.push_str(&format!("{}// gpu_print: r{}\n", pad, src.0,));
         }
     }
 }
