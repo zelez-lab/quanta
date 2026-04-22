@@ -8,17 +8,18 @@ use std::collections::HashMap;
 /// Compile a KernelDef to all available targets.
 ///
 /// Strategy:
-/// 1. Try quanta-compiler binary (supports LLVM targets + SPIR-V + metallib)
-/// 2. If not found, return error (binary-only — no text fallback)
+/// 1. Try quanta-compiler binary (local dev, PATH, cached download, or auto-download)
+/// 2. If not found, return empty output with warning
 pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
-    // Try calling the compiler binary for full output
+    // Try calling the compiler binary for full output.
+    // find_compiler_binary() handles the full search chain including
+    // auto-download from GitHub Releases for crates.io users.
     if let Some(output) = try_compiler_binary(kernel) {
         return Ok(output);
     }
 
     // No compiler binary found — return empty output.
-    // This is acceptable during development: proc macro tests will get
-    // empty binaries, but GPU execution requires the compiler.
+    // GPU dispatch will fail at runtime, but compilation succeeds.
     Ok(CompilerOutput {
         amd: None,
         nvidia: None,
@@ -77,6 +78,8 @@ fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
 /// 2. ../quanta-compiler/target/release/quanta-compiler (development)
 /// 3. ../quanta-compiler/target/debug/quanta-compiler (development)
 /// 4. quanta-compiler in PATH
+/// 5. Cached download in ~/.quanta/bin/
+/// 6. Download from GitHub Releases (unless QUANTA_NO_DOWNLOAD=1)
 fn find_compiler_binary() -> Option<String> {
     // 1. Environment variable
     if let Ok(path) = std::env::var("QUANTA_COMPILER")
@@ -101,7 +104,7 @@ fn find_compiler_binary() -> Option<String> {
         }
     }
 
-    // 4. PATH
+    // 3. PATH
     if let Ok(output) = std::process::Command::new("which")
         .arg("quanta-compiler")
         .output()
@@ -113,7 +116,168 @@ fn find_compiler_binary() -> Option<String> {
         }
     }
 
-    None // Fall back to built-in emitters
+    // 4. Cached download in ~/.quanta/bin/
+    if let Some(cached) = find_cached_compiler() {
+        return Some(cached);
+    }
+
+    // 5. Download from GitHub Releases
+    if let Some(downloaded) = download_compiler_binary() {
+        return Some(downloaded);
+    }
+
+    eprintln!(
+        "[quanta] Compiler not available. GPU kernels will not include LLVM-compiled targets."
+    );
+    eprintln!("[quanta] Install: cargo install quanta-compiler, or set QUANTA_COMPILER env var.");
+    None
+}
+
+// ============================================================================
+// Compiler binary auto-download (for crates.io users)
+// ============================================================================
+
+/// Resolve the user's home directory from environment variables.
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(std::path::PathBuf::from)
+}
+
+/// Detect the current compilation target triple.
+fn current_target() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return "aarch64-apple-darwin";
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return "x86_64-apple-darwin";
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return "x86_64-unknown-linux-gnu";
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    return "aarch64-unknown-linux-gnu";
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return "x86_64-pc-windows-msvc";
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+    )))]
+    return "unknown";
+}
+
+/// Return the path to the version-pinned cache directory: ~/.quanta/bin/
+fn compiler_cache_dir() -> Option<std::path::PathBuf> {
+    Some(home_dir()?.join(".quanta").join("bin"))
+}
+
+/// Return the expected cached binary path for the current version.
+fn cached_compiler_path() -> Option<std::path::PathBuf> {
+    let version = env!("CARGO_PKG_VERSION");
+    let binary_name = format!("quanta-compiler-{}", version);
+    Some(compiler_cache_dir()?.join(binary_name))
+}
+
+/// Check if a previously downloaded compiler binary exists in the cache.
+fn find_cached_compiler() -> Option<String> {
+    let cached_path = cached_compiler_path()?;
+    if cached_path.exists() {
+        return Some(cached_path.to_string_lossy().to_string());
+    }
+    None
+}
+
+/// Download the quanta-compiler binary from GitHub Releases.
+///
+/// Downloads a tar.gz archive matching the current version and target triple,
+/// extracts it to ~/.quanta/bin/, and returns the path to the binary.
+/// Returns None if download is disabled, fails, or the platform is unsupported.
+fn download_compiler_binary() -> Option<String> {
+    // Respect QUANTA_NO_DOWNLOAD=1 for CI or offline environments
+    if std::env::var("QUANTA_NO_DOWNLOAD").unwrap_or_default() == "1" {
+        return None;
+    }
+
+    let target = current_target();
+    if target == "unknown" {
+        eprintln!("[quanta] Unsupported platform for auto-download.");
+        return None;
+    }
+
+    let version = env!("CARGO_PKG_VERSION");
+    let cache_dir = compiler_cache_dir()?;
+    std::fs::create_dir_all(&cache_dir).ok()?;
+
+    let cached_path = cached_compiler_path()?;
+    let download_path = cache_dir.join("download.tar.gz");
+
+    let url = format!(
+        "https://github.com/zelez-lab/quanta/releases/download/v{}/quanta-compiler-{}.tar.gz",
+        version, target
+    );
+
+    eprintln!(
+        "[quanta] Downloading compiler v{} for {}...",
+        version, target
+    );
+    eprintln!("[quanta] URL: {}", url);
+
+    // Download using curl (available on macOS + Linux by default)
+    let output = std::process::Command::new("curl")
+        .args(["-fsSL", &url, "-o"])
+        .arg(&download_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("[quanta] Download failed: {}", stderr.trim());
+        eprintln!("[quanta] Build will continue without LLVM-compiled GPU targets.");
+        // Clean up partial download
+        let _ = std::fs::remove_file(&download_path);
+        return None;
+    }
+
+    // Extract the archive
+    let extract = std::process::Command::new("tar")
+        .args(["xzf"])
+        .arg(&download_path)
+        .current_dir(&cache_dir)
+        .output()
+        .ok()?;
+
+    // Clean up the archive regardless of extraction result
+    let _ = std::fs::remove_file(&download_path);
+
+    if !extract.status.success() {
+        let stderr = String::from_utf8_lossy(&extract.stderr);
+        eprintln!("[quanta] Extraction failed: {}", stderr.trim());
+        return None;
+    }
+
+    // The archive is expected to contain a `quanta-compiler` binary at its root.
+    // Rename to the version-pinned name to avoid mismatches.
+    let extracted = cache_dir.join("quanta-compiler");
+    if extracted.exists() {
+        if std::fs::rename(&extracted, &cached_path).is_err() {
+            eprintln!("[quanta] Failed to rename downloaded binary.");
+            return None;
+        }
+    } else {
+        eprintln!("[quanta] Archive did not contain expected 'quanta-compiler' binary.");
+        return None;
+    }
+
+    // Ensure the binary is executable (Unix)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&cached_path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    eprintln!("[quanta] Compiler installed to {}", cached_path.display());
+    Some(cached_path.to_string_lossy().to_string())
 }
 
 // ============================================================================
