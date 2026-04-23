@@ -26,11 +26,10 @@ fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
 `quark_id()` returns this thread's index. If you dispatch 1024 quarks,
 `quark_id()` ranges from 0 to 1023.
 
-The `#[quanta::kernel]` attribute compiles this function to native GPU machine
-code at build time -- SPIR-V, metallib, PTX, or GCN depending on the target.
-On your CPU, `vector_add` becomes a function that creates a `Wave` (a bound,
-dispatchable kernel). No text shaders (MSL/WGSL) are generated in the build
-path; all output is binary.
+The `#[quanta::kernel]` attribute compiles this function to all 5 GPU targets
+at build time: metallib (Apple), SPIR-V (Vulkan), PTX (NVIDIA), GCN (AMD),
+and WGSL (WebGPU). All are embedded in your binary. At runtime, the right
+one runs on whatever GPU is present.
 
 You can also set the workgroup size explicitly:
 
