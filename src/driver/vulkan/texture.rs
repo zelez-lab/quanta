@@ -740,6 +740,6 @@ impl VulkanDevice {
             }
         }
         drop(textures);
-        self.submit_and_wait(cmd)
+        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }
 }

@@ -331,6 +331,7 @@ fn roundtrip_compiler_output_all_fields() {
         nvidia: Some(vec![0x7F, 0x45, 0x4C, 0x46]),
         spirv: Some(vec![0x03, 0x02, 0x23, 0x07, 0x00, 0x01, 0x00, 0x00]),
         metallib: Some(vec![0x4D, 0x54, 0x4C, 0x42, 0x01, 0x00]),
+        wgsl: None,
     };
 
     let bytes = serialize_output(&o);
@@ -482,6 +483,7 @@ fn invalid_trailing_bytes_output() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        wgsl: None,
     };
     let mut bytes = serialize_output(&o);
     bytes.push(0xAB);

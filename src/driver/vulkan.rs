@@ -47,8 +47,8 @@ pub struct VulkanDevice {
     query_pools: RwLock<HashMap<u64, VkQueryPool>>,
     queues: RwLock<HashMap<u64, ffi::VkQueue>>,
     next_handle: AtomicU64,
-    /// Pool of reusable command buffers — Mutex since push/pop are always writes.
-    cmd_buffer_pool: Mutex<Vec<ffi::VkCommandBuffer>>,
+    /// Pool of reusable command buffers — Arc<Mutex> for sharing with Pulse closures.
+    cmd_buffer_pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
 }
 
 struct VkQueryPool {
@@ -398,7 +398,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             query_pools: RwLock::new(HashMap::new()),
             queues: RwLock::new(HashMap::new()),
             next_handle: AtomicU64::new(0),
-            cmd_buffer_pool: Mutex::new(Vec::new()),
+            cmd_buffer_pool: std::sync::Arc::new(Mutex::new(Vec::new())),
         }));
 
         break; // Use first suitable device

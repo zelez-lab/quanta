@@ -1380,7 +1380,7 @@ impl VulkanDevice {
             }
         }
         drop(pools);
-        self.submit_and_wait(cmd)
+        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }
 
     pub(crate) fn timestamp_query_read_impl(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
@@ -1588,7 +1588,7 @@ impl VulkanDevice {
             }
         }
         drop(textures);
-        self.submit_and_wait(cmd)
+        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }
 }
 

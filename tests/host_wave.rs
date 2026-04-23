@@ -63,6 +63,7 @@ fn kernel_binary_for_vendor_amd_prefers_amd_then_spirv() {
         nvidia: Some(b"nvidia_binary"),
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        wgsl: None,
     };
 
     let result = binary.for_vendor(Vendor::Amd);
@@ -76,6 +77,7 @@ fn kernel_binary_for_vendor_amd_falls_back_to_spirv() {
         nvidia: None,
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        wgsl: None,
     };
 
     let result = binary.for_vendor(Vendor::Amd);
@@ -89,6 +91,7 @@ fn kernel_binary_for_vendor_nvidia_prefers_nvidia_then_spirv() {
         nvidia: Some(b"ptx_binary"),
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        wgsl: None,
     };
 
     let result = binary.for_vendor(Vendor::Nvidia);
@@ -102,6 +105,7 @@ fn kernel_binary_for_vendor_nvidia_falls_back_to_spirv() {
         nvidia: None,
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        wgsl: None,
     };
 
     let result = binary.for_vendor(Vendor::Nvidia);
@@ -115,6 +119,7 @@ fn kernel_binary_for_vendor_apple_returns_metallib_only() {
         nvidia: None,
         spirv: None,
         metallib: Some(b"metallib_binary"),
+        wgsl: None,
     };
 
     let result = binary.for_vendor(Vendor::Apple);
@@ -128,6 +133,7 @@ fn kernel_binary_for_vendor_apple_returns_none_without_metallib() {
         nvidia: None,
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        wgsl: None,
     };
 
     let result = binary.for_vendor(Vendor::Apple);
@@ -144,6 +150,7 @@ fn kernel_binary_for_vendor_intel_prefers_spirv() {
         nvidia: None,
         spirv: Some(b"spirv"),
         metallib: None,
+        wgsl: None,
     };
 
     let result = binary.for_vendor(Vendor::Intel);
@@ -157,6 +164,7 @@ fn kernel_binary_for_vendor_intel_falls_back_to_amd() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        wgsl: None,
     };
 
     // Intel prefers spirv, then amd
@@ -172,6 +180,7 @@ fn kernel_binary_for_vendor_unknown_returns_spirv_only() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        wgsl: None,
     };
 
     let result = binary.for_vendor(Vendor::Unknown);
@@ -196,6 +205,7 @@ fn kernel_binary_for_vendor_none_returns_none() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        wgsl: None,
     };
 
     assert_eq!(binary.for_vendor(Vendor::Amd), None);
@@ -213,6 +223,7 @@ fn shader_binary_for_vendor_apple_returns_metallib() {
     let shader = ShaderBinary {
         spirv: Some(b"spirv_bytes"),
         metallib: Some(b"MTLBmetallib_bytes"),
+        wgsl: None,
         entry_point: "main",
         stage: ShaderStage::Vertex,
     };
@@ -226,6 +237,7 @@ fn shader_binary_for_vendor_nvidia_returns_spirv() {
     let shader = ShaderBinary {
         spirv: Some(b"spirv_bytes"),
         metallib: Some(b"metallib_bytes"),
+        wgsl: None,
         entry_point: "main",
         stage: ShaderStage::Vertex,
     };
@@ -239,6 +251,7 @@ fn shader_binary_for_vendor_apple_falls_back_to_spirv() {
     let shader = ShaderBinary {
         spirv: Some(b"spirv_bytes"),
         metallib: None,
+        wgsl: None,
         entry_point: "main",
         stage: ShaderStage::Fragment,
     };

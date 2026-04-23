@@ -53,7 +53,7 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
-        self.submit_and_wait(cmd)
+        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }
 
     pub(crate) fn barrier_buffer_impl(
@@ -120,7 +120,7 @@ impl VulkanDevice {
             }
         }
         drop(buffers);
-        self.submit_and_wait(cmd)
+        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }
 
     pub(crate) fn barrier_texture_impl(
@@ -205,7 +205,7 @@ impl VulkanDevice {
         tex.current_layout
             .store(new_layout, std::sync::atomic::Ordering::Relaxed);
         drop(textures);
-        self.submit_and_wait(cmd)
+        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }
 }
 
