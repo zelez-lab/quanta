@@ -1307,6 +1307,8 @@ fn emit_binop<'ctx>(
             BinOp::Mul => builder.build_float_mul(a, b, ""),
             BinOp::Div => builder.build_float_div(a, b, ""),
             BinOp::Rem => builder.build_float_rem(a, b, ""),
+            BinOp::SatAdd => builder.build_float_add(a, b, ""), // float doesn't overflow
+            BinOp::SatSub => builder.build_float_sub(a, b, ""), // float doesn't overflow
             _ => return Err("bitwise ops not supported on floats".into()),
         }
         .map_err(|e| e.to_string())?;
@@ -1325,6 +1327,28 @@ fn emit_binop<'ctx>(
             BinOp::BitXor => builder.build_xor(a, b, ""),
             BinOp::Shl => builder.build_left_shift(a, b, ""),
             BinOp::Shr => builder.build_right_shift(a, b, false, ""),
+            BinOp::SatAdd => {
+                // Saturating add: add then clamp overflow
+                let sum = builder.build_int_add(a, b, "").map_err(|e| e.to_string())?;
+                // Unsigned overflow: sum < a
+                let overflow = builder
+                    .build_int_compare(inkwell::IntPredicate::ULT, sum, a, "")
+                    .map_err(|e| e.to_string())?;
+                let max_val = a.get_type().const_all_ones();
+                return builder
+                    .build_select(overflow, max_val, sum, "")
+                    .map_err(|e| e.to_string());
+            }
+            BinOp::SatSub => {
+                let diff = builder.build_int_sub(a, b, "").map_err(|e| e.to_string())?;
+                let underflow = builder
+                    .build_int_compare(inkwell::IntPredicate::ULT, a, b, "")
+                    .map_err(|e| e.to_string())?;
+                let zero = a.get_type().const_zero();
+                return builder
+                    .build_select(underflow, zero, diff, "")
+                    .map_err(|e| e.to_string());
+            }
         }
         .map_err(|e| e.to_string())?;
         Ok(r.into())

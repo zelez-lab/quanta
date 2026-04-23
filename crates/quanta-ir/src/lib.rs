@@ -96,6 +96,8 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+    SatAdd,
+    SatSub,
 }
 
 /// Unary operations.

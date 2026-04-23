@@ -147,16 +147,46 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
         }
         KernelOp::BinOp { dst, a, b, op, ty } => {
-            let o = binop_str(op);
-            out.push_str(&format!(
-                "{}{} r{} = r{} {} r{};\n",
-                pad,
-                ty.msl_name(),
-                dst.0,
-                a.0,
-                o,
-                b.0
-            ));
+            if matches!(op, BinOp::SatAdd | BinOp::SatSub) {
+                if matches!(op, BinOp::SatAdd) {
+                    // Unsigned sat add: sum < a means overflow
+                    out.push_str(&format!(
+                        "{}{} _sum = r{} + r{}; {} r{} = (_sum < r{}) ? ({})0xFFFFFFFFu : _sum;\n",
+                        pad,
+                        ty.msl_name(),
+                        a.0,
+                        b.0,
+                        ty.msl_name(),
+                        dst.0,
+                        a.0,
+                        ty.msl_name()
+                    ));
+                } else {
+                    // Unsigned sat sub: a < b means underflow
+                    out.push_str(&format!(
+                        "{}{} r{} = (r{} < r{}) ? ({})0 : r{} - r{};\n",
+                        pad,
+                        ty.msl_name(),
+                        dst.0,
+                        a.0,
+                        b.0,
+                        ty.msl_name(),
+                        a.0,
+                        b.0
+                    ));
+                }
+            } else {
+                let o = binop_str(op);
+                out.push_str(&format!(
+                    "{}{} r{} = r{} {} r{};\n",
+                    pad,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    o,
+                    b.0
+                ));
+            }
         }
         KernelOp::Cmp { dst, a, b, op, .. } => {
             let o = cmpop_str(op);
@@ -668,6 +698,8 @@ fn binop_str(op: &BinOp) -> &'static str {
         BinOp::BitXor => "^",
         BinOp::Shl => "<<",
         BinOp::Shr => ">>",
+        BinOp::SatAdd => "+", // handled specially above
+        BinOp::SatSub => "-", // handled specially above
     }
 }
 

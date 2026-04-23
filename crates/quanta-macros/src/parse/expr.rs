@@ -461,6 +461,32 @@ fn emit_method_call(
 ) -> Result<(Reg, ScalarType), syn::Error> {
     let method = mc.method.to_string();
 
+    // x.saturating_add(y), x.saturating_sub(y)
+    if method == "saturating_add" || method == "saturating_sub" {
+        let (receiver, ty) = emit_expr(&mc.receiver, ctx)?;
+        if mc.args.len() != 1 {
+            return Err(syn::Error::new_spanned(
+                &mc.method,
+                format!("{} takes exactly 1 argument", method),
+            ));
+        }
+        let (arg, _) = emit_expr(&mc.args[0], ctx)?;
+        let dst = ctx.alloc_reg();
+        let op = if method == "saturating_add" {
+            BinOp::SatAdd
+        } else {
+            BinOp::SatSub
+        };
+        ctx.ops.push(KernelOp::BinOp {
+            dst,
+            a: receiver,
+            b: arg,
+            op,
+            ty,
+        });
+        return Ok((dst, ty));
+    }
+
     // x.sin(), x.cos(), x.sqrt(), x.abs()
     if let Some(math_fn) = name_to_math_fn(&method) {
         let (receiver, ty) = emit_expr(&mc.receiver, ctx)?;

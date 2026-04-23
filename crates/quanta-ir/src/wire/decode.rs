@@ -168,6 +168,8 @@ fn read_binop(r: &mut Reader) -> Result<BinOp, &'static str> {
         7 => Ok(BinOp::BitXor),
         8 => Ok(BinOp::Shl),
         9 => Ok(BinOp::Shr),
+        10 => Ok(BinOp::SatAdd),
+        11 => Ok(BinOp::SatSub),
         _ => Err("invalid BinOp tag"),
     }
 }

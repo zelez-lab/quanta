@@ -149,6 +149,8 @@ fn write_binop(w: &mut Writer, op: &BinOp) {
         BinOp::BitXor => 7,
         BinOp::Shl => 8,
         BinOp::Shr => 9,
+        BinOp::SatAdd => 10,
+        BinOp::SatSub => 11,
     };
     w.u8(tag);
 }

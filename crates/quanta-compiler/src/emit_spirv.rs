@@ -1529,15 +1529,80 @@ impl SpvEmitter {
                     (BinOp::Shl, _, _) => OP_SHIFT_LEFT_LOGICAL,
                     (BinOp::Shr, _, true) => OP_SHIFT_RIGHT_ARITHMETIC,
                     (BinOp::Shr, _, false) => OP_SHIFT_RIGHT_LOGICAL,
+                    // SatAdd/SatSub handled below
+                    (BinOp::SatAdd, _, _) | (BinOp::SatSub, _, _) => 0,
                 };
 
-                let result = self.alloc_id();
-                Self::emit_op(
-                    &mut self.sec_function,
-                    opcode,
-                    &[result_ty, result, a_val, b_val],
-                );
-                self.set_reg(*dst, result, result_ty);
+                if matches!(op, BinOp::SatAdd | BinOp::SatSub) {
+                    if is_float {
+                        let base_op = if matches!(op, BinOp::SatAdd) {
+                            OP_FADD
+                        } else {
+                            OP_FSUB
+                        };
+                        let raw = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            base_op,
+                            &[result_ty, raw, a_val, b_val],
+                        );
+                        self.set_reg(*dst, raw, result_ty);
+                    } else if matches!(op, BinOp::SatAdd) {
+                        // Unsigned sat add: sum = a + b; overflow = sum < a; result = overflow ? MAX : sum
+                        let sum = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_IADD,
+                            &[result_ty, sum, a_val, b_val],
+                        );
+                        let bool_ty = self.ensure_type_bool();
+                        let overflow = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_ULESS_THAN,
+                            &[bool_ty, overflow, sum, a_val],
+                        );
+                        let max_val = self.emit_constant_u32(u32::MAX);
+                        let result = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_SELECT,
+                            &[result_ty, result, overflow, max_val, sum],
+                        );
+                        self.set_reg(*dst, result, result_ty);
+                    } else {
+                        // Unsigned sat sub: underflow = a < b; diff = a - b; result = underflow ? 0 : diff
+                        let bool_ty = self.ensure_type_bool();
+                        let underflow = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_ULESS_THAN,
+                            &[bool_ty, underflow, a_val, b_val],
+                        );
+                        let diff = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_ISUB,
+                            &[result_ty, diff, a_val, b_val],
+                        );
+                        let zero = self.emit_constant_u32(0);
+                        let result = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_SELECT,
+                            &[result_ty, result, underflow, zero, diff],
+                        );
+                        self.set_reg(*dst, result, result_ty);
+                    }
+                } else {
+                    let result = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        opcode,
+                        &[result_ty, result, a_val, b_val],
+                    );
+                    self.set_reg(*dst, result, result_ty);
+                }
             }
 
             KernelOp::UnaryOp { dst, a, op, ty } => {

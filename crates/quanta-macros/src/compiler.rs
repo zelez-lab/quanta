@@ -557,16 +557,44 @@ fn emit_msl_op(
                 quanta_ir::BinOp::BitXor => "^",
                 quanta_ir::BinOp::Shl => "<<",
                 quanta_ir::BinOp::Shr => ">>",
+                quanta_ir::BinOp::SatAdd => "+", // handled via clamp below
+                quanta_ir::BinOp::SatSub => "-",
             };
-            out.push_str(&format!(
-                "{}{} r{} = r{} {} r{};\n",
-                pad,
-                ty.msl_name(),
-                dst.0,
-                a.0,
-                op_str,
-                b.0
-            ));
+            if matches!(op, quanta_ir::BinOp::SatAdd) {
+                out.push_str(&format!(
+                    "{}{} _s = r{} + r{}; {} r{} = (_s < r{}) ? ({})0xFFFFFFFFu : _s;\n",
+                    pad,
+                    ty.msl_name(),
+                    a.0,
+                    b.0,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    ty.msl_name()
+                ));
+            } else if matches!(op, quanta_ir::BinOp::SatSub) {
+                out.push_str(&format!(
+                    "{}{} r{} = (r{} < r{}) ? ({})0 : r{} - r{};\n",
+                    pad,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    b.0,
+                    ty.msl_name(),
+                    a.0,
+                    b.0
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}{} r{} = r{} {} r{};\n",
+                    pad,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    op_str,
+                    b.0
+                ));
+            }
         }
         Cmp { dst, a, b, op, .. } => {
             let op_str = match op {
