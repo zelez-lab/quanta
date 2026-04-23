@@ -247,7 +247,15 @@ const GROUP_OPERATION_EXCLUSIVE_SCAN: u32 = 2;
 
 // Additional capabilities
 const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
+const CAPABILITY_GROUP_NON_UNIFORM_BALLOT: u32 = 62;
 const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
+const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 64;
+
+// Subgroup vote/ballot/shuffle opcodes
+const OP_GROUP_NON_UNIFORM_ANY: u16 = 335;
+const OP_GROUP_NON_UNIFORM_ALL: u16 = 336;
+const OP_GROUP_NON_UNIFORM_BALLOT: u16 = 339;
+const OP_GROUP_NON_UNIFORM_SHUFFLE: u16 = 345;
 
 // ── Function control ────────────────────────────────────────────────────────
 
@@ -2167,20 +2175,110 @@ impl SpvEmitter {
                 self.set_reg(*dst, old_val, result_ty);
             }
 
-            KernelOp::WaveShuffle { dst, .. } => {
-                // Wave/subgroup ops require SubgroupBallotKHR capability.
-                // Emit zero placeholder for now.
-                let uint_ty = self.ensure_type_u32();
-                let zero = self.emit_constant_u32(0);
-                self.set_reg(*dst, zero, uint_ty);
+            KernelOp::WaveShuffle {
+                dst,
+                src,
+                lane_delta,
+                ty,
+            } => {
+                Self::emit_op(
+                    &mut self.sec_capability,
+                    OP_CAPABILITY,
+                    &[CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE],
+                );
+                let src_val = self.reg_value_id(*src)?;
+                let delta_val = self.reg_value_id(*lane_delta)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_GROUP_NON_UNIFORM_SHUFFLE,
+                    &[result_ty, result, scope, src_val, delta_val],
+                );
+                self.set_reg(*dst, result, result_ty);
             }
 
-            KernelOp::WaveBallot { dst, .. }
-            | KernelOp::WaveAny { dst, .. }
-            | KernelOp::WaveAll { dst, .. } => {
+            KernelOp::WaveBallot { dst, predicate } => {
+                Self::emit_op(
+                    &mut self.sec_capability,
+                    OP_CAPABILITY,
+                    &[CAPABILITY_GROUP_NON_UNIFORM_BALLOT],
+                );
+                let pred_val = self.reg_value_id(*predicate)?;
                 let uint_ty = self.ensure_type_u32();
+                let vec4_uint = self.ensure_type_vector(uint_ty, 4);
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let ballot = self.alloc_id();
+                // OpGroupNonUniformBallot returns uvec4
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_GROUP_NON_UNIFORM_BALLOT,
+                    &[vec4_uint, ballot, scope, pred_val],
+                );
+                // Extract first component (lanes 0-31)
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_EXTRACT,
+                    &[uint_ty, result, ballot, 0],
+                );
+                self.set_reg(*dst, result, uint_ty);
+            }
+
+            KernelOp::WaveAny { dst, predicate } => {
+                Self::emit_op(
+                    &mut self.sec_capability,
+                    OP_CAPABILITY,
+                    &[CAPABILITY_GROUP_NON_UNIFORM],
+                );
+                let pred_val = self.reg_value_id(*predicate)?;
+                let bool_ty = self.ensure_type_bool();
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let result_bool = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_GROUP_NON_UNIFORM_ANY,
+                    &[bool_ty, result_bool, scope, pred_val],
+                );
+                // Convert bool to u32 for the register
+                let uint_ty = self.ensure_type_u32();
+                let one = self.emit_constant_u32(1);
                 let zero = self.emit_constant_u32(0);
-                self.set_reg(*dst, zero, uint_ty);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_SELECT,
+                    &[uint_ty, result, result_bool, one, zero],
+                );
+                self.set_reg(*dst, result, uint_ty);
+            }
+
+            KernelOp::WaveAll { dst, predicate } => {
+                Self::emit_op(
+                    &mut self.sec_capability,
+                    OP_CAPABILITY,
+                    &[CAPABILITY_GROUP_NON_UNIFORM],
+                );
+                let pred_val = self.reg_value_id(*predicate)?;
+                let bool_ty = self.ensure_type_bool();
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let result_bool = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_GROUP_NON_UNIFORM_ALL,
+                    &[bool_ty, result_bool, scope, pred_val],
+                );
+                let uint_ty = self.ensure_type_u32();
+                let one = self.emit_constant_u32(1);
+                let zero = self.emit_constant_u32(0);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_SELECT,
+                    &[uint_ty, result, result_bool, one, zero],
+                );
+                self.set_reg(*dst, result, uint_ty);
             }
 
             KernelOp::TextureSample2D { dst, ty, .. }
