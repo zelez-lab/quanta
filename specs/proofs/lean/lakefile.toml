@@ -1,0 +1,7 @@
+[package]
+name = "quanta-specs"
+version = "0.1.0"
+leanVersion = "v4.16.0"
+
+[[lean_lib]]
+name = "Quanta"
