@@ -90,11 +90,18 @@ fn main() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        wgsl: None,
     };
 
     // Compile MSL → metallib via xcrun (if available).
     if let Ok(msl) = emit_msl::emit(&kernel) {
         output.metallib = compile_msl_to_metallib(&msl);
+    }
+
+    // Emit WGSL source for WebGPU.
+    match emit_wgsl::emit(&kernel) {
+        Ok(wgsl) => output.wgsl = Some(wgsl),
+        Err(e) => eprintln!("[quanta] WGSL emitter error: {}", e),
     }
 
     // Emit Vulkan SPIR-V directly from KernelOps (Shader capability, GLCompute).
@@ -226,6 +233,7 @@ fn compile_shader(stage: &str) {
     let mut output = quanta_ir::ShaderOutput {
         spirv: None,
         metallib: None,
+        wgsl: None,
     };
 
     // Emit SPIR-V
@@ -250,6 +258,16 @@ fn compile_shader(stage: &str) {
     };
     if let Ok(msl) = msl_result {
         output.metallib = compile_msl_to_metallib(&msl);
+    }
+
+    // Emit WGSL
+    let wgsl_result = match stage {
+        "vertex" => emit_wgsl::emit_vertex_shader(&shader),
+        "fragment" => emit_wgsl::emit_fragment_shader(&shader),
+        _ => unreachable!(),
+    };
+    if let Ok(wgsl) = wgsl_result {
+        output.wgsl = Some(wgsl);
     }
 
     let out_bytes = quanta_ir::serialize_shader_output(&output);

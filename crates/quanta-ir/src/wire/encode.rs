@@ -1006,6 +1006,7 @@ pub(crate) fn write_compiler_output(w: &mut Writer, o: &CompilerOutput) {
     w.option_bytes(&o.nvidia);
     w.option_bytes(&o.spirv);
     w.option_bytes(&o.metallib);
+    w.option_str(&o.wgsl);
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,4 +1029,5 @@ pub(crate) fn write_shader_def(w: &mut Writer, s: &crate::ShaderDef) {
 pub(crate) fn write_shader_output(w: &mut Writer, o: &crate::ShaderOutput) {
     w.option_bytes(&o.spirv);
     w.option_bytes(&o.metallib);
+    w.option_str(&o.wgsl);
 }

@@ -89,4 +89,12 @@ fn main() {
             "no"
         }
     );
+    println!(
+        "  WGSL:     {}",
+        if VECTOR_ADD_BINARY.wgsl.is_some() {
+            "yes"
+        } else {
+            "no"
+        }
+    );
 }

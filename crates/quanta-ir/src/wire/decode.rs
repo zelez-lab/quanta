@@ -979,11 +979,13 @@ pub(crate) fn read_compiler_output(r: &mut Reader) -> Result<CompilerOutput, &'s
     let nvidia = r.option_bytes()?;
     let spirv = r.option_bytes()?;
     let metallib = r.option_bytes()?;
+    let wgsl = r.option_str()?;
     Ok(CompilerOutput {
         amd,
         nvidia,
         spirv,
         metallib,
+        wgsl,
     })
 }
 
@@ -1040,5 +1042,10 @@ pub(crate) fn read_shader_def(r: &mut Reader) -> Result<crate::ShaderDef, &'stat
 pub(crate) fn read_shader_output(r: &mut Reader) -> Result<crate::ShaderOutput, &'static str> {
     let spirv = r.option_bytes()?;
     let metallib = r.option_bytes()?;
-    Ok(crate::ShaderOutput { spirv, metallib })
+    let wgsl = r.option_str()?;
+    Ok(crate::ShaderOutput {
+        spirv,
+        metallib,
+        wgsl,
+    })
 }

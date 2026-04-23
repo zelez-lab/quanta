@@ -94,6 +94,10 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
         None => quote! { None },
     };
+    let wgsl_expr = match &outputs.wgsl {
+        Some(s) => quote! { Some(#s) },
+        None => quote! { None },
+    };
 
     let wg_x = kernel_attrs.workgroup_size[0];
     let wg_y = kernel_attrs.workgroup_size[1];
@@ -105,6 +109,7 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
             nvidia: #nvidia_expr,
             spirv: #spirv_expr,
             metallib: #metallib_expr,
+            wgsl: #wgsl_expr,
         };
 
         pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
@@ -254,7 +259,7 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Extract body source text for the compiler.
     let body_source = func.block.to_token_stream().to_string();
 
-    let (spirv_expr, metallib_expr) =
+    let (spirv_expr, metallib_expr, wgsl_expr) =
         match compiler::compile_shader(&func_name_str, "vertex", &params, &return_ty, &body_source)
         {
             Some(output) => {
@@ -272,15 +277,20 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                     None => quote! { None },
                 };
-                (spirv, metallib)
+                let wgsl = match &output.wgsl {
+                    Some(s) => quote! { Some(#s) },
+                    None => quote! { None },
+                };
+                (spirv, metallib, wgsl)
             }
-            None => (quote! { None }, quote! { None }),
+            None => (quote! { None }, quote! { None }, quote! { None }),
         };
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: #spirv_expr,
             metallib: #metallib_expr,
+            wgsl: #wgsl_expr,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Vertex,
         };
@@ -339,7 +349,7 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let body_source = func.block.to_token_stream().to_string();
 
-    let (spirv_expr, metallib_expr) = match compiler::compile_shader(
+    let (spirv_expr, metallib_expr, wgsl_expr) = match compiler::compile_shader(
         &func_name_str,
         "fragment",
         &params,
@@ -361,15 +371,20 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
                 None => quote! { None },
             };
-            (spirv, metallib)
+            let wgsl = match &output.wgsl {
+                Some(s) => quote! { Some(#s) },
+                None => quote! { None },
+            };
+            (spirv, metallib, wgsl)
         }
-        None => (quote! { None }, quote! { None }),
+        None => (quote! { None }, quote! { None }, quote! { None }),
     };
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: #spirv_expr,
             metallib: #metallib_expr,
+            wgsl: #wgsl_expr,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Fragment,
         };

@@ -25,6 +25,7 @@ pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
         nvidia: None,
         spirv: None,
         metallib: None,
+        wgsl: None,
     })
 }
 
@@ -288,6 +289,7 @@ fn download_compiler_binary() -> Option<String> {
 pub(crate) struct ShaderCompileOutput {
     pub(crate) spirv: Option<Vec<u8>>,
     pub(crate) metallib: Option<Vec<u8>>,
+    pub(crate) wgsl: Option<String>,
 }
 
 /// Compile a vertex or fragment shader via the quanta-compiler binary.
@@ -355,6 +357,7 @@ pub(crate) fn compile_shader(
     Some(ShaderCompileOutput {
         spirv: shader_output.spirv,
         metallib: shader_output.metallib,
+        wgsl: shader_output.wgsl,
     })
 }
 

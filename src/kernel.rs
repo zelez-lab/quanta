@@ -108,6 +108,7 @@ pub struct KernelBinary {
     pub nvidia: Option<&'static [u8]>,
     pub spirv: Option<&'static [u8]>,
     pub metallib: Option<&'static [u8]>,
+    pub wgsl: Option<&'static str>,
 }
 
 /// Shader stage — which programmable pipeline stage this shader runs in.
@@ -140,6 +141,8 @@ pub struct ShaderBinary {
     pub spirv: Option<&'static [u8]>,
     /// Pre-compiled Metal library binary.
     pub metallib: Option<&'static [u8]>,
+    /// WGSL source for WebGPU.
+    pub wgsl: Option<&'static str>,
     /// Shader entry point name.
     pub entry_point: &'static str,
     /// Shader stage (vertex or fragment).

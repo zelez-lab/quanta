@@ -515,6 +515,7 @@ pub struct CompilerOutput {
     pub nvidia: Option<Vec<u8>>,
     pub spirv: Option<Vec<u8>>,
     pub metallib: Option<Vec<u8>>,
+    pub wgsl: Option<String>,
 }
 
 /// Serialize a KernelDef to binary bytes.
@@ -614,6 +615,7 @@ pub struct ShaderDef {
 pub struct ShaderOutput {
     pub spirv: Option<Vec<u8>>,
     pub metallib: Option<Vec<u8>>,
+    pub wgsl: Option<String>,
 }
 
 /// Serialize a [`ShaderDef`] to wire bytes.
