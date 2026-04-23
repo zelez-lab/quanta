@@ -1,8 +1,10 @@
 //! Benchmark: N-body gravity simulation — GPU vs CPU.
 //!
-//! Tiled kernel with SoA (Structure of Arrays) data layout.
-//! Positions stored as separate x[], y[], z[], mass[] arrays for coalesced
-//! GPU memory access. Tile size 512 for maximum shared memory utilization.
+//! Optimized tiled kernel:
+//! - SoA data layout for coalesced global reads
+//! - Tile size 512 with shared memory
+//! - Inner loop unrolled 4x for better ILP
+//! - addCompletedHandler for async GPU notification
 //!
 //! Run: cargo run --example bench_nbody --release
 
@@ -11,9 +13,7 @@ use std::time::Instant;
 
 const TILE: usize = 512;
 
-/// Tiled N-body with SoA layout.
-/// Separate arrays: px[], py[], pz[], pm[] for coalesced reads.
-/// Each workgroup loads a tile of 512 particles into shared memory.
+/// Tiled N-body with SoA layout and 4x unrolled inner loop.
 #[quanta::kernel(workgroup = [512, 1, 1])]
 fn nbody_soa(
     px: &[f32],
@@ -48,7 +48,6 @@ fn nbody_soa(
 
     let num_tiles = (count + 511u32) / 512u32;
     for t in 0..num_tiles {
-        // Cooperative load: each thread loads one particle (coalesced!)
         let src = t * 512u32 + lid;
         sx[lid] = px[src];
         sy[lid] = py[src];
@@ -56,17 +55,54 @@ fn nbody_soa(
         sm[lid] = pm[src];
         barrier();
 
-        for j in 0..512u32 {
-            let dx = sx[j] - my_x;
-            let dy = sy[j] - my_y;
-            let dz = sz[j] - my_z;
-            let mass = sm[j];
-            let dist_sq = dx * dx + dy * dy + dz * dz + eps;
-            let inv_dist = rsqrt(dist_sq);
-            let inv_dist3 = inv_dist * inv_dist * inv_dist;
-            ax += dx * inv_dist3 * mass;
-            ay += dy * inv_dist3 * mass;
-            az += dz * inv_dist3 * mass;
+        // Unrolled 4x: process 4 particles per iteration
+        let iters = 512u32 / 4u32;
+        for j in 0..iters {
+            let j0 = j * 4u32;
+
+            let dx0 = sx[j0] - my_x;
+            let dy0 = sy[j0] - my_y;
+            let dz0 = sz[j0] - my_z;
+            let m0 = sm[j0];
+            let d0 = dx0 * dx0 + dy0 * dy0 + dz0 * dz0 + eps;
+            let i0 = rsqrt(d0);
+            let i03 = i0 * i0 * i0;
+            ax += dx0 * i03 * m0;
+            ay += dy0 * i03 * m0;
+            az += dz0 * i03 * m0;
+
+            let dx1 = sx[j0 + 1u32] - my_x;
+            let dy1 = sy[j0 + 1u32] - my_y;
+            let dz1 = sz[j0 + 1u32] - my_z;
+            let m1 = sm[j0 + 1u32];
+            let d1 = dx1 * dx1 + dy1 * dy1 + dz1 * dz1 + eps;
+            let i1 = rsqrt(d1);
+            let i13 = i1 * i1 * i1;
+            ax += dx1 * i13 * m1;
+            ay += dy1 * i13 * m1;
+            az += dz1 * i13 * m1;
+
+            let dx2 = sx[j0 + 2u32] - my_x;
+            let dy2 = sy[j0 + 2u32] - my_y;
+            let dz2 = sz[j0 + 2u32] - my_z;
+            let m2 = sm[j0 + 2u32];
+            let d2 = dx2 * dx2 + dy2 * dy2 + dz2 * dz2 + eps;
+            let i2 = rsqrt(d2);
+            let i23 = i2 * i2 * i2;
+            ax += dx2 * i23 * m2;
+            ay += dy2 * i23 * m2;
+            az += dz2 * i23 * m2;
+
+            let dx3 = sx[j0 + 3u32] - my_x;
+            let dy3 = sy[j0 + 3u32] - my_y;
+            let dz3 = sz[j0 + 3u32] - my_z;
+            let m3 = sm[j0 + 3u32];
+            let d3 = dx3 * dx3 + dy3 * dy3 + dz3 * dz3 + eps;
+            let i3 = rsqrt(d3);
+            let i33 = i3 * i3 * i3;
+            ax += dx3 * i33 * m3;
+            ay += dy3 * i33 * m3;
+            az += dz3 * i33 * m3;
         }
         barrier();
     }
@@ -82,7 +118,6 @@ fn main() {
     println!("GPU: {}\n", gpu.name());
 
     for &count in &[1024, 4096, 16384, 65536] {
-        // Pad to multiple of TILE
         let padded = ((count + TILE - 1) / TILE) * TILE;
 
         let mut pos_x = vec![0.0f32; padded];
@@ -137,7 +172,7 @@ fn main() {
         gpu.wait(&mut p).unwrap();
         let gpu_time = start.elapsed();
 
-        // CPU (single-threaded, SoA layout)
+        // CPU (single-threaded)
         let start = Instant::now();
         let mut cvx = vel_x.clone();
         let mut cvy = vel_y.clone();

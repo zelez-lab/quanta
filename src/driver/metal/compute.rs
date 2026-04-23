@@ -8,6 +8,30 @@ use crate::{Pulse, QuantaError, Wave};
 use super::MetalDevice;
 use super::ffi;
 
+/// Create a Pulse backed by a dispatch_semaphore + addCompletedHandler.
+/// The GPU signals the semaphore when the command buffer completes.
+/// Pulse.wait() waits on the semaphore — no busy-polling, no thread parking.
+pub(crate) fn make_async_pulse(device: &MetalDevice, cmd: ffi::Id) -> Pulse {
+    unsafe {
+        let sem = ffi::dispatch_semaphore_create(0);
+        let block = ffi::make_completion_block(sem);
+        ffi::msg_add_completed_handler(cmd, block);
+        ffi::msg_void(cmd, b"commit\0");
+
+        let handle = device.alloc_handle();
+        Pulse {
+            handle,
+            completed: false,
+            wait_fn: Some(Box::new(move || {
+                ffi::dispatch_semaphore_wait(sem, ffi::DISPATCH_TIME_FOREVER);
+                ffi::dispatch_release(sem);
+                // Free the heap-allocated block
+                drop(Box::from_raw(block));
+            })),
+        }
+    }
+}
+
 impl MetalDevice {
     /// JIT-compile a kernel from serialized KernelDef IR.
     ///
@@ -272,16 +296,8 @@ impl MetalDevice {
         unsafe {
             ffi::msg_dispatch_threadgroups(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
-            ffi::msg_void(cmd, b"commit\0");
         }
-        let handle = self.alloc_handle();
-        Ok(Pulse {
-            handle,
-            completed: false,
-            wait_fn: Some(Box::new(move || unsafe {
-                ffi::msg_void(cmd, b"waitUntilCompleted\0");
-            })),
-        })
+        Ok(make_async_pulse(self, cmd))
     }
 
     /// Dispatch by total thread count — Metal clips to exact grid size.
@@ -374,16 +390,8 @@ impl MetalDevice {
         unsafe {
             ffi::msg_dispatch_threads(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
-            ffi::msg_void(cmd, b"commit\0");
         }
-        let handle = self.alloc_handle();
-        Ok(Pulse {
-            handle,
-            completed: false,
-            wait_fn: Some(Box::new(move || unsafe {
-                ffi::msg_void(cmd, b"waitUntilCompleted\0");
-            })),
-        })
+        Ok(make_async_pulse(self, cmd))
     }
 
     pub(crate) fn wave_dispatch_indirect_impl(
@@ -460,15 +468,7 @@ impl MetalDevice {
         unsafe {
             ffi::msg_dispatch_threadgroups_indirect(encoder, *indirect_buf, offset, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
-            ffi::msg_void(cmd, b"commit\0");
         }
-        let handle = self.alloc_handle();
-        Ok(Pulse {
-            handle,
-            completed: false,
-            wait_fn: Some(Box::new(move || unsafe {
-                ffi::msg_void(cmd, b"waitUntilCompleted\0");
-            })),
-        })
+        Ok(make_async_pulse(self, cmd))
     }
 }

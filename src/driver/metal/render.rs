@@ -1,6 +1,5 @@
 //! Render pipeline and pass execution for Metal.
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -850,15 +849,8 @@ impl MetalDevice {
             }
 
             ffi::msg_void(encoder, b"endEncoding\0");
-            ffi::msg_void(cmd, b"commit\0");
 
-            Ok(Pulse {
-                handle: self.alloc_handle(),
-                completed: false,
-                wait_fn: Some(Box::new(move || {
-                    ffi::msg_void(cmd, b"waitUntilCompleted\0");
-                })),
-            })
+            Ok(super::compute::make_async_pulse(self, cmd))
         }
     }
 }

@@ -910,4 +910,73 @@ unsafe extern "C" {
         queue: *mut c_void,
         destructor: *mut c_void,
     ) -> *mut c_void;
+    pub fn dispatch_semaphore_create(value: isize) -> *mut c_void;
+    pub fn dispatch_semaphore_signal(dsema: *mut c_void) -> isize;
+    pub fn dispatch_semaphore_wait(dsema: *mut c_void, timeout: u64) -> isize;
+    pub fn dispatch_release(object: *mut c_void);
+}
+
+/// Infinite timeout for dispatch_semaphore_wait.
+pub const DISPATCH_TIME_FOREVER: u64 = !0;
+
+// ─── ObjC block ABI (for addCompletedHandler:) ────────────────────────────
+
+/// Minimal ObjC block descriptor (no copy/dispose — stack block, no captures
+/// that need ARC. We use a global descriptor with a static invoke function.)
+#[repr(C)]
+pub struct BlockDescriptor {
+    pub reserved: u64,
+    pub size: u64,
+}
+
+/// ObjC block layout for `void (^)(id)` — one argument, no return.
+/// The `context` field carries our Rust data (semaphore pointer).
+#[repr(C)]
+pub struct CompletionBlock {
+    pub isa: *const c_void,
+    pub flags: i32,
+    pub reserved: i32,
+    pub invoke: unsafe extern "C" fn(*mut CompletionBlock, Id),
+    pub descriptor: *const BlockDescriptor,
+    pub semaphore: *mut c_void,
+}
+
+/// Global block descriptor (static, shared by all completion blocks).
+static COMPLETION_BLOCK_DESCRIPTOR: BlockDescriptor = BlockDescriptor {
+    reserved: 0,
+    size: core::mem::size_of::<CompletionBlock>() as u64,
+};
+
+// _NSConcreteGlobalBlock — the ISA for global (heap-safe) blocks.
+unsafe extern "C" {
+    static _NSConcreteGlobalBlock: *const c_void;
+}
+
+/// Invoke function for the completion block: signals the semaphore.
+unsafe extern "C" fn completion_block_invoke(block: *mut CompletionBlock, _cmd_buf: Id) {
+    dispatch_semaphore_signal((*block).semaphore);
+}
+
+/// Create a heap-allocated completion block that signals `semaphore` when invoked.
+/// Returns a leaked Box pointer — Metal retains the block, and we clean up
+/// the semaphore in the Pulse wait_fn.
+pub fn make_completion_block(semaphore: *mut c_void) -> *mut CompletionBlock {
+    let block = Box::new(CompletionBlock {
+        isa: unsafe { _NSConcreteGlobalBlock },
+        flags: (1 << 28), // BLOCK_IS_GLOBAL
+        reserved: 0,
+        invoke: completion_block_invoke,
+        descriptor: &COMPLETION_BLOCK_DESCRIPTOR,
+        semaphore,
+    });
+    Box::into_raw(block)
+}
+
+use alloc::boxed::Box;
+
+/// Send addCompletedHandler: to a command buffer with a block.
+pub unsafe fn msg_add_completed_handler(cmd: Id, block: *mut CompletionBlock) {
+    let f: unsafe extern "C" fn(Id, Sel, *mut CompletionBlock) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(cmd, sel(b"addCompletedHandler:\0"), block);
 }
