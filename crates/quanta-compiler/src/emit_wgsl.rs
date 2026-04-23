@@ -486,6 +486,19 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
         KernelOp::DebugPrint { src, .. } => {
             out.push_str(&format!("{}// gpu_print: r{}\n", pad, src.0,));
         }
+        KernelOp::CooperativeMMA {
+            dst, a, b, c, ty, ..
+        } => {
+            out.push_str(&format!(
+                "{}var r{}: {} = r{} * r{} + r{};\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                a.0,
+                b.0,
+                c.0
+            ));
+        }
     }
 }
 

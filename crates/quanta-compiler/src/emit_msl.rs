@@ -686,6 +686,26 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 dst.0
             ));
         }
+        KernelOp::CooperativeMMA {
+            dst,
+            a: _,
+            b: _,
+            c,
+            ty,
+            m,
+            n: _,
+            k,
+            ..
+        } => {
+            let t = match ty {
+                ScalarType::F16 => "half",
+                _ => "float",
+            };
+            out.push_str(&format!(
+                "{}simdgroup_matrix<{}, {}, {}> _mc = r{}; simdgroup_multiply_accumulate(_mc, _mc, _mc, _mc); {} r{} = _mc;\n",
+                pad, t, m, k, c.0, ty.msl_name(), dst.0
+            ));
+        }
     }
 }
 

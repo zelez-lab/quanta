@@ -323,6 +323,18 @@ pub enum KernelOp {
         size: u8,
         ty: ScalarType,
     },
+    /// Cooperative matrix multiply-accumulate (tensor cores / SIMD group matrix).
+    /// D = A * B + C where A, B, C, D are SIMD-group-scoped matrices.
+    CooperativeMMA {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        c: Reg,
+        m: u8,
+        n: u8,
+        k: u8,
+        ty: ScalarType,
+    },
 
     // Texture
     TextureSample2D {

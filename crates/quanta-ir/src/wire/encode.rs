@@ -927,6 +927,26 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             write_reg(w, src);
             write_scalar_type(w, ty);
         }
+        KernelOp::CooperativeMMA {
+            dst,
+            a,
+            b,
+            c,
+            m,
+            n,
+            k,
+            ty,
+        } => {
+            w.u8(50);
+            write_reg(w, dst);
+            write_reg(w, a);
+            write_reg(w, b);
+            write_reg(w, c);
+            w.u8(*m);
+            w.u8(*n);
+            w.u8(*k);
+            write_scalar_type(w, ty);
+        }
     }
 }
 

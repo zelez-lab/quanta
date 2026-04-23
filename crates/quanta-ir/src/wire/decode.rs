@@ -854,6 +854,26 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
             let ty = read_scalar_type(r)?;
             Ok(KernelOp::DebugPrint { src, ty })
         }
+        50 => {
+            let dst = read_reg(r)?;
+            let a = read_reg(r)?;
+            let b = read_reg(r)?;
+            let c = read_reg(r)?;
+            let m = r.u8()?;
+            let n = r.u8()?;
+            let k = r.u8()?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::CooperativeMMA {
+                dst,
+                a,
+                b,
+                c,
+                m,
+                n,
+                k,
+                ty,
+            })
+        }
 
         _ => Err("invalid KernelOp tag"),
     }

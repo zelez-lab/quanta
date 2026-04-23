@@ -1310,7 +1310,8 @@ impl SpvEmitter {
                 | KernelOp::SubgroupExclusiveAdd { dst, .. }
                 | KernelOp::SubgroupInclusiveAdd { dst, .. }
                 | KernelOp::TextureLoad2D { dst, .. }
-                | KernelOp::SubgroupSize { dst, .. } => {
+                | KernelOp::SubgroupSize { dst, .. }
+                | KernelOp::CooperativeMMA { dst, .. } => {
                     dsts.push(dst.0);
                 }
                 KernelOp::TextureSize { dst_w, dst_h, .. } => {
@@ -2788,6 +2789,39 @@ impl SpvEmitter {
 
             KernelOp::Dispatch { .. } => {
                 // Dynamic parallelism not supported in Vulkan compute
+            }
+
+            KernelOp::CooperativeMMA {
+                dst, a, b, c, ty, ..
+            } => {
+                // Scalar fallback: D = A * B + C
+                let a_val = self.reg_value_id(*a)?;
+                let b_val = self.reg_value_id(*b)?;
+                let c_val = self.reg_value_id(*c)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let op_mul = if matches!(ty, ScalarType::F32 | ScalarType::F16) {
+                    OP_FMUL
+                } else {
+                    OP_IMUL
+                };
+                let op_add = if matches!(ty, ScalarType::F32 | ScalarType::F16) {
+                    OP_FADD
+                } else {
+                    OP_IADD
+                };
+                let mul = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    op_mul,
+                    &[result_ty, mul, a_val, b_val],
+                );
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    op_add,
+                    &[result_ty, result, mul, c_val],
+                );
+                self.set_reg(*dst, result, result_ty);
             }
         }
 

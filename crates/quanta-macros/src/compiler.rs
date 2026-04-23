@@ -1084,6 +1084,19 @@ fn emit_msl_op(
             };
             out.push_str(&format!("{}/* gpu_print: {} */\n", pad, val_expr,));
         }
+        CooperativeMMA {
+            dst, a, b, c, ty, ..
+        } => {
+            out.push_str(&format!(
+                "{}{} r{} = r{} * r{} + r{};\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                a.0,
+                b.0,
+                c.0
+            ));
+        }
     }
 }
 
@@ -1663,6 +1676,19 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
         }
         DebugPrint { src, .. } => {
             out.push_str(&format!("{}// gpu_print: r{}\n", pad, src.0,));
+        }
+        CooperativeMMA {
+            dst, a, b, c, ty, ..
+        } => {
+            out.push_str(&format!(
+                "{}var r{}: {} = r{} * r{} + r{};\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                a.0,
+                b.0,
+                c.0
+            ));
         }
     }
 }
