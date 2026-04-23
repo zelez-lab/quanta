@@ -188,6 +188,20 @@ impl GpuDevice for MetalDevice {
         self.wave_dispatch_indirect_impl(wave, buffer, offset)
     }
 
+    // === Batch ===
+
+    fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
+        let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
+        let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
+        Ok(crate::Batch {
+            inner: Box::new(MetalBatch {
+                device: self as *const MetalDevice,
+                cmd,
+                encoder,
+            }),
+        })
+    }
+
     // === Render ===
 
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
@@ -898,5 +912,90 @@ pub(crate) fn blend_op_to_metal(op: crate::BlendOp) -> ffi::NSUInteger {
         ReverseSubtract => ffi::MTL_BLEND_OP_REVERSE_SUBTRACT,
         Min => ffi::MTL_BLEND_OP_MIN,
         Max => ffi::MTL_BLEND_OP_MAX,
+    }
+}
+
+// ── Batched dispatch ────────────────────────────────────────────────────────
+
+struct MetalBatch {
+    device: *const MetalDevice,
+    cmd: ffi::Id,
+    encoder: ffi::Id,
+}
+
+impl crate::batch::BatchInner for MetalBatch {
+    fn encode_dispatch(&mut self, wave: &Wave, quarks: u32) -> Result<(), QuantaError> {
+        let device = unsafe { &*self.device };
+        let pipelines = device
+            .compute_pipelines
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipeline = pipelines
+            .get(&wave.handle)
+            .ok_or_else(|| QuantaError::invalid_param("bad wave handle"))?;
+
+        unsafe {
+            ffi::msg_void_id(self.encoder, b"setComputePipelineState:\0", *pipeline);
+        }
+
+        let buffers = device
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        for slot in 0..wave.binding_count as usize {
+            let handle = wave.bindings[slot];
+            if handle != 0
+                && let Some(buf) = buffers.get(&handle)
+            {
+                unsafe {
+                    ffi::msg_set_buffer(
+                        self.encoder,
+                        b"setBuffer:offset:atIndex:\0",
+                        *buf,
+                        0,
+                        slot as u64,
+                    );
+                }
+            }
+        }
+
+        // Push constants
+        let mut mask = wave.push_mask;
+        while mask != 0 {
+            let slot = mask.trailing_zeros() as usize;
+            let offset = slot * 16;
+            let remaining = wave.push_len as usize - offset;
+            let len = remaining.min(16);
+            unsafe {
+                ffi::msg_set_bytes(
+                    self.encoder,
+                    b"setBytes:length:atIndex:\0",
+                    wave.push_data[offset..].as_ptr() as *const _,
+                    len as u64,
+                    slot as u64,
+                );
+            }
+            mask &= mask - 1;
+        }
+
+        let groups_x = quarks.div_ceil(wave.workgroup_size[0]);
+        let grid = ffi::MTLSize::new(groups_x as u64, 1, 1);
+        let group_size = ffi::MTLSize::new(
+            wave.workgroup_size[0] as u64,
+            wave.workgroup_size[1] as u64,
+            wave.workgroup_size[2] as u64,
+        );
+        unsafe {
+            ffi::msg_dispatch_threadgroups(self.encoder, grid, group_size);
+        }
+        Ok(())
+    }
+
+    fn submit(self: Box<Self>) -> Result<Pulse, QuantaError> {
+        unsafe {
+            ffi::msg_void(self.encoder, b"endEncoding\0");
+        }
+        let device = unsafe { &*self.device };
+        Ok(compute::make_async_pulse(device, self.cmd))
     }
 }

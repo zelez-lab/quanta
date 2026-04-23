@@ -5,9 +5,10 @@ use core::marker::PhantomData;
 
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
-    Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, OcclusionQuery, Pipeline,
-    PipelineDesc, Pulse, QuantaError, QueueFamily, QueueType, RenderPass, ResourceState, Texture,
-    TextureDesc, TextureUsage, TextureView, TextureViewDesc, Timeline, TimestampQuery, Wave,
+    Batch, Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, OcclusionQuery,
+    Pipeline, PipelineDesc, Pulse, QuantaError, QueueFamily, QueueType, RenderPass, ResourceState,
+    Texture, TextureDesc, TextureUsage, TextureView, TextureViewDesc, Timeline, TimestampQuery,
+    Wave,
 };
 
 /// A GPU device handle. The main entry point for Quanta.
@@ -262,6 +263,15 @@ impl Gpu {
     ) -> Result<Pulse, QuantaError> {
         self.inner
             .wave_dispatch_indirect(wave, buffer.handle(), offset)
+    }
+
+    // === Batch dispatch ===
+
+    /// Begin a batch of dispatches. Multiple kernels are encoded into a single
+    /// command buffer. Call `submit()` on the batch to commit all at once.
+    /// One commit + one fence instead of N — eliminates per-dispatch overhead.
+    pub fn begin_batch(&self) -> Result<Batch, QuantaError> {
+        self.inner.batch_begin()
     }
 
     // === Render ===

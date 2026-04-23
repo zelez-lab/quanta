@@ -85,6 +85,12 @@ pub trait GpuDevice {
         offset: u64,
     ) -> Result<Pulse, QuantaError>;
 
+    // === Batch ===
+
+    fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
+        Err(QuantaError::invalid_param("batch dispatch not supported"))
+    }
+
     // === Render ===
 
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError>;
