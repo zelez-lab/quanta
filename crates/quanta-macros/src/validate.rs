@@ -28,12 +28,14 @@ pub fn validate_kernel(func: &ItemFn) -> Result<(), syn::Error> {
         ));
     }
 
-    // No generics
-    if !func.sig.generics.params.is_empty() {
-        return Err(syn::Error::new_spanned(
-            &func.sig.generics,
-            "GPU kernel cannot have generic parameters",
-        ));
+    // Allow const generics, reject type/lifetime generics
+    for param in &func.sig.generics.params {
+        if !matches!(param, syn::GenericParam::Const(_)) {
+            return Err(syn::Error::new_spanned(
+                param,
+                "GPU kernel only supports const generic parameters (not type or lifetime)",
+            ));
+        }
     }
 
     // Validate parameters

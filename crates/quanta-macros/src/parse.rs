@@ -194,6 +194,19 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
         }
     }
 
+    // Const generics: treated as push constant parameters
+    for generic in &func.sig.generics.params {
+        if let syn::GenericParam::Const(cp) = generic {
+            let const_name = cp.ident.to_string();
+            params.push(KernelParam::Constant {
+                name: const_name,
+                slot,
+                scalar_type: ScalarType::U32,
+            });
+            slot += 1;
+        }
+    }
+
     let mut ctx = EmitCtx::new(&params);
 
     for s in &func.block.stmts {

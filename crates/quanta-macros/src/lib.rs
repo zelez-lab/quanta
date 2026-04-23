@@ -103,6 +103,21 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let wg_y = kernel_attrs.workgroup_size[1];
     let wg_z = kernel_attrs.workgroup_size[2];
 
+    // Const generics: extract from the function signature and generate set_value calls
+    let generics = &func.sig.generics;
+    let mut const_setters = Vec::new();
+    let num_regular_params = func.sig.inputs.len();
+    for (i, generic) in func.sig.generics.params.iter().enumerate() {
+        if let syn::GenericParam::Const(cp) = generic {
+            let ident = &cp.ident;
+            let slot = (num_regular_params + i) as u32;
+            const_setters.push(quote! {
+                wave.set_value(#slot, #ident as u32);
+            });
+        }
+    }
+    let const_generic_setters = quote! { #(#const_setters)* };
+
     let expanded = quote! {
         pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
             amd: #amd_expr,
@@ -112,13 +127,14 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
             wgsl: #wgsl_expr,
         };
 
-        pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
+        pub fn #func_name #generics (device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
             let binary = #binary_name.for_vendor(device.caps().vendor)
                 .ok_or_else(|| ::quanta::QuantaError::compilation_failed(
                     format!("no compiled kernel for vendor {:?}", device.caps().vendor)
                 ))?;
             let mut wave = device.wave(binary)?;
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
+            #const_generic_setters
             Ok(wave)
         }
     };

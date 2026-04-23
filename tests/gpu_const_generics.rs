@@ -1,0 +1,64 @@
+//! Const generics in kernels (step 047).
+//!
+//! Verifies that `fn kernel<const TILE: u32>(...)` works as a compile-time
+//! constant accessible in the kernel body.
+
+fn try_gpu() -> Option<quanta::Gpu> {
+    quanta::init().ok()
+}
+
+#[quanta::kernel]
+fn fill_with_const<const VAL: u32>(output: &mut [u32]) {
+    let i = quark_id();
+    output[i] = VAL;
+}
+
+#[test]
+fn const_generic_fills_buffer() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+
+    let n = 16usize;
+    let output = gpu.compute_field::<u32>(n).unwrap();
+
+    // Dispatch with const generic = 42
+    let mut wave = fill_with_const::<42>(&gpu).unwrap();
+    wave.bind(0, &output);
+
+    let mut p = gpu.dispatch(&wave, n as u32).unwrap();
+    gpu.wait(&mut p).unwrap();
+
+    let result = gpu.read_field(&output).unwrap();
+    for i in 0..n {
+        assert_eq!(
+            result[i], 42,
+            "const generic: expected 42, got {}",
+            result[i]
+        );
+    }
+}
+
+#[test]
+fn const_generic_different_values() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+
+    let n = 16usize;
+    let output = gpu.compute_field::<u32>(n).unwrap();
+
+    // Dispatch with const generic = 99
+    let mut wave = fill_with_const::<99>(&gpu).unwrap();
+    wave.bind(0, &output);
+
+    let mut p = gpu.dispatch(&wave, n as u32).unwrap();
+    gpu.wait(&mut p).unwrap();
+
+    let result = gpu.read_field(&output).unwrap();
+    assert_eq!(
+        result[0], 99,
+        "const generic: expected 99, got {}",
+        result[0]
+    );
+}
