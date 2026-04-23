@@ -74,7 +74,8 @@ fn gradient_fill(output: &mut [u32], width: u32) {
     let x = i % width;
     let y = i / width;
     // Pack RGBA little-endian: r | (g << 8) | (b << 16) | (a << 24)
-    output[i] = (x & 0xFF) | ((y & 0xFF) << 8) | (0xFFu32 << 24);
+    // Use % 256 instead of & 0xFF to work around Broadcom V3D OpBitwiseAnd bug.
+    output[i] = (x % 256) | ((y % 256) << 8) | (0xFFu32 << 24);
 }
 
 /// Square each element.
@@ -217,6 +218,10 @@ fn clear_arbitrary_color() {
 
     assert_pixels_eq(&pixels, &expected, 1, "clear_arbitrary_color");
 }
+
+// ===========================================================================
+// Test 2b: Push constant diagnostic
+// ===========================================================================
 
 // ===========================================================================
 // Test 3: Compute kernel gradient fill -- verify pixel packing
