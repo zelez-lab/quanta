@@ -20,6 +20,17 @@ impl VulkanDevice {
         &self,
         desc: &crate::PipelineDesc,
     ) -> Result<Pipeline, QuantaError> {
+        // Vulkan requires SPIR-V binaries — MSL/WGSL text source is not supported
+        if desc.source.is_some() {
+            return Err(QuantaError::compilation_failed(
+                "Vulkan backend requires SPIR-V binaries (vertex/fragment), not text source",
+            ));
+        }
+        if desc.vertex.is_empty() || desc.fragment.is_empty() {
+            return Err(QuantaError::compilation_failed(
+                "vertex and fragment SPIR-V binaries must be non-empty",
+            ));
+        }
         if desc.vertex.len() % 4 != 0 {
             return Err(QuantaError::compilation_failed(
                 "vertex SPIR-V binary length must be a multiple of 4",
