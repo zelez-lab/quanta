@@ -332,7 +332,7 @@ impl VulkanDevice {
             std::sync::atomic::Ordering::Relaxed,
         );
         drop(textures);
-        self.submit_and_wait(cmd)?;
+        self.submit_and_wait(cmd)?.wait()?;
 
         // Clean up staging
         unsafe {
@@ -484,7 +484,7 @@ impl VulkanDevice {
             }
         }
         drop(textures);
-        self.submit_and_wait(cmd)?;
+        self.submit_and_wait(cmd)?.wait()?;
 
         // Read from staging
         let mut result = vec![0u8; size];

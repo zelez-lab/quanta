@@ -1326,6 +1326,7 @@ impl GpuDevice for CpuDevice {
         Ok(Pulse {
             handle: 0,
             completed: true,
+            wait_fn: None,
         })
     }
 
@@ -1593,6 +1594,7 @@ mod tests {
         let pulse = Pulse {
             handle: 0,
             completed: false,
+            wait_fn: None,
         };
         assert!(dev.pulse_poll(&pulse));
     }

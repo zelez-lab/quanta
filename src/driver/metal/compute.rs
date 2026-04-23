@@ -1,5 +1,6 @@
 //! Compute dispatch operations for Metal.
 
+use alloc::boxed::Box;
 use alloc::format;
 
 use crate::{Pulse, QuantaError, Wave};
@@ -272,12 +273,14 @@ impl MetalDevice {
             ffi::msg_dispatch_threadgroups(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
             ffi::msg_void(cmd, b"commit\0");
-            ffi::msg_void(cmd, b"waitUntilCompleted\0");
         }
-
+        let handle = self.alloc_handle();
         Ok(Pulse {
-            handle: self.alloc_handle(),
-            completed: true,
+            handle,
+            completed: false,
+            wait_fn: Some(Box::new(move || unsafe {
+                ffi::msg_void(cmd, b"waitUntilCompleted\0");
+            })),
         })
     }
 
@@ -372,12 +375,14 @@ impl MetalDevice {
             ffi::msg_dispatch_threads(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
             ffi::msg_void(cmd, b"commit\0");
-            ffi::msg_void(cmd, b"waitUntilCompleted\0");
         }
-
+        let handle = self.alloc_handle();
         Ok(Pulse {
-            handle: self.alloc_handle(),
-            completed: true,
+            handle,
+            completed: false,
+            wait_fn: Some(Box::new(move || unsafe {
+                ffi::msg_void(cmd, b"waitUntilCompleted\0");
+            })),
         })
     }
 
@@ -456,12 +461,14 @@ impl MetalDevice {
             ffi::msg_dispatch_threadgroups_indirect(encoder, *indirect_buf, offset, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
             ffi::msg_void(cmd, b"commit\0");
-            ffi::msg_void(cmd, b"waitUntilCompleted\0");
         }
-
+        let handle = self.alloc_handle();
         Ok(Pulse {
-            handle: self.alloc_handle(),
-            completed: true,
+            handle,
+            completed: false,
+            wait_fn: Some(Box::new(move || unsafe {
+                ffi::msg_void(cmd, b"waitUntilCompleted\0");
+            })),
         })
     }
 }

@@ -161,7 +161,23 @@ impl VulkanDevice {
         Ok(cmd)
     }
 
-    fn submit_and_wait(&self, cmd: ffi::VkCommandBuffer) -> Result<(), QuantaError> {
+    /// Submit a command buffer with a fence. Returns a Pulse that waits on the
+    /// fence when wait() is called. The GPU executes asynchronously — the CPU
+    /// can do other work before calling pulse.wait().
+    fn submit_and_wait(&self, cmd: ffi::VkCommandBuffer) -> Result<Pulse, QuantaError> {
+        let fence_info = ffi::VkFenceCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+        };
+        let mut fence = ffi::null_handle();
+        unsafe {
+            let r = ffi::vkCreateFence(self.device, &fence_info, core::ptr::null(), &mut fence);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+
         let submit = ffi::VkSubmitInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_SUBMIT_INFO,
             p_next: core::ptr::null(),
@@ -174,21 +190,26 @@ impl VulkanDevice {
             p_signal_semaphores: core::ptr::null(),
         };
         unsafe {
-            let r = ffi::vkQueueSubmit(self.queue, 1, &submit, ffi::null_handle());
-            if r != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
-            }
-            let r = ffi::vkQueueWaitIdle(self.queue);
+            let r = ffi::vkQueueSubmit(self.queue, 1, &submit, fence);
             if r != ffi::VK_SUCCESS {
                 return Err(QuantaError::submit_failed());
             }
         }
-        // Return to pool for reuse instead of freeing.
-        self.cmd_buffer_pool
-            .lock()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .push(cmd);
-        Ok(())
+
+        let device = self.device;
+        let pool = self.cmd_buffer_pool.clone();
+        let handle = self.alloc_handle();
+        Ok(Pulse {
+            handle,
+            completed: false,
+            wait_fn: Some(Box::new(move || unsafe {
+                ffi::vkWaitForFences(device, 1, &fence, 1, u64::MAX);
+                ffi::vkDestroyFence(device, fence, core::ptr::null());
+                if let Ok(mut p) = pool.lock() {
+                    p.push(cmd);
+                }
+            })),
+        })
     }
 }
 

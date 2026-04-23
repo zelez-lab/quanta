@@ -1295,7 +1295,7 @@ impl VulkanDevice {
         drop(textures);
         drop(render_pipelines);
 
-        self.submit_and_wait(cmd)?;
+        self.submit_and_wait(cmd)?.wait()?;
 
         unsafe {
             ffi::vkDestroyFramebuffer(self.device, framebuffer, core::ptr::null());
@@ -1310,6 +1310,7 @@ impl VulkanDevice {
         Ok(Pulse {
             handle: self.alloc_handle(),
             completed: true,
+            wait_fn: None,
         })
     }
 

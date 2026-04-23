@@ -1,4 +1,5 @@
 use crate::QuantaError;
+use alloc::boxed::Box;
 
 /// GPU completion signal. Returned by dispatch/render operations.
 ///
@@ -10,12 +11,16 @@ use crate::QuantaError;
 pub struct Pulse {
     pub(crate) handle: u64,
     pub(crate) completed: bool,
+    /// Deferred GPU wait: called once by wait() to block until completion.
+    pub(crate) wait_fn: Option<Box<dyn FnOnce()>>,
 }
 
 impl Pulse {
     /// Block until GPU completes this operation.
-    /// After waiting, the pulse is marked as completed.
     pub fn wait(&mut self) -> Result<(), QuantaError> {
+        if let Some(f) = self.wait_fn.take() {
+            f();
+        }
         self.completed = true;
         Ok(())
     }
@@ -26,7 +31,6 @@ impl Pulse {
     }
 
     /// Reset the pulse so it can be reused for another operation.
-    /// The pulse must have been waited on (completed) before resetting.
     pub fn reset(&mut self) {
         self.completed = false;
     }

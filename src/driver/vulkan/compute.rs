@@ -353,7 +353,7 @@ impl VulkanDevice {
         }
         drop(buffers_guard);
         drop(compute_pipelines);
-        self.submit_and_wait(cmd)?;
+        self.submit_and_wait(cmd)?.wait()?;
 
         // Clean up descriptor pool
         unsafe {
@@ -363,6 +363,7 @@ impl VulkanDevice {
         Ok(Pulse {
             handle: self.alloc_handle(),
             completed: true,
+            wait_fn: None,
         })
     }
 
@@ -501,7 +502,7 @@ impl VulkanDevice {
         }
         drop(buffers_guard);
         drop(compute_pipelines);
-        self.submit_and_wait(cmd)?;
+        self.submit_and_wait(cmd)?.wait()?;
 
         unsafe {
             ffi::vkDestroyDescriptorPool(self.device, descriptor_pool, core::ptr::null());
@@ -510,6 +511,7 @@ impl VulkanDevice {
         Ok(Pulse {
             handle: self.alloc_handle(),
             completed: true,
+            wait_fn: None,
         })
     }
 }
