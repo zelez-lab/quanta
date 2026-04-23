@@ -175,18 +175,20 @@ for all rendering tests.
 - macOS Metal: Apple Silicon (M-series)
 - Vulkan: Raspberry Pi 5 (Broadcom V3D)
 
-**What works (306 tests, 0 failures):**
-- Compute: reductions, atomics, shared memory, warp primitives, math intrinsics
-- Rendering: vertex/index buffers, depth testing, instanced draw, texture sampling
-- Shader body evaluation: arithmetic, math functions (30), matrix-vector multiply,
-  if/else conditionals, vertex→fragment varyings, texture sampling via `sample()`
-- Binary-only output: SPIR-V + metallib (no runtime shader compilation)
-- Push constants for uniform parameters (MVP matrices, etc.)
+**What works (zero failures on both platforms):**
+- Compute: reductions, atomics, shared memory, warp primitives, math intrinsics,
+  saturation arithmetic, f16, cooperative matrix MMA, const generics
+- Rendering: vertex/index buffers, depth testing, instanced draw, texture sampling,
+  vertex→fragment varyings, if/else in shaders, 30 math functions
+- 5 GPU targets from one macro: metallib, SPIR-V, PTX, GCN, WGSL
+- Subgroup ops: shuffle, ballot, any/all, reduce, scan
+- Performance: 67x Mandelbrot, 120x heavy compute, batched dispatch (7.3x),
+  async completion handler (Metal), VkFence (Vulkan)
+- Compute texture read/write, push constants, const generics
 - Zero validation errors on both Metal and Vulkan
 
 **What's tracked for follow-up releases:**
-- WebGPU runtime backend (WGSL emitter exists, browser host pending)
-- Tensor-core / matrix-engine intrinsics
+- WebGPU runtime driver (WGSL embedded, browser host pending)
 - Software (CPU) backend for headless testing
 - Multi-GPU dispatch primitives
 

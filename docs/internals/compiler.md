@@ -1,23 +1,23 @@
 # Compiler Internals
 
 The `quanta-compiler` binary reads a `KernelDef` from stdin and writes a
-`CompilerOutput` to stdout. It uses LLVM 22 (via inkwell) for backend code generation.
+`CompilerOutput` to stdout. It produces 5 GPU targets from one kernel definition.
 
 ## Compilation pipeline
-
-The build-time pipeline produces only native binaries. Text emitters
-(`emit_msl.rs`, `emit_wgsl.rs`) exist but are reserved for the JIT path.
 
 ```
 KernelDef
     |
-    +-- to_llvm.rs ----------> LLVM Module
-    |                              |
-    |                              +-- NVPTX target --> PTX binary
-    |                              +-- AMDGPU target --> GCN ELF binary
-    |                              +-- SPIR-V target --> SPIR-V binary (compute)
+    +-- emit_msl.rs ----------> MSL source --> xcrun metal --> metallib (Apple)
     |
-    +-- (SPIR-V) ------------> xcrun metal --> metallib binary (Apple)
+    +-- emit_spirv.rs ---------> SPIR-V binary (Vulkan, custom emitter)
+    |
+    +-- emit_wgsl.rs ----------> WGSL source (WebGPU, embedded as string)
+    |
+    +-- to_llvm.rs (subprocess) --> LLVM Module
+                                       |
+                                       +-- NVPTX target --> PTX binary
+                                       +-- AMDGPU target --> GCN ELF binary
     |
     +-- (JIT only) emit_msl.rs --> MSL source string
     +-- (JIT only) emit_wgsl.rs -> WGSL source string
@@ -31,6 +31,26 @@ Vertex shaders emit with `OpEntryPoint Vertex`, fragment shaders with
 and graphics pipelines. On Apple, the SPIR-V output is compiled to
 metallib via `xcrun metal`, so vertex/fragment shaders also produce
 native metallib binaries.
+
+### LLVM subprocess isolation
+
+LLVM's fatal error handler calls `abort()` on unsupported ops (e.g. `fsin` on
+the SPIR-V target). To prevent this from killing the compiler before metallib +
+SPIR-V + WGSL are serialized, LLVM compilation runs in a subprocess via
+`--llvm-only <target>`. The parent process emits metallib/SPIR-V/WGSL first,
+then spawns children for PTX/GCN. If a child crashes, the parent still succeeds.
+
+### KernelOp coverage
+
+50 ops across 5 emitters. Key additions:
+
+| Op | SPIR-V | MSL | WGSL | LLVM |
+|---|---|---|---|---|
+| SatAdd/SatSub | OpULessThan + OpSelect | ternary | scalar | compare + select |
+| CooperativeMMA | scalar fallback | simdgroup_matrix | scalar | unsupported |
+| WaveShuffle/Ballot | OpGroupNonUniform* | simd_shuffle | subgroup* | unsupported |
+| TextureLoad2D | OpImageFetch | tex.read() | textureLoad | unsupported |
+| TextureWrite2D | OpImageWrite | tex.write() | textureStore | unsupported |
 
 ## LLVM IR emission (`to_llvm/emit.rs`)
 

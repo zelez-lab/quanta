@@ -212,6 +212,38 @@ for gpu in &gpus {
 let gpu = gpus.into_iter().next().expect("no GPU");
 ```
 
+## Const generics
+
+Kernels support const generic parameters. The value is set at the call site
+and baked into the dispatch as a push constant:
+
+```rust
+#[quanta::kernel]
+fn tiled_reduce<const TILE: u32>(data: &[f32], output: &mut [f32]) {
+    let lid = local_id();
+    // TILE is available as a compile-time value
+    if lid < TILE {
+        // ...
+    }
+}
+
+// Call with specific tile size:
+let wave = tiled_reduce::<256>(&gpu)?;
+```
+
+## Saturation arithmetic
+
+Use `.saturating_add()` and `.saturating_sub()` for clamped arithmetic
+that never wraps:
+
+```rust
+#[quanta::kernel]
+fn clamp_add(a: &[u32], b: &[u32], out: &mut [u32]) {
+    let i = quark_id();
+    out[i] = a[i].saturating_add(b[i]); // clamps to u32::MAX on overflow
+}
+```
+
 ## Next
 
 - [Fields and types](02-fields-and-types.md) -- memory management and supported types
