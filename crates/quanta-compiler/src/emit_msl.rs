@@ -68,7 +68,26 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                 ));
                 slot_names.insert(*slot, name.clone());
             }
-            _ => {}
+            KernelParam::Texture2DRead { slot, .. } => {
+                param_lines.push(format!(
+                    "    texture2d<float, access::sample> tex_{} [[texture({})]]",
+                    slot, slot
+                ));
+                param_lines.push(format!("    sampler samp_{} [[sampler({})]]", slot, slot));
+            }
+            KernelParam::Texture2DWrite { slot, .. } => {
+                param_lines.push(format!(
+                    "    texture2d<float, access::write> tex_{} [[texture({})]]",
+                    slot, slot
+                ));
+            }
+            KernelParam::Texture3DRead { slot, .. } => {
+                param_lines.push(format!(
+                    "    texture3d<float, access::sample> tex_{} [[texture({})]]",
+                    slot, slot
+                ));
+                param_lines.push(format!("    sampler samp_{} [[sampler({})]]", slot, slot));
+            }
         }
     }
     // Check if kernel uses debug print — if so, add a debug buffer parameter
@@ -380,7 +399,7 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.sample(samp_{}, float2(r{}, r{}));\n",
+                "{}{} r{} = tex_{}.sample(samp_{}, float2(r{}, r{})).x;\n",
                 pad,
                 ty.msl_name(),
                 dst.0,
@@ -399,7 +418,7 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.sample(samp_{}, float3(r{}, r{}, r{}));\n",
+                "{}{} r{} = tex_{}.sample(samp_{}, float3(r{}, r{}, r{})).x;\n",
                 pad,
                 ty.msl_name(),
                 dst.0,
@@ -585,7 +604,7 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.read(uint2(r{}, r{}));\n",
+                "{}{} r{} = tex_{}.read(uint2(r{}, r{})).x;\n",
                 pad,
                 ty.msl_name(),
                 dst.0,

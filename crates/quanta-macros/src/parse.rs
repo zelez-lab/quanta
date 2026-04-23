@@ -95,7 +95,30 @@ impl EmitCtx {
                         },
                     );
                 }
-                _ => {}
+                KernelParam::Texture2DRead {
+                    name,
+                    slot,
+                    scalar_type,
+                }
+                | KernelParam::Texture2DWrite {
+                    name,
+                    slot,
+                    scalar_type,
+                }
+                | KernelParam::Texture3DRead {
+                    name,
+                    slot,
+                    scalar_type,
+                } => {
+                    param_map.insert(
+                        name.clone(),
+                        ParamInfo {
+                            slot: *slot,
+                            is_const: false,
+                            scalar_type: *scalar_type,
+                        },
+                    );
+                }
             }
         }
         Self {
@@ -115,6 +138,10 @@ impl EmitCtx {
         let r = Reg(self.next_reg);
         self.next_reg += 1;
         r
+    }
+
+    pub(crate) fn param_slot(&self, name: &str) -> Option<u32> {
+        self.params.get(name).map(|p| p.slot)
     }
 
     /// Create a child context for loop/branch bodies that shares variables by reference.
@@ -308,6 +335,32 @@ fn parse_param_type(name: &str, ty: &Type, slot: u32) -> Result<KernelParam, syn
                         })
                     }
                 }
+                Type::Path(path) => {
+                    // Check for Texture2D<T>
+                    if let Some(seg) = path.path.segments.last() {
+                        let ident = seg.ident.to_string();
+                        if ident == "Texture2D" {
+                            let scalar = extract_generic_scalar(seg)?;
+                            return if is_mut {
+                                Ok(KernelParam::Texture2DWrite {
+                                    name: name.to_string(),
+                                    slot,
+                                    scalar_type: scalar,
+                                })
+                            } else {
+                                Ok(KernelParam::Texture2DRead {
+                                    name: name.to_string(),
+                                    slot,
+                                    scalar_type: scalar,
+                                })
+                            };
+                        }
+                    }
+                    Err(syn::Error::new_spanned(
+                        ty,
+                        "reference parameter must be &[T], &Texture2D<T>, or scalar &T",
+                    ))
+                }
                 _ => Err(syn::Error::new_spanned(
                     ty,
                     "reference parameter must be &[T] or &mut [T]",
@@ -324,6 +377,15 @@ fn parse_param_type(name: &str, ty: &Type, slot: u32) -> Result<KernelParam, syn
         }
         _ => Err(syn::Error::new_spanned(ty, "unsupported parameter type")),
     }
+}
+
+fn extract_generic_scalar(seg: &syn::PathSegment) -> Result<ScalarType, syn::Error> {
+    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+        && let Some(syn::GenericArgument::Type(Type::Path(p))) = args.args.first()
+    {
+        return scalar_type_from_path(p);
+    }
+    Ok(ScalarType::F32) // default to f32
 }
 
 fn scalar_type_from_type(ty: &Type) -> Result<ScalarType, syn::Error> {

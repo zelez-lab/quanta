@@ -57,6 +57,8 @@ const OP_VECTOR_TIMES_MATRIX: u16 = 144;
 #[allow(dead_code)]
 const OP_MATRIX_TIMES_MATRIX: u16 = 146;
 const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
+const OP_IMAGE_WRITE: u16 = 99;
+const OP_IMAGE_FETCH: u16 = 95;
 #[allow(dead_code)]
 const OP_SELECT: u16 = 169;
 const OP_CONVERT_U_TO_F: u16 = 112;
@@ -229,8 +231,6 @@ const GLSL_FIND_U_MSB: u32 = 75;
 
 const OP_BIT_COUNT: u16 = 205;
 const OP_DOT: u16 = 148;
-#[allow(dead_code)]
-const OP_IMAGE_FETCH: u16 = 164;
 const OP_GROUP_NON_UNIFORM_IADD: u16 = 349;
 const OP_GROUP_NON_UNIFORM_FADD: u16 = 350;
 const OP_GROUP_NON_UNIFORM_SMIN: u16 = 354;
@@ -318,9 +318,9 @@ struct SpvEmitter {
     // GLSL.std.450 extended instruction set ID
     glsl_ext_id: Option<u32>,
 
-    // Combined image sampler variables for texture sampling in fragment shaders
-    // Index = texture slot, value = (sampler_var_id, sampled_image_type_id)
-    texture_samplers: Vec<(u32, u32)>,
+    // Texture sampler variables: slot → (var_id, type_id)
+    // Used by both compute kernel texture params and fragment shader sample() calls.
+    texture_samplers: HashMap<u32, (u32, u32)>,
 
     // Stack of loop merge labels for Break support
     loop_merge_stack: Vec<u32>,
@@ -377,7 +377,7 @@ impl SpvEmitter {
             type_cache: HashMap::new(),
             const_cache: HashMap::new(),
             glsl_ext_id: None,
-            texture_samplers: Vec::new(),
+            texture_samplers: HashMap::new(),
             loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
@@ -1116,8 +1116,92 @@ impl SpvEmitter {
                     self.push_constant_slots.insert(*slot);
                     self.push_constant_size += 16;
                 }
-                _ => {
-                    // Texture params — not yet supported in SPIR-V emitter
+                KernelParam::Texture2DRead { name, slot, .. } => {
+                    // Combined image sampler for texture reads
+                    let f32_ty = self.ensure_type_f32();
+                    let image_ty = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_type_const,
+                        OP_TYPE_IMAGE,
+                        &[
+                            image_ty, f32_ty, 1, /*Dim2D*/
+                            0, 0, 0, 1, /*sampled*/
+                            0,
+                        ],
+                    );
+                    let sampled_image_ty = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_type_const,
+                        OP_TYPE_SAMPLED_IMAGE,
+                        &[sampled_image_ty, image_ty],
+                    );
+                    let ptr_si =
+                        self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, sampled_image_ty);
+                    let var_id = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_global_var,
+                        OP_VARIABLE,
+                        &[ptr_si, var_id, STORAGE_CLASS_UNIFORM_CONSTANT],
+                    );
+                    self.emit_name(var_id, name);
+                    self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+                    self.decorate(var_id, DECORATION_BINDING, &[*slot]);
+                    self.texture_samplers
+                        .insert(*slot, (var_id, sampled_image_ty));
+                }
+                KernelParam::Texture2DWrite { name, slot, .. } => {
+                    // Storage image for texture writes
+                    let f32_ty = self.ensure_type_f32();
+                    let image_ty = self.alloc_id();
+                    // Dim2D, non-depth, non-arrayed, non-MS, sampled=2 (storage), Rgba32f
+                    Self::emit_op(
+                        &mut self.sec_type_const,
+                        OP_TYPE_IMAGE,
+                        &[
+                            image_ty, f32_ty, 1, 0, 0, 0, 2, /*storage*/
+                            3, /*Rgba32f*/
+                        ],
+                    );
+                    let ptr_img =
+                        self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, image_ty);
+                    let var_id = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_global_var,
+                        OP_VARIABLE,
+                        &[ptr_img, var_id, STORAGE_CLASS_UNIFORM_CONSTANT],
+                    );
+                    self.emit_name(var_id, name);
+                    self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+                    self.decorate(var_id, DECORATION_BINDING, &[*slot]);
+                    self.texture_samplers.insert(*slot, (var_id, image_ty));
+                }
+                KernelParam::Texture3DRead { name, slot, .. } => {
+                    let f32_ty = self.ensure_type_f32();
+                    let image_ty = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_type_const,
+                        OP_TYPE_IMAGE,
+                        &[image_ty, f32_ty, 2 /*Dim3D*/, 0, 0, 0, 1, 0],
+                    );
+                    let sampled_image_ty = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_type_const,
+                        OP_TYPE_SAMPLED_IMAGE,
+                        &[sampled_image_ty, image_ty],
+                    );
+                    let ptr_si =
+                        self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, sampled_image_ty);
+                    let var_id = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_global_var,
+                        OP_VARIABLE,
+                        &[ptr_si, var_id, STORAGE_CLASS_UNIFORM_CONSTANT],
+                    );
+                    self.emit_name(var_id, name);
+                    self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+                    self.decorate(var_id, DECORATION_BINDING, &[*slot]);
+                    self.texture_samplers
+                        .insert(*slot, (var_id, sampled_image_ty));
                 }
             }
         }
@@ -2346,16 +2430,95 @@ impl SpvEmitter {
                 self.set_reg(*dst, result, uint_ty);
             }
 
-            KernelOp::TextureSample2D { dst, ty, .. }
-            | KernelOp::TextureSample3D { dst, ty, .. } => {
-                // Texture sampling not yet supported
+            KernelOp::TextureSample2D {
+                dst,
+                texture,
+                x,
+                y,
+                ty,
+            } => {
+                if let Some(&(var_id, type_id)) = self.texture_samplers.get(texture) {
+                    let loaded = self.alloc_id();
+                    Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+                    let f32_ty = self.ensure_type_f32();
+                    let vec2_ty = self.ensure_type_vector(f32_ty, 2);
+                    let x_val = self.reg_value_id(*x)?;
+                    let y_val = self.reg_value_id(*y)?;
+                    let coord = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_COMPOSITE_CONSTRUCT,
+                        &[vec2_ty, coord, x_val, y_val],
+                    );
+                    let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+                    let sample_result = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_IMAGE_SAMPLE_IMPLICIT_LOD,
+                        &[vec4_ty, sample_result, loaded, coord],
+                    );
+                    // Extract first component (scalar result)
+                    let result_ty = self.scalar_type_id(*ty);
+                    let result = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_COMPOSITE_EXTRACT,
+                        &[result_ty, result, sample_result, 0],
+                    );
+                    self.set_reg(*dst, result, result_ty);
+                } else {
+                    let result_ty = self.scalar_type_id(*ty);
+                    let zero = self.emit_constant_f32(0.0);
+                    self.set_reg(*dst, zero, result_ty);
+                }
+            }
+
+            KernelOp::TextureSample3D { dst, ty, .. } => {
+                // 3D texture sampling — placeholder until 3D textures are tested
                 let result_ty = self.scalar_type_id(*ty);
                 let zero = self.emit_constant_f32(0.0);
                 self.set_reg(*dst, zero, result_ty);
             }
 
-            KernelOp::TextureWrite2D { .. } => {
-                // Texture writes not yet supported
+            KernelOp::TextureWrite2D {
+                texture,
+                x,
+                y,
+                value,
+                ..
+            } => {
+                if let Some(&(var_id, type_id)) = self.texture_samplers.get(texture) {
+                    let loaded = self.alloc_id();
+                    Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+                    let uint_ty = self.ensure_type_u32();
+                    let vec2_uint = self.ensure_type_vector(uint_ty, 2);
+                    let x_val = self.reg_value_id(*x)?;
+                    let y_val = self.reg_value_id(*y)?;
+                    let coord = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_COMPOSITE_CONSTRUCT,
+                        &[vec2_uint, coord, x_val, y_val],
+                    );
+                    let val = self.reg_value_id(*value)?;
+                    let f32_ty = self.ensure_type_f32();
+                    let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+                    // Expand scalar to vec4 for image write
+                    let zero = self.emit_constant_f32(0.0);
+                    let one = self.emit_constant_f32(1.0);
+                    let texel = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_COMPOSITE_CONSTRUCT,
+                        &[vec4_ty, texel, val, zero, zero, one],
+                    );
+                    // OpImageWrite: void (image, coord, texel)
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_IMAGE_WRITE,
+                        &[loaded, coord, texel],
+                    );
+                }
             }
 
             KernelOp::TextureSize { dst_w, dst_h, .. } => {
@@ -2559,11 +2722,47 @@ impl SpvEmitter {
                 self.set_reg(*dst, result, result_ty);
             }
 
-            KernelOp::TextureLoad2D { dst, ty, .. } => {
-                // Texture load not yet wired to image variables; placeholder zero.
-                let result_ty = self.scalar_type_id(*ty);
-                let zero = self.emit_constant_f32(0.0);
-                self.set_reg(*dst, zero, result_ty);
+            KernelOp::TextureLoad2D {
+                dst,
+                texture,
+                x,
+                y,
+                ty,
+            } => {
+                if let Some(&(var_id, type_id)) = self.texture_samplers.get(texture) {
+                    let loaded = self.alloc_id();
+                    Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+                    let int_ty = self.ensure_type_i32();
+                    let vec2_int = self.ensure_type_vector(int_ty, 2);
+                    let x_val = self.reg_value_id(*x)?;
+                    let y_val = self.reg_value_id(*y)?;
+                    let coord = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_COMPOSITE_CONSTRUCT,
+                        &[vec2_int, coord, x_val, y_val],
+                    );
+                    let f32_ty = self.ensure_type_f32();
+                    let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+                    let fetch_result = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_IMAGE_FETCH,
+                        &[vec4_ty, fetch_result, loaded, coord],
+                    );
+                    let result_ty = self.scalar_type_id(*ty);
+                    let result = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_COMPOSITE_EXTRACT,
+                        &[result_ty, result, fetch_result, 0],
+                    );
+                    self.set_reg(*dst, result, result_ty);
+                } else {
+                    let result_ty = self.scalar_type_id(*ty);
+                    let zero = self.emit_constant_f32(0.0);
+                    self.set_reg(*dst, zero, result_ty);
+                }
             }
 
             KernelOp::SubgroupSize { dst } => {
@@ -3116,10 +3315,10 @@ impl SpvEmitter {
                         *pos += 1;
                     }
 
-                    if (slot as usize) >= self.texture_samplers.len() {
+                    let Some(&(sampler_var, sampled_image_ty)) = self.texture_samplers.get(&slot)
+                    else {
                         return Err(format!("texture slot {} not declared", slot));
-                    }
-                    let (sampler_var, sampled_image_ty) = self.texture_samplers[slot as usize];
+                    };
                     let loaded_sampler = self.alloc_id();
                     Self::emit_op(
                         &mut self.sec_function,
@@ -3757,7 +3956,8 @@ impl SpvEmitter {
                 self.emit_name(var_id, &format!("tex_{}", slot));
                 self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
                 self.decorate(var_id, DECORATION_BINDING, &[slot + 8]); // bindings 8+ for textures (matching Vulkan layout)
-                self.texture_samplers.push((var_id, sampled_image_ty));
+                self.texture_samplers
+                    .insert(slot, (var_id, sampled_image_ty));
             }
         }
 

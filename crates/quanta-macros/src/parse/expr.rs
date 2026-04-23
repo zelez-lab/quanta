@@ -328,6 +328,44 @@ fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
             Ok((Reg(u32::MAX), ScalarType::Bool))
         }
 
+        // Texture access: texture_load_2d(tex, x, y), texture_sample_2d(tex, x, y)
+        "texture_load_2d" | "texture_sample_2d" => {
+            if call.args.len() != 3 {
+                return Err(syn::Error::new_spanned(
+                    call,
+                    format!("{func_name} requires 3 arguments: (texture, x, y)"),
+                ));
+            }
+            // First arg is the texture param — resolve to its slot
+            let tex_name = expr_to_name(&call.args[0]).ok_or_else(|| {
+                syn::Error::new_spanned(&call.args[0], "texture argument must be a name")
+            })?;
+            let tex_slot = ctx
+                .param_slot(&tex_name)
+                .ok_or_else(|| syn::Error::new_spanned(&call.args[0], "unknown texture param"))?;
+            let (x_reg, _) = emit_expr(&call.args[1], ctx)?;
+            let (y_reg, _) = emit_expr(&call.args[2], ctx)?;
+            let dst = ctx.alloc_reg();
+            if func_name == "texture_load_2d" {
+                ctx.ops.push(KernelOp::TextureLoad2D {
+                    dst,
+                    texture: tex_slot,
+                    x: x_reg,
+                    y: y_reg,
+                    ty: ScalarType::F32,
+                });
+            } else {
+                ctx.ops.push(KernelOp::TextureSample2D {
+                    dst,
+                    texture: tex_slot,
+                    x: x_reg,
+                    y: y_reg,
+                    ty: ScalarType::F32,
+                });
+            }
+            Ok((dst, ScalarType::F32))
+        }
+
         // Atomics: atomic_add(&mut arr[i], val)
         "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
         | "atomic_xor" | "atomic_exchange" => emit_atomic_call(&func_name, call, ctx),
