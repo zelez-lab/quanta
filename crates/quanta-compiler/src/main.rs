@@ -54,6 +54,31 @@ fn main() {
         return;
     }
 
+    // LLVM subprocess mode: compile a single target, write raw binary to stdout.
+    // Used by the parent process to isolate LLVM fatal errors (abort on fsin etc.)
+    if let Some(pos) = args.iter().position(|a| a == "--llvm-only")
+        && let Some(target_name) = args.get(pos + 1)
+    {
+        let target = match target_name.as_str() {
+            "nvptx" => GpuTarget::Nvptx,
+            "amdgpu" => GpuTarget::Amdgpu,
+            _ => std::process::exit(1),
+        };
+        let mut input = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut input).unwrap();
+        let kernel: KernelDef = quanta_ir::deserialize_kernel(&input).unwrap();
+        match to_llvm::compile_to_binary(&kernel, target) {
+            Ok(binary) => {
+                std::io::Write::write_all(&mut std::io::stdout(), &binary).unwrap();
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     // Normal mode: read KernelDef from stdin, emit results to stdout
     let mut input = Vec::new();
     std::io::Read::read_to_end(&mut std::io::stdin(), &mut input).unwrap();
@@ -68,43 +93,51 @@ fn main() {
     };
 
     // Compile MSL → metallib via xcrun (if available).
-    // MSL is used only as an intermediate — not stored in the output.
     if let Ok(msl) = emit_msl::emit(&kernel) {
         output.metallib = compile_msl_to_metallib(&msl);
     }
 
     // Emit Vulkan SPIR-V directly from KernelOps (Shader capability, GLCompute).
-    // Our own emitter — no naga, no LLVM spirv64 backend.
     match emit_spirv::emit(&kernel) {
         Ok(spirv) => output.spirv = Some(spirv),
         Err(e) => eprintln!("[quanta] SPIR-V emitter error: {}", e),
     }
 
-    // Generate LLVM-compiled targets
-    // Strategy: try rustc path first (handles ALL Rust), fall back to KernelOp path
-    let use_rustc = kernel.body_source.is_some();
-
+    // LLVM compilation for PTX/GCN — run in subprocess to survive fatal errors.
+    // LLVM's error handler calls abort() on unsupported ops (e.g. fsin on SPIR-V target),
+    // which would kill this process before metallib + SPIR-V are written to stdout.
+    let self_exe = std::env::current_exe().unwrap_or_default();
     for target in &targets {
-        let result = if use_rustc {
-            // rustc path: Rust source → rustc → LLVM IR → retarget
-            // Then we'd feed the retargeted IR to our LLVM pipeline.
-            // For now, use rustc to get verified IR, then fall back to KernelOp path
-            // for actual binary emission (until we wire up IR → inkwell → binary).
-            to_llvm::compile_to_binary(&kernel, *target)
-        } else {
-            to_llvm::compile_to_binary(&kernel, *target)
+        let target_name = match target {
+            GpuTarget::Nvptx => "nvptx",
+            GpuTarget::Amdgpu => "amdgpu",
+            GpuTarget::Spirv => continue, // already emitted above
         };
 
-        match result {
-            Ok(binary) => match target {
-                GpuTarget::Nvptx => output.nvidia = Some(binary),
-                // Don't overwrite direct/naga SPIR-V with LLVM's OpenCL-style SPIR-V
-                GpuTarget::Spirv if output.spirv.is_some() => {}
-                GpuTarget::Amdgpu => output.amd = Some(binary),
-                GpuTarget::Spirv => output.spirv = Some(binary),
-            },
-            Err(e) => {
-                eprintln!("Error compiling for {:?}: {}", target, e);
+        let child = std::process::Command::new(&self_exe)
+            .arg("--llvm-only")
+            .arg(target_name)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+
+        if let Ok(mut child) = child {
+            {
+                if let Some(ref mut stdin) = child.stdin {
+                    let _ = std::io::Write::write_all(stdin, &input);
+                }
+            }
+            child.stdin.take(); // close stdin so child sees EOF
+            if let Ok(result) = child.wait_with_output()
+                && result.status.success()
+                && !result.stdout.is_empty()
+            {
+                match target {
+                    GpuTarget::Nvptx => output.nvidia = Some(result.stdout),
+                    GpuTarget::Amdgpu => output.amd = Some(result.stdout),
+                    GpuTarget::Spirv => {}
+                }
             }
         }
     }
