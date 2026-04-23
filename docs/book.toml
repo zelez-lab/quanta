@@ -1,0 +1,15 @@
+[book]
+title = "Quanta"
+description = "GPU compute and rendering for Rust"
+authors = ["Quanta Contributors"]
+language = "en"
+src = "."
+
+[build]
+build-dir = "../target/book"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/quanta-gpu/quanta"
+edit-url-template = "https://github.com/quanta-gpu/quanta/edit/main/docs/{path}"

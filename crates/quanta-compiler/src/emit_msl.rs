@@ -816,6 +816,29 @@ fn translate_shader_body(src: &str) -> String {
     s
 }
 
+/// Wrap the last expression as an assignment to a variable (for vertex output struct).
+fn indent_and_return_to_var(body: &str, var_name: &str) -> String {
+    let lines: Vec<&str> = body.trim().lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if i == lines.len() - 1 && !trimmed.is_empty() {
+            let expr = trimmed
+                .trim_end_matches(';')
+                .trim()
+                .trim_start_matches("return ")
+                .trim();
+            out.push_str(&format!("    auto {} = {};\n", var_name, expr));
+        } else {
+            out.push_str(&format!("    {}\n", trimmed));
+        }
+    }
+    out
+}
+
 /// Wrap the last expression of a body as a return statement.
 fn indent_and_return(body: &str) -> String {
     let lines: Vec<&str> = body.trim().lines().collect();
@@ -858,6 +881,10 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
     let uniform_params: Vec<&quanta_ir::ShaderParam> =
         shader.params.iter().filter(|p| p.is_uniform).collect();
 
+    // Varying params = all attr params except the first (position)
+    let varying_params: Vec<&quanta_ir::ShaderParam> =
+        attr_params.iter().skip(1).copied().collect();
+
     // Emit vertex input struct with [[attribute(N)]] decorations
     if !attr_params.is_empty() {
         out.push_str(&format!("struct {}_VertexIn {{\n", shader.name));
@@ -871,6 +898,22 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
         }
         out.push_str("};\n\n");
     }
+
+    // Emit vertex output struct: [[position]] + varying members with [[user(locN)]]
+    out.push_str(&format!("struct {}_VertexOut {{\n", shader.name));
+    out.push_str(&format!(
+        "    {} position [[position]];\n",
+        shader_type_msl(shader.return_type),
+    ));
+    for (i, p) in varying_params.iter().enumerate() {
+        out.push_str(&format!(
+            "    {} {} [[user(loc{})]];\n",
+            shader_type_msl(p.ty),
+            p.name,
+            i,
+        ));
+    }
+    out.push_str("};\n\n");
 
     // Build parameter list
     let mut param_lines = Vec::new();
@@ -887,8 +930,8 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
     }
 
     out.push_str(&format!(
-        "vertex {} {}(\n{}\n) {{\n",
-        shader_type_msl(shader.return_type),
+        "vertex {}_VertexOut {}(\n{}\n) {{\n",
+        shader.name,
         shader.name,
         param_lines.join(",\n"),
     ));
@@ -903,8 +946,18 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
         ));
     }
 
+    // Evaluate body for position
     let body = translate_shader_body(&shader.body_source);
-    out.push_str(&indent_and_return(&body));
+    let body = indent_and_return_to_var(&body, "pos_result");
+    out.push_str(&body);
+
+    // Build output struct
+    out.push_str(&format!("    {}_VertexOut out;\n", shader.name));
+    out.push_str("    out.position = pos_result;\n");
+    for p in &varying_params {
+        out.push_str(&format!("    out.{} = {};\n", p.name, p.name));
+    }
+    out.push_str("    return out;\n");
     out.push_str("}\n");
     Ok(out)
 }
@@ -933,6 +986,13 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         out.push_str("};\n\n");
     }
 
+    // Detect texture slots used in body
+    let max_tex_slot = (0..8u32)
+        .filter(|slot| shader.body_source.contains(&format!("sample({}", slot)))
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
+
     let mut param_lines = Vec::new();
     if !stage_in_params.is_empty() {
         param_lines.push(format!("    {}_Input in [[stage_in]]", shader.name));
@@ -944,6 +1004,14 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
             p.name,
             i,
         ));
+    }
+    // Add texture + sampler params for each used slot
+    for slot in 0..max_tex_slot {
+        param_lines.push(format!(
+            "    texture2d<float> tex_{} [[texture({})]]",
+            slot, slot,
+        ));
+        param_lines.push(format!("    sampler smp_{} [[sampler({})]]", slot, slot,));
     }
 
     out.push_str(&format!(
@@ -963,7 +1031,20 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         ));
     }
 
-    let body = translate_shader_body(&shader.body_source);
+    // Translate body, replacing sample(N, uv) with tex_N.sample(smp_N, uv)
+    let mut body = translate_shader_body(&shader.body_source);
+    for slot in 0..max_tex_slot {
+        // Handle both spaced and compact forms
+        let patterns = [
+            format!("sample({} ,", slot),
+            format!("sample({},", slot),
+            format!("sample ({} ,", slot),
+            format!("sample ({},", slot),
+        ];
+        for pat in &patterns {
+            body = body.replace(pat, &format!("tex_{}.sample(smp_{},", slot, slot));
+        }
+    }
     out.push_str(&indent_and_return(&body));
     out.push_str("}\n");
     Ok(out)

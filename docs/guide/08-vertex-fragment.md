@@ -1,7 +1,9 @@
 # Vertex and Fragment Shaders
 
 Render pipeline shaders are written as annotated Rust functions, just like
-compute kernels. The proc macro compiles them to MSL and WGSL at build time.
+compute kernels. The proc macro compiles them to SPIR-V (Vulkan) and metallib
+(Metal) at build time. Both platforms get native binary shaders -- no runtime
+compilation needed.
 
 ## Vertex shaders
 
@@ -210,6 +212,93 @@ pass.draw_instanced(36, 1000); // 36 verts * 1000 instances
 | `AttributeFormat::Int4`   | 4 i32    | 16 B  |
 | `AttributeFormat::UInt`   | 1 u32    | 4 B   |
 | `AttributeFormat::UByte4Norm` | 4 u8 (normalized) | 4 B |
+
+## Vertex-to-fragment varyings
+
+The first vertex parameter is always the position (goes to `gl_Position`).
+All remaining parameters are automatically forwarded to the fragment shader as
+interpolated varyings:
+
+```rust
+#[quanta::vertex]
+fn my_vertex(pos: Vec3, uv: Vec2, color: Vec3) -> Vec4 {
+    Vec4::new(pos.x, pos.y, pos.z, 1.0)
+}
+
+// Fragment receives uv at Location 0, color at Location 1
+#[quanta::fragment]
+fn my_fragment(uv: Vec2, color: Vec3) -> Vec4 {
+    Vec4::new(color.x * uv.x, color.y * uv.y, color.z, 1.0)
+}
+```
+
+Convention:
+- Vertex param 0 = position (not forwarded)
+- Vertex param 1 = fragment input at Location 0
+- Vertex param 2 = fragment input at Location 1
+- ...
+
+## Texture sampling
+
+Fragment shaders can sample textures using the `sample(slot, uv)` function.
+The slot number matches the `set_texture(slot, ...)` call in the render pass:
+
+```rust
+#[quanta::fragment]
+fn textured(uv: Vec2) -> Vec4 {
+    sample(0, uv)
+}
+```
+
+On the CPU side, bind the texture and sampler:
+
+```rust
+let mut pass = gpu.render_begin(&target)?;
+pass.set_pipeline(&pipeline);
+pass.bind_vertices(0, &vertices);
+pass.set_texture(0, &albedo_texture);
+pass.set_sampler(0, SamplerDesc {
+    min_filter: Filter::Linear,
+    mag_filter: Filter::Linear,
+    ..SamplerDesc::default()
+});
+pass.draw(6);
+```
+
+`sample()` returns `Vec4` (RGBA). Combine with varyings for UV-mapped rendering:
+
+```rust
+#[quanta::vertex]
+fn uv_vertex(pos: Vec3, uv: Vec2) -> Vec4 {
+    Vec4::new(pos.x, pos.y, pos.z, 1.0)
+}
+
+#[quanta::fragment]
+fn uv_textured(uv: Vec2) -> Vec4 {
+    sample(0, uv)
+}
+```
+
+## Shader expression support
+
+The shader body supports these operations on both Metal and Vulkan:
+
+| Feature | Example |
+|---------|---------|
+| Arithmetic | `a + b`, `a * b`, `a / b`, `a - b` |
+| Negation | `-x` |
+| Field access | `pos.x`, `color.rgb` |
+| Vec constructors | `Vec4::new(x, y, z, w)` |
+| Let bindings | `let t = a * 0.5;` |
+| Math functions | `sin(x)`, `cos(x)`, `sqrt(x)`, `clamp(x, 0.0, 1.0)` |
+| Matrix multiply | `mvp * vec4` |
+| Texture sample | `sample(0, uv)` |
+| Conditionals | `if x > 0.5 { a } else { b }` |
+
+Math functions (30 total): `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sqrt`,
+`abs`, `floor`, `ceil`, `round`, `fract`, `min`, `max`, `clamp`, `mix`, `step`,
+`smoothstep`, `pow`, `exp`, `log`, `exp2`, `log2`, `normalize`, `length`,
+`distance`, `cross`, `fma`, `atan2`, `inverseSqrt`.
 
 ## Next
 

@@ -22,9 +22,14 @@ const OP_TYPE_BOOL: u16 = 20;
 const OP_TYPE_INT: u16 = 21;
 const OP_TYPE_FLOAT: u16 = 22;
 const OP_TYPE_VECTOR: u16 = 23;
+const OP_TYPE_MATRIX: u16 = 24;
 const OP_TYPE_ARRAY: u16 = 28;
 const OP_TYPE_RUNTIME_ARRAY: u16 = 29;
 const OP_TYPE_STRUCT: u16 = 30;
+const OP_TYPE_IMAGE: u16 = 25;
+#[allow(dead_code)]
+const OP_TYPE_SAMPLER: u16 = 26;
+const OP_TYPE_SAMPLED_IMAGE: u16 = 27;
 const OP_TYPE_POINTER: u16 = 32;
 const OP_TYPE_FUNCTION: u16 = 33;
 const OP_CONSTANT: u16 = 43;
@@ -44,6 +49,16 @@ const OP_MEMBER_DECORATE: u16 = 72;
 const OP_COMPOSITE_CONSTRUCT: u16 = 80;
 const OP_COMPOSITE_EXTRACT: u16 = 81;
 const OP_COPY_OBJECT: u16 = 83;
+#[allow(dead_code)]
+const OP_TRANSPOSE: u16 = 84;
+const OP_MATRIX_TIMES_VECTOR: u16 = 145;
+#[allow(dead_code)]
+const OP_VECTOR_TIMES_MATRIX: u16 = 144;
+#[allow(dead_code)]
+const OP_MATRIX_TIMES_MATRIX: u16 = 146;
+const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
+#[allow(dead_code)]
+const OP_SELECT: u16 = 169;
 const OP_CONVERT_U_TO_F: u16 = 112;
 const OP_CONVERT_F_TO_U: u16 = 113;
 const OP_CONVERT_S_TO_F: u16 = 114;
@@ -116,9 +131,9 @@ const OP_ATOMIC_XOR: u16 = 242;
 
 // ── Storage classes ─────────────────────────────────────────────────────────
 
+const STORAGE_CLASS_UNIFORM_CONSTANT: u32 = 0;
 const STORAGE_CLASS_INPUT: u32 = 1;
 const STORAGE_CLASS_OUTPUT: u32 = 3;
-// const STORAGE_CLASS_UNIFORM: u32 = 2;
 const STORAGE_CLASS_WORKGROUP: u32 = 4;
 // const STORAGE_CLASS_FUNCTION: u32 = 7;
 const STORAGE_CLASS_PUSH_CONSTANT: u32 = 9;
@@ -199,6 +214,14 @@ const GLSL_SCLAMP: u32 = 45;
 const GLSL_FMA: u32 = 50;
 const GLSL_POW: u32 = 26;
 const GLSL_ATAN2: u32 = 25;
+const GLSL_FMIX: u32 = 46;
+const GLSL_LENGTH: u32 = 66;
+const GLSL_DISTANCE: u32 = 67;
+const GLSL_CROSS: u32 = 68;
+const GLSL_NORMALIZE: u32 = 69;
+const GLSL_FRACT: u32 = 10;
+const GLSL_STEP: u32 = 48;
+const GLSL_SMOOTH_STEP: u32 = 49;
 const GLSL_FIND_I_LSB: u32 = 73;
 const GLSL_FIND_U_MSB: u32 = 75;
 
@@ -287,6 +310,10 @@ struct SpvEmitter {
     // GLSL.std.450 extended instruction set ID
     glsl_ext_id: Option<u32>,
 
+    // Combined image sampler variables for texture sampling in fragment shaders
+    // Index = texture slot, value = (sampler_var_id, sampled_image_type_id)
+    texture_samplers: Vec<(u32, u32)>,
+
     // Stack of loop merge labels for Break support
     loop_merge_stack: Vec<u32>,
 
@@ -342,6 +369,7 @@ impl SpvEmitter {
             type_cache: HashMap::new(),
             const_cache: HashMap::new(),
             glsl_ext_id: None,
+            texture_samplers: Vec::new(),
             loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
@@ -2461,12 +2489,31 @@ impl SpvEmitter {
             quanta_ir::ShaderType::Vec2 => self.ensure_type_vector(f32_ty, 2),
             quanta_ir::ShaderType::Vec3 => self.ensure_type_vector(f32_ty, 3),
             quanta_ir::ShaderType::Vec4 => self.ensure_type_vector(f32_ty, 4),
-            // Mat4 = array of 4 vec4, Mat3 = array of 3 vec3
-            // For push-constant usage, store as a flat struct member.
-            // For now, treat as vec4 (uniform matrices need proper handling later).
-            quanta_ir::ShaderType::Mat4 => self.ensure_type_vector(f32_ty, 4),
-            quanta_ir::ShaderType::Mat3 => self.ensure_type_vector(f32_ty, 3),
+            quanta_ir::ShaderType::Mat4 => {
+                let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+                self.ensure_type_matrix(vec4_ty, 4)
+            }
+            quanta_ir::ShaderType::Mat3 => {
+                let vec3_ty = self.ensure_type_vector(f32_ty, 3);
+                self.ensure_type_matrix(vec3_ty, 3)
+            }
         }
+    }
+
+    /// Ensure an OpTypeMatrix exists: matrix of `count` column vectors of type `col_type`.
+    fn ensure_type_matrix(&mut self, col_type: u32, count: u32) -> u32 {
+        let key = format!("mat_{}_{}", col_type, count);
+        if let Some(&id) = self.type_cache.get(&key) {
+            return id;
+        }
+        let id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_type_const,
+            OP_TYPE_MATRIX,
+            &[id, col_type, count],
+        );
+        self.type_cache.insert(key, id);
+        id
     }
 
     /// Number of f32 components in a ShaderType.
@@ -2481,14 +2528,686 @@ impl SpvEmitter {
         }
     }
 
-    // ── Vertex shader ───��──────────────────────────────────────────────────
+    // ── Shader body expression parser + SPIR-V emitter ──────────────────
+    //
+    // Parses tokenized Rust shader body into SPIR-V instructions.
+    // Supports: Vec constructors, field access, arithmetic, float literals,
+    // let bindings, math functions (GLSL.std.450), matrix-vector multiply,
+    // if/else, comparisons, and uniform parameter access via push constants.
+
+    /// Evaluate a shader body_source and emit SPIR-V instructions.
+    /// Returns the SPIR-V result ID of the final expression and its type.
+    fn eval_shader_body(
+        &mut self,
+        body_source: &str,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)], // (name, var_id, type_id, shader_type)
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let src = body_source.trim();
+        let src = if src.starts_with('{') && src.ends_with('}') {
+            &src[1..src.len() - 1]
+        } else {
+            src
+        };
+
+        let mut locals: Vec<(String, u32, quanta_ir::ShaderType)> = Vec::new();
+        let mut remaining = src.trim();
+
+        // Process let-bindings
+        while remaining.starts_with("let ") {
+            let semi = remaining.find(';').ok_or("missing ; after let binding")?;
+            let binding = &remaining[..semi];
+            remaining = remaining[semi + 1..].trim();
+
+            let binding = binding.trim_start_matches("let ").trim();
+            let binding = binding.trim_start_matches("mut ").trim();
+            let eq_pos = binding.find('=').ok_or("missing = in let binding")?;
+            let var_name = binding[..eq_pos].trim().to_string();
+            let expr_str = binding[eq_pos + 1..].trim();
+
+            let (val_id, val_ty) = self.eval_expr(expr_str, params, &locals)?;
+            locals.push((var_name, val_id, val_ty));
+        }
+
+        let remaining = remaining.trim().trim_end_matches(';').trim();
+        if remaining.is_empty() {
+            return Err("empty shader body".to_string());
+        }
+        self.eval_expr(remaining, params, &locals)
+    }
+
+    fn eval_expr(
+        &mut self,
+        src: &str,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let tokens = tokenize_shader_expr(src);
+        let mut pos = 0;
+        self.parse_conditional(&tokens, &mut pos, params, locals)
+    }
+
+    // ── Gap 5: if/else ───────────────────────────────────────────────────
+
+    fn parse_conditional(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Ident("if".to_string()) {
+            *pos += 1;
+            // Parse condition (comparison expression)
+            let (cond, _) = self.parse_comparison(tokens, pos, params, locals)?;
+
+            // Skip '{'
+            if *pos < tokens.len() && tokens[*pos] == ShaderToken::BraceOpen {
+                *pos += 1;
+            }
+            // Find matching '}' for then-branch by counting braces
+            let then_start = *pos;
+            let mut depth = 1i32;
+            while *pos < tokens.len() && depth > 0 {
+                match &tokens[*pos] {
+                    ShaderToken::BraceOpen => depth += 1,
+                    ShaderToken::BraceClose => depth -= 1,
+                    _ => {}
+                }
+                if depth > 0 {
+                    *pos += 1;
+                }
+            }
+            let then_tokens: Vec<ShaderToken> = tokens[then_start..*pos].to_vec();
+            if *pos < tokens.len() {
+                *pos += 1; // skip '}'
+            }
+
+            // Parse else branch
+            let has_else =
+                *pos < tokens.len() && tokens[*pos] == ShaderToken::Ident("else".to_string());
+
+            if !has_else {
+                return Err("if without else not supported in shader expressions".to_string());
+            }
+            *pos += 1; // skip 'else'
+            if *pos < tokens.len() && tokens[*pos] == ShaderToken::BraceOpen {
+                *pos += 1;
+            }
+            let else_start = *pos;
+            depth = 1;
+            while *pos < tokens.len() && depth > 0 {
+                match &tokens[*pos] {
+                    ShaderToken::BraceOpen => depth += 1,
+                    ShaderToken::BraceClose => depth -= 1,
+                    _ => {}
+                }
+                if depth > 0 {
+                    *pos += 1;
+                }
+            }
+            let else_tokens: Vec<ShaderToken> = tokens[else_start..*pos].to_vec();
+            if *pos < tokens.len() {
+                *pos += 1; // skip '}'
+            }
+
+            // Emit SPIR-V structured control flow
+            let then_label = self.alloc_id();
+            let else_label = self.alloc_id();
+            let merge_label = self.alloc_id();
+
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SELECTION_MERGE,
+                &[merge_label, 0], // 0 = None selection control
+            );
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_BRANCH_CONDITIONAL,
+                &[cond, then_label, else_label],
+            );
+
+            // Then block
+            Self::emit_op(&mut self.sec_function, OP_LABEL, &[then_label]);
+            let mut then_pos = 0;
+            let (then_id, then_ty) =
+                self.parse_conditional(&then_tokens, &mut then_pos, params, locals)?;
+            Self::emit_op(&mut self.sec_function, OP_BRANCH, &[merge_label]);
+
+            // Else block
+            Self::emit_op(&mut self.sec_function, OP_LABEL, &[else_label]);
+            let mut else_pos = 0;
+            let (else_id, _) =
+                self.parse_conditional(&else_tokens, &mut else_pos, params, locals)?;
+            Self::emit_op(&mut self.sec_function, OP_BRANCH, &[merge_label]);
+
+            // Merge block with OpPhi
+            Self::emit_op(&mut self.sec_function, OP_LABEL, &[merge_label]);
+            let result = self.alloc_id();
+            let ty_id = self.shader_type_id(then_ty);
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_PHI,
+                &[ty_id, result, then_id, then_label, else_id, else_label],
+            );
+
+            return Ok((result, then_ty));
+        }
+        self.parse_comparison(tokens, pos, params, locals)
+    }
+
+    // ── Comparison operators ─────────────────────────────────────────────
+
+    fn parse_comparison(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let (left, ty) = self.parse_additive(tokens, pos, params, locals)?;
+        if *pos < tokens.len() {
+            let cmp_op = match &tokens[*pos] {
+                ShaderToken::Cmp(c) => Some(*c),
+                _ => None,
+            };
+            if let Some(op) = cmp_op {
+                *pos += 1;
+                let (right, _) = self.parse_additive(tokens, pos, params, locals)?;
+                let bool_ty = self.ensure_type_bool();
+                let result = self.alloc_id();
+                let opcode = match op {
+                    ShaderCmpOp::Lt => OP_FORD_LESS_THAN,
+                    ShaderCmpOp::Gt => OP_FORD_GREATER_THAN,
+                    ShaderCmpOp::Le => OP_FORD_LESS_THAN_EQUAL,
+                    ShaderCmpOp::Ge => OP_FORD_GREATER_THAN_EQUAL,
+                    ShaderCmpOp::Eq => OP_FORD_EQUAL,
+                    ShaderCmpOp::Ne => OP_FORD_NOT_EQUAL,
+                };
+                Self::emit_op(
+                    &mut self.sec_function,
+                    opcode,
+                    &[bool_ty, result, left, right],
+                );
+                return Ok((result, quanta_ir::ShaderType::F32)); // abuse F32 for bool
+            }
+        }
+        Ok((left, ty))
+    }
+
+    // ── Additive / multiplicative / unary ────────────────────────────────
+
+    fn parse_additive(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let (mut left, ty) = self.parse_multiplicative(tokens, pos, params, locals)?;
+        while *pos < tokens.len() {
+            match &tokens[*pos] {
+                ShaderToken::Op('+') => {
+                    *pos += 1;
+                    let (right, _) = self.parse_multiplicative(tokens, pos, params, locals)?;
+                    let result = self.alloc_id();
+                    let ty_id = self.shader_type_id(ty);
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_FADD,
+                        &[ty_id, result, left, right],
+                    );
+                    left = result;
+                }
+                ShaderToken::Op('-') => {
+                    *pos += 1;
+                    let (right, _) = self.parse_multiplicative(tokens, pos, params, locals)?;
+                    let result = self.alloc_id();
+                    let ty_id = self.shader_type_id(ty);
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_FSUB,
+                        &[ty_id, result, left, right],
+                    );
+                    left = result;
+                }
+                _ => break,
+            }
+        }
+        Ok((left, ty))
+    }
+
+    /// Gap 2: Matrix-vector multiplication detection
+    fn parse_multiplicative(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let (mut left, mut left_ty) = self.parse_unary(tokens, pos, params, locals)?;
+        while *pos < tokens.len() {
+            match &tokens[*pos] {
+                ShaderToken::Op('*') => {
+                    *pos += 1;
+                    let (right, right_ty) = self.parse_unary(tokens, pos, params, locals)?;
+                    let result = self.alloc_id();
+
+                    // Detect matrix × vector
+                    let is_left_mat = matches!(
+                        left_ty,
+                        quanta_ir::ShaderType::Mat4 | quanta_ir::ShaderType::Mat3
+                    );
+                    let is_right_vec = matches!(
+                        right_ty,
+                        quanta_ir::ShaderType::Vec4 | quanta_ir::ShaderType::Vec3
+                    );
+
+                    if is_left_mat && is_right_vec {
+                        // OpMatrixTimesVector: result_type = vector type
+                        let result_ty_id = self.shader_type_id(right_ty);
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_MATRIX_TIMES_VECTOR,
+                            &[result_ty_id, result, left, right],
+                        );
+                        left = result;
+                        left_ty = right_ty;
+                    } else {
+                        let ty_id = self.shader_type_id(left_ty);
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_FMUL,
+                            &[ty_id, result, left, right],
+                        );
+                        left = result;
+                    }
+                }
+                ShaderToken::Op('/') => {
+                    *pos += 1;
+                    let (right, _) = self.parse_unary(tokens, pos, params, locals)?;
+                    let result = self.alloc_id();
+                    let ty_id = self.shader_type_id(left_ty);
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_FDIV,
+                        &[ty_id, result, left, right],
+                    );
+                    left = result;
+                }
+                _ => break,
+            }
+        }
+        Ok((left, left_ty))
+    }
+
+    fn parse_unary(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Op('-') {
+            *pos += 1;
+            let (val, ty) = self.parse_unary(tokens, pos, params, locals)?;
+            let result = self.alloc_id();
+            let ty_id = self.shader_type_id(ty);
+            Self::emit_op(&mut self.sec_function, OP_F_NEGATE, &[ty_id, result, val]);
+            return Ok((result, ty));
+        }
+        self.parse_atom(tokens, pos, params, locals)
+    }
+
+    // ── Atom: literals, identifiers, constructors, math calls ────────────
+
+    fn parse_atom(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        if *pos >= tokens.len() {
+            return Err("unexpected end of expression".to_string());
+        }
+
+        match &tokens[*pos] {
+            ShaderToken::Float(val) => {
+                *pos += 1;
+                let id = self.emit_constant_f32(*val);
+                Ok((id, quanta_ir::ShaderType::F32))
+            }
+            ShaderToken::Open => {
+                *pos += 1;
+                let result = self.parse_conditional(tokens, pos, params, locals)?;
+                if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
+                    *pos += 1;
+                }
+                Ok(result)
+            }
+            ShaderToken::Ident(name) => {
+                let name = name.clone();
+                *pos += 1;
+
+                // Vec{2,3,4} :: new ( args )
+                if (name == "Vec2" || name == "Vec3" || name == "Vec4")
+                    && *pos + 2 <= tokens.len()
+                    && tokens.get(*pos) == Some(&ShaderToken::ColonColon)
+                    && tokens
+                        .get(*pos + 1)
+                        .map(|t| matches!(t, ShaderToken::Ident(n) if n == "new"))
+                        .unwrap_or(false)
+                {
+                    *pos += 2; // skip :: new
+                    let count = match name.as_str() {
+                        "Vec2" => 2u32,
+                        "Vec3" => 3,
+                        "Vec4" => 4,
+                        _ => unreachable!(),
+                    };
+                    if *pos < tokens.len() && tokens[*pos] == ShaderToken::Open {
+                        *pos += 1;
+                    }
+                    let mut components = Vec::new();
+                    for i in 0..count {
+                        if i > 0 && *pos < tokens.len() && tokens[*pos] == ShaderToken::Comma {
+                            *pos += 1;
+                        }
+                        let (c, _) = self.parse_conditional(tokens, pos, params, locals)?;
+                        components.push(c);
+                    }
+                    if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
+                        *pos += 1;
+                    }
+                    let f32_ty = self.ensure_type_f32();
+                    let vec_ty = self.ensure_type_vector(f32_ty, count);
+                    let result = self.alloc_id();
+                    let mut ops = vec![vec_ty, result];
+                    ops.extend_from_slice(&components);
+                    Self::emit_op(&mut self.sec_function, OP_COMPOSITE_CONSTRUCT, &ops);
+                    let out_ty = match count {
+                        2 => quanta_ir::ShaderType::Vec2,
+                        3 => quanta_ir::ShaderType::Vec3,
+                        4 => quanta_ir::ShaderType::Vec4,
+                        _ => unreachable!(),
+                    };
+                    return Ok((result, out_ty));
+                }
+
+                // Texture sampling: sample(slot, uv) → OpImageSampleImplicitLod
+                if name == "sample" && *pos < tokens.len() && tokens[*pos] == ShaderToken::Open {
+                    *pos += 1; // skip '('
+                    // Parse slot (must be a float literal that we treat as integer)
+                    let slot = if let ShaderToken::Float(f) = &tokens[*pos] {
+                        let s = *f as u32;
+                        *pos += 1;
+                        s
+                    } else {
+                        return Err("sample() first arg must be a literal slot number".to_string());
+                    };
+                    if *pos < tokens.len() && tokens[*pos] == ShaderToken::Comma {
+                        *pos += 1;
+                    }
+                    let (uv_id, _) = self.parse_conditional(tokens, pos, params, locals)?;
+                    if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
+                        *pos += 1;
+                    }
+
+                    if (slot as usize) >= self.texture_samplers.len() {
+                        return Err(format!("texture slot {} not declared", slot));
+                    }
+                    let (sampler_var, sampled_image_ty) = self.texture_samplers[slot as usize];
+                    let loaded_sampler = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_LOAD,
+                        &[sampled_image_ty, loaded_sampler, sampler_var],
+                    );
+                    let f32_ty = self.ensure_type_f32();
+                    let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+                    let result = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_IMAGE_SAMPLE_IMPLICIT_LOD,
+                        &[vec4_ty, result, loaded_sampler, uv_id],
+                    );
+                    return Ok((result, quanta_ir::ShaderType::Vec4));
+                }
+
+                // Gap 3: Math function calls — sin(x), sqrt(x), clamp(x,a,b), etc.
+                if *pos < tokens.len() && tokens[*pos] == ShaderToken::Open {
+                    if let Some(glsl_op) = glsl_func_id(&name) {
+                        *pos += 1; // skip '('
+                        let mut args = Vec::new();
+                        let mut first_ty = quanta_ir::ShaderType::F32;
+                        loop {
+                            if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
+                                break;
+                            }
+                            if !args.is_empty()
+                                && *pos < tokens.len()
+                                && tokens[*pos] == ShaderToken::Comma
+                            {
+                                *pos += 1;
+                            }
+                            let (a, t) = self.parse_conditional(tokens, pos, params, locals)?;
+                            if args.is_empty() {
+                                first_ty = t;
+                            }
+                            args.push(a);
+                        }
+                        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
+                            *pos += 1;
+                        }
+
+                        // dot() returns f32 regardless of input vector type
+                        let result_ty = if name == "dot" || name == "length" || name == "distance" {
+                            quanta_ir::ShaderType::F32
+                        } else {
+                            first_ty
+                        };
+
+                        let ext = self.ensure_glsl_ext();
+                        let result = self.alloc_id();
+                        let ty_id = self.shader_type_id(result_ty);
+                        let mut ops = vec![ty_id, result, ext, glsl_op];
+                        ops.extend_from_slice(&args);
+                        Self::emit_op(&mut self.sec_function, OP_EXT_INST, &ops);
+                        return Ok((result, result_ty));
+                    }
+
+                    // dot() as SPIR-V OpDot (not GLSL ext)
+                    if name == "dot" {
+                        *pos += 1;
+                        let (a, _) = self.parse_conditional(tokens, pos, params, locals)?;
+                        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Comma {
+                            *pos += 1;
+                        }
+                        let (b, _) = self.parse_conditional(tokens, pos, params, locals)?;
+                        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
+                            *pos += 1;
+                        }
+                        let f32_ty = self.ensure_type_f32();
+                        let result = self.alloc_id();
+                        Self::emit_op(&mut self.sec_function, OP_DOT, &[f32_ty, result, a, b]);
+                        return Ok((result, quanta_ir::ShaderType::F32));
+                    }
+                }
+
+                // param.field (e.g. pos.x)
+                if *pos + 1 < tokens.len()
+                    && tokens[*pos] == ShaderToken::Dot
+                    && let ShaderToken::Ident(field) = &tokens[*pos + 1]
+                {
+                    let field = field.clone();
+                    *pos += 2;
+
+                    let index = match field.as_str() {
+                        "x" | "r" => 0u32,
+                        "y" | "g" => 1,
+                        "z" | "b" => 2,
+                        "w" | "a" => 3,
+                        _ => return Err(format!("unknown field: {field}")),
+                    };
+
+                    if let Some((_, var_id, type_id, _)) =
+                        params.iter().find(|(n, _, _, _)| *n == name)
+                    {
+                        let loaded = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_LOAD,
+                            &[*type_id, loaded, *var_id],
+                        );
+                        let f32_ty = self.ensure_type_f32();
+                        let result = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_EXTRACT,
+                            &[f32_ty, result, loaded, index],
+                        );
+                        return Ok((result, quanta_ir::ShaderType::F32));
+                    }
+                    if let Some((_, val_id, _)) = locals.iter().find(|(n, _, _)| *n == name) {
+                        let f32_ty = self.ensure_type_f32();
+                        let result = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_EXTRACT,
+                            &[f32_ty, result, *val_id, index],
+                        );
+                        return Ok((result, quanta_ir::ShaderType::F32));
+                    }
+                    return Err(format!("unknown variable: {name}"));
+                }
+
+                // Bare identifier — local, param, or boolean literal
+                if name == "true" {
+                    let id = self.emit_constant_f32(1.0);
+                    return Ok((id, quanta_ir::ShaderType::F32));
+                }
+                if name == "false" {
+                    let id = self.emit_constant_f32(0.0);
+                    return Ok((id, quanta_ir::ShaderType::F32));
+                }
+                if let Some((_, val_id, val_ty)) = locals.iter().find(|(n, _, _)| *n == name) {
+                    return Ok((*val_id, *val_ty));
+                }
+                if let Some((_, var_id, type_id, sty)) =
+                    params.iter().find(|(n, _, _, _)| *n == name)
+                {
+                    let loaded = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_LOAD,
+                        &[*type_id, loaded, *var_id],
+                    );
+                    return Ok((loaded, *sty));
+                }
+                Err(format!("unknown identifier: {name}"))
+            }
+            other => Err(format!("unexpected token: {other:?}")),
+        }
+    }
+
+    // ── Vertex shader ─────────────────────────────────────────────────────
+
+    /// Pass-through fallback: load first input, promote to vec4.
+    /// Used when body evaluation fails (unsupported features like uniforms).
+    fn passthrough_first_input(
+        &mut self,
+        attr_params: &[(usize, &quanta_ir::ShaderParam)],
+        input_vars: &[(u32, u32)],
+        f32_ty: u32,
+        vec4_ty: u32,
+    ) -> u32 {
+        if input_vars.is_empty() {
+            let zero = self.emit_constant_f32(0.0);
+            let one = self.emit_constant_f32(1.0);
+            let r = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_COMPOSITE_CONSTRUCT,
+                &[vec4_ty, r, zero, zero, zero, one],
+            );
+            return r;
+        }
+        let (var_id, type_id) = input_vars[0];
+        let loaded = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+        let comps = Self::shader_type_components(attr_params[0].1.ty);
+        match comps {
+            4 => loaded,
+            3 => {
+                let x = self.alloc_id();
+                let y = self.alloc_id();
+                let z = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_EXTRACT,
+                    &[f32_ty, x, loaded, 0],
+                );
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_EXTRACT,
+                    &[f32_ty, y, loaded, 1],
+                );
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_EXTRACT,
+                    &[f32_ty, z, loaded, 2],
+                );
+                let one = self.emit_constant_f32(1.0);
+                let r = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_CONSTRUCT,
+                    &[vec4_ty, r, x, y, z, one],
+                );
+                r
+            }
+            2 => {
+                let x = self.alloc_id();
+                let y = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_EXTRACT,
+                    &[f32_ty, x, loaded, 0],
+                );
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_EXTRACT,
+                    &[f32_ty, y, loaded, 1],
+                );
+                let zero = self.emit_constant_f32(0.0);
+                let one = self.emit_constant_f32(1.0);
+                let r = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_CONSTRUCT,
+                    &[vec4_ty, r, x, y, zero, one],
+                );
+                r
+            }
+            _ => {
+                let zero = self.emit_constant_f32(0.0);
+                let one = self.emit_constant_f32(1.0);
+                let r = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_CONSTRUCT,
+                    &[vec4_ty, r, loaded, zero, zero, one],
+                );
+                r
+            }
+        }
+    }
 
     /// Emit a vertex shader SPIR-V module.
     ///
-    /// Generates a passthrough vertex shader: each value parameter becomes
-    /// an Input variable with Location decoration. The first parameter is
-    /// promoted to gl_Position output (expanded to vec4 with w=1.0).
-    /// Uniform parameters are ignored for V1 (no push constant block yet).
+    /// Evaluates the function body to compute gl_Position. Each value parameter
+    /// becomes an Input variable with Location decoration. Uniform parameters
+    /// are ignored for V1 (no push constant block yet).
     fn emit_vertex_shader(&mut self, shader: &quanta_ir::ShaderDef) -> Result<(), String> {
         // 1. Capability + memory model
         Self::emit_op(
@@ -2528,6 +3247,96 @@ impl SpvEmitter {
             input_vars.push((var_id, ty_id));
         }
 
+        // 2b. Declare uniform params as push constant struct (Gap 1)
+        let uniform_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_uniform)
+            .collect();
+
+        // Uniform access: each uniform becomes a member of a push constant struct
+        let mut uniform_vars: Vec<(String, u32, u32, quanta_ir::ShaderType)> = Vec::new();
+        if !uniform_params.is_empty() {
+            let mut member_types = Vec::new();
+            let mut member_offsets = Vec::new();
+            let mut offset = 0u32;
+            for (_, p) in &uniform_params {
+                let ty_id = self.shader_type_id(p.ty);
+                member_types.push(ty_id);
+                member_offsets.push(offset);
+                // std430 alignment: mat4=64, vec4=16, vec3=16, vec2=8, f32=4
+                let size = match p.ty {
+                    quanta_ir::ShaderType::Mat4 => 64u32,
+                    quanta_ir::ShaderType::Mat3 => 48,
+                    quanta_ir::ShaderType::Vec4 => 16,
+                    quanta_ir::ShaderType::Vec3 => 16,
+                    quanta_ir::ShaderType::Vec2 => 8,
+                    quanta_ir::ShaderType::F32 => 4,
+                };
+                offset += size;
+            }
+
+            // Build struct type
+            let struct_ty = self.alloc_id();
+            let mut struct_ops = vec![struct_ty];
+            struct_ops.extend_from_slice(&member_types);
+            Self::emit_op(&mut self.sec_type_const, OP_TYPE_STRUCT, &struct_ops);
+            self.decorate(struct_ty, DECORATION_BLOCK, &[]);
+            for (i, off) in member_offsets.iter().enumerate() {
+                self.member_decorate(struct_ty, i as u32, DECORATION_OFFSET, &[*off]);
+                // ColMajor decoration for matrices
+                if matches!(
+                    uniform_params[i].1.ty,
+                    quanta_ir::ShaderType::Mat4 | quanta_ir::ShaderType::Mat3
+                ) {
+                    self.member_decorate(struct_ty, i as u32, 5 /* ColMajor */, &[]);
+                    let stride = match uniform_params[i].1.ty {
+                        quanta_ir::ShaderType::Mat4 => 16u32,
+                        quanta_ir::ShaderType::Mat3 => 16,
+                        _ => 16,
+                    };
+                    self.member_decorate(struct_ty, i as u32, 7 /* MatrixStride */, &[stride]);
+                }
+            }
+
+            let ptr_pc = self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, struct_ty);
+            let pc_var = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_pc, pc_var, STORAGE_CLASS_PUSH_CONSTANT],
+            );
+            self.emit_name(pc_var, "push_constants");
+
+            // Store uniform info for AccessChain in function body
+            for (_, p) in &uniform_params {
+                let mty = self.shader_type_id(p.ty);
+                uniform_vars.push((p.name.clone(), pc_var, mty, p.ty));
+            }
+        }
+
+        // 2c. Declare Output variables for varyings
+        // Convention: first attr param = position (→ gl_Position, not forwarded).
+        // Remaining attr params are forwarded as outputs starting at Location 0,
+        // matching the fragment shader's Input locations.
+        let mut varying_outputs: Vec<(u32, u32, u32)> = Vec::new(); // (output_var, type_id, input_var)
+        for (i, (_, param)) in attr_params.iter().enumerate().skip(1) {
+            let varying_loc = (i - 1) as u32;
+            let ty_id = self.shader_type_id(param.ty);
+            let ptr_ty = self.ensure_type_pointer(STORAGE_CLASS_OUTPUT, ty_id);
+            let out_var = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_ty, out_var, STORAGE_CLASS_OUTPUT],
+            );
+            self.emit_name(out_var, &format!("out_{}", param.name));
+            self.decorate(out_var, DECORATION_LOCATION, &[varying_loc]);
+            interface_ids.push(out_var);
+            varying_outputs.push((out_var, ty_id, input_vars[i].0));
+        }
+
         // 3. Declare Output variable: gl_Position (BuiltIn Position, vec4)
         let f32_ty = self.ensure_type_f32();
         let vec4_ty = self.ensure_type_vector(f32_ty, 4);
@@ -2556,8 +3365,6 @@ impl SpvEmitter {
             Self::emit_op(&mut self.sec_entry_point, OP_ENTRY_POINT, &ops);
         }
 
-        // No execution mode for vertex shaders (no LocalSize, no OriginUpperLeft)
-
         // 5. Function body
         Self::emit_op(
             &mut self.sec_function,
@@ -2567,103 +3374,122 @@ impl SpvEmitter {
         let entry_label = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[entry_label]);
 
-        // Load the first input and construct vec4 for gl_Position.
-        // If no inputs, emit a zero position.
-        let result_id = if input_vars.is_empty() {
-            // No inputs — emit vec4(0,0,0,1)
-            let zero = self.emit_constant_f32(0.0);
-            let one = self.emit_constant_f32(1.0);
-            let result = self.alloc_id();
+        // Build param_info: attribute params + uniform params (loaded via AccessChain)
+        let mut param_info: Vec<(String, u32, u32, quanta_ir::ShaderType)> = attr_params
+            .iter()
+            .zip(input_vars.iter())
+            .map(|((_, p), (var_id, type_id))| (p.name.clone(), *var_id, *type_id, p.ty))
+            .collect();
+
+        // Emit AccessChain + load for each uniform in the function body
+        for (member_idx, (name, pc_var, member_ty, sty)) in uniform_vars.iter().enumerate() {
+            let ptr_member = self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, *member_ty);
+            let idx_const = self.emit_constant_u32(member_idx as u32);
+            let access = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
-                OP_COMPOSITE_CONSTRUCT,
-                &[vec4_ty, result, zero, zero, zero, one],
+                OP_ACCESS_CHAIN,
+                &[ptr_member, access, *pc_var, idx_const],
             );
-            result
-        } else {
-            let (first_var, first_ty) = input_vars[0];
+            // Store access chain pointer as the "var_id" — OpLoad in eval will load from it
+            param_info.push((name.clone(), access, *member_ty, *sty));
+        }
+
+        // Forward vertex attributes as varying outputs (Gap 4)
+        for (out_var, type_id, in_var) in &varying_outputs {
             let loaded = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
                 OP_LOAD,
-                &[first_ty, loaded, first_var],
+                &[*type_id, loaded, *in_var],
             );
+            Self::emit_op(&mut self.sec_function, OP_STORE, &[*out_var, loaded]);
+        }
 
-            // Promote to vec4 based on component count
-            let components = Self::shader_type_components(attr_params[0].1.ty);
-            match components {
-                4 => loaded, // Already vec4
-                3 => {
-                    // vec3 → vec4(pos.x, pos.y, pos.z, 1.0)
-                    let x = self.alloc_id();
-                    let y = self.alloc_id();
-                    let z = self.alloc_id();
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, x, loaded, 0],
-                    );
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, y, loaded, 1],
-                    );
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, z, loaded, 2],
-                    );
-                    let one = self.emit_constant_f32(1.0);
-                    let result = self.alloc_id();
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_COMPOSITE_CONSTRUCT,
-                        &[vec4_ty, result, x, y, z, one],
-                    );
-                    result
+        // Save state so we can roll back on failure
+        let saved_func = self.sec_function.clone();
+        let saved_next = self.next_id;
+
+        let result_id = match self.eval_shader_body(&shader.body_source, &param_info) {
+            Ok((id, ty)) => {
+                // Promote result to vec4 if needed
+                match ty {
+                    quanta_ir::ShaderType::Vec4 => id,
+                    quanta_ir::ShaderType::Vec3 => {
+                        let x = self.alloc_id();
+                        let y = self.alloc_id();
+                        let z = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_EXTRACT,
+                            &[f32_ty, x, id, 0],
+                        );
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_EXTRACT,
+                            &[f32_ty, y, id, 1],
+                        );
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_EXTRACT,
+                            &[f32_ty, z, id, 2],
+                        );
+                        let one = self.emit_constant_f32(1.0);
+                        let r = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_CONSTRUCT,
+                            &[vec4_ty, r, x, y, z, one],
+                        );
+                        r
+                    }
+                    quanta_ir::ShaderType::Vec2 => {
+                        let x = self.alloc_id();
+                        let y = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_EXTRACT,
+                            &[f32_ty, x, id, 0],
+                        );
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_EXTRACT,
+                            &[f32_ty, y, id, 1],
+                        );
+                        let zero = self.emit_constant_f32(0.0);
+                        let one = self.emit_constant_f32(1.0);
+                        let r = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_CONSTRUCT,
+                            &[vec4_ty, r, x, y, zero, one],
+                        );
+                        r
+                    }
+                    quanta_ir::ShaderType::F32 => {
+                        let zero = self.emit_constant_f32(0.0);
+                        let one = self.emit_constant_f32(1.0);
+                        let r = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_COMPOSITE_CONSTRUCT,
+                            &[vec4_ty, r, id, zero, zero, one],
+                        );
+                        r
+                    }
+                    _ => {
+                        // Unsupported return type — fall back to pass-through
+                        self.sec_function = saved_func;
+                        self.next_id = saved_next;
+                        self.passthrough_first_input(&attr_params, &input_vars, f32_ty, vec4_ty)
+                    }
                 }
-                2 => {
-                    // vec2 → vec4(pos.x, pos.y, 0.0, 1.0)
-                    let x = self.alloc_id();
-                    let y = self.alloc_id();
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, x, loaded, 0],
-                    );
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, y, loaded, 1],
-                    );
-                    let zero = self.emit_constant_f32(0.0);
-                    let one = self.emit_constant_f32(1.0);
-                    let result = self.alloc_id();
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_COMPOSITE_CONSTRUCT,
-                        &[vec4_ty, result, x, y, zero, one],
-                    );
-                    result
-                }
-                1 => {
-                    // f32 → vec4(val, 0.0, 0.0, 1.0)
-                    let zero = self.emit_constant_f32(0.0);
-                    let one = self.emit_constant_f32(1.0);
-                    let result = self.alloc_id();
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_COMPOSITE_CONSTRUCT,
-                        &[vec4_ty, result, loaded, zero, zero, one],
-                    );
-                    result
-                }
-                _ => {
-                    return Err(format!(
-                        "unsupported component count {} for vertex position",
-                        components
-                    ));
-                }
+            }
+            Err(_) => {
+                // Body uses unsupported features — roll back and use pass-through
+                self.sec_function = saved_func;
+                self.next_id = saved_next;
+                self.passthrough_first_input(&attr_params, &input_vars, f32_ty, vec4_ty)
             }
         };
 
@@ -2722,9 +3548,57 @@ impl SpvEmitter {
             input_vars.push((var_id, ty_id));
         }
 
-        // 3. Declare Output variable: fragment color at Location(0)
+        // 2b. Declare combined image samplers for texture sampling
+        // Scan body_source for sample() calls to determine which slots are used
         let f32_ty = self.ensure_type_f32();
         let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+
+        let max_tex_slot = (0..8u32)
+            .filter(|slot| shader.body_source.contains(&format!("sample({}", slot)))
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+
+        self.texture_samplers.clear();
+        if max_tex_slot > 0 {
+            // OpTypeImage: float, 2D, non-depth, non-arrayed, non-MS, sampled=1, Unknown format
+            let image_ty = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_type_const,
+                OP_TYPE_IMAGE,
+                &[
+                    image_ty, f32_ty, 1, /*Dim2D*/
+                    0, /*depth*/
+                    0, /*arrayed*/
+                    0, /*MS*/
+                    1, /*sampled*/
+                    0, /*Unknown*/
+                ],
+            );
+            let sampled_image_ty = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_type_const,
+                OP_TYPE_SAMPLED_IMAGE,
+                &[sampled_image_ty, image_ty],
+            );
+            let ptr_uniform_si =
+                self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, sampled_image_ty);
+
+            for slot in 0..max_tex_slot {
+                let var_id = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_global_var,
+                    OP_VARIABLE,
+                    &[ptr_uniform_si, var_id, STORAGE_CLASS_UNIFORM_CONSTANT],
+                );
+                self.emit_name(var_id, &format!("tex_{}", slot));
+                self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+                self.decorate(var_id, DECORATION_BINDING, &[slot + 8]); // bindings 8+ for textures (matching Vulkan layout)
+                self.texture_samplers.push((var_id, sampled_image_ty));
+            }
+        }
+
+        // 3. Declare Output variable: fragment color at Location(0)
         let ptr_output_vec4 = self.ensure_type_pointer(STORAGE_CLASS_OUTPUT, vec4_ty);
         let color_var = self.alloc_id();
         Self::emit_op(
@@ -2766,97 +3640,92 @@ impl SpvEmitter {
         let entry_label = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[entry_label]);
 
-        // Load the first input and promote to vec4 for the output color.
-        let result_id = if input_vars.is_empty() {
-            // No inputs — emit solid white
-            let one = self.emit_constant_f32(1.0);
-            let result = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_COMPOSITE_CONSTRUCT,
-                &[vec4_ty, result, one, one, one, one],
-            );
-            result
-        } else {
-            let (first_var, first_ty) = input_vars[0];
-            let loaded = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_LOAD,
-                &[first_ty, loaded, first_var],
-            );
+        // Evaluate function body to compute output color.
+        // Falls back to pass-through on failure.
+        let param_info: Vec<(String, u32, u32, quanta_ir::ShaderType)> = stage_in_params
+            .iter()
+            .zip(input_vars.iter())
+            .map(|((_, p), (var_id, type_id))| (p.name.clone(), *var_id, *type_id, p.ty))
+            .collect();
 
-            let components = Self::shader_type_components(stage_in_params[0].1.ty);
-            match components {
-                4 => loaded,
-                3 => {
+        let saved_func = self.sec_function.clone();
+        let saved_next = self.next_id;
+
+        let result_id = match self.eval_shader_body(&shader.body_source, &param_info) {
+            Ok((id, ty)) => match ty {
+                quanta_ir::ShaderType::Vec4 => id,
+                quanta_ir::ShaderType::Vec3 => {
                     let x = self.alloc_id();
                     let y = self.alloc_id();
                     let z = self.alloc_id();
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, x, loaded, 0],
+                        &[f32_ty, x, id, 0],
                     );
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, y, loaded, 1],
+                        &[f32_ty, y, id, 1],
                     );
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, z, loaded, 2],
+                        &[f32_ty, z, id, 2],
                     );
                     let one = self.emit_constant_f32(1.0);
-                    let result = self.alloc_id();
+                    let r = self.alloc_id();
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COMPOSITE_CONSTRUCT,
-                        &[vec4_ty, result, x, y, z, one],
+                        &[vec4_ty, r, x, y, z, one],
                     );
-                    result
+                    r
                 }
-                2 => {
+                quanta_ir::ShaderType::Vec2 => {
                     let x = self.alloc_id();
                     let y = self.alloc_id();
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, x, loaded, 0],
+                        &[f32_ty, x, id, 0],
                     );
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COMPOSITE_EXTRACT,
-                        &[f32_ty, y, loaded, 1],
+                        &[f32_ty, y, id, 1],
                     );
                     let zero = self.emit_constant_f32(0.0);
                     let one = self.emit_constant_f32(1.0);
-                    let result = self.alloc_id();
+                    let r = self.alloc_id();
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COMPOSITE_CONSTRUCT,
-                        &[vec4_ty, result, x, y, zero, one],
+                        &[vec4_ty, r, x, y, zero, one],
                     );
-                    result
+                    r
                 }
-                1 => {
+                quanta_ir::ShaderType::F32 => {
                     let zero = self.emit_constant_f32(0.0);
                     let one = self.emit_constant_f32(1.0);
-                    let result = self.alloc_id();
+                    let r = self.alloc_id();
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COMPOSITE_CONSTRUCT,
-                        &[vec4_ty, result, loaded, zero, zero, one],
+                        &[vec4_ty, r, id, zero, zero, one],
                     );
-                    result
+                    r
                 }
                 _ => {
-                    return Err(format!(
-                        "unsupported component count {} for fragment color",
-                        components
-                    ));
+                    self.sec_function = saved_func;
+                    self.next_id = saved_next;
+                    self.passthrough_first_input(&stage_in_params, &input_vars, f32_ty, vec4_ty)
                 }
+            },
+            Err(_) => {
+                self.sec_function = saved_func;
+                self.next_id = saved_next;
+                self.passthrough_first_input(&stage_in_params, &input_vars, f32_ty, vec4_ty)
             }
         };
 
@@ -2884,4 +3753,127 @@ pub fn emit_fragment(shader: &quanta_ir::ShaderDef) -> Result<Vec<u8>, String> {
     let mut e = SpvEmitter::new();
     e.emit_fragment_shader(shader)?;
     Ok(e.finalize())
+}
+
+// ── Shader expression tokenizer ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ShaderCmpOp {
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Eq,
+    Ne,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ShaderToken {
+    Float(f32),
+    Ident(String),
+    Op(char),         // + - * /
+    Cmp(ShaderCmpOp), // < > <= >= == !=
+    Dot,              // .
+    ColonColon,       // ::
+    Comma,            // ,
+    Open,             // (
+    Close,            // )
+    BraceOpen,        // {
+    BraceClose,       // }
+}
+
+fn tokenize_shader_expr(src: &str) -> Vec<ShaderToken> {
+    let mut tokens = Vec::new();
+    for w in src.split_whitespace() {
+        tokenize_word(w, &mut tokens);
+    }
+    tokens
+}
+
+fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
+    match w {
+        "::" => tokens.push(ShaderToken::ColonColon),
+        "." => tokens.push(ShaderToken::Dot),
+        "," => tokens.push(ShaderToken::Comma),
+        "(" => tokens.push(ShaderToken::Open),
+        ")" => tokens.push(ShaderToken::Close),
+        "{" => tokens.push(ShaderToken::BraceOpen),
+        "}" => tokens.push(ShaderToken::BraceClose),
+        "+" => tokens.push(ShaderToken::Op('+')),
+        "-" => tokens.push(ShaderToken::Op('-')),
+        "*" => tokens.push(ShaderToken::Op('*')),
+        "/" => tokens.push(ShaderToken::Op('/')),
+        "<" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Lt)),
+        ">" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Gt)),
+        "<=" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Le)),
+        ">=" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Ge)),
+        "==" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Eq)),
+        "!=" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Ne)),
+        ";" => {} // skip semicolons
+        _ => {
+            // Split on embedded punctuation
+            if let Some(split_pos) = w.find(['(', ')', ',', '{', '}']) {
+                let (before, rest) = w.split_at(split_pos);
+                if !before.is_empty() {
+                    tokenize_word(before, tokens);
+                }
+                tokenize_word(&rest[..1], tokens);
+                if rest.len() > 1 {
+                    tokenize_word(&rest[1..], tokens);
+                }
+            } else if w.contains('.') && !w.starts_with(|c: char| c.is_ascii_digit()) {
+                if let Some(dot_pos) = w.find('.') {
+                    let (before, rest) = w.split_at(dot_pos);
+                    if !before.is_empty() {
+                        tokenize_word(before, tokens);
+                    }
+                    tokens.push(ShaderToken::Dot);
+                    if rest.len() > 1 {
+                        tokenize_word(&rest[1..], tokens);
+                    }
+                }
+            } else if let Ok(f) = w.parse::<f32>() {
+                tokens.push(ShaderToken::Float(f));
+            } else {
+                tokens.push(ShaderToken::Ident(w.to_string()));
+            }
+        }
+    }
+}
+
+/// Map function name to GLSL.std.450 extended instruction opcode.
+fn glsl_func_id(name: &str) -> Option<u32> {
+    match name {
+        "sin" => Some(GLSL_SIN),
+        "cos" => Some(GLSL_COS),
+        "tan" => Some(GLSL_TAN),
+        "asin" => Some(GLSL_ASIN),
+        "acos" => Some(GLSL_ACOS),
+        "atan" => Some(GLSL_ATAN),
+        "sqrt" => Some(GLSL_SQRT),
+        "inverseSqrt" | "inverse_sqrt" => Some(GLSL_INVERSE_SQRT),
+        "abs" => Some(GLSL_FABS),
+        "floor" => Some(GLSL_FLOOR),
+        "ceil" => Some(GLSL_CEIL),
+        "round" => Some(GLSL_ROUND),
+        "fract" => Some(GLSL_FRACT),
+        "min" => Some(GLSL_FMIN),
+        "max" => Some(GLSL_FMAX),
+        "clamp" => Some(GLSL_FCLAMP),
+        "mix" => Some(GLSL_FMIX),
+        "step" => Some(GLSL_STEP),
+        "smoothstep" | "smooth_step" => Some(GLSL_SMOOTH_STEP),
+        "pow" => Some(GLSL_POW),
+        "exp" => Some(GLSL_EXP),
+        "log" => Some(GLSL_LOG),
+        "exp2" => Some(GLSL_EXP2),
+        "log2" => Some(GLSL_LOG2),
+        "normalize" => Some(GLSL_NORMALIZE),
+        "length" => Some(GLSL_LENGTH),
+        "distance" => Some(GLSL_DISTANCE),
+        "cross" => Some(GLSL_CROSS),
+        "fma" => Some(GLSL_FMA),
+        "atan2" => Some(GLSL_ATAN2),
+        _ => None,
+    }
 }

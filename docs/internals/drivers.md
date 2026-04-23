@@ -10,8 +10,8 @@ overhead, zero external dependencies, and full control over the ABI.
 | `metal-rs` / `ash` | 5-20 crates | +200KB | slower | limited |
 | Raw FFI | 0 crates | minimal | fast | total |
 
-The pattern comes from Dija (Zelez UI framework): system calls go through
-hand-written `extern "C"` blocks with `#[repr(C)]` struct layouts.
+System calls go through hand-written `extern "C"` blocks with `#[repr(C)]`
+struct layouts.
 The driver code is the thinnest possible translation layer.
 
 ## Metal driver (`src/driver/metal/`)

@@ -87,32 +87,65 @@ impl MetalDevice {
                 let ff = get_function_maybe_specialized(lib, desc.fragment_entry, fcv)?;
                 (vf, ff)
             } else {
-                let vert_src = std::str::from_utf8(desc.vertex).map_err(|_| {
-                    QuantaError::compilation_failed("invalid UTF-8 in vertex shader")
-                })?;
-                let frag_src = std::str::from_utf8(desc.fragment).map_err(|_| {
-                    QuantaError::compilation_failed("invalid UTF-8 in fragment shader")
-                })?;
+                // Load vertex shader: metallib binary (MTLB) or MSL text
+                let vert_lib = if desc.vertex.len() >= 4 && &desc.vertex[..4] == b"MTLB" {
+                    let (lib, error) = ffi::msg_new_library_with_data(
+                        self.device,
+                        desc.vertex.as_ptr() as *const _,
+                        desc.vertex.len() as u64,
+                    );
+                    if lib.is_null() {
+                        let msg = error_string(error);
+                        return Err(QuantaError::compilation_failed(format!(
+                            "vertex metallib: {msg}"
+                        )));
+                    }
+                    lib
+                } else {
+                    let src = std::str::from_utf8(desc.vertex).map_err(|_| {
+                        QuantaError::compilation_failed("invalid UTF-8 in vertex shader")
+                    })?;
+                    let mut vb: Vec<u8> = src.bytes().collect();
+                    vb.push(0);
+                    let ns_vert = ffi::nsstring(&vb);
+                    let (lib, err) =
+                        ffi::msg_new_library_with_source(self.device, ns_vert, ffi::NIL);
+                    if lib.is_null() {
+                        let msg = error_string(err);
+                        return Err(QuantaError::compilation_failed(format!("vertex: {msg}")));
+                    }
+                    lib
+                };
 
-                let mut vb: Vec<u8> = vert_src.bytes().collect();
-                vb.push(0);
-                let ns_vert = ffi::nsstring(&vb);
-                let (vert_lib, err) =
-                    ffi::msg_new_library_with_source(self.device, ns_vert, ffi::NIL);
-                if vert_lib.is_null() {
-                    let msg = error_string(err);
-                    return Err(QuantaError::compilation_failed(format!("vertex: {msg}")));
-                }
-
-                let mut fb: Vec<u8> = frag_src.bytes().collect();
-                fb.push(0);
-                let ns_frag = ffi::nsstring(&fb);
-                let (frag_lib, err) =
-                    ffi::msg_new_library_with_source(self.device, ns_frag, ffi::NIL);
-                if frag_lib.is_null() {
-                    let msg = error_string(err);
-                    return Err(QuantaError::compilation_failed(format!("fragment: {msg}")));
-                }
+                // Load fragment shader: metallib binary (MTLB) or MSL text
+                let frag_lib = if desc.fragment.len() >= 4 && &desc.fragment[..4] == b"MTLB" {
+                    let (lib, error) = ffi::msg_new_library_with_data(
+                        self.device,
+                        desc.fragment.as_ptr() as *const _,
+                        desc.fragment.len() as u64,
+                    );
+                    if lib.is_null() {
+                        let msg = error_string(error);
+                        return Err(QuantaError::compilation_failed(format!(
+                            "fragment metallib: {msg}"
+                        )));
+                    }
+                    lib
+                } else {
+                    let src = std::str::from_utf8(desc.fragment).map_err(|_| {
+                        QuantaError::compilation_failed("invalid UTF-8 in fragment shader")
+                    })?;
+                    let mut fb: Vec<u8> = src.bytes().collect();
+                    fb.push(0);
+                    let ns_frag = ffi::nsstring(&fb);
+                    let (lib, err) =
+                        ffi::msg_new_library_with_source(self.device, ns_frag, ffi::NIL);
+                    if lib.is_null() {
+                        let msg = error_string(err);
+                        return Err(QuantaError::compilation_failed(format!("fragment: {msg}")));
+                    }
+                    lib
+                };
 
                 let vf = get_function_maybe_specialized(vert_lib, desc.vertex_entry, fcv)?;
                 let ff = get_function_maybe_specialized(frag_lib, desc.fragment_entry, fcv)?;
@@ -174,6 +207,43 @@ impl MetalDevice {
                     b"setDepthAttachmentPixelFormat:\0",
                     format_to_metal(depth_fmt),
                 );
+            }
+
+            // Vertex descriptor — maps VertexLayout to MTLVertexDescriptor
+            if !desc.vertex_layouts.is_empty() {
+                let vtx_desc = ffi::msg_id(ffi::cls(b"MTLVertexDescriptor\0") as ffi::Id, b"new\0");
+                let layouts_array = ffi::msg_id(vtx_desc, b"layouts\0");
+                let attrs_array = ffi::msg_id(vtx_desc, b"attributes\0");
+
+                for (buf_idx, layout) in desc.vertex_layouts.iter().enumerate() {
+                    let layout_obj = ffi::msg_id_u64(
+                        layouts_array,
+                        b"objectAtIndexedSubscript:\0",
+                        buf_idx as u64,
+                    );
+                    ffi::msg_void_u64(layout_obj, b"setStride:\0", layout.stride as u64);
+                    let step_fn = match layout.step {
+                        crate::StepMode::Vertex => ffi::MTL_VERTEX_STEP_FUNCTION_PER_VERTEX,
+                        crate::StepMode::Instance => ffi::MTL_VERTEX_STEP_FUNCTION_PER_INSTANCE,
+                    };
+                    ffi::msg_void_u64(layout_obj, b"setStepFunction:\0", step_fn);
+
+                    for attr in &layout.attributes {
+                        let attr_obj = ffi::msg_id_u64(
+                            attrs_array,
+                            b"objectAtIndexedSubscript:\0",
+                            attr.location as u64,
+                        );
+                        ffi::msg_void_u64(
+                            attr_obj,
+                            b"setFormat:\0",
+                            attr_format_to_metal(attr.format),
+                        );
+                        ffi::msg_void_u64(attr_obj, b"setOffset:\0", attr.offset as u64);
+                        ffi::msg_void_u64(attr_obj, b"setBufferIndex:\0", buf_idx as u64);
+                    }
+                }
+                ffi::msg_void_id(pipe_desc, b"setVertexDescriptor:\0", vtx_desc);
             }
 
             ffi::msg_void_u64(pipe_desc, b"setSampleCount:\0", desc.sample_count as u64);
@@ -845,5 +915,23 @@ unsafe fn get_function_maybe_specialized(
             Ok(func)
         }
         None => unsafe { get_named_function(library, name) },
+    }
+}
+
+fn attr_format_to_metal(fmt: crate::AttributeFormat) -> ffi::NSUInteger {
+    match fmt {
+        crate::AttributeFormat::Float => ffi::MTL_VERTEX_FORMAT_FLOAT,
+        crate::AttributeFormat::Float2 => ffi::MTL_VERTEX_FORMAT_FLOAT2,
+        crate::AttributeFormat::Float3 => ffi::MTL_VERTEX_FORMAT_FLOAT3,
+        crate::AttributeFormat::Float4 => ffi::MTL_VERTEX_FORMAT_FLOAT4,
+        crate::AttributeFormat::Int => ffi::MTL_VERTEX_FORMAT_INT,
+        crate::AttributeFormat::Int2 => ffi::MTL_VERTEX_FORMAT_INT2,
+        crate::AttributeFormat::Int3 => ffi::MTL_VERTEX_FORMAT_INT3,
+        crate::AttributeFormat::Int4 => ffi::MTL_VERTEX_FORMAT_INT4,
+        crate::AttributeFormat::UInt => ffi::MTL_VERTEX_FORMAT_UINT,
+        crate::AttributeFormat::UInt2 => ffi::MTL_VERTEX_FORMAT_UINT2,
+        crate::AttributeFormat::UInt3 => ffi::MTL_VERTEX_FORMAT_UINT3,
+        crate::AttributeFormat::UInt4 => ffi::MTL_VERTEX_FORMAT_UINT4,
+        crate::AttributeFormat::UByte4Norm => ffi::MTL_VERTEX_FORMAT_UCHAR4_NORMALIZED,
     }
 }

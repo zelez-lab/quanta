@@ -940,7 +940,37 @@ pub struct VkQueryPoolCreateInfo {
     pub pipeline_statistics: u32,
 }
 
+// ─── Vulkan vertex format constants ──────────────────────────────────────────
+
+pub const VK_FORMAT_R32G32B32_SFLOAT: u32 = 106;
+pub const VK_FORMAT_R32_SINT: u32 = 99;
+pub const VK_FORMAT_R32G32_SINT: u32 = 102;
+pub const VK_FORMAT_R32G32B32_SINT: u32 = 105;
+pub const VK_FORMAT_R32G32B32A32_SINT: u32 = 108;
+pub const VK_FORMAT_R32_UINT: u32 = 98;
+pub const VK_FORMAT_R32G32_UINT: u32 = 101;
+pub const VK_FORMAT_R32G32B32_UINT: u32 = 104;
+pub const VK_FORMAT_R32G32B32A32_UINT: u32 = 107;
+
+pub const VK_VERTEX_INPUT_RATE_VERTEX: u32 = 0;
+pub const VK_VERTEX_INPUT_RATE_INSTANCE: u32 = 1;
+
 // ─── Graphics pipeline create info and sub-structures ───────────────────────
+
+#[repr(C)]
+pub struct VkVertexInputBindingDescription {
+    pub binding: u32,
+    pub stride: u32,
+    pub input_rate: u32,
+}
+
+#[repr(C)]
+pub struct VkVertexInputAttributeDescription {
+    pub location: u32,
+    pub binding: u32,
+    pub format: u32,
+    pub offset: u32,
+}
 
 #[repr(C)]
 pub struct VkPipelineVertexInputStateCreateInfo {
@@ -948,9 +978,9 @@ pub struct VkPipelineVertexInputStateCreateInfo {
     pub p_next: *const c_void,
     pub flags: u32,
     pub vertex_binding_description_count: u32,
-    pub p_vertex_binding_descriptions: *const c_void,
+    pub p_vertex_binding_descriptions: *const VkVertexInputBindingDescription,
     pub vertex_attribute_description_count: u32,
-    pub p_vertex_attribute_descriptions: *const c_void,
+    pub p_vertex_attribute_descriptions: *const VkVertexInputAttributeDescription,
 }
 
 #[repr(C)]

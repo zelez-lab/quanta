@@ -790,6 +790,27 @@ pub unsafe fn msg_sample_timestamps(device: Id, cpu_ts: *mut u64, gpu_ts: *mut u
     );
 }
 
+// ─── MTLVertexFormat ───────────────────────────────────────────────────────
+
+pub const MTL_VERTEX_FORMAT_FLOAT: NSUInteger = 28;
+pub const MTL_VERTEX_FORMAT_FLOAT2: NSUInteger = 29;
+pub const MTL_VERTEX_FORMAT_FLOAT3: NSUInteger = 30;
+pub const MTL_VERTEX_FORMAT_FLOAT4: NSUInteger = 31;
+pub const MTL_VERTEX_FORMAT_INT: NSUInteger = 32;
+pub const MTL_VERTEX_FORMAT_INT2: NSUInteger = 33;
+pub const MTL_VERTEX_FORMAT_INT3: NSUInteger = 34;
+pub const MTL_VERTEX_FORMAT_INT4: NSUInteger = 35;
+pub const MTL_VERTEX_FORMAT_UINT: NSUInteger = 36;
+pub const MTL_VERTEX_FORMAT_UINT2: NSUInteger = 37;
+pub const MTL_VERTEX_FORMAT_UINT3: NSUInteger = 38;
+pub const MTL_VERTEX_FORMAT_UINT4: NSUInteger = 39;
+pub const MTL_VERTEX_FORMAT_UCHAR4_NORMALIZED: NSUInteger = 4;
+
+// ─── MTLVertexStepFunction ─────────────────────────────────────────────────
+
+pub const MTL_VERTEX_STEP_FUNCTION_PER_VERTEX: NSUInteger = 1;
+pub const MTL_VERTEX_STEP_FUNCTION_PER_INSTANCE: NSUInteger = 2;
+
 // ─── Metal data types (for function constants) ────────────────────────────
 
 pub const MTL_DATA_TYPE_FLOAT: NSUInteger = 3;

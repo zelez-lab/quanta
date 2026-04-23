@@ -206,8 +206,8 @@ workspace crates `quanta-macros` and `quanta-ir`). GPU drivers use raw FFI:
 - **Metal**: `objc_msgSend` / `sel_registerName` / `objc_getClass` via `extern "C"`
 - **Vulkan**: `vkCreateInstance` / `vkCreateBuffer` / etc. via `#[link(name = "vulkan")]`
 
-No `metal-rs`, no `ash`, no `objc` crate. This pattern comes from the Dija UI
-framework (Zelez project) and gives minimal binary size, fast builds, and total ABI control.
+No `metal-rs`, no `ash`, no `objc` crate. Raw FFI gives minimal binary size,
+fast builds, and total ABI control.
 
 Only `quanta-macros` depends on `syn` + `quote` (proc-macro requirements), and
 `quanta-compiler` depends on `inkwell` / LLVM 22 (build-time only).

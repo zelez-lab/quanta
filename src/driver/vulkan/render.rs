@@ -300,14 +300,44 @@ impl VulkanDevice {
             },
         ];
 
+        // Build vertex input bindings and attributes from desc.vertex_layouts
+        let mut vk_bindings: Vec<ffi::VkVertexInputBindingDescription> = Vec::new();
+        let mut vk_attributes: Vec<ffi::VkVertexInputAttributeDescription> = Vec::new();
+        for (buf_idx, layout) in desc.vertex_layouts.iter().enumerate() {
+            vk_bindings.push(ffi::VkVertexInputBindingDescription {
+                binding: buf_idx as u32,
+                stride: layout.stride,
+                input_rate: match layout.step {
+                    crate::StepMode::Vertex => ffi::VK_VERTEX_INPUT_RATE_VERTEX,
+                    crate::StepMode::Instance => ffi::VK_VERTEX_INPUT_RATE_INSTANCE,
+                },
+            });
+            for attr in &layout.attributes {
+                vk_attributes.push(ffi::VkVertexInputAttributeDescription {
+                    location: attr.location,
+                    binding: buf_idx as u32,
+                    format: attr_format_to_vulkan(attr.format),
+                    offset: attr.offset,
+                });
+            }
+        }
+
         let vertex_input = ffi::VkPipelineVertexInputStateCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
-            vertex_binding_description_count: 0,
-            p_vertex_binding_descriptions: core::ptr::null(),
-            vertex_attribute_description_count: 0,
-            p_vertex_attribute_descriptions: core::ptr::null(),
+            vertex_binding_description_count: vk_bindings.len() as u32,
+            p_vertex_binding_descriptions: if vk_bindings.is_empty() {
+                core::ptr::null()
+            } else {
+                vk_bindings.as_ptr()
+            },
+            vertex_attribute_description_count: vk_attributes.len() as u32,
+            p_vertex_attribute_descriptions: if vk_attributes.is_empty() {
+                core::ptr::null()
+            } else {
+                vk_attributes.as_ptr()
+            },
         };
 
         let input_assembly = ffi::VkPipelineInputAssemblyStateCreateInfo {
@@ -1134,6 +1164,18 @@ impl VulkanDevice {
                             max_depth: *max_depth,
                         };
                         ffi::vkCmdSetViewport(cmd, 0, 1, &viewport);
+                        // Set default scissor to match viewport (required for dynamic state)
+                        let scissor = ffi::VkRect2D {
+                            offset: ffi::VkOffset2D {
+                                x: *x as i32,
+                                y: *y as i32,
+                            },
+                            extent: ffi::VkExtent2D {
+                                width: *width as u32,
+                                height: *height as u32,
+                            },
+                        };
+                        ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
                     }
 
                     RenderOp::SetScissor {
@@ -1535,5 +1577,23 @@ impl VulkanDevice {
         }
         drop(textures);
         self.submit_and_wait(cmd)
+    }
+}
+
+fn attr_format_to_vulkan(fmt: crate::AttributeFormat) -> u32 {
+    match fmt {
+        crate::AttributeFormat::Float => ffi::VK_FORMAT_R32_SFLOAT,
+        crate::AttributeFormat::Float2 => ffi::VK_FORMAT_R32G32_SFLOAT,
+        crate::AttributeFormat::Float3 => ffi::VK_FORMAT_R32G32B32_SFLOAT,
+        crate::AttributeFormat::Float4 => ffi::VK_FORMAT_R32G32B32A32_SFLOAT,
+        crate::AttributeFormat::Int => ffi::VK_FORMAT_R32_SINT,
+        crate::AttributeFormat::Int2 => ffi::VK_FORMAT_R32G32_SINT,
+        crate::AttributeFormat::Int3 => ffi::VK_FORMAT_R32G32B32_SINT,
+        crate::AttributeFormat::Int4 => ffi::VK_FORMAT_R32G32B32A32_SINT,
+        crate::AttributeFormat::UInt => ffi::VK_FORMAT_R32_UINT,
+        crate::AttributeFormat::UInt2 => ffi::VK_FORMAT_R32G32_UINT,
+        crate::AttributeFormat::UInt3 => ffi::VK_FORMAT_R32G32B32_UINT,
+        crate::AttributeFormat::UInt4 => ffi::VK_FORMAT_R32G32B32A32_UINT,
+        crate::AttributeFormat::UByte4Norm => ffi::VK_FORMAT_R8G8B8A8_UNORM,
     }
 }

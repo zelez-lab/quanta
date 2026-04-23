@@ -157,6 +157,34 @@ let view = gpu.texture_view_create(&tex, &TextureViewDesc {
 Views share the parent texture's memory. Useful for binding specific mip levels
 or array slices to different shader slots.
 
+## Sampling in fragment shaders
+
+Fragment shaders sample textures using the `sample(slot, uv)` function. The
+slot number corresponds to `pass.set_texture(slot, ...)`:
+
+```rust
+#[quanta::vertex]
+fn uv_vertex(pos: Vec3, uv: Vec2) -> Vec4 {
+    Vec4::new(pos.x, pos.y, pos.z, 1.0)
+}
+
+#[quanta::fragment]
+fn textured(uv: Vec2) -> Vec4 {
+    sample(0, uv)  // returns Vec4 (RGBA)
+}
+```
+
+Bind the texture and sampler in the render pass:
+
+```rust
+pass.set_texture(0, &albedo);
+pass.set_sampler(0, SamplerDesc::default()); // linear filtering
+pass.draw(6);
+```
+
+`sample()` returns `Vec4` regardless of texture format. For single-channel
+textures (e.g., glyph atlas), use `.x` to extract the value.
+
 ## Sampling in kernels
 
 Inside compute kernels, textures are accessed via texture parameters:

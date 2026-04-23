@@ -188,6 +188,52 @@ Available depth configurations:
 | `DepthStencilState::DEPTH_LESS`       | Standard 3D (closer wins)         |
 | `DepthStencilState::DEPTH_READ_ONLY`  | Test but don't write (transparent)|
 
+## Depth testing with a depth target
+
+For a complete 3D scene, create a depth texture and attach it to the render pass:
+
+```rust
+let color = gpu.render_target(800, 600, Format::RGBA8)?;
+let depth = gpu.create_texture(&TextureDesc {
+    width: 800,
+    height: 600,
+    format: Format::Depth32Float,
+    usage: TextureUsage::RENDER_TARGET,
+    ..TextureDesc::default()
+})?;
+
+let mut pass = gpu.render_begin(&color)?;
+pass.set_color_targets(vec![ColorTarget {
+    texture: color.handle(),
+    load_op: LoadOp::Clear(Color::BLACK),
+    store_op: StoreOp::Store,
+}]);
+pass.set_depth_target(DepthTarget {
+    texture: depth.handle(),
+    load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)),
+    store_op: StoreOp::DontCare,
+    stencil_load_op: LoadOp::DontCare,
+    stencil_store_op: StoreOp::DontCare,
+});
+pass.set_viewport(0.0, 0.0, 800.0, 600.0);
+pass.set_pipeline(&pipeline);
+pass.bind_vertices(0, &vertices);
+pass.bind_indices(&indices);
+pass.draw_indexed(36); // 12 triangles
+```
+
+## Textured rendering
+
+Bind a texture and sampler for fragment shader access:
+
+```rust
+pass.set_texture(0, &albedo_texture);
+pass.set_sampler(0, SamplerDesc::default());
+pass.draw(6);
+```
+
+See [textures](06-textures.md) for `sample()` usage in fragment shaders.
+
 ## Viewport and scissor
 
 ```rust
