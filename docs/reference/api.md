@@ -358,3 +358,29 @@ Prefix sum utilities (requires `software` feature).
 `exclusive_scan_f32_bytes` interprets the input byte slice as a contiguous
 `f32` array, computes the exclusive prefix sum, and returns the result as
 raw bytes. Useful for stream compaction and radix sort building blocks.
+
+---
+
+## Design decisions
+
+Features Quanta deliberately does not include:
+
+| Feature | Rationale |
+|---------|-----------|
+| **Swapchain / window management** | Quanta renders to textures. The host application owns the window, surface, and presentation. This keeps Quanta focused on compute and rendering without coupling to a windowing system. |
+| **Geometry shaders** | Deprecated in Metal and Vulkan best practices. Mesh shaders (`#[quanta::mesh]`) are the modern replacement. |
+| **HLSL / GLSL input** | Rust is the shader language. One language for CPU and GPU code, with the borrow checker, generics, and standard tooling. |
+| **Dynamic parallelism** | Nested kernel dispatch from GPU code. Not supported by Metal or Vulkan compute. If needed, dispatch from the CPU with multiple `gpu.dispatch()` calls or use `gpu.begin_batch()`. |
+
+## Current limitations
+
+Features not yet implemented:
+
+| Feature | Status |
+|---------|--------|
+| **WebGPU runtime** | WGSL source is embedded at build time. A browser runtime host for standalone WASM dispatch is planned but not shipped. |
+| **Multi-GPU** | Single device only. Multi-GPU dispatch and peer-to-peer transfer are not yet in the API. |
+| **Tensor core acceleration (Vulkan)** | `CooperativeMMA` emits a scalar fallback on Vulkan. Native `VK_KHR_cooperative_matrix` support requires hardware testing. Metal uses `simdgroup_multiply_accumulate` natively. |
+| **Staging buffers** | Buffers use shared/host-visible memory. Discrete GPUs with separate CPU/GPU memory would benefit from device-local buffers with staging transfers. |
+| **Ray tracing / mesh shaders** | API surface exists (`#[quanta::ray_gen]`, `#[quanta::mesh]`). Driver implementations are not yet wired. |
+| **Software backend** | A CPU reference executor exists (`feature = "software"`) but is not production-ready. |
