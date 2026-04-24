@@ -213,6 +213,11 @@ macro_rules! vk_extern_fns {
                 pool: VkDescriptorPool,
                 allocator: *const c_void,
             );
+            pub fn vkResetDescriptorPool(
+                device: VkDevice,
+                pool: VkDescriptorPool,
+                flags: u32,
+            ) -> VkResult;
             pub fn vkAllocateDescriptorSets(
                 device: VkDevice,
                 alloc_info: *const VkDescriptorSetAllocateInfo,

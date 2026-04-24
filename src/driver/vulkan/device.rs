@@ -36,6 +36,8 @@ pub struct VulkanDevice {
     pub(super) next_handle: AtomicU64,
     /// Pool of reusable command buffers — Arc<Mutex> for sharing with Pulse closures.
     pub(super) cmd_buffer_pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+    /// Pool of reusable descriptor pools — avoids create/destroy per dispatch.
+    pub(super) descriptor_pool_cache: Mutex<Vec<ffi::VkDescriptorPool>>,
 }
 
 pub(super) struct VkQueryPool {
@@ -146,6 +148,58 @@ impl VulkanDevice {
             return Err(QuantaError::submit_failed());
         }
         Ok(cmd)
+    }
+
+    /// Acquire a descriptor pool — pop from cache or create new.
+    pub(super) fn acquire_descriptor_pool(&self) -> Result<ffi::VkDescriptorPool, QuantaError> {
+        if let Some(pool) = self
+            .descriptor_pool_cache
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .pop()
+        {
+            let result = unsafe { ffi::vkResetDescriptorPool(self.device, pool, 0) };
+            if result != ffi::VK_SUCCESS {
+                // Reset failed — destroy this pool and fall through to create a fresh one.
+                unsafe {
+                    ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
+                }
+            } else {
+                return Ok(pool);
+            }
+        }
+        let pool_size = ffi::VkDescriptorPoolSize {
+            ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            descriptor_count: 16,
+        };
+        let pool_info = ffi::VkDescriptorPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            max_sets: 1,
+            pool_size_count: 1,
+            p_pool_sizes: &pool_size,
+        };
+        let mut pool = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateDescriptorPool(self.device, &pool_info, core::ptr::null(), &mut pool)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
+        Ok(pool)
+    }
+
+    /// Return a descriptor pool to the cache for reuse.
+    pub(super) fn return_descriptor_pool(&self, pool: ffi::VkDescriptorPool) {
+        if let Ok(mut cache) = self.descriptor_pool_cache.lock() {
+            cache.push(pool);
+        } else {
+            // Lock poisoned — destroy to avoid leak.
+            unsafe {
+                ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
+            }
+        }
     }
 
     /// Submit a command buffer with a fence. Returns a Pulse that waits on the
@@ -386,6 +440,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             queues: RwLock::new(HashMap::new()),
             next_handle: AtomicU64::new(0),
             cmd_buffer_pool: std::sync::Arc::new(Mutex::new(Vec::new())),
+            descriptor_pool_cache: Mutex::new(Vec::new()),
         }));
 
         break; // Use first suitable device
@@ -449,6 +504,13 @@ impl Drop for VulkanDevice {
             if let Ok(mut pools) = self.query_pools.write() {
                 for (_, qp) in pools.drain() {
                     ffi::vkDestroyQueryPool(self.device, qp.pool, core::ptr::null());
+                }
+            }
+
+            // Destroy cached descriptor pools.
+            if let Ok(mut pools) = self.descriptor_pool_cache.lock() {
+                for pool in pools.drain(..) {
+                    ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
                 }
             }
 

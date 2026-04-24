@@ -222,31 +222,8 @@ impl VulkanDevice {
                 .with_context(&format!("wave_dispatch: handle {}", wave.handle))
         })?;
 
-        // Create descriptor pool + set for buffer bindings
-        let pool_size = ffi::VkDescriptorPoolSize {
-            ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            descriptor_count: 16,
-        };
-        let pool_info = ffi::VkDescriptorPoolCreateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            p_next: core::ptr::null(),
-            flags: 0,
-            max_sets: 1,
-            pool_size_count: 1,
-            p_pool_sizes: &pool_size,
-        };
-        let mut descriptor_pool = ffi::null_handle();
-        let result = unsafe {
-            ffi::vkCreateDescriptorPool(
-                self.device,
-                &pool_info,
-                core::ptr::null(),
-                &mut descriptor_pool,
-            )
-        };
-        if result != ffi::VK_SUCCESS {
-            return Err(QuantaError::submit_failed());
-        }
+        // Acquire descriptor pool from cache (or create new)
+        let descriptor_pool = self.acquire_descriptor_pool()?;
 
         let alloc_info = ffi::VkDescriptorSetAllocateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -355,10 +332,8 @@ impl VulkanDevice {
         drop(compute_pipelines);
         self.submit_and_wait(cmd)?.wait()?;
 
-        // Clean up descriptor pool
-        unsafe {
-            ffi::vkDestroyDescriptorPool(self.device, descriptor_pool, core::ptr::null());
-        }
+        // Return descriptor pool to cache for reuse
+        self.return_descriptor_pool(descriptor_pool);
 
         Ok(Pulse {
             handle: self.alloc_handle(),
@@ -382,31 +357,8 @@ impl VulkanDevice {
                 .with_context(&format!("wave_dispatch_indirect: handle {}", wave.handle))
         })?;
 
-        // Create descriptor pool + set (same as wave_dispatch)
-        let pool_size = ffi::VkDescriptorPoolSize {
-            ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            descriptor_count: 16,
-        };
-        let pool_info = ffi::VkDescriptorPoolCreateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            p_next: core::ptr::null(),
-            flags: 0,
-            max_sets: 1,
-            pool_size_count: 1,
-            p_pool_sizes: &pool_size,
-        };
-        let mut descriptor_pool = ffi::null_handle();
-        let result = unsafe {
-            ffi::vkCreateDescriptorPool(
-                self.device,
-                &pool_info,
-                core::ptr::null(),
-                &mut descriptor_pool,
-            )
-        };
-        if result != ffi::VK_SUCCESS {
-            return Err(QuantaError::submit_failed());
-        }
+        // Acquire descriptor pool from cache (or create new)
+        let descriptor_pool = self.acquire_descriptor_pool()?;
 
         let alloc_info = ffi::VkDescriptorSetAllocateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -504,9 +456,8 @@ impl VulkanDevice {
         drop(compute_pipelines);
         self.submit_and_wait(cmd)?.wait()?;
 
-        unsafe {
-            ffi::vkDestroyDescriptorPool(self.device, descriptor_pool, core::ptr::null());
-        }
+        // Return descriptor pool to cache for reuse
+        self.return_descriptor_pool(descriptor_pool);
 
         Ok(Pulse {
             handle: self.alloc_handle(),
