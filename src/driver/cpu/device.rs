@@ -28,6 +28,9 @@ struct CpuBuffer {
 /// Stored kernel ready for dispatch.
 struct CpuKernel {
     def: KernelDef,
+    /// Pre-computed barrier segment ranges into def.body (start, end).
+    /// Computed once at wave_jit time, reused every dispatch.
+    segments: Vec<(usize, usize)>,
 }
 
 /// CPU software device — executes GPU kernel IR without hardware.
@@ -220,10 +223,11 @@ impl GpuDevice for CpuDevice {
             .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
         let handle = self.alloc_handle();
         let workgroup_size = def.workgroup_size;
+        let segments = barrier_segment_ranges(&def.body);
         self.kernels
             .lock()
             .unwrap()
-            .insert(handle, CpuKernel { def });
+            .insert(handle, CpuKernel { def, segments });
         Ok(Wave {
             handle,
             bindings: [0u64; 16],
@@ -249,15 +253,15 @@ impl GpuDevice for CpuDevice {
         let threads_per_group = wg[0] as u64 * wg[1] as u64 * wg[2] as u64;
         let total_threads = total_groups * threads_per_group;
 
-        // Snapshot bound buffer data into a working copy
-        let mut field_data: HashMap<u64, Vec<u8>> = HashMap::new();
+        // Snapshot bound buffer data into fixed-size array (max 16 bindings)
+        let mut field_data: [Option<Vec<u8>>; 16] = Default::default();
         {
             let bufs = self.buffers.lock().unwrap();
             for i in 0..wave.binding_count as usize {
                 let handle = wave.bindings[i];
                 if handle != 0 {
                     if let Some(buf) = bufs.get(&handle) {
-                        field_data.insert(i as u64, buf.data.clone());
+                        field_data[i] = Some(buf.data.clone());
                     }
                 }
             }
@@ -265,19 +269,22 @@ impl GpuDevice for CpuDevice {
 
         let group_size_x = wg[0];
 
-        // Split the kernel body at top-level Barrier ops into segments.
-        // For each workgroup: run all threads through segment 0, then all
-        // threads through segment 1, etc. This correctly simulates GPU
-        // barrier semantics where all threads synchronize at each barrier.
-        let segments = split_at_barriers(&kernel.def.body);
+        // Use pre-computed barrier segment ranges (zero-copy slices)
+        let segments = &kernel.segments;
+
+        // Allocate workgroup state once, reuse via clear()
+        let mut shared: HashMap<u32, Vec<u8>> = HashMap::new();
+        let mut thread_regs: Vec<HashMap<u32, Value>> =
+            (0..threads_per_group).map(|_| HashMap::new()).collect();
 
         for gid in 0..total_groups {
-            let mut shared: HashMap<u32, Vec<u8>> = HashMap::new();
-            // Per-thread register state persists across barrier segments
-            let mut thread_regs: Vec<HashMap<u32, Value>> =
-                (0..threads_per_group).map(|_| HashMap::new()).collect();
+            shared.clear();
+            for reg_map in thread_regs.iter_mut() {
+                reg_map.clear();
+            }
 
-            for segment in &segments {
+            for &(seg_start, seg_end) in segments {
+                let segment = &kernel.def.body[seg_start..seg_end];
                 for lid in 0..threads_per_group {
                     let quark_id = (gid * threads_per_group + lid) as u32;
                     let local_id = lid as u32;
@@ -300,7 +307,6 @@ impl GpuDevice for CpuDevice {
                         ))
                     })?;
 
-                    // Save register state for next segment
                     thread_regs[lid as usize] = ctx.regs;
                 }
             }
@@ -312,7 +318,7 @@ impl GpuDevice for CpuDevice {
             for i in 0..wave.binding_count as usize {
                 let handle = wave.bindings[i];
                 if handle != 0 {
-                    if let Some(modified) = field_data.remove(&(i as u64)) {
+                    if let Some(modified) = field_data[i].take() {
                         if let Some(buf) = bufs.get_mut(&handle) {
                             buf.data = modified;
                         }
@@ -472,24 +478,22 @@ impl GpuDevice for CpuDevice {
     }
 }
 
-/// Split a list of ops at top-level `Barrier` instructions.
+/// Compute barrier segment ranges as (start, end) indices into the ops slice.
 ///
-/// Returns a list of segments. Each segment is a slice of ops between
-/// barriers. The barrier ops themselves are consumed (they serve only
-/// as synchronization points).
-fn split_at_barriers(ops: &[KernelOp]) -> Vec<Vec<KernelOp>> {
-    let mut segments: Vec<Vec<KernelOp>> = Vec::new();
-    let mut current: Vec<KernelOp> = Vec::new();
+/// Each range covers the ops between consecutive barriers.
+/// The barrier ops themselves are excluded. Zero allocation at dispatch
+/// time — segments are sliced from the original body via `&ops[start..end]`.
+fn barrier_segment_ranges(ops: &[KernelOp]) -> Vec<(usize, usize)> {
+    let mut segments = Vec::new();
+    let mut start = 0;
 
-    for op in ops {
+    for (i, op) in ops.iter().enumerate() {
         if matches!(op, KernelOp::Barrier) {
-            segments.push(core::mem::take(&mut current));
-        } else {
-            current.push(op.clone());
+            segments.push((start, i));
+            start = i + 1;
         }
     }
-    // Push the final segment (ops after the last barrier, or all ops if no barriers)
-    segments.push(current);
+    segments.push((start, ops.len()));
     segments
 }
 

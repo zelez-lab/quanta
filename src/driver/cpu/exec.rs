@@ -1,7 +1,8 @@
 //! Per-thread kernel execution — walks KernelOp instructions.
 
 use alloc::format;
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 use std::collections::HashMap;
 
@@ -23,7 +24,7 @@ pub(super) struct ExecCtx<'a> {
     pub(super) group_size: u32,
     pub(super) quark_count: u32,
     pub(super) regs: HashMap<u32, Value>,
-    pub(super) fields: &'a mut HashMap<u64, Vec<u8>>,
+    pub(super) fields: &'a mut [Option<Vec<u8>>; 16],
     /// Shared memory per workgroup, keyed by declaration id.
     pub(super) shared: &'a mut HashMap<u32, Vec<u8>>,
 }
@@ -59,10 +60,9 @@ pub(super) fn execute_ops(
                 ty,
             } => {
                 let idx = reg(ctx, index)?;
-                let slot = *field as u64;
-                let buf = ctx
-                    .fields
-                    .get(&slot)
+                let slot = *field as usize;
+                let buf = ctx.fields[slot]
+                    .as_ref()
                     .ok_or_else(|| format!("Load: field slot {slot} not bound"))?;
                 let val = read_scalar(buf, idx.as_u32(), ty);
                 ctx.regs.insert(dst.0, val);
@@ -75,10 +75,9 @@ pub(super) fn execute_ops(
             } => {
                 let idx = reg(ctx, index)?;
                 let val = reg(ctx, src)?;
-                let slot = *field as u64;
-                let buf = ctx
-                    .fields
-                    .get_mut(&slot)
+                let slot = *field as usize;
+                let buf = ctx.fields[slot]
+                    .as_mut()
                     .ok_or_else(|| format!("Store: field slot {slot} not bound"))?;
                 write_scalar(buf, idx.as_u32(), val, ty);
             }
@@ -176,14 +175,13 @@ pub(super) fn execute_ops(
             } => {
                 let idx = reg(ctx, index)?.as_u32();
                 let operand = reg(ctx, val)?;
-                let slot = *field as u64;
-                let buf = ctx
-                    .fields
-                    .get(&slot)
+                let slot = *field as usize;
+                let buf = ctx.fields[slot]
+                    .as_ref()
                     .ok_or_else(|| format!("AtomicOp: field slot {slot} not bound"))?;
                 let old = read_scalar(buf, idx, ty);
                 let (new_val, old_val) = eval_atomic(old, operand, op, ty);
-                let buf = ctx.fields.get_mut(&slot).unwrap();
+                let buf = ctx.fields[slot].as_mut().unwrap();
                 write_scalar(buf, idx, new_val, ty);
                 ctx.regs.insert(dst.0, old_val);
             }
@@ -198,16 +196,15 @@ pub(super) fn execute_ops(
                 let idx = reg(ctx, index)?.as_u32();
                 let exp = reg(ctx, expected)?;
                 let des = reg(ctx, desired)?;
-                let slot = *field as u64;
-                let buf = ctx
-                    .fields
-                    .get(&slot)
+                let slot = *field as usize;
+                let buf = ctx.fields[slot]
+                    .as_ref()
                     .ok_or_else(|| format!("AtomicCas: field slot {slot} not bound"))?;
                 let old = read_scalar(buf, idx, ty);
                 let old_u64 = old.as_u64();
                 let exp_u64 = exp.as_u64();
                 if old_u64 == exp_u64 {
-                    let buf = ctx.fields.get_mut(&slot).unwrap();
+                    let buf = ctx.fields[slot].as_mut().unwrap();
                     write_scalar(buf, idx, des, ty);
                 }
                 ctx.regs.insert(dst.0, old);
