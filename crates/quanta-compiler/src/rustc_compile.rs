@@ -130,9 +130,9 @@ impl<T: Copy> core::ops::IndexMut<u32> for GpuSliceMut<T> {
 unsafe extern \"C\" {
     fn __quanta_quark_id() -> u32;
     fn __quanta_quark_count() -> u32;
-    fn __quanta_local_id() -> u32;
-    fn __quanta_group_id() -> u32;
-    fn __quanta_group_size() -> u32;
+    fn __quanta_proton_id() -> u32;
+    fn __quanta_nucleus_id() -> u32;
+    fn __quanta_proton_size() -> u32;
     fn __quanta_barrier();
 }
 
@@ -141,11 +141,11 @@ fn quark_id() -> u32 { unsafe { __quanta_quark_id() } }
 #[inline(always)]
 fn quark_count() -> u32 { unsafe { __quanta_quark_count() } }
 #[inline(always)]
-fn local_id() -> u32 { unsafe { __quanta_local_id() } }
+fn proton_id() -> u32 { unsafe { __quanta_proton_id() } }
 #[inline(always)]
-fn group_id() -> u32 { unsafe { __quanta_group_id() } }
+fn nucleus_id() -> u32 { unsafe { __quanta_nucleus_id() } }
 #[inline(always)]
-fn group_size() -> u32 { unsafe { __quanta_group_size() } }
+fn proton_size() -> u32 { unsafe { __quanta_proton_size() } }
 #[inline(always)]
 fn barrier() { unsafe { __quanta_barrier() } }
 ",

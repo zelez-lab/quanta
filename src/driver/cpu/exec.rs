@@ -40,13 +40,13 @@ pub(super) fn execute_ops(
             KernelOp::QuarkCount { dst } => {
                 ctx.regs.insert(dst.0, Value::U32(ctx.quark_count));
             }
-            KernelOp::LocalId { dst } => {
+            KernelOp::ProtonId { dst } => {
                 ctx.regs.insert(dst.0, Value::U32(ctx.local_id));
             }
-            KernelOp::GroupId { dst } => {
+            KernelOp::NucleusId { dst } => {
                 ctx.regs.insert(dst.0, Value::U32(ctx.group_id));
             }
-            KernelOp::GroupSize { dst } => {
+            KernelOp::ProtonSize { dst } => {
                 ctx.regs.insert(dst.0, Value::U32(ctx.group_size));
             }
             KernelOp::Const { dst, value } => {

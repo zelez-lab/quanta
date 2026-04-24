@@ -13,8 +13,8 @@ impl SpvEmitter {
         &mut self,
         op: &KernelOp,
         gid_var: u32,
-        local_id_var: u32,
-        group_id_var: u32,
+        proton_id_var: u32,
+        nucleus_id_var: u32,
         num_wg_var: u32,
     ) -> Result<(), String> {
         match op {
@@ -24,15 +24,15 @@ impl SpvEmitter {
                 self.set_reg(*dst, val, uint_ty);
             }
 
-            KernelOp::LocalId { dst } => {
+            KernelOp::ProtonId { dst } => {
                 let uint_ty = self.ensure_type_u32();
-                let val = self.load_builtin_x(local_id_var);
+                let val = self.load_builtin_x(proton_id_var);
                 self.set_reg(*dst, val, uint_ty);
             }
 
-            KernelOp::GroupId { dst } => {
+            KernelOp::NucleusId { dst } => {
                 let uint_ty = self.ensure_type_u32();
-                let val = self.load_builtin_x(group_id_var);
+                let val = self.load_builtin_x(nucleus_id_var);
                 self.set_reg(*dst, val, uint_ty);
             }
 
@@ -49,7 +49,7 @@ impl SpvEmitter {
                 self.set_reg(*dst, result, uint_ty);
             }
 
-            KernelOp::GroupSize { dst } => {
+            KernelOp::ProtonSize { dst } => {
                 let uint_ty = self.ensure_type_u32();
                 let val = self.emit_constant_u32(64);
                 self.set_reg(*dst, val, uint_ty);
@@ -145,8 +145,8 @@ impl SpvEmitter {
                     then_ops,
                     else_ops,
                     gid_var,
-                    local_id_var,
-                    group_id_var,
+                    proton_id_var,
+                    nucleus_id_var,
                     num_wg_var,
                 )?;
             }
@@ -161,8 +161,8 @@ impl SpvEmitter {
                     *iter_reg,
                     body,
                     gid_var,
-                    local_id_var,
-                    group_id_var,
+                    proton_id_var,
+                    nucleus_id_var,
                     num_wg_var,
                 )?;
             }

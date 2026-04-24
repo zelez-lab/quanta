@@ -232,13 +232,13 @@ pub enum KernelOp {
     QuarkCount {
         dst: Reg,
     },
-    LocalId {
+    ProtonId {
         dst: Reg,
     },
-    GroupId {
+    NucleusId {
         dst: Reg,
     },
-    GroupSize {
+    ProtonSize {
         dst: Reg,
     },
 

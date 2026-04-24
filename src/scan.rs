@@ -58,7 +58,7 @@ fn build_exclusive_scan(ty: ScalarType, zero: ConstValue) -> KernelDef {
     };
 
     // --- Thread indexing ---
-    let r_lid = alloc_reg(); // local_id
+    let r_lid = alloc_reg(); // proton_id
     let r_gid = alloc_reg(); // group_id
     let r_gs = alloc_reg(); // group_size
     let r_quark = alloc_reg(); // quark_id (global)
@@ -111,9 +111,9 @@ fn build_exclusive_scan(ty: ScalarType, zero: ConstValue) -> KernelDef {
     let mut body = Vec::new();
 
     // Get thread indices
-    body.push(KernelOp::LocalId { dst: r_lid });
-    body.push(KernelOp::GroupId { dst: r_gid });
-    body.push(KernelOp::GroupSize { dst: r_gs });
+    body.push(KernelOp::ProtonId { dst: r_lid });
+    body.push(KernelOp::NucleusId { dst: r_gid });
+    body.push(KernelOp::ProtonSize { dst: r_gs });
     body.push(KernelOp::QuarkId { dst: r_quark });
 
     // Constants

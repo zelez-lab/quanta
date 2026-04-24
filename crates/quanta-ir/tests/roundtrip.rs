@@ -142,9 +142,9 @@ fn roundtrip_all_ops() {
                 value: ConstValue::F32(3.14),
             },
             KernelOp::QuarkId { dst: Reg(1) },
-            KernelOp::LocalId { dst: Reg(2) },
-            KernelOp::GroupId { dst: Reg(3) },
-            KernelOp::GroupSize { dst: Reg(4) },
+            KernelOp::ProtonId { dst: Reg(2) },
+            KernelOp::NucleusId { dst: Reg(3) },
+            KernelOp::ProtonSize { dst: Reg(4) },
             KernelOp::Barrier,
             KernelOp::Branch {
                 cond: Reg(0),

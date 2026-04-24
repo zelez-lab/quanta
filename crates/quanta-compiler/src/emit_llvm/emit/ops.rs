@@ -60,7 +60,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             )?;
         }
 
-        KernelOp::LocalId { dst } => {
+        KernelOp::ProtonId { dst } => {
             let tid = ectx
                 .intrinsics
                 .thread_id_x(ectx.context, ectx.module, ectx.builder);
@@ -74,7 +74,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             )?;
         }
 
-        KernelOp::GroupId { dst } => {
+        KernelOp::NucleusId { dst } => {
             let bid = ectx
                 .intrinsics
                 .block_id_x(ectx.context, ectx.module, ectx.builder);
@@ -88,7 +88,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             )?;
         }
 
-        KernelOp::GroupSize { dst } => {
+        KernelOp::ProtonSize { dst } => {
             let bdim = ectx
                 .intrinsics
                 .block_dim_x(ectx.context, ectx.module, ectx.builder);

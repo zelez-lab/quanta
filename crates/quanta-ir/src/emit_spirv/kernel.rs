@@ -78,28 +78,28 @@ impl SpvEmitter {
         self.decorate(gid_var, DECORATION_BUILTIN, &[BUILTIN_GLOBAL_INVOCATION_ID]);
 
         // LocalInvocationId
-        let local_id_var = self.alloc_id();
+        let proton_id_var = self.alloc_id();
         Self::emit_op(
             &mut self.sec_global_var,
             OP_VARIABLE,
-            &[ptr_input_v3uint, local_id_var, STORAGE_CLASS_INPUT],
+            &[ptr_input_v3uint, proton_id_var, STORAGE_CLASS_INPUT],
         );
-        self.emit_name(local_id_var, "gl_LocalInvocationId");
+        self.emit_name(proton_id_var, "gl_LocalInvocationId");
         self.decorate(
-            local_id_var,
+            proton_id_var,
             DECORATION_BUILTIN,
             &[BUILTIN_LOCAL_INVOCATION_ID],
         );
 
         // WorkgroupId
-        let group_id_var = self.alloc_id();
+        let nucleus_id_var = self.alloc_id();
         Self::emit_op(
             &mut self.sec_global_var,
             OP_VARIABLE,
-            &[ptr_input_v3uint, group_id_var, STORAGE_CLASS_INPUT],
+            &[ptr_input_v3uint, nucleus_id_var, STORAGE_CLASS_INPUT],
         );
-        self.emit_name(group_id_var, "gl_WorkGroupID");
-        self.decorate(group_id_var, DECORATION_BUILTIN, &[BUILTIN_WORKGROUP_ID]);
+        self.emit_name(nucleus_id_var, "gl_WorkGroupID");
+        self.decorate(nucleus_id_var, DECORATION_BUILTIN, &[BUILTIN_WORKGROUP_ID]);
 
         // NumWorkgroups
         let num_wg_var = self.alloc_id();
@@ -114,7 +114,7 @@ impl SpvEmitter {
         // Collect Input/Output interface variables for the entry point.
         // SPIR-V 1.3 requires only Input/Output variables in the interface list.
         // StorageBuffer, Uniform, and Workgroup variables must NOT be listed.
-        let interface_ids = vec![gid_var, local_id_var, group_id_var, num_wg_var];
+        let interface_ids = vec![gid_var, proton_id_var, nucleus_id_var, num_wg_var];
 
         // 4. Set up storage buffers for each field parameter
         self.emit_kernel_params(&kernel.params)?;
@@ -124,7 +124,7 @@ impl SpvEmitter {
 
         // 5b. Emit device functions as SPIR-V OpFunction definitions.
         // Done before the main function so function IDs are available.
-        self.emit_device_functions(kernel, gid_var, local_id_var, group_id_var, num_wg_var)?;
+        self.emit_device_functions(kernel, gid_var, proton_id_var, nucleus_id_var, num_wg_var)?;
 
         // 6. Entry point (Input/Output variables only in SPIR-V 1.3)
         let void_ty = self.ensure_type_void();
@@ -168,8 +168,8 @@ impl SpvEmitter {
         self.emit_ops(
             &kernel.body,
             gid_var,
-            local_id_var,
-            group_id_var,
+            proton_id_var,
+            nucleus_id_var,
             num_wg_var,
         )?;
 
@@ -281,10 +281,10 @@ impl SpvEmitter {
         for op in ops {
             match op {
                 KernelOp::QuarkId { dst }
-                | KernelOp::LocalId { dst }
-                | KernelOp::GroupId { dst }
+                | KernelOp::ProtonId { dst }
+                | KernelOp::NucleusId { dst }
                 | KernelOp::QuarkCount { dst }
-                | KernelOp::GroupSize { dst }
+                | KernelOp::ProtonSize { dst }
                 | KernelOp::Const { dst, .. }
                 | KernelOp::Load { dst, .. }
                 | KernelOp::BinOp { dst, .. }
@@ -402,12 +402,12 @@ impl SpvEmitter {
         &mut self,
         ops: &[KernelOp],
         gid_var: u32,
-        local_id_var: u32,
-        group_id_var: u32,
+        proton_id_var: u32,
+        nucleus_id_var: u32,
         num_wg_var: u32,
     ) -> Result<(), String> {
         for op in ops {
-            self.emit_single_op(op, gid_var, local_id_var, group_id_var, num_wg_var)?;
+            self.emit_single_op(op, gid_var, proton_id_var, nucleus_id_var, num_wg_var)?;
         }
         Ok(())
     }
@@ -439,8 +439,8 @@ impl SpvEmitter {
         &mut self,
         kernel: &KernelDef,
         gid_var: u32,
-        local_id_var: u32,
-        group_id_var: u32,
+        proton_id_var: u32,
+        nucleus_id_var: u32,
         num_wg_var: u32,
     ) -> Result<(), String> {
         for device_fn in &kernel.device_functions {
@@ -502,8 +502,8 @@ impl SpvEmitter {
             self.emit_ops(
                 &device_fn.body,
                 gid_var,
-                local_id_var,
-                group_id_var,
+                proton_id_var,
+                nucleus_id_var,
                 num_wg_var,
             )?;
 

@@ -570,7 +570,7 @@ fn cpu_dispatch_atomic_add() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn build_shared_sum_kernel() -> Vec<u8> {
-    // Each thread loads data[quark_id] into shared[local_id],
+    // Each thread loads data[quark_id] into shared[proton_id],
     // then thread 0 sums all shared values and writes to output[0].
     let def = KernelDef {
         name: "shared_sum".into(),
@@ -588,8 +588,8 @@ fn build_shared_sum_kernel() -> Vec<u8> {
         ],
         body: vec![
             KernelOp::QuarkId { dst: Reg(0) },
-            KernelOp::LocalId { dst: Reg(1) },
-            KernelOp::GroupSize { dst: Reg(2) },
+            KernelOp::ProtonId { dst: Reg(1) },
+            KernelOp::ProtonSize { dst: Reg(2) },
             // Declare shared memory
             KernelOp::SharedDecl {
                 id: 0,

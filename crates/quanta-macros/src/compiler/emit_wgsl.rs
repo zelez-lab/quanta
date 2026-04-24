@@ -309,10 +309,10 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
                 arg_strs.join(", ")
             ));
         }
-        LocalId { dst } => {
-            out.push_str(&format!("{}let r{} = gid.x; // local\n", pad, dst.0));
+        ProtonId { dst } => {
+            out.push_str(&format!("{}let r{} = gid.x; // proton\n", pad, dst.0));
         }
-        GroupId { dst } => {
+        NucleusId { dst } => {
             out.push_str(&format!("{}let r{} = gid.x; // group\n", pad, dst.0));
         }
         QuarkCount { dst } => {
@@ -321,7 +321,7 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
                 pad, dst.0
             ));
         }
-        GroupSize { dst } => {
+        ProtonSize { dst } => {
             out.push_str(&format!("{}let r{} = 64u; // workgroup_size\n", pad, dst.0));
         }
         AtomicOp {
@@ -553,8 +553,8 @@ fn translate_body_to_wgsl(rust_source: &str) -> String {
     rust_source
         .replace("quark_id ()", "_quark_id")
         .replace("quark_id()", "_quark_id")
-        .replace("local_id ()", "gid.x")
-        .replace("local_id()", "gid.x")
+        .replace("proton_id ()", "gid.x")
+        .replace("proton_id()", "gid.x")
         .replace("let mut ", "var ")
         .replace(" as f32", "")
         .replace(" as u32", "")

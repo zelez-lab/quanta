@@ -288,19 +288,19 @@ fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
             ctx.ops.push(KernelOp::QuarkCount { dst });
             Ok((dst, ScalarType::U32))
         }
-        "local_id" => {
+        "proton_id" => {
             let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::LocalId { dst });
+            ctx.ops.push(KernelOp::ProtonId { dst });
             Ok((dst, ScalarType::U32))
         }
-        "group_id" => {
+        "nucleus_id" => {
             let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::GroupId { dst });
+            ctx.ops.push(KernelOp::NucleusId { dst });
             Ok((dst, ScalarType::U32))
         }
-        "group_size" => {
+        "proton_size" => {
             let dst = ctx.alloc_reg();
-            ctx.ops.push(KernelOp::GroupSize { dst });
+            ctx.ops.push(KernelOp::ProtonSize { dst });
             Ok((dst, ScalarType::U32))
         }
         "subgroup_size" => {

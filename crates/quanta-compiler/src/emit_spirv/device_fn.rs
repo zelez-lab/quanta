@@ -19,8 +19,8 @@ impl SpvEmitter {
         &mut self,
         kernel: &KernelDef,
         gid_var: u32,
-        local_id_var: u32,
-        group_id_var: u32,
+        proton_id_var: u32,
+        nucleus_id_var: u32,
         num_wg_var: u32,
     ) -> Result<(), String> {
         for device_fn in &kernel.device_functions {
@@ -82,8 +82,8 @@ impl SpvEmitter {
             self.emit_ops(
                 &device_fn.body,
                 gid_var,
-                local_id_var,
-                group_id_var,
+                proton_id_var,
+                nucleus_id_var,
                 num_wg_var,
             )?;
 

@@ -120,9 +120,9 @@ fn roundtrip_all_kernel_op_variants() {
         // Thread indexing (5)
         KernelOp::QuarkId { dst: Reg(24) },
         KernelOp::QuarkCount { dst: Reg(25) },
-        KernelOp::LocalId { dst: Reg(26) },
-        KernelOp::GroupId { dst: Reg(27) },
-        KernelOp::GroupSize { dst: Reg(28) },
+        KernelOp::ProtonId { dst: Reg(26) },
+        KernelOp::NucleusId { dst: Reg(27) },
+        KernelOp::ProtonSize { dst: Reg(28) },
         // Synchronization (3)
         KernelOp::Barrier,
         KernelOp::AtomicOp {

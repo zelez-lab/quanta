@@ -35,7 +35,7 @@ fn nbody_soa(
     let sm: [f32; 512];
 
     let idx = quark_id();
-    let lid = local_id();
+    let lid = proton_id();
 
     let my_x = px[idx];
     let my_y = py[idx];

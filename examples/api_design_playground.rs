@@ -39,7 +39,7 @@ fn gravity(
     let sm: [f32; 256];
 
     let idx = quark_id();
-    let lid = local_id();
+    let lid = proton_id();
 
     let my_x = pos_x[idx];
     let my_y = pos_y[idx];

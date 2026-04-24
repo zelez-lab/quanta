@@ -26,9 +26,9 @@ use super::helpers::{
 //  10  MathCall
 //  11  QuarkId
 //  12  QuarkCount
-//  13  LocalId
-//  14  GroupId
-//  15  GroupSize
+//  13  ProtonId
+//  14  NucleusId
+//  15  ProtonSize
 //  16  Barrier
 //  17  AtomicOp
 //  18  AtomicCas
@@ -202,20 +202,20 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             write_reg(w, dst);
         }
 
-        // 13 — LocalId { dst }
-        KernelOp::LocalId { dst } => {
+        // 13 — ProtonId { dst }
+        KernelOp::ProtonId { dst } => {
             w.u8(13);
             write_reg(w, dst);
         }
 
-        // 14 — GroupId { dst }
-        KernelOp::GroupId { dst } => {
+        // 14 — NucleusId { dst }
+        KernelOp::NucleusId { dst } => {
             w.u8(14);
             write_reg(w, dst);
         }
 
-        // 15 — GroupSize { dst }
-        KernelOp::GroupSize { dst } => {
+        // 15 — ProtonSize { dst }
+        KernelOp::ProtonSize { dst } => {
             w.u8(15);
             write_reg(w, dst);
         }

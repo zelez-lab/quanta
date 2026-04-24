@@ -77,9 +77,9 @@ fn emit_msl(kernel: &KernelDef) -> Result<String, String> {
         }
     }
     param_lines.push("    uint _quark_id [[thread_position_in_grid]]".to_string());
-    param_lines.push("    uint _local_id [[thread_position_in_threadgroup]]".to_string());
-    param_lines.push("    uint _group_id [[threadgroup_position_in_grid]]".to_string());
-    param_lines.push("    uint _group_size [[threads_per_threadgroup]]".to_string());
+    param_lines.push("    uint _proton_id [[thread_position_in_threadgroup]]".to_string());
+    param_lines.push("    uint _nucleus_id [[threadgroup_position_in_grid]]".to_string());
+    param_lines.push("    uint _proton_size [[threads_per_threadgroup]]".to_string());
 
     out.push_str(&param_lines.join(",\n"));
     out.push_str("\n) {\n");
@@ -130,18 +130,18 @@ fn emit_msl_op(
         }
         QuarkCount { dst } => {
             out.push_str(&format!(
-                "{}uint r{} = _group_id * _group_size + _group_size;\n",
+                "{}uint r{} = _nucleus_id * _proton_size + _proton_size;\n",
                 pad, dst.0
             ));
         }
-        LocalId { dst } => {
-            out.push_str(&format!("{}uint r{} = _local_id;\n", pad, dst.0));
+        ProtonId { dst } => {
+            out.push_str(&format!("{}uint r{} = _proton_id;\n", pad, dst.0));
         }
-        GroupId { dst } => {
-            out.push_str(&format!("{}uint r{} = _group_id;\n", pad, dst.0));
+        NucleusId { dst } => {
+            out.push_str(&format!("{}uint r{} = _nucleus_id;\n", pad, dst.0));
         }
-        GroupSize { dst } => {
-            out.push_str(&format!("{}uint r{} = _group_size;\n", pad, dst.0));
+        ProtonSize { dst } => {
+            out.push_str(&format!("{}uint r{} = _proton_size;\n", pad, dst.0));
         }
         Load {
             dst,
@@ -775,12 +775,12 @@ fn translate_body_to_msl(rust_source: &str) -> String {
     rust_source
         .replace("quark_id ()", "_quark_id")
         .replace("quark_id()", "_quark_id")
-        .replace("local_id ()", "_local_id")
-        .replace("local_id()", "_local_id")
-        .replace("group_id ()", "_group_id")
-        .replace("group_id()", "_group_id")
-        .replace("group_size ()", "_group_size")
-        .replace("group_size()", "_group_size")
+        .replace("proton_id ()", "_proton_id")
+        .replace("proton_id()", "_proton_id")
+        .replace("nucleus_id ()", "_nucleus_id")
+        .replace("nucleus_id()", "_nucleus_id")
+        .replace("proton_size ()", "_proton_size")
+        .replace("proton_size()", "_proton_size")
         .replace("let mut ", "auto ")
         .replace("let ", "auto ")
         .replace(" as f32", "")

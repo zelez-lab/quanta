@@ -20,17 +20,17 @@ pub(super) fn emit_op(
         KernelOp::QuarkId { dst } => {
             out.push_str(&format!("{}uint r{} = _quark_id;\n", pad, dst.0))
         }
-        KernelOp::LocalId { dst } => {
-            out.push_str(&format!("{}uint r{} = _local_id;\n", pad, dst.0))
+        KernelOp::ProtonId { dst } => {
+            out.push_str(&format!("{}uint r{} = _proton_id;\n", pad, dst.0))
         }
-        KernelOp::GroupId { dst } => {
-            out.push_str(&format!("{}uint r{} = _group_id;\n", pad, dst.0))
+        KernelOp::NucleusId { dst } => {
+            out.push_str(&format!("{}uint r{} = _nucleus_id;\n", pad, dst.0))
         }
-        KernelOp::GroupSize { dst } => {
-            out.push_str(&format!("{}uint r{} = _group_size;\n", pad, dst.0))
+        KernelOp::ProtonSize { dst } => {
+            out.push_str(&format!("{}uint r{} = _proton_size;\n", pad, dst.0))
         }
         KernelOp::QuarkCount { dst } => out.push_str(&format!(
-            "{}uint r{} = _group_id * _group_size + _group_size;\n",
+            "{}uint r{} = _nucleus_id * _proton_size + _proton_size;\n",
             pad, dst.0
         )),
         KernelOp::Load {

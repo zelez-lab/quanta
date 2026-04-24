@@ -17,11 +17,11 @@ pub(crate) fn emit_op(
             out.push_str(&format!("{}let r{} = {};\n", pad, dst.0, const_wgsl(value)));
         }
         KernelOp::QuarkId { dst } => out.push_str(&format!("{}let r{} = _quark_id;\n", pad, dst.0)),
-        KernelOp::LocalId { dst } => {
-            out.push_str(&format!("{}let r{} = gid.x; // local\n", pad, dst.0))
+        KernelOp::ProtonId { dst } => {
+            out.push_str(&format!("{}let r{} = gid.x; // proton\n", pad, dst.0))
         }
-        KernelOp::GroupId { dst } => {
-            out.push_str(&format!("{}let r{} = gid.x; // group\n", pad, dst.0))
+        KernelOp::NucleusId { dst } => {
+            out.push_str(&format!("{}let r{} = gid.x; // nucleus\n", pad, dst.0))
         }
         KernelOp::Load {
             dst, field, index, ..
@@ -158,7 +158,7 @@ pub(crate) fn emit_op(
                 pad, dst.0
             ));
         }
-        KernelOp::GroupSize { dst } => {
+        KernelOp::ProtonSize { dst } => {
             out.push_str(&format!("{}let r{} = 64u; // workgroup_size\n", pad, dst.0));
         }
         KernelOp::UnaryOp { dst, a, op, .. } => {

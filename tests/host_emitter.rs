@@ -31,7 +31,7 @@ fn basic_kernel_compiles() {
 fn emit_shared(input: &[f32], output: &mut [f32]) {
     #[quanta::shared]
     let local: [f32; 256];
-    let lid = local_id();
+    let lid = proton_id();
     let gid = quark_id();
     local[lid] = input[gid];
     barrier();

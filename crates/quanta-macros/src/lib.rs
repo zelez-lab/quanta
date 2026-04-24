@@ -61,7 +61,7 @@ pub fn device(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// #[quanta::kernel]
 /// fn reduce(data: &[f32], result: &mut [f32]) {
 ///     #[quanta::shared] let local: [f32; 256];
-///     let lid = local_id();
+///     let lid = proton_id();
 ///     local[lid] = data[quark_id()];
 ///     barrier();
 /// }

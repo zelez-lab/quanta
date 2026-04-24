@@ -13,8 +13,8 @@ impl SpvEmitter {
         then_ops: &[KernelOp],
         else_ops: &[KernelOp],
         gid_var: u32,
-        local_id_var: u32,
-        group_id_var: u32,
+        proton_id_var: u32,
+        nucleus_id_var: u32,
         num_wg_var: u32,
     ) -> Result<(), String> {
         let cond_val = self.reg_value_id(cond)?;
@@ -45,13 +45,13 @@ impl SpvEmitter {
 
         // Then block
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[then_label]);
-        self.emit_ops(then_ops, gid_var, local_id_var, group_id_var, num_wg_var)?;
+        self.emit_ops(then_ops, gid_var, proton_id_var, nucleus_id_var, num_wg_var)?;
         Self::emit_op(&mut self.sec_function, OP_BRANCH, &[merge_label]);
 
         // Else block
         if !else_ops.is_empty() {
             Self::emit_op(&mut self.sec_function, OP_LABEL, &[else_label]);
-            self.emit_ops(else_ops, gid_var, local_id_var, group_id_var, num_wg_var)?;
+            self.emit_ops(else_ops, gid_var, proton_id_var, nucleus_id_var, num_wg_var)?;
             Self::emit_op(&mut self.sec_function, OP_BRANCH, &[merge_label]);
         }
 
@@ -66,8 +66,8 @@ impl SpvEmitter {
         iter_reg: Reg,
         body: &[KernelOp],
         gid_var: u32,
-        local_id_var: u32,
-        group_id_var: u32,
+        proton_id_var: u32,
+        nucleus_id_var: u32,
         num_wg_var: u32,
     ) -> Result<(), String> {
         let count_val = self.reg_value_id(count)?;
@@ -168,7 +168,7 @@ impl SpvEmitter {
         // Body block
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[body_label]);
         self.loop_merge_stack.push(merge_label);
-        self.emit_ops(body, gid_var, local_id_var, group_id_var, num_wg_var)?;
+        self.emit_ops(body, gid_var, proton_id_var, nucleus_id_var, num_wg_var)?;
         self.loop_merge_stack.pop();
         Self::emit_op(&mut self.sec_function, OP_BRANCH, &[continue_label]);
 

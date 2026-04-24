@@ -103,9 +103,9 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     }
 
     param_lines.push("    uint _quark_id [[thread_position_in_grid]]".to_string());
-    param_lines.push("    uint _local_id [[thread_position_in_threadgroup]]".to_string());
-    param_lines.push("    uint _group_id [[threadgroup_position_in_grid]]".to_string());
-    param_lines.push("    uint _group_size [[threads_per_threadgroup]]".to_string());
+    param_lines.push("    uint _proton_id [[thread_position_in_threadgroup]]".to_string());
+    param_lines.push("    uint _nucleus_id [[threadgroup_position_in_grid]]".to_string());
+    param_lines.push("    uint _proton_size [[threads_per_threadgroup]]".to_string());
     param_lines.push("    uint _simd_width [[threads_per_simdgroup]]".to_string());
 
     out.push_str(&param_lines.join(",\n"));

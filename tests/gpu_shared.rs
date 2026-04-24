@@ -16,7 +16,7 @@ fn shared_sum(data: &[f32], result: &mut [f32]) {
     #[quanta::shared]
     let local: [f32; 64];
 
-    let lid = local_id();
+    let lid = proton_id();
     let gid = quark_id();
 
     local[lid] = data[gid];
@@ -29,7 +29,7 @@ fn shared_sum(data: &[f32], result: &mut [f32]) {
             sum = sum + local[j];
             j = j + 1;
         }
-        result[group_id()] = sum;
+        result[nucleus_id()] = sum;
     }
 }
 
@@ -39,7 +39,7 @@ fn shared_reverse(data: &[f32], result: &mut [f32]) {
     #[quanta::shared]
     let local: [f32; 64];
 
-    let lid = local_id();
+    let lid = proton_id();
     let gid = quark_id();
 
     local[lid] = data[gid];

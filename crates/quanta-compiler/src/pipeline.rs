@@ -568,7 +568,7 @@ pub fn test_spirv() {
                 ty: ScalarType::F32,
                 count: 64,
             },
-            KernelOp::LocalId { dst: Reg(0) },
+            KernelOp::ProtonId { dst: Reg(0) },
             KernelOp::QuarkId { dst: Reg(1) },
             KernelOp::Load {
                 dst: Reg(2),
@@ -624,7 +624,7 @@ pub fn test_spirv() {
                             },
                         ],
                     },
-                    KernelOp::GroupId { dst: Reg(9) },
+                    KernelOp::NucleusId { dst: Reg(9) },
                     KernelOp::Store {
                         field: 1,
                         index: Reg(9),

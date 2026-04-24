@@ -156,22 +156,22 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
             Ok(KernelOp::QuarkCount { dst })
         }
 
-        // 13 — LocalId
+        // 13 — ProtonId
         13 => {
             let dst = read_reg(r)?;
-            Ok(KernelOp::LocalId { dst })
+            Ok(KernelOp::ProtonId { dst })
         }
 
-        // 14 — GroupId
+        // 14 — NucleusId
         14 => {
             let dst = read_reg(r)?;
-            Ok(KernelOp::GroupId { dst })
+            Ok(KernelOp::NucleusId { dst })
         }
 
-        // 15 — GroupSize
+        // 15 — ProtonSize
         15 => {
             let dst = read_reg(r)?;
-            Ok(KernelOp::GroupSize { dst })
+            Ok(KernelOp::ProtonSize { dst })
         }
 
         // 16 — Barrier
