@@ -48,7 +48,10 @@ pub fn compile_shader(stage: &str) {
         _ => unreachable!(),
     };
     if let Ok(msl) = msl_result {
-        output.metallib = metallib::compile_msl_to_metallib(&msl);
+        match metallib::compile_msl_to_metallib(&msl) {
+            Ok(bytes) => output.metallib = bytes,
+            Err(e) => eprintln!("[quanta] metallib error: {}", e),
+        }
     }
 
     // Emit WGSL

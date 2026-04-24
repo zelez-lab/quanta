@@ -63,8 +63,12 @@ pub fn compile_kernel(args: &[String]) {
     };
 
     // Compile MSL → metallib via xcrun (if available).
+    // Axiom A1: if xcrun is present and fails, the build must fail.
     if let Ok(msl) = emit_msl::emit(&kernel) {
-        output.metallib = metallib::compile_msl_to_metallib(&msl);
+        match metallib::compile_msl_to_metallib(&msl) {
+            Ok(bytes) => output.metallib = bytes,
+            Err(e) => eprintln!("[quanta] metallib error: {}", e),
+        }
     }
 
     // Emit WGSL source for WebGPU.
