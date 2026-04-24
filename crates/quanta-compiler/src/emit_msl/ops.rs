@@ -1,103 +1,20 @@
-//! KernelDef → Metal Shading Language.
+//! KernelOp → MSL statement emission.
 //!
-//! Walks KernelOps and emits correct MSL for all supported operations.
-//! This is the structured emitter — no string replacement.
+//! Single recursive function that pattern-matches every `KernelOp` variant
+//! and appends the corresponding MSL text.
 
-use crate::*;
 use std::collections::HashMap;
 
-pub fn emit(kernel: &KernelDef) -> Result<String, String> {
-    let mut out = String::new();
-    out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+use quanta_ir::*;
 
-    // Emit device helper functions (from inner fn definitions)
-    for src in &kernel.device_sources {
-        out.push_str(&translate_device_fn_to_msl(src));
-        out.push('\n');
-    }
+use super::helpers::{atomic_fn_str, binop_str, cmpop_str, const_msl, math_fn_str};
 
-    // Kernel signature with max_total_threads_per_threadgroup attribute
-    let max_threads =
-        kernel.workgroup_size[0] * kernel.workgroup_size[1] * kernel.workgroup_size[2];
-    out.push_str(&format!(
-        "[[max_total_threads_per_threadgroup({})]]\nkernel void {}(\n",
-        max_threads, kernel.name
-    ));
-
-    let mut param_lines = Vec::new();
-    let mut slot_names: HashMap<u32, String> = HashMap::new();
-
-    for param in &kernel.params {
-        match param {
-            KernelParam::FieldRead {
-                name,
-                slot,
-                scalar_type,
-            } => {
-                param_lines.push(format!(
-                    "    device const {}* {} [[buffer({})]]",
-                    scalar_type.msl_name(),
-                    name,
-                    slot
-                ));
-                slot_names.insert(*slot, name.clone());
-            }
-            KernelParam::FieldWrite {
-                name,
-                slot,
-                scalar_type,
-            } => {
-                param_lines.push(format!(
-                    "    device {}* {} [[buffer({})]]",
-                    scalar_type.msl_name(),
-                    name,
-                    slot
-                ));
-                slot_names.insert(*slot, name.clone());
-            }
-            KernelParam::Constant {
-                name,
-                slot,
-                scalar_type,
-            } => {
-                param_lines.push(format!(
-                    "    constant {}& {} [[buffer({})]]",
-                    scalar_type.msl_name(),
-                    name,
-                    slot
-                ));
-                slot_names.insert(*slot, name.clone());
-            }
-            _ => {}
-        }
-    }
-    // Check if kernel uses debug print — if so, add a debug buffer parameter
-    let uses_debug_print = kernel
-        .body
-        .iter()
-        .any(|op| matches!(op, KernelOp::DebugPrint { .. }));
-    if uses_debug_print {
-        param_lines.push("    device uint* _debug_buf [[buffer(30)]]".to_string());
-    }
-
-    param_lines.push("    uint _quark_id [[thread_position_in_grid]]".to_string());
-    param_lines.push("    uint _local_id [[thread_position_in_threadgroup]]".to_string());
-    param_lines.push("    uint _group_id [[threadgroup_position_in_grid]]".to_string());
-    param_lines.push("    uint _group_size [[threads_per_threadgroup]]".to_string());
-    param_lines.push("    uint _simd_width [[threads_per_simdgroup]]".to_string());
-
-    out.push_str(&param_lines.join(",\n"));
-    out.push_str("\n) {\n");
-
-    for op in &kernel.body {
-        emit_op(&mut out, op, 1, &slot_names);
-    }
-
-    out.push_str("}\n");
-    Ok(out)
-}
-
-fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, String>) {
+pub(crate) fn emit_op(
+    out: &mut String,
+    op: &KernelOp,
+    indent: usize,
+    names: &HashMap<u32, String>,
+) {
     let pad = "    ".repeat(indent);
     match op {
         KernelOp::Const { dst, value } => {
@@ -147,16 +64,46 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
         }
         KernelOp::BinOp { dst, a, b, op, ty } => {
-            let o = binop_str(op);
-            out.push_str(&format!(
-                "{}{} r{} = r{} {} r{};\n",
-                pad,
-                ty.msl_name(),
-                dst.0,
-                a.0,
-                o,
-                b.0
-            ));
+            if matches!(op, BinOp::SatAdd | BinOp::SatSub) {
+                if matches!(op, BinOp::SatAdd) {
+                    // Unsigned sat add: sum < a means overflow
+                    out.push_str(&format!(
+                        "{}{} _sum = r{} + r{}; {} r{} = (_sum < r{}) ? ({})0xFFFFFFFFu : _sum;\n",
+                        pad,
+                        ty.msl_name(),
+                        a.0,
+                        b.0,
+                        ty.msl_name(),
+                        dst.0,
+                        a.0,
+                        ty.msl_name()
+                    ));
+                } else {
+                    // Unsigned sat sub: a < b means underflow
+                    out.push_str(&format!(
+                        "{}{} r{} = (r{} < r{}) ? ({})0 : r{} - r{};\n",
+                        pad,
+                        ty.msl_name(),
+                        dst.0,
+                        a.0,
+                        b.0,
+                        ty.msl_name(),
+                        a.0,
+                        b.0
+                    ));
+                }
+            } else {
+                let o = binop_str(op);
+                out.push_str(&format!(
+                    "{}{} r{} = r{} {} r{};\n",
+                    pad,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    o,
+                    b.0
+                ));
+            }
         }
         KernelOp::Cmp { dst, a, b, op, .. } => {
             let o = cmpop_str(op);
@@ -350,7 +297,7 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.sample(samp_{}, float2(r{}, r{}));\n",
+                "{}{} r{} = tex_{}.sample(samp_{}, float2(r{}, r{})).x;\n",
                 pad,
                 ty.msl_name(),
                 dst.0,
@@ -369,7 +316,7 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.sample(samp_{}, float3(r{}, r{}, r{}));\n",
+                "{}{} r{} = tex_{}.sample(samp_{}, float3(r{}, r{}, r{})).x;\n",
                 pad,
                 ty.msl_name(),
                 dst.0,
@@ -555,7 +502,7 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.read(uint2(r{}, r{}));\n",
+                "{}{} r{} = tex_{}.read(uint2(r{}, r{})).x;\n",
                 pad,
                 ty.msl_name(),
                 dst.0,
@@ -568,6 +515,8 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             out.push_str(&format!("{}uint r{} = _simd_width;\n", pad, dst.0));
         }
         KernelOp::SharedDeclDyn { id, ty } => {
+            // Dynamic shared memory: declared as a threadgroup pointer.
+            // The actual size is set at dispatch via setThreadgroupMemoryLength.
             out.push_str(&format!(
                 "{}/* dynamic shared_{}: threadgroup {}[] — size set at dispatch */\n",
                 pad,
@@ -583,6 +532,9 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
             ));
         }
         KernelOp::DebugPrint { src, ty } => {
+            // Debug buffer approach: atomic append (value, thread_id) to _debug_buf.
+            // _debug_buf[0] = current write offset (in uint units).
+            // _debug_buf[1..] = pairs of (thread_id, value_as_uint).
             let val_expr = match ty {
                 ScalarType::F32 => format!("as_type<uint>(r{})", src.0),
                 ScalarType::U32 => format!("r{}", src.0),
@@ -632,341 +584,25 @@ fn emit_op(out: &mut String, op: &KernelOp, indent: usize, names: &HashMap<u32, 
                 dst.0
             ));
         }
-        KernelOp::CooperativeMMA { dst, ty, .. } => {
-            // Cooperative matrix multiply-add not yet supported in MSL; placeholder zero.
-            out.push_str(&format!("{}{} r{} = 0;\n", pad, ty.msl_name(), dst.0));
-        }
-    }
-}
-
-fn const_msl(v: &ConstValue) -> (&'static str, String) {
-    match v {
-        ConstValue::F32(x) => ("float", format!("{:.6}", x)),
-        ConstValue::F64(x) => ("double", format!("{:.6}", x)),
-        ConstValue::U32(x) => ("uint", format!("{}u", x)),
-        ConstValue::U64(x) => ("ulong", format!("{}ul", x)),
-        ConstValue::I32(x) => ("int", format!("{}", x)),
-        ConstValue::I64(x) => ("long", format!("{}l", x)),
-        ConstValue::Bool(x) => ("bool", if *x { "true" } else { "false" }.to_string()),
-        ConstValue::F16(x) => (
-            "half",
-            format!("(half){}", f32::from_bits((*x as u32) << 16)),
-        ),
-    }
-}
-
-fn binop_str(op: &BinOp) -> &'static str {
-    match op {
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Rem => "%",
-        BinOp::BitAnd => "&",
-        BinOp::BitOr => "|",
-        BinOp::BitXor => "^",
-        BinOp::Shl => "<<",
-        BinOp::Shr => ">>",
-        // Saturating ops: MSL doesn't have a native operator, use regular +/-
-        BinOp::SatAdd => "+",
-        BinOp::SatSub => "-",
-    }
-}
-
-fn cmpop_str(op: &CmpOp) -> &'static str {
-    match op {
-        CmpOp::Eq => "==",
-        CmpOp::Ne => "!=",
-        CmpOp::Lt => "<",
-        CmpOp::Le => "<=",
-        CmpOp::Gt => ">",
-        CmpOp::Ge => ">=",
-    }
-}
-
-fn math_fn_str(f: &MathFn) -> &'static str {
-    match f {
-        MathFn::Sin => "sin",
-        MathFn::Cos => "cos",
-        MathFn::Tan => "tan",
-        MathFn::Asin => "asin",
-        MathFn::Acos => "acos",
-        MathFn::Atan => "atan",
-        MathFn::Atan2 => "atan2",
-        MathFn::Sqrt => "sqrt",
-        MathFn::Rsqrt => "rsqrt",
-        MathFn::Exp => "exp",
-        MathFn::Exp2 => "exp2",
-        MathFn::Log => "log",
-        MathFn::Log2 => "log2",
-        MathFn::Pow => "pow",
-        MathFn::Abs => "abs",
-        MathFn::Min => "min",
-        MathFn::Max => "max",
-        MathFn::Clamp => "clamp",
-        MathFn::Floor => "floor",
-        MathFn::Ceil => "ceil",
-        MathFn::Round => "round",
-        MathFn::Fma => "fma",
-    }
-}
-
-fn atomic_fn_str(op: &AtomicOp) -> &'static str {
-    match op {
-        AtomicOp::Add => "atomic_fetch_add_explicit",
-        AtomicOp::Sub => "atomic_fetch_sub_explicit",
-        AtomicOp::Min => "atomic_fetch_min_explicit",
-        AtomicOp::Max => "atomic_fetch_max_explicit",
-        AtomicOp::And => "atomic_fetch_and_explicit",
-        AtomicOp::Or => "atomic_fetch_or_explicit",
-        AtomicOp::Xor => "atomic_fetch_xor_explicit",
-        AtomicOp::Exchange => "atomic_exchange_explicit",
-        AtomicOp::CompareExchange => "atomic_compare_exchange_weak_explicit",
-    }
-}
-
-/// Translate a Rust device function source to MSL.
-///
-/// Rewrites the function signature (return type, parameter types) and body
-/// using string substitutions. This is the Phase 1 text-based approach;
-/// Phase 2 will walk KernelOps for device function bodies too.
-fn translate_device_fn_to_msl(rust_source: &str) -> String {
-    // Map Rust return types to MSL return types. The `fn name(...) -> T` form
-    // becomes `T name(...)` in MSL.
-    let type_map: &[(&str, &str)] = &[
-        ("f32", "float"),
-        ("f64", "double"),
-        ("u32", "uint"),
-        ("u64", "ulong"),
-        ("i32", "int"),
-        ("i64", "long"),
-        ("bool", "bool"),
-    ];
-
-    let mut s = rust_source.to_string();
-
-    // Replace return type: "-> f32" → "" (moved to front)
-    let mut ret_msl = "void";
-    for &(rust_ty, msl_ty) in type_map {
-        let arrow = format!("-> {}", rust_ty);
-        if s.contains(&arrow) {
-            ret_msl = msl_ty;
-            s = s.replace(&arrow, "");
-            break;
-        }
-    }
-
-    // Replace "fn name" with "inline <ret_type> name"
-    if let Some(pos) = s.find("fn ") {
-        s = format!("{}inline {} {}", &s[..pos], ret_msl, &s[pos + 3..]);
-    }
-
-    // Replace parameter types
-    for &(rust_ty, msl_ty) in type_map {
-        let param_pattern = format!(": {}", rust_ty);
-        let param_replacement = format!(": {}", msl_ty);
-        // Only replace parameter annotations (": type" patterns), not
-        // occurrences inside the body. Since parameter annotations come before
-        // the opening brace, this is safe with a simple replace.
-        s = s.replace(&param_pattern, &param_replacement);
-    }
-
-    // Body translations
-    s = s.replace("let mut ", "auto ");
-    s = s.replace("let ", "auto ");
-    s = s.replace(" as f32", "");
-    s = s.replace(" as u32", "");
-    s = s.replace(" as i32", "");
-
-    s
-}
-
-// ── Vertex/Fragment shader MSL emitters ────────────────────────────────────
-
-fn shader_type_msl(ty: crate::ShaderType) -> &'static str {
-    match ty {
-        crate::ShaderType::F32 => "float",
-        crate::ShaderType::Vec2 => "float2",
-        crate::ShaderType::Vec3 => "float3",
-        crate::ShaderType::Vec4 => "float4",
-        crate::ShaderType::Mat4 => "float4x4",
-        crate::ShaderType::Mat3 => "float3x3",
-    }
-}
-
-/// Translate a Rust-like shader body to MSL (basic string substitutions).
-///
-/// Handles both hand-written source and tokenized source (proc_macro2
-/// tokenizes `Vec4::new` as `Vec4 :: new` with spaces around `::`) .
-fn translate_shader_body(src: &str) -> String {
-    let mut s = src.to_string();
-    // Strip outer braces from block expression
-    let trimmed = s.trim();
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        s = trimmed[1..trimmed.len() - 1].to_string();
-    }
-    // Handle tokenized form (spaces around ::)
-    s = s.replace("Vec4 :: new(", "float4(");
-    s = s.replace("Vec3 :: new(", "float3(");
-    s = s.replace("Vec2 :: new(", "float2(");
-    // Handle direct source form
-    s = s.replace("Vec4::new(", "float4(");
-    s = s.replace("Vec3::new(", "float3(");
-    s = s.replace("Vec2::new(", "float2(");
-    s = s.replace("let mut ", "auto ");
-    s = s.replace("let ", "auto ");
-    s
-}
-
-/// Wrap the last expression of a body as a return statement.
-fn indent_and_return(body: &str) -> String {
-    let lines: Vec<&str> = body.trim().lines().collect();
-    if lines.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if i == lines.len() - 1 && !trimmed.is_empty() {
-            if !trimmed.ends_with(';') && !trimmed.starts_with("return") {
-                out.push_str(&format!("    return {};\n", trimmed));
-            } else if !trimmed.contains("return") {
-                let without_semi = trimmed.trim_end_matches(';').trim();
-                if !without_semi.contains('=') {
-                    out.push_str(&format!("    return {};\n", without_semi));
-                } else {
-                    out.push_str(&format!("    {}\n", trimmed));
-                }
-            } else {
-                out.push_str(&format!("    {}\n", trimmed));
-            }
-        } else {
-            out.push_str(&format!("    {}\n", trimmed));
-        }
-    }
-    out
-}
-
-/// Emit MSL for a vertex shader.
-///
-/// Metal requires vertex attributes to be passed via a struct with `[[stage_in]]`.
-/// Uniform parameters use `[[buffer(N)]]` bindings.
-pub fn emit_vertex_shader(shader: &crate::ShaderDef) -> Result<String, String> {
-    let mut out = String::new();
-    out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
-
-    let attr_params: Vec<&crate::ShaderParam> =
-        shader.params.iter().filter(|p| !p.is_uniform).collect();
-    let uniform_params: Vec<&crate::ShaderParam> =
-        shader.params.iter().filter(|p| p.is_uniform).collect();
-
-    // Emit vertex input struct with [[attribute(N)]] decorations
-    if !attr_params.is_empty() {
-        out.push_str(&format!("struct {}_VertexIn {{\n", shader.name));
-        for (i, p) in attr_params.iter().enumerate() {
+        KernelOp::CooperativeMMA {
+            dst,
+            a: _,
+            b: _,
+            c,
+            ty,
+            m,
+            n: _,
+            k,
+            ..
+        } => {
+            let t = match ty {
+                ScalarType::F16 => "half",
+                _ => "float",
+            };
             out.push_str(&format!(
-                "    {} {} [[attribute({})]];\n",
-                shader_type_msl(p.ty),
-                p.name,
-                i,
+                "{}simdgroup_matrix<{}, {}, {}> _mc = r{}; simdgroup_multiply_accumulate(_mc, _mc, _mc, _mc); {} r{} = _mc;\n",
+                pad, t, m, k, c.0, ty.msl_name(), dst.0
             ));
         }
-        out.push_str("};\n\n");
     }
-
-    // Build parameter list
-    let mut param_lines = Vec::new();
-    if !attr_params.is_empty() {
-        param_lines.push(format!("    {}_VertexIn in [[stage_in]]", shader.name));
-    }
-    for (i, p) in uniform_params.iter().enumerate() {
-        param_lines.push(format!(
-            "    constant {}& {} [[buffer({})]]",
-            shader_type_msl(p.ty),
-            p.name,
-            i,
-        ));
-    }
-
-    out.push_str(&format!(
-        "vertex {} {}(\n{}\n) {{\n",
-        shader_type_msl(shader.return_type),
-        shader.name,
-        param_lines.join(",\n"),
-    ));
-
-    // Unpack struct members into local variables
-    for p in &attr_params {
-        out.push_str(&format!(
-            "    {} {} = in.{};\n",
-            shader_type_msl(p.ty),
-            p.name,
-            p.name,
-        ));
-    }
-
-    let body = translate_shader_body(&shader.body_source);
-    out.push_str(&indent_and_return(&body));
-    out.push_str("}\n");
-    Ok(out)
-}
-
-/// Emit MSL for a fragment shader.
-pub fn emit_fragment_shader(shader: &crate::ShaderDef) -> Result<String, String> {
-    let mut out = String::new();
-    out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
-
-    let stage_in_params: Vec<&crate::ShaderParam> =
-        shader.params.iter().filter(|p| !p.is_uniform).collect();
-    let uniform_params: Vec<&crate::ShaderParam> =
-        shader.params.iter().filter(|p| p.is_uniform).collect();
-
-    // Stage-in struct for interpolated inputs
-    if !stage_in_params.is_empty() {
-        out.push_str(&format!("struct {}_Input {{\n", shader.name));
-        for (i, p) in stage_in_params.iter().enumerate() {
-            out.push_str(&format!(
-                "    {} {} [[user(loc{})]];\n",
-                shader_type_msl(p.ty),
-                p.name,
-                i,
-            ));
-        }
-        out.push_str("};\n\n");
-    }
-
-    let mut param_lines = Vec::new();
-    if !stage_in_params.is_empty() {
-        param_lines.push(format!("    {}_Input in [[stage_in]]", shader.name));
-    }
-    for (i, p) in uniform_params.iter().enumerate() {
-        param_lines.push(format!(
-            "    constant {}& {} [[buffer({})]]",
-            shader_type_msl(p.ty),
-            p.name,
-            i,
-        ));
-    }
-
-    out.push_str(&format!(
-        "fragment {} {}(\n{}\n) {{\n",
-        shader_type_msl(shader.return_type),
-        shader.name,
-        param_lines.join(",\n"),
-    ));
-
-    // Unpack stage_in members
-    for p in &stage_in_params {
-        out.push_str(&format!(
-            "    {} {} = in.{};\n",
-            shader_type_msl(p.ty),
-            p.name,
-            p.name,
-        ));
-    }
-
-    let body = translate_shader_body(&shader.body_source);
-    out.push_str(&indent_and_return(&body));
-    out.push_str("}\n");
-    Ok(out)
 }
