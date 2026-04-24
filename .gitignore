@@ -2,3 +2,4 @@
 Cargo.lock
 .cargo/config.toml
 dist/
+libopcodes_complete.rlib

@@ -12,6 +12,10 @@ mod encode;
 #[path = "wire/tests.rs"]
 mod tests;
 
+#[cfg(kani)]
+#[path = "wire/kani_proofs.rs"]
+mod kani_proofs;
+
 use crate::*;
 
 use decode::{Reader, read_compiler_output, read_kernel_def, read_shader_def, read_shader_output};

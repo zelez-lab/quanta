@@ -8,6 +8,9 @@ description = "Quanta kernel intermediate representation — shared between proc
 keywords = ["gpu", "compiler", "ir", "shader", "kernel"]
 categories = ["compilers", "graphics"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [features]
 default = []
 ## Enable runtime emitters (SPIR-V + MSL) for JIT compilation.
