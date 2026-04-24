@@ -7,7 +7,9 @@ use super::ops::emit_op;
 
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     let mut out = String::new();
-    out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+    out.push_str(
+        "#pragma clang fp contract(fast)\n#include <metal_stdlib>\nusing namespace metal;\n\n",
+    );
 
     // Emit device helper functions (from inner fn definitions)
     for src in &kernel.device_sources {

@@ -154,6 +154,7 @@ impl SpvEmitter {
                     base_op,
                     &[result_ty, raw, a_val, b_val],
                 );
+                self.decorate(raw, DECORATION_FP_FAST_MATH_MODE, &[FP_FAST_MATH_FAST]);
                 self.set_reg(dst, raw, result_ty);
             } else if matches!(op, BinOp::SatAdd) {
                 let sum = self.alloc_id();
@@ -207,6 +208,9 @@ impl SpvEmitter {
                 opcode,
                 &[result_ty, result, a_val, b_val],
             );
+            if is_float {
+                self.decorate(result, DECORATION_FP_FAST_MATH_MODE, &[FP_FAST_MATH_FAST]);
+            }
             self.set_reg(dst, result, result_ty);
         }
         Ok(())
@@ -231,6 +235,7 @@ impl SpvEmitter {
                     OP_F_NEGATE,
                     &[result_ty, result, a_val],
                 );
+                self.decorate(result, DECORATION_FP_FAST_MATH_MODE, &[FP_FAST_MATH_FAST]);
             }
             UnaryOp::Neg => {
                 Self::emit_op(

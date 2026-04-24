@@ -4,12 +4,33 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::{BasicType, BasicTypeEnum, VectorType};
-use inkwell::values::BasicValueEnum;
+use inkwell::values::{BasicValueEnum, FastMathFlags};
 use inkwell::{FloatPredicate, IntPredicate};
 
 use quanta_ir::*;
 
 use super::super::{is_float_type, scalar_to_llvm_type};
+
+/// All fast-math flags combined: enables FMA contraction, reassociation,
+/// reciprocal approximation, and assumes no NaN/Inf/negative-zero.
+fn all_fast_math_flags() -> FastMathFlags {
+    FastMathFlags::AllowReassoc
+        | FastMathFlags::NoNaNs
+        | FastMathFlags::NoInfs
+        | FastMathFlags::NoSignedZeros
+        | FastMathFlags::AllowReciprocal
+        | FastMathFlags::AllowContract
+        | FastMathFlags::ApproxFunc
+}
+
+/// Set fast-math flags on a value if it is a float instruction.
+fn set_fast_math(val: BasicValueEnum<'_>) {
+    if let BasicValueEnum::FloatValue(fv) = val
+        && let Some(inst) = fv.as_instruction()
+    {
+        let _ = inst.set_fast_math_flags(all_fast_math_flags());
+    }
+}
 
 pub(super) fn emit_binop<'ctx>(
     builder: &Builder<'ctx>,
@@ -32,7 +53,9 @@ pub(super) fn emit_binop<'ctx>(
             _ => return Err("bitwise ops not supported on floats".into()),
         }
         .map_err(|e| e.to_string())?;
-        Ok(r.into())
+        let result: BasicValueEnum = r.into();
+        set_fast_math(result);
+        Ok(result)
     } else {
         let a = lhs.into_int_value();
         let b = rhs.into_int_value();
@@ -122,10 +145,12 @@ pub(super) fn emit_unary<'ctx>(
     match op {
         UnaryOp::Neg => {
             if is_float_type(ty) {
-                Ok(builder
+                let r = builder
                     .build_float_neg(val.into_float_value(), "neg")
-                    .map_err(|e| e.to_string())?
-                    .into())
+                    .map_err(|e| e.to_string())?;
+                let result: BasicValueEnum = r.into();
+                set_fast_math(result);
+                Ok(result)
             } else {
                 Ok(builder
                     .build_int_neg(val.into_int_value(), "neg")
@@ -263,6 +288,7 @@ pub(super) fn emit_math_direct<'ctx>(
         .basic()
         .ok_or("math function returned void")?;
 
+    set_fast_math(result);
     Ok(result)
 }
 

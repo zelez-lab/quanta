@@ -149,6 +149,13 @@ pub const DECORATION_LOCATION: u32 = 30;
 pub const DECORATION_BINDING: u32 = 33;
 pub const DECORATION_DESCRIPTOR_SET: u32 = 34;
 pub const DECORATION_OFFSET: u32 = 35;
+pub const DECORATION_FP_FAST_MATH_MODE: u32 = 40;
+
+// ── FPFastMathMode bits ────────────────────────────────────────────────────
+//
+// NotNaN (0x1) | NotInf (0x2) | NSZ (0x4) | AllowRecip (0x8) | Fast (0x10)
+// Fast implies all of the above.
+pub const FP_FAST_MATH_FAST: u32 = 0x10;
 
 // ── Built-in values ─────────────────────────────────────────────────────────
 

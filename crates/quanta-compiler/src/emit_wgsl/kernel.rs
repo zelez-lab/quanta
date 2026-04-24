@@ -1,4 +1,7 @@
 //! Main WGSL emit function and kernel setup.
+//!
+//! WGSL has no fast-math mode -- all float operations use strict IEEE 754 semantics.
+//! This is a known limitation of the WebGPU spec.
 
 use quanta_ir::*;
 use std::collections::HashMap;
