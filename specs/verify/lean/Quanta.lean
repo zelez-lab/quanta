@@ -6,3 +6,4 @@ import Quanta.WireFormat
 import Quanta.VaryingCoord
 import Quanta.ComparisonOps
 import Quanta.UnaryOps
+import Quanta.Scan
