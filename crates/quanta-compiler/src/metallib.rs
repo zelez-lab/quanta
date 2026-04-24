@@ -19,9 +19,14 @@ pub fn compile_msl_to_metallib(msl_source: &str) -> Option<Vec<u8>> {
 
     std::fs::write(&msl_path, msl_source).ok()?;
 
-    // MSL → AIR
+    // MSL → AIR (with aggressive optimization)
     let air_result = std::process::Command::new("xcrun")
-        .args(["metal", "-c"])
+        .args([
+            "metal",
+            "-c",
+            "-O3",         // maximum optimization
+            "-ffast-math", // allow reassociation, no NaN/inf checks
+        ])
         .arg(&msl_path)
         .arg("-o")
         .arg(&air_path)
