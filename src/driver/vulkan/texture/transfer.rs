@@ -25,54 +25,9 @@ impl VulkanDevice {
                 .with_context(&format!("texture_write: handle {}", texture.handle()))
         })?;
 
-        // Create staging buffer
-        let staging_info = ffi::VkBufferCreateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            p_next: core::ptr::null(),
-            flags: 0,
-            size: data.len() as u64,
-            usage: ffi::VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
-            queue_family_index_count: 0,
-            p_queue_family_indices: core::ptr::null(),
-        };
-        let mut staging_buf = ffi::null_handle();
-        let result = unsafe {
-            ffi::vkCreateBuffer(
-                self.device,
-                &staging_info,
-                core::ptr::null(),
-                &mut staging_buf,
-            )
-        };
-        if result != ffi::VK_SUCCESS {
-            return Err(QuantaError::out_of_memory());
-        }
-
-        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
-        unsafe { ffi::vkGetBufferMemoryRequirements(self.device, staging_buf, &mut mem_reqs) };
-        let mem_type = self.find_memory_type(
-            mem_reqs.memory_type_bits,
-            ffi::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | ffi::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        )?;
-        let alloc = ffi::VkMemoryAllocateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            p_next: core::ptr::null(),
-            allocation_size: mem_reqs.size,
-            memory_type_index: mem_type,
-        };
-        let mut staging_mem = ffi::null_handle();
-        let result = unsafe {
-            ffi::vkAllocateMemory(self.device, &alloc, core::ptr::null(), &mut staging_mem)
-        };
-        if result != ffi::VK_SUCCESS {
-            return Err(QuantaError::out_of_memory());
-        }
+        // Acquire staging buffer from pool or create a new one
+        let (staging_buf, staging_mem, staging_cap) = self.acquire_staging_buffer(data.len())?;
         unsafe {
-            let r = ffi::vkBindBufferMemory(self.device, staging_buf, staging_mem, 0);
-            if r != ffi::VK_SUCCESS {
-                return Err(QuantaError::out_of_memory());
-            }
             let mut ptr: *mut c_void = core::ptr::null_mut();
             let r = ffi::vkMapMemory(self.device, staging_mem, 0, data.len() as u64, 0, &mut ptr);
             if r != ffi::VK_SUCCESS {
@@ -201,11 +156,8 @@ impl VulkanDevice {
         drop(textures);
         self.submit_and_wait(cmd)?.wait()?;
 
-        // Clean up staging
-        unsafe {
-            ffi::vkDestroyBuffer(self.device, staging_buf, core::ptr::null());
-            ffi::vkFreeMemory(self.device, staging_mem, core::ptr::null());
-        }
+        // Return staging buffer to pool for reuse
+        self.return_staging_buffer(staging_buf, staging_mem, staging_cap);
         Ok(())
     }
 
@@ -222,53 +174,9 @@ impl VulkanDevice {
         let bpp = format_bytes_per_pixel_vk(texture.format());
         let size = (tex.width * tex.height) as usize * bpp;
 
-        // Create staging buffer
-        let staging_info = ffi::VkBufferCreateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            p_next: core::ptr::null(),
-            flags: 0,
-            size: size as u64,
-            usage: ffi::VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
-            queue_family_index_count: 0,
-            p_queue_family_indices: core::ptr::null(),
-        };
-        let mut staging_buf = ffi::null_handle();
-        let result = unsafe {
-            ffi::vkCreateBuffer(
-                self.device,
-                &staging_info,
-                core::ptr::null(),
-                &mut staging_buf,
-            )
-        };
-        if result != ffi::VK_SUCCESS {
-            return Err(QuantaError::out_of_memory());
-        }
-
-        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
-        unsafe { ffi::vkGetBufferMemoryRequirements(self.device, staging_buf, &mut mem_reqs) };
-        let mem_type = self.find_memory_type(
-            mem_reqs.memory_type_bits,
-            ffi::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | ffi::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        )?;
-        let alloc = ffi::VkMemoryAllocateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            p_next: core::ptr::null(),
-            allocation_size: mem_reqs.size,
-            memory_type_index: mem_type,
-        };
-        let mut staging_mem = ffi::null_handle();
-        let result = unsafe {
-            ffi::vkAllocateMemory(self.device, &alloc, core::ptr::null(), &mut staging_mem)
-        };
-        if result != ffi::VK_SUCCESS {
-            return Err(QuantaError::out_of_memory());
-        }
-        let result = unsafe { ffi::vkBindBufferMemory(self.device, staging_buf, staging_mem, 0) };
-        if result != ffi::VK_SUCCESS {
-            return Err(QuantaError::out_of_memory());
-        }
+        // Acquire staging buffer from pool or create a new one.
+        // Read-back staging uses TRANSFER_DST, but our pool creates with SRC|DST usage.
+        let (staging_buf, staging_mem, staging_cap) = self.acquire_staging_buffer(size)?;
 
         // Transition + copy
         let cmd = self.alloc_command_buffer()?;
@@ -364,9 +272,9 @@ impl VulkanDevice {
             }
             std::ptr::copy_nonoverlapping(ptr as *const u8, result.as_mut_ptr(), size);
             ffi::vkUnmapMemory(self.device, staging_mem);
-            ffi::vkDestroyBuffer(self.device, staging_buf, core::ptr::null());
-            ffi::vkFreeMemory(self.device, staging_mem, core::ptr::null());
         }
+        // Return staging buffer to pool for reuse
+        self.return_staging_buffer(staging_buf, staging_mem, staging_cap);
         Ok(result)
     }
 

@@ -141,6 +141,10 @@ impl SpvEmitter {
         }
 
         // OpLoopMerge
+        // TODO(T1405): When count is a compile-time constant <= 8, use
+        // LOOP_CONTROL_UNROLL (0x1) instead of LOOP_CONTROL_NONE. This
+        // requires checking reg_value_id(count) against the constant table
+        // at emit time, which is not yet wired up.
         Self::emit_op(
             &mut self.sec_function,
             OP_LOOP_MERGE,

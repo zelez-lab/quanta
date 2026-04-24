@@ -30,8 +30,9 @@ pub fn compile_msl_to_metallib(msl_source: &str) -> Result<Option<Vec<u8>>, Stri
         .args([
             "metal",
             "-c",
-            "-O3",         // maximum optimization
-            "-ffast-math", // allow reassociation, no NaN/inf checks
+            "-std=metal3.1", // mesh shaders, ray tracing, bfloat16
+            "-O3",           // maximum optimization
+            "-ffast-math",   // allow reassociation, no NaN/inf checks
         ])
         .arg(&msl_path)
         .arg("-o")

@@ -152,6 +152,17 @@ macro_rules! vk_extern_fns {
                 layout: VkPipelineLayout,
                 allocator: *const c_void,
             );
+            pub fn vkCreatePipelineCache(
+                device: VkDevice,
+                create_info: *const VkPipelineCacheCreateInfo,
+                allocator: *const c_void,
+                pipeline_cache: *mut VkPipelineCache,
+            ) -> VkResult;
+            pub fn vkDestroyPipelineCache(
+                device: VkDevice,
+                pipeline_cache: VkPipelineCache,
+                allocator: *const c_void,
+            );
             pub fn vkCreateComputePipelines(
                 device: VkDevice,
                 cache: VkPipelineCache,

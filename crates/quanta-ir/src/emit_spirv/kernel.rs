@@ -229,6 +229,7 @@ impl SpvEmitter {
                     self.decorate(var_id, DECORATION_BINDING, &[*slot]);
                     if !is_writable {
                         self.decorate(var_id, DECORATION_NON_WRITABLE, &[]);
+                        self.decorate(var_id, DECORATION_RESTRICT, &[]);
                     }
 
                     self.field_vars

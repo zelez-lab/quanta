@@ -32,7 +32,8 @@ impl SpvEmitter {
         );
 
         let scope = self.emit_constant_u32(1); // Device
-        let semantics = self.emit_constant_u32(0); // Relaxed
+        let semantics =
+            self.emit_constant_u32(MEMORY_SEMANTICS_ACQ_REL | MEMORY_SEMANTICS_WORKGROUP);
 
         let is_signed = matches!(
             ty,
@@ -86,8 +87,8 @@ impl SpvEmitter {
             .get(&field)
             .ok_or_else(|| format!("field {} not declared", field))?;
         let idx = self.reg_value_id(index)?;
-        let _exp_val = self.reg_value_id(expected)?;
-        let _des_val = self.reg_value_id(desired)?;
+        let exp_val = self.reg_value_id(expected)?;
+        let des_val = self.reg_value_id(desired)?;
         let result_ty = self.scalar_type_id(ty);
         let zero = self.emit_constant_u32(0);
         let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, elem_ty);
@@ -97,13 +98,22 @@ impl SpvEmitter {
             OP_ACCESS_CHAIN,
             &[ptr_elem, chain, var_id, zero, idx],
         );
-        let old_val = self.alloc_id();
+
+        let scope = self.emit_constant_u32(1); // Device
+        let semantics =
+            self.emit_constant_u32(MEMORY_SEMANTICS_ACQ_REL | MEMORY_SEMANTICS_WORKGROUP);
+
+        // OpAtomicCompareExchange: result_type result pointer scope
+        //   equal_sem unequal_sem value comparator
+        let result_id = self.alloc_id();
         Self::emit_op(
             &mut self.sec_function,
-            OP_LOAD,
-            &[result_ty, old_val, chain],
+            OP_ATOMIC_COMPARE_EXCHANGE,
+            &[
+                result_ty, result_id, chain, scope, semantics, semantics, des_val, exp_val,
+            ],
         );
-        self.set_reg(dst, old_val, result_ty);
+        self.set_reg(dst, result_id, result_ty);
         Ok(())
     }
 

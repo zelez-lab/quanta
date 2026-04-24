@@ -6,9 +6,37 @@ use core::ffi::c_void;
 
 use crate::{Pulse, QuantaError, Wave};
 use std::ffi::CString;
+use std::process::Stdio;
 
 use super::ffi;
 use super::{VkComputePipeline, VulkanDevice};
+
+/// Try to optimize SPIR-V binary via spirv-opt if available.
+/// Falls back to the original input on any failure (missing binary, crash, etc.).
+fn try_optimize_spirv(spirv: &[u8]) -> Vec<u8> {
+    let child = std::process::Command::new("spirv-opt")
+        .args(["--target-env=vulkan1.3", "-O", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(_) => return spirv.to_vec(),
+    };
+    // Write SPIR-V to stdin
+    if let Some(ref mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        if stdin.write_all(spirv).is_err() {
+            let _ = child.wait();
+            return spirv.to_vec();
+        }
+    }
+    match child.wait_with_output() {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => output.stdout,
+        _ => spirv.to_vec(),
+    }
+}
 
 impl VulkanDevice {
     /// JIT-compile a kernel from serialized KernelDef IR.
@@ -41,7 +69,9 @@ impl VulkanDevice {
         }
         // LLVM's SPIR-V backend may emit a trailing byte — truncate to word boundary.
         let kernel = &kernel[..kernel.len() & !3];
-        let spirv_words: Vec<u32> = kernel
+        // Try spirv-opt optimization pass (no-op if spirv-opt not installed)
+        let optimized = try_optimize_spirv(kernel);
+        let spirv_words: Vec<u32> = optimized
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
@@ -51,7 +81,7 @@ impl VulkanDevice {
             s_type: ffi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
-            code_size: kernel.len(),
+            code_size: optimized.len(),
             p_code: spirv_words.as_ptr(),
         };
         let mut shader_module = ffi::null_handle();
@@ -72,38 +102,8 @@ impl VulkanDevice {
 
         // Descriptor set layout -- one storage buffer per binding.
         // Limit to 8 to stay within maxPerStageDescriptorStorageBuffers on mobile GPUs.
-        let mut bindings = Vec::new();
-        for i in 0..8u32 {
-            bindings.push(ffi::VkDescriptorSetLayoutBinding {
-                binding: i,
-                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                descriptor_count: 1,
-                stage_flags: ffi::VK_SHADER_STAGE_COMPUTE_BIT,
-                p_immutable_samplers: core::ptr::null(),
-            });
-        }
-        let ds_layout_info = ffi::VkDescriptorSetLayoutCreateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            p_next: core::ptr::null(),
-            flags: 0,
-            binding_count: bindings.len() as u32,
-            p_bindings: bindings.as_ptr(),
-        };
-        let mut descriptor_set_layout = ffi::null_handle();
-        let result = unsafe {
-            ffi::vkCreateDescriptorSetLayout(
-                self.device,
-                &ds_layout_info,
-                core::ptr::null(),
-                &mut descriptor_set_layout,
-            )
-        };
-        if result != ffi::VK_SUCCESS {
-            return Err(QuantaError::compilation_failed(format!(
-                "ds layout: VkResult {}",
-                result
-            )));
-        }
+        let binding_count = 8u32;
+        let descriptor_set_layout = self.acquire_descriptor_set_layout(binding_count)?;
 
         // Declare a push constant range. Clamp to device limit (128 on mobile, 256 on desktop).
         let push_size = self.max_push_constants_size.min(256);
@@ -162,7 +162,7 @@ impl VulkanDevice {
         let result = unsafe {
             ffi::vkCreateComputePipelines(
                 self.device,
-                ffi::null_handle(),
+                self.pipeline_cache,
                 1,
                 &pipeline_info,
                 core::ptr::null(),

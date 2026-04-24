@@ -571,6 +571,19 @@ pub struct VkImageResolve {
     pub extent: VkExtent3D,
 }
 
+// ─── Pipeline cache ───────────────────────────────────────────────────────
+
+pub const VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO: u32 = 17;
+
+#[repr(C)]
+pub struct VkPipelineCacheCreateInfo {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub initial_data_size: usize,
+    pub p_initial_data: *const c_void,
+}
+
 // ─── Query pool ────────────────────────────────────────────────────────────
 
 pub const VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO: u32 = 11;

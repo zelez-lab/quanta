@@ -462,7 +462,7 @@ impl VulkanDevice {
         let result = unsafe {
             ffi::vkCreateGraphicsPipelines(
                 self.device,
-                ffi::null_handle(),
+                self.pipeline_cache,
                 1,
                 &pipeline_info,
                 core::ptr::null(),

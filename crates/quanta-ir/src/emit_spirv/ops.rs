@@ -108,6 +108,7 @@ impl SpvEmitter {
                     .ok_or_else(|| format!("field {} not declared", field))?;
 
                 let result_ty = self.scalar_type_id(*ty);
+                let alignment = Self::scalar_byte_size(*ty);
 
                 if index.0 == u32::MAX {
                     // Push constant: access member 0 of the struct
@@ -125,7 +126,12 @@ impl SpvEmitter {
                         &[ptr_elem, chain, var_id, zero],
                     );
                     let loaded = self.alloc_id();
-                    Self::emit_op(&mut self.sec_function, OP_LOAD, &[result_ty, loaded, chain]);
+                    // Memory operand 0x2 = Aligned, followed by alignment value
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_LOAD,
+                        &[result_ty, loaded, chain, 0x2, alignment],
+                    );
                     self.set_reg(*dst, loaded, result_ty);
                 } else {
                     // Array access: struct member 0, then index into runtime array
@@ -139,7 +145,12 @@ impl SpvEmitter {
                         &[ptr_elem, chain, var_id, zero, idx],
                     );
                     let loaded = self.alloc_id();
-                    Self::emit_op(&mut self.sec_function, OP_LOAD, &[result_ty, loaded, chain]);
+                    // Memory operand 0x2 = Aligned, followed by alignment value
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_LOAD,
+                        &[result_ty, loaded, chain, 0x2, alignment],
+                    );
                     self.set_reg(*dst, loaded, result_ty);
                 }
             }
@@ -148,7 +159,7 @@ impl SpvEmitter {
                 field,
                 index,
                 src,
-                ty: _,
+                ty,
             } => {
                 let (var_id, elem_ty, _) = *self
                     .field_vars
@@ -165,7 +176,13 @@ impl SpvEmitter {
                     OP_ACCESS_CHAIN,
                     &[ptr_elem, chain, var_id, zero, idx],
                 );
-                Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, val]);
+                let alignment = Self::scalar_byte_size(*ty);
+                // Memory operand 0x2 = Aligned, followed by alignment value
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_STORE,
+                    &[chain, val, 0x2, alignment],
+                );
             }
 
             KernelOp::BinOp { dst, a, b, op, ty } => {
@@ -454,6 +471,10 @@ impl SpvEmitter {
                 }
 
                 // OpLoopMerge (must be penultimate)
+                // TODO(T1405): When count is a compile-time constant <= 8, use
+                // LOOP_CONTROL_UNROLL (0x1) instead of LOOP_CONTROL_NONE. This
+                // requires checking reg_value_id(count) against the constant table
+                // at emit time, which is not yet wired up.
                 Self::emit_op(
                     &mut self.sec_function,
                     OP_LOOP_MERGE,
@@ -753,9 +774,10 @@ impl SpvEmitter {
                     &[ptr_elem, chain, var_id, zero, idx],
                 );
 
-                // Scope: Device (1). Semantics: None (0x0 = relaxed).
+                // Scope: Device (1). Semantics: AcquireRelease | WorkgroupMemory.
                 let scope = self.emit_constant_u32(1);
-                let semantics = self.emit_constant_u32(0);
+                let semantics =
+                    self.emit_constant_u32(MEMORY_SEMANTICS_ACQ_REL | MEMORY_SEMANTICS_WORKGROUP);
 
                 let is_signed = matches!(
                     ty,
@@ -805,14 +827,13 @@ impl SpvEmitter {
                 desired,
                 ty,
             } => {
-                // Non-atomic fallback: load, compare, conditionally store
                 let (var_id, elem_ty, _) = *self
                     .field_vars
                     .get(field)
                     .ok_or_else(|| format!("field {} not declared", field))?;
                 let idx = self.reg_value_id(*index)?;
-                let _exp_val = self.reg_value_id(*expected)?;
-                let _des_val = self.reg_value_id(*desired)?;
+                let exp_val = self.reg_value_id(*expected)?;
+                let des_val = self.reg_value_id(*desired)?;
                 let result_ty = self.scalar_type_id(*ty);
                 let zero = self.emit_constant_u32(0);
                 let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, elem_ty);
@@ -822,13 +843,22 @@ impl SpvEmitter {
                     OP_ACCESS_CHAIN,
                     &[ptr_elem, chain, var_id, zero, idx],
                 );
-                let old_val = self.alloc_id();
+
+                let scope = self.emit_constant_u32(1); // Device
+                let semantics =
+                    self.emit_constant_u32(MEMORY_SEMANTICS_ACQ_REL | MEMORY_SEMANTICS_WORKGROUP);
+
+                // OpAtomicCompareExchange: result_type result pointer scope
+                //   equal_sem unequal_sem value comparator
+                let result_id = self.alloc_id();
                 Self::emit_op(
                     &mut self.sec_function,
-                    OP_LOAD,
-                    &[result_ty, old_val, chain],
+                    OP_ATOMIC_COMPARE_EXCHANGE,
+                    &[
+                        result_ty, result_id, chain, scope, semantics, semantics, des_val, exp_val,
+                    ],
                 );
-                self.set_reg(*dst, old_val, result_ty);
+                self.set_reg(*dst, result_id, result_ty);
             }
 
             KernelOp::WaveShuffle { dst, .. } => {

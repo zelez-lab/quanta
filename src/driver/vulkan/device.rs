@@ -21,6 +21,7 @@ pub struct VulkanDevice {
     #[allow(dead_code)]
     pub(super) queue_family: u32,
     pub(super) command_pool: ffi::VkCommandPool,
+    pub(super) pipeline_cache: ffi::VkPipelineCache,
     pub(super) caps: Caps,
     pub(super) max_push_constants_size: u32,
     // Resource storage — RwLock: dispatch/render paths take read locks; alloc/free take write locks.
@@ -38,6 +39,10 @@ pub struct VulkanDevice {
     pub(super) cmd_buffer_pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
     /// Pool of reusable descriptor pools — avoids create/destroy per dispatch.
     pub(super) descriptor_pool_cache: Mutex<Vec<ffi::VkDescriptorPool>>,
+    /// Pool of reusable staging buffers — avoids alloc/free per texture upload.
+    pub(super) staging_pool: Mutex<Vec<(ffi::VkBuffer, ffi::VkDeviceMemory, usize)>>,
+    /// Cache of descriptor set layouts keyed by binding count — avoids re-creation.
+    pub(super) layout_cache: Mutex<HashMap<u32, ffi::VkDescriptorSetLayout>>,
 }
 
 pub(super) struct VkQueryPool {
@@ -50,7 +55,14 @@ pub(super) struct VkBuffer {
     pub(super) buffer: ffi::VkBuffer,
     pub(super) memory: ffi::VkDeviceMemory,
     pub(super) size: u64,
+    /// Persistently mapped pointer for HOST_VISIBLE buffers (avoids map/unmap per write).
+    pub(super) mapped_ptr: Option<*mut u8>,
 }
+
+// Safety: The raw pointer in mapped_ptr points to Vulkan host-visible memory that
+// outlives the VkBuffer. Access is synchronized by the RwLock in VulkanDevice.
+unsafe impl Send for VkBuffer {}
+unsafe impl Sync for VkBuffer {}
 
 #[allow(dead_code)]
 pub(super) struct VkTexture {
@@ -190,6 +202,59 @@ impl VulkanDevice {
         Ok(pool)
     }
 
+    /// Acquire a descriptor set layout for compute (storage buffers only), cached by binding count.
+    pub(super) fn acquire_descriptor_set_layout(
+        &self,
+        binding_count: u32,
+    ) -> Result<ffi::VkDescriptorSetLayout, QuantaError> {
+        {
+            let cache = self
+                .layout_cache
+                .lock()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            if let Some(&layout) = cache.get(&binding_count) {
+                return Ok(layout);
+            }
+        }
+        // Cache miss — create a new layout.
+        let mut bindings = alloc::vec::Vec::new();
+        for i in 0..binding_count {
+            bindings.push(ffi::VkDescriptorSetLayoutBinding {
+                binding: i,
+                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: ffi::VK_SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: core::ptr::null(),
+            });
+        }
+        let ds_layout_info = ffi::VkDescriptorSetLayoutCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            binding_count: bindings.len() as u32,
+            p_bindings: bindings.as_ptr(),
+        };
+        let mut layout = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateDescriptorSetLayout(
+                self.device,
+                &ds_layout_info,
+                core::ptr::null(),
+                &mut layout,
+            )
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::internal(
+                "descriptor set layout creation failed",
+            ));
+        }
+        self.layout_cache
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(binding_count, layout);
+        Ok(layout)
+    }
+
     /// Return a descriptor pool to the cache for reuse.
     pub(super) fn return_descriptor_pool(&self, pool: ffi::VkDescriptorPool) {
         if let Ok(mut cache) = self.descriptor_pool_cache.lock() {
@@ -199,6 +264,80 @@ impl VulkanDevice {
             unsafe {
                 ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
             }
+        }
+    }
+
+    /// Acquire a staging buffer of at least `min_size` bytes from the pool, or create a new one.
+    pub(super) fn acquire_staging_buffer(
+        &self,
+        min_size: usize,
+    ) -> Result<(ffi::VkBuffer, ffi::VkDeviceMemory, usize), QuantaError> {
+        // Try to find a suitable buffer in the pool.
+        if let Ok(mut pool) = self.staging_pool.lock() {
+            if let Some(idx) = pool.iter().position(|&(_, _, cap)| cap >= min_size) {
+                return Ok(pool.swap_remove(idx));
+            }
+        }
+        // Pool miss — allocate a new staging buffer (both SRC and DST for read-back reuse).
+        let staging_info = ffi::VkBufferCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            size: min_size as u64,
+            usage: ffi::VK_BUFFER_USAGE_TRANSFER_SRC_BIT | ffi::VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: core::ptr::null(),
+        };
+        let mut buf = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkCreateBuffer(self.device, &staging_info, core::ptr::null(), &mut buf) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
+        unsafe { ffi::vkGetBufferMemoryRequirements(self.device, buf, &mut mem_reqs) };
+        let mem_type = self.find_memory_type(
+            mem_reqs.memory_type_bits,
+            ffi::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | ffi::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        )?;
+        let alloc_info = ffi::VkMemoryAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            allocation_size: mem_reqs.size,
+            memory_type_index: mem_type,
+        };
+        let mut mem = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkAllocateMemory(self.device, &alloc_info, core::ptr::null(), &mut mem) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+        let result = unsafe { ffi::vkBindBufferMemory(self.device, buf, mem, 0) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+        Ok((buf, mem, min_size))
+    }
+
+    /// Return a staging buffer to the pool for reuse.
+    pub(super) fn return_staging_buffer(
+        &self,
+        buf: ffi::VkBuffer,
+        mem: ffi::VkDeviceMemory,
+        cap: usize,
+    ) {
+        if let Ok(mut pool) = self.staging_pool.lock() {
+            // Cap pool size to avoid unbounded growth.
+            if pool.len() < 8 {
+                pool.push((buf, mem, cap));
+                return;
+            }
+        }
+        // Pool full or lock poisoned — destroy immediately.
+        unsafe {
+            ffi::vkDestroyBuffer(self.device, buf, core::ptr::null());
+            ffi::vkFreeMemory(self.device, mem, core::ptr::null());
         }
     }
 
@@ -388,6 +527,23 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             continue;
         }
 
+        // Create pipeline cache for faster pipeline creation
+        let cache_info = ffi::VkPipelineCacheCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            initial_data_size: 0,
+            p_initial_data: core::ptr::null(),
+        };
+        let mut pipeline_cache = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreatePipelineCache(device, &cache_info, core::ptr::null(), &mut pipeline_cache)
+        };
+        if result != ffi::VK_SUCCESS {
+            // Non-fatal — proceed with null cache (Vulkan allows it)
+            pipeline_cache = ffi::null_handle();
+        }
+
         let name = unsafe {
             let cstr =
                 std::ffi::CStr::from_ptr(props.device_name.as_ptr() as *const core::ffi::c_char);
@@ -428,6 +584,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             queue,
             queue_family: qf_index as u32,
             command_pool,
+            pipeline_cache,
             caps,
             max_push_constants_size: props.limits.max_push_constants_size,
             buffers: RwLock::new(HashMap::new()),
@@ -441,6 +598,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             next_handle: AtomicU64::new(0),
             cmd_buffer_pool: std::sync::Arc::new(Mutex::new(Vec::new())),
             descriptor_pool_cache: Mutex::new(Vec::new()),
+            staging_pool: Mutex::new(Vec::new()),
+            layout_cache: Mutex::new(HashMap::new()),
         }));
 
         break; // Use first suitable device
@@ -457,6 +616,9 @@ impl Drop for VulkanDevice {
             // Clean up resources — write locks since we're draining.
             if let Ok(mut buffers) = self.buffers.write() {
                 for (_, buf) in buffers.drain() {
+                    if buf.mapped_ptr.is_some() {
+                        ffi::vkUnmapMemory(self.device, buf.memory);
+                    }
                     ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
                     ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
                 }
@@ -472,11 +634,7 @@ impl Drop for VulkanDevice {
                 for (_, cp) in pipelines.drain() {
                     ffi::vkDestroyPipeline(self.device, cp.pipeline, core::ptr::null());
                     ffi::vkDestroyPipelineLayout(self.device, cp.layout, core::ptr::null());
-                    ffi::vkDestroyDescriptorSetLayout(
-                        self.device,
-                        cp.descriptor_set_layout,
-                        core::ptr::null(),
-                    );
+                    // descriptor_set_layout is owned by layout_cache — destroyed separately.
                 }
             }
             if let Ok(mut pipelines) = self.render_pipelines.write() {
@@ -512,6 +670,26 @@ impl Drop for VulkanDevice {
                 for pool in pools.drain(..) {
                     ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
                 }
+            }
+
+            // Destroy cached descriptor set layouts.
+            if let Ok(mut cache) = self.layout_cache.lock() {
+                for (_, layout) in cache.drain() {
+                    ffi::vkDestroyDescriptorSetLayout(self.device, layout, core::ptr::null());
+                }
+            }
+
+            // Drain and destroy pooled staging buffers.
+            if let Ok(mut pool) = self.staging_pool.lock() {
+                for (buf, mem, _) in pool.drain(..) {
+                    ffi::vkDestroyBuffer(self.device, buf, core::ptr::null());
+                    ffi::vkFreeMemory(self.device, mem, core::ptr::null());
+                }
+            }
+
+            // Destroy pipeline cache.
+            if !self.pipeline_cache.is_null() {
+                ffi::vkDestroyPipelineCache(self.device, self.pipeline_cache, core::ptr::null());
             }
 
             // Free pooled command buffers before destroying the pool.

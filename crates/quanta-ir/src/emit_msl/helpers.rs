@@ -57,7 +57,7 @@ pub(super) fn math_fn_str(f: &MathFn) -> &'static str {
         MathFn::Atan => "atan",
         MathFn::Atan2 => "atan2",
         MathFn::Sqrt => "sqrt",
-        MathFn::Rsqrt => "rsqrt",
+        MathFn::Rsqrt => "fast::rsqrt",
         MathFn::Exp => "exp",
         MathFn::Exp2 => "exp2",
         MathFn::Log => "log",

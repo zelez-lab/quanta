@@ -22,6 +22,8 @@ impl SpvEmitter {
 
         let result_ty = self.scalar_type_id(ty);
 
+        let alignment = Self::scalar_byte_size(ty);
+
         if index.0 == u32::MAX {
             // Push constant: access member 0 of the struct
             let zero = self.emit_constant_u32(0);
@@ -38,7 +40,12 @@ impl SpvEmitter {
                 &[ptr_elem, chain, var_id, zero],
             );
             let loaded = self.alloc_id();
-            Self::emit_op(&mut self.sec_function, OP_LOAD, &[result_ty, loaded, chain]);
+            // Memory operand 0x2 = Aligned, followed by alignment value
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_LOAD,
+                &[result_ty, loaded, chain, 0x2, alignment],
+            );
             self.set_reg(dst, loaded, result_ty);
         } else {
             // Array access: struct member 0, then index into runtime array
@@ -52,13 +59,24 @@ impl SpvEmitter {
                 &[ptr_elem, chain, var_id, zero, idx],
             );
             let loaded = self.alloc_id();
-            Self::emit_op(&mut self.sec_function, OP_LOAD, &[result_ty, loaded, chain]);
+            // Memory operand 0x2 = Aligned, followed by alignment value
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_LOAD,
+                &[result_ty, loaded, chain, 0x2, alignment],
+            );
             self.set_reg(dst, loaded, result_ty);
         }
         Ok(())
     }
 
-    pub(crate) fn emit_op_store(&mut self, field: u32, index: Reg, src: Reg) -> Result<(), String> {
+    pub(crate) fn emit_op_store(
+        &mut self,
+        field: u32,
+        index: Reg,
+        src: Reg,
+        ty: ScalarType,
+    ) -> Result<(), String> {
         let (var_id, elem_ty, _) = *self
             .field_vars
             .get(&field)
@@ -74,7 +92,13 @@ impl SpvEmitter {
             OP_ACCESS_CHAIN,
             &[ptr_elem, chain, var_id, zero, idx],
         );
-        Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, val]);
+        let alignment = Self::scalar_byte_size(ty);
+        // Memory operand 0x2 = Aligned, followed by alignment value
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_STORE,
+            &[chain, val, 0x2, alignment],
+        );
         Ok(())
     }
 

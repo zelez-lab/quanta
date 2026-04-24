@@ -23,13 +23,18 @@ impl VulkanDevice {
             }
         }
 
+        // Compute-to-compute barrier: wait for previous compute writes before
+        // next compute reads/writes.  Transfer-to-compute is also covered since
+        // TRANSFER_BIT is a subset of the union used here.
         let memory_barrier = ffi::VkMemoryBarrier2 {
             s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
             p_next: core::ptr::null(),
-            src_stage_mask: ffi::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            src_access_mask: ffi::VK_ACCESS_2_MEMORY_WRITE_BIT,
-            dst_stage_mask: ffi::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            dst_access_mask: ffi::VK_ACCESS_2_MEMORY_READ_BIT | ffi::VK_ACCESS_2_MEMORY_WRITE_BIT,
+            src_stage_mask: ffi::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                | ffi::VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            src_access_mask: ffi::VK_ACCESS_2_SHADER_WRITE_BIT
+                | ffi::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            dst_stage_mask: ffi::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            dst_access_mask: ffi::VK_ACCESS_2_SHADER_READ_BIT | ffi::VK_ACCESS_2_SHADER_WRITE_BIT,
         };
 
         let dep_info = ffi::VkDependencyInfo {

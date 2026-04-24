@@ -108,9 +108,9 @@ impl SpvEmitter {
                 field,
                 index,
                 src,
-                ty: _,
+                ty,
             } => {
-                self.emit_op_store(*field, *index, *src)?;
+                self.emit_op_store(*field, *index, *src, *ty)?;
             }
 
             KernelOp::BinOp { dst, a, b, op, ty } => {

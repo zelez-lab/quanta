@@ -143,6 +143,7 @@ pub const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
 pub const DECORATION_BLOCK: u32 = 2;
 pub const DECORATION_ARRAY_STRIDE: u32 = 6;
 pub const DECORATION_BUILTIN: u32 = 11;
+pub const DECORATION_RESTRICT: u32 = 19;
 pub const DECORATION_NON_WRITABLE: u32 = 24;
 pub const DECORATION_LOCATION: u32 = 30;
 pub const DECORATION_BINDING: u32 = 33;
@@ -173,6 +174,7 @@ pub const MEMORY_MODEL_GLSL450: u32 = 1;
 // ── Capabilities ────────────────────────────────────────────────────────────
 
 pub const CAPABILITY_SHADER: u32 = 1;
+pub const CAPABILITY_FLOAT16: u32 = 9;
 pub const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
 pub const CAPABILITY_GROUP_NON_UNIFORM_BALLOT: u32 = 62;
 pub const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
@@ -196,6 +198,7 @@ pub const GROUP_OPERATION_EXCLUSIVE_SCAN: u32 = 2;
 pub const FUNCTION_CONTROL_NONE: u32 = 0;
 pub const SELECTION_CONTROL_NONE: u32 = 0;
 pub const LOOP_CONTROL_NONE: u32 = 0;
+pub const LOOP_CONTROL_UNROLL: u32 = 0x1;
 
 // ── SPIR-V header ───────────────────────────────────────────────────────────
 

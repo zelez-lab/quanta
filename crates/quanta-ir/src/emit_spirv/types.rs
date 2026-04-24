@@ -53,6 +53,22 @@ impl SpvEmitter {
         id
     }
 
+    pub(crate) fn ensure_type_f16(&mut self) -> u32 {
+        if let Some(id) = self.type_f16 {
+            return id;
+        }
+        let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_TYPE_FLOAT, &[id, 16]);
+        // Declare Float16 capability when f16 types are used
+        Self::emit_op(
+            &mut self.sec_capability,
+            OP_CAPABILITY,
+            &[CAPABILITY_FLOAT16],
+        );
+        self.type_f16 = Some(id);
+        id
+    }
+
     pub(crate) fn ensure_type_f32(&mut self) -> u32 {
         if let Some(id) = self.type_f32 {
             return id;
@@ -200,10 +216,7 @@ impl SpvEmitter {
             }
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => self.ensure_type_i32(),
             ScalarType::I64 => self.ensure_type_i32(),
-            ScalarType::F16 => {
-                // Map F16 to F32 for basic support
-                self.ensure_type_f32()
-            }
+            ScalarType::F16 => self.ensure_type_f16(),
             ScalarType::Bool => self.ensure_type_bool(),
         }
     }
@@ -271,6 +284,19 @@ impl SpvEmitter {
             return id;
         }
         let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_CONSTANT, &[ty, id, val as u32]);
+        self.const_cache.insert(key, id);
+        id
+    }
+
+    pub(crate) fn emit_constant_f16(&mut self, val: u16) -> u32 {
+        let ty = self.ensure_type_f16();
+        let key = format!("{}:{}", ty, val);
+        if let Some(&id) = self.const_cache.get(&key) {
+            return id;
+        }
+        let id = self.alloc_id();
+        // F16 constant is stored as a 32-bit word with the f16 value in the low 16 bits
         Self::emit_op(&mut self.sec_type_const, OP_CONSTANT, &[ty, id, val as u32]);
         self.const_cache.insert(key, id);
         id

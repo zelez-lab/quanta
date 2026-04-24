@@ -86,6 +86,19 @@ impl VulkanDevice {
             return Err(QuantaError::out_of_memory());
         }
 
+        // For HOST_VISIBLE buffers, map persistently to avoid map/unmap overhead.
+        let mapped_ptr = if (mem_props & ffi::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 {
+            let mut ptr: *mut c_void = core::ptr::null_mut();
+            let r = unsafe { ffi::vkMapMemory(self.device, memory, 0, size as u64, 0, &mut ptr) };
+            if r == ffi::VK_SUCCESS && !ptr.is_null() {
+                Some(ptr as *mut u8)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let handle = self.alloc_handle();
         self.buffers
             .write()
@@ -96,6 +109,7 @@ impl VulkanDevice {
                     buffer,
                     memory,
                     size: size as u64,
+                    mapped_ptr,
                 },
             );
         Ok(handle)
@@ -109,6 +123,9 @@ impl VulkanDevice {
             .and_then(|mut b| b.remove(&handle))
         {
             unsafe {
+                if buf.mapped_ptr.is_some() {
+                    ffi::vkUnmapMemory(self.device, buf.memory);
+                }
                 ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
                 ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
             }
@@ -128,16 +145,23 @@ impl VulkanDevice {
             QuantaError::invalid_param("bad field handle")
                 .with_context(&format!("field_write_bytes: handle {handle}"))
         })?;
-        unsafe {
-            let mut ptr: *mut c_void = core::ptr::null_mut();
-            let result =
-                ffi::vkMapMemory(self.device, buf.memory, 0, data.len() as u64, 0, &mut ptr);
-            if result != ffi::VK_SUCCESS {
-                return Err(QuantaError::invalid_param("map failed")
-                    .with_context(&format!("field_write_bytes: handle {handle}")));
+        // If buffer is persistently mapped, just copy directly.
+        if let Some(ptr) = buf.mapped_ptr {
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
             }
-            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
-            ffi::vkUnmapMemory(self.device, buf.memory);
+        } else {
+            unsafe {
+                let mut ptr: *mut c_void = core::ptr::null_mut();
+                let result =
+                    ffi::vkMapMemory(self.device, buf.memory, 0, data.len() as u64, 0, &mut ptr);
+                if result != ffi::VK_SUCCESS {
+                    return Err(QuantaError::invalid_param("map failed")
+                        .with_context(&format!("field_write_bytes: handle {handle}")));
+                }
+                std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
+                ffi::vkUnmapMemory(self.device, buf.memory);
+            }
         }
         Ok(())
     }
@@ -156,15 +180,21 @@ impl VulkanDevice {
                 .with_context(&format!("field_read_bytes: handle {handle}"))
         })?;
         let mut result = vec![0u8; size];
-        unsafe {
-            let mut ptr: *mut c_void = core::ptr::null_mut();
-            let r = ffi::vkMapMemory(self.device, buf.memory, 0, size as u64, 0, &mut ptr);
-            if r != ffi::VK_SUCCESS {
-                return Err(QuantaError::invalid_param("map failed")
-                    .with_context(&format!("field_read_bytes: handle {handle}")));
+        if let Some(ptr) = buf.mapped_ptr {
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr as *const u8, result.as_mut_ptr(), size);
             }
-            std::ptr::copy_nonoverlapping(ptr as *const u8, result.as_mut_ptr(), size);
-            ffi::vkUnmapMemory(self.device, buf.memory);
+        } else {
+            unsafe {
+                let mut ptr: *mut c_void = core::ptr::null_mut();
+                let r = ffi::vkMapMemory(self.device, buf.memory, 0, size as u64, 0, &mut ptr);
+                if r != ffi::VK_SUCCESS {
+                    return Err(QuantaError::invalid_param("map failed")
+                        .with_context(&format!("field_read_bytes: handle {handle}")));
+                }
+                std::ptr::copy_nonoverlapping(ptr as *const u8, result.as_mut_ptr(), size);
+                ffi::vkUnmapMemory(self.device, buf.memory);
+            }
         }
         Ok(result)
     }
@@ -232,6 +262,7 @@ impl VulkanDevice {
                 .with_context("field_create_mapped: persistent map"));
         }
 
+        let mapped = ptr as *mut u8;
         let handle = self.alloc_handle();
         self.buffers
             .write()
@@ -242,9 +273,10 @@ impl VulkanDevice {
                     buffer,
                     memory,
                     size: size as u64,
+                    mapped_ptr: Some(mapped),
                 },
             );
-        Ok((handle, ptr as *mut u8))
+        Ok((handle, mapped))
     }
 
     pub(crate) fn field_map_impl(&self, handle: u64, _size: usize) -> Result<*mut u8, QuantaError> {
