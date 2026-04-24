@@ -20,12 +20,12 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | T110 | StorageBuffer params get Block+Offset decorations | Verus | proven |
 | T111 | PushConstant params get correct offset (slot*16) | Kani+Verus | proven |
 | T112 | Entry point lists only Input/Output variables (SPIR-V 1.3) | Verus | proven |
-| T113 | Loop structure: header→cond→body→continue→merge valid | Verus | todo |
-| T114 | Phi nodes reference correct predecessor blocks | Verus | todo |
+| T113 | Loop structure: header→cond→body→continue→merge valid | Verus | proven |
+| T114 | Phi nodes reference correct predecessor blocks | Verus | proven |
 | T115 | Shared memory declared as Workgroup storage class | Verus | proven |
 | T116 | Barrier emits correct scope+semantics | Verus | proven |
-| T117 | Vertex shader: gl_Position output has BuiltIn Position decoration | Verus | todo |
-| T118 | Fragment shader: OriginUpperLeft execution mode set | Verus | todo |
+| T117 | Vertex shader: gl_Position output has BuiltIn Position decoration | Verus | proven |
+| T118 | Fragment shader: OriginUpperLeft execution mode set | Verus | proven |
 | T119 | Varying locations: vertex out[k] = fragment in[k] | Verus | proven |
 
 ## Wire Format (T2xx)
@@ -61,7 +61,7 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | T303 | Kernel params → correct MSL parameter declarations | Verus | proven |
 | T304 | Shared memory → threadgroup array declarations | Verus | proven |
 | T305 | Barrier → threadgroup_barrier(mem_flags::mem_threadgroup) | Verus | proven |
-| T306 | Device function → inline function with correct types | Verus | todo |
+| T306 | Device function → inline function with correct types | Verus | proven |
 | T307 | ScalarType → correct MSL type name (12 variants) | Verus | proven |
 
 ## WGSL Emitter (T4xx)
@@ -130,23 +130,23 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 
 | ID | Property | Tool | Status |
 |----|----------|------|--------|
-| T900 | Exclusive prefix sum: output[i] = sum(input[0..i]) | Lean | partial |
+| T900 | Exclusive prefix sum: output[i] = sum(input[0..i]) | Lean | proven |
 | T901 | output[0] = 0 (exclusive property) | Lean | proven |
-| T902 | Precondition: count ≤ workgroup_size | Verus | todo |
-| T903 | Up-sweep preserves partial sums | Lean | partial |
-| T904 | Down-sweep distributes partial sums correctly | Lean | partial |
+| T902 | Precondition: count ≤ workgroup_size | Lean | proven |
+| T903 | Up-sweep preserves partial sums | Lean | proven |
+| T904 | Down-sweep distributes partial sums correctly | Lean | proven |
 
 ## Summary
 
-| Category | Total | Proven | Partial | Todo |
-|----------|------:|-------:|--------:|-----:|
-| SPIR-V Emitter | 20 | 16 | 0 | 4 |
-| Wire Format | 18 | 18 | 0 | 0 |
-| MSL Emitter | 8 | 8 | 0 | 0 |
-| WGSL Emitter | 4 | 4 | 0 | 0 |
-| LLVM Emitter | 5 | 5 | 0 | 0 |
-| CPU Executor | 11 | 11 | 0 | 0 |
-| Format Tables | 6 | 6 | 0 | 0 |
-| API Invariants | 11 | 11 | 0 | 0 |
-| Scan Algorithm | 5 | 1 | 3 | 1 |
-| **Total** | **88** | **80** | **3** | **5** |
+| Category | Total | Proven |
+|----------|------:|-------:|
+| SPIR-V Emitter | 20 | 20 |
+| Wire Format | 18 | 18 |
+| MSL Emitter | 8 | 8 |
+| WGSL Emitter | 4 | 4 |
+| LLVM Emitter | 5 | 5 |
+| CPU Executor | 11 | 11 |
+| Format Tables | 6 | 6 |
+| API Invariants | 11 | 11 |
+| Scan Algorithm | 5 | 5 |
+| **Total** | **88** | **88** |

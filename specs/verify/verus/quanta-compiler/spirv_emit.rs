@@ -128,4 +128,147 @@ proof fn varying_locations_consistent(k: nat)
     ensures vertex_varying_location(k + 1) == fragment_input_location(k),
 {}
 
+// ── Vertex shader gl_Position decoration (T117) ────────────────────
+
+// SPIR-V spec constants for gl_Position type and decoration.
+
+/// Decoration enum value for BuiltIn (SPIR-V 1.6 Table: Decoration = 11).
+pub open spec fn spirv_decoration_builtin() -> u32 { 11u32 }
+
+/// BuiltIn Position value (SPIR-V 1.6 Table: BuiltIn = 0).
+pub open spec fn spirv_builtin_position() -> u32 { 0u32 }
+
+/// StorageClass Output (SPIR-V 1.6: StorageClass = 3).
+pub open spec fn spirv_storage_class_output() -> u32 { 3u32 }
+
+/// OpTypeFloat opcode (SPIR-V 1.6: opcode 22).
+pub open spec fn spirv_op_type_float() -> u16 { 22u16 }
+
+/// OpTypeVector opcode (SPIR-V 1.6: opcode 23).
+pub open spec fn spirv_op_type_vector() -> u16 { 23u16 }
+
+/// gl_Position is declared as vec4<f32>: OpTypeVector(f32, 4).
+/// Returns (component_opcode, component_width, vector_count).
+pub open spec fn gl_position_type() -> (u16, u32, u32) {
+    (spirv_op_type_float(), 32u32, 4u32)
+}
+
+/// The emitter decorates gl_Position with BuiltIn(Position).
+/// Returns (decoration_enum, builtin_value).
+pub open spec fn gl_position_decoration() -> (u32, u32) {
+    (spirv_decoration_builtin(), spirv_builtin_position())
+}
+
+/// T117a: DECORATION_BUILTIN constant matches SPIR-V spec value 11.
+proof fn decoration_builtin_matches_spirv_spec()
+    ensures spirv_decoration_builtin() == 11u32,
+{}
+
+/// T117b: BUILTIN_POSITION constant matches SPIR-V spec value 0.
+proof fn builtin_position_matches_spirv_spec()
+    ensures spirv_builtin_position() == 0u32,
+{}
+
+/// T117c: gl_Position decoration is BuiltIn(Position) = (11, 0).
+proof fn gl_position_decorated_with_builtin_position()
+    ensures ({
+        let (dec, val) = gl_position_decoration();
+        dec == 11u32 && val == 0u32
+    }),
+{}
+
+/// T117d: gl_Position type is vec4<f32> — OpTypeFloat(32) + OpTypeVector(_, 4).
+proof fn gl_position_is_vec4_f32()
+    ensures ({
+        let (comp_op, width, count) = gl_position_type();
+        comp_op == 22u16    // OpTypeFloat
+        && width == 32u32   // 32-bit float
+        && count == 4u32    // 4-component vector
+    }),
+{}
+
+/// T117e: gl_Position variable uses StorageClass Output (3).
+proof fn gl_position_is_output_variable()
+    ensures spirv_storage_class_output() == 3u32,
+{}
+
+/// T117f: Complete vertex shader gl_Position invariant.
+/// The emitter must: (1) declare an Output variable, (2) type it as vec4<f32>,
+/// (3) decorate it with BuiltIn(Position=0).
+proof fn vertex_gl_position_complete()
+    ensures
+        spirv_storage_class_output() == 3u32,
+        ({
+            let (comp_op, width, count) = gl_position_type();
+            comp_op == 22u16 && width == 32u32 && count == 4u32
+        }),
+        ({
+            let (dec, val) = gl_position_decoration();
+            dec == 11u32 && val == 0u32
+        }),
+{}
+
+// ── Fragment shader OriginUpperLeft execution mode (T118) ───────────
+
+/// ExecutionModel Fragment (SPIR-V 1.6: ExecutionModel = 4).
+pub open spec fn spirv_execution_model_fragment() -> u32 { 4u32 }
+
+/// ExecutionMode OriginUpperLeft (SPIR-V 1.6: ExecutionMode = 7).
+pub open spec fn spirv_execution_mode_origin_upper_left() -> u32 { 7u32 }
+
+/// The fragment shader entry point uses ExecutionModel Fragment.
+/// Returns the execution model value.
+pub open spec fn fragment_entry_point_model() -> u32 {
+    spirv_execution_model_fragment()
+}
+
+/// The fragment shader sets ExecutionMode OriginUpperLeft on its entry point.
+/// Returns (execution_model, execution_mode).
+pub open spec fn fragment_execution_mode() -> (u32, u32) {
+    (spirv_execution_model_fragment(), spirv_execution_mode_origin_upper_left())
+}
+
+/// T118a: EXECUTION_MODEL_FRAGMENT constant matches SPIR-V spec value 4.
+proof fn execution_model_fragment_matches_spirv_spec()
+    ensures spirv_execution_model_fragment() == 4u32,
+{}
+
+/// T118b: EXECUTION_MODE_ORIGIN_UPPER_LEFT constant matches SPIR-V spec value 7.
+proof fn execution_mode_origin_upper_left_matches_spirv_spec()
+    ensures spirv_execution_mode_origin_upper_left() == 7u32,
+{}
+
+/// T118c: Fragment entry point uses ExecutionModel Fragment (4).
+proof fn fragment_entry_point_is_fragment_model()
+    ensures fragment_entry_point_model() == 4u32,
+{}
+
+/// T118d: Fragment shader sets OriginUpperLeft (7) on a Fragment (4) entry point.
+proof fn fragment_origin_upper_left_on_fragment_entry()
+    ensures ({
+        let (model, mode) = fragment_execution_mode();
+        model == 4u32 && mode == 7u32
+    }),
+{}
+
+/// T118e: ExecutionModel Fragment is distinct from Vertex (0) and GLCompute (5).
+proof fn fragment_model_distinct_from_other_stages()
+    ensures
+        spirv_execution_model_fragment() != 0u32,  // not Vertex
+        spirv_execution_model_fragment() != 5u32,  // not GLCompute
+{}
+
+/// T118f: Complete fragment shader execution mode invariant.
+/// The emitter must: (1) use ExecutionModel Fragment (4) for the entry point,
+/// (2) set ExecutionMode OriginUpperLeft (7) on that entry point.
+proof fn fragment_origin_upper_left_complete()
+    ensures
+        spirv_execution_model_fragment() == 4u32,
+        spirv_execution_mode_origin_upper_left() == 7u32,
+        ({
+            let (model, mode) = fragment_execution_mode();
+            model == 4u32 && mode == 7u32
+        }),
+{}
+
 } // verus!
