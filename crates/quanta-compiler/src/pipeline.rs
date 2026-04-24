@@ -6,7 +6,7 @@
 use quanta_ir::*;
 
 use crate::targets::GpuTarget;
-use crate::{emit_msl, emit_spirv, emit_wgsl, metallib, to_llvm};
+use crate::{emit_llvm, emit_msl, emit_spirv, emit_wgsl, metallib};
 
 /// Parse `--targets nvptx,amdgpu` from CLI args.
 pub fn parse_targets(args: &[String]) -> Vec<GpuTarget> {
@@ -36,7 +36,7 @@ pub fn llvm_only(target: GpuTarget) {
     let mut input = Vec::new();
     std::io::Read::read_to_end(&mut std::io::stdin(), &mut input).unwrap();
     let kernel: KernelDef = quanta_ir::deserialize_kernel(&input).unwrap();
-    match to_llvm::compile_to_binary(&kernel, target) {
+    match emit_llvm::compile_to_binary(&kernel, target) {
         Ok(binary) => {
             std::io::Write::write_all(&mut std::io::stdout(), &binary).unwrap();
         }
@@ -186,7 +186,7 @@ pub fn make_test_kernel() -> KernelDef {
 pub fn test_ptx() {
     let kernel = make_test_kernel();
     println!("=== Compiling vector_add to NVIDIA PTX ===\n");
-    match to_llvm::compile_to_binary(&kernel, GpuTarget::Nvptx) {
+    match emit_llvm::compile_to_binary(&kernel, GpuTarget::Nvptx) {
         Ok(ptx) => {
             let ptx_text = String::from_utf8_lossy(&ptx);
             println!("{}", ptx_text);
@@ -200,7 +200,7 @@ pub fn test_ptx() {
 pub fn test_amd() {
     let kernel = make_test_kernel();
     println!("=== Compiling vector_add to AMD GCN ELF ===\n");
-    match to_llvm::compile_to_binary(&kernel, GpuTarget::Amdgpu) {
+    match emit_llvm::compile_to_binary(&kernel, GpuTarget::Amdgpu) {
         Ok(elf) => {
             println!("ELF binary size: {} bytes", elf.len());
             // Print first few bytes as hex
@@ -433,7 +433,7 @@ pub fn test_complex() {
     };
 
     println!("=== NVIDIA PTX (neuron_activate, O3) ===\n");
-    match to_llvm::compile_to_binary(&kernel, GpuTarget::Nvptx) {
+    match emit_llvm::compile_to_binary(&kernel, GpuTarget::Nvptx) {
         Ok(ptx) => {
             println!("{}", String::from_utf8_lossy(&ptx));
             println!("=== PTX size: {} bytes ===", ptx.len());
@@ -442,7 +442,7 @@ pub fn test_complex() {
     }
 
     println!("\n=== AMD ELF (neuron_activate, O3) ===\n");
-    match to_llvm::compile_to_binary(&kernel, GpuTarget::Amdgpu) {
+    match emit_llvm::compile_to_binary(&kernel, GpuTarget::Amdgpu) {
         Ok(elf) => {
             println!("ELF size: {} bytes", elf.len());
             if elf.len() >= 4 && elf[0..4] == [0x7f, b'E', b'L', b'F'] {
@@ -453,7 +453,7 @@ pub fn test_complex() {
     }
 
     println!("\n=== LLVM IR (neuron_activate) ===\n");
-    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Nvptx) {
+    match emit_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Nvptx) {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("Error: {}", e),
     }
@@ -485,19 +485,19 @@ pub fn test_ir() {
     let kernel = make_test_kernel();
 
     println!("=== NVPTX LLVM IR ===");
-    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Nvptx) {
+    match emit_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Nvptx) {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("NVPTX error: {}", e),
     }
 
     println!("\n=== AMDGPU LLVM IR ===");
-    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Amdgpu) {
+    match emit_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Amdgpu) {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("AMDGPU error: {}", e),
     }
 
     println!("\n=== SPIR-V LLVM IR ===");
-    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
+    match emit_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("SPIR-V error: {}", e),
     }
@@ -541,7 +541,7 @@ pub fn test_spirv() {
     }
 
     println!("\n=== SPIR-V LLVM IR (reference) ===\n");
-    match to_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
+    match emit_llvm::compile_to_llvm_ir(&kernel, GpuTarget::Spirv) {
         Ok(ir) => println!("{}", ir),
         Err(e) => eprintln!("SPIR-V IR error: {}", e),
     }

@@ -4,6 +4,7 @@
 //!   echo '<bincode>' | quanta-compiler --targets nvptx,amdgpu
 //!   quanta-compiler --test-ir    # test with a built-in vector_add kernel
 
+mod emit_llvm;
 mod emit_msl;
 mod emit_spirv;
 #[allow(dead_code)]
@@ -13,7 +14,6 @@ mod pipeline;
 mod rustc_compile;
 mod shader_pipeline;
 mod targets;
-mod to_llvm;
 
 use targets::GpuTarget;
 
