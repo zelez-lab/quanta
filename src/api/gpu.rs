@@ -3,13 +3,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
-    Batch, Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, OcclusionQuery,
-    Pipeline, PipelineDesc, Pulse, QuantaError, QueueFamily, QueueType, RenderPass, ResourceState,
-    Texture, TextureDesc, TextureUsage, TextureView, TextureViewDesc, Timeline, TimestampQuery,
-    Wave,
+    Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, QuantaError,
+    ResourceState, Texture, TextureDesc, TextureUsage, TextureView, TextureViewDesc,
+    TimestampQuery,
 };
+
+mod compute;
+mod render;
 
 /// A GPU device handle. The main entry point for Quanta.
 ///
@@ -229,115 +230,41 @@ impl Gpu {
             .resolve_texture(msaa_src.handle(), resolve_dst.handle())
     }
 
-    // === Compute ===
-
-    pub fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
-        self.inner.wave(kernel)
-    }
-
-    /// JIT-compile a kernel from its serialized KernelDef at runtime.
-    ///
-    /// Used by `#[quanta::kernel(jit)]` — the kernel IR is embedded in the
-    /// binary and compiled to the appropriate GPU shader format at first use.
-    pub fn wave_jit(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
-        self.inner.wave_jit(kernel_def_bytes)
-    }
-
-    pub fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
-        self.inner.wave_dispatch(wave, groups)
-    }
-
-    /// Dispatch a 1D wave over exactly `quarks` threads.
-    /// Metal uses dispatchThreads (clips to exact count).
-    /// Vulkan uses dispatchGroups with ceil(quarks/workgroup_size[0]).
-    pub fn dispatch(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
-        self.inner.wave_dispatch_threads(wave, quarks)
-    }
-
-    /// Dispatch with group counts from a GPU buffer (GPU-driven).
-    pub fn dispatch_indirect<T: Copy>(
-        &self,
-        wave: &Wave,
-        buffer: &Field<T>,
-        offset: u64,
-    ) -> Result<Pulse, QuantaError> {
-        self.inner
-            .wave_dispatch_indirect(wave, buffer.handle(), offset)
-    }
-
-    // === Batch dispatch ===
-
-    /// Begin a batch of dispatches. Multiple kernels are encoded into a single
-    /// command buffer. Call `submit()` on the batch to commit all at once.
-    /// One commit + one fence instead of N — eliminates per-dispatch overhead.
-    pub fn begin_batch(&self) -> Result<Batch, QuantaError> {
-        self.inner.batch_begin()
-    }
-
-    // === Render ===
-
-    /// Create a render pipeline from a descriptor.
-    pub fn pipeline(&self, desc: &PipelineDesc) -> Result<Pipeline, QuantaError> {
-        self.inner.pipeline_create(desc)
-    }
-
-    /// Begin a render pass targeting a texture.
-    pub fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
-        self.inner.render_begin(target)
-    }
-
-    /// End a render pass and submit for execution.
-    pub fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
-        self.inner.render_end(pass)
-    }
-
     // === Sync ===
 
-    pub fn wait(&self, pulse: &mut Pulse) -> Result<(), QuantaError> {
+    pub fn wait(&self, pulse: &mut crate::Pulse) -> Result<(), QuantaError> {
         self.inner.pulse_wait(pulse)
     }
 
     /// Wait for a pulse, then reset it for reuse.
-    pub fn wait_and_reset(&self, pulse: &mut Pulse) -> Result<(), QuantaError> {
+    pub fn wait_and_reset(&self, pulse: &mut crate::Pulse) -> Result<(), QuantaError> {
         self.inner.pulse_wait(pulse)?;
         pulse.reset();
         Ok(())
     }
 
-    pub fn poll(&self, pulse: &Pulse) -> bool {
+    pub fn poll(&self, pulse: &crate::Pulse) -> bool {
         self.inner.pulse_poll(pulse)
-    }
-
-    // === Async compute ===
-
-    /// Whether this device supports a dedicated async compute queue.
-    pub fn supports_async_compute(&self) -> bool {
-        self.inner.supports_async_compute()
-    }
-
-    /// Dispatch a compute wave on the async compute queue.
-    pub fn async_compute_dispatch(
-        &self,
-        wave: &Wave,
-        groups: [u32; 3],
-    ) -> Result<Pulse, QuantaError> {
-        self.inner.async_compute_dispatch(wave, groups)
     }
 
     // === Timeline semaphores ===
 
     /// Create a timeline semaphore for multi-frame synchronization.
-    pub fn timeline_create(&self) -> Result<Timeline, QuantaError> {
+    pub fn timeline_create(&self) -> Result<crate::Timeline, QuantaError> {
         self.inner.timeline_create()
     }
 
     /// Signal a timeline to the given value.
-    pub fn timeline_signal(&self, timeline: &Timeline, value: u64) -> Result<(), QuantaError> {
+    pub fn timeline_signal(
+        &self,
+        timeline: &crate::Timeline,
+        value: u64,
+    ) -> Result<(), QuantaError> {
         self.inner.timeline_signal(timeline, value)
     }
 
     /// Block until a timeline reaches at least the given value.
-    pub fn timeline_wait(&self, timeline: &Timeline, value: u64) -> Result<(), QuantaError> {
+    pub fn timeline_wait(&self, timeline: &crate::Timeline, value: u64) -> Result<(), QuantaError> {
         self.inner.timeline_wait(timeline, value)
     }
 
@@ -467,86 +394,6 @@ impl Gpu {
         self.inner.stencil_read(texture.handle())
     }
 
-    // === M3.1: Multi-queue ===
-
-    /// List available queue families on this device.
-    pub fn queue_families(&self) -> Vec<QueueFamily> {
-        self.inner.queue_families()
-    }
-
-    /// Create a queue of the given type.
-    pub fn create_queue(&self, queue_type: QueueType) -> Result<u64, QuantaError> {
-        self.inner.create_queue(queue_type)
-    }
-
-    /// Submit a compute dispatch to a specific queue.
-    pub fn queue_dispatch(
-        &self,
-        queue: u64,
-        wave: &Wave,
-        groups: [u32; 3],
-    ) -> Result<(), QuantaError> {
-        self.inner.queue_dispatch(queue, wave, groups)
-    }
-
-    /// Signal a semaphore from a queue.
-    pub fn queue_signal(&self, queue: u64, semaphore: u64) -> Result<(), QuantaError> {
-        self.inner.queue_signal(queue, semaphore)
-    }
-
-    /// Wait on a semaphore before executing more work on a queue.
-    pub fn queue_wait(&self, queue: u64, semaphore: u64) -> Result<(), QuantaError> {
-        self.inner.queue_wait(queue, semaphore)
-    }
-
-    // === M3.3: Occlusion queries ===
-
-    /// Create an occlusion query set with `count` slots.
-    pub fn occlusion_query_create(&self, count: u32) -> Result<OcclusionQuery, QuantaError> {
-        let handle = self.inner.occlusion_query_create(count)?;
-        Ok(OcclusionQuery { handle, count })
-    }
-
-    /// Read results from an occlusion query set (fragment counts per slot).
-    pub fn occlusion_query_read(&self, query: &OcclusionQuery) -> Result<Vec<u64>, QuantaError> {
-        self.inner.occlusion_query_read(query.handle)
-    }
-
-    // === M4.2: Mesh shaders ===
-
-    /// Dispatch a mesh shader pipeline.
-    pub fn dispatch_mesh(&self, pipeline: &Pipeline, groups: [u32; 3]) -> Result<(), QuantaError> {
-        self.inner.dispatch_mesh(pipeline.handle(), groups)
-    }
-
-    // === M4.3: Ray tracing ===
-
-    /// Build a bottom-level acceleration structure from geometry.
-    pub fn build_acceleration_structure(
-        &self,
-        geometry: &[GeometryDesc],
-    ) -> Result<u64, QuantaError> {
-        self.inner.build_acceleration_structure(geometry)
-    }
-
-    /// Create a ray tracing pipeline from shader stages.
-    pub fn create_ray_tracing_pipeline(
-        &self,
-        desc: &RayTracingPipelineDesc,
-    ) -> Result<u64, QuantaError> {
-        self.inner.create_ray_tracing_pipeline(desc)
-    }
-
-    /// Dispatch rays through a ray tracing pipeline.
-    pub fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError> {
-        self.inner.dispatch_rays(pipeline, width, height)
-    }
-
-    /// Destroy an acceleration structure.
-    pub fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {
-        self.inner.destroy_acceleration_structure(handle)
-    }
-
     // === M5.1: Sparse textures ===
 
     /// Create a sparse (virtual) texture.
@@ -575,55 +422,6 @@ impl Gpu {
         y: u32,
     ) -> Result<(), QuantaError> {
         self.inner.sparse_unmap_tile(texture, mip, x, y)
-    }
-
-    // === M5.2: Indirect command buffers ===
-
-    /// Create an indirect command buffer (GPU-driven draw/dispatch).
-    pub fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
-        self.inner.indirect_buffer_create(max_commands)
-    }
-
-    /// Execute commands from an indirect command buffer.
-    pub fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
-        self.inner.indirect_buffer_execute(handle, count)
-    }
-
-    /// Destroy an indirect command buffer.
-    pub fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
-        self.inner.indirect_buffer_destroy(handle)
-    }
-
-    // === M5.3: Bindless resources ===
-
-    /// Create a bindless texture array (all textures accessible by index in shaders).
-    pub fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
-        self.inner.bind_texture_array(textures)
-    }
-
-    /// Create a bindless buffer array (all buffers accessible by index in shaders).
-    pub fn bind_buffer_array(&self, buffers: &[u64]) -> Result<u64, QuantaError> {
-        self.inner.bind_buffer_array(buffers)
-    }
-
-    // === Hot reload ===
-
-    /// Replace a wave's kernel while preserving its bindings and push constants.
-    ///
-    /// Compiles `kernel` into a new wave, transfers all bindings and push constants
-    /// from `wave` to the new wave, then replaces `wave`'s handle.
-    pub fn reload_wave(&self, wave: &mut Wave, kernel: &[u8]) -> Result<(), QuantaError> {
-        let mut new_wave = self.inner.wave(kernel)?;
-        new_wave.bindings = wave.bindings;
-        new_wave.binding_count = wave.binding_count;
-        new_wave.texture_bindings = wave.texture_bindings;
-        new_wave.texture_count = wave.texture_count;
-        new_wave.push_data = wave.push_data;
-        new_wave.push_len = wave.push_len;
-        new_wave.push_mask = wave.push_mask;
-        // Swap: the old handle gets dropped via new_wave's eventual drop
-        core::mem::swap(wave, &mut new_wave);
-        Ok(())
     }
 
     // === Debug ===

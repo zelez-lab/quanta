@@ -4,13 +4,15 @@ extern crate proc_macro;
 
 #[allow(dead_code)]
 mod compiler;
+mod device_macro;
 mod gpu_type;
+mod kernel_macro;
 mod parse;
+mod shader_macro;
 mod validate;
 
 use proc_macro::TokenStream;
-use quote::{ToTokens, quote};
-use syn::{Expr, ItemFn, Lit, parse::Parser, parse_macro_input};
+use syn::{ItemFn, parse_macro_input};
 
 /// Mark a function as a GPU kernel.
 ///
@@ -28,147 +30,7 @@ use syn::{Expr, ItemFn, Lit, parse::Parser, parse_macro_input};
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-
-    // Parse attributes: optimization level, workgroup size, and jit flag
-    let attr_str = attr.to_string();
-    let is_jit = attr_str.contains("jit");
-    let kernel_attrs = parse_kernel_attrs(attr.clone());
-
-    if let Err(err) = validate::validate_kernel(&func) {
-        return err.to_compile_error().into();
-    }
-
-    let mut kernel_def = match parse::parse_kernel(&func) {
-        Ok(def) => def,
-        Err(err) => return err.to_compile_error().into(),
-    };
-    kernel_def.opt_level = kernel_attrs.opt_level;
-    kernel_def.workgroup_size = kernel_attrs.workgroup_size;
-    kernel_def.subgroup_size = kernel_attrs.subgroup_size;
-
-    if is_jit {
-        return emit_jit_kernel(&func, &kernel_def);
-    }
-
-    let outputs = match compiler::compile_kernel(&kernel_def) {
-        Ok(outputs) => outputs,
-        Err(err) => {
-            let msg = format!("quanta compiler error: {}", err);
-            return syn::Error::new_spanned(&func.sig.ident, msg)
-                .to_compile_error()
-                .into();
-        }
-    };
-
-    let func_name = &func.sig.ident;
-    let binary_name = syn::Ident::new(
-        &format!("{}_BINARY", func_name.to_string().to_uppercase()),
-        func_name.span(),
-    );
-
-    let nvidia_expr = match &outputs.nvidia {
-        Some(bytes) => {
-            let lit = proc_macro2::Literal::byte_string(bytes);
-            quote! { Some(#lit as &[u8]) }
-        }
-        None => quote! { None },
-    };
-    let amd_expr = match &outputs.amd {
-        Some(bytes) => {
-            let lit = proc_macro2::Literal::byte_string(bytes);
-            quote! { Some(#lit as &[u8]) }
-        }
-        None => quote! { None },
-    };
-    let spirv_expr = match &outputs.spirv {
-        Some(bytes) => {
-            let lit = proc_macro2::Literal::byte_string(bytes);
-            quote! { Some(#lit as &[u8]) }
-        }
-        None => quote! { None },
-    };
-    let metallib_expr = match &outputs.metallib {
-        Some(bytes) => {
-            let lit = proc_macro2::Literal::byte_string(bytes);
-            quote! { Some(#lit as &[u8]) }
-        }
-        None => quote! { None },
-    };
-    let wgsl_expr = match &outputs.wgsl {
-        Some(s) => quote! { Some(#s) },
-        None => quote! { None },
-    };
-
-    let wg_x = kernel_attrs.workgroup_size[0];
-    let wg_y = kernel_attrs.workgroup_size[1];
-    let wg_z = kernel_attrs.workgroup_size[2];
-
-    // Const generics: extract from the function signature and generate set_value calls
-    let generics = &func.sig.generics;
-    let mut const_setters = Vec::new();
-    let num_regular_params = func.sig.inputs.len();
-    for (i, generic) in func.sig.generics.params.iter().enumerate() {
-        if let syn::GenericParam::Const(cp) = generic {
-            let ident = &cp.ident;
-            let slot = (num_regular_params + i) as u32;
-            const_setters.push(quote! {
-                wave.set_value(#slot, #ident as u32);
-            });
-        }
-    }
-    let const_generic_setters = quote! { #(#const_setters)* };
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
-            amd: #amd_expr,
-            nvidia: #nvidia_expr,
-            spirv: #spirv_expr,
-            metallib: #metallib_expr,
-            wgsl: #wgsl_expr,
-        };
-
-        pub fn #func_name #generics (device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
-            let binary = #binary_name.for_vendor(device.caps().vendor)
-                .ok_or_else(|| ::quanta::QuantaError::compilation_failed(
-                    format!("no compiled kernel for vendor {:?}", device.caps().vendor)
-                ))?;
-            let mut wave = device.wave(binary)?;
-            wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
-            #const_generic_setters
-            Ok(wave)
-        }
-    };
-
-    expanded.into()
-}
-
-/// Emit JIT kernel: serialize KernelDef and embed it, generate runtime
-/// compilation function via `wave_jit`.
-fn emit_jit_kernel(func: &ItemFn, kernel_def: &quanta_ir::KernelDef) -> TokenStream {
-    let func_name = &func.sig.ident;
-    let def_name = syn::Ident::new(
-        &format!("{}_DEF", func_name.to_string().to_uppercase()),
-        func_name.span(),
-    );
-
-    let serialized = quanta_ir::serialize_kernel(kernel_def);
-    let def_lit = proc_macro2::Literal::byte_string(&serialized);
-
-    let wg_x = kernel_def.workgroup_size[0];
-    let wg_y = kernel_def.workgroup_size[1];
-    let wg_z = kernel_def.workgroup_size[2];
-
-    let expanded = quote! {
-        pub static #def_name: &[u8] = #def_lit;
-
-        pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
-            let mut wave = device.wave_jit(#def_name)?;
-            wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
-            Ok(wave)
-        }
-    };
-
-    expanded.into()
+    kernel_macro::expand_kernel(attr, func)
 }
 
 /// Mark a function as a GPU device function (callable from kernels).
@@ -190,17 +52,7 @@ fn emit_jit_kernel(func: &ItemFn, kernel_def: &quanta_ir::KernelDef) -> TokenStr
 #[proc_macro_attribute]
 pub fn device(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let source = func.to_token_stream().to_string();
-    let fn_name = &func.sig.ident;
-    let const_name = syn::Ident::new(
-        &format!("__QUANTA_DEVICE_{}", fn_name.to_string().to_uppercase()),
-        fn_name.span(),
-    );
-
-    let expanded = quote! {
-        pub const #const_name: &str = #source;
-    };
-    expanded.into()
+    device_macro::expand_device(func)
 }
 
 /// Mark a variable as shared (workgroup-local) memory inside a kernel.
@@ -245,77 +97,7 @@ pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-
-    if matches!(func.sig.output, syn::ReturnType::Default) {
-        return syn::Error::new_spanned(
-            &func.sig.ident,
-            "vertex shader must have a return type (clip-space position)",
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    // Parse shader params and body, then compile via the compiler binary.
-    let params = match compiler::parse_shader_params(&func) {
-        Ok(p) => p,
-        Err(e) => return e.to_compile_error().into(),
-    };
-    let return_ty = match compiler::parse_return_type(&func) {
-        Ok(t) => t,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    // Extract body source text for the compiler.
-    let body_source = func.block.to_token_stream().to_string();
-
-    let (spirv_expr, metallib_expr, wgsl_expr) =
-        match compiler::compile_shader(&func_name_str, "vertex", &params, &return_ty, &body_source)
-        {
-            Some(output) => {
-                let spirv = match &output.spirv {
-                    Some(bytes) => {
-                        let lit = proc_macro2::Literal::byte_string(bytes);
-                        quote! { Some(#lit as &[u8]) }
-                    }
-                    None => quote! { None },
-                };
-                let metallib = match &output.metallib {
-                    Some(bytes) => {
-                        let lit = proc_macro2::Literal::byte_string(bytes);
-                        quote! { Some(#lit as &[u8]) }
-                    }
-                    None => quote! { None },
-                };
-                let wgsl = match &output.wgsl {
-                    Some(s) => quote! { Some(#s) },
-                    None => quote! { None },
-                };
-                (spirv, metallib, wgsl)
-            }
-            None => (quote! { None }, quote! { None }, quote! { None }),
-        };
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: #spirv_expr,
-            metallib: #metallib_expr,
-            wgsl: #wgsl_expr,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Vertex,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_vertex(func)
 }
 
 /// Mark a function as a fragment shader.
@@ -336,80 +118,7 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-
-    if matches!(func.sig.output, syn::ReturnType::Default) {
-        return syn::Error::new_spanned(
-            &func.sig.ident,
-            "fragment shader must have a return type (output color)",
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    // Parse shader params and body, then compile via the compiler binary.
-    let params = match compiler::parse_shader_params(&func) {
-        Ok(p) => p,
-        Err(e) => return e.to_compile_error().into(),
-    };
-    let return_ty = match compiler::parse_return_type(&func) {
-        Ok(t) => t,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    let body_source = func.block.to_token_stream().to_string();
-
-    let (spirv_expr, metallib_expr, wgsl_expr) = match compiler::compile_shader(
-        &func_name_str,
-        "fragment",
-        &params,
-        &return_ty,
-        &body_source,
-    ) {
-        Some(output) => {
-            let spirv = match &output.spirv {
-                Some(bytes) => {
-                    let lit = proc_macro2::Literal::byte_string(bytes);
-                    quote! { Some(#lit as &[u8]) }
-                }
-                None => quote! { None },
-            };
-            let metallib = match &output.metallib {
-                Some(bytes) => {
-                    let lit = proc_macro2::Literal::byte_string(bytes);
-                    quote! { Some(#lit as &[u8]) }
-                }
-                None => quote! { None },
-            };
-            let wgsl = match &output.wgsl {
-                Some(s) => quote! { Some(#s) },
-                None => quote! { None },
-            };
-            (spirv, metallib, wgsl)
-        }
-        None => (quote! { None }, quote! { None }, quote! { None }),
-    };
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: #spirv_expr,
-            metallib: #metallib_expr,
-            wgsl: #wgsl_expr,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Fragment,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_fragment(func)
 }
 
 // === Tessellation shader macros (M4.1) ===
@@ -428,26 +137,7 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn tess_control(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::TessControl,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_tess_control(func)
 }
 
 /// Mark a function as a tessellation evaluation (domain) shader.
@@ -466,26 +156,7 @@ pub fn tess_control(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn tess_eval(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::TessEval,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_tess_eval(func)
 }
 
 // === Mesh shader macros (M4.2) ===
@@ -507,26 +178,7 @@ pub fn tess_eval(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Task,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_task(func)
 }
 
 /// Mark a function as a mesh shader.
@@ -547,26 +199,7 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn mesh(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Mesh,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_mesh(func)
 }
 
 // === Ray tracing shader macros (M4.3) ===
@@ -586,26 +219,7 @@ pub fn mesh(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn ray_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::RayGen,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_ray_gen(func)
 }
 
 /// Mark a function as a closest-hit shader.
@@ -624,26 +238,7 @@ pub fn ray_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn closest_hit(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::ClosestHit,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_closest_hit(func)
 }
 
 /// Mark a function as a miss shader.
@@ -661,26 +256,7 @@ pub fn closest_hit(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Miss,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    shader_macro::expand_miss(func)
 }
 
 /// Mark a struct as GPU-compatible.
@@ -710,120 +286,4 @@ pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
-}
-
-/// Parsed kernel attributes from `#[quanta::kernel(...)]`.
-struct KernelAttrs {
-    opt_level: u8,
-    workgroup_size: [u32; 3],
-    subgroup_size: Option<u32>,
-}
-
-impl Default for KernelAttrs {
-    fn default() -> Self {
-        Self {
-            opt_level: 3,
-            workgroup_size: [64, 1, 1],
-            subgroup_size: None,
-        }
-    }
-}
-
-/// Parse kernel attributes: `opt = "O2"`, `workgroup = [16, 16, 1]`, `jit`.
-///
-/// Supports:
-/// - `#[quanta::kernel]`                           -> defaults
-/// - `#[quanta::kernel(opt = "O2")]`               -> opt only
-/// - `#[quanta::kernel(workgroup = [256])]`        -> [256, 1, 1]
-/// - `#[quanta::kernel(workgroup = [16, 16])]`     -> [16, 16, 1]
-/// - `#[quanta::kernel(workgroup = [16, 16, 1])]`  -> explicit 3D
-/// - `#[quanta::kernel(workgroup = [256], opt = "O2")]` -> both
-fn parse_kernel_attrs(attr: TokenStream) -> KernelAttrs {
-    let mut attrs = KernelAttrs::default();
-
-    if attr.is_empty() {
-        return attrs;
-    }
-
-    // Try parsing as a punctuated list of name = value pairs.
-    // We use syn to parse the token stream as comma-separated meta items.
-    let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
-    let parsed = match parser.parse(attr.clone()) {
-        Ok(p) => p,
-        Err(_) => {
-            // Fall back: might be just `jit` or a single `opt = "O2"`.
-            // Try single MetaNameValue parse for backward compat.
-            if let Ok(nv) = syn::parse::<syn::MetaNameValue>(attr)
-                && nv.path.is_ident("opt")
-                && let Expr::Lit(expr_lit) = &nv.value
-                && let Lit::Str(s) = &expr_lit.lit
-            {
-                attrs.opt_level = parse_opt_str(&s.value());
-            }
-            return attrs;
-        }
-    };
-
-    for meta in &parsed {
-        match meta {
-            syn::Meta::NameValue(nv) if nv.path.is_ident("opt") => {
-                if let Expr::Lit(expr_lit) = &nv.value
-                    && let Lit::Str(s) = &expr_lit.lit
-                {
-                    attrs.opt_level = parse_opt_str(&s.value());
-                }
-            }
-            syn::Meta::NameValue(nv) if nv.path.is_ident("workgroup") => {
-                if let Some(wg) = parse_workgroup_expr(&nv.value) {
-                    attrs.workgroup_size = wg;
-                }
-            }
-            syn::Meta::NameValue(nv) if nv.path.is_ident("subgroup") => {
-                if let Expr::Lit(expr_lit) = &nv.value
-                    && let Lit::Int(i) = &expr_lit.lit
-                    && let Ok(v) = i.base10_parse::<u32>()
-                {
-                    attrs.subgroup_size = Some(v);
-                }
-            }
-            _ => {} // ignore `jit` and unknown attrs
-        }
-    }
-
-    attrs
-}
-
-fn parse_opt_str(s: &str) -> u8 {
-    match s {
-        "O0" | "0" => 0,
-        "O1" | "1" => 1,
-        "O2" | "2" => 2,
-        "O3" | "3" => 3,
-        _ => 3,
-    }
-}
-
-/// Parse `[256]`, `[16, 16]`, or `[16, 16, 1]` from an expression.
-fn parse_workgroup_expr(expr: &Expr) -> Option<[u32; 3]> {
-    if let Expr::Array(arr) = expr {
-        let elems: Vec<u32> = arr
-            .elems
-            .iter()
-            .filter_map(|e| {
-                if let Expr::Lit(lit) = e
-                    && let Lit::Int(int_lit) = &lit.lit
-                {
-                    return int_lit.base10_parse::<u32>().ok();
-                }
-                None
-            })
-            .collect();
-        match elems.len() {
-            1 => return Some([elems[0], 1, 1]),
-            2 => return Some([elems[0], elems[1], 1]),
-            3 => return Some([elems[0], elems[1], elems[2]]),
-            _ => {}
-        }
-    }
-    None
 }
