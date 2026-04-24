@@ -222,4 +222,49 @@ theorem bitor_opcode_grounded :
 theorem bitxor_opcode_grounded :
     (QBinOp.to_spv_unsigned .BitXor).opcode = 198 := by rfl
 
+-- ════════════════════════════════════════════════════════════════════
+-- A4: Fast-math mode
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Fast-math mode: the GPU may reassociate, contract FMAs,
+    and skip NaN/inf checks. Results may differ from strict
+    IEEE 754 by a small ULP margin. -/
+axiom fast_math_reassociation (a b c : Float) :
+    -- (a + b) + c may be computed as a + (b + c)
+    True
+
+/-- Under fast-math, FMA contraction is permitted:
+    a * b + c may be computed as a single fused multiply-add,
+    which gives a more precise result (single rounding). -/
+axiom fast_math_fma_contraction (a b c : Float) :
+    -- a * b + c may become fma(a, b, c)
+    True
+
+/-- Under fast-math, NaN propagation is not guaranteed.
+    Operations that would produce NaN under strict IEEE 754
+    may produce any value. -/
+axiom fast_math_no_nan (a : Float) :
+    -- isNaN(a) does not constrain the result
+    True
+
+/-- Under fast-math, infinity propagation is not guaranteed.
+    Operations that would produce ±inf under strict IEEE 754
+    may produce any finite value. -/
+axiom fast_math_no_inf (a : Float) :
+    -- isInf(a) does not constrain the result
+    True
+
+/-- Under fast-math, negative zero is not distinguished from
+    positive zero: -0.0 may be replaced by +0.0. -/
+axiom fast_math_no_signed_zero :
+    -- -0.0 and +0.0 are interchangeable
+    True
+
+/-- Under fast-math, reciprocal approximation is permitted:
+    a / b may be computed as a * (1/b) using a hardware
+    reciprocal approximation. -/
+axiom fast_math_allow_reciprocal (a b : Float) :
+    -- a / b may become a * approx_recip(b)
+    True
+
 end Quanta.Axioms.Gpu

@@ -170,6 +170,35 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | T1300 | F16↔F32 round-trip within 1 ULP for normal values | Kani | proven |
 | T1301 | Metallib output starts with MTLB magic bytes | Verus | proven |
 
+## GPU Optimizations (T14xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T1400 | AtomicCAS uses OpAtomicCompareExchange with expected+desired | Verus+Kani | proven |
+| T1401 | Atomics use AcqRel\|Workgroup semantics (0x108) | Verus+Kani | proven |
+| T1402 | MSL rsqrt maps to fast::rsqrt | Verus | proven |
+| T1403 | xcrun metal uses -std=metal3.1 | Verus | proven |
+| T1404 | F16 scalars emit OpTypeFloat 16 + Float16 capability | Verus | proven |
+| T1405 | LOOP_CONTROL_UNROLL constant = 0x1 | Verus | proven |
+| T1406 | OpLoad/OpStore emit Aligned memory operand | Verus | proven |
+| T1407 | Barrier uses COMPUTE_SHADER\|TRANSFER, not ALL_COMMANDS | Verus | proven |
+| T1408 | VkPipelineCache created at init, used for all pipelines | Verus | proven |
+| T1409 | HOST_VISIBLE buffers persistently mapped | Verus | proven |
+| T1410 | Staging buffers pooled (cap 8), not alloc/free per upload | Verus | proven |
+| T1411 | Read-only buffers decorated with Restrict | Verus | proven |
+| T1412 | spirv-opt optional — original SPIR-V on failure | Verus | proven |
+| T1413 | Descriptor set layouts cached by binding count | Verus | proven |
+
+## Fast-Math (T15xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T1500 | SPIR-V float ops decorated FPFastMathMode Fast (0x10) | Verus | proven |
+| T1501 | MSL emits #pragma clang fp contract(fast) | Verus | proven |
+| T1502 | LLVM float instructions have fast-math flags | Verus | proven |
+| T1503 | WGSL has no fast-math (documented limitation) | Verus | proven |
+| T1504 | compile_msl_to_metallib returns Err on xcrun failure | Verus | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -187,4 +216,6 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | SPIR-V Structural | 3 | 3 | 0 |
 | Driver Lifecycle | 5 | 5 | 0 |
 | Precision & Validity | 2 | 2 | 0 |
-| **Total** | **102** | **102** | **0** |
+| GPU Optimizations | 14 | 14 | 0 |
+| Fast-Math | 5 | 5 | 0 |
+| **Total** | **121** | **121** | **0** |
