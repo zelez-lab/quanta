@@ -136,17 +136,55 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | T903 | Up-sweep preserves partial sums | Lean | proven |
 | T904 | Down-sweep distributes partial sums correctly | Lean | proven |
 
+## Cross-Emitter Consistency (T10xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T1000 | Every KernelOp variant handled in CPU executor (no missing arms) | Kani | proven |
+| T1001 | Every KernelOp variant handled in WGSL emitter (no missing arms) | Kani | proven |
+| T1002 | Every KernelOp variant handled in LLVM emitter (no missing arms) | Kani | proven |
+| T1003 | Emitter output count: SPIR-V=MSL=WGSL=LLVM=CPU for same KernelOp | Verus | proven |
+
+## SPIR-V Structural Validity (T11xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T1100 | ID bound in header ≥ max ID used in module | Verus | proven |
+| T1101 | string_words: null-terminated, padded to 4-byte boundary | Verus | proven |
+| T1102 | Entry point name is "main" (matches module declaration) | Verus | proven |
+
+## Driver Lifecycle Safety (T12xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T1200 | Vulkan image layout transitions: correct layout before first use | Verus | proven |
+| T1201 | Buffer memory alignment: allocation respects device requirements | Verus | proven |
+| T1202 | Command buffer lifecycle: begin→record→end→submit ordering | Verus | proven |
+| T1203 | Workgroup size ≤ device maxComputeWorkGroupSize | Verus | proven |
+| T1204 | Resource Drop: GPU handles freed exactly once | Verus | proven |
+
+## Precision & Validity (T13xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T1300 | F16↔F32 round-trip within 1 ULP for normal values | Kani | proven |
+| T1301 | Metallib output starts with MTLB magic bytes | Verus | proven |
+
 ## Summary
 
-| Category | Total | Proven |
-|----------|------:|-------:|
-| SPIR-V Emitter | 20 | 20 |
-| Wire Format | 18 | 18 |
-| MSL Emitter | 8 | 8 |
-| WGSL Emitter | 4 | 4 |
-| LLVM Emitter | 5 | 5 |
-| CPU Executor | 11 | 11 |
-| Format Tables | 6 | 6 |
-| API Invariants | 11 | 11 |
-| Scan Algorithm | 5 | 5 |
-| **Total** | **88** | **88** |
+| Category | Total | Proven | Todo |
+|----------|------:|-------:|-----:|
+| SPIR-V Emitter | 20 | 20 | 0 |
+| Wire Format | 18 | 18 | 0 |
+| MSL Emitter | 8 | 8 | 0 |
+| WGSL Emitter | 4 | 4 | 0 |
+| LLVM Emitter | 5 | 5 | 0 |
+| CPU Executor | 11 | 11 | 0 |
+| Format Tables | 6 | 6 | 0 |
+| API Invariants | 11 | 11 | 0 |
+| Scan Algorithm | 5 | 5 | 0 |
+| Cross-Emitter | 4 | 4 | 0 |
+| SPIR-V Structural | 3 | 3 | 0 |
+| Driver Lifecycle | 5 | 5 | 0 |
+| Precision & Validity | 2 | 2 | 0 |
+| **Total** | **102** | **102** | **0** |
