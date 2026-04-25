@@ -1,44 +1,22 @@
 # Migration from wgpu
 
-## API mapping
+## Side-by-side: compute shader
 
-| wgpu | Quanta |
-|------|--------|
-| `wgpu::Instance::new(Backends::all())` | `quanta::init()` |
-| `instance.request_adapter()` | `quanta::init()` (automatic) |
-| `adapter.request_device()` | `quanta::init()` (automatic) |
-| `device.create_buffer(...)` | `gpu.compute_field::<T>(n)` |
-| `device.create_buffer_init(...)` | `gpu.compute_field(n)` + `gpu.write_field(&f, &data)` |
-| `device.create_shader_module(wgsl)` | `#[quanta::kernel]` (compile-time) |
-| `device.create_compute_pipeline(...)` | automatic (inside `#[quanta::kernel]`) |
-| `device.create_bind_group_layout(...)` | not needed |
-| `device.create_bind_group(...)` | `wave.bind(slot, &field)` |
-| `device.create_pipeline_layout(...)` | not needed |
-| `encoder.begin_compute_pass()` | not needed |
-| `pass.set_pipeline(&pipeline)` | automatic |
-| `pass.set_bind_group(0, &bg, &[])` | `wave.bind(slot, &field)` |
-| `pass.dispatch_workgroups(x, y, z)` | `gpu.dispatch(&wave, n)` |
-| `encoder.copy_buffer_to_buffer(...)` | `gpu.copy_field(&dst, &src)` |
-| `queue.submit(...)` | automatic (dispatch submits) |
-| `buffer.slice(..).map_async(...)` | `gpu.read_field(&field)` |
-| `device.poll(Maintain::Wait)` | `gpu.wait(&mut pulse)` |
-
-## Example: compute shader
-
-### wgpu (70 lines)
+### wgpu (50+ lines)
 
 ```rust
+// 1. Device setup (3 async calls)
 let instance = wgpu::Instance::new(Backends::all());
 let adapter = instance.request_adapter(&Default::default()).await.unwrap();
 let (device, queue) = adapter.request_device(&Default::default(), None).await.unwrap();
 
-// Shader (separate WGSL string)
+// 2. Shader module (separate WGSL file)
 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
     label: None,
     source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
 });
 
-// Bind group layout
+// 3. Bind group layout (describe every binding manually)
 let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
     entries: &[
         wgpu::BindGroupLayoutEntry {
@@ -65,14 +43,14 @@ let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
     label: None,
 });
 
-// Pipeline layout
+// 4. Pipeline layout
 let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
     bind_group_layouts: &[&bgl],
     push_constant_ranges: &[],
     label: None,
 });
 
-// Pipeline
+// 5. Pipeline
 let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
     layout: Some(&pipeline_layout),
     module: &shader,
@@ -80,9 +58,20 @@ let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
     ..Default::default()
 });
 
-// Buffers + bind group
-let input_buf = device.create_buffer_init(...);
-let output_buf = device.create_buffer(...);
+// 6. Buffers
+let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    label: None,
+    contents: bytemuck::cast_slice(&data),
+    usage: wgpu::BufferUsages::STORAGE,
+});
+let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
+    label: None,
+    size: (N * 4) as u64,
+    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    mapped_at_creation: false,
+});
+
+// 7. Bind group
 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
     layout: &bgl,
     entries: &[
@@ -92,7 +81,7 @@ let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
     label: None,
 });
 
-// Dispatch
+// 8. Encode + dispatch
 let mut encoder = device.create_command_encoder(&Default::default());
 {
     let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -101,11 +90,17 @@ let mut encoder = device.create_command_encoder(&Default::default());
     pass.dispatch_workgroups(64, 1, 1);
 }
 queue.submit(Some(encoder.finish()));
+
+// 9. Read back (async map, poll, copy)
+// ... another 10+ lines ...
 ```
 
-### Quanta (15 lines)
+### Quanta (5 lines of host code)
 
 ```rust
+#[derive(quanta::Fields)]
+struct DoubleData { input: Vec<f32>, output: Vec<f32> }
+
 #[quanta::kernel]
 fn double(input: &[f32], output: &mut [f32]) {
     let i = quark_id();
@@ -113,21 +108,54 @@ fn double(input: &[f32], output: &mut [f32]) {
 }
 
 fn main() -> Result<(), quanta::QuantaError> {
-    let gpu = quanta::init()?;
-    let input = gpu.compute_field::<f32>(1024)?;
+    let gpu = quanta::init()?;                      // 1. init
+    let input = gpu.compute_field::<f32>(1024)?;    // 2. allocate
     let output = gpu.compute_field::<f32>(1024)?;
-    gpu.write_field(&input, &data)?;
+    input.write(&data)?;                            // 3. upload
 
-    let mut wave = double(&gpu)?;
+    let mut wave = double(&gpu)?;                   // 4. compile
     wave.bind(0, &input);
     wave.bind(1, &output);
-    let mut pulse = gpu.dispatch(&wave, 1024)?;
-    gpu.wait(&mut pulse)?;
+    let mut pulse = gpu.dispatch(&wave, 1024)?;     // 5. dispatch
+    pulse.wait()?;
 
-    let result = gpu.read_field(&output)?;
+    let result = output.read()?;                    // 6. download
     Ok(())
 }
 ```
+
+**What disappears:**
+- Shader module creation (WGSL is a separate language, separate file)
+- Bind group layout descriptors (8 fields per binding)
+- Pipeline layout descriptors
+- Pipeline creation descriptors
+- Bind group creation
+- Command encoder + compute pass management
+- `queue.submit()` (dispatch submits automatically)
+- Async buffer mapping + polling
+
+## API mapping
+
+| wgpu | Quanta |
+|------|--------|
+| `wgpu::Instance::new(Backends::all())` | `quanta::init()` |
+| `instance.request_adapter()` | `quanta::init()` (automatic) |
+| `adapter.request_device()` | `quanta::init()` (automatic) |
+| `device.create_buffer(...)` | `gpu.compute_field::<T>(n)` |
+| `device.create_buffer_init(...)` | `gpu.compute_field(n)` + `field.write(&data)` |
+| `device.create_shader_module(wgsl)` | `#[quanta::kernel]` (compile-time) |
+| `device.create_compute_pipeline(...)` | automatic (inside `#[quanta::kernel]`) |
+| `device.create_bind_group_layout(...)` | not needed |
+| `device.create_bind_group(...)` | `wave.bind(slot, &field)` |
+| `device.create_pipeline_layout(...)` | not needed |
+| `encoder.begin_compute_pass()` | not needed |
+| `pass.set_pipeline(&pipeline)` | automatic |
+| `pass.set_bind_group(0, &bg, &[])` | `wave.bind(slot, &field)` |
+| `pass.dispatch_workgroups(x, y, z)` | `gpu.dispatch(&wave, n)` |
+| `encoder.copy_buffer_to_buffer(...)` | `dst.copy_from(&src)` |
+| `queue.submit(...)` | automatic (dispatch submits) |
+| `buffer.slice(..).map_async(...)` | `field.read()` |
+| `device.poll(Maintain::Wait)` | `pulse.wait()` |
 
 ## Key differences
 
@@ -143,7 +171,7 @@ all of this from the kernel function signature.
 **No command encoder.** Dispatch submits immediately. No manual encoder/pass management.
 
 **Typed buffers.** `Field<f32>` vs wgpu's untyped `Buffer`. Read/write operations are
-type-safe — no manual byte slicing.
+type-safe -- no manual byte slicing.
 
 ## Render pipeline
 
@@ -189,6 +217,31 @@ let pipeline = gpu.pipeline(&PipelineDesc {
     fragment: fs_main(),
     ..Default::default()
 })?;
+```
+
+### Render pass: wgpu vs Quanta
+
+wgpu render passes require manual encoder management:
+```rust
+let mut encoder = device.create_command_encoder(&Default::default());
+{
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { ... });
+    pass.set_pipeline(&pipeline);
+    pass.set_vertex_buffer(0, verts.slice(..));
+    pass.draw(0..3, 0..1);
+}
+queue.submit(Some(encoder.finish()));
+```
+
+Quanta uses a builder chain:
+```rust
+let mut pulse = gpu.render(&target)?
+    .clear(Color::BLACK)
+    .pipeline(&pipeline)
+    .vertices(0, &verts)
+    .draw(3)
+    .pulse()?;
+pulse.wait()?;
 ```
 
 ## When to stay with wgpu

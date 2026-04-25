@@ -3,7 +3,26 @@
 N-body gravity using shared memory tiling. Each particle interacts with
 every other particle (O(N^2) complexity), making this ideal for GPU parallelism.
 
-## Body type
+## Data layout
+
+```rust
+#[derive(quanta::Fields)]
+struct NBodyData {
+    positions: Vec<f32>,   // [x, y, z, mass] x N (interleaved)
+    velocities: Vec<f32>,  // [vx, vy, vz, _] x N
+    count: u32,            // push constant
+    dt: f32,               // push constant
+}
+```
+
+The `#[derive(quanta::Fields)]` macro classifies each field:
+- `Vec<f32>` fields become GPU storage buffers (slots 0 and 1)
+- `u32` and `f32` scalars become push constants (slots 2 and 3)
+
+Positions are interleaved as `[x, y, z, mass]` per particle. This layout
+matches the shared memory tile stride and is optimal for coalesced access.
+
+## Body type (for host-side initialization)
 
 ```rust
 #[quanta::gpu_type]
@@ -13,11 +32,9 @@ struct Body {
 }
 ```
 
-The `Body` struct can be used for host-side initialization and non-tiled kernels.
-The tiled kernel below uses flat `&[f32]` arrays for shared memory compatibility
-(shared memory requires fixed-size scalar arrays, not structs).
+## Kernels
 
-## Kernel
+### Force computation (tiled)
 
 ```rust
 const TILE_SIZE: u32 = 256;
@@ -91,7 +108,11 @@ fn nbody_tiled(
         velocities[base + 2u32] = velocities[base + 2u32] + az * dt;
     }
 }
+```
 
+### Position integration
+
+```rust
 #[quanta::kernel]
 fn integrate_positions(
     positions: &mut [f32],
@@ -114,8 +135,8 @@ fn integrate_positions(
 ## Host code
 
 ```rust
-fn main() {
-    let gpu = quanta::init().unwrap();
+fn main() -> Result<(), quanta::QuantaError> {
+    let gpu = quanta::init()?;
 
     let count: u32 = 65536;
     let tile_size: u32 = 256;
@@ -123,7 +144,7 @@ fn main() {
 
     // Initialize: particles in a disk with random masses
     let mut pos_data = Vec::with_capacity(count as usize * 4);
-    let mut vel_data = vec![0.0f32; count as usize * 4];
+    let vel_data = vec![0.0f32; count as usize * 4];
     for i in 0..count {
         let angle = i as f32 * 0.1;
         let radius = (i as f32).sqrt() * 0.5;
@@ -133,20 +154,20 @@ fn main() {
         pos_data.push(1.0);                  // mass
     }
 
-    let positions = gpu.compute_field::<f32>(count as usize * 4).unwrap();
-    let velocities = gpu.compute_field::<f32>(count as usize * 4).unwrap();
-    gpu.write_field(&positions, &pos_data).unwrap();
-    gpu.write_field(&velocities, &vel_data).unwrap();
+    let positions = gpu.compute_field::<f32>(count as usize * 4)?;
+    let velocities = gpu.compute_field::<f32>(count as usize * 4)?;
+    positions.write(&pos_data)?;
+    velocities.write(&vel_data)?;
 
     // Force computation kernel
-    let mut force_wave = nbody_tiled(&gpu).unwrap();
+    let mut force_wave = nbody_tiled(&gpu)?;
     force_wave.bind(0, &positions);
     force_wave.bind(1, &velocities);
     force_wave.set_value(2, count);
     force_wave.set_value(3, dt);
 
     // Position integration kernel
-    let mut integrate_wave = integrate_positions(&gpu).unwrap();
+    let mut integrate_wave = integrate_positions(&gpu)?;
     integrate_wave.bind(0, &positions);
     integrate_wave.bind(1, &velocities);
     integrate_wave.set_value(2, count);
@@ -157,19 +178,20 @@ fn main() {
     // Simulation loop
     for step in 0..1000 {
         // Compute forces (tiled)
-        let mut p = gpu.wave_dispatch(&force_wave, [num_groups, 1, 1]).unwrap();
-        gpu.wait(&mut p).unwrap();
+        let mut p = gpu.wave_dispatch(&force_wave, [num_groups, 1, 1])?;
+        p.wait()?;
 
         // Integrate positions
-        let mut p = gpu.dispatch(&integrate_wave, count).unwrap();
-        gpu.wait(&mut p).unwrap();
+        let mut p = gpu.dispatch(&integrate_wave, count)?;
+        p.wait()?;
 
         if step % 100 == 0 {
-            let pos = gpu.read_field(&positions).unwrap();
+            let pos = positions.read()?;
             let energy = compute_kinetic_energy(&pos);
             println!("Step {step}: E_k = {energy:.4}");
         }
     }
+    Ok(())
 }
 
 fn compute_kinetic_energy(positions: &[f32]) -> f64 {
@@ -184,7 +206,7 @@ fn compute_kinetic_energy(positions: &[f32]) -> f64 {
 }
 ```
 
-## Why tiling
+## Why tiling (shared memory optimization)
 
 Without tiling, each quark reads all N positions from global memory:
 - N = 65536 particles, 4 floats each = 1 MB per quark
@@ -198,6 +220,25 @@ With tiling (TILE_SIZE = 256):
 The two `barrier()` calls per tile ensure:
 1. All quarks have finished loading before the inner loop reads shared memory
 2. All quarks have finished reading before the next tile overwrites shared memory
+
+### Shared memory in Quanta
+
+```rust
+#[quanta::shared]
+let tile_pos: [f32; 1024];
+```
+
+This declares 4 KB of workgroup-local memory. It maps to:
+- `threadgroup float tile_pos[1024]` in Metal
+- `shared float tile_pos[1024]` in GLSL/Vulkan
+- `var<workgroup> tile_pos: array<f32, 1024>` in WGSL
+- `__shared__ float tile_pos[1024]` in CUDA (for comparison)
+
+Rules:
+- Must be a fixed-size array of scalars
+- Only valid inside `#[quanta::kernel]` bodies
+- Size is shared across all quarks in the workgroup
+- Access requires `barrier()` for correctness
 
 ## Performance
 

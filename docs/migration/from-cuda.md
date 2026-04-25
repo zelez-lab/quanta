@@ -10,6 +10,79 @@
 | Grid | Dispatch | All quarks in one launch |
 | Device memory | Field | Typed GPU buffer |
 
+## Side-by-side: vector addition
+
+### CUDA (15 lines of host boilerplate)
+
+```c
+__global__ void vector_add(float *a, float *b, float *result, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) result[i] = a[i] + b[i];
+}
+
+int main() {
+    float *d_a, *d_b, *d_result;
+    cudaMalloc(&d_a, N * sizeof(float));          // 1. allocate
+    cudaMalloc(&d_b, N * sizeof(float));          // 2. allocate
+    cudaMalloc(&d_result, N * sizeof(float));     // 3. allocate
+    cudaMemcpy(d_a, h_a, N * sizeof(float),       // 4. upload
+               cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b, N * sizeof(float),       // 5. upload
+               cudaMemcpyHostToDevice);
+    int threads = 256;
+    int blocks = (N + threads - 1) / threads;
+    vector_add<<<blocks, threads>>>(d_a, d_b,     // 6. dispatch
+                                     d_result, N);
+    cudaDeviceSynchronize();                       // 7. wait
+    cudaMemcpy(h_result, d_result,                 // 8. download
+               N * sizeof(float),
+               cudaMemcpyDeviceToHost);
+    cudaFree(d_a);                                 // 9. free
+    cudaFree(d_b);                                 // 10. free
+    cudaFree(d_result);                            // 11. free
+}
+```
+
+### Quanta (5 lines of host code)
+
+```rust
+#[derive(quanta::Fields)]
+struct VectorData { a: Vec<f32>, b: Vec<f32>, result: Vec<f32> }
+
+#[quanta::kernel]
+fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
+    let i = quark_id();
+    result[i] = a[i] + b[i];
+}
+
+fn main() -> Result<(), quanta::QuantaError> {
+    let gpu = quanta::init()?;
+    let a = gpu.compute_field::<f32>(N)?;          // allocate
+    let b = gpu.compute_field::<f32>(N)?;
+    let result = gpu.compute_field::<f32>(N)?;
+    a.write(&h_a)?;                                // upload
+    b.write(&h_b)?;
+
+    let mut wave = vector_add(&gpu)?;              // compile
+    wave.bind(0, &a);
+    wave.bind(1, &b);
+    wave.bind(2, &result);
+
+    let mut pulse = gpu.dispatch(&wave, N as u32)?; // dispatch
+    pulse.wait()?;                                  // wait
+
+    let h_result = result.read()?;                  // download
+    Ok(())                                          // free is automatic (RAII)
+}
+```
+
+**What disappears:**
+- `cudaMalloc`/`cudaFree` -- RAII handles allocation and deallocation
+- `cudaMemcpyHostToDevice`/`cudaMemcpyDeviceToHost` -- `field.write()`/`field.read()`
+- Block/grid dimension math -- `gpu.dispatch(&wave, N)` handles it
+- `cudaError_t` checking -- Rust `Result<T, QuantaError>` everywhere
+- Separate `.cu` files -- kernel is Rust, same compiler
+
 ## API mapping
 
 | CUDA | Quanta |
@@ -29,72 +102,12 @@
 | `__ballot_sync(mask, pred)` | `wave_ballot(pred)` |
 | `__any_sync(mask, pred)` | `wave_any(pred)` |
 | `__all_sync(mask, pred)` | `wave_all(pred)` |
-| `cudaMalloc` + `cudaMemcpy` | `gpu.compute_field::<T>(n)` + `gpu.write_field(&f, &data)` |
+| `cudaMalloc` + `cudaMemcpy` | `gpu.compute_field::<T>(n)` + `field.write(&data)` |
 | `cudaMallocManaged` | `gpu.field_mapped::<T>(n)` |
 | `kernel<<<blocks, threads>>>(...)` | `gpu.dispatch(&wave, n)` |
-| `cudaDeviceSynchronize()` | `gpu.wait(&mut pulse)` |
+| `cudaDeviceSynchronize()` | `pulse.wait()` |
 | `cudaGetDeviceProperties` | `gpu.caps()` |
-
-## Example: vector addition
-
-### CUDA
-
-```c
-__global__ void vector_add(float *a, float *b, float *result, int n) {
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
-    if (i < n) {
-        result[i] = a[i] + b[i];
-    }
-}
-
-int main() {
-    float *d_a, *d_b, *d_result;
-    cudaMalloc(&d_a, N * sizeof(float));
-    cudaMalloc(&d_b, N * sizeof(float));
-    cudaMalloc(&d_result, N * sizeof(float));
-    cudaMemcpy(d_a, h_a, N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_b, h_b, N * sizeof(float), cudaMemcpyHostToDevice);
-
-    int threads = 256;
-    int blocks = (N + threads - 1) / threads;
-    vector_add<<<blocks, threads>>>(d_a, d_b, d_result, N);
-    cudaDeviceSynchronize();
-
-    cudaMemcpy(h_result, d_result, N * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaFree(d_a); cudaFree(d_b); cudaFree(d_result);
-}
-```
-
-### Quanta
-
-```rust
-#[quanta::kernel]
-fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
-    let i = quark_id();
-    result[i] = a[i] + b[i];
-}
-
-fn main() -> Result<(), quanta::QuantaError> {
-    let gpu = quanta::init()?;
-
-    let a = gpu.compute_field::<f32>(N)?;
-    let b = gpu.compute_field::<f32>(N)?;
-    let result = gpu.compute_field::<f32>(N)?;
-    gpu.write_field(&a, &h_a)?;
-    gpu.write_field(&b, &h_b)?;
-
-    let mut wave = vector_add(&gpu)?;
-    wave.bind(0, &a);
-    wave.bind(1, &b);
-    wave.bind(2, &result);
-
-    let mut pulse = gpu.dispatch(&wave, N as u32)?;
-    gpu.wait(&mut pulse)?;
-
-    let h_result = gpu.read_field(&result)?;
-    Ok(())
-}
-```
+| `cudaFree` | automatic (Field drops when it goes out of scope) |
 
 ## Workgroup (block) size
 
@@ -138,24 +151,6 @@ CUDA warp intrinsics map directly to Quanta wave/subgroup operations:
 
 Quanta does not require an explicit `mask` parameter -- all active lanes
 participate. This matches the SPIR-V and Metal subgroup model.
-
-## Key differences
-
-**Build-time compilation.** CUDA compiles kernels with nvcc at build time (or PTX at runtime
-via the driver). Quanta compiles at build time via proc macros — the kernel binary is embedded
-in your Rust binary. No CUDA toolkit needed at runtime.
-
-**Cross-vendor.** The same `#[quanta::kernel]` compiles to PTX (NVIDIA), GCN ELF (AMD),
-metallib (Apple), and SPIR-V (Vulkan). One source, all GPUs. All output is native binary.
-
-**No bounds checking in the example.** CUDA requires manual `if (i < n)` guards because
-you launch more threads than elements (grid must be a multiple of block size). Quanta
-dispatches the exact number of quarks needed.
-
-**No manual memory management.** Fields drop automatically (RAII). No `cudaFree`.
-
-**Type safety.** `Field<f32>` cannot be bound where `Field<u32>` is expected. CUDA uses
-`void*` everywhere.
 
 ## Shared memory
 
@@ -237,6 +232,24 @@ let particles = gpu.compute_field::<Particle>(n)?;
 `#[quanta::gpu_type]` is the Quanta equivalent of a CUDA `struct` used in device
 code. It ensures `repr(C)` layout matching GPU expectations and generates
 MSL/WGSL struct declarations automatically. No separate `.cuh` header needed.
+
+## Key differences
+
+**Build-time compilation.** CUDA compiles kernels with nvcc at build time (or PTX at runtime
+via the driver). Quanta compiles at build time via proc macros -- the kernel binary is embedded
+in your Rust binary. No CUDA toolkit needed at runtime.
+
+**Cross-vendor.** The same `#[quanta::kernel]` compiles to PTX (NVIDIA), GCN ELF (AMD),
+metallib (Apple), and SPIR-V (Vulkan). One source, all GPUs. All output is native binary.
+
+**No bounds checking in the example.** CUDA requires manual `if (i < n)` guards because
+you launch more threads than elements (grid must be a multiple of block size). Quanta
+dispatches the exact number of quarks needed.
+
+**No manual memory management.** Fields drop automatically (RAII). No `cudaFree`.
+
+**Type safety.** `Field<f32>` cannot be bound where `Field<u32>` is expected. CUDA uses
+`void*` everywhere.
 
 ## What you won't miss
 

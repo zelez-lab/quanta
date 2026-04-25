@@ -1,134 +1,52 @@
-# Memory Model
+# GPU Memory: Fields, Shared, and Constants
 
-GPU memory is a hierarchy. Faster memory is smaller and closer to the quarks.
+## The memory hierarchy
+
+GPU memory is layered. Faster memory is smaller and closer to the quarks
+(threads). Choosing the right layer is one of the most important performance
+decisions in GPU programming.
 
 ```
-Registers        per-quark     fastest   implicit (local variables)
-     |
-Shared memory    per-nucleus   ~48KB     #[quanta::shared]
-     |
-Global memory    all quarks    8-80GB    gpu.field() / gpu.field_mapped()
-     |
-CPU memory       host only     system    Vec<T>, &[T]
+                    Speed        Size          Scope
+                  --------    ---------    ---------------
+Registers          fastest     ~256KB*     per-quark (local variables)
+    |
+Shared memory      fast        ~48KB       per-workgroup (#[quanta::shared])
+    |
+Global memory      slow        8-80GB      all quarks (gpu.field())
+    |
+CPU memory         slowest     system RAM  host only (Vec<T>)
+
+*total register file per nucleus, divided among active quarks
 ```
 
-## Fields (global memory)
+Think of it like CPU caches: registers are L1, shared memory is L2, global
+memory is main RAM. The difference: on a GPU, you control the "cache" (shared
+memory) explicitly.
 
-A Field is a typed GPU buffer. Large, visible to all quarks, but high latency.
+## Fields: GPU-resident typed buffers
+
+A Field is a typed buffer in GPU global memory. This is where your data lives
+on the GPU -- the equivalent of a `Vec<T>` but on the graphics card.
 
 ```rust
-// Allocate 1M floats on the GPU
+// Allocate 1 million floats on the GPU
 let data = gpu.compute_field::<f32>(1_000_000)?;
 
-// Upload from CPU
+// Upload from CPU to GPU
 gpu.write_field(&data, &cpu_vec)?;
 
-// Download to CPU
+// Run a kernel that reads/writes the field
+gpu.dispatch(&wave, 1_000_000)?;
+
+// Download results back to CPU
 let result = gpu.read_field(&data)?;
 ```
 
-Fields are the primary way to move data between CPU and GPU.
+Fields are the primary bridge between CPU and GPU. Your kernel parameters
+(`&[f32]`, `&mut [f32]`) bind to Fields.
 
-## Mapped memory
-
-Zero-copy buffers visible to both CPU and GPU simultaneously.
-
-```rust
-let mapped = gpu.field_mapped::<f32>(1024)?;
-
-// CPU writes directly to GPU-visible memory
-mapped.write(0, 3.14);
-mapped.write(1, 2.71);
-
-// No copy needed — GPU sees the data on next dispatch
-```
-
-Use mapped memory for data that changes every frame (uniforms, streaming vertices).
-
-## Shared memory
-
-Small, fast memory shared by all quarks within one nucleus.
-
-```rust
-#[quanta::kernel]
-fn reduce(data: &[f32], result: &mut [f32]) {
-    #[quanta::shared] let local: [f32; 256];
-
-    let lid = local_id();   // 0..255 within this nucleus
-    let gid = quark_id();   // global index
-
-    // Each quark loads one element into shared memory
-    local[lid] = data[gid];
-
-    // BARRIER: wait for all quarks in this nucleus to finish writing
-    barrier();
-
-    // Now every quark can read any element in local[]
-    if lid == 0 {
-        let mut sum = 0.0;
-        for i in 0..256 {
-            sum += local[i];
-        }
-        result[group_id()] = sum;
-    }
-}
-```
-
-## Registers
-
-Per-quark, fastest storage. Every local variable in your kernel lives in a register.
-
-```rust
-#[quanta::kernel]
-fn compute(a: &[f32], b: &[f32], out: &mut [f32]) {
-    let i = quark_id();        // register
-    let x = a[i];             // register (loaded from global)
-    let y = b[i];             // register
-    let result = x * y + x;   // register
-    out[i] = result;           // write back to global
-}
-```
-
-Registers are implicit. The GPU has thousands of them (unlike CPUs).
-
-## Barriers
-
-`barrier()` synchronizes all quarks within a nucleus. Required between shared memory writes and reads.
-
-```
-Without barrier:
-  Quark 0: write local[0]           Quark 1: read local[0]  <-- RACE!
-
-With barrier:
-  Quark 0: write local[0]     Quark 1: write local[1]
-                  |_________________________|
-                          barrier()
-  Quark 0: read local[1]      Quark 1: read local[0]  <-- safe
-```
-
-Rules:
-- `barrier()` must be reached by ALL quarks in the nucleus (no conditional barriers).
-- Only needed for shared memory. Fields have no cross-quark races (each quark writes its own index).
-
-## Resource transitions
-
-When a texture or field is used for different purposes between dispatches, insert a barrier:
-
-```rust
-// Compute writes to texture
-gpu.dispatch(&compute_wave, 1024)?;
-
-// Transition: compute-write -> shader-read
-gpu.barrier_texture(&texture, ResourceState::ComputeWrite, ResourceState::ShaderRead)?;
-
-// Fragment shader reads the texture
-gpu.render_end(pass)?;
-```
-
-On Vulkan, this inserts a pipeline barrier with correct stage/access masks.
-On Metal, this is a no-op (Metal tracks hazards automatically).
-
-## Structured data (`#[quanta::gpu_type]`)
+### Structured fields
 
 Fields can hold user-defined structs, not just scalars:
 
@@ -143,37 +61,133 @@ struct Particle {
 let particles = gpu.compute_field::<Particle>(100_000)?;
 ```
 
-The struct is laid out with `#[repr(C)]` -- contiguous, deterministic, matching
-the GPU's expected layout. The macro also generates MSL and WGSL struct
-declarations so kernel compilation can reference the type.
+The `#[quanta::gpu_type]` macro ensures the struct layout matches what the GPU
+expects (`#[repr(C)]`, no padding surprises).
 
-In GPU memory, 3 particles look like:
+See [Guide: Fields and Types](../guide/02-fields-and-types.md) for details.
 
-```
-[pos.x][pos.y][pos.z][vel.x][vel.y][vel.z][mass] [pos.x][pos.y][pos.z]...
- 0     4      8      12     16     20     24      28    ...
-```
+## Push constants: small values sent per dispatch
 
-This is AOS (Array of Structures) layout. For SOA, use separate scalar fields instead.
-
-## Variable-length data
-
-GPU structs must be fixed-size. For data with variable length (strings, dynamic
-arrays, adjacency lists), use the **offset + length** pattern:
+Push constants are small scalar values (up to ~128 bytes) sent with each
+dispatch. They avoid allocating a Field for values like `width`, `dt`, or
+`frame_count`.
 
 ```rust
-#[quanta::gpu_type]
-struct StringRef {
-    offset: u32,    // byte offset into a data field
-    length: u32,    // byte count
+#[quanta::kernel]
+fn step(particles: &mut [Particle], dt: f32, gravity: f32) {
+    let i = quark_id();
+    particles[i].vel[1] += gravity * dt;  // dt and gravity are push constants
+    particles[i].pos[0] += particles[i].vel[0] * dt;
 }
-
-// String refs (fixed-size, one per element)
-let refs = gpu.compute_field::<StringRef>(1000)?;
-
-// Packed string bytes (variable-length data, concatenated)
-let data = gpu.compute_field::<u8>(total_bytes)?;
 ```
 
-Inside the kernel, read `data[offset .. offset + length]` to access each string.
-The same pattern works for variable-length arrays, graphs, or any dynamically-sized data.
+In this kernel, `particles` binds to a Field (large, on GPU). `dt` and
+`gravity` are push constants (small values, sent from the CPU each frame).
+
+Rule of thumb: if it fits in a few floats/ints that change per dispatch, use a
+push constant. If it is an array or large struct, use a Field.
+
+## Shared memory: fast per-workgroup cache
+
+Shared memory is a small (~48KB), fast block of memory accessible to all quarks
+in the same workgroup. It is roughly 100x faster than global memory for random
+access patterns.
+
+```rust
+#[quanta::kernel]
+fn reduce(data: &[f32], result: &mut [f32]) {
+    #[quanta::shared] let cache: [f32; 256];
+
+    let lid = local_id();
+    let gid = quark_id();
+
+    // Load from slow global memory into fast shared memory
+    cache[lid] = data[gid];
+    barrier();   // wait for all quarks to finish loading
+
+    // Now all quarks can read any element in cache[] cheaply
+    if lid == 0 {
+        let mut sum = 0.0;
+        for i in 0..256 { sum += cache[i]; }
+        result[group_id()] = sum;
+    }
+}
+```
+
+Shared memory only lives for the duration of the dispatch, and is only visible
+within one workgroup.
+
+See [Guide: Shared Memory](../guide/03-shared-memory.md) for tiling patterns.
+
+## Textures: 2D/3D images with hardware sampling
+
+A texture is an image stored on the GPU with hardware support for:
+- **Filtering:** bilinear/trilinear interpolation between pixels
+- **Addressing:** wrapping, clamping, mirroring at edges
+- **Format conversion:** the hardware decodes RGBA8, R16F, etc.
+
+```rust
+let texture = gpu.texture_2d(width, height, Format::Rgba8Unorm)?;
+gpu.write_texture(&texture, &pixel_data)?;
+```
+
+Inside a fragment shader, sample a texture with UV coordinates:
+
+```rust
+#[quanta::fragment]
+fn textured(uv: Vec2, tex: &Texture) -> Vec4 {
+    tex.sample(uv)
+}
+```
+
+Compute kernels can also read and write textures for image processing.
+
+See [Guide: Textures](../guide/06-textures.md) for formats and sampling modes.
+
+## Mapped memory: zero-copy CPU-GPU sharing
+
+For data that changes every frame, mapped memory avoids upload/download:
+
+```rust
+let mapped = gpu.field_mapped::<f32>(1024)?;
+mapped.write(0, 3.14);   // CPU writes directly to GPU-visible memory
+// GPU sees the data on next dispatch -- no copy needed
+```
+
+Use mapped memory for small, frequently-updated data (camera matrices, UI
+state). For large compute buffers, dedicated Fields are faster for the GPU.
+
+## Transfers
+
+Data crosses the PCIe bus (or unified memory controller) when moving between
+CPU and GPU. Minimize transfers by keeping data on the GPU between dispatches.
+
+## When to use what
+
+```
+Is it a large array processed by the kernel?
+  YES --> Field (gpu.compute_field / gpu.render_field)
+
+Is it a small value that changes per dispatch? (dt, frame, resolution)
+  YES --> Push constant (scalar parameter in your kernel)
+
+Is it a 2D/3D image needing interpolation?
+  YES --> Texture (gpu.texture_2d)
+
+Is it data shared between quarks in one workgroup?
+  YES --> Shared memory (#[quanta::shared])
+
+Does the CPU update it every frame?
+  YES --> Mapped memory (gpu.field_mapped)
+
+Is it a local variable in your kernel?
+  YES --> Register (automatic, no annotation needed)
+```
+
+## Registers
+
+Every local variable in your kernel is a register -- the fastest storage on the
+GPU. Unlike CPUs (~16 registers), a GPU nucleus has thousands shared among its
+quarks. You never allocate them explicitly; `let x = a[i]` puts `x` in a
+register automatically. Using too many reduces how many quarks can run
+simultaneously (occupancy), so keep kernel functions lean.

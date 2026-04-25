@@ -1,147 +1,160 @@
-# Shader Stages
+# The Render Pipeline: What Vertex and Fragment Shaders Do
 
-The GPU render pipeline processes geometry through fixed stages. Some stages
-are programmable (you write the code), others are fixed-function hardware.
+## What is rendering?
 
-## Pipeline diagram
+Rendering turns 3D geometry into a 2D image. You give the GPU a list of
+triangles in 3D space, and it produces a grid of colored pixels. This is what
+games, CAD tools, and map applications do every frame.
+
+## The pipeline
+
+The GPU processes geometry through a fixed sequence of stages. Some stages are
+programmable (you write the code), others are hardwired into the chip.
 
 ```
-Vertex data (positions, normals, UVs)
+Your 3D data
+  triangles = [(v0, v1, v2), (v3, v4, v5), ...]
+  each vertex has: position, color, texture coordinate, normal
          |
          v
-+-------------------+
-| Vertex stage      |  #[quanta::vertex]    -- runs once per vertex
-| (programmable)    |  transforms positions to clip space
-+-------------------+
++---------------------+
+| 1. VERTEX STAGE     |  Programmable: #[quanta::vertex]
+|                     |  Runs once per vertex
+|  Transforms each    |  Input:  vertex attributes (position, normal, ...)
+|  vertex from 3D     |  Output: clip-space position (Vec4)
+|  world space to     |
+|  screen space       |  Think: "where does this point appear on screen?"
++---------------------+
          |
          v
-+-------------------+
-| Rasterizer        |  fixed-function hardware
-| (not programmable)|  converts triangles to fragments (pixels)
-+-------------------+
++---------------------+
+| 2. RASTERIZER       |  Fixed-function (not programmable)
+|                     |
+|  For each triangle: |  - Clips to the visible area
+|  figure out which   |  - Projects 3D to 2D screen coordinates
+|  pixels it covers   |  - Interpolates vertex outputs across the surface
+|                     |  - Generates one "fragment" per covered pixel
++---------------------+
          |
          v
-+-------------------+
-| Fragment stage    |  #[quanta::fragment]   -- runs once per fragment
-| (programmable)    |  computes pixel color, reads textures
-+-------------------+
++---------------------+
+| 3. FRAGMENT STAGE   |  Programmable: #[quanta::fragment]
+|                     |  Runs once per fragment (covered pixel)
+|  Computes the final |  Input:  interpolated values from vertex stage
+|  color for each     |  Output: RGBA color
+|  pixel              |
+|                     |  Think: "what color is this pixel?"
++---------------------+
          |
          v
-+-------------------+
-| Blending          |  configurable (not programmable)
-|                   |  combines fragment with existing framebuffer
-+-------------------+
++---------------------+
+| 4. BLENDING         |  Configurable (not programmable)
+|                     |  Combines fragment color with existing pixel
+|                     |  Example: alpha blending for transparency
++---------------------+
          |
          v
-    Framebuffer (final image)
+    Framebuffer (the final image on screen)
 ```
 
-## Vertex stage
+## Why two programmable stages?
 
-Runs once per vertex. Transforms model-space positions to clip-space.
+The vertex stage answers: "where does each corner of my triangle end up on
+screen?" It runs once per vertex -- a cube has 8 vertices, so it runs 8 times
+regardless of how many pixels the cube covers.
 
-```rust
-#[quanta::vertex]
-fn transform(pos: Vec3, normal: Vec3, mvp: &Mat4) -> Vec4 {
-    mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
-}
+The fragment stage answers: "what color is each pixel inside this triangle?"
+It runs once per covered pixel -- a triangle covering 10,000 pixels runs the
+fragment shader 10,000 times.
+
+Splitting the work means the vertex stage runs on a small number of points,
+while the expensive per-pixel work runs only where needed.
+
+## How varyings work
+
+The vertex stage outputs values (position, normal, texture coordinate). The
+rasterizer interpolates these across the triangle surface. The fragment stage
+receives the interpolated values.
+
+```
+Vertex A: color = red       Vertex B: color = blue
+     \                         /
+      \    fragment at 50%    /
+       \   color = purple    /
+        \       |           /
+         \      |          /
+          \     |         /
+    Vertex C: color = green
 ```
 
-Inputs: vertex attributes (position, normal, UV, color, etc.)
-Output: clip-space position (Vec4). The `w` component is used for perspective division.
+The GPU does this interpolation automatically. You just declare what the vertex
+stage outputs, and the fragment stage receives smoothly blended values.
 
-## Rasterization
+## How textures work
 
-Not programmable. Hardware does this:
-1. Clips triangles to the view frustum.
-2. Projects to screen coordinates (perspective division).
-3. Determines which pixels are covered by each triangle.
-4. Interpolates vertex outputs (normals, UVs) across the triangle surface.
-5. Generates one fragment per covered pixel.
-
-## Fragment stage
-
-Runs once per fragment (potential pixel). Computes the final color.
+A texture is a 2D image stored on the GPU. The fragment stage samples it using
+texture coordinates (UVs) -- two numbers between 0.0 and 1.0 that map a pixel
+to a point on the image.
 
 ```rust
 #[quanta::fragment]
-fn shade(uv: Vec2, normal: Vec3, light_dir: &Vec3) -> Vec4 {
-    let diffuse = dot(normal, *light_dir).max(0.0);
-    Vec4::new(diffuse, diffuse, diffuse, 1.0)
+fn textured(uv: Vec2, texture: &Texture) -> Vec4 {
+    texture.sample(uv)    // look up the color at this UV coordinate
 }
 ```
 
-Inputs: interpolated values from the vertex stage + uniforms/textures.
-Output: RGBA color for this pixel.
+The hardware handles filtering (bilinear, trilinear) so the image looks smooth
+even when stretched or compressed.
 
-## Blending
+See [Guide: Textures](../guide/06-textures.md) for details on texture formats
+and sampling.
 
-Configurable at pipeline creation. Combines the fragment output with
-whatever is already in the framebuffer.
-
-Common modes:
-- Opaque: replace (alpha = 1.0).
-- Alpha blend: `final = src * src_alpha + dst * (1 - src_alpha)`.
-- Additive: `final = src + dst`.
-
-## Compute stage
-
-Not part of the render pipeline. General-purpose GPU work.
+## Quanta render code
 
 ```rust
-#[quanta::kernel]
-fn blur(input: &[f32], output: &mut [f32], width: u32) {
-    let i = quark_id();
-    output[i] = (input[i-1] + input[i] + input[i+1]) / 3.0;
+// 1. Define vertex and fragment shaders
+#[quanta::vertex]
+fn transform(pos: Vec3, mvp: &Mat4) -> Vec4 {
+    mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
 }
-```
 
-No fixed inputs/outputs. No rasterization. You control everything.
-Use compute for: physics, particle systems, image processing, ML inference,
-sorting, reduction — anything that isn't rasterizing triangles.
+#[quanta::fragment]
+fn shade(normal: Vec3, light_dir: &Vec3) -> Vec4 {
+    let brightness = dot(normal, *light_dir).max(0.0);
+    Vec4::new(brightness, brightness, brightness, 1.0)
+}
 
-## Advanced stages
-
-### Tessellation (`#[quanta::tess_control]` + `#[quanta::tess_eval]`)
-
-Subdivides patches into finer geometry on the GPU.
-
-```
-Input patches -> [Tess Control] -> Tessellator (HW) -> [Tess Eval] -> Rasterizer
-```
-
-### Mesh shaders (`#[quanta::task]` + `#[quanta::mesh]`)
-
-Replaces vertex + input assembly. Generates geometry directly on the GPU.
-
-```
-[Task shader] -> [Mesh shader] -> Rasterizer -> [Fragment] -> Framebuffer
-```
-
-### Ray tracing (`#[quanta::ray_gen]` + `#[quanta::closest_hit]` + `#[quanta::miss]`)
-
-Fires rays into an acceleration structure instead of rasterizing triangles.
-
-```
-[Ray Gen] -> trace_ray() -> BVH traversal (HW) -> [Closest Hit] or [Miss]
-```
-
-## Putting it together
-
-```rust
-// Create shaders
-let vtx = transform();    // returns &ShaderBinary
-let frag = shade();       // returns &ShaderBinary
-
-// Create pipeline (vertex + fragment bound together)
+// 2. Create a pipeline (vertex + fragment bound together)
 let pipeline = gpu.pipeline(&PipelineDesc {
-    vertex: vtx,
-    fragment: frag,
+    vertex: transform(),
+    fragment: shade(),
     ..Default::default()
 })?;
 
-// Render
+// 3. Render
 let pass = gpu.render_begin(&target)?;
 // draw commands...
 gpu.render_end(pass)?;
 ```
+
+See [Guide: Vertex and Fragment Shaders](../guide/08-vertex-fragment.md) for a
+full walkthrough of writing render pipelines.
+
+## Compute vs render: when to use which
+
+The render pipeline is specialized for turning triangles into pixels. For
+everything else, use compute kernels (`#[quanta::kernel]`).
+
+| Use render when...              | Use compute when...              |
+|---------------------------------|----------------------------------|
+| Drawing 3D geometry to screen   | Processing arrays of data        |
+| You need rasterization          | Physics simulation               |
+| Texture sampling with filtering | Image processing (blur, FFT)     |
+| Real-time graphics              | Machine learning inference        |
+| UI rendering                    | Sorting, reduction, histogram    |
+
+Compute kernels are simpler -- no pipeline stages, no rasterization, no
+vertex/fragment split. You control the inputs, outputs, and dispatch directly.
+
+See [Guide: Compute Basics](../guide/01-compute-basics.md) for compute,
+and [Guide: Rendering](../guide/07-rendering.md) for the render pipeline.

@@ -2,6 +2,23 @@
 
 Tiled matrix multiply using shared memory for coalesced access.
 
+## Data layout
+
+```rust
+#[derive(quanta::Fields)]
+struct MatmulData {
+    a: Vec<f32>,       // M x K input matrix
+    b: Vec<f32>,       // K x N input matrix
+    c: Vec<f32>,       // M x N output matrix
+    m: u32,            // push constant: rows of A / rows of C
+    n: u32,            // push constant: cols of B / cols of C
+    k: u32,            // push constant: cols of A / rows of B
+}
+```
+
+Three `Vec<f32>` fields map to GPU storage buffer slots 0, 1, 2. Three `u32`
+scalars become push constants at slots 3, 4, 5.
+
 ## Kernel
 
 ```rust
@@ -60,8 +77,8 @@ fn matmul(a: &[f32], b: &[f32], c: &mut [f32], m: u32, n: u32, k: u32) {
 ## Host code
 
 ```rust
-fn main() {
-    let gpu = quanta::init().unwrap();
+fn main() -> Result<(), quanta::QuantaError> {
+    let gpu = quanta::init()?;
 
     let m: u32 = 1024;
     let n: u32 = 1024;
@@ -76,14 +93,14 @@ fn main() {
         .map(|i| (i % 13) as f32 * 0.1)
         .collect();
 
-    let a = gpu.compute_field::<f32>((m * k) as usize).unwrap();
-    let b = gpu.compute_field::<f32>((k * n) as usize).unwrap();
-    let c = gpu.compute_field::<f32>((m * n) as usize).unwrap();
+    let a = gpu.compute_field::<f32>((m * k) as usize)?;
+    let b = gpu.compute_field::<f32>((k * n) as usize)?;
+    let c = gpu.compute_field::<f32>((m * n) as usize)?;
 
-    gpu.write_field(&a, &a_data).unwrap();
-    gpu.write_field(&b, &b_data).unwrap();
+    a.write(&a_data)?;
+    b.write(&b_data)?;
 
-    let mut wave = matmul(&gpu).unwrap();
+    let mut wave = matmul(&gpu)?;
     wave.bind(0, &a);
     wave.bind(1, &b);
     wave.bind(2, &c);
@@ -94,12 +111,13 @@ fn main() {
     // Dispatch with TILE x TILE workgroups covering the output matrix
     let groups_x = (n + tile - 1) / tile;
     let groups_y = (m + tile - 1) / tile;
-    let mut pulse = gpu.wave_dispatch(&wave, [groups_x * groups_y, 1, 1]).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu.wave_dispatch(&wave, [groups_x * groups_y, 1, 1])?;
+    pulse.wait()?;
 
-    let result = gpu.read_field(&c).unwrap();
+    let result = c.read()?;
     println!("C[0,0] = {}", result[0]);
     println!("C[511,511] = {}", result[511 * n as usize + 511]);
+    Ok(())
 }
 ```
 

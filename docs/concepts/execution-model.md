@@ -1,138 +1,172 @@
-# Execution Model
+# How GPU Threads Execute
 
-## One kernel, many quarks
+## The dispatch model
 
-A kernel is a function that runs once per quark. Every quark executes the same code
-but operates on different data. This is SIMT (Single Instruction, Multiple Threads).
+When you call `gpu.dispatch()`, the GPU launches a grid of quarks (threads).
+These quarks are organized into a three-level hierarchy.
 
-```rust
-#[quanta::kernel]
-fn square(input: &[f32], output: &mut [f32]) {
-    let i = quark_id();       // each quark gets a unique ID
-    output[i] = input[i] * input[i];
-}
+```
+Dispatch: 1,048,576 quarks
+|
++-- Grid (the entire dispatch)
+     |
+     +-- Workgroup 0            Workgroup 1            ...
+     |   (256 quarks)           (256 quarks)
+     |   |                      |
+     |   +-- Proton 0           +-- Proton 0
+     |   |   Quark 0..31        |   Quark 0..31
+     |   +-- Proton 1           +-- Proton 1
+     |   |   Quark 32..63       |   Quark 32..63
+     |   +-- ...                +-- ...
+     |   +-- Proton 7           +-- Proton 7
+     |       Quark 224..255         Quark 224..255
+     |
+     +-- Workgroup 2            ...            Workgroup 4095
 ```
 
-When you dispatch 1000 quarks, this function runs 1000 times simultaneously — each
-invocation sees a different value from `quark_id()`.
+| Level     | Quanta name | CUDA name    | Size        | Shares memory? |
+|-----------|-------------|--------------|-------------|----------------|
+| Grid      | --          | Grid         | All quarks  | Global only    |
+| Workgroup | --          | Thread block | 64-1024     | Shared memory  |
+| Proton    | Proton      | Warp         | 32 or 64    | Lockstep exec  |
+| Thread    | Quark       | Thread       | 1           | Registers      |
+
+The workgroup maps to one nucleus (compute unit) on the hardware. All quarks
+in a workgroup share the same fast shared memory and can synchronize with
+`barrier()`.
 
 ## Thread indexing
 
+Every quark can ask "which one am I?" using built-in functions.
+
 ```
-quark_id()    Global index (0..N). Unique across the entire dispatch.
-local_id()    Index within the nucleus (0..group_size). Resets per group.
-group_id()    Which group (nucleus) this quark belongs to.
-group_size()  Number of quarks per group (typically 64-256).
+quark_id()     Global index across the entire dispatch (0..N)
+local_id()     Index within the workgroup (0..group_size)
+group_id()     Which workgroup this quark belongs to
+group_size()   Number of quarks per workgroup (typically 64-256)
 ```
 
-Relationship: `quark_id() == group_id() * group_size() + local_id()`
-
-## Dispatch
+The relationship: `quark_id() == group_id() * group_size() + local_id()`
 
 ```rust
-let wave = my_kernel(&gpu)?;
-wave.bind(0, &input_field);
-wave.bind(1, &output_field);
-
-// Launch N quarks, hardware groups them into protons and nuclei
-gpu.dispatch(&wave, 1_000_000)?;
+#[quanta::kernel]
+fn example(data: &mut [f32]) {
+    let global = quark_id();    // 0..1048576 (unique across dispatch)
+    let local  = local_id();    // 0..255 (unique within workgroup)
+    let group  = group_id();    // 0..4095 (which workgroup)
+    data[global] = (group * 1000 + local) as f32;
+}
 ```
 
-`gpu.dispatch(&wave, N)` launches N quarks. The GPU:
-1. Divides N quarks into groups (one group per nucleus).
-2. Groups are divided into protons (32 or 64 quarks each).
-3. Protons execute in lockstep on the hardware.
-
-For multi-dimensional dispatches:
+For 2D/3D problems (images, volumes), use multi-dimensional dispatch:
 
 ```rust
-// 3D dispatch: groups_x * groups_y * groups_z workgroups
+// 64x64 workgroups, each 16x16 quarks = 1,048,576 total quarks
 gpu.wave_dispatch(&wave, [64, 64, 1])?;
 ```
 
-## Branching and divergence
+## SIMD execution: protons run in lockstep
 
-Within a proton, all quarks execute in lockstep. When quarks take different branches,
-both paths execute — quarks on the "wrong" path are masked (their results discarded).
+Within a proton (warp), all 32 quarks execute the same instruction at the same
+time. This is SIMD -- Single Instruction, Multiple Data. The hardware has one
+instruction decoder shared across 32 arithmetic units.
+
+This is what makes GPUs fast: 32 multiplications happen with one instruction
+fetch. But it also means branching works differently than on a CPU.
+
+## Branch divergence
+
+On a CPU, an `if/else` jumps to one branch. On a GPU proton, quarks that take
+different branches cause divergence: both paths execute, and quarks on the
+"wrong" path are masked (their results discarded).
 
 ```rust
 #[quanta::kernel]
 fn divergent(data: &[f32], out: &mut [f32]) {
     let i = quark_id();
     if data[i] > 0.0 {
-        // Quarks where data[i] <= 0.0 are masked here
-        out[i] = data[i] * 2.0;
+        out[i] = data[i] * 2.0;    // path A
     } else {
-        // Quarks where data[i] > 0.0 are masked here
-        out[i] = 0.0;
+        out[i] = 0.0;              // path B
     }
 }
 ```
 
 ```
-Proton (32 quarks):
-  data = [0.5, -1.0, 0.3, -0.2, ...]
+Proton with 4 quarks (simplified from 32):
+  data = [0.5, -1.0, 0.3, -0.2]
 
-  Step 1: execute "then" branch
-    Quark 0: ACTIVE  (0.5 > 0.0)   -> out[0] = 1.0
-    Quark 1: MASKED  (-1.0 <= 0.0)
-    Quark 2: ACTIVE  (0.3 > 0.0)   -> out[2] = 0.6
-    Quark 3: MASKED  (-0.2 <= 0.0)
+  Step 1: execute path A (quarks where data[i] > 0.0)
+    Quark 0: ACTIVE  -> out[0] = 1.0
+    Quark 1: MASKED  (sits idle)
+    Quark 2: ACTIVE  -> out[2] = 0.6
+    Quark 3: MASKED  (sits idle)
 
-  Step 2: execute "else" branch
+  Step 2: execute path B (remaining quarks)
     Quark 0: MASKED
     Quark 1: ACTIVE  -> out[1] = 0.0
     Quark 2: MASKED
     Quark 3: ACTIVE  -> out[3] = 0.0
 ```
 
-Performance rule: divergence within a proton costs double (both paths run).
-Divergence across protons is free (different protons take different paths independently).
+Cost: divergence within a proton runs both paths (2x time in the worst case).
+Divergence across different protons is free -- each proton decides independently.
 
-## Synchronization
+Practical rule: structure your data so quarks in the same proton take the same
+branch. Sort by category, not by ID.
 
-### Within a nucleus: `barrier()`
+## Barriers: synchronizing a workgroup
 
-Waits for all quarks in the nucleus to reach this point.
-
-```rust
-#[quanta::shared] let cache: [f32; 256];
-cache[local_id()] = data[quark_id()];
-barrier();  // all quarks have written before any quark reads
-let neighbor = cache[(local_id() + 1) % 256];
-```
-
-### Within a proton: wave operations
-
-Quarks in the same proton can exchange data without shared memory:
+`barrier()` makes every quark in the workgroup wait until all quarks reach the
+same point. This is required when quarks write to shared memory and other quarks
+need to read those writes.
 
 ```rust
-let my_val = data[quark_id()];
-let neighbor_val = wave_shuffle(my_val, 1);  // get value from lane+1
-```
+#[quanta::kernel]
+fn prefix_sum(data: &[f32], out: &mut [f32]) {
+    #[quanta::shared] let cache: [f32; 256];
 
-### CPU-GPU: `gpu.wait()`
-
-```rust
-let pulse = gpu.dispatch(&wave, n)?;
-// ... do CPU work ...
-gpu.wait(&mut pulse)?;  // block until GPU finishes
-```
-
-Or non-blocking:
-
-```rust
-if gpu.poll(&pulse) {
-    // GPU finished
+    cache[local_id()] = data[quark_id()];  // every quark writes
+    barrier();                              // wait for all writes
+    // now every quark can safely read any element in cache[]
+    if local_id() > 0 {
+        out[quark_id()] = cache[local_id()] + cache[local_id() - 1];
+    }
 }
 ```
 
-## Execution order
+Rules:
+- `barrier()` must be reached by ALL quarks in the workgroup (never put it
+  inside a conditional where some quarks skip it -- this is undefined behavior)
+- Only needed for shared memory; global memory has no cross-quark ordering
+  guarantees within a single dispatch
 
-- Quarks within a proton: execute in lockstep (same instruction, same cycle).
-- Protons within a nucleus: scheduled independently (no guaranteed order).
-- Nuclei: fully independent (no guaranteed order).
-- Dispatches: sequential unless using async compute queues.
+## Shared memory: fast per-workgroup cache
 
-The only ordering guarantees come from explicit synchronization:
-`barrier()`, `gpu.wait()`, `gpu.barrier_texture()`, `gpu.barrier_buffer()`.
+Each workgroup has ~48KB of fast memory, declared with `#[quanta::shared]`.
+It is roughly 100x faster than global memory for random access.
+
+```rust
+#[quanta::shared] let tile: [f32; 256];
+tile[local_id()] = data[quark_id()];   // load from slow global
+barrier();
+let val = tile[(local_id() + 1) % 256]; // read from fast shared
+```
+
+Shared memory is visible only within a workgroup. Quarks in other workgroups
+cannot see it. It exists only for the lifetime of the dispatch.
+
+See [Guide: Shared Memory](../guide/03-shared-memory.md) for patterns like
+tiled matrix multiply and reductions.
+
+## Execution order guarantees
+
+| Scope                  | Ordering                                       |
+|------------------------|-------------------------------------------------|
+| Quarks within a proton | Lockstep (same instruction, same cycle)         |
+| Protons in a workgroup | No guaranteed order (use `barrier()` to sync)   |
+| Workgroups             | No guaranteed order (fully independent)          |
+| Dispatches             | Sequential unless using async compute            |
+
+The only way to enforce ordering is explicit synchronization: `barrier()` within
+a workgroup, `gpu.wait()` between dispatches.

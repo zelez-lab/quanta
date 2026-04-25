@@ -1,6 +1,6 @@
 # Getting Started
 
-GPU compute in 5 minutes. You know Rust. You may not know GPUs.
+GPU compute in 3 minutes. You know Rust. You may not know GPUs.
 
 ## Add dependency
 
@@ -16,114 +16,124 @@ each on a different element.
 ```rust
 use quanta::*;
 
+#[derive(quanta::Fields)]
+struct VecAdd {
+    a: Vec<f32>,
+    b: Vec<f32>,
+    result: Vec<f32>,
+}
+
 #[quanta::kernel]
-fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
+fn vector_add(data: &VecAdd) {
     let i = quark_id();
-    result[i] = a[i] + b[i];
+    data.result[i] = data.a[i] + data.b[i];
 }
 ```
 
-`quark_id()` returns this thread's index. If you dispatch 1024 quarks,
+`quark_id()` returns this quark's index. If you dispatch 1024 quarks,
 `quark_id()` ranges from 0 to 1023.
 
-The `#[quanta::kernel]` attribute compiles this function to all 5 GPU targets
-at build time: metallib (Apple), SPIR-V (Vulkan), PTX (NVIDIA), GCN (AMD),
-and WGSL (WebGPU). All are embedded in your binary. At runtime, the right
+`#[derive(quanta::Fields)]` tells the framework how to map your struct
+to the GPU. `Vec<T>` fields become GPU storage buffers. Scalar fields
+become push constants. No manual slot numbers, no manual binding.
+
+`#[quanta::kernel]` compiles the function to all 5 GPU targets at build
+time: metallib (Apple), SPIR-V (Vulkan), PTX (NVIDIA), GCN (AMD), and
+WGSL (WebGPU). All are embedded in your binary. At runtime, the right
 one runs on whatever GPU is present.
-
-You can also set the workgroup size explicitly:
-
-```rust
-#[quanta::kernel(workgroup = [256, 1, 1])]
-fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
-    let i = quark_id();
-    result[i] = a[i] + b[i];
-}
-```
-
-This controls how quarks are grouped into workgroups. See
-[Compute basics](guide/01-compute-basics.md) for details on 1D/2D/3D workgroup sizes.
 
 ## Run it
 
 ```rust
 use quanta::*;
 
+#[derive(quanta::Fields)]
+struct VecAdd {
+    a: Vec<f32>,
+    b: Vec<f32>,
+    result: Vec<f32>,
+}
+
 #[quanta::kernel]
-fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
+fn vector_add(data: &VecAdd) {
     let i = quark_id();
-    result[i] = a[i] + b[i];
+    data.result[i] = data.a[i] + data.b[i];
 }
 
 fn main() -> Result<(), QuantaError> {
     let gpu = init()?;
 
-    let data_a = vec![1.0f32; 1024];
-    let data_b = vec![2.0f32; 1024];
+    let mut data = VecAdd {
+        a: vec![1.0f32; 1024],
+        b: vec![2.0f32; 1024],
+        result: vec![0.0f32; 1024],
+    };
 
-    // Allocate GPU fields and upload data
-    let a = gpu.compute_field::<f32>(1024)?;
-    let b = gpu.compute_field::<f32>(1024)?;
-    let mut result = gpu.compute_field::<f32>(1024)?;
+    // One line: upload, bind, dispatch, readback
+    vector_add(&gpu, &mut data, 1024)?.wait()?;
 
-    gpu.write_field(&a, &data_a)?;
-    gpu.write_field(&b, &data_b)?;
-
-    // Create a wave and bind fields to kernel parameters
-    let mut wave = vector_add(&gpu)?;
-    wave.bind(0, &a);
-    wave.bind(1, &b);
-    wave.bind(2, &result);
-
-    // Dispatch 1024 quarks, wait for completion
-    let mut pulse = gpu.dispatch(&wave, 1024)?;
-    gpu.wait(&mut pulse)?;
-
-    let output = gpu.read_field::<f32>(&result)?;
-    assert_eq!(output[0], 3.0);
-    println!("GPU computed: {} elements", output.len());
+    assert_eq!(data.result[0], 3.0);
+    println!("GPU computed: {} elements", data.result.len());
     Ok(())
 }
 ```
 
+The dispatch call is one line:
+
+```rust
+vector_add(&gpu, &mut data, 1024)?.wait()?;
+```
+
+That is the entire GPU interaction. Define your data, call the kernel, read
+the results back from the same struct.
+
 ## What happened
 
-1. **Build time**: `#[quanta::kernel]` compiled `vector_add` to native GPU binaries.
-   On Apple GPUs it generates pre-compiled metallib. On AMD it generates GCN machine
-   code via LLVM. On NVIDIA it generates PTX. For Vulkan it generates SPIR-V. All
-   formats are binary and embedded in your Rust binary at compile time. No text
-   shaders are produced in the build path.
+1. **Build time**: `#[quanta::kernel]` compiled `vector_add` to native GPU
+   binaries for all 5 targets. `#[derive(quanta::Fields)]` generated the
+   metadata that maps struct fields to GPU buffer slots and push constant
+   slots. Both happen at `cargo build` -- zero runtime compilation.
 
 2. **`init()`**: Discovered the first available GPU and returned a `Gpu` handle.
 
-3. **`compute_field`**: Allocated typed GPU memory (a field). `write_field` uploaded
-   CPU data into it.
+3. **`vector_add(&gpu, &mut data, 1024)?`**: This single call did everything:
+   - Allocated GPU storage buffers for each `Vec<T>` field
+   - Uploaded CPU data to the GPU
+   - Selected the right pre-compiled binary for your GPU vendor
+   - Created a Wave (a kernel ready to dispatch) and bound all fields
+   - Dispatched 1024 quarks on the GPU
+   - Read results back into `data.result`
 
-4. **`vector_add(&gpu)`**: Selected the right pre-compiled binary for your GPU vendor
-   and created a `Wave` -- a kernel ready to dispatch.
-
-5. **`wave.bind(slot, &field)`**: Bound each field to the corresponding kernel
-   parameter by slot index (0 = `a`, 1 = `b`, 2 = `result`).
-
-6. **`dispatch(&wave, 1024)`**: Launched 1024 quarks on the GPU. Each quark
-   executed `vector_add` with its own `quark_id()`. Returns a `Pulse` (a
-   completion signal).
-
-7. **`wait(&mut pulse)`**: Blocked until the GPU finished.
-
-8. **`read_field`**: Copied results back to CPU memory.
+4. **`.wait()?`**: Blocked until the GPU finished. Returns a `Pulse`
+   (a completion signal) that you wait on.
 
 No shader files. No intermediate representations. No runtime compilation.
-The GPU binary is baked into your Rust binary at `cargo build`.
+No manual slot numbers. No `gpu.write_field`. The GPU binary is baked into
+your Rust binary at `cargo build`.
 
-Quanta has **zero runtime dependencies** -- no `metal-rs`, no `ash`, no `objc` crate.
-Drivers use raw FFI (`objc_msgSend`, `extern "C"` Vulkan functions) for minimal
-binary size and maximum build speed.
+Quanta has **zero runtime dependencies** -- no `metal-rs`, no `ash`, no
+`objc` crate. Drivers use raw FFI (`objc_msgSend`, `extern "C"` Vulkan
+functions) for minimal binary size and maximum build speed.
+
+## Workgroup sizes
+
+Control how quarks are grouped for optimal GPU utilization:
+
+```rust
+#[quanta::kernel(workgroup = [256, 1, 1])]
+fn vector_add(data: &VecAdd) {
+    let i = quark_id();
+    data.result[i] = data.a[i] + data.b[i];
+}
+```
+
+See [Compute basics](guide/01-compute-basics.md) for details on 1D/2D/3D
+workgroup sizes.
 
 ## Structured GPU data
 
-For kernels that operate on multi-field data (particles, vertices, game entities),
-use `#[quanta::gpu_type]` to define a GPU-compatible struct:
+For kernels that operate on multi-field data (particles, vertices, game
+entities), use `#[quanta::gpu_type]` to define a GPU-compatible struct:
 
 ```rust
 #[quanta::gpu_type]
@@ -134,21 +144,35 @@ struct Particle {
 }
 ```
 
-The macro generates:
-- `#[repr(C)]` + `Copy` + `Clone` (safe GPU layout)
-- A `GpuType` impl (so you can use `gpu.compute_field::<Particle>(n)`)
-- Struct layout metadata for backend code generation
-- Field metadata (`GPU_FIELDS`, `GPU_SIZE`) for reflection
-
-Then use it like any scalar type:
+The macro generates `#[repr(C)]`, `Copy`, `Clone`, `GpuType` impl, and
+backend struct declarations (MSL/WGSL). Then use it as an element type
+in your Fields struct:
 
 ```rust
-let particles = gpu.compute_field::<Particle>(10_000)?;
+#[derive(quanta::Fields)]
+struct Simulation {
+    particles: Vec<Particle>,
+    dt: f32,
+}
 ```
 
 See [Fields and types](guide/02-fields-and-types.md) for the full reference.
 
+## Manual API
+
+For power users who need fine-grained control over GPU memory, binding,
+and dispatch, Quanta exposes the full manual API:
+
+```rust
+let a = gpu.field::<f32>(1024, FieldUsage::default_compute())?;
+a.write(&data_a)?;
+// ... see Expert: Manual API for the full story
+```
+
+See [Expert: Manual API](expert/manual-api.md) for manual field allocation,
+explicit wave binding, double-buffering, and raw handles.
+
 ## Next
 
-- [Compute basics](guide/01-compute-basics.md) -- execution model, error handling, optimization
+- [Compute basics](guide/01-compute-basics.md) -- execution model, workgroups, optimization
 - [Fields and types](guide/02-fields-and-types.md) -- GPU memory management

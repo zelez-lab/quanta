@@ -1,10 +1,50 @@
-# Compute Basics
+# Compute
 
 How GPU execution works in Quanta. Read [getting started](../getting-started.md) first.
 
+## The derive-based API
+
+Define your data layout with `#[derive(quanta::Fields)]`, write the kernel,
+call it. The framework handles allocation, binding, and readback.
+
+```rust
+use quanta::*;
+
+#[derive(quanta::Fields)]
+struct Scale {
+    data: Vec<f32>,
+    factor: f32,
+}
+
+#[quanta::kernel]
+fn scale(s: &Scale) {
+    let i = quark_id();
+    s.data[i] = s.data[i] * s.factor;
+}
+
+fn main() -> Result<(), QuantaError> {
+    let gpu = init()?;
+
+    let mut s = Scale {
+        data: vec![1.0, 2.0, 3.0, 4.0],
+        factor: 10.0,
+    };
+
+    scale(&gpu, &mut s, 4)?.wait()?;
+
+    assert_eq!(s.data, vec![10.0, 20.0, 30.0, 40.0]);
+    Ok(())
+}
+```
+
+`Vec<T>` fields become GPU storage buffers. Scalar fields (`f32`, `u32`, etc.)
+become push constants -- small per-dispatch values baked into the command
+stream, faster than buffer reads for single values.
+
 ## Execution hierarchy
 
-GPUs execute in a strict hierarchy. Quanta uses physics names instead of vendor jargon:
+GPUs execute in a strict hierarchy. Quanta uses physics names instead of
+vendor jargon:
 
 | Quanta   | NVIDIA        | AMD          | Metal           | What it is                   |
 |----------|---------------|--------------|-----------------|------------------------------|
@@ -16,78 +56,51 @@ GPUs execute in a strict hierarchy. Quanta uses physics names instead of vendor 
 | Pulse    | Fence         | Fence        | MTLEvent        | GPU completion signal        |
 | Quanta   | The GPU       | The GPU      | The GPU         | All nuclei together          |
 
-When you call `gpu.dispatch(&wave, 1024)`, the GPU schedules 1024 quarks across
-its nuclei. Each quark runs the same kernel code with a different `quark_id()`.
+When you dispatch 1024 quarks, the GPU schedules them across its nuclei. Each
+quark runs the same kernel code with a different `quark_id()`.
 
-Quarks within a proton execute in lockstep (SIMD). If your proton has 32 quarks
-and one takes a branch, all 32 execute both paths (divergence). Minimize branching
-in hot code.
+Quarks within a proton execute in lockstep (SIMD). If your proton has 32
+quarks and one takes a branch, all 32 execute both paths (divergence).
+Minimize branching in hot code.
 
-## What is a field
+## Thread indexing functions
 
-A field is a typed GPU buffer. It holds a contiguous array of `T: Copy` elements.
+| Function         | Returns                                          |
+|------------------|--------------------------------------------------|
+| `quark_id()`     | Global thread index (0..total dispatched quarks) |
+| `quark_count()`  | Total number of dispatched quarks                |
+| `proton_id()`    | Thread index within the workgroup (0..proton_size)|
+| `nucleus_id()`   | Workgroup index                                  |
+| `proton_size()`  | Number of quarks per workgroup                   |
 
-```rust
-let data = gpu.compute_field::<f32>(1_000_000)?;
-```
+## 2D and 3D dispatch
 
-This allocates space for 1 million `f32` values on the GPU. The data is not
-initialized -- you must write to it before reading.
-
-Fields are typed at the Rust level (`Field<f32>`, `Field<u32>`) but the GPU
-sees raw bytes. The type parameter prevents accidentally binding a `Field<u32>`
-where a `Field<f32>` is expected.
-
-See [Fields and types](02-fields-and-types.md) for the full field API.
-
-## The dispatch model
-
-A kernel maps one quark to one piece of work. The standard pattern:
+For image processing or volume work, use 2D/3D workgroups and combine
+indexing functions to compute coordinates:
 
 ```rust
-#[quanta::kernel]
-fn scale(data: &mut [f32], factor: f32) {
-    let i = quark_id();
-    data[i] = data[i] * factor;
+#[derive(quanta::Fields)]
+struct Image {
+    input: Vec<f32>,
+    output: Vec<f32>,
+    width: u32,
+}
+
+#[quanta::kernel(workgroup = [16, 16, 1])]
+fn blur(img: &Image) {
+    let gid = nucleus_id();
+    let lid = proton_id();
+    let x = gid * proton_size() + lid;
+    // Derive row/col from x and img.width
 }
 ```
 
-`quark_id()` is the global thread index. For 1D dispatches, it equals the
-element index directly.
-
-For 2D or 3D work, use `wave_dispatch` with explicit group counts:
-
-```rust
-let mut pulse = gpu.wave_dispatch(&wave, [width, height, 1])?;
-```
-
-Inside the kernel, combine `group_id()`, `local_id()`, and `group_size()` to
-compute 2D coordinates:
-
-```rust
-#[quanta::kernel]
-fn fill_2d(output: &mut [f32], width: u32) {
-    let gid = group_id();
-    let lid = local_id();
-    let x = gid * group_size() + lid;
-    // Derive row/col from x and width
-}
-```
+For explicit 2D/3D dispatch sizes, use `wave_dispatch` on the manual API
+(see [Expert: Manual API](../expert/manual-api.md)).
 
 ## Workgroup size
 
-By default, the driver picks a workgroup size. To set it explicitly, use the
-`workgroup` attribute:
-
-```rust
-#[quanta::kernel(workgroup = [256, 1, 1])]
-fn scale(data: &mut [f32], factor: f32) {
-    let i = quark_id();
-    data[i] = data[i] * factor;
-}
-```
-
-The value is a 1D, 2D, or 3D array:
+By default, the driver picks a workgroup size. To set it explicitly:
 
 ```rust
 // 1D workgroup (256 quarks per group)
@@ -100,51 +113,54 @@ The value is a 1D, 2D, or 3D array:
 #[quanta::kernel(workgroup = [8, 8, 4])]
 ```
 
-The workgroup size is baked into the compiled binary. Choose a size that is a
-multiple of the proton width (32 for NVIDIA/Apple, 64 for AMD) for best
+The workgroup size is baked into the compiled binary. Choose a size that is
+a multiple of the proton width (32 for NVIDIA/Apple, 64 for AMD) for best
 occupancy. When in doubt, `[256, 1, 1]` is a safe default for 1D work, and
 `[16, 16, 1]` for 2D.
 
-You can combine `workgroup` with `opt`:
+Combine `workgroup` with `opt`:
 
 ```rust
 #[quanta::kernel(workgroup = [16, 16, 1], opt = "O2")]
-fn blur(input: &[f32], output: &mut [f32], width: u32) {
+fn blur(img: &Image) {
     // ...
 }
 ```
 
-## Thread indexing functions
-
-| Function        | Returns                                          |
-|-----------------|--------------------------------------------------|
-| `quark_id()`    | Global thread index (0..total dispatched quarks) |
-| `quark_count()` | Total number of dispatched quarks                |
-| `local_id()`    | Thread index within the workgroup (0..group_size)|
-| `group_id()`    | Workgroup index                                  |
-| `group_size()`  | Number of quarks per workgroup                   |
-
-## Push constants
-
-Scalar values (not arrays) can be passed as push constants instead of fields.
-Faster for small, per-dispatch data like a single `f32` threshold.
+## Optimization levels
 
 ```rust
-let mut wave = my_kernel(&gpu)?;
-wave.bind(0, &data_field);
-wave.set_value(1, 0.5f32);  // push constant at slot 1
+#[quanta::kernel]              // default: O3 (aggressive optimization)
+#[quanta::kernel(opt = "O2")]  // balanced
+#[quanta::kernel(opt = "O0")]  // no optimization (for debugging)
 ```
 
-Inside the kernel, the scalar parameter maps to the push constant slot:
+O3 is the default. It enables LLVM's full optimization pipeline for the GPU
+target, including loop unrolling, vectorization, and register allocation.
+Use O0 only when debugging kernel correctness.
+
+## Const generics
+
+Kernels support const generic parameters:
 
 ```rust
+#[derive(quanta::Fields)]
+struct TiledData {
+    data: Vec<f32>,
+    output: Vec<f32>,
+}
+
 #[quanta::kernel]
-fn threshold_filter(data: &mut [f32], threshold: f32) {
-    let i = quark_id();
-    if data[i] < threshold {
-        data[i] = 0.0;
+fn tiled_reduce<const TILE: u32>(d: &TiledData) {
+    let lid = proton_id();
+    if lid < TILE {
+        // ...
     }
 }
+
+// Call with specific tile size:
+let gpu = quanta::init()?;
+tiled_reduce::<256>(&gpu, &mut data, n)?.wait()?;
 ```
 
 ## Error handling
@@ -164,24 +180,9 @@ All GPU operations return `Result<T, QuantaError>`. Error kinds:
 Attach context to errors for debugging:
 
 ```rust
-let field = gpu.compute_field::<f32>(n)
-    .map_err(|e| e.with_context("allocating particle buffer"))?;
+let gpu = quanta::init()
+    .map_err(|e| e.with_context("initializing GPU for particle sim"))?;
 ```
-
-## Optimization levels
-
-The `#[quanta::kernel]` macro accepts an optimization level:
-
-```rust
-#[quanta::kernel]              // default: O3 (aggressive optimization)
-#[quanta::kernel(opt = "O2")]  // balanced
-#[quanta::kernel(opt = "O0")]  // no optimization (for debugging)
-```
-
-O3 is the default. It enables LLVM's full optimization pipeline for the GPU
-target, including loop unrolling, vectorization, and register allocation. Use
-O0 only when debugging kernel correctness -- it produces significantly slower
-code.
 
 ## Device information
 
@@ -197,12 +198,9 @@ println!("Total quarks: {}", gpu.total_quarks());
 println!("Memory: {} MB", gpu.caps().memory_bytes / 1_000_000);
 ```
 
-This information is useful for tuning dispatch sizes and workgroup dimensions.
-
 ## Multiple GPUs
 
-`quanta::devices()` returns all available GPUs. Use this to select a specific
-device or distribute work:
+`quanta::devices()` returns all available GPUs:
 
 ```rust
 let gpus = quanta::devices();
@@ -212,35 +210,23 @@ for gpu in &gpus {
 let gpu = gpus.into_iter().next().expect("no GPU");
 ```
 
-## Const generics
-
-Kernels support const generic parameters. The value is set at the call site
-and baked into the dispatch as a push constant:
-
-```rust
-#[quanta::kernel]
-fn tiled_reduce<const TILE: u32>(data: &[f32], output: &mut [f32]) {
-    let lid = local_id();
-    // TILE is available as a compile-time value
-    if lid < TILE {
-        // ...
-    }
-}
-
-// Call with specific tile size:
-let wave = tiled_reduce::<256>(&gpu)?;
-```
-
 ## Saturation arithmetic
 
 Use `.saturating_add()` and `.saturating_sub()` for clamped arithmetic
 that never wraps:
 
 ```rust
+#[derive(quanta::Fields)]
+struct Clamped {
+    a: Vec<u32>,
+    b: Vec<u32>,
+    out: Vec<u32>,
+}
+
 #[quanta::kernel]
-fn clamp_add(a: &[u32], b: &[u32], out: &mut [u32]) {
+fn clamp_add(c: &Clamped) {
     let i = quark_id();
-    out[i] = a[i].saturating_add(b[i]); // clamps to u32::MAX on overflow
+    c.out[i] = c.a[i].saturating_add(c.b[i]); // clamps to u32::MAX on overflow
 }
 ```
 

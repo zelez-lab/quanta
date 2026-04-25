@@ -2,6 +2,20 @@
 
 Sum an array using shared memory and tree reduction.
 
+## Data layout
+
+```rust
+#[derive(quanta::Fields)]
+struct ReduceData {
+    input: Vec<f32>,    // input array
+    output: Vec<f32>,   // partial sums (one per workgroup)
+    count: u32,         // push constant: total element count
+}
+```
+
+Two `Vec<f32>` fields become GPU storage buffer slots 0 and 1. The `u32`
+scalar becomes a push constant at slot 2.
+
 ## Kernel
 
 ```rust
@@ -44,8 +58,8 @@ fn reduce_sum(input: &[f32], output: &mut [f32], count: u32) {
 ## Host code
 
 ```rust
-fn main() {
-    let gpu = quanta::init().unwrap();
+fn main() -> Result<(), quanta::QuantaError> {
+    let gpu = quanta::init()?;
 
     let count: usize = 1_048_576;
     let block_size: u32 = 256;
@@ -53,27 +67,28 @@ fn main() {
 
     let data: Vec<f32> = (0..count).map(|i| (i % 7) as f32).collect();
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let partial = gpu.compute_field::<f32>(num_blocks as usize).unwrap();
+    let input = gpu.compute_field::<f32>(count)?;
+    let partial = gpu.compute_field::<f32>(num_blocks as usize)?;
 
-    gpu.write_field(&input, &data).unwrap();
+    input.write(&data)?;
 
-    let mut wave = reduce_sum(&gpu).unwrap();
+    let mut wave = reduce_sum(&gpu)?;
     wave.bind(0, &input);
     wave.bind(1, &partial);
     wave.set_value(2, count as u32);
 
     // Dispatch with group size = BLOCK_SIZE
-    let mut pulse = gpu.wave_dispatch(&wave, [num_blocks, 1, 1]).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu.wave_dispatch(&wave, [num_blocks, 1, 1])?;
+    pulse.wait()?;
 
     // Read partial sums and finish on CPU
-    let partials = gpu.read_field(&partial).unwrap();
+    let partials = partial.read()?;
     let total: f32 = partials.iter().sum();
 
     let expected: f32 = data.iter().sum();
     assert!((total - expected).abs() < 1.0);
     println!("Sum = {total}");
+    Ok(())
 }
 ```
 
@@ -88,6 +103,19 @@ Step 3:  [final  _ _ _ _ _ _ _]
 
 Each `barrier()` ensures all quarks in the group have finished writing before
 the next round reads. Without barriers, quarks would read stale shared memory.
+
+## Shared memory pattern
+
+The reduction kernel demonstrates the fundamental shared memory pattern:
+
+1. **Load** from global into `#[quanta::shared]` arrays (each quark loads one element)
+2. **Barrier** to ensure all loads are visible
+3. **Compute** using shared memory (tree reduction, scan, etc.)
+4. **Barrier** between computation rounds
+5. **Store** the result back to global memory (typically one quark per group)
+
+This pattern applies to reductions, prefix scans, histogram binning, and
+any algorithm that needs workgroup-wide cooperation.
 
 ## Key concepts
 

@@ -3,6 +3,21 @@
 Compute the Mandelbrot fractal. Demonstrates complex arithmetic, branching,
 and variable iteration counts per quark.
 
+## Data layout
+
+```rust
+#[derive(quanta::Fields)]
+struct MandelbrotData {
+    output: Vec<u32>,  // iteration counts per pixel
+    width: u32,        // push constant
+    height: u32,       // push constant
+    max_iter: u32,     // push constant
+}
+```
+
+Three scalars become push constants (set via `wave.set_value`). The `Vec<u32>`
+becomes a GPU storage buffer at slot 0.
+
 ## Kernel
 
 ```rust
@@ -34,31 +49,32 @@ fn mandelbrot(output: &mut [u32], width: u32, height: u32, max_iter: u32) {
 ## Host code
 
 ```rust
-fn main() {
-    let gpu = quanta::init().unwrap();
+fn main() -> Result<(), quanta::QuantaError> {
+    let gpu = quanta::init()?;
 
     let width: u32 = 3840;
     let height: u32 = 2160;
     let max_iter: u32 = 1000;
     let count = (width * height) as usize;
 
-    let output = gpu.compute_field::<u32>(count).unwrap();
+    let output = gpu.compute_field::<u32>(count)?;
 
-    let mut wave = mandelbrot(&gpu).unwrap();
+    let mut wave = mandelbrot(&gpu)?;
     wave.bind(0, &output);
     wave.set_value(1, width);
     wave.set_value(2, height);
     wave.set_value(3, max_iter);
 
-    let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu.dispatch(&wave, count as u32)?;
+    pulse.wait()?;
 
-    let iterations = gpu.read_field(&output).unwrap();
+    let iterations = output.read()?;
 
     // Count pixels in the set (hit max_iter)
     let in_set = iterations.iter().filter(|&&v| v == max_iter).count();
     println!("4K Mandelbrot: {in_set} pixels in set ({:.1}%)",
         in_set as f64 / count as f64 * 100.0);
+    Ok(())
 }
 ```
 

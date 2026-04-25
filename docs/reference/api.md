@@ -15,9 +15,9 @@ let gpu = quanta::init()?;
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `caps()` | `&Caps` | Full device capabilities |
-| `nuclei()` | `u32` | Number of compute units |
+| `nuclei()` | `u32` | Number of compute units (SM / CU) |
 | `protons_per_nucleus()` | `u32` | Cores per compute unit |
-| `quarks_per_proton()` | `u32` | Threads per core (warp width) |
+| `quarks_per_proton()` | `u32` | Threads per core (warp / wavefront width) |
 | `total_quarks()` | `u32` | Total parallel execution units |
 | `name()` | `&str` | Device name string |
 
@@ -25,15 +25,11 @@ let gpu = quanta::init()?;
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `field::<T>(count, usage)` | `Result<Field<T>>` | Allocate with explicit usage |
-| `compute_field::<T>(count)` | `Result<Field<T>>` | Read + write + compute + transfer |
-| `render_field::<T>(count)` | `Result<Field<T>>` | Read + render + transfer |
-| `uniform_field::<T>(count)` | `Result<Field<T>>` | Read + uniform + transfer |
+| `field::<T>(count, usage)` | `Result<Field<T>>` | Allocate with explicit usage flags |
+| `compute_field::<T>(count)` | `Result<Field<T>>` | Storage + transfer (compute workloads) |
+| `render_field::<T>(count)` | `Result<Field<T>>` | Vertex + transfer (render workloads) |
+| `uniform_field::<T>(count)` | `Result<Field<T>>` | Uniform + transfer (constant data) |
 | `field_mapped::<T>(count)` | `Result<MappedField<T>>` | CPU-mapped buffer (zero-copy) |
-| `write_field(field, data)` | `Result<()>` | Upload data to GPU |
-| `read_field(field)` | `Result<Vec<T>>` | Download data from GPU |
-| `copy_field(dst, src)` | `Result<()>` | GPU-to-GPU copy |
-| `resize_field(old, new_count, usage)` | `Result<Field<T>>` | Resize with data copy |
 
 ### Textures
 
@@ -43,10 +39,7 @@ let gpu = quanta::init()?;
 | `create_texture(desc)` | `Result<Texture>` | Full-control creation |
 | `render_target(w, h, fmt)` | `Result<Texture>` | Can be drawn to + sampled |
 | `msaa_target(w, h, fmt, samples)` | `Result<Texture>` | Multi-sampled render target |
-| `texture_write(tex, data)` | `Result<()>` | Upload pixel data |
-| `texture_read(tex)` | `Result<Vec<u8>>` | Download pixel data |
 | `sampler(desc)` | `Result<Sampler>` | Create reusable sampler |
-| `generate_mipmaps(tex)` | `Result<()>` | Auto-generate mip chain |
 | `resolve_texture(msaa, dst)` | `Result<()>` | Resolve MSAA to single-sample |
 | `texture_view_create(tex, desc)` | `Result<TextureView>` | Sub-range view |
 | `format_caps(format)` | `FormatCaps` | Query format capabilities |
@@ -56,30 +49,27 @@ let gpu = quanta::init()?;
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `wave(kernel_bytes)` | `Result<Wave>` | Create wave from compiled kernel |
-| `wave_jit(kernel_def)` | `Result<Wave>` | JIT-compile a serialized KernelDef and create wave (requires `jit` feature) |
-| `dispatch(wave, quarks)` | `Result<Pulse>` | Dispatch 1D (convenience) |
+| `wave_jit(kernel_def)` | `Result<Wave>` | JIT-compile KernelDef and create wave |
+| `dispatch(wave, quarks)` | `Result<Pulse>` | Dispatch 1D (exact thread count) |
 | `wave_dispatch(wave, [x,y,z])` | `Result<Pulse>` | Dispatch with group counts |
 | `dispatch_indirect(wave, buf, off)` | `Result<Pulse>` | GPU-driven dispatch |
 | `reload_wave(wave, kernel)` | `Result<()>` | Hot-reload kernel binary |
+| `batch()` | `Result<Batch>` | Begin multi-dispatch batch |
 
 ### Render
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `pipeline(desc)` | `Result<Pipeline>` | Create render pipeline |
-| `render_begin(target)` | `Result<RenderPass>` | Begin render pass |
-| `render_end(pass)` | `Result<Pulse>` | Submit render pass |
+| `render(target)` | `Result<RenderBuilder>` | Begin render pass (builder chain) |
 | `dispatch_mesh(pipeline, groups)` | `Result<()>` | Mesh shader dispatch |
 
 ### Sync
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `wait(pulse)` | `Result<()>` | Block until GPU completes |
-| `wait_and_reset(pulse)` | `Result<()>` | Wait then reset for reuse |
-| `poll(pulse)` | `bool` | Non-blocking completion check |
 | `barrier()` | `Result<()>` | Full pipeline barrier |
-| `barrier_buffer(field, from, to)` | `Result<()>` | Buffer state transition |
+| `barrier_field(field, from, to)` | `Result<()>` | Field state transition |
 | `barrier_texture(tex, from, to)` | `Result<()>` | Texture state transition |
 
 ### Timeline semaphores
@@ -118,33 +108,57 @@ let gpu = quanta::init()?;
 | `debug_push(label)` | `()` | Push debug group |
 | `debug_pop()` | `()` | Pop debug group |
 
+### Deprecated methods
+
+These methods still work but have preferred alternatives:
+
+| Deprecated | Use instead |
+|------------|-------------|
+| `gpu.write_field(&field, &data)` | `field.write(&data)` |
+| `gpu.read_field(&field)` | `field.read()` |
+| `gpu.copy_field(&dst, &src)` | `dst.copy_from(&src)` |
+| `gpu.resize_field(&old, n, usage)` | Allocate new field + `dst.copy_from(&old)` |
+| `gpu.texture_write(&tex, &data)` | `texture.write(&data)` |
+| `gpu.texture_read(&tex)` | `texture.read()` |
+| `gpu.generate_mipmaps(&tex)` | `texture.generate_mipmaps()` |
+| `gpu.wait(&mut pulse)` | `pulse.wait()` |
+| `gpu.wait_and_reset(&mut pulse)` | `pulse.wait()` + `pulse.reset()` |
+| `gpu.poll(&pulse)` | `pulse.is_done()` |
+| `gpu.begin_batch()` | `gpu.batch()` |
+| `gpu.render_begin(&target)` | `gpu.render(&target)` (builder) |
+| `gpu.render_end(pass)` | `.pulse()` on `RenderBuilder` |
+| `gpu.barrier_buffer(field, from, to)` | `gpu.barrier_field(field, from, to)` |
+| `gpu.compute_field::<T>(n)` | Still valid (not deprecated) |
+
 ---
 
 ## `Field<T>`
 
-GPU-resident typed buffer. Created via `gpu.compute_field()` or `gpu.field()`.
+GPU-resident typed buffer (storage buffer). Created via `gpu.compute_field()`
+or `gpu.field()`. Freed automatically when dropped (RAII).
 
 | Method | Returns | Description |
 |--------|---------|-------------|
+| `write(&data)` | `Result<()>` | Upload data from CPU to GPU |
+| `read()` | `Result<Vec<T>>` | Download data from GPU to CPU |
+| `copy_from(&src)` | `Result<()>` | GPU-to-GPU copy from another field |
 | `len()` | `usize` | Element count |
 | `is_empty()` | `bool` | True if count is 0 |
 | `byte_size()` | `usize` | Size in bytes |
-| `handle()` | `u64` | Raw GPU handle |
-
-Dropped automatically when it goes out of scope.
+| `handle()` | `u64` | Raw GPU handle (for driver use) |
 
 ---
 
 ## `MappedField<T>`
 
-CPU-mapped GPU buffer for zero-copy writes.
+CPU-mapped GPU buffer for zero-copy writes. Created via `gpu.field_mapped()`.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `write(index, value)` | `()` | Write single element |
-| `read(index)` | `T` | Read single element |
-| `as_slice()` | `&[T]` | Immutable slice view |
-| `as_mut_slice()` | `&mut [T]` | Mutable slice view |
+| `write(index, value)` | `()` | Write single element at index |
+| `read(index)` | `T` | Read single element at index |
+| `as_slice()` | `&[T]` | Immutable slice view of mapped memory |
+| `as_mut_slice()` | `&mut [T]` | Mutable slice view of mapped memory |
 | `len()` | `usize` | Element count |
 | `byte_size()` | `usize` | Size in bytes |
 | `handle()` | `u64` | Raw GPU handle |
@@ -153,10 +167,13 @@ CPU-mapped GPU buffer for zero-copy writes.
 
 ## `Texture`
 
-GPU-resident 2D image.
+GPU-resident 2D image. Created via `gpu.texture()` or `gpu.create_texture()`.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
+| `write(&data)` | `Result<()>` | Upload pixel data |
+| `read()` | `Result<Vec<u8>>` | Download pixel data |
+| `generate_mipmaps()` | `Result<()>` | Auto-generate mip chain |
 | `width()` | `u32` | Width in pixels |
 | `height()` | `u32` | Height in pixels |
 | `format()` | `Format` | Pixel format |
@@ -166,15 +183,19 @@ GPU-resident 2D image.
 
 ## `Wave`
 
-A bound compute pipeline — compiled kernel with field bindings.
+A bound compute pipeline -- compiled kernel with field bindings.
+Created via `kernel_fn(&gpu)` (the function generated by `#[quanta::kernel]`).
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `bind(slot, field)` | `()` | Bind buffer at slot |
-| `bind_texture(slot, texture)` | `()` | Bind texture at slot |
-| `set_value(slot, value)` | `()` | Set push constant (any Copy type) |
-| `set_bytes(slot, data)` | `()` | Set raw push constant bytes |
+| `bind(slot, &field)` | `()` | Bind a field at a slot |
+| `bind_texture(slot, &texture)` | `()` | Bind a texture at a slot |
+| `set_value(slot, value)` | `()` | Set push constant (any `Copy` type) |
+| `set_bytes(slot, &data)` | `()` | Set raw push constant bytes |
 | `handle()` | `u64` | Raw GPU handle |
+
+Waves are reusable: rebind fields and dispatch again with different data.
+All binding state is stored inline (no heap allocation on the hot path).
 
 ---
 
@@ -184,64 +205,114 @@ GPU completion signal returned by dispatch/render operations.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `wait()` | `Result<()>` | Block until completed |
-| `is_done()` | `bool` | Non-blocking check |
+| `wait()` | `Result<()>` | Block until GPU completes this operation |
+| `is_done()` | `bool` | Non-blocking completion check |
 | `reset()` | `()` | Reset for reuse |
 | `handle()` | `u64` | Raw GPU handle |
 
 ---
 
-## `RenderPass`
+## `RenderBuilder`
 
-Active render pass — record draw commands, then submit via `gpu.render_end()`.
+Chainable render pass builder. Created by `gpu.render(&target)`. Every method
+consumes and returns `self`, so the entire pass is a single expression ending
+in `.pulse()`.
+
+```rust
+let mut pulse = gpu.render(&target)?
+    .clear(Color::BLACK)
+    .pipeline(&pipeline)
+    .vertices(0, &verts)
+    .draw(3)
+    .pulse()?;
+pulse.wait()?;
+```
 
 ### Pipeline
 
 | Method | Description |
 |--------|-------------|
-| `set_pipeline(pipeline)` | Bind render pipeline |
+| `.pipeline(&p)` | Bind render pipeline |
 
 ### Geometry
 
 | Method | Description |
 |--------|-------------|
-| `bind_vertices(slot, field)` | Bind vertex buffer |
-| `bind_vertices_offset(slot, field, offset)` | Bind with byte offset |
-| `bind_indices(field)` | Bind index buffer (u32) |
+| `.vertices(slot, &field)` | Bind vertex buffer at slot |
+| `.vertices_offset(slot, &field, offset)` | Bind with byte offset |
+| `.indices(&field)` | Bind index buffer (u32) |
 
-### Resources
-
-| Method | Description |
-|--------|-------------|
-| `set_field(slot, field)` | Bind storage buffer |
-| `set_uniform(slot, field)` | Bind uniform buffer |
-| `set_texture(slot, texture)` | Bind texture |
-| `set_sampler(slot, desc)` | Set sampler state |
-| `set_value(slot, value)` | Set push constant |
-
-### Draw
+### Shader resources
 
 | Method | Description |
 |--------|-------------|
-| `draw(vertex_count)` | Draw non-indexed |
-| `draw_instanced(verts, instances)` | Instanced draw |
-| `draw_indexed(index_count)` | Draw indexed |
-| `draw_indexed_instanced(idxs, insts)` | Indexed + instanced |
-| `draw_indirect(buffer, offset)` | GPU-driven draw |
+| `.field(slot, &field)` | Bind storage buffer at slot |
+| `.uniform(slot, &field)` | Bind uniform buffer at slot |
+| `.texture(slot, &tex)` | Bind texture at slot |
+| `.sampler(slot, desc)` | Set sampler state |
+| `.value(slot, &val)` | Set push constant |
 
-### State
+### Draw commands
 
 | Method | Description |
 |--------|-------------|
-| `clear(color)` | Clear color attachment |
-| `clear_depth(depth)` | Clear depth attachment |
-| `clear_stencil(value)` | Clear stencil attachment |
-| `set_stencil_ref(value)` | Set stencil reference |
-| `set_scissor(x, y, w, h)` | Set scissor rect |
-| `set_viewport(x, y, w, h)` | Set viewport |
-| `set_shading_rate(rate)` | Set VRS rate |
-| `set_color_targets(targets)` | Set MRT targets |
-| `set_depth_target(target)` | Set depth target |
+| `.draw(vertex_count)` | Draw non-indexed |
+| `.draw_instanced(verts, instances)` | Instanced draw |
+| `.draw_indexed(index_count)` | Draw indexed |
+| `.draw_indexed_instanced(idxs, insts)` | Indexed + instanced |
+| `.draw_indirect(&buffer, offset)` | GPU-driven draw |
+| `.draw_indexed_indirect(&buffer, offset, &indices)` | GPU-driven indexed draw |
+
+### Render state
+
+| Method | Description |
+|--------|-------------|
+| `.clear(color)` | Clear color attachment |
+| `.clear_depth(depth)` | Clear depth attachment |
+| `.clear_stencil(value)` | Clear stencil |
+| `.stencil_ref(value)` | Set stencil reference |
+| `.scissor(x, y, w, h)` | Set scissor rect (pixels) |
+| `.viewport(x, y, w, h)` | Set viewport |
+| `.viewport_depth(x, y, w, h, min, max)` | Viewport with depth range |
+| `.shading_rate(rate)` | Variable rate shading |
+| `.shading_rate_image(&tex)` | Per-pixel shading rate |
+| `.color_targets(targets)` | MRT color targets |
+| `.depth_target(target)` | Depth/stencil target |
+
+### Queries and debug
+
+| Method | Description |
+|--------|-------------|
+| `.begin_occlusion_query(&q, idx)` | Start occlusion query |
+| `.end_occlusion_query(&q, idx)` | End occlusion query |
+| `.debug_push(label)` | Push debug group |
+| `.debug_pop()` | Pop debug group |
+
+### Terminal
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `.pulse()` | `Result<Pulse>` | Submit and return completion signal |
+
+---
+
+## `Batch`
+
+A batch of GPU dispatches recorded into a single command buffer.
+Multiple kernels are encoded without per-dispatch commit overhead.
+
+```rust
+let mut batch = gpu.batch()?;
+batch.dispatch(&wave1, n)?;
+batch.dispatch(&wave2, n)?;
+let mut pulse = batch.pulse()?;
+pulse.wait()?;
+```
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `dispatch(&wave, quarks)` | `Result<()>` | Encode a dispatch into the batch |
+| `pulse()` | `Result<Pulse>` | Submit all dispatches, return one completion signal |
 
 ---
 
@@ -264,14 +335,10 @@ Contains native binaries (SPIR-V + metallib), not text sources.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `spirv` | `Option<&'static [u8]>` | SPIR-V binary (vertex/fragment execution model) |
-| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib binary |
+| `spirv` | `Option<&'static [u8]>` | SPIR-V binary |
+| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib |
 | `entry_point` | `&'static str` | Shader entry point name |
-| `stage` | `ShaderStage` | Which pipeline stage |
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `for_vendor(vendor)` | `Option<&[u8]>` | Select best format for vendor |
+| `stage` | `ShaderStage` | Pipeline stage |
 
 ---
 
@@ -288,10 +355,6 @@ binaries -- no text sources (MSL/WGSL) are included in the build path.
 | `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib (Apple) |
 | `llvm_ir` | `Option<&'static [u8]>` | LLVM IR fallback |
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `for_vendor(vendor)` | `Option<&[u8]>` | Select best format for vendor |
-
 ---
 
 ## `GpuType` trait
@@ -306,29 +369,9 @@ pub trait GpuType: Copy + 'static {
 }
 ```
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `gpu_size()` | `usize` | Size in bytes of one element |
-| `scalar_type()` | `ScalarType` | Enum variant for this type |
-
-### Automatic implementation
-
-`#[quanta::gpu_type]` implements `GpuType` automatically for user-defined structs:
-
-```rust
-#[quanta::gpu_type]
-struct Particle {
-    pos: [f32; 3],
-    vel: [f32; 3],
-    mass: f32,
-}
-
-// Now valid:
-let particles = gpu.compute_field::<Particle>(1000)?;
-```
-
-Manual `GpuType` implementation is possible but not recommended -- the macro
-handles `repr(C)` layout, shader declarations, and field metadata automatically.
+Automatic `GpuType` implementation is generated by:
+- `#[quanta::gpu_type]` -- for storage buffer element types
+- `#[derive(quanta::Uniforms)]` -- for uniform buffer structs
 
 ---
 
@@ -343,7 +386,7 @@ handles `repr(C)` layout, shader declarations, and field metadata automatically.
 | `quanta::devices()` | `Vec<Gpu>` | List all available GPUs |
 
 Set the environment variable `QUANTA_CPU=1` as an alternative to calling
-`init_cpu()`. When set, `init()` returns the CPU software executor.
+`init_cpu()`. When set, `init()` includes the CPU software executor.
 
 ---
 
@@ -355,10 +398,6 @@ Prefix sum utilities (requires `software` feature).
 |----------|---------|-------------|
 | `exclusive_scan_f32_bytes(input)` | `Vec<u8>` | Exclusive prefix sum on raw f32 byte slice |
 
-`exclusive_scan_f32_bytes` interprets the input byte slice as a contiguous
-`f32` array, computes the exclusive prefix sum, and returns the result as
-raw bytes. Useful for stream compaction and radix sort building blocks.
-
 ---
 
 ## Design decisions
@@ -367,20 +406,7 @@ Features Quanta deliberately does not include:
 
 | Feature | Rationale |
 |---------|-----------|
-| **Swapchain / window management** | Quanta renders to textures. The host application owns the window, surface, and presentation. This keeps Quanta focused on compute and rendering without coupling to a windowing system. |
-| **Geometry shaders** | Deprecated in Metal and Vulkan best practices. Mesh shaders (`#[quanta::mesh]`) are the modern replacement. |
-| **HLSL / GLSL input** | Rust is the shader language. One language for CPU and GPU code, with the borrow checker, generics, and standard tooling. |
-| **Dynamic parallelism** | Nested kernel dispatch from GPU code. Not supported by Metal or Vulkan compute. If needed, dispatch from the CPU with multiple `gpu.dispatch()` calls or use `gpu.begin_batch()`. |
-
-## Current limitations
-
-Features not yet implemented:
-
-| Feature | Status |
-|---------|--------|
-| **WebGPU runtime** | WGSL source is embedded at build time. A browser runtime host for standalone WASM dispatch is planned but not shipped. |
-| **Multi-GPU** | Single device only. Multi-GPU dispatch and peer-to-peer transfer are not yet in the API. |
-| **Tensor core acceleration (Vulkan)** | `CooperativeMMA` emits a scalar fallback on Vulkan. Native `VK_KHR_cooperative_matrix` support requires hardware testing. Metal uses `simdgroup_multiply_accumulate` natively. |
-| **Staging buffers** | Buffers use shared/host-visible memory. Discrete GPUs with separate CPU/GPU memory would benefit from device-local buffers with staging transfers. |
-| **Ray tracing / mesh shaders** | API surface exists (`#[quanta::ray_gen]`, `#[quanta::mesh]`). Driver implementations are not yet wired. |
-| **Software backend** | A CPU reference executor exists (`feature = "software"`) but is not production-ready. |
+| **Swapchain / window management** | Quanta renders to textures. The host application owns the window, surface, and presentation. |
+| **Geometry shaders** | Deprecated in Metal and Vulkan best practices. Mesh shaders (`#[quanta::mesh]`) are the replacement. |
+| **HLSL / GLSL input** | Rust is the shader language. One language for CPU and GPU. |
+| **Dynamic parallelism** | Not supported by Metal or Vulkan compute. Use multiple `gpu.dispatch()` calls or `gpu.batch()`. |

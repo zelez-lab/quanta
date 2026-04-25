@@ -4,9 +4,16 @@
 
 ---
 
+# How GPUs Work
+
+- [GPU Architecture](concepts/gpu-architecture.md)
+- [Shader Stages](concepts/shader-stages.md)
+- [Execution Model](concepts/execution-model.md)
+- [Memory Model](concepts/memory-model.md)
+
 # Guide
 
-- [Compute Basics](guide/01-compute-basics.md)
+- [Compute](guide/01-compute-basics.md)
 - [Fields and Types](guide/02-fields-and-types.md)
 - [Shared Memory](guide/03-shared-memory.md)
 - [Atomics](guide/04-atomics.md)
@@ -15,14 +22,14 @@
 - [Rendering](guide/07-rendering.md)
 - [Vertex and Fragment Shaders](guide/08-vertex-fragment.md)
 - [Device Functions](guide/09-device-functions.md)
-- [Advanced](guide/10-advanced.md)
 
-# Concepts
+# Expert
 
-- [GPU Architecture](concepts/gpu-architecture.md)
-- [Shader Stages](concepts/shader-stages.md)
-- [Execution Model](concepts/execution-model.md)
-- [Memory Model](concepts/memory-model.md)
+- [Manual API](expert/manual-api.md)
+- [Double Buffering](expert/double-buffering.md)
+- [Multi-Queue](expert/multi-queue.md)
+- [Ray Tracing](expert/ray-tracing.md)
+- [Sparse Textures](expert/sparse-textures.md)
 
 # Cookbook
 
