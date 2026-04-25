@@ -1,14 +1,21 @@
-use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
+
+use crate::{GpuDevice, QuantaError};
 
 /// GPU-resident typed buffer. Data that quarks operate on.
 ///
-/// Created via [`GpuDevice::field`]. Freed when dropped.
+/// Created via [`Gpu::field`]. Freed when dropped.
 /// Type parameter ensures type-safe reads and writes.
+///
+/// Resources own their operations — write, read, copy are methods
+/// on Field itself, not on Gpu.
 pub struct Field<T: Copy> {
     pub(crate) handle: u64,
     pub(crate) count: usize,
-    pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
+    pub(crate) device: Arc<dyn GpuDevice>,
     pub(crate) _marker: PhantomData<T>,
 }
 
@@ -24,9 +31,14 @@ pub struct MappedField<T: Copy> {
     pub(crate) handle: u64,
     pub(crate) ptr: *mut u8,
     pub(crate) count: usize,
-    pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
+    pub(crate) device: Arc<dyn GpuDevice>,
     pub(crate) _marker: PhantomData<T>,
 }
+
+// Safety: MappedField's ptr points to GPU-visible memory that outlives the field.
+// Access is either single-threaded or synchronized by the driver.
+unsafe impl<T: Copy> Send for MappedField<T> {}
+unsafe impl<T: Copy> Sync for MappedField<T> {}
 
 impl<T: Copy> MappedField<T> {
     /// Number of elements.
@@ -79,9 +91,7 @@ impl<T: Copy> MappedField<T> {
 
 impl<T: Copy> Drop for MappedField<T> {
     fn drop(&mut self) {
-        if let Some(f) = self.drop_fn.take() {
-            f(self.handle);
-        }
+        self.device.field_free(self.handle);
     }
 }
 
@@ -104,12 +114,41 @@ impl<T: Copy> Field<T> {
     pub fn handle(&self) -> u64 {
         self.handle
     }
+
+    /// Write data from CPU to this GPU field.
+    pub fn write(&self, data: &[T]) -> Result<(), QuantaError> {
+        let bytes = unsafe {
+            core::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
+        };
+        self.device.field_write_bytes(self.handle, bytes)
+    }
+
+    /// Read data from this GPU field back to CPU.
+    pub fn read(&self) -> Result<Vec<T>, QuantaError> {
+        let bytes = self
+            .device
+            .field_read_bytes(self.handle, self.byte_size())?;
+        let mut result = vec![unsafe { core::mem::zeroed::<T>() }; self.count];
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                result.as_mut_ptr() as *mut u8,
+                bytes.len(),
+            );
+        }
+        Ok(result)
+    }
+
+    /// Copy data from another field into this one.
+    /// Copies min(self.byte_size(), src.byte_size()) bytes.
+    pub fn copy_from(&self, src: &Field<T>) -> Result<(), QuantaError> {
+        let size = self.byte_size().min(src.byte_size());
+        self.device.field_copy_bytes(self.handle, src.handle, size)
+    }
 }
 
 impl<T: Copy> Drop for Field<T> {
     fn drop(&mut self) {
-        if let Some(f) = self.drop_fn.take() {
-            f(self.handle);
-        }
+        self.device.field_free(self.handle);
     }
 }

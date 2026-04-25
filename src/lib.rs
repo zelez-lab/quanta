@@ -88,11 +88,11 @@ fn validation_enabled() -> bool {
 
 /// Optionally wrap a device in the validation layer.
 #[cfg(feature = "std")]
-fn maybe_validate(dev: alloc::boxed::Box<dyn GpuDevice>) -> alloc::boxed::Box<dyn GpuDevice> {
+fn maybe_validate(dev: alloc::boxed::Box<dyn GpuDevice>) -> alloc::sync::Arc<dyn GpuDevice> {
     if validation_enabled() {
-        driver::validation::ValidationDevice::wrap(dev)
+        alloc::sync::Arc::from(driver::validation::ValidationDevice::wrap(dev))
     } else {
-        dev
+        alloc::sync::Arc::from(dev)
     }
 }
 

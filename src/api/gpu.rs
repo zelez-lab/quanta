@@ -1,5 +1,4 @@
-use alloc::boxed::Box;
-use alloc::vec;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -23,13 +22,19 @@ mod render;
 /// gpu.dispatch(&wave, 1_000_000)?;
 /// ```
 pub struct Gpu {
-    inner: Box<dyn GpuDevice>,
+    inner: Arc<dyn GpuDevice>,
 }
 
 impl Gpu {
     #[allow(dead_code)]
-    pub(crate) fn new(inner: Box<dyn GpuDevice>) -> Self {
+    pub(crate) fn new(inner: Arc<dyn GpuDevice>) -> Self {
         Self { inner }
+    }
+
+    /// Get a reference to the underlying device (for resources that need it).
+    #[allow(dead_code)]
+    pub(crate) fn device(&self) -> Arc<dyn GpuDevice> {
+        self.inner.clone()
     }
 
     // === Device info ===
@@ -60,21 +65,24 @@ impl Gpu {
 
     // === Fields (typed GPU memory) ===
 
+    /// Allocate a GPU field with the given element count and usage flags.
     pub fn field<T: Copy>(&self, count: usize, usage: FieldUsage) -> Result<Field<T>, QuantaError> {
         let size = count * size_of::<T>();
         let handle = self.inner.field_alloc(size, usage)?;
         Ok(Field {
             handle,
             count,
-            drop_fn: None,
+            device: self.inner.clone(),
             _marker: PhantomData,
         })
     }
 
+    /// Allocate a compute field (storage + transfer). Convenience shorthand.
     pub fn compute_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
         self.field(count, FieldUsage::default_compute())
     }
 
+    /// Allocate a render field (vertex + transfer). Convenience shorthand.
     pub fn render_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
         self.field(count, FieldUsage::default_render())
     }
@@ -84,30 +92,21 @@ impl Gpu {
         self.field(count, FieldUsage::default_uniform())
     }
 
+    /// Write data to a field. Delegates to `field.write(data)`.
+    #[deprecated(note = "use field.write(data) instead")]
     pub fn write_field<T: Copy>(&self, field: &Field<T>, data: &[T]) -> Result<(), QuantaError> {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
-        };
-        self.inner.field_write_bytes(field.handle(), bytes)
+        field.write(data)
     }
 
+    /// Read data from a field. Delegates to `field.read()`.
+    #[deprecated(note = "use field.read() instead")]
     pub fn read_field<T: Copy>(&self, field: &Field<T>) -> Result<Vec<T>, QuantaError> {
-        let bytes = self
-            .inner
-            .field_read_bytes(field.handle(), field.byte_size())?;
-        let mut result = vec![unsafe { core::mem::zeroed::<T>() }; field.len()];
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                result.as_mut_ptr() as *mut u8,
-                bytes.len(),
-            );
-        }
-        Ok(result)
+        field.read()
     }
 
     /// Resize a field. Allocates a new field, copies existing data, returns new field.
     /// The old field remains valid until dropped.
+    #[deprecated(note = "allocate a new field and use dst.copy_from(&old) instead")]
     pub fn resize_field<T: Copy>(
         &self,
         old: &Field<T>,
@@ -115,16 +114,14 @@ impl Gpu {
         usage: FieldUsage,
     ) -> Result<Field<T>, QuantaError> {
         let new = self.field::<T>(new_count, usage)?;
-        let copy_size = old.byte_size().min(new.byte_size());
-        self.inner
-            .field_copy_bytes(new.handle(), old.handle(), copy_size)?;
+        new.copy_from(old)?;
         Ok(new)
     }
 
+    /// Copy field data. Delegates to `dst.copy_from(src)`.
+    #[deprecated(note = "use dst.copy_from(&src) instead")]
     pub fn copy_field<T: Copy>(&self, dst: &Field<T>, src: &Field<T>) -> Result<(), QuantaError> {
-        let size = src.byte_size().min(dst.byte_size());
-        self.inner
-            .field_copy_bytes(dst.handle(), src.handle(), size)
+        dst.copy_from(src)
     }
 
     /// Create a GPU buffer permanently mapped into CPU address space.
@@ -140,7 +137,7 @@ impl Gpu {
             handle,
             ptr,
             count,
-            drop_fn: None,
+            device: self.inner.clone(),
             _marker: PhantomData,
         })
     }
@@ -149,7 +146,9 @@ impl Gpu {
 
     /// Create a texture from a descriptor (full control).
     pub fn create_texture(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
-        self.inner.texture_create(desc)
+        let mut tex = self.inner.texture_create(desc)?;
+        tex.device = Some(self.inner.clone());
+        Ok(tex)
     }
 
     /// Create a simple RGBA8 texture (convenience).
@@ -196,10 +195,14 @@ impl Gpu {
         })
     }
 
+    /// Write pixel data to a texture. Delegates to `texture.write(data)`.
+    #[deprecated(note = "use texture.write(data) instead")]
     pub fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
         self.inner.texture_write(texture, data)
     }
 
+    /// Read pixel data from a texture. Delegates to `texture.read()`.
+    #[deprecated(note = "use texture.read() instead")]
     pub fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
         self.inner.texture_read(texture)
     }
@@ -212,7 +215,8 @@ impl Gpu {
         self.inner.sampler_create(desc)
     }
 
-    /// Generate mipmaps for a texture.
+    /// Generate mipmaps for a texture. Delegates to `texture.generate_mipmaps()`.
+    #[deprecated(note = "use texture.generate_mipmaps() instead")]
     pub fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError> {
         self.inner.generate_mipmaps(texture)
     }

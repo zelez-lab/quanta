@@ -11,7 +11,7 @@ use crate::{
 ///
 /// Methods use raw bytes and handles to keep the trait dyn-compatible.
 /// Users interact with the `Gpu` wrapper which provides typed, ergonomic methods.
-pub trait GpuDevice {
+pub trait GpuDevice: Send + Sync {
     // === Device info ===
 
     fn caps(&self) -> &Caps;

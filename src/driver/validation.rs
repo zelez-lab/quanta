@@ -23,7 +23,7 @@ use std::sync::Mutex;
 /// Tracks allocated handles and checks for misuse before forwarding
 /// calls to the underlying driver.
 pub struct ValidationDevice {
-    inner: Box<dyn GpuDevice>,
+    inner: Box<dyn GpuDevice + Send + Sync>,
     live_fields: Mutex<HashSet<u64>>,
     live_textures: Mutex<HashSet<u64>>,
 }

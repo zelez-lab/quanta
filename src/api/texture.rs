@@ -1,15 +1,20 @@
 use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ops::Range;
 
-use crate::Format;
+use crate::{Format, GpuDevice, QuantaError};
 
 /// GPU-resident 2D image.
+///
+/// Resources own their operations — write, read, and mipmap generation
+/// are methods on Texture itself, not on Gpu.
 pub struct Texture {
     pub(crate) handle: u64,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) format: Format,
-    pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
+    pub(crate) device: Option<Arc<dyn GpuDevice>>,
 }
 
 impl Texture {
@@ -25,13 +30,40 @@ impl Texture {
     pub fn handle(&self) -> u64 {
         self.handle
     }
+
+    /// Write pixel data to this texture.
+    pub fn write(&self, data: &[u8]) -> Result<(), QuantaError> {
+        if let Some(ref dev) = self.device {
+            dev.texture_write(self, data)
+        } else {
+            Err(QuantaError::invalid_param("texture has no device"))
+        }
+    }
+
+    /// Read pixel data from this texture.
+    pub fn read(&self) -> Result<Vec<u8>, QuantaError> {
+        if let Some(ref dev) = self.device {
+            dev.texture_read(self)
+        } else {
+            Err(QuantaError::invalid_param("texture has no device"))
+        }
+    }
+
+    /// Generate mipmaps for this texture.
+    pub fn generate_mipmaps(&self) -> Result<(), QuantaError> {
+        if let Some(ref dev) = self.device {
+            dev.generate_mipmaps(self)
+        } else {
+            Err(QuantaError::invalid_param("texture has no device"))
+        }
+    }
 }
 
 impl Drop for Texture {
     fn drop(&mut self) {
-        if let Some(f) = self.drop_fn.take() {
-            f(self.handle);
-        }
+        // Texture cleanup is handled by the driver when the device is dropped.
+        // The device ref is held to keep the driver alive while textures exist
+        // and to enable operations (write, read, mipmaps).
     }
 }
 

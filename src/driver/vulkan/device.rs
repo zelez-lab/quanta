@@ -64,6 +64,11 @@ pub(super) struct VkBuffer {
 unsafe impl Send for VkBuffer {}
 unsafe impl Sync for VkBuffer {}
 
+// Safety: Vulkan handles are thread-safe when externally synchronized.
+// All mutable state is protected by RwLock/Mutex.
+unsafe impl Send for VulkanDevice {}
+unsafe impl Sync for VulkanDevice {}
+
 #[allow(dead_code)]
 pub(super) struct VkTexture {
     pub(super) image: ffi::VkImage,

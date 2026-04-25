@@ -135,7 +135,7 @@ impl VulkanDevice {
             width: desc.width,
             height: desc.height,
             format: desc.format,
-            drop_fn: None,
+            device: None,
         })
     }
 

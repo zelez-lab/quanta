@@ -28,6 +28,11 @@ pub struct MetalDevice {
     pub(crate) next_handle: AtomicU64,
 }
 
+// Safety: Metal objects (MTLDevice, MTLCommandQueue, etc.) are thread-safe.
+// All mutable state is protected by RwLock.
+unsafe impl Send for MetalDevice {}
+unsafe impl Sync for MetalDevice {}
+
 impl MetalDevice {
     pub(crate) fn alloc_handle(&self) -> u64 {
         self.next_handle.fetch_add(1, Ordering::Relaxed) + 1
