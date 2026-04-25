@@ -3,3 +3,7 @@ Cargo.lock
 .cargo/config.toml
 dist/
 libopcodes_complete.rlib
+
+# Lean build artifacts (specs/verify/lean/)
+specs/verify/lean/.lake/
+specs/verify/lean/lake-manifest.json
