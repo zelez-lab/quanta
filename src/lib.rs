@@ -65,6 +65,11 @@ pub use quanta_macros::gpu_type;
 pub use quanta_macros::kernel;
 pub use quanta_macros::vertex;
 
+// Derive macros
+pub use quanta_macros::Fields;
+pub use quanta_macros::Uniforms;
+pub use quanta_macros::Vertex;
+
 // M4.1: Tessellation shader macros
 pub use quanta_macros::tess_control;
 pub use quanta_macros::tess_eval;

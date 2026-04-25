@@ -230,17 +230,28 @@ impl Gpu {
 
     // === Sync ===
 
+    /// Block until GPU completes this operation.
+    ///
+    /// Prefer `pulse.wait()` directly — this method just delegates to it.
+    #[deprecated(note = "use pulse.wait() instead")]
     pub fn wait(&self, pulse: &mut crate::Pulse) -> Result<(), QuantaError> {
         self.inner.pulse_wait(pulse)
     }
 
     /// Wait for a pulse, then reset it for reuse.
+    ///
+    /// Prefer calling `pulse.wait()` followed by `pulse.reset()` directly.
+    #[deprecated(note = "use pulse.wait() + pulse.reset() instead")]
     pub fn wait_and_reset(&self, pulse: &mut crate::Pulse) -> Result<(), QuantaError> {
         self.inner.pulse_wait(pulse)?;
         pulse.reset();
         Ok(())
     }
 
+    /// Check if GPU has completed (non-blocking).
+    ///
+    /// Prefer `pulse.is_done()` directly — this method just delegates to it.
+    #[deprecated(note = "use pulse.is_done() instead")]
     pub fn poll(&self, pulse: &crate::Pulse) -> bool {
         self.inner.pulse_poll(pulse)
     }
@@ -270,23 +281,36 @@ impl Gpu {
 
     /// Full pipeline barrier — wait for all prior GPU work to complete.
     ///
-    /// This is a heavyweight synchronization point. Prefer `barrier_buffer`
+    /// This is a heavyweight synchronization point. Prefer `barrier_field`
     /// or `barrier_texture` for fine-grained resource transitions.
     pub fn barrier(&self) -> Result<(), QuantaError> {
         self.inner.barrier()
     }
 
-    /// Transition a buffer between resource states.
+    /// Transition a field between resource states.
     ///
     /// On Vulkan, this inserts pipeline barriers with correct stage/access masks.
     /// On Metal, this is a no-op (automatic hazard tracking).
-    pub fn barrier_buffer<T: Copy>(
+    pub fn barrier_field<T: Copy>(
         &self,
         field: &Field<T>,
         from: ResourceState,
         to: ResourceState,
     ) -> Result<(), QuantaError> {
         self.inner.barrier_buffer(field.handle(), from, to)
+    }
+
+    /// Transition a buffer between resource states.
+    ///
+    /// Renamed to `barrier_field` for consistency with Quanta's Field naming.
+    #[deprecated(note = "renamed to barrier_field() for Field naming consistency")]
+    pub fn barrier_buffer<T: Copy>(
+        &self,
+        field: &Field<T>,
+        from: ResourceState,
+        to: ResourceState,
+    ) -> Result<(), QuantaError> {
+        self.barrier_field(field, from, to)
     }
 
     /// Transition a texture between resource states.

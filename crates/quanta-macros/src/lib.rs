@@ -5,11 +5,14 @@ extern crate proc_macro;
 #[allow(dead_code)]
 mod compiler;
 mod device_macro;
+mod fields_derive;
 mod gpu_type;
 mod kernel_macro;
 mod parse;
 mod shader_macro;
+mod uniforms_derive;
 mod validate;
+mod vertex_derive;
 
 use proc_macro::TokenStream;
 use syn::{ItemFn, parse_macro_input};
@@ -283,6 +286,97 @@ pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as syn::ItemStruct);
     match gpu_type::expand_gpu_type(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+// === Derive macros ===
+
+/// Derive vertex layout metadata from a struct's fields.
+///
+/// The struct must have `#[repr(C)]` and use only GPU-compatible field types:
+/// - Scalars: `f32`, `u32`, `i32`
+/// - Vectors: `[f32; 2]`, `[f32; 3]`, `[f32; 4]`, and similar for `u32`/`i32`
+///
+/// ```ignore
+/// #[repr(C)]
+/// #[derive(Copy, Clone, quanta::Vertex)]
+/// struct MyVertex {
+///     pos: [f32; 3],   // location 0, Float3, offset 0
+///     color: [f32; 4], // location 1, Float4, offset 12
+/// }
+///
+/// // Generated:
+/// // MyVertex::ATTRIBUTES — const array of VertexAttribute
+/// // MyVertex::vertex_layout() -> VertexLayout
+/// ```
+#[proc_macro_derive(Vertex)]
+pub fn derive_vertex(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    match vertex_derive::expand_vertex_derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive GPU uniform buffer metadata from a struct's fields.
+///
+/// Generates `GpuType` impl, byte-level field metadata (`GPU_SIZE`, `GPU_FIELDS`),
+/// and MSL/WGSL struct declarations. The struct must have `#[repr(C)]`.
+///
+/// ```ignore
+/// #[repr(C)]
+/// #[derive(Copy, Clone, quanta::Uniforms)]
+/// struct Camera {
+///     view: [f32; 16],     // mat4x4
+///     proj: [f32; 16],     // mat4x4
+///     eye_pos: [f32; 3],   // vec3
+///     fov: f32,
+/// }
+///
+/// // Generated:
+/// // Camera::GPU_SIZE, Camera::GPU_FIELDS
+/// // impl GpuType for Camera
+/// // __QUANTA_UNIFORMS_CAMERA (MSL)
+/// // __QUANTA_UNIFORMS_CAMERA_WGSL (WGSL)
+/// ```
+#[proc_macro_derive(Uniforms)]
+pub fn derive_uniforms(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    match uniforms_derive::expand_uniforms_derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive GPU dispatch field metadata from a struct's fields.
+///
+/// Classifies each field as either a GPU storage buffer (`Vec<T>`) or a
+/// push constant (scalar). Generates metadata used by `#[quanta::kernel]`
+/// to auto-generate upload/bind/dispatch/readback code.
+///
+/// ```ignore
+/// #[derive(quanta::Fields)]
+/// struct Particles {
+///     pos: Vec<f32>,   // GPU field (storage buffer), slot 0
+///     vel: Vec<f32>,   // GPU field (storage buffer), slot 1
+///     count: u32,      // Push constant, slot 0
+///     dt: f32,         // Push constant, slot 1
+/// }
+///
+/// // Generated:
+/// // Particles::FIELD_COUNT = 2
+/// // Particles::PUSH_CONSTANT_COUNT = 2
+/// // Particles::field_names() -> &["pos", "vel"]
+/// // Particles::field_types() -> &["f32", "f32"]
+/// // Particles::push_constant_names() -> &["count", "dt"]
+/// // Particles::push_constant_types() -> &["u32", "f32"]
+/// ```
+#[proc_macro_derive(Fields)]
+pub fn derive_fields(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    match fields_derive::expand_fields_derive(&input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
