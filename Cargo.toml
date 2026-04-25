@@ -30,6 +30,11 @@ vulkan = ["std"]
 software = ["std", "jit"]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
 jit = ["quanta-ir/jit"]
+## WebGPU driver, browser-only (target_arch = "wasm32"). Pure scaffold for now;
+## actual JS-side bindings will be hand-written `extern "C"` blocks via
+## `wasm-bindgen` once step 079 (JIT WGSL emitter) lands. No external wrapper
+## crate is permitted (step 000 policy: no `ash`, `metal-rs`, `objc`, `web-sys`).
+webgpu = ["std", "jit"]
 
 [dependencies]
 quanta-macros = { path = "crates/quanta-macros", version = "0.1.0" }
