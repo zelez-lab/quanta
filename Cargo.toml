@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/quanta-ir", "crates/quanta-macros", "crates/quanta-compiler"]
+members = [".", "crates/quanta-ir", "crates/quanta-macros", "crates/quanta-compiler", "crates/quanta-bench"]
 
 [workspace.package]
 version = "0.1.0"

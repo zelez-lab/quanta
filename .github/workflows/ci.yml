@@ -183,6 +183,66 @@ jobs:
           ptxas --arch=sm_50 /tmp/kernel.ptx -o /dev/null
           echo "ptxas validation passed"
 
+  # ─── Performance regression gate (step 069) ─────────────────────────
+  perf-regression:
+    runs-on: macos-14
+    needs: gpu-tests-metal
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-14-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run benchmarks
+        run: cargo run --release -p quanta-bench -- run --out /tmp/quanta-bench-current.json
+
+      - name: Compare against baseline
+        # Threshold widened to 25% in CI (shared runners are noisy). Tighten
+        # locally with `just bench-check` for tighter regression detection.
+        run: cargo run --release -p quanta-bench -- compare --baseline bench/baselines/macos-aarch64.json --current /tmp/quanta-bench-current.json --threshold 25
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-macos
+          path: /tmp/quanta-bench-current.json
+
+  # ─── Bench harness build (Linux, no GPU) ─────────────────────────────
+  # Validates the bench harness compiles on a machine without Metal/Vulkan.
+  # Actual perf measurement is done in `perf-regression` on macos-14.
+  perf-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build bench harness (no metal/vulkan)
+        run: cargo build --release -p quanta-bench --no-default-features
+
+      - name: Verify --help runs
+        run: cargo run --release -p quanta-bench --no-default-features -- --help
+
   # ─── Clippy + fmt ────────────────────────────────────────────────────
   lint:
     runs-on: macos-14

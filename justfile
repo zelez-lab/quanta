@@ -39,6 +39,23 @@ example-bench-mandelbrot:
 example-bench-nbody:
     cargo run --example bench_nbody --release
 
+# Performance regression suite (step 069)
+# Records JSON results; gated by `bench-check` against committed baseline.
+BENCH_BASELINE := if os() == "macos" { "bench/baselines/macos-aarch64.json" } else { "bench/baselines/linux-x86_64.json" }
+
+bench:
+    cargo run --release -p quanta-bench -- run
+
+bench-record:
+    cargo run --release -p quanta-bench -- run --out {{BENCH_BASELINE}}
+
+bench-check:
+    cargo run --release -p quanta-bench -- run --out /tmp/quanta-bench-current.json
+    cargo run --release -p quanta-bench -- compare --baseline {{BENCH_BASELINE}} --current /tmp/quanta-bench-current.json
+
+bench-smoke:
+    cargo run --release -p quanta-bench --no-default-features -- run --smoke
+
 # Compiler tests
 test-ptx:
     cargo run -p quanta-compiler -- --test-ptx

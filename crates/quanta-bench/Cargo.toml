@@ -1,0 +1,19 @@
+[package]
+name = "quanta-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Performance regression harness for Quanta"
+publish = false
+
+[[bin]]
+name = "quanta-bench"
+path = "src/main.rs"
+
+[features]
+default = ["metal"]
+metal = ["quanta/metal"]
+vulkan = ["quanta/vulkan"]
+
+[dependencies]
+quanta = { path = "../..", default-features = false, features = ["software"] }

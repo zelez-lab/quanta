@@ -1,0 +1,12 @@
+{
+  "platform": "macos-aarch64",
+  "gpu": "Apple M1 Pro",
+  "results": [
+    {"name": "heavy_compute", "workload": "1000_elements", "elements": 1000, "gpu_ms": 0.4128, "cpu_ms": 15.5524},
+    {"name": "heavy_compute", "workload": "10000_elements", "elements": 10000, "gpu_ms": 0.8265, "cpu_ms": 154.3576},
+    {"name": "heavy_compute", "workload": "100000_elements", "elements": 100000, "gpu_ms": 3.0641, "cpu_ms": 1545.0764},
+    {"name": "heavy_compute", "workload": "1000000_elements", "elements": 1000000, "gpu_ms": 24.2380, "cpu_ms": 15435.9730},
+    {"name": "add_one_dispatch", "workload": "64x_dispatch_1048576_elements", "elements": 1048576, "gpu_ms": 0.2603},
+    {"name": "mandelbrot", "workload": "3840x2160", "elements": 8294400, "gpu_ms": 25.5895}
+  ]
+}
