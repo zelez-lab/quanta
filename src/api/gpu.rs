@@ -31,12 +31,6 @@ impl Gpu {
         Self { inner }
     }
 
-    /// Get a reference to the underlying device (for resources that need it).
-    #[allow(dead_code)]
-    pub(crate) fn device(&self) -> Arc<dyn GpuDevice> {
-        self.inner.clone()
-    }
-
     // === Device info ===
 
     pub fn caps(&self) -> &Caps {

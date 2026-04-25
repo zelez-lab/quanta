@@ -46,8 +46,14 @@ impl Gpu {
     // === Batch dispatch ===
 
     /// Begin a batch of dispatches. Multiple kernels are encoded into a single
-    /// command buffer. Call `submit()` on the batch to commit all at once.
+    /// command buffer. Call `pulse()` on the batch to commit all at once.
     /// One commit + one fence instead of N — eliminates per-dispatch overhead.
+    pub fn batch(&self) -> Result<Batch, QuantaError> {
+        self.inner.batch_begin()
+    }
+
+    /// Begin a batch of dispatches.
+    #[deprecated(note = "use gpu.batch() instead")]
     pub fn begin_batch(&self) -> Result<Batch, QuantaError> {
         self.inner.batch_begin()
     }
