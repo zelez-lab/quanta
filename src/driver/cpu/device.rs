@@ -257,12 +257,16 @@ impl GpuDevice for CpuDevice {
         let mut field_data: [Option<Vec<u8>>; 16] = Default::default();
         {
             let bufs = self.buffers.lock().unwrap();
-            for i in 0..wave.binding_count as usize {
+            for (i, slot) in field_data
+                .iter_mut()
+                .enumerate()
+                .take(wave.binding_count as usize)
+            {
                 let handle = wave.bindings[i];
-                if handle != 0 {
-                    if let Some(buf) = bufs.get(&handle) {
-                        field_data[i] = Some(buf.data.clone());
-                    }
+                if handle != 0
+                    && let Some(buf) = bufs.get(&handle)
+                {
+                    *slot = Some(buf.data.clone());
                 }
             }
         }
@@ -315,14 +319,17 @@ impl GpuDevice for CpuDevice {
         // Write back modified buffer data
         {
             let mut bufs = self.buffers.lock().unwrap();
-            for i in 0..wave.binding_count as usize {
+            for (i, slot) in field_data
+                .iter_mut()
+                .enumerate()
+                .take(wave.binding_count as usize)
+            {
                 let handle = wave.bindings[i];
-                if handle != 0 {
-                    if let Some(modified) = field_data[i].take() {
-                        if let Some(buf) = bufs.get_mut(&handle) {
-                            buf.data = modified;
-                        }
-                    }
+                if handle != 0
+                    && let Some(modified) = slot.take()
+                    && let Some(buf) = bufs.get_mut(&handle)
+                {
+                    buf.data = modified;
                 }
             }
         }

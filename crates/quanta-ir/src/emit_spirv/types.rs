@@ -289,6 +289,7 @@ impl SpvEmitter {
         id
     }
 
+    #[allow(dead_code)] // f16 emission infrastructure; reachable via future codegen paths
     pub(crate) fn emit_constant_f16(&mut self, val: u16) -> u32 {
         let ty = self.ensure_type_f16();
         let key = format!("{}:{}", ty, val);

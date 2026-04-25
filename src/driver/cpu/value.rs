@@ -196,7 +196,7 @@ pub(super) fn f16_to_f32(bits: u16) -> f32 {
                 e += 1;
             }
             f &= 0x3FF;
-            let f32_exp = (127 - 15 - e + 1) as u32;
+            let f32_exp = 127 - 15 - e + 1;
             f32::from_bits((sign << 31) | (f32_exp << 23) | (f << 13))
         }
     } else if exp == 31 {

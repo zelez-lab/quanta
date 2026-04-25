@@ -1,7 +1,7 @@
 //! Per-thread kernel execution — walks KernelOp instructions.
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use std::collections::HashMap;

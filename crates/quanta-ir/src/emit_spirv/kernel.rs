@@ -567,10 +567,10 @@ impl SpvEmitter {
                 | KernelOp::SubgroupSize { dst, .. } => Some(dst.0),
                 _ => None,
             };
-            if let Some(reg_num) = dst_reg {
-                if let Some(&id) = self.reg_ids.get(&reg_num) {
-                    return Some(id);
-                }
+            if let Some(reg_num) = dst_reg
+                && let Some(&id) = self.reg_ids.get(&reg_num)
+            {
+                return Some(id);
             }
         }
         None
