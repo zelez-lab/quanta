@@ -3,6 +3,8 @@
 extern crate proc_macro;
 
 #[allow(dead_code)]
+mod auto_dispatch;
+#[allow(dead_code)]
 mod compiler;
 mod device_macro;
 mod fields_derive;
