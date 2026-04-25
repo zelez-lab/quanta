@@ -334,6 +334,22 @@ pub(super) fn execute_ops(
                 // Return zero for now.
                 ctx.regs.insert(dst.0, Value::U32(0));
             }
+            KernelOp::CooperativeMMA { dst, .. } => {
+                // Cooperative matrix multiply-accumulate: not supported in CPU mode.
+                ctx.regs.insert(dst.0, Value::F32(0.0));
+            }
+            KernelOp::SubgroupSize { dst } => {
+                // Single-threaded CPU: subgroup size = 1.
+                ctx.regs.insert(dst.0, Value::U32(1));
+            }
+            KernelOp::SharedDeclDyn { id, ty } => {
+                // Dynamic shared memory: allocate a default-sized buffer.
+                let size = scalar_size(ty) * 64;
+                ctx.shared.entry(*id).or_insert_with(|| vec![0u8; size]);
+            }
+            KernelOp::DebugPrint { .. } => {
+                // No-op in CPU mode.
+            }
         }
     }
     Ok(None)

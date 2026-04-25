@@ -58,6 +58,8 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb),
                 BinOp::Shr => va.wrapping_shr(vb),
+                BinOp::SatAdd => va.saturating_add(vb),
+                BinOp::SatSub => va.saturating_sub(vb),
             })
         }
         ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => {
@@ -86,6 +88,8 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb as u32),
                 BinOp::Shr => va.wrapping_shr(vb as u32),
+                BinOp::SatAdd => va.saturating_add(vb),
+                BinOp::SatSub => va.saturating_sub(vb),
             })
         }
         ScalarType::U64 => {
@@ -114,6 +118,8 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb as u32),
                 BinOp::Shr => va.wrapping_shr(vb as u32),
+                BinOp::SatAdd => va.saturating_add(vb),
+                BinOp::SatSub => va.saturating_sub(vb),
             })
         }
         ScalarType::I64 => {
@@ -142,6 +148,8 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb as u32),
                 BinOp::Shr => va.wrapping_shr(vb as u32),
+                BinOp::SatAdd => va.saturating_add(vb),
+                BinOp::SatSub => va.saturating_sub(vb),
             })
         }
         ScalarType::Bool => {
@@ -405,5 +413,334 @@ pub(super) fn eval_atomic(
             (Value::U64(new), Value::U64(o))
         }
         _ => (operand, old), // unsupported types pass through
+    }
+}
+
+// ── Property-based tests ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptest_eval {
+    use super::*;
+    use proptest::prelude::*;
+    use quanta_ir::{BinOp, CmpOp, MathFn, ScalarType, UnaryOp};
+
+    // ── BinOp: never panics for any input ───────────────────────────────
+
+    proptest! {
+        #[test]
+        fn binop_add_u32_no_panic(a in any::<u32>(), b in any::<u32>()) {
+            let _ = eval_binop(Value::U32(a), Value::U32(b), &BinOp::Add, &ScalarType::U32);
+        }
+
+        #[test]
+        fn binop_sub_u32_no_panic(a in any::<u32>(), b in any::<u32>()) {
+            let _ = eval_binop(Value::U32(a), Value::U32(b), &BinOp::Sub, &ScalarType::U32);
+        }
+
+        #[test]
+        fn binop_mul_u32_no_panic(a in any::<u32>(), b in any::<u32>()) {
+            let _ = eval_binop(Value::U32(a), Value::U32(b), &BinOp::Mul, &ScalarType::U32);
+        }
+
+        /// Division by zero must return 0, never panic.
+        #[test]
+        fn binop_div_by_zero_u32(a in any::<u32>()) {
+            let result = eval_binop(Value::U32(a), Value::U32(0), &BinOp::Div, &ScalarType::U32);
+            assert_eq!(result.as_u32(), 0);
+        }
+
+        /// Remainder by zero must return 0, never panic.
+        #[test]
+        fn binop_rem_by_zero_u32(a in any::<u32>()) {
+            let result = eval_binop(Value::U32(a), Value::U32(0), &BinOp::Rem, &ScalarType::U32);
+            assert_eq!(result.as_u32(), 0);
+        }
+
+        /// Division by zero for i32 must return 0, never panic.
+        #[test]
+        fn binop_div_by_zero_i32(a in any::<i32>()) {
+            let result = eval_binop(Value::I32(a), Value::I32(0), &BinOp::Div, &ScalarType::I32);
+            assert_eq!(result.as_i32(), 0);
+        }
+
+        /// i32::MIN / -1 must not panic (wrapping_div handles it).
+        #[test]
+        fn binop_div_i32_overflow(a in any::<i32>(), b in any::<i32>().prop_filter("non-zero", |b| *b != 0)) {
+            let _ = eval_binop(Value::I32(a), Value::I32(b), &BinOp::Div, &ScalarType::I32);
+        }
+
+        /// i32::MIN % -1 must not panic.
+        #[test]
+        fn binop_rem_i32_overflow(a in any::<i32>(), b in any::<i32>().prop_filter("non-zero", |b| *b != 0)) {
+            let _ = eval_binop(Value::I32(a), Value::I32(b), &BinOp::Rem, &ScalarType::I32);
+        }
+
+        /// Division by zero for u64 must return 0.
+        #[test]
+        fn binop_div_by_zero_u64(a in any::<u64>()) {
+            let result = eval_binop(Value::U64(a), Value::U64(0), &BinOp::Div, &ScalarType::U64);
+            assert_eq!(result.as_u64(), 0);
+        }
+
+        /// Division by zero for i64 must return 0.
+        #[test]
+        fn binop_div_by_zero_i64(a in any::<i64>()) {
+            let result = eval_binop(Value::I64(a), Value::I64(0), &BinOp::Div, &ScalarType::I64);
+            assert_eq!(result.as_i64(), 0);
+        }
+
+        /// i64 division with arbitrary non-zero divisors must not panic.
+        #[test]
+        fn binop_div_i64_no_panic(a in any::<i64>(), b in any::<i64>().prop_filter("non-zero", |b| *b != 0)) {
+            let _ = eval_binop(Value::I64(a), Value::I64(b), &BinOp::Div, &ScalarType::I64);
+        }
+
+        /// Shift operations with any shift amount must not panic.
+        #[test]
+        fn binop_shl_u32_no_panic(a in any::<u32>(), b in any::<u32>()) {
+            let _ = eval_binop(Value::U32(a), Value::U32(b), &BinOp::Shl, &ScalarType::U32);
+        }
+
+        #[test]
+        fn binop_shr_u32_no_panic(a in any::<u32>(), b in any::<u32>()) {
+            let _ = eval_binop(Value::U32(a), Value::U32(b), &BinOp::Shr, &ScalarType::U32);
+        }
+
+        /// Float arithmetic with special values (NaN, inf, denormal).
+        #[test]
+        fn binop_f32_all_ops(a_bits in any::<u32>(), b_bits in any::<u32>()) {
+            let a = f32::from_bits(a_bits);
+            let b = f32::from_bits(b_bits);
+            for op in &[BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Rem] {
+                let _ = eval_binop(Value::F32(a), Value::F32(b), op, &ScalarType::F32);
+            }
+        }
+
+        /// Float64 arithmetic with special values.
+        #[test]
+        fn binop_f64_all_ops(a_bits in any::<u64>(), b_bits in any::<u64>()) {
+            let a = f64::from_bits(a_bits);
+            let b = f64::from_bits(b_bits);
+            for op in &[BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Rem] {
+                let _ = eval_binop(Value::F64(a), Value::F64(b), op, &ScalarType::F64);
+            }
+        }
+
+        /// Bool binops never panic.
+        #[test]
+        fn binop_bool_no_panic(a in any::<bool>(), b in any::<bool>()) {
+            for op in &[BinOp::BitAnd, BinOp::BitOr, BinOp::BitXor, BinOp::Add] {
+                let _ = eval_binop(Value::Bool(a), Value::Bool(b), op, &ScalarType::Bool);
+            }
+        }
+    }
+
+    // ── CmpOp: never panics ─────────────────────────────────────────────
+
+    proptest! {
+        #[test]
+        fn cmp_u32_no_panic(a in any::<u32>(), b in any::<u32>(), op_tag in 0u8..6) {
+            let op = cmpop_from_tag(op_tag);
+            let result = eval_cmp(Value::U32(a), Value::U32(b), &op, &ScalarType::U32);
+            // Result must always be a bool.
+            let _ = result.as_bool();
+        }
+
+        #[test]
+        fn cmp_i32_no_panic(a in any::<i32>(), b in any::<i32>(), op_tag in 0u8..6) {
+            let op = cmpop_from_tag(op_tag);
+            let _ = eval_cmp(Value::I32(a), Value::I32(b), &op, &ScalarType::I32);
+        }
+
+        #[test]
+        fn cmp_f32_no_panic(a_bits in any::<u32>(), b_bits in any::<u32>(), op_tag in 0u8..6) {
+            let op = cmpop_from_tag(op_tag);
+            let a = f32::from_bits(a_bits);
+            let b = f32::from_bits(b_bits);
+            let _ = eval_cmp(Value::F32(a), Value::F32(b), &op, &ScalarType::F32);
+        }
+    }
+
+    // ── UnaryOp: never panics ───────────────────────────────────────────
+
+    proptest! {
+        #[test]
+        fn unary_u32_no_panic(a in any::<u32>(), op_tag in 0u8..3) {
+            let op = unaryop_from_tag(op_tag);
+            let _ = eval_unary(Value::U32(a), &op, &ScalarType::U32);
+        }
+
+        #[test]
+        fn unary_i32_no_panic(a in any::<i32>(), op_tag in 0u8..3) {
+            let op = unaryop_from_tag(op_tag);
+            let _ = eval_unary(Value::I32(a), &op, &ScalarType::I32);
+        }
+
+        #[test]
+        fn unary_f32_no_panic(a_bits in any::<u32>(), op_tag in 0u8..3) {
+            let op = unaryop_from_tag(op_tag);
+            let a = f32::from_bits(a_bits);
+            let _ = eval_unary(Value::F32(a), &op, &ScalarType::F32);
+        }
+
+        /// Neg of i32::MIN must not panic (wrapping_neg handles it).
+        #[test]
+        fn neg_i32_min_no_panic(a in any::<i32>()) {
+            let _ = eval_unary(Value::I32(a), &UnaryOp::Neg, &ScalarType::I32);
+        }
+    }
+
+    // ── Cast: never panics for any type pair ────────────────────────────
+
+    proptest! {
+        #[test]
+        fn cast_u32_to_all_types(val in any::<u32>(), to_tag in 0u8..12) {
+            let to = scalar_type_from_tag(to_tag);
+            let _ = eval_cast(Value::U32(val), &ScalarType::U32, &to);
+        }
+
+        #[test]
+        fn cast_f32_to_all_types(bits in any::<u32>(), to_tag in 0u8..12) {
+            let to = scalar_type_from_tag(to_tag);
+            let val = f32::from_bits(bits);
+            let _ = eval_cast(Value::F32(val), &ScalarType::F32, &to);
+        }
+
+        #[test]
+        fn cast_i32_to_all_types(val in any::<i32>(), to_tag in 0u8..12) {
+            let to = scalar_type_from_tag(to_tag);
+            let _ = eval_cast(Value::I32(val), &ScalarType::I32, &to);
+        }
+    }
+
+    // ── Math: never panics ──────────────────────────────────────────────
+
+    proptest! {
+        /// All MathFn functions must not panic for any f32 inputs.
+        #[test]
+        fn math_f32_no_panic(a_bits in any::<u32>(), b_bits in any::<u32>(), c_bits in any::<u32>(), fn_tag in 0u8..22) {
+            let func = mathfn_from_tag(fn_tag);
+            let a = Value::F32(f32::from_bits(a_bits));
+            let b = Value::F32(f32::from_bits(b_bits));
+            let c = Value::F32(f32::from_bits(c_bits));
+            let _ = eval_math(&func, &[a, b, c], &ScalarType::F32);
+        }
+
+        /// All MathFn functions must not panic for any f64 inputs.
+        #[test]
+        fn math_f64_no_panic(a_bits in any::<u64>(), b_bits in any::<u64>(), fn_tag in 0u8..22) {
+            let func = mathfn_from_tag(fn_tag);
+            let a = Value::F64(f64::from_bits(a_bits));
+            let b = Value::F64(f64::from_bits(b_bits));
+            let _ = eval_math(&func, &[a, b], &ScalarType::F64);
+        }
+    }
+
+    // ── f16 roundtrip ───────────────────────────────────────────────────
+
+    proptest! {
+        /// Normal f16 values (non-zero exponent, non-max exponent) should
+        /// roundtrip through f16_to_f32 -> f32_to_f16.
+        #[test]
+        fn f16_normal_roundtrip(bits in 0x0400u16..0x7C00) {
+            // bits in [0x0400, 0x7BFF] = positive normals
+            use super::super::value::{f16_to_f32, f32_to_f16};
+            let f32_val = f16_to_f32(bits);
+            let back = f32_to_f16(f32_val);
+            assert_eq!(back, bits, "roundtrip failed for f16 bits 0x{:04X}", bits);
+        }
+
+        /// Negative normal f16 values should also roundtrip.
+        #[test]
+        fn f16_negative_normal_roundtrip(bits in 0x8400u16..0xFC00) {
+            use super::super::value::{f16_to_f32, f32_to_f16};
+            let f32_val = f16_to_f32(bits);
+            let back = f32_to_f16(f32_val);
+            assert_eq!(back, bits, "roundtrip failed for f16 bits 0x{:04X}", bits);
+        }
+
+        /// f16_to_f32 must never panic for any u16 input.
+        #[test]
+        fn f16_to_f32_no_panic(bits in any::<u16>()) {
+            use super::super::value::f16_to_f32;
+            let _ = f16_to_f32(bits);
+        }
+
+        /// f32_to_f16 must never panic for any f32 input.
+        #[test]
+        fn f32_to_f16_no_panic(bits in any::<u32>()) {
+            use super::super::value::f32_to_f16;
+            let val = f32::from_bits(bits);
+            let _ = f32_to_f16(val);
+        }
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    fn scalar_type_from_tag(tag: u8) -> ScalarType {
+        match tag {
+            0 => ScalarType::F16,
+            1 => ScalarType::F32,
+            2 => ScalarType::F64,
+            3 => ScalarType::U8,
+            4 => ScalarType::U16,
+            5 => ScalarType::U32,
+            6 => ScalarType::U64,
+            7 => ScalarType::I8,
+            8 => ScalarType::I16,
+            9 => ScalarType::I32,
+            10 => ScalarType::I64,
+            11 => ScalarType::Bool,
+            _ => unreachable!(),
+        }
+    }
+
+    fn cmpop_from_tag(tag: u8) -> CmpOp {
+        match tag {
+            0 => CmpOp::Eq,
+            1 => CmpOp::Ne,
+            2 => CmpOp::Lt,
+            3 => CmpOp::Le,
+            4 => CmpOp::Gt,
+            5 => CmpOp::Ge,
+            _ => unreachable!(),
+        }
+    }
+
+    fn unaryop_from_tag(tag: u8) -> UnaryOp {
+        match tag {
+            0 => UnaryOp::Neg,
+            1 => UnaryOp::BitNot,
+            2 => UnaryOp::LogicalNot,
+            _ => unreachable!(),
+        }
+    }
+
+    fn mathfn_from_tag(tag: u8) -> MathFn {
+        match tag {
+            0 => MathFn::Sin,
+            1 => MathFn::Cos,
+            2 => MathFn::Tan,
+            3 => MathFn::Asin,
+            4 => MathFn::Acos,
+            5 => MathFn::Atan,
+            6 => MathFn::Atan2,
+            7 => MathFn::Sqrt,
+            8 => MathFn::Rsqrt,
+            9 => MathFn::Exp,
+            10 => MathFn::Exp2,
+            11 => MathFn::Log,
+            12 => MathFn::Log2,
+            13 => MathFn::Pow,
+            14 => MathFn::Abs,
+            15 => MathFn::Min,
+            16 => MathFn::Max,
+            17 => MathFn::Clamp,
+            18 => MathFn::Floor,
+            19 => MathFn::Ceil,
+            20 => MathFn::Round,
+            21 => MathFn::Fma,
+            _ => unreachable!(),
+        }
     }
 }

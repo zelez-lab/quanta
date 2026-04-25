@@ -78,6 +78,7 @@ fn roundtrip_compiler_output() {
         nvidia: Some(b".visible .entry test()".to_vec()),
         spirv: None,
         metallib: None,
+        wgsl: None,
     };
 
     let bytes = serialize_output(&output);

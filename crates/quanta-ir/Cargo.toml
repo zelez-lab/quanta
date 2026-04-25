@@ -16,4 +16,7 @@ default = []
 ## Enable runtime emitters (SPIR-V + MSL) for JIT compilation.
 jit = []
 
+[dev-dependencies]
+proptest = "1"
+
 [dependencies]

@@ -7,3 +7,5 @@ mod ops;
 pub(crate) use header::{
     Writer, write_compiler_output, write_kernel_def, write_shader_def, write_shader_output,
 };
+#[allow(unused_imports)]
+pub(crate) use helpers::{write_const_value, write_scalar_type};

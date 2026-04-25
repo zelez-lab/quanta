@@ -2,7 +2,8 @@
 //!
 //! Extends T809 from api_invariants.rs with complete Batch lifecycle proofs.
 //! The Batch records dispatches into a command buffer via encode_dispatch(),
-//! then submit() commits all at once.
+//! then submit() commits all at once. Updated: pulse() is now the primary
+//! method, with submit() as a deprecated alias.
 //!
 //! Verified properties:
 //!
@@ -13,6 +14,7 @@
 //! | T1502 order_preserved       | Dispatch order matches recording order.                |
 //! | T1503 submit_returns_pulse  | submit() returns a Pulse covering all dispatches.      |
 //! | T1504 empty_batch_valid     | An empty batch can be submitted (yields completed Pulse). |
+//! | T2060 pulse_eq_submit       | batch.pulse() == batch.submit() (alias).               |
 
 use vstd::prelude::*;
 
@@ -56,6 +58,11 @@ pub open spec fn batch_submit(pre: BatchState) -> BatchState {
         entries: pre.entries,
         submitted: true,
     }
+}
+
+/// batch.pulse() — identical to submit().
+pub open spec fn batch_pulse(pre: BatchState) -> BatchState {
+    batch_submit(pre)
 }
 
 /// Well-formedness: batch is not yet submitted.
@@ -161,6 +168,36 @@ proof fn t1505_dispatch_preserves_wf(
 )
     requires batch_wf(pre),
     ensures batch_wf(batch_dispatch(pre, wave_handle, quarks)),
+{}
+
+// ════════════════════════════════════════════════════════════════════════
+// T2060: batch.pulse() == batch.submit() (alias)
+// ════════════════════════════════════════════════════════════════════════
+
+/// T2060: pulse() and submit() produce identical results.
+proof fn t2060_pulse_eq_submit(pre: BatchState)
+    requires batch_wf(pre),
+    ensures batch_pulse(pre) == batch_submit(pre),
+{}
+
+/// T2060 corollary: pulse() on empty batch == submit() on empty batch.
+proof fn t2060_pulse_empty_eq_submit_empty()
+    ensures ({
+        let batch = begin_batch();
+        batch_pulse(batch) == batch_submit(batch)
+    }),
+{}
+
+/// T2060 corollary: pulse() after dispatches == submit() after dispatches.
+proof fn t2060_pulse_after_dispatch_eq_submit(
+    wave_handle: u64,
+    quarks: u32,
+)
+    ensures ({
+        let b0 = begin_batch();
+        let b1 = batch_dispatch(b0, wave_handle, quarks);
+        batch_pulse(b1) == batch_submit(b1)
+    }),
 {}
 
 } // verus!

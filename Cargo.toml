@@ -34,3 +34,6 @@ jit = ["quanta-ir/jit"]
 [dependencies]
 quanta-macros = { path = "crates/quanta-macros", version = "0.1.0" }
 quanta-ir.workspace = true
+
+[dev-dependencies]
+proptest = "1"

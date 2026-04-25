@@ -126,6 +126,57 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | T809 | Batch dispatch: equivalent to N sequential dispatches | Verus | proven |
 | T810 | Pipeline blend states: src+dst alpha consistent | Verus | proven |
 
+## API — Render Builder (T20xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T2000 | Each builder method appends exactly one RenderOp to ops | Verus | proven |
+| T2001 | pulse() delegates to device.render_end with collected ops | Verus | proven |
+| T2002 | Builder methods consume self (move semantics — no reuse) | Verus | proven |
+| T2003 | clear()→Clear, pipeline()→SetPipeline, draw()→Draw, etc. | Verus | proven |
+
+## API — Derive Macros (T20xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T2010 | f32→Float(4), [f32;2]→Float2(8), [f32;3]→Float3(12), [f32;4]→Float4(16) | Verus | proven |
+| T2011 | Vertex offsets are cumulative (field N = sum sizes 0..N-1) | Verus | proven |
+| T2012 | Vertex stride = total size of all fields | Verus | proven |
+| T2013 | Vertex location = field index (0, 1, 2...) | Verus | proven |
+| T2014 | #[derive(Vertex)] requires #[repr(C)] | Verus | proven |
+| T2020 | Uniforms GPU_SIZE = sum of field sizes (with alignment) | Verus | proven |
+| T2021 | Uniforms GPU_FIELDS contains all fields in declaration order | Verus | proven |
+| T2022 | #[derive(Uniforms)] requires #[repr(C)] | Verus | proven |
+| T2030 | Fields: Vec<T> classified as GPU buffers | Verus | proven |
+| T2031 | Fields: scalar fields classified as push constants | Verus | proven |
+| T2032 | Fields: FIELD_COUNT = number of Vec fields | Verus | proven |
+| T2033 | Fields: PUSH_CONSTANT_COUNT = number of scalar fields | Verus | proven |
+| T2034 | Fields: field_names() returns names in declaration order | Verus | proven |
+| T2035 | Fields: buffer slots 0..N-1, push constant slots N..N+M-1 | Verus | proven |
+
+## API — Field Delegation (T20xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T2040 | field.write(data) delegates to device.field_write_bytes | Verus | proven |
+| T2041 | field.read() delegates to device.field_read_bytes | Verus | proven |
+| T2042 | field.copy_from(src) delegates to device.field_copy_bytes | Verus | proven |
+| T2043 | Drop calls device.field_free (not drop_fn) | Verus | proven |
+
+## API — Texture Delegation (T20xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T2050 | texture.write(data) delegates to device.texture_write | Verus | proven |
+| T2051 | texture.read() delegates to device.texture_read | Verus | proven |
+| T2052 | Drop calls device.texture_free when device is Some | Verus | proven |
+
+## API — Batch Alias (T20xx)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T2060 | batch.pulse() == batch.submit() (alias) | Verus | proven |
+
 ## Scan Algorithm (T9xx)
 
 | ID | Property | Tool | Status |
@@ -211,6 +262,11 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | CPU Executor | 11 | 11 | 0 |
 | Format Tables | 6 | 6 | 0 |
 | API Invariants | 11 | 11 | 0 |
+| API — Render Builder | 4 | 4 | 0 |
+| API — Derive Macros | 14 | 14 | 0 |
+| API — Field Delegation | 4 | 4 | 0 |
+| API — Texture Delegation | 3 | 3 | 0 |
+| API — Batch Alias | 1 | 1 | 0 |
 | Scan Algorithm | 5 | 5 | 0 |
 | Cross-Emitter | 4 | 4 | 0 |
 | SPIR-V Structural | 3 | 3 | 0 |
@@ -218,4 +274,4 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | Precision & Validity | 2 | 2 | 0 |
 | GPU Optimizations | 14 | 14 | 0 |
 | Fast-Math | 5 | 5 | 0 |
-| **Total** | **121** | **121** | **0** |
+| **Total** | **147** | **147** | **0** |
