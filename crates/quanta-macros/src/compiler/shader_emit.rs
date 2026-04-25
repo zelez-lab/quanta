@@ -1,4 +1,5 @@
 //! Vertex/fragment shader MSL and WGSL text emitters.
+#![allow(dead_code)]
 
 use super::shader_types::{ShaderParam, ShaderType};
 

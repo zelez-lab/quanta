@@ -537,8 +537,32 @@ pub(crate) fn emit_store_or_reassign(
     ctx: &mut EmitCtx,
 ) -> Result<(), syn::Error> {
     match target {
-        // field[index] = value  OR  shared[index] = value
+        // field[index] = value  OR  shared[index] = value  OR  p.field[index] = value
         Expr::Index(index) => {
+            // Try struct-ref field store: p.field[idx] = value
+            if let Some(field_name) = super::expr::extract_struct_field_from_expr(&index.expr, ctx)
+            {
+                let info = ctx
+                    .params
+                    .get(&field_name)
+                    .ok_or_else(|| {
+                        syn::Error::new_spanned(
+                            &index.expr,
+                            format!("unknown struct field: {}", field_name),
+                        )
+                    })?
+                    .clone();
+                let (idx_reg, _) = emit_expr(&index.index, ctx)?;
+                ctx.ops.push(KernelOp::Store {
+                    field: info.slot,
+                    index: idx_reg,
+                    src: src_reg,
+                    ty: info.scalar_type,
+                });
+                return Ok(());
+            }
+
+            // Flat mode: direct parameter name
             let arr_name = expr_to_name(&index.expr).ok_or_else(|| {
                 syn::Error::new_spanned(&index.expr, "store target must be a field name")
             })?;

@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 //! Expression emission — returns (register, type).
 
 use quanta_ir::{AtomicOp, BinOp, ConstValue, KernelOp, Reg, ScalarType, UnaryOp};
@@ -40,6 +41,9 @@ pub(crate) fn emit_expr(expr: &Expr, ctx: &mut EmitCtx) -> Result<(Reg, ScalarTy
 
         // Cast: x as f32
         Expr::Cast(cast) => emit_cast(cast, ctx),
+
+        // Field access: p.field (struct-ref parameter scalar access)
+        Expr::Field(field_expr) => emit_field_access(field_expr, ctx),
 
         // Tuple: (expr1, expr2) — used in tuple destructuring RHS
         Expr::Tuple(_) => Err(syn::Error::new_spanned(
@@ -233,7 +237,35 @@ fn emit_unary(unary: &syn::ExprUnary, ctx: &mut EmitCtx) -> Result<(Reg, ScalarT
 }
 
 fn emit_index(index: &syn::ExprIndex, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
-    // arr[idx] — arr can be a parameter (field) or a shared variable
+    // Two forms:
+    //   arr[idx]         — arr is a direct parameter name (flat mode)
+    //   p.field[idx]     — struct-ref mode: field access on the struct param
+
+    // Try extracting from struct-ref field access: p.field[idx]
+    if let Some(field_name) = extract_struct_field_from_expr(&index.expr, ctx) {
+        let info = ctx
+            .params
+            .get(&field_name)
+            .ok_or_else(|| {
+                syn::Error::new_spanned(
+                    &index.expr,
+                    format!("unknown struct field: {}", field_name),
+                )
+            })?
+            .clone();
+
+        let (idx_reg, _) = emit_expr(&index.index, ctx)?;
+        let dst = ctx.alloc_reg();
+        ctx.ops.push(KernelOp::Load {
+            dst,
+            field: info.slot,
+            index: idx_reg,
+            ty: info.scalar_type,
+        });
+        return Ok((dst, info.scalar_type));
+    }
+
+    // Flat mode: arr[idx] — arr can be a parameter (field) or a shared variable
     let arr_name = expr_to_name(&index.expr).ok_or_else(|| {
         syn::Error::new_spanned(&index.expr, "indexing target must be a parameter name")
     })?;
@@ -655,4 +687,87 @@ pub(crate) fn emit_expr_stmt(expr: &Expr, ctx: &mut EmitCtx) -> Result<(), syn::
             Ok(())
         }
     }
+}
+
+/// Handle `p.field` — struct-ref parameter scalar (push constant) access.
+///
+/// When the kernel has a struct-ref param (e.g., `p: &Particles`), accessing
+/// `p.count` resolves to a push constant load using the field's slot.
+fn emit_field_access(
+    field_expr: &syn::ExprField,
+    ctx: &mut EmitCtx,
+) -> Result<(Reg, ScalarType), syn::Error> {
+    // Check if this is a struct-ref field access
+    if let Some(ref struct_param) = ctx.struct_ref_param {
+        if let Expr::Path(path) = field_expr.base.as_ref() {
+            if let Some(seg) = path.path.segments.last() {
+                if seg.ident == struct_param.as_str() {
+                    let field_name = match &field_expr.member {
+                        syn::Member::Named(ident) => ident.to_string(),
+                        syn::Member::Unnamed(_) => {
+                            return Err(syn::Error::new_spanned(
+                                field_expr,
+                                "tuple-style field access not supported in GPU kernels",
+                            ));
+                        }
+                    };
+
+                    let info = ctx
+                        .params
+                        .get(&field_name)
+                        .ok_or_else(|| {
+                            syn::Error::new_spanned(
+                                field_expr,
+                                format!("unknown struct field: {}", field_name),
+                            )
+                        })?
+                        .clone();
+
+                    // Scalar (push constant) access
+                    if info.is_const {
+                        let dst = ctx.alloc_reg();
+                        ctx.ops.push(KernelOp::Load {
+                            dst,
+                            field: info.slot,
+                            index: Reg(u32::MAX),
+                            ty: info.scalar_type,
+                        });
+                        return Ok((dst, info.scalar_type));
+                    }
+
+                    // Buffer field accessed without indexing — error
+                    return Err(syn::Error::new_spanned(
+                        field_expr,
+                        format!(
+                            "`{}.{}` is a buffer field — use `{}.{}[idx]` to access elements",
+                            struct_param, field_name, struct_param, field_name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    Err(syn::Error::new_spanned(
+        field_expr,
+        "field access not supported in GPU kernels (only struct-ref parameter fields)",
+    ))
+}
+
+/// Extract a struct field name from an expression if it's a `p.field` pattern
+/// where `p` is the struct-ref parameter.
+pub(crate) fn extract_struct_field_from_expr(expr: &Expr, ctx: &EmitCtx) -> Option<String> {
+    let struct_param = ctx.struct_ref_param.as_ref()?;
+    if let Expr::Field(field_expr) = expr {
+        if let Expr::Path(path) = field_expr.base.as_ref() {
+            if let Some(seg) = path.path.segments.last() {
+                if seg.ident == struct_param.as_str() {
+                    if let syn::Member::Named(ident) = &field_expr.member {
+                        return Some(ident.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Auto-dispatch code generation for struct-ref kernel parameters.
 //!
 //! When `#[quanta::kernel]` detects a parameter typed as `p: &MyStruct` where

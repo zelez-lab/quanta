@@ -1,9 +1,10 @@
 //! Implementation body for `#[quanta::kernel]`.
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Expr, ItemFn, Lit, parse::Parser};
 
+use crate::auto_dispatch;
 use crate::compiler;
 use crate::parse;
 use crate::validate;
@@ -17,6 +18,9 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     if let Err(err) = validate::validate_kernel(&func) {
         return err.to_compile_error().into();
     }
+
+    // Detect struct-ref parameter: single param typed as `p: &MyStruct`
+    let struct_ref = parse::detect_struct_ref_param(&func);
 
     let mut kernel_def = match parse::parse_kernel(&func) {
         Ok(def) => def,
@@ -41,6 +45,15 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     };
 
     let func_name = &func.sig.ident;
+
+    // For struct-ref kernels, the wave function is named `{name}_wave` and
+    // the auto-dispatch wrapper takes the original name.
+    let wave_fn_name = if struct_ref.is_some() {
+        format_ident!("{}_wave", func_name)
+    } else {
+        func_name.clone()
+    };
+
     let binary_name = syn::Ident::new(
         &format!("{}_BINARY", func_name.to_string().to_uppercase()),
         func_name.span(),
@@ -83,14 +96,22 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     let wg_y = kernel_attrs.workgroup_size[1];
     let wg_z = kernel_attrs.workgroup_size[2];
 
-    // Const generics: extract from the function signature and generate set_value calls
+    // Const generics: extract from the function signature and generate set_value calls.
+    // For struct-ref kernels, the slot offset is the number of struct fields (not func params).
     let generics = &func.sig.generics;
     let mut const_setters = Vec::new();
-    let num_regular_params = func.sig.inputs.len();
+    let num_field_params = kernel_def.params.len()
+        - func
+            .sig
+            .generics
+            .params
+            .iter()
+            .filter(|g| matches!(g, syn::GenericParam::Const(_)))
+            .count();
     for (i, generic) in func.sig.generics.params.iter().enumerate() {
         if let syn::GenericParam::Const(cp) = generic {
             let ident = &cp.ident;
-            let slot = (num_regular_params + i) as u32;
+            let slot = (num_field_params + i) as u32;
             const_setters.push(quote! {
                 wave.set_value(#slot, #ident as u32);
             });
@@ -98,7 +119,7 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     }
     let const_generic_setters = quote! { #(#const_setters)* };
 
-    let expanded = quote! {
+    let wave_fn = quote! {
         pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
             amd: #amd_expr,
             nvidia: #nvidia_expr,
@@ -107,7 +128,7 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
             wgsl: #wgsl_expr,
         };
 
-        pub fn #func_name #generics (device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
+        pub fn #wave_fn_name #generics (device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
             let binary = #binary_name.for_vendor(device.caps().vendor)
                 .ok_or_else(|| ::quanta::QuantaError::compilation_failed(
                     format!("no compiled kernel for vendor {:?}", device.caps().vendor)
@@ -119,7 +140,87 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
         }
     };
 
-    expanded.into()
+    // For struct-ref kernels, also generate the auto-dispatch wrapper
+    if let Some(sr) = struct_ref {
+        let field_accesses = parse::scan_struct_field_accesses(&func, &sr.param_name);
+        let dispatch_info = build_dispatch_info(&sr, &field_accesses, &kernel_def);
+        let dispatch_fn = auto_dispatch::emit_auto_dispatch(&func, &dispatch_info, &wave_fn_name);
+
+        let expanded = quote! {
+            #wave_fn
+            #dispatch_fn
+        };
+        return expanded.into();
+    }
+
+    wave_fn.into()
+}
+
+/// Build the auto_dispatch::StructParamInfo by bridging parse.rs types to
+/// auto_dispatch.rs types, filling in scalar_type_name from the compiled KernelDef.
+fn build_dispatch_info(
+    sr: &parse::StructRefParam,
+    field_accesses: &[parse::StructFieldAccess],
+    kernel_def: &quanta_ir::KernelDef,
+) -> auto_dispatch::StructParamInfo {
+    let fields = field_accesses
+        .iter()
+        .map(|fa| {
+            // Look up the scalar type from the KernelDef params by slot
+            let scalar_type_name = kernel_def
+                .params
+                .get(fa.slot)
+                .map(|p| scalar_type_to_name(param_scalar_type(p)))
+                .unwrap_or_else(|| "f32".to_string());
+
+            auto_dispatch::StructFieldAccess {
+                name: fa.name.clone(),
+                slot: fa.slot,
+                is_indexed: fa.is_indexed,
+                is_read: fa.is_read,
+                is_written: fa.is_written,
+                scalar_type_name,
+            }
+        })
+        .collect();
+
+    auto_dispatch::StructParamInfo {
+        param_name: sr.param_name.clone(),
+        type_name: sr.type_name.clone(),
+        type_tokens: sr.type_tokens.clone(),
+        fields,
+    }
+}
+
+/// Extract the ScalarType from any KernelParam variant.
+fn param_scalar_type(p: &quanta_ir::KernelParam) -> quanta_ir::ScalarType {
+    match p {
+        quanta_ir::KernelParam::FieldRead { scalar_type, .. }
+        | quanta_ir::KernelParam::FieldWrite { scalar_type, .. }
+        | quanta_ir::KernelParam::Constant { scalar_type, .. }
+        | quanta_ir::KernelParam::Texture2DRead { scalar_type, .. }
+        | quanta_ir::KernelParam::Texture2DWrite { scalar_type, .. }
+        | quanta_ir::KernelParam::Texture3DRead { scalar_type, .. } => *scalar_type,
+    }
+}
+
+/// Convert a ScalarType to its Rust type name string.
+fn scalar_type_to_name(ty: quanta_ir::ScalarType) -> String {
+    match ty {
+        quanta_ir::ScalarType::F16 => "f16",
+        quanta_ir::ScalarType::F32 => "f32",
+        quanta_ir::ScalarType::F64 => "f64",
+        quanta_ir::ScalarType::U8 => "u8",
+        quanta_ir::ScalarType::U16 => "u16",
+        quanta_ir::ScalarType::U32 => "u32",
+        quanta_ir::ScalarType::U64 => "u64",
+        quanta_ir::ScalarType::I8 => "i8",
+        quanta_ir::ScalarType::I16 => "i16",
+        quanta_ir::ScalarType::I32 => "i32",
+        quanta_ir::ScalarType::I64 => "i64",
+        quanta_ir::ScalarType::Bool => "bool",
+    }
+    .to_string()
 }
 
 /// Emit JIT kernel: serialize KernelDef and embed it, generate runtime

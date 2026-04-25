@@ -1,4 +1,5 @@
 //! Shader parameter types, parsing, and body extraction.
+#![allow(dead_code)]
 
 /// A parsed shader parameter — either a vertex/fragment attribute or a uniform.
 pub(crate) struct ShaderParam {
