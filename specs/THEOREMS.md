@@ -250,6 +250,48 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | T1503 | WGSL has no fast-math (documented limitation) | Verus | proven |
 | T1504 | compile_msl_to_metallib returns Err on xcrun failure | Verus | proven |
 
+## Memory Model Axioms (T16xx)
+
+Per-backend memory models, formalized as Lean axioms in
+`specs/verify/lean/Quanta/Axioms/MemoryModels.lean`. These are part of the
+Trusted Computing Base (axioms A6-A9 in `specs/machine_model.md`); they are
+stated, not proven, but they are the **named ground** that Quanta's atomics
+and barriers stand on. Empirical cross-checks live in `specs/verify/herd7/`.
+
+| ID | Axiom | Backend | Tool | Status |
+|----|-------|---------|------|--------|
+| T1600 | A6.vulkan_workgroup_seq_cst — within a workgroup, SeqCst atomics at Workgroup scope are totally ordered | Vulkan | Lean | axiom |
+| T1601 | A6.vulkan_cross_workgroup_acq_rel — release(Device) → acquire(Device) establishes happens-before across workgroups | Vulkan | Lean | axiom |
+| T1602 | A6.vulkan_relaxed_with_barrier — OpControlBarrier with AcqRel\|WorkgroupMemory flushes prior relaxed ops | Vulkan | Lean | axiom |
+| T1603 | A6.vulkan_storage_buffer_fence — OpMemoryBarrier with StorageBuffer semantics propagates writes across dispatches | Vulkan | Lean | axiom |
+| T1604 | A7.ptx_cta_acquire_release — st.release.cta → ld.acquire.cta synchronizes within a CTA | PTX | Lean | axiom |
+| T1605 | A7.ptx_gpu_acquire_release — st.release.gpu → ld.acquire.gpu synchronizes across CTAs on the same GPU | PTX | Lean | axiom |
+| T1606 | A7.ptx_sys_acquire_release — st.release.sys → ld.acquire.sys synchronizes GPU and CPU threads | PTX | Lean | axiom |
+| T1607 | A7.ptx_bar_cta — bar.sync is a full AcqRel fence at CTA scope | PTX | Lean | axiom |
+| T1608 | A7.ptx_fence_scope_inclusion — fence at wider scope implies fence at narrower scope | PTX | Lean | axiom |
+| T1609 | A8.metal_device_relaxed_default — non-atomic device memory has no cross-thread ordering | Metal | Lean | axiom |
+| T1610 | A8.metal_atomic_acq_rel — atomic_store(release) → atomic_load(acquire) establishes happens-before | Metal | Lean | axiom |
+| T1611 | A8.metal_threadgroup_barrier — barrier with mem_threadgroup flushes threadgroup writes | Metal | Lean | axiom |
+| T1612 | A8.metal_simdgroup_barrier — simdgroup_barrier synchronizes within SIMD-group | Metal | Lean | axiom |
+| T1613 | A8.metal_threadgroup_coherent_after_barrier — threadgroup write before barrier visible to all threads after | Metal | Lean | axiom |
+| T1614 | A8.metal_no_cross_workgroup_threadgroup — threadgroup memory is workgroup-local only | Metal | Lean | axiom |
+| T1615 | A9.rdna_workgroup_acq_rel — scoped acq-rel at workgroup scope works | RDNA | Lean | axiom |
+| T1616 | A9.rdna_agent_acq_rel — agent-scope acq-rel with glc bypasses L1, establishes happens-before across workgroups | RDNA | Lean | axiom |
+| T1617 | A9.rdna_s_barrier — s_barrier + s_waitcnt is a workgroup-scope AcqRel fence | RDNA | Lean | axiom |
+| T1618 | A9.rdna_lds_coherent_within_workgroup — LDS write before s_barrier visible to all waves after | RDNA | Lean | axiom |
+| T1619 | A9.rdna_wave_scope_lockstep — lanes within a wave are implicitly synchronized | RDNA | Lean | axiom |
+| T1620 | A9.rdna_gl_scope_mapping — SPIR-V gl_Scope* lowered to correct RDNA scope by AMD driver | RDNA | Lean | axiom |
+| T1621 | barrier_semantics_agreement — all four backends agree on workgroup barrier as AcqRel at workgroup scope | All | Lean | axiom |
+| T1622 | cross_workgroup_requires_device_scope — cross-workgroup visibility requires device-scope atomics on every backend | All | Lean | axiom |
+
+Empirical cross-checks (Cat-language litmus tests, runnable with herd7):
+
+| File | Pattern | Forbidden outcome | Grounds axiom |
+|------|---------|-------------------|---------------|
+| `message_passing.litmus` | MP+rel+acq | flag=1 ∧ data=0 | T1601 / T1605 / T1610 / T1616 |
+| `store_buffer.litmus` | SB+rel+acq | both readers see 0 (allowed under rel/acq, forbidden only under SeqCst) | T1600 / T1607 |
+| `atomic_add_visibility.litmus` | AtomicAdd+rel+acq | counter=1 ∧ data=0 | T1601 / T1605 / T1610 / T1616 |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -274,4 +316,13 @@ the module is considered verified. Status: `proven` | `partial` | `todo`.
 | Precision & Validity | 2 | 2 | 0 |
 | GPU Optimizations | 14 | 14 | 0 |
 | Fast-Math | 5 | 5 | 0 |
-| **Total** | **147** | **147** | **0** |
+| Memory Model Axioms | 23 | -- | -- |
+| **Total proven theorems** | **147** | **147** | **0** |
+| **TCB axioms (A6-A9)** | **23** | -- | -- |
+
+The 23 memory-model entries (T1600-T1622) are **axioms**, not theorems —
+they are part of the Trusted Computing Base, declared in Lean and grounded
+in the published memory-model specifications of each backend (Vulkan
+Memory Model extension, NVIDIA PTX ISA 8.5, Metal Shading Language §6.13,
+AMD RDNA ISA Reference). They are stated and named, not proved, and they
+are excluded from the "proven theorems" count.

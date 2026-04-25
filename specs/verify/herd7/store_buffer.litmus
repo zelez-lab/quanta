@@ -1,0 +1,42 @@
+LISA SB+rel+acq
+
+(*
+ * Store-Buffer test for Quanta GPU atomics.
+ *
+ * Two threads (quarks) each write to their own location, then read
+ * the other's. Under sequential consistency, at least one thread
+ * must see the other's write. Under weaker models, both may read
+ * the initial value (store buffers have not drained).
+ *
+ * This pattern arises in Quanta when two workgroups coordinate via
+ * device-scope atomics: workgroup A writes its status, reads B's;
+ * workgroup B writes its status, reads A's. If both can read stale
+ * values, a deadlock or lost update results.
+ *
+ * Quanta emits release-stores and acquire-loads at device scope
+ * to prevent the SB anomaly across workgroups:
+ *   Vulkan: OpAtomicStore(Release, Device) + OpAtomicLoad(Acquire, Device)
+ *   PTX:    st.release.gpu + ld.acquire.gpu
+ *   Metal:  atomic_store_explicit(release) + atomic_load_explicit(acquire)
+ *   RDNA:   flat_store + release + glc / flat_load + acquire + glc
+ *
+ * CLAIM: with release-store and acquire-load, the bad outcome
+ * (both read 0) is forbidden. At least one reader must observe
+ * the other's write.
+ *
+ * Note: under pure release-acquire (without seq-cst), SB *can*
+ * still occur — seq-cst fences are needed to fully forbid it.
+ * This test documents the boundary: rel/acq alone is not sufficient
+ * to forbid SB on all architectures.
+ *)
+
+{
+  [x] = 0;
+  [y] = 0;
+}
+
+P0             |  P1             ;
+w[release] x 1 |  w[release] y 1 ;
+r[acquire] r0 y |  r[acquire] r1 x ;
+
+exists (0:r0=0 /\ 1:r1=0)

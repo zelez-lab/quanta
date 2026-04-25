@@ -1,7 +1,5 @@
-[package]
 name = "quanta-specs"
-version = "0.1.0"
-leanVersion = "v4.16.0"
+defaultTargets = ["Quanta"]
 
 [[lean_lib]]
 name = "Quanta"

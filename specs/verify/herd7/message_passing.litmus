@@ -1,0 +1,40 @@
+LISA MP+rel+acq
+
+(*
+ * Message-Passing test for Quanta GPU atomics.
+ *
+ * Models the classic MP pattern mapped to GPU compute:
+ * Thread 0 (producer quark) writes data, then release-stores a flag.
+ * Thread 1 (consumer quark) acquire-loads the flag, then reads data.
+ *
+ * This is the fundamental pattern for Quanta's cross-thread
+ * communication: a kernel writes results to a buffer, then sets a
+ * flag; another kernel (or a later invocation) checks the flag
+ * before reading.
+ *
+ * Quanta emits:
+ *   Vulkan SPIR-V: OpAtomicStore (Release, Device) / OpAtomicLoad (Acquire, Device)
+ *   PTX:           st.release.gpu / ld.acquire.gpu
+ *   Metal MSL:     atomic_store_explicit(release) / atomic_load_explicit(acquire)
+ *   RDNA:          flat_store + release / flat_load + acquire + glc
+ *
+ * Maps to axioms:
+ *   A6 (vulkan_cross_workgroup_acq_rel)
+ *   A7 (ptx_gpu_acquire_release)
+ *   A8 (metal_atomic_acq_rel)
+ *   A9 (rdna_agent_acq_rel)
+ *
+ * CLAIM: if the consumer observes flag=1, it must also observe
+ * data=42. The bad outcome (flag=1, data=0) must be forbidden.
+ *)
+
+{
+  [data] = 0;
+  [flag] = 0;
+}
+
+P0          |  P1          ;
+w[] data 42 |  r[acquire] r0 flag ;
+w[release] flag 1 | r[] r1 data ;
+
+exists (0:r0=1 /\ 0:r1=0)

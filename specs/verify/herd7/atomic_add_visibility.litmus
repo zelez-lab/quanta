@@ -1,0 +1,41 @@
+LISA AtomicAdd+rel+acq
+
+(*
+ * AtomicAdd visibility test for Quanta GPU atomics.
+ *
+ * Thread 0 writes data, then performs an atomic_add (release) on a
+ * counter. Thread 1 performs an atomic_load (acquire) on the counter,
+ * then reads data. If Thread 1 observes the incremented counter, it
+ * must also observe the data write.
+ *
+ * This models Quanta's `atomic_add` kernel intrinsic used for:
+ * - Workgroup-level counters (e.g., prefix sum, histogram)
+ * - Cross-workgroup synchronization (e.g., completion counters)
+ * - Global reduction atomics
+ *
+ * Quanta emits:
+ *   Vulkan SPIR-V: OpAtomicIAdd (Release, Device)
+ *   PTX:           atom.add.release.gpu
+ *   Metal MSL:     atomic_fetch_add_explicit(release)
+ *   RDNA:          flat_atomic_add + release + glc
+ *
+ * The atomic RMW (read-modify-write) has both a read and write
+ * component. Under release ordering, the write portion acts as
+ * a release — all prior writes (including non-atomic data) are
+ * visible to any thread that acquires from this location.
+ *
+ * CLAIM: if Thread 1's acquire-load observes counter=1 (the
+ * result of Thread 0's atomic_add), then data=42 must be visible.
+ *)
+
+{
+  [data] = 0;
+  [counter] = 0;
+}
+
+P0                 |  P1                    ;
+w[] data 42        |  r[acquire] r0 counter ;
+f[release]         |  r[] r1 data           ;
+rmw[once] counter 0 1 |                     ;
+
+exists (1:r0=1 /\ 1:r1=0)

@@ -49,6 +49,91 @@ LLVM 22 correctly:
 - Evaluates `const` expressions at compile time
 - Enforces type safety across the macro boundary
 
+### A6: Vulkan memory model
+
+The `VK_KHR_vulkan_memory_model` extension provides, with the SPIR-V `Vulkan`
+memory model:
+- A scoped modification order: for each atomic object and each memory scope
+  (`Invocation` ⊂ `Subgroup` ⊂ `Workgroup` ⊂ `QueueFamily` ⊂ `CrossDevice`),
+  there is a total order of all modifications performed at that scope.
+- Sequentially consistent atomics at workgroup scope: within a workgroup,
+  `MemorySemanticsSequentiallyConsistentKHR` atomics admit a total order.
+- Cross-workgroup acquire-release: `OpAtomicStore(Release, Device)` synchronizes
+  with `OpAtomicLoad(Acquire, Device)` that reads the stored value.
+- Barriers flush relaxed ops: `OpControlBarrier Workgroup Workgroup
+  AcquireRelease|WorkgroupMemory` makes prior workgroup-memory writes visible.
+- Storage-buffer fences propagate writes across dispatches on the same queue.
+
+Quanta requires this extension; behavior without it is unspecified.
+
+### A7: PTX release-acquire scoping (NVIDIA CUDA)
+
+PTX (ISA 8.5) provides scoped release-acquire ordering:
+- `st.release.cta` / `ld.acquire.cta` synchronize threads within a CTA
+  (= workgroup).
+- `st.release.gpu` / `ld.acquire.gpu` synchronize threads across CTAs on the
+  same GPU.
+- `st.release.sys` / `ld.acquire.sys` synchronize GPU and CPU threads on
+  PCIe-coherent memory.
+- `bar.sync 0` is a full acquire-release fence at CTA scope.
+- A fence at a wider scope subsumes fences at narrower scopes (`fence.gpu`
+  implies `fence.cta`; `fence.sys` implies `fence.gpu`).
+
+### A8: Metal memory model (Apple GPU)
+
+The Metal Shading Language memory model (MSL spec, §6.13) provides:
+- Default-relaxed device memory: non-atomic device-memory accesses have no
+  cross-thread ordering. Ordering requires explicit `atomic_*` functions.
+- C++14-style atomics: `atomic_store_explicit(release)` synchronizes with
+  `atomic_load_explicit(acquire)` at the same address.
+- `threadgroup_barrier(mem_threadgroup)` flushes threadgroup-memory writes
+  within a workgroup; `mem_device` flushes device-memory writes.
+- `simdgroup_barrier` synchronizes within a SIMD-group (32 threads).
+- Threadgroup memory is coherent within a workgroup after a barrier; before
+  the barrier, cross-thread visibility is not guaranteed.
+- Threadgroup memory is workgroup-local — it is not visible across workgroups,
+  ever. Cross-workgroup communication requires device memory with atomics.
+
+### A9: AMD RDNA memory model
+
+AMD RDNA 1/2/3 (and Sea Islands+) ISA provides:
+- Scoped acquire-release at workgroup, agent (= device), and system scope via
+  `flat_atomic` / `s_buffer_atomic` instructions with the `glc` (globally
+  coherent) flag and scope annotation.
+- `glc` on cross-workgroup loads bypasses the L1 vector cache, reading from
+  L2 directly. Without `glc`, agent-scope ordering may still see stale L1.
+- `s_barrier` (preceded by `s_waitcnt lgkmcnt(0)`) is a full workgroup-scope
+  acquire-release fence — both LDS and (appropriately scoped) global memory.
+- LDS (Local Data Share, threadgroup memory) is coherent within a workgroup
+  after `s_barrier`; before the barrier, cross-wave visibility is not
+  guaranteed.
+- Lanes within a wave (32 or 64 threads) execute in lockstep — no explicit
+  synchronization is needed for wave-level communication via `ds_permute` or
+  `v_readlane`.
+- The AMD Vulkan driver (AMDVLK / RADV) lowers SPIR-V `gl_ScopeWorkgroup` to
+  workgroup scope, `gl_ScopeDevice` to agent scope, and `gl_ScopeSubgroup` to
+  wave scope.
+
+### Cross-model agreement
+
+All four backends agree on two minimal properties that Quanta relies on:
+- **Workgroup barrier semantics:** `workgroup_barrier()` is a full acquire-release
+  fence at workgroup scope for shared memory. Quanta emits, respectively:
+  `OpControlBarrier Workgroup Workgroup AcqRel|WorkgroupMemory` (Vulkan),
+  `bar.sync 0` (PTX), `threadgroup_barrier(mem_threadgroup)` (Metal),
+  `s_waitcnt lgkmcnt(0)` + `s_barrier` (RDNA).
+- **Cross-workgroup requires device scope:** communication between threads in
+  different workgroups requires device-scope acquire-release atomics. Shared /
+  threadgroup / LDS memory is workgroup-local on every backend.
+
+Lean formalization: `specs/verify/lean/Quanta/Axioms/MemoryModels.lean`
+(namespaces `VulkanMM`, `PtxMM`, `MetalMM`, `RdnaMM`).
+
+Empirical validation: `specs/verify/herd7/` — three litmus tests
+(`message_passing.litmus`, `store_buffer.litmus`,
+`atomic_add_visibility.litmus`) check the message-passing and store-buffer
+patterns under release-acquire on a Cat-language model compatible with A6.
+
 ---
 
 ## Theorems (proven by Quanta)

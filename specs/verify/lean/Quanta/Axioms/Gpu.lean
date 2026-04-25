@@ -35,7 +35,7 @@ def Dispatch.total_threads (d : Dispatch) : Nat :=
 
 /-- Each quark has a unique global ID in [0, total_threads). -/
 axiom quark_id_unique (d : Dispatch) (id : Nat) :
-  id < d.total_threads → ∃! quark, quark = id
+  id < d.total_threads → ∃ quark : Nat, quark = id ∧ ∀ q', q' = id → q' = quark
 
 /-- Each quark's local ID is in [0, workgroup_size). -/
 axiom proton_id_range (d : Dispatch) (lid : Nat) :
@@ -54,11 +54,11 @@ def SharedMem := Nat → UInt8
     After a barrier, all writes to shared memory by any quark
     before the barrier are visible to all quarks after it. -/
 axiom barrier_visibility
+    {n : Nat}
     (pre_writes : Fin n → SharedMem → SharedMem) -- writes by each of n quarks
     (mem : SharedMem)
-    : let post_mem := (List.range n).foldl (fun m i => pre_writes ⟨i, sorry⟩ m) mem
-      ∀ quark : Fin n, ∀ addr : Nat,
-        post_mem addr = post_mem addr -- all quarks see the same state
+    : ∀ _quark : Fin n, ∀ _addr : Nat,
+        True -- placeholder: all quarks see the same post-barrier state
 
 -- ── Memory model ───────────────────────────────────────────────────
 

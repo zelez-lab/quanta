@@ -13,6 +13,7 @@ import Quanta.Axioms.Gpu
 import Quanta.Axioms.Metal
 import Quanta.Axioms.Vulkan
 import Quanta.Axioms.Llvm
+import Quanta.Axioms.MemoryModels
 
 -- Backend instruction semantics
 import Quanta.Semantics.SpirV
