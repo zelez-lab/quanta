@@ -9,7 +9,7 @@
 //! All tests verify pixel output mathematically — no golden images.
 
 use quanta::render_pass::ColorTarget;
-use quanta::{Color, Format, LoadOp, StoreOp};
+use quanta::{Color, FieldUsage, Format, LoadOp, StoreOp};
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -170,27 +170,32 @@ fn render_triangle() {
         -0.5,  0.5, 0.0,   0.0, 1.0, 0.0,
          0.5,  0.5, 0.0,   0.0, 0.0, 1.0,
     ];
-    let vb: quanta::Field<f32> = gpu.render_field(verts.len()).expect("vb");
-    gpu.write_field(&vb, &verts).expect("write vb");
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .expect("vb");
+    vb.write(&verts).expect("write vb");
 
     let w = 64u32;
     let h = 64u32;
     let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
 
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-        store_op: StoreOp::Store,
-    }]);
-    pass.set_viewport(0.0, 0.0, w as f32, h as f32);
-    pass.set_pipeline(&pipeline);
-    pass.bind_vertices(0, &vb);
-    pass.draw(3);
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
+            store_op: StoreOp::Store,
+        }])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
     let (r, g, b, a) = pixel_at(&pixels, w, w / 2, h / 2);
     eprintln!("center: rgba({r},{g},{b},{a})");
     assert!(r > 200, "center should be red (R={r})");
@@ -249,10 +254,14 @@ fn depth_test_near_wins() {
          0.7,  0.7, 0.2,   0.0, 0.0, 0.0,
     ];
 
-    let far_vb: quanta::Field<f32> = gpu.render_field(far_verts.len()).unwrap();
-    gpu.write_field(&far_vb, &far_verts).unwrap();
-    let near_vb: quanta::Field<f32> = gpu.render_field(near_verts.len()).unwrap();
-    gpu.write_field(&near_vb, &near_verts).unwrap();
+    let far_vb: quanta::Field<f32> = gpu
+        .field_with_usage(far_verts.len(), FieldUsage::default_render())
+        .unwrap();
+    far_vb.write(&far_verts).unwrap();
+    let near_vb: quanta::Field<f32> = gpu
+        .field_with_usage(near_verts.len(), FieldUsage::default_render())
+        .unwrap();
+    near_vb.write(&near_verts).unwrap();
 
     let w = 64u32;
     let h = 64u32;
@@ -267,35 +276,35 @@ fn depth_test_near_wins() {
         })
         .unwrap();
 
-    let mut pass = gpu.render_begin(&color_target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: color_target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-        store_op: StoreOp::Store,
-    }]);
-    pass.set_depth_target(quanta::render_pass::DepthTarget {
-        texture: depth_target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)), // clear depth to 1.0
-        store_op: StoreOp::DontCare,
-        stencil_load_op: LoadOp::DontCare,
-        stencil_store_op: StoreOp::DontCare,
-    });
-    pass.set_viewport(0.0, 0.0, w as f32, h as f32);
-
     // Draw order: green (far) FIRST, then red (near) SECOND.
     // With depth test (Less), the near red triangle wins at overlap.
-    pass.set_pipeline(&green_pipe);
-    pass.bind_vertices(0, &far_vb);
-    pass.draw(3);
+    let mut pulse = gpu
+        .render(&color_target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: color_target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
+            store_op: StoreOp::Store,
+        }])
+        .depth_target(quanta::render_pass::DepthTarget {
+            texture: depth_target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)), // clear depth to 1.0
+            store_op: StoreOp::DontCare,
+            stencil_load_op: LoadOp::DontCare,
+            stencil_store_op: StoreOp::DontCare,
+        })
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&green_pipe)
+        .vertices(0, &far_vb)
+        .draw(3)
+        .pipeline(&red_pipe)
+        .vertices(0, &near_vb)
+        .draw(3)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    pass.set_pipeline(&red_pipe);
-    pass.bind_vertices(0, &near_vb);
-    pass.draw(3);
-
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
-
-    let pixels = gpu.texture_read(&color_target).unwrap();
+    let pixels = color_target.read().unwrap();
     let (r, g, b, _) = pixel_at(&pixels, w, w / 2, h / 2);
     eprintln!("depth test center: rgba({r},{g},{b})");
 
@@ -379,10 +388,14 @@ fn indexed_draw_cube() {
         0, 3, 7,  7, 4, 0,
     ];
 
-    let vb: quanta::Field<f32> = gpu.render_field(verts.len()).unwrap();
-    gpu.write_field(&vb, &verts).unwrap();
-    let ib: quanta::Field<u32> = gpu.render_field(indices.len()).unwrap();
-    gpu.write_field(&ib, &indices).unwrap();
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+    let ib: quanta::Field<u32> = gpu
+        .field_with_usage(indices.len(), FieldUsage::default_render())
+        .unwrap();
+    ib.write(&indices).unwrap();
 
     let w = 64u32;
     let h = 64u32;
@@ -397,29 +410,31 @@ fn indexed_draw_cube() {
         })
         .unwrap();
 
-    let mut pass = gpu.render_begin(&color_target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: color_target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-        store_op: StoreOp::Store,
-    }]);
-    pass.set_depth_target(quanta::render_pass::DepthTarget {
-        texture: depth_target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)),
-        store_op: StoreOp::DontCare,
-        stencil_load_op: LoadOp::DontCare,
-        stencil_store_op: StoreOp::DontCare,
-    });
-    pass.set_viewport(0.0, 0.0, w as f32, h as f32);
-    pass.set_pipeline(&pipeline);
-    pass.bind_vertices(0, &vb);
-    pass.bind_indices(&ib);
-    pass.draw_indexed(36);
+    let mut pulse = gpu
+        .render(&color_target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: color_target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
+            store_op: StoreOp::Store,
+        }])
+        .depth_target(quanta::render_pass::DepthTarget {
+            texture: depth_target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)),
+            store_op: StoreOp::DontCare,
+            stencil_load_op: LoadOp::DontCare,
+            stencil_store_op: StoreOp::DontCare,
+        })
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .indices(&ib)
+        .draw_indexed(36)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
-
-    let pixels = gpu.texture_read(&color_target).unwrap();
+    let pixels = color_target.read().unwrap();
 
     // Center should be red (cube covers it)
     let (r, g, b, _) = pixel_at(&pixels, w, w / 2, h / 2);
@@ -494,31 +509,37 @@ fn instanced_draw() {
          0.5, 0.0, 0.0,  // right
     ];
 
-    let vb: quanta::Field<f32> = gpu.render_field(tri.len()).unwrap();
-    gpu.write_field(&vb, &tri).unwrap();
-    let instance_buf: quanta::Field<f32> = gpu.render_field(offsets.len()).unwrap();
-    gpu.write_field(&instance_buf, &offsets).unwrap();
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(tri.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&tri).unwrap();
+    let instance_buf: quanta::Field<f32> = gpu
+        .field_with_usage(offsets.len(), FieldUsage::default_render())
+        .unwrap();
+    instance_buf.write(&offsets).unwrap();
 
     let w = 128u32;
     let h = 64u32;
     let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
 
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-        store_op: StoreOp::Store,
-    }]);
-    pass.set_viewport(0.0, 0.0, w as f32, h as f32);
-    pass.set_pipeline(&pipeline);
-    pass.bind_vertices(0, &vb);
-    pass.bind_vertices(1, &instance_buf);
-    pass.draw_instanced(3, 3);
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
+            store_op: StoreOp::Store,
+        }])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .vertices(1, &instance_buf)
+        .draw_instanced(3, 3)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
-
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
 
     // Check three horizontal positions for red pixels
     let left_x = w / 4; // ~32: should have left instance
@@ -626,7 +647,7 @@ fn textured_quad() {
             ..quanta::TextureDesc::default()
         })
         .expect("texture");
-    gpu.texture_write(&tex, &tex_data).expect("tex write");
+    tex.write(&tex_data).expect("tex write");
 
     // Full-screen quad: two triangles covering [-1,1]
     //   pos (x, y, z)     uv (u, v)
@@ -639,36 +660,41 @@ fn textured_quad() {
          1.0,  1.0, 0.0,  1.0, 1.0,  // top-right
         -1.0,  1.0, 0.0,  0.0, 1.0,  // top-left
     ];
-    let vb: quanta::Field<f32> = gpu.render_field(verts.len()).unwrap();
-    gpu.write_field(&vb, &verts).unwrap();
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
 
     let w = 4u32;
     let h = 4u32;
     let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
 
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-        store_op: StoreOp::Store,
-    }]);
-    pass.set_viewport(0.0, 0.0, w as f32, h as f32);
-    pass.set_pipeline(&pipeline);
-    pass.bind_vertices(0, &vb);
-    pass.set_texture(0, &tex);
-    pass.set_sampler(
-        0,
-        quanta::render_pass::SamplerDesc {
-            min_filter: quanta::render_pass::Filter::Nearest,
-            mag_filter: quanta::render_pass::Filter::Nearest,
-            ..quanta::render_pass::SamplerDesc::default()
-        },
-    );
-    pass.draw(6);
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
+            store_op: StoreOp::Store,
+        }])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .texture(0, &tex)
+        .sampler(
+            0,
+            quanta::render_pass::SamplerDesc {
+                min_filter: quanta::render_pass::Filter::Nearest,
+                mag_filter: quanta::render_pass::Filter::Nearest,
+                ..quanta::render_pass::SamplerDesc::default()
+            },
+        )
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
     assert_eq!(pixels.len(), (w * h * 4) as usize);
 
     // With nearest sampling on a 4×4 target from a 2×2 texture:

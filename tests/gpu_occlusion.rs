@@ -70,14 +70,16 @@ fn occlusion_query_in_render_pass() {
     };
 
     let target = gpu.render_target(16, 16, Format::RGBA8).unwrap();
-    let mut pass = gpu.render_begin(&target).unwrap();
 
     // Begin and end an occlusion query (no draw between -- result should be 0).
-    pass.begin_occlusion_query(&query, 0);
-    pass.end_occlusion_query(&query, 0);
-
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .begin_occlusion_query(&query, 0)
+        .end_occlusion_query(&query, 0)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
     // Read the result -- should be 0 (no fragments drawn).
     match gpu.occlusion_query_read(&query) {
@@ -108,16 +110,17 @@ fn occlusion_query_multiple_slots() {
     };
 
     let target = gpu.render_target(16, 16, Format::RGBA8).unwrap();
-    let mut pass = gpu.render_begin(&target).unwrap();
 
     // Use each slot.
+    let mut builder = gpu.render(&target).unwrap();
     for i in 0..slot_count {
-        pass.begin_occlusion_query(&query, i);
-        pass.end_occlusion_query(&query, i);
+        builder = builder
+            .begin_occlusion_query(&query, i)
+            .end_occlusion_query(&query, i);
     }
 
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = builder.pulse().unwrap();
+    pulse.wait().unwrap();
 
     match gpu.occlusion_query_read(&query) {
         Ok(results) => {

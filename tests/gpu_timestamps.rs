@@ -37,11 +37,11 @@ fn timestamp_basic_ordering() {
 
     // Do some GPU work in between
     let count = 10_000;
-    let field = gpu.compute_field::<f32>(count).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
     let mut wave = busy_work(&gpu).unwrap();
     wave.bind(0, &field);
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
     // Write second timestamp
     gpu.write_timestamp(&query, 1).unwrap();
@@ -76,11 +76,11 @@ fn timestamp_multiple_slots() {
         gpu.write_timestamp(&query, slot).unwrap();
 
         // Small dispatch to advance GPU time
-        let field = gpu.compute_field::<f32>(256).unwrap();
+        let field = gpu.field::<f32>(256).unwrap();
         let mut wave = busy_work(&gpu).unwrap();
         wave.bind(0, &field);
         let mut pulse = gpu.dispatch(&wave, 256).unwrap();
-        gpu.wait(&mut pulse).unwrap();
+        pulse.wait().unwrap();
     }
 
     let stamps = gpu.read_timestamps(&query).unwrap();
@@ -113,11 +113,11 @@ fn timestamp_to_nanoseconds() {
 
     // Generate measurable work
     let count = 100_000;
-    let field = gpu.compute_field::<f32>(count).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
     let mut wave = busy_work(&gpu).unwrap();
     wave.bind(0, &field);
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
     gpu.write_timestamp(&query, 1).unwrap();
 

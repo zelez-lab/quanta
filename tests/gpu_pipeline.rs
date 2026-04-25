@@ -81,19 +81,24 @@ fn pipeline_draw_triangle() {
     let pipeline = gpu.pipeline(&base_desc(v, f, &layouts)).unwrap();
 
     let verts: [f32; 9] = [0.0, 0.5, 0.0, -0.5, -0.5, 0.0, 0.5, -0.5, 0.0];
-    let vb: quanta::Field<f32> = gpu.render_field(verts.len()).unwrap();
-    gpu.write_field(&vb, &verts).unwrap();
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), quanta::FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
 
     let target = gpu.render_target(64, 64, Format::RGBA8).unwrap();
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_viewport(0.0, 0.0, 64.0, 64.0);
-    pass.set_pipeline(&pipeline);
-    pass.bind_vertices(0, &vb);
-    pass.draw(3);
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .viewport(0.0, 0.0, 64.0, 64.0)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
     assert_eq!(pixels.len(), 64 * 64 * 4);
     let has_nonzero = pixels.iter().any(|&b| b != 0);
     assert!(

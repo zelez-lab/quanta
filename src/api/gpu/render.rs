@@ -3,9 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
-use crate::{
-    OcclusionQuery, Pipeline, PipelineDesc, Pulse, QuantaError, RenderBuilder, RenderPass, Texture,
-};
+use crate::{OcclusionQuery, Pipeline, PipelineDesc, QuantaError, RenderBuilder, Texture};
 
 use super::Gpu;
 
@@ -34,18 +32,6 @@ impl Gpu {
     pub fn render(&self, target: &Texture) -> Result<RenderBuilder, QuantaError> {
         let pass = self.inner.render_begin(target)?;
         Ok(RenderBuilder::new(self.inner.clone(), pass))
-    }
-
-    /// Begin a render pass targeting a texture.
-    #[deprecated(note = "use gpu.render(&target) builder chain instead")]
-    pub fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
-        self.inner.render_begin(target)
-    }
-
-    /// End a render pass and submit for execution.
-    #[deprecated(note = "use gpu.render(&target).....pulse() builder chain instead")]
-    pub fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
-        self.inner.render_end(pass)
     }
 
     // === M3.3: Occlusion queries ===

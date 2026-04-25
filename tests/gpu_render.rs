@@ -23,11 +23,10 @@ fn render_clear_to_red() {
     let h = 32;
     let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
 
-    let pass = gpu.render_begin(&target).unwrap();
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu.render(&target).unwrap().pulse().unwrap();
+    pulse.wait().unwrap();
 
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
     let expected_size = (w * h * 4) as usize;
     assert_eq!(
         pixels.len(),
@@ -54,17 +53,15 @@ fn render_clear_multiple_passes() {
     let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
 
     // First pass
-    let pass1 = gpu.render_begin(&target).unwrap();
-    let mut pulse1 = gpu.render_end(pass1).unwrap();
-    gpu.wait(&mut pulse1).unwrap();
+    let mut pulse1 = gpu.render(&target).unwrap().pulse().unwrap();
+    pulse1.wait().unwrap();
 
     // Second pass (should overwrite first)
-    let pass2 = gpu.render_begin(&target).unwrap();
-    let mut pulse2 = gpu.render_end(pass2).unwrap();
-    gpu.wait(&mut pulse2).unwrap();
+    let mut pulse2 = gpu.render(&target).unwrap().pulse().unwrap();
+    pulse2.wait().unwrap();
 
     // Verify we can still read the texture after two passes
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
     assert_eq!(pixels.len(), (w * h * 4) as usize);
 }
 
@@ -80,9 +77,8 @@ fn render_target_different_formats() {
 
     for fmt in &formats {
         let target = gpu.render_target(8, 8, *fmt).unwrap();
-        let pass = gpu.render_begin(&target).unwrap();
-        let mut pulse = gpu.render_end(pass).unwrap();
-        gpu.wait(&mut pulse).unwrap();
+        let mut pulse = gpu.render(&target).unwrap().pulse().unwrap();
+        pulse.wait().unwrap();
     }
 }
 
@@ -95,11 +91,10 @@ fn render_target_large() {
 
     // 1080p render target
     let target = gpu.render_target(1920, 1080, Format::RGBA8).unwrap();
-    let pass = gpu.render_begin(&target).unwrap();
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu.render(&target).unwrap().pulse().unwrap();
+    pulse.wait().unwrap();
 
     // Read back and verify size
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
     assert_eq!(pixels.len(), 1920 * 1080 * 4);
 }

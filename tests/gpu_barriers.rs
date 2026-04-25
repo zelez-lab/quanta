@@ -33,20 +33,20 @@ fn barrier_full_pipeline() {
     };
 
     let count = 256;
-    let field = gpu.compute_field::<f32>(count).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
 
     // Write via compute kernel
     let mut wave = write_pattern(&gpu).unwrap();
     wave.bind(0, &field);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
     // Full barrier
     gpu.barrier().unwrap();
 
     // Read back should see updated data
-    let result = gpu.read_field::<f32>(&field).unwrap();
+    let result = field.read().unwrap();
     for i in 0..count {
         let expected = (i + 1) as f32;
         assert!(
@@ -67,18 +67,18 @@ fn barrier_compute_write_then_read() {
     };
 
     let count = 256;
-    let field_a = gpu.compute_field::<f32>(count).unwrap();
-    let field_b = gpu.compute_field::<f32>(count).unwrap();
+    let field_a = gpu.field::<f32>(count).unwrap();
+    let field_b = gpu.field::<f32>(count).unwrap();
 
     // First kernel writes to field_a
     let mut wave1 = write_pattern(&gpu).unwrap();
     wave1.bind(0, &field_a);
 
     let mut pulse1 = gpu.dispatch(&wave1, count as u32).unwrap();
-    gpu.wait(&mut pulse1).unwrap();
+    pulse1.wait().unwrap();
 
     // Transition field_a from compute-write to compute-read
-    gpu.barrier_buffer(
+    gpu.barrier_field(
         &field_a,
         ResourceState::ComputeWrite,
         ResourceState::ComputeRead,
@@ -91,9 +91,9 @@ fn barrier_compute_write_then_read() {
     wave2.bind(1, &field_b);
 
     let mut pulse2 = gpu.dispatch(&wave2, count as u32).unwrap();
-    gpu.wait(&mut pulse2).unwrap();
+    pulse2.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&field_b).unwrap();
+    let result = field_b.read().unwrap();
     for i in 0..count {
         let expected = (i + 1) as f32 * 2.0;
         assert!(
@@ -115,15 +115,15 @@ fn barrier_buffer_multiple_transitions() {
 
     let count = 128;
     let data = vec![5.0f32; count];
-    let field = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&field, &data).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
+    field.write(&data).unwrap();
 
     // Transition: General -> ComputeRead
-    gpu.barrier_buffer(&field, ResourceState::General, ResourceState::ComputeRead)
+    gpu.barrier_field(&field, ResourceState::General, ResourceState::ComputeRead)
         .unwrap();
 
     // Transition: ComputeRead -> ComputeWrite
-    gpu.barrier_buffer(
+    gpu.barrier_field(
         &field,
         ResourceState::ComputeRead,
         ResourceState::ComputeWrite,
@@ -131,11 +131,11 @@ fn barrier_buffer_multiple_transitions() {
     .unwrap();
 
     // Transition: ComputeWrite -> General
-    gpu.barrier_buffer(&field, ResourceState::ComputeWrite, ResourceState::General)
+    gpu.barrier_field(&field, ResourceState::ComputeWrite, ResourceState::General)
         .unwrap();
 
     // Verify data is still intact
-    let result = gpu.read_field::<f32>(&field).unwrap();
+    let result = field.read().unwrap();
     for (i, v) in result.iter().enumerate() {
         assert!(
             (*v - 5.0).abs() < 0.001,
@@ -167,7 +167,7 @@ fn barrier_texture_transition() {
 
     // Write pixel data
     let pixels = vec![128u8; 16 * 16 * 4];
-    gpu.texture_write(&tex, &pixels).unwrap();
+    tex.write(&pixels).unwrap();
 
     // Transition texture state
     gpu.barrier_texture(&tex, ResourceState::TransferDst, ResourceState::ShaderRead)
@@ -177,7 +177,7 @@ fn barrier_texture_transition() {
         .unwrap();
 
     // Verify data persists through transitions
-    let result = gpu.texture_read(&tex).unwrap();
+    let result = tex.read().unwrap();
     assert_eq!(
         pixels, result,
         "texture data lost after barrier transitions"

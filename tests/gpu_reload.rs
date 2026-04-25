@@ -29,9 +29,9 @@ fn reload_wave_changes_behavior() {
     let count = 64;
     let data = vec![10.0f32; count];
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
+    input.write(&data).unwrap();
 
     // First: dispatch add_one.
     let mut wave = add_one(&gpu).unwrap();
@@ -39,9 +39,9 @@ fn reload_wave_changes_behavior() {
     wave.bind(1, &output);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result1 = gpu.read_field::<f32>(&output).unwrap();
+    let result1 = output.read().unwrap();
     for v in &result1 {
         assert!(
             (*v - 11.0).abs() < 0.001,
@@ -60,9 +60,9 @@ fn reload_wave_changes_behavior() {
     wave2.bind(1, &output);
 
     let mut pulse2 = gpu.dispatch(&wave2, count as u32).unwrap();
-    gpu.wait(&mut pulse2).unwrap();
+    pulse2.wait().unwrap();
 
-    let result2 = gpu.read_field::<f32>(&output).unwrap();
+    let result2 = output.read().unwrap();
     for v in &result2 {
         assert!(
             (*v - 12.0).abs() < 0.001,

@@ -47,9 +47,9 @@ fn compute_reads_texture() {
             ..quanta::TextureDesc::default()
         })
         .unwrap();
-    gpu.texture_write(&tex, &tex_data).unwrap();
+    tex.write(&tex_data).unwrap();
 
-    let output = gpu.compute_field::<f32>(n).unwrap();
+    let output = gpu.field::<f32>(n).unwrap();
 
     eprintln!("metallib: {}", READ_TEXTURE_BINARY.metallib.is_some());
     eprintln!("spirv: {}", READ_TEXTURE_BINARY.spirv.is_some());
@@ -59,9 +59,9 @@ fn compute_reads_texture() {
     wave.set_value(2, w);
 
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&output).unwrap();
+    let result = output.read().unwrap();
 
     // Check first row: R channel should be 0/255, 64/255, 128/255, 192/255
     for x in 0..w as usize {

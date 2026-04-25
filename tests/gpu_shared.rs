@@ -65,18 +65,18 @@ fn shared_memory_sum() {
     // Each element is 1.0 => each group sum = 64.0
     let data = vec![1.0f32; count];
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(num_groups).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(num_groups).unwrap();
+    input.write(&data).unwrap();
 
     let mut wave = shared_sum(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.wave_dispatch(&wave, [num_groups as u32, 1, 1]).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
     for (g, v) in result.iter().enumerate() {
         assert!(
             (*v - 64.0).abs() < 0.01,
@@ -102,18 +102,18 @@ fn shared_memory_sum_varying_data() {
     // Group 1: values 64..128, sum = (64+127)*64/2 = 6112
     let data: Vec<f32> = (0..count).map(|i| i as f32).collect();
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(num_groups).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(num_groups).unwrap();
+    input.write(&data).unwrap();
 
     let mut wave = shared_sum(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.wave_dispatch(&wave, [num_groups as u32, 1, 1]).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
     let expected_0: f32 = (0..64).map(|i| i as f32).sum();
     let expected_1: f32 = (64..128).map(|i| i as f32).sum();
 
@@ -144,18 +144,18 @@ fn shared_memory_reverse() {
 
     let data: Vec<f32> = (0..count).map(|i| i as f32).collect();
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
+    input.write(&data).unwrap();
 
     let mut wave = shared_reverse(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.wave_dispatch(&wave, [num_groups as u32, 1, 1]).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
 
     // Group 0: indices 0..64 reversed => [63, 62, ..., 0]
     for i in 0..group_size {

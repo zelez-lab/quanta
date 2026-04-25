@@ -25,18 +25,18 @@ fn init_cpu_returns_device() {
 #[test]
 fn cpu_field_roundtrip() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<f32>(4).unwrap();
-    gpu.write_field(&field, &[1.0, 2.0, 3.0, 4.0]).unwrap();
-    let data = gpu.read_field(&field).unwrap();
+    let field = gpu.field::<f32>(4).unwrap();
+    field.write(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+    let data = field.read().unwrap();
     assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0]);
 }
 
 #[test]
 fn cpu_field_u32_roundtrip() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<u32>(3).unwrap();
-    gpu.write_field(&field, &[10, 20, 30]).unwrap();
-    let data = gpu.read_field(&field).unwrap();
+    let field = gpu.field::<u32>(3).unwrap();
+    field.write(&[10, 20, 30]).unwrap();
+    let data = field.read().unwrap();
     assert_eq!(data, vec![10, 20, 30]);
 }
 
@@ -103,18 +103,18 @@ fn cpu_dispatch_add_one() {
     let gpu = quanta::init_cpu();
 
     // Create field with data [0, 10, 20, 30]
-    let field = gpu.compute_field::<f32>(4).unwrap();
-    gpu.write_field(&field, &[0.0, 10.0, 20.0, 30.0]).unwrap();
+    let field = gpu.field::<f32>(4).unwrap();
+    field.write(&[0.0, 10.0, 20.0, 30.0]).unwrap();
 
     // Compile and dispatch
     let kernel_bytes = build_add_one_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
     wave.bind(0, &field);
     let mut pulse = gpu.dispatch(&wave, 4).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
     // Verify: each element should be incremented by 1
-    let result = gpu.read_field(&field).unwrap();
+    let result = field.read().unwrap();
     assert_eq!(result, vec![1.0, 11.0, 21.0, 31.0]);
 }
 
@@ -187,12 +187,12 @@ fn build_vector_add_kernel() -> Vec<u8> {
 fn cpu_dispatch_vector_add() {
     let gpu = quanta::init_cpu();
 
-    let a = gpu.compute_field::<f32>(4).unwrap();
-    let b = gpu.compute_field::<f32>(4).unwrap();
-    let out = gpu.compute_field::<f32>(4).unwrap();
+    let a = gpu.field::<f32>(4).unwrap();
+    let b = gpu.field::<f32>(4).unwrap();
+    let out = gpu.field::<f32>(4).unwrap();
 
-    gpu.write_field(&a, &[1.0, 2.0, 3.0, 4.0]).unwrap();
-    gpu.write_field(&b, &[10.0, 20.0, 30.0, 40.0]).unwrap();
+    a.write(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+    b.write(&[10.0, 20.0, 30.0, 40.0]).unwrap();
 
     let kernel_bytes = build_vector_add_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
@@ -200,9 +200,9 @@ fn cpu_dispatch_vector_add() {
     wave.bind(1, &b);
     wave.bind(2, &out);
     let mut pulse = gpu.dispatch(&wave, 4).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field(&out).unwrap();
+    let result = out.read().unwrap();
     assert_eq!(result, vec![11.0, 22.0, 33.0, 44.0]);
 }
 
@@ -277,17 +277,16 @@ fn build_threshold_kernel() -> Vec<u8> {
 #[test]
 fn cpu_dispatch_branch() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<f32>(6).unwrap();
-    gpu.write_field(&field, &[1.0, 10.0, 3.0, 7.0, 5.0, 6.0])
-        .unwrap();
+    let field = gpu.field::<f32>(6).unwrap();
+    field.write(&[1.0, 10.0, 3.0, 7.0, 5.0, 6.0]).unwrap();
 
     let kernel_bytes = build_threshold_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
     wave.bind(0, &field);
     let mut pulse = gpu.dispatch(&wave, 6).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field(&field).unwrap();
+    let result = field.read().unwrap();
     // >5: 10, 7, 6 -> 1.0; <=5: 1, 3, 5 -> 0.0
     assert_eq!(result, vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
 }
@@ -348,15 +347,15 @@ fn build_loop_sum_kernel() -> Vec<u8> {
 #[test]
 fn cpu_dispatch_loop() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<u32>(3).unwrap();
+    let field = gpu.field::<u32>(3).unwrap();
 
     let kernel_bytes = build_loop_sum_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
     wave.bind(0, &field);
     let mut pulse = gpu.dispatch(&wave, 3).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field(&field).unwrap();
+    let result = field.read().unwrap();
     // sum(0..10) = 0+1+2+...+9 = 45
     assert_eq!(result, vec![45, 45, 45]);
 }
@@ -368,8 +367,8 @@ fn cpu_dispatch_loop() {
 #[test]
 fn cpu_dispatch_reuse_wave() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<f32>(4).unwrap();
-    gpu.write_field(&field, &[0.0, 0.0, 0.0, 0.0]).unwrap();
+    let field = gpu.field::<f32>(4).unwrap();
+    field.write(&[0.0, 0.0, 0.0, 0.0]).unwrap();
 
     let kernel_bytes = build_add_one_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
@@ -378,10 +377,10 @@ fn cpu_dispatch_reuse_wave() {
     // Dispatch 3 times: each adds 1
     for _ in 0..3 {
         let mut pulse = gpu.dispatch(&wave, 4).unwrap();
-        gpu.wait(&mut pulse).unwrap();
+        pulse.wait().unwrap();
     }
 
-    let result = gpu.read_field(&field).unwrap();
+    let result = field.read().unwrap();
     assert_eq!(result, vec![3.0, 3.0, 3.0, 3.0]);
 }
 
@@ -429,15 +428,15 @@ fn build_identity_kernel() -> Vec<u8> {
 fn cpu_dispatch_256_threads() {
     let gpu = quanta::init_cpu();
     let n = 256;
-    let field = gpu.compute_field::<f32>(n).unwrap();
+    let field = gpu.field::<f32>(n).unwrap();
 
     let kernel_bytes = build_identity_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
     wave.bind(0, &field);
     let mut pulse = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field(&field).unwrap();
+    let result = field.read().unwrap();
     let expected: Vec<f32> = (0..n).map(|i| i as f32).collect();
     assert_eq!(result, expected);
 }
@@ -491,16 +490,16 @@ fn build_sqrt_kernel() -> Vec<u8> {
 #[test]
 fn cpu_dispatch_math_sqrt() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<f32>(4).unwrap();
-    gpu.write_field(&field, &[4.0, 9.0, 16.0, 25.0]).unwrap();
+    let field = gpu.field::<f32>(4).unwrap();
+    field.write(&[4.0, 9.0, 16.0, 25.0]).unwrap();
 
     let kernel_bytes = build_sqrt_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
     wave.bind(0, &field);
     let mut pulse = gpu.dispatch(&wave, 4).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field(&field).unwrap();
+    let result = field.read().unwrap();
     assert_eq!(result, vec![2.0, 3.0, 4.0, 5.0]);
 }
 
@@ -550,17 +549,17 @@ fn build_atomic_add_kernel() -> Vec<u8> {
 #[test]
 fn cpu_dispatch_atomic_add() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<u32>(1).unwrap();
-    gpu.write_field(&field, &[0u32]).unwrap();
+    let field = gpu.field::<u32>(1).unwrap();
+    field.write(&[0u32]).unwrap();
 
     let kernel_bytes = build_atomic_add_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
     wave.bind(0, &field);
     // Dispatch 100 threads — each atomically adds 1 to counter[0]
     let mut pulse = gpu.wave_dispatch(&wave, [2, 1, 1]).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field(&field).unwrap();
+    let result = field.read().unwrap();
     // 2 groups * 64 threads = 128
     assert_eq!(result, vec![128]);
 }
@@ -673,19 +672,19 @@ fn build_shared_sum_kernel() -> Vec<u8> {
 #[test]
 fn cpu_dispatch_shared_memory() {
     let gpu = quanta::init_cpu();
-    let data = gpu.compute_field::<f32>(4).unwrap();
-    let output = gpu.compute_field::<f32>(1).unwrap();
+    let data = gpu.field::<f32>(4).unwrap();
+    let output = gpu.field::<f32>(1).unwrap();
 
-    gpu.write_field(&data, &[1.0, 2.0, 3.0, 4.0]).unwrap();
+    data.write(&[1.0, 2.0, 3.0, 4.0]).unwrap();
 
     let kernel_bytes = build_shared_sum_kernel();
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
     wave.bind(0, &data);
     wave.bind(1, &output);
     let mut pulse = gpu.wave_dispatch(&wave, [1, 1, 1]).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field(&output).unwrap();
+    let result = output.read().unwrap();
     assert!(
         (result[0] - 10.0).abs() < 1e-6,
         "sum should be 10.0, got {}",

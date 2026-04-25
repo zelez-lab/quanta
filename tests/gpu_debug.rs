@@ -42,15 +42,15 @@ fn debug_push_pop_around_dispatch() {
     };
 
     let count = 32;
-    let field = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&field, &vec![0.0f32; count]).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
+    field.write(&vec![0.0f32; count]).unwrap();
 
     gpu.debug_push("compute pass");
 
     // A simple field write/read within a debug scope.
     let data = vec![1.0f32; count];
-    gpu.write_field(&field, &data).unwrap();
-    let result = gpu.read_field::<f32>(&field).unwrap();
+    field.write(&data).unwrap();
+    let result = field.read().unwrap();
     assert_eq!(result, data);
 
     gpu.debug_pop();
@@ -64,14 +64,16 @@ fn debug_push_pop_in_render_pass() {
     };
 
     let target = gpu.render_target(8, 8, Format::RGBA8).unwrap();
-    let mut pass = gpu.render_begin(&target).unwrap();
 
     // Debug labels inside render pass.
-    pass.debug_push("render section");
-    pass.debug_pop();
-
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .debug_push("render section")
+        .debug_pop()
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 }
 
 #[test]

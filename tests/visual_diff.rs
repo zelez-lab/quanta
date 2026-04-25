@@ -127,16 +127,19 @@ fn clear_red_exact() {
     let h = 64u32;
     let target = create_rgba8_target(&gpu, w, h);
 
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 1.0)),
-        store_op: StoreOp::Store,
-    }]);
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 1.0)),
+            store_op: StoreOp::Store,
+        }])
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
     let num_pixels = (w * h) as usize;
     assert_eq!(pixels.len(), num_pixels * 4, "unexpected buffer size");
 
@@ -187,16 +190,19 @@ fn clear_arbitrary_color() {
     let target = create_rgba8_target(&gpu, w, h);
 
     let color = Color::rgba(0.5, 0.25, 0.75, 1.0);
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: target.handle(),
-        load_op: LoadOp::Clear(color),
-        store_op: StoreOp::Store,
-    }]);
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: target.handle(),
+            load_op: LoadOp::Clear(color),
+            store_op: StoreOp::Store,
+        }])
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
 
     // Mathematical expectation: round(value * 255)
     let expected_r = linear_to_u8(0.5);
@@ -237,16 +243,16 @@ fn compute_gradient_fill() {
     let h = 64u32;
     let count = (w * h) as usize;
 
-    let output = gpu.compute_field::<u32>(count).unwrap();
+    let output = gpu.field::<u32>(count).unwrap();
 
     let mut wave = gradient_fill(&gpu).unwrap();
     wave.bind(0, &output);
     wave.set_value(1, w);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<u32>(&output).unwrap();
+    let result = output.read().unwrap();
     assert_eq!(result.len(), count);
 
     for y in 0..h {
@@ -321,18 +327,18 @@ fn compute_squares_vs_cpu() {
 
     let expected = cpu_reference_squares(&input_data);
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&input, &input_data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
+    input.write(&input_data).unwrap();
 
     let mut wave = compute_squares(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
     assert_eq!(result.len(), count);
 
     let epsilon = 0.001f32;
@@ -372,20 +378,20 @@ fn atomic_reduction_vs_cpu() {
     let data: Vec<u32> = (0..count as u32).map(|i| (i % 100) + 1).collect();
     let cpu_sum: u32 = data.iter().sum();
 
-    let data_field = gpu.compute_field::<u32>(count).unwrap();
-    let result_field = gpu.compute_field::<u32>(1).unwrap();
+    let data_field = gpu.field::<u32>(count).unwrap();
+    let result_field = gpu.field::<u32>(1).unwrap();
 
-    gpu.write_field(&data_field, &data).unwrap();
-    gpu.write_field(&result_field, &[0u32]).unwrap();
+    data_field.write(&data).unwrap();
+    result_field.write(&[0u32]).unwrap();
 
     let mut wave = sum_reduce(&gpu).unwrap();
     wave.bind(0, &data_field);
     wave.bind(1, &result_field);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<u32>(&result_field).unwrap();
+    let result = result_field.read().unwrap();
     assert_eq!(
         result[0], cpu_sum,
         "atomic reduction: GPU sum {} != CPU sum {}",
@@ -411,18 +417,18 @@ fn shared_memory_reduction_vs_cpu() {
     // Known data: each element is its index * 0.5
     let data: Vec<f32> = (0..count).map(|i| i as f32 * 0.5).collect();
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(num_groups).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(num_groups).unwrap();
+    input.write(&data).unwrap();
 
     let mut wave = workgroup_sum(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.wave_dispatch(&wave, [num_groups as u32, 1, 1]).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
     assert_eq!(result.len(), num_groups);
 
     for g in 0..num_groups {
@@ -461,16 +467,19 @@ fn multi_format_clear_rgba8() {
     let target = create_rgba8_target(&gpu, w, h);
 
     // Clear to mid-gray
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(0.5, 0.5, 0.5, 1.0)),
-        store_op: StoreOp::Store,
-    }]);
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(0.5, 0.5, 0.5, 1.0)),
+            store_op: StoreOp::Store,
+        }])
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let pixels = gpu.texture_read(&target).unwrap();
+    let pixels = target.read().unwrap();
     let expected_gray = linear_to_u8(0.5);
     let num_pixels = (w * h) as usize;
 
@@ -507,16 +516,19 @@ fn multi_format_clear_r32float() {
     let target = gpu.render_target(w, h, Format::R32Float).unwrap();
 
     let clear_value = 3.14f32;
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(clear_value, 0.0, 0.0, 0.0)),
-        store_op: StoreOp::Store,
-    }]);
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(clear_value, 0.0, 0.0, 0.0)),
+            store_op: StoreOp::Store,
+        }])
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let bytes = gpu.texture_read(&target).unwrap();
+    let bytes = target.read().unwrap();
     let num_pixels = (w * h) as usize;
     // R32Float = 4 bytes per pixel
     assert_eq!(bytes.len(), num_pixels * 4, "R32Float size mismatch");
@@ -559,16 +571,19 @@ fn multi_format_clear_rgba16float() {
     let clear_b = 0.75f32;
     let clear_a = 1.0f32;
 
-    let mut pass = gpu.render_begin(&target).unwrap();
-    pass.set_color_targets(vec![ColorTarget {
-        texture: target.handle(),
-        load_op: LoadOp::Clear(Color::rgba(clear_r, clear_g, clear_b, clear_a)),
-        store_op: StoreOp::Store,
-    }]);
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget {
+            texture: target.handle(),
+            load_op: LoadOp::Clear(Color::rgba(clear_r, clear_g, clear_b, clear_a)),
+            store_op: StoreOp::Store,
+        }])
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 
-    let bytes = gpu.texture_read(&target).unwrap();
+    let bytes = target.read().unwrap();
     let num_pixels = (w * h) as usize;
     // RGBA16Float = 8 bytes per pixel (4 channels x 2 bytes)
     assert_eq!(bytes.len(), num_pixels * 8, "RGBA16Float size mismatch");
@@ -662,16 +677,19 @@ fn clear_channel_isolation() {
     for (name, color, expected_pixel) in &channels {
         let target = create_rgba8_target(&gpu, w, h);
 
-        let mut pass = gpu.render_begin(&target).unwrap();
-        pass.set_color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(*color),
-            store_op: StoreOp::Store,
-        }]);
-        let mut pulse = gpu.render_end(pass).unwrap();
-        gpu.wait(&mut pulse).unwrap();
+        let mut pulse = gpu
+            .render(&target)
+            .unwrap()
+            .color_targets(vec![ColorTarget {
+                texture: target.handle(),
+                load_op: LoadOp::Clear(*color),
+                store_op: StoreOp::Store,
+            }])
+            .pulse()
+            .unwrap();
+        pulse.wait().unwrap();
 
-        let pixels = gpu.texture_read(&target).unwrap();
+        let pixels = target.read().unwrap();
         let num_pixels = (w * h) as usize;
 
         for p in 0..num_pixels {
@@ -712,18 +730,18 @@ fn compute_squares_edge_cases() {
     let count = input_data.len();
     let expected = cpu_reference_squares(&input_data);
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&input, &input_data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
+    input.write(&input_data).unwrap();
 
     let mut wave = compute_squares(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
 
     let epsilon = 0.001f32;
     for i in 0..count {

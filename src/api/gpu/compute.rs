@@ -52,12 +52,6 @@ impl Gpu {
         self.inner.batch_begin()
     }
 
-    /// Begin a batch of dispatches.
-    #[deprecated(note = "use gpu.batch() instead")]
-    pub fn begin_batch(&self) -> Result<Batch, QuantaError> {
-        self.inner.batch_begin()
-    }
-
     // === Async compute ===
 
     /// Whether this device supports a dedicated async compute queue.

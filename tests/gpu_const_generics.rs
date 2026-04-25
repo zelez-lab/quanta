@@ -20,16 +20,16 @@ fn const_generic_fills_buffer() {
     };
 
     let n = 16usize;
-    let output = gpu.compute_field::<u32>(n).unwrap();
+    let output = gpu.field::<u32>(n).unwrap();
 
     // Dispatch with const generic = 42
     let mut wave = fill_with_const::<42>(&gpu).unwrap();
     wave.bind(0, &output);
 
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&output).unwrap();
+    let result = output.read().unwrap();
     for i in 0..n {
         assert_eq!(
             result[i], 42,
@@ -46,16 +46,16 @@ fn const_generic_different_values() {
     };
 
     let n = 16usize;
-    let output = gpu.compute_field::<u32>(n).unwrap();
+    let output = gpu.field::<u32>(n).unwrap();
 
     // Dispatch with const generic = 99
     let mut wave = fill_with_const::<99>(&gpu).unwrap();
     wave.bind(0, &output);
 
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&output).unwrap();
+    let result = output.read().unwrap();
     assert_eq!(
         result[0], 99,
         "const generic: expected 99, got {}",

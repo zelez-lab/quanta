@@ -44,20 +44,20 @@ fn atomic_add_count_nonzero() {
     let flags: Vec<u32> = (0..count).map(|i| if i % 2 == 0 { 1 } else { 0 }).collect();
     let expected_count = flags.iter().filter(|&&f| f != 0).count() as u32;
 
-    let flags_field = gpu.compute_field::<u32>(count).unwrap();
-    let counter_field = gpu.compute_field::<u32>(1).unwrap();
+    let flags_field = gpu.field::<u32>(count).unwrap();
+    let counter_field = gpu.field::<u32>(1).unwrap();
 
-    gpu.write_field(&flags_field, &flags).unwrap();
-    gpu.write_field(&counter_field, &[0u32]).unwrap();
+    flags_field.write(&flags).unwrap();
+    counter_field.write(&[0u32]).unwrap();
 
     let mut wave = atomic_count(&gpu).unwrap();
     wave.bind(0, &flags_field);
     wave.bind(1, &counter_field);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<u32>(&counter_field).unwrap();
+    let result = counter_field.read().unwrap();
     assert_eq!(
         result[0], expected_count,
         "atomic_add count: expected {}, got {}",
@@ -76,20 +76,20 @@ fn atomic_add_all_ones() {
     let count = 512;
     let flags = vec![1u32; count];
 
-    let flags_field = gpu.compute_field::<u32>(count).unwrap();
-    let counter_field = gpu.compute_field::<u32>(1).unwrap();
+    let flags_field = gpu.field::<u32>(count).unwrap();
+    let counter_field = gpu.field::<u32>(1).unwrap();
 
-    gpu.write_field(&flags_field, &flags).unwrap();
-    gpu.write_field(&counter_field, &[0u32]).unwrap();
+    flags_field.write(&flags).unwrap();
+    counter_field.write(&[0u32]).unwrap();
 
     let mut wave = atomic_count(&gpu).unwrap();
     wave.bind(0, &flags_field);
     wave.bind(1, &counter_field);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<u32>(&counter_field).unwrap();
+    let result = counter_field.read().unwrap();
     assert_eq!(
         result[0], count as u32,
         "atomic_add all-ones: expected {}, got {}",
@@ -108,20 +108,20 @@ fn atomic_max_finds_maximum() {
     let values: Vec<u32> = (0..count as u32).collect();
     let expected_max = (count - 1) as u32;
 
-    let values_field = gpu.compute_field::<u32>(count).unwrap();
-    let result_field = gpu.compute_field::<u32>(1).unwrap();
+    let values_field = gpu.field::<u32>(count).unwrap();
+    let result_field = gpu.field::<u32>(1).unwrap();
 
-    gpu.write_field(&values_field, &values).unwrap();
-    gpu.write_field(&result_field, &[0u32]).unwrap();
+    values_field.write(&values).unwrap();
+    result_field.write(&[0u32]).unwrap();
 
     let mut wave = atomic_find_max(&gpu).unwrap();
     wave.bind(0, &values_field);
     wave.bind(1, &result_field);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<u32>(&result_field).unwrap();
+    let result = result_field.read().unwrap();
     assert_eq!(
         result[0], expected_max,
         "atomic_max: expected {}, got {}",
@@ -141,21 +141,21 @@ fn atomic_min_finds_minimum() {
     let values: Vec<u32> = (10..10 + count as u32).collect();
     let expected_min = 10u32;
 
-    let values_field = gpu.compute_field::<u32>(count).unwrap();
-    let result_field = gpu.compute_field::<u32>(1).unwrap();
+    let values_field = gpu.field::<u32>(count).unwrap();
+    let result_field = gpu.field::<u32>(1).unwrap();
 
-    gpu.write_field(&values_field, &values).unwrap();
+    values_field.write(&values).unwrap();
     // Initialize to max u32 so any value is smaller
-    gpu.write_field(&result_field, &[u32::MAX]).unwrap();
+    result_field.write(&[u32::MAX]).unwrap();
 
     let mut wave = atomic_find_min(&gpu).unwrap();
     wave.bind(0, &values_field);
     wave.bind(1, &result_field);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<u32>(&result_field).unwrap();
+    let result = result_field.read().unwrap();
     assert_eq!(
         result[0], expected_min,
         "atomic_min: expected {}, got {}",

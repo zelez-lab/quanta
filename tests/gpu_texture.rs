@@ -42,8 +42,8 @@ fn texture_rgba8_round_trip() {
         }
     }
 
-    gpu.texture_write(&tex, &pixels).unwrap();
-    let result = gpu.texture_read(&tex).unwrap();
+    tex.write(&pixels).unwrap();
+    let result = tex.read().unwrap();
 
     assert_eq!(pixels.len(), result.len(), "RGBA8 size mismatch");
     assert_eq!(pixels, result, "RGBA8 pixel data mismatch");
@@ -72,8 +72,8 @@ fn texture_r32float_round_trip() {
     let float_data: Vec<f32> = (0..(w * h) as usize).map(|i| i as f32 * 0.1).collect();
     let bytes: Vec<u8> = float_data.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    gpu.texture_write(&tex, &bytes).unwrap();
-    let result = gpu.texture_read(&tex).unwrap();
+    tex.write(&bytes).unwrap();
+    let result = tex.read().unwrap();
 
     assert_eq!(bytes.len(), result.len(), "R32Float size mismatch");
     // Compare as floats for tolerance
@@ -136,13 +136,13 @@ fn texture_partial_write() {
 
     // Write full texture with black
     let black = vec![0u8; (w * h * 4) as usize];
-    gpu.texture_write(&tex, &black).unwrap();
+    tex.write(&black).unwrap();
 
     // Write full texture with white
     let white = vec![255u8; (w * h * 4) as usize];
-    gpu.texture_write(&tex, &white).unwrap();
+    tex.write(&white).unwrap();
 
-    let result = gpu.texture_read(&tex).unwrap();
+    let result = tex.read().unwrap();
     // After overwrite, all pixels should be white
     for (i, byte) in result.iter().enumerate() {
         assert_eq!(
@@ -175,10 +175,10 @@ fn texture_mipmap_generation() {
 
     // Write solid red to base level
     let pixels = vec![255u8; 64 * 64 * 4];
-    gpu.texture_write(&tex, &pixels).unwrap();
+    tex.write(&pixels).unwrap();
 
     // Generate mipmaps (should not error)
-    gpu.generate_mipmaps(&tex).unwrap();
+    tex.generate_mipmaps().unwrap();
 }
 
 #[test]

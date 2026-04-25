@@ -28,11 +28,11 @@ fn saturating_add_clamps_to_max() {
     let b_data: Vec<u32> = vec![20, 1, 50, 0];
     let n = a_data.len();
 
-    let fa = gpu.compute_field::<u32>(n).unwrap();
-    let fb = gpu.compute_field::<u32>(n).unwrap();
-    let fo = gpu.compute_field::<u32>(n).unwrap();
-    gpu.write_field(&fa, &a_data).unwrap();
-    gpu.write_field(&fb, &b_data).unwrap();
+    let fa = gpu.field::<u32>(n).unwrap();
+    let fb = gpu.field::<u32>(n).unwrap();
+    let fo = gpu.field::<u32>(n).unwrap();
+    fa.write(&a_data).unwrap();
+    fb.write(&b_data).unwrap();
 
     let mut wave = sat_add_u32(&gpu).unwrap();
     wave.bind(0, &fa);
@@ -40,9 +40,9 @@ fn saturating_add_clamps_to_max() {
     wave.bind(2, &fo);
 
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&fo).unwrap();
+    let result = fo.read().unwrap();
     // (MAX-10) + 20 would wrap → should clamp to MAX
     assert_eq!(result[0], u32::MAX, "sat_add should clamp to MAX");
     // MAX + 1 would wrap → should clamp to MAX
@@ -63,11 +63,11 @@ fn saturating_sub_clamps_to_zero() {
     let b_data: Vec<u32> = vec![20, 1, 50, 50];
     let n = a_data.len();
 
-    let fa = gpu.compute_field::<u32>(n).unwrap();
-    let fb = gpu.compute_field::<u32>(n).unwrap();
-    let fo = gpu.compute_field::<u32>(n).unwrap();
-    gpu.write_field(&fa, &a_data).unwrap();
-    gpu.write_field(&fb, &b_data).unwrap();
+    let fa = gpu.field::<u32>(n).unwrap();
+    let fb = gpu.field::<u32>(n).unwrap();
+    let fo = gpu.field::<u32>(n).unwrap();
+    fa.write(&a_data).unwrap();
+    fb.write(&b_data).unwrap();
 
     let mut wave = sat_sub_u32(&gpu).unwrap();
     wave.bind(0, &fa);
@@ -75,9 +75,9 @@ fn saturating_sub_clamps_to_zero() {
     wave.bind(2, &fo);
 
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&fo).unwrap();
+    let result = fo.read().unwrap();
     // 10 - 20 would underflow → should clamp to 0
     assert_eq!(result[0], 0, "sat_sub should clamp to 0");
     // 0 - 1 would underflow → should clamp to 0

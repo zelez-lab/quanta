@@ -83,54 +83,6 @@ impl Gpu {
         })
     }
 
-    /// Allocate a compute field (storage + transfer). Convenience shorthand.
-    #[deprecated(note = "use gpu.field(count) instead")]
-    pub fn compute_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
-        self.field(count)
-    }
-
-    /// Allocate a render field (vertex + transfer). Convenience shorthand.
-    pub fn render_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
-        self.field_with_usage(count, FieldUsage::default_render())
-    }
-
-    /// Allocate a uniform buffer field (read + uniform + transfer).
-    pub fn uniform_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
-        self.field_with_usage(count, FieldUsage::default_uniform())
-    }
-
-    /// Write data to a field. Delegates to `field.write(data)`.
-    #[deprecated(note = "use field.write(data) instead")]
-    pub fn write_field<T: Copy>(&self, field: &Field<T>, data: &[T]) -> Result<(), QuantaError> {
-        field.write(data)
-    }
-
-    /// Read data from a field. Delegates to `field.read()`.
-    #[deprecated(note = "use field.read() instead")]
-    pub fn read_field<T: Copy>(&self, field: &Field<T>) -> Result<Vec<T>, QuantaError> {
-        field.read()
-    }
-
-    /// Resize a field. Allocates a new field, copies existing data, returns new field.
-    /// The old field remains valid until dropped.
-    #[deprecated(note = "allocate a new field and use dst.copy_from(&old) instead")]
-    pub fn resize_field<T: Copy>(
-        &self,
-        old: &Field<T>,
-        new_count: usize,
-        usage: FieldUsage,
-    ) -> Result<Field<T>, QuantaError> {
-        let new = self.field_with_usage::<T>(new_count, usage)?;
-        new.copy_from(old)?;
-        Ok(new)
-    }
-
-    /// Copy field data. Delegates to `dst.copy_from(src)`.
-    #[deprecated(note = "use dst.copy_from(&src) instead")]
-    pub fn copy_field<T: Copy>(&self, dst: &Field<T>, src: &Field<T>) -> Result<(), QuantaError> {
-        dst.copy_from(src)
-    }
-
     /// Create a GPU buffer permanently mapped into CPU address space.
     ///
     /// Enables zero-copy writes: data written to the returned `MappedField`
@@ -202,30 +154,12 @@ impl Gpu {
         })
     }
 
-    /// Write pixel data to a texture. Delegates to `texture.write(data)`.
-    #[deprecated(note = "use texture.write(data) instead")]
-    pub fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
-        self.inner.texture_write(texture, data)
-    }
-
-    /// Read pixel data from a texture. Delegates to `texture.read()`.
-    #[deprecated(note = "use texture.read() instead")]
-    pub fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
-        self.inner.texture_read(texture)
-    }
-
     /// Create a reusable sampler.
     pub fn sampler(
         &self,
         desc: &crate::render_pass::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         self.inner.sampler_create(desc)
-    }
-
-    /// Generate mipmaps for a texture. Delegates to `texture.generate_mipmaps()`.
-    #[deprecated(note = "use texture.generate_mipmaps() instead")]
-    pub fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError> {
-        self.inner.generate_mipmaps(texture)
     }
 
     /// Resolve an MSAA texture to a single-sample texture.
@@ -242,32 +176,6 @@ impl Gpu {
     }
 
     // === Sync ===
-
-    /// Block until GPU completes this operation.
-    ///
-    /// Prefer `pulse.wait()` directly — this method just delegates to it.
-    #[deprecated(note = "use pulse.wait() instead")]
-    pub fn wait(&self, pulse: &mut crate::Pulse) -> Result<(), QuantaError> {
-        self.inner.pulse_wait(pulse)
-    }
-
-    /// Wait for a pulse, then reset it for reuse.
-    ///
-    /// Prefer calling `pulse.wait()` followed by `pulse.reset()` directly.
-    #[deprecated(note = "use pulse.wait() + pulse.reset() instead")]
-    pub fn wait_and_reset(&self, pulse: &mut crate::Pulse) -> Result<(), QuantaError> {
-        self.inner.pulse_wait(pulse)?;
-        pulse.reset();
-        Ok(())
-    }
-
-    /// Check if GPU has completed (non-blocking).
-    ///
-    /// Prefer `pulse.is_done()` directly — this method just delegates to it.
-    #[deprecated(note = "use pulse.is_done() instead")]
-    pub fn poll(&self, pulse: &crate::Pulse) -> bool {
-        self.inner.pulse_poll(pulse)
-    }
 
     // === Timeline semaphores ===
 
@@ -311,19 +219,6 @@ impl Gpu {
         to: ResourceState,
     ) -> Result<(), QuantaError> {
         self.inner.barrier_buffer(field.handle(), from, to)
-    }
-
-    /// Transition a buffer between resource states.
-    ///
-    /// Renamed to `barrier_field` for consistency with Quanta's Field naming.
-    #[deprecated(note = "renamed to barrier_field() for Field naming consistency")]
-    pub fn barrier_buffer<T: Copy>(
-        &self,
-        field: &Field<T>,
-        from: ResourceState,
-        to: ResourceState,
-    ) -> Result<(), QuantaError> {
-        self.barrier_field(field, from, to)
     }
 
     /// Transition a texture between resource states.

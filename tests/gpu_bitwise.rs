@@ -34,17 +34,17 @@ fn and_with_constant() {
 
     let input_data: Vec<u32> = vec![0, 1, 256, 0xFFFF, 0xDEAD, 0xFF];
     let n = input_data.len();
-    let input = gpu.compute_field::<u32>(n).unwrap();
-    let output = gpu.compute_field::<u32>(n).unwrap();
-    gpu.write_field(&input, &input_data).unwrap();
+    let input = gpu.field::<u32>(n).unwrap();
+    let output = gpu.field::<u32>(n).unwrap();
+    input.write(&input_data).unwrap();
 
     let mut wave = bitwise_and_const(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&output).unwrap();
+    let result = output.read().unwrap();
     let expected: Vec<u32> = input_data.iter().map(|x| x & 255).collect();
     for i in 0..n {
         assert_eq!(
@@ -65,20 +65,20 @@ fn and_runtime_operands() {
     let b_data: Vec<u32> = vec![0x0F, 0xFF, 0x00FF, 0xFF00];
     let n = a_data.len();
 
-    let a = gpu.compute_field::<u32>(n).unwrap();
-    let b = gpu.compute_field::<u32>(n).unwrap();
-    let out = gpu.compute_field::<u32>(n).unwrap();
-    gpu.write_field(&a, &a_data).unwrap();
-    gpu.write_field(&b, &b_data).unwrap();
+    let a = gpu.field::<u32>(n).unwrap();
+    let b = gpu.field::<u32>(n).unwrap();
+    let out = gpu.field::<u32>(n).unwrap();
+    a.write(&a_data).unwrap();
+    b.write(&b_data).unwrap();
 
     let mut wave = bitwise_and_runtime(&gpu).unwrap();
     wave.bind(0, &a);
     wave.bind(1, &b);
     wave.bind(2, &out);
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&out).unwrap();
+    let result = out.read().unwrap();
     for i in 0..n {
         let expected = a_data[i] & b_data[i];
         assert_eq!(
@@ -99,12 +99,12 @@ fn or_and_xor() {
     let b_data: Vec<u32> = vec![0x0F, 0xF0, 0x55, 0xAA];
     let n = a_data.len();
 
-    let a = gpu.compute_field::<u32>(n).unwrap();
-    let b = gpu.compute_field::<u32>(n).unwrap();
-    let out_or = gpu.compute_field::<u32>(n).unwrap();
-    let out_xor = gpu.compute_field::<u32>(n).unwrap();
-    gpu.write_field(&a, &a_data).unwrap();
-    gpu.write_field(&b, &b_data).unwrap();
+    let a = gpu.field::<u32>(n).unwrap();
+    let b = gpu.field::<u32>(n).unwrap();
+    let out_or = gpu.field::<u32>(n).unwrap();
+    let out_xor = gpu.field::<u32>(n).unwrap();
+    a.write(&a_data).unwrap();
+    b.write(&b_data).unwrap();
 
     let mut wave = bitwise_or_xor(&gpu).unwrap();
     wave.bind(0, &a);
@@ -112,10 +112,10 @@ fn or_and_xor() {
     wave.bind(2, &out_or);
     wave.bind(3, &out_xor);
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let r_or = gpu.read_field(&out_or).unwrap();
-    let r_xor = gpu.read_field(&out_xor).unwrap();
+    let r_or = out_or.read().unwrap();
+    let r_xor = out_xor.read().unwrap();
     for i in 0..n {
         assert_eq!(r_or[i], a_data[i] | b_data[i], "OR failed at {i}");
         assert_eq!(r_xor[i], a_data[i] ^ b_data[i], "XOR failed at {i}");

@@ -36,11 +36,11 @@ fn f16_addition_precision() {
     let b_data: Vec<f32> = vec![2.0, 0.25, 200.0, 3.5];
     let n = a_data.len();
 
-    let fa = gpu.compute_field::<f32>(n).unwrap();
-    let fb = gpu.compute_field::<f32>(n).unwrap();
-    let fo = gpu.compute_field::<f32>(n).unwrap();
-    gpu.write_field(&fa, &a_data).unwrap();
-    gpu.write_field(&fb, &b_data).unwrap();
+    let fa = gpu.field::<f32>(n).unwrap();
+    let fb = gpu.field::<f32>(n).unwrap();
+    let fo = gpu.field::<f32>(n).unwrap();
+    fa.write(&a_data).unwrap();
+    fb.write(&b_data).unwrap();
 
     let mut wave = f16_add(&gpu).unwrap();
     wave.bind(0, &fa);
@@ -48,9 +48,9 @@ fn f16_addition_precision() {
     wave.bind(2, &fo);
 
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&fo).unwrap();
+    let result = fo.read().unwrap();
 
     // f16 has ~3 digits of precision. Allow 0.1% relative error for small values,
     // 1% for larger values (100+200=300 has quantization).
@@ -82,11 +82,11 @@ fn f16_multiplication_precision() {
     let b_data: Vec<f32> = vec![3.0, 0.5, 10.0, 4.0];
     let n = a_data.len();
 
-    let fa = gpu.compute_field::<f32>(n).unwrap();
-    let fb = gpu.compute_field::<f32>(n).unwrap();
-    let fo = gpu.compute_field::<f32>(n).unwrap();
-    gpu.write_field(&fa, &a_data).unwrap();
-    gpu.write_field(&fb, &b_data).unwrap();
+    let fa = gpu.field::<f32>(n).unwrap();
+    let fb = gpu.field::<f32>(n).unwrap();
+    let fo = gpu.field::<f32>(n).unwrap();
+    fa.write(&a_data).unwrap();
+    fb.write(&b_data).unwrap();
 
     let mut wave = f16_mul(&gpu).unwrap();
     wave.bind(0, &fa);
@@ -94,9 +94,9 @@ fn f16_multiplication_precision() {
     wave.bind(2, &fo);
 
     let mut p = gpu.dispatch(&wave, n as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    p.wait().unwrap();
 
-    let result = gpu.read_field(&fo).unwrap();
+    let result = fo.read().unwrap();
 
     let expected = [6.0, 0.25, 100.0, -12.0];
     for i in 0..n {

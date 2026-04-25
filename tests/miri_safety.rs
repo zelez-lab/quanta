@@ -22,7 +22,7 @@ use quanta::kernel::*;
 #[test]
 fn field_write_read_roundtrip() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<f32>(4).unwrap();
+    let field = gpu.field::<f32>(4).unwrap();
     field.write(&[1.0, 2.0, 3.0, 4.0]).unwrap();
     let data = field.read().unwrap();
     assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0]);
@@ -32,7 +32,7 @@ fn field_write_read_roundtrip() {
 #[test]
 fn field_write_read_roundtrip_u32() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<u32>(3).unwrap();
+    let field = gpu.field::<u32>(3).unwrap();
     field.write(&[10, 20, 30]).unwrap();
     let data = field.read().unwrap();
     assert_eq!(data, vec![10, 20, 30]);
@@ -42,7 +42,7 @@ fn field_write_read_roundtrip_u32() {
 #[test]
 fn field_write_read_roundtrip_u8() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<u8>(5).unwrap();
+    let field = gpu.field::<u8>(5).unwrap();
     field.write(&[0xFF, 0x00, 0xAB, 0xCD, 0xEF]).unwrap();
     let data = field.read().unwrap();
     assert_eq!(data, vec![0xFF, 0x00, 0xAB, 0xCD, 0xEF]);
@@ -61,13 +61,13 @@ fn field_drop_frees_memory() {
     let gpu = quanta::init_cpu();
     let handle;
     {
-        let field = gpu.compute_field::<f32>(16).unwrap();
+        let field = gpu.field::<f32>(16).unwrap();
         handle = field.handle();
         field.write(&[42.0; 16]).unwrap();
         // field dropped here
     }
     // Allocate a new field -- the device should not hold stale refs to the old one
-    let field2 = gpu.compute_field::<f32>(8).unwrap();
+    let field2 = gpu.field::<f32>(8).unwrap();
     assert_ne!(field2.handle(), handle);
     field2.write(&[1.0; 8]).unwrap();
     let data = field2.read().unwrap();
@@ -196,7 +196,7 @@ fn field_outlives_gpu() {
     let field;
     {
         let gpu = quanta::init_cpu();
-        field = gpu.compute_field::<f32>(4).unwrap();
+        field = gpu.field::<f32>(4).unwrap();
         field.write(&[1.0, 2.0, 3.0, 4.0]).unwrap();
         // gpu dropped here
     }
@@ -235,7 +235,7 @@ fn concurrent_field_access() {
     use std::sync::Arc;
 
     let gpu = quanta::init_cpu();
-    let field = Arc::new(gpu.compute_field::<u32>(4).unwrap());
+    let field = Arc::new(gpu.field::<u32>(4).unwrap());
 
     // Thread 1: write
     let f1 = Arc::clone(&field);
@@ -323,9 +323,9 @@ fn cpu_executor_no_ub() {
     };
     let kernel_bytes = quanta_ir::serialize_kernel(&def);
 
-    let a = gpu.compute_field::<f32>(4).unwrap();
-    let b = gpu.compute_field::<f32>(4).unwrap();
-    let out = gpu.compute_field::<f32>(4).unwrap();
+    let a = gpu.field::<f32>(4).unwrap();
+    let b = gpu.field::<f32>(4).unwrap();
+    let out = gpu.field::<f32>(4).unwrap();
 
     a.write(&[1.0, 2.0, 3.0, 4.0]).unwrap();
     b.write(&[10.0, 20.0, 30.0, 40.0]).unwrap();
@@ -527,8 +527,8 @@ fn value_type_conversions_via_kernel() {
     };
     let kernel_bytes = quanta_ir::serialize_kernel(&def);
 
-    let input = gpu.compute_field::<u32>(4).unwrap();
-    let output = gpu.compute_field::<f32>(4).unwrap();
+    let input = gpu.field::<u32>(4).unwrap();
+    let output = gpu.field::<f32>(4).unwrap();
 
     input.write(&[0, 1, 42, 1000]).unwrap();
 
@@ -551,7 +551,7 @@ fn value_type_conversions_via_kernel() {
 #[test]
 fn wave_push_constant_safety() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<f32>(1).unwrap();
+    let field = gpu.field::<f32>(1).unwrap();
 
     let def = KernelDef {
         name: "push_const".into(),
@@ -610,8 +610,8 @@ fn wave_push_constant_safety() {
 #[test]
 fn field_copy_from_safety() {
     let gpu = quanta::init_cpu();
-    let src = gpu.compute_field::<f32>(4).unwrap();
-    let dst = gpu.compute_field::<f32>(4).unwrap();
+    let src = gpu.field::<f32>(4).unwrap();
+    let dst = gpu.field::<f32>(4).unwrap();
 
     src.write(&[1.0, 2.0, 3.0, 4.0]).unwrap();
     dst.copy_from(&src).unwrap();
@@ -624,7 +624,7 @@ fn field_copy_from_safety() {
 #[test]
 fn pulse_lifecycle_no_ub() {
     let gpu = quanta::init_cpu();
-    let field = gpu.compute_field::<f32>(1).unwrap();
+    let field = gpu.field::<f32>(1).unwrap();
     field.write(&[0.0]).unwrap();
 
     let def = KernelDef {
@@ -662,9 +662,9 @@ fn pulse_lifecycle_no_ub() {
 fn interleaved_alloc_free() {
     let gpu = quanta::init_cpu();
 
-    let f1 = gpu.compute_field::<u32>(4).unwrap();
-    let f2 = gpu.compute_field::<u32>(8).unwrap();
-    let f3 = gpu.compute_field::<u32>(16).unwrap();
+    let f1 = gpu.field::<u32>(4).unwrap();
+    let f2 = gpu.field::<u32>(8).unwrap();
+    let f3 = gpu.field::<u32>(16).unwrap();
 
     f1.write(&[1, 2, 3, 4]).unwrap();
     f2.write(&[10, 20, 30, 40, 50, 60, 70, 80]).unwrap();
@@ -680,7 +680,7 @@ fn interleaved_alloc_free() {
     assert_eq!(d3, vec![100; 16]);
 
     // Allocate a new field in the gap
-    let f4 = gpu.compute_field::<u32>(4).unwrap();
+    let f4 = gpu.field::<u32>(4).unwrap();
     f4.write(&[99, 98, 97, 96]).unwrap();
     let d4 = f4.read().unwrap();
     assert_eq!(d4, vec![99, 98, 97, 96]);

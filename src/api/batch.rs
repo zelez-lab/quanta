@@ -29,13 +29,6 @@ impl Batch {
     pub fn pulse(self) -> Result<Pulse, QuantaError> {
         self.inner.submit()
     }
-
-    /// Submit all encoded dispatches as a single GPU submission.
-    /// Returns a Pulse that completes when ALL dispatches finish.
-    #[deprecated(note = "use batch.pulse() instead")]
-    pub fn submit(self) -> Result<Pulse, QuantaError> {
-        self.inner.submit()
-    }
 }
 
 pub(crate) trait BatchInner {

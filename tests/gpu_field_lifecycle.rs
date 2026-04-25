@@ -19,10 +19,10 @@ fn field_alloc_write_read_cycle() {
     let count = 128;
     let data: Vec<f32> = (0..count).map(|i| i as f32 * 0.5).collect();
 
-    let field = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&field, &data).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
+    field.write(&data).unwrap();
 
-    let result = gpu.read_field::<f32>(&field).unwrap();
+    let result = field.read().unwrap();
     assert_eq!(result.len(), count);
     for i in 0..count {
         assert!(
@@ -45,13 +45,13 @@ fn field_copy_between_fields() {
     let count = 256;
     let data: Vec<u32> = (0..count as u32).collect();
 
-    let src = gpu.compute_field::<u32>(count).unwrap();
-    let dst = gpu.compute_field::<u32>(count).unwrap();
+    let src = gpu.field::<u32>(count).unwrap();
+    let dst = gpu.field::<u32>(count).unwrap();
 
-    gpu.write_field(&src, &data).unwrap();
-    gpu.copy_field(&dst, &src).unwrap();
+    src.write(&data).unwrap();
+    dst.copy_from(&src).unwrap();
 
-    let result = gpu.read_field::<u32>(&dst).unwrap();
+    let result = dst.read().unwrap();
     assert_eq!(result, data, "copy_field should produce identical data");
 }
 
@@ -64,7 +64,7 @@ fn field_free_on_drop() {
 
     // Allocate and immediately drop -- should not leak or crash.
     for _ in 0..100 {
-        let field = gpu.compute_field::<f32>(64).unwrap();
+        let field = gpu.field::<f32>(64).unwrap();
         drop(field);
     }
 }
@@ -79,16 +79,15 @@ fn field_resize_preserves_data() {
     let count = 64;
     let data: Vec<f32> = (0..count).map(|i| (i + 1) as f32).collect();
 
-    let old = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&old, &data).unwrap();
+    let old = gpu.field::<f32>(count).unwrap();
+    old.write(&data).unwrap();
 
-    // Resize to double the capacity.
+    // Resize to double the capacity: allocate new field and copy.
     let new_count = count * 2;
-    let resized = gpu
-        .resize_field(&old, new_count, FieldUsage::default_compute())
-        .unwrap();
+    let resized = gpu.field::<f32>(new_count).unwrap();
+    resized.copy_from(&old).unwrap();
 
-    let result = gpu.read_field::<f32>(&resized).unwrap();
+    let result = resized.read().unwrap();
     assert_eq!(result.len(), new_count);
 
     // First `count` elements should be preserved.
@@ -116,15 +115,15 @@ fn field_stress_alloc() {
     let mut fields = Vec::new();
 
     for i in 0..n {
-        let f = gpu.compute_field::<u32>(size).unwrap();
+        let f = gpu.field::<u32>(size).unwrap();
         let data: Vec<u32> = (0..size as u32).map(|j| i as u32 * 1000 + j).collect();
-        gpu.write_field(&f, &data).unwrap();
+        f.write(&data).unwrap();
         fields.push((f, data));
     }
 
     // Verify all fields still contain correct data.
     for (field, expected) in &fields {
-        let result = gpu.read_field::<u32>(field).unwrap();
+        let result = field.read().unwrap();
         assert_eq!(&result, expected, "stress alloc: field data mismatch");
     }
 }
@@ -136,9 +135,11 @@ fn field_render_usage() {
         return;
     };
 
-    // Verify render_field allocation works.
+    // Verify render field allocation works.
     let count = 64;
-    let field = gpu.render_field::<f32>(count).unwrap();
+    let field = gpu
+        .field_with_usage::<f32>(count, FieldUsage::default_render())
+        .unwrap();
     assert_eq!(field.len(), count);
     assert_eq!(field.byte_size(), count * 4);
     assert!(!field.is_empty());
@@ -151,9 +152,11 @@ fn field_uniform_usage() {
         return;
     };
 
-    // Verify uniform_field allocation works.
+    // Verify uniform field allocation works.
     let count = 16;
-    let field = gpu.uniform_field::<[f32; 4]>(count).unwrap();
+    let field = gpu
+        .field_with_usage::<[f32; 4]>(count, FieldUsage::default_uniform())
+        .unwrap();
     assert_eq!(field.len(), count);
     assert_eq!(field.byte_size(), count * 16);
 }
@@ -167,15 +170,15 @@ fn field_copy_different_sizes() {
 
     // Copy from a smaller field to a larger one -- only min(src, dst) bytes copied.
     let small_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
-    let small = gpu.compute_field::<f32>(4).unwrap();
-    let large = gpu.compute_field::<f32>(8).unwrap();
+    let small = gpu.field::<f32>(4).unwrap();
+    let large = gpu.field::<f32>(8).unwrap();
 
-    gpu.write_field(&small, &small_data).unwrap();
-    gpu.write_field(&large, &[0.0f32; 8]).unwrap();
+    small.write(&small_data).unwrap();
+    large.write(&[0.0f32; 8]).unwrap();
 
-    gpu.copy_field(&large, &small).unwrap();
+    large.copy_from(&small).unwrap();
 
-    let result = gpu.read_field::<f32>(&large).unwrap();
+    let result = large.read().unwrap();
     // First 4 elements should be from small.
     for i in 0..4 {
         assert!(

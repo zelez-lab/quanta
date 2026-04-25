@@ -331,7 +331,7 @@ fn async_compute_dispatch_returns_result() {
             let result = gpu.async_compute_dispatch(&wave, [1, 1, 1]);
             match result {
                 Ok(mut pulse) => {
-                    gpu.wait(&mut pulse).unwrap();
+                    pulse.wait().unwrap();
                 }
                 Err(e) => {
                     eprintln!("async_compute_dispatch not supported: {}", e);

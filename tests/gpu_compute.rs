@@ -45,18 +45,18 @@ fn dispatch_add_one() {
     let count = 256;
     let data = vec![1.0f32; count];
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
+    input.write(&data).unwrap();
 
     let mut wave = add_one(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
     for (i, v) in result.iter().enumerate() {
         assert!(
             (*v - 2.0).abs() < 0.001,
@@ -78,12 +78,12 @@ fn dispatch_vector_add() {
     let a_data: Vec<f32> = (0..count).map(|i| i as f32).collect();
     let b_data: Vec<f32> = (0..count).map(|i| (i * 2) as f32).collect();
 
-    let a = gpu.compute_field::<f32>(count).unwrap();
-    let b = gpu.compute_field::<f32>(count).unwrap();
-    let result_field = gpu.compute_field::<f32>(count).unwrap();
+    let a = gpu.field::<f32>(count).unwrap();
+    let b = gpu.field::<f32>(count).unwrap();
+    let result_field = gpu.field::<f32>(count).unwrap();
 
-    gpu.write_field(&a, &a_data).unwrap();
-    gpu.write_field(&b, &b_data).unwrap();
+    a.write(&a_data).unwrap();
+    b.write(&b_data).unwrap();
 
     let mut wave = vector_add(&gpu).unwrap();
     wave.bind(0, &a);
@@ -91,9 +91,9 @@ fn dispatch_vector_add() {
     wave.bind(2, &result_field);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&result_field).unwrap();
+    let result = result_field.read().unwrap();
     for i in 0..count {
         let expected = a_data[i] + b_data[i];
         assert!(
@@ -117,9 +117,9 @@ fn dispatch_scalar_multiply() {
     let factor = 3.5f32;
     let data: Vec<f32> = (0..count).map(|i| i as f32).collect();
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
+    input.write(&data).unwrap();
 
     let mut wave = scalar_multiply(&gpu).unwrap();
     wave.bind(0, &input);
@@ -127,9 +127,9 @@ fn dispatch_scalar_multiply() {
     wave.set_value(2, factor);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
     for i in 0..count {
         let expected = data[i] * factor;
         assert!(
@@ -152,18 +152,18 @@ fn dispatch_large() {
     let count = 1_000_000;
     let data: Vec<f32> = (0..count).map(|i| (i % 1000) as f32).collect();
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
+    input.write(&data).unwrap();
 
     let mut wave = add_one(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
     assert_eq!(result.len(), count);
     // Spot-check: first, middle, last
     assert!((result[0] - 1.0).abs() < 0.001);
@@ -180,33 +180,33 @@ fn dispatch_multiple_same_wave() {
 
     let count = 256;
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
 
     // First dispatch: start with 1.0, expect 2.0
     let data1 = vec![1.0f32; count];
-    gpu.write_field(&input, &data1).unwrap();
+    input.write(&data1).unwrap();
 
     let mut wave = add_one(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result1 = gpu.read_field::<f32>(&output).unwrap();
+    let result1 = output.read().unwrap();
     for v in &result1 {
         assert!((*v - 2.0).abs() < 0.001);
     }
 
     // Second dispatch: start with 10.0, expect 11.0
     let data2 = vec![10.0f32; count];
-    gpu.write_field(&input, &data2).unwrap();
+    input.write(&data2).unwrap();
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result2 = gpu.read_field::<f32>(&output).unwrap();
+    let result2 = output.read().unwrap();
     for v in &result2 {
         assert!((*v - 11.0).abs() < 0.001);
     }
@@ -222,18 +222,18 @@ fn dispatch_identity() {
     let count = 1024;
     let data: Vec<f32> = (0..count).map(|i| i as f32 * 0.25).collect();
 
-    let input = gpu.compute_field::<f32>(count).unwrap();
-    let output = gpu.compute_field::<f32>(count).unwrap();
-    gpu.write_field(&input, &data).unwrap();
+    let input = gpu.field::<f32>(count).unwrap();
+    let output = gpu.field::<f32>(count).unwrap();
+    input.write(&data).unwrap();
 
     let mut wave = identity_copy(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &output);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field::<f32>(&output).unwrap();
+    let result = output.read().unwrap();
     for i in 0..count {
         assert!(
             (result[i] - data[i]).abs() < 0.001,

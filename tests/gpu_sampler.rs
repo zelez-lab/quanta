@@ -132,15 +132,17 @@ fn sampler_used_in_render_pass() {
     // Create a texture and sampler, then bind in a render pass.
     let tex = gpu.texture(16, 16).unwrap();
     let pixels = vec![128u8; 16 * 16 * 4];
-    gpu.texture_write(&tex, &pixels).unwrap();
+    tex.write(&pixels).unwrap();
 
     let target = gpu.render_target(16, 16, Format::RGBA8).unwrap();
-    let mut pass = gpu.render_begin(&target).unwrap();
 
     // Bind sampler and texture into the render pass.
-    pass.set_texture(0, &tex);
-    pass.set_sampler(0, SamplerDesc::default());
-
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .texture(0, &tex)
+        .sampler(0, SamplerDesc::default())
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
 }

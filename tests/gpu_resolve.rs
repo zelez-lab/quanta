@@ -26,15 +26,14 @@ fn resolve_4x_msaa_to_single_sample() {
     let resolve = gpu.render_target(w, h, Format::RGBA8).unwrap();
 
     // Render to the MSAA target (clear to a color).
-    let pass = gpu.render_begin(&msaa).unwrap();
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu.render(&msaa).unwrap().pulse().unwrap();
+    pulse.wait().unwrap();
 
     // Resolve MSAA -> single sample.
     match gpu.resolve_texture(&msaa, &resolve) {
         Ok(()) => {
             // Verify the resolve target is readable.
-            let pixels = gpu.texture_read(&resolve).unwrap();
+            let pixels = resolve.read().unwrap();
             assert_eq!(pixels.len(), (w * h * 4) as usize);
         }
         Err(e) => {
@@ -57,9 +56,8 @@ fn resolve_2x_msaa() {
     let msaa = gpu.msaa_target(w, h, Format::RGBA8, 2).unwrap();
     let resolve = gpu.render_target(w, h, Format::RGBA8).unwrap();
 
-    let pass = gpu.render_begin(&msaa).unwrap();
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu.render(&msaa).unwrap().pulse().unwrap();
+    pulse.wait().unwrap();
 
     // May or may not be supported.
     let _ = gpu.resolve_texture(&msaa, &resolve);
@@ -78,9 +76,8 @@ fn resolve_rgba16float() {
     let msaa = gpu.msaa_target(w, h, Format::RGBA16Float, 4).unwrap();
     let resolve = gpu.render_target(w, h, Format::RGBA16Float).unwrap();
 
-    let pass = gpu.render_begin(&msaa).unwrap();
-    let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    let mut pulse = gpu.render(&msaa).unwrap().pulse().unwrap();
+    pulse.wait().unwrap();
 
     let _ = gpu.resolve_texture(&msaa, &resolve);
 }
