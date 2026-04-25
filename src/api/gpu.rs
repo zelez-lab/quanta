@@ -59,8 +59,20 @@ impl Gpu {
 
     // === Fields (typed GPU memory) ===
 
-    /// Allocate a GPU field with the given element count and usage flags.
-    pub fn field<T: Copy>(&self, count: usize, usage: FieldUsage) -> Result<Field<T>, QuantaError> {
+    /// Allocate a GPU field with default compute usage (storage + transfer).
+    ///
+    /// This is the most common allocation — use it for kernel inputs and outputs.
+    /// For specific usage flags, see [`field_with_usage`](Gpu::field_with_usage).
+    pub fn field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
+        self.field_with_usage(count, FieldUsage::default_compute())
+    }
+
+    /// Allocate a GPU field with explicit usage flags.
+    pub fn field_with_usage<T: Copy>(
+        &self,
+        count: usize,
+        usage: FieldUsage,
+    ) -> Result<Field<T>, QuantaError> {
         let size = count * size_of::<T>();
         let handle = self.inner.field_alloc(size, usage)?;
         Ok(Field {
@@ -72,18 +84,19 @@ impl Gpu {
     }
 
     /// Allocate a compute field (storage + transfer). Convenience shorthand.
+    #[deprecated(note = "use gpu.field(count) instead")]
     pub fn compute_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
-        self.field(count, FieldUsage::default_compute())
+        self.field(count)
     }
 
     /// Allocate a render field (vertex + transfer). Convenience shorthand.
     pub fn render_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
-        self.field(count, FieldUsage::default_render())
+        self.field_with_usage(count, FieldUsage::default_render())
     }
 
     /// Allocate a uniform buffer field (read + uniform + transfer).
     pub fn uniform_field<T: Copy>(&self, count: usize) -> Result<Field<T>, QuantaError> {
-        self.field(count, FieldUsage::default_uniform())
+        self.field_with_usage(count, FieldUsage::default_uniform())
     }
 
     /// Write data to a field. Delegates to `field.write(data)`.
@@ -107,7 +120,7 @@ impl Gpu {
         new_count: usize,
         usage: FieldUsage,
     ) -> Result<Field<T>, QuantaError> {
-        let new = self.field::<T>(new_count, usage)?;
+        let new = self.field_with_usage::<T>(new_count, usage)?;
         new.copy_from(old)?;
         Ok(new)
     }

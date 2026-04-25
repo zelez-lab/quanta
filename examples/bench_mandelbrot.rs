@@ -33,15 +33,14 @@ fn main() {
     let height: u32 = 2160;
     let count = (width * height) as usize;
 
-    let fo = gpu.compute_field::<u32>(count).unwrap();
+    let fo = gpu.field::<u32>(count).unwrap();
     let mut wave = mandelbrot(&gpu).expect("create wave");
     wave.bind(0, &fo);
     wave.set_value(1, width);
     wave.set_value(2, height);
 
     let start = Instant::now();
-    let mut p = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut p).unwrap();
+    gpu.dispatch(&wave, count as u32).unwrap().wait().unwrap();
     let gpu_time = start.elapsed();
 
     // CPU
@@ -68,7 +67,7 @@ fn main() {
     let speedup = cpu_time.as_nanos() as f64 / gpu_time.as_nanos() as f64;
     println!("Mandelbrot 4K ({}x{}, {} pixels):", width, height, count);
     println!(
-        "  CPU: {:.2}ms  GPU: {:.2}ms  → {:.0}x GPU",
+        "  CPU: {:.2}ms  GPU: {:.2}ms  -> {:.0}x GPU",
         cpu_time.as_secs_f64() * 1000.0,
         gpu_time.as_secs_f64() * 1000.0,
         speedup

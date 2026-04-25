@@ -1,100 +1,35 @@
-//! Hello Quanta — verify GPU compute works on your machine.
+//! Hello Quanta — GPU compute in 5 lines of user code.
 //!
 //! Run: cargo run --example hello_quanta
 
-// Define a GPU kernel. The proc macro compiles it to metallib, SPIR-V, PTX, and AMD GCN.
-// The function is replaced with: fn vector_add(gpu: &Gpu) -> Result<Wave, QuantaError>
-#[quanta::kernel]
-fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
-    let i = quark_id();
-    result[i] = a[i] + b[i];
+use quanta::*;
+
+#[derive(quanta::Fields)]
+struct VecAdd {
+    a: Vec<f32>,
+    b: Vec<f32>,
+    result: Vec<f32>,
 }
 
-fn main() {
-    let gpu = quanta::init().expect("no GPU found");
-    println!(
-        "GPU: {} ({} nuclei, {} total quarks, {} MB)",
-        gpu.name(),
-        gpu.nuclei(),
-        gpu.total_quarks(),
-        gpu.caps().memory_bytes / 1_000_000
-    );
+#[quanta::kernel]
+fn vector_add(d: &VecAdd) {
+    let i = quark_id();
+    d.result[i] = d.a[i] + d.b[i];
+}
 
-    let count = 1_000_000;
-    let a_data: Vec<f32> = (0..count).map(|i| i as f32).collect();
-    let b_data: Vec<f32> = (0..count).map(|i| (i * 2) as f32).collect();
+fn main() -> Result<(), QuantaError> {
+    let gpu = init()?;
+    println!("GPU: {}", gpu.name());
 
-    let a = gpu.compute_field::<f32>(count).unwrap();
-    let b = gpu.compute_field::<f32>(count).unwrap();
-    let result = gpu.compute_field::<f32>(count).unwrap();
+    let mut data = VecAdd {
+        a: vec![1.0; 1024],
+        b: vec![2.0; 1024],
+        result: vec![0.0; 1024],
+    };
 
-    gpu.write_field(&a, &a_data).unwrap();
-    gpu.write_field(&b, &b_data).unwrap();
+    vector_add(&gpu, &mut data, 1024)?.wait()?;
 
-    // Call the kernel — creates a Wave bound to this GPU
-    let mut wave = vector_add(&gpu).expect("create wave");
-    wave.bind(0, &a);
-    wave.bind(1, &b);
-    wave.bind(2, &result);
-
-    // Dispatch 1M quarks and wait
-    let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
-
-    let output = gpu.read_field(&result).unwrap();
-
-    let mut errors = 0;
-    for i in 0..count {
-        if (output[i] - (a_data[i] + b_data[i])).abs() > 0.001 {
-            errors += 1;
-        }
-    }
-
-    if errors == 0 {
-        println!("✓ {} results correct", count);
-    } else {
-        println!("✗ {} errors out of {}", errors, count);
-    }
-
-    println!("\nCompiled targets:");
-    println!(
-        "  metallib: {}",
-        if VECTOR_ADD_BINARY.metallib.is_some() {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    println!(
-        "  SPIR-V:   {}",
-        if VECTOR_ADD_BINARY.spirv.is_some() {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    println!(
-        "  NVIDIA:   {}",
-        if VECTOR_ADD_BINARY.nvidia.is_some() {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    println!(
-        "  AMD:      {}",
-        if VECTOR_ADD_BINARY.amd.is_some() {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    println!(
-        "  WGSL:     {}",
-        if VECTOR_ADD_BINARY.wgsl.is_some() {
-            "yes"
-        } else {
-            "no"
-        }
-    );
+    assert_eq!(data.result[0], 3.0);
+    println!("1.0 + 2.0 = {}", data.result[0]);
+    Ok(())
 }

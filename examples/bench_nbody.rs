@@ -122,7 +122,7 @@ fn main() {
 
         let mut pos_x = vec![0.0f32; padded];
         let mut pos_y = vec![0.0f32; padded];
-        let mut pos_z = vec![0.0f32; padded];
+        let pos_z = vec![0.0f32; padded];
         let mut pos_m = vec![0.0f32; padded];
         for i in 0..count {
             let angle = i as f32 * 0.01;
@@ -134,20 +134,20 @@ fn main() {
         let vel_y = vec![0.0f32; padded];
         let vel_z = vec![0.0f32; padded];
 
-        let fpx = gpu.compute_field::<f32>(padded).unwrap();
-        let fpy = gpu.compute_field::<f32>(padded).unwrap();
-        let fpz = gpu.compute_field::<f32>(padded).unwrap();
-        let fpm = gpu.compute_field::<f32>(padded).unwrap();
-        let fvx = gpu.compute_field::<f32>(padded).unwrap();
-        let fvy = gpu.compute_field::<f32>(padded).unwrap();
-        let fvz = gpu.compute_field::<f32>(padded).unwrap();
-        gpu.write_field(&fpx, &pos_x).unwrap();
-        gpu.write_field(&fpy, &pos_y).unwrap();
-        gpu.write_field(&fpz, &pos_z).unwrap();
-        gpu.write_field(&fpm, &pos_m).unwrap();
-        gpu.write_field(&fvx, &vel_x).unwrap();
-        gpu.write_field(&fvy, &vel_y).unwrap();
-        gpu.write_field(&fvz, &vel_z).unwrap();
+        let fpx = gpu.field::<f32>(padded).unwrap();
+        let fpy = gpu.field::<f32>(padded).unwrap();
+        let fpz = gpu.field::<f32>(padded).unwrap();
+        let fpm = gpu.field::<f32>(padded).unwrap();
+        let fvx = gpu.field::<f32>(padded).unwrap();
+        let fvy = gpu.field::<f32>(padded).unwrap();
+        let fvz = gpu.field::<f32>(padded).unwrap();
+        fpx.write(&pos_x).unwrap();
+        fpy.write(&pos_y).unwrap();
+        fpz.write(&pos_z).unwrap();
+        fpm.write(&pos_m).unwrap();
+        fvx.write(&vel_x).unwrap();
+        fvy.write(&vel_y).unwrap();
+        fvz.write(&vel_z).unwrap();
 
         let mut wave = nbody_soa(&gpu).expect("create wave");
         wave.bind(0, &fpx);
@@ -160,16 +160,14 @@ fn main() {
         wave.set_value(7, padded as u32);
 
         // Warmup
-        let mut pw = gpu.dispatch(&wave, padded as u32).unwrap();
-        gpu.wait(&mut pw).unwrap();
-        gpu.write_field(&fvx, &vel_x).unwrap();
-        gpu.write_field(&fvy, &vel_y).unwrap();
-        gpu.write_field(&fvz, &vel_z).unwrap();
+        gpu.dispatch(&wave, padded as u32).unwrap().wait().unwrap();
+        fvx.write(&vel_x).unwrap();
+        fvy.write(&vel_y).unwrap();
+        fvz.write(&vel_z).unwrap();
 
         // Timed GPU
         let start = Instant::now();
-        let mut p = gpu.dispatch(&wave, padded as u32).unwrap();
-        gpu.wait(&mut p).unwrap();
+        gpu.dispatch(&wave, padded as u32).unwrap().wait().unwrap();
         let gpu_time = start.elapsed();
 
         // CPU (single-threaded)

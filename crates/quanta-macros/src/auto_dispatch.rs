@@ -83,7 +83,7 @@ pub(crate) fn emit_auto_dispatch(
 
         // Allocate
         alloc_stmts.push(quote! {
-            let #field_var = device.compute_field::<#scalar_ty>(#param_ident.#field_ident.len())?;
+            let #field_var = device.field::<#scalar_ty>(#param_ident.#field_ident.len())?;
         });
 
         // Upload (only if field is read by the kernel)

@@ -24,22 +24,20 @@ fn main() {
     for &count in &[1_000, 10_000, 100_000, 1_000_000] {
         let input: Vec<f32> = (0..count).map(|i| i as f32 * 0.001).collect();
 
-        let fi = gpu.compute_field::<f32>(count).unwrap();
-        let fo = gpu.compute_field::<f32>(count).unwrap();
-        gpu.write_field(&fi, &input).unwrap();
+        let fi = gpu.field::<f32>(count).unwrap();
+        let fo = gpu.field::<f32>(count).unwrap();
+        fi.write(&input).unwrap();
 
         let mut wave = heavy_compute(&gpu).expect("create wave");
         wave.bind(0, &fi);
         wave.bind(1, &fo);
 
         // Warm up
-        let mut p = gpu.dispatch(&wave, count as u32).unwrap();
-        gpu.wait(&mut p).unwrap();
+        gpu.dispatch(&wave, count as u32).unwrap().wait().unwrap();
 
         let start = Instant::now();
-        let mut p = gpu.dispatch(&wave, count as u32).unwrap();
-        gpu.wait(&mut p).unwrap();
-        let _result = gpu.read_field(&fo).unwrap();
+        gpu.dispatch(&wave, count as u32).unwrap().wait().unwrap();
+        let _result = fo.read().unwrap();
         let gpu_time = start.elapsed();
 
         // CPU
@@ -57,7 +55,7 @@ fn main() {
 
         let speedup = cpu_time.as_nanos() as f64 / gpu_time.as_nanos() as f64;
         println!(
-            "{:>10} elements:  CPU {:>10.2}ms  GPU {:>10.2}ms  → {:.0}x GPU",
+            "{:>10} elements:  CPU {:>10.2}ms  GPU {:>10.2}ms  -> {:.0}x GPU",
             count,
             cpu_time.as_secs_f64() * 1000.0,
             gpu_time.as_secs_f64() * 1000.0,
