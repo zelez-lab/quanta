@@ -23,3 +23,6 @@ import Quanta.Semantics.Wgsl
 import Quanta.Semantics.Llvm
 import Quanta.Semantics.Cpu
 import Quanta.Semantics.Agreement
+
+-- Conditional-correctness theorems
+import Quanta.Theorems.WebGpu
