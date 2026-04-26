@@ -187,6 +187,35 @@ Lean formalization: `specs/verify/lean/Quanta/Axioms/WebGpu.lean`
 `dispatch_executes_kernel`, `submit_ordering`, `wasm_bindgen_faithful`,
 and siblings).
 
+### API-layer invariants (step 075)
+
+The trait surface (`GpuDevice`, `Pulse`, `Field`, `Wave`) sits above
+the per-driver axioms — properties stated here hold across all
+backends and are proven directly in Verus.
+
+Verus formalization: `specs/verify/verus/quanta-api/`:
+- `pulse_lifetime.rs` — Pulse state machine. T720 (monotonic-with-reset),
+  T721 (`is_done` agrees with state), T722 (closure consumed exactly
+  once: no double-fire of the deferred-wait `FnOnce`).
+- `field_lifetime.rs` — Field handle invariants. T730 (handle is
+  immutable post-construction), T731 (drop frees exactly once),
+  T732 (no use-after-free at the mirror level), T733 (`byte_size =
+  count * size_of::<T>()`).
+- `wave_lifetime.rs` — Wave binding invariants. T740 (slot-indexed
+  writes leave other slots unchanged), T741 (**capability
+  monotonicity**: `binding_count` / `texture_count` never shrink),
+  T742 (handle 0 is the unbound sentinel), T743 (push-data slot
+  alignment).
+- `submission_safety.rs` — submission-layer state machine.
+  T750 (submit-after-close is forbidden), T751 (fence ordering: a
+  fence at submission N is visible only after N+1 submits, and stays
+  visible monotonically), T752 (no double-submit: `CommandBuffer` is
+  consumed by `submit`), T753 (pulse ↔ submission position
+  correspondence), T754 (hazard-free declaration the per-backend
+  driver discharges).
+
+Verified by Verus: **27 theorems across 4 files, 0 errors**.
+
 ---
 
 ## Theorems (proven by Quanta)
