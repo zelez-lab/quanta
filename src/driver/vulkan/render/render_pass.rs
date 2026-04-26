@@ -782,8 +782,17 @@ impl VulkanDevice {
                         }
                     }
 
-                    // M4+ render ops — not yet implemented.
-                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {}
+                    // M4+ render ops — not yet implemented. Per Kani
+                    // T419 (no silent RenderOp drops on Vulkan), we
+                    // surface this as an explicit error rather than a
+                    // no-op so a render pass that requested VRS doesn't
+                    // silently fall back to uniform shading.
+                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
+                        ffi::vkCmdEndRenderPass(cmd);
+                        return Err(QuantaError::invalid_param(
+                            "Vulkan render: variable-rate shading pending (Tier A 029)",
+                        ));
+                    }
                 }
             }
 

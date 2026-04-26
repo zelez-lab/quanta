@@ -504,8 +504,17 @@ impl MetalDevice {
                         );
                     }
 
-                    // M4+ render ops — not yet implemented.
-                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {}
+                    // M4+ render ops — not yet implemented. Per Kani
+                    // T418 (no silent RenderOp drops on Metal), we
+                    // surface this as an explicit error rather than a
+                    // no-op so a render pass that requested VRS doesn't
+                    // silently fall back to uniform shading.
+                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
+                        ffi::msg_void(encoder, b"endEncoding\0");
+                        return Err(QuantaError::invalid_param(
+                            "Metal render: variable-rate shading pending (Tier A 028)",
+                        ));
+                    }
                 }
             }
 

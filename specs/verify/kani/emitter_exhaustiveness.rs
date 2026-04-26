@@ -499,6 +499,130 @@ fn t417_webgpu_render_end_no_silent_drops() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// T418 — Metal render_end RenderOp exhaustiveness
+//
+// Production: src/driver/metal/render/render_pass.rs — render_end()
+//
+// Same invariant as T417 (WebGPU): every RenderOp variant takes one of
+// two named paths — wired (issues a real Metal encoder call) or
+// rejected (returns Err). Silent drops are forbidden.
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Variants whose Metal arm issues a real encoder call.
+fn metal_render_end_wired(tag: u8) -> bool {
+    matches!(
+        tag,
+        TAG_RP_SET_PIPELINE
+            | TAG_RP_BIND_VERTICES
+            | TAG_RP_BIND_INDICES
+            | TAG_RP_SET_FIELD
+            | TAG_RP_SET_UNIFORM
+            | TAG_RP_SET_TEXTURE
+            | TAG_RP_SET_SAMPLER
+            | TAG_RP_SET_VALUE
+            | TAG_RP_DRAW
+            | TAG_RP_DRAW_INDEXED
+            | TAG_RP_CLEAR
+            | TAG_RP_CLEAR_DEPTH
+            | TAG_RP_CLEAR_STENCIL
+            | TAG_RP_SET_STENCIL_REF
+            | TAG_RP_DEBUG_PUSH
+            | TAG_RP_DEBUG_POP
+            | TAG_RP_DRAW_INDIRECT
+            | TAG_RP_DRAW_INDEXED_INDIRECT
+            | TAG_RP_SET_SCISSOR
+            | TAG_RP_SET_VIEWPORT
+            | TAG_RP_BEGIN_OCCLUSION_QUERY
+            | TAG_RP_END_OCCLUSION_QUERY
+    )
+}
+
+/// Variants whose Metal arm explicitly returns an error.
+fn metal_render_end_rejected(tag: u8) -> bool {
+    matches!(
+        tag,
+        TAG_RP_SET_SHADING_RATE | TAG_RP_SET_SHADING_RATE_IMAGE
+    )
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn t418_metal_render_end_no_silent_drops() {
+    let tag: u8 = kani::any();
+    kani::assume(tag < RENDER_OP_VARIANT_COUNT);
+    let wired = metal_render_end_wired(tag);
+    let rejected = metal_render_end_rejected(tag);
+    assert!(
+        wired ^ rejected,
+        "Metal RenderOp tag {} silently drops (wired={}, rejected={})",
+        tag, wired, rejected
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T419 — Vulkan render_end RenderOp exhaustiveness
+//
+// Production: src/driver/vulkan/render/render_pass.rs — render_end()
+//
+// Same shape as T417/T418. Vulkan's Clear* arms emit no command in the
+// op replay because clears are applied at vkCmdBeginRenderPass via the
+// VkClearValue array; we model this as "wired" with the effect at
+// pass-setup time, not in the op loop.
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Variants whose Vulkan arm issues a real Vulkan encoder call (or has
+/// its effect applied at pass-setup time, in the case of Clear*).
+fn vulkan_render_end_wired(tag: u8) -> bool {
+    matches!(
+        tag,
+        TAG_RP_SET_PIPELINE
+            | TAG_RP_BIND_VERTICES
+            | TAG_RP_BIND_INDICES
+            | TAG_RP_SET_FIELD
+            | TAG_RP_SET_UNIFORM
+            | TAG_RP_SET_TEXTURE
+            | TAG_RP_SET_SAMPLER
+            | TAG_RP_SET_VALUE
+            | TAG_RP_DRAW
+            | TAG_RP_DRAW_INDEXED
+            | TAG_RP_CLEAR              // applied at vkCmdBeginRenderPass
+            | TAG_RP_CLEAR_DEPTH        // applied at vkCmdBeginRenderPass
+            | TAG_RP_CLEAR_STENCIL      // applied at vkCmdBeginRenderPass
+            | TAG_RP_SET_STENCIL_REF
+            | TAG_RP_DEBUG_PUSH
+            | TAG_RP_DEBUG_POP
+            | TAG_RP_DRAW_INDIRECT
+            | TAG_RP_DRAW_INDEXED_INDIRECT
+            | TAG_RP_SET_SCISSOR
+            | TAG_RP_SET_VIEWPORT
+            | TAG_RP_BEGIN_OCCLUSION_QUERY
+            | TAG_RP_END_OCCLUSION_QUERY
+    )
+}
+
+/// Variants whose Vulkan arm explicitly returns an error.
+fn vulkan_render_end_rejected(tag: u8) -> bool {
+    matches!(
+        tag,
+        TAG_RP_SET_SHADING_RATE | TAG_RP_SET_SHADING_RATE_IMAGE
+    )
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn t419_vulkan_render_end_no_silent_drops() {
+    let tag: u8 = kani::any();
+    kani::assume(tag < RENDER_OP_VARIANT_COUNT);
+    let wired = vulkan_render_end_wired(tag);
+    let rejected = vulkan_render_end_rejected(tag);
+    assert!(
+        wired ^ rejected,
+        "Vulkan RenderOp tag {} silently drops (wired={}, rejected={})",
+        tag, wired, rejected
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Supplementary: verify tag uniqueness (no duplicate assignments)
 // ═══════════════════════════════════════════════════════════════════════
 
