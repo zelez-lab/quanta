@@ -1137,11 +1137,52 @@ impl QGpuDevice for WebgpuDevice {
                     width,
                     height,
                 } => rp.rp_set_scissor(*x, *y, *width, *height),
-                _ => {
-                    // Other ops (debug labels, occlusion queries, MRT
-                    // overrides, indirect draw, shading rate) are not in the
-                    // 050 baseline. Silently drop — the surface returns no
-                    // error so these calls remain compatible across drivers.
+                // Variants below are not in the 050 baseline. Per Kani
+                // theorem T417, the rule is **every RenderOp is either
+                // wired or explicitly rejected** — no silent drops.
+                // Closing the gaps is tracked on step 050; until then,
+                // surface a clear error so callers can't run a render
+                // pass that observably misses these ops.
+                RenderOp::SetTexture { .. } => {
+                    rp.rp_end();
+                    return Err(Self::err("WebGPU render: SetTexture pending"));
+                }
+                RenderOp::SetSampler { .. } => {
+                    rp.rp_end();
+                    return Err(Self::err("WebGPU render: SetSampler pending"));
+                }
+                RenderOp::SetValue { .. } => {
+                    rp.rp_end();
+                    return Err(Self::err(
+                        "WebGPU render: SetValue (push constants) pending",
+                    ));
+                }
+                RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {
+                    rp.rp_end();
+                    return Err(Self::err("WebGPU render: depth/stencil clear pending"));
+                }
+                RenderOp::SetStencilRef(_) => {
+                    rp.rp_end();
+                    return Err(Self::err("WebGPU render: SetStencilRef pending"));
+                }
+                RenderOp::DebugPush(_) | RenderOp::DebugPop => {
+                    // Debug labels are advisory; safe to skip on WebGPU.
+                }
+                RenderOp::DrawIndirect { .. } | RenderOp::DrawIndexedIndirect { .. } => {
+                    rp.rp_end();
+                    return Err(Self::err(
+                        "WebGPU render: indirect draw pending (Tier A 032+033)",
+                    ));
+                }
+                RenderOp::BeginOcclusionQuery { .. } | RenderOp::EndOcclusionQuery { .. } => {
+                    rp.rp_end();
+                    return Err(Self::err("WebGPU render: occlusion queries pending"));
+                }
+                RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
+                    rp.rp_end();
+                    return Err(Self::err(
+                        "WebGPU render: variable-rate shading not in spec",
+                    ));
                 }
             }
         }

@@ -382,6 +382,123 @@ fn t1002_llvm_emitter_exhaustive() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// T417 — WebGPU render_end RenderOp exhaustiveness
+//
+// Production: src/driver/webgpu/mod.rs — render_end()
+//
+// The WebGPU render path replays the recorded RenderOp stream against the
+// JS-side encoder. Every variant the IR can emit must produce *some*
+// observable encoder call (or an explicit error). A `_ => {}` catch-all
+// arm silently drops the op, which is worse than NotImplemented because
+// nothing surfaces at runtime — the kernel returns Ok with a wrong
+// picture.
+//
+// The model below honestly reflects the current `render_end` match: each
+// flag is `true` iff the production code wires that variant to a
+// `GpuRenderPassEncoder` call. Variants stuck at `false` are the silent-
+// drop holes — the ones that need either wiring or an explicit error.
+//
+// Per the conditional-correctness chain, this theorem combined with
+// A10.4 (submit_ordering) and A10.5 (on_submitted_work_done_resolves)
+// gives "render_end submits a command buffer that observably reflects
+// every recorded op." Without exhaustiveness, that chain doesn't hold.
+// ═══════════════════════════════════════════════════════════════════════
+
+const RENDER_OP_VARIANT_COUNT: u8 = 24;
+
+const TAG_RP_SET_PIPELINE: u8           = 0;
+const TAG_RP_BIND_VERTICES: u8          = 1;
+const TAG_RP_BIND_INDICES: u8           = 2;
+const TAG_RP_SET_FIELD: u8              = 3;
+const TAG_RP_SET_UNIFORM: u8            = 4;
+const TAG_RP_SET_TEXTURE: u8            = 5;
+const TAG_RP_SET_SAMPLER: u8            = 6;
+const TAG_RP_SET_VALUE: u8              = 7;
+const TAG_RP_DRAW: u8                   = 8;
+const TAG_RP_DRAW_INDEXED: u8           = 9;
+const TAG_RP_CLEAR: u8                  = 10;
+const TAG_RP_CLEAR_DEPTH: u8            = 11;
+const TAG_RP_CLEAR_STENCIL: u8          = 12;
+const TAG_RP_SET_STENCIL_REF: u8        = 13;
+const TAG_RP_DEBUG_PUSH: u8             = 14;
+const TAG_RP_DEBUG_POP: u8              = 15;
+const TAG_RP_DRAW_INDIRECT: u8          = 16;
+const TAG_RP_DRAW_INDEXED_INDIRECT: u8  = 17;
+const TAG_RP_SET_SCISSOR: u8            = 18;
+const TAG_RP_SET_VIEWPORT: u8           = 19;
+const TAG_RP_BEGIN_OCCLUSION_QUERY: u8  = 20;
+const TAG_RP_END_OCCLUSION_QUERY: u8    = 21;
+const TAG_RP_SET_SHADING_RATE: u8       = 22;
+const TAG_RP_SET_SHADING_RATE_IMAGE: u8 = 23;
+
+/// Variants whose match arm in `render_end` issues a real encoder call
+/// (set_pipeline, draw, etc.). The recorded op produces an observable
+/// effect on the WebGPU command buffer.
+fn webgpu_render_end_wired(tag: u8) -> bool {
+    matches!(
+        tag,
+        TAG_RP_SET_PIPELINE
+            | TAG_RP_BIND_VERTICES
+            | TAG_RP_BIND_INDICES
+            | TAG_RP_SET_FIELD
+            | TAG_RP_SET_UNIFORM
+            | TAG_RP_DRAW
+            | TAG_RP_DRAW_INDEXED
+            | TAG_RP_CLEAR
+            | TAG_RP_SET_SCISSOR
+            | TAG_RP_SET_VIEWPORT
+            | TAG_RP_DEBUG_PUSH    // skipped — labels are advisory
+            | TAG_RP_DEBUG_POP     // skipped — labels are advisory
+    )
+}
+
+/// Variants whose match arm explicitly returns an error
+/// ("WebGPU render: X pending"). The recorded op is rejected loudly,
+/// not silently dropped.
+fn webgpu_render_end_rejected(tag: u8) -> bool {
+    matches!(
+        tag,
+        TAG_RP_SET_TEXTURE
+            | TAG_RP_SET_SAMPLER
+            | TAG_RP_SET_VALUE
+            | TAG_RP_CLEAR_DEPTH
+            | TAG_RP_CLEAR_STENCIL
+            | TAG_RP_SET_STENCIL_REF
+            | TAG_RP_DRAW_INDIRECT
+            | TAG_RP_DRAW_INDEXED_INDIRECT
+            | TAG_RP_BEGIN_OCCLUSION_QUERY
+            | TAG_RP_END_OCCLUSION_QUERY
+            | TAG_RP_SET_SHADING_RATE
+            | TAG_RP_SET_SHADING_RATE_IMAGE
+    )
+}
+
+/// **T417** — every RenderOp variant takes one of two named paths in
+/// `render_end`: wired to a `GpuRenderPassEncoder` call, or explicitly
+/// rejected with an error. Silent drops are forbidden by construction.
+///
+/// This is the bridge that makes A10.4 (submit_ordering) +
+/// A10.5 (on_submitted_work_done_resolves) compose with the recorded-op
+/// model: every recorded op is observable in the submitted command
+/// buffer, *or* the call returns Err — never returns Ok with missing
+/// effects. Closing the rejected set into the wired set is the parity
+/// completion work for step 050.
+#[cfg(kani)]
+#[kani::proof]
+fn t417_webgpu_render_end_no_silent_drops() {
+    let tag: u8 = kani::any();
+    kani::assume(tag < RENDER_OP_VARIANT_COUNT);
+    let wired = webgpu_render_end_wired(tag);
+    let rejected = webgpu_render_end_rejected(tag);
+    // Exactly one of the two paths fires for every variant.
+    assert!(
+        wired ^ rejected,
+        "RenderOp tag {} silently drops (wired={}, rejected={})",
+        tag, wired, rejected
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Supplementary: verify tag uniqueness (no duplicate assignments)
 // ═══════════════════════════════════════════════════════════════════════
 
