@@ -292,6 +292,65 @@ Empirical cross-checks (Cat-language litmus tests, runnable with herd7):
 | `store_buffer.litmus` | SB+rel+acq | both readers see 0 (allowed under rel/acq, forbidden only under SeqCst) | T1600 / T1607 |
 | `atomic_add_visibility.litmus` | AtomicAdd+rel+acq | counter=1 ∧ data=0 | T1601 / T1605 / T1610 / T1616 |
 
+## JIT WGSL Emitter (T4xx) — step 079
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T410 | Every KernelOp variant handled in `emit_wgsl_jit` | Verus+Kani | proven |
+| T411 | Subgroup ops ⇒ emitted module begins with `enable subgroups;` | Verus | proven |
+| T412 | F16 use ⇒ emitted module begins with `enable f16;` | Verus | proven |
+| T413 | Atomic field ⇒ declared as `array<atomic<T>>` at module scope | Verus | proven |
+| T414 | `wave_jit_flow ≠ none` — chains T410 + A10.1 + A10.2 | Lean | proven |
+| T415 | `wave_dispatch` invokes A10.3 (kernel runs `total_threads` times) | Lean | proven |
+| T416 | End-to-end round-trip: `f(input)` GPU = `f(input)` CPU | Lean | scaffold |
+
+## Render-Path No-Silent-Drops (T417-T419)
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T417 | WebGPU `render_end` — every RenderOp variant wired XOR rejected | Kani | proven |
+| T418 | Metal `render_end` — every RenderOp variant wired XOR rejected | Kani | proven |
+| T419 | Vulkan `render_end` — every RenderOp variant wired XOR rejected | Kani | proven |
+
+## API-Layer Lifetimes (T7xx) — step 075
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T720 | Pulse state machine: `wait` Pending→Done, `reset` Done→Pending | Verus | proven |
+| T721 | `Pulse::is_done` agrees with state field | Verus | proven |
+| T722 | Wait closure (FnOnce) consumed at most once: no double-fire | Verus | proven |
+| T730 | Field handle/count/elem_size immutable post-construction | Verus | proven |
+| T731 | `Drop for Field` frees exactly once | Verus | proven |
+| T732 | `live(field)` precondition for handle reads (no use-after-free) | Verus | proven |
+| T733 | `byte_size = count * elem_size` | Verus | proven |
+| T740 | `bind_handle(slot, h)` only mutates the target slot | Verus | proven |
+| T741 | **Capability monotonicity**: `binding_count`/`texture_count` never shrink | Verus | proven |
+| T742 | Handle 0 is the unbound sentinel for fresh waves | Verus | proven |
+| T743 | Push-data slot alignment: slot N at byte offset 16·N | Verus | proven |
+| T750 | Submit-after-close forbidden | Verus | proven |
+| T751 | Fence at submission N visible after N+1 submits, monotonic | Verus | proven |
+| T752 | CommandBuffer consumed by submit; no double-submit | Verus | proven |
+| T753 | Pulse position ↔ submission index correspondence | Verus | proven |
+| T754 | `raw_hazard_free` declared (per-backend driver discharges) | Verus | proven |
+
+## WebGPU Host Axioms (A10, A11) — TCB
+
+These are axioms (TCB), not theorems. Stated explicitly so reviewers
+know exactly what is trusted vs. proven on the WebGPU host side.
+
+| ID | Axiom | Backend | Tool | Status |
+|----|-------|---------|------|--------|
+| T1700 | A10.1 `wgsl_module_acceptance` — well-formed WGSL ⇒ `createShaderModule` succeeds | WebGPU | Lean | axiom |
+| T1701 | A10.2 `compute_pipeline_creation` — module + entry name ⇒ pipeline ≠ none | WebGPU | Lean | axiom |
+| T1702 | A10.3 `dispatch_executes_kernel` — pipeline + dispatch ⇒ A3 GPU semantics | WebGPU | Lean | axiom |
+| T1703 | A10.4 `submit_ordering` — queue submissions execute in insertion order | WebGPU | Lean | axiom |
+| T1704 | A10.5 `on_submitted_work_done_resolves` — Promise resolves once after submits | WebGPU | Lean | axiom |
+| T1705 | A10.6 `map_async_visibility` — mapped range reflects last completed write | WebGPU | Lean | axiom |
+| T1706 | A10.7 `write_buffer_atomicity` — subsequent dispatch sees full `writeBuffer` data | WebGPU | Lean | axiom |
+| T1707 | A11 `wasm_bindgen_faithful` — extern blocks dispatch to declared JS methods | wasm-bindgen | Lean | axiom |
+| T1708 | A11.1 `promise_to_jsfuture_lossless` — JsFuture faithful to Promise semantics | wasm-bindgen | Lean | axiom |
+| T1709 | A11.2 `js_value_method_dispatch` — `unchecked_into` traps on missing method | wasm-bindgen | Lean | axiom |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -316,13 +375,35 @@ Empirical cross-checks (Cat-language litmus tests, runnable with herd7):
 | Precision & Validity | 2 | 2 | 0 |
 | GPU Optimizations | 14 | 14 | 0 |
 | Fast-Math | 5 | 5 | 0 |
+| JIT WGSL Emitter | 7 | 6 | 1 |
+| Render-Path No-Silent-Drops | 3 | 3 | 0 |
+| API-Layer Lifetimes | 16 | 16 | 0 |
 | Memory Model Axioms | 23 | -- | -- |
-| **Total proven theorems** | **147** | **147** | **0** |
-| **TCB axioms (A6-A9)** | **23** | -- | -- |
+| WebGPU Host + wasm-bindgen Axioms | 10 | -- | -- |
+| **Total proven theorems** | **172** | **171** | **1** |
+| **TCB axioms (A6-A11)** | **33** | -- | -- |
 
-The 23 memory-model entries (T1600-T1622) are **axioms**, not theorems —
-they are part of the Trusted Computing Base, declared in Lean and grounded
-in the published memory-model specifications of each backend (Vulkan
-Memory Model extension, NVIDIA PTX ISA 8.5, Metal Shading Language §6.13,
-AMD RDNA ISA Reference). They are stated and named, not proved, and they
-are excluded from the "proven theorems" count.
+T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing
+conditional theorem ("wave_jit succeeds for any well-formed kernel").
+T416 (end-to-end round-trip) is a scaffold; full proof needs the
+WGSL grammar mirror.
+
+T417/T418/T419 are the cross-driver no-silent-drops invariant on the
+render replay loop. The same proof template covers all three render
+backends. Catching the same VRS silent-drop bug on Metal + Vulkan
+(after first catching it on WebGPU) was a real payoff of the
+discipline — not a hypothetical.
+
+T720-T754 are the API-layer Verus proofs (step 075). They cover the
+Pulse / Field / Wave / submission-queue lifetimes — closing the gap
+between "proven kernel" and "proven library." T741 is the
+capability-monotonicity property the roadmap names explicitly.
+
+The 23 memory-model entries (T1600-T1622) plus the 10 WebGPU host /
+wasm-bindgen axioms (T1700-T1709) are **axioms**, not theorems —
+they are part of the Trusted Computing Base, declared in Lean and
+grounded in the published memory-model specifications of each
+backend (Vulkan Memory Model extension, NVIDIA PTX ISA 8.5, Metal
+Shading Language §6.13, AMD RDNA ISA Reference) and the W3C WebGPU
+spec / wasm-bindgen ABI. They are stated and named, not proved, and
+they are excluded from the "proven theorems" count.
