@@ -18,6 +18,10 @@ pub mod emit_spirv;
 #[cfg(feature = "jit")]
 pub mod emit_msl;
 
+/// WGSL emitter for JIT compilation. Enabled by the `jit` feature.
+#[cfg(feature = "jit")]
+pub mod emit_wgsl;
+
 // ── Re-exports for backward compatibility ────────────────────────────────────
 
 pub use output::CompilerOutput;

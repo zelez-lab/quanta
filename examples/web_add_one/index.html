@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Quanta WebGPU smoke test — add_one</title>
+    <style>
+      body { font: 14px ui-monospace, monospace; padding: 1rem; }
+      pre  { background: #f6f6f6; padding: 0.5rem; }
+      .ok  { color: #0a0; }
+      .fail { color: #a00; }
+    </style>
+  </head>
+  <body>
+    <h1>Quanta WebGPU smoke test — <code>add_one</code></h1>
+    <p>
+      Loads the wasm built from <code>examples/web_add_one</code>, calls
+      <code>quanta::driver::webgpu::init_async()</code>, JIT-compiles an
+      <code>add_one</code> kernel via <code>wave_jit</code>, dispatches one
+      workgroup, and reads back the result.
+    </p>
+    <p id="status">Loading…</p>
+    <pre id="output"></pre>
+
+    <script type="module">
+      import init, { run_add_one } from "./pkg/web_add_one.js";
+
+      const statusEl = document.getElementById("status");
+      const outEl    = document.getElementById("output");
+
+      async function main() {
+        await init();
+        const bytes = await run_add_one();
+        // Reinterpret as u32[]
+        const u32 = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4);
+        const expected = Array.from({ length: 64 }, (_, i) => i + 1);
+        const actual   = Array.from(u32);
+        const ok = expected.every((v, i) => v === actual[i]);
+
+        statusEl.className = ok ? "ok" : "fail";
+        statusEl.textContent = ok ? "PASS — buffer = [1, 2, …, 64]" : "FAIL";
+        outEl.textContent = `expected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(actual)}`;
+      }
+
+      main().catch(err => {
+        statusEl.className = "fail";
+        statusEl.textContent = "FAIL — " + err;
+        console.error(err);
+      });
+    </script>
+  </body>
+</html>

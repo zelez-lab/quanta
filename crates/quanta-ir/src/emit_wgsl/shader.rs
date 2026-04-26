@@ -1,29 +1,6 @@
-//! Helper functions for WGSL emission.
+//! Vertex/fragment shader WGSL emitters.
 
-use quanta_ir::*;
-
-pub(crate) fn const_wgsl(v: &ConstValue) -> String {
-    match v {
-        ConstValue::F32(x) => format!("{}f", x),
-        ConstValue::U32(x) => format!("{}u", x),
-        ConstValue::I32(x) => format!("{}i", x),
-        ConstValue::Bool(x) => format!("{}", x),
-        _ => "/* unsupported const */".to_string(),
-    }
-}
-
-/// Translate a Rust device function source to WGSL.
-/// WGSL uses `fn name(...) -> type` — same syntax as Rust for function
-/// signatures, so only body-level translations are needed.
-pub(crate) fn translate_device_fn_to_wgsl(rust_source: &str) -> String {
-    let mut s = rust_source.to_string();
-    s = s.replace("let mut ", "var ");
-    s = s.replace(" as f32", "");
-    s = s.replace(" as u32", "");
-    s
-}
-
-// ── Vertex/Fragment WGSL emitters ──────────────────────────────────────────
+use crate::*;
 
 fn shader_type_wgsl(ty: ShaderType) -> &'static str {
     match ty {
@@ -58,7 +35,6 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     let attr_params: Vec<&ShaderParam> = shader.params.iter().filter(|p| !p.is_uniform).collect();
     let varying_params: Vec<&ShaderParam> = attr_params.iter().skip(1).copied().collect();
 
-    // Input struct
     out.push_str("struct VertexInput {\n");
     for (i, p) in attr_params.iter().enumerate() {
         out.push_str(&format!(
@@ -70,7 +46,6 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     }
     out.push_str("};\n\n");
 
-    // Output struct
     out.push_str("struct VertexOutput {\n");
     out.push_str("    @builtin(position) position: vec4<f32>,\n");
     for (i, p) in varying_params.iter().enumerate() {

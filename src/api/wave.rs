@@ -42,6 +42,18 @@ impl Wave {
         }
     }
 
+    /// Bind a raw buffer handle at the given slot. Use this when working
+    /// with handles obtained from low-level driver APIs that don't yield a
+    /// typed `Field<T>` — e.g. the WebGPU driver's `field_alloc` returns a
+    /// raw `u64`.
+    pub fn bind_handle(&mut self, slot: u32, handle: u64) {
+        debug_assert!((slot as usize) < MAX_BINDINGS, "max 16 buffer bindings");
+        self.bindings[slot as usize] = handle;
+        if slot as u8 >= self.binding_count {
+            self.binding_count = slot as u8 + 1;
+        }
+    }
+
     /// Set a push constant value at the given slot (any size).
     ///
     /// Each slot occupies a 16-byte aligned region inside the inline buffer.

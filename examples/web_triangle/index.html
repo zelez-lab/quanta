@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Quanta WebGPU smoke test — render path</title>
+    <style>
+      body { font: 14px ui-monospace, monospace; padding: 1rem; }
+      .ok  { color: #0a0; }
+      .fail { color: #a00; }
+      canvas { border: 1px solid #ccc; image-rendering: pixelated; width: 256px; height: 256px; }
+    </style>
+  </head>
+  <body>
+    <h1>Quanta WebGPU smoke test — render path</h1>
+    <p>
+      Creates a 16×16 RGBA8 render target, runs a clear-then-draw render
+      pass through <code>pipeline_create</code> /
+      <code>render_begin</code> / <code>render_end</code>, and reads the
+      pixels back through <code>texture_read_async</code>. The triangle
+      covers the full screen, so the entire texture should end up the
+      triangle's solid blue.
+    </p>
+    <p id="status">Loading…</p>
+    <canvas id="canvas" width="16" height="16"></canvas>
+
+    <script type="module">
+      import init, { run_triangle } from "./pkg/web_triangle.js";
+
+      const statusEl = document.getElementById("status");
+      const canvas   = document.getElementById("canvas");
+
+      async function main() {
+        await init();
+        const bytes = await run_triangle();
+        const ctx = canvas.getContext("2d");
+        const img = ctx.createImageData(16, 16);
+        img.data.set(bytes);
+        ctx.putImageData(img, 0, 0);
+
+        // Sample center pixel to validate.
+        const off = (8 * 16 + 8) * 4;
+        const r = bytes[off], g = bytes[off+1], b = bytes[off+2];
+        const expectedB = Math.round(0.9 * 255);
+        const ok = b > 200 && r < 80 && g < 130;
+        statusEl.className = ok ? "ok" : "fail";
+        statusEl.textContent =
+          ok ? `PASS — center pixel rgb(${r},${g},${b}) ≈ triangle blue (expected b≈${expectedB})`
+             : `FAIL — center pixel rgb(${r},${g},${b}) does not match triangle blue`;
+      }
+
+      main().catch(err => {
+        statusEl.className = "fail";
+        statusEl.textContent = "FAIL — " + err;
+        console.error(err);
+      });
+    </script>
+  </body>
+</html>

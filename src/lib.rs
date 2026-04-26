@@ -104,6 +104,10 @@ fn maybe_validate(dev: alloc::boxed::Box<dyn GpuDevice>) -> alloc::sync::Arc<dyn
 /// Discover available GPU devices.
 #[cfg(feature = "std")]
 pub fn devices() -> alloc::vec::Vec<Gpu> {
+    // `mut` is conditional: only the metal/vulkan/software cfgs below mutate
+    // the vector, and feature combinations may disable all of them (e.g.
+    // wasm32 + webgpu).
+    #[allow(unused_mut)]
     let mut devs: alloc::vec::Vec<alloc::boxed::Box<dyn GpuDevice>> = alloc::vec::Vec::new();
 
     #[cfg(feature = "metal")]
@@ -147,4 +151,24 @@ pub fn init_cpu() -> Gpu {
     let dev: alloc::boxed::Box<dyn GpuDevice> =
         alloc::boxed::Box::new(driver::cpu::CpuDevice::new());
     Gpu::new(maybe_validate(dev))
+}
+
+/// Initialize a WebGPU device. Browser-only. Async because the WebGPU
+/// device is acquired through Promises (`navigator.gpu.requestAdapter`,
+/// `adapter.requestDevice`).
+///
+/// This is the only entry point for the WebGPU driver — sync `init()`
+/// can never return a WebGPU device because the platform requires an
+/// async handshake.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub async fn init_webgpu_async() -> Result<Gpu, QuantaError> {
+    driver::webgpu::init_async().await
+}
+
+/// Re-export of the WebGPU driver module for callers that need direct
+/// access to `WebgpuDevice` (and its async extensions like
+/// `field_read_bytes_async`).
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub mod webgpu {
+    pub use crate::driver::webgpu::*;
 }

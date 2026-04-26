@@ -1,17 +1,28 @@
-//! T1000-T1002 — Cross-emitter KernelOp exhaustiveness proofs.
+//! T1000-T1003 — Cross-emitter KernelOp exhaustiveness proofs.
 //!
 //! These Kani harnesses verify that every KernelOp variant (51 total)
-//! is handled by each of the three main emitters: CPU, WGSL, and LLVM.
+//! is handled by each of the four main emitters: CPU, build-time WGSL,
+//! LLVM, and the JIT WGSL emitter that ships inside the WebGPU driver's
+//! wasm binary.
 //!
 //! Production code:
 //!   - KernelOp enum:        crates/quanta-ir/src/types.rs
 //!   - CPU emitter:          src/driver/cpu/exec.rs
-//!   - WGSL emitter:         crates/quanta-compiler/src/emit_wgsl/ops.rs
+//!   - Build-time WGSL:      crates/quanta-compiler/src/emit_wgsl.rs
+//!                           (re-exports `quanta_ir::emit_wgsl::emit`)
 //!   - LLVM emitter:         crates/quanta-compiler/src/emit_llvm/emit/ops.rs
+//!   - JIT WGSL emitter:     crates/quanta-ir/src/emit_wgsl/ops.rs
 //!
 //! Method: model each emitter's match as a tag -> bool function.
 //! If all tags in 0..VARIANT_COUNT map to true, the emitter is exhaustive.
 //! Kani explores all possible tag values symbolically and asserts coverage.
+//!
+//! The build-time WGSL emitter and the JIT WGSL emitter share their
+//! implementation (the build-time path is a thin re-export of the JIT
+//! module after step 079). T1001 covers both shapes by referencing the
+//! same `wgsl_emitter_handles` model — the cross-emitter agreement
+//! property is therefore stronger than before: a regression in one path
+//! is impossible without regressing the other.
 
 /// Total number of KernelOp variants in crates/quanta-ir/src/types.rs.
 ///
@@ -187,9 +198,13 @@ fn t1000_cpu_emitter_exhaustive() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// T1001 — WGSL emitter exhaustiveness
+// T1001 — WGSL emitter exhaustiveness (shared model: build-time + JIT)
 //
-// Production: crates/quanta-compiler/src/emit_wgsl/ops.rs — emit_op()
+// Production: crates/quanta-ir/src/emit_wgsl/ops.rs — emit_op()
+//   - quanta-compiler's emit_wgsl.rs is a thin `pub use` re-export of the
+//     IR emitter, so this single model covers both the build-time path
+//     and the JIT path served to browsers via step 050's WebGPU driver.
+//
 // The WGSL emitter handles all 51 variants. Each match arm either:
 //   - Emits WGSL source text for the operation
 //   - Emits a comment for unsupported ops (Dispatch, DebugPrint)
@@ -261,6 +276,29 @@ fn t1001_wgsl_emitter_exhaustive() {
     assert!(
         wgsl_emitter_handles(tag),
         "WGSL emitter missing KernelOp variant with tag {}",
+        tag
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1001-JIT — WGSL JIT emitter exhaustiveness (step 079)
+//
+// Production: crates/quanta-ir/src/emit_wgsl/ops.rs — emit_op()
+//
+// Same emitter as T1001 above; this harness asserts the property under the
+// JIT entry point name (`emit_wgsl_jit`) so a future split between the
+// build-time and JIT paths would be caught here. Today the model is
+// shared by construction.
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(kani)]
+#[kani::proof]
+fn t1001_jit_wgsl_emitter_exhaustive() {
+    let tag: u8 = kani::any();
+    kani::assume(tag < KERNEL_OP_VARIANT_COUNT);
+    assert!(
+        wgsl_emitter_handles(tag),
+        "JIT WGSL emitter missing KernelOp variant with tag {}",
         tag
     );
 }

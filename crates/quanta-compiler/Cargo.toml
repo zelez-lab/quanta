@@ -9,5 +9,5 @@ keywords = ["gpu", "compiler", "shader", "llvm", "ptx"]
 categories = ["compilers", "command-line-utilities"]
 
 [dependencies]
-quanta-ir.workspace = true
+quanta-ir = { workspace = true, features = ["jit"] }
 inkwell = { version = "0.9", features = ["llvm22-1-force-dynamic"] }

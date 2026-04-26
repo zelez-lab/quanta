@@ -1,15 +1,22 @@
-//! Op dispatch match for WGSL emission.
+//! emit_op() — match dispatcher over [`KernelOp`] variants.
+//!
+//! Mirrors the build-time emitter in `quanta-compiler/src/emit_wgsl/ops.rs`
+//! op-for-op so that T1001 (cross-emitter exhaustiveness) holds for the JIT
+//! path as well. Differences are documented inline; the JIT version closes
+//! gaps where the build-time emitter previously emitted
+//! `/* unsupported */`.
 
-use quanta_ir::*;
-use std::collections::HashMap;
+use crate::*;
+use std::collections::{HashMap, HashSet};
 
-use super::helpers::const_wgsl;
+use super::helpers::*;
 
-pub(crate) fn emit_op(
+pub(super) fn emit_op(
     out: &mut String,
     op: &KernelOp,
     indent: usize,
     names: &HashMap<u32, String>,
+    atomic_fields: &HashSet<u32>,
 ) {
     let pad = "    ".repeat(indent);
     match op {
@@ -18,49 +25,80 @@ pub(crate) fn emit_op(
         }
         KernelOp::QuarkId { dst } => out.push_str(&format!("{}let r{} = _quark_id;\n", pad, dst.0)),
         KernelOp::ProtonId { dst } => {
-            out.push_str(&format!("{}let r{} = gid.x; // proton\n", pad, dst.0))
+            out.push_str(&format!("{}let r{} = _proton_id;\n", pad, dst.0))
         }
         KernelOp::NucleusId { dst } => {
-            out.push_str(&format!("{}let r{} = gid.x; // nucleus\n", pad, dst.0))
+            out.push_str(&format!("{}let r{} = _nucleus_id;\n", pad, dst.0))
+        }
+        KernelOp::ProtonSize { dst } => {
+            out.push_str(&format!("{}let r{} = _proton_size;\n", pad, dst.0))
+        }
+        KernelOp::QuarkCount { dst } => {
+            out.push_str(&format!("{}let r{} = _quark_count;\n", pad, dst.0));
         }
         KernelOp::Load {
-            dst, field, index, ..
+            dst,
+            field,
+            index,
+            ty,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
-            out.push_str(&format!("{}let r{} = {}[r{}];\n", pad, dst.0, n, index.0));
+            if atomic_fields.contains(field) {
+                out.push_str(&format!(
+                    "{}let r{}: {} = atomicLoad(&{}[r{}]);\n",
+                    pad,
+                    dst.0,
+                    ty.wgsl_name(),
+                    n,
+                    index.0
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}let r{}: {} = {}[r{}];\n",
+                    pad,
+                    dst.0,
+                    ty.wgsl_name(),
+                    n,
+                    index.0
+                ));
+            }
         }
         KernelOp::Store {
             field, index, src, ..
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
-            out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
+            if atomic_fields.contains(field) {
+                out.push_str(&format!(
+                    "{}atomicStore(&{}[r{}], r{});\n",
+                    pad, n, index.0, src.0
+                ));
+            } else {
+                out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
+            }
         }
-        KernelOp::BinOp { dst, a, b, op, .. } => {
-            let o = match op {
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::Div => "/",
-                BinOp::Rem => "%",
-                _ => "/* unsupported */",
-            };
-            out.push_str(&format!(
-                "{}let r{} = r{} {} r{};\n",
-                pad, dst.0, a.0, o, b.0
-            ));
+        KernelOp::BinOp { dst, a, b, op, ty } => {
+            binop_wgsl(out, &pad, dst.0, a.0, b.0, op, ty);
         }
         KernelOp::Cmp { dst, a, b, op, .. } => {
-            let o = match op {
-                CmpOp::Eq => "==",
-                CmpOp::Ne => "!=",
-                CmpOp::Lt => "<",
-                CmpOp::Le => "<=",
-                CmpOp::Gt => ">",
-                CmpOp::Ge => ">=",
-            };
+            let o = cmpop_str(op);
             out.push_str(&format!(
                 "{}let r{} = (r{} {} r{});\n",
                 pad, dst.0, a.0, o, b.0
+            ));
+        }
+        KernelOp::UnaryOp { dst, a, op, ty } => {
+            let o = match op {
+                UnaryOp::Neg => "-",
+                UnaryOp::BitNot => "~",
+                UnaryOp::LogicalNot => "!",
+            };
+            out.push_str(&format!(
+                "{}let r{}: {} = {}r{};\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                o,
+                a.0
             ));
         }
         KernelOp::Cast { dst, src, to, .. } => {
@@ -73,30 +111,18 @@ pub(crate) fn emit_op(
             ));
         }
         KernelOp::MathCall {
-            dst, func, args, ..
+            dst,
+            func,
+            args,
+            ty,
         } => {
-            let f = match func {
-                MathFn::Sin => "sin",
-                MathFn::Cos => "cos",
-                MathFn::Sqrt => "sqrt",
-                MathFn::Abs => "abs",
-                MathFn::Min => "min",
-                MathFn::Max => "max",
-                MathFn::Floor => "floor",
-                MathFn::Ceil => "ceil",
-                MathFn::Round => "round",
-                MathFn::Exp => "exp",
-                MathFn::Log => "log",
-                MathFn::Pow => "pow",
-                MathFn::Clamp => "clamp",
-                MathFn::Fma => "fma",
-                _ => "/* unsupported */",
-            };
+            let f = math_fn_str(func);
             let a: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
             out.push_str(&format!(
-                "{}let r{} = {}({});\n",
+                "{}let r{}: {} = {}({});\n",
                 pad,
                 dst.0,
+                ty.wgsl_name(),
                 f,
                 a.join(", ")
             ));
@@ -108,12 +134,12 @@ pub(crate) fn emit_op(
         } => {
             out.push_str(&format!("{}if r{} {{\n", pad, cond.0));
             for op in then_ops {
-                emit_op(out, op, indent + 1, names);
+                emit_op(out, op, indent + 1, names, atomic_fields);
             }
             if !else_ops.is_empty() {
                 out.push_str(&format!("{}}} else {{\n", pad));
                 for op in else_ops {
-                    emit_op(out, op, indent + 1, names);
+                    emit_op(out, op, indent + 1, names, atomic_fields);
                 }
             }
             out.push_str(&format!("{}}}\n", pad));
@@ -128,7 +154,7 @@ pub(crate) fn emit_op(
                 pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0, iter_reg.0
             ));
             for op in body {
-                emit_op(out, op, indent + 1, names);
+                emit_op(out, op, indent + 1, names, atomic_fields);
             }
             out.push_str(&format!("{}}}\n", pad));
         }
@@ -137,45 +163,17 @@ pub(crate) fn emit_op(
         }
         KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!("{}workgroupBarrier();\n", pad)),
-        KernelOp::DeviceCall {
-            dst,
-            func_name,
-            args,
-            ..
-        } => {
-            let a: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
+        KernelOp::SharedDecl { .. } | KernelOp::SharedDeclDyn { .. } => {
+            // Already emitted at module scope by collect_shared_decls.
+        }
+        KernelOp::SharedLoad { dst, id, index, ty } => {
             out.push_str(&format!(
-                "{}let r{} = {}({});\n",
+                "{}let r{}: {} = shared_{}[r{}];\n",
                 pad,
                 dst.0,
-                func_name,
-                a.join(", ")
-            ));
-        }
-        KernelOp::QuarkCount { dst } => {
-            out.push_str(&format!(
-                "{}let r{} = gid.x; // total quark count unavailable in WGSL\n",
-                pad, dst.0
-            ));
-        }
-        KernelOp::ProtonSize { dst } => {
-            out.push_str(&format!("{}let r{} = 64u; // workgroup_size\n", pad, dst.0));
-        }
-        KernelOp::UnaryOp { dst, a, op, .. } => {
-            let o = match op {
-                UnaryOp::Neg => "-",
-                UnaryOp::BitNot => "~",
-                UnaryOp::LogicalNot => "!",
-            };
-            out.push_str(&format!("{}let r{} = {}r{};\n", pad, dst.0, o, a.0));
-        }
-        KernelOp::SharedDecl { .. } => {
-            // WGSL shared memory must be at module scope -- emit separately.
-        }
-        KernelOp::SharedLoad { dst, id, index, .. } => {
-            out.push_str(&format!(
-                "{}let r{} = shared_{}[r{}];\n",
-                pad, dst.0, id, index.0
+                ty.wgsl_name(),
+                id,
+                index.0
             ));
         }
         KernelOp::SharedStore { id, index, src, .. } => {
@@ -190,23 +188,19 @@ pub(crate) fn emit_op(
             index,
             val,
             op,
-            ..
+            ty,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
-            let f = match op {
-                AtomicOp::Add => "atomicAdd",
-                AtomicOp::Sub => "atomicSub",
-                AtomicOp::Min => "atomicMin",
-                AtomicOp::Max => "atomicMax",
-                AtomicOp::And => "atomicAnd",
-                AtomicOp::Or => "atomicOr",
-                AtomicOp::Xor => "atomicXor",
-                AtomicOp::Exchange => "atomicExchange",
-                AtomicOp::CompareExchange => "atomicCompareExchangeWeak",
-            };
+            let f = atomic_fn_str(op);
             out.push_str(&format!(
-                "{}let r{} = {}(&{}[r{}], r{});\n",
-                pad, dst.0, f, n, index.0, val.0
+                "{}let r{}: {} = {}(&{}[r{}], r{});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                f,
+                n,
+                index.0,
+                val.0
             ));
         }
         KernelOp::AtomicCas {
@@ -215,28 +209,38 @@ pub(crate) fn emit_op(
             index,
             expected,
             desired,
-            ..
+            ty,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             out.push_str(&format!(
-                "{}let r{} = atomicCompareExchangeWeak(&{}[r{}], r{}, r{}).old_value;\n",
-                pad, dst.0, n, index.0, expected.0, desired.0
+                "{}let r{}: {} = atomicCompareExchangeWeak(&{}[r{}], r{}, r{}).old_value;\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                n,
+                index.0,
+                expected.0,
+                desired.0
             ));
         }
         KernelOp::WaveShuffle {
             dst,
             src,
             lane_delta,
-            ..
+            ty,
         } => {
             out.push_str(&format!(
-                "{}let r{} = subgroupShuffleXor(r{}, r{});\n",
-                pad, dst.0, src.0, lane_delta.0
+                "{}let r{}: {} = subgroupShuffleXor(r{}, r{});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                src.0,
+                lane_delta.0
             ));
         }
         KernelOp::WaveBallot { dst, predicate } => {
             out.push_str(&format!(
-                "{}let r{} = subgroupBallot(r{} != 0u);\n",
+                "{}let r{} = subgroupBallot(r{} != 0u).x;\n",
                 pad, dst.0, predicate.0
             ));
         }
@@ -252,12 +256,29 @@ pub(crate) fn emit_op(
                 pad, dst.0, predicate.0
             ));
         }
+        KernelOp::DeviceCall {
+            dst,
+            func_name,
+            args,
+            ty,
+        } => {
+            let a: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
+            out.push_str(&format!(
+                "{}let r{}: {} = {}({});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                func_name,
+                a.join(", ")
+            ));
+        }
         KernelOp::TextureSample2D {
             dst, texture, x, y, ..
         } => {
+            let n = names.get(texture).map(|s| s.as_str()).unwrap_or("tex");
             out.push_str(&format!(
-                "{}let r{} = textureSample(tex_{}, samp_{}, vec2<f32>(r{}, r{}));\n",
-                pad, dst.0, texture, texture, x.0, y.0
+                "{}let r{} = textureSampleLevel({}, samp_{}, vec2<f32>(r{}, r{}), 0.0);\n",
+                pad, dst.0, n, texture, x.0, y.0
             ));
         }
         KernelOp::TextureSample3D {
@@ -268,9 +289,10 @@ pub(crate) fn emit_op(
             z,
             ..
         } => {
+            let n = names.get(texture).map(|s| s.as_str()).unwrap_or("tex");
             out.push_str(&format!(
-                "{}let r{} = textureSample(tex_{}, samp_{}, vec3<f32>(r{}, r{}, r{}));\n",
-                pad, dst.0, texture, texture, x.0, y.0, z.0
+                "{}let r{} = textureSampleLevel({}, samp_{}, vec3<f32>(r{}, r{}, r{}), 0.0);\n",
+                pad, dst.0, n, texture, x.0, y.0, z.0
             ));
         }
         KernelOp::TextureWrite2D {
@@ -280,9 +302,10 @@ pub(crate) fn emit_op(
             value,
             ..
         } => {
+            let n = names.get(texture).map(|s| s.as_str()).unwrap_or("tex");
             out.push_str(&format!(
-                "{}textureStore(tex_{}, vec2<i32>(r{}, r{}), r{});\n",
-                pad, texture, x.0, y.0, value.0
+                "{}textureStore({}, vec2<i32>(i32(r{}), i32(r{})), r{});\n",
+                pad, n, x.0, y.0, value.0
             ));
         }
         KernelOp::TextureSize {
@@ -290,9 +313,10 @@ pub(crate) fn emit_op(
             dst_h,
             texture,
         } => {
+            let n = names.get(texture).map(|s| s.as_str()).unwrap_or("tex");
             out.push_str(&format!(
-                "{}let _dim_{} = textureDimensions(tex_{});\n",
-                pad, texture, texture
+                "{}let _dim_{} = textureDimensions({});\n",
+                pad, texture, n
             ));
             out.push_str(&format!("{}let r{} = _dim_{}.x;\n", pad, dst_w.0, texture));
             out.push_str(&format!("{}let r{} = _dim_{}.y;\n", pad, dst_h.0, texture));
@@ -366,34 +390,49 @@ pub(crate) fn emit_op(
                 pad, dst.0, a.0, b.0
             ));
         }
-        KernelOp::SubgroupReduceAdd { dst, src, .. } => {
+        KernelOp::SubgroupReduceAdd { dst, src, ty } => {
             out.push_str(&format!(
-                "{}let r{} = subgroupAdd(r{});\n",
-                pad, dst.0, src.0
+                "{}let r{}: {} = subgroupAdd(r{});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                src.0
             ));
         }
-        KernelOp::SubgroupReduceMin { dst, src, .. } => {
+        KernelOp::SubgroupReduceMin { dst, src, ty } => {
             out.push_str(&format!(
-                "{}let r{} = subgroupMin(r{});\n",
-                pad, dst.0, src.0
+                "{}let r{}: {} = subgroupMin(r{});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                src.0
             ));
         }
-        KernelOp::SubgroupReduceMax { dst, src, .. } => {
+        KernelOp::SubgroupReduceMax { dst, src, ty } => {
             out.push_str(&format!(
-                "{}let r{} = subgroupMax(r{});\n",
-                pad, dst.0, src.0
+                "{}let r{}: {} = subgroupMax(r{});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                src.0
             ));
         }
-        KernelOp::SubgroupExclusiveAdd { dst, src, .. } => {
+        KernelOp::SubgroupExclusiveAdd { dst, src, ty } => {
             out.push_str(&format!(
-                "{}let r{} = subgroupExclusiveAdd(r{});\n",
-                pad, dst.0, src.0
+                "{}let r{}: {} = subgroupExclusiveAdd(r{});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                src.0
             ));
         }
-        KernelOp::SubgroupInclusiveAdd { dst, src, .. } => {
+        KernelOp::SubgroupInclusiveAdd { dst, src, ty } => {
             out.push_str(&format!(
-                "{}let r{} = subgroupInclusiveAdd(r{});\n",
-                pad, dst.0, src.0
+                "{}let r{}: {} = subgroupInclusiveAdd(r{});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                src.0
             ));
         }
         KernelOp::TextureLoad2D {
@@ -401,33 +440,35 @@ pub(crate) fn emit_op(
         } => {
             let n = names.get(texture).map(|s| s.as_str()).unwrap_or("tex");
             out.push_str(&format!(
-                "{}let r{} = textureLoad({}, vec2<i32>(r{}, r{}), 0);\n",
+                "{}let r{} = textureLoad({}, vec2<i32>(i32(r{}), i32(r{})), 0);\n",
                 pad, dst.0, n, x.0, y.0
             ));
         }
-        KernelOp::Dispatch { .. } => {
-            out.push_str(&format!(
-                "{}// error: dynamic parallelism not supported in WGSL\n",
-                pad
-            ));
-        }
         KernelOp::SubgroupSize { dst } => {
-            out.push_str(&format!("{}let r{} = subgroup_size;\n", pad, dst.0));
-        }
-        KernelOp::SharedDeclDyn { id, ty } => {
-            out.push_str(&format!(
-                "{}// dynamic shared_{}: {} — size set at dispatch\n",
-                pad,
-                id,
-                ty.wgsl_name(),
-            ));
+            out.push_str(&format!("{}let r{} = subgroupSize();\n", pad, dst.0));
         }
         KernelOp::DebugPrint { src, .. } => {
-            out.push_str(&format!("{}// gpu_print: r{}\n", pad, src.0,));
+            // WGSL has no print primitive. Emit a comment so the op is
+            // visible in generated source for debuggers (DevTools shows the
+            // shader); a real implementation can route through a debug
+            // storage buffer once one is wired up by the WebGPU driver.
+            out.push_str(&format!("{}// gpu_print: r{}\n", pad, src.0));
+        }
+        KernelOp::Dispatch { .. } => {
+            // Dynamic parallelism is not supported by WebGPU. Surface as a
+            // comment so the kernel still validates; the host-side dispatch
+            // path must enqueue the child wave instead.
+            out.push_str(&format!(
+                "{}// dynamic-parallelism dispatch lowered host-side\n",
+                pad
+            ));
         }
         KernelOp::CooperativeMMA {
             dst, a, b, c, ty, ..
         } => {
+            // WGSL has no native cooperative matrix; emit an equivalent
+            // scalar lowering so the op compiles. Hardware acceleration will
+            // be added when WebGPU exposes the matrix extension.
             out.push_str(&format!(
                 "{}var r{}: {} = r{} * r{} + r{};\n",
                 pad,
