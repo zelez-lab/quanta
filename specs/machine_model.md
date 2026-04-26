@@ -134,6 +134,59 @@ Empirical validation: `specs/verify/herd7/` — three litmus tests
 `atomic_add_visibility.litmus`) check the message-passing and store-buffer
 patterns under release-acquire on a Cat-language model compatible with A6.
 
+### A10: WebGPU host correctness (browser)
+
+The browser's WebGPU implementation (Chrome/Dawn, Safari/WebKit,
+Firefox/wgpu-core) correctly implements:
+- `navigator.gpu.requestAdapter` and `adapter.requestDevice` resolve to
+  a working `GPUDevice` when WebGPU is available.
+- `device.createShaderModule({ code })` accepts any WGSL source string
+  that is well-formed per the W3C WGSL spec (§3 Parsing + §4 Validation),
+  and produces a non-null module.
+- `device.createComputePipeline` and `createRenderPipeline` succeed for
+  any shader module + entry-point name that exists in the module.
+- `dispatchWorkgroups(x, y, z)` runs the kernel exactly `x*y*z`
+  workgroup invocations, consistent with A3 (GPU hardware execution).
+- `queue.submit([...])` orders command buffers in queue order; later
+  submissions observe earlier submissions' effects on storage resources.
+- `queue.onSubmittedWorkDone()` returns a Promise that resolves exactly
+  once after prior submissions complete.
+- `buffer.mapAsync(READ)` resolves with a snapshot consistent with the
+  most recent submitted write that completed before resolution.
+- `queue.writeBuffer(b, 0, data)` is atomic with respect to subsequent
+  `submit()` calls — a later dispatch sees the full `data`, never a
+  partial update.
+
+This is what makes WebGPU's JavaScript implementation a **reasonable
+backend** — without it, the soundness of the WGSL emitter (T410) buys
+no end-to-end correctness for the browser. A10 is the WebGPU analog of
+A1 (Metal) / A2 (Vulkan).
+
+### A11: wasm-bindgen FFI faithfulness
+
+The `wasm-bindgen` toolchain is treated as the wasm32 calling-convention
+primitive (the libc-equivalent for Rust ↔ JS interop). For every
+`extern "C"` block in `src/driver/webgpu/ffi.rs`:
+- `#[wasm_bindgen(method, js_name = ...)]` invokes the named JS method on
+  the receiver, marshals arguments per the wasm-bindgen ABI, and
+  propagates the return value (or thrown exception) back to Rust.
+- `JsFuture::from(promise).await` yields `Ok(value)` exactly when the
+  underlying Promise resolves, and `Err(reason)` exactly when it
+  rejects. (`wasm-bindgen-futures` is held to this contract.)
+- `unchecked_into::<T>()` followed by a method call on `T` traps at
+  runtime if the underlying JS object lacks the method — it does not
+  silently no-op.
+
+Bugs in `wasm-bindgen` itself, or in the host JS engine's method
+dispatch, are part of A11 by construction. The smoke tests
+(`examples/web_add_one`, `examples/web_triangle`) are the operational
+check that the declared `js_name`s match the actual WebGPU surface.
+
+Lean formalization: `specs/verify/lean/Quanta/Axioms/WebGpu.lean`
+(axioms `wgsl_module_acceptance`, `compute_pipeline_creation`,
+`dispatch_executes_kernel`, `submit_ordering`, `wasm_bindgen_faithful`,
+and siblings).
+
 ---
 
 ## Theorems (proven by Quanta)
