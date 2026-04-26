@@ -1,10 +1,16 @@
 //! Verus mirror proofs for WGSL emitter correctness.
 //!
-//! Mirrors `quanta-compiler/src/emit_wgsl/ops.rs` and
+//! Mirrors `quanta-ir/src/emit_wgsl/ops.rs`,
+//! `quanta-ir/src/emit_wgsl/helpers.rs`, and
 //! `quanta-ir/src/types.rs::ScalarType::wgsl_name`.
 //!
+//! Note (post step 079): the WGSL emitter moved from `quanta-compiler` into
+//! `quanta-ir/src/emit_wgsl/` so the same code serves both build-time and
+//! JIT (browser) paths. The compiler crate's `emit_wgsl.rs` is now a
+//! `pub use` re-export of the IR module — one source of truth, one mirror.
+//!
 //! Theorems:
-//!   T400: Every BinOp maps to a valid WGSL operator
+//!   T400: Every BinOp maps to a valid WGSL operator (now: all 12 ops handled)
 //!   T401: Every ScalarType maps to a correct WGSL type name
 //!   T402: WGSL type coarsening: U8/U16/U32 -> "u32", I8/I16/I32 -> "i32"
 //!   T403: workgroup_size annotation format is correct
@@ -34,60 +40,80 @@ pub enum ScalarType {
 // ── T400: BinOp -> WGSL operator ──────────────────────────────────
 
 /// Tag encoding for WGSL binary operator strings.
-/// The WGSL emitter supports 5 arithmetic ops directly; bitwise ops
-/// fall through to "/* unsupported */" in the current emitter.
-///   1 = "+", 2 = "-", 3 = "*", 4 = "/", 5 = "%", 0 = unsupported
+/// Post step 079: every BinOp variant produces a valid WGSL form. Bitwise
+/// and shift ops emit native operators; saturating ops lower to a `select`
+/// pattern in `crates/quanta-ir/src/emit_wgsl/helpers.rs::binop_wgsl`.
+///   1=+ 2=- 3=* 4=/ 5=% 6=& 7=| 8=^ 9=<< 10=>> 11=satadd 12=satsub
 pub open spec fn binop_wgsl_tag(op: BinOp) -> u8 {
     match op {
-        BinOp::Add    => 1u8,  // "+"
-        BinOp::Sub    => 2u8,  // "-"
-        BinOp::Mul    => 3u8,  // "*"
-        BinOp::Div    => 4u8,  // "/"
-        BinOp::Rem    => 5u8,  // "%"
-        BinOp::BitAnd => 0u8,  // unsupported in current WGSL emitter
-        BinOp::BitOr  => 0u8,  // unsupported
-        BinOp::BitXor => 0u8,  // unsupported
-        BinOp::Shl    => 0u8,  // unsupported
-        BinOp::Shr    => 0u8,  // unsupported
-        BinOp::SatAdd => 0u8,  // unsupported
-        BinOp::SatSub => 0u8,  // unsupported
+        BinOp::Add    => 1u8,
+        BinOp::Sub    => 2u8,
+        BinOp::Mul    => 3u8,
+        BinOp::Div    => 4u8,
+        BinOp::Rem    => 5u8,
+        BinOp::BitAnd => 6u8,
+        BinOp::BitOr  => 7u8,
+        BinOp::BitXor => 8u8,
+        BinOp::Shl    => 9u8,
+        BinOp::Shr    => 10u8,
+        BinOp::SatAdd => 11u8,
+        BinOp::SatSub => 12u8,
     }
 }
 
-/// Whether a BinOp is supported by the WGSL emitter.
+/// Whether a BinOp is supported by the WGSL emitter. Post step 079, all
+/// variants are supported — saturating ops fall through to a `select`
+/// expansion that is still well-formed WGSL.
 pub open spec fn binop_wgsl_supported(op: BinOp) -> bool {
     match op {
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => true,
-        _ => false,
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
+        | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+        | BinOp::Shl | BinOp::Shr
+        | BinOp::SatAdd | BinOp::SatSub => true,
     }
 }
 
-/// T400: Every supported BinOp produces a valid (non-zero) WGSL operator.
+/// T400: Every BinOp produces a valid (non-zero) WGSL form.
+/// Post step 079, the JIT WGSL emitter handles all 12 variants — bitwise,
+/// shifts, and saturating ops are no longer "unsupported".
 proof fn t400_supported_binop_valid(op: BinOp)
     requires binop_wgsl_supported(op),
-    ensures  binop_wgsl_tag(op) >= 1u8 && binop_wgsl_tag(op) <= 5u8,
+    ensures  binop_wgsl_tag(op) >= 1u8 && binop_wgsl_tag(op) <= 12u8,
 {
     match op {
-        BinOp::Add => {},
-        BinOp::Sub => {},
-        BinOp::Mul => {},
-        BinOp::Div => {},
-        BinOp::Rem => {},
-        _          => {},
+        BinOp::Add    => {},
+        BinOp::Sub    => {},
+        BinOp::Mul    => {},
+        BinOp::Div    => {},
+        BinOp::Rem    => {},
+        BinOp::BitAnd => {},
+        BinOp::BitOr  => {},
+        BinOp::BitXor => {},
+        BinOp::Shl    => {},
+        BinOp::Shr    => {},
+        BinOp::SatAdd => {},
+        BinOp::SatSub => {},
     }
 }
 
-/// T400 exhaustiveness: all 5 arithmetic ops are covered.
+/// T400 exhaustiveness: every BinOp variant is covered with a distinct tag.
 proof fn t400_arithmetic_complete()
     ensures
-        binop_wgsl_tag(BinOp::Add) == 1u8,
-        binop_wgsl_tag(BinOp::Sub) == 2u8,
-        binop_wgsl_tag(BinOp::Mul) == 3u8,
-        binop_wgsl_tag(BinOp::Div) == 4u8,
-        binop_wgsl_tag(BinOp::Rem) == 5u8,
+        binop_wgsl_tag(BinOp::Add)    == 1u8,
+        binop_wgsl_tag(BinOp::Sub)    == 2u8,
+        binop_wgsl_tag(BinOp::Mul)    == 3u8,
+        binop_wgsl_tag(BinOp::Div)    == 4u8,
+        binop_wgsl_tag(BinOp::Rem)    == 5u8,
+        binop_wgsl_tag(BinOp::BitAnd) == 6u8,
+        binop_wgsl_tag(BinOp::BitOr)  == 7u8,
+        binop_wgsl_tag(BinOp::BitXor) == 8u8,
+        binop_wgsl_tag(BinOp::Shl)    == 9u8,
+        binop_wgsl_tag(BinOp::Shr)    == 10u8,
+        binop_wgsl_tag(BinOp::SatAdd) == 11u8,
+        binop_wgsl_tag(BinOp::SatSub) == 12u8,
 {}
 
-/// Supported ops are injective (5 distinct operators).
+/// All ops are injective (12 distinct operators / lowerings).
 proof fn t400_supported_injective(a: BinOp, b: BinOp)
     requires
         binop_wgsl_supported(a),
@@ -96,29 +122,18 @@ proof fn t400_supported_injective(a: BinOp, b: BinOp)
     ensures a == b,
 {
     match a {
-        BinOp::Add => { match b { BinOp::Add => {} _ => {} } },
-        BinOp::Sub => { match b { BinOp::Sub => {} _ => {} } },
-        BinOp::Mul => { match b { BinOp::Mul => {} _ => {} } },
-        BinOp::Div => { match b { BinOp::Div => {} _ => {} } },
-        BinOp::Rem => { match b { BinOp::Rem => {} _ => {} } },
-        _          => {},
-    }
-}
-
-/// Unsupported ops all map to tag 0.
-proof fn t400_unsupported_is_zero(op: BinOp)
-    requires !binop_wgsl_supported(op),
-    ensures  binop_wgsl_tag(op) == 0u8,
-{
-    match op {
-        BinOp::BitAnd => {},
-        BinOp::BitOr  => {},
-        BinOp::BitXor => {},
-        BinOp::Shl    => {},
-        BinOp::Shr    => {},
-        BinOp::SatAdd => {},
-        BinOp::SatSub => {},
-        _             => {},
+        BinOp::Add    => { match b { BinOp::Add    => {} _ => {} } },
+        BinOp::Sub    => { match b { BinOp::Sub    => {} _ => {} } },
+        BinOp::Mul    => { match b { BinOp::Mul    => {} _ => {} } },
+        BinOp::Div    => { match b { BinOp::Div    => {} _ => {} } },
+        BinOp::Rem    => { match b { BinOp::Rem    => {} _ => {} } },
+        BinOp::BitAnd => { match b { BinOp::BitAnd => {} _ => {} } },
+        BinOp::BitOr  => { match b { BinOp::BitOr  => {} _ => {} } },
+        BinOp::BitXor => { match b { BinOp::BitXor => {} _ => {} } },
+        BinOp::Shl    => { match b { BinOp::Shl    => {} _ => {} } },
+        BinOp::Shr    => { match b { BinOp::Shr    => {} _ => {} } },
+        BinOp::SatAdd => { match b { BinOp::SatAdd => {} _ => {} } },
+        BinOp::SatSub => { match b { BinOp::SatSub => {} _ => {} } },
     }
 }
 
