@@ -64,3 +64,7 @@
 - [Compiler](internals/compiler.md)
 - [Drivers](internals/drivers.md)
 - [Testing](internals/testing.md)
+
+# Verification
+
+- [Theorem Dashboard](verification/index.md)
