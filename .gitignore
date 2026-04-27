@@ -8,3 +8,7 @@ libopcodes_complete.rlib
 specs/verify/lean/.lake/
 specs/verify/lean/lake-manifest.json
 specs/verify/lean/lib*.rlib
+
+# wasm-bindgen output for browser smoke tests (regenerated per build)
+examples/web_add_one/pkg/
+examples/web_triangle/pkg/

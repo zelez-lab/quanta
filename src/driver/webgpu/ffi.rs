@@ -22,18 +22,21 @@ extern "C" {
 
     pub type Navigator;
 
+    #[wasm_bindgen(js_name = GPU)]
     pub type GpuInstance;
     #[wasm_bindgen(method, js_name = requestAdapter)]
     pub fn request_adapter(this: &GpuInstance) -> js_sys::Promise;
 
     // ── GPUAdapter ──────────────────────────────────────────────────────────
 
+    #[wasm_bindgen(js_name = GPUAdapter)]
     pub type GpuAdapter;
     #[wasm_bindgen(method, js_name = requestDevice)]
     pub fn request_device(this: &GpuAdapter) -> js_sys::Promise;
 
     // ── GPUDevice ───────────────────────────────────────────────────────────
 
+    #[wasm_bindgen(js_name = GPUDevice)]
     pub type GpuDevice;
     #[wasm_bindgen(method, getter)]
     pub fn queue(this: &GpuDevice) -> GpuQueue;
@@ -56,9 +59,10 @@ extern "C" {
 
     // ── GPUQueue ────────────────────────────────────────────────────────────
 
+    #[wasm_bindgen(js_name = GPUQueue)]
     pub type GpuQueue;
     #[wasm_bindgen(method, js_name = writeBuffer)]
-    pub fn write_buffer(this: &GpuQueue, buffer: &GpuBuffer, offset: u64, data: &[u8]);
+    pub fn write_buffer(this: &GpuQueue, buffer: &GpuBuffer, offset: f64, data: &[u8]);
     #[wasm_bindgen(method, js_name = writeTexture)]
     pub fn write_texture(
         this: &GpuQueue,
@@ -74,6 +78,7 @@ extern "C" {
 
     // ── GPUBuffer ───────────────────────────────────────────────────────────
 
+    #[wasm_bindgen(js_name = GPUBuffer)]
     pub type GpuBuffer;
     #[wasm_bindgen(method, js_name = mapAsync)]
     pub fn map_async(this: &GpuBuffer, mode: u32) -> js_sys::Promise;
@@ -86,26 +91,34 @@ extern "C" {
 
     // ── GPUShaderModule, GPUComputePipeline, GPUBindGroup ──────────────────
 
+    #[wasm_bindgen(js_name = GPUShaderModule)]
     pub type GpuShaderModule;
+    #[wasm_bindgen(js_name = GPUComputePipeline)]
     pub type GpuComputePipeline;
     #[wasm_bindgen(method, js_name = getBindGroupLayout)]
     pub fn get_bind_group_layout(this: &GpuComputePipeline, index: u32) -> JsValue;
 
+    #[wasm_bindgen(js_name = GPURenderPipeline)]
     pub type GpuRenderPipeline;
     #[wasm_bindgen(method, js_name = getBindGroupLayout)]
     pub fn render_get_bind_group_layout(this: &GpuRenderPipeline, index: u32) -> JsValue;
 
+    #[wasm_bindgen(js_name = GPUBindGroup)]
     pub type GpuBindGroup;
+    #[wasm_bindgen(js_name = GPUTexture)]
     pub type GpuTexture;
     #[wasm_bindgen(method, js_name = createView)]
     pub fn create_view(this: &GpuTexture) -> GpuTextureView;
     #[wasm_bindgen(method)]
     pub fn destroy_texture(this: &GpuTexture);
+    #[wasm_bindgen(js_name = GPUTextureView)]
     pub type GpuTextureView;
+    #[wasm_bindgen(js_name = GPUSampler)]
     pub type GpuSampler;
 
     // ── GPUCommandEncoder, GPUComputePassEncoder, GPUCommandBuffer ─────────
 
+    #[wasm_bindgen(js_name = GPUCommandEncoder)]
     pub type GpuCommandEncoder;
     #[wasm_bindgen(method, js_name = beginComputePass)]
     pub fn begin_compute_pass(this: &GpuCommandEncoder) -> GpuComputePassEncoder;
@@ -118,10 +131,10 @@ extern "C" {
     pub fn copy_buffer_to_buffer(
         this: &GpuCommandEncoder,
         src: &GpuBuffer,
-        src_offset: u64,
+        src_offset: f64,
         dst: &GpuBuffer,
-        dst_offset: u64,
-        size: u64,
+        dst_offset: f64,
+        size: f64,
     );
     #[wasm_bindgen(method, js_name = copyTextureToBuffer)]
     pub fn copy_texture_to_buffer(
@@ -133,6 +146,7 @@ extern "C" {
     #[wasm_bindgen(method)]
     pub fn finish(this: &GpuCommandEncoder) -> GpuCommandBuffer;
 
+    #[wasm_bindgen(js_name = GPUComputePassEncoder)]
     pub type GpuComputePassEncoder;
     #[wasm_bindgen(method, js_name = setPipeline)]
     pub fn set_pipeline(this: &GpuComputePassEncoder, pipeline: &GpuComputePipeline);
@@ -143,6 +157,7 @@ extern "C" {
     #[wasm_bindgen(method)]
     pub fn end(this: &GpuComputePassEncoder);
 
+    #[wasm_bindgen(js_name = GPURenderPassEncoder)]
     pub type GpuRenderPassEncoder;
     #[wasm_bindgen(method, js_name = setPipeline)]
     pub fn rp_set_pipeline(this: &GpuRenderPassEncoder, pipeline: &GpuRenderPipeline);
@@ -153,14 +168,14 @@ extern "C" {
         this: &GpuRenderPassEncoder,
         slot: u32,
         buffer: &GpuBuffer,
-        offset: u64,
+        offset: f64,
     );
     #[wasm_bindgen(method, js_name = setIndexBuffer)]
     pub fn rp_set_index_buffer(
         this: &GpuRenderPassEncoder,
         buffer: &GpuBuffer,
         format: &str,
-        offset: u64,
+        offset: f64,
     );
     #[wasm_bindgen(method)]
     pub fn draw(this: &GpuRenderPassEncoder, vertex_count: u32, instance_count: u32);
@@ -181,6 +196,7 @@ extern "C" {
     #[wasm_bindgen(method, js_name = end)]
     pub fn rp_end(this: &GpuRenderPassEncoder);
 
+    #[wasm_bindgen(js_name = GPUCommandBuffer)]
     pub type GpuCommandBuffer;
 }
 

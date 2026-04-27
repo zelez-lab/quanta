@@ -170,7 +170,7 @@ impl WebgpuDevice {
                 .get(&handle)
                 .ok_or_else(|| Self::err("unknown buffer handle"))?;
             let encoder = device.create_command_encoder();
-            encoder.copy_buffer_to_buffer(src, 0, &staging, 0, size as u64);
+            encoder.copy_buffer_to_buffer(src, 0.0, &staging, 0.0, size as f64);
             let cmd = encoder.finish();
             let arr = Array::new();
             arr.push(&cmd);
@@ -467,7 +467,7 @@ impl QGpuDevice for WebgpuDevice {
         let buf = buffers
             .get(&handle)
             .ok_or_else(|| Self::err("unknown buffer handle"))?;
-        device.queue().write_buffer(buf, 0, data);
+        device.queue().write_buffer(buf, 0.0, data);
         Ok(())
     }
 
@@ -484,7 +484,7 @@ impl QGpuDevice for WebgpuDevice {
         let s = buffers.get(&src).ok_or_else(|| Self::err("src missing"))?;
         let d = buffers.get(&dst).ok_or_else(|| Self::err("dst missing"))?;
         let encoder = device.create_command_encoder();
-        encoder.copy_buffer_to_buffer(s, 0, d, 0, size as u64);
+        encoder.copy_buffer_to_buffer(s, 0.0, d, 0.0, size as f64);
         let cmd = encoder.finish();
         let arr = Array::new();
         arr.push(&cmd);
@@ -1065,11 +1065,11 @@ impl QGpuDevice for WebgpuDevice {
                     offset,
                 } => {
                     let buf = buffers.get(handle).ok_or_else(|| Self::err("vbuf"))?;
-                    rp.rp_set_vertex_buffer(*slot, buf, *offset);
+                    rp.rp_set_vertex_buffer(*slot, buf, *offset as f64);
                 }
                 RenderOp::BindIndices { handle, offset } => {
                     let buf = buffers.get(handle).ok_or_else(|| Self::err("ibuf"))?;
-                    rp.rp_set_index_buffer(buf, "uint32", *offset);
+                    rp.rp_set_index_buffer(buf, "uint32", *offset as f64);
                 }
                 RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
                     let buf = buffers.get(handle).ok_or_else(|| Self::err("ubuf"))?;
