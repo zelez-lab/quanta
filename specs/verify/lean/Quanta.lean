@@ -42,6 +42,9 @@ import Quanta.KRust.Semantics
 import Quanta.KOps.Syntax
 import Quanta.KOps.Semantics
 
+-- KRust → KernelOps translator (E.3)
+import Quanta.KRust.Translate
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
