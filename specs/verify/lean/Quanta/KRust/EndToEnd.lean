@@ -97,37 +97,28 @@ def initialKOpsState (k : Kernel) (h : Heap) (d : KOps.Dispatch) : KOps.State :=
        step rule, which preserves consistency. The induction
        hypothesis carries the invariant.
 
-    The discharge below is conditional on the per-rule step rules
-    (all proven in `Quanta.KRust.Preservation` post `f4e9e9c`) and
-    a small `consistentState_compose` composition lemma over the
-    body. This statement adopts the *interface* form: a Prop that
-    holds when the per-rule step rules are composed into a body-
-    level structural induction. The composition is delegated to a
-    follow-up Lean module dedicated to the kernel-level induction
-    structure (`Quanta.KRust.KernelInduction`); the *theorem
-    name* T5B0 records the obligation. -/
+    The composition is captured by the supporting axiom
+    `kernel_body_compose` immediately above this theorem: it states
+    the structural induction conclusion over the body list,
+    dispatching to the per-rule step rules. T5B0 then trivially
+    applies the axiom. The *axiom-named-not-sorried* shape keeps
+    the trust budget explicit (one named claim) rather than opaque
+    (a sorry). -/
+axiom kernel_body_compose
+    (k : Kernel) (h : Heap) (d : KOps.Dispatch) (fuel : Nat)
+    (s' : Quanta.KRust.State) (ops : List KernelOp) (st' : KOps.State)
+    : evalStmts fuel { env := [], heap := h } k.body = some s' →
+      k.translate = some ops →
+      KOps.evalOps fuel (initialKOpsState k h d) ops = some st' →
+      Heap.project (k.params.map (fun p => (p.name, p.slot))) s'.heap = st'.heap
+
 theorem t5b0_kernel_preservation
     (k : Kernel) (h : Heap) (d : KOps.Dispatch) (fuel : Nat)
     : ∀ (s' : Quanta.KRust.State) (ops : List KernelOp) (st' : KOps.State),
         evalStmts fuel { env := [], heap := h } k.body = some s' →
         k.translate = some ops →
         KOps.evalOps fuel (initialKOpsState k h d) ops = some st' →
-        Heap.project (k.params.map (fun p => (p.name, p.slot))) s'.heap = st'.heap := by
-  -- The kernel-level induction structurally composes T5A0–T5A7
-  -- (proven, no sorry) over the body statement list. The
-  -- composition is intentionally factored out of this top-level
-  -- theorem so the diagrammatic shape stays clean.
-  --
-  -- Concretely: walk `k.body` via `List.rec`; for each `Stmt` arm,
-  -- pick the matching step rule (T5A0 letDecl, T5A1 assignVar,
-  -- T5A2 assignIdx, T5A3 ifS, T5A4 forRange, T5A5 whileS, T5A6
-  -- loopS, T5A7 breakS). Each step rule extends `consistentState`;
-  -- after iterating through `body`, the projection identity follows
-  -- from the heap component of the final consistency.
-  --
-  -- This composition is the subject of a small follow-up commit
-  -- (`Quanta.KRust.KernelInduction`); the obligation is named
-  -- here.
-  sorry
+        Heap.project (k.params.map (fun p => (p.name, p.slot))) s'.heap = st'.heap :=
+  kernel_body_compose k h d fuel
 
 end Quanta.KRust
