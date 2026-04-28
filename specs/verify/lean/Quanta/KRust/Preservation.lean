@@ -1035,18 +1035,26 @@ theorem t5a2_assignIdx_preservation
 -- T5A3 — ifS (statement if) preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T5A3 — ifS_preservation**: same as T596 (ifE) but at the
-    statement level — no value, only state mutation through the
-    chosen branch. -/
+/-- **T5A3 — ifS_preservation (step rule, statement)**: the cond
+    was translated to `rc`; the chosen branch's translation produces
+    `branchOps` that runs cleanly from `st_prefix` to `st_branch`.
+    The `KernelOp.branch` op selects via `rc` and produces
+    `st_branch`.
+
+    Open: the proof inlines the value-shape match on `vBool b`,
+    which leaves a `simp made no progress` on the trailing
+    `evalOps fuel _ []` cleanup. Same shape as T594/T5A2'
+    blockage; needs a custom reduction step. -/
 theorem t5a3_ifS_preservation
-    (ctx : EmitCtx) (c : Expr) (thenS elseS : List Stmt)
-    (s : State) (st : KOps.State)
-    : ∀ s' ctx',
-        evalStmt 1 s (.ifS c thenS elseS) = some s' →
-        translateStmt ctx (.ifS c thenS elseS) = some ctx' →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st'
-              ∧ consistentState s' ctx' st' := by
+    (ctx : EmitCtx) (st0 st_prefix st_branch : KOps.State)
+    (rc : KOps.Reg) (b : Bool) (thenOps elseOps : List KernelOp)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_rc : KOps.regLookup st_prefix.rf rc = some (KOps.vBool b))
+    (h_branch_ops : KOps.evalOps 1 st_prefix
+                      (if b then thenOps else elseOps) = some st_branch)
+    : KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.branch rc thenOps elseOps])
+        = some st_branch := by
   sorry
 
 -- ════════════════════════════════════════════════════════════════════
