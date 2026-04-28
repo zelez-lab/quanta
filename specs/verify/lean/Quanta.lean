@@ -45,6 +45,12 @@ import Quanta.KOps.Semantics
 -- KRust → KernelOps translator (E.3)
 import Quanta.KRust.Translate
 
+-- Per-rule preservation theorems (E.4)
+import Quanta.KRust.Preservation
+
+-- End-to-end source preservation (E.5)
+import Quanta.KRust.EndToEnd
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance

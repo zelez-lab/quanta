@@ -61,19 +61,19 @@ structure EmitCtx where
 def EmitCtx.empty (params : List (Ident × Nat)) : EmitCtx :=
   { nextReg := 0, vars := [], params := params, ops := [] }
 
-private def EmitCtx.fresh (c : EmitCtx) : Reg × EmitCtx :=
+def EmitCtx.fresh (c : EmitCtx) : Reg × EmitCtx :=
   (c.nextReg, { c with nextReg := c.nextReg + 1 })
 
-private def EmitCtx.emit (c : EmitCtx) (op : KernelOp) : EmitCtx :=
+def EmitCtx.emit (c : EmitCtx) (op : KernelOp) : EmitCtx :=
   { c with ops := c.ops ++ [op] }
 
-private def EmitCtx.lookupVar (c : EmitCtx) (name : Ident) : Option Reg :=
+def EmitCtx.lookupVar (c : EmitCtx) (name : Ident) : Option Reg :=
   c.vars.find? (fun p => p.fst = name) |>.map Prod.snd
 
-private def EmitCtx.bindVar (c : EmitCtx) (name : Ident) (r : Reg) : EmitCtx :=
+def EmitCtx.bindVar (c : EmitCtx) (name : Ident) (r : Reg) : EmitCtx :=
   { c with vars := (name, r) :: c.vars.filter (fun p => p.fst ≠ name) }
 
-private def EmitCtx.lookupParam (c : EmitCtx) (name : Ident) : Option Nat :=
+def EmitCtx.lookupParam (c : EmitCtx) (name : Ident) : Option Nat :=
   c.params.find? (fun p => p.fst = name) |>.map Prod.snd
 
 -- ════════════════════════════════════════════════════════════════════

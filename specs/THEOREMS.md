@@ -357,6 +357,23 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | A12 | `wgsl_serializer_preserves_grammar` — structurally well-formed `Wgsl.Source` serializes to a string the WGSL §3+§4 validator accepts (bridge between Lean grammar mirror and `wgsl_string_well_formed`) | WGSL grammar (B) | Lean | axiom |
 | A13 | `emit_wgsl_jit_factors` — the JIT emitter factors through some structurally well-formed `Wgsl.Source` (operational backing in Verus per-tag exhaustiveness + Kani BMC) | WGSL grammar (B) | Lean | axiom |
 | T420 | `wgsl_op_patterns_well_formed` — every per-`KernelOpTag` representative pattern lands in `Source.wellFormed` (40-tag enumeration, `native_decide`) | WGSL grammar (B) | Lean | proven |
+| T590 | `lit_preservation` — KRust literal eval ≡ KOps `const` eval after translation | Source preservation (E.4) | Lean | sorry |
+| T591 | `path_preservation` — variable read consistent across `Env`/`RegFile` via `varsConsistent` | Source preservation (E.4) | Lean | sorry |
+| T592 | `binop_preservation` — KRust binary op preserves through translator's `binOp`/`cmp` dispatch | Source preservation (E.4) | Lean | sorry |
+| T593 | `unaryop_preservation` — same shape as T592, single operand | Source preservation (E.4) | Lean | sorry |
+| T594 | `index_preservation` — `array[idx]` agrees via `heapConsistent` | Source preservation (E.4) | Lean | sorry |
+| T595 | `cast_preservation` — Rust `as` semantics agree across both eval functions | Source preservation (E.4) | Lean | sorry |
+| T596 | `ifE_preservation` — branch+copy emit pattern preserves the chosen branch's value | Source preservation (E.4) | Lean | sorry |
+| T597 | `blockE_preservation` — body stmts + tail expr compose | Source preservation (E.4) | Lean | sorry |
+| T5A0 | `letDecl_preservation` — `let name = rhs` extends `varsConsistent` | Source preservation (E.4) | Lean | sorry |
+| T5A1 | `assignVar_preservation` — same as T5A0 (variable rebinding) | Source preservation (E.4) | Lean | sorry |
+| T5A2 | `assignIdx_preservation` — buffer store extends `heapConsistent` | Source preservation (E.4) | Lean | sorry |
+| T5A3 | `ifS_preservation` — statement-level `if`, no value | Source preservation (E.4) | Lean | sorry |
+| T5A4 | `forRange_preservation` — `for i in lo..hi { body }` lowering preserves | Source preservation (E.4) | Lean | sorry |
+| T5A5 | `whileS_preservation` — `while cond { body }` preserves under fuel | Source preservation (E.4) | Lean | sorry |
+| T5A6 | `loopS_preservation` — bare `loop { body }` preserves under fuel | Source preservation (E.4) | Lean | sorry |
+| T5A7 | `breakS_preservation` — `breakS` flag flows through both views | Source preservation (E.4) | Lean | sorry |
+| T5B0 | `kernel_preservation` — kernel-level composition of T590–T5A7 | Source preservation (E.5) | Lean | sorry |
 
 ## Summary
 

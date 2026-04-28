@@ -14,3 +14,6 @@ path = "src/lib.rs"
 # WebIDL parser. Dev-only crate, so vendored deps are fine here — the
 # user-facing wasm output never reaches `quanta-codegen`.
 weedle = "0.13"
+# Rust parser for the E.6 KRust view emitter — same `syn` the proc
+# macro already uses, so the parsed-AST shape stays in lockstep.
+syn = { version = "2", features = ["full"] }
