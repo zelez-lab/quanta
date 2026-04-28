@@ -24,5 +24,10 @@ import Quanta.Semantics.Llvm
 import Quanta.Semantics.Cpu
 import Quanta.Semantics.Agreement
 
+-- WebIDL grammar mirror (B″) and generated spec data
+import Quanta.Idl
+import Quanta.Idl.WebGpuSpec
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
+import Quanta.Theorems.IdlConformance

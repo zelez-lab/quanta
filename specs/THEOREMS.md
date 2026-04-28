@@ -350,6 +350,10 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | T1707 | A11 `quanta_abi_faithful` — `extern "C"` imports + `quanta.ts` honour the documented ABI | Quanta wasm↔JS ABI (B⁰/B′) | Lean | axiom |
 | T1708 | A11.1 `promise_callback_lossless` — `quanta_resolve`/`quanta_reject` fire exactly once per task | Quanta wasm↔JS ABI (B⁰/B′) | Lean | axiom |
 | T1709 | A11.2 `handle_table_consistent` — JS handle table is the unique GPU-object identity source | Quanta wasm↔JS ABI (B⁰/B′) | Lean | axiom |
+| T1710 | `quanta_strings_in_spec` — every WebGPU enum string Quanta hands the JS side is declared by `web/webgpu.idl` (proven against `Quanta.Idl.WebGpuSpec`, lifts the enum-string component of T1707) | WebIDL conformance (B″) | Lean | proven |
+| T1711 | `quanta_methods_in_spec` — every WebGPU method `quanta.ts`/`webgpu.ts` calls is declared by `web/webgpu.idl` on the right interface, mixin includes flattened (lifts the method-presence component of T1707) | WebIDL conformance (B″) | Lean | proven |
+| T1712 | `quanta_call_arities_in_spec` — at every call site, Quanta's argument count is admitted by some declared overload of the WebIDL method (lifts the arity component of T1707) | WebIDL conformance (B″) | Lean | proven |
+| T1713 | `quanta_call_types_in_spec` — at every call site, some declared overload's leading param type names equal the spec-canonical types Quanta supplies (lifts the param-type component of T1707) | WebIDL conformance (B″) | Lean | proven |
 
 ## Summary
 
@@ -378,9 +382,10 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | JIT WGSL Emitter | 7 | 6 | 1 |
 | Render-Path No-Silent-Drops | 3 | 3 | 0 |
 | API-Layer Lifetimes | 16 | 16 | 0 |
+| WebIDL Conformance | 4 | 4 | 0 |
 | Memory Model Axioms | 23 | -- | -- |
 | WebGPU Host + Quanta-ABI Axioms | 10 | -- | -- |
-| **Total proven theorems** | **172** | **171** | **1** |
+| **Total proven theorems** | **176** | **175** | **1** |
 | **TCB axioms (A6-A11)** | **33** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing
@@ -398,6 +403,20 @@ T720-T754 are the API-layer Verus proofs (step 075). They cover the
 Pulse / Field / Wave / submission-queue lifetimes — closing the gap
 between "proven kernel" and "proven library." T741 is the
 capability-monotonicity property the roadmap names explicitly.
+
+T1710–T1713 are the B″ (WebIDL grammar mirror) deliverables.
+T1710 discharges enum-string conformance, T1711 method-presence,
+T1712 call-site arity (every Quanta call's argument count falls
+within some declared overload's `[required, max]` range, variadics
+admitted), T1713 parameter-type conformance (some declared
+overload's leading param type names equal the spec-canonical types
+Quanta supplies, typedefs preserved verbatim). All four by
+`native_decide` against the `Quanta.Idl.WebGpuSpec` literal
+generated from `web/webgpu.idl`. T1707 itself stays an axiom but
+its residue is now the irreducible WebIDL-surface floor: linker
+faithfulness for `extern "C"` (libc-equivalent trust on the wasm32
+calling convention) plus typedef-stability (f64 ≡ `GPUSize64` etc.
+in the JS engine).
 
 The 23 memory-model entries (T1600-T1622) plus the 10 WebGPU host /
 Quanta-ABI axioms (T1700-T1709) are **axioms**, not theorems — they

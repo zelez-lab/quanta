@@ -39,8 +39,23 @@ arrays in `web/src/codes.ts` are *checked* against those spec tables:
 The lockstep hazard between Rust codes and TS codes — previously two
 hand-edits with no enforcement — collapses to one parsed AST.
 
-A11 still axiomatizes the boundary, but its surface is small enough
-that B″ (Lean WebIDL conformance) can lift it from axiom to theorem.
+Step B″ (first commit, also 2026-04-28) lifts the *enum-string*
+component of A11 from axiom to theorem. The same parsed IDL AST now
+emits a third view — `Quanta.Idl.WebGpuSpec` in
+`specs/verify/lean/Quanta/Idl/WebGpuSpec.lean` — and the theorem
+`Quanta.Theorems.IdlConformance.quanta_strings_in_spec` (T1710)
+discharges, by `native_decide` over ground string lists, the claim
+that every WebGPU enum string Quanta uses is declared by the spec.
+A spec drift that would previously have escaped to runtime now
+fails `lake build` before reaching a browser.
+
+What still axiomatizes A11: (a) the wasm linker actually delivers
+Quanta's integer codes to the JS dispatch table unchanged
+(libc-equivalent trust on `extern "C"`), and (b) the JS-side method
+dispatch in `web/src/quanta.ts` maps each integer to the spec
+string and forwards to the right `GPUDevice.*` method. The next
+B″ commit lifts (b) with a method-signature mirror, using the
+`MethodDecl` shape already declared in `Quanta.Idl`.
 
 See `specs/verify/verus/quanta-ir/emit_wgsl_jit.rs` for the IR-side
 mirror that connects to A10 via the `wgsl_string_well_formed` predicate.
@@ -246,7 +261,29 @@ axiom write_buffer_atomicity
 
     This is the wasm32 equivalent of trusting libc's `extern "C"` ABI
     on native targets — but unlike the pre-B⁰ shape, both sides of the
-    boundary are project-local and inspectable line by line. -/
+    boundary are project-local and inspectable line by line.
+
+    *Post-B″ surface*: four components of this axiom are now
+    discharged as theorems against `Quanta.Idl.WebGpuSpec`:
+    - `quanta_strings_in_spec` (T1710) — every WebGPU enum string
+      Quanta uses is declared by the spec.
+    - `quanta_methods_in_spec` (T1711) — every WebGPU method
+      Quanta calls is declared by the spec on the right interface
+      (mixin includes flattened).
+    - `quanta_call_arities_in_spec` (T1712) — at every call site,
+      Quanta's argument count is admitted by some declared overload's
+      arity range (variadics admitted).
+    - `quanta_call_types_in_spec` (T1713) — at every call site, some
+      declared overload's leading param type names equal the spec's
+      canonical form for the types Quanta supplies (typedefs
+      preserved verbatim).
+    What remains axiomatic — the irreducible A11 floor:
+    - **Linker faithfulness for `extern "C"`** (libc-equivalent trust
+      on the wasm32 calling convention itself).
+    - **Typedef stability** — that f64 is a faithful representation
+      of `GPUSize64`/`GPUSize32`/`GPUIndex32`/etc. in the JS engine.
+    Both are below the WebIDL surface and outside what Lean can
+    discharge against `webgpu.idl` alone. -/
 axiom quanta_abi_faithful : True
 
 /-- **A11.1 — promise_callback_lossless**: For every async import

@@ -1,24 +1,30 @@
-//! Quanta WebIDL → Rust + TypeScript codegen.
+//! Quanta WebIDL → Rust + TypeScript + Lean codegen.
 //!
-//! Step B′ of the FFI TCB shrink track. Reads the W3C `webgpu.idl`
-//! and produces:
+//! Steps B′ + B″ of the FFI TCB shrink track. Reads the W3C
+//! `webgpu.idl` and produces three views of the same data:
 //!
-//! 1. `src/driver/webgpu/generated_codes.rs` — Rust constants for
-//!    every WebGPU enum we use (texture format, blend factor, …).
+//! 1. `src/webgpu_generated_codes.rs` — Rust constants for every
+//!    WebGPU enum Quanta uses (texture format, blend factor, …).
 //!    Each constant's value is a small integer; the integer's
 //!    canonical name string is taken straight from the spec.
 //! 2. `web/src/generated/codes.ts` — the matching TypeScript tables
 //!    that convert each integer back to the IDL string.
+//! 3. `specs/verify/lean/Quanta/Idl/WebGpuSpec.lean` — a
+//!    `Quanta.Idl.WebGpuSpec` literal that the conformance theorem
+//!    `Quanta.Theorems.IdlConformance.quanta_strings_in_spec`
+//!    discharges T1707 against (lifting the enum-string component
+//!    of A11 from axiom to theorem).
 //!
-//! Both files share the same parsed AST, so the lockstep hazard
-//! (Rust says `format::RGBA8UNORM = 0` but TS table[0] says
-//! `"rgba8unorm-srgb"`) becomes impossible by construction.
+//! All three files share the same parsed AST, so a spec drift that
+//! escapes one view (e.g. Rust says `format::RGBA8UNORM = 0` but TS
+//! table[0] says `"rgba8unorm-srgb"`) becomes impossible by
+//! construction.
 //!
 //! Why a separate crate (vs. inlined in `quanta-cli`):
-//! - The codegen will eventually be reused for B″ (Lean WebIDL
-//!   conformance) and B (WGSL grammar mirror). Same parser, three
-//!   targets. Putting the parsing layer in its own crate avoids
-//!   coupling the CLI binary to those follow-ons.
+//! - The codegen will eventually be reused for B (WGSL grammar
+//!   mirror). Same parser, multiple targets. Putting the parsing
+//!   layer in its own crate avoids coupling the CLI binary to those
+//!   follow-ons.
 //! - It also keeps `quanta-cli`'s dep tree shallow — `weedle` only
 //!   pulls in for code generation, not for `quanta build` /
 //!   `quanta serve`.
@@ -27,6 +33,7 @@
 //! does end-to-end parse + emit + write. Used by
 //! `quanta-cli`'s `codegen` subcommand.
 
+mod emit_lean;
 mod emit_rust;
 mod emit_ts;
 mod parse;
@@ -52,20 +59,25 @@ pub fn generate(idl_path: &Path, project_root: &Path) -> Result<()> {
     let parsed = parse::parse(&idl_text)?;
     let report = parse::summarize(&parsed);
     eprintln!(
-        "[quanta-codegen] parsed {} enums, kept {} project-relevant",
-        report.enums_total, report.enums_kept
+        "[quanta-codegen] parsed {} enums, kept {} project-relevant; {} methods on relevant interfaces",
+        report.enums_total, report.enums_kept, report.methods_kept,
     );
 
     let rust_out = project_root.join("src").join("webgpu_generated_codes.rs");
     let ts_dir: PathBuf = project_root.join("web/src/generated");
     let ts_out = ts_dir.join("codes.ts");
+    let lean_dir: PathBuf = project_root.join("specs/verify/lean/Quanta/Idl");
+    let lean_out = lean_dir.join("WebGpuSpec.lean");
 
     std::fs::create_dir_all(&ts_dir)?;
+    std::fs::create_dir_all(&lean_dir)?;
 
     let rust_text = emit_rust::emit(&parsed);
     let ts_text = emit_ts::emit(&parsed);
+    let lean_text = emit_lean::emit(&parsed);
     std::fs::write(&rust_out, rust_text)?;
     std::fs::write(&ts_out, ts_text)?;
+    std::fs::write(&lean_out, lean_text)?;
     // Re-format the Rust output so it survives `cargo fmt --check`
     // on subsequent regenerations. `rustfmt` is part of every Rust
     // toolchain via rustup; if it's not available we warn but don't
@@ -80,6 +92,7 @@ pub fn generate(idl_path: &Path, project_root: &Path) -> Result<()> {
     }
     eprintln!("[quanta-codegen] wrote {}", rust_out.display());
     eprintln!("[quanta-codegen] wrote {}", ts_out.display());
+    eprintln!("[quanta-codegen] wrote {}", lean_out.display());
     Ok(())
 }
 
