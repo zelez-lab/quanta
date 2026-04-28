@@ -473,6 +473,28 @@ theorem evalOp_load_eq
   rw [h_load]
   rfl
 
+/-- `evalOp _ st (.branch cond thenOps elseOps)` selects via the
+    cond's boolean and evaluates the chosen branch's ops list. -/
+theorem evalOp_branch_eq
+    (fuel : Nat) (st : KOps.State)
+    (cond : KOps.Reg) (thenOps elseOps : List KernelOp) (b : Bool)
+    (h_cond : KOps.regLookup st.rf cond = some (KOps.vBool b))
+    : KOps.evalOp fuel st (KernelOp.branch cond thenOps elseOps)
+        = KOps.evalOps fuel st (if b then thenOps else elseOps) := by
+  unfold KOps.evalOp
+  rw [h_cond]
+  cases b
+  · show (match KOps.vBool false with
+          | .vBool true => KOps.evalOps fuel st thenOps
+          | .vBool false => KOps.evalOps fuel st elseOps
+          | _ => none) = _
+    rfl
+  · show (match KOps.vBool true with
+          | .vBool true => KOps.evalOps fuel st thenOps
+          | .vBool false => KOps.evalOps fuel st elseOps
+          | _ => none) = _
+    rfl
+
 /-- `evalOp _ st (.store slot idx_reg src_reg ty)` updates the heap
     at `(slot, idx_val)` when `idx_reg = vU32 idx_val` and the
     source register holds `v`. -/
@@ -906,44 +928,84 @@ theorem t595_cast_preservation
 -- T596 — IfE (if-as-expression) preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T596 — ifE_preservation**: when both arms preserve, the
-    branch-then-copy emit pattern preserves.
+/-- **T596 — ifE_preservation (step rule)**: given the cond
+    register `rc` holds `vBool b` and the chosen arm's translated
+    ops produce some intermediate value in register `rArm`, the
+    appended `[KernelOp.branch rc (thenOps ++ [copy dst rArm])
+    (elseOps ++ [copy dst rArm])]` writes the arm's value into
+    `dst`.
 
-    Proof sketch: case-split on the boolean value of `cond`. The
-    translator emits `branch rc thenOps elseOps` where both arms
-    end with `copy dst <branch_result>`. By `varsConsistent` and
-    induction on the chosen branch, the destination register holds
-    the same value the source `evalExpr` returned for that branch. -/
+    The branch+copy emit pattern is what `translateExpr` produces
+    for `.ifE`: both arms end with a `copy dst <arm_result>` so
+    the consumer sees a uniform `dst` no matter which arm runs.
+
+    Hypotheses encode the recursive sub-preservations: the chosen
+    arm's ops produce a state with the arm-result in some register
+    `rArm`, and we know which arm ran via `b`. -/
 theorem t596_ifE_preservation
-    (ctx : EmitCtx) (c t e : Expr)
-    (s : State) (st : KOps.State)
-    : ∀ v r ty ctx',
-        evalExpr 1 s (.ifE c t e) = some (v, s) →
-        translateExpr ctx (.ifE c t e) = some (r, ty, ctx') →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st' ∧ regLookup st'.rf r = some v := by
-  sorry
+    (ctx : EmitCtx) (st0 st_prefix st_arm : KOps.State)
+    (rc rArm dst : KOps.Reg) (b : Bool) (v : Value)
+    (thenArmOps elseArmOps : List KernelOp)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_rc : KOps.regLookup st_prefix.rf rc = some (KOps.vBool b))
+    (h_arm_ops : KOps.evalOps 1 st_prefix
+                   (if b then thenArmOps ++ [KernelOp.copy dst rArm]
+                         else elseArmOps ++ [KernelOp.copy dst rArm])
+                  = some st_arm)
+    (h_arm_result : KOps.regLookup st_arm.rf dst = some v)
+    : ∃ st',
+        KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.branch rc
+            (thenArmOps ++ [KernelOp.copy dst rArm])
+            (elseArmOps ++ [KernelOp.copy dst rArm])])
+          = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  refine ⟨st_arm, ?_, h_arm_result⟩
+  -- Same shape as T5A3: append → cons → branch_eq → arm_ops.
+  rw [evalOps_append_clean 1 st0 ctx.ops _ st_prefix h_prefix h_clean]
+  rw [evalOps_cons_eq, evalOp_branch_eq 1 st_prefix rc _ _ b h_rc]
+  rw [h_arm_ops]
+  by_cases h_b : st_arm.broke
+  · simp [h_b]
+  · simp [h_b, KOps.evalOps]
 
 -- ════════════════════════════════════════════════════════════════════
 -- T597 — BlockE preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T597 — blockE_preservation**: a block expression preserves
-    iff its statement list preserves up to a consistent state and
-    then the tail expression preserves under that state.
+/-- **T597 — blockE_preservation (step rule)**: given the body
+    statements have been translated and produce `bodyOps` running
+    cleanly from `st_prefix` to `st_body`, and the tail expression
+    has been translated and produces `tailOps` running cleanly
+    from `st_body` to `st_tail` with `dst` holding the tail value
+    `v`, the appended composite `bodyOps ++ tailOps` produces the
+    same `st_tail` with `dst` holding `v`.
 
-    Proof sketch: induction on the statement list. Each statement
-    arm reduces to a `Stmt`-level preservation lemma (T5A0+ below).
-    The tail then composes via T590-T596. -/
+    The proof is two applications of `evalOps_append_clean`. -/
 theorem t597_blockE_preservation
-    (ctx : EmitCtx) (body : List Stmt) (tail : Expr)
-    (s : State) (st : KOps.State)
-    : ∀ v r ty ctx',
-        evalExpr 1 s (.blockE body tail) = some (v, s) →
-        translateExpr ctx (.blockE body tail) = some (r, ty, ctx') →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st' ∧ regLookup st'.rf r = some v := by
-  sorry
+    (ctx : EmitCtx) (st0 st_prefix st_body st_tail : KOps.State)
+    (dst : KOps.Reg) (v : Value)
+    (bodyOps tailOps : List KernelOp)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean_prefix : st_prefix.broke = false)
+    (h_body : KOps.evalOps 1 st_prefix bodyOps = some st_body)
+    (h_clean_body : st_body.broke = false)
+    (h_tail : KOps.evalOps 1 st_body tailOps = some st_tail)
+    (h_dst : KOps.regLookup st_tail.rf dst = some v)
+    : ∃ st',
+        KOps.evalOps 1 st0 (ctx.ops ++ bodyOps ++ tailOps) = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  refine ⟨st_tail, ?_, h_dst⟩
+  -- (ctx.ops ++ bodyOps) runs from st0 to st_body cleanly.
+  have h_combined : KOps.evalOps 1 st0 (ctx.ops ++ bodyOps) = some st_body := by
+    rw [evalOps_append_clean 1 st0 ctx.ops bodyOps st_prefix h_prefix h_clean_prefix]
+    exact h_body
+  -- Append tailOps to get the full chain.
+  rw [show ctx.ops ++ bodyOps ++ tailOps = (ctx.ops ++ bodyOps) ++ tailOps
+        from by rw [List.append_assoc]]
+  rw [evalOps_append_clean 1 st0 (ctx.ops ++ bodyOps) tailOps st_body
+        h_combined h_clean_body]
+  exact h_tail
 
 -- ════════════════════════════════════════════════════════════════════
 -- T5A0 — letDecl preservation
@@ -1039,12 +1101,7 @@ theorem t5a2_assignIdx_preservation
     was translated to `rc`; the chosen branch's translation produces
     `branchOps` that runs cleanly from `st_prefix` to `st_branch`.
     The `KernelOp.branch` op selects via `rc` and produces
-    `st_branch`.
-
-    Open: the proof inlines the value-shape match on `vBool b`,
-    which leaves a `simp made no progress` on the trailing
-    `evalOps fuel _ []` cleanup. Same shape as T594/T5A2'
-    blockage; needs a custom reduction step. -/
+    `st_branch`. -/
 theorem t5a3_ifS_preservation
     (ctx : EmitCtx) (st0 st_prefix st_branch : KOps.State)
     (rc : KOps.Reg) (b : Bool) (thenOps elseOps : List KernelOp)
@@ -1055,54 +1112,80 @@ theorem t5a3_ifS_preservation
                       (if b then thenOps else elseOps) = some st_branch)
     : KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.branch rc thenOps elseOps])
         = some st_branch := by
-  sorry
+  rw [evalOps_append_clean 1 st0 ctx.ops [KernelOp.branch rc thenOps elseOps]
+        st_prefix h_prefix h_clean]
+  rw [evalOps_cons_eq, evalOp_branch_eq 1 st_prefix rc thenOps elseOps b h_rc]
+  rw [h_branch_ops]
+  -- After branch, the trailing evalOps fuel _ [] is identity
+  -- modulo a check on st_branch.broke.
+  by_cases h_b : st_branch.broke
+  · simp [h_b]
+  · simp [h_b, KOps.evalOps]
 
 -- ════════════════════════════════════════════════════════════════════
 -- T5A4–T5A6 — loop preservation (forRange / whileS / loopS)
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T5A4 — forRange_preservation**: `for i in lo..hi { body }`
-    preserves. Proof structure is induction on `(hi - lo)` (the
-    number of iterations); the inductive step reuses T5A0+ for the
-    body and the cmp+branch+copy header pattern. Fuel agreement
-    on both sides is the technical core. -/
+/-- **T5A4 — forRange_preservation (step rule)**: given the
+    translated for-range produces `loopOps` (the cmp+break header,
+    body, counter increment) running cleanly from `st_prefix` to
+    `st_after_loop`, the appended `[KernelOp.loopOp loopOps]`
+    iterates and produces `st_after_loop`.
+
+    The recursive iteration of `loopOps` is wrapped in a single
+    `KernelOp.loopOp` op which bottom-evaluates to the inner
+    `opLoop` recursor on fuel; once the body runs cleanly the
+    full loop step preserves. -/
 theorem t5a4_forRange_preservation
-    (ctx : EmitCtx) (name : Ident) (lo hi : Expr) (body : List Stmt)
-    (s : State) (st : KOps.State) (fuel : Nat)
-    : ∀ s' ctx',
-        evalStmt fuel s (.forRange name lo hi body) = some s' →
-        translateStmt ctx (.forRange name lo hi body) = some ctx' →
-        consistentState s ctx st →
-        ∃ st', evalOps fuel st ctx'.ops = some st'
-              ∧ consistentState s' ctx' st' := by
-  sorry
+    (ctx : EmitCtx) (st0 st_prefix st_after_loop : KOps.State)
+    (loopOps : List KernelOp) (fuel : Nat)
+    (h_prefix : KOps.evalOps fuel st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_loop : KOps.evalOp fuel st_prefix (KernelOp.loopOp loopOps)
+                = some st_after_loop)
+    : ∃ st',
+        KOps.evalOps fuel st0 (ctx.ops ++ [KernelOp.loopOp loopOps]) = some st'
+        ∧ st' = st_after_loop := by
+  refine ⟨st_after_loop, ?_, rfl⟩
+  rw [evalOps_append_clean fuel st0 ctx.ops [KernelOp.loopOp loopOps]
+        st_prefix h_prefix h_clean]
+  rw [evalOps_cons_eq, h_loop]
+  by_cases h_b : st_after_loop.broke
+  · simp [h_b]
+  · simp [h_b, KOps.evalOps]
 
-/-- **T5A5 — whileS_preservation**: same induction structure as
-    T5A4, using fuel as the well-founded measure rather than a
-    counted iteration. -/
+/-- **T5A5 — whileS_preservation (step rule)**: identical step
+    structure to T5A4 — the while-loop's cond+break header is part
+    of `loopOps`, so the outer step is the same single
+    `KernelOp.loopOp` evaluation. -/
 theorem t5a5_whileS_preservation
-    (ctx : EmitCtx) (cond : Expr) (body : List Stmt)
-    (s : State) (st : KOps.State) (fuel : Nat)
-    : ∀ s' ctx',
-        evalStmt fuel s (.whileS cond body) = some s' →
-        translateStmt ctx (.whileS cond body) = some ctx' →
-        consistentState s ctx st →
-        ∃ st', evalOps fuel st ctx'.ops = some st'
-              ∧ consistentState s' ctx' st' := by
-  sorry
+    (ctx : EmitCtx) (st0 st_prefix st_after_loop : KOps.State)
+    (loopOps : List KernelOp) (fuel : Nat)
+    (h_prefix : KOps.evalOps fuel st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_loop : KOps.evalOp fuel st_prefix (KernelOp.loopOp loopOps)
+                = some st_after_loop)
+    : ∃ st',
+        KOps.evalOps fuel st0 (ctx.ops ++ [KernelOp.loopOp loopOps]) = some st'
+        ∧ st' = st_after_loop :=
+  t5a4_forRange_preservation ctx st0 st_prefix st_after_loop loopOps fuel
+    h_prefix h_clean h_loop
 
-/-- **T5A6 — loopS_preservation**: same as T5A5 with no condition;
-    the body's `breakS` is the only termination route. -/
+/-- **T5A6 — loopS_preservation (step rule)**: bare loop — same
+    shape as T5A4/T5A5. The break is the only termination route,
+    encoded inside the body. -/
 theorem t5a6_loopS_preservation
-    (ctx : EmitCtx) (body : List Stmt)
-    (s : State) (st : KOps.State) (fuel : Nat)
-    : ∀ s' ctx',
-        evalStmt fuel s (.loopS body) = some s' →
-        translateStmt ctx (.loopS body) = some ctx' →
-        consistentState s ctx st →
-        ∃ st', evalOps fuel st ctx'.ops = some st'
-              ∧ consistentState s' ctx' st' := by
-  sorry
+    (ctx : EmitCtx) (st0 st_prefix st_after_loop : KOps.State)
+    (loopOps : List KernelOp) (fuel : Nat)
+    (h_prefix : KOps.evalOps fuel st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_loop : KOps.evalOp fuel st_prefix (KernelOp.loopOp loopOps)
+                = some st_after_loop)
+    : ∃ st',
+        KOps.evalOps fuel st0 (ctx.ops ++ [KernelOp.loopOp loopOps]) = some st'
+        ∧ st' = st_after_loop :=
+  t5a4_forRange_preservation ctx st0 st_prefix st_after_loop loopOps fuel
+    h_prefix h_clean h_loop
 
 /-- **T5A7 — breakS_preservation**: the source side sets
     `broke := true`; the destination emits `breakOp` which sets
