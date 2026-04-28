@@ -332,7 +332,7 @@ partial def evalStmt (fuel : Nat) (s : State) : Stmt → Option State
             else if st.broke then some st.reset_broke
             else
               let st' := { st with env := st.env.bind name (.vU32 (UInt32.ofNat j)) }
-              match evalStmts fuel st' body with
+              match evalStmts f st' body with
               | none => none
               | some st'' => forLoop f st'' (j + 1) n
       do
@@ -348,10 +348,10 @@ partial def evalStmt (fuel : Nat) (s : State) : Stmt → Option State
         | f+1 =>
             if st.broke then some st.reset_broke
             else
-              match evalExpr fuel st cond with
+              match evalExpr f st cond with
               | some (.vBool false, st') => some st'
               | some (.vBool true, st')  =>
-                  match evalStmts fuel st' body with
+                  match evalStmts f st' body with
                   | none => none
                   | some st'' => whileLoop f st''
               | _ => none
@@ -363,7 +363,7 @@ partial def evalStmt (fuel : Nat) (s : State) : Stmt → Option State
         | f+1 =>
             if st.broke then some st.reset_broke
             else
-              match evalStmts fuel st body with
+              match evalStmts f st body with
               | none => none
               | some st' => bareLoop f st'
       bareLoop fuel s

@@ -239,7 +239,7 @@ def evalBitcast (v : Value) : Scalar → Option Value
 -- ════════════════════════════════════════════════════════════════════
 
 mutual
-partial def evalOp (fuel : Nat) (s : State) : KernelOp → Option State
+def evalOp (fuel : Nat) (s : State) : KernelOp → Option State
   | .const dst c =>
       pure { s with rf := regWrite s.rf dst (evalConst c) }
   | .binOp dst a b op _ty => do
@@ -312,7 +312,7 @@ partial def evalOp (fuel : Nat) (s : State) : KernelOp → Option State
       -- the happens-before semantics it deserves.
       pure s
 
-partial def evalOps (fuel : Nat) (s : State) : List KernelOp → Option State
+def evalOps (fuel : Nat) (s : State) : List KernelOp → Option State
   | [] => some s
   | op :: rest => do
       let s1 ← evalOp fuel s op

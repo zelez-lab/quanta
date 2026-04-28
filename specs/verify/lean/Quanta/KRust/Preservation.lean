@@ -250,6 +250,262 @@ theorem heapLookup_heapStore_eq
   simp [KOps.heapStore, KOps.heapLookup]
 
 -- ════════════════════════════════════════════════════════════════════
+-- Alignment 7 — single-op KOps eval reductions
+-- ════════════════════════════════════════════════════════════════════
+--
+-- `KOps.evalOp` was promoted from `partial def` to `def`
+-- (Lean detected structural recursion automatically; the loop
+-- arms's inner `opLoop` already had its own fuel parameter). The
+-- following per-constructor reductions are now `rfl`-provable.
+-- They give the "given an op X, evalOp produces this specific
+-- state" facts that compose into the per-rule preservation
+-- theorems T590–T5A7.
+
+/-- `evalOp _ st (.const r cv)` writes `evalConst cv` into register
+    `r` and leaves heap, dispatch, and broke flag unchanged. -/
+theorem evalOp_const_eq
+    (fuel : Nat) (st : KOps.State) (r : KOps.Reg) (cv : KOps.ConstValue)
+    : KOps.evalOp fuel st (KernelOp.const r cv)
+        = some { st with rf := KOps.regWrite st.rf r (KOps.evalConst cv) } := by
+  simp [KOps.evalOp, pure]
+
+/-- `evalOp _ st (.copy dst src)` returns `none` if `src` is unbound,
+    otherwise writes `src`'s value into `dst`. -/
+theorem evalOp_copy_eq
+    (fuel : Nat) (st : KOps.State) (dst src : KOps.Reg)
+    : KOps.evalOp fuel st (KernelOp.copy dst src)
+        = (KOps.regLookup st.rf src).bind
+            (fun v => some { st with rf := KOps.regWrite st.rf dst v }) := by
+  simp [KOps.evalOp, pure, bind, Option.bind]
+
+/-- `evalOp _ st .breakOp` sets the broke flag. -/
+theorem evalOp_breakOp_eq
+    (fuel : Nat) (st : KOps.State)
+    : KOps.evalOp fuel st KernelOp.breakOp = some { st with broke := true } := by
+  simp [KOps.evalOp, pure]
+
+/-- `evalOp _ st .barrier` is a no-op. -/
+theorem evalOp_barrier_eq
+    (fuel : Nat) (st : KOps.State)
+    : KOps.evalOp fuel st KernelOp.barrier = some st := by
+  simp [KOps.evalOp, pure]
+
+/-- Identity intrinsic: `quarkId`. The four other identity
+    intrinsics (`protonId`, `nucleusId`, `protonSize`,
+    `quarkCount`) follow the same shape. -/
+theorem evalOp_quarkId_eq
+    (fuel : Nat) (st : KOps.State) (dst : KOps.Reg)
+    : KOps.evalOp fuel st (KernelOp.quarkId dst)
+        = some { st with rf := KOps.regWrite st.rf dst (KOps.vU32 st.dispatch.quarkId) } := by
+  simp [KOps.evalOp, pure]
+
+theorem evalOp_protonId_eq
+    (fuel : Nat) (st : KOps.State) (dst : KOps.Reg)
+    : KOps.evalOp fuel st (KernelOp.protonId dst)
+        = some { st with rf := KOps.regWrite st.rf dst (KOps.vU32 st.dispatch.protonId) } := by
+  simp [KOps.evalOp, pure]
+
+theorem evalOp_nucleusId_eq
+    (fuel : Nat) (st : KOps.State) (dst : KOps.Reg)
+    : KOps.evalOp fuel st (KernelOp.nucleusId dst)
+        = some { st with rf := KOps.regWrite st.rf dst (KOps.vU32 st.dispatch.nucleusId) } := by
+  simp [KOps.evalOp, pure]
+
+theorem evalOp_protonSize_eq
+    (fuel : Nat) (st : KOps.State) (dst : KOps.Reg)
+    : KOps.evalOp fuel st (KernelOp.protonSize dst)
+        = some { st with rf := KOps.regWrite st.rf dst (KOps.vU32 st.dispatch.protonSize) } := by
+  simp [KOps.evalOp, pure]
+
+theorem evalOp_quarkCount_eq
+    (fuel : Nat) (st : KOps.State) (dst : KOps.Reg)
+    : KOps.evalOp fuel st (KernelOp.quarkCount dst)
+        = some { st with rf := KOps.regWrite st.rf dst (KOps.vU32 st.dispatch.quarkCount) } := by
+  simp [KOps.evalOp, pure]
+
+-- ════════════════════════════════════════════════════════════════════
+-- Alignment 8 — evalOps singleton + cons
+-- ════════════════════════════════════════════════════════════════════
+
+/-- A non-`broke` singleton op-list reduces to the single op's eval. -/
+theorem evalOps_singleton_clean
+    (fuel : Nat) (st : KOps.State) (op : KernelOp) (st' : KOps.State)
+    (h_eval : KOps.evalOp fuel st op = some st')
+    (h_broke : st'.broke = false)
+    : KOps.evalOps fuel st [op] = some st' := by
+  simp [KOps.evalOps, bind, Option.bind, h_eval, h_broke]
+
+/-- Cons reduces to: eval head, then if `broke` short-circuit, else
+    recurse on tail. -/
+theorem evalOps_cons_eq
+    (fuel : Nat) (st : KOps.State) (op : KernelOp) (rest : List KernelOp)
+    : KOps.evalOps fuel st (op :: rest)
+        = (KOps.evalOp fuel st op).bind
+            (fun s1 => if s1.broke then some s1 else KOps.evalOps fuel s1 rest) := by
+  simp [KOps.evalOps, bind, Option.bind]
+
+-- ════════════════════════════════════════════════════════════════════
+-- T5A7' — focused breakS preservation on the KOps side
+-- ════════════════════════════════════════════════════════════════════
+
+/-- **T5A7' — breakS_preservation_focused**: the KOps-side fact
+    that translating `breakS` produces the singleton op list
+    `[KernelOp.breakOp]`, and running it produces a state whose
+    register file and heap are unchanged, with the broke flag set
+    to `true`.
+
+    The full T5A7 falls out of this lemma plus the source-side
+    `evalStmt _ s .breakS = some { s with broke := true }`, which
+    needs `KRust.evalStmt` to reduce — pending the `partial def`
+    → `def` conversion noted in T590's docstring. -/
+theorem t5a7_breakS_preservation_focused
+    (s : State) (st : KOps.State)
+    : ∃ st',
+        KOps.evalOps 1 st [KernelOp.breakOp] = some st'
+        ∧ st'.rf = st.rf
+        ∧ st'.heap = st.heap
+        ∧ st'.broke = true := by
+  refine ⟨{ st with broke := true }, ?_, ?_, ?_, ?_⟩
+  · -- evalOps fuel st [breakOp] = bind (evalOp fuel st breakOp) (...)
+    -- evalOp fuel st breakOp = some { st with broke := true }
+    -- broke is true, so the cons short-circuits to the broke state.
+    rw [evalOps_cons_eq, evalOp_breakOp_eq]
+    simp
+  · rfl
+  · rfl
+  · rfl
+
+-- ════════════════════════════════════════════════════════════════════
+-- T590' — focused lit preservation (KOps side)
+-- ════════════════════════════════════════════════════════════════════
+
+/-- **T590' — lit_preservation_focused**: a focused KOps-side
+    theorem stating that if `constOfLit l` produces `(cv, sty)`,
+    then running `[KernelOp.const r cv]` on any state writes
+    `evalConst cv` (which equals `evalLit l` by alignment) into
+    register `r`.
+
+    The full T590 (linking source-side `evalLit` through to the
+    register) reduces to this lemma plus the value alignment
+    `evalConst_eq_evalLit_*`. The remaining gap is unfolding
+    `KRust.evalExpr (.lit l)` to extract `evalLit l`'s result —
+    which needs `KRust.evalExpr` to be `def` rather than `partial
+    def`. -/
+theorem t590_lit_preservation_focused
+    (l : Lit) (cv : KOps.ConstValue) (sty : KOps.Scalar) (r : KOps.Reg) (st : KOps.State)
+    (h_const : constOfLit l = some (cv, sty))
+    (h_st_clean : st.broke = false)
+    : ∃ st',
+        KOps.evalOps 1 st [KernelOp.const r cv] = some st'
+        ∧ KOps.regLookup st'.rf r = some (KOps.evalConst cv) := by
+  refine ⟨{ st with rf := KOps.regWrite st.rf r (KOps.evalConst cv) }, ?_, ?_⟩
+  · exact evalOps_singleton_clean 1 st (KernelOp.const r cv) _
+            (evalOp_const_eq 1 st r cv) h_st_clean
+  · exact regLookup_regWrite_eq st.rf r (KOps.evalConst cv)
+
+-- ════════════════════════════════════════════════════════════════════
+-- T592' — focused binop preservation (KOps side, arith dispatch)
+-- ════════════════════════════════════════════════════════════════════
+
+/-- **T592' — binop_preservation_focused (arith)**: given two
+    register values `va`, `vb` already established to satisfy
+    `evalBinOp_agreement_arith`, running `[KernelOp.binOp dst a b
+    op .u32]` writes the agreement value into `dst`.
+
+    The full T592 chains this with the per-operand recursive
+    preservation. -/
+theorem t592_binop_preservation_focused_bin
+    (bop : KOps.BinOp) (a b dst : KOps.Reg) (ty : KOps.Scalar)
+    (st : KOps.State) (va vb v : Value)
+    (h_a : KOps.regLookup st.rf a = some va)
+    (h_b : KOps.regLookup st.rf b = some vb)
+    (h_op : KOps.evalBinOp bop va vb = some v)
+    (h_st_clean : st.broke = false)
+    : ∃ st',
+        KOps.evalOps 1 st [KernelOp.binOp dst a b bop ty] = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  refine ⟨{ st with rf := KOps.regWrite st.rf dst v }, ?_, ?_⟩
+  · refine evalOps_singleton_clean 1 st (KernelOp.binOp dst a b bop ty)
+              { st with rf := KOps.regWrite st.rf dst v } ?_ h_st_clean
+    simp [KOps.evalOp, h_a, h_b, h_op, bind, Option.bind, pure]
+  · exact regLookup_regWrite_eq st.rf dst v
+
+-- ════════════════════════════════════════════════════════════════════
+-- T593' — focused unary preservation
+-- ════════════════════════════════════════════════════════════════════
+
+theorem t593_unaryop_preservation_focused
+    (uop : KOps.UnaryOp) (a dst : KOps.Reg) (ty : KOps.Scalar)
+    (st : KOps.State) (va v : Value)
+    (h_a : KOps.regLookup st.rf a = some va)
+    (h_op : KOps.evalUnaryOp uop va = some v)
+    (h_st_clean : st.broke = false)
+    : ∃ st',
+        KOps.evalOps 1 st [KernelOp.unaryOp dst a uop ty] = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  refine ⟨{ st with rf := KOps.regWrite st.rf dst v }, ?_, ?_⟩
+  · refine evalOps_singleton_clean 1 st (KernelOp.unaryOp dst a uop ty)
+              { st with rf := KOps.regWrite st.rf dst v } ?_ h_st_clean
+    simp [KOps.evalOp, h_a, h_op, bind, Option.bind, pure]
+  · exact regLookup_regWrite_eq st.rf dst v
+
+-- ════════════════════════════════════════════════════════════════════
+-- T595' — focused cast preservation
+-- ════════════════════════════════════════════════════════════════════
+
+theorem t595_cast_preservation_focused
+    (src dst : KOps.Reg) (fromTy toTy : KOps.Scalar)
+    (st : KOps.State) (v_src v : Value)
+    (h_src : KOps.regLookup st.rf src = some v_src)
+    (h_cast : KOps.evalCast v_src toTy = some v)
+    (h_st_clean : st.broke = false)
+    : ∃ st',
+        KOps.evalOps 1 st [KernelOp.cast dst src fromTy toTy] = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  refine ⟨{ st with rf := KOps.regWrite st.rf dst v }, ?_, ?_⟩
+  · refine evalOps_singleton_clean 1 st (KernelOp.cast dst src fromTy toTy)
+              { st with rf := KOps.regWrite st.rf dst v } ?_ h_st_clean
+    simp [KOps.evalOp, h_src, h_cast, bind, Option.bind, pure]
+  · exact regLookup_regWrite_eq st.rf dst v
+
+-- ════════════════════════════════════════════════════════════════════
+-- T594' — focused index preservation
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Open per-rule preservation: the `load`/`store` arms branch on
+    the runtime shape of the index value (`.vU32 n`). The `simp`
+    set reduces the bind chain but leaves the match-on-Value-shape
+    unreduced; closing requires a custom `cases vi` step. Tracked
+    as part of the broader open obligation. -/
+theorem t594_index_preservation_focused
+    (slot : Nat) (idx_reg dst : KOps.Reg) (ty : KOps.Scalar)
+    (st : KOps.State) (idx : UInt32) (v : Value)
+    (h_idx : KOps.regLookup st.rf idx_reg = some (KOps.vU32 idx))
+    (h_load : KOps.heapLookup st.heap slot idx.toNat = some v)
+    (h_st_clean : st.broke = false)
+    : ∃ st',
+        KOps.evalOps 1 st [KernelOp.load dst slot idx_reg ty] = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  sorry
+
+-- ════════════════════════════════════════════════════════════════════
+-- T5A2' — focused assignIdx (store) preservation
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Open per-rule preservation: `store` shares the same value-shape
+    match as `load`. -/
+theorem t5a2_assignIdx_preservation_focused
+    (slot : Nat) (idx_reg src_reg : KOps.Reg) (ty : KOps.Scalar)
+    (st : KOps.State) (idx : UInt32) (v : Value)
+    (h_idx : KOps.regLookup st.rf idx_reg = some (KOps.vU32 idx))
+    (h_src : KOps.regLookup st.rf src_reg = some v)
+    (h_st_clean : st.broke = false)
+    : ∃ st',
+        KOps.evalOps 1 st [KernelOp.store slot idx_reg src_reg ty] = some st'
+        ∧ KOps.heapLookup st'.heap slot idx.toNat = some v := by
+  sorry
+
+-- ════════════════════════════════════════════════════════════════════
 -- T590 — Lit preservation
 -- ════════════════════════════════════════════════════════════════════
 
