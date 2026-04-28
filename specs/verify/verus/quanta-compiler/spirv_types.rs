@@ -250,7 +250,7 @@ proof fn t203_byte_size_bounded(ty: ScalarType)
 
 /// T203b: Byte sizes are powers of two (except Bool=4 which is also power of 2).
 pub open spec fn is_power_of_two(n: u32) -> bool {
-    n > 0 && (n & (n - 1)) == 0
+    n > 0 && (n & ((n - 1) as u32)) == 0
 }
 
 proof fn t203_byte_size_power_of_two(ty: ScalarType)

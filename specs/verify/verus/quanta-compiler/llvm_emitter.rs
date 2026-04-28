@@ -156,25 +156,26 @@ proof fn t500_int_types_are_int_kind(s: ScalarType)
 }
 
 /// T500: F32 maps to FloatType(32) (the most common GPU type).
+/// Struct literals inside `ensures` need parentheses in current Verus.
 proof fn t500_f32_is_float32()
-    ensures scalar_to_llvm_type(ScalarType::F32) == LlvmTypeKind::FloatType { bits: 32 },
+    ensures scalar_to_llvm_type(ScalarType::F32) == (LlvmTypeKind::FloatType { bits: 32 }),
 {}
 
 /// T500: F64 maps to FloatType(64) (double precision).
 proof fn t500_f64_is_float64()
-    ensures scalar_to_llvm_type(ScalarType::F64) == LlvmTypeKind::FloatType { bits: 64 },
+    ensures scalar_to_llvm_type(ScalarType::F64) == (LlvmTypeKind::FloatType { bits: 64 }),
 {}
 
 /// T500: U32 and I32 both map to IntType(32) — LLVM integers are sign-agnostic.
 proof fn t500_u32_i32_same_width()
     ensures
-        scalar_to_llvm_type(ScalarType::U32) == LlvmTypeKind::IntType { bits: 32 },
-        scalar_to_llvm_type(ScalarType::I32) == LlvmTypeKind::IntType { bits: 32 },
+        scalar_to_llvm_type(ScalarType::U32) == (LlvmTypeKind::IntType { bits: 32 }),
+        scalar_to_llvm_type(ScalarType::I32) == (LlvmTypeKind::IntType { bits: 32 }),
 {}
 
 /// T500: Bool maps to IntType(1) (i1 in LLVM).
 proof fn t500_bool_is_i1()
-    ensures scalar_to_llvm_type(ScalarType::Bool) == LlvmTypeKind::IntType { bits: 1 },
+    ensures scalar_to_llvm_type(ScalarType::Bool) == (LlvmTypeKind::IntType { bits: 1 }),
 {}
 
 /// T500: Signed and unsigned of the same width produce identical LLVM types.
@@ -554,27 +555,14 @@ proof fn t503_empty_kernel_zero_params()
 {}
 
 /// T503: Adding one param increases the count by exactly 1.
+/// Proof leverages `t503_param_count_matches` (`total_llvm_params s ==
+/// s.len()`) so the inductive case collapses to a length argument.
 proof fn t503_push_increments_by_one(params: Seq<ParamKind>, p: ParamKind)
     ensures total_llvm_params(params.push(p)) == total_llvm_params(params) + 1,
-    decreases params.len(),
 {
-    if params.len() == 0 {
-        assert(params.push(p).len() == 1);
-        let pushed = params.push(p);
-        assert(pushed[0] == p);
-        match p {
-            ParamKind::FieldPtr      => {},
-            ParamKind::Constant      => {},
-            ParamKind::TextureHandle => {},
-        }
-    } else {
-        let head = params[0];
-        let tail = params.subrange(1, params.len() as int);
-        let pushed_tail = tail.push(p);
-        t503_push_increments_by_one(tail, p);
-        // params.push(p) = [head] ++ tail.push(p)
-        assert(params.push(p).subrange(1, params.push(p).len() as int) =~= pushed_tail);
-    }
+    t503_param_count_matches(params);
+    t503_param_count_matches(params.push(p));
+    assert(params.push(p).len() == params.len() + 1);
 }
 
 // ============================================================================

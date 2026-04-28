@@ -327,14 +327,16 @@ proof fn t1409_device_local_not_mapped()
 //   return_staging_buffer: pushes back if pool.len() < 8, else destroy
 // ════════════════════════════════════════════════════════════════════════
 
-pub const STAGING_POOL_CAP: nat = 8;
+// `pub const ... : nat` is rejected by current Verus (`nat` is ghost);
+// expose as a spec function instead.
+pub open spec fn staging_pool_cap() -> nat { 8 }
 
 pub struct StagingPoolModel {
     pub count: nat,
 }
 
 pub open spec fn staging_return(pool: StagingPoolModel) -> StagingPoolModel {
-    if pool.count < STAGING_POOL_CAP {
+    if pool.count < staging_pool_cap() {
         StagingPoolModel { count: pool.count + 1 }
     } else {
         pool // destroyed immediately, pool unchanged
@@ -351,8 +353,8 @@ pub open spec fn staging_acquire(pool: StagingPoolModel, hit: bool) -> StagingPo
 
 /// T1410: Pool never exceeds cap of 8.
 proof fn t1410_staging_pool_bounded(pool: StagingPoolModel)
-    requires pool.count <= STAGING_POOL_CAP,
-    ensures  staging_return(pool).count <= STAGING_POOL_CAP,
+    requires pool.count <= staging_pool_cap(),
+    ensures  staging_return(pool).count <= staging_pool_cap(),
 {}
 
 /// T1410 corollary: acquire on hit decrements.

@@ -140,7 +140,15 @@ proof fn t2203_field_usage_flags_distinct()
         FIELD_RENDER & FIELD_TRANSFER == 0,
         FIELD_TRANSFER & FIELD_UNIFORM == 0,
         FIELD_READ & FIELD_UNIFORM == 0,
-{}
+{
+    // Each pair is disjoint by single-bit-position construction.
+    assert(FIELD_READ & FIELD_WRITE == 0) by (bit_vector);
+    assert(FIELD_WRITE & FIELD_COMPUTE == 0) by (bit_vector);
+    assert(FIELD_COMPUTE & FIELD_RENDER == 0) by (bit_vector);
+    assert(FIELD_RENDER & FIELD_TRANSFER == 0) by (bit_vector);
+    assert(FIELD_TRANSFER & FIELD_UNIFORM == 0) by (bit_vector);
+    assert(FIELD_READ & FIELD_UNIFORM == 0) by (bit_vector);
+}
 
 /// T2203 corollary: default_compute includes READ|WRITE|COMPUTE|TRANSFER.
 proof fn t2203_default_compute()

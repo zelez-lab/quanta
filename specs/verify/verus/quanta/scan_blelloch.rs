@@ -40,7 +40,7 @@ proof fn t652b_power_of_two()
     ensures ({
         let wg = WORKGROUP_SIZE();
         // A power of 2 has exactly one bit set: wg & (wg-1) == 0
-        wg > 0u32 && (wg & (wg - 1u32)) == 0u32
+        wg > 0u32 && (wg & ((wg - 1u32) as u32)) == 0u32
     }),
 {}
 
@@ -69,13 +69,13 @@ proof fn t652b_power_of_two()
 /// Abstract model of shared memory after up-sweep at depth d.
 /// After up-sweep, shared[n-1] contains the total sum.
 pub open spec fn upsweep_active(lid: u32, stride: u32) -> bool {
-    ((lid + 1u32) % stride) == 0u32
+    (((lid + 1u32) as u32) % stride) == 0u32
 }
 
 /// Abstract model of shared memory after down-sweep at depth d.
 /// After down-sweep, shared[i] contains the exclusive prefix sum.
 pub open spec fn downsweep_active(lid: u32, stride: u32) -> bool {
-    ((lid + 1u32) % stride) == 0u32
+    (((lid + 1u32) as u32) % stride) == 0u32
 }
 
 // ── T650: Algorithm structure correctness ──────────────────────────

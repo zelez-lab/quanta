@@ -21,7 +21,7 @@ import Quanta.Semantics.SpirV
 
 namespace Quanta.Semantics.Llvm
 
-open Quanta.Semantics.SpirV (Float32 toSigned32 fromSigned32)
+open Quanta.Semantics.SpirV (F32Bits toSigned32 fromSigned32)
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 1: Integer arithmetic (i32 unsigned interpretation)
@@ -57,15 +57,15 @@ def eval_srem_i32 (a b : UInt32) : UInt32 :=
 -- ════════════════════════════════════════════════════════════════════
 
 /-- `fadd float %a, %b`: IEEE 754 addition. -/
-opaque eval_fadd_float : Float32 → Float32 → Float32
+noncomputable opaque eval_fadd_float : F32Bits → F32Bits → F32Bits
 /-- `fsub float %a, %b`: IEEE 754 subtraction. -/
-opaque eval_fsub_float : Float32 → Float32 → Float32
+noncomputable opaque eval_fsub_float : F32Bits → F32Bits → F32Bits
 /-- `fmul float %a, %b`: IEEE 754 multiplication. -/
-opaque eval_fmul_float : Float32 → Float32 → Float32
+noncomputable opaque eval_fmul_float : F32Bits → F32Bits → F32Bits
 /-- `fdiv float %a, %b`: IEEE 754 division. -/
-opaque eval_fdiv_float : Float32 → Float32 → Float32
+noncomputable opaque eval_fdiv_float : F32Bits → F32Bits → F32Bits
 /-- `frem float %a, %b`: IEEE 754 remainder. -/
-opaque eval_frem_float : Float32 → Float32 → Float32
+noncomputable opaque eval_frem_float : F32Bits → F32Bits → F32Bits
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 3: Bitwise operations
@@ -128,12 +128,12 @@ def eval_icmp_sgt (a b : UInt32) : Bool := toSigned32 b < toSigned32 a
 def eval_icmp_sge (a b : UInt32) : Bool := toSigned32 b ≤ toSigned32 a
 
 -- Float comparisons: axiomatized (ordered variants).
-opaque eval_fcmp_oeq : Float32 → Float32 → Bool
-opaque eval_fcmp_one : Float32 → Float32 → Bool
-opaque eval_fcmp_olt : Float32 → Float32 → Bool
-opaque eval_fcmp_ole : Float32 → Float32 → Bool
-opaque eval_fcmp_ogt : Float32 → Float32 → Bool
-opaque eval_fcmp_oge : Float32 → Float32 → Bool
+noncomputable opaque eval_fcmp_oeq : F32Bits → F32Bits → Bool
+noncomputable opaque eval_fcmp_one : F32Bits → F32Bits → Bool
+noncomputable opaque eval_fcmp_olt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_fcmp_ole : F32Bits → F32Bits → Bool
+noncomputable opaque eval_fcmp_ogt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_fcmp_oge : F32Bits → F32Bits → Bool
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 5: Unary operations
@@ -143,7 +143,7 @@ opaque eval_fcmp_oge : Float32 → Float32 → Bool
 def eval_neg_i32 (a : UInt32) : UInt32 := 0 - a
 
 /-- `fneg float %a`: IEEE 754 negate. -/
-opaque eval_fneg_float : Float32 → Float32
+noncomputable opaque eval_fneg_float : F32Bits → F32Bits
 
 /-- `xor i1 %a, true`: logical not on i1. -/
 def eval_logical_not (a : Bool) : Bool := !a
@@ -153,13 +153,13 @@ def eval_logical_not (a : Bool) : Bool := !a
 -- ════════════════════════════════════════════════════════════════════
 
 /-- `fptoui float %a to i32`. -/
-opaque eval_fptoui : Float32 → UInt32
+noncomputable opaque eval_fptoui : F32Bits → UInt32
 /-- `fptosi float %a to i32`. -/
-opaque eval_fptosi : Float32 → UInt32
+noncomputable opaque eval_fptosi : F32Bits → UInt32
 /-- `sitofp i32 %a to float`. -/
-opaque eval_sitofp : UInt32 → Float32
+noncomputable opaque eval_sitofp : UInt32 → F32Bits
 /-- `uitofp i32 %a to float`. -/
-opaque eval_uitofp : UInt32 → Float32
+noncomputable opaque eval_uitofp : UInt32 → F32Bits
 /-- `bitcast i32 %a to float` (or vice versa). -/
 def eval_bitcast (a : UInt32) : UInt32 := a
 
@@ -184,10 +184,12 @@ def eval_store (mem : Memory) (addr : Nat) (val : UInt32) : Memory :=
     `call void @llvm.amdgcn.s.barrier()` (GCN):
     Workgroup barrier with shared memory visibility. -/
 axiom barrier_visibility_llvm
+    {n : Nat}
     (writes : Fin n → Memory → Memory)
     (mem : Memory) :
-    let post := (List.range n).foldl (fun m i => writes ⟨i, sorry⟩ m) mem
-    ∀ thread : Fin n, ∀ addr : Nat, post addr = post addr
+    let post := (List.range n).foldl (fun m i =>
+      if h : i < n then writes ⟨i, h⟩ m else m) mem
+    ∀ _thread : Fin n, ∀ addr : Nat, post addr = post addr
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 9: Unified dispatch (Quanta BinOp → LLVM)

@@ -137,8 +137,9 @@ proof fn t702_dimension_positive(t: ShaderType)
 /// and uniform params (is_uniform). The two sets are disjoint.
 /// Model: for any bool flag, exactly one of the two predicates holds.
 proof fn t703_partition(is_uniform: bool)
-    ensures  is_uniform || !is_uniform,
-    ensures  !(is_uniform && !is_uniform),
+    ensures
+        is_uniform || !is_uniform,
+        !(is_uniform && !is_uniform),
 {}
 
 // ── T704: ShaderStage vs SPIR-V ExecutionModel ─────────────────────

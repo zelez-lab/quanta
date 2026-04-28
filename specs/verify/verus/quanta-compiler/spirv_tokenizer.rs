@@ -163,11 +163,14 @@ proof fn t244_dot_split_produces_three_tokens()
 /// All parts are strictly shorter than the original.
 
 /// T245: Split produces strictly shorter parts.
+/// Precondition tightened to `len > 1` so the "delimiter is shorter"
+/// claim follows: with len = 1 the input has only the delimiter and
+/// no recursion happens, so this lemma trivially doesn't apply there.
 proof fn t245_recursive_termination(len: nat, split_pos: nat)
-    requires split_pos < len && len > 0,
+    requires split_pos < len && len > 1,
     ensures
         split_pos < len,           // before is shorter
-        1 < len,                   // delimiter is shorter (if len > 1)
+        1 < len,                   // delimiter is shorter
         len - split_pos - 1 < len, // rest is shorter
 {}
 

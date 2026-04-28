@@ -21,7 +21,7 @@ import Quanta.Semantics.SpirV
 
 namespace Quanta.Semantics.Msl
 
-open Quanta.Semantics.SpirV (Float32 toSigned32 fromSigned32)
+open Quanta.Semantics.SpirV (F32Bits toSigned32 fromSigned32)
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 1: Unsigned integer arithmetic
@@ -70,15 +70,15 @@ def eval_int_mod (a b : UInt32) : UInt32 :=
 -- ════════════════════════════════════════════════════════════════════
 
 /-- `float + float` in MSL: IEEE 754 addition. -/
-opaque eval_float_add : Float32 → Float32 → Float32
+noncomputable opaque eval_float_add : F32Bits → F32Bits → F32Bits
 /-- `float - float` in MSL: IEEE 754 subtraction. -/
-opaque eval_float_sub : Float32 → Float32 → Float32
+noncomputable opaque eval_float_sub : F32Bits → F32Bits → F32Bits
 /-- `float * float` in MSL: IEEE 754 multiplication. -/
-opaque eval_float_mul : Float32 → Float32 → Float32
+noncomputable opaque eval_float_mul : F32Bits → F32Bits → F32Bits
 /-- `float / float` in MSL: IEEE 754 division. -/
-opaque eval_float_div : Float32 → Float32 → Float32
+noncomputable opaque eval_float_div : F32Bits → F32Bits → F32Bits
 /-- `fmod(a, b)` in MSL: IEEE 754 remainder. -/
-opaque eval_float_rem : Float32 → Float32 → Float32
+noncomputable opaque eval_float_rem : F32Bits → F32Bits → F32Bits
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 4: Bitwise operations
@@ -137,12 +137,12 @@ def eval_int_gt (a b : UInt32) : Bool := toSigned32 b < toSigned32 a
 def eval_int_ge (a b : UInt32) : Bool := toSigned32 b ≤ toSigned32 a
 
 -- Float comparisons: axiomatized.
-opaque eval_float_eq : Float32 → Float32 → Bool
-opaque eval_float_ne : Float32 → Float32 → Bool
-opaque eval_float_lt : Float32 → Float32 → Bool
-opaque eval_float_le : Float32 → Float32 → Bool
-opaque eval_float_gt : Float32 → Float32 → Bool
-opaque eval_float_ge : Float32 → Float32 → Bool
+noncomputable opaque eval_float_eq : F32Bits → F32Bits → Bool
+noncomputable opaque eval_float_ne : F32Bits → F32Bits → Bool
+noncomputable opaque eval_float_lt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_float_le : F32Bits → F32Bits → Bool
+noncomputable opaque eval_float_gt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_float_ge : F32Bits → F32Bits → Bool
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 6: Unary operations
@@ -152,7 +152,7 @@ opaque eval_float_ge : Float32 → Float32 → Bool
 def eval_int_negate (a : UInt32) : UInt32 := 0 - a
 
 /-- Unary `-a` on float. -/
-opaque eval_float_negate : Float32 → Float32
+noncomputable opaque eval_float_negate : F32Bits → F32Bits
 
 /-- `!a` on bool: logical not. -/
 def eval_logical_not (a : Bool) : Bool := !a
@@ -162,13 +162,13 @@ def eval_logical_not (a : Bool) : Bool := !a
 -- ════════════════════════════════════════════════════════════════════
 
 /-- `static_cast<uint>(float_val)`: float to unsigned. -/
-opaque eval_float_to_uint : Float32 → UInt32
+noncomputable opaque eval_float_to_uint : F32Bits → UInt32
 /-- `static_cast<int>(float_val)`: float to signed. -/
-opaque eval_float_to_int : Float32 → UInt32
+noncomputable opaque eval_float_to_int : F32Bits → UInt32
 /-- `static_cast<float>(int_val)`: signed to float. -/
-opaque eval_int_to_float : UInt32 → Float32
+noncomputable opaque eval_int_to_float : UInt32 → F32Bits
 /-- `static_cast<float>(uint_val)`: unsigned to float. -/
-opaque eval_uint_to_float : UInt32 → Float32
+noncomputable opaque eval_uint_to_float : UInt32 → F32Bits
 /-- `as_type<T>(val)`: bitcast (reinterpret). -/
 def eval_bitcast (a : UInt32) : UInt32 := a
 
@@ -193,10 +193,12 @@ def eval_store (mem : Memory) (addr : Nat) (val : UInt32) : Memory :=
 /-- `threadgroup_barrier(mem_flags::mem_threadgroup)`:
     All threadgroup writes before the barrier are visible after it. -/
 axiom barrier_visibility_msl
+    {n : Nat}
     (writes : Fin n → Memory → Memory)
     (mem : Memory) :
-    let post := (List.range n).foldl (fun m i => writes ⟨i, sorry⟩ m) mem
-    ∀ thread : Fin n, ∀ addr : Nat, post addr = post addr
+    let post := (List.range n).foldl (fun m i =>
+      if h : i < n then writes ⟨i, h⟩ m else m) mem
+    ∀ _thread : Fin n, ∀ addr : Nat, post addr = post addr
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 10: Unified dispatch (Quanta BinOp → MSL)

@@ -87,22 +87,36 @@ def eval_smod (a b : UInt32) : UInt32 :=
 
 /-- Opaque float type. Real IEEE 754 semantics are out of scope for
     constructive proofs; we axiomatize agreement instead. -/
-opaque Float32 : Type := Unit
+opaque F32Bits : Type
+
+/-- A canonical placeholder inhabitant of `F32Bits`, used solely to
+    discharge the `Inhabited` obligation on bodyless `opaque` function
+    declarations below. The actual semantic value is irrelevant since
+    the `eval_*` operations are themselves `opaque` — Lean only needs
+    *some* inhabitant to elaborate them.
+
+    Declared as `axiom` rather than `opaque` because `opaque` itself
+    requires `Inhabited`, creating a chicken-and-egg with the
+    instance below; `axiom` is the right primitive for "we postulate
+    this exists." -/
+axiom Float32_default : F32Bits
+
+noncomputable instance : Inhabited F32Bits := ⟨Float32_default⟩
 
 /-- OpFAdd (129): IEEE 754 float addition. -/
-opaque eval_fadd : Float32 → Float32 → Float32
+noncomputable opaque eval_fadd : F32Bits → F32Bits → F32Bits
 
 /-- OpFSub (131): IEEE 754 float subtraction. -/
-opaque eval_fsub : Float32 → Float32 → Float32
+noncomputable opaque eval_fsub : F32Bits → F32Bits → F32Bits
 
 /-- OpFMul (133): IEEE 754 float multiplication. -/
-opaque eval_fmul : Float32 → Float32 → Float32
+noncomputable opaque eval_fmul : F32Bits → F32Bits → F32Bits
 
 /-- OpFDiv (136): IEEE 754 float division. -/
-opaque eval_fdiv : Float32 → Float32 → Float32
+noncomputable opaque eval_fdiv : F32Bits → F32Bits → F32Bits
 
 /-- OpFRem (140): IEEE 754 float remainder. -/
-opaque eval_frem : Float32 → Float32 → Float32
+noncomputable opaque eval_frem : F32Bits → F32Bits → F32Bits
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 4: Bitwise operations
@@ -166,12 +180,12 @@ def eval_sgt (a b : UInt32) : Bool := toSigned32 b < toSigned32 a
 def eval_sge (a b : UInt32) : Bool := toSigned32 b ≤ toSigned32 a
 
 -- Float comparisons: axiomatized (ordered variants assume non-NaN).
-opaque eval_ford_equal : Float32 → Float32 → Bool
-opaque eval_ford_notequal : Float32 → Float32 → Bool
-opaque eval_ford_lt : Float32 → Float32 → Bool
-opaque eval_ford_le : Float32 → Float32 → Bool
-opaque eval_ford_gt : Float32 → Float32 → Bool
-opaque eval_ford_ge : Float32 → Float32 → Bool
+noncomputable opaque eval_ford_equal : F32Bits → F32Bits → Bool
+noncomputable opaque eval_ford_notequal : F32Bits → F32Bits → Bool
+noncomputable opaque eval_ford_lt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_ford_le : F32Bits → F32Bits → Bool
+noncomputable opaque eval_ford_gt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_ford_ge : F32Bits → F32Bits → Bool
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 6: Unary operations
@@ -181,7 +195,7 @@ opaque eval_ford_ge : Float32 → Float32 → Bool
 def eval_snegate (a : UInt32) : UInt32 := 0 - a
 
 /-- OpFNegate (127): IEEE 754 negate. -/
-opaque eval_fnegate : Float32 → Float32
+noncomputable opaque eval_fnegate : F32Bits → F32Bits
 
 /-- OpLogicalNot (168): Boolean not. -/
 def eval_logical_not (a : Bool) : Bool := !a
@@ -191,16 +205,16 @@ def eval_logical_not (a : Bool) : Bool := !a
 -- ════════════════════════════════════════════════════════════════════
 
 /-- OpConvertFToU: Float to unsigned integer (truncating). -/
-opaque eval_convert_f_to_u : Float32 → UInt32
+noncomputable opaque eval_convert_f_to_u : F32Bits → UInt32
 
 /-- OpConvertFToS: Float to signed integer (truncating). -/
-opaque eval_convert_f_to_s : Float32 → UInt32  -- stored as UInt32, signed interpretation
+noncomputable opaque eval_convert_f_to_s : F32Bits → UInt32  -- stored as UInt32, signed interpretation
 
 /-- OpConvertSToF: Signed integer to float. -/
-opaque eval_convert_s_to_f : UInt32 → Float32
+noncomputable opaque eval_convert_s_to_f : UInt32 → F32Bits
 
 /-- OpConvertUToF: Unsigned integer to float. -/
-opaque eval_convert_u_to_f : UInt32 → Float32
+noncomputable opaque eval_convert_u_to_f : UInt32 → F32Bits
 
 /-- OpBitcast: Reinterpret bit pattern. No-op on same-width types. -/
 def eval_bitcast (a : UInt32) : UInt32 := a
@@ -260,10 +274,12 @@ def eval_phi (predecessors : List (Nat × UInt32)) (from_block : Nat) : UInt32 :
 
 /-- Per-quark memory view after a barrier: all quarks see the same state. -/
 axiom barrier_visibility_spv
+    {n : Nat}
     (writes : Fin n → Memory → Memory)
     (mem : Memory) :
-    let post := (List.range n).foldl (fun m i => writes ⟨i, sorry⟩ m) mem
-    ∀ quark : Fin n, ∀ addr : Nat, post addr = post addr
+    let post := (List.range n).foldl (fun m i =>
+      if h : i < n then writes ⟨i, h⟩ m else m) mem
+    ∀ _quark : Fin n, ∀ addr : Nat, post addr = post addr
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 11: Unified dispatch interface

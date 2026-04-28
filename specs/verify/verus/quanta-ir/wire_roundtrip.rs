@@ -146,8 +146,11 @@ proof fn unaryop_roundtrip(op: UnaryOp)
 // ── Push constant layout (T6) ───────────────────────────────────────
 
 /// Push constant offset for slot `n` (16-byte aligned).
+/// Verus spec multiplication promotes to `int`; cast back to `u32` so
+/// the return type is honored. Caller-side bounds (slot < 16) are
+/// asserted in the theorems below, keeping the cast in range.
 pub open spec fn push_constant_offset(slot: u32) -> u32 {
-    slot * 16u32
+    (slot * 16u32) as u32
 }
 
 /// T6: every slot within the 16-slot limit fits in the

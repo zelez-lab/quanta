@@ -43,7 +43,7 @@ pub open spec fn align_up(offset: nat, align: nat) -> nat
 {
     let misalign = offset % align;
     if misalign == 0 { offset }
-    else { offset + (align - misalign) }
+    else { (offset + (align - misalign)) as nat }
 }
 
 /// Compute cumulative offset after placing fields 0..n with alignment.

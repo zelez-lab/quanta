@@ -19,7 +19,7 @@ import Quanta.Semantics.SpirV
 
 namespace Quanta.Semantics.Wgsl
 
-open Quanta.Semantics.SpirV (Float32 toSigned32 fromSigned32)
+open Quanta.Semantics.SpirV (F32Bits toSigned32 fromSigned32)
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 1: u32 arithmetic
@@ -68,15 +68,15 @@ def eval_i32_mod (a b : UInt32) : UInt32 :=
 -- ════════════════════════════════════════════════════════════════════
 
 /-- `a + b` on f32: IEEE 754 addition. -/
-opaque eval_f32_add : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_add : F32Bits → F32Bits → F32Bits
 /-- `a - b` on f32. -/
-opaque eval_f32_sub : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_sub : F32Bits → F32Bits → F32Bits
 /-- `a * b` on f32. -/
-opaque eval_f32_mul : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_mul : F32Bits → F32Bits → F32Bits
 /-- `a / b` on f32. -/
-opaque eval_f32_div : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_div : F32Bits → F32Bits → F32Bits
 /-- `a % b` on f32: IEEE 754 remainder. -/
-opaque eval_f32_rem : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_rem : F32Bits → F32Bits → F32Bits
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 4: Bitwise operations
@@ -135,12 +135,12 @@ def eval_i32_gt (a b : UInt32) : Bool := toSigned32 b < toSigned32 a
 def eval_i32_ge (a b : UInt32) : Bool := toSigned32 b ≤ toSigned32 a
 
 -- Float comparisons: axiomatized.
-opaque eval_f32_eq : Float32 → Float32 → Bool
-opaque eval_f32_ne : Float32 → Float32 → Bool
-opaque eval_f32_lt : Float32 → Float32 → Bool
-opaque eval_f32_le : Float32 → Float32 → Bool
-opaque eval_f32_gt : Float32 → Float32 → Bool
-opaque eval_f32_ge : Float32 → Float32 → Bool
+noncomputable opaque eval_f32_eq : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_ne : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_lt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_le : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_gt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_ge : F32Bits → F32Bits → Bool
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 6: Unary operations
@@ -150,7 +150,7 @@ opaque eval_f32_ge : Float32 → Float32 → Bool
 def eval_negate (a : UInt32) : UInt32 := 0 - a
 
 /-- `-a` on f32. -/
-opaque eval_f32_negate : Float32 → Float32
+noncomputable opaque eval_f32_negate : F32Bits → F32Bits
 
 /-- `!a` on bool: logical not. -/
 def eval_logical_not (a : Bool) : Bool := !a
@@ -160,13 +160,13 @@ def eval_logical_not (a : Bool) : Bool := !a
 -- ════════════════════════════════════════════════════════════════════
 
 /-- `u32(f32_val)`: float to unsigned. -/
-opaque eval_f32_to_u32 : Float32 → UInt32
+noncomputable opaque eval_f32_to_u32 : F32Bits → UInt32
 /-- `i32(f32_val)`: float to signed. -/
-opaque eval_f32_to_i32 : Float32 → UInt32
+noncomputable opaque eval_f32_to_i32 : F32Bits → UInt32
 /-- `f32(i32_val)`: signed to float. -/
-opaque eval_i32_to_f32 : UInt32 → Float32
+noncomputable opaque eval_i32_to_f32 : UInt32 → F32Bits
 /-- `f32(u32_val)`: unsigned to float. -/
-opaque eval_u32_to_f32 : UInt32 → Float32
+noncomputable opaque eval_u32_to_f32 : UInt32 → F32Bits
 /-- `bitcast<T>(val)`: reinterpret bit pattern. -/
 def eval_bitcast (a : UInt32) : UInt32 := a
 
@@ -190,10 +190,12 @@ def eval_store (mem : Memory) (addr : Nat) (val : UInt32) : Memory :=
 /-- `workgroupBarrier()` in WGSL:
     All workgroup writes before the barrier are visible after it. -/
 axiom barrier_visibility_wgsl
+    {n : Nat}
     (writes : Fin n → Memory → Memory)
     (mem : Memory) :
-    let post := (List.range n).foldl (fun m i => writes ⟨i, sorry⟩ m) mem
-    ∀ thread : Fin n, ∀ addr : Nat, post addr = post addr
+    let post := (List.range n).foldl (fun m i =>
+      if h : i < n then writes ⟨i, h⟩ m else m) mem
+    ∀ _thread : Fin n, ∀ addr : Nat, post addr = post addr
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 10: Unified dispatch (Quanta BinOp → WGSL)

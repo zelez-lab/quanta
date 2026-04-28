@@ -21,17 +21,27 @@ def binOpTag : Nat → Option String
   | 11 => some "SatSub"
   | _  => none
 
--- Theorem: every tag maps to a unique operation
+-- Theorem: every tag maps to a unique operation. Phrased over `Fin 12`
+-- so the universal quantifier is decidable and `decide` closes it
+-- without needing Mathlib's `interval_cases`.
+theorem binop_tags_unique_fin :
+    ∀ i j : Fin 12, i ≠ j → binOpTag i.val ≠ binOpTag j.val := by
+  decide
+
 theorem binop_tags_unique :
     ∀ i j, i < 12 → j < 12 → i ≠ j →
       binOpTag i ≠ binOpTag j := by
   intro i j hi hj hne
-  interval_cases i <;> interval_cases j <;> simp_all [binOpTag]
+  exact binop_tags_unique_fin ⟨i, hi⟩ ⟨j, hj⟩ (fun h => hne (congrArg Fin.val h))
 
 -- Theorem: every tag in range produces Some
+theorem binop_tags_total_fin :
+    ∀ i : Fin 12, (binOpTag i.val).isSome = true := by
+  decide
+
 theorem binop_tags_total :
     ∀ i, i < 12 → (binOpTag i).isSome = true := by
   intro i hi
-  interval_cases i <;> simp [binOpTag]
+  exact binop_tags_total_fin ⟨i, hi⟩
 
 end Quanta.WireFormat

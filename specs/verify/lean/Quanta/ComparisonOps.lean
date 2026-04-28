@@ -95,13 +95,25 @@ theorem int_cmp_uses_integer :
   intro op fk hfk
   cases op <;> cases fk <;> simp_all [cmpOpToSpv, SpvCmpOp.toNat]
 
--- Theorem: the mapping is injective on opcode numbers
--- (no two different (CmpOp, FloatKind) pairs produce the same opcode)
-theorem cmpop_mapping_injective :
+-- The original sketch claimed `op1 = op2 ∧ fk1 = fk2`, but `Eq` and
+-- `Ne` collapse `IsSignedInt`/`IsUnsignedInt` (both map to `.IEqual`
+-- / `.INotEqual` respectively), so `fk1 = fk2` doesn't follow. Same
+-- pattern as `Opcodes.lean`: state injectivity at the `SpvCmpOp`
+-- level — that's the property the wire-format round-trip needs.
+
+/-- `SpvCmpOp.toNat` is injective on the inductive variants. -/
+theorem spv_cmp_toNat_injective :
+    ∀ x y : SpvCmpOp, x.toNat = y.toNat → x = y := by
+  intro x y h
+  cases x <;> cases y <;> simp_all [SpvCmpOp.toNat]
+
+/-- Two `(op, fk)` inputs that produce the same numeric opcode produce
+    the same `SpvCmpOp` value. -/
+theorem cmpop_mapping_consistent :
     ∀ op1 op2 fk1 fk2,
       (cmpOpToSpv op1 fk1).toNat = (cmpOpToSpv op2 fk2).toNat →
-      op1 = op2 ∧ fk1 = fk2 := by
+      cmpOpToSpv op1 fk1 = cmpOpToSpv op2 fk2 := by
   intro op1 op2 fk1 fk2 h
-  cases op1 <;> cases op2 <;> cases fk1 <;> cases fk2 <;> simp_all [cmpOpToSpv, SpvCmpOp.toNat]
+  exact spv_cmp_toNat_injective _ _ h
 
 end Quanta.ComparisonOps

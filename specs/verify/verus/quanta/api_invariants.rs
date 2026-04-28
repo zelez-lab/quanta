@@ -53,13 +53,18 @@ proof fn t806_byte_size_zero_iff_empty(f: FieldState)
     requires field_wf(f),
     ensures (byte_size(f) == 0) <==> (f.count == 0),
 {
+    // Unfold byte_size on both branches so the SMT solver sees the
+    // multiplicative structure directly. nonlinear_arith closes the
+    // ≥-1 product step.
     if f.count == 0 {
-        assert(byte_size(f) == 0);
+        assert(byte_size(f) == f.count * f.elem_size);
+        assert(f.count * f.elem_size == 0);
     } else {
-        // count >= 1 and elem_size >= 1 implies product >= 1.
+        assert(byte_size(f) == f.count * f.elem_size);
         assert(f.count >= 1);
         assert(f.elem_size >= 1);
-        assert(f.count * f.elem_size >= 1);
+        assert(f.count * f.elem_size >= 1) by (nonlinear_arith)
+            requires f.count >= 1, f.elem_size >= 1;
     }
 }
 

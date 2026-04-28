@@ -307,7 +307,7 @@ proof fn t316_substitution_count()
 
 /// Workgroup size product: wg[0] * wg[1] * wg[2].
 pub open spec fn max_threads(wg: (u32, u32, u32)) -> u32 {
-    wg.0 * wg.1 * wg.2
+    (wg.0 * wg.1 * wg.2) as u32
 }
 
 /// T317: Default workgroup [64, 1, 1] produces max_threads = 64.

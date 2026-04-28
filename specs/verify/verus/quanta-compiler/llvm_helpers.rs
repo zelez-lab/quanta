@@ -256,7 +256,7 @@ pub open spec fn sat_add_result(a: u32, b: u32) -> u32 {
     if unsigned_add_overflows(a, b) {
         0xFFFF_FFFFu32
     } else {
-        (a + b)
+        (a + b) as u32
     }
 }
 
@@ -271,7 +271,7 @@ proof fn t514_sat_add_bounded(a: u32, b: u32)
 
 /// T514b: SatSub never goes below 0.
 pub open spec fn sat_sub_result(a: u32, b: u32) -> u32 {
-    if b > a { 0u32 } else { (a - b) }
+    if b > a { 0u32 } else { (a - b) as u32 }
 }
 
 proof fn t514_sat_sub_non_negative(a: u32, b: u32)

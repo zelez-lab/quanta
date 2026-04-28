@@ -136,7 +136,9 @@ proof fn t2603_push_mask_dispatch(mask: u16, slot: nat)
 proof fn t2603_zero_mask_empty()
     ensures forall|slot: nat| slot < 16 ==> !push_slots_sent(0u16).contains(slot),
 {
-    assert(forall|slot: nat| slot < 16 ==> (0u16 & (1u16 << (slot as u16))) == 0u16) by (bit_vector);
+    assert(forall|slot: nat|
+        slot < 16 ==> (0u16 & #[trigger] (1u16 << (slot as u16))) == 0u16
+    ) by (bit_vector);
 }
 
 // ════════════════════════════════════════════════════════════════════════

@@ -21,7 +21,7 @@ import Quanta.Semantics.SpirV
 
 namespace Quanta.Semantics.Cpu
 
-open Quanta.Semantics.SpirV (Float32 toSigned32 fromSigned32)
+open Quanta.Semantics.SpirV (F32Bits toSigned32 fromSigned32)
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 1: Unsigned integer binary operations (matches eval_binop for U32)
@@ -101,15 +101,15 @@ def eval_i32_shr (a b : UInt32) : UInt32 :=
 -- ════════════════════════════════════════════════════════════════════
 
 /-- `va + vb` on f32 (Rust `+` operator). -/
-opaque eval_f32_add : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_add : F32Bits → F32Bits → F32Bits
 /-- `va - vb` on f32. -/
-opaque eval_f32_sub : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_sub : F32Bits → F32Bits → F32Bits
 /-- `va * vb` on f32. -/
-opaque eval_f32_mul : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_mul : F32Bits → F32Bits → F32Bits
 /-- `va / vb` on f32. -/
-opaque eval_f32_div : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_div : F32Bits → F32Bits → F32Bits
 /-- `va % vb` on f32. -/
-opaque eval_f32_rem : Float32 → Float32 → Float32
+noncomputable opaque eval_f32_rem : F32Bits → F32Bits → F32Bits
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 4: Comparison operations (matches eval_cmp)
@@ -142,12 +142,12 @@ def eval_i32_gt (a b : UInt32) : Bool := toSigned32 b < toSigned32 a
 def eval_i32_ge (a b : UInt32) : Bool := toSigned32 b ≤ toSigned32 a
 
 -- Float comparisons: axiomatized.
-opaque eval_f32_eq : Float32 → Float32 → Bool
-opaque eval_f32_ne : Float32 → Float32 → Bool
-opaque eval_f32_lt : Float32 → Float32 → Bool
-opaque eval_f32_le : Float32 → Float32 → Bool
-opaque eval_f32_gt : Float32 → Float32 → Bool
-opaque eval_f32_ge : Float32 → Float32 → Bool
+noncomputable opaque eval_f32_eq : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_ne : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_lt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_le : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_gt : F32Bits → F32Bits → Bool
+noncomputable opaque eval_f32_ge : F32Bits → F32Bits → Bool
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 5: Unary operations (matches eval_unary)
@@ -163,20 +163,20 @@ def eval_u32_bitnot (a : UInt32) : UInt32 := a ^^^ 0xFFFFFFFF
 def eval_logical_not (a : Bool) : Bool := !a
 
 /-- `-a.as_f32()` — float negate. -/
-opaque eval_f32_neg : Float32 → Float32
+noncomputable opaque eval_f32_neg : F32Bits → F32Bits
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 6: Cast operations (matches eval_cast)
 -- ════════════════════════════════════════════════════════════════════
 
 /-- `val.as_f32() as u32` — float to unsigned via Rust `as`. -/
-opaque eval_f32_to_u32 : Float32 → UInt32
+noncomputable opaque eval_f32_to_u32 : F32Bits → UInt32
 /-- `val.as_f32() as i32` (stored as UInt32). -/
-opaque eval_f32_to_i32 : Float32 → UInt32
+noncomputable opaque eval_f32_to_i32 : F32Bits → UInt32
 /-- `val.as_i32() as f32`. -/
-opaque eval_i32_to_f32 : UInt32 → Float32
+noncomputable opaque eval_i32_to_f32 : UInt32 → F32Bits
 /-- `val.as_u32() as f32`. -/
-opaque eval_u32_to_f32 : UInt32 → Float32
+noncomputable opaque eval_u32_to_f32 : UInt32 → F32Bits
 /-- Identity cast for same-width integer types. -/
 def eval_bitcast (a : UInt32) : UInt32 := a
 

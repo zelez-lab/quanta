@@ -128,7 +128,7 @@ pub open spec fn fragment_input_location(input_index: nat) -> nat {
 /// T226: vertex varying[k] matches fragment input[k-1] for all k >= 1.
 proof fn t226_varying_alignment(k: nat)
     requires k >= 1,
-    ensures vertex_varying_location(k) == fragment_input_location(k - 1),
+    ensures vertex_varying_location(k) == fragment_input_location((k - 1) as nat),
 {}
 
 // ── T227: Varying forwarding correctness ───────────────────────────

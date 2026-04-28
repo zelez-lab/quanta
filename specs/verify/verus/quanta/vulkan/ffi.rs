@@ -183,6 +183,10 @@ pub open spec fn make_api_version(variant: u32, major: u32, minor: u32, patch: u
 
 proof fn t3608_api_version_1_3()
     ensures make_api_version(0, 1, 3, 0) == (1u32 << 22) | (3u32 << 12),
-{}
+{
+    // Pure bit-pattern computation; bit_vector closes it.
+    assert(make_api_version(0, 1, 3, 0) == (1u32 << 22) | (3u32 << 12))
+        by (bit_vector);
+}
 
 } // verus!

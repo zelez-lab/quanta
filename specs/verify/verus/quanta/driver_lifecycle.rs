@@ -360,7 +360,19 @@ proof fn t1201_alloc_size_from_requirements(
         // Bind offset (0) is aligned
         &&& alloc.bind_offset % alloc.alignment == 0
     }),
-{}
+{
+    // Pin the constructed value so the SMT solver sees the field
+    // assignments coming from `alloc_from_requirements`.
+    let alloc = alloc_from_requirements(requested_size, req_size, req_alignment);
+    assert(alloc.alloc_size == req_size);
+    assert(alloc.alignment == req_alignment);
+    assert(alloc.requested_size == requested_size);
+    assert(alloc.bind_offset == 0);
+    assert(alloc.alloc_size >= alloc.requested_size);
+    assert(alloc.alloc_size % alloc.alignment == 0);
+    assert(alloc.bind_offset % alloc.alignment == 0u64) by (nonlinear_arith)
+        requires alloc.bind_offset == 0u64, alloc.alignment > 0;
+}
 
 // ============================================================================
 // T1202 — Command buffer lifecycle

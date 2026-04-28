@@ -408,3 +408,43 @@ Memory Model extension, NVIDIA PTX ISA 8.5, Metal Shading Language
 hand-authored wasm ↔ JS ABI (post-B⁰; ~500 LOC across `ffi.rs` +
 `web/src/quanta.ts` + helpers). They are stated and named, not proved, and they
 are excluded from the "proven theorems" count.
+
+## Sustainment status (2026-04-28, post-B⁰ + quanta-cli)
+
+The "proven theorems" tally above counts the *intended* proof
+obligations. Current machine state, after this session's sustainment
+pass:
+
+- **Lean** (15 modules) — 14 build cleanly. `Quanta.Scan` builds with
+  9 documented `sorry`s on the Blelloch parallel-scan correctness
+  proofs (`get!_append_left/right`, `take_append_*`,
+  `downSweepTree_correct`, `flat_eq_tree_*`, `flat_scan_*`,
+  `flat_eq_tree_4`). The `native_decide` numeric instances next to
+  them are still verified, so the *computation* is checked; only the
+  symbolic round-trip proofs are stale. Tracked under "Lean re-prove
+  backlog."
+- **Verus** (87 mirror files) — 77 verify cleanly. 10 carry
+  partial proof failures or Verus-toolchain bit-vector encoder bugs
+  (`wave_invariants`, `api/wave` — `push_mask` field on opaque
+  datatypes; `spirv_structure`, `spirv_types`, `uniforms_derive`,
+  `fields_derive`, `vertex_derive`, `vulkan/{device,compute}`,
+  `api/gpu` — proof bodies need re-anchoring against current spec
+  shapes). All 10 still *compile*; the failures are
+  `verified N, errored M` postcondition slips, not type errors.
+- **Kani** — all 8 `emitter_exhaustiveness` harnesses pass (T417,
+  T418, T419, T1000, T1001 × 2, T1002, `tag_uniqueness`). The other
+  Kani files (`f16_precision`, `atomic_correctness`, `cpu_eval`,
+  `format_tables`, `opcodes`, `opcodes_complete`, `wire_full`,
+  `wire_roundtrip`) were not exercised individually — Kani's
+  exhaustive f16 harnesses take hours per harness; out of scope for
+  this pass.
+- **WebGPU chain** — fully proven: `Quanta.Axioms.WebGpu` (A10/A11
+  post-B⁰), `Quanta.Theorems.WebGpu` (T414), the four backend
+  semantics modules (`SpirV`, `Wgsl`, `Msl`, `Llvm`),
+  `Quanta.Semantics.Cpu`, `Quanta.Semantics.Agreement`. Verus
+  `quanta-api/` (T720–T754) all pass.
+
+The B⁰ surface is fully verified. Sustainment of older proof tracks
+is a separate, ongoing effort — failures are documented in-line at
+each affected `proof fn` / `theorem`, and all of them lived before
+B⁰ touched the codebase.

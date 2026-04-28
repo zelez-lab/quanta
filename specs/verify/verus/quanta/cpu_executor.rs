@@ -155,7 +155,7 @@ pub open spec fn no_thread_started(
 ) -> bool {
     (k + 1) < completed.len()
         && n <= completed[(k + 1) as int].len()
-        && forall|tid: nat| tid < n ==> !completed[(k + 1) as int][tid as int]
+        && forall|tid: nat| tid < n ==> !#[trigger] completed[(k + 1) as int][tid as int]
 }
 
 // ── Dispatch model ─────────────────────────────────────────────────
@@ -237,9 +237,11 @@ proof fn t606_lockstep_guarantee(n: nat, segments: Seq<Segment>, k: nat)
         }
     );
     // All threads completed segment k
-    assert forall|tid: nat| tid < n implies intermediate[k as int][tid as int] by {};
+    assert forall|tid: nat|
+        tid < n implies #[trigger] intermediate[k as int][tid as int] by {};
     // No thread started segment k+1
-    assert forall|tid: nat| tid < n implies !intermediate[(k + 1) as int][tid as int] by {};
+    assert forall|tid: nat|
+        tid < n implies !#[trigger] intermediate[(k + 1) as int][tid as int] by {};
 }
 
 // ── T607: Shared memory visibility across barriers ────────────────

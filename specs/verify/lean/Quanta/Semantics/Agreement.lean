@@ -334,11 +334,14 @@ theorem all_backends_agree_on_bitcast (a : UInt32) :
 -- functions agree across all 5 backends for every BinOp variant.
 -- ════════════════════════════════════════════════════════════════════
 
-open SpirV (BinOp CmpOp UnaryOp)
+-- Fully-qualified references: `open SpirV (BinOp ...)` triggers an
+-- ambiguity warning in Lean 4.16 (`open Quanta.Semantics` above
+-- already brings `SpirV` into scope). Use SpirV.BinOp / SpirV.CmpOp /
+-- SpirV.UnaryOp directly to keep the resolution unambiguous.
 
 -- ── BinOp dispatch: unsigned ──────────────────────────────────────
 
-theorem dispatch_binop_u32_agree (op : BinOp) (a b : UInt32) :
+theorem dispatch_binop_u32_agree (op : SpirV.BinOp) (a b : UInt32) :
     SpirV.eval_binop_u32 op a b = Msl.eval_binop_u32 op a b ∧
     Msl.eval_binop_u32 op a b = Wgsl.eval_binop_u32 op a b ∧
     Wgsl.eval_binop_u32 op a b = Llvm.eval_binop_u32 op a b ∧
@@ -347,7 +350,7 @@ theorem dispatch_binop_u32_agree (op : BinOp) (a b : UInt32) :
 
 -- ── BinOp dispatch: signed ────────────────────────────────────────
 
-theorem dispatch_binop_i32_agree (op : BinOp) (a b : UInt32) :
+theorem dispatch_binop_i32_agree (op : SpirV.BinOp) (a b : UInt32) :
     SpirV.eval_binop_i32 op a b = Msl.eval_binop_i32 op a b ∧
     Msl.eval_binop_i32 op a b = Wgsl.eval_binop_i32 op a b ∧
     Wgsl.eval_binop_i32 op a b = Llvm.eval_binop_i32 op a b ∧
@@ -356,7 +359,7 @@ theorem dispatch_binop_i32_agree (op : BinOp) (a b : UInt32) :
 
 -- ── CmpOp dispatch: unsigned ──────────────────────────────────────
 
-theorem dispatch_cmp_u32_agree (op : CmpOp) (a b : UInt32) :
+theorem dispatch_cmp_u32_agree (op : SpirV.CmpOp) (a b : UInt32) :
     SpirV.eval_cmp_u32 op a b = Msl.eval_cmp_u32 op a b ∧
     Msl.eval_cmp_u32 op a b = Wgsl.eval_cmp_u32 op a b ∧
     Wgsl.eval_cmp_u32 op a b = Llvm.eval_cmp_u32 op a b ∧
@@ -365,7 +368,7 @@ theorem dispatch_cmp_u32_agree (op : CmpOp) (a b : UInt32) :
 
 -- ── CmpOp dispatch: signed ────────────────────────────────────────
 
-theorem dispatch_cmp_i32_agree (op : CmpOp) (a b : UInt32) :
+theorem dispatch_cmp_i32_agree (op : SpirV.CmpOp) (a b : UInt32) :
     SpirV.eval_cmp_i32 op a b = Msl.eval_cmp_i32 op a b ∧
     Msl.eval_cmp_i32 op a b = Wgsl.eval_cmp_i32 op a b ∧
     Wgsl.eval_cmp_i32 op a b = Llvm.eval_cmp_i32 op a b ∧
@@ -374,7 +377,7 @@ theorem dispatch_cmp_i32_agree (op : CmpOp) (a b : UInt32) :
 
 -- ── UnaryOp dispatch ──────────────────────────────────────────────
 
-theorem dispatch_unary_u32_agree (op : UnaryOp) (a : UInt32) :
+theorem dispatch_unary_u32_agree (op : SpirV.UnaryOp) (a : UInt32) :
     SpirV.eval_unary_u32 op a = Msl.eval_unary_u32 op a ∧
     Msl.eval_unary_u32 op a = Wgsl.eval_unary_u32 op a ∧
     Wgsl.eval_unary_u32 op a = Llvm.eval_unary_u32 op a ∧
@@ -391,23 +394,23 @@ theorem dispatch_unary_u32_agree (op : UnaryOp) (a : UInt32) :
 /-- Master theorem: SPIR-V and CPU agree on every unsigned binary operation.
     Since all backends chain-agree (Section 6), transitivity gives us
     full 5-backend agreement. -/
-theorem spirv_eq_cpu_binop_u32 (op : BinOp) (a b : UInt32) :
+theorem spirv_eq_cpu_binop_u32 (op : SpirV.BinOp) (a b : UInt32) :
     SpirV.eval_binop_u32 op a b = Cpu.eval_binop_u32 op a b := by
   cases op <;> rfl
 
-theorem spirv_eq_cpu_binop_i32 (op : BinOp) (a b : UInt32) :
+theorem spirv_eq_cpu_binop_i32 (op : SpirV.BinOp) (a b : UInt32) :
     SpirV.eval_binop_i32 op a b = Cpu.eval_binop_i32 op a b := by
   cases op <;> rfl
 
-theorem spirv_eq_cpu_cmp_u32 (op : CmpOp) (a b : UInt32) :
+theorem spirv_eq_cpu_cmp_u32 (op : SpirV.CmpOp) (a b : UInt32) :
     SpirV.eval_cmp_u32 op a b = Cpu.eval_cmp_u32 op a b := by
   cases op <;> rfl
 
-theorem spirv_eq_cpu_cmp_i32 (op : CmpOp) (a b : UInt32) :
+theorem spirv_eq_cpu_cmp_i32 (op : SpirV.CmpOp) (a b : UInt32) :
     SpirV.eval_cmp_i32 op a b = Cpu.eval_cmp_i32 op a b := by
   cases op <;> rfl
 
-theorem spirv_eq_cpu_unary_u32 (op : UnaryOp) (a : UInt32) :
+theorem spirv_eq_cpu_unary_u32 (op : SpirV.UnaryOp) (a : UInt32) :
     SpirV.eval_unary_u32 op a = Cpu.eval_unary_u32 op a := by
   cases op <;> rfl
 

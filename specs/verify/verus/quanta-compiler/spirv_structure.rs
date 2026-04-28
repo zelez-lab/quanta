@@ -161,7 +161,9 @@ pub open spec fn section_index(s: SpirvSection) -> nat {
 }
 
 /// SPIR-V header is 5 words (magic, version, generator, bound, schema).
-pub const HEADER_WORDS: nat = 5;
+/// Spec-only constant; `pub const ... : nat` is rejected by current
+/// Verus (`nat` is ghost), so we expose it via a spec function instead.
+pub open spec fn header_words() -> nat { 5 }
 
 /// Offset of section `s` in the final word buffer, given section sizes.
 /// The header occupies the first 5 words, then sections follow in order.
@@ -169,7 +171,7 @@ pub open spec fn section_offset(sizes: Seq<nat>, s: SpirvSection) -> nat
     recommends sizes.len() == 12,
 {
     let idx = section_index(s);
-    HEADER_WORDS + sum_prefix(sizes, idx)
+    header_words() + sum_prefix(sizes, idx)
 }
 
 /// Sum of first `n` elements of a sequence.
@@ -186,7 +188,7 @@ pub open spec fn sum_prefix(s: Seq<nat>, n: nat) -> nat
 /// Capability section starts right after the 5-word header.
 proof fn capability_is_first(sizes: Seq<nat>)
     requires sizes.len() == 12,
-    ensures section_offset(sizes, SpirvSection::Capability) == HEADER_WORDS,
+    ensures section_offset(sizes, SpirvSection::Capability) == header_words(),
 {
     assert(sum_prefix(sizes, 0) == 0);
 }
@@ -229,7 +231,8 @@ proof fn function_section_is_last(sizes: Seq<nat>)
     requires sizes.len() == 12,
     ensures
         forall|s: SpirvSection|
-            section_offset(sizes, s) <= section_offset(sizes, SpirvSection::Function),
+            #[trigger] section_offset(sizes, s)
+                <= section_offset(sizes, SpirvSection::Function),
 {
     section_order_preserved(sizes);
 }
@@ -238,7 +241,7 @@ proof fn function_section_is_last(sizes: Seq<nat>)
 pub open spec fn total_module_words(sizes: Seq<nat>) -> nat
     recommends sizes.len() == 12,
 {
-    HEADER_WORDS + sum_prefix(sizes, 12)
+    header_words() + sum_prefix(sizes, 12)
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -268,7 +271,8 @@ pub open spec fn type_dedup(
         (cache[key], cache, next_id)
     } else {
         // Cache miss: allocate new ID, insert into cache, bump next_id
-        (next_id, cache.insert(key, next_id), next_id + 1)
+        // Cast to u32 because spec arithmetic widens to int.
+        (next_id, cache.insert(key, next_id), (next_id + 1) as u32)
     }
 }
 
@@ -665,7 +669,7 @@ pub open spec fn barrier_emission() -> BarrierEmission {
         opcode: 224,           // OP_CONTROL_BARRIER
         execution_scope: 2,    // SCOPE_WORKGROUP
         memory_scope: 2,       // SCOPE_WORKGROUP
-        semantics: 0x8 | 0x100, // AcquireRelease | WorkgroupMemory
+        semantics: 0x8u32 | 0x100u32, // AcquireRelease | WorkgroupMemory
     }
 }
 
@@ -789,12 +793,12 @@ pub struct LoopStructure {
 pub open spec fn emit_loop_structure(base: u32) -> LoopStructure
     recommends base <= 0xFFFF_FFF0u32,  // room for 6 sequential IDs
 {
-    let pre_header = base;
-    let header     = base + 1;
-    let cond       = base + 2;
-    let body       = base + 3;
-    let cont       = base + 4;
-    let merge      = base + 5;
+    let pre_header: u32 = base;
+    let header: u32     = (base + 1) as u32;
+    let cond: u32       = (base + 2) as u32;
+    let body: u32       = (base + 3) as u32;
+    let cont: u32       = (base + 4) as u32;
+    let merge: u32      = (base + 5) as u32;
 
     LoopStructure {
         pre_header: LoopBlock {
@@ -1026,10 +1030,10 @@ pub struct LoopCounterPhi {
 pub open spec fn emit_loop_counter_phi(base: u32, zero_id: u32) -> LoopCounterPhi
     recommends base <= 0xFFFF_FFF0u32,
 {
-    let pre_header = base;
-    let continue_label = base + 4;
-    let phi_id = base + 6;   // alloc_id after 6 label allocations
-    let inc_id = base + 7;   // alloc_id for forward-reference
+    let pre_header: u32 = base;
+    let continue_label: u32 = (base + 4) as u32;
+    let phi_id: u32 = (base + 6) as u32;   // alloc_id after 6 label allocations
+    let inc_id: u32 = (base + 7) as u32;   // alloc_id for forward-reference
 
     LoopCounterPhi {
         result_id: phi_id,
@@ -1390,7 +1394,7 @@ pub open spec fn id_allocator_new() -> IdAllocator {
 pub open spec fn alloc_id(state: IdAllocator) -> (u32, IdAllocator)
     recommends state.next_id < 0xFFFF_FFFFu32,
 {
-    (state.next_id, IdAllocator { next_id: state.next_id + 1 })
+    (state.next_id, IdAllocator { next_id: (state.next_id + 1) as u32 })
 }
 
 /// After n allocations from initial state, next_id == 1 + n.
@@ -1564,7 +1568,7 @@ proof fn t1101b_null_terminator_present(str_len: nat)
 proof fn t1101b_padding_is_zero(str_len: nat)
     ensures ({
         let word_count = string_words_len(str_len);
-        let last_byte_pos = word_count * 4 - 1;
+        let last_byte_pos = (word_count * 4 - 1) as nat;
         // All bytes from str_len onward are 0
         string_words_byte(str_len, last_byte_pos)
     }),
@@ -1976,8 +1980,8 @@ proof fn t1400b_atomic_cas_word_count()
 {
     assert(encode_word(9u16, 230u16) >> 16u32 == 9u32) by (bit_vector)
         requires
-            9u16 < 0x10000u16,
-            230u16 < 0x10000u16;
+            9u16 < 0xFFFFu16,
+            230u16 < 0xFFFFu16;
 }
 
 /// T1400c: The opcode field of the header word is 230.
@@ -2055,7 +2059,7 @@ pub struct AtomicSemantics {
 pub open spec fn atomic_operation_semantics() -> AtomicSemantics {
     AtomicSemantics {
         scope: 1,              // Device
-        memory_semantics: 0x8 | 0x100, // AcqRel | WorkgroupMemory
+        memory_semantics: 0x8u32 | 0x100u32, // AcqRel | WorkgroupMemory
     }
 }
 

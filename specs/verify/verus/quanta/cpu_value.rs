@@ -165,22 +165,32 @@ pub open spec fn f16_zero_as_f32(bits: u16) -> u32 {
 /// T631a: Positive zero (+0.0) converts to f32 positive zero.
 proof fn t631a_pos_zero()
     ensures is_f16_zero(0x0000u16) && f16_zero_as_f32(0x0000u16) == 0u32,
-{}
+{
+    assert(is_f16_zero(0x0000u16)) by (bit_vector);
+    assert(f16_zero_as_f32(0x0000u16) == 0u32) by (bit_vector);
+}
 
 /// T631b: Negative zero (-0.0) converts to f32 negative zero.
 proof fn t631b_neg_zero()
     ensures is_f16_zero(0x8000u16) && f16_zero_as_f32(0x8000u16) == 0x80000000u32,
-{}
+{
+    assert(is_f16_zero(0x8000u16)) by (bit_vector);
+    assert(f16_zero_as_f32(0x8000u16) == 0x80000000u32) by (bit_vector);
+}
 
 /// T632a: Positive inf (0x7C00) is detected as inf.
 proof fn t632a_pos_inf()
     ensures is_f16_inf(0x7C00u16),
-{}
+{
+    assert(is_f16_inf(0x7C00u16)) by (bit_vector);
+}
 
 /// T632b: NaN (0x7C01) is detected as NaN.
 proof fn t632b_nan()
     ensures is_f16_nan(0x7C01u16),
-{}
+{
+    assert(is_f16_nan(0x7C01u16)) by (bit_vector);
+}
 
 // ── T633: scalar_size ──────────────────────────────────────────────
 

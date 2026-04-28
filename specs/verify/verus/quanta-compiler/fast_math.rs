@@ -358,6 +358,15 @@ proof fn t1502b_individual_flags_present()
         llvm_all_fast_math_flags() & LLVM_FMF_AFN != 0u32,
         llvm_all_fast_math_flags() & LLVM_FMF_REASSOC != 0u32,
 {
+    // Anchor the union value first so the SMT solver sees the literal.
+    assert(llvm_all_fast_math_flags() == 0x7Fu32) by (bit_vector);
+    assert(LLVM_FMF_NNAN == 0x01u32);
+    assert(LLVM_FMF_NINF == 0x02u32);
+    assert(LLVM_FMF_NSZ == 0x04u32);
+    assert(LLVM_FMF_ARCP == 0x08u32);
+    assert(LLVM_FMF_CONTRACT == 0x10u32);
+    assert(LLVM_FMF_AFN == 0x20u32);
+    assert(LLVM_FMF_REASSOC == 0x40u32);
     assert(0x7Fu32 & 0x01u32 != 0u32) by (bit_vector);
     assert(0x7Fu32 & 0x02u32 != 0u32) by (bit_vector);
     assert(0x7Fu32 & 0x04u32 != 0u32) by (bit_vector);
@@ -371,6 +380,7 @@ proof fn t1502b_individual_flags_present()
 proof fn t1502c_no_extraneous_bits()
     ensures llvm_all_fast_math_flags() & 0xFFFFFF80u32 == 0u32,
 {
+    assert(llvm_all_fast_math_flags() == 0x7Fu32) by (bit_vector);
     assert(0x7Fu32 & 0xFFFFFF80u32 == 0u32) by (bit_vector);
 }
 

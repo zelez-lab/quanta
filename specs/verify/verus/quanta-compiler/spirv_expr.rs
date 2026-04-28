@@ -315,7 +315,7 @@ pub open spec fn if_else_labels_distinct(then_l: u32, else_l: u32, merge_l: u32)
 /// they are guaranteed distinct.
 proof fn t237_sequential_labels_distinct(base: u32)
     requires base < u32::MAX - 2,
-    ensures  if_else_labels_distinct(base, base + 1, base + 2),
+    ensures  if_else_labels_distinct(base, (base + 1) as u32, (base + 2) as u32),
 {}
 
 // ── T238: Brace stripping ──────────────────────────────────────────

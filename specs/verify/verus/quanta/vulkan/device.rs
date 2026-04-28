@@ -26,7 +26,7 @@ verus! {
 pub struct HandleAllocator { pub counter: u64 }
 
 pub open spec fn alloc_handle(pre: HandleAllocator) -> (u64, HandleAllocator) {
-    let handle = pre.counter + 1;
+    let handle: u64 = (pre.counter + 1) as u64;
     (handle, HandleAllocator { counter: handle })
 }
 
@@ -103,9 +103,16 @@ proof fn t3003_cmd_pool_reuse(pre: CmdBufferPool, cmd: nat)
 proof fn t3003_take_return_preserves_size(pre: CmdBufferPool)
     requires pre.available.len() > 0,
     ensures ({
-        let (Some(cmd), mid) = pool_take(pre);
-        let post = pool_return(mid, cmd);
-        post.available.len() == pre.available.len()
+        // Refutable patterns on ghost lets need an explicit `match`
+        // in current Verus.
+        let result = pool_take(pre);
+        match result.0 {
+            Some(cmd) => {
+                let post = pool_return(result.1, cmd);
+                post.available.len() == pre.available.len()
+            }
+            None => true,
+        }
     }),
 {}
 

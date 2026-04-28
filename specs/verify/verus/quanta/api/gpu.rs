@@ -81,7 +81,7 @@ proof fn t1402_read_count(count: nat, elem_size: nat)
 pub open spec fn div_ceil(a: u32, b: u32) -> u32
     recommends b > 0,
 {
-    if a == 0 { 0u32 } else { ((a - 1) / b) + 1 }
+    if a == 0 { 0u32 } else { ((((a - 1) as u32) / b) + 1) as u32 }
 }
 
 /// T1403: dispatch(quarks) uses ceil(quarks / workgroup_size) groups.
@@ -95,10 +95,10 @@ proof fn t1403_dispatch_groups(quarks: u32, wg_size: u32)
         assert(div_ceil(0u32, wg_size) == 0u32);
     } else {
         let groups = div_ceil(quarks, wg_size);
-        assert(groups == ((quarks - 1) / wg_size) + 1);
+        assert(groups == ((((quarks - 1) as u32) / wg_size) + 1) as u32);
         // (((quarks-1)/wg) + 1) * wg >= quarks
         assert((groups as nat) * (wg_size as nat) >= quarks as nat) by (nonlinear_arith)
-            requires groups == ((quarks - 1) / wg_size) + 1, wg_size > 0, quarks > 0;
+            requires groups == ((((quarks - 1) as u32) / wg_size) + 1) as u32, wg_size > 0, quarks > 0;
     }
 }
 
@@ -107,7 +107,7 @@ proof fn t1403_exact_multiple(wg_size: u32)
     requires wg_size > 0,
     ensures div_ceil(wg_size, wg_size) == 1u32,
 {
-    assert(div_ceil(wg_size, wg_size) == ((wg_size - 1) / wg_size) + 1);
+    assert(div_ceil(wg_size, wg_size) == ((((wg_size - 1) as u32) / wg_size) + 1) as u32);
 }
 
 // ════════════════════════════════════════════════════════════════════════

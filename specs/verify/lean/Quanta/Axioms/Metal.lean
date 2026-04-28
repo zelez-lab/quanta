@@ -34,8 +34,13 @@ opaque MTLBuffer : Type := Unit
 /-- Opaque handle to a Metal compute pipeline state. -/
 opaque MTLComputePipelineState : Type := Unit
 
-/-- Raw pointer to buffer contents (shared CPU/GPU memory). -/
-opaque Ptr : Type := Unit
+/-- Raw pointer to buffer contents (shared CPU/GPU memory).
+    Modeled as `Unit` because the proof layer never inspects pointer
+    contents — only that buffer-contents queries terminate and round-
+    trip through Metal's shared-storage semantics. Kept transparent
+    (not `opaque`) so the placeholder body of `mtl_buffer_contents`
+    elaborates against `Unit`. -/
+abbrev Ptr : Type := Unit
 
 -- ════════════════════════════════════════════════════════════════════
 -- A1: Metal driver operations

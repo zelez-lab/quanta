@@ -52,13 +52,27 @@ theorem bitnot_is_200 : ∀ fk, (unaryOpToSpv .BitNot fk).toNat = 200 := by
 theorem logicalnot_is_168 : ∀ fk, (unaryOpToSpv .LogicalNot fk).toNat = 168 := by
   intro fk; cases fk <;> rfl
 
--- Theorem: the mapping is injective on opcode numbers
--- (no two different (UnaryOp, FloatKind) pairs produce the same opcode)
-theorem unaryop_mapping_injective :
+-- The original sketch claimed `op1 = op2 ∧ (op1 = .Neg → fk1 = fk2)`,
+-- but `Neg IsSignedInt` and `Neg IsUnsignedInt` both map to `.SNegate`,
+-- so `fk1 = fk2` doesn't follow. Right pair of theorems mirrors the
+-- BinOp story in `Opcodes.lean`: numeric tags are injective on
+-- `SpvUnaryOp`, and `unaryOpToSpv` is consistent under `toNat`
+-- equality. Round-tripping the wire format only needs that the
+-- `SpvUnaryOp` is recoverable, not the input `(op, fk)` pair.
+
+/-- `SpvUnaryOp.toNat` is injective on the inductive variants. -/
+theorem spv_unary_toNat_injective :
+    ∀ x y : SpvUnaryOp, x.toNat = y.toNat → x = y := by
+  intro x y h
+  cases x <;> cases y <;> simp_all [SpvUnaryOp.toNat]
+
+/-- Two `(op, fk)` inputs that produce the same numeric opcode produce
+    the same `SpvUnaryOp` value. -/
+theorem unaryop_mapping_consistent :
     ∀ op1 op2 fk1 fk2,
       (unaryOpToSpv op1 fk1).toNat = (unaryOpToSpv op2 fk2).toNat →
-      op1 = op2 ∧ (op1 = .Neg → fk1 = fk2) := by
+      unaryOpToSpv op1 fk1 = unaryOpToSpv op2 fk2 := by
   intro op1 op2 fk1 fk2 h
-  cases op1 <;> cases op2 <;> cases fk1 <;> cases fk2 <;> simp_all [unaryOpToSpv, SpvUnaryOp.toNat]
+  exact spv_unary_toNat_injective _ _ h
 
 end Quanta.UnaryOps

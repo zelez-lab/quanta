@@ -40,7 +40,7 @@ pub open spec fn safe_rem_u32(a: u32, b: u32) -> u32 {
 }
 
 pub open spec fn safe_div_i32(a: i32, b: i32) -> i32 {
-    if b == 0i32 { 0i32 } else { a / b }
+    if b == 0i32 { 0i32 } else { (a / b) as i32 }
 }
 
 /// T640a: Division by zero returns 0 for u32.
@@ -160,8 +160,8 @@ proof fn t642f_trichotomy(a: u32, b: u32)
 // ── T643: Unary Neg self-inverse ───────────────────────────────────
 
 pub open spec fn neg_i32(a: i32) -> i32 {
-    // wrapping_neg
-    if a == i32::MIN { i32::MIN } else { -a }
+    // wrapping_neg; cast to i32 since spec arithmetic widens to int.
+    if a == i32::MIN { i32::MIN } else { (-a) as i32 }
 }
 
 /// T643a: Neg(Neg(x)) == x for x != i32::MIN.

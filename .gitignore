@@ -4,6 +4,19 @@ Cargo.lock
 dist/
 libopcodes_complete.rlib
 
+# Verus side-effect build artifacts (`verus --crate-type=lib` drops
+# .rlib files in the cwd of the verifier — they're not source).
+/lib*.rlib
+
+# Kani per-harness side-effect outputs (run from specs/verify/kani/).
+specs/verify/kani/*.rlib
+specs/verify/kani/*.out
+specs/verify/kani/*.kani-metadata.json
+specs/verify/kani/*.pretty_name_map.json
+specs/verify/kani/*.type_map.json
+specs/verify/kani/*.symtab.json
+specs/verify/kani/*kani_metadata*
+
 # Lean build artifacts (specs/verify/lean/)
 specs/verify/lean/.lake/
 specs/verify/lean/lake-manifest.json

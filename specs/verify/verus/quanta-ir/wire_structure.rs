@@ -51,7 +51,19 @@ proof fn u32_le_roundtrip(v: u32)
         decode_u32_le(enc[0], enc[1], enc[2], enc[3]) == v
     }),
 {
-    // Verus bit-vector reasoning handles this.
+    // The proof: (v & 0xff) as u8 as u32 == v & 0xff (i.e., the cast
+    // round-trip is identity for values that fit in 8 bits). With each
+    // byte slot anchored that way, OR-shift reconstructs `v`.
+    assert(
+          (v & 0xffu32)
+        | (((v >> 8u32) & 0xffu32) << 8u32)
+        | (((v >> 16u32) & 0xffu32) << 16u32)
+        | (((v >> 24u32) & 0xffu32) << 24u32) == v
+    ) by (bit_vector);
+    assert(((v & 0xffu32) as u8) as u32 == v & 0xffu32) by (bit_vector);
+    assert((((v >> 8u32) & 0xffu32) as u8) as u32 == (v >> 8u32) & 0xffu32) by (bit_vector);
+    assert((((v >> 16u32) & 0xffu32) as u8) as u32 == (v >> 16u32) & 0xffu32) by (bit_vector);
+    assert((((v >> 24u32) & 0xffu32) as u8) as u32 == (v >> 24u32) & 0xffu32) by (bit_vector);
 }
 
 // -- u16 little-endian encode/decode --
@@ -73,6 +85,9 @@ proof fn u16_le_roundtrip(v: u16)
         decode_u16_le(enc[0], enc[1]) == v
     }),
 {
+    assert((v & 0xffu16) | (((v >> 8u16) & 0xffu16) << 8u16) == v) by (bit_vector);
+    assert(((v & 0xffu16) as u8) as u16 == v & 0xffu16) by (bit_vector);
+    assert((((v >> 8u16) & 0xffu16) as u8) as u16 == (v >> 8u16) & 0xffu16) by (bit_vector);
 }
 
 // -- u64 little-endian encode/decode --
@@ -139,11 +154,21 @@ proof fn t212_len_prefixed_string_roundtrip(data: Seq<u8>)
     }),
 {
     let wire = encode_len_prefixed(data);
-    // The first 4 bytes are encode_u32_le(data.len() as u32)
     let prefix = encode_u32_le(data.len() as u32);
+    // Wire length: 4-byte prefix + data.
+    assert(prefix.len() == 4);
+    assert(wire.len() == prefix.len() + data.len());
+    assert(wire.len() == 4 + data.len());
+    // First 4 bytes form the length prefix; tail is the payload.
     assert(wire.subrange(0, 4) =~= prefix);
-    // The remaining bytes are data
     assert(wire.subrange(4, wire.len() as int) =~= data);
+    // Element-wise equality of wire[i] = prefix[i] for i ∈ [0,4).
+    assert(wire[0] == prefix[0]);
+    assert(wire[1] == prefix[1]);
+    assert(wire[2] == prefix[2]);
+    assert(wire[3] == prefix[3]);
+    // Reuse the u32 round-trip lemma to discharge the decode equality.
+    u32_le_roundtrip(data.len() as u32);
 }
 
 // =========================================================================
@@ -360,6 +385,7 @@ proof fn t215e_f32_bits_roundtrip(bits: u32)
         decode_u32_le(enc[0], enc[1], enc[2], enc[3]) == bits
     }),
 {
+    u32_le_roundtrip(bits);
 }
 
 /// T215f: F64 bit-level roundtrip — f64::to_bits then f64::from_bits.
@@ -371,6 +397,28 @@ proof fn t215f_f64_bits_roundtrip(bits: u64)
         &&& decode_u64_le(enc) == bits
     }),
 {
+    let enc = encode_u64_le(bits);
+    assert(enc.len() == 8);
+    // Round-trip: OR of shifted bytes reconstructs `bits`.
+    assert(
+          (bits & 0xffu64)
+        | (((bits >> 8u64) & 0xffu64) << 8u64)
+        | (((bits >> 16u64) & 0xffu64) << 16u64)
+        | (((bits >> 24u64) & 0xffu64) << 24u64)
+        | (((bits >> 32u64) & 0xffu64) << 32u64)
+        | (((bits >> 40u64) & 0xffu64) << 40u64)
+        | (((bits >> 48u64) & 0xffu64) << 48u64)
+        | (((bits >> 56u64) & 0xffu64) << 56u64) == bits
+    ) by (bit_vector);
+    // u8↔u64 cast round-trips for ≤8-bit values.
+    assert(((bits & 0xffu64) as u8) as u64 == bits & 0xffu64) by (bit_vector);
+    assert((((bits >> 8u64) & 0xffu64) as u8) as u64 == (bits >> 8u64) & 0xffu64) by (bit_vector);
+    assert((((bits >> 16u64) & 0xffu64) as u8) as u64 == (bits >> 16u64) & 0xffu64) by (bit_vector);
+    assert((((bits >> 24u64) & 0xffu64) as u8) as u64 == (bits >> 24u64) & 0xffu64) by (bit_vector);
+    assert((((bits >> 32u64) & 0xffu64) as u8) as u64 == (bits >> 32u64) & 0xffu64) by (bit_vector);
+    assert((((bits >> 40u64) & 0xffu64) as u8) as u64 == (bits >> 40u64) & 0xffu64) by (bit_vector);
+    assert((((bits >> 48u64) & 0xffu64) as u8) as u64 == (bits >> 48u64) & 0xffu64) by (bit_vector);
+    assert((((bits >> 56u64) & 0xffu64) as u8) as u64 == (bits >> 56u64) & 0xffu64) by (bit_vector);
 }
 
 /// T215g: Bool encoding is canonical — only 0 and 1 are valid.
