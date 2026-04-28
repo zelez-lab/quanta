@@ -250,6 +250,30 @@ theorem heapLookup_heapStore_eq
   simp [KOps.heapStore, KOps.heapLookup]
 
 -- ════════════════════════════════════════════════════════════════════
+-- Alignment 6.5 — varsConsistent / heapConsistent extension lemmas
+-- ════════════════════════════════════════════════════════════════════
+--
+-- These lemmas state how `varsConsistent` / `heapConsistent` evolve
+-- across a `bindVar` insertion, and how `heapConsistent` carries
+-- through ops that don't touch `params`. They're the supporting
+-- structural lemmas the T5A0–T5A6 stmt-level preservation theorems
+-- need to extend `consistentState` across each stmt.
+
+/-- **Alignment 6.5 (heapConsistent through bindVar)**: `bindVar`
+    only touches `ctx.vars`; `ctx.params` is unchanged. So
+    `heapConsistent` carries through verbatim, modulo the
+    `params`-field equality on the structure. -/
+theorem heapConsistent_bindVar_invariant
+    (ctx : EmitCtx) (h : Heap) (kh : KOps.Heap)
+    (name : Ident) (r : KOps.Reg)
+    (h_pre : heapConsistent h ctx kh)
+    : heapConsistent h (ctx.bindVar name r) kh := by
+  intro n slot idx v h_param h_lookup
+  -- (ctx.bindVar name r).params = ctx.params definitionally, so
+  -- the find? expressions are syntactically identical.
+  exact h_pre n slot idx v h_param h_lookup
+
+-- ════════════════════════════════════════════════════════════════════
 -- Alignment 7 — single-op KOps eval reductions
 -- ════════════════════════════════════════════════════════════════════
 --
@@ -783,9 +807,11 @@ theorem t597_blockE_preservation
     iff `rhs` preserves and the post-state binds `name` to the
     same value the rhs produced.
 
-    Proof sketch: T592–T597 (whichever applies to the rhs) gives
-    the rhs's value in some destination register; `bindVar` adds
-    the entry to `ctx.vars`; `varsConsistent` extends. -/
+    Open: the proof requires extending `varsConsistent` after a
+    `bindVar` insertion, which involves manual `List.find?`
+    case-splits on whether the lookup name matches the just-inserted
+    one. The supporting lemma `varsConsistent_bind_extends` is
+    deferred to a follow-up commit. -/
 theorem t5a0_letDecl_preservation
     (ctx : EmitCtx) (name : Ident) (ty : Option Scalar) (rhs : Expr)
     (s : State) (st : KOps.State)
