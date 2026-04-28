@@ -104,38 +104,66 @@ fn stage(root: &Path, example: &str, profile: &str) -> Result<()> {
 
     // Clear stale build artifacts in the example dir so a renamed
     // module (e.g. yesterday's `glue.js` after the entry-point rename)
-    // doesn't linger and silently shadow the new one. We only delete
-    // build-output extensions; index.html, src/, Cargo.toml stay.
-    for entry in std::fs::read_dir(&dst)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let kept = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_none_or(|ext| !matches!(ext, "js" | "wasm" | "map"));
-        if !kept {
-            std::fs::remove_file(&path)?;
-        }
+    // doesn't linger and silently shadow the new one. Sweep the
+    // top-level files plus `generated/` (B′ codegen output dir).
+    // We only delete build-output extensions; index.html, src/,
+    // Cargo.toml stay.
+    sweep_stale(&dst)?;
+    let generated_dir = dst.join("generated");
+    if generated_dir.exists() {
+        std::fs::remove_dir_all(&generated_dir)?;
     }
 
     let wasm_dst = dst.join(format!("{example}.wasm"));
     std::fs::copy(&wasm_src, &wasm_dst)?;
 
     let dist = root.join("web").join("dist");
-    for entry in std::fs::read_dir(&dist)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            let to = dst.join(entry.file_name());
-            std::fs::copy(entry.path(), to)?;
-        }
-    }
+    copy_dir_recursive(&dist, &dst)?;
     eprintln!(
         "[quanta build] ready: {}/index.html (wasm + quanta.js in place)",
         dst.display()
     );
+    Ok(())
+}
+
+/// Mirror every file under `src` into `dst`, preserving subdirectory
+/// structure. Needed because `web/dist/` contains nested generated/
+/// modules (B′ codegen output) that the example dir's `quanta.js`
+/// imports as `./generated/codes.js`.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if kind.is_dir() {
+            std::fs::create_dir_all(&to)?;
+            copy_dir_recursive(&from, &to)?;
+        } else if kind.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Delete every file at the top of `dir` whose extension is a build
+/// output kind (`.js`, `.wasm`, `.map`). Spares index.html, src/,
+/// Cargo.toml, and any other source that lives there.
+fn sweep_stale(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let stale = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|ext| matches!(ext, "js" | "wasm" | "map"));
+        if stale {
+            std::fs::remove_file(&path)?;
+        }
+    }
     Ok(())
 }
 
