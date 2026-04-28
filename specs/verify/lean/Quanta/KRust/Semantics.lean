@@ -239,7 +239,7 @@ def evalCast (v : Value) : Scalar → Option Value
 -- with no loops eval to completion at any fuel ≥ syntax depth.
 
 mutual
-partial def evalExpr (fuel : Nat) (s : State) : Expr → Option (Value × State)
+def evalExpr (fuel : Nat) (s : State) : Expr → Option (Value × State)
   | .lit l => (evalLit l).map (fun v => (v, s))
   | .path n => (s.env.lookup n).map (fun v => (v, s))
   | .binary op a b => do
@@ -296,8 +296,9 @@ partial def evalExpr (fuel : Nat) (s : State) : Expr → Option (Value × State)
   | .atomicCall _ _  => none   -- atomic semantics — separate module
   | .identityCall _  => none   -- thread-id values supplied by dispatch context (E.5)
   | .method _ _ _    => none   -- normalised away in E.3 — same target as mathCall
+  termination_by e => (fuel, sizeOf e)
 
-partial def evalStmt (fuel : Nat) (s : State) : Stmt → Option State
+def evalStmt (fuel : Nat) (s : State) : Stmt → Option State
   | .letDecl name _ rhs => do
       let (v, s1) ← evalExpr fuel s rhs
       pure { s1 with env := s1.env.bind name v }
@@ -324,58 +325,69 @@ partial def evalStmt (fuel : Nat) (s : State) : Stmt → Option State
       | .vBool false => evalStmts fuel s1 elseS
       | _ => none
   | .forRange name lo hi body =>
-      let rec forLoop (f : Nat) (st : State) (j n : Nat) : Option State :=
-        match f with
-        | 0 => none
-        | f+1 =>
-            if j ≥ n then some st.reset_broke
-            else if st.broke then some st.reset_broke
-            else
-              let st' := { st with env := st.env.bind name (.vU32 (UInt32.ofNat j)) }
-              match evalStmts f st' body with
-              | none => none
-              | some st'' => forLoop f st'' (j + 1) n
-      do
-        let (vlo, s1) ← evalExpr fuel s lo
-        let (vhi, s2) ← evalExpr fuel s1 hi
-        match vlo, vhi with
-        | .vU32 a, .vU32 b => forLoop fuel s2 a.toNat b.toNat
-        | _, _ => none
-  | .whileS cond body =>
-      let rec whileLoop (f : Nat) (st : State) : Option State :=
-        match f with
-        | 0 => none
-        | f+1 =>
-            if st.broke then some st.reset_broke
-            else
-              match evalExpr f st cond with
-              | some (.vBool false, st') => some st'
-              | some (.vBool true, st')  =>
-                  match evalStmts f st' body with
-                  | none => none
-                  | some st'' => whileLoop f st''
-              | _ => none
-      whileLoop fuel s
-  | .loopS body =>
-      let rec bareLoop (f : Nat) (st : State) : Option State :=
-        match f with
-        | 0 => none
-        | f+1 =>
-            if st.broke then some st.reset_broke
-            else
-              match evalStmts f st body with
-              | none => none
-              | some st' => bareLoop f st'
-      bareLoop fuel s
+      match evalExpr fuel s lo, body with
+      | none, _ => none
+      | some (vlo, _), _ =>
+          match evalExpr fuel s hi with
+          | none => none
+          | some (vhi, s2) =>
+              match vlo, vhi with
+              | .vU32 a, .vU32 b => evalForLoop fuel s2 name a.toNat b.toNat body
+              | _, _ => none
+  | .whileS cond body => evalWhileLoop fuel s cond body
+  | .loopS body       => evalBareLoop fuel s body
   | .breakS => some { s with broke := true }
   | .callS _ _ => none   -- atomic / debug stmts — not at this layer
+  termination_by st => (fuel, sizeOf st)
 
-partial def evalStmts (fuel : Nat) (s : State) : List Stmt → Option State
+/-- For-loop iteration helper. Lifted out of `evalStmt`'s `let rec`
+    so the mutual block has a single termination measure per
+    function. Recurses on its own `fuel` parameter. -/
+def evalForLoop : Nat → State → Ident → Nat → Nat → List Stmt → Option State
+  | 0,     _,  _,    _, _, _    => none
+  | f+1,   st, name, j, n, body =>
+      if j ≥ n then some st.reset_broke
+      else if st.broke then some st.reset_broke
+      else
+        let st' := { st with env := st.env.bind name (.vU32 (UInt32.ofNat j)) }
+        match evalStmts f st' body with
+        | none      => none
+        | some st'' => evalForLoop f st'' name (j + 1) n body
+  termination_by f _ => (f, 0)
+
+/-- While-loop iteration helper. -/
+def evalWhileLoop : Nat → State → Expr → List Stmt → Option State
+  | 0,   _,  _,    _    => none
+  | f+1, st, cond, body =>
+      if st.broke then some st.reset_broke
+      else
+        match evalExpr f st cond with
+        | some (.vBool false, st') => some st'
+        | some (.vBool true, st')  =>
+            match evalStmts f st' body with
+            | none      => none
+            | some st'' => evalWhileLoop f st'' cond body
+        | _ => none
+  termination_by f _ => (f, 0)
+
+/-- Bare-loop iteration helper. -/
+def evalBareLoop : Nat → State → List Stmt → Option State
+  | 0,   _,  _    => none
+  | f+1, st, body =>
+      if st.broke then some st.reset_broke
+      else
+        match evalStmts f st body with
+        | none     => none
+        | some st' => evalBareLoop f st' body
+  termination_by f _ => (f, 0)
+
+def evalStmts (fuel : Nat) (s : State) : List Stmt → Option State
   | []      => some s
   | st :: rest => do
       let s1 ← evalStmt fuel s st
       if s1.broke then some s1
       else evalStmts fuel s1 rest
+  termination_by xs => (fuel, sizeOf xs)
 end
 
 end Quanta.KRust

@@ -827,7 +827,10 @@ theorem t5a6_loopS_preservation
 
 /-- **T5A7 — breakS_preservation**: trivial — the source side
     sets `broke := true`; the destination emits `breakOp` which
-    sets the same flag on the KOps state. -/
+    sets the same flag on the KOps state. With `evalStmt` now
+    `def`, the source side reduces; the open obligation is the
+    `evalOps_append` composition lemma needed when `ctx.ops`
+    already contains entries from earlier in translation. -/
 theorem t5a7_breakS_preservation
     (ctx : EmitCtx) (s : State) (st : KOps.State)
     : ∀ s' ctx',
