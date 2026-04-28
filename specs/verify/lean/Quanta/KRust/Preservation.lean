@@ -95,6 +95,40 @@ def consistentState (s : State) (ctx : EmitCtx) (st : KOps.State) : Prop :=
   ∧ heapConsistent s.heap ctx st.heap
 
 -- ════════════════════════════════════════════════════════════════════
+-- Value-level alignment lemmas
+-- ════════════════════════════════════════════════════════════════════
+--
+-- These lemmas state that the primitive helpers on both sides
+-- agree on a per-value basis. They do *not* require `evalExpr` /
+-- `evalStmt` to unfold (the eval functions are still `partial def`
+-- pending the lex-order termination measure noted in T590); they
+-- only quote the pure `def` helpers (`evalLit`, `evalConst`,
+-- `constOfLit`, `evalCast`, `dispatchScalar`). When the eval
+-- functions land as `def`, T590-T5A7's proofs reduce via these
+-- lemmas plus a structural unfolding of `evalExpr`/`evalStmt`.
+
+/-- **Alignment 1 (bool case)**: for every boolean literal, the
+    source-side `evalLit` and the translator-side `evalConst ∘
+    constOfLit` produce the same `Value`.
+
+    This is the simplest alignment lemma — the boolean fragment of
+    the value alphabet has no encoding complexity. The full
+    statement (covering int and float literals) reduces to the same
+    case analysis once `evalLit`'s integer/float arms are
+    desugared; left as a follow-up since each arm tickles a
+    different `simp`-set quirk and the per-rule lemmas T590-T5A7
+    remain blocked on the `partial def` → `def` conversion either
+    way.  -/
+theorem evalConst_eq_evalLit_bool
+    (b : Bool) (cv : KOps.ConstValue) (sty : KOps.Scalar)
+    (h_const : constOfLit (Lit.bool b) = some (cv, sty))
+    : evalLit (Lit.bool b) = some (KOps.evalConst cv) := by
+  simp [constOfLit] at h_const
+  obtain ⟨h1, _⟩ := h_const
+  subst h1
+  rfl
+
+-- ════════════════════════════════════════════════════════════════════
 -- T590 — Lit preservation
 -- ════════════════════════════════════════════════════════════════════
 

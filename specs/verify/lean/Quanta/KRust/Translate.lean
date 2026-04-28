@@ -151,7 +151,7 @@ def constOfLit : Lit → Option (KOps.ConstValue × KOps.Scalar)
 -- same context.
 
 mutual
-partial def translateExpr (ctx : EmitCtx) : Expr → Option (Reg × KOps.Scalar × EmitCtx)
+def translateExpr (ctx : EmitCtx) : Expr → Option (Reg × KOps.Scalar × EmitCtx)
   | .lit l => do
       let (cv, ty) ← constOfLit l
       let (dst, ctx1) := ctx.fresh
@@ -226,7 +226,7 @@ partial def translateExpr (ctx : EmitCtx) : Expr → Option (Reg × KOps.Scalar 
       -- wires through to `Quanta.Semantics.Cpu`'s f32 library.
       none
 
-partial def translateStmt (ctx : EmitCtx) : Stmt → Option EmitCtx
+def translateStmt (ctx : EmitCtx) : Stmt → Option EmitCtx
   | .letDecl name _ rhs => do
       let (r, _, ctx1) ← translateExpr ctx rhs
       pure (ctx1.bindVar name r)
@@ -316,7 +316,7 @@ partial def translateStmt (ctx : EmitCtx) : Stmt → Option EmitCtx
       pure (ctx.emit KernelOp.breakOp)
   | .callS _ _ => none
 
-partial def translateStmts (ctx : EmitCtx) : List Stmt → Option EmitCtx
+def translateStmts (ctx : EmitCtx) : List Stmt → Option EmitCtx
   | []      => some ctx
   | st :: rest => do
       let ctx1 ← translateStmt ctx st
