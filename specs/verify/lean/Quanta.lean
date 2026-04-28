@@ -38,6 +38,10 @@ import Quanta.Axioms.Wgsl
 import Quanta.KRust.Syntax
 import Quanta.KRust.Semantics
 
+-- KernelOps view + semantics (E.2)
+import Quanta.KOps.Syntax
+import Quanta.KOps.Semantics
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
