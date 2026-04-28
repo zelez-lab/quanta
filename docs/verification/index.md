@@ -139,6 +139,15 @@ Metal/Vulkan drivers in the verification scheme:
   `webgpu.idl` alone.
 * **T414** — first end-to-end conditional theorem: given A10.1+A10.2
   and T410 (emitter exhaustiveness), `wave_jit` always succeeds.
+* **B (2026-04-28, scaffolded)** — WGSL grammar mirror in
+  `specs/verify/lean/Quanta/Wgsl/Grammar.lean`. Models the WGSL
+  fragment Quanta's emitter produces (enable directives, bindings,
+  fn decls, statements, expressions, types) and a structural
+  `Source.wellFormed : Source → Bool`. Bridge axiom
+  **A12 — `wgsl_serializer_preserves_grammar`** in
+  `specs/verify/lean/Quanta/Axioms/Wgsl.lean` links structural
+  well-formedness to `wgsl_string_well_formed`. The full T410
+  discharge (per-op lemmas + emitter mirror) lands in B.3 + B.4.
 
 ## Trusted Computing Base
 

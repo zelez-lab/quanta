@@ -50,12 +50,23 @@ opaque emit_wgsl_jit : KernelDef → String
 /-- T410 (Verus + Kani): for every `KernelDef`, `emit_wgsl_jit` produces
     a string that satisfies `wgsl_string_well_formed`.
 
-    This theorem is the *bridge*: it's stated in Lean as an axiom here
-    because the proof lives in Verus (`specs/verify/verus/quanta-ir/
-    emit_wgsl_jit.rs`) and Kani (`specs/verify/kani/
-    emitter_exhaustiveness.rs::t1001_jit_wgsl_emitter_exhaustive`).
-    A future WGSL grammar mirror (planned) would replace this axiom
-    with a Lean-side theorem. -/
+    Status: axiom now, theorem after **B** completes. The grammar
+    mirror in `Quanta.Wgsl.Grammar` and the bridge axiom A12
+    (`Quanta.Axioms.Wgsl.wgsl_serializer_preserves_grammar`)
+    landed in B.1 + B.2 (this commit). The remaining work to
+    discharge T410 as a Lean theorem:
+    - **B.3** — for each `KernelOp` tag, prove the emitter's
+      structural pattern lands in a `Quanta.Wgsl.Source` whose
+      `Source.wellFormed = true`. ~25 obligations, each by
+      `native_decide`.
+    - **B.4** — model `emit_wgsl_jit` operationally in Lean as
+      `KernelDef → Quanta.Wgsl.Source` and bridge to the existing
+      `String`-shaped axiom signature here. With B.3's per-op
+      lemmas, T410 reduces to A12 plus the trivial composition.
+    Until B.4, the operational claim still lives in Verus
+    (`specs/verify/verus/quanta-ir/emit_wgsl_jit.rs`) and Kani
+    (`specs/verify/kani/emitter_exhaustiveness.rs::
+    t1001_jit_wgsl_emitter_exhaustive`). -/
 axiom t410_emitter_produces_well_formed_wgsl
     (k : KernelDef)
     : wgsl_string_well_formed (emit_wgsl_jit k)

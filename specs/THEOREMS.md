@@ -354,6 +354,7 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | T1711 | `quanta_methods_in_spec` — every WebGPU method `quanta.ts`/`webgpu.ts` calls is declared by `web/webgpu.idl` on the right interface, mixin includes flattened (lifts the method-presence component of T1707) | WebIDL conformance (B″) | Lean | proven |
 | T1712 | `quanta_call_arities_in_spec` — at every call site, Quanta's argument count is admitted by some declared overload of the WebIDL method (lifts the arity component of T1707) | WebIDL conformance (B″) | Lean | proven |
 | T1713 | `quanta_call_types_in_spec` — at every call site, some declared overload's leading param type names equal the spec-canonical types Quanta supplies (lifts the param-type component of T1707) | WebIDL conformance (B″) | Lean | proven |
+| A12 | `wgsl_serializer_preserves_grammar` — structurally well-formed `Wgsl.Source` serializes to a string the WGSL §3+§4 validator accepts (bridge between Lean grammar mirror and `wgsl_string_well_formed`) | WGSL grammar (B) | Lean | axiom |
 
 ## Summary
 
@@ -385,8 +386,9 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | WebIDL Conformance | 4 | 4 | 0 |
 | Memory Model Axioms | 23 | -- | -- |
 | WebGPU Host + Quanta-ABI Axioms | 10 | -- | -- |
+| WGSL Grammar Bridge Axiom | 1 | -- | -- |
 | **Total proven theorems** | **176** | **175** | **1** |
-| **TCB axioms (A6-A11)** | **33** | -- | -- |
+| **TCB axioms (A6-A12)** | **34** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing
 conditional theorem ("wave_jit succeeds for any well-formed kernel").
