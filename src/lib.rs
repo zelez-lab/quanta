@@ -52,6 +52,13 @@ mod driver;
 pub mod kernel;
 pub mod scan;
 
+/// Spec enum tables for the WebGPU IDL (B′ track of FFI TCB shrink).
+/// Generated from `web/webgpu.idl` by `quanta codegen webgpu`; the
+/// `tests` block inside checks that every enum string Quanta hands
+/// the JS side is a member of the spec table. Top-level so native
+/// `cargo test` runs the subset check without needing a wasm32 build.
+pub mod webgpu_generated_codes;
+
 // Re-export API types at crate root
 pub use api::*;
 

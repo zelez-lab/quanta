@@ -4,12 +4,34 @@
 // (texture format, blend factor, primitive topology, …). This file is
 // the single point where those numbers are turned into the WebGPU IDL
 // strings the browser expects. The encoding lives in lockstep with the
-// `quanta-codes` mirror in `src/driver/webgpu/ffi.rs`; both sides will
-// be derived from the same WebIDL spec under B′ (next track), but are
-// hand-aligned here for B⁰.
+// `quanta-codes` mirror in `src/driver/webgpu/ffi.rs`.
+//
+// Post-B⁰: hand-aligned tables in this file. Post-B′ (now): every
+// table below is *checked at module init* against the spec table in
+// `web/src/generated/codes.ts` (auto-generated from `web/webgpu.idl`
+// by `quanta codegen webgpu`). If any string here disappears from the
+// spec, page load throws — surfacing drift before first call.
 //
 // Every `*Name` function rejects unknown codes with a thrown `Error` —
 // silent fallthrough would mask bugs at the FFI boundary.
+
+import {
+  SPEC_GPUTextureFormat,
+  SPEC_GPUVertexFormat,
+  SPEC_GPUPrimitiveTopology,
+  SPEC_GPUCullMode,
+  SPEC_GPUBlendFactor,
+  SPEC_GPUBlendOperation,
+  SPEC_GPUFilterMode,
+  SPEC_GPUMipmapFilterMode,
+  SPEC_GPUAddressMode,
+  SPEC_GPUCompareFunction,
+  SPEC_GPUVertexStepMode,
+  SPEC_GPUIndexFormat,
+  SPEC_GPULoadOp,
+  SPEC_GPUStoreOp,
+  assertSpecSubset,
+} from "./generated/codes.js";
 
 function lookup(table: readonly string[], code: number, kind: string): string {
   const s = table[code];
@@ -173,3 +195,30 @@ export const STORE_OP_NAMES: readonly string[] = [
 ];
 
 export const storeOpName = (c: number) => lookup(STORE_OP_NAMES, c, "store-op");
+
+// ── Spec-conformance check (B′) ────────────────────────────────────────────
+//
+// Run at module-init time: every string in every Quanta-side table
+// above MUST be a member of the spec table generated from
+// `web/webgpu.idl`. Throws on mismatch. Compiled away if all checks
+// pass — the spec tables are imported but the assertion calls don't
+// retain references at runtime once they've completed.
+//
+// COMPARE_NAMES is checked starting at index 0 = "never"; the
+// hand-written `compareName` skips index 0 (UNSET sentinel) — see
+// `compareName`'s implementation. Both sides agree on the offset.
+
+assertSpecSubset("GPUTextureFormat", SPEC_GPUTextureFormat, FORMAT_NAMES);
+assertSpecSubset("GPUVertexFormat", SPEC_GPUVertexFormat, ATTRIBUTE_FORMAT_NAMES);
+assertSpecSubset("GPUPrimitiveTopology", SPEC_GPUPrimitiveTopology, TOPOLOGY_NAMES);
+assertSpecSubset("GPUCullMode", SPEC_GPUCullMode, CULL_MODE_NAMES);
+assertSpecSubset("GPUBlendFactor", SPEC_GPUBlendFactor, BLEND_FACTOR_NAMES);
+assertSpecSubset("GPUBlendOperation", SPEC_GPUBlendOperation, BLEND_OP_NAMES);
+assertSpecSubset("GPUFilterMode", SPEC_GPUFilterMode, FILTER_NAMES);
+assertSpecSubset("GPUMipmapFilterMode", SPEC_GPUMipmapFilterMode, FILTER_NAMES);
+assertSpecSubset("GPUAddressMode", SPEC_GPUAddressMode, ADDRESS_NAMES);
+assertSpecSubset("GPUCompareFunction", SPEC_GPUCompareFunction, COMPARE_NAMES);
+assertSpecSubset("GPUVertexStepMode", SPEC_GPUVertexStepMode, STEP_MODE_NAMES);
+assertSpecSubset("GPUIndexFormat", SPEC_GPUIndexFormat, INDEX_FORMAT_NAMES);
+assertSpecSubset("GPULoadOp", SPEC_GPULoadOp, LOAD_OP_NAMES);
+assertSpecSubset("GPUStoreOp", SPEC_GPUStoreOp, STORE_OP_NAMES);

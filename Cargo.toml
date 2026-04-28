@@ -6,6 +6,7 @@ members = [
     "crates/quanta-compiler",
     "crates/quanta-bench",
     "crates/quanta-cli",
+    "crates/quanta-codegen",
     "examples/web_add_one",
     "examples/web_triangle",
 ]

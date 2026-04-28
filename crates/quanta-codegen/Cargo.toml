@@ -1,0 +1,16 @@
+[package]
+name = "quanta-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Quanta WebIDL → Rust + TypeScript codegen (B′)"
+
+[lib]
+name = "quanta_codegen"
+path = "src/lib.rs"
+
+[dependencies]
+# WebIDL parser. Dev-only crate, so vendored deps are fine here — the
+# user-facing wasm output never reaches `quanta-codegen`.
+weedle = "0.13"

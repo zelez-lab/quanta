@@ -25,6 +25,7 @@ use clap::{Parser, Subcommand};
 
 mod build;
 mod check;
+mod codegen;
 mod serve;
 mod workspace;
 
@@ -54,6 +55,23 @@ enum Cmd {
     Serve(ServeArgs),
     /// Run the full pre-commit-equivalent checks (clippy + TS noEmit).
     Check,
+    /// Run code generators that derive Rust + TS source from a spec
+    /// (currently: WebGPU IDL → enum tables for both sides).
+    Codegen(CodegenArgs),
+}
+
+#[derive(clap::Args)]
+struct CodegenArgs {
+    #[command(subcommand)]
+    target: CodegenTarget,
+}
+
+#[derive(Subcommand)]
+enum CodegenTarget {
+    /// Read `web/webgpu.idl` and emit
+    /// `src/driver/webgpu/generated_codes.rs` +
+    /// `web/src/generated/codes.ts`.
+    Webgpu,
 }
 
 #[derive(clap::Args)]
@@ -108,6 +126,9 @@ fn run(cli: Cli) -> Result<()> {
             serve::run(&example, port)
         }
         Cmd::Check => check::run(),
+        Cmd::Codegen(CodegenArgs {
+            target: CodegenTarget::Webgpu,
+        }) => codegen::webgpu(),
     }
 }
 

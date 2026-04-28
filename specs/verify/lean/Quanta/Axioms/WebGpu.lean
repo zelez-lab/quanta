@@ -22,8 +22,23 @@ A11 changed shape after step B⁰ (2026-04-28): the FFI layer is no longer
 `wasm-bindgen` (third-party, ~30-60 KB of opaque codegen); it is
 Quanta's own `extern "C"` block in `src/driver/webgpu/ffi.rs` plus a
 hand-authored `web/src/quanta.ts` + helpers (~500 LOC, compiled to
-`quanta.js` and sibling `.js` files). Both
-sides are project-local, version-controlled, auditable line by line.
+`quanta.js` and sibling `.js` files). Both sides are project-local,
+version-controlled, auditable line by line.
+
+Step B′ (also 2026-04-28) further narrowed A11: every WebGPU enum
+string Quanta hands the JS side (texture format, blend factor, …) is
+now generated from `web/webgpu.idl` by `crates/quanta-codegen` into
+`src/webgpu_generated_codes.rs` (Rust spec tables) and
+`web/src/generated/codes.ts` (TS spec tables). The hand-aligned
+`format` / `blend_factor` / … modules in `ffi.rs` and the parallel
+arrays in `web/src/codes.ts` are *checked* against those spec tables:
+- Rust side: `cargo test --lib webgpu_generated_codes` runs at every
+  build.
+- TS side: `assertSpecSubset()` runs at module-init in the browser
+  (page load throws if a value drifted out of spec).
+The lockstep hazard between Rust codes and TS codes — previously two
+hand-edits with no enforcement — collapses to one parsed AST.
+
 A11 still axiomatizes the boundary, but its surface is small enough
 that B″ (Lean WebIDL conformance) can lift it from axiom to theorem.
 
