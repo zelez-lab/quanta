@@ -10,8 +10,3 @@ crate-type = ["cdylib"]
 [dependencies]
 quanta = { path = "../..", default-features = false, features = ["webgpu"] }
 quanta-ir = { path = "../../crates/quanta-ir", features = ["jit"] }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"

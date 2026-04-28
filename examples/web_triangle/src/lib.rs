@@ -1,32 +1,30 @@
-//! Render-path smoke test for step 050.
+//! Render-path smoke test for step 050 + B⁰.
 //!
-//! Builds the simplest possible end-to-end Quanta-on-WebGPU render demo:
-//! create a tiny offscreen render target, run a clear-only render pass,
-//! and read the texels back. Validates `pipeline_create`,
-//! `render_begin/end`, and `texture_read_async` end-to-end.
-//!
-//! Run from a real browser tab — there's no headless harness, by design.
+//! Creates a 16×16 offscreen render target, runs a clear+draw render
+//! pass, and reads the texels back. Validates `pipeline_create`,
+//! `render_begin/end`, and `texture_read_async` end-to-end without
+//! `wasm-bindgen`. Result is reported via `quanta_complete_bytes`
+//! / `quanta_complete_err`.
 //!
 //! ## Build
 //!
 //! ```sh
-//! cargo build --target wasm32-unknown-unknown --release -p web-triangle
-//! wasm-bindgen --target web --out-dir examples/web_triangle/pkg \
-//!     target/wasm32-unknown-unknown/release/web_triangle.wasm
+//! ./scripts/build-web.sh web_triangle
 //! ```
-//!
-//! Serve `examples/web_triangle/index.html` over HTTPS (or
-//! http://localhost) and open in a WebGPU-capable browser.
 
 #![cfg(target_arch = "wasm32")]
 
+use quanta::webgpu::spawn_local;
 use quanta::{
     AddressMode, Color, Filter, Format, GpuDevice as _, PipelineDesc, RenderPass, SamplerDesc,
     TextureDesc, TextureUsage,
 };
-use wasm_bindgen::prelude::*;
 
-/// Trivial WGSL pipeline: full-screen triangle that outputs a constant color.
+unsafe extern "C" {
+    fn quanta_complete_bytes(task: u32, ptr: *const u8, len: usize);
+    fn quanta_complete_err(task: u32, ptr: *const u8, len: usize);
+}
+
 const TRIANGLE_WGSL: &str = r#"
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -50,13 +48,11 @@ fn fragment_main() -> @location(0) vec4<f32> {
 }
 "#;
 
-#[wasm_bindgen]
-pub async fn run_triangle() -> Result<Vec<u8>, JsValue> {
+async fn run() -> Result<Vec<u8>, String> {
     let dev = quanta::webgpu::WebgpuDevice::new_async()
         .await
-        .map_err(|e| JsValue::from_str(&format!("new_async: {:?}", e)))?;
+        .map_err(|e| format!("new_async: {:?}", e))?;
 
-    // 1. Render target.
     let target = dev
         .texture_create(&TextureDesc {
             width: 16,
@@ -65,10 +61,8 @@ pub async fn run_triangle() -> Result<Vec<u8>, JsValue> {
             usage: TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
             ..TextureDesc::default()
         })
-        .map_err(|e| JsValue::from_str(&format!("texture_create: {:?}", e)))?;
+        .map_err(|e| format!("texture_create: {:?}", e))?;
 
-    // 2. Sampler — created so the smoke test exercises sampler_create end-to-end
-    //    even though this kernel doesn't sample anything.
     let _sampler = dev
         .sampler_create(&SamplerDesc {
             min_filter: Filter::Linear,
@@ -79,34 +73,46 @@ pub async fn run_triangle() -> Result<Vec<u8>, JsValue> {
             max_anisotropy: 1,
             compare: None,
         })
-        .map_err(|e| JsValue::from_str(&format!("sampler_create: {:?}", e)))?;
+        .map_err(|e| format!("sampler_create: {:?}", e))?;
 
-    // 3. Render pipeline.
     let pipeline = dev
         .pipeline_create(&PipelineDesc {
             source: Some(TRIANGLE_WGSL.as_bytes()),
             vertex_entry: "vertex_main",
             fragment_entry: "fragment_main",
-            color_formats: alloc::vec![Format::RGBA8],
+            color_formats: vec![Format::RGBA8],
             ..PipelineDesc::default()
         })
-        .map_err(|e| JsValue::from_str(&format!("pipeline_create: {:?}", e)))?;
+        .map_err(|e| format!("pipeline_create: {:?}", e))?;
 
-    // 4. Render pass: clear to red, then draw the triangle (which paints blue).
     let mut pass: RenderPass = dev
         .render_begin(&target)
-        .map_err(|e| JsValue::from_str(&format!("render_begin: {:?}", e)))?;
+        .map_err(|e| format!("render_begin: {:?}", e))?;
     pass.clear(Color::rgba(1.0, 0.0, 0.0, 1.0));
     pass.set_pipeline(&pipeline);
     pass.draw(3);
     let _pulse = dev
         .render_end(pass)
-        .map_err(|e| JsValue::from_str(&format!("render_end: {:?}", e)))?;
+        .map_err(|e| format!("render_end: {:?}", e))?;
 
-    // 5. Read back: every pixel should be approximately the triangle color.
     dev.texture_read_async(&target)
         .await
-        .map_err(|e| JsValue::from_str(&format!("texture_read_async: {:?}", e)))
+        .map_err(|e| format!("texture_read_async: {:?}", e))
 }
 
-extern crate alloc;
+/// Smoke-test entry. JS-side harness calls
+/// `wasm.web_triangle_run(task)`; result delivered via
+/// `quanta_complete_bytes` / `quanta_complete_err`.
+#[unsafe(no_mangle)]
+pub extern "C" fn web_triangle_run(task: u32) {
+    spawn_local(async move {
+        match run().await {
+            Ok(bytes) => unsafe {
+                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
+            },
+            Err(msg) => unsafe {
+                quanta_complete_err(task, msg.as_ptr(), msg.len());
+            },
+        }
+    });
+}

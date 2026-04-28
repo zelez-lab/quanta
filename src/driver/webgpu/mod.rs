@@ -1,17 +1,22 @@
 //! WebGPU driver — browser-only.
 //!
-//! Step 050 + step 079 of the roadmap. Lets Quanta kernels run inside a
-//! browser via WebAssembly + the browser's WebGPU API. Native (non-wasm)
-//! targets continue to use Metal / Vulkan / CPU backends.
+//! Step 050 + step 079 + B⁰ (2026-04-28). Lets Quanta kernels run inside
+//! a browser via WebAssembly + the browser's WebGPU API. Native
+//! (non-wasm) targets continue to use Metal / Vulkan / CPU backends.
 //!
 //! ## Architecture
 //!
-//! - `ffi.rs` — hand-written `#[wasm_bindgen]` extern blocks covering only
-//!   the WebGPU surface Quanta uses (~200 lines we own and audit).
-//! - `state.rs` — handle table mapping `u64` handles to `GPUBuffer` /
-//!   `GPUComputePipeline` JsValues. Single-threaded (wasm32 only).
-//! - `mod.rs` (this file) — `WebgpuDevice: GpuDevice` impl that translates
-//!   trait calls into FFI calls and JIT-compiles WGSL via `quanta-ir`.
+//! - `ffi.rs` — bare `extern "C"` imports defining Quanta's WebGPU ABI.
+//!   ~300 lines we own and audit, with no `wasm-bindgen` runtime
+//!   dependency. Strings cross as `(*const u8, usize)`; long-lived JS
+//!   objects cross as `u32` handles into a JS-side handle table.
+//! - `executor.rs` — minimal Rust async executor. Replaces
+//!   `wasm-bindgen-futures::JsFuture` with a thread-local promise table
+//!   driven by JS-callable `quanta_resolve` / `quanta_reject` exports.
+//! - `state.rs` — handle bookkeeping mapping Quanta `u64` API handles
+//!   onto the JS-side `u32` ABI handles.
+//! - `web/src/glue.ts` — TypeScript half of the boundary. Compiled to
+//!   `glue.js` at build time; never ships TypeScript itself.
 //!
 //! ## Sync ↔ async impedance
 //!
@@ -19,10 +24,12 @@
 //! `mapAsync` (buffer read-back), `onSubmittedWorkDone` (completion).
 //! Synchronous for: buffer/encoder/pipeline create, `dispatchWorkgroups`,
 //! `submit`, `writeBuffer`. The browser cannot block its event loop, so
-//! `pulse_wait` and `field_read_bytes` (sync trait methods) are returned as
-//! errors that direct callers to the public extension methods
-//! [`WebgpuDevice::pulse_wait_async`] / [`WebgpuDevice::field_read_bytes_async`].
+//! `pulse_wait` and `field_read_bytes` (sync trait methods) are returned
+//! as errors that direct callers to the public extension methods
+//! [`WebgpuDevice::pulse_wait_async`] /
+//! [`WebgpuDevice::field_read_bytes_async`].
 
+mod executor;
 mod ffi;
 mod state;
 
@@ -33,24 +40,23 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use js_sys::{Array, Object, Reflect, Uint8Array};
-use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
-
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
     Caps, FieldUsage, Format, FormatCaps, Gpu, GpuDevice as QGpuDevice, Pipeline, Pulse,
     QuantaError, RenderPass, Texture, TextureDesc, Vendor, Wave,
 };
 
-use ffi::{buffer_usage, map_mode};
+use ffi::{NULL_HANDLE, buffer_usage};
 use state::{SendCell, State, WaveEntry};
 
-/// WebGPU device — sits behind `target_arch = "wasm32"` and the `webgpu`
-/// feature.
+pub use executor::{Promise, spawn_local};
+
+/// WebGPU device — sits behind `target_arch = "wasm32"` and the
+/// `webgpu` feature.
 pub struct WebgpuDevice {
     caps: Caps,
-    device: SendCell<Option<ffi::GpuDevice>>,
+    /// JS-side `GPUDevice` handle. `NULL_HANDLE` until `new_async` runs.
+    device: SendCell<u32>,
     state: State,
 }
 
@@ -63,50 +69,38 @@ impl WebgpuDevice {
         QuantaError::compilation_failed(Box::leak(msg.into_boxed_str()))
     }
 
-    fn dev(&self) -> Result<core::cell::Ref<'_, Option<ffi::GpuDevice>>, QuantaError> {
-        let r = self.device.0.borrow();
-        if r.is_none() {
+    fn dev(&self) -> Result<u32, QuantaError> {
+        let h = *self.device.0.borrow();
+        if h == NULL_HANDLE {
             return Err(Self::err("WebGPU device not initialized — call init_async"));
         }
-        Ok(r)
-    }
-
-    /// Like [`dev`], but returns a cloned handle so the borrow can be
-    /// released before crossing an `await` point. wasm_bindgen extern types
-    /// can be re-anchored from a `JsValue` view of the same underlying JS
-    /// object — that's the cheap "clone" we use here.
-    fn dev_clone(&self) -> Result<ffi::GpuDevice, QuantaError> {
-        let r = self.device.0.borrow();
-        let d = r
-            .as_ref()
-            .ok_or_else(|| Self::err("WebGPU device not initialized — call init_async"))?;
-        let js: JsValue = d.into();
-        Ok(js.unchecked_into())
+        Ok(h)
     }
 }
 
 // ── Async init ──────────────────────────────────────────────────────────────
 
 impl WebgpuDevice {
-    /// Acquire the typed WebGPU device. Use this when you need access to
-    /// the async extension methods (`field_read_bytes_async`,
-    /// `pulse_wait_async`); use [`init_async`] for the dyn-trait path that
-    /// fits Quanta's standard `Gpu` wrapper.
+    /// Acquire the typed WebGPU device. Use this when you need access
+    /// to the async extension methods (`field_read_bytes_async`,
+    /// `pulse_wait_async`); use [`init_async`] for the dyn-trait path
+    /// that fits Quanta's standard `Gpu` wrapper.
     pub async fn new_async() -> Result<Self, QuantaError> {
-        let gpu = ffi::gpu().map_err(|_| Self::err("navigator.gpu unavailable"))?;
-        let adapter_js: JsValue = JsFuture::from(gpu.request_adapter())
+        let adapter = Promise::register(|task| unsafe { ffi::quanta_request_adapter(task) })
             .await
-            .map_err(|_| Self::err("requestAdapter failed"))?;
-        let adapter: ffi::GpuAdapter = adapter_js
-            .dyn_into()
-            .map_err(|_| Self::err("adapter not GPUAdapter"))?;
+            .map_err(|_| Self::err("requestAdapter rejected"))?;
+        if adapter == NULL_HANDLE {
+            return Err(Self::err("navigator.gpu unavailable"));
+        }
 
-        let device_js: JsValue = JsFuture::from(adapter.request_device())
+        let device = Promise::register(|task| unsafe { ffi::quanta_request_device(adapter, task) })
             .await
-            .map_err(|_| Self::err("requestDevice failed"))?;
-        let device: ffi::GpuDevice = device_js
-            .dyn_into()
-            .map_err(|_| Self::err("device not GPUDevice"))?;
+            .map_err(|_| Self::err("requestDevice rejected"))?;
+        // Adapter handle is no longer needed — release the JS-side ref.
+        unsafe { ffi::quanta_release(adapter) };
+        if device == NULL_HANDLE {
+            return Err(Self::err("requestDevice returned no device"));
+        }
 
         let caps = Caps {
             nuclei: 1,
@@ -120,15 +114,15 @@ impl WebgpuDevice {
         };
         Ok(WebgpuDevice {
             caps,
-            device: SendCell(RefCell::new(Some(device))),
+            device: SendCell(RefCell::new(device)),
             state: State::new(),
         })
     }
 }
 
-/// Initialize a WebGPU device wrapped as a `Gpu`. Async because the browser
-/// surfaces device acquisition only via Promises. Call this once at app
-/// start.
+/// Initialize a WebGPU device wrapped as a `Gpu`. Async because the
+/// browser surfaces device acquisition only via Promises. Call this
+/// once at app start.
 ///
 /// ```ignore
 /// let gpu = quanta::driver::webgpu::init_async().await?;
@@ -154,67 +148,72 @@ impl WebgpuDevice {
         handle: u64,
         size: usize,
     ) -> Result<Vec<u8>, QuantaError> {
-        let device = self.dev_clone()?;
+        let device = self.dev()?;
+        let staging = unsafe {
+            ffi::quanta_create_buffer(
+                device,
+                size as f64,
+                buffer_usage::COPY_DST | buffer_usage::MAP_READ,
+            )
+        };
 
-        let staging = create_buffer(
-            &device,
-            size as u64,
-            buffer_usage::COPY_DST | buffer_usage::MAP_READ,
-        );
-
-        // Build the encoder under a short-lived borrow, then submit and
-        // release the borrow before awaiting `mapAsync`.
         {
             let buffers = self.state.buffers.0.borrow();
-            let src = buffers
+            let &src = buffers
                 .get(&handle)
                 .ok_or_else(|| Self::err("unknown buffer handle"))?;
-            let encoder = device.create_command_encoder();
-            encoder.copy_buffer_to_buffer(src, 0.0, &staging, 0.0, size as f64);
-            let cmd = encoder.finish();
-            let arr = Array::new();
-            arr.push(&cmd);
-            device.queue().submit(&arr);
+            let encoder = unsafe { ffi::quanta_create_command_encoder(device) };
+            unsafe {
+                ffi::quanta_encoder_copy_buffer_to_buffer(
+                    encoder,
+                    src,
+                    0.0,
+                    staging,
+                    0.0,
+                    size as f64,
+                );
+            }
+            let cmd = unsafe { ffi::quanta_encoder_finish(encoder) };
+            unsafe { ffi::quanta_queue_submit(device, cmd) };
         }
 
-        JsFuture::from(staging.map_async(map_mode::READ))
+        Promise::register(|task| unsafe { ffi::quanta_map_async_read(staging, task) })
             .await
-            .map_err(|_| Self::err("mapAsync failed"))?;
-        let mapped = staging.get_mapped_range();
-        let view = Uint8Array::new(&mapped);
+            .map_err(|_| Self::err("mapAsync rejected"))?;
+
         let mut out = alloc::vec![0u8; size];
-        view.copy_to(&mut out[..]);
-        staging.unmap();
-        staging.destroy();
+        unsafe {
+            ffi::quanta_get_mapped_range_copy(staging, out.as_mut_ptr(), size);
+        }
+        unsafe {
+            ffi::quanta_unmap_buffer(staging);
+            ffi::quanta_destroy_buffer(staging);
+        }
         Ok(out)
     }
 
     /// Async sibling of [`pulse_wait`]: awaits
     /// `device.queue.onSubmittedWorkDone()` for the pulse's submission.
     pub async fn pulse_wait_async(&self, _pulse: &mut Pulse) -> Result<(), QuantaError> {
-        let device = self.dev_clone()?;
-        JsFuture::from(device.queue().on_submitted_work_done())
+        let device = self.dev()?;
+        Promise::register(|task| unsafe { ffi::quanta_queue_on_submitted_work_done(device, task) })
             .await
-            .map_err(|_| Self::err("onSubmittedWorkDone failed"))?;
+            .map_err(|_| Self::err("onSubmittedWorkDone rejected"))?;
         Ok(())
     }
 
-    /// Async sibling of [`texture_read`]: copies the texture to a staging
-    /// buffer, awaits `mapAsync`, and returns the pixel bytes (tightly
-    /// packed in the texture's native row stride).
+    /// Async sibling of [`texture_read`]: copies the texture to a
+    /// staging buffer, awaits `mapAsync`, and returns the pixel bytes
+    /// (tightly packed in the texture's native row stride).
     pub async fn texture_read_async(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
-        let device = self.dev_clone()?;
-        let (tex_clone, view_dims, bytes_per_row, height, tight_row) = {
+        let device = self.dev()?;
+        let (tex_handle, view_dims, bytes_per_row, height, tight_row) = {
             let textures = self.state.textures.0.borrow();
             let entry = textures
                 .get(&texture.handle)
                 .ok_or_else(|| Self::err("unknown texture handle"))?;
-            // wasm_bindgen extern types are JsValue-shaped; recreate a
-            // typed handle from the JsValue view to drop the borrow.
-            let js: JsValue = (&entry.texture).into();
-            let cloned: ffi::GpuTexture = js.unchecked_into();
             (
-                cloned,
+                entry.texture,
                 (entry.width, entry.height),
                 entry.bytes_per_row,
                 entry.height,
@@ -222,46 +221,45 @@ impl WebgpuDevice {
             )
         };
 
-        let staging = create_buffer(
-            &device,
-            (bytes_per_row as u64) * (height as u64),
-            buffer_usage::COPY_DST | buffer_usage::MAP_READ,
-        );
+        let total_bytes = (bytes_per_row as u64) * (height as u64);
+        let staging = unsafe {
+            ffi::quanta_create_buffer(
+                device,
+                total_bytes as f64,
+                buffer_usage::COPY_DST | buffer_usage::MAP_READ,
+            )
+        };
 
-        let src = Object::new();
-        set(&src, "texture", &tex_clone);
-        let dst = Object::new();
-        set(&dst, "buffer", &staging);
-        set(
-            &dst,
-            "bytesPerRow",
-            &JsValue::from_f64(bytes_per_row as f64),
-        );
-        set(&dst, "rowsPerImage", &JsValue::from_f64(height as f64));
-        let size = Object::new();
-        set(&size, "width", &JsValue::from_f64(view_dims.0 as f64));
-        set(&size, "height", &JsValue::from_f64(view_dims.1 as f64));
-        set(&size, "depthOrArrayLayers", &JsValue::from_f64(1.0));
+        let encoder = unsafe { ffi::quanta_create_command_encoder(device) };
+        unsafe {
+            ffi::quanta_encoder_copy_texture_to_buffer(
+                encoder,
+                tex_handle,
+                staging,
+                bytes_per_row,
+                height,
+                view_dims.0,
+                view_dims.1,
+                1,
+            );
+        }
+        let cmd = unsafe { ffi::quanta_encoder_finish(encoder) };
+        unsafe { ffi::quanta_queue_submit(device, cmd) };
 
-        let encoder = device.create_command_encoder();
-        encoder.copy_texture_to_buffer(&src, &dst, &size);
-        let cmd = encoder.finish();
-        let arr = Array::new();
-        arr.push(&cmd);
-        device.queue().submit(&arr);
-
-        JsFuture::from(staging.map_async(map_mode::READ))
+        Promise::register(|task| unsafe { ffi::quanta_map_async_read(staging, task) })
             .await
-            .map_err(|_| Self::err("texture mapAsync failed"))?;
-        let mapped = staging.get_mapped_range();
-        let view = Uint8Array::new(&mapped);
+            .map_err(|_| Self::err("texture mapAsync rejected"))?;
+
         let total = (bytes_per_row as usize) * (height as usize);
         let mut padded = alloc::vec![0u8; total];
-        view.copy_to(&mut padded[..]);
-        staging.unmap();
-        staging.destroy();
+        unsafe {
+            ffi::quanta_get_mapped_range_copy(staging, padded.as_mut_ptr(), total);
+        }
+        unsafe {
+            ffi::quanta_unmap_buffer(staging);
+            ffi::quanta_destroy_buffer(staging);
+        }
 
-        // Strip row padding back to the tight row width that callers expect.
         if bytes_per_row == tight_row {
             Ok(padded)
         } else {
@@ -275,32 +273,19 @@ impl WebgpuDevice {
     }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Enum → code translations (Rust API → ABI integer codes) ─────────────────
 
-fn create_buffer(device: &ffi::GpuDevice, size: u64, usage: u32) -> ffi::GpuBuffer {
-    let desc = Object::new();
-    set(&desc, "size", &JsValue::from_f64(size as f64));
-    set(&desc, "usage", &JsValue::from_f64(usage as f64));
-    device.create_buffer(&desc)
-}
-
-fn set(obj: &Object, key: &str, value: &JsValue) {
-    Reflect::set(obj, &JsValue::from_str(key), value).expect("Reflect::set on Object");
-}
-
-fn wgpu_format(f: Format) -> Result<&'static str, QuantaError> {
+fn format_code(f: Format) -> Result<u32, QuantaError> {
     Ok(match f {
-        Format::RGBA8 => "rgba8unorm",
-        Format::BGRA8 => "bgra8unorm",
-        Format::R8 => "r8unorm",
-        Format::R16Float => "r16float",
-        Format::R32Float => "r32float",
-        Format::RG32Float => "rg32float",
-        Format::RGBA16Float => "rgba16float",
-        Format::RGBA32Float => "rgba32float",
-        Format::Depth32Float => "depth32float",
-        // Compressed formats are not supported by the 050 baseline; surface
-        // a clear error rather than returning an arbitrary mapping.
+        Format::RGBA8 => ffi::format::RGBA8UNORM,
+        Format::BGRA8 => ffi::format::BGRA8UNORM,
+        Format::R8 => ffi::format::R8UNORM,
+        Format::R16Float => ffi::format::R16FLOAT,
+        Format::R32Float => ffi::format::R32FLOAT,
+        Format::RG32Float => ffi::format::RG32FLOAT,
+        Format::RGBA16Float => ffi::format::RGBA16FLOAT,
+        Format::RGBA32Float => ffi::format::RGBA32FLOAT,
+        Format::Depth32Float => ffi::format::DEPTH32FLOAT,
         Format::Bc1Rgba
         | Format::Bc3Rgba
         | Format::Bc5Rg
@@ -317,110 +302,117 @@ fn wgpu_format(f: Format) -> Result<&'static str, QuantaError> {
     })
 }
 
-fn filter_name(f: crate::render_pass::Filter) -> &'static str {
+fn filter_code(f: crate::render_pass::Filter) -> u32 {
     match f {
-        crate::render_pass::Filter::Nearest => "nearest",
-        crate::render_pass::Filter::Linear => "linear",
+        crate::render_pass::Filter::Nearest => ffi::filter::NEAREST,
+        crate::render_pass::Filter::Linear => ffi::filter::LINEAR,
     }
 }
 
-fn address_name(a: crate::render_pass::AddressMode) -> &'static str {
+fn address_code(a: crate::render_pass::AddressMode) -> u32 {
     match a {
-        crate::render_pass::AddressMode::ClampToEdge => "clamp-to-edge",
-        crate::render_pass::AddressMode::Repeat => "repeat",
-        crate::render_pass::AddressMode::MirrorRepeat => "mirror-repeat",
+        crate::render_pass::AddressMode::ClampToEdge => ffi::address::CLAMP_TO_EDGE,
+        crate::render_pass::AddressMode::Repeat => ffi::address::REPEAT,
+        crate::render_pass::AddressMode::MirrorRepeat => ffi::address::MIRROR_REPEAT,
     }
 }
 
-fn compare_name(c: crate::CompareOp) -> &'static str {
+fn compare_op_code(c: crate::CompareOp) -> u32 {
     match c {
-        crate::CompareOp::Never => "never",
-        crate::CompareOp::Less => "less",
-        crate::CompareOp::Equal => "equal",
-        crate::CompareOp::LessEqual => "less-equal",
-        crate::CompareOp::Greater => "greater",
-        crate::CompareOp::NotEqual => "not-equal",
-        crate::CompareOp::GreaterEqual => "greater-equal",
-        crate::CompareOp::Always => "always",
+        crate::CompareOp::Never => ffi::compare::NEVER,
+        crate::CompareOp::Less => ffi::compare::LESS,
+        crate::CompareOp::Equal => ffi::compare::EQUAL,
+        crate::CompareOp::LessEqual => ffi::compare::LESS_EQUAL,
+        crate::CompareOp::Greater => ffi::compare::GREATER,
+        crate::CompareOp::NotEqual => ffi::compare::NOT_EQUAL,
+        crate::CompareOp::GreaterEqual => ffi::compare::GREATER_EQUAL,
+        crate::CompareOp::Always => ffi::compare::ALWAYS,
     }
 }
 
-fn compare_name_internal(c: crate::pipeline::CompareFunc) -> &'static str {
+fn compare_func_code(c: crate::pipeline::CompareFunc) -> u32 {
     match c {
-        crate::pipeline::CompareFunc::Never => "never",
-        crate::pipeline::CompareFunc::Less => "less",
-        crate::pipeline::CompareFunc::Equal => "equal",
-        crate::pipeline::CompareFunc::LessEqual => "less-equal",
-        crate::pipeline::CompareFunc::Greater => "greater",
-        crate::pipeline::CompareFunc::NotEqual => "not-equal",
-        crate::pipeline::CompareFunc::GreaterEqual => "greater-equal",
-        crate::pipeline::CompareFunc::Always => "always",
+        crate::pipeline::CompareFunc::Never => ffi::compare::NEVER,
+        crate::pipeline::CompareFunc::Less => ffi::compare::LESS,
+        crate::pipeline::CompareFunc::Equal => ffi::compare::EQUAL,
+        crate::pipeline::CompareFunc::LessEqual => ffi::compare::LESS_EQUAL,
+        crate::pipeline::CompareFunc::Greater => ffi::compare::GREATER,
+        crate::pipeline::CompareFunc::NotEqual => ffi::compare::NOT_EQUAL,
+        crate::pipeline::CompareFunc::GreaterEqual => ffi::compare::GREATER_EQUAL,
+        crate::pipeline::CompareFunc::Always => ffi::compare::ALWAYS,
     }
 }
 
-fn attribute_format(f: crate::pipeline::AttributeFormat) -> &'static str {
+fn attribute_format_code(f: crate::pipeline::AttributeFormat) -> u32 {
     use crate::pipeline::AttributeFormat as A;
     match f {
-        A::Float => "float32",
-        A::Float2 => "float32x2",
-        A::Float3 => "float32x3",
-        A::Float4 => "float32x4",
-        A::Int => "sint32",
-        A::Int2 => "sint32x2",
-        A::Int3 => "sint32x3",
-        A::Int4 => "sint32x4",
-        A::UInt => "uint32",
-        A::UInt2 => "uint32x2",
-        A::UInt3 => "uint32x3",
-        A::UInt4 => "uint32x4",
-        A::UByte4Norm => "unorm8x4",
+        A::Float => ffi::attribute_format::FLOAT,
+        A::Float2 => ffi::attribute_format::FLOAT2,
+        A::Float3 => ffi::attribute_format::FLOAT3,
+        A::Float4 => ffi::attribute_format::FLOAT4,
+        A::Int => ffi::attribute_format::SINT,
+        A::Int2 => ffi::attribute_format::SINT2,
+        A::Int3 => ffi::attribute_format::SINT3,
+        A::Int4 => ffi::attribute_format::SINT4,
+        A::UInt => ffi::attribute_format::UINT,
+        A::UInt2 => ffi::attribute_format::UINT2,
+        A::UInt3 => ffi::attribute_format::UINT3,
+        A::UInt4 => ffi::attribute_format::UINT4,
+        A::UByte4Norm => ffi::attribute_format::UNORM8X4,
     }
 }
 
-fn primitive_topology(p: crate::pipeline::Primitive) -> &'static str {
+fn topology_code(p: crate::pipeline::Primitive) -> u32 {
     use crate::pipeline::Primitive as P;
     match p {
-        P::Point => "point-list",
-        P::Line => "line-list",
-        P::LineStrip => "line-strip",
-        P::Triangle => "triangle-list",
-        P::TriangleStrip => "triangle-strip",
+        P::Point => ffi::topology::POINT,
+        P::Line => ffi::topology::LINE,
+        P::LineStrip => ffi::topology::LINE_STRIP,
+        P::Triangle => ffi::topology::TRIANGLE,
+        P::TriangleStrip => ffi::topology::TRIANGLE_STRIP,
     }
 }
 
-fn cull_mode(c: crate::pipeline::CullMode) -> &'static str {
+fn cull_mode_code(c: crate::pipeline::CullMode) -> u32 {
     use crate::pipeline::CullMode as C;
     match c {
-        C::None => "none",
-        C::Front => "front",
-        C::Back => "back",
+        C::None => ffi::cull_mode::NONE,
+        C::Front => ffi::cull_mode::FRONT,
+        C::Back => ffi::cull_mode::BACK,
     }
 }
 
-fn blend_factor(f: crate::pipeline::BlendFactor) -> &'static str {
+fn blend_factor_code(f: crate::pipeline::BlendFactor) -> u32 {
     use crate::pipeline::BlendFactor as F;
     match f {
-        F::Zero => "zero",
-        F::One => "one",
-        F::SrcAlpha => "src-alpha",
-        F::OneMinusSrcAlpha => "one-minus-src-alpha",
-        F::DstAlpha => "dst-alpha",
-        F::OneMinusDstAlpha => "one-minus-dst-alpha",
-        F::SrcColor => "src",
-        F::OneMinusSrcColor => "one-minus-src",
-        F::DstColor => "dst",
-        F::OneMinusDstColor => "one-minus-dst",
+        F::Zero => ffi::blend_factor::ZERO,
+        F::One => ffi::blend_factor::ONE,
+        F::SrcAlpha => ffi::blend_factor::SRC_ALPHA,
+        F::OneMinusSrcAlpha => ffi::blend_factor::ONE_MINUS_SRC_ALPHA,
+        F::DstAlpha => ffi::blend_factor::DST_ALPHA,
+        F::OneMinusDstAlpha => ffi::blend_factor::ONE_MINUS_DST_ALPHA,
+        F::SrcColor => ffi::blend_factor::SRC_COLOR,
+        F::OneMinusSrcColor => ffi::blend_factor::ONE_MINUS_SRC_COLOR,
+        F::DstColor => ffi::blend_factor::DST_COLOR,
+        F::OneMinusDstColor => ffi::blend_factor::ONE_MINUS_DST_COLOR,
     }
 }
 
-fn blend_op(o: crate::pipeline::BlendOp) -> &'static str {
+fn blend_op_code(o: crate::pipeline::BlendOp) -> u32 {
     use crate::pipeline::BlendOp as O;
     match o {
-        O::Add => "add",
-        O::Subtract => "subtract",
-        O::ReverseSubtract => "reverse-subtract",
-        O::Min => "min",
-        O::Max => "max",
+        O::Add => ffi::blend_op::ADD,
+        O::Subtract => ffi::blend_op::SUBTRACT,
+        O::ReverseSubtract => ffi::blend_op::REVERSE_SUBTRACT,
+        O::Min => ffi::blend_op::MIN,
+        O::Max => ffi::blend_op::MAX,
+    }
+}
+
+fn step_mode_code(s: crate::pipeline::StepMode) -> u32 {
+    match s {
+        crate::pipeline::StepMode::Vertex => ffi::step_mode::VERTEX,
+        crate::pipeline::StepMode::Instance => ffi::step_mode::INSTANCE,
     }
 }
 
@@ -434,21 +426,14 @@ impl QGpuDevice for WebgpuDevice {
     // ── Buffers ────────────────────────────────────────────────────────────
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
-
-        // Map quanta's FieldUsage flag bits onto WebGPU buffer usage flags.
-        // We always include COPY_SRC + COPY_DST so the buffer can participate
-        // in staging-buffer round-trips for read-back.
+        let device = self.dev()?;
         let mut wgpu_usage = buffer_usage::COPY_SRC | buffer_usage::COPY_DST;
         if usage.has(FieldUsage::UNIFORM) {
             wgpu_usage |= buffer_usage::UNIFORM;
         } else {
-            // Compute / render fields use storage buffers under WebGPU.
             wgpu_usage |= buffer_usage::STORAGE;
         }
-
-        let buf = create_buffer(device, size as u64, wgpu_usage);
+        let buf = unsafe { ffi::quanta_create_buffer(device, size as f64, wgpu_usage) };
         let handle = self.state.alloc_handle();
         self.state.buffers.0.borrow_mut().insert(handle, buf);
         Ok(handle)
@@ -456,18 +441,19 @@ impl QGpuDevice for WebgpuDevice {
 
     fn field_free(&self, handle: u64) {
         if let Some(buf) = self.state.buffers.0.borrow_mut().remove(&handle) {
-            buf.destroy();
+            unsafe { ffi::quanta_destroy_buffer(buf) };
         }
     }
 
     fn field_write_bytes(&self, handle: u64, data: &[u8]) -> Result<(), QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
+        let device = self.dev()?;
         let buffers = self.state.buffers.0.borrow();
-        let buf = buffers
+        let &buf = buffers
             .get(&handle)
             .ok_or_else(|| Self::err("unknown buffer handle"))?;
-        device.queue().write_buffer(buf, 0.0, data);
+        unsafe {
+            ffi::quanta_write_buffer(device, buf, 0.0, data.as_ptr(), data.len());
+        }
         Ok(())
     }
 
@@ -478,17 +464,16 @@ impl QGpuDevice for WebgpuDevice {
     }
 
     fn field_copy_bytes(&self, dst: u64, src: u64, size: usize) -> Result<(), QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
+        let device = self.dev()?;
         let buffers = self.state.buffers.0.borrow();
-        let s = buffers.get(&src).ok_or_else(|| Self::err("src missing"))?;
-        let d = buffers.get(&dst).ok_or_else(|| Self::err("dst missing"))?;
-        let encoder = device.create_command_encoder();
-        encoder.copy_buffer_to_buffer(s, 0.0, d, 0.0, size as f64);
-        let cmd = encoder.finish();
-        let arr = Array::new();
-        arr.push(&cmd);
-        device.queue().submit(&arr);
+        let &s = buffers.get(&src).ok_or_else(|| Self::err("src missing"))?;
+        let &d = buffers.get(&dst).ok_or_else(|| Self::err("dst missing"))?;
+        let encoder = unsafe { ffi::quanta_create_command_encoder(device) };
+        unsafe {
+            ffi::quanta_encoder_copy_buffer_to_buffer(encoder, s, 0.0, d, 0.0, size as f64);
+        }
+        let cmd = unsafe { ffi::quanta_encoder_finish(encoder) };
+        unsafe { ffi::quanta_queue_submit(device, cmd) };
         Ok(())
     }
 
@@ -507,24 +492,17 @@ impl QGpuDevice for WebgpuDevice {
         let wgsl = quanta_ir::emit_wgsl::emit_wgsl_jit(&kernel)
             .map_err(|e| Self::err_owned(format!("emit_wgsl_jit: {}", e)))?;
 
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
-
-        // createShaderModule({ code: wgsl })
-        let mod_desc = Object::new();
-        set(&mod_desc, "code", &JsValue::from_str(&wgsl));
-        let module = device.create_shader_module(&mod_desc);
-
-        // createComputePipeline({ layout: 'auto', compute: { module, entryPoint } })
-        let compute = Object::new();
-        set(&compute, "module", &module);
-        set(&compute, "entryPoint", &JsValue::from_str(&kernel.name));
-        let pipe_desc = Object::new();
-        set(&pipe_desc, "layout", &JsValue::from_str("auto"));
-        set(&pipe_desc, "compute", &compute);
-        let pipeline = device.create_compute_pipeline(&pipe_desc);
-
-        let layout = pipeline.get_bind_group_layout(0);
+        let device = self.dev()?;
+        let module = unsafe { ffi::quanta_create_shader_module(device, wgsl.as_ptr(), wgsl.len()) };
+        let pipeline = unsafe {
+            ffi::quanta_create_compute_pipeline(
+                device,
+                module,
+                kernel.name.as_ptr(),
+                kernel.name.len(),
+            )
+        };
+        let layout = unsafe { ffi::quanta_compute_pipeline_get_bind_group_layout(pipeline, 0) };
 
         let handle = self.state.alloc_handle();
         self.state.waves.0.borrow_mut().insert(
@@ -538,55 +516,45 @@ impl QGpuDevice for WebgpuDevice {
             },
         );
 
-        // Re-construct a Wave matching the public API shape.
         Ok(make_wave(handle, kernel.workgroup_size))
     }
 
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
+        let device = self.dev()?;
         let mut waves = self.state.waves.0.borrow_mut();
         let entry = waves
             .get_mut(&wave.handle)
             .ok_or_else(|| Self::err("unknown wave handle"))?;
 
-        // Build a fresh bind group from the wave's current bindings. WebGPU
-        // bind groups are immutable; we create one per dispatch — the cost
-        // is small (allocator only) compared to the dispatch itself.
-        let entries = Array::new();
-        let buffers = self.state.buffers.0.borrow();
-        for (slot_idx, &buf_handle) in wave.bindings.iter().enumerate() {
-            if buf_handle == 0 {
-                continue;
+        let bg_desc = unsafe { ffi::quanta_bg_desc_create(entry.layout) };
+        {
+            let buffers = self.state.buffers.0.borrow();
+            for (slot_idx, &buf_handle) in wave.bindings.iter().enumerate() {
+                if buf_handle == 0 {
+                    continue;
+                }
+                let &buf = buffers
+                    .get(&buf_handle)
+                    .ok_or_else(|| Self::err("bound buffer not found"))?;
+                unsafe {
+                    ffi::quanta_bg_desc_add_buffer(bg_desc, slot_idx as u32, buf);
+                }
+                entry.bindings.insert(slot_idx as u32, buf_handle);
             }
-            let buf = buffers
-                .get(&buf_handle)
-                .ok_or_else(|| Self::err("bound buffer not found"))?;
-
-            let resource = Object::new();
-            set(&resource, "buffer", buf);
-
-            let entry_obj = Object::new();
-            set(&entry_obj, "binding", &JsValue::from_f64(slot_idx as f64));
-            set(&entry_obj, "resource", &resource);
-            entries.push(&entry_obj);
-            entry.bindings.insert(slot_idx as u32, buf_handle);
         }
-        let bg_desc = Object::new();
-        set(&bg_desc, "layout", &entry.layout);
-        set(&bg_desc, "entries", &entries);
-        let bind_group = device.create_bind_group(&bg_desc);
+        let bind_group = unsafe { ffi::quanta_create_bind_group(device, bg_desc) };
 
-        let encoder = device.create_command_encoder();
-        let pass = encoder.begin_compute_pass();
-        pass.set_pipeline(&entry.pipeline);
-        pass.set_bind_group(0, &bind_group);
-        pass.dispatch_workgroups(groups[0], groups[1].max(1), groups[2].max(1));
-        pass.end();
-        let cmd = encoder.finish();
-        let arr = Array::new();
-        arr.push(&cmd);
-        device.queue().submit(&arr);
+        let encoder = unsafe { ffi::quanta_create_command_encoder(device) };
+        let pass = unsafe { ffi::quanta_encoder_begin_compute_pass(encoder) };
+        unsafe {
+            ffi::quanta_compute_pass_set_pipeline(pass, entry.pipeline);
+            ffi::quanta_compute_pass_set_bind_group(pass, 0, bind_group);
+            ffi::quanta_compute_pass_dispatch(pass, groups[0], groups[1].max(1), groups[2].max(1));
+            ffi::quanta_compute_pass_end(pass);
+        }
+        let cmd = unsafe { ffi::quanta_encoder_finish(encoder) };
+        unsafe { ffi::quanta_queue_submit(device, cmd) };
+        unsafe { ffi::quanta_release(bind_group) };
 
         Ok(make_pulse())
     }
@@ -609,18 +577,15 @@ impl QGpuDevice for WebgpuDevice {
     }
 
     fn pulse_poll(&self, _pulse: &Pulse) -> bool {
-        // No way to query without spinning the JS event loop; conservatively
-        // say "not done" and let the caller use pulse_wait_async.
         false
     }
 
     // ── Textures ───────────────────────────────────────────────────────────
 
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
+        let device = self.dev()?;
 
-        let format = wgpu_format(desc.format)?;
+        let format = format_code(desc.format)?;
         let mut usage = ffi::texture_usage::COPY_SRC | ffi::texture_usage::COPY_DST;
         if desc.usage.has(crate::TextureUsage::SHADER_READ) {
             usage |= ffi::texture_usage::TEXTURE_BINDING;
@@ -632,36 +597,24 @@ impl QGpuDevice for WebgpuDevice {
             usage |= ffi::texture_usage::RENDER_ATTACHMENT;
         }
 
-        let size_obj = Object::new();
-        set(&size_obj, "width", &JsValue::from_f64(desc.width as f64));
-        set(&size_obj, "height", &JsValue::from_f64(desc.height as f64));
-        set(
-            &size_obj,
-            "depthOrArrayLayers",
-            &JsValue::from_f64(desc.array_length.max(1) as f64),
-        );
+        let tex = unsafe {
+            ffi::quanta_create_texture(
+                device,
+                desc.width,
+                desc.height,
+                desc.array_length.max(1),
+                desc.mip_levels.max(1),
+                desc.sample_count.max(1),
+                format,
+                usage,
+            )
+        };
+        let view = unsafe { ffi::quanta_texture_create_view(tex) };
 
-        let tex_desc = Object::new();
-        set(&tex_desc, "size", &size_obj);
-        set(&tex_desc, "format", &JsValue::from_str(format));
-        set(&tex_desc, "usage", &JsValue::from_f64(usage as f64));
-        set(
-            &tex_desc,
-            "sampleCount",
-            &JsValue::from_f64(desc.sample_count.max(1) as f64),
-        );
-        set(
-            &tex_desc,
-            "mipLevelCount",
-            &JsValue::from_f64(desc.mip_levels.max(1) as f64),
-        );
-
-        let tex = device.create_texture(&tex_desc);
-        let view = tex.create_view();
         let bytes_per_row = desc.width * desc.format.bytes_per_pixel() as u32;
         // WebGPU requires bytesPerRow to be a multiple of 256 for
-        // copyTextureToBuffer; round up here so reads work even for narrow
-        // textures. writeTexture does not impose this alignment.
+        // copyTextureToBuffer; round up here so reads work even for
+        // narrow textures.
         let bytes_per_row_aligned = bytes_per_row.div_ceil(256) * 256;
 
         let handle = self.state.alloc_handle();
@@ -687,32 +640,25 @@ impl QGpuDevice for WebgpuDevice {
     }
 
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
+        let device = self.dev()?;
         let textures = self.state.textures.0.borrow();
         let entry = textures
             .get(&texture.handle)
             .ok_or_else(|| Self::err("unknown texture handle"))?;
-
-        let dst = Object::new();
-        set(&dst, "texture", &entry.texture);
-
-        let layout = Object::new();
         let row = entry.width * entry.format.bytes_per_pixel() as u32;
-        set(&layout, "offset", &JsValue::from_f64(0.0));
-        set(&layout, "bytesPerRow", &JsValue::from_f64(row as f64));
-        set(
-            &layout,
-            "rowsPerImage",
-            &JsValue::from_f64(entry.height as f64),
-        );
-
-        let size = Object::new();
-        set(&size, "width", &JsValue::from_f64(entry.width as f64));
-        set(&size, "height", &JsValue::from_f64(entry.height as f64));
-        set(&size, "depthOrArrayLayers", &JsValue::from_f64(1.0));
-
-        device.queue().write_texture(&dst, data, &layout, &size);
+        unsafe {
+            ffi::quanta_queue_write_texture(
+                device,
+                entry.texture,
+                data.as_ptr(),
+                data.len(),
+                row,
+                entry.height,
+                entry.width,
+                entry.height,
+                1,
+            );
+        }
         Ok(())
     }
 
@@ -726,50 +672,26 @@ impl QGpuDevice for WebgpuDevice {
         &self,
         desc: &crate::render_pass::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
-
-        let s = Object::new();
-        set(
-            &s,
-            "magFilter",
-            &JsValue::from_str(filter_name(desc.mag_filter)),
-        );
-        set(
-            &s,
-            "minFilter",
-            &JsValue::from_str(filter_name(desc.min_filter)),
-        );
-        set(
-            &s,
-            "mipmapFilter",
-            &JsValue::from_str(filter_name(desc.mip_filter)),
-        );
-        set(
-            &s,
-            "addressModeU",
-            &JsValue::from_str(address_name(desc.address_u)),
-        );
-        set(
-            &s,
-            "addressModeV",
-            &JsValue::from_str(address_name(desc.address_v)),
-        );
-        if desc.max_anisotropy > 1 {
-            set(
-                &s,
-                "maxAnisotropy",
-                &JsValue::from_f64(desc.max_anisotropy as f64),
-            );
-        }
-        if let Some(cmp) = desc.compare {
-            set(&s, "compare", &JsValue::from_str(compare_name(cmp)));
-        }
-
-        let sampler = device.create_sampler(&s);
+        let device = self.dev()?;
+        let compare_code = match desc.compare {
+            None => ffi::compare::UNSET,
+            Some(c) => compare_op_code(c),
+        };
+        let sampler = unsafe {
+            ffi::quanta_create_sampler(
+                device,
+                filter_code(desc.mag_filter),
+                filter_code(desc.min_filter),
+                filter_code(desc.mip_filter),
+                address_code(desc.address_u),
+                address_code(desc.address_v),
+                ffi::address::CLAMP_TO_EDGE,
+                desc.max_anisotropy as u32,
+                compare_code,
+            )
+        };
         let handle = self.state.alloc_handle();
         self.state.samplers.0.borrow_mut().insert(handle, sampler);
-
         Ok(crate::Sampler {
             handle,
             drop_fn: None,
@@ -777,22 +699,14 @@ impl QGpuDevice for WebgpuDevice {
     }
 
     fn generate_mipmaps(&self, _texture: &Texture) -> Result<(), QuantaError> {
-        // Mipmap generation requires a per-format reduction pass — typically
-        // a small WGSL kernel that downsamples 4 texels into 1. Not part of
-        // the 050 baseline; tracked separately.
         Err(Self::err("WebGPU mipmap generation pending"))
     }
 
     // ── Render path ────────────────────────────────────────────────────────
 
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
+        let device = self.dev()?;
 
-        // The PipelineDesc carries `vertex` + `fragment` slots (or a combined
-        // `source`) holding shader bytes. For WebGPU the bytes must be UTF-8
-        // WGSL — the proc macro emits this already via
-        // `quanta_ir::emit_wgsl::emit_vertex_shader/emit_fragment_shader`.
         let combined = desc.source;
         let vs_src = combined.unwrap_or(desc.vertex);
         let fs_src = combined.unwrap_or(desc.fragment);
@@ -801,173 +715,108 @@ impl QGpuDevice for WebgpuDevice {
         let fs_text = core::str::from_utf8(fs_src)
             .map_err(|_| Self::err("fragment shader is not valid UTF-8 WGSL"))?;
 
-        let vs_desc = Object::new();
-        set(&vs_desc, "code", &JsValue::from_str(vs_text));
-        let vs_module = device.create_shader_module(&vs_desc);
-
+        let vs_module =
+            unsafe { ffi::quanta_create_shader_module(device, vs_text.as_ptr(), vs_text.len()) };
         let fs_module = if combined.is_some() || vs_text == fs_text {
-            // Single combined source — reuse the same module for both stages.
-            // wasm_bindgen extern types don't auto-derive Clone; recreate a
-            // typed handle from the JsValue view of the same JS module.
-            let js: JsValue = (&vs_module).into();
-            js.unchecked_into::<ffi::GpuShaderModule>()
+            // Reuse the same module handle — JS side doesn't need a
+            // distinct copy. Keep the lifecycle simple by allocating
+            // a parallel handle on the JS side instead of aliasing in
+            // the table; cheap call but clearer ownership.
+            unsafe { ffi::quanta_create_shader_module(device, vs_text.as_ptr(), vs_text.len()) }
         } else {
-            let fs_desc = Object::new();
-            set(&fs_desc, "code", &JsValue::from_str(fs_text));
-            device.create_shader_module(&fs_desc)
+            unsafe { ffi::quanta_create_shader_module(device, fs_text.as_ptr(), fs_text.len()) }
         };
 
-        // Vertex stage descriptor.
-        let vs_stage = Object::new();
-        set(&vs_stage, "module", &vs_module);
-        set(
-            &vs_stage,
-            "entryPoint",
-            &JsValue::from_str(desc.vertex_entry),
-        );
-        if !desc.vertex_layouts.is_empty() {
-            let buffers = Array::new();
-            for layout in desc.vertex_layouts.iter() {
-                let buf_desc = Object::new();
-                set(
-                    &buf_desc,
-                    "arrayStride",
-                    &JsValue::from_f64(layout.stride as f64),
-                );
-                set(
-                    &buf_desc,
-                    "stepMode",
-                    &JsValue::from_str(match layout.step {
-                        crate::pipeline::StepMode::Vertex => "vertex",
-                        crate::pipeline::StepMode::Instance => "instance",
-                    }),
-                );
-                let attrs = Array::new();
-                for a in &layout.attributes {
-                    let att = Object::new();
-                    set(
-                        &att,
-                        "format",
-                        &JsValue::from_str(attribute_format(a.format)),
-                    );
-                    set(&att, "offset", &JsValue::from_f64(a.offset as f64));
-                    set(
-                        &att,
-                        "shaderLocation",
-                        &JsValue::from_f64(a.location as f64),
-                    );
-                    attrs.push(&att);
-                }
-                set(&buf_desc, "attributes", &attrs);
-                buffers.push(&buf_desc);
-            }
-            set(&vs_stage, "buffers", &buffers);
+        let rp_desc = unsafe { ffi::quanta_rp_desc_create() };
+
+        unsafe {
+            ffi::quanta_rp_desc_set_vertex(
+                rp_desc,
+                vs_module,
+                desc.vertex_entry.as_ptr(),
+                desc.vertex_entry.len(),
+            );
         }
 
-        // Fragment stage descriptor with one or more color targets.
-        let fs_stage = Object::new();
-        set(&fs_stage, "module", &fs_module);
-        set(
-            &fs_stage,
-            "entryPoint",
-            &JsValue::from_str(desc.fragment_entry),
-        );
-        let targets = Array::new();
+        for (buf_index, layout) in desc.vertex_layouts.iter().enumerate() {
+            unsafe {
+                ffi::quanta_rp_desc_add_vertex_buffer(
+                    rp_desc,
+                    layout.stride,
+                    step_mode_code(layout.step),
+                );
+            }
+            for a in &layout.attributes {
+                unsafe {
+                    ffi::quanta_rp_desc_add_vertex_attribute(
+                        rp_desc,
+                        buf_index as u32,
+                        attribute_format_code(a.format),
+                        a.offset,
+                        a.location,
+                    );
+                }
+            }
+        }
+
         for (i, fmt) in desc.color_formats.iter().enumerate() {
-            let target = Object::new();
-            set(&target, "format", &JsValue::from_str(wgpu_format(*fmt)?));
             let blend_state = desc
                 .blend_states
                 .get(i)
                 .copied()
                 .or_else(|| desc.blend_states.last().copied())
                 .unwrap_or(desc.blend);
-            if blend_state.enabled {
-                let blend = Object::new();
-                let color = Object::new();
-                set(
-                    &color,
-                    "srcFactor",
-                    &JsValue::from_str(blend_factor(blend_state.src_rgb)),
+            unsafe {
+                ffi::quanta_rp_desc_add_color_target(
+                    rp_desc,
+                    format_code(*fmt)?,
+                    if blend_state.enabled { 1 } else { 0 },
+                    blend_factor_code(blend_state.src_rgb),
+                    blend_factor_code(blend_state.dst_rgb),
+                    blend_op_code(blend_state.op_rgb),
+                    blend_factor_code(blend_state.src_alpha),
+                    blend_factor_code(blend_state.dst_alpha),
+                    blend_op_code(blend_state.op_alpha),
                 );
-                set(
-                    &color,
-                    "dstFactor",
-                    &JsValue::from_str(blend_factor(blend_state.dst_rgb)),
-                );
-                set(
-                    &color,
-                    "operation",
-                    &JsValue::from_str(blend_op(blend_state.op_rgb)),
-                );
-                let alpha = Object::new();
-                set(
-                    &alpha,
-                    "srcFactor",
-                    &JsValue::from_str(blend_factor(blend_state.src_alpha)),
-                );
-                set(
-                    &alpha,
-                    "dstFactor",
-                    &JsValue::from_str(blend_factor(blend_state.dst_alpha)),
-                );
-                set(
-                    &alpha,
-                    "operation",
-                    &JsValue::from_str(blend_op(blend_state.op_alpha)),
-                );
-                set(&blend, "color", &color);
-                set(&blend, "alpha", &alpha);
-                set(&target, "blend", &blend);
             }
-            targets.push(&target);
         }
-        set(&fs_stage, "targets", &targets);
 
-        let primitive = Object::new();
-        set(
-            &primitive,
-            "topology",
-            &JsValue::from_str(primitive_topology(desc.primitive)),
-        );
-        set(
-            &primitive,
-            "cullMode",
-            &JsValue::from_str(cull_mode(desc.cull_mode)),
-        );
-
-        let pipe_desc = Object::new();
-        set(&pipe_desc, "layout", &JsValue::from_str("auto"));
-        set(&pipe_desc, "vertex", &vs_stage);
-        set(&pipe_desc, "fragment", &fs_stage);
-        set(&pipe_desc, "primitive", &primitive);
-        set(&pipe_desc, "multisample", &{
-            let m = Object::new();
-            set(
-                &m,
-                "count",
-                &JsValue::from_f64(desc.sample_count.max(1) as f64),
+        unsafe {
+            ffi::quanta_rp_desc_set_fragment(
+                rp_desc,
+                fs_module,
+                desc.fragment_entry.as_ptr(),
+                desc.fragment_entry.len(),
             );
-            m.into()
-        });
+        }
+        unsafe {
+            ffi::quanta_rp_desc_set_primitive(
+                rp_desc,
+                topology_code(desc.primitive),
+                cull_mode_code(desc.cull_mode),
+            );
+            ffi::quanta_rp_desc_set_multisample(rp_desc, desc.sample_count.max(1));
+        }
         if let Some(depth_fmt) = desc.depth_format {
-            let ds = Object::new();
-            set(&ds, "format", &JsValue::from_str(wgpu_format(depth_fmt)?));
-            set(
-                &ds,
-                "depthWriteEnabled",
-                &JsValue::from_bool(desc.depth_stencil.depth_write),
-            );
-            set(
-                &ds,
-                "depthCompare",
-                &JsValue::from_str(compare_name_internal(desc.depth_stencil.depth_compare)),
-            );
-            set(&pipe_desc, "depthStencil", &ds);
+            unsafe {
+                ffi::quanta_rp_desc_set_depth_stencil(
+                    rp_desc,
+                    format_code(depth_fmt)?,
+                    if desc.depth_stencil.depth_write { 1 } else { 0 },
+                    compare_func_code(desc.depth_stencil.depth_compare),
+                );
+            }
         }
 
-        let pipeline = device.create_render_pipeline(&pipe_desc);
-        let layout = pipeline.render_get_bind_group_layout(0);
+        let pipeline = unsafe { ffi::quanta_create_render_pipeline(device, rp_desc) };
+        let layout = unsafe { ffi::quanta_render_pipeline_get_bind_group_layout(pipeline, 0) };
+
+        // Modules are referenced by the pipeline; we no longer need
+        // the JS-side handles.
+        unsafe {
+            ffi::quanta_release(vs_module);
+            ffi::quanta_release(fs_module);
+        }
 
         let handle = self.state.alloc_handle();
         self.state
@@ -983,10 +832,6 @@ impl QGpuDevice for WebgpuDevice {
     }
 
     fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
-        // The WebGPU render-pass encoder is created lazily inside `render_end`
-        // because the pass needs the recorded ops + the color target up front.
-        // We just stash the target in a reserved op slot — here, in
-        // `RenderPass::color_targets`.
         Ok(RenderPass {
             handle: target.handle,
             ops: Vec::new(),
@@ -1000,54 +845,65 @@ impl QGpuDevice for WebgpuDevice {
     }
 
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
-        let dev_ref = self.dev()?;
-        let device = dev_ref.as_ref().unwrap();
+        let device = self.dev()?;
 
         let textures = self.state.textures.0.borrow();
         let target = textures
             .get(&pass.handle)
             .ok_or_else(|| Self::err("unknown render target"))?;
 
-        // Build the render-pass descriptor: one color attachment for now.
-        let colors = Array::new();
-        let attach = Object::new();
-        set(&attach, "view", &target.view);
-        // load_op default for Quanta is Clear(CLEAR); folding LoadOp/StoreOp
-        // out of `ColorTarget` is left as a future refinement.
-        set(&attach, "loadOp", &JsValue::from_str("clear"));
-        set(&attach, "storeOp", &JsValue::from_str("store"));
-        let clear = Object::new();
-        set(&clear, "r", &JsValue::from_f64(0.0));
-        set(&clear, "g", &JsValue::from_f64(0.0));
-        set(&clear, "b", &JsValue::from_f64(0.0));
-        set(&clear, "a", &JsValue::from_f64(0.0));
-        set(&attach, "clearValue", &clear);
-        colors.push(&attach);
-
-        // Override clear color from the recorded ops if present.
+        // Find the clear color (if any) before building the pass desc.
+        let mut clear_rgba = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
         for op in &pass.ops {
             if let crate::render_pass::RenderOp::Clear(color) = op {
-                let clear = Object::new();
-                set(&clear, "r", &JsValue::from_f64(color.r as f64));
-                set(&clear, "g", &JsValue::from_f64(color.g as f64));
-                set(&clear, "b", &JsValue::from_f64(color.b as f64));
-                set(&clear, "a", &JsValue::from_f64(color.a as f64));
-                set(&attach, "clearValue", &clear);
+                clear_rgba = (color.r, color.g, color.b, color.a);
             }
         }
 
-        let pass_desc = Object::new();
-        set(&pass_desc, "colorAttachments", &colors);
+        let rpass_desc = unsafe { ffi::quanta_rpass_desc_create() };
+        unsafe {
+            ffi::quanta_rpass_desc_add_color_attachment(
+                rpass_desc,
+                target.view,
+                ffi::load_op::CLEAR,
+                ffi::store_op::STORE,
+                clear_rgba.0,
+                clear_rgba.1,
+                clear_rgba.2,
+                clear_rgba.3,
+            );
+        }
 
-        let encoder = device.create_command_encoder();
-        let rp = encoder.begin_render_pass(&pass_desc);
+        let encoder = unsafe { ffi::quanta_create_command_encoder(device) };
+        let rp = unsafe { ffi::quanta_encoder_begin_render_pass(encoder, rpass_desc) };
 
-        // Replay the recorded ops.
         let pipelines = self.state.pipelines.0.borrow();
         let buffers = self.state.buffers.0.borrow();
         let mut current_pipeline: Option<&state::PipelineEntry> = None;
-        let mut bind_entries: alloc::collections::BTreeMap<u32, JsValue> =
+        let mut bind_entries: alloc::collections::BTreeMap<u32, u32> =
             alloc::collections::BTreeMap::new();
+
+        // Helper: flush pending bind entries into a real bind group
+        // and bind it. Hoisted out of the match for the two draw
+        // variants below.
+        let flush_bg = |bind_entries: &mut alloc::collections::BTreeMap<u32, u32>,
+                        cur: Option<&state::PipelineEntry>|
+         -> Option<u32> {
+            if bind_entries.is_empty() {
+                return None;
+            }
+            let p = cur?;
+            let bg_desc = unsafe { ffi::quanta_bg_desc_create(p.layout) };
+            for (slot, buf) in bind_entries.iter() {
+                unsafe { ffi::quanta_bg_desc_add_buffer(bg_desc, *slot, *buf) };
+            }
+            let bg = unsafe { ffi::quanta_create_bind_group(device, bg_desc) };
+            unsafe { ffi::quanta_render_pass_set_bind_group(rp, 0, bg) };
+            bind_entries.clear();
+            Some(bg)
+        };
+
+        let mut owned_bgs: Vec<u32> = Vec::new();
 
         for op in &pass.ops {
             use crate::render_pass::RenderOp;
@@ -1056,7 +912,7 @@ impl QGpuDevice for WebgpuDevice {
                     let entry = pipelines
                         .get(handle)
                         .ok_or_else(|| Self::err("unknown pipeline"))?;
-                    rp.rp_set_pipeline(&entry.pipeline);
+                    unsafe { ffi::quanta_render_pass_set_pipeline(rp, entry.pipeline) };
                     current_pipeline = Some(entry);
                 }
                 RenderOp::BindVertices {
@@ -1064,62 +920,48 @@ impl QGpuDevice for WebgpuDevice {
                     handle,
                     offset,
                 } => {
-                    let buf = buffers.get(handle).ok_or_else(|| Self::err("vbuf"))?;
-                    rp.rp_set_vertex_buffer(*slot, buf, *offset as f64);
+                    let &buf = buffers.get(handle).ok_or_else(|| Self::err("vbuf"))?;
+                    unsafe {
+                        ffi::quanta_render_pass_set_vertex_buffer(rp, *slot, buf, *offset as f64);
+                    }
                 }
                 RenderOp::BindIndices { handle, offset } => {
-                    let buf = buffers.get(handle).ok_or_else(|| Self::err("ibuf"))?;
-                    rp.rp_set_index_buffer(buf, "uint32", *offset as f64);
+                    let &buf = buffers.get(handle).ok_or_else(|| Self::err("ibuf"))?;
+                    unsafe {
+                        ffi::quanta_render_pass_set_index_buffer(
+                            rp,
+                            buf,
+                            ffi::index_format::UINT32,
+                            *offset as f64,
+                        );
+                    }
                 }
                 RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
-                    let buf = buffers.get(handle).ok_or_else(|| Self::err("ubuf"))?;
-                    let resource = Object::new();
-                    set(&resource, "buffer", buf);
-                    let entry = Object::new();
-                    set(&entry, "binding", &JsValue::from_f64(*slot as f64));
-                    set(&entry, "resource", &resource);
-                    bind_entries.insert(*slot, entry.into());
+                    let &buf = buffers.get(handle).ok_or_else(|| Self::err("ubuf"))?;
+                    bind_entries.insert(*slot, buf);
                 }
                 RenderOp::Clear(_) => { /* handled above as clearValue */ }
                 RenderOp::Draw {
                     vertex_count,
                     instance_count,
                 } => {
-                    if !bind_entries.is_empty()
-                        && let Some(p) = current_pipeline
-                    {
-                        let entries = Array::new();
-                        for v in bind_entries.values() {
-                            entries.push(v);
-                        }
-                        let bg_desc = Object::new();
-                        set(&bg_desc, "layout", &p.layout);
-                        set(&bg_desc, "entries", &entries);
-                        let bg = device.create_bind_group(&bg_desc);
-                        rp.rp_set_bind_group(0, &bg);
-                        bind_entries.clear();
+                    if let Some(bg) = flush_bg(&mut bind_entries, current_pipeline) {
+                        owned_bgs.push(bg);
                     }
-                    rp.draw(*vertex_count, *instance_count);
+                    unsafe {
+                        ffi::quanta_render_pass_draw(rp, *vertex_count, *instance_count);
+                    }
                 }
                 RenderOp::DrawIndexed {
                     index_count,
                     instance_count,
                 } => {
-                    if !bind_entries.is_empty()
-                        && let Some(p) = current_pipeline
-                    {
-                        let entries = Array::new();
-                        for v in bind_entries.values() {
-                            entries.push(v);
-                        }
-                        let bg_desc = Object::new();
-                        set(&bg_desc, "layout", &p.layout);
-                        set(&bg_desc, "entries", &entries);
-                        let bg = device.create_bind_group(&bg_desc);
-                        rp.rp_set_bind_group(0, &bg);
-                        bind_entries.clear();
+                    if let Some(bg) = flush_bg(&mut bind_entries, current_pipeline) {
+                        owned_bgs.push(bg);
                     }
-                    rp.draw_indexed(*index_count, *instance_count);
+                    unsafe {
+                        ffi::quanta_render_pass_draw_indexed(rp, *index_count, *instance_count);
+                    }
                 }
                 RenderOp::SetViewport {
                     x,
@@ -1128,58 +970,59 @@ impl QGpuDevice for WebgpuDevice {
                     height,
                     min_depth,
                     max_depth,
-                } => {
-                    rp.rp_set_viewport(*x, *y, *width, *height, *min_depth, *max_depth);
-                }
+                } => unsafe {
+                    ffi::quanta_render_pass_set_viewport(
+                        rp, *x, *y, *width, *height, *min_depth, *max_depth,
+                    );
+                },
                 RenderOp::SetScissor {
                     x,
                     y,
                     width,
                     height,
-                } => rp.rp_set_scissor(*x, *y, *width, *height),
+                } => unsafe {
+                    ffi::quanta_render_pass_set_scissor(rp, *x, *y, *width, *height);
+                },
                 // Variants below are not in the 050 baseline. Per Kani
                 // theorem T417, the rule is **every RenderOp is either
                 // wired or explicitly rejected** — no silent drops.
-                // Closing the gaps is tracked on step 050; until then,
-                // surface a clear error so callers can't run a render
-                // pass that observably misses these ops.
                 RenderOp::SetTexture { .. } => {
-                    rp.rp_end();
+                    unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err("WebGPU render: SetTexture pending"));
                 }
                 RenderOp::SetSampler { .. } => {
-                    rp.rp_end();
+                    unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err("WebGPU render: SetSampler pending"));
                 }
                 RenderOp::SetValue { .. } => {
-                    rp.rp_end();
+                    unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err(
                         "WebGPU render: SetValue (push constants) pending",
                     ));
                 }
                 RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {
-                    rp.rp_end();
+                    unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err("WebGPU render: depth/stencil clear pending"));
                 }
                 RenderOp::SetStencilRef(_) => {
-                    rp.rp_end();
+                    unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err("WebGPU render: SetStencilRef pending"));
                 }
                 RenderOp::DebugPush(_) | RenderOp::DebugPop => {
                     // Debug labels are advisory; safe to skip on WebGPU.
                 }
                 RenderOp::DrawIndirect { .. } | RenderOp::DrawIndexedIndirect { .. } => {
-                    rp.rp_end();
+                    unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err(
                         "WebGPU render: indirect draw pending (Tier A 032+033)",
                     ));
                 }
                 RenderOp::BeginOcclusionQuery { .. } | RenderOp::EndOcclusionQuery { .. } => {
-                    rp.rp_end();
+                    unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err("WebGPU render: occlusion queries pending"));
                 }
                 RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
-                    rp.rp_end();
+                    unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err(
                         "WebGPU render: variable-rate shading not in spec",
                     ));
@@ -1187,14 +1030,15 @@ impl QGpuDevice for WebgpuDevice {
             }
         }
 
-        rp.rp_end();
-        let cmd = encoder.finish();
-        let arr = Array::new();
-        arr.push(&cmd);
-        device.queue().submit(&arr);
-
+        unsafe { ffi::quanta_render_pass_end(rp) };
+        let cmd = unsafe { ffi::quanta_encoder_finish(encoder) };
+        unsafe { ffi::quanta_queue_submit(device, cmd) };
+        for bg in owned_bgs {
+            unsafe { ffi::quanta_release(bg) };
+        }
         Ok(make_pulse())
     }
+
     fn dispatch_mesh(&self, _pipeline: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {
         Err(Self::err("WebGPU mesh shaders not supported"))
     }
@@ -1266,9 +1110,6 @@ impl QGpuDevice for WebgpuDevice {
 // ── Wave / Pulse construction helpers ──────────────────────────────────────
 
 fn make_wave(handle: u64, workgroup_size: [u32; 3]) -> Wave {
-    // Reuse the public Wave struct via mem::zeroed-equivalent — but Wave's
-    // fields are pub(crate), so we can build it directly inside the crate.
-    // The drop_fn is None: handle ownership is tracked via the state map.
     Wave {
         handle,
         bindings: [0; crate::api::wave::MAX_BINDINGS],
@@ -1286,9 +1127,6 @@ fn make_wave(handle: u64, workgroup_size: [u32; 3]) -> Wave {
 fn make_pulse() -> Pulse {
     Pulse {
         handle: 0,
-        // Submission has already been issued; the pulse is "done" from the
-        // caller's perspective unless they explicitly await via
-        // `pulse_wait_async`. Sync `pulse_wait` still rejects.
         completed: true,
         wait_fn: None,
     }

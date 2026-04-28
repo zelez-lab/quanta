@@ -88,8 +88,8 @@ noncomputable def wave_jit_flow (dev : GPUDevice) (k : KernelDef) : Option GPUCo
         ⇒ A10.2 (compute_pipeline_creation): create_compute_pipeline ≠ none
 
     No appeal to runtime testing. The browser smoke tests serve as
-    operational evidence for A11 (wasm-bindgen faithful), not for this
-    theorem. -/
+    operational evidence for A11 (Quanta wasm ↔ JS ABI faithful, post-B⁰),
+    not for this theorem. -/
 theorem t414_wave_jit_succeeds
     (dev : GPUDevice) (k : KernelDef)
     : wave_jit_flow dev k ≠ none := by

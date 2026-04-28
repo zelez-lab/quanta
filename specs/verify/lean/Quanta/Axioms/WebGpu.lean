@@ -3,7 +3,7 @@
 
 Trusted properties of the browser's WebGPU implementation that Quanta
 assumes. These formalize **axiom A10** (WebGPU host correctness) and
-**axiom A11** (wasm-bindgen FFI faithfulness).
+**axiom A11** (Quanta-owned wasm ↔ JS ABI faithfulness).
 
 WebGPU is unique among Quanta's backends in that the *driver* itself is
 implemented in browser-side JavaScript (Chrome/Dawn, Safari/WebKit,
@@ -17,6 +17,14 @@ extern "C" call in `src/driver/webgpu/ffi.rs` should map to one or more
 axioms here. Every Rust call site in `src/driver/webgpu/mod.rs` carries
 the corresponding `WebGpuAxiom.*` reference in a comment when proofs are
 strengthened.
+
+A11 changed shape after step B⁰ (2026-04-28): the FFI layer is no longer
+`wasm-bindgen` (third-party, ~30-60 KB of opaque codegen); it is
+Quanta's own `extern "C"` block in `src/driver/webgpu/ffi.rs` plus a
+hand-authored `web/src/glue.ts` (~500 LOC, compiled to `glue.js`). Both
+sides are project-local, version-controlled, auditable line by line.
+A11 still axiomatizes the boundary, but its surface is small enough
+that B″ (Lean WebIDL conformance) can lift it from axiom to theorem.
 
 See `specs/verify/verus/quanta-ir/emit_wgsl_jit.rs` for the IR-side
 mirror that connects to A10 via the `wgsl_string_well_formed` predicate.
@@ -195,45 +203,56 @@ axiom write_buffer_atomicity
     : True -- subsequent dispatch sees full data
 
 -- ════════════════════════════════════════════════════════════════════
--- A11: wasm-bindgen FFI faithfulness
+-- A11: Quanta wasm ↔ JS ABI faithfulness (post-B⁰)
+--
+-- Replaces the prior wasm-bindgen-shaped A11 (commit `27b26c0`).
+-- After step B⁰ (2026-04-28) the FFI boundary is hand-authored:
+--   - Rust side: `src/driver/webgpu/ffi.rs` declares bare
+--     `unsafe extern "C"` imports, no proc-macros, no third-party
+--     ABI codegen.
+--   - JS side: `web/src/glue.ts` (compiled to `glue.js`) implements
+--     each import; ~500 LOC owned by Quanta and version-controlled.
+-- Together they form the entire FFI TCB. B″ (Lean WebIDL conformance)
+-- proves that both halves match the W3C `webgpu.idl`, lifting A11 from
+-- axiom to theorem.
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **A11 — wasm_bindgen_faithful**: For every extern "C" block declared
-    in `src/driver/webgpu/ffi.rs` with attribute
-    `#[wasm_bindgen(method, js_name = ...)]`, the generated wasm32
-    glue invokes the named JavaScript method on the receiver, marshals
-    arguments per the wasm-bindgen ABI (W3C wasm-bindgen guide §3), and
-    propagates the return value (or thrown exception) back to Rust.
+/-- **A11 — quanta_abi_faithful**: For every `unsafe extern "C"` import
+    declared in `src/driver/webgpu/ffi.rs`, the implementation provided
+    by `web/src/glue.ts` (compiled to `glue.js`) marshals arguments per
+    the Quanta wasm ↔ JS ABI documented in `ffi.rs`, invokes the
+    corresponding WebGPU operation on the underlying handle (or reads
+    `navigator.gpu` for the bootstrap path), and either returns a JS
+    handle or hands a `(task, handle)` pair back via the
+    `quanta_resolve` / `quanta_reject` exports for async ops.
 
     This is the wasm32 equivalent of trusting libc's `extern "C"` ABI
-    on native targets. wasm-bindgen is treated as the calling-convention
-    primitive (libc-equivalent), not as a wrapper crate.
+    on native targets — but unlike the pre-B⁰ shape, both sides of the
+    boundary are project-local and inspectable line by line. -/
+axiom quanta_abi_faithful : True
 
-    Out of scope: bugs in `wasm-bindgen` itself, or in the JS engine's
-    method dispatch. Both are part of A11 by construction. -/
-axiom wasm_bindgen_faithful : True
-
-/-- **A11.1 — promise_to_jsfuture_lossless**: `JsFuture::from(promise)`
-    produces a Rust Future whose `.await` yields `Ok(value)` exactly
-    when the underlying Promise resolves with `value`, and yields
-    `Err(reason)` exactly when the Promise rejects with `reason`.
-    `wasm-bindgen-futures` is held to this contract. -/
-axiom promise_to_jsfuture_lossless
+/-- **A11.1 — promise_callback_lossless**: For every async import
+    `quanta_X(..., task)`, the JS side resolves exactly one of
+    `quanta_resolve(task, handle)` (success) or `quanta_reject(task)`
+    (failure) per task id, in finite time. The Rust executor in
+    `src/driver/webgpu/executor.rs` translates these callbacks into
+    `Future::poll` returning `Ready(Ok(handle))` / `Ready(Err(()))`. -/
+axiom promise_callback_lossless
     (α : Type) (p : JsPromise α)
     : True
 
-/-- **A11.2 — js_value_method_dispatch**: Casting a `JsValue` to an
-    extern type via `unchecked_into::<T>()` and then calling a method
-    declared in `T`'s `extern "C"` block dispatches that JS method
-    on the underlying object. If the object does not have a method
-    with the declared `js_name`, the call traps at runtime — it does
-    not silently no-op or call a different method.
+/-- **A11.2 — handle_table_consistent**: The JS-side handle table in
+    `web/src/handles.ts` is the unique source of identity for every
+    GPU object the Rust driver sees. Allocations return a fresh
+    monotonic `u32`; `quanta_release(h)` (and per-type destroy
+    siblings) drop the entry and never alias a fresh resource onto a
+    released handle.
 
-    Quanta's smoke tests (`examples/web_add_one`, `examples/web_triangle`)
-    are the operational check that the declared `js_name`s match the
-    actual WebGPU API surface. -/
-axiom js_value_method_dispatch
-    (jv : Type)
+    Quanta's smoke tests (`examples/web_add_one`,
+    `examples/web_triangle`) are the operational check that the
+    declared imports match the actual WebGPU API surface. -/
+axiom handle_table_consistent
+    (handle : Type)
     : True
 
 end Quanta.Axioms.WebGpu

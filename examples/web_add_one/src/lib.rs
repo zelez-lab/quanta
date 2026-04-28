@@ -1,24 +1,13 @@
-//! Browser-side smoke test for step 050 + step 079.
+//! Browser-side smoke test for step 050 + step 079 + B⁰.
 //!
 //! Builds the simplest possible end-to-end Quanta-on-WebGPU demo: an
 //! `add_one` kernel that increments every element of a `u32` buffer. Run
 //! it from a real browser tab — there's no headless harness, by design.
-//! The point is to prove that:
-//!
-//! 1. `quanta::webgpu::WebgpuDevice::new_async` acquires a real
-//!    `GPUDevice` via `navigator.gpu.requestAdapter` / `requestDevice`.
-//! 2. `wave_jit` runs `emit_wgsl_jit` and feeds the result to
-//!    `device.createShaderModule({ code })`.
-//! 3. `wave_dispatch` enqueues a real compute pass.
-//! 4. `field_read_bytes_async` round-trips data back out via `mapAsync`.
 //!
 //! ## Build
 //!
 //! ```sh
-//! cargo build --target wasm32-unknown-unknown --release \
-//!     -p web-add-one
-//! wasm-bindgen --target web --out-dir examples/web_add_one/pkg \
-//!     target/wasm32-unknown-unknown/release/web_add_one.wasm
+//! ./scripts/build-web.sh web_add_one
 //! ```
 //!
 //! Serve `examples/web_add_one/index.html` over HTTPS (or
@@ -30,16 +19,22 @@
 //! - After dispatching `add_one` with one workgroup of size 64,
 //!   the buffer must equal `[1, 2, 3, …, 64]`.
 //!
-//! Failures bubble up to the browser console as JS-shaped Result errors;
-//! pass returns the read-back vector as a `Uint8Array` to JS.
+//! Result is handed back to JS via the wasm imports
+//! `quanta_complete_bytes` (success) or `quanta_complete_err` (failure).
+//! No `wasm-bindgen` runtime is involved.
 
 #![cfg(target_arch = "wasm32")]
 
 use quanta::GpuDevice;
+use quanta::webgpu::spawn_local;
 use quanta_ir::{
     BinOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
 };
-use wasm_bindgen::prelude::*;
+
+unsafe extern "C" {
+    fn quanta_complete_bytes(task: u32, ptr: *const u8, len: usize);
+    fn quanta_complete_err(task: u32, ptr: *const u8, len: usize);
+}
 
 fn build_add_one_kernel() -> KernelDef {
     KernelDef {
@@ -86,44 +81,55 @@ fn build_add_one_kernel() -> KernelDef {
     }
 }
 
-/// Run the smoke test, returning the buffer contents (Vec<u8> of 64 u32s
-/// little-endian) on success.
-#[wasm_bindgen]
-pub async fn run_add_one() -> Result<Vec<u8>, JsValue> {
-    // Use the typed device directly — we need the async read-back method.
+async fn run() -> Result<Vec<u8>, String> {
     let dev = quanta::webgpu::WebgpuDevice::new_async()
         .await
-        .map_err(|e| JsValue::from_str(&format!("new_async: {:?}", e)))?;
+        .map_err(|e| format!("new_async: {:?}", e))?;
 
     let n = 64usize;
     let bytes = n * core::mem::size_of::<u32>();
 
     let buf = dev
         .field_alloc(bytes, quanta::FieldUsage::default_compute())
-        .map_err(|e| JsValue::from_str(&format!("field_alloc: {:?}", e)))?;
+        .map_err(|e| format!("field_alloc: {:?}", e))?;
 
     let mut input = Vec::with_capacity(bytes);
     for i in 0u32..(n as u32) {
         input.extend_from_slice(&i.to_le_bytes());
     }
     dev.field_write_bytes(buf, &input)
-        .map_err(|e| JsValue::from_str(&format!("field_write: {:?}", e)))?;
+        .map_err(|e| format!("field_write: {:?}", e))?;
 
     let kernel = build_add_one_kernel();
     let kernel_bytes = serialize_kernel(&kernel);
     let mut wave = dev
         .wave_jit(&kernel_bytes)
-        .map_err(|e| JsValue::from_str(&format!("wave_jit: {:?}", e)))?;
+        .map_err(|e| format!("wave_jit: {:?}", e))?;
     wave.bind_handle(0, buf);
 
     let _pulse = dev
         .wave_dispatch(&wave, [1, 1, 1])
-        .map_err(|e| JsValue::from_str(&format!("wave_dispatch: {:?}", e)))?;
+        .map_err(|e| format!("wave_dispatch: {:?}", e))?;
 
-    let out = dev
-        .field_read_bytes_async(buf, bytes)
+    dev.field_read_bytes_async(buf, bytes)
         .await
-        .map_err(|e| JsValue::from_str(&format!("read_back: {:?}", e)))?;
+        .map_err(|e| format!("read_back: {:?}", e))
+}
 
-    Ok(out)
+/// Smoke-test entry. JS-side harness calls
+/// `wasm.web_add_one_run(task)` with a freshly minted task id; this
+/// function spawns the async test and replies via
+/// `quanta_complete_bytes` / `quanta_complete_err`.
+#[unsafe(no_mangle)]
+pub extern "C" fn web_add_one_run(task: u32) {
+    spawn_local(async move {
+        match run().await {
+            Ok(bytes) => unsafe {
+                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
+            },
+            Err(msg) => unsafe {
+                quanta_complete_err(task, msg.as_ptr(), msg.len());
+            },
+        }
+    });
 }

@@ -13,25 +13,24 @@
   <body>
     <h1>Quanta WebGPU smoke test — render path</h1>
     <p>
-      Creates a 16×16 RGBA8 render target, runs a clear-then-draw render
-      pass through <code>pipeline_create</code> /
-      <code>render_begin</code> / <code>render_end</code>, and reads the
-      pixels back through <code>texture_read_async</code>. The triangle
-      covers the full screen, so the entire texture should end up the
-      triangle's solid blue.
+      Loads <code>web_triangle.wasm</code> via Quanta's own WebGPU glue
+      (no <code>wasm-bindgen</code> runtime). Creates a 16×16 RGBA8
+      render target, runs a clear-then-draw render pass, and reads the
+      pixels back. The triangle covers the full screen, so the entire
+      texture should end up the triangle's solid blue.
     </p>
     <p id="status">Loading…</p>
     <canvas id="canvas" width="16" height="16"></canvas>
 
     <script type="module">
-      import init, { run_triangle } from "./pkg/web_triangle.js";
+      import { instantiate } from "./glue.js";
 
       const statusEl = document.getElementById("status");
       const canvas   = document.getElementById("canvas");
 
       async function main() {
-        await init();
-        const bytes = await run_triangle();
+        const mod   = await instantiate("./web_triangle.wasm");
+        const bytes = await mod.runReturningBytes("web_triangle_run");
         const ctx = canvas.getContext("2d");
         const img = ctx.createImageData(16, 16);
         img.data.set(bytes);

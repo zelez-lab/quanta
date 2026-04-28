@@ -1,0 +1,15 @@
+{
+  "name": "@quanta/glue",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quanta WebGPU FFI glue. Build-only TypeScript that compiles to glue.js. Zero runtime npm dependencies — only TS itself, build-time only.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

@@ -162,29 +162,36 @@ backend** — without it, the soundness of the WGSL emitter (T410) buys
 no end-to-end correctness for the browser. A10 is the WebGPU analog of
 A1 (Metal) / A2 (Vulkan).
 
-### A11: wasm-bindgen FFI faithfulness
+### A11: Quanta wasm ↔ JS ABI faithfulness (post-B⁰)
 
-The `wasm-bindgen` toolchain is treated as the wasm32 calling-convention
-primitive (the libc-equivalent for Rust ↔ JS interop). For every
-`extern "C"` block in `src/driver/webgpu/ffi.rs`:
-- `#[wasm_bindgen(method, js_name = ...)]` invokes the named JS method on
-  the receiver, marshals arguments per the wasm-bindgen ABI, and
-  propagates the return value (or thrown exception) back to Rust.
-- `JsFuture::from(promise).await` yields `Ok(value)` exactly when the
-  underlying Promise resolves, and `Err(reason)` exactly when it
-  rejects. (`wasm-bindgen-futures` is held to this contract.)
-- `unchecked_into::<T>()` followed by a method call on `T` traps at
-  runtime if the underlying JS object lacks the method — it does not
-  silently no-op.
+After step B⁰ (2026-04-28) the FFI boundary is hand-authored on both
+sides; A11 is the trust statement covering it. For every `unsafe extern
+"C"` import declared in `src/driver/webgpu/ffi.rs`:
+- The corresponding implementation in `web/src/glue.ts` (compiled to
+  `glue.js` at build time) marshals arguments per the Quanta ABI:
+  long-lived JS objects cross as `u32` handles into a JS-side handle
+  table; strings cross as `(ptr, len)` into wasm linear memory;
+  `u64` sizes cross as `f64`.
+- Async imports take a `task: u32` argument and resolve exactly one of
+  `quanta_resolve(task, handle)` (success) or `quanta_reject(task)`
+  (failure) per task id, which the executor in
+  `src/driver/webgpu/executor.rs` turns into `Future::poll` returning
+  `Ready(Ok(handle))` / `Ready(Err(()))`.
+- The JS-side handle table is the unique source of GPU-object identity;
+  released handles never alias fresh resources.
 
-Bugs in `wasm-bindgen` itself, or in the host JS engine's method
-dispatch, are part of A11 by construction. The smoke tests
-(`examples/web_add_one`, `examples/web_triangle`) are the operational
-check that the declared `js_name`s match the actual WebGPU surface.
+Pre-B⁰ this axiom covered the `wasm-bindgen` runtime crate (~30-60 KB
+of opaque codegen). Post-B⁰ it covers only project-local code:
+`src/driver/webgpu/ffi.rs` (~300 lines) plus `web/src/*.ts` (~500
+lines). Both sides are version-controlled, auditable line by line, and
+shrink-able further to a Lean theorem under B″.
+
+The smoke tests (`examples/web_add_one`, `examples/web_triangle`) are
+the operational check that the ABI matches the actual WebGPU surface.
 
 Lean formalization: `specs/verify/lean/Quanta/Axioms/WebGpu.lean`
 (axioms `wgsl_module_acceptance`, `compute_pipeline_creation`,
-`dispatch_executes_kernel`, `submit_ordering`, `wasm_bindgen_faithful`,
+`dispatch_executes_kernel`, `submit_ordering`, `quanta_abi_faithful`,
 and siblings).
 
 ### API-layer invariants (step 075)

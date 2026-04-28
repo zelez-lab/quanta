@@ -347,9 +347,9 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | T1704 | A10.5 `on_submitted_work_done_resolves` — Promise resolves once after submits | WebGPU | Lean | axiom |
 | T1705 | A10.6 `map_async_visibility` — mapped range reflects last completed write | WebGPU | Lean | axiom |
 | T1706 | A10.7 `write_buffer_atomicity` — subsequent dispatch sees full `writeBuffer` data | WebGPU | Lean | axiom |
-| T1707 | A11 `wasm_bindgen_faithful` — extern blocks dispatch to declared JS methods | wasm-bindgen | Lean | axiom |
-| T1708 | A11.1 `promise_to_jsfuture_lossless` — JsFuture faithful to Promise semantics | wasm-bindgen | Lean | axiom |
-| T1709 | A11.2 `js_value_method_dispatch` — `unchecked_into` traps on missing method | wasm-bindgen | Lean | axiom |
+| T1707 | A11 `quanta_abi_faithful` — `extern "C"` imports + `glue.ts` honour the documented ABI | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
+| T1708 | A11.1 `promise_callback_lossless` — `quanta_resolve`/`quanta_reject` fire exactly once per task | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
+| T1709 | A11.2 `handle_table_consistent` — JS handle table is the unique GPU-object identity source | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
 
 ## Summary
 
@@ -379,7 +379,7 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | Render-Path No-Silent-Drops | 3 | 3 | 0 |
 | API-Layer Lifetimes | 16 | 16 | 0 |
 | Memory Model Axioms | 23 | -- | -- |
-| WebGPU Host + wasm-bindgen Axioms | 10 | -- | -- |
+| WebGPU Host + Quanta-ABI Axioms | 10 | -- | -- |
 | **Total proven theorems** | **172** | **171** | **1** |
 | **TCB axioms (A6-A11)** | **33** | -- | -- |
 
@@ -400,10 +400,11 @@ between "proven kernel" and "proven library." T741 is the
 capability-monotonicity property the roadmap names explicitly.
 
 The 23 memory-model entries (T1600-T1622) plus the 10 WebGPU host /
-wasm-bindgen axioms (T1700-T1709) are **axioms**, not theorems —
-they are part of the Trusted Computing Base, declared in Lean and
-grounded in the published memory-model specifications of each
-backend (Vulkan Memory Model extension, NVIDIA PTX ISA 8.5, Metal
-Shading Language §6.13, AMD RDNA ISA Reference) and the W3C WebGPU
-spec / wasm-bindgen ABI. They are stated and named, not proved, and
-they are excluded from the "proven theorems" count.
+Quanta-ABI axioms (T1700-T1709) are **axioms**, not theorems — they
+are part of the Trusted Computing Base, declared in Lean and grounded
+in the published memory-model specifications of each backend (Vulkan
+Memory Model extension, NVIDIA PTX ISA 8.5, Metal Shading Language
+§6.13, AMD RDNA ISA Reference) and the W3C WebGPU spec / Quanta's own
+hand-authored wasm ↔ JS ABI (post-B⁰; ~500 LOC across `ffi.rs` +
+`web/src/glue.ts`). They are stated and named, not proved, and they
+are excluded from the "proven theorems" count.

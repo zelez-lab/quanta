@@ -13,32 +13,32 @@
   <body>
     <h1>Quanta WebGPU smoke test — <code>add_one</code></h1>
     <p>
-      Loads the wasm built from <code>examples/web_add_one</code>, calls
-      <code>quanta::driver::webgpu::init_async()</code>, JIT-compiles an
-      <code>add_one</code> kernel via <code>wave_jit</code>, dispatches one
-      workgroup, and reads back the result.
+      Loads <code>web_add_one.wasm</code> via Quanta's own WebGPU glue
+      (no <code>wasm-bindgen</code> runtime), JIT-compiles an
+      <code>add_one</code> kernel, dispatches one workgroup, and reads
+      the result back via <code>field_read_bytes_async</code>.
     </p>
     <p id="status">Loading…</p>
     <pre id="output"></pre>
 
     <script type="module">
-      import init, { run_add_one } from "./pkg/web_add_one.js";
+      import { instantiate } from "./glue.js";
 
       const statusEl = document.getElementById("status");
       const outEl    = document.getElementById("output");
 
       async function main() {
-        await init();
-        const bytes = await run_add_one();
-        // Reinterpret as u32[]
-        const u32 = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4);
+        const mod   = await instantiate("./web_add_one.wasm");
+        const bytes = await mod.runReturningBytes("web_add_one_run");
+        const u32   = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4);
         const expected = Array.from({ length: 64 }, (_, i) => i + 1);
         const actual   = Array.from(u32);
         const ok = expected.every((v, i) => v === actual[i]);
 
         statusEl.className = ok ? "ok" : "fail";
         statusEl.textContent = ok ? "PASS — buffer = [1, 2, …, 64]" : "FAIL";
-        outEl.textContent = `expected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(actual)}`;
+        outEl.textContent =
+          `expected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(actual)}`;
       }
 
       main().catch(err => {

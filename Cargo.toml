@@ -39,20 +39,17 @@ software = ["std", "jit"]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
 jit = ["quanta-ir/jit"]
 ## WebGPU driver, browser-only (target_arch = "wasm32"). Wired to the
-## browser via hand-written `extern "C"` blocks under
-## `src/driver/webgpu/ffi.rs`; no external wrapper crate is permitted
-## (step 000 policy: no `ash`, `metal-rs`, `objc`, `web-sys`, `wgpu`).
-## `wasm-bindgen` is the wasm32 calling-convention bridge and is allowed.
-webgpu = ["std", "jit", "dep:wasm-bindgen", "dep:js-sys", "dep:wasm-bindgen-futures"]
+## browser via Quanta's own ABI (bare `extern "C"` blocks under
+## `src/driver/webgpu/ffi.rs` plus a TypeScript-authored
+## `web/src/glue.ts` compiled to `glue.js`). Step 000 / B⁰ policy: no
+## external wrapper crate is permitted (no `ash`, `metal-rs`, `objc`,
+## `web-sys`, `wgpu`, `wasm-bindgen` runtime). The wasm output ships
+## zero npm dependencies — `glue.js` is the only JS the browser loads.
+webgpu = ["std", "jit"]
 
 [dependencies]
 quanta-macros = { path = "crates/quanta-macros", version = "0.1.0" }
 quanta-ir.workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "0.2", optional = true }
-js-sys = { version = "0.3", optional = true }
-wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
 proptest = "1"
