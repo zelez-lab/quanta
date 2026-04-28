@@ -109,16 +109,7 @@ def consistentState (s : State) (ctx : EmitCtx) (st : KOps.State) : Prop :=
 
 /-- **Alignment 1 (bool case)**: for every boolean literal, the
     source-side `evalLit` and the translator-side `evalConst ∘
-    constOfLit` produce the same `Value`.
-
-    This is the simplest alignment lemma — the boolean fragment of
-    the value alphabet has no encoding complexity. The full
-    statement (covering int and float literals) reduces to the same
-    case analysis once `evalLit`'s integer/float arms are
-    desugared; left as a follow-up since each arm tickles a
-    different `simp`-set quirk and the per-rule lemmas T590-T5A7
-    remain blocked on the `partial def` → `def` conversion either
-    way.  -/
+    constOfLit` produce the same `Value`. -/
 theorem evalConst_eq_evalLit_bool
     (b : Bool) (cv : KOps.ConstValue) (sty : KOps.Scalar)
     (h_const : constOfLit (Lit.bool b) = some (cv, sty))
@@ -127,6 +118,136 @@ theorem evalConst_eq_evalLit_bool
   obtain ⟨h1, _⟩ := h_const
   subst h1
   rfl
+
+/-- **Alignment 1 (i32 case)**: for every signed-32 integer literal,
+    `evalLit` and `evalConst ∘ constOfLit` agree. -/
+theorem evalConst_eq_evalLit_i32
+    (n : Int) (cv : KOps.ConstValue) (sty : KOps.Scalar)
+    (h_const : constOfLit (Lit.int n .i32) = some (cv, sty))
+    : evalLit (Lit.int n .i32) = some (KOps.evalConst cv) := by
+  simp [constOfLit] at h_const
+  obtain ⟨h1, _⟩ := h_const
+  subst h1
+  rfl
+
+/-- **Alignment 1 (f32 case)**: for every f32 float literal, both
+    sides produce the same `vF32` bit pattern. The encoding choice
+    `(w * 1000) + f mod 1000` is shared between `evalLit` and
+    `constOfLit`, so the two coincide by construction. -/
+theorem evalConst_eq_evalLit_f32
+    (w f : Int) (cv : KOps.ConstValue) (sty : KOps.Scalar)
+    (h_const : constOfLit (Lit.float w f .f32) = some (cv, sty))
+    : evalLit (Lit.float w f .f32) = some (KOps.evalConst cv) := by
+  simp [constOfLit] at h_const
+  obtain ⟨h1, _⟩ := h_const
+  subst h1
+  rfl
+
+-- ════════════════════════════════════════════════════════════════════
+-- Alignment 2 — Cast agreement (KRust ↔ KOps)
+-- ════════════════════════════════════════════════════════════════════
+
+/-- **Alignment 2 (cast)**: the source-side `KRust.evalCast` and
+    destination-side `KOps.evalCast` agree on every (value, target
+    type) pair, modulo the `dispatchScalar` map. The two functions
+    are syntactically identical; the bridge is just the namespace
+    convention. -/
+theorem evalCast_agreement
+    (v : Value) (ty : Scalar)
+    : KRust.evalCast v ty = KOps.evalCast v (dispatchScalar ty) := by
+  cases ty <;> cases v <;> rfl
+
+-- ════════════════════════════════════════════════════════════════════
+-- Alignment 3 — UnaryOp agreement
+-- ════════════════════════════════════════════════════════════════════
+
+/-- **Alignment 3 (unary)**: KRust and KOps unary operators agree
+    on every value pair, with `dispatchUnaryOp` acting as the
+    namespace bridge. Provable by full case analysis since both
+    functions branch identically on `Value` constructor. -/
+theorem evalUnaryOp_agreement
+    (op : UnaryOp) (v : Value)
+    : KRust.evalUnaryOp op v = KOps.evalUnaryOp (dispatchUnaryOp op) v := by
+  cases op <;> cases v <;> rfl
+
+-- ════════════════════════════════════════════════════════════════════
+-- Alignment 4 — BinOp agreement (arithmetic core)
+-- ════════════════════════════════════════════════════════════════════
+
+/-- **Alignment 4 (binop, arithmetic core)**: for the arithmetic
+    binary operators (everything except `&&`/`||` short-circuit),
+    `KRust.evalBinOp` and `KOps.evalBinOp ∘ dispatchBinOp.bin/cmp`
+    produce the same value when applied to the same operands.
+
+    The two implementations share the same primitive library
+    (`Quanta.Semantics.Cpu`'s `eval_u32_*` / `eval_i32_*`); the
+    operator-by-operator dispatch in both `evalBinOp` functions is
+    structurally identical. The proof is a long case-split over
+    operator × value-pair shape. -/
+theorem evalBinOp_agreement_arith
+    (op : BinOp) (va vb : Value)
+    : (∀ b, dispatchBinOp op ≠ BinDispatch.logical b) →
+      (KRust.evalBinOp op va vb =
+         match dispatchBinOp op with
+         | .bin bop => KOps.evalBinOp bop va vb
+         | .cmp cop => KOps.evalCmpOp cop va vb
+         | .logical _ => none) := by
+  intro h_not_logical
+  cases op <;>
+    (try (cases va <;> cases vb <;> first | rfl | (simp [KRust.evalBinOp, KOps.evalBinOp, KOps.evalCmpOp, dispatchBinOp]))) <;>
+    (try (exfalso; exact h_not_logical _ rfl))
+
+-- ════════════════════════════════════════════════════════════════════
+-- Alignment 5 — dispatchScalar bijection
+-- ════════════════════════════════════════════════════════════════════
+
+/-- **Alignment 5 (scalar bijection)**: the namespace-bridging
+    `dispatchScalar` is injective. Two distinct KRust scalars never
+    map to the same KOps scalar. Trivial by case analysis since
+    `dispatchScalar` is a constructor-by-constructor identity
+    rename. -/
+theorem dispatchScalar_injective
+    (a b : Scalar)
+    (h : dispatchScalar a = dispatchScalar b)
+    : a = b := by
+  cases a <;> cases b <;> first | rfl | cases h
+
+-- ════════════════════════════════════════════════════════════════════
+-- Alignment 6 — RegFile / Env primitive lemmas
+-- ════════════════════════════════════════════════════════════════════
+
+/-- **Alignment 6.1 (regWrite-lookup)**: writing a value to a
+    register and immediately looking it up returns the written
+    value. Pure-state primitive used inside per-rule preservation
+    proofs to discharge the "register r holds value v" obligation
+    after a `KernelOp.const` or any other `dst`-writing op. -/
+theorem regLookup_regWrite_eq
+    (rf : KOps.RegFile) (r : KOps.Reg) (v : Value)
+    : KOps.regLookup (KOps.regWrite rf r v) r = some v := by
+  simp [KOps.regWrite, KOps.regLookup]
+
+/-- **Alignment 6.2 (Env-bind-lookup)**: writing to the env and
+    looking up the same name returns the written value. The KRust
+    counterpart of 6.1; both views support this primitive shape. -/
+theorem Env_lookup_bind_eq
+    (env : Env) (name : Ident) (v : Value)
+    : (env.bind name v).lookup name = some v := by
+  simp [Env.bind, Env.lookup]
+
+/-- **Alignment 6.3 (Heap.store-lookup)**: storing to a buffer
+    slot+index and looking up the same key returns the stored
+    value. Used by T5A2 (`assignIdx_preservation`). -/
+theorem Heap_lookup_store_eq
+    (h : Heap) (slot : Slot) (idx : Nat) (v : Value)
+    : (h.store slot idx v).lookup slot idx = some v := by
+  simp [Heap.store, Heap.lookup]
+
+/-- **Alignment 6.4 (heapStore-lookup, KOps side)**: matching primitive
+    on the KOps heap. -/
+theorem heapLookup_heapStore_eq
+    (h : KOps.Heap) (slot idx : Nat) (v : Value)
+    : KOps.heapLookup (KOps.heapStore h slot idx v) slot idx = some v := by
+  simp [KOps.heapStore, KOps.heapLookup]
 
 -- ════════════════════════════════════════════════════════════════════
 -- T590 — Lit preservation
