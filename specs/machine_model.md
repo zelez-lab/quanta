@@ -167,8 +167,9 @@ A1 (Metal) / A2 (Vulkan).
 After step B⁰ (2026-04-28) the FFI boundary is hand-authored on both
 sides; A11 is the trust statement covering it. For every `unsafe extern
 "C"` import declared in `src/driver/webgpu/ffi.rs`:
-- The corresponding implementation in `web/src/glue.ts` (compiled to
-  `glue.js` at build time) marshals arguments per the Quanta ABI:
+- The corresponding implementation in `web/src/quanta.ts` and its
+  helpers (compiled to `quanta.js` + `*.js` at build time) marshal
+  arguments per the Quanta ABI:
   long-lived JS objects cross as `u32` handles into a JS-side handle
   table; strings cross as `(ptr, len)` into wasm linear memory;
   `u64` sizes cross as `f64`.

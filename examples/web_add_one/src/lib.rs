@@ -7,7 +7,7 @@
 //! ## Build
 //!
 //! ```sh
-//! ./scripts/build-web.sh web_add_one
+//! quanta build web web_add_one
 //! ```
 //!
 //! Serve `examples/web_add_one/index.html` over HTTPS (or

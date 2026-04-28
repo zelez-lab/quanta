@@ -15,8 +15,10 @@
 //!   driven by JS-callable `quanta_resolve` / `quanta_reject` exports.
 //! - `state.rs` — handle bookkeeping mapping Quanta `u64` API handles
 //!   onto the JS-side `u32` ABI handles.
-//! - `web/src/glue.ts` — TypeScript half of the boundary. Compiled to
-//!   `glue.js` at build time; never ships TypeScript itself.
+//! - `web/src/quanta.ts` — TypeScript entry point on the JS half of the
+//!   boundary. Compiled to `quanta.js` at build time alongside the
+//!   internal modules (`handles.ts`, `tasks.ts`, `webgpu.ts`, …);
+//!   TypeScript itself is build-only and never ships.
 //!
 //! ## Sync ↔ async impedance
 //!

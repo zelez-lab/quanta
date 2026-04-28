@@ -1,7 +1,8 @@
 // Minimal WebGPU type declarations.
 //
 // Quanta deliberately does NOT depend on `@webgpu/types`. This file
-// declares exactly the surface our `glue.ts` touches — about 50 lines of
+// declares exactly the surface `quanta.ts` (and its helpers) touch —
+// about 50 lines of
 // hand-written types we own and audit, instead of the ~10K lines that
 // ship with the npm package. Under B″ this file will be replaced with
 // types generated from the W3C `webgpu.idl`; for B⁰ we hand-author it.

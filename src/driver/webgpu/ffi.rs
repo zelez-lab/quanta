@@ -3,7 +3,8 @@
 //! Step 000 forbids `web-sys` and `wgpu`. B⁰ (2026-04-28) extends the
 //! same rule to `wasm-bindgen`'s runtime crate: this driver speaks to
 //! the browser through hand-authored wasm imports defined here, and a
-//! TypeScript-authored `web/src/glue.ts` that compiles to `glue.js`.
+//! TypeScript-authored `web/src/quanta.ts` (and sibling helpers) that
+//! compile to `quanta.js` + `*.js`.
 //! Together they are the entire FFI TCB on the WebGPU backend — about
 //! 500 lines of code we own and audit, instead of the ~30-60 KB
 //! wasm-bindgen runtime that previously sat between Rust and JS.

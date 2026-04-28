@@ -6,7 +6,7 @@
 //!   `Sampler`, etc. carry on the public API. Stable across drivers,
 //!   never escapes into the FFI.
 //! - **Quanta WebGPU ABI u32 handles.** What `ffi.rs` exchanges with
-//!   `web/src/glue.ts`. Each `u32` is an index into the JS-side
+//!   `web/src/quanta.ts`. Each `u32` is an index into the JS-side
 //!   `HandleTable`. Owned and released through the FFI imports
 //!   (`quanta_destroy_buffer`, `quanta_release`, …).
 //!

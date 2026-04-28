@@ -99,7 +99,7 @@ Metal/Vulkan drivers in the verification scheme:
   atomicity).
 * **T1707–T1709** — A11 sub-axioms after step B⁰ (2026-04-28). The
   surface narrowed from "wasm-bindgen runtime" to Quanta's own
-  `extern "C"` block + hand-authored `glue.ts` (~500 LOC owned and
+  `extern "C"` block + hand-authored `quanta.ts` (~500 LOC owned and
   audited). Sub-axioms: ABI faithfulness, async callback lossless,
   handle-table identity uniqueness.
 * **T414** — first end-to-end conditional theorem: given A10.1+A10.2
@@ -121,7 +121,7 @@ Stated explicitly so reviewers know what is trusted vs proven:
 | A8    | Metal Shading Language §6.13               | Apple         |
 | A9    | AMD RDNA ISA Reference                     | AMD           |
 | **A10** | **W3C WebGPU spec, §6 Devices + §10 Queue** | **WebGPU**    |
-| **A11** | **Quanta wasm ↔ JS ABI** (`src/driver/webgpu/ffi.rs` + `web/src/glue.ts`, B⁰) | **wasm32**    |
+| **A11** | **Quanta wasm ↔ JS ABI** (`src/driver/webgpu/ffi.rs` + `web/src/quanta.ts`, B⁰) | **wasm32**    |
 
 If a hardware/driver/browser violates these, the bug is upstream of
 Quanta. The proof boundary is named explicitly.

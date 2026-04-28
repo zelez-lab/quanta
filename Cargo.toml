@@ -5,6 +5,7 @@ members = [
     "crates/quanta-macros",
     "crates/quanta-compiler",
     "crates/quanta-bench",
+    "crates/quanta-cli",
     "examples/web_add_one",
     "examples/web_triangle",
 ]
@@ -41,10 +42,11 @@ jit = ["quanta-ir/jit"]
 ## WebGPU driver, browser-only (target_arch = "wasm32"). Wired to the
 ## browser via Quanta's own ABI (bare `extern "C"` blocks under
 ## `src/driver/webgpu/ffi.rs` plus a TypeScript-authored
-## `web/src/glue.ts` compiled to `glue.js`). Step 000 / B⁰ policy: no
-## external wrapper crate is permitted (no `ash`, `metal-rs`, `objc`,
+## `web/src/quanta.ts` compiled to `quanta.js`). Step 000 / B⁰ policy:
+## no external wrapper crate is permitted (no `ash`, `metal-rs`, `objc`,
 ## `web-sys`, `wgpu`, `wasm-bindgen` runtime). The wasm output ships
-## zero npm dependencies — `glue.js` is the only JS the browser loads.
+## zero npm dependencies — `quanta.js` (+ sibling helper modules) is
+## the only JS the browser loads.
 webgpu = ["std", "jit"]
 
 [dependencies]

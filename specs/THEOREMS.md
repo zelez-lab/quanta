@@ -347,7 +347,7 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | T1704 | A10.5 `on_submitted_work_done_resolves` — Promise resolves once after submits | WebGPU | Lean | axiom |
 | T1705 | A10.6 `map_async_visibility` — mapped range reflects last completed write | WebGPU | Lean | axiom |
 | T1706 | A10.7 `write_buffer_atomicity` — subsequent dispatch sees full `writeBuffer` data | WebGPU | Lean | axiom |
-| T1707 | A11 `quanta_abi_faithful` — `extern "C"` imports + `glue.ts` honour the documented ABI | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
+| T1707 | A11 `quanta_abi_faithful` — `extern "C"` imports + `quanta.ts` honour the documented ABI | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
 | T1708 | A11.1 `promise_callback_lossless` — `quanta_resolve`/`quanta_reject` fire exactly once per task | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
 | T1709 | A11.2 `handle_table_consistent` — JS handle table is the unique GPU-object identity source | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
 
@@ -406,5 +406,5 @@ in the published memory-model specifications of each backend (Vulkan
 Memory Model extension, NVIDIA PTX ISA 8.5, Metal Shading Language
 §6.13, AMD RDNA ISA Reference) and the W3C WebGPU spec / Quanta's own
 hand-authored wasm ↔ JS ABI (post-B⁰; ~500 LOC across `ffi.rs` +
-`web/src/glue.ts`). They are stated and named, not proved, and they
+`web/src/quanta.ts` + helpers). They are stated and named, not proved, and they
 are excluded from the "proven theorems" count.

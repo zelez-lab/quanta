@@ -21,7 +21,8 @@ strengthened.
 A11 changed shape after step B⁰ (2026-04-28): the FFI layer is no longer
 `wasm-bindgen` (third-party, ~30-60 KB of opaque codegen); it is
 Quanta's own `extern "C"` block in `src/driver/webgpu/ffi.rs` plus a
-hand-authored `web/src/glue.ts` (~500 LOC, compiled to `glue.js`). Both
+hand-authored `web/src/quanta.ts` + helpers (~500 LOC, compiled to
+`quanta.js` and sibling `.js` files). Both
 sides are project-local, version-controlled, auditable line by line.
 A11 still axiomatizes the boundary, but its surface is small enough
 that B″ (Lean WebIDL conformance) can lift it from axiom to theorem.
@@ -210,7 +211,8 @@ axiom write_buffer_atomicity
 --   - Rust side: `src/driver/webgpu/ffi.rs` declares bare
 --     `unsafe extern "C"` imports, no proc-macros, no third-party
 --     ABI codegen.
---   - JS side: `web/src/glue.ts` (compiled to `glue.js`) implements
+--   - JS side: `web/src/quanta.ts` + helpers (compiled to `quanta.js`
+--     + sibling `.js`) implement
 --     each import; ~500 LOC owned by Quanta and version-controlled.
 -- Together they form the entire FFI TCB. B″ (Lean WebIDL conformance)
 -- proves that both halves match the W3C `webgpu.idl`, lifting A11 from
@@ -219,7 +221,8 @@ axiom write_buffer_atomicity
 
 /-- **A11 — quanta_abi_faithful**: For every `unsafe extern "C"` import
     declared in `src/driver/webgpu/ffi.rs`, the implementation provided
-    by `web/src/glue.ts` (compiled to `glue.js`) marshals arguments per
+    by `web/src/quanta.ts` + helpers (compiled to `quanta.js` +
+    siblings) marshals arguments per
     the Quanta wasm ↔ JS ABI documented in `ffi.rs`, invokes the
     corresponding WebGPU operation on the underlying handle (or reads
     `navigator.gpu` for the bootstrap path), and either returns a JS

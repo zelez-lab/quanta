@@ -1,0 +1,14 @@
+[package]
+name = "quanta-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Quanta CLI — build, serve, check"
+
+[[bin]]
+name = "quanta"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }

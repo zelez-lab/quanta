@@ -9,7 +9,7 @@
 //! ## Build
 //!
 //! ```sh
-//! ./scripts/build-web.sh web_triangle
+//! quanta build web web_triangle
 //! ```
 
 #![cfg(target_arch = "wasm32")]
