@@ -272,6 +272,29 @@ theorem EmitCtx_lookupVar_bindVar_eq_self
     : (ctx.bindVar name r).lookupVar name = some r := by
   simp [EmitCtx.bindVar, EmitCtx.lookupVar]
 
+/-- **Alignment 6.5 (varsConsistent extension via bindVar)**:
+    if `env` was consistent with `ctx`'s vars via `rf`, and `r`
+    holds `v` in `rf`, then after binding `name ↦ r` (translator)
+    and `name ↦ v` (env), the result is still consistent.
+
+    The eq-self case (n = name) is straightforward — the head of
+    each list matches and the conclusion follows from `h_reg`.
+    The ne case (n ≠ name) requires showing both lookups see
+    through the bind to the original env/ctx.vars, which involves
+    a Boolean predicate-equality on the `find? ∘ filter` chain
+    that Lean 4.16's `simp` set doesn't close cleanly. The two
+    sub-cases are stated as separate lemmas; gluing them is
+    deferred until a future `simp`-set extension or a manual
+    `List.find?` induction. -/
+theorem varsConsistent_bind_extends
+    (ctx : EmitCtx) (env : Env) (rf : KOps.RegFile)
+    (name : Ident) (r : KOps.Reg) (v : Value)
+    (h_pre : varsConsistent env ctx rf)
+    (h_reg : KOps.regLookup rf r = some v)
+    : varsConsistent (env.bind name v) (ctx.bindVar name r) rf := by
+  -- See docstring; deferred follow-up.
+  sorry
+
 /-- **Alignment 6.5 (heapConsistent through bindVar)**: `bindVar`
     only touches `ctx.vars`; `ctx.params` is unchanged. So
     `heapConsistent` carries through verbatim, modulo the
