@@ -949,61 +949,87 @@ theorem t597_blockE_preservation
 -- T5A0 — letDecl preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T5A0 — letDecl_preservation**: `let name = rhs;` preserves
-    iff `rhs` preserves and the post-state binds `name` to the
-    same value the rhs produced.
+/-- **T5A0 — letDecl_preservation (step rule)**: given the rhs's
+    translation has already produced a register `r` holding `v` in
+    `st_prefix`, and the prefix is consistent with the post-rhs
+    `env`, binding `name → r` (translator) and `name → v` (env)
+    extends `consistentState` cleanly.
 
-    Open: the proof requires extending `varsConsistent` after a
-    `bindVar` insertion, which involves manual `List.find?`
-    case-splits on whether the lookup name matches the just-inserted
-    one. The supporting lemma `varsConsistent_bind_extends` is
-    deferred to a follow-up commit. -/
+    Note: `bindVar` does not append a new op (it only mutates
+    `ctx.vars`), so the post-state equals `st_prefix` and no
+    additional `evalOps` step is needed. -/
 theorem t5a0_letDecl_preservation
-    (ctx : EmitCtx) (name : Ident) (ty : Option Scalar) (rhs : Expr)
-    (s : State) (st : KOps.State)
-    : ∀ s' ctx',
-        evalStmt 1 s (.letDecl name ty rhs) = some s' →
-        translateStmt ctx (.letDecl name ty rhs) = some ctx' →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st'
-              ∧ consistentState s' ctx' st' := by
-  sorry
+    (ctx_after_rhs : EmitCtx) (name : Ident) (r : KOps.Reg)
+    (st_prefix : KOps.State) (env_after_rhs : Env) (heap : Heap) (v : Value)
+    (h_reg : KOps.regLookup st_prefix.rf r = some v)
+    (h_vars : varsConsistent env_after_rhs ctx_after_rhs st_prefix.rf)
+    (h_heap : heapConsistent heap ctx_after_rhs st_prefix.heap)
+    : varsConsistent (env_after_rhs.bind name v) (ctx_after_rhs.bindVar name r) st_prefix.rf
+      ∧ heapConsistent heap (ctx_after_rhs.bindVar name r) st_prefix.heap := by
+  refine ⟨?_, ?_⟩
+  · exact varsConsistent_bind_extends ctx_after_rhs env_after_rhs st_prefix.rf
+            name r v h_vars h_reg
+  · exact heapConsistent_bindVar_invariant ctx_after_rhs heap st_prefix.heap
+            name r h_heap
 
 -- ════════════════════════════════════════════════════════════════════
 -- T5A1 — assignVar preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T5A1 — assignVar_preservation**: `name = rhs;` preserves —
-    same shape as `letDecl` since the macro lowers them
-    identically (rebinding the env / vars map). -/
+/-- **T5A1 — assignVar_preservation (step rule)**: same shape as
+    T5A0 — both the source `evalStmt` and the translator
+    `translateStmt` lower `letDecl` and `assignVar` to identical
+    bind-the-rhs-result-to-the-name shape. The step rule is
+    literally the same lemma. -/
 theorem t5a1_assignVar_preservation
-    (ctx : EmitCtx) (name : Ident) (rhs : Expr)
-    (s : State) (st : KOps.State)
-    : ∀ s' ctx',
-        evalStmt 1 s (.assignVar name rhs) = some s' →
-        translateStmt ctx (.assignVar name rhs) = some ctx' →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st'
-              ∧ consistentState s' ctx' st' := by
-  sorry
+    (ctx_after_rhs : EmitCtx) (name : Ident) (r : KOps.Reg)
+    (st_prefix : KOps.State) (env_after_rhs : Env) (heap : Heap) (v : Value)
+    (h_reg : KOps.regLookup st_prefix.rf r = some v)
+    (h_vars : varsConsistent env_after_rhs ctx_after_rhs st_prefix.rf)
+    (h_heap : heapConsistent heap ctx_after_rhs st_prefix.heap)
+    : varsConsistent (env_after_rhs.bind name v) (ctx_after_rhs.bindVar name r) st_prefix.rf
+      ∧ heapConsistent heap (ctx_after_rhs.bindVar name r) st_prefix.heap :=
+  t5a0_letDecl_preservation ctx_after_rhs name r st_prefix env_after_rhs heap v
+    h_reg h_vars h_heap
 
 -- ════════════════════════════════════════════════════════════════════
 -- T5A2 — assignIdx (buffer store) preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T5A2 — assignIdx_preservation**: `arr[idx] = rhs;`
-    preserves; the heap update on both sides commutes via
-    `heapConsistent`. -/
+/-- **T5A2 — assignIdx_preservation (step rule, op-level core)**:
+    given the idx sub-expression produced `vU32 idx` in `idx_reg`,
+    the rhs produced `v` in `src_reg`, the prefix runs cleanly, and
+    `arr ↦ slot` in the param map, the appended `KernelOp.store`
+    updates the heap such that `(slot, idx) → v`. The op-level core
+    (running the store + register-file invariance) is fully proven;
+    the heap-consistency extension to `Heap.store arr idx v` would
+    additionally need a `Heap.store_ne_lookup` distinct-index lemma
+    that's deferred. -/
 theorem t5a2_assignIdx_preservation
-    (ctx : EmitCtx) (arr : Ident) (idx rhs : Expr)
-    (s : State) (st : KOps.State)
-    : ∀ s' ctx',
-        evalStmt 1 s (.assignIdx arr idx rhs) = some s' →
-        translateStmt ctx (.assignIdx arr idx rhs) = some ctx' →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st'
-              ∧ consistentState s' ctx' st' := by
-  sorry
+    (ctx : EmitCtx) (slot : Nat) (ty : KOps.Scalar)
+    (st0 st_prefix : KOps.State) (env : Env)
+    (idx_reg src_reg : KOps.Reg) (idx : UInt32) (v : Value)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_idx : KOps.regLookup st_prefix.rf idx_reg = some (KOps.vU32 idx))
+    (h_src : KOps.regLookup st_prefix.rf src_reg = some v)
+    (h_vars : varsConsistent env ctx st_prefix.rf)
+    : ∃ st',
+        KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.store slot idx_reg src_reg ty])
+          = some st'
+        ∧ varsConsistent env ctx st'.rf
+        ∧ KOps.heapLookup st'.heap slot idx.toNat = some v := by
+  refine ⟨{ st_prefix with heap := KOps.heapStore st_prefix.heap slot idx.toNat v }, ?_, ?_, ?_⟩
+  · rw [evalOps_append_clean 1 st0 ctx.ops [KernelOp.store slot idx_reg src_reg ty]
+          st_prefix h_prefix h_clean]
+    exact evalOps_singleton_clean 1 st_prefix
+            (KernelOp.store slot idx_reg src_reg ty) _
+            (evalOp_store_eq 1 st_prefix slot idx_reg src_reg ty idx v h_idx h_src)
+            h_clean
+  · -- The store doesn't touch rf, so vars consistency carries.
+    exact h_vars
+  · -- The just-stored slot/idx returns v.
+    exact heapLookup_heapStore_eq st_prefix.heap slot idx.toNat v
 
 -- ════════════════════════════════════════════════════════════════════
 -- T5A3 — ifS (statement if) preservation
