@@ -272,28 +272,94 @@ theorem EmitCtx_lookupVar_bindVar_eq_self
     : (ctx.bindVar name r).lookupVar name = some r := by
   simp [EmitCtx.bindVar, EmitCtx.lookupVar]
 
+/-- Helper lemma: lookup-on-bind for ne case via `List.find?_cons_of_neg`
+    + `List.find?_filter`. Proven by reducing to a pointwise filter
+    predicate-equality and using `List.find?_eq_none` characterisation
+    contrapositively. -/
+private theorem find_filter_ne_self
+    {α β : Type} (xs : List (α × β)) (name n : α) [DecidableEq α]
+    (h_ne : n ≠ name)
+    : (xs.filter (fun p => p.fst ≠ name)).find? (fun p => p.fst = n)
+        = xs.find? (fun p => p.fst = n) := by
+  induction xs with
+  | nil => rfl
+  | cons p rest ih =>
+      simp only [List.filter_cons]
+      by_cases h_p : p.fst = name
+      · -- p.fst = name, so filter drops p. find? skips p (since
+        -- p.fst = name ≠ n), recurse via ih.
+        rw [show decide (p.fst ≠ name) = false from by simp [h_p]]
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        rw [ih]
+        rw [List.find?_cons_of_neg (l := rest) (a := p) (p := fun q => q.fst = n)
+              (by simp [h_p, h_ne.symm])]
+      · -- p.fst ≠ name, filter keeps p. find? on cons of filter
+        -- equals find? on cons of original.
+        rw [show decide (p.fst ≠ name) = true from by simp [h_p]]
+        simp only [↓reduceIte]
+        by_cases h_pn : p.fst = n
+        · rw [List.find?_cons_of_pos (a := p) (p := fun q => q.fst = n) (by simp [h_pn]) (l := _)]
+          rw [List.find?_cons_of_pos (a := p) (p := fun q => q.fst = n) (by simp [h_pn]) (l := rest)]
+        · rw [List.find?_cons_of_neg (a := p) (p := fun q => q.fst = n) (by simp [h_pn]) (l := _)]
+          rw [List.find?_cons_of_neg (a := p) (p := fun q => q.fst = n) (by simp [h_pn]) (l := rest)]
+          exact ih
+
+/-- Helper: `Env.bind name v` on lookup of `name' ≠ name` returns
+    `env.lookup name'` — the bind is invisible to other names. -/
+theorem Env_lookup_bind_ne
+    (env : Env) (name name' : Ident) (v : Value)
+    (h_ne : name' ≠ name)
+    : (env.bind name v).lookup name' = env.lookup name' := by
+  show (((name, v) :: env.filter (fun p => p.fst ≠ name)).find?
+          (fun p => p.fst = name')).map Prod.snd
+        = (env.find? (fun p => p.fst = name')).map Prod.snd
+  rw [List.find?_cons_of_neg (a := (name, v)) (p := fun p => p.fst = name')
+        (l := env.filter (fun p => p.fst ≠ name)) (by simp [Ne.symm h_ne])]
+  rw [find_filter_ne_self env name name' h_ne]
+
+/-- Helper: `EmitCtx.bindVar` lookup for `name' ≠ name` returns
+    `ctx.lookupVar name'`. -/
+theorem EmitCtx_lookupVar_bindVar_ne
+    (ctx : EmitCtx) (name name' : Ident) (r : KOps.Reg)
+    (h_ne : name' ≠ name)
+    : (ctx.bindVar name r).lookupVar name' = ctx.lookupVar name' := by
+  show (((name, r) :: ctx.vars.filter (fun p => p.fst ≠ name)).find?
+          (fun p => p.fst = name')).map Prod.snd
+        = (ctx.vars.find? (fun p => p.fst = name')).map Prod.snd
+  rw [List.find?_cons_of_neg (a := (name, r)) (p := fun p => p.fst = name')
+        (l := ctx.vars.filter (fun p => p.fst ≠ name)) (by simp [Ne.symm h_ne])]
+  rw [find_filter_ne_self ctx.vars name name' h_ne]
+
 /-- **Alignment 6.5 (varsConsistent extension via bindVar)**:
     if `env` was consistent with `ctx`'s vars via `rf`, and `r`
     holds `v` in `rf`, then after binding `name ↦ r` (translator)
-    and `name ↦ v` (env), the result is still consistent.
-
-    The eq-self case (n = name) is straightforward — the head of
-    each list matches and the conclusion follows from `h_reg`.
-    The ne case (n ≠ name) requires showing both lookups see
-    through the bind to the original env/ctx.vars, which involves
-    a Boolean predicate-equality on the `find? ∘ filter` chain
-    that Lean 4.16's `simp` set doesn't close cleanly. The two
-    sub-cases are stated as separate lemmas; gluing them is
-    deferred until a future `simp`-set extension or a manual
-    `List.find?` induction. -/
+    and `name ↦ v` (env), the result is still consistent. -/
 theorem varsConsistent_bind_extends
     (ctx : EmitCtx) (env : Env) (rf : KOps.RegFile)
     (name : Ident) (r : KOps.Reg) (v : Value)
     (h_pre : varsConsistent env ctx rf)
     (h_reg : KOps.regLookup rf r = some v)
     : varsConsistent (env.bind name v) (ctx.bindVar name r) rf := by
-  -- See docstring; deferred follow-up.
-  sorry
+  intro n r' h_lookup v' h_env
+  by_cases h_eq : n = name
+  · subst h_eq
+    have h_r_eq : r' = r := by
+      have h := EmitCtx_lookupVar_bindVar_eq_self ctx n r
+      rw [show (ctx.bindVar n r).lookupVar n = some r' from h_lookup] at h
+      exact Option.some.inj h
+    have h_v_eq : v' = v := by
+      have h := Env_lookup_bind_eq_self env n v
+      rw [show (env.bind n v).lookup n = some v' from h_env] at h
+      exact Option.some.inj h
+    rw [h_r_eq, h_v_eq]
+    exact h_reg
+  · have h_lookup' : ctx.lookupVar n = some r' := by
+      rw [← EmitCtx_lookupVar_bindVar_ne ctx name n r h_eq]
+      exact h_lookup
+    have h_env' : env.lookup n = some v' := by
+      rw [← Env_lookup_bind_ne env name n v h_eq]
+      exact h_env
+    exact h_pre n r' h_lookup' v' h_env'
 
 /-- **Alignment 6.5 (heapConsistent through bindVar)**: `bindVar`
     only touches `ctx.vars`; `ctx.params` is unchanged. So
