@@ -88,10 +88,10 @@ Three litmus tests (`message_passing.litmus`, `store_buffer.litmus`,
 `atomic_add_visibility.litmus`) check the message-passing and
 store-buffer patterns under release-acquire on a Cat-language model.
 
-### WebGPU host (step 050 + 079 + B⁰)
+### WebGPU host (step 050 + 079 + B⁰ + B′)
 
 **A10** (WebGPU host correctness) + **A11** (Quanta wasm ↔ JS ABI
-faithfulness, post-B⁰) make the WebGPU driver a peer of the
+faithfulness, post-B⁰/B′) make the WebGPU driver a peer of the
 Metal/Vulkan drivers in the verification scheme:
 * **T1700–T1706** — A10 sub-axioms (shader module acceptance,
   pipeline creation, dispatch executes the kernel, queue ordering,
@@ -102,6 +102,17 @@ Metal/Vulkan drivers in the verification scheme:
   `extern "C"` block + hand-authored `quanta.ts` (~500 LOC owned and
   audited). Sub-axioms: ABI faithfulness, async callback lossless,
   handle-table identity uniqueness.
+* **B′ refinement (2026-04-28)** — every WebGPU enum string Quanta
+  hands the JS side (texture format, blend factor, …) is now derived
+  from the W3C `webgpu.idl` by `crates/quanta-codegen` into spec
+  tables on both sides:
+  - `src/webgpu_generated_codes.rs` (Rust spec tables + a `cargo
+    test`-time `quanta_strings_are_spec_subsets` check).
+  - `web/src/generated/codes.ts` (TS spec tables + an
+    `assertSpecSubset()` runtime check on every page load).
+  The two-edits-without-enforcement lockstep hazard between the Rust
+  and TS sides collapses to a single parsed AST. Same A11 axiom shape;
+  smaller surface for B″ to lift to a Lean theorem.
 * **T414** — first end-to-end conditional theorem: given A10.1+A10.2
   and T410 (emitter exhaustiveness), `wave_jit` always succeeds.
 
@@ -121,7 +132,7 @@ Stated explicitly so reviewers know what is trusted vs proven:
 | A8    | Metal Shading Language §6.13               | Apple         |
 | A9    | AMD RDNA ISA Reference                     | AMD           |
 | **A10** | **W3C WebGPU spec, §6 Devices + §10 Queue** | **WebGPU**    |
-| **A11** | **Quanta wasm ↔ JS ABI** (`src/driver/webgpu/ffi.rs` + `web/src/quanta.ts`, B⁰) | **wasm32**    |
+| **A11** | **Quanta wasm ↔ JS ABI** (`src/driver/webgpu/ffi.rs` + `web/src/quanta.ts`, B⁰; enum strings codegen'd from `web/webgpu.idl`, B′) | **wasm32**    |
 
 If a hardware/driver/browser violates these, the bug is upstream of
 Quanta. The proof boundary is named explicitly.

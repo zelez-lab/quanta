@@ -347,9 +347,9 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | T1704 | A10.5 `on_submitted_work_done_resolves` — Promise resolves once after submits | WebGPU | Lean | axiom |
 | T1705 | A10.6 `map_async_visibility` — mapped range reflects last completed write | WebGPU | Lean | axiom |
 | T1706 | A10.7 `write_buffer_atomicity` — subsequent dispatch sees full `writeBuffer` data | WebGPU | Lean | axiom |
-| T1707 | A11 `quanta_abi_faithful` — `extern "C"` imports + `quanta.ts` honour the documented ABI | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
-| T1708 | A11.1 `promise_callback_lossless` — `quanta_resolve`/`quanta_reject` fire exactly once per task | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
-| T1709 | A11.2 `handle_table_consistent` — JS handle table is the unique GPU-object identity source | Quanta wasm↔JS ABI (B⁰) | Lean | axiom |
+| T1707 | A11 `quanta_abi_faithful` — `extern "C"` imports + `quanta.ts` honour the documented ABI | Quanta wasm↔JS ABI (B⁰/B′) | Lean | axiom |
+| T1708 | A11.1 `promise_callback_lossless` — `quanta_resolve`/`quanta_reject` fire exactly once per task | Quanta wasm↔JS ABI (B⁰/B′) | Lean | axiom |
+| T1709 | A11.2 `handle_table_consistent` — JS handle table is the unique GPU-object identity source | Quanta wasm↔JS ABI (B⁰/B′) | Lean | axiom |
 
 ## Summary
 
@@ -409,7 +409,7 @@ hand-authored wasm ↔ JS ABI (post-B⁰; ~500 LOC across `ffi.rs` +
 `web/src/quanta.ts` + helpers). They are stated and named, not proved, and they
 are excluded from the "proven theorems" count.
 
-## Sustainment status (2026-04-28, post-B⁰ + quanta-cli)
+## Sustainment status (2026-04-28, post-B⁰ + quanta-cli + B′)
 
 The "proven theorems" tally above counts the *intended* proof
 obligations. Current machine state, after this session's sustainment
@@ -439,12 +439,16 @@ pass:
   exhaustive f16 harnesses take hours per harness; out of scope for
   this pass.
 - **WebGPU chain** — fully proven: `Quanta.Axioms.WebGpu` (A10/A11
-  post-B⁰), `Quanta.Theorems.WebGpu` (T414), the four backend
+  post-B⁰/B′), `Quanta.Theorems.WebGpu` (T414), the four backend
   semantics modules (`SpirV`, `Wgsl`, `Msl`, `Llvm`),
   `Quanta.Semantics.Cpu`, `Quanta.Semantics.Agreement`. Verus
-  `quanta-api/` (T720–T754) all pass.
+  `quanta-api/` (T720–T754) all pass. B′ adds two new automated
+  spec-conformance checks on top: a `cargo test --lib`-time check
+  (`webgpu_generated_codes::tests::quanta_strings_are_spec_subsets`)
+  and a TS module-init `assertSpecSubset()` call, both backed by
+  tables generated from `web/webgpu.idl` by `crates/quanta-codegen`.
 
-The B⁰ surface is fully verified. Sustainment of older proof tracks
-is a separate, ongoing effort — failures are documented in-line at
-each affected `proof fn` / `theorem`, and all of them lived before
-B⁰ touched the codebase.
+The B⁰/B′ surface is fully verified. Sustainment of older proof
+tracks is a separate, ongoing effort — failures are documented
+in-line at each affected `proof fn` / `theorem`, and all of them
+lived before B⁰ touched the codebase.

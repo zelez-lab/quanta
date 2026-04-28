@@ -213,6 +213,81 @@ fn barrier_texture(&self, image: VkImage, old_layout: u32, new_layout: u32) {
 }
 ```
 
+## WebGPU driver (`src/driver/webgpu/`)
+
+Browser-only (`target_arch = "wasm32"` + `webgpu` feature). Same
+no-wrapper-crate rule as Metal/Vulkan, applied to wasm32: no
+`web-sys`, no `wgpu`, no `wasm-bindgen` runtime.
+
+### B⁰ — Quanta-owned wasm ↔ JS ABI
+
+Step `1d2fc65` (2026-04-28). Replaces `wasm-bindgen` (~30-60 KB
+third-party runtime) with hand-authored boundaries on both sides:
+
+```
+Rust side                     JS side
+─────────                     ──────
+src/driver/webgpu/ffi.rs      web/src/quanta.ts (entry)
+  unsafe extern "C" {           + handles.ts (handle table)
+    fn quanta_*(...);           + tasks.ts (Promise → wasm callback)
+  }                             + webgpu.ts (FFI imports)
+src/driver/webgpu/             + strings.ts (TextDecoder)
+  executor.rs (futures)         + codes.ts (enum string tables)
+```
+
+Total: ~500 LOC of project-local code on each side. Cargo wasm
+output ships zero npm runtime deps; `quanta.js` is the only JS the
+browser loads. ABI conventions:
+
+- Long-lived JS objects (devices, buffers, pipelines, …) cross as
+  `u32` handles into a JS-side handle table. Handle 0 = null.
+- Strings cross as `(ptr: *const u8, len: usize)`; JS reads them via
+  `TextDecoder` against the wasm linear memory.
+- `u64` sizes cross as `f64` (exact up to 2^53, larger than any
+  WebGPU resource).
+- Async ops take a `task: u32` argument. JS resolves the underlying
+  Promise and calls back into wasm exports `quanta_resolve(task,
+  handle)` / `quanta_reject(task)`. Rust executor (~150 LOC) turns
+  those into `Future::poll → Ready`.
+
+### B′ — WebIDL → Rust + TS code tables
+
+Step `1d93e78` (2026-04-28). Eliminates the lockstep hazard between
+the Rust `mod format`/`mod blend_factor`/… in `ffi.rs` and the
+parallel TypeScript arrays in `web/src/codes.ts`.
+
+```
+web/webgpu.idl                          (vendored, sha256-pinned)
+        │
+        ▼
+crates/quanta-codegen  ──────────────► weedle parse
+        │                                  │
+        ├─► src/webgpu_generated_codes.rs  (Rust spec tables)
+        │       + cargo test:    quanta_strings_are_spec_subsets
+        │
+        └─► web/src/generated/codes.ts     (TS spec tables)
+                + module init: assertSpecSubset()
+```
+
+`quanta codegen webgpu` regenerates both files from one parsed AST.
+Rust side: a unit test on every `cargo test --lib` checks every
+Quanta-side enum string is a member of the spec table. TS side:
+`assertSpecSubset()` runs at module-init in the browser; page load
+throws if any string drifted out of spec — visible before the first
+FFI call.
+
+### Build / serve
+
+```sh
+quanta codegen webgpu      # regenerate spec tables (when webgpu.idl changes)
+quanta build web           # compile glue.ts + cargo build wasm32 + stage
+quanta serve web_add_one   # embedded HTTP server on 127.0.0.1:8000
+```
+
+All three are dev-only — `quanta-cli` and `quanta-codegen` never
+ship to user codebases. The user-facing `quanta` library crate has
+zero transitive deps; the browser sees only `quanta.js` + the wasm.
+
 ## Validation layer (`src/driver/validation.rs`)
 
 Wraps any `GpuDevice` and adds runtime checks:
@@ -239,8 +314,13 @@ Enabled with `QUANTA_VALIDATE=1`:
 3. Add the public API method on `Gpu` in `src/api/gpu.rs`.
 4. Implement in `src/driver/metal/` (Metal version).
 5. Implement in `src/driver/vulkan/` (Vulkan version).
-6. Add validation checks in `src/driver/validation.rs`.
-7. Add a conformance test in `tests/conformance/`.
+6. Implement in `src/driver/webgpu/` if it's exposable to the browser
+   (and add the corresponding TS plumbing in `web/src/webgpu.ts`).
+   If a new WebGPU IDL enum is touched, add it to
+   `crates/quanta-codegen/src/parse.rs`'s `PROJECT_RELEVANT_ENUMS`
+   and re-run `quanta codegen webgpu`.
+7. Add validation checks in `src/driver/validation.rs`.
+8. Add a conformance test in `tests/conformance/`.
 
 ## Adding a new driver (e.g., DirectX 12)
 
