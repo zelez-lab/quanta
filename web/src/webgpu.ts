@@ -646,6 +646,11 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
       rp.setScissorRect(x, y, w, h);
     },
 
+    quanta_render_pass_set_stencil_reference(pass: number, reference: number): void {
+      const rp = state.handles.get<GPURenderPassEncoder>(pass);
+      rp.setStencilReference(reference);
+    },
+
     quanta_render_pass_end(pass: number): void {
       const rp = state.handles.get<GPURenderPassEncoder>(pass);
       rp.end();

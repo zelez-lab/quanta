@@ -105,6 +105,7 @@ declare global {
     drawIndexed(indexCount: number, instanceCount: number): void;
     setViewport(x: number, y: number, w: number, h: number, minD: number, maxD: number): void;
     setScissorRect(x: number, y: number, w: number, h: number): void;
+    setStencilReference(reference: number): void;
     end(): void;
   }
 }

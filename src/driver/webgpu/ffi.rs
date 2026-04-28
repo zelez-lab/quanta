@@ -334,6 +334,7 @@ unsafe extern "C" {
         max_depth: f32,
     );
     pub fn quanta_render_pass_set_scissor(pass: u32, x: u32, y: u32, w: u32, h: u32);
+    pub fn quanta_render_pass_set_stencil_reference(pass: u32, reference: u32);
     pub fn quanta_render_pass_end(pass: u32);
 
     // Queue.

@@ -854,11 +854,21 @@ impl QGpuDevice for WebgpuDevice {
             .get(&pass.handle)
             .ok_or_else(|| Self::err("unknown render target"))?;
 
-        // Find the clear color (if any) before building the pass desc.
+        // Pre-walk: find the clear color and (if attached) the depth
+        // clear. Both end up on the rpass descriptor, not on encoder
+        // calls — WebGPU §16 lets the user specify them once at
+        // beginRenderPass time.
         let mut clear_rgba = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+        let mut clear_depth: Option<f32> = None;
         for op in &pass.ops {
-            if let crate::render_pass::RenderOp::Clear(color) = op {
-                clear_rgba = (color.r, color.g, color.b, color.a);
+            match op {
+                crate::render_pass::RenderOp::Clear(color) => {
+                    clear_rgba = (color.r, color.g, color.b, color.a);
+                }
+                crate::render_pass::RenderOp::ClearDepth(d) => {
+                    clear_depth = Some(*d);
+                }
+                _ => {}
             }
         }
 
@@ -875,6 +885,30 @@ impl QGpuDevice for WebgpuDevice {
                 clear_rgba.3,
             );
         }
+        // If the API caller attached a depth target, wire its view onto
+        // the rpass desc. WebGPU only takes the clear value alongside
+        // the attachment; ClearDepth carries the value from the op
+        // stream into this attachment, so the depth target itself is
+        // the source of truth for "which texture", and ClearDepth is
+        // the source of truth for "what value."
+        if let Some(depth) = &pass.depth_target {
+            let depth_tex = textures
+                .get(&depth.texture)
+                .ok_or_else(|| Self::err("unknown depth target"))?;
+            unsafe {
+                ffi::quanta_rpass_desc_set_depth_attachment(
+                    rpass_desc,
+                    depth_tex.view,
+                    if clear_depth.is_some() {
+                        ffi::load_op::CLEAR
+                    } else {
+                        ffi::load_op::LOAD
+                    },
+                    ffi::store_op::STORE,
+                    clear_depth.unwrap_or(1.0),
+                );
+            }
+        }
 
         let encoder = unsafe { ffi::quanta_create_command_encoder(device) };
         let rp = unsafe { ffi::quanta_encoder_begin_render_pass(encoder, rpass_desc) };
@@ -882,13 +916,27 @@ impl QGpuDevice for WebgpuDevice {
         let pipelines = self.state.pipelines.0.borrow();
         let buffers = self.state.buffers.0.borrow();
         let mut current_pipeline: Option<&state::PipelineEntry> = None;
-        let mut bind_entries: alloc::collections::BTreeMap<u32, u32> =
+
+        /// One slot of a pending bind group. The JS-side resource is
+        /// either a buffer (long-lived; not owned by `render_end`), a
+        /// texture view (long-lived; lookup via `state.textures`), a
+        /// sampler (created here from a `SamplerDesc`; owned), or a
+        /// freshly-allocated uniform buffer holding push-constant
+        /// bytes (WebGPU has no push constants — the SetValue
+        /// fallback below allocates a per-call buffer; owned).
+        enum BindEntry {
+            Buffer(u32),
+            TextureView(u32),
+            Sampler(u32),
+            OwnedBuffer(u32),
+        }
+        let mut bind_entries: alloc::collections::BTreeMap<u32, BindEntry> =
             alloc::collections::BTreeMap::new();
 
         // Helper: flush pending bind entries into a real bind group
         // and bind it. Hoisted out of the match for the two draw
         // variants below.
-        let flush_bg = |bind_entries: &mut alloc::collections::BTreeMap<u32, u32>,
+        let flush_bg = |bind_entries: &mut alloc::collections::BTreeMap<u32, BindEntry>,
                         cur: Option<&state::PipelineEntry>|
          -> Option<u32> {
             if bind_entries.is_empty() {
@@ -896,8 +944,18 @@ impl QGpuDevice for WebgpuDevice {
             }
             let p = cur?;
             let bg_desc = unsafe { ffi::quanta_bg_desc_create(p.layout) };
-            for (slot, buf) in bind_entries.iter() {
-                unsafe { ffi::quanta_bg_desc_add_buffer(bg_desc, *slot, *buf) };
+            for (slot, entry) in bind_entries.iter() {
+                match entry {
+                    BindEntry::Buffer(h) | BindEntry::OwnedBuffer(h) => unsafe {
+                        ffi::quanta_bg_desc_add_buffer(bg_desc, *slot, *h)
+                    },
+                    BindEntry::TextureView(h) => unsafe {
+                        ffi::quanta_bg_desc_add_texture_view(bg_desc, *slot, *h)
+                    },
+                    BindEntry::Sampler(h) => unsafe {
+                        ffi::quanta_bg_desc_add_sampler(bg_desc, *slot, *h)
+                    },
+                }
             }
             let bg = unsafe { ffi::quanta_create_bind_group(device, bg_desc) };
             unsafe { ffi::quanta_render_pass_set_bind_group(rp, 0, bg) };
@@ -906,6 +964,11 @@ impl QGpuDevice for WebgpuDevice {
         };
 
         let mut owned_bgs: Vec<u32> = Vec::new();
+        // Resources allocated within this pass that must be released
+        // after submit: samplers minted from `SetSampler` and uniform
+        // buffers allocated as push-constant fallbacks for `SetValue`.
+        let mut owned_samplers: Vec<u32> = Vec::new();
+        let mut owned_buffers: Vec<u32> = Vec::new();
 
         for op in &pass.ops {
             use crate::render_pass::RenderOp;
@@ -940,9 +1003,13 @@ impl QGpuDevice for WebgpuDevice {
                 }
                 RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
                     let &buf = buffers.get(handle).ok_or_else(|| Self::err("ubuf"))?;
-                    bind_entries.insert(*slot, buf);
+                    bind_entries.insert(*slot, BindEntry::Buffer(buf));
                 }
-                RenderOp::Clear(_) => { /* handled above as clearValue */ }
+                RenderOp::Clear(_) | RenderOp::ClearDepth(_) => {
+                    // Both clear values are picked up in the pre-walk
+                    // above and applied as `clearValue` on the rpass
+                    // descriptor; nothing to emit per-op.
+                }
                 RenderOp::Draw {
                     vertex_count,
                     instance_count,
@@ -985,31 +1052,76 @@ impl QGpuDevice for WebgpuDevice {
                 } => unsafe {
                     ffi::quanta_render_pass_set_scissor(rp, *x, *y, *width, *height);
                 },
+                // ── Step C wiring ───────────────────────────────────────────
+                RenderOp::SetTexture { slot, handle } => {
+                    let view = textures
+                        .get(handle)
+                        .ok_or_else(|| Self::err("unknown texture for SetTexture"))?
+                        .view;
+                    bind_entries.insert(*slot, BindEntry::TextureView(view));
+                }
+                RenderOp::SetSampler { slot, sampler } => {
+                    let s = unsafe {
+                        ffi::quanta_create_sampler(
+                            device,
+                            filter_code(sampler.mag_filter),
+                            filter_code(sampler.min_filter),
+                            filter_code(sampler.mip_filter),
+                            address_code(sampler.address_u),
+                            address_code(sampler.address_v),
+                            // WebGPU samplers are 3D-addressable; the
+                            // public `SamplerDesc` only carries U/V, so
+                            // mirror V into W (same as Vulkan/Metal
+                            // drivers do for 2D textures).
+                            address_code(sampler.address_v),
+                            sampler.max_anisotropy as u32,
+                            // `compare::UNSET` is the JS-side sentinel
+                            // for "no compare function" — the JS layer
+                            // omits the field entirely when it sees
+                            // this code.
+                            sampler
+                                .compare
+                                .map(compare_op_code)
+                                .unwrap_or(ffi::compare::UNSET),
+                        )
+                    };
+                    bind_entries.insert(*slot, BindEntry::Sampler(s));
+                    owned_samplers.push(s);
+                }
+                RenderOp::SetValue { slot, data } => {
+                    // WebGPU has no push constants. Fallback: allocate
+                    // a one-shot uniform buffer, write the bytes, bind
+                    // it as if it were a `SetUniform`. The caller
+                    // pays per-call allocation cost; semantics match
+                    // Metal's `setVertexBytes` and Vulkan's
+                    // `vkCmdPushConstants`. The buffer is released
+                    // after submit, below.
+                    let size = data.len() as f64;
+                    let buf = unsafe {
+                        ffi::quanta_create_buffer(
+                            device,
+                            size,
+                            ffi::buffer_usage::UNIFORM | ffi::buffer_usage::COPY_DST,
+                        )
+                    };
+                    unsafe {
+                        ffi::quanta_write_buffer(device, buf, 0.0, data.as_ptr(), data.len());
+                    }
+                    bind_entries.insert(*slot, BindEntry::OwnedBuffer(buf));
+                    owned_buffers.push(buf);
+                }
+                RenderOp::SetStencilRef(reference) => unsafe {
+                    ffi::quanta_render_pass_set_stencil_reference(rp, *reference);
+                },
+                // Stencil clear value — like color/depth, the WebGPU
+                // pass descriptor takes it once at begin time. We
+                // currently always store DISCARD on the stencil aspect
+                // (no consumer wires stencil load yet), so absorbing
+                // the value here is a no-op until depth-target growth.
+                RenderOp::ClearStencil(_) => {}
                 // Variants below are not in the 050 baseline. Per Kani
                 // theorem T417, the rule is **every RenderOp is either
                 // wired or explicitly rejected** — no silent drops.
-                RenderOp::SetTexture { .. } => {
-                    unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err("WebGPU render: SetTexture pending"));
-                }
-                RenderOp::SetSampler { .. } => {
-                    unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err("WebGPU render: SetSampler pending"));
-                }
-                RenderOp::SetValue { .. } => {
-                    unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err(
-                        "WebGPU render: SetValue (push constants) pending",
-                    ));
-                }
-                RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {
-                    unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err("WebGPU render: depth/stencil clear pending"));
-                }
-                RenderOp::SetStencilRef(_) => {
-                    unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err("WebGPU render: SetStencilRef pending"));
-                }
                 RenderOp::DebugPush(_) | RenderOp::DebugPop => {
                     // Debug labels are advisory; safe to skip on WebGPU.
                 }
@@ -1037,6 +1149,16 @@ impl QGpuDevice for WebgpuDevice {
         unsafe { ffi::quanta_queue_submit(device, cmd) };
         for bg in owned_bgs {
             unsafe { ffi::quanta_release(bg) };
+        }
+        for s in owned_samplers {
+            unsafe { ffi::quanta_release(s) };
+        }
+        // SetValue's per-call uniform buffers go through
+        // `quanta_destroy_buffer` (not `quanta_release`) because the
+        // JS side allocates a real `GPUBuffer.destroy()`-bearing
+        // resource. The two FFI routes are not interchangeable.
+        for b in owned_buffers {
+            unsafe { ffi::quanta_destroy_buffer(b) };
         }
         Ok(make_pulse())
     }

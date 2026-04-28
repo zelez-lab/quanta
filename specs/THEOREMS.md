@@ -404,6 +404,15 @@ backends. Catching the same VRS silent-drop bug on Metal + Vulkan
 (after first catching it on WebGPU) was a real payoff of the
 discipline — not a hypothetical.
 
+Step C (2026-04-28) closed the WebGPU render-parity gap: SetTexture,
+SetSampler, SetValue (per-call uniform-buffer fallback for push
+constants), ClearDepth (via rpass `clearValue`), ClearStencil
+(absorbed; driver always discards stencil aspects), and
+SetStencilRef are now in T417's *wired* set. The remaining
+`rejected` set is the architectural floor — indirect draws (Tier A
+032+033, deferred), occlusion queries (M3.3), and variable-rate
+shading (not in the WebGPU spec).
+
 T720-T754 are the API-layer Verus proofs (step 075). They cover the
 Pulse / Field / Wave / submission-queue lifetimes — closing the gap
 between "proven kernel" and "proven library." T741 is the

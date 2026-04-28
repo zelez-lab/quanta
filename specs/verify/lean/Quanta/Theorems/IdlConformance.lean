@@ -266,6 +266,7 @@ def quantaMethodSubset : List (String × String) :=
     ("GPURenderPassEncoder", "setIndexBuffer"),
     ("GPURenderPassEncoder", "draw"),
     ("GPURenderPassEncoder", "drawIndexed"),
+    ("GPURenderPassEncoder", "setStencilReference"),
     ("GPURenderPassEncoder", "end") ]
 
 -- ════════════════════════════════════════════════════════════════════
@@ -353,6 +354,7 @@ def quantaCallArities : List (String × String × Nat) :=
     ("GPURenderPassEncoder", "setIndexBuffer", 3),
     ("GPURenderPassEncoder", "draw", 2),
     ("GPURenderPassEncoder", "drawIndexed", 2),
+    ("GPURenderPassEncoder", "setStencilReference", 1),
     ("GPURenderPassEncoder", "end", 0) ]
 
 -- ════════════════════════════════════════════════════════════════════
@@ -446,6 +448,7 @@ def quantaCallTypes : List (String × String × List String) :=
     ("GPURenderPassEncoder", "setIndexBuffer", ["GPUBuffer", "GPUIndexFormat", "GPUSize64"]),
     ("GPURenderPassEncoder", "draw", ["GPUSize32", "GPUSize32"]),
     ("GPURenderPassEncoder", "drawIndexed", ["GPUSize32", "GPUSize32"]),
+    ("GPURenderPassEncoder", "setStencilReference", ["GPUStencilValue"]),
     ("GPURenderPassEncoder", "end", []) ]
 
 -- ════════════════════════════════════════════════════════════════════

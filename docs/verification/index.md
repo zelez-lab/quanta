@@ -139,6 +139,14 @@ Metal/Vulkan drivers in the verification scheme:
   `webgpu.idl` alone.
 * **T414** — first end-to-end conditional theorem: given A10.1+A10.2
   and T410 (emitter exhaustiveness), `wave_jit` always succeeds.
+* **Step C (2026-04-28)** — closed the WebGPU render-parity gap.
+  SetTexture, SetSampler, SetValue (per-call uniform-buffer
+  fallback for push constants), ClearDepth (via rpass `clearValue`),
+  ClearStencil (absorbed), and SetStencilRef are now in T417's
+  *wired* set. Kani re-verifies T417 SUCCESSFUL. The remaining
+  `rejected` set is the architectural floor: indirect draws (Tier
+  A 032+033, deferred), occlusion queries (M3.3), and variable-rate
+  shading (not in the WebGPU spec).
 * **B (2026-04-28)** — WGSL grammar mirror in
   `specs/verify/lean/Quanta/Wgsl/{Grammar,Serialize,OpPatterns}.lean`.
   Models the WGSL fragment Quanta's emitter produces (enable

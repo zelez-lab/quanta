@@ -434,6 +434,14 @@ const TAG_RP_SET_SHADING_RATE_IMAGE: u8 = 23;
 /// Variants whose match arm in `render_end` issues a real encoder call
 /// (set_pipeline, draw, etc.). The recorded op produces an observable
 /// effect on the WebGPU command buffer.
+///
+/// Step C (2026-04-28) closed the parity gap on SetTexture, SetSampler,
+/// SetValue, ClearDepth, ClearStencil, and SetStencilRef — those tags
+/// graduated from "rejected" to "wired" here. SetValue uses a
+/// per-call uniform buffer fallback (WebGPU has no push constants).
+/// ClearDepth feeds the rpass `clearValue` instead of issuing a
+/// per-op encoder call; ClearStencil is currently absorbed since the
+/// driver always discards stencil aspects.
 fn webgpu_render_end_wired(tag: u8) -> bool {
     matches!(
         tag,
@@ -442,9 +450,15 @@ fn webgpu_render_end_wired(tag: u8) -> bool {
             | TAG_RP_BIND_INDICES
             | TAG_RP_SET_FIELD
             | TAG_RP_SET_UNIFORM
+            | TAG_RP_SET_TEXTURE
+            | TAG_RP_SET_SAMPLER
+            | TAG_RP_SET_VALUE
             | TAG_RP_DRAW
             | TAG_RP_DRAW_INDEXED
             | TAG_RP_CLEAR
+            | TAG_RP_CLEAR_DEPTH
+            | TAG_RP_CLEAR_STENCIL
+            | TAG_RP_SET_STENCIL_REF
             | TAG_RP_SET_SCISSOR
             | TAG_RP_SET_VIEWPORT
             | TAG_RP_DEBUG_PUSH    // skipped — labels are advisory
@@ -455,16 +469,15 @@ fn webgpu_render_end_wired(tag: u8) -> bool {
 /// Variants whose match arm explicitly returns an error
 /// ("WebGPU render: X pending"). The recorded op is rejected loudly,
 /// not silently dropped.
+///
+/// After step C, this set is the architectural floor: indirect draws
+/// (Tier A 032+033, deferred), occlusion queries (M3.3), and
+/// variable-rate shading (not in the WebGPU spec at all). The
+/// previous "render-state pending" group has been wired.
 fn webgpu_render_end_rejected(tag: u8) -> bool {
     matches!(
         tag,
-        TAG_RP_SET_TEXTURE
-            | TAG_RP_SET_SAMPLER
-            | TAG_RP_SET_VALUE
-            | TAG_RP_CLEAR_DEPTH
-            | TAG_RP_CLEAR_STENCIL
-            | TAG_RP_SET_STENCIL_REF
-            | TAG_RP_DRAW_INDIRECT
+        TAG_RP_DRAW_INDIRECT
             | TAG_RP_DRAW_INDEXED_INDIRECT
             | TAG_RP_BEGIN_OCCLUSION_QUERY
             | TAG_RP_END_OCCLUSION_QUERY
