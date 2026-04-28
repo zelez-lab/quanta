@@ -347,6 +347,48 @@ theorem evalOp_quarkCount_eq
         = some { st with rf := KOps.regWrite st.rf dst (KOps.vU32 st.dispatch.quarkCount) } := by
   simp [KOps.evalOp, pure]
 
+/-- `evalOp _ st (.load dst slot idx_reg ty)` writes the heap-stored
+    value into `dst` when the index register holds a `vU32`. -/
+theorem evalOp_load_eq
+    (fuel : Nat) (st : KOps.State)
+    (dst : KOps.Reg) (slot : Nat) (idx_reg : KOps.Reg) (ty : KOps.Scalar)
+    (idx_val : UInt32) (v : Value)
+    (h_idx : KOps.regLookup st.rf idx_reg = some (KOps.vU32 idx_val))
+    (h_load : KOps.heapLookup st.heap slot idx_val.toNat = some v)
+    : KOps.evalOp fuel st (KernelOp.load dst slot idx_reg ty)
+        = some { st with rf := KOps.regWrite st.rf dst v } := by
+  unfold KOps.evalOp
+  rw [h_idx]
+  -- After rewriting, the body becomes:
+  --   bind (some (vU32 idx_val)) (fun vi => match vi with | vU32 n => ...).
+  -- Reduce the `Option.bind`, then the constructor `match`.
+  show (match KOps.vU32 idx_val with
+        | .vU32 n => (KOps.heapLookup st.heap slot n.toNat).bind
+            (fun v => some { st with rf := KOps.regWrite st.rf dst v })
+        | _ => none) = _
+  -- Now `match vU32 idx_val with | vU32 n => ...` reduces to the vU32 arm.
+  show (KOps.heapLookup st.heap slot idx_val.toNat).bind _ = _
+  rw [h_load]
+  rfl
+
+/-- `evalOp _ st (.store slot idx_reg src_reg ty)` updates the heap
+    at `(slot, idx_val)` when `idx_reg = vU32 idx_val` and the
+    source register holds `v`. -/
+theorem evalOp_store_eq
+    (fuel : Nat) (st : KOps.State)
+    (slot : Nat) (idx_reg src_reg : KOps.Reg) (ty : KOps.Scalar)
+    (idx_val : UInt32) (v : Value)
+    (h_idx : KOps.regLookup st.rf idx_reg = some (KOps.vU32 idx_val))
+    (h_src : KOps.regLookup st.rf src_reg = some v)
+    : KOps.evalOp fuel st (KernelOp.store slot idx_reg src_reg ty)
+        = some { st with heap := KOps.heapStore st.heap slot idx_val.toNat v } := by
+  unfold KOps.evalOp
+  rw [h_idx, h_src]
+  show (match KOps.vU32 idx_val with
+        | .vU32 n => some { st with heap := KOps.heapStore st.heap slot n.toNat v }
+        | _ => none) = _
+  rfl
+
 -- ════════════════════════════════════════════════════════════════════
 -- Alignment 8 — evalOps singleton + cons
 -- ════════════════════════════════════════════════════════════════════
@@ -529,11 +571,8 @@ theorem t595_cast_preservation_focused
 -- T594' — focused index preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- Open per-rule preservation: the `load`/`store` arms branch on
-    the runtime shape of the index value (`.vU32 n`). The `simp`
-    set reduces the bind chain but leaves the match-on-Value-shape
-    unreduced; closing requires a custom `cases vi` step. Tracked
-    as part of the broader open obligation. -/
+/-- Focused per-rule preservation for buffer load. Now provable via
+    `evalOp_load_eq` (which threads the value-shape match cleanly). -/
 theorem t594_index_preservation_focused
     (slot : Nat) (idx_reg dst : KOps.Reg) (ty : KOps.Scalar)
     (st : KOps.State) (idx : UInt32) (v : Value)
@@ -543,14 +582,17 @@ theorem t594_index_preservation_focused
     : ∃ st',
         KOps.evalOps 1 st [KernelOp.load dst slot idx_reg ty] = some st'
         ∧ KOps.regLookup st'.rf dst = some v := by
-  sorry
+  refine ⟨{ st with rf := KOps.regWrite st.rf dst v }, ?_, ?_⟩
+  · exact evalOps_singleton_clean 1 st (KernelOp.load dst slot idx_reg ty) _
+            (evalOp_load_eq 1 st dst slot idx_reg ty idx v h_idx h_load) h_st_clean
+  · exact regLookup_regWrite_eq st.rf dst v
 
 -- ════════════════════════════════════════════════════════════════════
 -- T5A2' — focused assignIdx (store) preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- Open per-rule preservation: `store` shares the same value-shape
-    match as `load`. -/
+/-- Focused per-rule preservation for buffer store. Now provable
+    via `evalOp_store_eq`. -/
 theorem t5a2_assignIdx_preservation_focused
     (slot : Nat) (idx_reg src_reg : KOps.Reg) (ty : KOps.Scalar)
     (st : KOps.State) (idx : UInt32) (v : Value)
@@ -560,7 +602,10 @@ theorem t5a2_assignIdx_preservation_focused
     : ∃ st',
         KOps.evalOps 1 st [KernelOp.store slot idx_reg src_reg ty] = some st'
         ∧ KOps.heapLookup st'.heap slot idx.toNat = some v := by
-  sorry
+  refine ⟨{ st with heap := KOps.heapStore st.heap slot idx.toNat v }, ?_, ?_⟩
+  · exact evalOps_singleton_clean 1 st (KernelOp.store slot idx_reg src_reg ty) _
+            (evalOp_store_eq 1 st slot idx_reg src_reg ty idx v h_idx h_src) h_st_clean
+  · exact heapLookup_heapStore_eq st.heap slot idx.toNat v
 
 -- ════════════════════════════════════════════════════════════════════
 -- T590 — Lit preservation
@@ -707,13 +752,7 @@ theorem t593_unaryop_preservation
 /-- **T594 — index_preservation (step rule)**: given that the
     index sub-expression translation produced `vU32 idx` in
     register `idx_reg`, and the heap holds `v` at `(slot, idx)`,
-    `KernelOp.load dst slot idx_reg ty` writes `v` into `dst`.
-
-    Open: discharging requires a `cases vi` step on the value-shape
-    match in `evalOp .load`'s body, plus a manual reduction of the
-    inner heapLookup. The structure is identical to T592/T593/T595
-    except for the value-shape match; deferred until the same
-    reduction pattern works in T5A2 (assignIdx). -/
+    `KernelOp.load dst slot idx_reg ty` writes `v` into `dst`. -/
 theorem t594_index_preservation
     (ctx : EmitCtx) (slot : Nat) (ty : KOps.Scalar)
     (st0 st_prefix : KOps.State)
@@ -725,7 +764,12 @@ theorem t594_index_preservation
     : ∃ st',
         KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.load dst slot idx_reg ty]) = some st'
         ∧ KOps.regLookup st'.rf dst = some v := by
-  sorry
+  refine ⟨{ st_prefix with rf := KOps.regWrite st_prefix.rf dst v }, ?_, ?_⟩
+  · rw [evalOps_append_clean 1 st0 ctx.ops [KernelOp.load dst slot idx_reg ty]
+          st_prefix h_prefix h_clean]
+    exact evalOps_singleton_clean 1 st_prefix (KernelOp.load dst slot idx_reg ty) _
+            (evalOp_load_eq 1 st_prefix dst slot idx_reg ty idx v h_idx h_load) h_clean
+  · exact regLookup_regWrite_eq st_prefix.rf dst v
 
 -- ════════════════════════════════════════════════════════════════════
 -- T595 — Cast preservation
