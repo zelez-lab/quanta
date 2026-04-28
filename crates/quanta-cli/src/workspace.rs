@@ -34,7 +34,7 @@ fn is_workspace_manifest(path: &Path) -> Result<bool> {
 /// List of valid example crate names, kept in lockstep with
 /// `examples/` directory contents. Rather than glob the directory we
 /// hard-code so unknown names are rejected with a clear error.
-pub const WEB_EXAMPLES: &[&str] = &["web_add_one", "web_triangle"];
+pub const WEB_EXAMPLES: &[&str] = &["web_add_one", "web_triangle", "web_textured"];
 
 /// Validate an example name against the known list (or accept "all").
 pub fn resolve_examples(name: &str) -> Result<Vec<&'static str>> {

@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Quanta WebGPU smoke test — textured render path (step C)</title>
+    <style>
+      body { font: 14px ui-monospace, monospace; padding: 1rem; }
+      .ok  { color: #0a0; }
+      .fail { color: #a00; }
+      canvas { border: 1px solid #ccc; image-rendering: pixelated; width: 128px; height: 128px; }
+    </style>
+  </head>
+  <body>
+    <h1>Quanta WebGPU smoke test — textured render path (step C)</h1>
+    <p>
+      Loads <code>web_textured.wasm</code> via Quanta's own WebGPU glue.
+      Allocates a 1×1 source texture with the saturated orange
+      <code>rgba(255, 165, 64, 255)</code>, then renders into a 4×4
+      target with a fragment shader that <strong>samples the source
+      texture</strong>. The render pass calls <code>set_sampler</code>
+      and <code>set_texture</code> — the new wiring shipped in step C
+      of the FFI TCB shrink track. Every output pixel should match the
+      source color (within ±2 LSBs of rounding).
+    </p>
+    <p id="status">Loading…</p>
+    <canvas id="canvas" width="4" height="4"></canvas>
+
+    <script type="module">
+      import { instantiate } from "./quanta.js";
+
+      const statusEl = document.getElementById("status");
+      const canvas   = document.getElementById("canvas");
+
+      async function main() {
+        const mod   = await instantiate("./web_textured.wasm");
+        const bytes = await mod.runReturningBytes("web_textured_run");
+
+        const ctx = canvas.getContext("2d");
+        const img = ctx.createImageData(4, 4);
+        img.data.set(bytes);
+        ctx.putImageData(img, 0, 0);
+
+        // Validate every pixel matches the source color (±2 LSB).
+        const expected = [255, 165, 64, 255];
+        const tol = 2;
+        let mismatches = 0;
+        let firstBad = null;
+        for (let y = 0; y < 4; y++) {
+          for (let x = 0; x < 4; x++) {
+            const off = (y * 4 + x) * 4;
+            for (let c = 0; c < 4; c++) {
+              if (Math.abs(bytes[off + c] - expected[c]) > tol) {
+                mismatches += 1;
+                if (firstBad === null) {
+                  firstBad = `(${x},${y}).${"rgba"[c]} = ${bytes[off + c]}, expected ${expected[c]}`;
+                }
+              }
+            }
+          }
+        }
+
+        if (mismatches === 0) {
+          statusEl.className = "ok";
+          statusEl.textContent =
+            `PASS — all 16 pixels match source rgba(${expected.join(",")}); SetTexture+SetSampler wiring verified end-to-end on real WebGPU`;
+        } else {
+          statusEl.className = "fail";
+          statusEl.textContent =
+            `FAIL — ${mismatches} channel(s) outside tolerance; first: ${firstBad}`;
+        }
+      }
+
+      main().catch(err => {
+        statusEl.className = "fail";
+        statusEl.textContent = "FAIL — " + err;
+        console.error(err);
+      });
+    </script>
+  </body>
+</html>
