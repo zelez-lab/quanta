@@ -259,6 +259,19 @@ theorem heapLookup_heapStore_eq
 -- structural lemmas the T5A0–T5A6 stmt-level preservation theorems
 -- need to extend `consistentState` across each stmt.
 
+/-- Helper: `Env.bind name v` on lookup of `name` returns `v`. -/
+theorem Env_lookup_bind_eq_self
+    (env : Env) (name : Ident) (v : Value)
+    : (env.bind name v).lookup name = some v := by
+  simp [Env.bind, Env.lookup]
+
+/-- Helper: `EmitCtx.bindVar` lookup for `name` returns the just-
+    inserted `r`. -/
+theorem EmitCtx_lookupVar_bindVar_eq_self
+    (ctx : EmitCtx) (name : Ident) (r : KOps.Reg)
+    : (ctx.bindVar name r).lookupVar name = some r := by
+  simp [EmitCtx.bindVar, EmitCtx.lookupVar]
+
 /-- **Alignment 6.5 (heapConsistent through bindVar)**: `bindVar`
     only touches `ctx.vars`; `ctx.params` is unchanged. So
     `heapConsistent` carries through verbatim, modulo the
