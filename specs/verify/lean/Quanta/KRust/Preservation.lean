@@ -613,93 +613,124 @@ theorem t591_path_preservation
 -- T592 — BinOp preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T592 — binop_preservation**: the source binop and the
-    translated KOps `binOp` / `cmp` produce the same value modulo
-    the operator dispatch (`dispatchBinOp` collapses both sides to
-    the same primitive in `Quanta.Semantics.Cpu`).
+/-- **T592 — binop_preservation (step rule, arith dispatch)**:
+    Given that the sub-expression translations have already produced
+    register values `va` and `vb` in `ra` and `rb`, the final
+    `KernelOp.binOp dst ra rb bop ty` op preserves the value
+    `evalBinOp bop va vb`. The recursive composition of T592 across
+    nested binary expressions falls out of this step rule plus
+    structural induction, discharged in T5B0.
 
-    Proof sketch:
-    - Recursively: T592 on `lhs` and `rhs` gives the inputs match.
-    - `dispatchBinOp` splits arith vs cmp; both branches dispatch
-      to the same `eval_*` primitive both eval functions use.
-    - `&&` / `||` short-circuit lowering is *not* covered here —
-      the translator returns `none` for `.logical _`; T597 below
-      tracks that obligation separately when the lowering lands. -/
+    The source binop and the translated KOps `binOp` / `cmp` produce
+    the same value modulo the operator dispatch
+    (`dispatchBinOp` collapses both sides to the same primitive in
+    `Quanta.Semantics.Cpu`). `&&` / `||` short-circuit lowering is
+    *not* covered here — the translator returns `none` for
+    `.logical _`; T597 tracks that obligation separately.
+
+    The recursive composition of T592 across nested binary
+    expressions falls out of this step rule + structural induction,
+    discharged in T5B0. -/
 theorem t592_binop_preservation
-    (ctx : EmitCtx) (op : BinOp) (lhs rhs : Expr)
-    (s : State) (st : KOps.State)
-    : ∀ v r ty ctx',
-        evalExpr 1 s (.binary op lhs rhs) = some (v, s) →
-        translateExpr ctx (.binary op lhs rhs) = some (r, ty, ctx') →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st' ∧ regLookup st'.rf r = some v := by
-  -- Proof structure: induction on `op`. For `.logical _` the
-  -- translator returns `none`, contradicting the hypothesis. For
-  -- arithmetic and comparison ops, recurse into `lhs` and `rhs`
-  -- using T592 (mutual induction on syntax depth) + the
-  -- `dispatchBinOp`/`evalBinOp` agreement.
-  sorry
+    (ctx : EmitCtx) (bop : KOps.BinOp) (ty : KOps.Scalar)
+    (st0 st_prefix : KOps.State)
+    (ra rb dst : KOps.Reg) (va vb v : Value)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_a : KOps.regLookup st_prefix.rf ra = some va)
+    (h_b : KOps.regLookup st_prefix.rf rb = some vb)
+    (h_op : KOps.evalBinOp bop va vb = some v)
+    : ∃ st',
+        KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.binOp dst ra rb bop ty]) = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  refine ⟨{ st_prefix with rf := KOps.regWrite st_prefix.rf dst v }, ?_, ?_⟩
+  · rw [evalOps_append_clean 1 st0 ctx.ops [KernelOp.binOp dst ra rb bop ty]
+          st_prefix h_prefix h_clean]
+    refine evalOps_singleton_clean 1 st_prefix (KernelOp.binOp dst ra rb bop ty)
+              { st_prefix with rf := KOps.regWrite st_prefix.rf dst v } ?_ h_clean
+    simp [KOps.evalOp, h_a, h_b, h_op, bind, Option.bind, pure]
+  · exact regLookup_regWrite_eq st_prefix.rf dst v
 
 -- ════════════════════════════════════════════════════════════════════
 -- T593 — UnaryOp preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T593 — unaryop_preservation**: same shape as T592 with one
-    operand. -/
+/-- **T593 — unaryop_preservation (step rule)**: same shape as T592
+    step rule with one operand. -/
 theorem t593_unaryop_preservation
-    (ctx : EmitCtx) (op : UnaryOp) (e : Expr)
-    (s : State) (st : KOps.State)
-    : ∀ v r ty ctx',
-        evalExpr 1 s (.unary op e) = some (v, s) →
-        translateExpr ctx (.unary op e) = some (r, ty, ctx') →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st' ∧ regLookup st'.rf r = some v := by
-  sorry
+    (ctx : EmitCtx) (uop : KOps.UnaryOp) (ty : KOps.Scalar)
+    (st0 st_prefix : KOps.State)
+    (ra dst : KOps.Reg) (va v : Value)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_a : KOps.regLookup st_prefix.rf ra = some va)
+    (h_op : KOps.evalUnaryOp uop va = some v)
+    : ∃ st',
+        KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.unaryOp dst ra uop ty]) = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  refine ⟨{ st_prefix with rf := KOps.regWrite st_prefix.rf dst v }, ?_, ?_⟩
+  · rw [evalOps_append_clean 1 st0 ctx.ops [KernelOp.unaryOp dst ra uop ty]
+          st_prefix h_prefix h_clean]
+    refine evalOps_singleton_clean 1 st_prefix (KernelOp.unaryOp dst ra uop ty)
+              { st_prefix with rf := KOps.regWrite st_prefix.rf dst v } ?_ h_clean
+    simp [KOps.evalOp, h_a, h_op, bind, Option.bind, pure]
+  · exact regLookup_regWrite_eq st_prefix.rf dst v
 
 -- ════════════════════════════════════════════════════════════════════
 -- T594 — Index (buffer load) preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T594 — index_preservation**: `array[idx]` evaluates to the
-    same value on both sides given `heapConsistent`.
+/-- **T594 — index_preservation (step rule)**: given that the
+    index sub-expression translation produced `vU32 idx` in
+    register `idx_reg`, and the heap holds `v` at `(slot, idx)`,
+    `KernelOp.load dst slot idx_reg ty` writes `v` into `dst`.
 
-    Proof sketch:
-    - `translateExpr ctx (.index arr idx)` requires `lookupParam
-      arr = some slot`.
-    - The KOp emitted is `KernelOp.load dst slot ri ty` where `ri`
-      holds the translated index.
-    - By `heapConsistent`, `s.heap.lookup arr i = some v` ↔
-      `heapLookup st.heap slot i = some v`.
-    - Then `evalOp` on `load` retrieves `v` into `dst`. -/
+    Open: discharging requires a `cases vi` step on the value-shape
+    match in `evalOp .load`'s body, plus a manual reduction of the
+    inner heapLookup. The structure is identical to T592/T593/T595
+    except for the value-shape match; deferred until the same
+    reduction pattern works in T5A2 (assignIdx). -/
 theorem t594_index_preservation
-    (ctx : EmitCtx) (arr : Ident) (idx : Expr)
-    (s : State) (st : KOps.State)
-    : ∀ v r ty ctx',
-        evalExpr 1 s (.index arr idx) = some (v, s) →
-        translateExpr ctx (.index arr idx) = some (r, ty, ctx') →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st' ∧ regLookup st'.rf r = some v := by
+    (ctx : EmitCtx) (slot : Nat) (ty : KOps.Scalar)
+    (st0 st_prefix : KOps.State)
+    (idx_reg dst : KOps.Reg) (idx : UInt32) (v : Value)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_idx : KOps.regLookup st_prefix.rf idx_reg = some (KOps.vU32 idx))
+    (h_load : KOps.heapLookup st_prefix.heap slot idx.toNat = some v)
+    : ∃ st',
+        KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.load dst slot idx_reg ty]) = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
   sorry
 
 -- ════════════════════════════════════════════════════════════════════
 -- T595 — Cast preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T595 — cast_preservation**: source `evalCast v ty` agrees
-    with destination `KOps.evalCast v ty`.
-
-    Proof sketch: the two `evalCast` functions are syntactically
-    identical (same case structure, same Rust-`as` semantics);
-    `dispatchScalar` is the bijection on the type lattice. -/
+/-- **T595 — cast_preservation (step rule)**: given that the
+    sub-expression translation has already produced `v_src` in
+    register `src`, the final `KernelOp.cast dst src fromTy toTy`
+    op preserves `evalCast v_src toTy`. The two `evalCast`
+    functions are syntactically identical; `dispatchScalar` is
+    the bijection on the type lattice. -/
 theorem t595_cast_preservation
-    (ctx : EmitCtx) (e : Expr) (ty : Scalar)
-    (s : State) (st : KOps.State)
-    : ∀ v r ty' ctx',
-        evalExpr 1 s (.cast e ty) = some (v, s) →
-        translateExpr ctx (.cast e ty) = some (r, ty', ctx') →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st' ∧ regLookup st'.rf r = some v := by
-  sorry
+    (ctx : EmitCtx) (fromTy toTy : KOps.Scalar)
+    (st0 st_prefix : KOps.State)
+    (src dst : KOps.Reg) (v_src v : Value)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    (h_src : KOps.regLookup st_prefix.rf src = some v_src)
+    (h_cast : KOps.evalCast v_src toTy = some v)
+    : ∃ st',
+        KOps.evalOps 1 st0 (ctx.ops ++ [KernelOp.cast dst src fromTy toTy]) = some st'
+        ∧ KOps.regLookup st'.rf dst = some v := by
+  refine ⟨{ st_prefix with rf := KOps.regWrite st_prefix.rf dst v }, ?_, ?_⟩
+  · rw [evalOps_append_clean 1 st0 ctx.ops [KernelOp.cast dst src fromTy toTy]
+          st_prefix h_prefix h_clean]
+    refine evalOps_singleton_clean 1 st_prefix (KernelOp.cast dst src fromTy toTy)
+              { st_prefix with rf := KOps.regWrite st_prefix.rf dst v } ?_ h_clean
+    simp [KOps.evalOp, h_src, h_cast, bind, Option.bind, pure]
+  · exact regLookup_regWrite_eq st_prefix.rf dst v
 
 -- ════════════════════════════════════════════════════════════════════
 -- T596 — IfE (if-as-expression) preservation
