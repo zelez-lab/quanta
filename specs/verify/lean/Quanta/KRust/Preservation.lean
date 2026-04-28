@@ -344,6 +344,39 @@ theorem evalOps_cons_eq
             (fun s1 => if s1.broke then some s1 else KOps.evalOps fuel s1 rest) := by
   simp [KOps.evalOps, bind, Option.bind]
 
+/-- **Alignment 8.1 — evalOps_append**: running an append of two
+    op lists is the same as running the first then the second on
+    the resulting state, *modulo* the broke-flag short-circuit:
+    if running `xs` ends with `broke = true`, the appended `ys` is
+    skipped. The non-broke case (the common one in translation,
+    where intermediate states are clean) reduces to plain bind.
+
+    This is the load-bearing composition lemma the wide-form
+    preservation theorems use to bridge `ctx.ops ++ new_ops`. -/
+theorem evalOps_append_clean
+    (fuel : Nat) (st : KOps.State) (xs ys : List KernelOp) (st_mid : KOps.State)
+    (h_xs : KOps.evalOps fuel st xs = some st_mid)
+    (h_clean : st_mid.broke = false)
+    : KOps.evalOps fuel st (xs ++ ys) = KOps.evalOps fuel st_mid ys := by
+  induction xs generalizing st with
+  | nil =>
+      simp [KOps.evalOps] at h_xs
+      subst h_xs
+      simp
+  | cons op rest ih =>
+      simp [evalOps_cons_eq] at h_xs ⊢
+      cases h_eval : KOps.evalOp fuel st op with
+      | none => simp [h_eval] at h_xs
+      | some s1 =>
+          simp [h_eval] at h_xs ⊢
+          by_cases h_broke : s1.broke
+          · simp [h_broke] at h_xs
+            subst h_xs
+            -- s1 = st_mid, but s1.broke = true and h_clean says false.
+            exact absurd h_broke (by simp [h_clean])
+          · simp [h_broke] at h_xs ⊢
+            exact ih s1 h_xs
+
 -- ════════════════════════════════════════════════════════════════════
 -- T5A7' — focused breakS preservation on the KOps side
 -- ════════════════════════════════════════════════════════════════════
@@ -520,22 +553,29 @@ theorem t5a2_assignIdx_preservation_focused
       bit encoding `(w * 1000) + f mod 1000` so `evalLit` and
       `evalConst (.f32 …)` reduce to the same `Value.vF32`. -/
 theorem t590_lit_preservation
-    (ctx : EmitCtx) (l : Lit)
-    : ∀ v ctx' r ty,
-        evalLit l = some v →
+    (ctx : EmitCtx) (l : Lit) (st0 st_prefix : KOps.State)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
+    : ∀ ctx' r ty cv sty,
+        constOfLit l = some (cv, sty) →
         translateExpr ctx (.lit l) = some (r, ty, ctx') →
-        ∃ ops_state st',
-          evalOps 1 ops_state ctx'.ops = some st' ∧ regLookup st'.rf r = some v := by
-  -- Proof obligation: `translateExpr (.lit l) = some (r, ty, ctx')`
-  -- emits `[KernelOp.const r (constOfLit l).1]`. Running that with
-  -- any KOps state yields a state whose `rf` has `r ↦ evalConst _`,
-  -- equal to `evalLit l` by the bit-pattern alignment above.
-  --
-  -- Discharged once `evalExpr` / `translateExpr` / `evalOps` are
-  -- converted from `partial def` to `def` (the structural
-  -- termination is straightforward but Lean's mutual termination
-  -- checker needs a lex-order measure; deferred).
-  sorry
+        ∃ st',
+          KOps.evalOps 1 st0 ctx'.ops = some st'
+          ∧ KOps.regLookup st'.rf r = some (KOps.evalConst cv) := by
+  intro ctx' r ty cv sty h_const h_trans
+  -- Translator: translateExpr ctx (.lit l) = some (ctx.nextReg, ty, ctx')
+  -- where ctx'.ops = ctx.ops ++ [KernelOp.const ctx.nextReg cv].
+  simp [translateExpr, EmitCtx.fresh, EmitCtx.emit, h_const] at h_trans
+  obtain ⟨h_r, _h_ty, h_ctx'⟩ := h_trans
+  refine ⟨{ st_prefix with rf := KOps.regWrite st_prefix.rf r (KOps.evalConst cv) }, ?_, ?_⟩
+  · rw [← h_ctx']
+    rw [evalOps_append_clean 1 st0 ctx.ops [KernelOp.const ctx.nextReg cv]
+          st_prefix h_prefix h_clean]
+    rw [evalOps_cons_eq, evalOp_const_eq]
+    -- Cleanly run [const]: bind through, observe non-broke state, then evalOps [].
+    simp [h_clean, KOps.evalOps, h_r]
+  · rw [← h_r]
+    exact regLookup_regWrite_eq st_prefix.rf ctx.nextReg (KOps.evalConst cv)
 
 -- ════════════════════════════════════════════════════════════════════
 -- T591 — Path (variable read) preservation
@@ -561,11 +601,13 @@ theorem t591_path_preservation
     : ∀ v r,
         s.env.lookup name = some v →
         ctx.lookupVar name = some r →
-        regLookup st.rf r = some v := by
-  -- Direct application of `varsConsistent`, modulo the
-  -- definitional unfold of `EmitCtx.lookupVar`. Discharge needs
-  -- the `partial def` → `def` conversion noted above.
-  sorry
+        KOps.regLookup st.rf r = some v := by
+  intro v r h_env h_var
+  obtain ⟨h_vars, _⟩ := h_cons
+  -- `varsConsistent` says: any `(name, r)` in `ctx.vars` matches
+  -- `s.env`'s value. `ctx.lookupVar` unfolds to the same
+  -- find-then-snd expression `varsConsistent` quotes.
+  exact h_vars name r h_var v h_env
 
 -- ════════════════════════════════════════════════════════════════════
 -- T592 — BinOp preservation
@@ -825,20 +867,29 @@ theorem t5a6_loopS_preservation
               ∧ consistentState s' ctx' st' := by
   sorry
 
-/-- **T5A7 — breakS_preservation**: trivial — the source side
-    sets `broke := true`; the destination emits `breakOp` which
-    sets the same flag on the KOps state. With `evalStmt` now
-    `def`, the source side reduces; the open obligation is the
-    `evalOps_append` composition lemma needed when `ctx.ops`
-    already contains entries from earlier in translation. -/
+/-- **T5A7 — breakS_preservation**: the source side sets
+    `broke := true`; the destination emits `breakOp` which sets
+    the same flag on the KOps state. The proof reduces source +
+    translator + KOps eval, then composes via `evalOps_append_clean`
+    against a hypothesis that `ctx.ops` runs cleanly from some
+    initial KOps state `st0` to `st_prefix` (the state after the
+    previously-translated prefix). -/
 theorem t5a7_breakS_preservation
-    (ctx : EmitCtx) (s : State) (st : KOps.State)
+    (ctx : EmitCtx) (s : State) (st0 st_prefix : KOps.State)
+    (h_prefix : KOps.evalOps 1 st0 ctx.ops = some st_prefix)
+    (h_clean : st_prefix.broke = false)
     : ∀ s' ctx',
         evalStmt 1 s .breakS = some s' →
         translateStmt ctx .breakS = some ctx' →
-        consistentState s ctx st →
-        ∃ st', evalOps 1 st ctx'.ops = some st'
-              ∧ consistentState s' ctx' st' := by
-  sorry
+        ∃ st',
+          KOps.evalOps 1 st0 ctx'.ops = some st'
+          ∧ st'.broke = true := by
+  intro s' ctx' _h_eval h_trans
+  simp [translateStmt, EmitCtx.emit] at h_trans
+  refine ⟨{ st_prefix with broke := true }, ?_, rfl⟩
+  rw [← h_trans]
+  rw [evalOps_append_clean 1 st0 ctx.ops [KernelOp.breakOp] st_prefix h_prefix h_clean]
+  rw [evalOps_cons_eq, evalOp_breakOp_eq]
+  simp
 
 end Quanta.KRust.Preservation
