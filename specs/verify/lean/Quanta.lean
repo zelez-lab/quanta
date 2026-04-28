@@ -36,6 +36,7 @@ import Quanta.Axioms.Wgsl
 
 -- Kernel Rust syntax (E.1a) — top of the source-preservation track
 import Quanta.KRust.Syntax
+import Quanta.KRust.Semantics
 
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
