@@ -31,6 +31,7 @@ import Quanta.Idl.WebGpuSpec
 -- WGSL grammar mirror (B)
 import Quanta.Wgsl.Grammar
 import Quanta.Wgsl.Serialize
+import Quanta.Wgsl.OpPatterns
 import Quanta.Axioms.Wgsl
 
 -- Conditional-correctness theorems

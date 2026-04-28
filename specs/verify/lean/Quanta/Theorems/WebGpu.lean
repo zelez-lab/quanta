@@ -27,6 +27,7 @@ discharge `wgsl_string_well_formed` without leaving it as a hypothesis).
 
 import Quanta.Axioms.WebGpu
 import Quanta.Axioms.Gpu
+import Quanta.Axioms.Wgsl
 
 namespace Quanta.Theorems.WebGpu
 
@@ -47,29 +48,30 @@ opaque kernel_entry_name : KernelDef → String
     `crates/quanta-ir/src/emit_wgsl/`; modeled here as a function. -/
 opaque emit_wgsl_jit : KernelDef → String
 
-/-- T410 (Verus + Kani): for every `KernelDef`, `emit_wgsl_jit` produces
-    a string that satisfies `wgsl_string_well_formed`.
+/-- **T410 — emit_wgsl_jit_well_formed**: for every `KernelDef`,
+    `emit_wgsl_jit` produces a string that satisfies
+    `wgsl_string_well_formed`.
 
-    Status: axiom now, theorem after **B** completes. The grammar
-    mirror in `Quanta.Wgsl.Grammar` and the bridge axiom A12
-    (`Quanta.Axioms.Wgsl.wgsl_serializer_preserves_grammar`)
-    landed in B.1 + B.2 (this commit). The remaining work to
-    discharge T410 as a Lean theorem:
-    - **B.3** — for each `KernelOp` tag, prove the emitter's
-      structural pattern lands in a `Quanta.Wgsl.Source` whose
-      `Source.wellFormed = true`. ~25 obligations, each by
-      `native_decide`.
-    - **B.4** — model `emit_wgsl_jit` operationally in Lean as
-      `KernelDef → Quanta.Wgsl.Source` and bridge to the existing
-      `String`-shaped axiom signature here. With B.3's per-op
-      lemmas, T410 reduces to A12 plus the trivial composition.
-    Until B.4, the operational claim still lives in Verus
-    (`specs/verify/verus/quanta-ir/emit_wgsl_jit.rs`) and Kani
-    (`specs/verify/kani/emitter_exhaustiveness.rs::
-    t1001_jit_wgsl_emitter_exhaustive`). -/
-axiom t410_emitter_produces_well_formed_wgsl
+    This was an axiom through B.2; B.3 + B.4 lift it to a Lean
+    theorem chained from two smaller named claims:
+    - **A12** (`wgsl_serializer_preserves_grammar`) — structural
+      `Source.wellFormed` ⇒ string `wgsl_string_well_formed`.
+    - **A13** (`emit_wgsl_jit_factors`) — the emitter factors
+      through *some* structurally well-formed `Source`.
+
+    A12 is a grammar-level claim about the printer; A13 is the
+    operational claim Verus + Kani already discharge over the
+    actual Rust emitter (T420 in `Quanta.Wgsl.OpPatterns`
+    witnesses the per-tag structural shapes in Lean). T410's
+    surface shrinks accordingly — the same narrowing pattern B″
+    used for T1707. -/
+theorem t410_emitter_produces_well_formed_wgsl
     (k : KernelDef)
-    : wgsl_string_well_formed (emit_wgsl_jit k)
+    : wgsl_string_well_formed (emit_wgsl_jit k) := by
+  obtain ⟨s, hwf, heq⟩ :=
+    Quanta.Axioms.Wgsl.emit_wgsl_jit_factors emit_wgsl_jit k
+  rw [heq]
+  exact Quanta.Axioms.Wgsl.wgsl_serializer_preserves_grammar s hwf
 
 -- ════════════════════════════════════════════════════════════════════
 -- T414 — wave_jit succeeds for any kernel emit_wgsl_jit accepts

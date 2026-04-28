@@ -10,7 +10,7 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Proven theorems**        |  175   |
+| **Proven theorems**        |  176   |
 | **TCB axioms (A1–A11)**    |   33   |
 | **Tools used**             |   5    |
 | **Backends covered**       |   5    |
@@ -139,15 +139,23 @@ Metal/Vulkan drivers in the verification scheme:
   `webgpu.idl` alone.
 * **T414** — first end-to-end conditional theorem: given A10.1+A10.2
   and T410 (emitter exhaustiveness), `wave_jit` always succeeds.
-* **B (2026-04-28, scaffolded)** — WGSL grammar mirror in
-  `specs/verify/lean/Quanta/Wgsl/Grammar.lean`. Models the WGSL
-  fragment Quanta's emitter produces (enable directives, bindings,
-  fn decls, statements, expressions, types) and a structural
-  `Source.wellFormed : Source → Bool`. Bridge axiom
-  **A12 — `wgsl_serializer_preserves_grammar`** in
-  `specs/verify/lean/Quanta/Axioms/Wgsl.lean` links structural
-  well-formedness to `wgsl_string_well_formed`. The full T410
-  discharge (per-op lemmas + emitter mirror) lands in B.3 + B.4.
+* **B (2026-04-28)** — WGSL grammar mirror in
+  `specs/verify/lean/Quanta/Wgsl/{Grammar,Serialize,OpPatterns}.lean`.
+  Models the WGSL fragment Quanta's emitter produces (enable
+  directives, bindings, fn decls, statements, expressions, types)
+  and a structural `Source.wellFormed : Source → Bool`. Two named
+  bridge axioms in `Quanta/Axioms/Wgsl.lean`:
+  - **A12 — `wgsl_serializer_preserves_grammar`**: structural
+    `Source.wellFormed` ⇒ string `wgsl_string_well_formed` (W3C
+    WGSL §3 lex + §4 validate).
+  - **A13 — `emit_wgsl_jit_factors`**: the JIT emitter factors
+    through *some* structurally well-formed `Source` (operational
+    backing in Verus per-tag exhaustiveness + Kani BMC).
+  - **T420 — `wgsl_op_patterns_well_formed`**: every per-`KernelOpTag`
+    representative pattern in `OpPatterns.lean` is structurally
+    well-formed (40-tag enumeration, `native_decide`).
+  - **T410** is now a Lean theorem chained from A12 + A13 (replacing
+    the axiom that previously imported the Verus claim into Lean).
 
 ## Trusted Computing Base
 

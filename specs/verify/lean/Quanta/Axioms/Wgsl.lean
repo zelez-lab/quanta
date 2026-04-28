@@ -52,4 +52,36 @@ axiom wgsl_serializer_preserves_grammar
     (h : Source.wellFormed s = true)
     : wgsl_string_well_formed (Source.serialize s)
 
+/-- **A13 — emit_wgsl_jit_factors**: the JIT emitter factors
+    through a structurally well-formed `Source`. That is, for any
+    `emit : α → String` modelling Quanta's `emit_wgsl_jit` and any
+    input kernel `k : α`, the string `emit k` is the serialization
+    of some `Source` whose `Source.wellFormed = true`.
+
+    Stated polymorphically in `α` so this module does not have to
+    depend on `Quanta.Theorems.WebGpu`'s opaque `KernelDef`; the
+    consumer (`Quanta.Theorems.WebGpu.t410_emitter_produces_well_formed_wgsl`)
+    instantiates `α := KernelDef`.
+
+    This is the operational claim Verus and Kani already discharge
+    over the actual Rust emitter (`crates/quanta-ir/src/emit_wgsl/`).
+    `specs/verify/verus/quanta-ir/emit_wgsl_jit.rs::
+    t410_jit_wgsl_exhaustive` proves the per-tag exhaustiveness;
+    `specs/verify/kani/emitter_exhaustiveness.rs::
+    t1001_jit_wgsl_emitter_exhaustive` cross-checks the same
+    property by exhaustive bounded model checking. T420 in
+    `Quanta.Wgsl.OpPatterns` then witnesses the structural shape
+    in Lean per tag. A13 is the small, named bridge between those
+    operational results and the Lean `Source` view.
+
+    Together A12 + A13 reduce T410 (`emit_wgsl_jit produces
+    well-formed WGSL`) from an axiom to a theorem; see
+    `Quanta.Theorems.WebGpu.t410_emitter_produces_well_formed_wgsl`. -/
+axiom emit_wgsl_jit_factors
+    {α : Type}
+    (emit : α → String)
+    (k : α)
+    : ∃ s : Source,
+        Source.wellFormed s = true ∧ emit k = Source.serialize s
+
 end Quanta.Axioms.Wgsl

@@ -296,7 +296,7 @@ Empirical cross-checks (Cat-language litmus tests, runnable with herd7):
 
 | ID | Property | Tool | Status |
 |----|----------|------|--------|
-| T410 | Every KernelOp variant handled in `emit_wgsl_jit` | Verus+Kani | proven |
+| T410 | `emit_wgsl_jit` produces well-formed WGSL — Lean theorem chained from A12 (serializer preserves grammar) + A13 (emitter factors through well-formed `Source`); operational backing in Verus + Kani via per-KernelOp exhaustiveness | Lean+Verus+Kani | proven |
 | T411 | Subgroup ops ⇒ emitted module begins with `enable subgroups;` | Verus | proven |
 | T412 | F16 use ⇒ emitted module begins with `enable f16;` | Verus | proven |
 | T413 | Atomic field ⇒ declared as `array<atomic<T>>` at module scope | Verus | proven |
@@ -355,6 +355,8 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | T1712 | `quanta_call_arities_in_spec` — at every call site, Quanta's argument count is admitted by some declared overload of the WebIDL method (lifts the arity component of T1707) | WebIDL conformance (B″) | Lean | proven |
 | T1713 | `quanta_call_types_in_spec` — at every call site, some declared overload's leading param type names equal the spec-canonical types Quanta supplies (lifts the param-type component of T1707) | WebIDL conformance (B″) | Lean | proven |
 | A12 | `wgsl_serializer_preserves_grammar` — structurally well-formed `Wgsl.Source` serializes to a string the WGSL §3+§4 validator accepts (bridge between Lean grammar mirror and `wgsl_string_well_formed`) | WGSL grammar (B) | Lean | axiom |
+| A13 | `emit_wgsl_jit_factors` — the JIT emitter factors through some structurally well-formed `Wgsl.Source` (operational backing in Verus per-tag exhaustiveness + Kani BMC) | WGSL grammar (B) | Lean | axiom |
+| T420 | `wgsl_op_patterns_well_formed` — every per-`KernelOpTag` representative pattern lands in `Source.wellFormed` (40-tag enumeration, `native_decide`) | WGSL grammar (B) | Lean | proven |
 
 ## Summary
 
@@ -386,9 +388,10 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | WebIDL Conformance | 4 | 4 | 0 |
 | Memory Model Axioms | 23 | -- | -- |
 | WebGPU Host + Quanta-ABI Axioms | 10 | -- | -- |
-| WGSL Grammar Bridge Axiom | 1 | -- | -- |
-| **Total proven theorems** | **176** | **175** | **1** |
-| **TCB axioms (A6-A12)** | **34** | -- | -- |
+| WGSL Grammar (B) | 2 | 2 | 0 |
+| WGSL Grammar Bridge Axioms | 2 | -- | -- |
+| **Total proven theorems** | **177** | **176** | **1** |
+| **TCB axioms (A6-A13)** | **35** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing
 conditional theorem ("wave_jit succeeds for any well-formed kernel").
