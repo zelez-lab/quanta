@@ -1203,26 +1203,110 @@ impl QGpuDevice for WebgpuDevice {
     ) -> Result<(), QuantaError> {
         Err(Self::err("WebGPU sparse textures not supported"))
     }
-    fn indirect_buffer_create(&self, _max_commands: u32) -> Result<u64, QuantaError> {
-        Err(Self::err("WebGPU indirect command buffers pending"))
+    // === Indirect command buffers (steps 032 + 033) ===
+    //
+    // W3C WebGPU has `GPURenderBundle` for the render path but does
+    // not expose compute bundles, so a native ICB lowering for
+    // compute is not available on this backend. We refine the
+    // proven `Quanta.Icb.execute` semantics (Lean T7000) by
+    // recording dispatches as snapshots and replaying them through
+    // `wave_dispatch` at execute time. The IR-level theorem is
+    // parametric in the per-command transformer, so this is
+    // observationally identical to a native bundle.
+
+    fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        let handle = self.state.alloc_handle();
+        self.state.icbs.0.borrow_mut().insert(
+            handle,
+            state::WebgpuIcb {
+                cap: max_commands,
+                commands: alloc::vec::Vec::with_capacity(max_commands as usize),
+            },
+        );
+        Ok(handle)
     }
+
     fn icb_record_dispatch(
         &self,
-        _handle: u64,
-        _index: u32,
-        _wave: &Wave,
-        _groups: [u32; 3],
+        handle: u64,
+        index: u32,
+        wave: &Wave,
+        groups: [u32; 3],
     ) -> Result<(), QuantaError> {
-        // TODO(032/033): WebGPU has GPURenderBundle for render but
-        // no compute bundles per W3C spec — compute ICB on WebGPU is
-        // out of scope. Render-bundle ICB is a future commit.
-        Err(Self::err("WebGPU compute ICB not in W3C spec"))
+        if wave.push_mask != 0 || wave.push_len != 0 {
+            return Err(Self::err(
+                "WebGPU ICB does not support push constants in this MVP",
+            ));
+        }
+        if wave.texture_count != 0 {
+            return Err(Self::err(
+                "WebGPU ICB does not support texture bindings in this MVP",
+            ));
+        }
+        let mut icbs = self.state.icbs.0.borrow_mut();
+        let icb = icbs
+            .get_mut(&handle)
+            .ok_or_else(|| Self::err("ICB handle not found"))?;
+        if index != icb.commands.len() as u32 {
+            return Err(Self::err("ICB record index must equal current length"));
+        }
+        if index >= icb.cap {
+            return Err(Self::err("ICB index >= capacity"));
+        }
+        icb.commands.push(state::WebgpuIcbCommand {
+            wave_handle: wave.handle,
+            bindings: wave.bindings,
+            binding_count: wave.binding_count,
+            workgroup_size: wave.workgroup_size,
+            groups,
+        });
+        Ok(())
     }
-    fn indirect_buffer_execute(&self, _handle: u64, _count: u32) -> Result<(), QuantaError> {
-        Err(Self::err("WebGPU indirect command buffers pending"))
+
+    fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
+        // Snapshot the recorded sequence under the borrow, then
+        // drop it before re-entering `wave_dispatch` (which takes
+        // its own borrow on `self.state.waves`).
+        let snapshot: alloc::vec::Vec<state::WebgpuIcbCommand> = {
+            let icbs = self.state.icbs.0.borrow();
+            let icb = icbs
+                .get(&handle)
+                .ok_or_else(|| Self::err("ICB handle not found"))?;
+            if count > icb.commands.len() as u32 {
+                return Err(Self::err("ICB execute count exceeds recorded length"));
+            }
+            icb.commands[..count as usize]
+                .iter()
+                .map(|r| state::WebgpuIcbCommand {
+                    wave_handle: r.wave_handle,
+                    bindings: r.bindings,
+                    binding_count: r.binding_count,
+                    workgroup_size: r.workgroup_size,
+                    groups: r.groups,
+                })
+                .collect()
+        };
+        for rec in &snapshot {
+            let wave = Wave {
+                handle: rec.wave_handle,
+                bindings: rec.bindings,
+                binding_count: rec.binding_count,
+                texture_bindings: [0; crate::api::wave::MAX_TEXTURES],
+                texture_count: 0,
+                push_data: [0; crate::api::wave::PUSH_DATA_CAP],
+                push_len: 0,
+                push_mask: 0,
+                workgroup_size: rec.workgroup_size,
+                drop_fn: None,
+            };
+            self.wave_dispatch(&wave, rec.groups)?;
+        }
+        Ok(())
     }
-    fn indirect_buffer_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
-        Err(Self::err("WebGPU indirect command buffers pending"))
+
+    fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.state.icbs.0.borrow_mut().remove(&handle);
+        Ok(())
     }
     fn bind_texture_array(&self, _textures: &[u64]) -> Result<u64, QuantaError> {
         Err(Self::err("WebGPU bindless pending"))

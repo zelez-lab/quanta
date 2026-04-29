@@ -49,6 +49,30 @@ pub(super) struct PipelineEntry {
     pub layout: u32,
 }
 
+/// One recorded dispatch for an ICB. Snapshots the wave + group
+/// counts at record time. Refines the abstract `Quanta.Icb.Command`
+/// from the Lean equivalence theorem.
+pub(super) struct WebgpuIcbCommand {
+    pub wave_handle: u64,
+    pub bindings: [u64; crate::api::wave::MAX_BINDINGS],
+    pub binding_count: u8,
+    pub workgroup_size: [u32; 3],
+    pub groups: [u32; 3],
+}
+
+/// One Indirect Command Buffer for the WebGPU driver.
+///
+/// W3C WebGPU has GPURenderBundle for the render path but does not
+/// expose compute bundles, so a "true" native ICB lowering is not
+/// available. This refinement records dispatches as snapshots and
+/// replays them via the existing wave_dispatch path at execute
+/// time — directly satisfying the Lean T7000 equivalence theorem
+/// that the typed API contract is parametric in.
+pub(super) struct WebgpuIcb {
+    pub cap: u32,
+    pub commands: alloc::vec::Vec<WebgpuIcbCommand>,
+}
+
 /// Thin newtype that promises `Send + Sync` for handle tables.
 ///
 /// SAFETY: this module is `cfg(target_arch = "wasm32")`-gated. wasm32
@@ -74,6 +98,8 @@ pub(super) struct State {
     /// Quanta u64 → JS GPUSampler handle.
     pub samplers: SendCell<BTreeMap<u64, u32>>,
     pub pipelines: SendCell<BTreeMap<u64, PipelineEntry>>,
+    /// Indirect Command Buffers (steps 032 + 033). See `WebgpuIcb`.
+    pub icbs: SendCell<BTreeMap<u64, WebgpuIcb>>,
 }
 
 impl State {
@@ -87,6 +113,7 @@ impl State {
             textures: SendCell::new(BTreeMap::new()),
             samplers: SendCell::new(BTreeMap::new()),
             pipelines: SendCell::new(BTreeMap::new()),
+            icbs: SendCell::new(BTreeMap::new()),
         }
     }
 
