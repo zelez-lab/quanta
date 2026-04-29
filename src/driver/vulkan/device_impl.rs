@@ -505,54 +505,127 @@ impl GpuDevice for VulkanDevice {
         Ok(())
     }
 
-    // === Indirect command buffers (M5.2) ===
+    // === Indirect command buffers (steps 032 + 033) ===
+    //
+    // Refines the Lean `Quanta.Icb.execute` semantics. The IR-level
+    // theorem (`T7000`) is parametric in the per-command transformer;
+    // here we instantiate that transformer as `wave_dispatch_impl`.
+    // Recording snapshots {wave, bindings, push, groups}; executing
+    // replays the first `count` snapshots in order on the live
+    // compute path.
+    //
+    // A "true" Vulkan implementation via secondary command buffers
+    // (vkBeginCommandBuffer with VK_COMMAND_BUFFER_LEVEL_SECONDARY +
+    // vkCmdExecuteCommands) is a perf optimization and a future
+    // commit; the proof contract is satisfied by either form.
 
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
-        // Vulkan indirect draw/dispatch is core (no extension needed).
-        // Each indirect draw command is 16 bytes (VkDrawIndirectCommand).
-        let size = max_commands as usize * 16;
-        let handle = self.field_alloc_impl(
-            size,
-            FieldUsage::READ
-                .union(FieldUsage::WRITE)
-                .union(FieldUsage::TRANSFER),
-        )?;
+        let handle = self.alloc_handle();
+        self.icbs
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::VkIcb {
+                    cap: max_commands,
+                    commands: Vec::with_capacity(max_commands as usize),
+                },
+            );
         Ok(handle)
     }
 
     fn icb_record_dispatch(
         &self,
-        _handle: u64,
-        _index: u32,
-        _wave: &Wave,
-        _groups: [u32; 3],
+        handle: u64,
+        index: u32,
+        wave: &Wave,
+        groups: [u32; 3],
     ) -> Result<(), QuantaError> {
-        // TODO(032/033): Implement via VK_EXT_device_generated_commands
-        // or secondary command buffers (vkBeginCommandBuffer with
-        // VK_COMMAND_BUFFER_LEVEL_SECONDARY) replayed via
-        // vkCmdExecuteCommands. The proven CPU path serves as the
-        // reference implementation in the meantime.
-        Err(QuantaError::invalid_param(
-            "Vulkan ICB record_dispatch not yet implemented (use CPU device for ICB)",
-        ))
-    }
-
-    fn indirect_buffer_execute(&self, handle: u64, _count: u32) -> Result<(), QuantaError> {
-        let buffers = self
-            .buffers
-            .read()
+        let mut icbs = self
+            .icbs
+            .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        if !buffers.contains_key(&handle) {
+        let icb = icbs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+        if index != icb.commands.len() as u32 {
             return Err(QuantaError::invalid_param(
-                "indirect command buffer handle not found",
+                "ICB record index must equal current length",
             ));
         }
-        // Full execution would use vkCmdDrawIndirectCount during a render pass.
+        if index >= icb.cap {
+            return Err(QuantaError::invalid_param("ICB index >= capacity"));
+        }
+        icb.commands.push(super::device::VkIcbCommand {
+            wave_handle: wave.handle,
+            bindings: wave.bindings,
+            binding_count: wave.binding_count,
+            push_data: wave.push_data,
+            push_len: wave.push_len,
+            push_mask: wave.push_mask,
+            workgroup_size: wave.workgroup_size,
+            groups,
+        });
+        Ok(())
+    }
+
+    fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
+        // Snapshot under the lock, then drop it before re-entering
+        // wave_dispatch_impl (which takes its own locks).
+        let snapshot: Vec<super::device::VkIcbCommand> = {
+            let icbs = self
+                .icbs
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let icb = icbs
+                .get(&handle)
+                .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+            if count > icb.commands.len() as u32 {
+                return Err(QuantaError::invalid_param(
+                    "ICB execute count exceeds recorded length",
+                ));
+            }
+            icb.commands[..count as usize]
+                .iter()
+                .map(|r| super::device::VkIcbCommand {
+                    wave_handle: r.wave_handle,
+                    bindings: r.bindings,
+                    binding_count: r.binding_count,
+                    push_data: r.push_data,
+                    push_len: r.push_len,
+                    push_mask: r.push_mask,
+                    workgroup_size: r.workgroup_size,
+                    groups: r.groups,
+                })
+                .collect()
+        };
+        for rec in &snapshot {
+            // Reconstruct a transient Wave from the snapshot. Drop is
+            // a no-op (drop_fn = None), so the underlying pipeline
+            // handle is not double-freed.
+            let wave = Wave {
+                handle: rec.wave_handle,
+                bindings: rec.bindings,
+                binding_count: rec.binding_count,
+                texture_bindings: [0; crate::api::wave::MAX_TEXTURES],
+                texture_count: 0,
+                push_data: rec.push_data,
+                push_len: rec.push_len,
+                push_mask: rec.push_mask,
+                workgroup_size: rec.workgroup_size,
+                drop_fn: None,
+            };
+            let mut pulse = self.wave_dispatch_impl(&wave, rec.groups)?;
+            pulse.wait()?;
+        }
         Ok(())
     }
 
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
-        self.field_free_impl(handle);
+        self.icbs
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
         Ok(())
     }
 

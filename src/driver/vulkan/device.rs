@@ -43,6 +43,32 @@ pub struct VulkanDevice {
     pub(super) staging_pool: Mutex<Vec<(ffi::VkBuffer, ffi::VkDeviceMemory, usize)>>,
     /// Cache of descriptor set layouts keyed by binding count — avoids re-creation.
     pub(super) layout_cache: Mutex<HashMap<u32, ffi::VkDescriptorSetLayout>>,
+    /// Indirect command buffers (steps 032 + 033). Stores recorded
+    /// dispatches that `indirect_buffer_execute` replays sequentially
+    /// on the same compute path used by `wave_dispatch`. The Lean
+    /// `T7000` equivalence theorem is parametric in the per-command
+    /// transformer, so this list-of-dispatches refinement satisfies
+    /// the proof contract on every Vulkan implementation.
+    pub(super) icbs: RwLock<HashMap<u64, VkIcb>>,
+}
+
+/// State for one Vulkan ICB.
+pub(super) struct VkIcb {
+    pub(super) cap: u32,
+    pub(super) commands: Vec<VkIcbCommand>,
+}
+
+/// One recorded dispatch — snapshots the wave + group counts at
+/// record time so later wave mutations don't affect the recording.
+pub(super) struct VkIcbCommand {
+    pub(super) wave_handle: u64,
+    pub(super) bindings: [u64; crate::api::wave::MAX_BINDINGS],
+    pub(super) binding_count: u8,
+    pub(super) push_data: [u8; crate::api::wave::PUSH_DATA_CAP],
+    pub(super) push_len: u16,
+    pub(super) push_mask: u16,
+    pub(super) workgroup_size: [u32; 3],
+    pub(super) groups: [u32; 3],
 }
 
 pub(super) struct VkQueryPool {
@@ -605,6 +631,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             descriptor_pool_cache: Mutex::new(Vec::new()),
             staging_pool: Mutex::new(Vec::new()),
             layout_cache: Mutex::new(HashMap::new()),
+            icbs: RwLock::new(HashMap::new()),
         }));
 
         break; // Use first suitable device
