@@ -195,29 +195,71 @@ theorem blellochTree_toList_length (t : PTree) :
 -- downstream theorems that depend on these are also marked rotted
 -- below and tracked under the "Lean toolchain re-prove" backlog.
 
-/-- get! distributes over append (left). -/
+/-- get! distributes over append (left). Closed by induction on `xs`. -/
 theorem get!_append_left {xs ys : List Nat} {i : Nat}
-    (_h : i < xs.length) :
+    (h : i < xs.length) :
     (xs ++ ys).get! i = xs.get! i := by
-  sorry
+  induction xs generalizing i with
+  | nil => simp at h
+  | cons x xs' ih =>
+      match i with
+      | 0 => rfl
+      | i'+1 =>
+          simp only [List.cons_append, List.length_cons] at h ⊢
+          show (xs' ++ ys).get! i' = xs'.get! i'
+          exact ih (by omega)
 
-/-- get! distributes over append (right). -/
+/-- get! distributes over append (right). Closed by induction on `xs`. -/
 theorem get!_append_right {xs ys : List Nat} {i : Nat}
-    (_h : i ≥ xs.length) :
+    (h : i ≥ xs.length) :
     (xs ++ ys).get! i = ys.get! (i - xs.length) := by
-  sorry
+  induction xs generalizing i with
+  | nil => simp
+  | cons x xs' ih =>
+      match i with
+      | 0 =>
+          simp only [List.length_cons] at h
+          omega
+      | i'+1 =>
+          simp only [List.cons_append, List.length_cons] at h ⊢
+          show (xs' ++ ys).get! i' = ys.get! (i'+1 - (xs'.length + 1))
+          rw [show (i'+1 - (xs'.length + 1)) = (i' - xs'.length) by omega]
+          exact ih (by omega)
 
-/-- take from append, i <= left length. -/
+/-- take from append, i <= left length. Closed by induction. -/
 theorem List.take_append_of_le {xs ys : List Nat} {i : Nat}
-    (_h : i ≤ xs.length) :
+    (h : i ≤ xs.length) :
     (xs ++ ys).take i = xs.take i := by
-  sorry
+  induction xs generalizing i with
+  | nil =>
+      simp only [List.length_nil] at h
+      have : i = 0 := by omega
+      subst this
+      simp
+  | cons x xs' ih =>
+      match i with
+      | 0 => simp
+      | i'+1 =>
+          simp only [List.cons_append, List.length_cons, List.take] at h ⊢
+          congr 1
+          exact ih (by omega)
 
-/-- take from append, i >= left length. -/
+/-- take from append, i >= left length. Closed by induction. -/
 theorem List.take_append_ge {xs ys : List Nat} {i : Nat}
-    (_h : i ≥ xs.length) :
+    (h : i ≥ xs.length) :
     (xs ++ ys).take i = xs ++ ys.take (i - xs.length) := by
-  sorry
+  induction xs generalizing i with
+  | nil => simp
+  | cons x xs' ih =>
+      match i with
+      | 0 =>
+          simp only [List.length_cons] at h
+          omega
+      | i'+1 =>
+          simp only [List.cons_append, List.length_cons, List.take] at h ⊢
+          rw [show (i'+1 - (xs'.length + 1)) = (i' - xs'.length) by omega]
+          congr 1
+          exact ih (by omega)
 
 -- =====================================================================
 -- Section 7: T903 — Up-sweep correctness (fully proven)
@@ -249,19 +291,57 @@ theorem t903_upsweep_sum (t : PTree) :
 -- =====================================================================
 
 /-- **T904 core lemma**: After downSweepTree with accumulator `acc`,
-    the i-th leaf holds `acc + prefixSum(toList t, i)`.
-
-    ⚠️ PROOF ROT: this proof relied on `get!_append_left`,
-    `get!_append_right`, `List.take_append_of_le`,
-    `List.take_append_ge` (sorried above) and on simp-normal forms
-    that shifted in Lean 4.16. The structural-induction *strategy*
-    is correct; reconstructing the term-level proof against the
-    current normal form is on the Lean re-prove backlog. -/
+    the i-th leaf holds `acc + prefixSum(toList t, i)`. Closed via
+    structural induction on `t` against the (now-proven) list-append
+    helpers `get!_append_left`/`get!_append_right` /
+    `List.take_append_of_le`/`List.take_append_ge`. -/
 theorem downSweepTree_correct (t : PTree) (acc : Nat) :
     ∀ i, i < t.size →
     (downSweepTree t acc).toList.get! i =
       acc + prefixSum t.toList i := by
-  sorry
+  induction t generalizing acc with
+  | leaf v =>
+      intro i hi
+      have h_i : i = 0 := by
+        simp [PTree.size] at hi
+        omega
+      subst h_i
+      simp [downSweepTree_leaf, PTree.toList, List.get!, prefixSum]
+  | node l r ihl ihr =>
+      intro i hi
+      rw [downSweepTree_node]
+      show ((downSweepTree l acc).toList ++
+              (downSweepTree r (acc + (upSweepTree l).2)).toList).get! i =
+           acc + prefixSum (l.toList ++ r.toList) i
+      simp [PTree.size] at hi
+      have h_lsum : (upSweepTree l).2 = listSum l.toList := by
+        rw [upSweepTree_sum, PTree.treeSum_eq_listSum]
+      have h_l_len : (downSweepTree l acc).toList.length = l.toList.length := by
+        rw [PTree.toList_length, downSweepTree_size, ← PTree.toList_length]
+      by_cases h_i : i < l.size
+      · -- Left half: index falls inside l's leaves.
+        have h_i_len : i < (downSweepTree l acc).toList.length := by
+          rw [h_l_len, PTree.toList_length]; exact h_i
+        rw [get!_append_left h_i_len]
+        rw [ihl acc i h_i]
+        congr 1
+        rw [prefixSum, prefixSum, List.take_append_of_le]
+        rw [PTree.toList_length]
+        omega
+      · -- Right half: index falls inside r's leaves.
+        have h_i_ge : i ≥ l.size := Nat.not_lt.mp h_i
+        have h_i' : i - l.size < r.size := by omega
+        have h_ge : i ≥ (downSweepTree l acc).toList.length := by
+          rw [h_l_len, PTree.toList_length]; exact h_i_ge
+        rw [get!_append_right h_ge]
+        rw [show (downSweepTree l acc).toList.length = l.size from by
+              rw [PTree.toList_length, downSweepTree_size]]
+        rw [ihr (acc + (upSweepTree l).2) (i - l.size) h_i']
+        rw [h_lsum]
+        unfold prefixSum
+        rw [List.take_append_ge (by rw [PTree.toList_length]; exact h_i_ge)]
+        rw [PTree.toList_length, listSum_append]
+        omega
 
 /-- **T904**: After blellochTree (acc = 0), every leaf holds the
     exclusive prefix sum. -/
@@ -457,7 +537,12 @@ theorem flat_eq_tree_1 (a : Nat) :
 theorem flat_eq_tree_2 (a b : Nat) :
     flatBlellochScan [a, b] 1 =
     (blellochTree (.node (.leaf a) (.leaf b))).toList := by
-  sorry
+  -- LHS reduces to [0, a]; RHS reduces to [0, a].
+  simp [flatBlellochScan, flatUpSweep, flatUpStep, flatClearLast,
+        flatDownSweep, flatDownStep, List.range, List.range.loop,
+        List.set, List.get!,
+        blellochTree, downSweepTree, PTree.toList,
+        upSweepTree, upSweepTree_snd_leaf]
 
 -- Concrete verification via native_decide
 example : flatBlellochScan [42] 0 = [0] := by native_decide
@@ -481,11 +566,15 @@ example : (blellochTree (PTree.fromList [1,2,3,4,5,6,7,8] 3)).toList
 -- proof of the same fact is stale.
 theorem flat_scan_2 (a b : Nat) :
     flatBlellochScan [a, b] 1 = [0, a] := by
-  sorry
+  simp [flatBlellochScan, flatUpSweep, flatUpStep, flatClearLast,
+        flatDownSweep, flatDownStep, List.range, List.range.loop,
+        List.set, List.get!]
 
 theorem flat_scan_4 (a b c d : Nat) :
     flatBlellochScan [a, b, c, d] 2 = [0, a, a + b, a + b + c] := by
-  sorry
+  simp [flatBlellochScan, flatUpSweep, flatUpStep, flatClearLast,
+        flatDownSweep, flatDownStep, List.range, List.range.loop,
+        List.set, List.get!, Nat.add_comm]
 
 -- =====================================================================
 -- Section 15: IsExclusiveScan for the flat model
@@ -528,7 +617,11 @@ theorem flat_eq_tree_4 (a b c d : Nat) :
     flatBlellochScan [a, b, c, d] 2 =
     (blellochTree (.node (.node (.leaf a) (.leaf b))
                         (.node (.leaf c) (.leaf d)))).toList := by
-  sorry
+  simp [flatBlellochScan, flatUpSweep, flatUpStep, flatClearLast,
+        flatDownSweep, flatDownStep, List.range, List.range.loop,
+        List.set, List.get!,
+        blellochTree, downSweepTree, PTree.toList,
+        upSweepTree, upSweepTree_snd_leaf, Nat.add_comm]
 
 /-- Flat scan correctness for n=4 (symbolic). -/
 theorem t900_flat_4 (a b c d : Nat) :
