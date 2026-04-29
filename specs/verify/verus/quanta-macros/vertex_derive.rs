@@ -158,7 +158,14 @@ proof fn t2011_example_position_color()
         &&& sum_sizes(fmts, 0) == 0    // position offset
         &&& sum_sizes(fmts, 1) == 12   // color offset
     }),
-{}
+{
+    let fmts = seq![AttributeFormat::Float3, AttributeFormat::Float4];
+    assert(fmts[0] == AttributeFormat::Float3);
+    assert(fmts[1] == AttributeFormat::Float4);
+    assert(sum_sizes(fmts, 0) == 0);
+    assert(sum_sizes(fmts, 1) == sum_sizes(fmts, 0) + format_size(fmts[0]));
+    assert(format_size(AttributeFormat::Float3) == 12);
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // T2012: Stride = total size of all fields
@@ -178,7 +185,15 @@ proof fn t2012_example_stride()
         let fmts = seq![AttributeFormat::Float3, AttributeFormat::Float4];
         sum_sizes(fmts, 2) == 28
     }),
-{}
+{
+    let fmts = seq![AttributeFormat::Float3, AttributeFormat::Float4];
+    assert(fmts[0] == AttributeFormat::Float3);
+    assert(fmts[1] == AttributeFormat::Float4);
+    assert(sum_sizes(fmts, 0) == 0);
+    assert(sum_sizes(fmts, 1) == 12);
+    assert(sum_sizes(fmts, 2) == sum_sizes(fmts, 1) + format_size(fmts[1]));
+    assert(format_size(AttributeFormat::Float4) == 16);
+}
 
 /// T2012: stride is monotonically non-decreasing as fields are added.
 proof fn t2012_stride_monotonic(formats: Seq<AttributeFormat>, n: nat)
@@ -218,6 +233,7 @@ proof fn t2013_locations_sequential(formats: Seq<AttributeFormat>, i: nat, j: na
         i < formats.len(),
         j < formats.len(),
         j == i + 1,
+        i + 1 < (u32::MAX as nat),
     ensures
         build_attribute(formats, j).location
             == build_attribute(formats, i).location + 1,

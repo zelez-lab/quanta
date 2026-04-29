@@ -39,13 +39,20 @@ theorem quark_id_unique (_d : Dispatch) (id : Nat) :
   intro _h
   exact ⟨id, rfl, fun q' h_q' => h_q' ▸ rfl⟩
 
-/-- Each quark's local ID is in [0, workgroup_size). -/
-axiom proton_id_range (d : Dispatch) (lid : Nat) :
-  lid < d.wg.quarks
+/-- Each quark's local ID is in [0, workgroup_size). The argument
+    is type-enforced as `Fin d.wg.quarks`, so the bound holds by
+    construction — no axiom needed. The previous shape claimed
+    `∀ lid : Nat, lid < d.wg.quarks` which is provably false for
+    `lid = d.wg.quarks`; this reformulation captures the intended
+    contract (the ID *is* a thread index in the workgroup) without
+    a soundness gap. -/
+theorem proton_id_range (d : Dispatch) (lid : Fin d.wg.quarks) :
+    lid.val < d.wg.quarks := lid.isLt
 
-/-- Each workgroup ID is in [0, groups). -/
-axiom nucleus_id_range (d : Dispatch) (gid : Nat) :
-  gid < d.groups
+/-- Each workgroup ID is in [0, groups). Same Fin-based
+    type-enforced reformulation as `proton_id_range`. -/
+theorem nucleus_id_range (d : Dispatch) (gid : Fin d.groups) :
+    gid.val < d.groups := gid.isLt
 
 -- ── Barrier semantics ──────────────────────────────────────────────
 

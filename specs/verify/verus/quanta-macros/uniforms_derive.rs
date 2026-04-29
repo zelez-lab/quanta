@@ -30,7 +30,9 @@ pub open spec fn field_wf(f: UniformFieldMeta) -> bool {
     &&& f.size > 0
     &&& f.align > 0
     // alignment is power of 2
-    &&& f.align == 1 || f.align == 2 || f.align == 4 || f.align == 8
+    &&& (f.align == 1 || f.align == 2 || f.align == 4 || f.align == 8)
+    // size is a multiple of alignment (natural alignment, repr(C) GPU types)
+    &&& f.size % f.align == 0
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -77,16 +79,36 @@ pub open spec fn compute_total_size(fields: Seq<UniformFieldMeta>) -> nat {
 // T2020: GPU_SIZE matches sum of field sizes
 // ════════════════════════════════════════════════════════════════════════
 
+/// Helper: when offset is already aligned, `align_up` returns it unchanged.
+proof fn align_up_when_aligned(offset: nat, align: nat)
+    requires
+        align > 0,
+        offset % align == 0,
+    ensures align_up(offset, align) == offset,
+{}
+
 /// T2020: For a single field, GPU_SIZE = field.size.
+/// Requires `field_wf` (which now includes `size % align == 0`).
 proof fn t2020_single_field(f: UniformFieldMeta)
     requires field_wf(f),
     ensures ({
         let fields = seq![f];
         compute_total_size(fields) == f.size
     }),
-{}
+{
+    let fields = seq![f];
+    assert(fields.len() == 1);
+    assert(fields[0] == f);
+    assert(compute_offset(fields, 0) == 0);
+    assert(compute_offset(fields, 1) == align_up(0 + f.size, f.align));
+    assert((0 + f.size) % f.align == 0);
+    align_up_when_aligned((0 + f.size) as nat, f.align);
+    assert(compute_offset(fields, 1) == f.size);
+    assert(compute_total_size(fields) == compute_offset(fields, 1));
+}
 
-/// T2020: Adding a field increases total size.
+/// T2020: Adding a field increases total size. The added field's
+/// size + alignment padding is non-negative.
 proof fn t2020_size_grows_with_fields(
     fields: Seq<UniformFieldMeta>,
     extra: UniformFieldMeta,
@@ -98,7 +120,53 @@ proof fn t2020_size_grows_with_fields(
         let extended = fields.push(extra);
         compute_total_size(extended) >= compute_total_size(fields)
     }),
+{
+    // compute_total_size(extended) = compute_offset(extended, extended.len())
+    // extended.len() = fields.len() + 1
+    // compute_offset(extended, fields.len() + 1) = align_up(
+    //     compute_offset(extended, fields.len()) + extra.size,
+    //     extra.align)
+    // align_up(x, y) >= x for y > 0.
+    // compute_offset(extended, fields.len()) == compute_offset(fields, fields.len())
+    //   because compute_offset only inspects fields[0..fields.len()-1].
+    let extended = fields.push(extra);
+    assert(extended.len() == fields.len() + 1);
+    assert(extended[fields.len() as int] == extra);
+    // The recursive call on `extended` at `fields.len()` reads only
+    // indices 0..fields.len()-1, which equal fields's contents.
+    compute_offset_extends(fields, extra, fields.len());
+    align_up_grows(
+        compute_offset(extended, fields.len()) + extra.size,
+        extra.align,
+    );
+}
+
+/// Helper: align_up(x, a) ≥ x for any a > 0.
+proof fn align_up_grows(offset: nat, align: nat)
+    requires align > 0,
+    ensures align_up(offset, align) >= offset,
 {}
+
+/// Helper: extending a sequence doesn't change `compute_offset`
+/// at the original prefix.
+proof fn compute_offset_extends(
+    fields: Seq<UniformFieldMeta>,
+    extra: UniformFieldMeta,
+    n: nat,
+)
+    requires n <= fields.len(),
+    ensures compute_offset(fields.push(extra), n) == compute_offset(fields, n),
+    decreases n,
+{
+    if n == 0 {
+        // base case: both = 0
+    } else {
+        compute_offset_extends(fields, extra, (n - 1) as nat);
+        // fields.push(extra)[(n-1) as int] == fields[(n-1) as int]
+        // since (n-1) < fields.len() ≤ fields.push(extra).len() - 1.
+        assert(fields.push(extra)[(n - 1) as int] == fields[(n - 1) as int]);
+    }
+}
 
 /// T2020 example: two f32 fields → size = 8.
 proof fn t2020_example_two_f32()
@@ -107,7 +175,20 @@ proof fn t2020_example_two_f32()
         let fields = seq![f, f];
         compute_total_size(fields) == 8
     }),
-{}
+{
+    let f = UniformFieldMeta { name: 0, size: 4, align: 4 };
+    let fields = seq![f, f];
+    assert(fields.len() == 2);
+    assert(fields[0] == f);
+    assert(fields[1] == f);
+    // Chain the unfolds.
+    assert(compute_offset(fields, 0) == 0);
+    align_up_when_aligned(4nat, 4nat);
+    assert(compute_offset(fields, 1) == 4);
+    align_up_when_aligned(8nat, 4nat);
+    assert(compute_offset(fields, 2) == 8);
+    assert(compute_total_size(fields) == compute_offset(fields, 2));
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // T2021: GPU_FIELDS contains all fields in declaration order

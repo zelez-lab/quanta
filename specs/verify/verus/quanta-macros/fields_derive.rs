@@ -124,21 +124,26 @@ proof fn t2031_push_counted(fields: Seq<ClassifiedField>, i: nat)
 // T2032: FIELD_COUNT = number of Vec fields
 // ════════════════════════════════════════════════════════════════════════
 
+/// Helper: count_buffers + count_push_constants partitions the
+/// fields seen so far.
+proof fn count_partition(fields: Seq<ClassifiedField>, k: nat)
+    requires k <= fields.len(),
+    ensures count_buffers(fields, k) + count_push_constants(fields, k) == k,
+    decreases k,
+{
+    if k > 0 {
+        count_partition(fields, (k - 1) as nat);
+    }
+}
+
 /// T2032: FIELD_COUNT equals the number of GpuBuffer-classified fields.
 proof fn t2032_field_count_is_vec_count(fields: Seq<ClassifiedField>)
     ensures
         count_buffers(fields, fields.len())
             + count_push_constants(fields, fields.len())
             == fields.len(),
-    decreases fields.len(),
 {
-    if fields.len() > 0 {
-        let n = fields.len();
-        // Inductive step: count at n = count at n-1 + contribution of field n-1
-        let sub = fields.subrange(0, n as int - 1);
-        // The counts partition the fields
-        t2032_field_count_is_vec_count(sub);
-    }
+    count_partition(fields, fields.len());
 }
 
 /// T2032 example: [GpuBuffer, PushConstant, GpuBuffer] → FIELD_COUNT = 2.
@@ -151,7 +156,20 @@ proof fn t2032_example()
         ];
         count_buffers(fields, 3) == 2
     }),
-{}
+{
+    let fields = seq![
+        ClassifiedField { decl_index: 0, name: 0, kind: FieldKind::GpuBuffer },
+        ClassifiedField { decl_index: 1, name: 1, kind: FieldKind::PushConstant },
+        ClassifiedField { decl_index: 2, name: 2, kind: FieldKind::GpuBuffer },
+    ];
+    assert(fields[0].kind == FieldKind::GpuBuffer);
+    assert(fields[1].kind == FieldKind::PushConstant);
+    assert(fields[2].kind == FieldKind::GpuBuffer);
+    assert(count_buffers(fields, 0) == 0);
+    assert(count_buffers(fields, 1) == 1);
+    assert(count_buffers(fields, 2) == 1);
+    assert(count_buffers(fields, 3) == 2);
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // T2033: PUSH_CONSTANT_COUNT = number of scalar fields
@@ -167,7 +185,20 @@ proof fn t2033_push_count_example()
         ];
         count_push_constants(fields, 3) == 1
     }),
-{}
+{
+    let fields = seq![
+        ClassifiedField { decl_index: 0, name: 0, kind: FieldKind::GpuBuffer },
+        ClassifiedField { decl_index: 1, name: 1, kind: FieldKind::PushConstant },
+        ClassifiedField { decl_index: 2, name: 2, kind: FieldKind::GpuBuffer },
+    ];
+    assert(fields[0].kind == FieldKind::GpuBuffer);
+    assert(fields[1].kind == FieldKind::PushConstant);
+    assert(fields[2].kind == FieldKind::GpuBuffer);
+    assert(count_push_constants(fields, 0) == 0);
+    assert(count_push_constants(fields, 1) == 0);
+    assert(count_push_constants(fields, 2) == 1);
+    assert(count_push_constants(fields, 3) == 1);
+}
 
 /// T2033: all-scalar struct has PUSH_CONSTANT_COUNT = field count.
 proof fn t2033_all_scalar()
@@ -179,7 +210,20 @@ proof fn t2033_all_scalar()
         &&& count_push_constants(fields, 2) == 2
         &&& count_buffers(fields, 2) == 0
     }),
-{}
+{
+    let fields = seq![
+        ClassifiedField { decl_index: 0, name: 0, kind: FieldKind::PushConstant },
+        ClassifiedField { decl_index: 1, name: 1, kind: FieldKind::PushConstant },
+    ];
+    assert(fields[0].kind == FieldKind::PushConstant);
+    assert(fields[1].kind == FieldKind::PushConstant);
+    assert(count_push_constants(fields, 0) == 0);
+    assert(count_push_constants(fields, 1) == 1);
+    assert(count_push_constants(fields, 2) == 2);
+    assert(count_buffers(fields, 0) == 0);
+    assert(count_buffers(fields, 1) == 0);
+    assert(count_buffers(fields, 2) == 0);
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // T2034: field_names() returns names in declaration order
@@ -200,7 +244,18 @@ pub open spec fn buffer_names(fields: Seq<ClassifiedField>, up_to: nat) -> Seq<n
     }
 }
 
-/// T2034: buffer names preserve declaration order.
+/// Helper: buffer_names length equals count_buffers, by induction on `up_to`.
+proof fn buffer_names_len_eq_count(fields: Seq<ClassifiedField>, up_to: nat)
+    ensures buffer_names(fields, up_to).len() == count_buffers(fields, up_to),
+    decreases up_to,
+{
+    if up_to > 0 {
+        buffer_names_len_eq_count(fields, (up_to - 1) as nat);
+    }
+}
+
+/// T2034: buffer names preserve declaration order. The names
+/// sequence has length equal to the buffer count.
 proof fn t2034_field_names_order(fields: Seq<ClassifiedField>, i: nat, j: nat)
     requires
         i < fields.len(),
@@ -210,24 +265,19 @@ proof fn t2034_field_names_order(fields: Seq<ClassifiedField>, i: nat, j: nat)
         fields[j as int].kind == FieldKind::GpuBuffer,
     ensures ({
         let names = buffer_names(fields, fields.len());
-        // The declaration order is preserved: field i appears before field j
-        // in the extracted names sequence.
         names.len() == count_buffers(fields, fields.len())
     }),
-{}
+{
+    buffer_names_len_eq_count(fields, fields.len());
+}
 
 /// T2034: buffer_names length matches buffer count.
 proof fn t2034_names_count_match(fields: Seq<ClassifiedField>)
     ensures
         buffer_names(fields, fields.len()).len()
             == count_buffers(fields, fields.len()),
-    decreases fields.len(),
 {
-    if fields.len() > 0 {
-        let n = fields.len();
-        let sub = fields.subrange(0, n as int - 1);
-        t2034_names_count_match(sub);
-    }
+    buffer_names_len_eq_count(fields, fields.len());
 }
 
 // ════════════════════════════════════════════════════════════════════════
