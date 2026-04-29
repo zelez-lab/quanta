@@ -1,7 +1,7 @@
-//! Counter: N quarks each `atomic_add(&counter, 1)`.
+//! Counter: N quarks each `atomic_add(&ctr, 1)`.
 //!
 //! Integer kernel. Bit-exact tolerance: every backend must produce
-//! `counter[0] == N` regardless of dispatch order. The atomicity of
+//! `ctr[0] == N` regardless of dispatch order. The atomicity of
 //! `AtomicOp::Add` is the load-bearing property — a non-atomic
 //! increment would race and produce a value < N. Differential
 //! agreement here is the empirical complement to the 055 / 056
@@ -22,11 +22,10 @@ pub fn run_reference() -> RawOutput {
     }
 }
 
-#[cfg(feature = "software")]
-pub fn run_software() -> RawOutput {
+#[cfg(any(feature = "software", feature = "metal"))]
+fn build_def() -> quanta::kernel::KernelDef {
     use quanta::kernel::*;
-
-    let def = KernelDef {
+    KernelDef {
         name: "counter".into(),
         params: vec![KernelParam::FieldWrite {
             // Field name must differ from the kernel name — WGSL
@@ -64,21 +63,35 @@ pub fn run_software() -> RawOutput {
         workgroup_size: [64, 1, 1],
         subgroup_size: None,
         dynamic_shared_bytes: 0,
-    };
+    }
+}
 
-    let gpu = quanta::init_cpu();
-    let fcounter = gpu.field::<u32>(1).unwrap();
-    fcounter.write(&[0u32]).unwrap();
+#[cfg(any(feature = "software", feature = "metal"))]
+fn dispatch_on(gpu: &quanta::Gpu, lane: Lane) -> RawOutput {
+    let def = build_def();
+    let fctr = gpu.field::<u32>(1).unwrap();
+    fctr.write(&[0u32]).unwrap();
 
     let bytes = quanta_ir::serialize_kernel(&def);
     let mut wave = gpu.wave_jit(&bytes).unwrap();
-    wave.bind(0, &fcounter);
+    wave.bind(0, &fctr);
     let mut pulse = gpu.dispatch(&wave, N).unwrap();
     pulse.wait().unwrap();
 
     RawOutput {
-        lane: Lane::Software,
+        lane,
         kernel: NAME,
-        values: RawValues::U32(fcounter.read().unwrap()),
+        values: RawValues::U32(fctr.read().unwrap()),
     }
+}
+
+#[cfg(feature = "software")]
+pub fn run_software() -> RawOutput {
+    dispatch_on(&quanta::init_cpu(), Lane::Software)
+}
+
+#[cfg(feature = "metal")]
+pub fn run_metal() -> RawOutput {
+    let gpu = quanta::init().expect("metal lane requires a metal-capable device");
+    dispatch_on(&gpu, Lane::Metal)
 }

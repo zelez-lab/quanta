@@ -9,6 +9,8 @@ pub enum Lane {
     Reference,
     #[cfg(feature = "software")]
     Software,
+    #[cfg(feature = "metal")]
+    Metal,
 }
 
 impl Lane {
@@ -17,6 +19,8 @@ impl Lane {
             Lane::Reference => "reference",
             #[cfg(feature = "software")]
             Lane::Software => "software",
+            #[cfg(feature = "metal")]
+            Lane::Metal => "metal",
         }
     }
 }

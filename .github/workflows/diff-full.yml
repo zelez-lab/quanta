@@ -1,0 +1,57 @@
+name: Differential CI (full lanes)
+
+# Step D.5 of step 077. Runs the differential test suite with the
+# Metal lane enabled, on top of the software lane that already runs
+# per-PR via `ci.yml`. This is the empirical complement to the 055 /
+# 056 memory-model axioms: every observed Metal output must agree
+# with the pure-Rust reference within tolerance (≤ 1 ULP for floats,
+# bit-exact for ints).
+#
+# Triggers:
+#   - `schedule`: nightly cron @ 07:00 UTC
+#   - `workflow_dispatch`: manual button in the Actions tab
+#   - `pull_request` with the `run-full-diff` label applied
+#
+# We don't run on every PR because the macOS-14 minutes budget is
+# tight; opt-in via the label gives the option to exercise the full
+# matrix on PRs that touch IR / emitter / driver code.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize, opened, reopened]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  diff-metal:
+    # Skip on labeled PRs unless the label is `run-full-diff`. Schedule /
+    # workflow_dispatch always run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'run-full-diff')
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-14-cargo-diff-full-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-14-cargo-diff-full-
+            macos-14-cargo-
+
+      - name: Differential tests (software + metal lanes)
+        run: cargo test --test differential --features software,metal

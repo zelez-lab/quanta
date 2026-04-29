@@ -33,13 +33,10 @@ pub fn run_reference() -> RawOutput {
     }
 }
 
-#[cfg(feature = "software")]
-pub fn run_software() -> RawOutput {
+#[cfg(any(feature = "software", feature = "metal"))]
+fn build_def() -> quanta::kernel::KernelDef {
     use quanta::kernel::*;
-
-    let data = inputs();
-
-    let def = KernelDef {
+    KernelDef {
         name: "reduce_sum".into(),
         params: vec![
             KernelParam::FieldRead {
@@ -130,9 +127,14 @@ pub fn run_software() -> RawOutput {
         workgroup_size: [N, 1, 1],
         subgroup_size: None,
         dynamic_shared_bytes: 0,
-    };
+    }
+}
 
-    let gpu = quanta::init_cpu();
+#[cfg(any(feature = "software", feature = "metal"))]
+fn dispatch_on(gpu: &quanta::Gpu, lane: Lane) -> RawOutput {
+    let data = inputs();
+    let def = build_def();
+
     let fdata = gpu.field::<u32>(N as usize).unwrap();
     let fout = gpu.field::<u32>(1).unwrap();
     fdata.write(&data).unwrap();
@@ -146,8 +148,19 @@ pub fn run_software() -> RawOutput {
     pulse.wait().unwrap();
 
     RawOutput {
-        lane: Lane::Software,
+        lane,
         kernel: NAME,
         values: RawValues::U32(fout.read().unwrap()),
     }
+}
+
+#[cfg(feature = "software")]
+pub fn run_software() -> RawOutput {
+    dispatch_on(&quanta::init_cpu(), Lane::Software)
+}
+
+#[cfg(feature = "metal")]
+pub fn run_metal() -> RawOutput {
+    let gpu = quanta::init().expect("metal lane requires a metal-capable device");
+    dispatch_on(&gpu, Lane::Metal)
 }
