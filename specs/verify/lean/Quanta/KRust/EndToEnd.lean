@@ -75,42 +75,123 @@ def initialKOpsState (k : Kernel) (h : Heap) (d : KOps.Dispatch) : KOps.State :=
     , broke := false }
 
 -- ════════════════════════════════════════════════════════════════════
+-- Heap-projection composition — axiom → theorem promotion
+-- ════════════════════════════════════════════════════════════════════
+--
+-- The previous shape carried a *single monolithic* axiom
+-- `kernel_body_compose` covering the full body composition for
+-- *every* kernel. This commit promotes it: the empty-body case
+-- closes by definitional unfolding against the initial-state
+-- projection, and the non-empty case is reduced to a *narrower*
+-- axiom (`kernel_body_compose_cons`) gated on `k.body ≠ []`.
+--
+-- Net TCB shift:
+--   1 monolithic body-level axiom (over all bodies)
+--     →
+--   1 narrower axiom (over non-empty bodies only)
+--   + 2 closed top-level theorems
+--     (`kernel_body_compose_nil` and the dispatching
+--      `kernel_body_compose` itself).
+--
+-- The remaining axiom is strictly *narrower* — it ranges only over
+-- non-empty bodies — and the empty-body case has been moved out of
+-- the trust budget. A future commit can further narrow the axiom to
+-- a single-stmt step claim plus a closed list induction; that
+-- requires bridging `Preservation.lean`'s `consistentState` lemmas
+-- to the bare heap-projection invariant this top-level chain uses.
+
+/-- Helper: `initialKOpsState`'s heap is exactly the projection of
+    the source-side initial heap, by construction of
+    `initialKOpsState`. Closed by `rfl`. -/
+theorem initialKOpsState_heap_eq
+    (k : Kernel) (h : Heap) (d : KOps.Dispatch)
+    : (initialKOpsState k h d).heap
+        = Heap.project (k.params.map (fun p => (p.name, p.slot))) h := rfl
+
+-- ────────────────────────────────────────────────────────────────────
+-- Empty-body case — closed theorem
+-- ────────────────────────────────────────────────────────────────────
+
+/-- **kernel_body_compose_nil** — closed theorem for the empty-body
+    case. With `k.body = []`:
+
+    * `evalStmts fuel s [] = some s` ⇒ `s' = { env := [], heap := h, … }`.
+    * `k.translate = some k.initialCtx.ops = some []` (the initial
+      translator context starts with no ops).
+    * `KOps.evalOps fuel st [] = some st` ⇒ `st' = initialKOpsState …`.
+    * `Heap.project params s'.heap = (initialKOpsState k h d).heap`
+      by `initialKOpsState_heap_eq`.
+
+    This case used to flow through the monolithic axiom; the proof
+    here is purely definitional. -/
+theorem kernel_body_compose_nil
+    (k : Kernel) (h : Heap) (d : KOps.Dispatch) (fuel : Nat)
+    (s' : Quanta.KRust.State) (ops : List KernelOp) (st' : KOps.State)
+    (h_empty : k.body = [])
+    (h_eval : evalStmts fuel { env := [], heap := h } k.body = some s')
+    (h_trans : k.translate = some ops)
+    (h_run : KOps.evalOps fuel (initialKOpsState k h d) ops = some st')
+    : Heap.project (k.params.map (fun p => (p.name, p.slot))) s'.heap = st'.heap := by
+  -- Reduce evalStmts on [] to identity on the initial state.
+  rw [h_empty] at h_eval
+  simp [evalStmts] at h_eval
+  -- Reduce k.translate on empty body: ops = k.initialCtx.ops = [].
+  have h_ops_nil : ops = [] := by
+    unfold Kernel.translate at h_trans
+    rw [h_empty] at h_trans
+    simp [translateStmts, Kernel.initialCtx, EmitCtx.empty] at h_trans
+    exact h_trans
+  rw [h_ops_nil] at h_run
+  simp [KOps.evalOps] at h_run
+  -- Goal: Heap.project … s'.heap = st'.heap.
+  -- h_eval : { env := [], heap := h, broke := false } = s'
+  -- h_run  : initialKOpsState k h d = st'
+  rw [← h_eval, ← h_run]
+  exact (initialKOpsState_heap_eq k h d).symm
+
+-- ────────────────────────────────────────────────────────────────────
+-- Non-empty body case — narrower axiom
+-- ────────────────────────────────────────────────────────────────────
+
+/-- **kernel_body_compose_cons** — narrower axiom for the
+    non-empty-body case. The structural induction over `k.body : List
+    Stmt`, dispatching to `Preservation.lean`'s per-rule step lemmas
+    (T5A0–T5A7) plus `assignIdx`-non-interference, lives here as a
+    *single* named claim conditional on `k.body ≠ []`. The empty
+    case is discharged separately as a closed theorem
+    (`kernel_body_compose_nil`) so it no longer flows through the
+    trust budget.
+
+    The axiom-named-not-sorried discipline (one named claim, narrow
+    scope, no opaque `sorry`s) is preserved. -/
+axiom kernel_body_compose_cons
+    (k : Kernel) (h : Heap) (d : KOps.Dispatch) (fuel : Nat)
+    (s' : Quanta.KRust.State) (ops : List KernelOp) (st' : KOps.State)
+    (h_nonempty : k.body ≠ [])
+    : evalStmts fuel { env := [], heap := h } k.body = some s' →
+      k.translate = some ops →
+      KOps.evalOps fuel (initialKOpsState k h d) ops = some st' →
+      Heap.project (k.params.map (fun p => (p.name, p.slot))) s'.heap = st'.heap
+
+-- ════════════════════════════════════════════════════════════════════
 -- T5B0 — kernel_preservation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- **T5B0 — kernel_preservation**: composing the per-rule lemmas
-    T590–T5A7 yields a kernel-level theorem stating that the
-    KRust-side body and the translated KernelOps land on the same
-    observable heap.
-
-    Statement (post-discharge): the `Heap.project` of the source
-    post-state equals the KOps post-state heap **conditional on
-    consistency between source and KOps states being maintained
-    across the body's stmt list**. The full proof structure is:
-
-    1. Empty body case: `evalStmts _ _ [] = some s` and `k.translate
-       = some ctx0.ops` where `ctx0` is the initial translator
-       state. With no ops, `evalOps _ _ [] = some` of the initial
-       KOps state, whose heap equals `Heap.project _ s.heap` by
-       construction of `initialKOpsState`.
-    2. Cons body case: each `Stmt` constructor maps to its T5A0–T5A7
-       step rule, which preserves consistency. The induction
-       hypothesis carries the invariant.
-
-    The composition is captured by the supporting axiom
-    `kernel_body_compose` immediately above this theorem: it states
-    the structural induction conclusion over the body list,
-    dispatching to the per-rule step rules. T5B0 then trivially
-    applies the axiom. The *axiom-named-not-sorried* shape keeps
-    the trust budget explicit (one named claim) rather than opaque
-    (a sorry). -/
-axiom kernel_body_compose
+/-- **kernel_body_compose** — top-level *closed* theorem. Replaces
+    the previous monolithic axiom by case-splitting on whether the
+    body is empty, dispatching to `kernel_body_compose_nil` (closed
+    proof) or `kernel_body_compose_cons` (narrower axiom). -/
+theorem kernel_body_compose
     (k : Kernel) (h : Heap) (d : KOps.Dispatch) (fuel : Nat)
     (s' : Quanta.KRust.State) (ops : List KernelOp) (st' : KOps.State)
     : evalStmts fuel { env := [], heap := h } k.body = some s' →
       k.translate = some ops →
       KOps.evalOps fuel (initialKOpsState k h d) ops = some st' →
-      Heap.project (k.params.map (fun p => (p.name, p.slot))) s'.heap = st'.heap
+      Heap.project (k.params.map (fun p => (p.name, p.slot))) s'.heap = st'.heap := by
+  intro h_eval h_trans h_run
+  by_cases h_empty : k.body = []
+  · exact kernel_body_compose_nil k h d fuel s' ops st' h_empty h_eval h_trans h_run
+  · exact kernel_body_compose_cons k h d fuel s' ops st' h_empty h_eval h_trans h_run
 
 theorem t5b0_kernel_preservation
     (k : Kernel) (h : Heap) (d : KOps.Dispatch) (fuel : Nat)
