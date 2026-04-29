@@ -16,7 +16,8 @@ and the verifier output.
 | **Backends covered**       |   5    |
 | **Source preservation (E)** |  proven (T590-T5B0) |
 | **Headless smoke tests** | 3 in CI (per-PR) |
-| **Differential CI kernels** | 3 (saxpy, reduce_sum, counter) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
+| **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
+| **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
 
 Verifiers in active use: **Lean 4** (semantics + axioms), **Verus**
 (code-matches-spec), **Kani** (bounded model checking), **herd7**
@@ -84,6 +85,7 @@ reference oracle within tolerance.
 | `saxpy` | f32, N=1024 | ≤ 1 ULP | mul-then-add, no FMA contraction |
 | `reduce_sum` | u32, N=64 | bit-exact | shared memory + barrier + thread-0 accumulator |
 | `counter` | u32, N=128 | bit-exact (final value = N) | atomic_add, lost-update detection |
+| `race` | u32, N=2 | trace-membership (permitted set) | atomic_exchange race, ordering-non-determinism gate |
 
 | Lane | Triggered by | Workflow |
 |------|--------------|----------|
@@ -111,15 +113,42 @@ final value = N — is the empirical gate on backend atomic semantics.
 A non-atomic implementation produces a value < N; the backend
 disagrees with the reference and the test fails.
 
+The `race` kernel (D-ext.3b.2) is the first kernel where backends
+are *allowed* to disagree within a model-permitted set. Two quarks
+each `atomic_exchange(&cell, quark_id)` with `MemoryOrder::Relaxed`
+and store the prior value into `out[i]`. Output layout
+`[cell_final, out_0, out_1]`; permitted set = {`[1, 0, 0]`,
+`[0, 1, 0]`}. Comparator is `compare_u32_in_set` — candidate must
+equal at least one element of the permitted set. Sets the
+template for future MP / SB / IRIW litmus kernels.
+
 The `*` lanes (Metal, Vulkan, AMDGPU) run on opt-in workflows. The
 AMDGPU lane is wired up but stays inert until a self-hosted runner
 matching `[self-hosted, linux, gpu-amd]` is registered (setup steps
 inline in `diff-full.yml`).
 
-Explicit fence/ordering kernels (release/acquire litmus pairs)
-remain as **D-extended**: today's `AtomicOp` has no ordering
-metadata so litmus tests with anything other than implicit-SeqCst
-need an IR extension first.
+## Memory-order IR primitives (D-ext.3a / D-ext.3b)
+
+Five `MemoryOrder` variants — `Relaxed`, `Acquire`, `Release`,
+`AcqRel`, `SeqCst` — wired through every backend on three opcodes:
+
+  * `KernelOp::Fence { order }` — explicit memory fence. Lowering:
+    WGSL `storageBarrier()` (non-Relaxed only — WGSL atomics are
+    SC-by-spec); MSL `atomic_thread_fence(mem_flags::mem_device, …)`;
+    SPIR-V `OpMemoryBarrier` with the matching `MemorySemantics`;
+    LLVM AOT no-op (parked); CPU interpreter no-op (sequential).
+  * `KernelOp::AtomicOp { …, order }` — atomic RMW. SPIR-V derives
+    semantics; LLVM threads through `atomicrmw <ordering>`. MSL is
+    `device`-RELAXED-only by spec, so `order` is ignored on Metal
+    storage-buffer atomics — surrounding fences carry the ordering.
+    WGSL is SC-only by spec; ignored.
+  * `KernelOp::AtomicCas { …, order }` — atomic CAS. LLVM clamps the
+    failure-path ordering (Release→Monotonic, AcqRel→Acquire) per
+    libstdc++ recipe.
+
+Proc-macro frontend: `fence(MemoryOrder::Release)` (or just
+`fence(Release)`) inside a `#[quanta::kernel]` body emits the new
+opcode; `atomic_*()` builtins still default to `SeqCst`.
 
 ## Theorem chains by area
 
@@ -306,11 +335,18 @@ Open items the verification track is working on, in priority order:
    round-trips a kernel `f` to `f(input)`.
 3. **Step 058 + 059** — full Rust → WASM → KernelOps semantic
    preservation proof. Closes the entire source-to-ISA gap.
-4. **Step 077 / step D** — ✅ shipped 2026-04-29 across software,
-   WGSL, and Metal lanes (3 kernels: saxpy ≤ 1 ULP, reduce_sum
-   bit-exact, counter atomic-add bit-exact). Vulkan, full-hardware
-   AMDGPU, and explicit-ordering fence kernels remain as
-   **D-extended** — see "Differential CI" section above.
+4. **Step 077 / step D + D-extended** — ✅ shipped 2026-04-29.
+   Differential CI: 4 kernels × 5 lanes (software per-PR, WGSL
+   per-PR, Metal nightly+label, Vulkan/lavapipe nightly+label,
+   AMDGPU manual+label-inert). Full IR memory-order surface in
+   place: `MemoryOrder { Relaxed, Acquire, Release, AcqRel, SeqCst }`
+   threaded through `AtomicOp`, `AtomicCas`, and the new
+   `KernelOp::Fence`; per-emitter lowering wired across WGSL,
+   MSL, SPIR-V, LLVM, CPU; proc-macro `fence(...)` builtin.
+   Trace-membership comparator (`compare_u32_in_set`) accepts
+   model-permitted outcome sets — first user is the `race` litmus
+   kernel. Future MP / SB / IRIW litmus kernels can compose from
+   the existing primitives without further IR changes.
 
 Every shipped theorem above moves us further along the
 `hardware → IR → user source` chain. Every named axiom names something
