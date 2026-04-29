@@ -107,13 +107,21 @@ test("web_textured — SetTexture+SetSampler wiring (step C)", async ({ page }) 
   }
 });
 
-test("web_diff — WGSL lane: saxpy + reduce_sum (steps D.2, D.3a)", async ({ page }) => {
+test("web_diff — WGSL lane: saxpy + reduce_sum + counter (steps D.2-D.3b)", async ({ page }) => {
+  const consoleMsgs: string[] = [];
+  page.on("console", (msg) => consoleMsgs.push(`[${msg.type()}] ${msg.text()}`));
+  page.on("pageerror", (e) => consoleMsgs.push(`[pageerror] ${e.message}`));
   const { server, url } = await startStaticServer(join(REPO_ROOT, "examples", "web_diff"));
   try {
     await page.goto(url);
     const status = page.locator("#status");
-    await expect(status).toContainText("PASS", { timeout: 30_000 });
-    await expect(status).toContainText("2 / 2 kernels match");
+    try {
+      await expect(status).toContainText("PASS", { timeout: 30_000 });
+      await expect(status).toContainText("3 / 3 kernels match");
+    } catch (e) {
+      console.error("---console output---\n" + consoleMsgs.join("\n"));
+      throw e;
+    }
   } finally {
     server.close();
   }

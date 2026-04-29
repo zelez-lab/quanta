@@ -21,7 +21,8 @@
 use quanta::GpuDevice;
 use quanta::webgpu::spawn_local;
 use quanta_ir::{
-    BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
+    AtomicOp, BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType,
+    serialize_kernel,
 };
 
 unsafe extern "C" {
@@ -321,6 +322,102 @@ async fn run_reduce_sum() -> Result<Vec<u8>, String> {
 pub extern "C" fn web_diff_reduce_sum_run(task: u32) {
     spawn_local(async move {
         match run_reduce_sum().await {
+            Ok(bytes) => unsafe {
+                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
+            },
+            Err(msg) => unsafe {
+                quanta_complete_err(task, msg.as_ptr(), msg.len());
+            },
+        }
+    });
+}
+
+// ───────────────────────── counter (D.3b) ────────────────────────────
+//
+// N quarks each `atomic_add(&counter, 1)`. The atomic field is
+// detected by the WGSL emitter (collect_atomic_fields) and emitted
+// as `atomic<u32>` storage with `atomicAdd` in the kernel body. The
+// final value must equal exactly N — anything less indicates a lost
+// update from a non-atomic backend implementation.
+
+const COUNTER_N: u32 = 128;
+
+fn build_counter_kernel() -> KernelDef {
+    KernelDef {
+        name: "counter".into(),
+        params: vec![KernelParam::FieldWrite {
+            // Field name must differ from the kernel name — WGSL
+            // forbids module-scope redeclaration, so the storage
+            // binding and the @compute function can't share an
+            // identifier.
+            name: "ctr".into(),
+            slot: 0,
+            scalar_type: ScalarType::U32,
+        }],
+        body: vec![
+            KernelOp::Const {
+                dst: Reg(0),
+                value: ConstValue::U32(0),
+            },
+            KernelOp::Const {
+                dst: Reg(1),
+                value: ConstValue::U32(1),
+            },
+            KernelOp::AtomicOp {
+                dst: Reg(2),
+                field: 0,
+                index: Reg(0),
+                val: Reg(1),
+                op: AtomicOp::Add,
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 3,
+        opt_level: 3,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+async fn run_counter() -> Result<Vec<u8>, String> {
+    let dev = quanta::webgpu::WebgpuDevice::new_async()
+        .await
+        .map_err(|e| format!("new_async: {:?}", e))?;
+
+    let out_bytes = core::mem::size_of::<u32>();
+    let usage = quanta::FieldUsage::default_compute();
+
+    let fcounter = dev
+        .field_alloc(out_bytes, usage)
+        .map_err(|e| format!("field_alloc counter: {:?}", e))?;
+    dev.field_write_bytes(fcounter, &0u32.to_le_bytes())
+        .map_err(|e| format!("field_write counter: {:?}", e))?;
+
+    let kernel = build_counter_kernel();
+    let kernel_bytes = serialize_kernel(&kernel);
+    let mut wave = dev
+        .wave_jit(&kernel_bytes)
+        .map_err(|e| format!("wave_jit: {:?}", e))?;
+    wave.bind_handle(0, fcounter);
+
+    // 128 quarks at workgroup_size 64 → 2 workgroups along x.
+    let _pulse = dev
+        .wave_dispatch(&wave, [COUNTER_N / 64, 1, 1])
+        .map_err(|e| format!("wave_dispatch: {:?}", e))?;
+
+    dev.field_read_bytes_async(fcounter, out_bytes)
+        .await
+        .map_err(|e| format!("read_back: {:?}", e))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn web_diff_counter_run(task: u32) {
+    spawn_local(async move {
+        match run_counter().await {
             Ok(bytes) => unsafe {
                 quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
             },

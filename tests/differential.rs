@@ -19,7 +19,7 @@
 mod diff;
 
 use diff::compare::{compare_f32, compare_u32};
-use diff::kernels::{reduce_sum, saxpy};
+use diff::kernels::{counter, reduce_sum, saxpy};
 
 #[test]
 fn saxpy_reference_self_consistent() {
@@ -50,5 +50,14 @@ fn reduce_sum_software_bit_exact_versus_reference() {
     let candidate = reduce_sum::run_software();
     if let Err(div) = compare_u32(&oracle, &candidate) {
         panic!("reduce_sum divergence: {}", div);
+    }
+}
+
+#[test]
+fn counter_software_bit_exact_versus_reference() {
+    let oracle = counter::run_reference();
+    let candidate = counter::run_software();
+    if let Err(div) = compare_u32(&oracle, &candidate) {
+        panic!("counter divergence: {}", div);
     }
 }

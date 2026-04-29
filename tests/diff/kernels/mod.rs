@@ -6,5 +6,6 @@
 //! - `run_reference()` returning a `RawOutput` from a pure-Rust impl.
 //! - `run_<lane>()` per backend (gated by feature flag).
 
+pub mod counter;
 pub mod reduce_sum;
 pub mod saxpy;

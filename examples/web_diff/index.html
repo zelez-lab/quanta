@@ -97,6 +97,13 @@
         return new Uint32Array([sum]);
       }
 
+      // ────────────────────── counter oracle ────────────────────────
+
+      const COUNTER_N = 128;
+      function counterOracle() {
+        return new Uint32Array([COUNTER_N]);
+      }
+
       // ────────────────────── runner ────────────────────────────────
 
       function appendVerdict(name, verdict) {
@@ -121,13 +128,21 @@
         const reduceOracle = reduceSumOracle();
         const reduceOk = appendVerdict("reduce_sum (bit-exact, N=64)", compareU32(reduceOracle, reduceCand));
 
-        const allOk = saxpyOk && reduceOk;
+        // counter
+        const counterBytes = await mod.runReturningBytes("web_diff_counter_run");
+        const counterCand = new Uint32Array(counterBytes.buffer, counterBytes.byteOffset, counterBytes.length / 4);
+        const counterOracleArr = counterOracle();
+        const counterOk = appendVerdict("counter (atomic, N=128)", compareU32(counterOracleArr, counterCand));
+
+        const allOk = saxpyOk && reduceOk && counterOk;
         statusEl.className = allOk ? "ok" : "fail";
         statusEl.textContent = allOk
-          ? `PASS — 2 / 2 kernels match across the WGSL lane`
+          ? `PASS — 3 / 3 kernels match across the WGSL lane`
           : `FAIL — see per-kernel verdicts below`;
 
         outEl.textContent =
+          `counter oracle:       ${counterOracleArr[0]}\n` +
+          `counter candidate:    ${counterCand[0]}\n` +
           `reduce_sum oracle:    ${reduceOracle[0]}\n` +
           `reduce_sum candidate: ${reduceCand[0]}\n` +
           `saxpy oracle[0..4]:    ${Array.from(saxpyOracle().slice(0, 4)).join(", ")}\n` +
