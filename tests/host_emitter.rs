@@ -152,3 +152,26 @@ fn emit_push(data: &mut [f32], scale: f32) {
 fn push_constant_kernel_compiles() {
     let _binary = &EMIT_PUSH_BINARY;
 }
+
+// ===========================================================================
+// Explicit memory fence (D-ext.3a + D-ext.3b.3)
+// ===========================================================================
+//
+// Exercises the proc-macro `fence(MemoryOrder::Release)` builtin: the macro
+// must accept a fence call with any of the five MemoryOrder variants and
+// emit a corresponding KernelOp::Fence in the kernel body. We sandwich a
+// fence between two atomic ops to mirror the future release/acquire
+// litmus pattern.
+
+#[quanta::kernel]
+fn emit_fence(flag: &mut [u32], data: &mut [u32]) {
+    let i = quark_id();
+    data[i] = atomic_add(&mut flag[0], 1);
+    fence(Release);
+    data[i] = atomic_add(&mut flag[0], 1);
+}
+
+#[test]
+fn fence_kernel_compiles() {
+    let _binary = &EMIT_FENCE_BINARY;
+}

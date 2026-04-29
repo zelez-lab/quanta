@@ -359,6 +359,44 @@ fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
             ctx.ops.push(KernelOp::Barrier);
             Ok((Reg(u32::MAX), ScalarType::Bool))
         }
+        // `fence(MemoryOrder::Release)` (or `fence(Release)`, `fence(SeqCst)`,
+        // …). Single argument: the ordering. Emits `KernelOp::Fence { order }`
+        // (D-ext.3a) so user kernels can express explicit memory ordering
+        // without hand-rolling a KernelDef. Backend lowering is documented
+        // in the MemoryOrder enum.
+        "fence" => {
+            if call.args.len() != 1 {
+                return Err(syn::Error::new_spanned(
+                    call,
+                    "fence() requires exactly 1 argument (the MemoryOrder)",
+                ));
+            }
+            let order_name = expr_to_name(&call.args[0]).ok_or_else(|| {
+                syn::Error::new_spanned(
+                    &call.args[0],
+                    "fence() argument must be a MemoryOrder identifier (e.g. \
+                     MemoryOrder::Release or just Release)",
+                )
+            })?;
+            let order = match order_name.as_str() {
+                "Relaxed" => quanta_ir::MemoryOrder::Relaxed,
+                "Acquire" => quanta_ir::MemoryOrder::Acquire,
+                "Release" => quanta_ir::MemoryOrder::Release,
+                "AcqRel" => quanta_ir::MemoryOrder::AcqRel,
+                "SeqCst" => quanta_ir::MemoryOrder::SeqCst,
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &call.args[0],
+                        format!(
+                            "unknown MemoryOrder '{order_name}'; expected one of \
+                             Relaxed, Acquire, Release, AcqRel, SeqCst"
+                        ),
+                    ));
+                }
+            };
+            ctx.ops.push(KernelOp::Fence { order });
+            Ok((Reg(u32::MAX), ScalarType::Bool))
+        }
 
         // Texture access: texture_load_2d(tex, x, y), texture_sample_2d(tex, x, y)
         "texture_load_2d" | "texture_sample_2d" => {

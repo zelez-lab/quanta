@@ -426,11 +426,6 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             // Break is handled at the Loop level — no-op here
         }
 
-        // The LLVM AOT path doesn't yet thread `order` through to the
-        // builder's atomicrmw / cmpxchg ordering parameters — D-ext.3b.1
-        // adds the field to the IR; D-ext.3b.2 will wire it into the
-        // builder calls. Today every atomic still emits SeqCst-equivalent
-        // ordering at the LLVM level.
         KernelOp::AtomicOp {
             dst,
             field,
@@ -438,8 +433,19 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             val,
             op,
             ty,
-            order: _,
+            order,
         } => {
+            // Map the IR's MemoryOrder to inkwell's AtomicOrdering. LLVM's
+            // `Monotonic` is the IR-level "Relaxed" — same semantics, just
+            // the LLVM-spec name. We don't expose `Unordered` or
+            // `NotAtomic` because the IR doesn't.
+            let llvm_order = match order {
+                quanta_ir::MemoryOrder::Relaxed => AtomicOrdering::Monotonic,
+                quanta_ir::MemoryOrder::Acquire => AtomicOrdering::Acquire,
+                quanta_ir::MemoryOrder::Release => AtomicOrdering::Release,
+                quanta_ir::MemoryOrder::AcqRel => AtomicOrdering::AcquireRelease,
+                quanta_ir::MemoryOrder::SeqCst => AtomicOrdering::SequentiallyConsistent,
+            };
             if let Some((ptr, scalar_ty)) = ectx.slot_to_arg.get(field) {
                 let idx = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, index)?;
                 let elem_ty = scalar_to_llvm_type(ectx.context, scalar_ty);
@@ -470,12 +476,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                             .into_int_value();
                         let result = ectx
                             .builder
-                            .build_atomicrmw(
-                                AtomicRMWBinOp::Xchg,
-                                gep,
-                                val_as_int,
-                                AtomicOrdering::Monotonic,
-                            )
+                            .build_atomicrmw(AtomicRMWBinOp::Xchg, gep, val_as_int, llvm_order)
                             .map_err(|e| e.to_string())?;
                         let result_float = ectx
                             .builder
@@ -493,12 +494,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                         let val_int = value.into_int_value();
                         let result = ectx
                             .builder
-                            .build_atomicrmw(
-                                AtomicRMWBinOp::Xchg,
-                                gep,
-                                val_int,
-                                AtomicOrdering::Monotonic,
-                            )
+                            .build_atomicrmw(AtomicRMWBinOp::Xchg, gep, val_int, llvm_order)
                             .map_err(|e| e.to_string())?;
                         reg_store(
                             ectx.context,
@@ -536,7 +532,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                             };
                             let result = ectx
                                 .builder
-                                .build_atomicrmw(rmw_op, gep, val_as_int, AtomicOrdering::Monotonic)
+                                .build_atomicrmw(rmw_op, gep, val_as_int, llvm_order)
                                 .map_err(|e| e.to_string())?;
                             let result_float = ectx
                                 .builder
@@ -559,12 +555,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                                 .into_int_value();
                             let result = ectx
                                 .builder
-                                .build_atomicrmw(
-                                    AtomicRMWBinOp::Xchg,
-                                    gep,
-                                    val_as_int,
-                                    AtomicOrdering::Monotonic,
-                                )
+                                .build_atomicrmw(AtomicRMWBinOp::Xchg, gep, val_as_int, llvm_order)
                                 .map_err(|e| e.to_string())?;
                             let result_float = ectx
                                 .builder
@@ -616,7 +607,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                     };
                     let result = ectx
                         .builder
-                        .build_atomicrmw(rmw_op, gep, val_int, AtomicOrdering::Monotonic)
+                        .build_atomicrmw(rmw_op, gep, val_int, llvm_order)
                         .map_err(|e| e.to_string())?;
                     reg_store(
                         ectx.context,
