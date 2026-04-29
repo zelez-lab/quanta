@@ -462,35 +462,27 @@ hand-authored wasm ↔ JS ABI (post-B⁰; ~500 LOC across `ffi.rs` +
 `web/src/quanta.ts` + helpers). They are stated and named, not proved, and they
 are excluded from the "proven theorems" count.
 
-## Sustainment status (2026-04-28, post-B⁰ + quanta-cli + B′)
+## Sustainment status (2026-04-30, post-E sustainment pass)
 
 The "proven theorems" tally above counts the *intended* proof
-obligations. Current machine state, after this session's sustainment
+obligations. Current machine state after the verification finalization
 pass:
 
-- **Lean** (15 modules) — 14 build cleanly. `Quanta.Scan` builds with
-  9 documented `sorry`s on the Blelloch parallel-scan correctness
-  proofs (`get!_append_left/right`, `take_append_*`,
-  `downSweepTree_correct`, `flat_eq_tree_*`, `flat_scan_*`,
-  `flat_eq_tree_4`). The `native_decide` numeric instances next to
-  them are still verified, so the *computation* is checked; only the
-  symbolic round-trip proofs are stale. Tracked under "Lean re-prove
-  backlog."
-- **Verus** (87 mirror files) — 77 verify cleanly. 10 carry
-  partial proof failures or Verus-toolchain bit-vector encoder bugs
-  (`wave_invariants`, `api/wave` — `push_mask` field on opaque
-  datatypes; `spirv_structure`, `spirv_types`, `uniforms_derive`,
-  `fields_derive`, `vertex_derive`, `vulkan/{device,compute}`,
-  `api/gpu` — proof bodies need re-anchoring against current spec
-  shapes). All 10 still *compile*; the failures are
-  `verified N, errored M` postcondition slips, not type errors.
-- **Kani** — all 8 `emitter_exhaustiveness` harnesses pass (T417,
-  T418, T419, T1000, T1001 × 2, T1002, `tag_uniqueness`). The other
-  Kani files (`f16_precision`, `atomic_correctness`, `cpu_eval`,
-  `format_tables`, `opcodes`, `opcodes_complete`, `wire_full`,
-  `wire_roundtrip`) were not exercised individually — Kani's
-  exhaustive f16 harnesses take hours per harness; out of scope for
-  this pass.
+- **Lean** (15+ modules) — **all build cleanly with zero `sorry`
+  proof terms.** `Quanta.Scan`'s 9 sorrys (closed in `a263f0b`),
+  `Quanta.KRust.Preservation`'s T5A0–T5A7 lemmas (closed across
+  the E track), and `Quanta.KRust.EndToEnd`'s per-arm
+  `stmt_heap_step_*` wrappers are all proper theorems.
+- **Verus** (87 mirror files) — **87 / 87 verify cleanly.** The 10
+  partial-proof slips listed in the prior sustainment snapshot
+  closed in `2fa8f87` (7) and `dd0620c` (final 3 derive macros).
+  Plus, the `proton_id_range` / `nucleus_id_range` axioms in
+  `Quanta.Axioms.Gpu` were promoted to closed theorems by retyping
+  the `lid` / `gid` argument as `Fin _` (eliminates the soundness
+  gap the original axiom shape carried).
+- **Kani** — all 8 `emitter_exhaustiveness` harnesses pass; the
+  other Kani files (`f16_precision` etc.) remain time-bounded out
+  of the per-PR lane.
 - **WebGPU chain** — fully proven: `Quanta.Axioms.WebGpu` (A10/A11
   post-B⁰/B′), `Quanta.Theorems.WebGpu` (T414), the four backend
   semantics modules (`SpirV`, `Wgsl`, `Msl`, `Llvm`),
@@ -501,7 +493,41 @@ pass:
   and a TS module-init `assertSpecSubset()` call, both backed by
   tables generated from `web/webgpu.idl` by `crates/quanta-codegen`.
 
-The B⁰/B′ surface is fully verified. Sustainment of older proof
-tracks is a separate, ongoing effort — failures are documented
-in-line at each affected `proof fn` / `theorem`, and all of them
-lived before B⁰ touched the codebase.
+### Residual TCB axioms (Lean)
+
+Final residual axioms in `specs/verify/lean/Quanta/`:
+
+- **WebGPU FFI handles** (`Axioms/WebGpu.lean`, 11 axioms) —
+  `request_adapter`, `request_device`, `create_buffer`,
+  `create_shader_module`, `create_compute_pipeline`,
+  `create_render_pipeline`, `submit`, `on_submitted_work_done`,
+  `map_async`, plus the spec-conformance pair
+  `wgsl_module_acceptance` + `compute_pipeline_creation`. These
+  are the irreducible wasm ↔ JS ABI surface, equivalent to libc
+  trust on the wasm32 calling convention.
+- **WGSL spec axioms** (`Axioms/Wgsl.lean`, 2 axioms) —
+  `wgsl_serializer_preserves_grammar` and `emit_wgsl_jit_factors`,
+  the W3C WGSL surface invariants.
+- **Opaque float default** (`Semantics/SpirV.lean`, 1 axiom) —
+  `Float32_default : F32Bits`, the IEEE 754 zero-bit-pattern
+  representative.
+- **Step-level heap projection** (`KRust/EndToEnd.lean`, 1 axiom)
+  — `stmt_heap_step_helper`. This is the single residual
+  composition-level TCB, encoding the same semantic content that
+  `Preservation.lean`'s T5A0–T5A7 lemmas prove in `consistentState`
+  form. It collapses 8 prior per-arm axioms into one helper, and
+  the 9 `stmt_heap_step_*` wrappers (8 delegations + 1 `breakS`
+  closed inline) are closed theorems. Future work: bridge
+  `consistentState` ⇒ bare `Heap.project` projection to discharge
+  the helper itself.
+
+**Total TCB**: 15 Lean axioms (11 FFI + 2 WGSL spec + 1 opaque
+float + 1 step-level helper) + 1 Verus `external_body` proof
+(`t754_empty_queue_hazard_free`, the hardware-level hazard
+tracking trust boundary) — all narrowly scoped and individually
+named.
+
+The verification surface is finalized. Open verification work
+(race-freedom Level 2, MP/SB/IRIW litmus kernels, AMDGPU runner
+activation, W3C CTS lane, Firefox lane) is tracked in the
+roadmap memory and is research / infra rather than proof rot.
