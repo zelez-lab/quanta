@@ -993,9 +993,10 @@ theorem kops_evalOps_append_decompose
 
 /-- Per-stmt heap-step axiom for `breakS`. Despite the simple
     semantics (broke := true on both sides), inline closure
-    requires unfolding `evalStmt` (which is a mutual `def` with a
-    custom termination measure) and the cons-recursion of
-    `KOps.evalOps` against `evalOp_breakOp_eq`'s short-circuit. -/
+    requires equation lemmas for `evalStmt` (a mutual `def` with
+    a custom termination measure) which aren't auto-generated;
+    the proof would also have to thread through the cons-recursion
+    of `KOps.evalOps` against `evalOp_breakOp_eq`'s short-circuit. -/
 axiom stmt_heap_step_breakS
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
