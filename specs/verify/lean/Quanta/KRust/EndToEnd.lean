@@ -361,31 +361,83 @@ theorem translateStmt_preserves_params
       exact translateStmt_preserves_params_recursive_arms ctx ctx_after
               (Stmt.loopS body) h
 
-/-- **kops_evalOps_append_decompose_axiom** — running an appended
-    op-list factors through the intermediate state reached by the
-    first half. The existential-flavored counterpart to
-    `Preservation.evalOps_append_clean`, allowing the caller to
-    extract the intermediate state without committing to a clean /
-    broke flag in advance.
+/-- **kops_evalOps_append_decompose** — running an appended op-list
+    factors through the intermediate state reached by the first half.
+    Closed by induction on `xs`. The existential-flavored
+    counterpart to `Preservation.evalOps_append_clean`.
 
     The `h_pre_clean` precondition is *load-bearing*: `evalOps` does
     not gate on the entry broke flag (only on the post-op broke flag
     in the cons recursion), so without `st_pre.broke = false` the
-    empty-`xs` case is provably false when `ys` has any effect.
-    The previous unconditional version of this axiom was unsound on
-    that pathology; the new shape closes it. The use site
-    `stmts_heap_step` threads `h_pre_clean` from the entry point
-    `initialKOpsState` (which has `broke = false` by definition)
-    through every cons recursion via the broke-flag alignment in
-    `stmt_heap_step_axiom`. -/
-axiom kops_evalOps_append_decompose_axiom
-    (fuel : Nat) (st_pre : KOps.State) (xs ys : List KernelOp) (st_post : KOps.State)
-    (h_pre_clean : st_pre.broke = false)
-    (h : KOps.evalOps fuel st_pre (xs ++ ys) = some st_post)
-    : ∃ st_mid,
-        KOps.evalOps fuel st_pre xs = some st_mid
-        ∧ (if st_mid.broke then some st_mid
-           else KOps.evalOps fuel st_mid ys) = some st_post
+    empty-`xs` case is provably false when `ys` has any effect. -/
+theorem kops_evalOps_append_decompose
+    (fuel : Nat) : ∀ (xs : List KernelOp) (st_pre : KOps.State)
+        (ys : List KernelOp) (st_post : KOps.State),
+        st_pre.broke = false →
+        KOps.evalOps fuel st_pre (xs ++ ys) = some st_post →
+        ∃ st_mid,
+          KOps.evalOps fuel st_pre xs = some st_mid
+          ∧ (if st_mid.broke then some st_mid
+             else KOps.evalOps fuel st_mid ys) = some st_post := by
+  intro xs
+  induction xs with
+  | nil =>
+      intro st_pre ys st_post h_clean h
+      refine ⟨st_pre, ?_, ?_⟩
+      · simp [KOps.evalOps]
+      · rw [show ([] : List KernelOp) ++ ys = ys from rfl] at h
+        simp [h_clean]
+        exact h
+  | cons op rest ih =>
+      intro st_pre ys st_post _h_clean h
+      rw [List.cons_append] at h
+      -- Unfold evalOps on (op :: ...).
+      have h_unfold :
+          KOps.evalOps fuel st_pre (op :: (rest ++ ys))
+            = (KOps.evalOp fuel st_pre op).bind
+                (fun s1 => if s1.broke then some s1
+                           else KOps.evalOps fuel s1 (rest ++ ys)) := by
+        simp [KOps.evalOps]
+      rw [h_unfold] at h
+      cases h_op : KOps.evalOp fuel st_pre op with
+      | none => rw [h_op] at h; exact absurd h (by simp [Option.bind])
+      | some s1 =>
+          rw [h_op] at h
+          simp [Option.bind] at h
+          by_cases h_b : s1.broke
+          · -- s1 broke: cons short-circuits, st_post = s1.
+            rw [if_pos h_b] at h
+            have h_eq : s1 = st_post := Option.some.inj h
+            refine ⟨s1, ?_, ?_⟩
+            · -- evalOps fuel st_pre (op :: rest) = some s1.
+              show KOps.evalOps fuel st_pre (op :: rest) = some s1
+              rw [show KOps.evalOps fuel st_pre (op :: rest)
+                    = (KOps.evalOp fuel st_pre op).bind
+                        (fun s1 => if s1.broke then some s1
+                                   else KOps.evalOps fuel s1 rest)
+                  from by simp [KOps.evalOps]]
+              rw [h_op]
+              simp [Option.bind, h_b]
+            · rw [if_pos h_b]
+              exact congrArg some h_eq
+          · -- s1 clean: recurse via IH.
+            have h_s1_clean : s1.broke = false := by
+              cases h_eq : s1.broke with
+              | true => exact absurd h_eq h_b
+              | false => rfl
+            rw [if_neg h_b] at h
+            obtain ⟨st_mid, h_run_rest, h_tail⟩ :=
+              ih s1 ys st_post h_s1_clean h
+            refine ⟨st_mid, ?_, h_tail⟩
+            show KOps.evalOps fuel st_pre (op :: rest) = some st_mid
+            rw [show KOps.evalOps fuel st_pre (op :: rest)
+                  = (KOps.evalOp fuel st_pre op).bind
+                      (fun s1 => if s1.broke then some s1
+                                 else KOps.evalOps fuel s1 rest)
+                from by simp [KOps.evalOps]]
+            rw [h_op]
+            simp [Option.bind, h_s1_clean]
+            exact h_run_rest
 
 /-- **stmt_heap_step_axiom** — the *single* per-statement heap-
     projection step. Strictly narrower than the previous
@@ -520,10 +572,10 @@ theorem stmts_heap_step
                 rw [h_delta] at h_combined
                 exact List.append_cancel_left h_combined
               rw [h_delta_split] at h_run
-              -- Decompose KOps run via the append-decompose axiom
-              -- (now sound thanks to the threaded `h_pre_clean`).
+              -- Decompose KOps run via the closed append-decompose
+              -- theorem (sound via the threaded `h_pre_clean`).
               obtain ⟨st_mid, h_run_head, h_run_tail⟩ :=
-                kops_evalOps_append_decompose_axiom fuel st_pre delta_head
+                kops_evalOps_append_decompose fuel delta_head st_pre
                   delta_tail st_post h_pre_clean h_run
               -- Apply step axiom.
               have h_step :=
