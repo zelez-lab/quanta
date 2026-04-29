@@ -47,6 +47,12 @@ jobs:
       - name: IR roundtrip tests
         run: cargo test -p quanta-ir
 
+      # Step D / Step 077: differential CI. Software lane runs on every
+      # PR via the `software` feature. WGSL lane runs in `web-smoke.yml`.
+      # Metal nightly + label-gated lanes land in D.5.
+      - name: Differential tests (software lane)
+        run: cargo test --test differential --features software --no-default-features
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   gpu-tests-metal:
     runs-on: macos-14
