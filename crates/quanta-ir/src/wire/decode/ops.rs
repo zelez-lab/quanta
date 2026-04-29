@@ -185,6 +185,7 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
             let val = read_reg(r)?;
             let op = read_atomicop(r)?;
             let ty = read_scalar_type(r)?;
+            let order = read_memory_order(r)?;
             Ok(KernelOp::AtomicOp {
                 dst,
                 field,
@@ -192,6 +193,7 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
                 val,
                 op,
                 ty,
+                order,
             })
         }
 

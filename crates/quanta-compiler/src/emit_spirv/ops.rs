@@ -295,8 +295,9 @@ impl SpvEmitter {
                 val,
                 op,
                 ty,
+                order,
             } => {
-                self.emit_op_atomic(*dst, *field, *index, *val, *op, *ty)?;
+                self.emit_op_atomic(*dst, *field, *index, *val, *op, *ty, *order)?;
             }
 
             KernelOp::AtomicCas {

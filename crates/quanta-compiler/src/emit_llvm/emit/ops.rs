@@ -426,6 +426,11 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             // Break is handled at the Loop level — no-op here
         }
 
+        // The LLVM AOT path doesn't yet thread `order` through to the
+        // builder's atomicrmw / cmpxchg ordering parameters — D-ext.3b.1
+        // adds the field to the IR; D-ext.3b.2 will wire it into the
+        // builder calls. Today every atomic still emits SeqCst-equivalent
+        // ordering at the LLVM level.
         KernelOp::AtomicOp {
             dst,
             field,
@@ -433,6 +438,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             val,
             op,
             ty,
+            order: _,
         } => {
             if let Some((ptr, scalar_ty)) = ectx.slot_to_arg.get(field) {
                 let idx = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, index)?;

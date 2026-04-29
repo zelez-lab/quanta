@@ -532,6 +532,7 @@ fn build_atomic_add_kernel() -> Vec<u8> {
                 val: Reg(1),
                 op: AtomicOp::Add,
                 ty: ScalarType::U32,
+                order: MemoryOrder::SeqCst,
             },
         ],
         body_source: None,

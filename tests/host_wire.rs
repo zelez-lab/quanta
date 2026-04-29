@@ -132,6 +132,7 @@ fn roundtrip_all_kernel_op_variants() {
             val: Reg(31),
             op: AtomicOp::Add,
             ty: ScalarType::U32,
+            order: MemoryOrder::SeqCst,
         },
         KernelOp::AtomicCas {
             dst: Reg(32),
@@ -552,6 +553,7 @@ fn roundtrip_all_atomic_op_variants() {
             val: Reg(101),
             op: *op,
             ty: ScalarType::U32,
+            order: MemoryOrder::SeqCst,
         })
         .collect();
     roundtrip_ops(ops);

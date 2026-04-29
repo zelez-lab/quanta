@@ -53,6 +53,7 @@ fn build_def() -> quanta::kernel::KernelDef {
                 val: Reg(1),
                 op: AtomicOp::Add,
                 ty: ScalarType::U32,
+                order: MemoryOrder::SeqCst,
             },
         ],
         body_source: None,

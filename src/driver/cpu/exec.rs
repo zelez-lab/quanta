@@ -177,6 +177,7 @@ pub(super) fn execute_ops(
                 val,
                 op,
                 ty,
+                order: _,
             } => {
                 let idx = reg(ctx, index)?.as_u32();
                 let operand = reg(ctx, val)?;

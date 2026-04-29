@@ -227,7 +227,7 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             w.u8(16);
         }
 
-        // 17 — AtomicOp { dst, field, index, val, op, ty }
+        // 17 — AtomicOp { dst, field, index, val, op, ty, order }
         KernelOp::AtomicOp {
             dst,
             field,
@@ -235,6 +235,7 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             val,
             op,
             ty,
+            order,
         } => {
             w.u8(17);
             write_reg(w, dst);
@@ -243,6 +244,7 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             write_reg(w, val);
             write_atomicop(w, op);
             write_scalar_type(w, ty);
+            write_memory_order(w, order);
         }
 
         // 18 — AtomicCas { dst, field, index, expected, desired, ty }

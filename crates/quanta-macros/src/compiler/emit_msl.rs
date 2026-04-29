@@ -367,6 +367,10 @@ fn emit_msl_op(
                 a.0
             ));
         }
+        // Metal restricts device-address-space atomics to
+        // memory_order_relaxed (see emit_msl/ops.rs in quanta-ir for
+        // the same constraint). Stronger orderings on `order` must be
+        // expressed via a surrounding KernelOp::Fence.
         AtomicOp {
             dst,
             field,
@@ -374,6 +378,7 @@ fn emit_msl_op(
             val,
             op,
             ty,
+            order: _,
         } => {
             let fn_name = match op {
                 quanta_ir::AtomicOp::Add => "atomic_fetch_add_explicit",

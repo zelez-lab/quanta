@@ -488,6 +488,10 @@ fn emit_atomic_call(
         val: val_reg,
         op,
         ty,
+        // User-written atomic_*() calls in #[quanta::kernel] bodies map
+        // to SeqCst by default. The proc-macro frontend doesn't yet
+        // accept a `MemoryOrder::Relaxed` argument — that's D-ext.3b.3.
+        order: quanta_ir::MemoryOrder::SeqCst,
     });
     Ok((dst, ty))
 }

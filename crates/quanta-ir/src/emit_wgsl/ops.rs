@@ -190,6 +190,10 @@ pub(super) fn emit_op(
                 pad, id, index.0, src.0
             ));
         }
+        // WGSL atomics are SeqCst by spec — there's no per-op `order`
+        // parameter on `atomicAdd` / `atomicLoad` / etc. Stronger orderings
+        // than requested are always sound; this lane therefore ignores
+        // `order` and emits the standard atomic call.
         KernelOp::AtomicOp {
             dst,
             field,
@@ -197,6 +201,7 @@ pub(super) fn emit_op(
             val,
             op,
             ty,
+            order: _,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             let f = atomic_fn_str(op);

@@ -786,6 +786,7 @@ impl SpvEmitter {
                 val,
                 op,
                 ty,
+                order,
             } => {
                 // Real SPIR-V atomic instructions (OpAtomicIAdd, etc.)
                 let (var_id, elem_ty, _) = *self
@@ -804,10 +805,20 @@ impl SpvEmitter {
                     &[ptr_elem, chain, var_id, zero, idx],
                 );
 
-                // Scope: Device (1). Semantics: AcquireRelease | WorkgroupMemory.
+                // Scope: Device (1). Semantics derived from `order`:
+                //   Relaxed → 0, Acquire → ACQUIRE, Release → RELEASE,
+                //   AcqRel → ACQ_REL, SeqCst → SEQ_CST. We OR with
+                //   WorkgroupMemory so the atomic also synchronizes shared
+                //   memory writes — matches the prior behavior.
                 let scope = self.emit_constant_u32(1);
-                let semantics =
-                    self.emit_constant_u32(MEMORY_SEMANTICS_ACQ_REL | MEMORY_SEMANTICS_WORKGROUP);
+                let order_bits: u32 = match order {
+                    crate::MemoryOrder::Relaxed => 0,
+                    crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
+                    crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
+                    crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
+                    crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
+                };
+                let semantics = self.emit_constant_u32(order_bits | MEMORY_SEMANTICS_WORKGROUP);
 
                 let is_signed = matches!(
                     ty,

@@ -196,6 +196,7 @@ fn atomic_field_wraps_in_atomic() {
                 val: Reg(1),
                 op: AtomicOp::Add,
                 ty: ScalarType::U32,
+                order: quanta_ir::MemoryOrder::SeqCst,
             },
         ],
         3,
@@ -407,6 +408,7 @@ fn every_kernel_op_variant_compiles() {
             val: Reg(0),
             op: AtomicOp::Add,
             ty: ScalarType::U32,
+            order: quanta_ir::MemoryOrder::SeqCst,
         },
         KernelOp::AtomicCas {
             dst: Reg(22),

@@ -274,6 +274,9 @@ pub enum KernelOp {
     Fence {
         order: MemoryOrder,
     },
+    /// Atomic read-modify-write. The `order` field was added in D-ext.3b.1
+    /// to express weaker memory orderings; existing call sites pass
+    /// `MemoryOrder::SeqCst` to preserve the prior implicit semantics.
     AtomicOp {
         dst: Reg,
         field: u32,
@@ -281,6 +284,7 @@ pub enum KernelOp {
         val: Reg,
         op: AtomicOp,
         ty: ScalarType,
+        order: MemoryOrder,
     },
     AtomicCas {
         dst: Reg,

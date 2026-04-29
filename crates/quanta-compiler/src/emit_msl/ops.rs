@@ -236,11 +236,19 @@ pub(crate) fn emit_op(
             val,
             op,
             ty,
+            order,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             let f = atomic_fn_str(op);
+            let mo = match order {
+                quanta_ir::MemoryOrder::Relaxed => "memory_order_relaxed",
+                quanta_ir::MemoryOrder::Acquire => "memory_order_acquire",
+                quanta_ir::MemoryOrder::Release => "memory_order_release",
+                quanta_ir::MemoryOrder::AcqRel => "memory_order_acq_rel",
+                quanta_ir::MemoryOrder::SeqCst => "memory_order_seq_cst",
+            };
             out.push_str(&format!(
-                "{}{} r{} = {}((device atomic_{}*)&{}[r{}], r{}, memory_order_relaxed);\n",
+                "{}{} r{} = {}((device atomic_{}*)&{}[r{}], r{}, {});\n",
                 pad,
                 ty.msl_name(),
                 dst.0,
@@ -248,7 +256,8 @@ pub(crate) fn emit_op(
                 ty.msl_name(),
                 n,
                 index.0,
-                val.0
+                val.0,
+                mo
             ));
         }
         KernelOp::WaveShuffle {

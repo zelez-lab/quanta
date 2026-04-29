@@ -370,6 +370,7 @@ fn build_counter_kernel() -> KernelDef {
                 val: Reg(1),
                 op: AtomicOp::Add,
                 ty: ScalarType::U32,
+                order: quanta_ir::MemoryOrder::SeqCst,
             },
         ],
         body_source: None,

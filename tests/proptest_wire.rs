@@ -156,6 +156,7 @@ proptest! {
                 val: Reg(2),
                 op,
                 ty: ScalarType::U32,
+                order: quanta_ir::MemoryOrder::SeqCst,
             }],
             body_source: None,
             next_reg: 3,

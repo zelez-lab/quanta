@@ -198,6 +198,13 @@ pub(super) fn emit_op(
                 pad, id, index.0, src.0
             ));
         }
+        // Metal restricts `device`-address-space atomics to
+        // `memory_order_relaxed` (per MSL spec — the per-op ordering
+        // overload is gated to `threadgroup` storage). Stronger
+        // orderings on the IR's AtomicOp must be expressed via a
+        // surrounding `KernelOp::Fence`. Storage-buffer atomics on
+        // Metal are therefore always emitted as relaxed regardless of
+        // the IR's `order` field.
         KernelOp::AtomicOp {
             dst,
             field,
@@ -205,6 +212,7 @@ pub(super) fn emit_op(
             val,
             op,
             ty,
+            order: _,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             let f = atomic_fn_str(op);
