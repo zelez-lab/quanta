@@ -16,6 +16,7 @@ and the verifier output.
 | **Backends covered**       |   5    |
 | **Source preservation (E)** |  proven (T590-T5B0) |
 | **Headless smoke tests** | 3 in CI (per-PR) |
+| **Differential CI kernels** | 3 (saxpy, reduce_sum, counter) × {software, WGSL, Metal*} |
 
 Verifiers in active use: **Lean 4** (semantics + axioms), **Verus**
 (code-matches-spec), **Kani** (bounded model checking), **herd7**
@@ -70,6 +71,45 @@ headless Chromium with `--enable-unsafe-webgpu`:
 
 Local: `cd web && npm run smoke` — 3 passed, 3.3s.
 CI: `.github/workflows/web-smoke.yml`.
+
+## Differential CI (step D / step 077, 2026-04-29)
+
+Empirical complement to the memory-model axioms (055/056) and the
+emitter correctness theorems. Runs the same KernelDef on every
+backend lane and asserts each candidate matches the pure-Rust
+reference oracle within tolerance.
+
+| Kernel | Type | Tolerance | Exercises |
+|--------|------|-----------|-----------|
+| `saxpy` | f32, N=1024 | ≤ 1 ULP | mul-then-add, no FMA contraction |
+| `reduce_sum` | u32, N=64 | bit-exact | shared memory + barrier + thread-0 accumulator |
+| `counter` | u32, N=128 | bit-exact (final value = N) | atomic_add, lost-update detection |
+
+| Lane | Triggered by | Workflow |
+|------|--------------|----------|
+| Reference (pure Rust) | every test invocation | — |
+| Software (CpuDevice) | every PR + main push | `.github/workflows/ci.yml` |
+| WGSL (Chrome+Dawn) | every PR + main push | `.github/workflows/web-smoke.yml` |
+| Metal | nightly cron + `run-full-diff` PR label + manual | `.github/workflows/diff-full.yml` |
+
+Local:
+```sh
+# software lane (per-PR slice)
+cargo test --test differential --features software --no-default-features
+# software + metal (macOS, nightly slice)
+cargo test --test differential --features software,metal
+# WGSL lane (browser)
+cd web && npm run smoke    # exercises web_diff page
+```
+
+The `counter` kernel — N atomic_adds against a single cell, expected
+final value = N — is the empirical gate on backend atomic semantics.
+A non-atomic implementation produces a value < N; the backend
+disagrees with the reference and the test fails. Vulkan, AMDGPU
+(via SPIR-V), and explicit fence/ordering kernels (release/acquire
+litmus pairs) are tracked as **D-extended**: the IR currently
+provides only implicit-SeqCst atomics, so explicit ordering tests
+need an IR extension before they can land.
 
 ## Theorem chains by area
 
@@ -256,9 +296,11 @@ Open items the verification track is working on, in priority order:
    round-trips a kernel `f` to `f(input)`.
 3. **Step 058 + 059** — full Rust → WASM → KernelOps semantic
    preservation proof. Closes the entire source-to-ISA gap.
-4. **Step 077** — differential testing in CI: bit-exact integer,
-   ≤1 ULP float, atomic visibility across all 5 backends. Composes
-   with the memory-model axioms.
+4. **Step 077 / step D** — ✅ shipped 2026-04-29 across software,
+   WGSL, and Metal lanes (3 kernels: saxpy ≤ 1 ULP, reduce_sum
+   bit-exact, counter atomic-add bit-exact). Vulkan, full-hardware
+   AMDGPU, and explicit-ordering fence kernels remain as
+   **D-extended** — see "Differential CI" section above.
 
 Every shipped theorem above moves us further along the
 `hardware → IR → user source` chain. Every named axiom names something
