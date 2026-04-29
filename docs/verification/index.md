@@ -16,7 +16,7 @@ and the verifier output.
 | **Backends covered**       |   5    |
 | **Source preservation (E)** |  proven (T590-T5B0) |
 | **Headless smoke tests** | 3 in CI (per-PR) |
-| **Differential CI kernels** | 3 (saxpy, reduce_sum, counter) × {software, WGSL, Metal*, Vulkan*} |
+| **Differential CI kernels** | 3 (saxpy, reduce_sum, counter) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 
 Verifiers in active use: **Lean 4** (semantics + axioms), **Verus**
 (code-matches-spec), **Kani** (bounded model checking), **herd7**
@@ -92,6 +92,7 @@ reference oracle within tolerance.
 | WGSL (Chrome+Dawn) | every PR + main push | `.github/workflows/web-smoke.yml` |
 | Metal (macOS) | nightly cron + `run-full-diff` PR label + manual | `.github/workflows/diff-full.yml` |
 | Vulkan (lavapipe) | nightly cron + `run-full-diff` PR label + manual | `.github/workflows/diff-full.yml` |
+| AMDGPU (Mesa RADV, real silicon) | manual + `run-amd-diff` PR label; needs self-hosted runner tagged `[self-hosted, linux, gpu-amd]` | `.github/workflows/diff-full.yml` |
 
 Local:
 ```sh
@@ -108,12 +109,17 @@ cd web && npm run smoke    # exercises web_diff page
 The `counter` kernel — N atomic_adds against a single cell, expected
 final value = N — is the empirical gate on backend atomic semantics.
 A non-atomic implementation produces a value < N; the backend
-disagrees with the reference and the test fails. Real-hardware
-AMDGPU (SPIR-V on actual silicon) and explicit fence/ordering
-kernels (release/acquire litmus pairs) are tracked as
-**D-extended**: AMDGPU needs a self-hosted runner; explicit
-ordering tests need an IR extension because the current `AtomicOp`
-has no ordering metadata.
+disagrees with the reference and the test fails.
+
+The `*` lanes (Metal, Vulkan, AMDGPU) run on opt-in workflows. The
+AMDGPU lane is wired up but stays inert until a self-hosted runner
+matching `[self-hosted, linux, gpu-amd]` is registered (setup steps
+inline in `diff-full.yml`).
+
+Explicit fence/ordering kernels (release/acquire litmus pairs)
+remain as **D-extended**: today's `AtomicOp` has no ordering
+metadata so litmus tests with anything other than implicit-SeqCst
+need an IR extension first.
 
 ## Theorem chains by area
 

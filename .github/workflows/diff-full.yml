@@ -1,23 +1,26 @@
 name: Differential CI (full lanes)
 
-# Step D.5 + D-ext.1 of step 077. Runs the differential test suite
-# against backends that aren't covered by per-PR CI:
+# Step D.5 + D-ext.1 + D-ext.2 of step 077. Runs the differential
+# test suite against backends that aren't covered by per-PR CI:
 #   - Metal lane on macos-14 (real Apple GPU)
 #   - Vulkan lane on ubuntu-latest via Mesa lavapipe (software Vulkan)
+#   - AMDGPU lane on a self-hosted Linux runner (real AMD silicon
+#     via Mesa radv)
 #
 # Together with the software lane (host-tests in ci.yml) and the
-# WGSL lane (web-smoke.yml), this covers four distinct compute
-# backends. Real-hardware AMDGPU stays out — needs a self-hosted
-# runner.
+# WGSL lane (web-smoke.yml), this covers five distinct compute
+# backends — three real (Metal, AMDGPU, browser WebGPU) and two
+# software (CpuDevice, lavapipe).
 #
 # Triggers:
-#   - `schedule`: nightly cron @ 07:00 UTC
+#   - `schedule`: nightly cron @ 07:00 UTC (Metal + Vulkan only)
 #   - `workflow_dispatch`: manual button in the Actions tab
-#   - `pull_request` with the `run-full-diff` label applied
+#   - `pull_request` with the `run-full-diff` label (Metal + Vulkan)
+#   - `pull_request` with the `run-amd-diff` label (AMDGPU)
 #
-# We don't run on every PR because runtime + macOS-14 minutes budget
-# are tight; opt-in via the label exercises the full matrix on PRs
-# that touch IR / emitter / driver code.
+# AMDGPU uses a separate label (`run-amd-diff`) rather than
+# `run-full-diff` so PRs that don't need it don't accidentally
+# block on a missing self-hosted runner.
 
 on:
   schedule:
@@ -104,4 +107,68 @@ jobs:
           # job is deterministic regardless of which ICDs Mesa
           # registers on the runner image.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: cargo test --test differential --no-default-features --features vulkan
+
+  # ─── AMDGPU lane (real-hardware Vulkan via Mesa radv) ────────────────
+  #
+  # Runs on a self-hosted Linux runner with an AMD GPU. The Quanta
+  # vulkan driver code is identical to the lavapipe lane above —
+  # only the runner config and ICD selection differ.
+  #
+  # ## Setup the runner once:
+  #
+  #   1. Provision a Linux box with an AMD GPU (gfx9+ recommended).
+  #   2. Install drivers:
+  #        sudo apt-get install \
+  #          mesa-vulkan-drivers libvulkan-dev vulkan-tools \
+  #          vulkan-validationlayers
+  #      Confirm `vulkaninfo --summary` shows `AMD RADV ...`.
+  #   3. Register the runner with this repo via Settings → Actions →
+  #      Runners → New self-hosted runner.
+  #   4. Tag it with all three labels: self-hosted, linux, gpu-amd.
+  #   5. Verify with a manual workflow_dispatch — the diff-amdgpu job
+  #      should pick up and pass.
+  #
+  # The job uses `run-amd-diff` (not `run-full-diff`) as its PR-label
+  # gate so that ordinary "run the full diff matrix" PR labels don't
+  # queue against a runner that may be offline.
+  diff-amdgpu:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-amd-diff'))
+    runs-on: [self-hosted, linux, gpu-amd]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: amdgpu-cargo-diff-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            amdgpu-cargo-diff-
+            amdgpu-cargo-
+
+      - name: Sanity-check the GPU
+        run: |
+          vulkaninfo --summary
+          # Fail fast if no AMD device is exposed — the rest of the
+          # job would silently fall through to whichever ICD got
+          # picked, which would defeat the purpose.
+          vulkaninfo --summary | grep -E "AMD|RADV" || \
+            { echo "::error::no AMD/RADV device visible to Vulkan"; exit 1; }
+
+      - name: Differential tests (vulkan lane on real AMDGPU)
+        env:
+          # Pin to RADV so we don't accidentally fall back to
+          # lavapipe if the runner has both ICDs registered.
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
         run: cargo test --test differential --no-default-features --features vulkan
