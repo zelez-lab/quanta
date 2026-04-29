@@ -10,10 +10,12 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Proven theorems**        |  176   |
-| **TCB axioms (A1–A11)**    |   33   |
+| **Proven theorems**        |  ~232  |
+| **TCB axioms (A1–A13 + `kernel_body_compose`)** |   35   |
 | **Tools used**             |   5    |
 | **Backends covered**       |   5    |
+| **Source preservation (E)** |  proven (T590-T5B0) |
+| **Headless smoke tests** | 3 in CI (per-PR) |
 
 Verifiers in active use: **Lean 4** (semantics + axioms), **Verus**
 (code-matches-spec), **Kani** (bounded model checking), **herd7**
@@ -26,20 +28,48 @@ This is the **CompCert shape** — every property below ground level
 is named as an axiom; nothing is silently trusted.
 
 ```
-   Source preservation         (T59x — Rust→WASM→KernelOps; 058+059)
+   Source preservation         (T590-T5B0 ✅ — Lean, route a, step E; +
+                                kernel_body_compose axiom for body
+                                induction)
             │
-   Race freedom                (T606/T607 — Verus; 057)
+   Race freedom                (T606/T607 — Verus; step 057.
+                                Level 2 may-happen-in-parallel: open)
             │
-   Memory ordering             (T1600-T1622 — Lean axioms + herd7; 055+056)
+   Memory ordering             (T1600-T1622 — Lean axioms + herd7;
+                                055+056 ✅)
             │
-   Emitter correctness         (T1xx-T4xx — Lean+Verus+Kani; existing)
+   WebIDL conformance          (T1710-T1713 ✅ — Lean, step B″)
             │
-   API invariants              (T720-T754 — Verus; step 075)
+   Emitter correctness         (T1xx-T4xx — Lean+Verus+Kani; +T410 ✅
+                                lifted to theorem via A12+A13+T420,
+                                step B)
             │
-   Driver host                 (A10/A11 axioms — Lean; step 050+079)
+   API invariants              (T720-T754 ✅ — Verus; step 075)
+            │
+   Render-path no-silent-drops (T417 ✅ — Kani; step C wired set:
+                                SetTexture/Sampler/Value/ClearDepth/
+                                ClearStencil/SetStencilRef)
+            │
+   Driver host                 (A10 + A11 ✅ narrowed — irreducible
+                                WebIDL-surface floor; step 050+079+B⁰
+                                +B′+B″+B+C)
             │
    Hardware                    (A1-A5 axioms — Lean; existing)
 ```
+
+## Operational regression net (B‴, 2026-04-29)
+
+Three smoke tests run on every PR + main push via Playwright +
+headless Chromium with `--enable-unsafe-webgpu`:
+
+| Test | Path | Validates |
+|------|------|-----------|
+| `web_add_one` | compute | buffer = `[1, 2, …, 64]` byte-equal |
+| `web_triangle` | render | center pixel ≈ triangle blue |
+| `web_textured` | render w/ texture | 16 pixels match source `rgba(255,165,64,255)`; SetTexture+SetSampler wiring (step C) |
+
+Local: `cd web && npm run smoke` — 3 passed, 3.3s.
+CI: `.github/workflows/web-smoke.yml`.
 
 ## Theorem chains by area
 
