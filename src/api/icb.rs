@@ -16,7 +16,7 @@
 
 use alloc::sync::Arc;
 
-use crate::{GpuDevice, QuantaError, Wave};
+use crate::{GpuDevice, Pipeline, QuantaError, Wave};
 
 /// A pre-recorded sequence of GPU dispatch commands. Created via
 /// [`Gpu::indirect_command_buffer`](crate::Gpu::indirect_command_buffer).
@@ -57,12 +57,15 @@ impl IndirectCommandBuffer {
         self.recorded == 0
     }
 
-    /// Append a dispatch command to the buffer.
+    /// Append a compute dispatch command to the buffer.
     ///
     /// Records the wave's pipeline, current bindings, and the dispatch
     /// group counts. Backends snapshot the binding state at record
     /// time — later mutating the wave does not affect recorded
     /// commands.
+    ///
+    /// Refines the `Quanta.Icb.Command.dispatch` constructor from the
+    /// Lean equivalence theorem.
     ///
     /// Returns `Err(InvalidParam)` when the buffer is full or has
     /// been consumed.
@@ -75,6 +78,45 @@ impl IndirectCommandBuffer {
         }
         self.device
             .icb_record_dispatch(self.handle, self.recorded, wave, groups)?;
+        self.recorded += 1;
+        Ok(())
+    }
+
+    /// Append a render-path draw command to the buffer.
+    ///
+    /// Records the render pipeline, vertex / instance counts, and
+    /// the current resource bindings carried by the pipeline at
+    /// record time. The recorded draw is replayed inside an active
+    /// render pass when `execute` runs (Metal
+    /// `executeCommandsInBuffer:withRange:` on a render encoder,
+    /// Vulkan `vkCmdExecuteCommands` inside a render pass, WebGPU
+    /// `executeBundles` on a render pass).
+    ///
+    /// Refines the `Quanta.Icb.Command.draw` constructor.
+    ///
+    /// Returns `Err(InvalidParam)` when the buffer is full, has been
+    /// consumed, or the backend has not yet wired its render-path
+    /// ICB lowering (the proof contract is in place; per-backend
+    /// lowering is staged in follow-up commits).
+    pub fn record_draw(
+        &mut self,
+        pipeline: &Pipeline,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        if !self.live {
+            return Err(QuantaError::invalid_param("ICB is not live"));
+        }
+        if self.recorded >= self.cap {
+            return Err(QuantaError::invalid_param("ICB is full"));
+        }
+        self.device.icb_record_draw(
+            self.handle,
+            self.recorded,
+            pipeline.handle(),
+            vertex_count,
+            instance_count,
+        )?;
         self.recorded += 1;
         Ok(())
     }

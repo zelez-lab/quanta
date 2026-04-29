@@ -208,6 +208,36 @@ fn icb_re_execute_repeats_dispatches() {
     assert_eq!(result, vec![2.0; 4], "expected +2 (executed twice)");
 }
 
+// ─── Render-path recording (refines T7006) ───────────────────────────────
+
+#[test]
+fn icb_record_draw_extends_length_by_one() {
+    // T7006 refinement on the CPU device: record_draw appends the
+    // recorded sequence by exactly one Draw command. The CPU has
+    // no rasterizer, so execute replays the Draw arm as a no-op
+    // (still proof-correct: the recording shape is what T7006
+    // states, not the visible side-effect).
+    let gpu = quanta::init_cpu();
+    let pipeline = gpu.pipeline(&quanta::PipelineDesc::default()).unwrap();
+    let mut icb = gpu.indirect_command_buffer(4).unwrap();
+    assert_eq!(icb.len(), 0);
+    icb.record_draw(&pipeline, 6, 1).unwrap();
+    assert_eq!(icb.len(), 1);
+    icb.record_draw(&pipeline, 12, 2).unwrap();
+    assert_eq!(icb.len(), 2);
+    icb.execute_all().unwrap(); // CPU: Draw arm no-ops
+}
+
+#[test]
+fn icb_record_draw_fails_when_full() {
+    let gpu = quanta::init_cpu();
+    let pipeline = gpu.pipeline(&quanta::PipelineDesc::default()).unwrap();
+    let mut icb = gpu.indirect_command_buffer(1).unwrap();
+    icb.record_draw(&pipeline, 6, 1).unwrap();
+    let err = icb.record_draw(&pipeline, 6, 1).unwrap_err();
+    assert!(err.to_string().contains("full"), "got: {err}");
+}
+
 #[test]
 fn icb_drop_destroys_handle() {
     // Drop must release the underlying handle; subsequent

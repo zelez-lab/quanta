@@ -58,17 +58,29 @@ pub(super) struct VkIcb {
     pub(super) commands: Vec<VkIcbCommand>,
 }
 
-/// One recorded dispatch — snapshots the wave + group counts at
-/// record time so later wave mutations don't affect the recording.
-pub(super) struct VkIcbCommand {
-    pub(super) wave_handle: u64,
-    pub(super) bindings: [u64; crate::api::wave::MAX_BINDINGS],
-    pub(super) binding_count: u8,
-    pub(super) push_data: [u8; crate::api::wave::PUSH_DATA_CAP],
-    pub(super) push_len: u16,
-    pub(super) push_mask: u16,
-    pub(super) workgroup_size: [u32; 3],
-    pub(super) groups: [u32; 3],
+/// One recorded ICB command. Compute = Dispatch; render = Draw.
+/// Mirrors the Lean `Quanta.Icb.Command` sum type.
+pub(super) enum VkIcbCommand {
+    Dispatch {
+        wave_handle: u64,
+        bindings: [u64; crate::api::wave::MAX_BINDINGS],
+        binding_count: u8,
+        push_data: [u8; crate::api::wave::PUSH_DATA_CAP],
+        push_len: u16,
+        push_mask: u16,
+        workgroup_size: [u32; 3],
+        groups: [u32; 3],
+    },
+    /// Render-path draw. The replay refinement records the
+    /// parameters; live execution requires a real render-pass-
+    /// continued secondary command buffer + vkCmdExecuteCommands,
+    /// which is a future commit. T7006 is satisfied by the
+    /// recording shape alone.
+    Draw {
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    },
 }
 
 pub(super) struct VkQueryPool {

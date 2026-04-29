@@ -784,6 +784,30 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
+    fn icb_record_draw(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _pipeline: u64,
+        _vertex_count: u32,
+        _instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        // Metal's MTLIndirectRenderCommand uses a *separate*
+        // descriptor (DRAW / DRAW_INDEXED command types) and is
+        // recorded via `indirectRenderCommandAtIndex:`, then
+        // executed via `executeCommandsInBuffer:withRange:` on a
+        // *render* encoder inside an active render pass. Mixing
+        // it with the existing ConcurrentDispatch ICB requires a
+        // separate handle type. The proof contract (T7006) is met
+        // by the typed API; the native lowering lands as a future
+        // commit.
+        Err(QuantaError::invalid_param(
+            "Metal render-path ICB record_draw not yet implemented \
+             (requires a separate MTLIndirectCommandBuffer with \
+             DRAW command types)",
+        ))
+    }
+
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         let removed = self
             .icbs

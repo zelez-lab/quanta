@@ -556,7 +556,7 @@ impl GpuDevice for VulkanDevice {
         if index >= icb.cap {
             return Err(QuantaError::invalid_param("ICB index >= capacity"));
         }
-        icb.commands.push(super::device::VkIcbCommand {
+        icb.commands.push(super::device::VkIcbCommand::Dispatch {
             wave_handle: wave.handle,
             bindings: wave.bindings,
             binding_count: wave.binding_count,
@@ -565,6 +565,37 @@ impl GpuDevice for VulkanDevice {
             push_mask: wave.push_mask,
             workgroup_size: wave.workgroup_size,
             groups,
+        });
+        Ok(())
+    }
+
+    fn icb_record_draw(
+        &self,
+        handle: u64,
+        index: u32,
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        let mut icbs = self
+            .icbs
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let icb = icbs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+        if index != icb.commands.len() as u32 {
+            return Err(QuantaError::invalid_param(
+                "ICB record index must equal current length",
+            ));
+        }
+        if index >= icb.cap {
+            return Err(QuantaError::invalid_param("ICB index >= capacity"));
+        }
+        icb.commands.push(super::device::VkIcbCommand::Draw {
+            pipeline,
+            vertex_count,
+            instance_count,
         });
         Ok(())
     }
@@ -587,36 +618,73 @@ impl GpuDevice for VulkanDevice {
             }
             icb.commands[..count as usize]
                 .iter()
-                .map(|r| super::device::VkIcbCommand {
-                    wave_handle: r.wave_handle,
-                    bindings: r.bindings,
-                    binding_count: r.binding_count,
-                    push_data: r.push_data,
-                    push_len: r.push_len,
-                    push_mask: r.push_mask,
-                    workgroup_size: r.workgroup_size,
-                    groups: r.groups,
+                .map(|r| match r {
+                    super::device::VkIcbCommand::Dispatch {
+                        wave_handle,
+                        bindings,
+                        binding_count,
+                        push_data,
+                        push_len,
+                        push_mask,
+                        workgroup_size,
+                        groups,
+                    } => super::device::VkIcbCommand::Dispatch {
+                        wave_handle: *wave_handle,
+                        bindings: *bindings,
+                        binding_count: *binding_count,
+                        push_data: *push_data,
+                        push_len: *push_len,
+                        push_mask: *push_mask,
+                        workgroup_size: *workgroup_size,
+                        groups: *groups,
+                    },
+                    super::device::VkIcbCommand::Draw {
+                        pipeline,
+                        vertex_count,
+                        instance_count,
+                    } => super::device::VkIcbCommand::Draw {
+                        pipeline: *pipeline,
+                        vertex_count: *vertex_count,
+                        instance_count: *instance_count,
+                    },
                 })
                 .collect()
         };
         for rec in &snapshot {
-            // Reconstruct a transient Wave from the snapshot. Drop is
-            // a no-op (drop_fn = None), so the underlying pipeline
-            // handle is not double-freed.
-            let wave = Wave {
-                handle: rec.wave_handle,
-                bindings: rec.bindings,
-                binding_count: rec.binding_count,
-                texture_bindings: [0; crate::api::wave::MAX_TEXTURES],
-                texture_count: 0,
-                push_data: rec.push_data,
-                push_len: rec.push_len,
-                push_mask: rec.push_mask,
-                workgroup_size: rec.workgroup_size,
-                drop_fn: None,
-            };
-            let mut pulse = self.wave_dispatch_impl(&wave, rec.groups)?;
-            pulse.wait()?;
+            match rec {
+                super::device::VkIcbCommand::Dispatch {
+                    wave_handle,
+                    bindings,
+                    binding_count,
+                    push_data,
+                    push_len,
+                    push_mask,
+                    workgroup_size,
+                    groups,
+                } => {
+                    let wave = Wave {
+                        handle: *wave_handle,
+                        bindings: *bindings,
+                        binding_count: *binding_count,
+                        texture_bindings: [0; crate::api::wave::MAX_TEXTURES],
+                        texture_count: 0,
+                        push_data: *push_data,
+                        push_len: *push_len,
+                        push_mask: *push_mask,
+                        workgroup_size: *workgroup_size,
+                        drop_fn: None,
+                    };
+                    let mut pulse = self.wave_dispatch_impl(&wave, *groups)?;
+                    pulse.wait()?;
+                }
+                super::device::VkIcbCommand::Draw { .. } => {
+                    // Render-path replay would need a render-pass-
+                    // continued secondary CB + vkCmdExecuteCommands,
+                    // which requires the active render-pass context.
+                    // The recording shape (T7006) is satisfied; live
+                    // playback is deferred to a future commit.
+                }
+            }
         }
         Ok(())
     }

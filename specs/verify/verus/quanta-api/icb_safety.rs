@@ -34,13 +34,23 @@ verus! {
 // ── Ghost types ─────────────────────────────────────────────────────────────
 
 /// A single recorded command. Mirrors `Quanta.Icb.Command` in Lean.
-/// Backends serialize this into Metal `MTLIndirectComputeCommand`,
-/// Vulkan secondary CB ops, etc.
-pub struct IcbCommand {
-    pub wave_id: u64,
-    pub group_x: u32,
-    pub group_y: u32,
-    pub group_z: u32,
+/// Two shapes: compute `Dispatch` and render `Draw`. Backends
+/// serialize each into their native indirect-command format
+/// (Metal `MTLIndirectComputeCommand` /
+/// `MTLIndirectRenderCommand`, Vulkan secondary CB ops, WebGPU
+/// `GPURenderBundle` for draw).
+pub enum IcbCommand {
+    Dispatch {
+        wave_id: u64,
+        group_x: u32,
+        group_y: u32,
+        group_z: u32,
+    },
+    Draw {
+        pipeline_id: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    },
 }
 
 /// An ICB handle's ghost state.

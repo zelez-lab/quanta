@@ -33,29 +33,40 @@ struct CpuKernel {
     segments: Vec<(usize, usize)>,
 }
 
-/// A dispatch command recorded into an Indirect Command Buffer.
-///
-/// Snapshots the wave's pipeline + bindings + push-constants + group
-/// counts at record time; replayed sequentially during
-/// `indirect_buffer_execute`. This refines the abstract
-/// `Quanta.Icb.Command` model from the Lean equivalence theorem.
-struct RecordedDispatch {
-    wave_handle: u64,
-    bindings: [u64; crate::api::wave::MAX_BINDINGS],
-    binding_count: u8,
-    texture_bindings: [u64; crate::api::wave::MAX_TEXTURES],
-    texture_count: u8,
-    push_data: [u8; crate::api::wave::PUSH_DATA_CAP],
-    push_len: u16,
-    push_mask: u16,
-    workgroup_size: [u32; 3],
-    groups: [u32; 3],
+/// One recorded ICB command. Mirrors the Lean
+/// `Quanta.Icb.Command` sum type (Dispatch | Draw); the CPU
+/// device's `indirect_buffer_execute` folds over this list, which
+/// is the direct refinement of T7000.
+#[allow(clippy::large_enum_variant)]
+enum RecordedCommand {
+    Dispatch {
+        wave_handle: u64,
+        bindings: [u64; crate::api::wave::MAX_BINDINGS],
+        binding_count: u8,
+        texture_bindings: [u64; crate::api::wave::MAX_TEXTURES],
+        texture_count: u8,
+        push_data: [u8; crate::api::wave::PUSH_DATA_CAP],
+        push_len: u16,
+        push_mask: u16,
+        workgroup_size: [u32; 3],
+        groups: [u32; 3],
+    },
+    /// Render-path draw command. The CPU device has no rasterizer —
+    /// recording snapshots the parameters and `execute` replays
+    /// them as no-ops. The proof contract (T7006: record extends
+    /// the recorded sequence by exactly that command) is satisfied;
+    /// observable rendering side-effects belong to GPU backends.
+    Draw {
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    },
 }
 
 /// CPU-side ICB state — sized capacity + recorded commands.
 struct CpuIcb {
     cap: u32,
-    commands: Vec<RecordedDispatch>,
+    commands: Vec<RecordedCommand>,
 }
 
 /// CPU software device — executes GPU kernel IR without hardware.
@@ -520,7 +531,7 @@ impl GpuDevice for CpuDevice {
         if index >= icb.cap {
             return Err(QuantaError::invalid_param("ICB index >= capacity"));
         }
-        icb.commands.push(RecordedDispatch {
+        icb.commands.push(RecordedCommand::Dispatch {
             wave_handle: wave.handle,
             bindings: wave.bindings,
             binding_count: wave.binding_count,
@@ -535,11 +546,39 @@ impl GpuDevice for CpuDevice {
         Ok(())
     }
 
+    fn icb_record_draw(
+        &self,
+        handle: u64,
+        index: u32,
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        let mut icbs = self.icbs.lock().unwrap();
+        let icb = icbs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+        if index != icb.commands.len() as u32 {
+            return Err(QuantaError::invalid_param(
+                "ICB record index must equal current length",
+            ));
+        }
+        if index >= icb.cap {
+            return Err(QuantaError::invalid_param("ICB index >= capacity"));
+        }
+        icb.commands.push(RecordedCommand::Draw {
+            pipeline,
+            vertex_count,
+            instance_count,
+        });
+        Ok(())
+    }
+
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
         // Snapshot the recorded commands while holding the ICB lock,
         // then drop the lock before re-entering wave_dispatch (which
         // takes its own locks on buffers/kernels).
-        let snapshot: Vec<RecordedDispatch> = {
+        let snapshot: Vec<RecordedCommand> = {
             let icbs = self.icbs.lock().unwrap();
             let icb = icbs
                 .get(&handle)
@@ -551,38 +590,86 @@ impl GpuDevice for CpuDevice {
             }
             icb.commands[..count as usize]
                 .iter()
-                .map(|r| RecordedDispatch {
-                    wave_handle: r.wave_handle,
-                    bindings: r.bindings,
-                    binding_count: r.binding_count,
-                    texture_bindings: r.texture_bindings,
-                    texture_count: r.texture_count,
-                    push_data: r.push_data,
-                    push_len: r.push_len,
-                    push_mask: r.push_mask,
-                    workgroup_size: r.workgroup_size,
-                    groups: r.groups,
+                .map(|r| match r {
+                    RecordedCommand::Dispatch {
+                        wave_handle,
+                        bindings,
+                        binding_count,
+                        texture_bindings,
+                        texture_count,
+                        push_data,
+                        push_len,
+                        push_mask,
+                        workgroup_size,
+                        groups,
+                    } => RecordedCommand::Dispatch {
+                        wave_handle: *wave_handle,
+                        bindings: *bindings,
+                        binding_count: *binding_count,
+                        texture_bindings: *texture_bindings,
+                        texture_count: *texture_count,
+                        push_data: *push_data,
+                        push_len: *push_len,
+                        push_mask: *push_mask,
+                        workgroup_size: *workgroup_size,
+                        groups: *groups,
+                    },
+                    RecordedCommand::Draw {
+                        pipeline,
+                        vertex_count,
+                        instance_count,
+                    } => RecordedCommand::Draw {
+                        pipeline: *pipeline,
+                        vertex_count: *vertex_count,
+                        instance_count: *instance_count,
+                    },
                 })
                 .collect()
         };
         for rec in &snapshot {
-            // Reconstruct a transient Wave from the snapshot. Drop is
-            // a no-op (drop_fn = None), so this does not double-free
-            // any underlying kernel handle.
-            let wave = Wave {
-                handle: rec.wave_handle,
-                bindings: rec.bindings,
-                binding_count: rec.binding_count,
-                texture_bindings: rec.texture_bindings,
-                texture_count: rec.texture_count,
-                push_data: rec.push_data,
-                push_len: rec.push_len,
-                push_mask: rec.push_mask,
-                workgroup_size: rec.workgroup_size,
-                drop_fn: None,
-            };
-            let mut pulse = self.wave_dispatch(&wave, rec.groups)?;
-            pulse.wait()?;
+            match rec {
+                RecordedCommand::Dispatch {
+                    wave_handle,
+                    bindings,
+                    binding_count,
+                    texture_bindings,
+                    texture_count,
+                    push_data,
+                    push_len,
+                    push_mask,
+                    workgroup_size,
+                    groups,
+                } => {
+                    // Reconstruct a transient Wave from the snapshot.
+                    // Drop is a no-op (drop_fn = None), so this does
+                    // not double-free any underlying kernel handle.
+                    let wave = Wave {
+                        handle: *wave_handle,
+                        bindings: *bindings,
+                        binding_count: *binding_count,
+                        texture_bindings: *texture_bindings,
+                        texture_count: *texture_count,
+                        push_data: *push_data,
+                        push_len: *push_len,
+                        push_mask: *push_mask,
+                        workgroup_size: *workgroup_size,
+                        drop_fn: None,
+                    };
+                    let mut pulse = self.wave_dispatch(&wave, *groups)?;
+                    pulse.wait()?;
+                }
+                RecordedCommand::Draw {
+                    pipeline: _,
+                    vertex_count: _,
+                    instance_count: _,
+                } => {
+                    // CPU device has no rasterizer — recorded draws
+                    // replay as no-ops. T7006 (record-draw appends
+                    // to the sequence) is still satisfied; backends
+                    // with a real raster path provide the visible
+                    // side-effect.
+                }
+            }
         }
         Ok(())
     }

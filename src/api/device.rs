@@ -373,6 +373,27 @@ pub trait GpuDevice: Send + Sync {
         groups: [u32; 3],
     ) -> Result<(), QuantaError>;
 
+    /// Record a single render-path draw command at `index` in the
+    /// ICB. Default returns "not yet implemented" — backends opt in
+    /// by overriding when they wire their render bundle / indirect
+    /// render command lowering.
+    ///
+    /// Refines the `Quanta.Icb.Command.draw` constructor; the proof
+    /// contract (T7000 / T7006) holds for any backend that respects
+    /// the recorded order on execute.
+    fn icb_record_draw(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _pipeline: u64,
+        _vertex_count: u32,
+        _instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "render-path ICB record_draw not yet implemented on this backend",
+        ))
+    }
+
     /// Execute commands from an indirect command buffer.
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError>;
 

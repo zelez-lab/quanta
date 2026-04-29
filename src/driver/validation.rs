@@ -378,6 +378,18 @@ impl GpuDevice for ValidationDevice {
         self.inner.icb_record_dispatch(handle, index, wave, groups)
     }
 
+    fn icb_record_draw(
+        &self,
+        handle: u64,
+        index: u32,
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        self.inner
+            .icb_record_draw(handle, index, pipeline, vertex_count, instance_count)
+    }
+
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
         self.inner.indirect_buffer_execute(handle, count)
     }

@@ -49,15 +49,24 @@ pub(super) struct PipelineEntry {
     pub layout: u32,
 }
 
-/// One recorded dispatch for an ICB. Snapshots the wave + group
-/// counts at record time. Refines the abstract `Quanta.Icb.Command`
-/// from the Lean equivalence theorem.
-pub(super) struct WebgpuIcbCommand {
-    pub wave_handle: u64,
-    pub bindings: [u64; crate::api::wave::MAX_BINDINGS],
-    pub binding_count: u8,
-    pub workgroup_size: [u32; 3],
-    pub groups: [u32; 3],
+/// One recorded ICB command. Compute = Dispatch; render = Draw.
+/// Mirrors the Lean `Quanta.Icb.Command` sum type.
+pub(super) enum WebgpuIcbCommand {
+    Dispatch {
+        wave_handle: u64,
+        bindings: [u64; crate::api::wave::MAX_BINDINGS],
+        binding_count: u8,
+        workgroup_size: [u32; 3],
+        groups: [u32; 3],
+    },
+    /// Render-path draw — recording shape only. WebGPU's native
+    /// lowering is `GPURenderBundle`, which records into a render
+    /// pass context; that wiring is a future commit.
+    Draw {
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    },
 }
 
 /// One Indirect Command Buffer for the WebGPU driver.

@@ -1253,12 +1253,38 @@ impl QGpuDevice for WebgpuDevice {
         if index >= icb.cap {
             return Err(Self::err("ICB index >= capacity"));
         }
-        icb.commands.push(state::WebgpuIcbCommand {
+        icb.commands.push(state::WebgpuIcbCommand::Dispatch {
             wave_handle: wave.handle,
             bindings: wave.bindings,
             binding_count: wave.binding_count,
             workgroup_size: wave.workgroup_size,
             groups,
+        });
+        Ok(())
+    }
+
+    fn icb_record_draw(
+        &self,
+        handle: u64,
+        index: u32,
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        let mut icbs = self.state.icbs.0.borrow_mut();
+        let icb = icbs
+            .get_mut(&handle)
+            .ok_or_else(|| Self::err("ICB handle not found"))?;
+        if index != icb.commands.len() as u32 {
+            return Err(Self::err("ICB record index must equal current length"));
+        }
+        if index >= icb.cap {
+            return Err(Self::err("ICB index >= capacity"));
+        }
+        icb.commands.push(state::WebgpuIcbCommand::Draw {
+            pipeline,
+            vertex_count,
+            instance_count,
         });
         Ok(())
     }
@@ -1277,29 +1303,62 @@ impl QGpuDevice for WebgpuDevice {
             }
             icb.commands[..count as usize]
                 .iter()
-                .map(|r| state::WebgpuIcbCommand {
-                    wave_handle: r.wave_handle,
-                    bindings: r.bindings,
-                    binding_count: r.binding_count,
-                    workgroup_size: r.workgroup_size,
-                    groups: r.groups,
+                .map(|r| match r {
+                    state::WebgpuIcbCommand::Dispatch {
+                        wave_handle,
+                        bindings,
+                        binding_count,
+                        workgroup_size,
+                        groups,
+                    } => state::WebgpuIcbCommand::Dispatch {
+                        wave_handle: *wave_handle,
+                        bindings: *bindings,
+                        binding_count: *binding_count,
+                        workgroup_size: *workgroup_size,
+                        groups: *groups,
+                    },
+                    state::WebgpuIcbCommand::Draw {
+                        pipeline,
+                        vertex_count,
+                        instance_count,
+                    } => state::WebgpuIcbCommand::Draw {
+                        pipeline: *pipeline,
+                        vertex_count: *vertex_count,
+                        instance_count: *instance_count,
+                    },
                 })
                 .collect()
         };
         for rec in &snapshot {
-            let wave = Wave {
-                handle: rec.wave_handle,
-                bindings: rec.bindings,
-                binding_count: rec.binding_count,
-                texture_bindings: [0; crate::api::wave::MAX_TEXTURES],
-                texture_count: 0,
-                push_data: [0; crate::api::wave::PUSH_DATA_CAP],
-                push_len: 0,
-                push_mask: 0,
-                workgroup_size: rec.workgroup_size,
-                drop_fn: None,
-            };
-            self.wave_dispatch(&wave, rec.groups)?;
+            match rec {
+                state::WebgpuIcbCommand::Dispatch {
+                    wave_handle,
+                    bindings,
+                    binding_count,
+                    workgroup_size,
+                    groups,
+                } => {
+                    let wave = Wave {
+                        handle: *wave_handle,
+                        bindings: *bindings,
+                        binding_count: *binding_count,
+                        texture_bindings: [0; crate::api::wave::MAX_TEXTURES],
+                        texture_count: 0,
+                        push_data: [0; crate::api::wave::PUSH_DATA_CAP],
+                        push_len: 0,
+                        push_mask: 0,
+                        workgroup_size: *workgroup_size,
+                        drop_fn: None,
+                    };
+                    self.wave_dispatch(&wave, *groups)?;
+                }
+                state::WebgpuIcbCommand::Draw { .. } => {
+                    // Native render-bundle (GPURenderBundle) lowering
+                    // requires a render-pass encoder context; that
+                    // wiring is a future commit. T7006 is already
+                    // satisfied by the recording shape.
+                }
+            }
         }
         Ok(())
     }
