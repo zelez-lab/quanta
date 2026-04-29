@@ -1,20 +1,23 @@
 name: Differential CI (full lanes)
 
-# Step D.5 of step 077. Runs the differential test suite with the
-# Metal lane enabled, on top of the software lane that already runs
-# per-PR via `ci.yml`. This is the empirical complement to the 055 /
-# 056 memory-model axioms: every observed Metal output must agree
-# with the pure-Rust reference within tolerance (≤ 1 ULP for floats,
-# bit-exact for ints).
+# Step D.5 + D-ext.1 of step 077. Runs the differential test suite
+# against backends that aren't covered by per-PR CI:
+#   - Metal lane on macos-14 (real Apple GPU)
+#   - Vulkan lane on ubuntu-latest via Mesa lavapipe (software Vulkan)
+#
+# Together with the software lane (host-tests in ci.yml) and the
+# WGSL lane (web-smoke.yml), this covers four distinct compute
+# backends. Real-hardware AMDGPU stays out — needs a self-hosted
+# runner.
 #
 # Triggers:
 #   - `schedule`: nightly cron @ 07:00 UTC
 #   - `workflow_dispatch`: manual button in the Actions tab
 #   - `pull_request` with the `run-full-diff` label applied
 #
-# We don't run on every PR because the macOS-14 minutes budget is
-# tight; opt-in via the label gives the option to exercise the full
-# matrix on PRs that touch IR / emitter / driver code.
+# We don't run on every PR because runtime + macOS-14 minutes budget
+# are tight; opt-in via the label exercises the full matrix on PRs
+# that touch IR / emitter / driver code.
 
 on:
   schedule:
@@ -27,9 +30,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Skip on labeled PRs unless the label is `run-full-diff`.
+  # Schedule / workflow_dispatch always run.
   diff-metal:
-    # Skip on labeled PRs unless the label is `run-full-diff`. Schedule /
-    # workflow_dispatch always run.
     if: >-
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'run-full-diff')
@@ -55,3 +58,50 @@ jobs:
 
       - name: Differential tests (software + metal lanes)
         run: cargo test --test differential --features software,metal
+
+  diff-vulkan:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'run-full-diff')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-cargo-diff-vulkan-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-cargo-diff-vulkan-
+            ubuntu-cargo-
+
+      # lavapipe = Mesa's software Vulkan implementation. Lets the
+      # GitHub-hosted runner (no GPU) expose a Vulkan ICD that the
+      # Quanta vulkan driver discovers via `vkCreateInstance` +
+      # `vkEnumeratePhysicalDevices`. Validation layers help surface
+      # any spec violations the kernel-emitter chain might introduce.
+      - name: Install Mesa Vulkan + validation layers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            libvulkan-dev \
+            vulkan-validationlayers
+          vulkaninfo --summary || true
+
+      - name: Differential tests (vulkan lane via lavapipe)
+        env:
+          # Force lavapipe (the LLVM-based software rasterizer) so the
+          # job is deterministic regardless of which ICDs Mesa
+          # registers on the runner image.
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: cargo test --test differential --no-default-features --features vulkan

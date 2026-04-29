@@ -22,7 +22,7 @@ pub fn run_reference() -> RawOutput {
     }
 }
 
-#[cfg(any(feature = "software", feature = "metal"))]
+#[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
 fn build_def() -> quanta::kernel::KernelDef {
     use quanta::kernel::*;
     KernelDef {
@@ -66,7 +66,7 @@ fn build_def() -> quanta::kernel::KernelDef {
     }
 }
 
-#[cfg(any(feature = "software", feature = "metal"))]
+#[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
 fn dispatch_on(gpu: &quanta::Gpu, lane: Lane) -> RawOutput {
     let def = build_def();
     let fctr = gpu.field::<u32>(1).unwrap();
@@ -94,4 +94,10 @@ pub fn run_software() -> RawOutput {
 pub fn run_metal() -> RawOutput {
     let gpu = quanta::init().expect("metal lane requires a metal-capable device");
     dispatch_on(&gpu, Lane::Metal)
+}
+
+#[cfg(feature = "vulkan")]
+pub fn run_vulkan() -> RawOutput {
+    let gpu = quanta::init().expect("vulkan lane requires a vulkan-capable device");
+    dispatch_on(&gpu, Lane::Vulkan)
 }

@@ -16,7 +16,7 @@ and the verifier output.
 | **Backends covered**       |   5    |
 | **Source preservation (E)** |  proven (T590-T5B0) |
 | **Headless smoke tests** | 3 in CI (per-PR) |
-| **Differential CI kernels** | 3 (saxpy, reduce_sum, counter) × {software, WGSL, Metal*} |
+| **Differential CI kernels** | 3 (saxpy, reduce_sum, counter) × {software, WGSL, Metal*, Vulkan*} |
 
 Verifiers in active use: **Lean 4** (semantics + axioms), **Verus**
 (code-matches-spec), **Kani** (bounded model checking), **herd7**
@@ -90,7 +90,8 @@ reference oracle within tolerance.
 | Reference (pure Rust) | every test invocation | — |
 | Software (CpuDevice) | every PR + main push | `.github/workflows/ci.yml` |
 | WGSL (Chrome+Dawn) | every PR + main push | `.github/workflows/web-smoke.yml` |
-| Metal | nightly cron + `run-full-diff` PR label + manual | `.github/workflows/diff-full.yml` |
+| Metal (macOS) | nightly cron + `run-full-diff` PR label + manual | `.github/workflows/diff-full.yml` |
+| Vulkan (lavapipe) | nightly cron + `run-full-diff` PR label + manual | `.github/workflows/diff-full.yml` |
 
 Local:
 ```sh
@@ -98,6 +99,8 @@ Local:
 cargo test --test differential --features software --no-default-features
 # software + metal (macOS, nightly slice)
 cargo test --test differential --features software,metal
+# vulkan via lavapipe (Linux, nightly slice; needs libvulkan-dev + mesa-vulkan-drivers)
+cargo test --test differential --no-default-features --features vulkan
 # WGSL lane (browser)
 cd web && npm run smoke    # exercises web_diff page
 ```
@@ -105,11 +108,12 @@ cd web && npm run smoke    # exercises web_diff page
 The `counter` kernel — N atomic_adds against a single cell, expected
 final value = N — is the empirical gate on backend atomic semantics.
 A non-atomic implementation produces a value < N; the backend
-disagrees with the reference and the test fails. Vulkan, AMDGPU
-(via SPIR-V), and explicit fence/ordering kernels (release/acquire
-litmus pairs) are tracked as **D-extended**: the IR currently
-provides only implicit-SeqCst atomics, so explicit ordering tests
-need an IR extension before they can land.
+disagrees with the reference and the test fails. Real-hardware
+AMDGPU (SPIR-V on actual silicon) and explicit fence/ordering
+kernels (release/acquire litmus pairs) are tracked as
+**D-extended**: AMDGPU needs a self-hosted runner; explicit
+ordering tests need an IR extension because the current `AtomicOp`
+has no ordering metadata.
 
 ## Theorem chains by area
 

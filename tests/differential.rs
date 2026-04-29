@@ -9,21 +9,21 @@
 //!
 //! Per-PR (host-tests in ci.yml) enables the `software` lane.
 //! Nightly + `run-full-diff`-labelled PRs (diff-full.yml) additionally
-//! enable the `metal` lane on macOS runners. WGSL lane runs through
-//! `web-smoke.yml` against examples/web_diff/.
+//! enable the `metal` lane on macOS runners and the `vulkan` lane on
+//! ubuntu via Mesa lavapipe. WGSL lane runs through `web-smoke.yml`
+//! against examples/web_diff/.
 //!
 //! Run locally:
 //!   cargo test --test differential --features software --no-default-features
-//!   cargo test --test differential --features software,metal  # macOS
+//!   cargo test --test differential --features software,metal           # macOS
+//!   cargo test --test differential --no-default-features --features vulkan  # Linux + libvulkan-dev
 
-#![cfg(any(feature = "software", feature = "metal"))]
+#![cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
 
 #[path = "diff/mod.rs"]
 mod diff;
 
-#[cfg(any(feature = "software", feature = "metal"))]
 use diff::compare::{compare_f32, compare_u32};
-#[cfg(any(feature = "software", feature = "metal"))]
 use diff::kernels::{counter, reduce_sum, saxpy};
 
 // ── Reference oracle self-consistency ────────────────────────────────
@@ -101,6 +101,38 @@ fn reduce_sum_metal_bit_exact_versus_reference() {
 fn counter_metal_bit_exact_versus_reference() {
     let oracle = counter::run_reference();
     let candidate = counter::run_metal();
+    if let Err(div) = compare_u32(&oracle, &candidate) {
+        panic!("counter divergence: {}", div);
+    }
+}
+
+// ── Vulkan lane (nightly + label-gated; ubuntu via lavapipe) ─────────
+
+#[cfg(feature = "vulkan")]
+#[test]
+fn saxpy_vulkan_within_one_ulp_of_reference() {
+    let oracle = saxpy::run_reference();
+    let candidate = saxpy::run_vulkan();
+    if let Err(div) = compare_f32(&oracle, &candidate, 1) {
+        panic!("SAXPY divergence: {}", div);
+    }
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+fn reduce_sum_vulkan_bit_exact_versus_reference() {
+    let oracle = reduce_sum::run_reference();
+    let candidate = reduce_sum::run_vulkan();
+    if let Err(div) = compare_u32(&oracle, &candidate) {
+        panic!("reduce_sum divergence: {}", div);
+    }
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+fn counter_vulkan_bit_exact_versus_reference() {
+    let oracle = counter::run_reference();
+    let candidate = counter::run_vulkan();
     if let Err(div) = compare_u32(&oracle, &candidate) {
         panic!("counter divergence: {}", div);
     }
