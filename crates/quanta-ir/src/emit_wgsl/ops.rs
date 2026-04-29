@@ -216,8 +216,9 @@ pub(super) fn emit_op(
                 val.0
             ));
         }
-        // WGSL atomicCompareExchangeWeak is SeqCst by spec; `order` is
-        // ignored here, same as AtomicOp above.
+        // WGSL atomicCompareExchangeWeak is SeqCst by spec; both
+        // `success_order` and `failure_order` are ignored here, same
+        // as AtomicOp above.
         KernelOp::AtomicCas {
             dst,
             field,
@@ -225,7 +226,8 @@ pub(super) fn emit_op(
             expected,
             desired,
             ty,
-            order: _,
+            success_order: _,
+            failure_order: _,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             out.push_str(&format!(

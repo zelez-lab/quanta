@@ -205,7 +205,8 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
             let expected = read_reg(r)?;
             let desired = read_reg(r)?;
             let ty = read_scalar_type(r)?;
-            let order = read_memory_order(r)?;
+            let success_order = read_memory_order(r)?;
+            let failure_order = read_memory_order(r)?;
             Ok(KernelOp::AtomicCas {
                 dst,
                 field,
@@ -213,7 +214,8 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
                 expected,
                 desired,
                 ty,
-                order,
+                success_order,
+                failure_order,
             })
         }
 

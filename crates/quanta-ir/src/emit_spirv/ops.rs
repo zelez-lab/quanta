@@ -867,7 +867,8 @@ impl SpvEmitter {
                 expected,
                 desired,
                 ty,
-                order,
+                success_order,
+                failure_order: _,
             } => {
                 let (var_id, elem_ty, _) = *self
                     .field_vars
@@ -887,7 +888,11 @@ impl SpvEmitter {
                 );
 
                 let scope = self.emit_constant_u32(1); // Device
-                let order_bits: u32 = match order {
+                // SPIR-V `OpAtomicCompareExchange` takes `Equal` and
+                // `Unequal` semantics; we use `success_order` for both
+                // since `failure ≤ success` and SPIR-V doesn't enforce
+                // the LLVM split.
+                let order_bits: u32 = match success_order {
                     crate::MemoryOrder::Relaxed => 0,
                     crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
                     crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,

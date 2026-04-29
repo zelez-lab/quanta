@@ -417,6 +417,8 @@ fn every_kernel_op_variant_compiles() {
             expected: Reg(0),
             desired: Reg(0),
             ty: ScalarType::U32,
+            success_order: quanta_ir::MemoryOrder::SeqCst,
+            failure_order: quanta_ir::MemoryOrder::SeqCst,
         },
         KernelOp::WaveShuffle {
             dst: Reg(23),

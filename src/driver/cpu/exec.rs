@@ -198,7 +198,8 @@ pub(super) fn execute_ops(
                 expected,
                 desired,
                 ty,
-                order: _,
+                success_order: _,
+                failure_order: _,
             } => {
                 let idx = reg(ctx, index)?.as_u32();
                 let exp = reg(ctx, expected)?;

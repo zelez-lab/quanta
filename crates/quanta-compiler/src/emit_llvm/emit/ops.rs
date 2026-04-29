@@ -640,28 +640,31 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             expected,
             desired,
             ty,
-            order,
+            success_order,
+            failure_order,
         } => {
-            // Both success and failure orderings are derived from the
-            // single MemoryOrder field. LLVM requires that failure
-            // ordering ≤ success ordering, and that failure is never
-            // Release/AcquireRelease. For SeqCst/AcqRel this means we
-            // pass Monotonic on the failure path.
-            let llvm_success = match order {
-                quanta_ir::MemoryOrder::Relaxed => AtomicOrdering::Monotonic,
-                quanta_ir::MemoryOrder::Acquire => AtomicOrdering::Acquire,
-                quanta_ir::MemoryOrder::Release => AtomicOrdering::Release,
-                quanta_ir::MemoryOrder::AcqRel => AtomicOrdering::AcquireRelease,
-                quanta_ir::MemoryOrder::SeqCst => AtomicOrdering::SequentiallyConsistent,
-            };
-            let llvm_failure = match order {
-                quanta_ir::MemoryOrder::Relaxed | quanta_ir::MemoryOrder::Release => {
-                    AtomicOrdering::Monotonic
+            // LLVM `cmpxchg` takes two orderings (success / failure)
+            // with the constraints `failure ≤ success` and
+            // `failure ∉ {Release, AcqRel}`. Map both IR fields to
+            // LLVM AtomicOrdering, then clamp `failure` if a caller
+            // chose an invalid combination.
+            let map_order = |order: &quanta_ir::MemoryOrder| -> AtomicOrdering {
+                match order {
+                    quanta_ir::MemoryOrder::Relaxed => AtomicOrdering::Monotonic,
+                    quanta_ir::MemoryOrder::Acquire => AtomicOrdering::Acquire,
+                    quanta_ir::MemoryOrder::Release => AtomicOrdering::Release,
+                    quanta_ir::MemoryOrder::AcqRel => AtomicOrdering::AcquireRelease,
+                    quanta_ir::MemoryOrder::SeqCst => AtomicOrdering::SequentiallyConsistent,
                 }
-                quanta_ir::MemoryOrder::Acquire | quanta_ir::MemoryOrder::AcqRel => {
+            };
+            let llvm_success = map_order(success_order);
+            // Clamp failure: never Release/AcqRel; if SeqCst on success,
+            // failure must be SeqCst or weaker.
+            let llvm_failure = match failure_order {
+                quanta_ir::MemoryOrder::Release | quanta_ir::MemoryOrder::AcqRel => {
                     AtomicOrdering::Acquire
                 }
-                quanta_ir::MemoryOrder::SeqCst => AtomicOrdering::SequentiallyConsistent,
+                _ => map_order(failure_order),
             };
             if let Some((ptr, scalar_ty)) = ectx.slot_to_arg.get(field) {
                 let idx = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, index)?;

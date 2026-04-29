@@ -307,9 +307,21 @@ impl SpvEmitter {
                 expected,
                 desired,
                 ty,
-                order,
+                success_order,
+                failure_order: _,
             } => {
-                self.emit_op_atomic_cas(*dst, *field, *index, *expected, *desired, *ty, *order)?;
+                // SPIR-V `OpAtomicCompareExchange` takes a single scope/
+                // semantics pair; we use `success_order` since LLVM's
+                // constraint guarantees it dominates `failure_order`.
+                self.emit_op_atomic_cas(
+                    *dst,
+                    *field,
+                    *index,
+                    *expected,
+                    *desired,
+                    *ty,
+                    *success_order,
+                )?;
             }
 
             KernelOp::WaveShuffle {

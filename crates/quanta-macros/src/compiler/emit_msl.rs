@@ -688,7 +688,8 @@ fn emit_msl_op(
             expected,
             desired,
             ty,
-            order: _,
+            success_order: _,
+            failure_order: _,
         } => {
             let fname = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             out.push_str(&format!(
