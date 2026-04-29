@@ -51,6 +51,9 @@ import Quanta.KRust.Preservation
 -- End-to-end source preservation (E.5)
 import Quanta.KRust.EndToEnd
 
+-- Indirect Command Buffers (steps 032 + 033)
+import Quanta.Icb
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
