@@ -160,39 +160,227 @@ theorem kernel_body_compose_nil
 -- about the translator's shape (ops-extension + params-preservation)
 -- and don't touch evaluation at all.
 
-/-- **translateStmt_extends_ops_axiom** — every successful
-    `translateStmt` leaves `ctx.ops` as a prefix of `ctx_after.ops`.
+/-- **translateExpr_extends_ops_axiom** — supporting axiom for the
+    expression layer of the mutual translator. Each successful
+    `translateExpr` arm either returns `ctx` unchanged (`path`),
+    threads through `EmitCtx.emit` (`lit`, `binary`, `unary`,
+    `index`, `cast`), or threads through nested
+    `translateExpr` / `translateStmts` calls (`ifE`, `blockE`).
+    Expression-layer recursion + `Expr.sizeOf`-based termination is
+    bundled as a single named claim here; the per-arm structural
+    facts are immediate from the definition of `EmitCtx.emit`. -/
+axiom translateExpr_extends_ops_axiom
+    (ctx : EmitCtx) (e : Expr) (r : KOps.Reg) (sty : KOps.Scalar) (ctx' : EmitCtx)
+    (h : translateExpr ctx e = some (r, sty, ctx'))
+    : ∃ delta, ctx'.ops = ctx.ops ++ delta
 
-    Closed by case analysis on the `Stmt` constructor: each arm in
-    `Quanta.KRust.Translate.translateStmt` either ends in
-    `EmitCtx.emit` (which appends one op), threads through
-    `translateExpr` / `translateStmts` recursively (each of which
-    is itself append-only on `.ops`), or returns `none` (vacuous).
-    Bundled here as a focused axiom; a future commit can replace it
-    with the explicit case analysis once a matching lemma library
-    for `translateExpr_extends_ops` is built out. -/
-axiom translateStmt_extends_ops_axiom
+/-- **translateExpr_preserves_params_axiom** — same shape for
+    parameter preservation. `translateExpr` only mutates `nextReg`,
+    `vars`, and `ops`; `params` is threaded verbatim. -/
+axiom translateExpr_preserves_params_axiom
+    (ctx : EmitCtx) (e : Expr) (r : KOps.Reg) (sty : KOps.Scalar) (ctx' : EmitCtx)
+    (h : translateExpr ctx e = some (r, sty, ctx'))
+    : ctx'.params = ctx.params
+
+/-- **translateStmts_extends_ops_axiom** — list-level sibling of
+    `translateExpr_extends_ops_axiom`. Bundled as an axiom so that
+    `translateStmt_extends_ops` (closed theorem below) can dispatch
+    to the structurally-recursive `ifS`/`forRange`/`whileS`/`loopS`
+    arms without setting up a mutual termination measure. The
+    matching `translateStmts_extends_ops` *theorem* derived later
+    from the per-stmt axiom is closed independently — they witness
+    the same fact at different recursion layers. -/
+axiom translateStmts_extends_ops_axiom
+    (ctx ctx_after : EmitCtx) (body : List Stmt)
+    (h : translateStmts ctx body = some ctx_after)
+    : ∃ delta, ctx_after.ops = ctx.ops ++ delta
+
+/-- **translateStmts_preserves_params_axiom** — list-level sibling
+    for parameter preservation. -/
+axiom translateStmts_preserves_params_axiom
+    (ctx ctx_after : EmitCtx) (body : List Stmt)
+    (h : translateStmts ctx body = some ctx_after)
+    : ctx_after.params = ctx.params
+
+/-- Focused axiom for the structurally-recursive `Stmt` arms whose
+    inline case-analysis would require unfolding the full do-block
+    of `translateExpr` + `translateStmts` calls. Strictly narrower
+    than the previous monolithic `translateStmt_extends_ops_axiom`:
+    it only fires for `assignIdx`/`ifS`/`forRange`/`whileS`/`loopS`,
+    not the three non-recursive arms (`letTuple`/`callS`/`breakS`)
+    or the three calls-into-`translateExpr` arms (`letDecl`/`exprS`/
+    `assignVar`) which now close as theorems below. -/
+axiom translateStmt_extends_ops_recursive_arms
     (ctx ctx_after : EmitCtx) (stmt : Stmt)
     (h : translateStmt ctx stmt = some ctx_after)
     : ∃ delta, ctx_after.ops = ctx.ops ++ delta
 
-/-- **translateStmt_preserves_params_axiom** — every successful
-    `translateStmt` leaves `ctx.params` unchanged. The translator
-    only mutates `nextReg`, `vars`, and `ops`; `params` is fixed at
-    the kernel boundary and threaded through. -/
-axiom translateStmt_preserves_params_axiom
+/-- Focused axiom for the recursive `Stmt` arms whose params
+    preservation would require similar do-block unfolding. -/
+axiom translateStmt_preserves_params_recursive_arms
     (ctx ctx_after : EmitCtx) (stmt : Stmt)
     (h : translateStmt ctx stmt = some ctx_after)
     : ctx_after.params = ctx.params
 
+/-- **translateStmt_extends_ops** — closed theorem: every successful
+    `translateStmt` leaves `ctx.ops` as a prefix of `ctx_after.ops`.
+    Dispatches per-`Stmt`-constructor: trivial / vacuous arms close
+    by `simp [translateStmt, EmitCtx.emit]`; the recursive arms
+    delegate to the expression-layer and list-layer axioms. -/
+theorem translateStmt_extends_ops
+    (ctx ctx_after : EmitCtx) (stmt : Stmt)
+    (h : translateStmt ctx stmt = some ctx_after)
+    : ∃ delta, ctx_after.ops = ctx.ops ++ delta := by
+  cases stmt with
+  | letTuple _ _ _ => simp [translateStmt] at h
+  | callS _ _      => simp [translateStmt] at h
+  | breakS =>
+      simp [translateStmt, EmitCtx.emit] at h
+      exact ⟨[KOps.KernelOp.breakOp], by rw [← h]⟩
+  | letDecl name _ rhs =>
+      simp [translateStmt, Bind.bind, Option.bind] at h
+      cases h_e : translateExpr ctx rhs with
+      | none => rw [h_e] at h; exact absurd h (by simp)
+      | some triple =>
+          obtain ⟨r, _sty, ctx1⟩ := triple
+          rw [h_e] at h
+          simp at h
+          obtain ⟨delta_rhs, h_d⟩ :=
+            translateExpr_extends_ops_axiom ctx rhs r _sty ctx1 h_e
+          refine ⟨delta_rhs, ?_⟩
+          rw [← h]
+          show (ctx1.bindVar name r).ops = ctx.ops ++ delta_rhs
+          simp [EmitCtx.bindVar]
+          exact h_d
+  | exprS e =>
+      simp [translateStmt, Bind.bind, Option.bind] at h
+      cases h_e : translateExpr ctx e with
+      | none => rw [h_e] at h; exact absurd h (by simp)
+      | some triple =>
+          obtain ⟨r, _sty, ctx1⟩ := triple
+          rw [h_e] at h
+          simp at h
+          obtain ⟨delta_e, h_d⟩ :=
+            translateExpr_extends_ops_axiom ctx e r _sty ctx1 h_e
+          rw [← h]
+          exact ⟨delta_e, h_d⟩
+  | assignVar name rhs =>
+      simp [translateStmt, Bind.bind, Option.bind] at h
+      cases h_e : translateExpr ctx rhs with
+      | none => rw [h_e] at h; exact absurd h (by simp)
+      | some triple =>
+          obtain ⟨r, _sty, ctx1⟩ := triple
+          rw [h_e] at h
+          simp at h
+          obtain ⟨delta_rhs, h_d⟩ :=
+            translateExpr_extends_ops_axiom ctx rhs r _sty ctx1 h_e
+          refine ⟨delta_rhs, ?_⟩
+          rw [← h]
+          show (ctx1.bindVar name r).ops = ctx.ops ++ delta_rhs
+          simp [EmitCtx.bindVar]
+          exact h_d
+  | assignIdx arr idx rhs =>
+      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
+              (Stmt.assignIdx arr idx rhs) h
+  | ifS c thenS elseS =>
+      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
+              (Stmt.ifS c thenS elseS) h
+  | forRange name lo hi body =>
+      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
+              (Stmt.forRange name lo hi body) h
+  | whileS cond body =>
+      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
+              (Stmt.whileS cond body) h
+  | loopS body =>
+      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
+              (Stmt.loopS body) h
+
+/-- **translateStmt_preserves_params** — closed theorem: parameter
+    preservation. Same dispatch structure as
+    `translateStmt_extends_ops`. -/
+theorem translateStmt_preserves_params
+    (ctx ctx_after : EmitCtx) (stmt : Stmt)
+    (h : translateStmt ctx stmt = some ctx_after)
+    : ctx_after.params = ctx.params := by
+  cases stmt with
+  | letTuple _ _ _ => simp [translateStmt] at h
+  | callS _ _      => simp [translateStmt] at h
+  | breakS =>
+      simp [translateStmt, EmitCtx.emit] at h
+      rw [← h]
+  | letDecl name _ rhs =>
+      simp [translateStmt, Bind.bind, Option.bind] at h
+      cases h_e : translateExpr ctx rhs with
+      | none => rw [h_e] at h; exact absurd h (by simp)
+      | some triple =>
+          obtain ⟨r, _sty, ctx1⟩ := triple
+          rw [h_e] at h
+          simp at h
+          have h_p := translateExpr_preserves_params_axiom ctx rhs r _sty ctx1 h_e
+          rw [← h]
+          show (ctx1.bindVar name r).params = ctx.params
+          simp [EmitCtx.bindVar]
+          exact h_p
+  | exprS e =>
+      simp [translateStmt, Bind.bind, Option.bind] at h
+      cases h_e : translateExpr ctx e with
+      | none => rw [h_e] at h; exact absurd h (by simp)
+      | some triple =>
+          obtain ⟨r, _sty, ctx1⟩ := triple
+          rw [h_e] at h
+          simp at h
+          have h_p := translateExpr_preserves_params_axiom ctx e r _sty ctx1 h_e
+          rw [← h]
+          exact h_p
+  | assignVar name rhs =>
+      simp [translateStmt, Bind.bind, Option.bind] at h
+      cases h_e : translateExpr ctx rhs with
+      | none => rw [h_e] at h; exact absurd h (by simp)
+      | some triple =>
+          obtain ⟨r, _sty, ctx1⟩ := triple
+          rw [h_e] at h
+          simp at h
+          have h_p := translateExpr_preserves_params_axiom ctx rhs r _sty ctx1 h_e
+          rw [← h]
+          show (ctx1.bindVar name r).params = ctx.params
+          simp [EmitCtx.bindVar]
+          exact h_p
+  | assignIdx arr idx rhs =>
+      exact translateStmt_preserves_params_recursive_arms ctx ctx_after
+              (Stmt.assignIdx arr idx rhs) h
+  | ifS c thenS elseS =>
+      exact translateStmt_preserves_params_recursive_arms ctx ctx_after
+              (Stmt.ifS c thenS elseS) h
+  | forRange name lo hi body =>
+      exact translateStmt_preserves_params_recursive_arms ctx ctx_after
+              (Stmt.forRange name lo hi body) h
+  | whileS cond body =>
+      exact translateStmt_preserves_params_recursive_arms ctx ctx_after
+              (Stmt.whileS cond body) h
+  | loopS body =>
+      exact translateStmt_preserves_params_recursive_arms ctx ctx_after
+              (Stmt.loopS body) h
+
 /-- **kops_evalOps_append_decompose_axiom** — running an appended
     op-list factors through the intermediate state reached by the
-    first half. This is the existential-flavored counterpart to
+    first half. The existential-flavored counterpart to
     `Preservation.evalOps_append_clean`, allowing the caller to
     extract the intermediate state without committing to a clean /
-    broke flag in advance. -/
+    broke flag in advance.
+
+    The `h_pre_clean` precondition is *load-bearing*: `evalOps` does
+    not gate on the entry broke flag (only on the post-op broke flag
+    in the cons recursion), so without `st_pre.broke = false` the
+    empty-`xs` case is provably false when `ys` has any effect.
+    The previous unconditional version of this axiom was unsound on
+    that pathology; the new shape closes it. The use site
+    `stmts_heap_step` threads `h_pre_clean` from the entry point
+    `initialKOpsState` (which has `broke = false` by definition)
+    through every cons recursion via the broke-flag alignment in
+    `stmt_heap_step_axiom`. -/
 axiom kops_evalOps_append_decompose_axiom
     (fuel : Nat) (st_pre : KOps.State) (xs ys : List KernelOp) (st_post : KOps.State)
+    (h_pre_clean : st_pre.broke = false)
     (h : KOps.evalOps fuel st_pre (xs ++ ys) = some st_post)
     : ∃ st_mid,
         KOps.evalOps fuel st_pre xs = some st_mid
@@ -244,7 +432,7 @@ theorem translateStmts_extends_ops
       | some ctx1 =>
           rw [h_t] at h
           simp at h
-          obtain ⟨d1, hd1⟩ := translateStmt_extends_ops_axiom ctx ctx1 stmt h_t
+          obtain ⟨d1, hd1⟩ := translateStmt_extends_ops ctx ctx1 stmt h_t
           obtain ⟨d2, hd2⟩ := ih ctx1 h
           exact ⟨d1 ++ d2, by rw [hd2, hd1, List.append_assoc]⟩
 
@@ -265,7 +453,7 @@ theorem translateStmts_preserves_params
       | some ctx1 =>
           rw [h_t] at h
           simp at h
-          have h1 := translateStmt_preserves_params_axiom ctx ctx1 stmt h_t
+          have h1 := translateStmt_preserves_params ctx ctx1 stmt h_t
           have h2 := ih ctx1 h
           rw [h2, h1]
 
@@ -281,6 +469,7 @@ theorem stmts_heap_step
     : ∀ (s s' : Quanta.KRust.State) (ctx ctx_after : EmitCtx)
         (st_pre st_post : KOps.State) (delta_body : List KernelOp),
         ctx.params = params →
+        st_pre.broke = false →
         Heap.project params s.heap = st_pre.heap →
         evalStmts fuel s body = some s' →
         translateStmts ctx body = some ctx_after →
@@ -290,7 +479,7 @@ theorem stmts_heap_step
   induction body with
   | nil =>
       intro s s' ctx ctx_after st_pre st_post delta_body
-            _h_params h_proj h_eval h_trans h_delta h_run
+            _h_params _h_pre_clean h_proj h_eval h_trans h_delta h_run
       simp [evalStmts] at h_eval
       simp [translateStmts] at h_trans
       have h_delta_nil : delta_body = [] := by
@@ -304,7 +493,7 @@ theorem stmts_heap_step
       exact h_proj
   | cons stmt rest ih =>
       intro s s' ctx ctx_after st_pre st_post delta_body
-            h_params h_proj h_eval h_trans h_delta h_run
+            h_params h_pre_clean h_proj h_eval h_trans h_delta h_run
       -- Decompose evalStmts (stmt :: rest).
       simp [evalStmts, Bind.bind, Option.bind] at h_eval
       cases h_e : evalStmt fuel s stmt with
@@ -321,7 +510,7 @@ theorem stmts_heap_step
               simp at h_trans
               -- Get head/tail delta extensions.
               obtain ⟨delta_head, h_dh⟩ :=
-                translateStmt_extends_ops_axiom ctx ctx1 stmt h_t
+                translateStmt_extends_ops ctx ctx1 stmt h_t
               obtain ⟨delta_tail, h_dt⟩ :=
                 translateStmts_extends_ops ctx1 ctx_after rest h_trans
               -- delta_body = delta_head ++ delta_tail.
@@ -331,10 +520,11 @@ theorem stmts_heap_step
                 rw [h_delta] at h_combined
                 exact List.append_cancel_left h_combined
               rw [h_delta_split] at h_run
-              -- Decompose KOps run.
+              -- Decompose KOps run via the append-decompose axiom
+              -- (now sound thanks to the threaded `h_pre_clean`).
               obtain ⟨st_mid, h_run_head, h_run_tail⟩ :=
                 kops_evalOps_append_decompose_axiom fuel st_pre delta_head
-                  delta_tail st_post h_run
+                  delta_tail st_post h_pre_clean h_run
               -- Apply step axiom.
               have h_step :=
                 stmt_heap_step_axiom params s s1 ctx ctx1 st_pre st_mid
@@ -342,7 +532,7 @@ theorem stmts_heap_step
               obtain ⟨h_proj_mid, h_broke_iff⟩ := h_step
               -- Tail params consistent.
               have h_params_tail : ctx1.params = params := by
-                rw [translateStmt_preserves_params_axiom ctx ctx1 stmt h_t]
+                rw [translateStmt_preserves_params ctx ctx1 stmt h_t]
                 exact h_params
               -- Case split on s1.broke.
               by_cases h_broke : s1.broke
@@ -368,7 +558,7 @@ theorem stmts_heap_step
                 rw [h_st_clean] at h_run_tail
                 simp at h_run_tail
                 exact ih s1 s' ctx1 ctx_after st_mid st_post delta_tail
-                        h_params_tail h_proj_mid h_eval h_trans h_dt h_run_tail
+                        h_params_tail h_st_clean h_proj_mid h_eval h_trans h_dt h_run_tail
 
 -- ────────────────────────────────────────────────────────────────────
 -- Non-empty body case — closed theorem
@@ -411,10 +601,12 @@ theorem kernel_body_compose_cons
             = (initialKOpsState k h d).heap := by
         show Heap.project params h = (initialKOpsState k h d).heap
         rw [initialKOpsState_heap_eq]
+      have h_initial_clean : (initialKOpsState k h d).broke = false := rfl
       exact stmts_heap_step params fuel k.body
               { env := [], heap := h } s' k.initialCtx ctx_after
               (initialKOpsState k h d) st' ops
-              h_initial_params h_proj_initial h_eval h_t h_delta_eq h_run
+              h_initial_params h_initial_clean h_proj_initial
+              h_eval h_t h_delta_eq h_run
 
 -- ════════════════════════════════════════════════════════════════════
 -- T5B0 — kernel_preservation
