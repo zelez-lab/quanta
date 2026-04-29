@@ -238,21 +238,45 @@ def evalCast (v : Value) : Scalar → Option Value
 -- terminates structurally on `(fuel, expr/stmt)`. Closed kernels
 -- with no loops eval to completion at any fuel ≥ syntax depth.
 
+-- ════════════════════════════════════════════════════════════════════
+-- Reliability refactor (2026-04-29)
+--
+-- The mutual block previously used a lex `termination_by` measure
+-- `(fuel, sizeOf x)`, which compiles to `WellFounded.fix` and is
+-- *opaque* to definitional unfolding (`rfl` / `simp` / `unfold`
+-- all fail to reduce per-arm). To enable per-arm equation lemmas
+-- to close by `rfl`, every recursive call in the mutual block
+-- now decrements `fuel`, making `Nat` the single
+-- structurally-decreasing argument across all functions. Lean's
+-- structural-recursion inference handles this without
+-- `termination_by`, producing equation lemmas that reduce
+-- cleanly.
+--
+-- Behaviour change: leaf arms (`lit`, `path`, `breakS`,
+-- `letTuple`, `callS`, `mathCall`, etc.) now require at least
+-- 1 fuel to evaluate. Callers must provide fuel ≥ syntactic
+-- depth + iteration count. Existing proofs in `Preservation.lean`
+-- and `EndToEnd.lean` quantify universally over `fuel` and so
+-- continue to hold; concrete-fuel call sites would need
+-- adjustment but currently none exist outside test/example code.
+-- ════════════════════════════════════════════════════════════════════
+
 mutual
-def evalExpr (fuel : Nat) (s : State) : Expr → Option (Value × State)
-  | .lit l => (evalLit l).map (fun v => (v, s))
-  | .path n => (s.env.lookup n).map (fun v => (v, s))
-  | .binary op a b => do
-      let (va, s1) ← evalExpr fuel s a
-      let (vb, s2) ← evalExpr fuel s1 b
+def evalExpr : Nat → State → Expr → Option (Value × State)
+  | 0, _, _ => none
+  | _+1, s, .lit l => (evalLit l).map (fun v => (v, s))
+  | _+1, s, .path n => (s.env.lookup n).map (fun v => (v, s))
+  | f+1, s, .binary op a b => do
+      let (va, s1) ← evalExpr f s a
+      let (vb, s2) ← evalExpr f s1 b
       let v ← evalBinOp op va vb
       pure (v, s2)
-  | .unary op a => do
-      let (va, s1) ← evalExpr fuel s a
+  | f+1, s, .unary op a => do
+      let (va, s1) ← evalExpr f s a
       let v ← evalUnaryOp op va
       pure (v, s1)
-  | .index arr i => do
-      let (vi, s1) ← evalExpr fuel s i
+  | f+1, s, .index arr i => do
+      let (vi, s1) ← evalExpr f s i
       match vi with
       | .vU32 n =>
           let v ← s1.heap.lookup arr n.toNat
@@ -263,86 +287,80 @@ def evalExpr (fuel : Nat) (s : State) : Expr → Option (Value × State)
             let v ← s1.heap.lookup arr n.toNat
             pure (v, s1)
       | _ => none
-  | .indexRef arr i => do
+  | f+1, s, .indexRef arr i => do
       -- A reference to `arr[i]` evaluates as the same value the
       -- atomic op would observe; the `&` here is a marker for the
       -- macro, not a runtime distinction.
-      let (vi, s1) ← evalExpr fuel s i
+      let (vi, s1) ← evalExpr f s i
       match vi with
       | .vU32 n =>
           let v ← s1.heap.lookup arr n.toNat
           pure (v, s1)
       | _ => none
-  | .fieldRef _base _field =>
+  | _+1, _, .fieldRef _ _ =>
       -- The macro flattens struct-ref accesses to slot lookups
       -- before reaching this point; if a `fieldRef` survives into
       -- the Lean view it's a translator bug, not a runtime fact.
       none
-  | .cast e ty => do
-      let (v, s1) ← evalExpr fuel s e
+  | f+1, s, .cast e ty => do
+      let (v, s1) ← evalExpr f s e
       let v' ← evalCast v ty
       pure (v', s1)
-  | .ifE c t e => do
-      let (vc, s1) ← evalExpr fuel s c
+  | f+1, s, .ifE c t e => do
+      let (vc, s1) ← evalExpr f s c
       match vc with
-      | .vBool true  => evalExpr fuel s1 t
-      | .vBool false => evalExpr fuel s1 e
+      | .vBool true  => evalExpr f s1 t
+      | .vBool false => evalExpr f s1 e
       | _ => none
-  | .blockE body tail => do
-      let s1 ← evalStmts fuel s body
-      evalExpr fuel s1 tail
-  | .mathCall _ _    => none   -- E.1c will wire to Cpu.eval_f32_*
-  | .waveCall _ _    => none   -- not modelled at this layer
-  | .atomicCall _ _  => none   -- atomic semantics — separate module
-  | .identityCall _  => none   -- thread-id values supplied by dispatch context (E.5)
-  | .method _ _ _    => none   -- normalised away in E.3 — same target as mathCall
-  termination_by e => (fuel, sizeOf e)
+  | f+1, s, .blockE body tail => do
+      let s1 ← evalStmts f s body
+      evalExpr f s1 tail
+  | _+1, _, .mathCall _ _    => none
+  | _+1, _, .waveCall _ _    => none
+  | _+1, _, .atomicCall _ _  => none
+  | _+1, _, .identityCall _  => none
+  | _+1, _, .method _ _ _    => none
 
-def evalStmt (fuel : Nat) (s : State) : Stmt → Option State
-  | .letDecl name _ rhs => do
-      let (v, s1) ← evalExpr fuel s rhs
+def evalStmt : Nat → State → Stmt → Option State
+  | 0, _, _ => none
+  | f+1, s, .letDecl name _ rhs => do
+      let (v, s1) ← evalExpr f s rhs
       pure { s1 with env := s1.env.bind name v }
-  | .letTuple _ _ _ =>
-      -- Tuple destructuring — the macro lowers this to a sequence
-      -- of single `letDecl`s in E.3; not modelled at this layer.
-      none
-  | .exprS e => do
-      let (_, s1) ← evalExpr fuel s e
+  | _+1, _, .letTuple _ _ _ => none
+  | f+1, s, .exprS e => do
+      let (_, s1) ← evalExpr f s e
       pure s1
-  | .assignVar name rhs => do
-      let (v, s1) ← evalExpr fuel s rhs
+  | f+1, s, .assignVar name rhs => do
+      let (v, s1) ← evalExpr f s rhs
       pure { s1 with env := s1.env.bind name v }
-  | .assignIdx arr idx rhs => do
-      let (vi, s1) ← evalExpr fuel s idx
-      let (vr, s2) ← evalExpr fuel s1 rhs
+  | f+1, s, .assignIdx arr idx rhs => do
+      let (vi, s1) ← evalExpr f s idx
+      let (vr, s2) ← evalExpr f s1 rhs
       match vi with
       | .vU32 n => pure { s2 with heap := s2.heap.store arr n.toNat vr }
       | _ => none
-  | .ifS c thenS elseS => do
-      let (vc, s1) ← evalExpr fuel s c
+  | f+1, s, .ifS c thenS elseS => do
+      let (vc, s1) ← evalExpr f s c
       match vc with
-      | .vBool true  => evalStmts fuel s1 thenS
-      | .vBool false => evalStmts fuel s1 elseS
+      | .vBool true  => evalStmts f s1 thenS
+      | .vBool false => evalStmts f s1 elseS
       | _ => none
-  | .forRange name lo hi body =>
-      match evalExpr fuel s lo, body with
-      | none, _ => none
-      | some (vlo, _), _ =>
-          match evalExpr fuel s hi with
+  | f+1, s, .forRange name lo hi body =>
+      match evalExpr f s lo with
+      | none => none
+      | some (vlo, _) =>
+          match evalExpr f s hi with
           | none => none
           | some (vhi, s2) =>
               match vlo, vhi with
-              | .vU32 a, .vU32 b => evalForLoop fuel s2 name a.toNat b.toNat body
+              | .vU32 a, .vU32 b => evalForLoop f s2 name a.toNat b.toNat body
               | _, _ => none
-  | .whileS cond body => evalWhileLoop fuel s cond body
-  | .loopS body       => evalBareLoop fuel s body
-  | .breakS => some { s with broke := true }
-  | .callS _ _ => none   -- atomic / debug stmts — not at this layer
-  termination_by st => (fuel, sizeOf st)
+  | f+1, s, .whileS cond body => evalWhileLoop f s cond body
+  | f+1, s, .loopS body       => evalBareLoop f s body
+  | _+1, s, .breakS => some { s with broke := true }
+  | _+1, _, .callS _ _ => none
 
-/-- For-loop iteration helper. Lifted out of `evalStmt`'s `let rec`
-    so the mutual block has a single termination measure per
-    function. Recurses on its own `fuel` parameter. -/
+/-- For-loop iteration helper. -/
 def evalForLoop : Nat → State → Ident → Nat → Nat → List Stmt → Option State
   | 0,     _,  _,    _, _, _    => none
   | f+1,   st, name, j, n, body =>
@@ -353,7 +371,6 @@ def evalForLoop : Nat → State → Ident → Nat → Nat → List Stmt → Opti
         match evalStmts f st' body with
         | none      => none
         | some st'' => evalForLoop f st'' name (j + 1) n body
-  termination_by f _ => (f, 0)
 
 /-- While-loop iteration helper. -/
 def evalWhileLoop : Nat → State → Expr → List Stmt → Option State
@@ -368,7 +385,6 @@ def evalWhileLoop : Nat → State → Expr → List Stmt → Option State
             | none      => none
             | some st'' => evalWhileLoop f st'' cond body
         | _ => none
-  termination_by f _ => (f, 0)
 
 /-- Bare-loop iteration helper. -/
 def evalBareLoop : Nat → State → List Stmt → Option State
@@ -379,15 +395,14 @@ def evalBareLoop : Nat → State → List Stmt → Option State
         match evalStmts f st body with
         | none     => none
         | some st' => evalBareLoop f st' body
-  termination_by f _ => (f, 0)
 
-def evalStmts (fuel : Nat) (s : State) : List Stmt → Option State
-  | []      => some s
-  | st :: rest => do
-      let s1 ← evalStmt fuel s st
+def evalStmts : Nat → State → List Stmt → Option State
+  | _,   s, []          => some s
+  | 0,   _, _ :: _      => none
+  | f+1, s, st :: rest  => do
+      let s1 ← evalStmt f s st
       if s1.broke then some s1
-      else evalStmts fuel s1 rest
-  termination_by xs => (fuel, sizeOf xs)
+      else evalStmts f s1 rest
 end
 
 end Quanta.KRust

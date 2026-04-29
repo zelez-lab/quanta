@@ -23,6 +23,7 @@ narrowing automatically as those land.
 
 import Quanta.KRust.Syntax
 import Quanta.KRust.Semantics
+import Quanta.KRust.Equations
 import Quanta.KRust.Translate
 import Quanta.KRust.Preservation
 import Quanta.KOps.Syntax
@@ -991,27 +992,62 @@ theorem kops_evalOps_append_decompose
 -- close inline as theorems). Each per-arm axiom is strictly
 -- narrower than the original.
 
-/-- Per-stmt heap-step axiom for `breakS`. Despite the simple
-    semantics (broke := true on both sides), inline closure
-    requires equation lemmas for `evalStmt` (a mutual `def` with
-    a custom termination measure) which aren't auto-generated;
-    the proof would also have to thread through the cons-recursion
-    of `KOps.evalOps` against `evalOp_breakOp_eq`'s short-circuit. -/
-axiom stmt_heap_step_breakS
+/-- **stmt_heap_step_breakS** — closed theorem for the `breakS`
+    arm. Source: `s' = { s with broke := true }` (heap unchanged).
+    KOps: delta = `[breakOp]`, runs to
+    `st_post = { st_pre with broke := true }` via the cons
+    recursion's short-circuit on the breakOp's broke flag.
+    Closes via the refactor-enabled equation lemmas. -/
+theorem stmt_heap_step_breakS
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat)
-    (h_params : ctx.params = params)
+    (fuel_src fuel_kops : Nat)
+    (_h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s Stmt.breakS = some s')
+    (h_eval : evalStmt fuel_src s Stmt.breakS = some s')
     (h_trans : translateStmt ctx Stmt.breakS = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) := by
+  -- Source side: evalStmt fuel_src s breakS reduces.
+  have h_s'_def : s' = { s with broke := true } := by
+    cases fuel_src with
+    | zero => simp [evalStmt] at h_eval
+    | succ f =>
+        rw [evalStmt_breakS] at h_eval
+        exact (Option.some.inj h_eval).symm
+  -- Translate side: ctx_after = ctx.emit breakOp.
+  have h_ctx_after_def : ctx_after = ctx.emit KOps.KernelOp.breakOp := by
+    have : translateStmt ctx Stmt.breakS = some (ctx.emit KOps.KernelOp.breakOp) := by
+      simp [translateStmt, EmitCtx.emit]
+    rw [this] at h_trans
+    exact (Option.some.inj h_trans).symm
+  -- delta = [breakOp].
+  have h_delta_eq : delta = [KOps.KernelOp.breakOp] := by
+    rw [h_ctx_after_def] at h_delta
+    have h_emit : (ctx.emit KOps.KernelOp.breakOp).ops
+                    = ctx.ops ++ [KOps.KernelOp.breakOp] := by
+      simp [EmitCtx.emit]
+    rw [h_emit] at h_delta
+    exact (List.append_cancel_left h_delta).symm
+  rw [h_delta_eq] at h_run
+  -- KOps side: evalOps fuel_kops st_pre [breakOp] = some { ... broke := true }.
+  have h_st_post_def : st_post = { st_pre with broke := true } := by
+    have h_run_unfold : KOps.evalOps fuel_kops st_pre [KOps.KernelOp.breakOp]
+                          = some { st_pre with broke := true } := by
+      unfold KOps.evalOps
+      rw [evalOp_breakOp_eq]
+      simp [Bind.bind, Option.bind]
+    rw [h_run_unfold] at h_run
+    exact (Option.some.inj h_run).symm
+  refine ⟨?_, ?_⟩
+  · rw [h_s'_def, h_st_post_def]
+    exact h_pre_proj
+  · rw [h_s'_def, h_st_post_def]
 
 /-- Per-stmt heap-step axiom for `letDecl` rhs (which may include
     a heap-mutating `blockE` — hence the residual claim). -/
@@ -1021,14 +1057,14 @@ axiom stmt_heap_step_letDecl
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat)
+    (fuel_src fuel_kops : Nat)
     (name : Ident) (ty : Option Scalar) (rhs : Expr)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s (Stmt.letDecl name ty rhs) = some s')
+    (h_eval : evalStmt fuel_src s (Stmt.letDecl name ty rhs) = some s')
     (h_trans : translateStmt ctx (Stmt.letDecl name ty rhs) = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true)
 
@@ -1039,13 +1075,13 @@ axiom stmt_heap_step_exprS
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat) (e : Expr)
+    (fuel_src fuel_kops : Nat) (e : Expr)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s (Stmt.exprS e) = some s')
+    (h_eval : evalStmt fuel_src s (Stmt.exprS e) = some s')
     (h_trans : translateStmt ctx (Stmt.exprS e) = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true)
 
@@ -1056,14 +1092,14 @@ axiom stmt_heap_step_assignVar
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat)
+    (fuel_src fuel_kops : Nat)
     (name : Ident) (rhs : Expr)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s (Stmt.assignVar name rhs) = some s')
+    (h_eval : evalStmt fuel_src s (Stmt.assignVar name rhs) = some s')
     (h_trans : translateStmt ctx (Stmt.assignVar name rhs) = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true)
 
@@ -1077,14 +1113,14 @@ axiom stmt_heap_step_assignIdx
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat)
+    (fuel_src fuel_kops : Nat)
     (arr : Ident) (idx rhs : Expr)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s (Stmt.assignIdx arr idx rhs) = some s')
+    (h_eval : evalStmt fuel_src s (Stmt.assignIdx arr idx rhs) = some s')
     (h_trans : translateStmt ctx (Stmt.assignIdx arr idx rhs) = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true)
 
@@ -1095,13 +1131,13 @@ axiom stmt_heap_step_ifS
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat) (c : Expr) (thenS elseS : List Stmt)
+    (fuel_src fuel_kops : Nat) (c : Expr) (thenS elseS : List Stmt)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s (Stmt.ifS c thenS elseS) = some s')
+    (h_eval : evalStmt fuel_src s (Stmt.ifS c thenS elseS) = some s')
     (h_trans : translateStmt ctx (Stmt.ifS c thenS elseS) = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true)
 
@@ -1112,14 +1148,14 @@ axiom stmt_heap_step_forRange
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat)
+    (fuel_src fuel_kops : Nat)
     (name : Ident) (lo hi : Expr) (body : List Stmt)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s (Stmt.forRange name lo hi body) = some s')
+    (h_eval : evalStmt fuel_src s (Stmt.forRange name lo hi body) = some s')
     (h_trans : translateStmt ctx (Stmt.forRange name lo hi body) = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true)
 
@@ -1130,13 +1166,13 @@ axiom stmt_heap_step_whileS
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat) (cond : Expr) (body : List Stmt)
+    (fuel_src fuel_kops : Nat) (cond : Expr) (body : List Stmt)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s (Stmt.whileS cond body) = some s')
+    (h_eval : evalStmt fuel_src s (Stmt.whileS cond body) = some s')
     (h_trans : translateStmt ctx (Stmt.whileS cond body) = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true)
 
@@ -1147,13 +1183,13 @@ axiom stmt_heap_step_loopS
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat) (body : List Stmt)
+    (fuel_src fuel_kops : Nat) (body : List Stmt)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s (Stmt.loopS body) = some s')
+    (h_eval : evalStmt fuel_src s (Stmt.loopS body) = some s')
     (h_trans : translateStmt ctx (Stmt.loopS body) = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true)
 
@@ -1169,13 +1205,13 @@ theorem stmt_heap_step_axiom
     (ctx ctx_after : EmitCtx)
     (st_pre st_post : KOps.State)
     (delta : List KernelOp)
-    (fuel : Nat) (stmt : Stmt)
+    (fuel_src fuel_kops : Nat) (stmt : Stmt)
     (h_params : ctx.params = params)
     (h_pre_proj : Heap.project params s.heap = st_pre.heap)
-    (h_eval : evalStmt fuel s stmt = some s')
+    (h_eval : evalStmt fuel_src s stmt = some s')
     (h_trans : translateStmt ctx stmt = some ctx_after)
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
-    (h_run : KOps.evalOps fuel st_pre delta = some st_post)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
       ∧ (s'.broke = true ↔ st_post.broke = true) := by
   cases stmt with
@@ -1183,31 +1219,39 @@ theorem stmt_heap_step_axiom
   | callS _ _      => simp [translateStmt] at h_trans
   | breakS =>
       exact stmt_heap_step_breakS params s s' ctx ctx_after st_pre st_post
-              delta fuel h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops h_params h_pre_proj h_eval h_trans h_delta h_run
   | letDecl name ty rhs =>
       exact stmt_heap_step_letDecl params s s' ctx ctx_after st_pre st_post
-              delta fuel name ty rhs h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops name ty rhs
+              h_params h_pre_proj h_eval h_trans h_delta h_run
   | exprS e =>
       exact stmt_heap_step_exprS params s s' ctx ctx_after st_pre st_post
-              delta fuel e h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops e
+              h_params h_pre_proj h_eval h_trans h_delta h_run
   | assignVar name rhs =>
       exact stmt_heap_step_assignVar params s s' ctx ctx_after st_pre st_post
-              delta fuel name rhs h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops name rhs
+              h_params h_pre_proj h_eval h_trans h_delta h_run
   | assignIdx arr idx rhs =>
       exact stmt_heap_step_assignIdx params s s' ctx ctx_after st_pre st_post
-              delta fuel arr idx rhs h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops arr idx rhs
+              h_params h_pre_proj h_eval h_trans h_delta h_run
   | ifS c thenS elseS =>
       exact stmt_heap_step_ifS params s s' ctx ctx_after st_pre st_post
-              delta fuel c thenS elseS h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops c thenS elseS
+              h_params h_pre_proj h_eval h_trans h_delta h_run
   | forRange name lo hi body =>
       exact stmt_heap_step_forRange params s s' ctx ctx_after st_pre st_post
-              delta fuel name lo hi body h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops name lo hi body
+              h_params h_pre_proj h_eval h_trans h_delta h_run
   | whileS cond body =>
       exact stmt_heap_step_whileS params s s' ctx ctx_after st_pre st_post
-              delta fuel cond body h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops cond body
+              h_params h_pre_proj h_eval h_trans h_delta h_run
   | loopS body =>
       exact stmt_heap_step_loopS params s s' ctx ctx_after st_pre st_post
-              delta fuel body h_params h_pre_proj h_eval h_trans h_delta h_run
+              delta fuel_src fuel_kops body
+              h_params h_pre_proj h_eval h_trans h_delta h_run
 
 -- ────────────────────────────────────────────────────────────────────
 -- Closed list-level induction theorem
@@ -1237,38 +1281,61 @@ theorem translateStmts_preserves_params
     `stmt_heap_step_axiom`. -/
 theorem stmts_heap_step
     (params : List (Ident × Nat))
-    (fuel : Nat) (body : List Stmt)
-    : ∀ (s s' : Quanta.KRust.State) (ctx ctx_after : EmitCtx)
+    (body : List Stmt)
+    : ∀ (fuel_src fuel_kops : Nat)
+        (s s' : Quanta.KRust.State) (ctx ctx_after : EmitCtx)
         (st_pre st_post : KOps.State) (delta_body : List KernelOp),
         ctx.params = params →
         st_pre.broke = false →
         Heap.project params s.heap = st_pre.heap →
-        evalStmts fuel s body = some s' →
+        evalStmts fuel_src s body = some s' →
         translateStmts ctx body = some ctx_after →
         ctx_after.ops = ctx.ops ++ delta_body →
-        KOps.evalOps fuel st_pre delta_body = some st_post →
+        KOps.evalOps fuel_kops st_pre delta_body = some st_post →
         Heap.project params s'.heap = st_post.heap := by
   induction body with
   | nil =>
-      intro s s' ctx ctx_after st_pre st_post delta_body
+      intro fuel_src fuel_kops s s' ctx ctx_after st_pre st_post delta_body
             _h_params _h_pre_clean h_proj h_eval h_trans h_delta h_run
-      simp [evalStmts] at h_eval
-      simp [translateStmts] at h_trans
-      have h_delta_nil : delta_body = [] := by
-        rw [← h_trans] at h_delta
-        have := h_delta
-        simp at this
-        exact this
-      rw [h_delta_nil] at h_run
-      simp [KOps.evalOps] at h_run
-      rw [← h_eval, ← h_run]
-      exact h_proj
+      cases fuel_src with
+      | zero =>
+          simp [evalStmts] at h_eval
+          rw [← h_eval]
+          simp [translateStmts] at h_trans
+          have h_delta_nil : delta_body = [] := by
+            rw [← h_trans] at h_delta
+            have := h_delta
+            simp at this
+            exact this
+          rw [h_delta_nil] at h_run
+          simp [KOps.evalOps] at h_run
+          rw [← h_run]
+          exact h_proj
+      | succ f =>
+          simp [evalStmts] at h_eval
+          rw [← h_eval]
+          simp [translateStmts] at h_trans
+          have h_delta_nil : delta_body = [] := by
+            rw [← h_trans] at h_delta
+            have := h_delta
+            simp at this
+            exact this
+          rw [h_delta_nil] at h_run
+          simp [KOps.evalOps] at h_run
+          rw [← h_run]
+          exact h_proj
   | cons stmt rest ih =>
-      intro s s' ctx ctx_after st_pre st_post delta_body
+      intro fuel_src fuel_kops s s' ctx ctx_after st_pre st_post delta_body
             h_params h_pre_clean h_proj h_eval h_trans h_delta h_run
-      -- Decompose evalStmts (stmt :: rest).
+      -- After the 2026-04-29 reliability refactor, `evalStmts`
+      -- decrements fuel on each cons step. So for fuel_src = 0 the
+      -- hypothesis is vacuous; for fuel_src = f+1 we proceed.
+      cases fuel_src with
+      | zero => simp [evalStmts] at h_eval
+      | succ f =>
+      -- Decompose evalStmts (f+1) s (stmt :: rest).
       simp [evalStmts, Bind.bind, Option.bind] at h_eval
-      cases h_e : evalStmt fuel s stmt with
+      cases h_e : evalStmt f s stmt with
       | none => rw [h_e] at h_eval; exact absurd h_eval (by simp)
       | some s1 =>
           rw [h_e] at h_eval
@@ -1295,12 +1362,15 @@ theorem stmts_heap_step
               -- Decompose KOps run via the closed append-decompose
               -- theorem (sound via the threaded `h_pre_clean`).
               obtain ⟨st_mid, h_run_head, h_run_tail⟩ :=
-                kops_evalOps_append_decompose fuel delta_head st_pre
+                kops_evalOps_append_decompose fuel_kops delta_head st_pre
                   delta_tail st_post h_pre_clean h_run
-              -- Apply step axiom.
+              -- Apply step axiom: source side ran with fuel `f`
+              -- (decremented in the cons step), KOps side ran with
+              -- the original `fuel_kops`.
               have h_step :=
                 stmt_heap_step_axiom params s s1 ctx ctx1 st_pre st_mid
-                  delta_head fuel stmt h_params h_proj h_e h_t h_dh h_run_head
+                  delta_head f fuel_kops stmt
+                  h_params h_proj h_e h_t h_dh h_run_head
               obtain ⟨h_proj_mid, h_broke_iff⟩ := h_step
               -- Tail params consistent.
               have h_params_tail : ctx1.params = params := by
@@ -1329,7 +1399,7 @@ theorem stmts_heap_step
                   | false => rfl
                 rw [h_st_clean] at h_run_tail
                 simp at h_run_tail
-                exact ih s1 s' ctx1 ctx_after st_mid st_post delta_tail
+                exact ih f fuel_kops s1 s' ctx1 ctx_after st_mid st_post delta_tail
                         h_params_tail h_st_clean h_proj_mid h_eval h_trans h_dt h_run_tail
 
 -- ────────────────────────────────────────────────────────────────────
@@ -1374,7 +1444,7 @@ theorem kernel_body_compose_cons
         show Heap.project params h = (initialKOpsState k h d).heap
         rw [initialKOpsState_heap_eq]
       have h_initial_clean : (initialKOpsState k h d).broke = false := rfl
-      exact stmts_heap_step params fuel k.body
+      exact stmts_heap_step params k.body fuel fuel
               { env := [], heap := h } s' k.initialCtx ctx_after
               (initialKOpsState k h d) st' ops
               h_initial_params h_initial_clean h_proj_initial
