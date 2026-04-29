@@ -66,6 +66,62 @@ def Heap.project (params : List (Ident × Nat)) (h : Heap) : KOps.Heap :=
     | some (_, slot) => some ((slot, idx), v)
     | none => none)
 
+/-- **Heap.project_initial_eq** — `initialKOpsState`'s heap is the
+    projection of the empty source heap with whatever overlay the
+    runtime supplies. Holds by `rfl`. -/
+@[simp] theorem Heap.project_nil (params : List (Ident × Nat))
+    : Heap.project params [] = ([] : KOps.Heap) := rfl
+
+/-- **Heap.project_cons_in_params** — projecting a cons whose head
+    name is in the params map yields a cons with the projected slot. -/
+theorem Heap.project_cons_in_params
+    (params : List (Ident × Nat)) (h : Heap)
+    (name : Ident) (idx : Nat) (v : Value)
+    (slot : Nat)
+    (h_lookup : params.find? (fun p => p.fst = name) = some (name, slot))
+    : Heap.project params (((name, idx), v) :: h)
+        = ((slot, idx), v) :: Heap.project params h := by
+  unfold Heap.project
+  simp [List.filterMap_cons, h_lookup]
+
+/-- **Heap.project_cons_not_in_params** — projecting a cons whose
+    head name is NOT in the params map skips it. -/
+theorem Heap.project_cons_not_in_params
+    (params : List (Ident × Nat)) (h : Heap)
+    (name : Ident) (idx : Nat) (v : Value)
+    (h_lookup : params.find? (fun p => p.fst = name) = none)
+    : Heap.project params (((name, idx), v) :: h)
+        = Heap.project params h := by
+  unfold Heap.project
+  simp [List.filterMap_cons, h_lookup]
+
+/-- **params_distinct** — the parameter map is injective on slots:
+    distinct names map to distinct slots. Holds for kernel-derived
+    `params` lists where each `Param` has its own slot index. Used
+    as a precondition by future `Heap.project_store_commute`
+    proofs.
+
+    Discharge plan for `stmt_heap_step_helper`:
+    1. Prove `Heap.project_filter_commute` under `params_distinct`
+       (currently in progress; the `simp` lemma alignment between
+       `decide (p.fst ≠ k)` and `! decide (p.fst = k)` needs care).
+    2. Compose into `Heap.project_store_commute`.
+    3. Add a `evalExpr_no_heap_mutation` lemma for blockE-free
+       expressions and a `Heap.project_eq_through_evalStmts` lemma
+       for the recursive arms.
+    4. Per-arm closure of `stmt_heap_step_helper` against
+       `Preservation.lean`'s T5A0–T5A7 in `consistentState` form,
+       bridged via the projection lemmas above.
+
+    This is multi-session work; the foundation primitives
+    (`Heap.project_cons_in_params`, `Heap.project_cons_not_in_params`,
+    `params_distinct`) above are the first installment. -/
+def params_distinct (params : List (Ident × Nat)) : Prop :=
+  ∀ n1 n2 s,
+    params.find? (fun p => p.fst = n1) = some (n1, s) →
+    params.find? (fun p => p.fst = n2) = some (n2, s) →
+    n1 = n2
+
 /-- The starting `KOps.State` for a kernel run, given a source
     heap and a dispatch context. Mirrors what the runtime sets up
     before calling `evalOps` on a freshly translated kernel. -/
