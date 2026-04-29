@@ -333,13 +333,25 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                 .barrier(ectx.context, ectx.module, ectx.builder);
         }
 
-        // LLVM has `fence <ordering>` as a first-class IR instruction.
-        // We don't currently expose it through `intrinsics::barrier`, so
-        // for the AOT path the fence is a no-op until D-ext.3b wires
-        // the intrinsic. Correctness today: existing AtomicOps are SeqCst
-        // and require no surrounding fence.
-        KernelOp::Fence { .. } => {
-            // intentional no-op — see D-ext.3b backlog.
+        // LLVM `fence <ordering>` is a first-class IR instruction. The
+        // mapping from `MemoryOrder` mirrors the AtomicOp arm below.
+        // `Relaxed` has no LLVM-side fence (LLVM rejects `fence monotonic`),
+        // so we emit a no-op for that arm — consistent with the
+        // C11 / Rust `Ordering::Relaxed` semantics where a relaxed fence
+        // is meaningless.
+        KernelOp::Fence { order } => {
+            let llvm_order = match order {
+                quanta_ir::MemoryOrder::Relaxed => None,
+                quanta_ir::MemoryOrder::Acquire => Some(AtomicOrdering::Acquire),
+                quanta_ir::MemoryOrder::Release => Some(AtomicOrdering::Release),
+                quanta_ir::MemoryOrder::AcqRel => Some(AtomicOrdering::AcquireRelease),
+                quanta_ir::MemoryOrder::SeqCst => Some(AtomicOrdering::SequentiallyConsistent),
+            };
+            if let Some(ordering) = llvm_order {
+                ectx.builder
+                    .build_fence(ordering, /* is_single_thread */ false, "fence")
+                    .map_err(|e| e.to_string())?;
+            }
         }
 
         KernelOp::UnaryOp { dst, a, op, ty } => {
