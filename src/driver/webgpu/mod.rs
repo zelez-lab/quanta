@@ -1206,6 +1206,18 @@ impl QGpuDevice for WebgpuDevice {
     fn indirect_buffer_create(&self, _max_commands: u32) -> Result<u64, QuantaError> {
         Err(Self::err("WebGPU indirect command buffers pending"))
     }
+    fn icb_record_dispatch(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _wave: &Wave,
+        _groups: [u32; 3],
+    ) -> Result<(), QuantaError> {
+        // TODO(032/033): WebGPU has GPURenderBundle for render but
+        // no compute bundles per W3C spec — compute ICB on WebGPU is
+        // out of scope. Render-bundle ICB is a future commit.
+        Err(Self::err("WebGPU compute ICB not in W3C spec"))
+    }
     fn indirect_buffer_execute(&self, _handle: u64, _count: u32) -> Result<(), QuantaError> {
         Err(Self::err("WebGPU indirect command buffers pending"))
     }

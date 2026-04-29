@@ -33,12 +33,39 @@ struct CpuKernel {
     segments: Vec<(usize, usize)>,
 }
 
+/// A dispatch command recorded into an Indirect Command Buffer.
+///
+/// Snapshots the wave's pipeline + bindings + push-constants + group
+/// counts at record time; replayed sequentially during
+/// `indirect_buffer_execute`. This refines the abstract
+/// `Quanta.Icb.Command` model from the Lean equivalence theorem.
+struct RecordedDispatch {
+    wave_handle: u64,
+    bindings: [u64; crate::api::wave::MAX_BINDINGS],
+    binding_count: u8,
+    texture_bindings: [u64; crate::api::wave::MAX_TEXTURES],
+    texture_count: u8,
+    push_data: [u8; crate::api::wave::PUSH_DATA_CAP],
+    push_len: u16,
+    push_mask: u16,
+    workgroup_size: [u32; 3],
+    groups: [u32; 3],
+}
+
+/// CPU-side ICB state — sized capacity + recorded commands.
+struct CpuIcb {
+    cap: u32,
+    commands: Vec<RecordedDispatch>,
+}
+
 /// CPU software device — executes GPU kernel IR without hardware.
 pub struct CpuDevice {
     caps: Caps,
     next_handle: Mutex<u64>,
     buffers: Mutex<HashMap<u64, CpuBuffer>>,
     kernels: Mutex<HashMap<u64, CpuKernel>>,
+    /// Indirect command buffers indexed by handle.
+    icbs: Mutex<HashMap<u64, CpuIcb>>,
 }
 
 impl CpuDevice {
@@ -58,6 +85,7 @@ impl CpuDevice {
             next_handle: Mutex::new(1),
             buffers: Mutex::new(HashMap::new()),
             kernels: Mutex::new(HashMap::new()),
+            icbs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -452,21 +480,115 @@ impl GpuDevice for CpuDevice {
         ))
     }
 
-    // === M5.2: Indirect command buffers ===
+    // === M5.2: Indirect command buffers (steps 032 + 033) ===
+    //
+    // CPU implementation refines the abstract `Quanta.Icb` model:
+    // - create allocates a fresh handle + empty Vec sized to capacity.
+    // - icb_record_dispatch snapshots the wave + group counts.
+    // - indirect_buffer_execute replays the first `count` recorded
+    //   dispatches sequentially through the existing `wave_dispatch`
+    //   path, satisfying the Lean T7000 equivalence theorem.
 
-    fn indirect_buffer_create(&self, _max_commands: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "indirect command buffers not supported on CPU device",
-        ))
+    fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.icbs.lock().unwrap().insert(
+            handle,
+            CpuIcb {
+                cap: max_commands,
+                commands: Vec::with_capacity(max_commands as usize),
+            },
+        );
+        Ok(handle)
     }
 
-    fn indirect_buffer_execute(&self, _handle: u64, _count: u32) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
-            "indirect command buffers not supported on CPU device",
-        ))
+    fn icb_record_dispatch(
+        &self,
+        handle: u64,
+        index: u32,
+        wave: &Wave,
+        groups: [u32; 3],
+    ) -> Result<(), QuantaError> {
+        let mut icbs = self.icbs.lock().unwrap();
+        let icb = icbs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+        if index != icb.commands.len() as u32 {
+            return Err(QuantaError::invalid_param(
+                "ICB record index must equal current length",
+            ));
+        }
+        if index >= icb.cap {
+            return Err(QuantaError::invalid_param("ICB index >= capacity"));
+        }
+        icb.commands.push(RecordedDispatch {
+            wave_handle: wave.handle,
+            bindings: wave.bindings,
+            binding_count: wave.binding_count,
+            texture_bindings: wave.texture_bindings,
+            texture_count: wave.texture_count,
+            push_data: wave.push_data,
+            push_len: wave.push_len,
+            push_mask: wave.push_mask,
+            workgroup_size: wave.workgroup_size,
+            groups,
+        });
+        Ok(())
     }
 
-    fn indirect_buffer_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+    fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
+        // Snapshot the recorded commands while holding the ICB lock,
+        // then drop the lock before re-entering wave_dispatch (which
+        // takes its own locks on buffers/kernels).
+        let snapshot: Vec<RecordedDispatch> = {
+            let icbs = self.icbs.lock().unwrap();
+            let icb = icbs
+                .get(&handle)
+                .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+            if count as usize > icb.commands.len() {
+                return Err(QuantaError::invalid_param(
+                    "ICB execute count exceeds recorded length",
+                ));
+            }
+            icb.commands[..count as usize]
+                .iter()
+                .map(|r| RecordedDispatch {
+                    wave_handle: r.wave_handle,
+                    bindings: r.bindings,
+                    binding_count: r.binding_count,
+                    texture_bindings: r.texture_bindings,
+                    texture_count: r.texture_count,
+                    push_data: r.push_data,
+                    push_len: r.push_len,
+                    push_mask: r.push_mask,
+                    workgroup_size: r.workgroup_size,
+                    groups: r.groups,
+                })
+                .collect()
+        };
+        for rec in &snapshot {
+            // Reconstruct a transient Wave from the snapshot. Drop is
+            // a no-op (drop_fn = None), so this does not double-free
+            // any underlying kernel handle.
+            let wave = Wave {
+                handle: rec.wave_handle,
+                bindings: rec.bindings,
+                binding_count: rec.binding_count,
+                texture_bindings: rec.texture_bindings,
+                texture_count: rec.texture_count,
+                push_data: rec.push_data,
+                push_len: rec.push_len,
+                push_mask: rec.push_mask,
+                workgroup_size: rec.workgroup_size,
+                drop_fn: None,
+            };
+            let mut pulse = self.wave_dispatch(&wave, rec.groups)?;
+            pulse.wait()?;
+        }
+        Ok(())
+    }
+
+    fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.icbs.lock().unwrap().remove(&handle);
         Ok(())
     }
 

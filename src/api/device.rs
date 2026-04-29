@@ -354,10 +354,24 @@ pub trait GpuDevice: Send + Sync {
     /// Unmap a sparse texture tile (release backing memory).
     fn sparse_unmap_tile(&self, texture: u64, mip: u32, x: u32, y: u32) -> Result<(), QuantaError>;
 
-    // === M5.2: Indirect command buffers ===
+    // === M5.2: Indirect command buffers (steps 032 + 033) ===
 
     /// Create an indirect command buffer (GPU-driven draw/dispatch).
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError>;
+
+    /// Record a single dispatch command at `index` in the ICB.
+    ///
+    /// Snapshots the wave's pipeline + current bindings + group counts.
+    /// `index` is the command position assigned by
+    /// [`IndirectCommandBuffer::record_dispatch`](crate::IndirectCommandBuffer::record_dispatch);
+    /// the typed wrapper enforces `index < max_commands`.
+    fn icb_record_dispatch(
+        &self,
+        handle: u64,
+        index: u32,
+        wave: &Wave,
+        groups: [u32; 3],
+    ) -> Result<(), QuantaError>;
 
     /// Execute commands from an indirect command buffer.
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError>;

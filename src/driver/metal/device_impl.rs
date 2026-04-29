@@ -617,6 +617,25 @@ impl GpuDevice for MetalDevice {
         Ok(handle)
     }
 
+    fn icb_record_dispatch(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _wave: &Wave,
+        _groups: [u32; 3],
+    ) -> Result<(), QuantaError> {
+        // TODO(032/033): Implement via MTLIndirectComputeCommand —
+        // requires MTLIndirectCommandBufferDescriptor + new FFI for
+        // indirectComputeCommandAtIndex / setComputePipelineState /
+        // setKernelBuffer / concurrentDispatchThreadgroups, plus
+        // executeCommandsInBuffer:withRange: in
+        // indirect_buffer_execute. The proven CPU path serves as the
+        // reference implementation in the meantime.
+        Err(QuantaError::invalid_param(
+            "Metal ICB record_dispatch not yet implemented (use CPU device for ICB)",
+        ))
+    }
+
     fn indirect_buffer_execute(&self, handle: u64, _count: u32) -> Result<(), QuantaError> {
         let buffers = self
             .buffers

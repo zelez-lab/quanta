@@ -368,6 +368,16 @@ impl GpuDevice for ValidationDevice {
         self.inner.indirect_buffer_create(max_commands)
     }
 
+    fn icb_record_dispatch(
+        &self,
+        handle: u64,
+        index: u32,
+        wave: &Wave,
+        groups: [u32; 3],
+    ) -> Result<(), QuantaError> {
+        self.inner.icb_record_dispatch(handle, index, wave, groups)
+    }
+
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
         self.inner.indirect_buffer_execute(handle, count)
     }

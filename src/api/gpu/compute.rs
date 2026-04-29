@@ -127,19 +127,46 @@ impl Gpu {
         self.inner.dispatch_mesh(pipeline.handle(), groups)
     }
 
-    // === M5.2: Indirect command buffers ===
+    // === M5.2: Indirect command buffers (steps 032 + 033) ===
 
-    /// Create an indirect command buffer (GPU-driven draw/dispatch).
+    /// Create a typed [`IndirectCommandBuffer`] with the given
+    /// capacity.
+    ///
+    /// The buffer can hold up to `max_commands` recorded dispatches.
+    /// Records past capacity return an error; `Drop` releases the
+    /// underlying handle. See
+    /// [`IndirectCommandBuffer`](crate::IndirectCommandBuffer) for
+    /// the full API.
+    pub fn indirect_command_buffer(
+        &self,
+        max_commands: u32,
+    ) -> Result<crate::IndirectCommandBuffer, QuantaError> {
+        let handle = self.inner.indirect_buffer_create(max_commands)?;
+        Ok(crate::IndirectCommandBuffer {
+            handle,
+            cap: max_commands,
+            recorded: 0,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
+    // ── Raw handle API (legacy / unsafe — prefer indirect_command_buffer) ──
+
+    /// Create an indirect command buffer (GPU-driven draw/dispatch),
+    /// returning a raw handle. Prefer
+    /// [`indirect_command_buffer`](Self::indirect_command_buffer) for
+    /// the typed wrapper with automatic destroy on drop.
     pub fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
         self.inner.indirect_buffer_create(max_commands)
     }
 
-    /// Execute commands from an indirect command buffer.
+    /// Execute commands from an indirect command buffer (raw-handle API).
     pub fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
         self.inner.indirect_buffer_execute(handle, count)
     }
 
-    /// Destroy an indirect command buffer.
+    /// Destroy an indirect command buffer (raw-handle API).
     pub fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.inner.indirect_buffer_destroy(handle)
     }
