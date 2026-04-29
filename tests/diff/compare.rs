@@ -101,6 +101,58 @@ pub fn compare_f32(
     Ok(())
 }
 
+/// Trace-membership comparator (D-ext.3b.2). For kernels that have
+/// multiple model-permitted outcomes (atomic races, weakly-ordered
+/// litmus tests), the candidate output must equal at least one element
+/// of `permitted`. Each `permitted[i]` is a complete `Vec<u32>` of
+/// expected outputs, of the same length as the candidate.
+///
+/// The returned `Divergence` lists how many permitted outcomes were
+/// considered and (briefly) why each was rejected — useful when adding
+/// a new litmus kernel and a backend produces an unexpected interleaving.
+pub fn compare_u32_in_set(candidate: &RawOutput, permitted: &[Vec<u32>]) -> Result<(), Divergence> {
+    let cand = match &candidate.values {
+        RawValues::U32(v) => v.as_slice(),
+        _ => {
+            return Err(Divergence {
+                kernel: candidate.kernel,
+                oracle_lane: "permitted-set",
+                candidate_lane: candidate.lane.name(),
+                index: None,
+                detail: format!(
+                    "compare_u32_in_set expected u32 candidate, got {}",
+                    candidate.values.type_tag()
+                ),
+            });
+        }
+    };
+    if permitted.is_empty() {
+        return Err(Divergence {
+            kernel: candidate.kernel,
+            oracle_lane: "permitted-set",
+            candidate_lane: candidate.lane.name(),
+            index: None,
+            detail: "empty permitted set — no outcomes accepted".into(),
+        });
+    }
+    for p in permitted {
+        if p.len() == cand.len() && p.iter().zip(cand.iter()).all(|(a, b)| a == b) {
+            return Ok(());
+        }
+    }
+    Err(Divergence {
+        kernel: candidate.kernel,
+        oracle_lane: "permitted-set",
+        candidate_lane: candidate.lane.name(),
+        index: None,
+        detail: format!(
+            "candidate {:?} not in any of {} permitted outcomes",
+            cand,
+            permitted.len()
+        ),
+    })
+}
+
 pub fn compare_u32(oracle: &RawOutput, candidate: &RawOutput) -> Result<(), Divergence> {
     if oracle.kernel != candidate.kernel {
         return Err(div(

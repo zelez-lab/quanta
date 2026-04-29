@@ -121,7 +121,13 @@ impl MetalDevice {
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
-            workgroup_size: [64, 1, 1],
+            // Honor the kernel's declared workgroup_size — previously
+            // hardcoded to [64,1,1], which silently mismatched the
+            // generated MSL's `[[max_total_threads_per_threadgroup(N)]]`
+            // for kernels with smaller groups (e.g. the D-ext.3b.2 race
+            // kernel uses [2,1,1]) and caused dispatchThreadgroups to
+            // either clip silently or no-op.
+            workgroup_size: kernel.workgroup_size,
             drop_fn: None,
         })
     }

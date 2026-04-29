@@ -104,6 +104,27 @@
         return new Uint32Array([COUNTER_N]);
       }
 
+      // ────────────────────── race permitted-set ────────────────────
+      // 2 quarks atomic_exchange `cell` from initial 0 with their id.
+      // Output layout: [cell_final, out_0, out_1].
+      //   q0 first, q1 second:  [1, 0, 0]
+      //   q1 first, q0 second:  [0, 1, 0]
+      const RACE_PERMITTED = [
+        [1, 0, 0],
+        [0, 1, 0],
+      ];
+      function compareInSet(candidate, permitted) {
+        for (const p of permitted) {
+          if (p.length !== candidate.length) continue;
+          let ok = true;
+          for (let i = 0; i < p.length; i++) {
+            if (p[i] !== candidate[i]) { ok = false; break; }
+          }
+          if (ok) return { ok: true };
+        }
+        return { ok: false, detail: `candidate [${Array.from(candidate).join(",")}] not in any of ${permitted.length} permitted outcomes` };
+      }
+
       // ────────────────────── runner ────────────────────────────────
 
       function appendVerdict(name, verdict) {
@@ -134,13 +155,19 @@
         const counterOracleArr = counterOracle();
         const counterOk = appendVerdict("counter (atomic, N=128)", compareU32(counterOracleArr, counterCand));
 
-        const allOk = saxpyOk && reduceOk && counterOk;
+        // race (litmus, trace-membership)
+        const raceBytes = await mod.runReturningBytes("web_diff_race_run");
+        const raceCand = new Uint32Array(raceBytes.buffer, raceBytes.byteOffset, raceBytes.length / 4);
+        const raceOk = appendVerdict("race (permitted-set, N=2)", compareInSet(raceCand, RACE_PERMITTED));
+
+        const allOk = saxpyOk && reduceOk && counterOk && raceOk;
         statusEl.className = allOk ? "ok" : "fail";
         statusEl.textContent = allOk
-          ? `PASS — 3 / 3 kernels match across the WGSL lane`
+          ? `PASS — 4 / 4 kernels match across the WGSL lane`
           : `FAIL — see per-kernel verdicts below`;
 
         outEl.textContent =
+          `race candidate:       [${Array.from(raceCand).join(", ")}]\n` +
           `counter oracle:       ${counterOracleArr[0]}\n` +
           `counter candidate:    ${counterCand[0]}\n` +
           `reduce_sum oracle:    ${reduceOracle[0]}\n` +

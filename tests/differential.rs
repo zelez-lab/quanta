@@ -23,8 +23,8 @@
 #[path = "diff/mod.rs"]
 mod diff;
 
-use diff::compare::{compare_f32, compare_u32};
-use diff::kernels::{counter, reduce_sum, saxpy};
+use diff::compare::{compare_f32, compare_u32, compare_u32_in_set};
+use diff::kernels::{counter, race, reduce_sum, saxpy};
 
 // ── Reference oracle self-consistency ────────────────────────────────
 
@@ -74,6 +74,15 @@ fn counter_software_bit_exact_versus_reference() {
     }
 }
 
+#[cfg(feature = "software")]
+#[test]
+fn race_software_in_permitted_set() {
+    let candidate = race::run_software();
+    if let Err(div) = compare_u32_in_set(&candidate, &race::permitted()) {
+        panic!("race divergence: {}", div);
+    }
+}
+
 // ── Metal lane (nightly + label-gated; macOS only) ───────────────────
 
 #[cfg(feature = "metal")]
@@ -106,6 +115,15 @@ fn counter_metal_bit_exact_versus_reference() {
     }
 }
 
+#[cfg(feature = "metal")]
+#[test]
+fn race_metal_in_permitted_set() {
+    let candidate = race::run_metal();
+    if let Err(div) = compare_u32_in_set(&candidate, &race::permitted()) {
+        panic!("race divergence: {}", div);
+    }
+}
+
 // ── Vulkan lane (nightly + label-gated; ubuntu via lavapipe) ─────────
 
 #[cfg(feature = "vulkan")]
@@ -135,5 +153,14 @@ fn counter_vulkan_bit_exact_versus_reference() {
     let candidate = counter::run_vulkan();
     if let Err(div) = compare_u32(&oracle, &candidate) {
         panic!("counter divergence: {}", div);
+    }
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+fn race_vulkan_in_permitted_set() {
+    let candidate = race::run_vulkan();
+    if let Err(div) = compare_u32_in_set(&candidate, &race::permitted()) {
+        panic!("race divergence: {}", div);
     }
 }

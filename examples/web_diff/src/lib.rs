@@ -428,3 +428,119 @@ pub extern "C" fn web_diff_counter_run(task: u32) {
         }
     });
 }
+
+// ───────────────────────── race (D-ext.3b.2) ─────────────────────────
+//
+// 2 quarks each `atomic_exchange(&cell, quark_id)`. Final layout:
+// [cell_final, out_0, out_1] — non-deterministic across runs but
+// always a member of the model-permitted set the page enumerates.
+
+const RACE_N: u32 = 2;
+
+fn build_race_kernel() -> KernelDef {
+    KernelDef {
+        name: "race".into(),
+        params: vec![
+            KernelParam::FieldWrite {
+                name: "cell".into(),
+                slot: 0,
+                scalar_type: ScalarType::U32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 1,
+                scalar_type: ScalarType::U32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Const {
+                dst: Reg(1),
+                value: ConstValue::U32(0),
+            },
+            KernelOp::AtomicOp {
+                dst: Reg(2),
+                field: 0,
+                index: Reg(1),
+                val: Reg(0),
+                op: AtomicOp::Exchange,
+                ty: ScalarType::U32,
+                order: quanta_ir::MemoryOrder::Relaxed,
+            },
+            KernelOp::Store {
+                field: 1,
+                index: Reg(0),
+                src: Reg(2),
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 3,
+        opt_level: 3,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [RACE_N, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+async fn run_race() -> Result<Vec<u8>, String> {
+    let dev = quanta::webgpu::WebgpuDevice::new_async()
+        .await
+        .map_err(|e| format!("new_async: {:?}", e))?;
+
+    let cell_bytes = core::mem::size_of::<u32>();
+    let out_bytes_total = (RACE_N as usize) * core::mem::size_of::<u32>();
+    let usage = quanta::FieldUsage::default_compute();
+
+    let fcell = dev
+        .field_alloc(cell_bytes, usage)
+        .map_err(|e| format!("field_alloc cell: {:?}", e))?;
+    let fout = dev
+        .field_alloc(out_bytes_total, usage)
+        .map_err(|e| format!("field_alloc out: {:?}", e))?;
+
+    let zeros: Vec<u8> = vec![0u8; out_bytes_total];
+    dev.field_write_bytes(fcell, &0u32.to_le_bytes())
+        .map_err(|e| format!("field_write cell: {:?}", e))?;
+    dev.field_write_bytes(fout, &zeros)
+        .map_err(|e| format!("field_write out: {:?}", e))?;
+
+    let kernel = build_race_kernel();
+    let kernel_bytes = serialize_kernel(&kernel);
+    let mut wave = dev
+        .wave_jit(&kernel_bytes)
+        .map_err(|e| format!("wave_jit: {:?}", e))?;
+    wave.bind_handle(0, fcell);
+    wave.bind_handle(1, fout);
+
+    let _pulse = dev
+        .wave_dispatch(&wave, [1, 1, 1])
+        .map_err(|e| format!("wave_dispatch: {:?}", e))?;
+
+    let mut combined = dev
+        .field_read_bytes_async(fcell, cell_bytes)
+        .await
+        .map_err(|e| format!("read_back cell: {:?}", e))?;
+    let out_part = dev
+        .field_read_bytes_async(fout, out_bytes_total)
+        .await
+        .map_err(|e| format!("read_back out: {:?}", e))?;
+    combined.extend(out_part);
+    Ok(combined)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn web_diff_race_run(task: u32) {
+    spawn_local(async move {
+        match run_race().await {
+            Ok(bytes) => unsafe {
+                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
+            },
+            Err(msg) => unsafe {
+                quanta_complete_err(task, msg.as_ptr(), msg.len());
+            },
+        }
+    });
+}

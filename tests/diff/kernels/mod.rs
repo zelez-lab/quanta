@@ -7,5 +7,6 @@
 //! - `run_<lane>()` per backend (gated by feature flag).
 
 pub mod counter;
+pub mod race;
 pub mod reduce_sum;
 pub mod saxpy;
