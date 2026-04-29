@@ -141,6 +141,7 @@ fn roundtrip_all_kernel_op_variants() {
             expected: Reg(34),
             desired: Reg(35),
             ty: ScalarType::U32,
+            order: MemoryOrder::SeqCst,
         },
         // Warp/wave (4)
         KernelOp::WaveShuffle {

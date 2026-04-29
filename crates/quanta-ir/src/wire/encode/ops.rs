@@ -247,7 +247,7 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             write_memory_order(w, order);
         }
 
-        // 18 — AtomicCas { dst, field, index, expected, desired, ty }
+        // 18 — AtomicCas { dst, field, index, expected, desired, ty, order }
         KernelOp::AtomicCas {
             dst,
             field,
@@ -255,6 +255,7 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             expected,
             desired,
             ty,
+            order,
         } => {
             w.u8(18);
             write_reg(w, dst);
@@ -263,6 +264,7 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             write_reg(w, expected);
             write_reg(w, desired);
             write_scalar_type(w, ty);
+            write_memory_order(w, order);
         }
 
         // 19 — WaveShuffle { dst, src, lane_delta, ty }

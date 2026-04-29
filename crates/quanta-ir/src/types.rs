@@ -286,6 +286,12 @@ pub enum KernelOp {
         ty: ScalarType,
         order: MemoryOrder,
     },
+    /// Compare-and-swap. The `order` field was added in D-ext.3b.4
+    /// to express per-op memory ordering — same shape as `AtomicOp`
+    /// gained in D-ext.3b.1. Existing construction sites pass
+    /// `MemoryOrder::SeqCst` to preserve the prior implicit semantics.
+    /// LLVM cmpxchg uses the same ordering for both success and
+    /// failure paths.
     AtomicCas {
         dst: Reg,
         field: u32,
@@ -293,6 +299,7 @@ pub enum KernelOp {
         expected: Reg,
         desired: Reg,
         ty: ScalarType,
+        order: MemoryOrder,
     },
 
     // Warp/wave

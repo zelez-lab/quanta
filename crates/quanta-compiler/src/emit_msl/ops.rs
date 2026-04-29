@@ -576,6 +576,7 @@ pub(crate) fn emit_op(
                 pad
             ));
         }
+        // Metal device atomic CAS is RELAXED-only; `order` ignored.
         KernelOp::AtomicCas {
             dst,
             field,
@@ -583,6 +584,7 @@ pub(crate) fn emit_op(
             expected,
             desired,
             ty,
+            order: _,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             out.push_str(&format!(

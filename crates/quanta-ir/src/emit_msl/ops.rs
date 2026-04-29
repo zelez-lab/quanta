@@ -539,6 +539,9 @@ pub(super) fn emit_op(
                 pad
             ));
         }
+        // Metal-on-device atomic CAS is RELAXED-only (same constraint
+        // documented on AtomicOp above). Stronger orderings on `order`
+        // must be expressed via a surrounding KernelOp::Fence.
         KernelOp::AtomicCas {
             dst,
             field,
@@ -546,6 +549,7 @@ pub(super) fn emit_op(
             expected,
             desired,
             ty,
+            order: _,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             out.push_str(&format!(

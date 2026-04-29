@@ -867,6 +867,7 @@ impl SpvEmitter {
                 expected,
                 desired,
                 ty,
+                order,
             } => {
                 let (var_id, elem_ty, _) = *self
                     .field_vars
@@ -886,8 +887,14 @@ impl SpvEmitter {
                 );
 
                 let scope = self.emit_constant_u32(1); // Device
-                let semantics =
-                    self.emit_constant_u32(MEMORY_SEMANTICS_ACQ_REL | MEMORY_SEMANTICS_WORKGROUP);
+                let order_bits: u32 = match order {
+                    crate::MemoryOrder::Relaxed => 0,
+                    crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
+                    crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
+                    crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
+                    crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
+                };
+                let semantics = self.emit_constant_u32(order_bits | MEMORY_SEMANTICS_WORKGROUP);
 
                 // OpAtomicCompareExchange: result_type result pointer scope
                 //   equal_sem unequal_sem value comparator

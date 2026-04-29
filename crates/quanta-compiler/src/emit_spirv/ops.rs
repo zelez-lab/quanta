@@ -307,8 +307,9 @@ impl SpvEmitter {
                 expected,
                 desired,
                 ty,
+                order,
             } => {
-                self.emit_op_atomic_cas(*dst, *field, *index, *expected, *desired, *ty)?;
+                self.emit_op_atomic_cas(*dst, *field, *index, *expected, *desired, *ty, *order)?;
             }
 
             KernelOp::WaveShuffle {

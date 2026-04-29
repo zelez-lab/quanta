@@ -628,7 +628,29 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             expected,
             desired,
             ty,
+            order,
         } => {
+            // Both success and failure orderings are derived from the
+            // single MemoryOrder field. LLVM requires that failure
+            // ordering ≤ success ordering, and that failure is never
+            // Release/AcquireRelease. For SeqCst/AcqRel this means we
+            // pass Monotonic on the failure path.
+            let llvm_success = match order {
+                quanta_ir::MemoryOrder::Relaxed => AtomicOrdering::Monotonic,
+                quanta_ir::MemoryOrder::Acquire => AtomicOrdering::Acquire,
+                quanta_ir::MemoryOrder::Release => AtomicOrdering::Release,
+                quanta_ir::MemoryOrder::AcqRel => AtomicOrdering::AcquireRelease,
+                quanta_ir::MemoryOrder::SeqCst => AtomicOrdering::SequentiallyConsistent,
+            };
+            let llvm_failure = match order {
+                quanta_ir::MemoryOrder::Relaxed | quanta_ir::MemoryOrder::Release => {
+                    AtomicOrdering::Monotonic
+                }
+                quanta_ir::MemoryOrder::Acquire | quanta_ir::MemoryOrder::AcqRel => {
+                    AtomicOrdering::Acquire
+                }
+                quanta_ir::MemoryOrder::SeqCst => AtomicOrdering::SequentiallyConsistent,
+            };
             if let Some((ptr, scalar_ty)) = ectx.slot_to_arg.get(field) {
                 let idx = reg_load_int(ectx.context, ectx.builder, ectx.reg_slots, index)?;
                 let elem_ty = scalar_to_llvm_type(ectx.context, scalar_ty);
@@ -660,13 +682,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                         .into_int_value();
                     let result = ectx
                         .builder
-                        .build_cmpxchg(
-                            gep,
-                            exp_int,
-                            des_int,
-                            AtomicOrdering::Monotonic,
-                            AtomicOrdering::Monotonic,
-                        )
+                        .build_cmpxchg(gep, exp_int, des_int, llvm_success, llvm_failure)
                         .map_err(|e| e.to_string())?;
                     let old_int = ectx
                         .builder
@@ -689,13 +705,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                     let des_int = des_val.into_int_value();
                     let result = ectx
                         .builder
-                        .build_cmpxchg(
-                            gep,
-                            exp_int,
-                            des_int,
-                            AtomicOrdering::Monotonic,
-                            AtomicOrdering::Monotonic,
-                        )
+                        .build_cmpxchg(gep, exp_int, des_int, llvm_success, llvm_failure)
                         .map_err(|e| e.to_string())?;
                     let old_val = ectx
                         .builder
