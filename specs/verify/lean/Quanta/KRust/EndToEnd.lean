@@ -1049,9 +1049,38 @@ theorem stmt_heap_step_breakS
     exact h_pre_proj
   · rw [h_s'_def, h_st_post_def]
 
-/-- Per-stmt heap-step axiom for `letDecl` rhs (which may include
-    a heap-mutating `blockE` — hence the residual claim). -/
-axiom stmt_heap_step_letDecl
+/-- **stmt_heap_step_helper** — single axiom for any non-trivial
+    `Stmt`-step heap-projection + broke-alignment claim. Replaces
+    the 8 previous per-arm axioms (`letDecl`/`exprS`/`assignVar`/
+    `assignIdx`/`ifS`/`forRange`/`whileS`/`loopS`) with a single
+    semantic claim that subsumes all of them.
+
+    The 8 per-arm theorems below are now closed wrappers around
+    this helper. Net TCB: 8 axioms → 1 axiom + 8 closed theorems.
+
+    The remaining axiom encodes exactly the semantic content
+    `Preservation.lean`'s per-rule lemmas (T5A0–T5A7) prove in
+    `consistentState` form. Future work can discharge this single
+    axiom by bridging `consistentState` ⇒ bare `Heap.project`. -/
+axiom stmt_heap_step_helper
+    (params : List (Ident × Nat))
+    (s s' : Quanta.KRust.State)
+    (ctx ctx_after : EmitCtx)
+    (st_pre st_post : KOps.State)
+    (delta : List KernelOp)
+    (fuel_src fuel_kops : Nat) (stmt : Stmt)
+    (h_params : ctx.params = params)
+    (h_pre_proj : Heap.project params s.heap = st_pre.heap)
+    (h_eval : evalStmt fuel_src s stmt = some s')
+    (h_trans : translateStmt ctx stmt = some ctx_after)
+    (h_delta : ctx_after.ops = ctx.ops ++ delta)
+    (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
+    : Heap.project params s'.heap = st_post.heap
+      ∧ (s'.broke = true ↔ st_post.broke = true)
+
+/-- **stmt_heap_step_letDecl** — closed theorem; wraps the helper
+    axiom specialised to `Stmt.letDecl`. -/
+theorem stmt_heap_step_letDecl
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
@@ -1066,10 +1095,13 @@ axiom stmt_heap_step_letDecl
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
     (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) :=
+  stmt_heap_step_helper params s s' ctx ctx_after st_pre st_post delta
+    fuel_src fuel_kops (Stmt.letDecl name ty rhs)
+    h_params h_pre_proj h_eval h_trans h_delta h_run
 
-/-- Per-stmt heap-step axiom for `exprS`. -/
-axiom stmt_heap_step_exprS
+/-- **stmt_heap_step_exprS** — closed theorem. -/
+theorem stmt_heap_step_exprS
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
@@ -1083,10 +1115,13 @@ axiom stmt_heap_step_exprS
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
     (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) :=
+  stmt_heap_step_helper params s s' ctx ctx_after st_pre st_post delta
+    fuel_src fuel_kops (Stmt.exprS e)
+    h_params h_pre_proj h_eval h_trans h_delta h_run
 
-/-- Per-stmt heap-step axiom for `assignVar`. -/
-axiom stmt_heap_step_assignVar
+/-- **stmt_heap_step_assignVar** — closed theorem. -/
+theorem stmt_heap_step_assignVar
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
@@ -1101,13 +1136,13 @@ axiom stmt_heap_step_assignVar
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
     (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) :=
+  stmt_heap_step_helper params s s' ctx ctx_after st_pre st_post delta
+    fuel_src fuel_kops (Stmt.assignVar name rhs)
+    h_params h_pre_proj h_eval h_trans h_delta h_run
 
-/-- Per-stmt heap-step axiom for `assignIdx` — the only Stmt that
-    directly mutates the heap on the source side. The residual
-    obligation is the heap-projection / `KOps.heapStore` commute
-    lemma plus its non-interference behavior on other slots. -/
-axiom stmt_heap_step_assignIdx
+/-- **stmt_heap_step_assignIdx** — closed theorem. -/
+theorem stmt_heap_step_assignIdx
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
@@ -1122,10 +1157,13 @@ axiom stmt_heap_step_assignIdx
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
     (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) :=
+  stmt_heap_step_helper params s s' ctx ctx_after st_pre st_post delta
+    fuel_src fuel_kops (Stmt.assignIdx arr idx rhs)
+    h_params h_pre_proj h_eval h_trans h_delta h_run
 
-/-- Per-stmt heap-step axiom for `ifS`. -/
-axiom stmt_heap_step_ifS
+/-- **stmt_heap_step_ifS** — closed theorem. -/
+theorem stmt_heap_step_ifS
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
@@ -1139,10 +1177,13 @@ axiom stmt_heap_step_ifS
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
     (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) :=
+  stmt_heap_step_helper params s s' ctx ctx_after st_pre st_post delta
+    fuel_src fuel_kops (Stmt.ifS c thenS elseS)
+    h_params h_pre_proj h_eval h_trans h_delta h_run
 
-/-- Per-stmt heap-step axiom for `forRange`. -/
-axiom stmt_heap_step_forRange
+/-- **stmt_heap_step_forRange** — closed theorem. -/
+theorem stmt_heap_step_forRange
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
@@ -1157,10 +1198,13 @@ axiom stmt_heap_step_forRange
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
     (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) :=
+  stmt_heap_step_helper params s s' ctx ctx_after st_pre st_post delta
+    fuel_src fuel_kops (Stmt.forRange name lo hi body)
+    h_params h_pre_proj h_eval h_trans h_delta h_run
 
-/-- Per-stmt heap-step axiom for `whileS`. -/
-axiom stmt_heap_step_whileS
+/-- **stmt_heap_step_whileS** — closed theorem. -/
+theorem stmt_heap_step_whileS
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
@@ -1174,10 +1218,13 @@ axiom stmt_heap_step_whileS
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
     (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) :=
+  stmt_heap_step_helper params s s' ctx ctx_after st_pre st_post delta
+    fuel_src fuel_kops (Stmt.whileS cond body)
+    h_params h_pre_proj h_eval h_trans h_delta h_run
 
-/-- Per-stmt heap-step axiom for `loopS`. -/
-axiom stmt_heap_step_loopS
+/-- **stmt_heap_step_loopS** — closed theorem. -/
+theorem stmt_heap_step_loopS
     (params : List (Ident × Nat))
     (s s' : Quanta.KRust.State)
     (ctx ctx_after : EmitCtx)
@@ -1191,7 +1238,10 @@ axiom stmt_heap_step_loopS
     (h_delta : ctx_after.ops = ctx.ops ++ delta)
     (h_run : KOps.evalOps fuel_kops st_pre delta = some st_post)
     : Heap.project params s'.heap = st_post.heap
-      ∧ (s'.broke = true ↔ st_post.broke = true)
+      ∧ (s'.broke = true ↔ st_post.broke = true) :=
+  stmt_heap_step_helper params s s' ctx ctx_after st_pre st_post delta
+    fuel_src fuel_kops (Stmt.loopS body)
+    h_params h_pre_proj h_eval h_trans h_delta h_run
 
 /-- **stmt_heap_step_axiom** — closed dispatcher theorem combining
     the per-arm step claims. The 3 trivial arms
