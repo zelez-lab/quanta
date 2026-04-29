@@ -333,6 +333,15 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                 .barrier(ectx.context, ectx.module, ectx.builder);
         }
 
+        // LLVM has `fence <ordering>` as a first-class IR instruction.
+        // We don't currently expose it through `intrinsics::barrier`, so
+        // for the AOT path the fence is a no-op until D-ext.3b wires
+        // the intrinsic. Correctness today: existing AtomicOps are SeqCst
+        // and require no surrounding fence.
+        KernelOp::Fence { .. } => {
+            // intentional no-op — see D-ext.3b backlog.
+        }
+
         KernelOp::UnaryOp { dst, a, op, ty } => {
             let val = reg_load(ectx.context, ectx.builder, ectx.reg_slots, a.0)?;
             let result = emit_unary(ectx.builder, val, op, ty)?;

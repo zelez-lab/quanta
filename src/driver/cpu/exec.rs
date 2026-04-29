@@ -165,6 +165,11 @@ pub(super) fn execute_ops(
             KernelOp::Barrier => {
                 // No-op: sequential execution means shared memory is always visible.
             }
+            KernelOp::Fence { .. } => {
+                // No-op: the CPU interpreter executes opcodes sequentially in
+                // a single thread, so every program order is also a memory
+                // order. Fence on a non-multithreaded executor is a noop.
+            }
             KernelOp::AtomicOp {
                 dst,
                 field,

@@ -31,6 +31,6 @@ pub use serial::{
 };
 pub use shader::{ShaderDef, ShaderOutput, ShaderParam, ShaderStage, ShaderType};
 pub use types::{
-    AtomicOp, BinOp, CmpOp, ConstValue, DeviceFnDef, KernelDef, KernelOp, KernelParam, MathFn, Reg,
-    ScalarType, UnaryOp,
+    AtomicOp, BinOp, CmpOp, ConstValue, DeviceFnDef, KernelDef, KernelOp, KernelParam, MathFn,
+    MemoryOrder, Reg, ScalarType, UnaryOp,
 };

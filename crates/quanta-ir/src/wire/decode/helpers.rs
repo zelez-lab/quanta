@@ -102,6 +102,24 @@ pub(in crate::wire) fn read_atomicop(r: &mut Reader) -> Result<AtomicOp, &'stati
 }
 
 // ---------------------------------------------------------------------------
+// MemoryOrder  (5 variants, tags 0..4)
+// ---------------------------------------------------------------------------
+
+pub(in crate::wire) fn read_memory_order(
+    r: &mut Reader,
+) -> Result<crate::MemoryOrder, &'static str> {
+    let tag = r.u8()?;
+    match tag {
+        0 => Ok(crate::MemoryOrder::Relaxed),
+        1 => Ok(crate::MemoryOrder::Acquire),
+        2 => Ok(crate::MemoryOrder::Release),
+        3 => Ok(crate::MemoryOrder::AcqRel),
+        4 => Ok(crate::MemoryOrder::SeqCst),
+        _ => Err("invalid MemoryOrder tag"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MathFn  (21 variants, tags 0..20)
 // ---------------------------------------------------------------------------
 

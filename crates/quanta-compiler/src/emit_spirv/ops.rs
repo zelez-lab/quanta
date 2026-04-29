@@ -178,6 +178,25 @@ impl SpvEmitter {
                 );
             }
 
+            KernelOp::Fence { order } => {
+                let order_bits: u32 = match order {
+                    quanta_ir::MemoryOrder::Relaxed => 0,
+                    quanta_ir::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
+                    quanta_ir::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
+                    quanta_ir::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
+                    quanta_ir::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
+                };
+                let scope_wg = self.emit_constant_u32(SCOPE_WORKGROUP);
+                let semantics = self.emit_constant_u32(
+                    order_bits | MEMORY_SEMANTICS_UNIFORM_MEMORY | MEMORY_SEMANTICS_WORKGROUP,
+                );
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_MEMORY_BARRIER,
+                    &[scope_wg, semantics],
+                );
+            }
+
             KernelOp::SharedDecl { .. } => {
                 // Already handled in emit_shared_decls
             }

@@ -8,8 +8,8 @@ use crate::KernelOp;
 
 use super::header::Reader;
 use super::helpers::{
-    read_atomicop, read_binop, read_cmpop, read_const_value, read_mathfn, read_reg,
-    read_scalar_type, read_unaryop,
+    read_atomicop, read_binop, read_cmpop, read_const_value, read_mathfn, read_memory_order,
+    read_reg, read_scalar_type, read_unaryop,
 };
 
 // ---------------------------------------------------------------------------
@@ -556,6 +556,12 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
                 k,
                 ty,
             })
+        }
+
+        // 51 — Fence
+        51 => {
+            let order = read_memory_order(r)?;
+            Ok(KernelOp::Fence { order })
         }
 
         _ => Err("invalid KernelOp tag"),

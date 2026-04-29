@@ -552,6 +552,29 @@ impl SpvEmitter {
                 );
             }
 
+            // OpMemoryBarrier <scope> <semantics>. We pick Workgroup scope
+            // and OR the ordering bits with UniformMemory so the fence
+            // applies to storage buffers (which is the point of an
+            // explicit fence; thread-local memory needs no fence).
+            KernelOp::Fence { order } => {
+                let order_bits: u32 = match order {
+                    crate::MemoryOrder::Relaxed => 0,
+                    crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
+                    crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
+                    crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
+                    crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
+                };
+                let scope_wg = self.emit_constant_u32(SCOPE_WORKGROUP);
+                let semantics = self.emit_constant_u32(
+                    order_bits | MEMORY_SEMANTICS_UNIFORM_MEMORY | MEMORY_SEMANTICS_WORKGROUP,
+                );
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_MEMORY_BARRIER,
+                    &[scope_wg, semantics],
+                );
+            }
+
             KernelOp::SharedDecl { .. } => {
                 // Already handled in emit_shared_decls
             }

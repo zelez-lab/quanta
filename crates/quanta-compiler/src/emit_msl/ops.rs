@@ -193,6 +193,17 @@ pub(crate) fn emit_op(
             "{}threadgroup_barrier(mem_flags::mem_threadgroup);\n",
             pad
         )),
+        KernelOp::Fence { order } => out.push_str(&format!(
+            "{}atomic_thread_fence(mem_flags::mem_device, {});\n",
+            pad,
+            match order {
+                quanta_ir::MemoryOrder::Relaxed => "memory_order_relaxed",
+                quanta_ir::MemoryOrder::Acquire => "memory_order_acquire",
+                quanta_ir::MemoryOrder::Release => "memory_order_release",
+                quanta_ir::MemoryOrder::AcqRel => "memory_order_acq_rel",
+                quanta_ir::MemoryOrder::SeqCst => "memory_order_seq_cst",
+            }
+        )),
         KernelOp::SharedDecl { id, ty, count } => {
             out.push_str(&format!(
                 "{}threadgroup {} shared_{}[{}];\n",

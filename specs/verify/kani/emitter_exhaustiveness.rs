@@ -1,6 +1,6 @@
 //! T1000-T1003 — Cross-emitter KernelOp exhaustiveness proofs.
 //!
-//! These Kani harnesses verify that every KernelOp variant (51 total)
+//! These Kani harnesses verify that every KernelOp variant (52 total)
 //! is handled by each of the four main emitters: CPU, build-time WGSL,
 //! LLVM, and the JIT WGSL emitter that ships inside the WebGPU driver's
 //! wasm binary.
@@ -48,10 +48,11 @@
 ///   Texture:      TextureLoad2D
 ///   Shared dyn:   SharedDeclDyn
 ///   Debug:        DebugPrint
-const KERNEL_OP_VARIANT_COUNT: u8 = 51;
+///   Sync (D-ext.3a): Fence
+const KERNEL_OP_VARIANT_COUNT: u8 = 52;
 
 // ═══════════════════════════════════════════════════════════════════════
-// Tag assignment: each KernelOp variant maps to a unique tag in 0..51.
+// Tag assignment: each KernelOp variant maps to a unique tag in 0..52.
 // The ordering follows the source definition in types.rs.
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -106,12 +107,13 @@ const TAG_SUBGROUP_INCLUSIVE_ADD: u8 = 47;
 const TAG_TEXTURE_LOAD_2D: u8       = 48;
 const TAG_SHARED_DECL_DYN: u8       = 49;
 const TAG_DEBUG_PRINT: u8           = 50;
+const TAG_FENCE: u8                 = 51;
 
 // ═══════════════════════════════════════════════════════════════════════
 // T1000 — CPU emitter exhaustiveness
 //
 // Production: src/driver/cpu/exec.rs — execute_ops()
-// The CPU emitter handles all 51 variants. Each match arm either:
+// The CPU emitter handles all 52 variants. Each match arm either:
 //   - Executes the operation (arithmetic, loads, stores, etc.)
 //   - Returns identity values (wave ops in sequential mode)
 //   - Is a no-op with documented reason (Barrier, Dispatch)
@@ -173,6 +175,7 @@ fn cpu_emitter_handles(tag: u8) -> bool {
             | TAG_TEXTURE_LOAD_2D
             | TAG_SHARED_DECL_DYN // Not in CPU: verify below
             | TAG_DEBUG_PRINT // Not in CPU: verify below
+            | TAG_FENCE
     )
 }
 
@@ -183,7 +186,7 @@ fn cpu_emitter_handles(tag: u8) -> bool {
 /// production code wouldn't compile. This harness verifies the tag-level
 /// model is complete.
 ///
-/// Actual CPU exec.rs handles all 51 via exhaustive match (Rust enforces it).
+/// Actual CPU exec.rs handles all 52 via exhaustive match (Rust enforces it).
 /// No wildcard `_` arm exists, so every variant has explicit handling.
 #[cfg(kani)]
 #[kani::proof]
@@ -205,7 +208,7 @@ fn t1000_cpu_emitter_exhaustive() {
 //     IR emitter, so this single model covers both the build-time path
 //     and the JIT path served to browsers via step 050's WebGPU driver.
 //
-// The WGSL emitter handles all 51 variants. Each match arm either:
+// The WGSL emitter handles all 52 variants. Each match arm either:
 //   - Emits WGSL source text for the operation
 //   - Emits a comment for unsupported ops (Dispatch, DebugPrint)
 //   - Emits no-op for declarations handled at module scope (SharedDecl)
@@ -265,6 +268,7 @@ fn wgsl_emitter_handles(tag: u8) -> bool {
             | TAG_TEXTURE_LOAD_2D
             | TAG_SHARED_DECL_DYN
             | TAG_DEBUG_PRINT
+            | TAG_FENCE
     )
 }
 
@@ -307,7 +311,7 @@ fn t1001_jit_wgsl_emitter_exhaustive() {
 // T1002 — LLVM emitter exhaustiveness
 //
 // Production: crates/quanta-compiler/src/emit_llvm/emit/ops.rs — emit_op()
-// The LLVM emitter handles all 51 variants. Some newer ops return errors
+// The LLVM emitter handles all 52 variants. Some newer ops return errors
 // (Err("not yet supported")) rather than generating IR — but they are
 // still matched, not missing from the match statement.
 // ═══════════════════════════════════════════════════════════════════════
@@ -366,6 +370,7 @@ fn llvm_emitter_handles(tag: u8) -> bool {
             | TAG_TEXTURE_LOAD_2D
             | TAG_SHARED_DECL_DYN
             | TAG_DEBUG_PRINT
+            | TAG_FENCE
     )
 }
 

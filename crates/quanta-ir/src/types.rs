@@ -122,6 +122,30 @@ pub enum AtomicOp {
     CompareExchange,
 }
 
+/// Memory ordering for `KernelOp::Fence`.
+///
+/// Mirrors the C11 / Rust `std::sync::atomic::Ordering` semantics. Today
+/// only `Fence` consumes this; existing `AtomicOp { .. }` is implicitly
+/// SeqCst on every backend. Adding a per-op `order` field to AtomicOp is
+/// future work — see `differential_ci.md` (memory) for the rationale.
+///
+/// Backend mapping (see emit_*/ops.rs):
+///   - WGSL has no per-op ordering. Non-Relaxed fences emit
+///     `storageBarrier()`; `Relaxed` is a no-op.
+///   - MSL: `threadgroup_barrier(mem_flags::mem_device, memory_order_*)`.
+///   - SPIR-V: `OpMemoryBarrier` with the appropriate `MemorySemantics`.
+///   - CPU: no-op (the interpreter is sequential — every program order is
+///     also a memory order).
+///   - LLVM: `__atomic_thread_fence` with the matching `__ATOMIC_*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryOrder {
+    Relaxed,
+    Acquire,
+    Release,
+    AcqRel,
+    SeqCst,
+}
+
 /// Built-in math functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MathFn {
@@ -244,6 +268,12 @@ pub enum KernelOp {
 
     // Synchronization
     Barrier,
+    /// Memory fence with explicit ordering. Applies to the storage class
+    /// implied by surrounding atomic ops; backends emit per-spec
+    /// equivalents (see `MemoryOrder` doc).
+    Fence {
+        order: MemoryOrder,
+    },
     AtomicOp {
         dst: Reg,
         field: u32,

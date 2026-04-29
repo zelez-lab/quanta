@@ -97,6 +97,22 @@ pub(in crate::wire) fn write_atomicop(w: &mut Writer, op: &AtomicOp) {
 }
 
 // ---------------------------------------------------------------------------
+// MemoryOrder  (5 variants, tags 0..4)
+// ---------------------------------------------------------------------------
+
+pub(in crate::wire) fn write_memory_order(w: &mut Writer, order: &crate::MemoryOrder) {
+    use crate::MemoryOrder::*;
+    let tag: u8 = match order {
+        Relaxed => 0,
+        Acquire => 1,
+        Release => 2,
+        AcqRel => 3,
+        SeqCst => 4,
+    };
+    w.u8(tag);
+}
+
+// ---------------------------------------------------------------------------
 // MathFn  (21 variants, tags 0..20)
 // ---------------------------------------------------------------------------
 

@@ -159,6 +159,20 @@ pub(super) fn emit_op(
             "{}threadgroup_barrier(mem_flags::mem_threadgroup);\n",
             pad
         )),
+        // MSL: atomic_thread_fence with an explicit memory_order. Scope
+        // is mem_device because Fence is meant for inter-quark visibility
+        // of storage-buffer writes, not just the threadgroup.
+        KernelOp::Fence { order } => out.push_str(&format!(
+            "{}atomic_thread_fence(mem_flags::mem_device, {});\n",
+            pad,
+            match order {
+                crate::MemoryOrder::Relaxed => "memory_order_relaxed",
+                crate::MemoryOrder::Acquire => "memory_order_acquire",
+                crate::MemoryOrder::Release => "memory_order_release",
+                crate::MemoryOrder::AcqRel => "memory_order_acq_rel",
+                crate::MemoryOrder::SeqCst => "memory_order_seq_cst",
+            }
+        )),
         KernelOp::SharedDecl { id, ty, count } => {
             out.push_str(&format!(
                 "{}threadgroup {} shared_{}[{}];\n",

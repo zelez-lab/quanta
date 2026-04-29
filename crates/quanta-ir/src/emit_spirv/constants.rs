@@ -175,7 +175,13 @@ pub(crate) const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
 pub(crate) const SCOPE_SUBGROUP: u32 = 3;
 pub(crate) const SCOPE_WORKGROUP: u32 = 2;
 pub(crate) const MEMORY_SEMANTICS_WORKGROUP: u32 = 0x100;
+pub(crate) const MEMORY_SEMANTICS_UNIFORM_MEMORY: u32 = 0x40;
+pub(crate) const MEMORY_SEMANTICS_ACQUIRE: u32 = 0x2;
+pub(crate) const MEMORY_SEMANTICS_RELEASE: u32 = 0x4;
 pub(crate) const MEMORY_SEMANTICS_ACQ_REL: u32 = 0x8;
+pub(crate) const MEMORY_SEMANTICS_SEQ_CST: u32 = 0x10;
+
+pub(crate) const OP_MEMORY_BARRIER: u16 = 225;
 
 // ── Group operations ────────────────────────────────────────────────────────
 

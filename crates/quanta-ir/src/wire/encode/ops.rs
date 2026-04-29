@@ -4,8 +4,8 @@ use crate::KernelOp;
 
 use super::header::Writer;
 use super::helpers::{
-    write_atomicop, write_binop, write_cmpop, write_const_value, write_mathfn, write_reg,
-    write_scalar_type, write_unaryop,
+    write_atomicop, write_binop, write_cmpop, write_const_value, write_mathfn, write_memory_order,
+    write_reg, write_scalar_type, write_unaryop,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,6 +63,8 @@ use super::helpers::{
 //  47  SubgroupSize
 //  48  SharedDeclDyn
 //  49  DebugPrint
+//  50  CooperativeMMA
+//  51  Fence
 
 fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
     match op {
@@ -601,6 +603,11 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             w.u8(*n);
             w.u8(*k);
             write_scalar_type(w, ty);
+        }
+        // 51 — Fence { order }
+        KernelOp::Fence { order } => {
+            w.u8(51);
+            write_memory_order(w, order);
         }
     }
 }

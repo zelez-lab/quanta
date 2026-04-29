@@ -1,5 +1,8 @@
 use super::*;
-use crate::{BinOp, CompilerOutput, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType};
+use crate::{
+    BinOp, CompilerOutput, ConstValue, KernelDef, KernelOp, KernelParam, MemoryOrder, Reg,
+    ScalarType,
+};
 
 #[test]
 fn roundtrip_empty_kernel() {
@@ -803,4 +806,41 @@ fn roundtrip_subgroup_size_none() {
     let k2 = deserialize_kernel(&bytes).unwrap();
     assert_eq!(k2.subgroup_size, None);
     assert_eq!(k2.dynamic_shared_bytes, 0);
+}
+
+#[test]
+fn roundtrip_fence_all_orderings() {
+    // D-ext.3a: every MemoryOrder variant must survive a wire-format
+    // roundtrip in a Fence opcode. The decoder is the only place where
+    // the read_memory_order helper is exercised in a real kernel, so a
+    // bug there would surface here as a tag mismatch.
+    let orderings = [
+        MemoryOrder::Relaxed,
+        MemoryOrder::Acquire,
+        MemoryOrder::Release,
+        MemoryOrder::AcqRel,
+        MemoryOrder::SeqCst,
+    ];
+    for &order in &orderings {
+        let k = KernelDef {
+            name: String::from("fence_test"),
+            params: Vec::new(),
+            body: vec![KernelOp::Fence { order }],
+            body_source: None,
+            next_reg: 0,
+            opt_level: 0,
+            device_sources: Vec::new(),
+            device_functions: Vec::new(),
+            workgroup_size: [1, 1, 1],
+            subgroup_size: None,
+            dynamic_shared_bytes: 0,
+        };
+        let bytes = serialize_kernel(&k);
+        let k2 = deserialize_kernel(&bytes).unwrap();
+        assert_eq!(k2.body.len(), 1);
+        match k2.body[0] {
+            KernelOp::Fence { order: o2 } => assert_eq!(o2, order, "ordering survived roundtrip"),
+            _ => panic!("expected Fence, got {:?}", k2.body[0]),
+        }
+    }
 }

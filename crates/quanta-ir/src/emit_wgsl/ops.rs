@@ -163,6 +163,14 @@ pub(super) fn emit_op(
         }
         KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!("{}workgroupBarrier();\n", pad)),
+        // WGSL has no per-op memory ordering — atomicAdd / atomicLoad are
+        // SeqCst by spec. The closest equivalent to a non-Relaxed fence is
+        // `storageBarrier()`, which forces visibility of storage-buffer
+        // writes across the workgroup. Relaxed is a no-op.
+        KernelOp::Fence { order } => match order {
+            crate::MemoryOrder::Relaxed => {}
+            _ => out.push_str(&format!("{}storageBarrier();\n", pad)),
+        },
         KernelOp::SharedDecl { .. } | KernelOp::SharedDeclDyn { .. } => {
             // Already emitted at module scope by collect_shared_decls.
         }

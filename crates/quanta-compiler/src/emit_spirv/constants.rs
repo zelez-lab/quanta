@@ -192,7 +192,13 @@ pub const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 64;
 pub const SCOPE_SUBGROUP: u32 = 3;
 pub const SCOPE_WORKGROUP: u32 = 2;
 pub const MEMORY_SEMANTICS_WORKGROUP: u32 = 0x100;
+pub const MEMORY_SEMANTICS_UNIFORM_MEMORY: u32 = 0x40;
+pub const MEMORY_SEMANTICS_ACQUIRE: u32 = 0x2;
+pub const MEMORY_SEMANTICS_RELEASE: u32 = 0x4;
 pub const MEMORY_SEMANTICS_ACQ_REL: u32 = 0x8;
+pub const MEMORY_SEMANTICS_SEQ_CST: u32 = 0x10;
+
+pub const OP_MEMORY_BARRIER: u16 = 225;
 
 // ── Group operations ────────────────────────────────────────────────────────
 

@@ -250,6 +250,10 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
         Barrier => {
             out.push_str(&format!("{}workgroupBarrier();\n", pad));
         }
+        Fence { order } => match order {
+            quanta_ir::MemoryOrder::Relaxed => {}
+            _ => out.push_str(&format!("{}storageBarrier();\n", pad)),
+        },
         SharedDecl { .. } => {
             // Already emitted at module level by collect_shared_decls_wgsl
         }
