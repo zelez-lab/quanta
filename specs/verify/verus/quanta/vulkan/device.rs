@@ -40,6 +40,7 @@ proof fn t3000_handle_monotonic(s0: HandleAllocator)
 {}
 
 proof fn t3001_handle_nonzero(pre: HandleAllocator)
+    requires pre.counter < u64::MAX,
     ensures ({
         let (h, _) = alloc_handle(pre);
         h > 0
@@ -175,6 +176,9 @@ pub open spec fn make_api_version(variant: u32, major: u32, minor: u32, patch: u
 
 proof fn t3006_discover_uses_vulkan13()
     ensures make_api_version(0, 1, 3, 0) == (1u32 << 22) | (3u32 << 12),
-{}
+{
+    assert((0u32 << 29) | (1u32 << 22) | (3u32 << 12) | 0u32
+             == (1u32 << 22) | (3u32 << 12)) by (bit_vector);
+}
 
 } // verus!

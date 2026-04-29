@@ -256,6 +256,13 @@ pub open spec fn is_power_of_two(n: u32) -> bool {
 proof fn t203_byte_size_power_of_two(ty: ScalarType)
     ensures is_power_of_two(scalar_byte_size(ty)),
 {
+    // Each branch needs to evaluate `is_power_of_two` for the
+    // specific u32 value. The bit-vector tactic discharges these
+    // via the underlying SMT solver.
+    assert((1u32 & 0u32) == 0u32) by (bit_vector);
+    assert((2u32 & 1u32) == 0u32) by (bit_vector);
+    assert((4u32 & 3u32) == 0u32) by (bit_vector);
+    assert((8u32 & 7u32) == 0u32) by (bit_vector);
     match ty {
         ScalarType::F16  => {},
         ScalarType::F32  => {},

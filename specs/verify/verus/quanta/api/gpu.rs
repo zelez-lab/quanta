@@ -107,7 +107,11 @@ proof fn t1403_exact_multiple(wg_size: u32)
     requires wg_size > 0,
     ensures div_ceil(wg_size, wg_size) == 1u32,
 {
-    assert(div_ceil(wg_size, wg_size) == ((((wg_size - 1) as u32) / wg_size) + 1) as u32);
+    // div_ceil(n, n) = ((n - 1) / n) + 1. Since wg_size > 0,
+    // (wg_size - 1) < wg_size, so (wg_size - 1) / wg_size = 0,
+    // giving div_ceil = 1.
+    assert(((wg_size - 1) as u32) / wg_size == 0u32) by (nonlinear_arith)
+        requires wg_size > 0;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -142,10 +146,18 @@ proof fn t1404_monotonic(t1: u64, t2: u64, freq: u64)
     ensures timestamp_to_ns(t1, freq) <= timestamp_to_ns(t2, freq),
 {
     if freq == 1_000_000_000 {
-        assert(t1 as nat <= t2 as nat);
+        // identity branch — `timestamp_to_ns` returns `ticks as nat`
+    } else if freq == 0 {
+        // Excluded by precondition `freq > 0`.
     } else {
-        assert(t1 as nat * 1_000_000_000 <= t2 as nat * 1_000_000_000) by (nonlinear_arith)
-            requires t1 as nat <= t2 as nat;
+        // Else branch: (ticks * 1e9) / freq. Need `a ≤ b → a/c ≤ b/c`.
+        let a: nat = t1 as nat;
+        let b: nat = t2 as nat;
+        let c: nat = 1_000_000_000;
+        let f: nat = freq as nat;
+        assert(a * c <= b * c) by (nonlinear_arith) requires a <= b;
+        assert(a * c / f <= b * c / f) by (nonlinear_arith)
+            requires a * c <= b * c, f > 0;
     }
 }
 

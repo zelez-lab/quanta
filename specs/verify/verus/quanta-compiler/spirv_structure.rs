@@ -278,7 +278,9 @@ pub open spec fn type_dedup(
 
 /// First call allocates a fresh ID.
 proof fn type_dedup_first_alloc(cache: Map<int, u32>, key: int, next_id: u32)
-    requires !cache.contains_key(key),
+    requires
+        !cache.contains_key(key),
+        next_id < u32::MAX,
     ensures ({
         let (id, new_cache, new_next) = type_dedup(cache, key, next_id);
         &&& id == next_id
@@ -315,6 +317,7 @@ proof fn type_dedup_distinct_keys(cache: Map<int, u32>, k1: int, k2: int, next_i
         !cache.contains_key(k1),
         !cache.contains_key(k2),
         k1 != k2,
+        next_id < u32::MAX,
     ensures ({
         let (id1, cache1, next1) = type_dedup(cache, k1, next_id);
         let (id2, _cache2, _next2) = type_dedup(cache1, k2, next1);
@@ -387,6 +390,7 @@ proof fn const_dedup_distinct_values(
         !cache.contains_key(const_key(type_id, bits1)),
         !cache.contains_key(const_key(type_id, bits2)),
         const_key(type_id, bits1) != const_key(type_id, bits2),
+        next_id < u32::MAX,
     ensures ({
         let k1 = const_key(type_id, bits1);
         let k2 = const_key(type_id, bits2);
@@ -700,14 +704,16 @@ proof fn barrier_semantics_combined()
 proof fn barrier_has_acquire_release()
     ensures barrier_emission().semantics & SPIRV_MEM_ACQ_REL != 0,
 {
-    assert(0x108u32 & 0x8u32 != 0u32) by (bit_vector);
+    assert(barrier_emission().semantics == 0x8u32 | 0x100u32);
+    assert((0x8u32 | 0x100u32) & 0x8u32 != 0u32) by (bit_vector);
 }
 
 /// The WorkgroupMemory bit is set in the semantics.
 proof fn barrier_has_workgroup_memory()
     ensures barrier_emission().semantics & SPIRV_MEM_WORKGROUP != 0,
 {
-    assert(0x108u32 & 0x100u32 != 0u32) by (bit_vector);
+    assert(barrier_emission().semantics == 0x8u32 | 0x100u32);
+    assert((0x8u32 | 0x100u32) & 0x100u32 != 0u32) by (bit_vector);
 }
 
 /// The barrier instruction is exactly 4 words: header + 3 operands
@@ -2091,7 +2097,8 @@ proof fn t1401d_acq_rel_bit_set()
     ensures
         atomic_operation_semantics().memory_semantics & SPIRV_MEM_ACQ_REL != 0u32,
 {
-    assert(0x108u32 & 0x8u32 != 0u32) by (bit_vector);
+    assert(atomic_operation_semantics().memory_semantics == 0x8u32 | 0x100u32);
+    assert((0x8u32 | 0x100u32) & 0x8u32 != 0u32) by (bit_vector);
 }
 
 /// T1401e: The WorkgroupMemory bit (0x100) is set in the combined semantics.
@@ -2099,7 +2106,8 @@ proof fn t1401e_workgroup_bit_set()
     ensures
         atomic_operation_semantics().memory_semantics & SPIRV_MEM_WORKGROUP != 0u32,
 {
-    assert(0x108u32 & 0x100u32 != 0u32) by (bit_vector);
+    assert(atomic_operation_semantics().memory_semantics == 0x8u32 | 0x100u32);
+    assert((0x8u32 | 0x100u32) & 0x100u32 != 0u32) by (bit_vector);
 }
 
 /// Combined T1401: atomic semantics are AcqRel|Workgroup=0x108 with Device scope.

@@ -230,6 +230,10 @@ proof fn t1407_specific_bits_set()
         (barrier_src_stage() & VK_STAGE_TRANSFER_BIT) == VK_STAGE_TRANSFER_BIT,
         (barrier_src_stage() & VK_STAGE_ALL_COMMANDS_BIT) == 0,
 {
+    assert(barrier_src_stage() == 0x1800u32) by {
+        assert(VK_STAGE_COMPUTE_SHADER_BIT | VK_STAGE_TRANSFER_BIT == 0x1800u32)
+            by (bit_vector);
+    }
     assert((0x1800u32 & 0x800u32) == 0x800u32) by (bit_vector);
     assert((0x1800u32 & 0x1000u32) == 0x1000u32) by (bit_vector);
     assert((0x1800u32 & 0x10000u32) == 0u32) by (bit_vector);

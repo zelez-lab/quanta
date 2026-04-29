@@ -153,9 +153,15 @@ proof fn t1702_set_bytes_equiv(
     ensures
         (post.push_mask & (1u16 << (slot as u16))) != 0u16,
 {
-    assert(post.push_mask == (pre.push_mask | (1u16 << (slot as u16))));
-    assert((post.push_mask & (1u16 << (slot as u16))) != 0u16) by (bit_vector)
-        requires post.push_mask == (pre.push_mask | (1u16 << (slot as u16)));
+    let post_mask: u16 = post.push_mask;
+    let pre_mask: u16 = pre.push_mask;
+    let slot_u16: u16 = slot as u16;
+    assert(slot_u16 < 16u16);
+    assert(post_mask == (pre_mask | (1u16 << slot_u16)));
+    assert((post_mask & (1u16 << slot_u16)) != 0u16) by (bit_vector)
+        requires
+            post_mask == (pre_mask | (1u16 << slot_u16)),
+            slot_u16 < 16u16;
 }
 
 // ── T1703: default workgroup size ───────────────────────────────────

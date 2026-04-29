@@ -205,9 +205,17 @@ proof fn push_mask_records_bind(
     ensures
         (post.push_mask & (1u16 << (slot as u16))) != 0u16,
 {
-    assert(post.push_mask == (pre.push_mask | (1u16 << (slot as u16))));
-    assert((post.push_mask & (1u16 << (slot as u16))) != 0u16) by (bit_vector)
-        requires post.push_mask == (pre.push_mask | (1u16 << (slot as u16)));
+    // Extract field projections into u16 locals so the bit-vector
+    // encoder doesn't need to traverse opaque-datatype field paths.
+    let post_mask: u16 = post.push_mask;
+    let pre_mask: u16 = pre.push_mask;
+    let slot_u16: u16 = slot as u16;
+    assert(slot_u16 < 16u16);
+    assert(post_mask == (pre_mask | (1u16 << slot_u16)));
+    assert((post_mask & (1u16 << slot_u16)) != 0u16) by (bit_vector)
+        requires
+            post_mask == (pre_mask | (1u16 << slot_u16)),
+            slot_u16 < 16u16;
 }
 
 /// Converse: if bit k is set in push_mask after a sequence of set_value
@@ -237,11 +245,14 @@ proof fn push_mask_monotonic(
     ensures
         (post.push_mask & (1u16 << k)) != 0u16,
 {
-    assert(post.push_mask == (pre.push_mask | (1u16 << (slot as u16))));
-    assert((post.push_mask & (1u16 << k)) != 0u16) by (bit_vector)
+    let post_mask: u16 = post.push_mask;
+    let pre_mask: u16 = pre.push_mask;
+    let slot_u16: u16 = slot as u16;
+    assert(post_mask == (pre_mask | (1u16 << slot_u16)));
+    assert((post_mask & (1u16 << k)) != 0u16) by (bit_vector)
         requires
-            post.push_mask == (pre.push_mask | (1u16 << (slot as u16))),
-            (pre.push_mask & (1u16 << k)) != 0u16;
+            post_mask == (pre_mask | (1u16 << slot_u16)),
+            (pre_mask & (1u16 << k)) != 0u16;
 }
 
 // ── set_value stays within capacity ─────────────────────────────────
