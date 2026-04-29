@@ -1,0 +1,86 @@
+name: Web smoke (B‴)
+
+# Step B‴ of the FFI TCB shrink track. Runs the browser smoke
+# tests headlessly on every PR and main push so the WebGPU chain
+# (B⁰ ABI + B′ enum tables + step C render parity) regresses
+# loudly the moment a refactor breaks anything visible to a real
+# WebGPU implementation.
+#
+# The matching local invocation:
+#   cargo run -p quanta-cli -- build web
+#   cd web && npm install && npm run smoke:install && npm run smoke
+#
+# Each smoke test asserts the page-side PASS banner — same
+# contract a human would eyeball when running `quanta serve`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  web-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + wasm32-unknown-unknown
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-web-smoke-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-web-smoke-
+            ${{ runner.os }}-cargo-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install npm dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install Playwright + Chromium (with system deps)
+        working-directory: web
+        run: npm run smoke:install
+
+      - name: Build smoke-test deliverables (wasm + JS glue)
+        run: cargo run -p quanta-cli -- build web
+
+      - name: Run headless WebGPU smoke harness
+        working-directory: web
+        env:
+          # Chromium needs a software WebGPU adapter (SwiftShader /
+          # Vulkan-Lavapipe) inside the GitHub-Actions runner since
+          # the runners have no GPU. Setting Vulkan ICD here
+          # plus the launchOptions in playwright.config.ts is what
+          # gates a passing run on the runner.
+          VK_ICD_FILENAMES: ""
+        run: npm run smoke
+
+      - name: Upload Playwright trace + report (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7

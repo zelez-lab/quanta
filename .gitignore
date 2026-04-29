@@ -33,3 +33,11 @@ examples/web_add_one/generated/
 examples/web_triangle/*.js
 examples/web_triangle/*.wasm
 examples/web_triangle/generated/
+examples/web_textured/*.js
+examples/web_textured/*.wasm
+examples/web_textured/generated/
+
+# Playwright headless smoke harness (B‴) artifacts.
+web/test-results/
+web/playwright-report/
+web/playwright/.cache/
