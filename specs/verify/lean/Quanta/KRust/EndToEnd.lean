@@ -182,39 +182,6 @@ axiom translateExpr_preserves_params_axiom
     (h : translateExpr ctx e = some (r, sty, ctx'))
     : ctx'.params = ctx.params
 
-/-- **translateStmts_extends_ops_axiom** — list-level sibling of
-    `translateExpr_extends_ops_axiom`. Bundled as an axiom so that
-    `translateStmt_extends_ops` (closed theorem below) can dispatch
-    to the structurally-recursive `ifS`/`forRange`/`whileS`/`loopS`
-    arms without setting up a mutual termination measure. The
-    matching `translateStmts_extends_ops` *theorem* derived later
-    from the per-stmt axiom is closed independently — they witness
-    the same fact at different recursion layers. -/
-axiom translateStmts_extends_ops_axiom
-    (ctx ctx_after : EmitCtx) (body : List Stmt)
-    (h : translateStmts ctx body = some ctx_after)
-    : ∃ delta, ctx_after.ops = ctx.ops ++ delta
-
-/-- **translateStmts_preserves_params_axiom** — list-level sibling
-    for parameter preservation. -/
-axiom translateStmts_preserves_params_axiom
-    (ctx ctx_after : EmitCtx) (body : List Stmt)
-    (h : translateStmts ctx body = some ctx_after)
-    : ctx_after.params = ctx.params
-
-/-- Focused axiom for the structurally-recursive `Stmt` arms whose
-    inline case-analysis would require unfolding the full do-block
-    of `translateExpr` + `translateStmts` calls. Strictly narrower
-    than the previous monolithic `translateStmt_extends_ops_axiom`:
-    it only fires for `assignIdx`/`ifS`/`forRange`/`whileS`/`loopS`,
-    not the three non-recursive arms (`letTuple`/`callS`/`breakS`)
-    or the three calls-into-`translateExpr` arms (`letDecl`/`exprS`/
-    `assignVar`) which now close as theorems below. -/
-axiom translateStmt_extends_ops_recursive_arms
-    (ctx ctx_after : EmitCtx) (stmt : Stmt)
-    (h : translateStmt ctx stmt = some ctx_after)
-    : ∃ delta, ctx_after.ops = ctx.ops ++ delta
-
 /-- Focused axiom for the recursive `Stmt` arms whose params
     preservation would require similar do-block unfolding. -/
 axiom translateStmt_preserves_params_recursive_arms
@@ -280,20 +247,139 @@ theorem translateStmt_extends_ops
           simp [EmitCtx.bindVar]
           exact h_d
   | assignIdx arr idx rhs =>
-      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
-              (Stmt.assignIdx arr idx rhs) h
+      simp [translateStmt, Bind.bind, Option.bind] at h
+      cases h_lk : ctx.lookupParam arr with
+      | none => rw [h_lk] at h; exact absurd h (by simp)
+      | some slot =>
+          rw [h_lk] at h
+          simp at h
+          cases h_idx : translateExpr ctx idx with
+          | none => rw [h_idx] at h; exact absurd h (by simp)
+          | some triple1 =>
+              obtain ⟨ri, _sty1, ctx1⟩ := triple1
+              rw [h_idx] at h
+              simp at h
+              cases h_rhs : translateExpr ctx1 rhs with
+              | none => rw [h_rhs] at h; exact absurd h (by simp)
+              | some triple2 =>
+                  obtain ⟨rr, _sty2, ctx2⟩ := triple2
+                  rw [h_rhs] at h
+                  simp at h
+                  obtain ⟨d_idx, h_d_idx⟩ :=
+                    translateExpr_extends_ops_axiom ctx idx ri _sty1 ctx1 h_idx
+                  obtain ⟨d_rhs, h_d_rhs⟩ :=
+                    translateExpr_extends_ops_axiom ctx1 rhs rr _sty2 ctx2 h_rhs
+                  refine ⟨d_idx ++ d_rhs ++ [KOps.KernelOp.store slot ri rr .u32], ?_⟩
+                  rw [← h]
+                  show (ctx2.emit _).ops = ctx.ops ++ _
+                  simp [EmitCtx.emit, h_d_rhs, h_d_idx, List.append_assoc]
   | ifS c thenS elseS =>
-      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
-              (Stmt.ifS c thenS elseS) h
+      simp [translateStmt] at h
+      cases h_c : translateExpr ctx c with
+      | none => rw [h_c] at h; exact absurd h (by simp)
+      | some triple =>
+          obtain ⟨rc, _styc, ctx1⟩ := triple
+          rw [h_c] at h
+          simp at h
+          cases h_then : (translateStmts { ctx1 with ops := [] } thenS : Option EmitCtx) with
+          | none => rw [h_then] at h; exact absurd h (by simp)
+          | some thenCtxS =>
+              rw [h_then] at h
+              simp at h
+              cases h_else : (translateStmts { thenCtxS with ops := [] } elseS : Option EmitCtx) with
+              | none => rw [h_else] at h; exact absurd h (by simp)
+              | some elseCtxS =>
+                  rw [h_else] at h
+                  simp at h
+                  obtain ⟨d_c, h_d_c⟩ :=
+                    translateExpr_extends_ops_axiom ctx c rc _styc ctx1 h_c
+                  refine ⟨d_c ++ [KOps.KernelOp.branch rc thenCtxS.ops elseCtxS.ops], ?_⟩
+                  rw [← h]
+                  show (({ elseCtxS with ops := ctx1.ops } : EmitCtx).emit _).ops
+                       = ctx.ops ++ _
+                  simp [EmitCtx.emit, h_d_c, List.append_assoc]
   | forRange name lo hi body =>
-      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
-              (Stmt.forRange name lo hi body) h
+      simp [translateStmt] at h
+      cases h_lo : translateExpr ctx lo with
+      | none => rw [h_lo] at h; exact absurd h (by simp)
+      | some triple1 =>
+          obtain ⟨rlo, _sty1, ctx1⟩ := triple1
+          rw [h_lo] at h
+          simp at h
+          cases h_hi : translateExpr ctx1 hi with
+          | none => rw [h_hi] at h; exact absurd h (by simp)
+          | some triple2 =>
+              obtain ⟨rhi, _sty2, ctx2⟩ := triple2
+              rw [h_hi] at h
+              simp at h
+              -- ctx3 = ctx2.fresh.snd, ri = ctx2.fresh.fst
+              -- ctx4 = ctx3.emit (copy ri rlo); ctx5 = ctx4.bindVar name ri
+              -- bodyCtx0 = { ctx5 with ops := [] }
+              cases h_b : (translateStmts
+                  ({ (ctx2.fresh.snd.emit
+                        (KOps.KernelOp.copy ctx2.fresh.fst rlo)).bindVar name ctx2.fresh.fst
+                     with ops := ([] : List KernelOp) } : EmitCtx)
+                  body : Option EmitCtx) with
+              | none => rw [h_b] at h; exact absurd h (by simp)
+              | some bodyCtxF =>
+                  rw [h_b] at h
+                  simp at h
+                  obtain ⟨d_lo, h_d_lo⟩ :=
+                    translateExpr_extends_ops_axiom ctx lo rlo _sty1 ctx1 h_lo
+                  obtain ⟨d_hi, h_d_hi⟩ :=
+                    translateExpr_extends_ops_axiom ctx1 hi rhi _sty2 ctx2 h_hi
+                  -- delta = d_lo ++ d_hi ++ [copy] ++ [loopOp loopBody]
+                  let ri := ctx2.fresh.fst
+                  let rcmp := bodyCtxF.fresh.fst
+                  let rone := bodyCtxF.fresh.snd.fresh.fst
+                  let rinc := bodyCtxF.fresh.snd.fresh.snd.fresh.fst
+                  let header :=
+                    [KOps.KernelOp.cmp rcmp ri rhi KOps.CmpOp.ge KOps.Scalar.u32,
+                     KOps.KernelOp.branch rcmp [KOps.KernelOp.breakOp] []]
+                  let trailer :=
+                    [KOps.KernelOp.const rone (KOps.ConstValue.u32 1),
+                     KOps.KernelOp.binOp rinc ri rone KOps.BinOp.add KOps.Scalar.u32,
+                     KOps.KernelOp.copy ri rinc]
+                  let loopBody := header ++ bodyCtxF.ops ++ trailer
+                  refine ⟨d_lo ++ d_hi ++
+                          [KOps.KernelOp.copy ri rlo, KOps.KernelOp.loopOp loopBody], ?_⟩
+                  rw [← h]
+                  simp [EmitCtx.emit, EmitCtx.bindVar, EmitCtx.fresh, ri, rcmp, rone, rinc,
+                        header, trailer, loopBody]
+                  rw [h_d_hi, h_d_lo]
+                  simp [List.append_assoc]
   | whileS cond body =>
-      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
-              (Stmt.whileS cond body) h
+      simp [translateStmt] at h
+      cases h_c : translateExpr ({ ctx with ops := ([] : List KernelOp) } : EmitCtx) cond with
+      | none => rw [h_c] at h; exact absurd h (by simp)
+      | some triple =>
+          obtain ⟨rc, _styc, condCtx⟩ := triple
+          rw [h_c] at h
+          simp at h
+          cases h_b : (translateStmts
+              ({ condCtx with ops := ([] : List KernelOp) } : EmitCtx) body : Option EmitCtx) with
+          | none => rw [h_b] at h; exact absurd h (by simp)
+          | some bodyCtxW =>
+              rw [h_b] at h
+              simp at h
+              refine ⟨[KOps.KernelOp.loopOp
+                  ((condCtx.ops ++
+                    [KOps.KernelOp.unaryOp rc rc KOps.UnaryOp.logNot KOps.Scalar.bool,
+                     KOps.KernelOp.branch rc [KOps.KernelOp.breakOp] []])
+                   ++ bodyCtxW.ops)], ?_⟩
+              rw [← h]
+              simp [EmitCtx.emit]
   | loopS body =>
-      exact translateStmt_extends_ops_recursive_arms ctx ctx_after
-              (Stmt.loopS body) h
+      simp [translateStmt] at h
+      cases h_b : (translateStmts
+          ({ ctx with ops := ([] : List KernelOp) } : EmitCtx) body : Option EmitCtx) with
+      | none => rw [h_b] at h; exact absurd h (by simp)
+      | some bodyCtxL =>
+          rw [h_b] at h
+          simp at h
+          refine ⟨[KOps.KernelOp.loopOp bodyCtxL.ops], ?_⟩
+          rw [← h]
+          simp [EmitCtx.emit]
 
 /-- **translateStmt_preserves_params** — closed theorem: parameter
     preservation. Same dispatch structure as
@@ -346,9 +432,36 @@ theorem translateStmt_preserves_params
           simp [EmitCtx.bindVar]
           exact h_p
   | assignIdx arr idx rhs =>
-      exact translateStmt_preserves_params_recursive_arms ctx ctx_after
-              (Stmt.assignIdx arr idx rhs) h
+      simp [translateStmt, Bind.bind, Option.bind] at h
+      cases h_lk : ctx.lookupParam arr with
+      | none => rw [h_lk] at h; exact absurd h (by simp)
+      | some slot =>
+          rw [h_lk] at h
+          simp at h
+          cases h_idx : translateExpr ctx idx with
+          | none => rw [h_idx] at h; exact absurd h (by simp)
+          | some triple1 =>
+              obtain ⟨ri, _sty1, ctx1⟩ := triple1
+              rw [h_idx] at h
+              simp at h
+              cases h_rhs : translateExpr ctx1 rhs with
+              | none => rw [h_rhs] at h; exact absurd h (by simp)
+              | some triple2 =>
+                  obtain ⟨rr, _sty2, ctx2⟩ := triple2
+                  rw [h_rhs] at h
+                  simp at h
+                  have h_p1 := translateExpr_preserves_params_axiom ctx idx ri _sty1 ctx1 h_idx
+                  have h_p2 := translateExpr_preserves_params_axiom ctx1 rhs rr _sty2 ctx2 h_rhs
+                  rw [← h]
+                  show (ctx2.emit _).params = ctx.params
+                  simp [EmitCtx.emit]
+                  rw [h_p2, h_p1]
   | ifS c thenS elseS =>
+      -- Inner translateStmts calls on thenS/elseS introduce a
+      -- mutual dependency with `translateStmts_preserves_params`
+      -- (which is defined later via induction over this theorem).
+      -- The recursive-arms axiom covers this case until the mutual
+      -- proof is set up.
       exact translateStmt_preserves_params_recursive_arms ctx ctx_after
               (Stmt.ifS c thenS elseS) h
   | forRange name lo hi body =>
