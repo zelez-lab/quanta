@@ -5,7 +5,7 @@
 //! sequence as the IR (no FMA contraction).
 
 use super::super::lane::Lane;
-use super::super::output::RawOutput;
+use super::super::output::{RawOutput, RawValues};
 
 pub const NAME: &str = "saxpy";
 pub const N: usize = 1024;
@@ -26,7 +26,7 @@ pub fn run_reference() -> RawOutput {
     RawOutput {
         lane: Lane::Reference,
         kernel: NAME,
-        values: out,
+        values: RawValues::F32(out),
     }
 }
 
@@ -122,6 +122,6 @@ pub fn run_software() -> RawOutput {
     RawOutput {
         lane: Lane::Software,
         kernel: NAME,
-        values: fout.read().unwrap(),
+        values: RawValues::F32(fout.read().unwrap()),
     }
 }

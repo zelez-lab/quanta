@@ -2,55 +2,36 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Quanta differential CI — saxpy WGSL lane</title>
+    <title>Quanta differential CI — WGSL lane</title>
     <style>
       body { font: 14px ui-monospace, monospace; padding: 1rem; }
       pre  { background: #f6f6f6; padding: 0.5rem; max-height: 18rem; overflow: auto; }
       .ok  { color: #0a0; }
       .fail { color: #a00; }
+      ul#kernels { margin: 0; padding-left: 1.5rem; }
     </style>
   </head>
   <body>
-    <h1>Quanta differential CI — <code>saxpy</code> on WebGPU</h1>
+    <h1>Quanta differential CI — WGSL lane</h1>
     <p>
-      Step D.2 of step 077. Runs the same SAXPY kernel as
-      <code>tests/diff/kernels/saxpy.rs</code> through the WebGPU
-      backend, then asserts every output element is within 1 ULP of
-      a JS-side reference oracle that uses the same constants.
+      Runs each kernel in <code>tests/diff/kernels/</code> through the
+      WebGPU backend and asserts agreement with a JS-side reference
+      oracle. Tolerance is per-kernel (≤ 1 ULP for floats, bit-exact
+      for ints). Status is PASS only if every kernel verdict passes.
     </p>
     <p id="status">Loading…</p>
+    <ul id="kernels"></ul>
     <pre id="output"></pre>
 
     <script type="module">
       import { instantiate } from "./quanta.js";
 
-      const statusEl = document.getElementById("status");
-      const outEl    = document.getElementById("output");
+      const statusEl  = document.getElementById("status");
+      const kernelsEl = document.getElementById("kernels");
+      const outEl     = document.getElementById("output");
 
-      const A = 2.5;
-      const N = 1024;
+      // ────────────────────── tolerance helpers ──────────────────────
 
-      // Reference oracle. Mirrors `tests/diff/kernels/saxpy.rs`
-      // byte-for-byte: same A, same inputs, same mul-then-add order
-      // (no FMA contraction). If you change the Rust reference, change
-      // this too.
-      function referenceOutput() {
-        const xs = new Float32Array(N);
-        const ys = new Float32Array(N);
-        const out = new Float32Array(N);
-        for (let i = 0; i < N; i++) {
-          xs[i] = i * 0.125;
-          ys[i] = 1.0 - i * 0.0625;
-        }
-        for (let i = 0; i < N; i++) {
-          out[i] = Math.fround(Math.fround(A * xs[i]) + ys[i]);
-        }
-        return out;
-      }
-
-      // ULP distance between two f32s. Returns null if the pair is
-      // not ULP-comparable (any NaN, or finite values of opposite
-      // sign that are not both ±0).
       function ulpDistance(x, y) {
         if (Number.isNaN(x) || Number.isNaN(y)) return null;
         if (x === y) return 0;
@@ -71,33 +52,86 @@
         }
         for (let i = 0; i < oracle.length; i++) {
           const d = ulpDistance(oracle[i], candidate[i]);
-          if (d === null) {
-            return { ok: false, detail: `index=${i} oracle=${oracle[i]} candidate=${candidate[i]} (NaN or sign-disjoint)` };
-          }
-          if (d > maxUlps) {
-            return { ok: false, detail: `index=${i} oracle=${oracle[i]} candidate=${candidate[i]} ulp_distance=${d} max=${maxUlps}` };
+          if (d === null) return { ok: false, detail: `index=${i} oracle=${oracle[i]} candidate=${candidate[i]} (NaN or sign-disjoint)` };
+          if (d > maxUlps) return { ok: false, detail: `index=${i} oracle=${oracle[i]} candidate=${candidate[i]} ulp_distance=${d} max=${maxUlps}` };
+        }
+        return { ok: true };
+      }
+
+      function compareU32(oracle, candidate) {
+        if (oracle.length !== candidate.length) {
+          return { ok: false, detail: `length mismatch: ${oracle.length} vs ${candidate.length}` };
+        }
+        for (let i = 0; i < oracle.length; i++) {
+          if (oracle[i] !== candidate[i]) {
+            return { ok: false, detail: `index=${i} oracle=${oracle[i]} candidate=${candidate[i]}` };
           }
         }
         return { ok: true };
       }
 
+      // ────────────────────── saxpy oracle ──────────────────────────
+
+      const SAXPY_A = 2.5;
+      const SAXPY_N = 1024;
+      function saxpyOracle() {
+        const xs = new Float32Array(SAXPY_N);
+        const ys = new Float32Array(SAXPY_N);
+        const out = new Float32Array(SAXPY_N);
+        for (let i = 0; i < SAXPY_N; i++) {
+          xs[i] = i * 0.125;
+          ys[i] = 1.0 - i * 0.0625;
+        }
+        for (let i = 0; i < SAXPY_N; i++) {
+          out[i] = Math.fround(Math.fround(SAXPY_A * xs[i]) + ys[i]);
+        }
+        return out;
+      }
+
+      // ────────────────────── reduce_sum oracle ─────────────────────
+
+      const REDUCE_N = 64;
+      function reduceSumOracle() {
+        let sum = 0;
+        for (let i = 1; i <= REDUCE_N; i++) sum = (sum + i) >>> 0;
+        return new Uint32Array([sum]);
+      }
+
+      // ────────────────────── runner ────────────────────────────────
+
+      function appendVerdict(name, verdict) {
+        const li = document.createElement("li");
+        li.textContent = `${name} — ${verdict.ok ? "PASS" : "FAIL " + verdict.detail}`;
+        li.className = verdict.ok ? "ok" : "fail";
+        kernelsEl.appendChild(li);
+        return verdict.ok;
+      }
+
       async function main() {
         const mod = await instantiate("./web_diff.wasm");
-        const bytes = await mod.runReturningBytes("web_diff_saxpy_run");
-        const candidate = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4);
-        const oracle = referenceOutput();
 
-        const verdict = compareF32(oracle, candidate, 1);
+        // saxpy
+        const saxpyBytes = await mod.runReturningBytes("web_diff_saxpy_run");
+        const saxpyCand = new Float32Array(saxpyBytes.buffer, saxpyBytes.byteOffset, saxpyBytes.length / 4);
+        const saxpyOk = appendVerdict("saxpy (≤ 1 ULP, N=1024)", compareF32(saxpyOracle(), saxpyCand, 1));
 
-        statusEl.className = verdict.ok ? "ok" : "fail";
-        statusEl.textContent = verdict.ok
-          ? `PASS — saxpy WGSL lane within 1 ULP across ${N} elements`
-          : `FAIL — ${verdict.detail}`;
+        // reduce_sum
+        const reduceBytes = await mod.runReturningBytes("web_diff_reduce_sum_run");
+        const reduceCand = new Uint32Array(reduceBytes.buffer, reduceBytes.byteOffset, reduceBytes.length / 4);
+        const reduceOracle = reduceSumOracle();
+        const reduceOk = appendVerdict("reduce_sum (bit-exact, N=64)", compareU32(reduceOracle, reduceCand));
 
-        const head = (a) => Array.from(a.slice(0, 8)).map(v => v.toFixed(6)).join(", ");
+        const allOk = saxpyOk && reduceOk;
+        statusEl.className = allOk ? "ok" : "fail";
+        statusEl.textContent = allOk
+          ? `PASS — 2 / 2 kernels match across the WGSL lane`
+          : `FAIL — see per-kernel verdicts below`;
+
         outEl.textContent =
-          `oracle[0..8]:    ${head(oracle)}\n` +
-          `candidate[0..8]: ${head(candidate)}`;
+          `reduce_sum oracle:    ${reduceOracle[0]}\n` +
+          `reduce_sum candidate: ${reduceCand[0]}\n` +
+          `saxpy oracle[0..4]:    ${Array.from(saxpyOracle().slice(0, 4)).join(", ")}\n` +
+          `saxpy candidate[0..4]: ${Array.from(saxpyCand.slice(0, 4)).join(", ")}`;
       }
 
       main().catch(err => {

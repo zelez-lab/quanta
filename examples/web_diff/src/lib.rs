@@ -21,7 +21,7 @@
 use quanta::GpuDevice;
 use quanta::webgpu::spawn_local;
 use quanta_ir::{
-    BinOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
+    BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
 };
 
 unsafe extern "C" {
@@ -156,6 +156,171 @@ async fn run() -> Result<Vec<u8>, String> {
 pub extern "C" fn web_diff_saxpy_run(task: u32) {
     spawn_local(async move {
         match run().await {
+            Ok(bytes) => unsafe {
+                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
+            },
+            Err(msg) => unsafe {
+                quanta_complete_err(task, msg.as_ptr(), msg.len());
+            },
+        }
+    });
+}
+
+// ───────────────────────── reduce_sum (D.3a) ─────────────────────────
+//
+// Mirrors `tests/diff/kernels/reduce_sum.rs`: shared-memory + barrier
+// + thread-0 sums the 64 cells linearly. Output is one u32. Tolerance
+// is bit-exact; the JS verdict checks `out[0] === Σ inputs`.
+
+const REDUCE_N: u32 = 64;
+
+fn build_reduce_sum_kernel() -> KernelDef {
+    KernelDef {
+        name: "reduce_sum".into(),
+        params: vec![
+            KernelParam::FieldRead {
+                name: "data".into(),
+                slot: 0,
+                scalar_type: ScalarType::U32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 1,
+                scalar_type: ScalarType::U32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::ProtonId { dst: Reg(1) },
+            KernelOp::ProtonSize { dst: Reg(2) },
+            KernelOp::SharedDecl {
+                id: 0,
+                ty: ScalarType::U32,
+                count: REDUCE_N,
+            },
+            KernelOp::Load {
+                dst: Reg(3),
+                field: 0,
+                index: Reg(0),
+                ty: ScalarType::U32,
+            },
+            KernelOp::SharedStore {
+                id: 0,
+                index: Reg(1),
+                src: Reg(3),
+                ty: ScalarType::U32,
+            },
+            KernelOp::Barrier,
+            KernelOp::Const {
+                dst: Reg(4),
+                value: ConstValue::U32(0),
+            },
+            KernelOp::Cmp {
+                dst: Reg(5),
+                a: Reg(1),
+                b: Reg(4),
+                op: CmpOp::Eq,
+                ty: ScalarType::U32,
+            },
+            KernelOp::Branch {
+                cond: Reg(5),
+                then_ops: vec![KernelOp::Loop {
+                    count: Reg(2),
+                    iter_reg: Reg(7),
+                    body: vec![
+                        // Accumulator lives in `out[0]` rather than a
+                        // register: the WGSL emitter lowers BinOp to
+                        // an immutable `let`, which would shadow not
+                        // mutate inside the loop. Reading + writing
+                        // the storage binding works on every backend.
+                        KernelOp::Load {
+                            dst: Reg(6),
+                            field: 1,
+                            index: Reg(4),
+                            ty: ScalarType::U32,
+                        },
+                        KernelOp::SharedLoad {
+                            dst: Reg(8),
+                            id: 0,
+                            index: Reg(7),
+                            ty: ScalarType::U32,
+                        },
+                        KernelOp::BinOp {
+                            dst: Reg(9),
+                            a: Reg(6),
+                            b: Reg(8),
+                            op: BinOp::Add,
+                            ty: ScalarType::U32,
+                        },
+                        KernelOp::Store {
+                            field: 1,
+                            index: Reg(4),
+                            src: Reg(9),
+                            ty: ScalarType::U32,
+                        },
+                    ],
+                }],
+                else_ops: vec![],
+            },
+        ],
+        body_source: None,
+        next_reg: 10,
+        opt_level: 3,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [REDUCE_N, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+async fn run_reduce_sum() -> Result<Vec<u8>, String> {
+    let dev = quanta::webgpu::WebgpuDevice::new_async()
+        .await
+        .map_err(|e| format!("new_async: {:?}", e))?;
+
+    let n = REDUCE_N as usize;
+    let in_bytes = n * core::mem::size_of::<u32>();
+    let out_bytes = core::mem::size_of::<u32>();
+    let usage = quanta::FieldUsage::default_compute();
+
+    let fdata = dev
+        .field_alloc(in_bytes, usage)
+        .map_err(|e| format!("field_alloc data: {:?}", e))?;
+    let fout = dev
+        .field_alloc(out_bytes, usage)
+        .map_err(|e| format!("field_alloc out: {:?}", e))?;
+
+    let mut data_bytes = Vec::with_capacity(in_bytes);
+    for i in 1u32..=REDUCE_N {
+        data_bytes.extend_from_slice(&i.to_le_bytes());
+    }
+    dev.field_write_bytes(fdata, &data_bytes)
+        .map_err(|e| format!("field_write data: {:?}", e))?;
+    dev.field_write_bytes(fout, &0u32.to_le_bytes())
+        .map_err(|e| format!("field_write out: {:?}", e))?;
+
+    let kernel = build_reduce_sum_kernel();
+    let kernel_bytes = serialize_kernel(&kernel);
+    let mut wave = dev
+        .wave_jit(&kernel_bytes)
+        .map_err(|e| format!("wave_jit: {:?}", e))?;
+    wave.bind_handle(0, fdata);
+    wave.bind_handle(1, fout);
+
+    let _pulse = dev
+        .wave_dispatch(&wave, [1, 1, 1])
+        .map_err(|e| format!("wave_dispatch: {:?}", e))?;
+
+    dev.field_read_bytes_async(fout, out_bytes)
+        .await
+        .map_err(|e| format!("read_back: {:?}", e))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn web_diff_reduce_sum_run(task: u32) {
+    spawn_local(async move {
+        match run_reduce_sum().await {
             Ok(bytes) => unsafe {
                 quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
             },

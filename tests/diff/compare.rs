@@ -1,10 +1,13 @@
 //! Tolerance rules for cross-lane output comparison.
 //!
-//! Currently float-only (`compare` enforces ≤ `max_ulps` distance).
-//! Integer kernels (D.3 — reduce_sum, counter) will introduce a
-//! bit-exact path alongside this one.
+//! - `compare_f32(..., max_ulps)` — float kernels (≤ `max_ulps` ULP).
+//! - `compare_u32(...)` — integer kernels (bit-exact).
+//!
+//! Each comparator errors with a `Divergence` carrying the kernel,
+//! lane names, the failing index (if any), and a free-form detail
+//! string suitable for direct use in panic / status messages.
 
-use super::output::RawOutput;
+use super::output::{RawOutput, RawValues};
 
 #[derive(Debug)]
 pub struct Divergence {
@@ -48,24 +51,30 @@ pub fn compare_f32(
             ),
         ));
     }
-    if oracle.values.len() != candidate.values.len() {
+    let (a, b) = match (&oracle.values, &candidate.values) {
+        (RawValues::F32(a), RawValues::F32(b)) => (a.as_slice(), b.as_slice()),
+        _ => {
+            return Err(div(
+                oracle,
+                candidate,
+                None,
+                format!(
+                    "compare_f32 expected f32 outputs, got oracle={} candidate={}",
+                    oracle.values.type_tag(),
+                    candidate.values.type_tag()
+                ),
+            ));
+        }
+    };
+    if a.len() != b.len() {
         return Err(div(
             oracle,
             candidate,
             None,
-            format!(
-                "length mismatch: {} vs {}",
-                oracle.values.len(),
-                candidate.values.len()
-            ),
+            format!("length mismatch: {} vs {}", a.len(), b.len()),
         ));
     }
-    for (i, (x, y)) in oracle
-        .values
-        .iter()
-        .zip(candidate.values.iter())
-        .enumerate()
-    {
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
         match ulp_distance(*x, *y) {
             Some(d) if d <= max_ulps => {}
             Some(d) => {
@@ -87,6 +96,54 @@ pub fn compare_f32(
                     format!("f32 oracle={} candidate={} (NaN or sign-disjoint)", x, y),
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+pub fn compare_u32(oracle: &RawOutput, candidate: &RawOutput) -> Result<(), Divergence> {
+    if oracle.kernel != candidate.kernel {
+        return Err(div(
+            oracle,
+            candidate,
+            None,
+            format!(
+                "kernel name mismatch: {} vs {}",
+                oracle.kernel, candidate.kernel
+            ),
+        ));
+    }
+    let (a, b) = match (&oracle.values, &candidate.values) {
+        (RawValues::U32(a), RawValues::U32(b)) => (a.as_slice(), b.as_slice()),
+        _ => {
+            return Err(div(
+                oracle,
+                candidate,
+                None,
+                format!(
+                    "compare_u32 expected u32 outputs, got oracle={} candidate={}",
+                    oracle.values.type_tag(),
+                    candidate.values.type_tag()
+                ),
+            ));
+        }
+    };
+    if a.len() != b.len() {
+        return Err(div(
+            oracle,
+            candidate,
+            None,
+            format!("length mismatch: {} vs {}", a.len(), b.len()),
+        ));
+    }
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        if x != y {
+            return Err(div(
+                oracle,
+                candidate,
+                Some(i),
+                format!("u32 oracle={} candidate={}", x, y),
+            ));
         }
     }
     Ok(())

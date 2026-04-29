@@ -18,8 +18,8 @@
 #[path = "diff/mod.rs"]
 mod diff;
 
-use diff::compare::compare_f32;
-use diff::kernels::saxpy;
+use diff::compare::{compare_f32, compare_u32};
+use diff::kernels::{reduce_sum, saxpy};
 
 #[test]
 fn saxpy_reference_self_consistent() {
@@ -34,5 +34,21 @@ fn saxpy_software_within_one_ulp_of_reference() {
     let candidate = saxpy::run_software();
     if let Err(div) = compare_f32(&oracle, &candidate, 1) {
         panic!("SAXPY divergence: {}", div);
+    }
+}
+
+#[test]
+fn reduce_sum_reference_self_consistent() {
+    let oracle = reduce_sum::run_reference();
+    let again = reduce_sum::run_reference();
+    compare_u32(&oracle, &again).expect("reference reduce_sum must be deterministic");
+}
+
+#[test]
+fn reduce_sum_software_bit_exact_versus_reference() {
+    let oracle = reduce_sum::run_reference();
+    let candidate = reduce_sum::run_software();
+    if let Err(div) = compare_u32(&oracle, &candidate) {
+        panic!("reduce_sum divergence: {}", div);
     }
 }
