@@ -11,6 +11,21 @@ use std::sync::RwLock;
 
 use super::ffi;
 
+/// State for one Metal MTLIndirectCommandBuffer.
+pub(crate) struct MetalIcb {
+    /// The MTLIndirectCommandBuffer object.
+    pub(crate) icb: ffi::Id,
+    /// Capacity (max command count) supplied at create time.
+    pub(crate) cap: u32,
+    /// Resource buffer handles touched by recorded commands. Used at
+    /// execute time to call `useResource:usage:` so the GPU resource
+    /// hazard tracker sees the dependencies (Metal does not infer
+    /// these from the recorded ICB itself).
+    pub(crate) used_buffers: Vec<u64>,
+    /// Number of commands recorded so far. Always ≤ cap.
+    pub(crate) recorded: u32,
+}
+
 /// Metal-backed GPU device.
 pub struct MetalDevice {
     pub(crate) device: ffi::Id,
@@ -25,6 +40,7 @@ pub struct MetalDevice {
     pub(crate) depth_stencil_states: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) samplers: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) queues: RwLock<HashMap<u64, ffi::Id>>,
+    pub(crate) icbs: RwLock<HashMap<u64, MetalIcb>>,
     pub(crate) next_handle: AtomicU64,
 }
 
@@ -81,6 +97,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         depth_stencil_states: RwLock::new(HashMap::new()),
         samplers: RwLock::new(HashMap::new()),
         queues: RwLock::new(HashMap::new()),
+        icbs: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
     })]
 }

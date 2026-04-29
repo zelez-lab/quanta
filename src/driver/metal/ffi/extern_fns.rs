@@ -571,6 +571,108 @@ pub unsafe fn msg_pop_debug_group(encoder: Id) {
     msg_void(encoder, b"popDebugGroup\0")
 }
 
+// ─── MTLIndirectCommandBuffer (steps 032 + 033) ────────────────────────────
+
+/// Build an MTLIndirectCommandBufferDescriptor, configure for compute
+/// dispatch, and return it (autoreleased — caller does not own it).
+pub unsafe fn msg_new_icb_descriptor(
+    command_types: NSUInteger,
+    max_kernel_buffer_bind_count: NSUInteger,
+) -> Id {
+    let cls_id = cls(b"MTLIndirectCommandBufferDescriptor\0") as Id;
+    let alloc: Id = msg_id(cls_id, b"alloc\0");
+    let desc: Id = msg_id(alloc, b"init\0");
+    msg_void_u64(desc, b"setCommandTypes:\0", command_types);
+    msg_void_u64(
+        desc,
+        b"setMaxKernelBufferBindCount:\0",
+        max_kernel_buffer_bind_count,
+    );
+    // Inherit pipeline + buffers from the parent encoder so we don't
+    // have to re-pin every resource per command.
+    msg_void_bool(desc, b"setInheritPipelineState:\0", false);
+    msg_void_bool(desc, b"setInheritBuffers:\0", false);
+    desc
+}
+
+/// `[device newIndirectCommandBufferWithDescriptor:maxCommandCount:options:]`
+pub unsafe fn msg_new_icb(
+    device: Id,
+    descriptor: Id,
+    max_command_count: NSUInteger,
+    options: NSUInteger,
+) -> Id {
+    let f: unsafe extern "C" fn(Id, Sel, Id, NSUInteger, NSUInteger) -> Id =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        device,
+        sel(b"newIndirectCommandBufferWithDescriptor:maxCommandCount:options:\0"),
+        descriptor,
+        max_command_count,
+        options,
+    )
+}
+
+/// `[icb indirectComputeCommandAtIndex:]` — returns the command slot
+/// the caller writes pipeline + bindings + dispatch into.
+pub unsafe fn msg_icb_compute_command_at_index(icb: Id, index: NSUInteger) -> Id {
+    msg_id_u64(icb, b"indirectComputeCommandAtIndex:\0", index)
+}
+
+/// `[indirectComputeCommand setComputePipelineState:]`
+pub unsafe fn msg_icc_set_compute_pipeline(cmd: Id, pipeline: Id) {
+    msg_void_id(cmd, b"setComputePipelineState:\0", pipeline)
+}
+
+/// `[indirectComputeCommand setKernelBuffer:offset:atIndex:]`
+pub unsafe fn msg_icc_set_kernel_buffer(cmd: Id, buffer: Id, offset: u64, index: u64) {
+    msg_set_buffer(
+        cmd,
+        b"setKernelBuffer:offset:atIndex:\0",
+        buffer,
+        offset,
+        index,
+    )
+}
+
+/// `[indirectComputeCommand concurrentDispatchThreadgroups:threadsPerThreadgroup:]`
+pub unsafe fn msg_icc_concurrent_dispatch_threadgroups(
+    cmd: Id,
+    groups: MTLSize,
+    group_size: MTLSize,
+) {
+    let f: unsafe extern "C" fn(Id, Sel, MTLSize, MTLSize) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        cmd,
+        sel(b"concurrentDispatchThreadgroups:threadsPerThreadgroup:\0"),
+        groups,
+        group_size,
+    )
+}
+
+/// `[encoder executeCommandsInBuffer:withRange:]` — executes a range
+/// of recorded commands from an ICB on the active compute encoder.
+pub unsafe fn msg_execute_commands_in_buffer(encoder: Id, icb: Id, range: NSRange) {
+    let f: unsafe extern "C" fn(Id, Sel, Id, NSRange) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        encoder,
+        sel(b"executeCommandsInBuffer:withRange:\0"),
+        icb,
+        range,
+    )
+}
+
+/// `[encoder useResource:usage:]` — declare a resource used by ICB
+/// commands so the GPU resource hazard tracker sees it. `usage` is
+/// MTLResourceUsageRead = 1, Write = 2, Sample = 4.
+pub unsafe fn msg_use_resource(encoder: Id, resource: Id, usage: NSUInteger) {
+    let f: unsafe extern "C" fn(Id, Sel, Id, NSUInteger) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(encoder, sel(b"useResource:usage:\0"), resource, usage)
+}
+
 /// generateMipmapsForTexture: on blit encoder
 pub unsafe fn msg_generate_mipmaps(blit: Id, texture: Id) {
     msg_void_id(blit, b"generateMipmapsForTexture:\0", texture)

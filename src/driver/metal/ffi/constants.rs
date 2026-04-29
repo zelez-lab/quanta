@@ -176,3 +176,22 @@ pub const MTL_VISIBILITY_RESULT_MODE_COUNTING: NSUInteger = 2;
 
 /// Infinite timeout for dispatch_semaphore_wait.
 pub const DISPATCH_TIME_FOREVER: u64 = !0;
+
+// ─── MTLIndirectCommandType (steps 032 + 033) ──────────────────────────────
+//
+// Bitmask passed to MTLIndirectCommandBufferDescriptor.commandTypes.
+// We use ConcurrentDispatchThreads to lower compute dispatches into
+// the ICB; render variants are documented for the future render-path
+// follow-up.
+
+#[allow(dead_code)]
+pub const MTL_INDIRECT_COMMAND_TYPE_DRAW: NSUInteger = 1 << 0;
+#[allow(dead_code)]
+pub const MTL_INDIRECT_COMMAND_TYPE_DRAW_INDEXED: NSUInteger = 1 << 1;
+#[allow(dead_code)]
+pub const MTL_INDIRECT_COMMAND_TYPE_DRAW_PATCHES: NSUInteger = 1 << 2;
+#[allow(dead_code)]
+pub const MTL_INDIRECT_COMMAND_TYPE_DRAW_INDEXED_PATCHES: NSUInteger = 1 << 3;
+pub const MTL_INDIRECT_COMMAND_TYPE_CONCURRENT_DISPATCH: NSUInteger = 1 << 5;
+#[allow(dead_code)]
+pub const MTL_INDIRECT_COMMAND_TYPE_CONCURRENT_DISPATCH_THREADS: NSUInteger = 1 << 6;

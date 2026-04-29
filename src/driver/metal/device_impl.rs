@@ -590,72 +590,211 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
-    // === Indirect command buffers (M5.2) ===
+    // === Indirect command buffers (steps 032 + 033) ===
+    //
+    // Refines the Lean `Quanta.Icb.execute` semantics + the Verus
+    // `quanta-api/icb_safety.rs` invariants. Recording lowers each
+    // dispatch into an MTLIndirectComputeCommand slot;
+    // execute(count) wraps an executeCommandsInBuffer:withRange:
+    // call inside a fresh compute encoder, so the GPU replays the
+    // first `count` recorded commands without host re-issue.
+    //
+    // Limitations of the current Metal MVP:
+    //   - Push constants (setBytes:length:atIndex:) are not
+    //     supported on indirect command commands; recording rejects
+    //     waves with non-zero push state.
+    //   - Texture bindings are not yet recorded into ICB commands;
+    //     recording rejects waves with bound textures.
 
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
-        // Metal MTLIndirectCommandBuffer is available on all Apple GPUs.
-        // Each indirect command is 32 bytes (draw args).
-        let size = max_commands as u64 * 32;
-        let buf = unsafe {
-            ffi::msg_new_buffer(self.device, size, ffi::MTL_RESOURCE_STORAGE_MODE_SHARED)
+        // MTLIndirectCommandBuffer is available on all Apple GPUs.
+        // Set commandTypes to ConcurrentDispatch so the slots accept
+        // concurrentDispatchThreadgroups: writes.
+        let icb = unsafe {
+            let desc = ffi::msg_new_icb_descriptor(
+                ffi::MTL_INDIRECT_COMMAND_TYPE_CONCURRENT_DISPATCH,
+                crate::api::wave::MAX_BINDINGS as ffi::NSUInteger,
+            );
+            ffi::msg_new_icb(
+                self.device,
+                desc,
+                max_commands as ffi::NSUInteger,
+                ffi::MTL_RESOURCE_STORAGE_MODE_SHARED,
+            )
         };
-        if buf.is_null() {
+        if icb.is_null() {
             return Err(QuantaError::internal(
-                "failed to create indirect command buffer",
+                "failed to create MTLIndirectCommandBuffer",
             ));
         }
-        // Zero-initialize.
-        unsafe {
-            let ptr = ffi::msg_ptr(buf, b"contents\0");
-            core::ptr::write_bytes(ptr, 0, size as usize);
-        }
         let handle = self.alloc_handle();
-        self.buffers
+        self.icbs
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(handle, buf);
+            .insert(
+                handle,
+                super::device::MetalIcb {
+                    icb,
+                    cap: max_commands,
+                    used_buffers: Vec::new(),
+                    recorded: 0,
+                },
+            );
         Ok(handle)
     }
 
     fn icb_record_dispatch(
         &self,
-        _handle: u64,
-        _index: u32,
-        _wave: &Wave,
-        _groups: [u32; 3],
+        handle: u64,
+        index: u32,
+        wave: &Wave,
+        groups: [u32; 3],
     ) -> Result<(), QuantaError> {
-        // TODO(032/033): Implement via MTLIndirectComputeCommand —
-        // requires MTLIndirectCommandBufferDescriptor + new FFI for
-        // indirectComputeCommandAtIndex / setComputePipelineState /
-        // setKernelBuffer / concurrentDispatchThreadgroups, plus
-        // executeCommandsInBuffer:withRange: in
-        // indirect_buffer_execute. The proven CPU path serves as the
-        // reference implementation in the meantime.
-        Err(QuantaError::invalid_param(
-            "Metal ICB record_dispatch not yet implemented (use CPU device for ICB)",
-        ))
-    }
+        if wave.push_mask != 0 || wave.push_len != 0 {
+            return Err(QuantaError::invalid_param(
+                "Metal ICB does not support push constants (setBytes); \
+                 record dispatches with explicit field bindings instead",
+            ));
+        }
+        if wave.texture_count != 0 {
+            return Err(QuantaError::invalid_param(
+                "Metal ICB texture bindings not yet supported",
+            ));
+        }
+        let pipelines = self
+            .compute_pipelines
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipeline = pipelines
+            .get(&wave.handle)
+            .copied()
+            .ok_or_else(|| QuantaError::invalid_param("bad wave handle in ICB record"))?;
+        drop(pipelines);
 
-    fn indirect_buffer_execute(&self, handle: u64, _count: u32) -> Result<(), QuantaError> {
         let buffers = self
             .buffers
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        if !buffers.contains_key(&handle) {
+        // Translate slot bindings into (slot, MTLBuffer) pairs.
+        let mut bound: Vec<(usize, ffi::Id, u64)> = Vec::new();
+        for slot in 0..wave.binding_count as usize {
+            let h = wave.bindings[slot];
+            if h != 0 {
+                let buf = *buffers
+                    .get(&h)
+                    .ok_or_else(|| QuantaError::invalid_param("bad buffer handle in ICB record"))?;
+                bound.push((slot, buf, h));
+            }
+        }
+        drop(buffers);
+
+        let mut icbs = self
+            .icbs
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let icb_state = icbs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+        if index != icb_state.recorded {
             return Err(QuantaError::invalid_param(
-                "indirect command buffer handle not found",
+                "ICB record index must equal current length",
             ));
         }
-        // Full execution would use executeCommandsInBuffer:range: on a render encoder.
-        // For now, validates the handle exists.
+        if index >= icb_state.cap {
+            return Err(QuantaError::invalid_param("ICB index >= capacity"));
+        }
+        unsafe {
+            let cmd =
+                ffi::msg_icb_compute_command_at_index(icb_state.icb, index as ffi::NSUInteger);
+            ffi::msg_icc_set_compute_pipeline(cmd, pipeline);
+            for (slot, buf, _) in &bound {
+                ffi::msg_icc_set_kernel_buffer(cmd, *buf, 0, *slot as u64);
+            }
+            let group_size = ffi::MTLSize::new(
+                wave.workgroup_size[0] as u64,
+                wave.workgroup_size[1] as u64,
+                wave.workgroup_size[2] as u64,
+            );
+            let groups_3d = ffi::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
+            ffi::msg_icc_concurrent_dispatch_threadgroups(cmd, groups_3d, group_size);
+        }
+        for (_, _, h) in bound {
+            if !icb_state.used_buffers.contains(&h) {
+                icb_state.used_buffers.push(h);
+            }
+        }
+        icb_state.recorded += 1;
+        Ok(())
+    }
+
+    fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
+        // Snapshot the ICB Id + used_buffers under the lock, then
+        // drop it before issuing the command buffer (which may
+        // re-enter device methods).
+        let (icb_id, used_buffer_handles) = {
+            let icbs = self
+                .icbs
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let icb_state = icbs
+                .get(&handle)
+                .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+            if count > icb_state.recorded {
+                return Err(QuantaError::invalid_param(
+                    "ICB execute count exceeds recorded length",
+                ));
+            }
+            (icb_state.icb, icb_state.used_buffers.clone())
+        };
+        if count == 0 {
+            return Ok(());
+        }
+        // Resolve buffer Ids while holding the buffers lock briefly.
+        let used_buffer_ids: Vec<ffi::Id> = {
+            let buffers = self
+                .buffers
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            used_buffer_handles
+                .iter()
+                .filter_map(|h| buffers.get(h).copied())
+                .collect()
+        };
+        unsafe {
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            let encoder = ffi::msg_id(cmd, b"computeCommandEncoder\0");
+            const MTL_RESOURCE_USAGE_READ: ffi::NSUInteger = 1;
+            const MTL_RESOURCE_USAGE_WRITE: ffi::NSUInteger = 2;
+            for buf in &used_buffer_ids {
+                ffi::msg_use_resource(
+                    encoder,
+                    *buf,
+                    MTL_RESOURCE_USAGE_READ | MTL_RESOURCE_USAGE_WRITE,
+                );
+            }
+            let range = ffi::NSRange {
+                location: 0,
+                length: count as u64,
+            };
+            ffi::msg_execute_commands_in_buffer(encoder, icb_id, range);
+            ffi::msg_void(encoder, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
+        }
         Ok(())
     }
 
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
-        self.buffers
+        let removed = self
+            .icbs
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
+        if let Some(state) = removed {
+            unsafe {
+                ffi::msg_void(state.icb, b"release\0");
+            }
+        }
         Ok(())
     }
 
