@@ -1,0 +1,12 @@
+[package]
+name = "web-diff"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+quanta = { path = "../..", default-features = false, features = ["webgpu"] }
+quanta-ir = { path = "../../crates/quanta-ir", features = ["jit"] }

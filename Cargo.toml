@@ -10,6 +10,7 @@ members = [
     "examples/web_add_one",
     "examples/web_triangle",
     "examples/web_textured",
+    "examples/web_diff",
 ]
 
 [workspace.package]

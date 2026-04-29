@@ -106,3 +106,15 @@ test("web_textured — SetTexture+SetSampler wiring (step C)", async ({ page }) 
     server.close();
   }
 });
+
+test("web_diff — saxpy WGSL lane within 1 ULP (step D.2)", async ({ page }) => {
+  const { server, url } = await startStaticServer(join(REPO_ROOT, "examples", "web_diff"));
+  try {
+    await page.goto(url);
+    const status = page.locator("#status");
+    await expect(status).toContainText("PASS", { timeout: 30_000 });
+    await expect(status).toContainText("within 1 ULP");
+  } finally {
+    server.close();
+  }
+});

@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Quanta differential CI — saxpy WGSL lane</title>
+    <style>
+      body { font: 14px ui-monospace, monospace; padding: 1rem; }
+      pre  { background: #f6f6f6; padding: 0.5rem; max-height: 18rem; overflow: auto; }
+      .ok  { color: #0a0; }
+      .fail { color: #a00; }
+    </style>
+  </head>
+  <body>
+    <h1>Quanta differential CI — <code>saxpy</code> on WebGPU</h1>
+    <p>
+      Step D.2 of step 077. Runs the same SAXPY kernel as
+      <code>tests/diff/kernels/saxpy.rs</code> through the WebGPU
+      backend, then asserts every output element is within 1 ULP of
+      a JS-side reference oracle that uses the same constants.
+    </p>
+    <p id="status">Loading…</p>
+    <pre id="output"></pre>
+
+    <script type="module">
+      import { instantiate } from "./quanta.js";
+
+      const statusEl = document.getElementById("status");
+      const outEl    = document.getElementById("output");
+
+      const A = 2.5;
+      const N = 1024;
+
+      // Reference oracle. Mirrors `tests/diff/kernels/saxpy.rs`
+      // byte-for-byte: same A, same inputs, same mul-then-add order
+      // (no FMA contraction). If you change the Rust reference, change
+      // this too.
+      function referenceOutput() {
+        const xs = new Float32Array(N);
+        const ys = new Float32Array(N);
+        const out = new Float32Array(N);
+        for (let i = 0; i < N; i++) {
+          xs[i] = i * 0.125;
+          ys[i] = 1.0 - i * 0.0625;
+        }
+        for (let i = 0; i < N; i++) {
+          out[i] = Math.fround(Math.fround(A * xs[i]) + ys[i]);
+        }
+        return out;
+      }
+
+      // ULP distance between two f32s. Returns null if the pair is
+      // not ULP-comparable (any NaN, or finite values of opposite
+      // sign that are not both ±0).
+      function ulpDistance(x, y) {
+        if (Number.isNaN(x) || Number.isNaN(y)) return null;
+        if (x === y) return 0;
+        const sx = Math.sign(x) || (1 / x === Infinity ? 1 : -1);
+        const sy = Math.sign(y) || (1 / y === Infinity ? 1 : -1);
+        if (sx !== sy) return null;
+        const buf = new ArrayBuffer(4);
+        const f = new Float32Array(buf);
+        const u = new Uint32Array(buf);
+        f[0] = x; const xb = u[0];
+        f[0] = y; const yb = u[0];
+        return xb > yb ? xb - yb : yb - xb;
+      }
+
+      function compareF32(oracle, candidate, maxUlps) {
+        if (oracle.length !== candidate.length) {
+          return { ok: false, detail: `length mismatch: ${oracle.length} vs ${candidate.length}` };
+        }
+        for (let i = 0; i < oracle.length; i++) {
+          const d = ulpDistance(oracle[i], candidate[i]);
+          if (d === null) {
+            return { ok: false, detail: `index=${i} oracle=${oracle[i]} candidate=${candidate[i]} (NaN or sign-disjoint)` };
+          }
+          if (d > maxUlps) {
+            return { ok: false, detail: `index=${i} oracle=${oracle[i]} candidate=${candidate[i]} ulp_distance=${d} max=${maxUlps}` };
+          }
+        }
+        return { ok: true };
+      }
+
+      async function main() {
+        const mod = await instantiate("./web_diff.wasm");
+        const bytes = await mod.runReturningBytes("web_diff_saxpy_run");
+        const candidate = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4);
+        const oracle = referenceOutput();
+
+        const verdict = compareF32(oracle, candidate, 1);
+
+        statusEl.className = verdict.ok ? "ok" : "fail";
+        statusEl.textContent = verdict.ok
+          ? `PASS — saxpy WGSL lane within 1 ULP across ${N} elements`
+          : `FAIL — ${verdict.detail}`;
+
+        const head = (a) => Array.from(a.slice(0, 8)).map(v => v.toFixed(6)).join(", ");
+        outEl.textContent =
+          `oracle[0..8]:    ${head(oracle)}\n` +
+          `candidate[0..8]: ${head(candidate)}`;
+      }
+
+      main().catch(err => {
+        statusEl.className = "fail";
+        statusEl.textContent = "FAIL — " + err;
+        console.error(err);
+      });
+    </script>
+  </body>
+</html>
