@@ -96,31 +96,123 @@ theorem Heap.project_cons_not_in_params
   simp [List.filterMap_cons, h_lookup]
 
 /-- **params_distinct** — the parameter map is injective on slots:
-    distinct names map to distinct slots. Holds for kernel-derived
-    `params` lists where each `Param` has its own slot index. Used
-    as a precondition by future `Heap.project_store_commute`
-    proofs.
-
-    Discharge plan for `stmt_heap_step_helper`:
-    1. Prove `Heap.project_filter_commute` under `params_distinct`
-       (currently in progress; the `simp` lemma alignment between
-       `decide (p.fst ≠ k)` and `! decide (p.fst = k)` needs care).
-    2. Compose into `Heap.project_store_commute`.
-    3. Add a `evalExpr_no_heap_mutation` lemma for blockE-free
-       expressions and a `Heap.project_eq_through_evalStmts` lemma
-       for the recursive arms.
-    4. Per-arm closure of `stmt_heap_step_helper` against
-       `Preservation.lean`'s T5A0–T5A7 in `consistentState` form,
-       bridged via the projection lemmas above.
-
-    This is multi-session work; the foundation primitives
-    (`Heap.project_cons_in_params`, `Heap.project_cons_not_in_params`,
-    `params_distinct`) above are the first installment. -/
+    distinct names map to distinct slots. -/
 def params_distinct (params : List (Ident × Nat)) : Prop :=
   ∀ n1 n2 s,
     params.find? (fun p => p.fst = n1) = some (n1, s) →
     params.find? (fun p => p.fst = n2) = some (n2, s) →
     n1 = n2
+
+/-- **find_fst_eq** — when `List.find?` with predicate
+    `(·.fst = n)` returns `some x`, then `x.fst = n`. -/
+private theorem find_fst_eq
+    {α β : Type} [DecidableEq α] (xs : List (α × β)) (n : α) (x : α × β)
+    (h : xs.find? (fun p => p.fst = n) = some x)
+    : x.fst = n := by
+  induction xs with
+  | nil => simp at h
+  | cons head tail ih =>
+      rw [List.find?_cons] at h
+      by_cases h_eq : head.fst = n
+      · simp [h_eq] at h
+        rw [← h]
+        exact h_eq
+      · rw [show (decide (head.fst = n)) = false from by simp [h_eq]] at h
+        simp at h
+        exact ih h
+
+/-- **Heap.project_filter_commute** — filtering on KRust side
+    (excluding `(name, idx)`) commutes with projection (under the
+    params-distinct hypothesis), yielding the corresponding
+    `(slot, idx)` filter on the KOps side. -/
+theorem Heap.project_filter_commute
+    (params : List (Ident × Nat)) (h : Heap)
+    (name : Ident) (slot : Nat) (idx : Nat)
+    (h_lookup : params.find? (fun p => p.fst = name) = some (name, slot))
+    (h_inj : params_distinct params)
+    : Heap.project params (h.filter (fun p => decide (p.fst ≠ (name, idx))))
+        = (Heap.project params h).filter
+            (fun p => decide (p.fst ≠ (slot, idx))) := by
+  induction h with
+  | nil =>
+      show Heap.project params [] = _
+      simp [Heap.project]
+  | cons head tail ih =>
+      obtain ⟨⟨n, i⟩, w⟩ := head
+      cases h_n : params.find? (fun p => p.fst = n) with
+      | none =>
+          -- Case: n not in params. KRust head is dropped by project on RHS.
+          have h_n_ne : n ≠ name := by
+            intro h_eq; rw [h_eq] at h_n; rw [h_lookup] at h_n
+            exact absurd h_n (by simp)
+          have h_pair_ne : (n, i) ≠ (name, idx) := by
+            intro h_pair_eq
+            exact h_n_ne (Prod.mk.inj h_pair_eq).1
+          rw [show (((n, i), w) :: tail).filter (fun p => decide (p.fst ≠ (name, idx)))
+                = ((n, i), w) :: tail.filter (fun p => decide (p.fst ≠ (name, idx)))
+              from by simp [List.filter, h_pair_ne]]
+          rw [Heap.project_cons_not_in_params params _ n i w h_n]
+          rw [Heap.project_cons_not_in_params params tail n i w h_n]
+          exact ih
+      | some pair =>
+          obtain ⟨n', s'⟩ := pair
+          have h_n_eq : n' = n := find_fst_eq params n (n', s') h_n
+          -- Replace n' with n in h_n (so it reads `find? ... = some (n, s')`).
+          rw [h_n_eq] at h_n
+          rw [Heap.project_cons_in_params params tail n i w s' h_n]
+          by_cases h_pair_eq : (n, i) = (name, idx)
+          · -- KRust: (n,i) = (name,idx); filter drops. KOps: (s',i)=(slot,idx); filter drops.
+            obtain ⟨h_n_eq, h_i_eq⟩ := Prod.mk.inj h_pair_eq
+            subst h_n_eq
+            subst h_i_eq
+            have h_s_eq : s' = slot := by
+              rw [h_lookup] at h_n
+              exact ((Prod.mk.inj (Option.some.inj h_n)).2).symm
+            subst h_s_eq
+            rw [show (((n, i), w) :: tail).filter (fun p => decide (p.fst ≠ (n, i)))
+                  = tail.filter (fun p => decide (p.fst ≠ (n, i)))
+                from by simp [List.filter]]
+            rw [show ((((s', i), w) :: project params tail).filter
+                          (fun p => decide (p.fst ≠ (s', i))))
+                  = (project params tail).filter
+                      (fun p => decide (p.fst ≠ (s', i)))
+                from by simp [List.filter]]
+            exact ih
+          · -- KRust: (n,i) ≠ (name,idx); filter keeps. Need KOps: (s',i) ≠ (slot,idx).
+            have h_kops_ne : (s', i) ≠ (slot, idx) := by
+              intro h_kops_eq
+              obtain ⟨h_s_eq, h_i_eq⟩ := Prod.mk.inj h_kops_eq
+              subst h_i_eq
+              have h_n_name : n = name :=
+                h_inj n name s' h_n (h_s_eq ▸ h_lookup)
+              subst h_n_name
+              exact h_pair_eq rfl
+            rw [show (((n, i), w) :: tail).filter (fun p => decide (p.fst ≠ (name, idx)))
+                  = ((n, i), w) :: tail.filter (fun p => decide (p.fst ≠ (name, idx)))
+                from by simp [List.filter, h_pair_eq]]
+            rw [show ((((s', i), w) :: project params tail).filter
+                          (fun p => decide (p.fst ≠ (slot, idx))))
+                  = ((s', i), w) :: (project params tail).filter
+                      (fun p => decide (p.fst ≠ (slot, idx)))
+                from by simp [List.filter, h_kops_ne]]
+            rw [Heap.project_cons_in_params params (tail.filter _) n i w s' h_n]
+            exact congrArg (fun x => ((s', i), w) :: x) ih
+
+/-- **Heap.project_store_commute** — `Heap.store` on a name in
+    `params` commutes with `Heap.project`, producing the
+    corresponding `KOps.heapStore` on the projected slot. -/
+theorem Heap.project_store_commute
+    (params : List (Ident × Nat)) (h : Heap)
+    (name : Ident) (slot : Nat) (idx : Nat) (v : Value)
+    (h_lookup : params.find? (fun p => p.fst = name) = some (name, slot))
+    (h_inj : params_distinct params)
+    : Heap.project params (h.store name idx v)
+        = KOps.heapStore (Heap.project params h) slot idx v := by
+  show Heap.project params (((name, idx), v) :: h.filter _)
+       = ((slot, idx), v) :: (Heap.project params h).filter _
+  rw [Heap.project_cons_in_params params _ name idx v slot h_lookup]
+  congr 1
+  exact Heap.project_filter_commute params h name slot idx h_lookup h_inj
 
 /-- The starting `KOps.State` for a kernel run, given a source
     heap and a dispatch context. Mirrors what the runtime sets up
