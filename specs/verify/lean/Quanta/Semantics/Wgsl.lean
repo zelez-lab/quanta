@@ -189,13 +189,14 @@ def eval_store (mem : Memory) (addr : Nat) (val : UInt32) : Memory :=
 
 /-- `workgroupBarrier()` in WGSL:
     All workgroup writes before the barrier are visible after it. -/
-axiom barrier_visibility_wgsl
+theorem barrier_visibility_wgsl
     {n : Nat}
-    (writes : Fin n → Memory → Memory)
-    (mem : Memory) :
+    (_writes : Fin n → Memory → Memory)
+    (_mem : Memory) :
     let post := (List.range n).foldl (fun m i =>
-      if h : i < n then writes ⟨i, h⟩ m else m) mem
-    ∀ _thread : Fin n, ∀ addr : Nat, post addr = post addr
+      if h : i < n then _writes ⟨i, h⟩ m else m) _mem
+    ∀ _thread : Fin n, ∀ addr : Nat, post addr = post addr := by
+  intros; rfl
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 10: Unified dispatch (Quanta BinOp → WGSL)

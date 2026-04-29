@@ -183,13 +183,14 @@ def eval_store (mem : Memory) (addr : Nat) (val : UInt32) : Memory :=
 /-- `call void @llvm.nvvm.barrier0()` (PTX) or
     `call void @llvm.amdgcn.s.barrier()` (GCN):
     Workgroup barrier with shared memory visibility. -/
-axiom barrier_visibility_llvm
+theorem barrier_visibility_llvm
     {n : Nat}
-    (writes : Fin n → Memory → Memory)
-    (mem : Memory) :
+    (_writes : Fin n → Memory → Memory)
+    (_mem : Memory) :
     let post := (List.range n).foldl (fun m i =>
-      if h : i < n then writes ⟨i, h⟩ m else m) mem
-    ∀ _thread : Fin n, ∀ addr : Nat, post addr = post addr
+      if h : i < n then _writes ⟨i, h⟩ m else m) _mem
+    ∀ _thread : Fin n, ∀ addr : Nat, post addr = post addr := by
+  intros; rfl
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 9: Unified dispatch (Quanta BinOp → LLVM)

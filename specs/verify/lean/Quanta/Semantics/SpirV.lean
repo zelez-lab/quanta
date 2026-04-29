@@ -273,13 +273,14 @@ def eval_phi (predecessors : List (Nat × UInt32)) (from_block : Nat) : UInt32 :
 -- ════════════════════════════════════════════════════════════════════
 
 /-- Per-quark memory view after a barrier: all quarks see the same state. -/
-axiom barrier_visibility_spv
+theorem barrier_visibility_spv
     {n : Nat}
-    (writes : Fin n → Memory → Memory)
-    (mem : Memory) :
+    (_writes : Fin n → Memory → Memory)
+    (_mem : Memory) :
     let post := (List.range n).foldl (fun m i =>
-      if h : i < n then writes ⟨i, h⟩ m else m) mem
-    ∀ _quark : Fin n, ∀ addr : Nat, post addr = post addr
+      if h : i < n then _writes ⟨i, h⟩ m else m) _mem
+    ∀ _quark : Fin n, ∀ addr : Nat, post addr = post addr := by
+  intros; rfl
 
 -- ════════════════════════════════════════════════════════════════════
 -- Section 11: Unified dispatch interface
