@@ -66,6 +66,9 @@ import Quanta.MeshShader
 -- Ray tracing (steps 026 + 027)
 import Quanta.RayTracing
 
+-- Variable rate shading (steps 028 + 029)
+import Quanta.Vrs
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
