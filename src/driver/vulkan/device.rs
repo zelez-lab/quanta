@@ -101,6 +101,15 @@ pub struct VulkanDevice {
     /// `tessellation_pipeline_create` can surface a clean
     /// NotSupported without re-querying. Step 063 slice 6.
     pub(super) tessellation_feature: bool,
+    /// Supported shading-rate fragment sizes returned by
+    /// `vkGetPhysicalDeviceFragmentShadingRatesKHR`. Empty when the
+    /// VRS extension isn't enabled. The render encoder validates the
+    /// requested rate against this list before calling
+    /// `vkCmdSetFragmentShadingRateKHR`, surfacing a clear
+    /// "rate unsupported on this device" error at submit time
+    /// instead of a generic Vulkan validation message.
+    /// Step 063 slice 14.
+    pub(super) supported_shading_rates: Vec<(u32, u32)>,
 }
 
 /// Software tessellation pipeline state — refines
@@ -572,6 +581,30 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         return Vec::new();
     }
 
+    // Step 063 slice 14 — resolve the instance-level proc once.
+    // `None` is fine on builds without the VRS extension; the
+    // per-physical-device query just yields an empty supported-rate
+    // list, and the render encoder gate falls through to its own
+    // NotSupported message.
+    let get_shading_rates_fn: Option<ffi::PfnVkGetPhysicalDeviceFragmentShadingRatesKHR> = {
+        let name = b"vkGetPhysicalDeviceFragmentShadingRatesKHR\0";
+        let p = unsafe {
+            ffi::vkGetInstanceProcAddr(instance, name.as_ptr() as *const core::ffi::c_char)
+        };
+        if p.is_null() {
+            None
+        } else {
+            // SAFETY: vkGetInstanceProcAddr returns a valid function
+            // pointer of the documented signature when non-null.
+            Some(unsafe {
+                core::mem::transmute::<
+                    *const core::ffi::c_void,
+                    ffi::PfnVkGetPhysicalDeviceFragmentShadingRatesKHR,
+                >(p)
+            })
+        }
+    };
+
     let mut count = 0u32;
     let result =
         unsafe { ffi::vkEnumeratePhysicalDevices(instance, &mut count, core::ptr::null_mut()) };
@@ -755,6 +788,39 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         } else {
             None
         };
+        // Slice 14 — enumerate supported shading rates. The query
+        // operates on the physical device, so it uses the
+        // instance-level proc resolved before this loop.
+        let supported_shading_rates: Vec<(u32, u32)> = match (has_vrs_ext, get_shading_rates_fn) {
+            (true, Some(query)) => {
+                let mut count = 0u32;
+                let r = unsafe { query(pd, &mut count, core::ptr::null_mut()) };
+                if r == ffi::VK_SUCCESS && count > 0 {
+                    let mut rates = vec![
+                        ffi::VkPhysicalDeviceFragmentShadingRateKHR {
+                            s_type:
+                                ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR,
+                            ..Default::default()
+                        };
+                        count as usize
+                    ];
+                    let r = unsafe { query(pd, &mut count, rates.as_mut_ptr()) };
+                    if r == ffi::VK_SUCCESS {
+                        rates
+                            .iter()
+                            .filter(|e| e.sample_counts != 0)
+                            .map(|e| (e.fragment_size.width, e.fragment_size.height))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        };
+
         let trace_rays_fn: Option<ffi::PfnVkCmdTraceRaysKHR> = if has_rt {
             let name = b"vkCmdTraceRaysKHR\0";
             let p = unsafe {
@@ -870,6 +936,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             mesh_draw_fn,
             trace_rays_fn,
             tessellation_feature,
+            supported_shading_rates,
         }));
 
         break; // Use first suitable device

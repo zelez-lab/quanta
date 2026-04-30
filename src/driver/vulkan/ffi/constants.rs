@@ -363,6 +363,16 @@ pub type PfnVkCmdSetFragmentShadingRateKHR = unsafe extern "C" fn(
     combiner_ops: *const u32,
 );
 
+/// Function-pointer type for `vkGetPhysicalDeviceFragmentShadingRatesKHR`.
+/// Loaded once via `vkGetInstanceProcAddr` after the instance is
+/// created; per-physical-device rate enumeration runs through this
+/// proc before `vkCreateDevice`.
+pub type PfnVkGetPhysicalDeviceFragmentShadingRatesKHR = unsafe extern "C" fn(
+    physical_device: VkPhysicalDevice,
+    p_count: *mut u32,
+    p_rates: *mut super::structs::VkPhysicalDeviceFragmentShadingRateKHR,
+) -> VkResult;
+
 // ─── VK_EXT_mesh_shader (step 063) ──────────────────────────────────────────
 
 /// Function-pointer type for `vkCmdDrawMeshTasksEXT`. Issued from

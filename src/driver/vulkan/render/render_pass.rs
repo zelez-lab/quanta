@@ -821,6 +821,19 @@ impl VulkanDevice {
                     // separate native track — keep it deferred.
                     RenderOp::SetShadingRate(rate) => {
                         if let Some(set_rate) = self.vrs_set_rate_fn {
+                            // Slice 14 — validate against the
+                            // hardware-supported rate list cached
+                            // at device discovery. Catches an
+                            // unsupported rate before the driver
+                            // surfaces it as a generic validation
+                            // error inside the command buffer.
+                            let want = (rate.x_axis(), rate.y_axis());
+                            if !self.supported_shading_rates.contains(&want) {
+                                ffi::vkCmdEndRenderPass(cmd);
+                                return Err(QuantaError::not_supported(
+                                    "Vulkan render encoder: requested shading rate is not in the device's supported-rate list",
+                                ));
+                            }
                             let extent = ffi::VkExtent2D {
                                 width: rate.x_axis(),
                                 height: rate.y_axis(),

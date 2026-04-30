@@ -56,6 +56,14 @@ macro_rules! vk_extern_fns {
                 device: VkDevice,
                 name: *const core::ffi::c_char,
             ) -> *const c_void;
+            /// Resolve an instance-level extension function pointer
+            /// (commands taking a `VkPhysicalDevice` such as
+            /// `vkGetPhysicalDeviceFragmentShadingRatesKHR`). The
+            /// loader provides this as a standard export.
+            pub fn vkGetInstanceProcAddr(
+                instance: VkInstance,
+                name: *const core::ffi::c_char,
+            ) -> *const c_void;
             pub fn vkGetDeviceQueue(device: VkDevice, family: u32, index: u32, queue: *mut VkQueue);
             pub fn vkCreateCommandPool(
                 device: VkDevice,

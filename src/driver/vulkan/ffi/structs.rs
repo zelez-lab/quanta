@@ -232,6 +232,32 @@ pub struct VkExtent2D {
     pub height: u32,
 }
 
+/// VK_KHR_fragment_shading_rate (step 063 slice 14) — one entry in
+/// the supported-rate list returned by
+/// `vkGetPhysicalDeviceFragmentShadingRatesKHR`. `sample_counts` is
+/// a `VkSampleCountFlags` bitmask for which sample counts each rate
+/// supports; we only check that it's non-zero today.
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct VkPhysicalDeviceFragmentShadingRateKHR {
+    pub s_type: u32,
+    pub p_next: *mut c_void,
+    pub sample_counts: u32,
+    pub fragment_size: VkExtent2D,
+}
+
+/// `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR`.
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR: u32 = 1000226001;
+
+impl Default for VkExtent2D {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VkOffset2D {
