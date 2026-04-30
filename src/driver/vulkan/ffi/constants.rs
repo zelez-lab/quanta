@@ -347,6 +347,22 @@ pub const VK_STRUCTURE_TYPE_MEMORY_BARRIER_2: u32 = 1000314000;
 pub const VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2: u32 = 1000314001;
 pub const VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2: u32 = 1000314002;
 
+// ─── VK_KHR_fragment_shading_rate (step 063) ────────────────────────────────
+
+/// Combiner ops for `vkCmdSetFragmentShadingRateKHR`. KEEP combines
+/// per-draw rates by passing the pipeline rate through unchanged —
+/// matches the per-draw semantics of `RenderOp::SetShadingRate`.
+pub const VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR: u32 = 0;
+
+/// Function-pointer type for `vkCmdSetFragmentShadingRateKHR`. Loaded
+/// at device init via `vkGetDeviceProcAddr` when the
+/// `VK_KHR_fragment_shading_rate` extension is enabled; null otherwise.
+pub type PfnVkCmdSetFragmentShadingRateKHR = unsafe extern "C" fn(
+    cmd_buf: VkCommandBuffer,
+    rate: *const super::structs::VkExtent2D,
+    combiner_ops: *const u32,
+);
+
 // ─── Vulkan API version helper ──────────────────────────────────────────────
 
 #[inline]

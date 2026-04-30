@@ -78,6 +78,13 @@ pub struct VulkanDevice {
     pub(super) mesh_pipelines: RwLock<HashMap<u64, VulkanMeshPipeline>>,
     /// VRS states (steps 028 + 029). MVP: software lifecycle.
     pub(super) vrs_states: RwLock<HashMap<u64, VulkanVrsState>>,
+    /// Function pointer for `vkCmdSetFragmentShadingRateKHR`,
+    /// resolved via `vkGetDeviceProcAddr` at device creation when
+    /// `VK_KHR_fragment_shading_rate` was enabled. `None` means the
+    /// extension is unavailable; the render encoder surfaces this as
+    /// `NotSupported` from the `RenderOp::SetShadingRate` arm
+    /// (step 063 native VRS lowering).
+    pub(super) vrs_set_rate_fn: Option<ffi::PfnVkCmdSetFragmentShadingRateKHR>,
 }
 
 /// Software tessellation pipeline state — refines
@@ -616,6 +623,20 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             synchronization2: 1, // VK_TRUE
         };
 
+        // Step 063 — enable VK_KHR_fragment_shading_rate when the
+        // physical device advertises it. The render encoder loads
+        // `vkCmdSetFragmentShadingRateKHR` after device creation and
+        // wires `RenderOp::SetShadingRate` to it; absence of the
+        // extension keeps the existing NotSupported behavior.
+        let has_vrs_ext = physical_device_has_extension(pd, b"VK_KHR_fragment_shading_rate\0");
+        let vrs_ext_name = b"VK_KHR_fragment_shading_rate\0".as_ptr() as *const core::ffi::c_char;
+        let enabled_extensions: [*const core::ffi::c_char; 1] = [vrs_ext_name];
+        let (enabled_ext_count, enabled_ext_ptr) = if has_vrs_ext {
+            (1u32, enabled_extensions.as_ptr())
+        } else {
+            (0u32, core::ptr::null())
+        };
+
         let device_create = ffi::VkDeviceCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             p_next: &sync2_features as *const _ as *const core::ffi::c_void,
@@ -624,8 +645,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             p_queue_create_infos: &queue_create,
             enabled_layer_count: 0,
             pp_enabled_layer_names: core::ptr::null(),
-            enabled_extension_count: 0,
-            pp_enabled_extension_names: core::ptr::null(),
+            enabled_extension_count: enabled_ext_count,
+            pp_enabled_extension_names: enabled_ext_ptr,
             p_enabled_features: core::ptr::null(),
         };
 
@@ -638,6 +659,33 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
 
         let mut queue = ffi::null_handle();
         unsafe { ffi::vkGetDeviceQueue(device, qf_index as u32, 0, &mut queue) };
+
+        // Resolve the VRS extension proc address. Even with the
+        // extension enabled at vkCreateDevice, an underlying driver
+        // can return null (e.g. lavapipe without the optional
+        // feature). Treat null the same as "extension absent" so the
+        // render encoder falls through to NotSupported.
+        let vrs_set_rate_fn: Option<ffi::PfnVkCmdSetFragmentShadingRateKHR> = if has_vrs_ext {
+            let name = b"vkCmdSetFragmentShadingRateKHR\0";
+            let proc_ptr = unsafe {
+                ffi::vkGetDeviceProcAddr(device, name.as_ptr() as *const core::ffi::c_char)
+            };
+            if proc_ptr.is_null() {
+                None
+            } else {
+                // SAFETY: vkGetDeviceProcAddr returns a valid
+                // function pointer of the documented signature when
+                // non-null, per the Vulkan spec.
+                Some(unsafe {
+                    core::mem::transmute::<
+                        *const core::ffi::c_void,
+                        ffi::PfnVkCmdSetFragmentShadingRateKHR,
+                    >(proc_ptr)
+                })
+            }
+        } else {
+            None
+        };
 
         // Command pool
         let pool_info = ffi::VkCommandPoolCreateInfo {
@@ -734,12 +782,53 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             tess_pipelines: RwLock::new(HashMap::new()),
             mesh_pipelines: RwLock::new(HashMap::new()),
             vrs_states: RwLock::new(HashMap::new()),
+            vrs_set_rate_fn,
         }));
 
         break; // Use first suitable device
     }
 
     devices
+}
+
+/// Pre-create-time variant of `VulkanDevice::has_device_extension`.
+/// Used during device discovery to decide which extensions to enable
+/// at `vkCreateDevice`, before the `VulkanDevice` exists. `ext_name`
+/// must be a null-terminated byte string.
+fn physical_device_has_extension(pd: ffi::VkPhysicalDevice, ext_name: &[u8]) -> bool {
+    let mut count = 0u32;
+    let result = unsafe {
+        ffi::vkEnumerateDeviceExtensionProperties(
+            pd,
+            core::ptr::null(),
+            &mut count,
+            core::ptr::null_mut(),
+        )
+    };
+    if result != ffi::VK_SUCCESS || count == 0 {
+        return false;
+    }
+    let mut props = vec![ffi::VkExtensionProperties::default(); count as usize];
+    let result = unsafe {
+        ffi::vkEnumerateDeviceExtensionProperties(
+            pd,
+            core::ptr::null(),
+            &mut count,
+            props.as_mut_ptr(),
+        )
+    };
+    if result != ffi::VK_SUCCESS {
+        return false;
+    }
+    let target = &ext_name[..ext_name.len() - 1];
+    props.iter().any(|p| {
+        let name_bytes = &p.extension_name;
+        let len = name_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(name_bytes.len());
+        &name_bytes[..len] == target
+    })
 }
 
 impl Drop for VulkanDevice {

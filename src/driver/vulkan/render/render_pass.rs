@@ -812,15 +812,40 @@ impl VulkanDevice {
                         }
                     }
 
-                    // VRS native lowering lands with step 063
-                    // (VK_KHR_fragment_shading_rate). Per Kani T419
-                    // (no silent RenderOp drops on Vulkan) we surface
-                    // a concrete error; NotSupported is the right
-                    // category — the feature is extension-gated.
-                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
+                    // VRS native lowering (step 063). When
+                    // VK_KHR_fragment_shading_rate was enabled at
+                    // device creation and `vkGetDeviceProcAddr`
+                    // returned a non-null function pointer, lower
+                    // SetShadingRate to vkCmdSetFragmentShadingRateKHR.
+                    // SetShadingRateImage (texel-driven rates) is a
+                    // separate native track — keep it deferred.
+                    RenderOp::SetShadingRate(rate) => {
+                        if let Some(set_rate) = self.vrs_set_rate_fn {
+                            let extent = ffi::VkExtent2D {
+                                width: rate.x_axis(),
+                                height: rate.y_axis(),
+                            };
+                            // Pipeline-rate KEEP / KEEP — combine
+                            // the per-draw rate with itself, which
+                            // yields the requested rate verbatim.
+                            // This matches the per-draw semantic of
+                            // `RenderOp::SetShadingRate(r)`.
+                            let combiner_ops: [u32; 2] = [
+                                ffi::VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+                                ffi::VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+                            ];
+                            set_rate(cmd, &extent, combiner_ops.as_ptr());
+                        } else {
+                            ffi::vkCmdEndRenderPass(cmd);
+                            return Err(QuantaError::not_supported(
+                                "Vulkan render encoder: VK_KHR_fragment_shading_rate is not available on this device",
+                            ));
+                        }
+                    }
+                    RenderOp::SetShadingRateImage { .. } => {
                         ffi::vkCmdEndRenderPass(cmd);
                         return Err(QuantaError::not_supported(
-                            "Vulkan render encoder: variable-rate shading deferred to step 063",
+                            "Vulkan render encoder: shading-rate-image (texel-driven VRS) deferred",
                         ));
                     }
                     RenderOp::ExecuteRenderBundle {

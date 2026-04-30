@@ -46,6 +46,16 @@ macro_rules! vk_extern_fns {
             ) -> VkResult;
             pub fn vkDestroyDevice(device: VkDevice, allocator: *const c_void);
             pub fn vkDeviceWaitIdle(device: VkDevice) -> VkResult;
+            /// Resolve an extension function pointer at runtime.
+            /// Returns null when the extension wasn't enabled at
+            /// device creation. Required because extension symbols
+            /// (`vkCmdSetFragmentShadingRateKHR`, `vkCmdDrawMeshTasksEXT`,
+            /// `vkCmdTraceRaysKHR`, …) are not part of the core
+            /// Vulkan ABI and cannot be link-time-resolved.
+            pub fn vkGetDeviceProcAddr(
+                device: VkDevice,
+                name: *const core::ffi::c_char,
+            ) -> *const c_void;
             pub fn vkGetDeviceQueue(device: VkDevice, family: u32, index: u32, queue: *mut VkQueue);
             pub fn vkCreateCommandPool(
                 device: VkDevice,
