@@ -96,6 +96,17 @@ struct CpuMeshPipeline {
     dispatched: Vec<[u32; 3]>,
 }
 
+/// CPU queue state. Mirrors `Quanta.MultiQueue.Queue`: kind set at
+/// create + an in-order submitted command counter + last_signal
+/// pair. Software FIFO satisfies the contract; cross-queue ordering
+/// is trivially serial on the CPU.
+#[allow(dead_code)]
+struct CpuQueue {
+    kind: u8, // 0 = graphics, 1 = compute, 2 = transfer
+    submit_count: u32,
+    last_signal: Option<(u64, u64)>,
+}
+
 /// CPU sparse-texture state. Mirrors `Quanta.SparseTexture.Texture`:
 /// dimensions captured at create + a tile-association map keyed by
 /// (mip, x, y).
@@ -155,6 +166,8 @@ pub struct CpuDevice {
     vrs_states: Mutex<HashMap<u64, CpuVrsState>>,
     /// Sparse textures indexed by handle.
     sparse_textures: Mutex<HashMap<u64, CpuSparseTexture>>,
+    /// Queues indexed by handle.
+    queues: Mutex<HashMap<u64, CpuQueue>>,
 }
 
 impl CpuDevice {
@@ -183,6 +196,7 @@ impl CpuDevice {
             rt_pipelines: Mutex::new(HashMap::new()),
             vrs_states: Mutex::new(HashMap::new()),
             sparse_textures: Mutex::new(HashMap::new()),
+            queues: Mutex::new(HashMap::new()),
         }
     }
 
@@ -631,6 +645,83 @@ impl GpuDevice for CpuDevice {
 
     fn sparse_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.sparse_textures.lock().unwrap().remove(&handle);
+        Ok(())
+    }
+
+    // === Multi-queue (steps 018 + 019) ===
+    //
+    // CPU implementation refines `Quanta.MultiQueue.Queue` as a
+    // software FIFO. The CPU device executes everything serially so
+    // queue ordering is trivially preserved; the contract bars
+    // re-ordering, which is unconditionally satisfied here.
+
+    fn queue_families(&self) -> Vec<crate::QueueFamily> {
+        vec![
+            crate::QueueFamily {
+                queue_type: crate::QueueType::Graphics,
+                count: 1,
+            },
+            crate::QueueFamily {
+                queue_type: crate::QueueType::Compute,
+                count: 1,
+            },
+            crate::QueueFamily {
+                queue_type: crate::QueueType::Transfer,
+                count: 1,
+            },
+        ]
+    }
+
+    fn create_queue(&self, queue_type: crate::QueueType) -> Result<u64, QuantaError> {
+        let kind: u8 = match queue_type {
+            crate::QueueType::Graphics => 0,
+            crate::QueueType::Compute => 1,
+            crate::QueueType::Transfer => 2,
+        };
+        let handle = self.alloc_handle();
+        self.queues.lock().unwrap().insert(
+            handle,
+            CpuQueue {
+                kind,
+                submit_count: 0,
+                last_signal: None,
+            },
+        );
+        Ok(handle)
+    }
+
+    fn queue_dispatch(&self, queue: u64, wave: &Wave, groups: [u32; 3]) -> Result<(), QuantaError> {
+        {
+            let mut qs = self.queues.lock().unwrap();
+            let q = qs
+                .get_mut(&queue)
+                .ok_or_else(|| QuantaError::invalid_param("queue not found"))?;
+            q.submit_count += 1;
+        }
+        // Execute serially against the existing wave_dispatch path.
+        let _ = self.wave_dispatch(wave, groups)?;
+        Ok(())
+    }
+
+    fn queue_signal(&self, queue: u64, semaphore: u64) -> Result<(), QuantaError> {
+        let mut qs = self.queues.lock().unwrap();
+        let q = qs
+            .get_mut(&queue)
+            .ok_or_else(|| QuantaError::invalid_param("queue not found"))?;
+        q.last_signal = Some((semaphore, q.submit_count as u64));
+        Ok(())
+    }
+
+    fn queue_wait(&self, queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
+        let qs = self.queues.lock().unwrap();
+        if !qs.contains_key(&queue) {
+            return Err(QuantaError::invalid_param("queue not found"));
+        }
+        Ok(())
+    }
+
+    fn queue_destroy(&self, queue: u64) -> Result<(), QuantaError> {
+        self.queues.lock().unwrap().remove(&queue);
         Ok(())
     }
 

@@ -298,6 +298,12 @@ pub trait GpuDevice: Send + Sync {
         Err(QuantaError::invalid_param("multi-queue not supported"))
     }
 
+    /// Destroy a queue handle. Default no-ops so backends without
+    /// an explicit registry don't error on Drop.
+    fn queue_destroy(&self, _queue: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     // === M3.3: Occlusion queries ===
 
     /// Create an occlusion query set with `count` slots.

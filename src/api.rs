@@ -6,6 +6,7 @@ pub mod field;
 pub mod gpu;
 pub mod icb;
 pub mod mesh_shader;
+pub mod multi_queue;
 pub mod pipeline;
 pub mod pulse;
 pub mod ray_tracing;
@@ -29,6 +30,7 @@ pub use mesh_shader::{
     MAX_GROUP_COUNT, MAX_MESH_PRIMITIVES, MAX_MESH_VERTICES, MAX_TASK_THREADS, MeshPipeline,
     MeshPipelineDesc,
 };
+pub use multi_queue::Queue;
 pub use pipeline::*;
 pub use pulse::{OcclusionQuery, Pulse, Timeline, TimestampQuery};
 pub use ray_tracing::*;

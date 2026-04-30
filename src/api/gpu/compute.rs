@@ -80,6 +80,22 @@ impl Gpu {
         self.inner.create_queue(queue_type)
     }
 
+    /// Allocate a typed [`Queue`](crate::Queue) for the given
+    /// capability tier. Steps 018 + 019.
+    ///
+    /// Backends that don't expose multi-queue (single-queue
+    /// software fallbacks, WebGPU global queue) return
+    /// `NotSupported` here so user code can branch.
+    pub fn queue(&self, queue_type: QueueType) -> Result<crate::Queue, QuantaError> {
+        let handle = self.inner.create_queue(queue_type)?;
+        Ok(crate::Queue {
+            handle,
+            kind: queue_type,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
     /// Submit a compute dispatch to a specific queue.
     pub fn queue_dispatch(
         &self,
