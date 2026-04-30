@@ -75,6 +75,9 @@ import Quanta.SparseTexture
 -- Multi-queue (steps 018 + 019)
 import Quanta.MultiQueue
 
+-- Async memory copy (step 044)
+import Quanta.AsyncCopy
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
