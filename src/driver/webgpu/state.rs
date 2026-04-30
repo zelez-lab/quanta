@@ -119,6 +119,9 @@ pub(super) struct State {
     /// so via host-side rebinding before each dispatch.
     pub bindless_textures: SendCell<BTreeMap<u64, WebgpuBindlessArray>>,
     pub bindless_buffers: SendCell<BTreeMap<u64, WebgpuBindlessArray>>,
+    /// Occlusion query sets (post-step-063 closure).
+    /// Quanta u64 handle → (JS GPUQuerySet handle, slot count).
+    pub query_sets: SendCell<BTreeMap<u64, (u32, u32)>>,
 }
 
 pub(super) struct WebgpuBindlessArray {
@@ -163,6 +166,7 @@ impl State {
             render_bundles: SendCell::new(BTreeMap::new()),
             bindless_textures: SendCell::new(BTreeMap::new()),
             bindless_buffers: SendCell::new(BTreeMap::new()),
+            query_sets: SendCell::new(BTreeMap::new()),
         }
     }
 

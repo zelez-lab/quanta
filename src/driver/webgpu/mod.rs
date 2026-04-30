@@ -586,6 +586,42 @@ impl QGpuDevice for WebgpuDevice {
         false
     }
 
+    // ── Occlusion queries (post-step-063 closure) ──────────────────────────
+
+    fn occlusion_query_create(&self, count: u32) -> Result<u64, QuantaError> {
+        if count == 0 {
+            return Err(QuantaError::invalid_param(
+                "occlusion query set must have at least one slot",
+            ));
+        }
+        let device = self.dev()?;
+        let qs = unsafe { ffi::quanta_create_query_set(device, count) };
+        if qs == ffi::NULL_HANDLE {
+            return Err(Self::err("createQuerySet returned a null handle"));
+        }
+        let handle = self.state.alloc_handle();
+        self.state
+            .query_sets
+            .0
+            .borrow_mut()
+            .insert(handle, (qs, count));
+        Ok(handle)
+    }
+
+    fn occlusion_query_read(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
+        // WebGPU readback is fundamentally async — same shape as
+        // pulse_wait. The recorded begin/end pairs work; reading
+        // the resolved buffer back to the host needs a command-
+        // buffer submit + mapAsync. Either wire an
+        // `occlusion_query_read_async` (separate slice) or call
+        // sites can read back via the standard
+        // `field_read_bytes_async` path against the resolve
+        // buffer they own.
+        Err(Self::err(
+            "occlusion_query_read is async-only on WebGPU; use occlusion_query_read_async or resolve into a buffer and field_read_bytes_async",
+        ))
+    }
+
     // ── Textures ───────────────────────────────────────────────────────────
 
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
@@ -935,6 +971,26 @@ impl QGpuDevice for WebgpuDevice {
             }
         }
 
+        // Occlusion-query attachment: pre-walk pass.ops for the
+        // first BeginOcclusionQuery, look up its query set in the
+        // device registry, and bind it to the render pass desc
+        // BEFORE beginRenderPass — WebGPU requires the
+        // occlusionQuerySet to be set at descriptor time.
+        let occlusion_qs_js: Option<u32> = pass
+            .ops
+            .iter()
+            .find_map(|op| {
+                if let crate::render_pass::RenderOp::BeginOcclusionQuery { handle, .. } = op {
+                    Some(*handle)
+                } else {
+                    None
+                }
+            })
+            .and_then(|h| self.state.query_sets.0.borrow().get(&h).map(|(js, _)| *js));
+        if let Some(qs_js) = occlusion_qs_js {
+            unsafe { ffi::quanta_rpass_desc_set_occlusion_query_set(rpass_desc, qs_js) };
+        }
+
         let encoder = unsafe { ffi::quanta_create_command_encoder(device) };
         let rp = unsafe { ffi::quanta_encoder_begin_render_pass(encoder, rpass_desc) };
 
@@ -1244,16 +1300,11 @@ impl QGpuDevice for WebgpuDevice {
                         ffi::quanta_release(bundle_h);
                     }
                 }
-                RenderOp::BeginOcclusionQuery { .. } | RenderOp::EndOcclusionQuery { .. } => {
-                    // The device-level occlusion_query_create
-                    // returns NotSupported on WebGPU, so this arm
-                    // is unreachable today. Keep it consistent in
-                    // case a future caller fabricates a handle —
-                    // the user-facing error category should agree.
-                    unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::not_supported(
-                        "WebGPU render encoder: occlusion queries are not yet wired",
-                    ));
+                RenderOp::BeginOcclusionQuery { index, .. } => {
+                    unsafe { ffi::quanta_render_pass_begin_occlusion_query(rp, *index) };
+                }
+                RenderOp::EndOcclusionQuery { .. } => {
+                    unsafe { ffi::quanta_render_pass_end_occlusion_query(rp) };
                 }
                 RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
                     unsafe { ffi::quanta_render_pass_end(rp) };

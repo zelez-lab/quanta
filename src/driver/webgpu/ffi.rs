@@ -54,6 +54,7 @@ pub mod buffer_usage {
     pub const UNIFORM: u32 = 0x0040;
     pub const STORAGE: u32 = 0x0080;
     pub const INDIRECT: u32 = 0x0100;
+    pub const QUERY_RESOLVE: u32 = 0x0200;
 }
 
 pub mod texture_usage {
@@ -322,6 +323,27 @@ unsafe extern "C" {
         format_code: u32,
         offset: f64,
     );
+    // Occlusion query support (post-step-063 closure). Maps the
+    // typed `OcclusionQuery` API to GPUQuerySet + the
+    // occlusionQuerySet field on render pass descriptors +
+    // beginOcclusionQuery / endOcclusionQuery + resolveQuerySet
+    // for asynchronous result readback.
+    pub fn quanta_create_query_set(device: u32, count: u32) -> u32;
+    pub fn quanta_rpass_desc_set_occlusion_query_set(desc: u32, query_set: u32);
+    pub fn quanta_render_pass_begin_occlusion_query(pass: u32, index: u32);
+    pub fn quanta_render_pass_end_occlusion_query(pass: u32);
+    /// Encode a resolve from the query set into a buffer. The
+    /// destination buffer must have COPY_DST + QUERY_RESOLVE
+    /// usage. Each query result is 8 bytes (u64).
+    pub fn quanta_encoder_resolve_query_set(
+        encoder: u32,
+        query_set: u32,
+        first_query: u32,
+        query_count: u32,
+        dst_buffer: u32,
+        dst_offset: f64,
+    );
+
     pub fn quanta_render_pass_draw(pass: u32, vertex_count: u32, instance_count: u32);
     pub fn quanta_render_pass_draw_indexed(pass: u32, index_count: u32, instance_count: u32);
     pub fn quanta_render_pass_draw_indirect(pass: u32, indirect_buffer: u32, indirect_offset: f64);

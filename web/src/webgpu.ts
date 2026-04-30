@@ -59,6 +59,7 @@ interface BindGroupDescriptor {
 interface RenderPassDescriptor {
   colorAttachments: any[];
   depthStencilAttachment: any | null;
+  occlusionQuerySet?: GPUQuerySet;
 }
 
 const COMPARE_UNSET = 0;
@@ -561,9 +562,54 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
       if (desc.depthStencilAttachment !== null) {
         passDesc.depthStencilAttachment = desc.depthStencilAttachment;
       }
+      if (desc.occlusionQuerySet !== undefined) {
+        passDesc.occlusionQuerySet = desc.occlusionQuerySet;
+      }
       const rp = enc.beginRenderPass(passDesc);
       state.handles.release(desc_h);
       return state.handles.alloc(rp);
+    },
+
+    // Occlusion queries (post-step-063 closure).
+    quanta_create_query_set(device: number, count: number): number {
+      const dev = state.handles.get<GPUDevice>(device);
+      const qs = dev.createQuerySet({ type: "occlusion", count });
+      return state.handles.alloc(qs);
+    },
+
+    quanta_rpass_desc_set_occlusion_query_set(
+      desc_h: number,
+      query_set: number,
+    ): void {
+      const desc = state.handles.get<RenderPassDescriptor>(desc_h);
+      desc.occlusionQuerySet = state.handles.get<GPUQuerySet>(query_set);
+    },
+
+    quanta_render_pass_begin_occlusion_query(
+      pass: number,
+      index: number,
+    ): void {
+      const rp = state.handles.get<GPURenderPassEncoder>(pass);
+      rp.beginOcclusionQuery(index);
+    },
+
+    quanta_render_pass_end_occlusion_query(pass: number): void {
+      const rp = state.handles.get<GPURenderPassEncoder>(pass);
+      rp.endOcclusionQuery();
+    },
+
+    quanta_encoder_resolve_query_set(
+      encoder: number,
+      query_set: number,
+      first_query: number,
+      query_count: number,
+      dst_buffer: number,
+      dst_offset: number,
+    ): void {
+      const enc = state.handles.get<GPUCommandEncoder>(encoder);
+      const qs = state.handles.get<GPUQuerySet>(query_set);
+      const dst = state.handles.get<GPUBuffer>(dst_buffer);
+      enc.resolveQuerySet(qs, first_query, query_count, dst, dst_offset);
     },
 
     quanta_render_pass_set_pipeline(pass: number, pipeline: number): void {
