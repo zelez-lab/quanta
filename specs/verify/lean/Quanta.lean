@@ -78,6 +78,9 @@ import Quanta.MultiQueue
 -- Async memory copy (step 044)
 import Quanta.AsyncCopy
 
+-- GPU printf (step 049)
+import Quanta.Printf
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
