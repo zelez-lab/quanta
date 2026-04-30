@@ -80,6 +80,23 @@ pub struct VkCommandBufferBeginInfo {
     pub p_inheritance_info: *const c_void,
 }
 
+/// Inheritance info passed to a secondary command buffer's begin
+/// info. For compute-only secondaries, all handle fields are null
+/// and `subpass` / `framebuffer` are unused. For render-pass-
+/// continued secondaries (steps 032 + 033 render path),
+/// `render_pass` and `subpass` must match the primary's pass.
+#[repr(C)]
+pub struct VkCommandBufferInheritanceInfo {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub render_pass: super::constants::VkRenderPass,
+    pub subpass: u32,
+    pub framebuffer: super::constants::VkFramebuffer,
+    pub occlusion_query_enable: u32,
+    pub query_flags: u32,
+    pub pipeline_statistics: u32,
+}
+
 #[repr(C)]
 pub struct VkBufferCreateInfo {
     pub s_type: u32,

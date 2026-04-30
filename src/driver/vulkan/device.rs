@@ -53,9 +53,23 @@ pub struct VulkanDevice {
 }
 
 /// State for one Vulkan ICB.
+///
+/// Native lowering: each `record_dispatch` writes one secondary
+/// VkCommandBuffer (allocated lazily) bound to a dedicated
+/// descriptor pool that lives as long as the ICB. `execute(count)`
+/// runs `vkCmdExecuteCommands(primary, count, &secondaries[..count])`
+/// and submits once. The replay path (commands fold) is no longer
+/// used for execute; we keep `commands` only as a Vec<VkIcbCommand>
+/// counter / discriminator for record-time state.
 pub(super) struct VkIcb {
     pub(super) cap: u32,
     pub(super) commands: Vec<VkIcbCommand>,
+    /// Pre-allocated secondary command buffers, one per slot.
+    /// `secondaries[i]` is recorded by `icb_record_dispatch(handle, i, ...)`.
+    pub(super) secondaries: Vec<ffi::VkCommandBuffer>,
+    /// Dedicated descriptor pool — outlives any single record.
+    /// Reset on `indirect_buffer_destroy` only.
+    pub(super) descriptor_pool: ffi::VkDescriptorPool,
 }
 
 /// One recorded ICB command. Compute = Dispatch; render = Draw.

@@ -291,6 +291,11 @@ macro_rules! vk_extern_fns {
             );
             pub fn vkCmdDispatch(cmd_buf: VkCommandBuffer, x: u32, y: u32, z: u32);
             pub fn vkCmdDispatchIndirect(cmd_buf: VkCommandBuffer, buffer: VkBuffer, offset: VkDeviceSize);
+            pub fn vkCmdExecuteCommands(
+                cmd_buf: VkCommandBuffer,
+                count: u32,
+                cmd_buffers: *const VkCommandBuffer,
+            );
             pub fn vkCmdBeginRenderPass(
                 cmd_buf: VkCommandBuffer,
                 begin_info: *const VkRenderPassBeginInfo,

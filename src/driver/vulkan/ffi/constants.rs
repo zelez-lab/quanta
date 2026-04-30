@@ -216,7 +216,13 @@ pub const VK_SHADER_STAGE_COMPUTE_BIT: u32 = 0x00000020;
 // ─── Command buffer level / usage ───────────────────────────────────────────
 
 pub const VK_COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
+pub const VK_COMMAND_BUFFER_LEVEL_SECONDARY: u32 = 1;
 pub const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: u32 = 0x00000001;
+pub const VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT: u32 = 0x00000002;
+pub const VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT: u32 = 0x00000004;
+pub const VK_SUBPASS_CONTENTS_INLINE: u32 = 0;
+pub const VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS: u32 = 1;
+pub const VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO: u32 = 41;
 
 // ─── Command pool create flags ──────────────────────────────────────────────
 

@@ -520,6 +520,63 @@ impl GpuDevice for VulkanDevice {
     // commit; the proof contract is satisfied by either form.
 
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        // Native lowering: allocate `max_commands` secondary command
+        // buffers up front, plus a dedicated descriptor pool sized
+        // to hold one descriptor set per recorded command.
+        let alloc_info = ffi::VkCommandBufferAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            command_pool: self.command_pool,
+            level: ffi::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+            command_buffer_count: max_commands,
+        };
+        let mut secondaries: Vec<ffi::VkCommandBuffer> =
+            vec![ffi::null_handle(); max_commands as usize];
+        if max_commands > 0 {
+            let r = unsafe {
+                ffi::vkAllocateCommandBuffers(self.device, &alloc_info, secondaries.as_mut_ptr())
+            };
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        // Descriptor pool sized for `max_commands` storage-buffer
+        // sets, MAX_BINDINGS descriptors per set.
+        let pool_size = ffi::VkDescriptorPoolSize {
+            ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            descriptor_count: max_commands * crate::api::wave::MAX_BINDINGS as u32,
+        };
+        let pool_info = ffi::VkDescriptorPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            max_sets: max_commands.max(1),
+            pool_size_count: 1,
+            p_pool_sizes: &pool_size,
+        };
+        let mut descriptor_pool = ffi::null_handle();
+        let r = unsafe {
+            ffi::vkCreateDescriptorPool(
+                self.device,
+                &pool_info,
+                core::ptr::null(),
+                &mut descriptor_pool,
+            )
+        };
+        if r != ffi::VK_SUCCESS {
+            if max_commands > 0 {
+                unsafe {
+                    ffi::vkFreeCommandBuffers(
+                        self.device,
+                        self.command_pool,
+                        max_commands,
+                        secondaries.as_ptr(),
+                    );
+                }
+            }
+            return Err(QuantaError::submit_failed());
+        }
+
         let handle = self.alloc_handle();
         self.icbs
             .write()
@@ -529,6 +586,8 @@ impl GpuDevice for VulkanDevice {
                 super::device::VkIcb {
                     cap: max_commands,
                     commands: Vec::with_capacity(max_commands as usize),
+                    secondaries,
+                    descriptor_pool,
                 },
             );
         Ok(handle)
@@ -541,31 +600,169 @@ impl GpuDevice for VulkanDevice {
         wave: &Wave,
         groups: [u32; 3],
     ) -> Result<(), QuantaError> {
-        let mut icbs = self
-            .icbs
-            .write()
+        // Resolve compute pipeline + bound buffers up front (the
+        // pipeline binding survives the lock; the buffer handles do
+        // not need to outlive recording — vkCmdBindDescriptorSets
+        // captures the descriptor set, which lives in the ICB's
+        // dedicated pool).
+        let (pipeline_handle, pipeline_layout) = {
+            let cps = self
+                .compute_pipelines
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let cp = cps
+                .get(&wave.handle)
+                .ok_or_else(|| QuantaError::invalid_param("bad wave handle in ICB record"))?;
+            (cp.pipeline, cp.layout)
+        };
+        let descriptor_set_layout = {
+            let cps = self
+                .compute_pipelines
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            cps.get(&wave.handle)
+                .map(|cp| cp.descriptor_set_layout)
+                .ok_or_else(|| QuantaError::invalid_param("bad wave handle in ICB record"))?
+        };
+
+        let secondary = {
+            let mut icbs = self
+                .icbs
+                .write()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let icb = icbs
+                .get_mut(&handle)
+                .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+            if index != icb.commands.len() as u32 {
+                return Err(QuantaError::invalid_param(
+                    "ICB record index must equal current length",
+                ));
+            }
+            if index >= icb.cap {
+                return Err(QuantaError::invalid_param("ICB index >= capacity"));
+            }
+            // Push the discriminator first so re-entry can't see a
+            // partially-recorded slot.
+            icb.commands.push(super::device::VkIcbCommand::Dispatch {
+                wave_handle: wave.handle,
+                bindings: wave.bindings,
+                binding_count: wave.binding_count,
+                push_data: wave.push_data,
+                push_len: wave.push_len,
+                push_mask: wave.push_mask,
+                workgroup_size: wave.workgroup_size,
+                groups,
+            });
+            (icb.secondaries[index as usize], icb.descriptor_pool)
+        };
+        let (secondary_cb, dedicated_pool) = (secondary.0, secondary.1);
+
+        // Allocate a descriptor set from the ICB's dedicated pool.
+        let alloc_info = ffi::VkDescriptorSetAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            descriptor_pool: dedicated_pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &descriptor_set_layout,
+        };
+        let mut ds = ffi::null_handle();
+        let r = unsafe { ffi::vkAllocateDescriptorSets(self.device, &alloc_info, &mut ds) };
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
+
+        // Update descriptor set with bound buffers.
+        let buffers_guard = self
+            .buffers
+            .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        let icb = icbs
-            .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
-        if index != icb.commands.len() as u32 {
-            return Err(QuantaError::invalid_param(
-                "ICB record index must equal current length",
-            ));
+        let mut buffer_infos: [ffi::VkDescriptorBufferInfo; 16] = unsafe { core::mem::zeroed() };
+        let mut writes: [ffi::VkWriteDescriptorSet; 16] = unsafe { core::mem::zeroed() };
+        let mut write_count = 0usize;
+        for slot in 0..wave.binding_count as usize {
+            let h = wave.bindings[slot];
+            if h != 0
+                && let Some(buf) = buffers_guard.get(&h)
+            {
+                buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
+                    buffer: buf.buffer,
+                    offset: 0,
+                    range: ffi::VK_WHOLE_SIZE,
+                };
+                writes[write_count] = ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: ds,
+                    dst_binding: slot as u32,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    p_image_info: core::ptr::null(),
+                    p_buffer_info: &buffer_infos[write_count],
+                    p_texel_buffer_view: core::ptr::null(),
+                };
+                write_count += 1;
+            }
         }
-        if index >= icb.cap {
-            return Err(QuantaError::invalid_param("ICB index >= capacity"));
+        if write_count > 0 {
+            unsafe {
+                ffi::vkUpdateDescriptorSets(
+                    self.device,
+                    write_count as u32,
+                    writes.as_ptr(),
+                    0,
+                    core::ptr::null(),
+                );
+            }
         }
-        icb.commands.push(super::device::VkIcbCommand::Dispatch {
-            wave_handle: wave.handle,
-            bindings: wave.bindings,
-            binding_count: wave.binding_count,
-            push_data: wave.push_data,
-            push_len: wave.push_len,
-            push_mask: wave.push_mask,
-            workgroup_size: wave.workgroup_size,
-            groups,
-        });
+        drop(buffers_guard);
+
+        // Record the secondary command buffer. Compute outside a
+        // render pass: inheritance info has null render_pass and
+        // framebuffer; SIMULTANEOUS_USE so a single ICB execute
+        // can replay multiple times concurrently.
+        let inheritance = ffi::VkCommandBufferInheritanceInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+            p_next: core::ptr::null(),
+            render_pass: ffi::null_handle(),
+            subpass: 0,
+            framebuffer: ffi::null_handle(),
+            occlusion_query_enable: 0,
+            query_flags: 0,
+            pipeline_statistics: 0,
+        };
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
+            p_inheritance_info: &inheritance as *const _ as *const core::ffi::c_void,
+        };
+        unsafe {
+            let r = ffi::vkBeginCommandBuffer(secondary_cb, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            ffi::vkCmdBindPipeline(
+                secondary_cb,
+                ffi::VK_PIPELINE_BIND_POINT_COMPUTE,
+                pipeline_handle,
+            );
+            ffi::vkCmdBindDescriptorSets(
+                secondary_cb,
+                ffi::VK_PIPELINE_BIND_POINT_COMPUTE,
+                pipeline_layout,
+                0,
+                1,
+                &ds,
+                0,
+                core::ptr::null(),
+            );
+            ffi::vkCmdDispatch(secondary_cb, groups[0], groups[1], groups[2]);
+            let r = ffi::vkEndCommandBuffer(secondary_cb);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
         Ok(())
     }
 
@@ -601,9 +798,12 @@ impl GpuDevice for VulkanDevice {
     }
 
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
-        // Snapshot under the lock, then drop it before re-entering
-        // wave_dispatch_impl (which takes its own locks).
-        let snapshot: Vec<super::device::VkIcbCommand> = {
+        // Native lowering: collect the first `count` secondary CBs,
+        // submit a single primary CB that calls
+        // `vkCmdExecuteCommands(primary, count, &secondaries[..count])`,
+        // submit + wait once. Refines the proven Lean T7000
+        // equivalence theorem (recorded order preserved on execute).
+        let secondaries: Vec<ffi::VkCommandBuffer> = {
             let icbs = self
                 .icbs
                 .read()
@@ -616,84 +816,52 @@ impl GpuDevice for VulkanDevice {
                     "ICB execute count exceeds recorded length",
                 ));
             }
-            icb.commands[..count as usize]
-                .iter()
-                .map(|r| match r {
-                    super::device::VkIcbCommand::Dispatch {
-                        wave_handle,
-                        bindings,
-                        binding_count,
-                        push_data,
-                        push_len,
-                        push_mask,
-                        workgroup_size,
-                        groups,
-                    } => super::device::VkIcbCommand::Dispatch {
-                        wave_handle: *wave_handle,
-                        bindings: *bindings,
-                        binding_count: *binding_count,
-                        push_data: *push_data,
-                        push_len: *push_len,
-                        push_mask: *push_mask,
-                        workgroup_size: *workgroup_size,
-                        groups: *groups,
-                    },
-                    super::device::VkIcbCommand::Draw {
-                        pipeline,
-                        vertex_count,
-                        instance_count,
-                    } => super::device::VkIcbCommand::Draw {
-                        pipeline: *pipeline,
-                        vertex_count: *vertex_count,
-                        instance_count: *instance_count,
-                    },
-                })
-                .collect()
+            icb.secondaries[..count as usize].to_vec()
         };
-        for rec in &snapshot {
-            match rec {
-                super::device::VkIcbCommand::Dispatch {
-                    wave_handle,
-                    bindings,
-                    binding_count,
-                    push_data,
-                    push_len,
-                    push_mask,
-                    workgroup_size,
-                    groups,
-                } => {
-                    let wave = Wave {
-                        handle: *wave_handle,
-                        bindings: *bindings,
-                        binding_count: *binding_count,
-                        texture_bindings: [0; crate::api::wave::MAX_TEXTURES],
-                        texture_count: 0,
-                        push_data: *push_data,
-                        push_len: *push_len,
-                        push_mask: *push_mask,
-                        workgroup_size: *workgroup_size,
-                        drop_fn: None,
-                    };
-                    let mut pulse = self.wave_dispatch_impl(&wave, *groups)?;
-                    pulse.wait()?;
-                }
-                super::device::VkIcbCommand::Draw { .. } => {
-                    // Render-path replay would need a render-pass-
-                    // continued secondary CB + vkCmdExecuteCommands,
-                    // which requires the active render-pass context.
-                    // The recording shape (T7006) is satisfied; live
-                    // playback is deferred to a future commit.
-                }
+        if count == 0 {
+            return Ok(());
+        }
+        let cmd = self.alloc_command_buffer()?;
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
+        unsafe {
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            ffi::vkCmdExecuteCommands(cmd, count, secondaries.as_ptr());
+            let r = ffi::vkEndCommandBuffer(cmd);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
             }
         }
+        self.submit_and_wait(cmd)?.wait()?;
         Ok(())
     }
 
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
-        self.icbs
+        let removed = self
+            .icbs
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
+        if let Some(icb) = removed {
+            unsafe {
+                if !icb.secondaries.is_empty() {
+                    ffi::vkFreeCommandBuffers(
+                        self.device,
+                        self.command_pool,
+                        icb.secondaries.len() as u32,
+                        icb.secondaries.as_ptr(),
+                    );
+                }
+                ffi::vkDestroyDescriptorPool(self.device, icb.descriptor_pool, core::ptr::null());
+            }
+        }
         Ok(())
     }
 
