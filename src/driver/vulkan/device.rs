@@ -96,6 +96,14 @@ pub struct VulkanDevice {
     /// otherwise. Ray-tracing dispatch surfaces NotSupported when
     /// None (step 063 native ray-tracing scaffolding).
     pub(super) trace_rays_fn: Option<ffi::PfnVkCmdTraceRaysKHR>,
+    /// Acceleration-structure build proc addresses. All four are
+    /// resolved when `VK_KHR_acceleration_structure` is enabled;
+    /// `None` otherwise. Stored together because the build path
+    /// always needs the whole set. Step 063 slice 15.
+    pub(super) accel_create_fn: Option<ffi::PfnVkCreateAccelerationStructureKHR>,
+    pub(super) accel_destroy_fn: Option<ffi::PfnVkDestroyAccelerationStructureKHR>,
+    pub(super) accel_build_sizes_fn: Option<ffi::PfnVkGetAccelerationStructureBuildSizesKHR>,
+    pub(super) accel_build_fn: Option<ffi::PfnVkCmdBuildAccelerationStructuresKHR>,
     /// Whether `VkPhysicalDeviceFeatures.tessellationShader` is
     /// available on this physical device. Cached at discovery so
     /// `tessellation_pipeline_create` can surface a clean
@@ -836,6 +844,50 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         } else {
             None
         };
+        // Slice 15 — acceleration-structure build procs. Loaded
+        // off `has_accel_ext` (not `has_rt`) so AS builds can be
+        // available even on devices that lack the ray-tracing
+        // pipeline extension. The four procs travel together
+        // because a build path needs the whole set.
+        let resolve_pfn = |has: bool, name: &[u8]| -> Option<*const core::ffi::c_void> {
+            if !has {
+                return None;
+            }
+            let p = unsafe {
+                ffi::vkGetDeviceProcAddr(device, name.as_ptr() as *const core::ffi::c_char)
+            };
+            if p.is_null() { None } else { Some(p) }
+        };
+        let accel_create_fn = resolve_pfn(has_accel_ext, b"vkCreateAccelerationStructureKHR\0")
+            .map(|p| unsafe {
+                core::mem::transmute::<
+                    *const core::ffi::c_void,
+                    ffi::PfnVkCreateAccelerationStructureKHR,
+                >(p)
+            });
+        let accel_destroy_fn = resolve_pfn(has_accel_ext, b"vkDestroyAccelerationStructureKHR\0")
+            .map(|p| unsafe {
+                core::mem::transmute::<
+                    *const core::ffi::c_void,
+                    ffi::PfnVkDestroyAccelerationStructureKHR,
+                >(p)
+            });
+        let accel_build_sizes_fn =
+            resolve_pfn(has_accel_ext, b"vkGetAccelerationStructureBuildSizesKHR\0").map(
+                |p| unsafe {
+                    core::mem::transmute::<
+                        *const core::ffi::c_void,
+                        ffi::PfnVkGetAccelerationStructureBuildSizesKHR,
+                    >(p)
+                },
+            );
+        let accel_build_fn = resolve_pfn(has_accel_ext, b"vkCmdBuildAccelerationStructuresKHR\0")
+            .map(|p| unsafe {
+                core::mem::transmute::<
+                    *const core::ffi::c_void,
+                    ffi::PfnVkCmdBuildAccelerationStructuresKHR,
+                >(p)
+            });
 
         // Command pool
         let pool_info = ffi::VkCommandPoolCreateInfo {
@@ -935,6 +987,10 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             vrs_set_rate_fn,
             mesh_draw_fn,
             trace_rays_fn,
+            accel_create_fn,
+            accel_destroy_fn,
+            accel_build_sizes_fn,
+            accel_build_fn,
             tessellation_feature,
             supported_shading_rates,
         }));

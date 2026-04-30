@@ -408,6 +408,48 @@ pub type PfnVkCmdTraceRaysKHR = unsafe extern "C" fn(
     depth: u32,
 );
 
+// ─── VK_KHR_acceleration_structure (step 063 slice 15) ──────────────────────
+//
+// Acceleration structure builds: typed handle is opaque; the actual
+// `VkAccelerationStructureKHR` is `*mut c_void`. The four helper
+// procs below are the entry points needed for a real BLAS/TLAS
+// build-out — load them at device discovery so the future
+// build-out doesn't need to re-touch device.rs / extern_fns.rs.
+//
+// The full call signatures take VkAccelerationStructureCreateInfoKHR,
+// VkAccelerationStructureBuildGeometryInfoKHR and friends; we type
+// the create-info / build-info pointers as opaque `*const c_void`
+// here so the FFI surface stays minimal until the build-path
+// commit lands.
+
+pub type PfnVkCreateAccelerationStructureKHR = unsafe extern "C" fn(
+    device: VkDevice,
+    create_info: *const c_void,
+    allocator: *const c_void,
+    p_acceleration_structure: *mut *mut c_void,
+) -> VkResult;
+
+pub type PfnVkDestroyAccelerationStructureKHR = unsafe extern "C" fn(
+    device: VkDevice,
+    acceleration_structure: *mut c_void,
+    allocator: *const c_void,
+);
+
+pub type PfnVkGetAccelerationStructureBuildSizesKHR = unsafe extern "C" fn(
+    device: VkDevice,
+    build_type: u32,
+    build_info: *const c_void,
+    max_primitive_counts: *const u32,
+    p_size_info: *mut c_void,
+);
+
+pub type PfnVkCmdBuildAccelerationStructuresKHR = unsafe extern "C" fn(
+    cmd_buf: VkCommandBuffer,
+    info_count: u32,
+    p_infos: *const c_void,
+    pp_build_range_infos: *const *const c_void,
+);
+
 // ─── Vulkan API version helper ──────────────────────────────────────────────
 
 #[inline]

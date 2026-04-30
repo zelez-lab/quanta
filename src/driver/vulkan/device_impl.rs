@@ -397,10 +397,13 @@ impl GpuDevice for VulkanDevice {
     // === Ray tracing (M4.3) ===
 
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
-        let has_accel = self.has_device_extension(b"VK_KHR_acceleration_structure\0");
-        if !has_accel {
+        // Step 063 slice 15 — gate on the resolved AS proc set
+        // (slice 4 + 15 cached at device discovery). When all four
+        // procs are present, we have everything needed to build a
+        // BLAS; the actual build wiring is the next slice.
+        if self.accel_create_fn.is_none() || self.accel_build_fn.is_none() {
             return Err(QuantaError::not_supported(
-                "ray tracing requires VK_KHR_acceleration_structure — not available on this device",
+                "ray tracing requires VK_KHR_acceleration_structure — extension or proc address unavailable on this device",
             ));
         }
         if geometry.is_empty() {
@@ -408,17 +411,14 @@ impl GpuDevice for VulkanDevice {
                 "acceleration structure requires at least one geometry descriptor",
             ));
         }
-        // Allocate a device-local buffer as backing storage for the BLAS.
-        let accel_size = geometry
-            .iter()
-            .map(|g| g.vertex_count as u64 * 48)
-            .sum::<u64>()
-            .max(256);
-        let handle = self.field_alloc_impl(
-            accel_size as usize,
-            FieldUsage::READ.union(FieldUsage::WRITE),
-        )?;
-        Ok(handle)
+        // Until the native vkCreateAccelerationStructureKHR +
+        // vkCmdBuildAccelerationStructuresKHR call sequence lands,
+        // surface a more specific NotSupported pointing at the
+        // unwired build path. Allocating a placeholder buffer
+        // would lie to callers about the handle's residency.
+        Err(QuantaError::not_supported(
+            "Vulkan acceleration-structure build pending — proc addresses loaded, awaiting native build sequence (vkCreateAccelerationStructureKHR + vkCmdBuildAccelerationStructuresKHR)",
+        ))
     }
 
     fn create_ray_tracing_pipeline(
