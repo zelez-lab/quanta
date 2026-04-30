@@ -40,6 +40,29 @@ impl VulkanDevice {
                 "fragment SPIR-V binary length must be a multiple of 4",
             ));
         }
+        // Step 063 slice 5 — gate the deferred render-pipeline
+        // features. The render-pipeline rebuild that wires
+        // TCS+TES SPIR-V (tessellation), object/mesh shader
+        // stages, and conservative-rasterization extension state
+        // is a separate track. Until then, surface NotSupported
+        // when the user asks for them on the descriptor — better
+        // than silently dropping the request (matches Kani T419's
+        // no-silent-drops contract).
+        if desc.tessellation.is_some() {
+            return Err(QuantaError::not_supported(
+                "Vulkan render pipelines: tessellation (TCS+TES) integration pending — set PipelineDesc.tessellation = None or use the typed TessellationPipeline wrapper",
+            ));
+        }
+        if desc.mesh_shader.is_some() {
+            return Err(QuantaError::not_supported(
+                "Vulkan render pipelines: object/mesh shader stages pending — use dispatch_mesh on the typed MeshPipeline wrapper",
+            ));
+        }
+        if desc.conservative_rasterization {
+            return Err(QuantaError::not_supported(
+                "Vulkan render pipelines: conservative rasterization (VK_EXT_conservative_rasterization) pending",
+            ));
+        }
         let vert_spirv: Vec<u32> = desc
             .vertex
             .chunks_exact(4)

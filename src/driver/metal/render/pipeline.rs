@@ -17,6 +17,28 @@ impl MetalDevice {
         &self,
         desc: &crate::PipelineDesc,
     ) -> Result<Pipeline, QuantaError> {
+        // Step 063 slice 5 — gate deferred render-pipeline features
+        // up-front rather than silently dropping the request when
+        // the render-pipeline integration hasn't been wired yet.
+        // The typed wrappers (TessellationPipeline, MeshPipeline)
+        // continue to exercise the Lean refinement contract via
+        // their own create methods; setting these on the standard
+        // PipelineDesc is what gets gated.
+        if desc.tessellation.is_some() {
+            return Err(QuantaError::not_supported(
+                "Metal render pipelines: tessellation (drawIndexedPatches + tessellationFactorBuffer) integration pending — set PipelineDesc.tessellation = None or use the typed TessellationPipeline wrapper",
+            ));
+        }
+        if desc.mesh_shader.is_some() {
+            return Err(QuantaError::not_supported(
+                "Metal render pipelines: MTLMeshRenderPipelineDescriptor integration pending — use dispatch_mesh on the typed MeshPipeline wrapper",
+            ));
+        }
+        if desc.conservative_rasterization {
+            return Err(QuantaError::not_supported(
+                "Metal render pipelines: conservative rasterization is not exposed by Metal",
+            ));
+        }
         // Build MTLFunctionConstantValues if specialization constants are present.
         let fcv = if !desc.specialization.is_empty() {
             unsafe {
