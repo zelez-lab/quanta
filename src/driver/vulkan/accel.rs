@@ -35,7 +35,7 @@ use core::ffi::c_void;
 use crate::QuantaError;
 use crate::ray_tracing::GeometryDesc;
 
-use super::device::{VulkanAccelerationStructure, VulkanDevice};
+use super::device::VulkanDevice;
 use super::ffi;
 
 impl VulkanDevice {
@@ -69,9 +69,17 @@ impl VulkanDevice {
         let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
         unsafe { ffi::vkGetBufferMemoryRequirements(self.device, buffer, &mut mem_reqs) };
         let mem_type = self.find_memory_type(mem_reqs.memory_type_bits, mem_props)?;
+        // AS storage + scratch buffers always include
+        // SHADER_DEVICE_ADDRESS_BIT — chain VkMemoryAllocateFlagsInfo.
+        let flags_info = ffi::VkMemoryAllocateFlagsInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+            device_mask: 0,
+        };
         let alloc_info = ffi::VkMemoryAllocateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            p_next: core::ptr::null(),
+            p_next: &flags_info as *const _ as *const c_void,
             allocation_size: mem_reqs.size,
             memory_type_index: mem_type,
         };
@@ -327,75 +335,54 @@ impl VulkanDevice {
         let range_ptrs: Vec<*const ffi::VkAccelerationStructureBuildRangeInfoKHR> =
             range_list.iter().map(|r| r as *const _).collect();
 
+        // SLICE 23 — vkCmdBuildAccelerationStructuresKHR crashes
+        // lavapipe at vkQueueWaitIdle (segfault inside the
+        // build-driver execution). The validator emits a
+        // pGeometries[0].sType complaint that the byte dump
+        // disproves (offset 0 reads 1000150003 = the correct
+        // GEOMETRY_KHR sType in little-endian); whatever lavapipe
+        // is actually unhappy about isn't visible from the host
+        // side. The whole leading sequence works:
+        //
+        //   - vkGetAccelerationStructureBuildSizesKHR returns
+        //     valid (152, 41184) sizes when given the same
+        //     geometry struct.
+        //   - vkCreateAccelerationStructureKHR succeeds against
+        //     the storage buffer.
+        //   - Scratch buffer allocation + device-address resolve
+        //     succeed.
+        //   - Submit + vkQueueWaitIdle succeed against an empty
+        //     command buffer.
+        //   - destroy_acceleration_structure_native_if_present
+        //     tears the AS down cleanly.
+        //
+        // Tearing down the freshly-created AS now and surfacing
+        // NotSupported is the honest behavior. Future slice will
+        // either narrow down the lavapipe issue or pivot to a
+        // different validation hardware path (real GPU, AMDGPU
+        // self-hosted runner, MoltenVK).
+        let _ = (build_fn, range_ptrs, build_info);
         unsafe {
-            build_fn(
-                cmd,
-                1,
-                &build_info as *const _ as *const c_void,
-                range_ptrs.as_ptr() as *const *const c_void,
-            );
             ffi::vkEndCommandBuffer(cmd);
-        }
-
-        let submit = ffi::VkSubmitInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            p_next: core::ptr::null(),
-            wait_semaphore_count: 0,
-            p_wait_semaphores: core::ptr::null(),
-            p_wait_dst_stage_mask: core::ptr::null(),
-            command_buffer_count: 1,
-            p_command_buffers: &cmd,
-            signal_semaphore_count: 0,
-            p_signal_semaphores: core::ptr::null(),
-        };
-        let r = unsafe { ffi::vkQueueSubmit(self.queue, 1, &submit, ffi::null_handle()) };
-        if r != ffi::VK_SUCCESS {
             if let Ok(mut p) = self.cmd_buffer_pool.lock() {
                 p.push(cmd);
             }
-            unsafe {
-                ffi::vkDestroyBuffer(self.device, scratch_buffer, core::ptr::null());
-                ffi::vkFreeMemory(self.device, scratch_memory, core::ptr::null());
-                if let Some(destroy) = self.accel_destroy_fn {
-                    destroy(self.device, as_handle, core::ptr::null());
-                }
-                ffi::vkDestroyBuffer(self.device, storage_buffer, core::ptr::null());
-                ffi::vkFreeMemory(self.device, storage_memory, core::ptr::null());
-            }
-            return Err(QuantaError::submit_failed());
-        }
-
-        // Wait for the build, free the scratch (no longer needed),
-        // then register the AS for destroy.
-        unsafe { ffi::vkQueueWaitIdle(self.queue) };
-        if let Ok(mut p) = self.cmd_buffer_pool.lock() {
-            p.push(cmd);
-        }
-        unsafe {
             ffi::vkDestroyBuffer(self.device, scratch_buffer, core::ptr::null());
             ffi::vkFreeMemory(self.device, scratch_memory, core::ptr::null());
+            if let Some(destroy) = self.accel_destroy_fn {
+                destroy(self.device, as_handle, core::ptr::null());
+            }
+            ffi::vkDestroyBuffer(self.device, storage_buffer, core::ptr::null());
+            ffi::vkFreeMemory(self.device, storage_memory, core::ptr::null());
         }
-
-        let handle = self.alloc_handle();
-        self.acceleration_structures
-            .write()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(
-                handle,
-                VulkanAccelerationStructure {
-                    as_handle,
-                    storage_buffer,
-                    storage_memory,
-                },
-            );
-
         // Drop the geometry list; ManuallyDrop in the union means
         // we don't need to drop the inner triangles struct.
         for mut g in geom_list {
             unsafe { core::mem::ManuallyDrop::drop(&mut g.geometry.triangles) };
         }
-
-        Ok(handle)
+        Err(QuantaError::not_supported(
+            "Vulkan AS build native: foundation in place (handle, scratch, submit, destroy) but vkCmdBuildAccelerationStructuresKHR crashes lavapipe — investigation pending",
+        ))
     }
 
     pub(crate) fn destroy_as_native_if_present(&self, handle: u64) -> bool {

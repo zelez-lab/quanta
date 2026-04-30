@@ -238,6 +238,18 @@ pub struct VkBufferDeviceAddressInfo {
     pub buffer: VkBuffer,
 }
 
+/// Chain into `VkMemoryAllocateInfo.p_next` to allocate memory
+/// that backs a buffer with `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`.
+/// Without this, vkBindBufferMemory fails with VUID-03339.
+/// Step 063 slice 23.
+#[repr(C)]
+pub struct VkMemoryAllocateFlagsInfo {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub device_mask: u32,
+}
+
 /// `VkPhysicalDeviceBufferDeviceAddressFeatures` — chain into
 /// `VkDeviceCreateInfo.p_next` to enable buffer device addresses.
 /// Step 063 slice 23.
@@ -279,13 +291,15 @@ pub struct VkAccelerationStructureGeometryTrianglesDataKHR {
 }
 
 /// Geometry-data union — only the triangles arm is used today.
+/// In C, the union is sized to its largest member; for KHR ray
+/// tracing that's `triangles` at 64 bytes (8-byte aligned). AABBs
+/// (32 B) and instances (32 B) both fit. Adding an explicit
+/// padding member would *overshoot* the C union size and shift the
+/// parent struct's `flags` field, which is exactly the bug that
+/// surfaced as a SIGSEGV inside vkQueueWaitIdle on the first run.
 #[repr(C)]
 pub union VkAccelerationStructureGeometryDataKHR {
     pub triangles: core::mem::ManuallyDrop<VkAccelerationStructureGeometryTrianglesDataKHR>,
-    /// Reserve space for the union's other arms so the size is
-    /// correct. AABBs / instances arms are larger; pick the
-    /// largest known size as a safety pad.
-    _max_size: [u8; 96],
 }
 
 /// One geometry entry inside a BLAS / TLAS build. Step 063 slice 23.

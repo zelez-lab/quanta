@@ -61,6 +61,13 @@ fn build_blas_either_succeeds_or_surfaces_capability_error() {
             drop(blas);
         }
         Err(e) => {
+            // Slice 23 currently surfaces NotSupported even on
+            // capable devices — the foundation works (handle
+            // creation, scratch alloc, command buffer submit, AS
+            // destroy) but vkCmdBuildAccelerationStructuresKHR
+            // crashes lavapipe. The typed wrapper sees this as
+            // NotSupported with a specific message; the test
+            // asserts the category, not the success.
             assert!(
                 matches!(e.kind, QuantaErrorKind::NotSupported(_)),
                 "expected NotSupported, got {:?}",

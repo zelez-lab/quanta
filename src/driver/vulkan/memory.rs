@@ -75,9 +75,27 @@ impl VulkanDevice {
 
         let mem_type = self.find_memory_type(mem_reqs.memory_type_bits, mem_props)?;
 
+        // Slice 23 — when SHADER_DEVICE_ADDRESS_BIT is set on the
+        // buffer, the memory must also be allocated with the
+        // matching VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT in a
+        // VkMemoryAllocateFlagsInfo p_next chain. Validation layer
+        // VUID-vkBindBufferMemory-bufferDeviceAddress-03339 fires
+        // otherwise.
+        let flags_info = ffi::VkMemoryAllocateFlagsInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+            device_mask: 0,
+        };
+        let alloc_p_next: *const c_void = if self.buffer_device_address_enabled {
+            &flags_info as *const _ as *const c_void
+        } else {
+            core::ptr::null()
+        };
+
         let alloc_info = ffi::VkMemoryAllocateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            p_next: core::ptr::null(),
+            p_next: alloc_p_next,
             allocation_size: mem_reqs.size,
             memory_type_index: mem_type,
         };
