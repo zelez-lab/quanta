@@ -54,6 +54,9 @@ import Quanta.KRust.EndToEnd
 -- Indirect Command Buffers (steps 032 + 033)
 import Quanta.Icb
 
+-- Bindless resource arrays (steps 034 + 035)
+import Quanta.Bindless
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
