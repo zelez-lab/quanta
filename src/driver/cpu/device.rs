@@ -515,7 +515,30 @@ impl GpuDevice for CpuDevice {
 
     // === Render (stubs) ===
 
-    fn pipeline_create(&self, _desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
+    fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
+        // Step 063 slice 12 — close the silent-drop on CPU for
+        // symmetry with the Metal/Vulkan/WebGPU gates (slices 5
+        // and 11). The CPU device has no rasterizer at all so any
+        // PipelineDesc field that names a render-only feature
+        // surfaces NotSupported here; render_begin returns
+        // NotSupported regardless, but a user who constructs a
+        // tessellation-using PipelineDesc deserves a feature-named
+        // error rather than a successful create that fails later.
+        if desc.tessellation.is_some() {
+            return Err(QuantaError::not_supported(
+                "CPU pipelines: tessellation is not supported (CPU has no rasterizer)",
+            ));
+        }
+        if desc.mesh_shader.is_some() {
+            return Err(QuantaError::not_supported(
+                "CPU pipelines: mesh shaders are not supported (CPU has no rasterizer)",
+            ));
+        }
+        if desc.conservative_rasterization {
+            return Err(QuantaError::not_supported(
+                "CPU pipelines: conservative rasterization is not supported (CPU has no rasterizer)",
+            ));
+        }
         Ok(Pipeline {
             handle: self.alloc_handle(),
             drop_fn: None,
