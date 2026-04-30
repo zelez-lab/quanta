@@ -427,7 +427,14 @@ pub const VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO: u32 = 1000244001;
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES: u32 = 1000257000;
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR: u32 = 1000150013;
 pub const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR: u32 = 1000150000;
-pub const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR: u32 = 1000150003;
+// Verified against the system Vulkan header on RPi 5 / Mesa
+// 25.x: VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR is
+// 1000150006 (NOT 1000150003 as the original commit had — that
+// value was guessed from the alphabetical sequence in the spec
+// XML and turned out to be wrong, hence the persistent
+// "VUID-VkAccelerationStructureGeometryKHR-sType-sType" complaint
+// from the validator).
+pub const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR: u32 = 1000150006;
 pub const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR: u32 = 1000150005;
 // Per Vulkan spec: 1000150017. First commit had 1000150000 (a
 // copy-paste from BUILD_GEOMETRY_INFO_KHR) — validation layers

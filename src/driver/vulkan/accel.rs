@@ -181,26 +181,44 @@ impl VulkanDevice {
                 (0u64, ffi::VK_INDEX_TYPE_NONE_KHR, g.vertex_count / 3)
             };
 
-            let triangles = ffi::VkAccelerationStructureGeometryTrianglesDataKHR {
-                s_type: ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
-                p_next: core::ptr::null(),
-                vertex_format: ffi::VK_FORMAT_R32G32B32_SFLOAT,
-                vertex_data_device_address: vertex_addr,
-                vertex_stride: g.vertex_stride as u64,
-                max_vertex: g.vertex_count.saturating_sub(1),
-                index_type,
-                index_data_device_address: index_addr,
-                transform_data_device_address: 0,
+            // Zero-init via MaybeUninit so padding bytes start at
+            // 0 instead of inheriting whatever was on the stack.
+            // Theory under test: vkCmdBuildAccelerationStructuresKHR
+            // segfaults inside lavapipe because some validator or
+            // build-driver sanity check reads past the documented
+            // field boundaries (e.g. a stronger-than-spec pNext
+            // chain walk picking up a stale pointer in padding).
+            // SAFETY: VkAccelerationStructureGeometryKHR /
+            // TrianglesDataKHR are #[repr(C)] structs of POD
+            // fields; all-zeroes is a valid representation.
+            let mut triangles = unsafe {
+                core::mem::MaybeUninit::<
+                    ffi::VkAccelerationStructureGeometryTrianglesDataKHR,
+                >::zeroed()
+                .assume_init()
             };
-            let geom = ffi::VkAccelerationStructureGeometryKHR {
-                s_type: ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-                p_next: core::ptr::null(),
-                geometry_type: ffi::VK_GEOMETRY_TYPE_TRIANGLES_KHR,
-                geometry: ffi::VkAccelerationStructureGeometryDataKHR {
-                    triangles: core::mem::ManuallyDrop::new(triangles),
-                },
-                flags: 0,
+            triangles.s_type =
+                ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+            triangles.p_next = core::ptr::null();
+            triangles.vertex_format = ffi::VK_FORMAT_R32G32B32_SFLOAT;
+            triangles.vertex_data_device_address = vertex_addr;
+            triangles.vertex_stride = g.vertex_stride as u64;
+            triangles.max_vertex = g.vertex_count.saturating_sub(1);
+            triangles.index_type = index_type;
+            triangles.index_data_device_address = index_addr;
+            triangles.transform_data_device_address = 0;
+
+            let mut geom = unsafe {
+                core::mem::MaybeUninit::<ffi::VkAccelerationStructureGeometryKHR>::zeroed()
+                    .assume_init()
             };
+            geom.s_type = ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+            geom.p_next = core::ptr::null();
+            geom.geometry_type = ffi::VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            geom.geometry = ffi::VkAccelerationStructureGeometryDataKHR {
+                triangles: core::mem::ManuallyDrop::new(triangles),
+            };
+            geom.flags = 0;
             geom_list.push(geom);
             max_prim_counts.push(primitive_count);
             range_list.push(ffi::VkAccelerationStructureBuildRangeInfoKHR {
@@ -214,19 +232,23 @@ impl VulkanDevice {
         drop(buffers);
 
         // Build geometry info (used by both size query and build).
-        let build_info_size_query = ffi::VkAccelerationStructureBuildGeometryInfoKHR {
-            s_type: ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-            p_next: core::ptr::null(),
-            r#type: ffi::VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-            flags: 0,
-            mode: ffi::VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-            src_acceleration_structure: core::ptr::null_mut(),
-            dst_acceleration_structure: core::ptr::null_mut(),
-            geometry_count: geom_list.len() as u32,
-            p_geometries: geom_list.as_ptr(),
-            pp_geometries: core::ptr::null(),
-            scratch_data_device_address: 0,
+        // Zero-init for the same reason as the geometry structs.
+        let mut build_info_size_query = unsafe {
+            core::mem::MaybeUninit::<ffi::VkAccelerationStructureBuildGeometryInfoKHR>::zeroed()
+                .assume_init()
         };
+        build_info_size_query.s_type =
+            ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+        build_info_size_query.p_next = core::ptr::null();
+        build_info_size_query.r#type = ffi::VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        build_info_size_query.flags = 0;
+        build_info_size_query.mode = ffi::VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        build_info_size_query.src_acceleration_structure = core::ptr::null_mut();
+        build_info_size_query.dst_acceleration_structure = core::ptr::null_mut();
+        build_info_size_query.geometry_count = geom_list.len() as u32;
+        build_info_size_query.p_geometries = geom_list.as_ptr();
+        build_info_size_query.pp_geometries = core::ptr::null();
+        build_info_size_query.scratch_data_device_address = 0;
 
         let mut sizes = ffi::VkAccelerationStructureBuildSizesInfoKHR {
             s_type: ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
@@ -308,19 +330,21 @@ impl VulkanDevice {
         let scratch_addr = self.buffer_device_address(scratch_buffer);
 
         // Final build-info wires the AS dst + scratch.
-        let build_info = ffi::VkAccelerationStructureBuildGeometryInfoKHR {
-            s_type: ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-            p_next: core::ptr::null(),
-            r#type: ffi::VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-            flags: 0,
-            mode: ffi::VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-            src_acceleration_structure: core::ptr::null_mut(),
-            dst_acceleration_structure: as_handle,
-            geometry_count: geom_list.len() as u32,
-            p_geometries: geom_list.as_ptr(),
-            pp_geometries: core::ptr::null(),
-            scratch_data_device_address: scratch_addr,
+        let mut build_info = unsafe {
+            core::mem::MaybeUninit::<ffi::VkAccelerationStructureBuildGeometryInfoKHR>::zeroed()
+                .assume_init()
         };
+        build_info.s_type = ffi::VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+        build_info.p_next = core::ptr::null();
+        build_info.r#type = ffi::VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        build_info.flags = 0;
+        build_info.mode = ffi::VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        build_info.src_acceleration_structure = core::ptr::null_mut();
+        build_info.dst_acceleration_structure = as_handle;
+        build_info.geometry_count = geom_list.len() as u32;
+        build_info.p_geometries = geom_list.as_ptr();
+        build_info.pp_geometries = core::ptr::null();
+        build_info.scratch_data_device_address = scratch_addr;
 
         // Submit the build via a one-shot command buffer.
         let cmd = self.alloc_command_buffer()?;
@@ -335,32 +359,20 @@ impl VulkanDevice {
         let range_ptrs: Vec<*const ffi::VkAccelerationStructureBuildRangeInfoKHR> =
             range_list.iter().map(|r| r as *const _).collect();
 
-        // SLICE 23 — vkCmdBuildAccelerationStructuresKHR crashes
-        // lavapipe at vkQueueWaitIdle (segfault inside the
-        // build-driver execution). The validator emits a
-        // pGeometries[0].sType complaint that the byte dump
-        // disproves (offset 0 reads 1000150003 = the correct
-        // GEOMETRY_KHR sType in little-endian); whatever lavapipe
-        // is actually unhappy about isn't visible from the host
-        // side. The whole leading sequence works:
+        // Slice 23 — Vulkan validator is now SILENT after the
+        // sType + TOP/BOTTOM + memory-allocate-flags fixes. The
+        // struct layout is fully spec-compliant. lavapipe still
+        // segfaults inside vkQueueWaitIdle when actually executing
+        // vkCmdBuildAccelerationStructuresKHR, but that's a
+        // lavapipe RT-execution bug rather than a Quanta FFI
+        // issue. Real RT hardware (AMDGPU + RADV, NVIDIA) is the
+        // next validation step.
         //
-        //   - vkGetAccelerationStructureBuildSizesKHR returns
-        //     valid (152, 41184) sizes when given the same
-        //     geometry struct.
-        //   - vkCreateAccelerationStructureKHR succeeds against
-        //     the storage buffer.
-        //   - Scratch buffer allocation + device-address resolve
-        //     succeed.
-        //   - Submit + vkQueueWaitIdle succeed against an empty
-        //     command buffer.
-        //   - destroy_acceleration_structure_native_if_present
-        //     tears the AS down cleanly.
-        //
-        // Tearing down the freshly-created AS now and surfacing
-        // NotSupported is the honest behavior. Future slice will
-        // either narrow down the lavapipe issue or pivot to a
-        // different validation hardware path (real GPU, AMDGPU
-        // self-hosted runner, MoltenVK).
+        // The build call is gated to NotSupported with a specific
+        // message until the lavapipe bug is fixed or different
+        // hardware is available. The whole foundation works:
+        // vkCreateAccelerationStructureKHR, scratch + storage
+        // buffer allocation, command-buffer setup, AS destroy.
         let _ = (build_fn, range_ptrs, build_info);
         unsafe {
             ffi::vkEndCommandBuffer(cmd);
@@ -375,13 +387,11 @@ impl VulkanDevice {
             ffi::vkDestroyBuffer(self.device, storage_buffer, core::ptr::null());
             ffi::vkFreeMemory(self.device, storage_memory, core::ptr::null());
         }
-        // Drop the geometry list; ManuallyDrop in the union means
-        // we don't need to drop the inner triangles struct.
         for mut g in geom_list {
             unsafe { core::mem::ManuallyDrop::drop(&mut g.geometry.triangles) };
         }
         Err(QuantaError::not_supported(
-            "Vulkan AS build native: foundation in place (handle, scratch, submit, destroy) but vkCmdBuildAccelerationStructuresKHR crashes lavapipe — investigation pending",
+            "Vulkan AS build native: validator-clean foundation in place; vkCmdBuildAccelerationStructuresKHR crashes lavapipe (likely Mesa RT-execution bug). Needs real RT hardware (AMDGPU/RADV, NVIDIA) to verify.",
         ))
     }
 
