@@ -72,6 +72,9 @@ import Quanta.Vrs
 -- Sparse textures (steps 030 + 031)
 import Quanta.SparseTexture
 
+-- Multi-queue (steps 018 + 019)
+import Quanta.MultiQueue
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
