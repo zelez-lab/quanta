@@ -80,3 +80,58 @@ fn context_propagates_with_existing_kind() {
     assert!(s.contains("not supported on this backend"));
     assert!(s.contains("rendering pass"));
 }
+
+// === Step 062 parity: default-stub features must report NotSupported ===
+//
+// The CPU driver doesn't override these `GpuDevice` methods, so they
+// fall through to the default trait impls. Step 062 sweeps the last
+// `invalid_param` defaults to `not_supported` so backends without an
+// implementation of a feature surface a category that matches the
+// step 070 contract.
+
+#[test]
+fn cpu_occlusion_query_create_returns_not_supported() {
+    let gpu = quanta::init_cpu();
+    let r = gpu.occlusion_query_create(4);
+    match r {
+        Err(e) => assert!(
+            matches!(e.kind, QuantaErrorKind::NotSupported(_)),
+            "expected NotSupported, got {:?}",
+            e.kind
+        ),
+        Ok(_) => panic!("CPU occlusion_query_create should return NotSupported"),
+    }
+}
+
+#[test]
+fn cpu_timeline_create_returns_not_supported() {
+    let gpu = quanta::init_cpu();
+    let r = gpu.timeline_create();
+    match r {
+        Err(e) => assert!(
+            matches!(e.kind, QuantaErrorKind::NotSupported(_)),
+            "expected NotSupported, got {:?}",
+            e.kind
+        ),
+        Ok(_) => panic!("CPU timeline_create should return NotSupported"),
+    }
+}
+
+#[test]
+fn cpu_render_begin_returns_not_supported() {
+    // CPU has no rasterizer; opening a render pass on it must
+    // surface NotSupported, not a generic invalid-param error.
+    let gpu = quanta::init_cpu();
+    let target = gpu
+        .render_target(8, 8, quanta::Format::RGBA8)
+        .expect("render_target on CPU should still allocate");
+    let r = gpu.render(&target);
+    match r {
+        Err(e) => assert!(
+            matches!(e.kind, QuantaErrorKind::NotSupported(_)),
+            "expected NotSupported, got {:?}",
+            e.kind
+        ),
+        Ok(_) => panic!("CPU render() should return NotSupported"),
+    }
+}

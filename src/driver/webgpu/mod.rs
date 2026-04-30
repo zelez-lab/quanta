@@ -67,6 +67,10 @@ impl WebgpuDevice {
         QuantaError::invalid_param(msg)
     }
 
+    fn not_supported(msg: &'static str) -> QuantaError {
+        QuantaError::not_supported(msg)
+    }
+
     fn err_owned(msg: String) -> QuantaError {
         QuantaError::compilation_failed(Box::leak(msg.into_boxed_str()))
     }
@@ -1125,11 +1129,45 @@ impl QGpuDevice for WebgpuDevice {
                 RenderOp::DebugPush(_) | RenderOp::DebugPop => {
                     // Debug labels are advisory; safe to skip on WebGPU.
                 }
-                RenderOp::DrawIndirect { .. } | RenderOp::DrawIndexedIndirect { .. } => {
-                    unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err(
-                        "WebGPU render: indirect draw pending (Tier A 032+033)",
-                    ));
+                RenderOp::DrawIndirect {
+                    buffer_handle,
+                    offset,
+                } => {
+                    if let Some(bg) = flush_bg(&mut bind_entries, current_pipeline) {
+                        owned_bgs.push(bg);
+                    }
+                    let &buf = buffers
+                        .get(buffer_handle)
+                        .ok_or_else(|| Self::err("draw_indirect buffer handle not found"))?;
+                    unsafe {
+                        ffi::quanta_render_pass_draw_indirect(rp, buf, *offset as f64);
+                    }
+                }
+                RenderOp::DrawIndexedIndirect {
+                    buffer_handle,
+                    offset,
+                    index_handle,
+                } => {
+                    if let Some(bg) = flush_bg(&mut bind_entries, current_pipeline) {
+                        owned_bgs.push(bg);
+                    }
+                    let &idx_buf = buffers.get(index_handle).ok_or_else(|| {
+                        Self::err("draw_indexed_indirect index buffer handle not found")
+                    })?;
+                    unsafe {
+                        ffi::quanta_render_pass_set_index_buffer(
+                            rp,
+                            idx_buf,
+                            ffi::index_format::UINT32,
+                            0.0,
+                        );
+                    }
+                    let &buf = buffers.get(buffer_handle).ok_or_else(|| {
+                        Self::err("draw_indexed_indirect indirect buffer handle not found")
+                    })?;
+                    unsafe {
+                        ffi::quanta_render_pass_draw_indexed_indirect(rp, buf, *offset as f64);
+                    }
                 }
                 RenderOp::ExecuteRenderBundle {
                     bundle_handle,
@@ -1186,13 +1224,20 @@ impl QGpuDevice for WebgpuDevice {
                     }
                 }
                 RenderOp::BeginOcclusionQuery { .. } | RenderOp::EndOcclusionQuery { .. } => {
+                    // The device-level occlusion_query_create
+                    // returns NotSupported on WebGPU, so this arm
+                    // is unreachable today. Keep it consistent in
+                    // case a future caller fabricates a handle —
+                    // the user-facing error category should agree.
                     unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err("WebGPU render: occlusion queries pending"));
+                    return Err(Self::not_supported(
+                        "WebGPU render encoder: occlusion queries are not yet wired",
+                    ));
                 }
                 RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
                     unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err(
-                        "WebGPU render: variable-rate shading not in spec",
+                    return Err(Self::not_supported(
+                        "WebGPU render encoder: variable-rate shading is not in the WebGPU spec",
                     ));
                 }
             }

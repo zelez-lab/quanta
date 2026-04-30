@@ -622,6 +622,26 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
       rp.drawIndexed(index_count, instance_count);
     },
 
+    quanta_render_pass_draw_indirect(
+      pass: number,
+      indirect_buffer: number,
+      indirect_offset: number,
+    ): void {
+      const rp = state.handles.get<GPURenderPassEncoder>(pass);
+      const buf = state.handles.get<GPUBuffer>(indirect_buffer);
+      rp.drawIndirect(buf, indirect_offset);
+    },
+
+    quanta_render_pass_draw_indexed_indirect(
+      pass: number,
+      indirect_buffer: number,
+      indirect_offset: number,
+    ): void {
+      const rp = state.handles.get<GPURenderPassEncoder>(pass);
+      const buf = state.handles.get<GPUBuffer>(indirect_buffer);
+      rp.drawIndexedIndirect(buf, indirect_offset);
+    },
+
     quanta_render_pass_set_viewport(
       pass: number,
       x: number,

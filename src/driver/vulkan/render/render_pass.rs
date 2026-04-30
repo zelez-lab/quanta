@@ -812,15 +812,15 @@ impl VulkanDevice {
                         }
                     }
 
-                    // M4+ render ops — not yet implemented. Per Kani
-                    // T419 (no silent RenderOp drops on Vulkan), we
-                    // surface this as an explicit error rather than a
-                    // no-op so a render pass that requested VRS doesn't
-                    // silently fall back to uniform shading.
+                    // VRS native lowering lands with step 063
+                    // (VK_KHR_fragment_shading_rate). Per Kani T419
+                    // (no silent RenderOp drops on Vulkan) we surface
+                    // a concrete error; NotSupported is the right
+                    // category — the feature is extension-gated.
                     RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
                         ffi::vkCmdEndRenderPass(cmd);
-                        return Err(QuantaError::invalid_param(
-                            "Vulkan render: variable-rate shading pending (Tier A 029)",
+                        return Err(QuantaError::not_supported(
+                            "Vulkan render encoder: variable-rate shading deferred to step 063",
                         ));
                     }
                     RenderOp::ExecuteRenderBundle {

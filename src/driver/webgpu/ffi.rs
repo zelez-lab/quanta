@@ -324,6 +324,12 @@ unsafe extern "C" {
     );
     pub fn quanta_render_pass_draw(pass: u32, vertex_count: u32, instance_count: u32);
     pub fn quanta_render_pass_draw_indexed(pass: u32, index_count: u32, instance_count: u32);
+    pub fn quanta_render_pass_draw_indirect(pass: u32, indirect_buffer: u32, indirect_offset: f64);
+    pub fn quanta_render_pass_draw_indexed_indirect(
+        pass: u32,
+        indirect_buffer: u32,
+        indirect_offset: f64,
+    );
     pub fn quanta_render_pass_set_viewport(
         pass: u32,
         x: f32,

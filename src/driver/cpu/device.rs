@@ -523,13 +523,13 @@ impl GpuDevice for CpuDevice {
     }
 
     fn render_begin(&self, _target: &Texture) -> Result<RenderPass, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "render passes not supported on CPU device",
         ))
     }
 
     fn render_end(&self, _pass: RenderPass) -> Result<Pulse, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "render passes not supported on CPU device",
         ))
     }

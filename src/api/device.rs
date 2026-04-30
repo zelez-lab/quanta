@@ -162,21 +162,21 @@ pub trait GpuDevice: Send + Sync {
 
     /// Create a timeline semaphore (monotonic u64 counter for multi-frame sync).
     fn timeline_create(&self) -> Result<Timeline, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "timeline semaphores not supported",
         ))
     }
 
     /// Signal a timeline to the given value.
     fn timeline_signal(&self, _timeline: &Timeline, _value: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "timeline semaphores not supported",
         ))
     }
 
     /// Block until a timeline reaches at least the given value.
     fn timeline_wait(&self, _timeline: &Timeline, _value: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "timeline semaphores not supported",
         ))
     }
@@ -258,7 +258,7 @@ pub trait GpuDevice: Send + Sync {
 
     /// Read stencil buffer contents from a depth/stencil texture.
     fn stencil_read(&self, _texture: u64) -> Result<Vec<u8>, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "stencil read-back not supported",
         ))
     }
@@ -315,7 +315,7 @@ pub trait GpuDevice: Send + Sync {
     /// Allocate a fresh async-copy queue. Default returns
     /// "not yet implemented".
     fn async_copy_create(&self) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "async memory copy not yet implemented on this backend",
         ))
     }
@@ -328,7 +328,7 @@ pub trait GpuDevice: Send + Sync {
         _src: u64,
         _size: usize,
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "async memory copy not yet implemented on this backend",
         ))
     }
@@ -348,21 +348,21 @@ pub trait GpuDevice: Send + Sync {
 
     /// Allocate a printf buffer with capacity for `cap` messages.
     fn printf_create(&self, _cap: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "GPU printf not yet implemented on this backend",
         ))
     }
 
     /// Record a message id into the printf buffer.
     fn printf_record(&self, _handle: u64, _msg_id: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "GPU printf not yet implemented on this backend",
         ))
     }
 
     /// Drain recorded messages, leaving the buffer empty.
     fn printf_drain(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "GPU printf not yet implemented on this backend",
         ))
     }
@@ -377,14 +377,14 @@ pub trait GpuDevice: Send + Sync {
 
     /// Create an occlusion query set with `count` slots.
     fn occlusion_query_create(&self, _count: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "occlusion queries not supported",
         ))
     }
 
     /// Read results from an occlusion query set (fragment counts per slot).
     fn occlusion_query_read(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "occlusion queries not supported",
         ))
     }
@@ -411,7 +411,7 @@ pub trait GpuDevice: Send + Sync {
         _max_primitives: u32,
         _task_threads: u32,
     ) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "mesh shaders not yet implemented on this backend",
         ))
     }
@@ -420,7 +420,7 @@ pub trait GpuDevice: Send + Sync {
     /// The typed wrapper has already bounds-checked groups against
     /// `MAX_GROUP_COUNT`.
     fn mesh_dispatch(&self, _handle: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "mesh shaders not yet implemented on this backend",
         ))
     }
@@ -513,7 +513,7 @@ pub trait GpuDevice: Send + Sync {
         _vertex_count: u32,
         _instance_count: u32,
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "render-path ICB record_draw not yet implemented on this backend",
         ))
     }
@@ -531,7 +531,7 @@ pub trait GpuDevice: Send + Sync {
     /// [`IndirectRenderBundle`](crate::IndirectRenderBundle)
     /// wraps. Default returns "not yet implemented".
     fn render_bundle_create(&self, _max_commands: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "render-path indirect command buffers not yet implemented on this backend",
         ))
     }
@@ -545,7 +545,7 @@ pub trait GpuDevice: Send + Sync {
         _vertex_count: u32,
         _instance_count: u32,
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "render-path indirect command buffers not yet implemented on this backend",
         ))
     }
@@ -571,7 +571,7 @@ pub trait GpuDevice: Send + Sync {
     /// Allocate a bindless texture array with the given capacity.
     /// Default returns "not yet implemented"; backends override.
     fn bindless_texture_create(&self, _cap: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "bindless texture arrays not yet implemented on this backend",
         ))
     }
@@ -583,7 +583,7 @@ pub trait GpuDevice: Send + Sync {
         _index: u32,
         _texture: u64,
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "bindless texture arrays not yet implemented on this backend",
         ))
     }
@@ -596,7 +596,7 @@ pub trait GpuDevice: Send + Sync {
 
     /// Allocate a bindless buffer array with the given capacity.
     fn bindless_buffer_create(&self, _cap: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "bindless buffer arrays not yet implemented on this backend",
         ))
     }
@@ -608,7 +608,7 @@ pub trait GpuDevice: Send + Sync {
         _index: u32,
         _buffer: u64,
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "bindless buffer arrays not yet implemented on this backend",
         ))
     }
@@ -635,7 +635,7 @@ pub trait GpuDevice: Send + Sync {
         _topology: u8,
         _control_points: u32,
     ) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "tessellation not yet implemented on this backend",
         ))
     }
@@ -649,7 +649,7 @@ pub trait GpuDevice: Send + Sync {
         _index: u32,
         _factor: u32,
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "tessellation not yet implemented on this backend",
         ))
     }
@@ -661,7 +661,7 @@ pub trait GpuDevice: Send + Sync {
         _index: u32,
         _factor: u32,
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "tessellation not yet implemented on this backend",
         ))
     }
@@ -683,7 +683,7 @@ pub trait GpuDevice: Send + Sync {
 
     /// Create a fresh VRS state. Default rate is 1×1 (no reduction).
     fn vrs_create(&self) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "variable rate shading not yet implemented on this backend",
         ))
     }
@@ -692,7 +692,7 @@ pub trait GpuDevice: Send + Sync {
     /// encoding (0 = 1×1, 1 = 1×2, … 6 = 4×4). The typed wrapper
     /// has already validated the code.
     fn vrs_set_rate(&self, _handle: u64, _rate_code: u8) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "variable rate shading not yet implemented on this backend",
         ))
     }
