@@ -96,6 +96,11 @@ pub struct VulkanDevice {
     /// otherwise. Ray-tracing dispatch surfaces NotSupported when
     /// None (step 063 native ray-tracing scaffolding).
     pub(super) trace_rays_fn: Option<ffi::PfnVkCmdTraceRaysKHR>,
+    /// Whether `VkPhysicalDeviceFeatures.tessellationShader` is
+    /// available on this physical device. Cached at discovery so
+    /// `tessellation_pipeline_create` can surface a clean
+    /// NotSupported without re-querying. Step 063 slice 6.
+    pub(super) tessellation_feature: bool,
 }
 
 /// Software tessellation pipeline state — refines
@@ -642,6 +647,14 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         //   * Stores the resolved Pfn in VulkanDevice; absence keeps
         //     the existing NotSupported behavior on the matching
         //     render-encoder / dispatch arm.
+        // Step 063 slice 6 — query the tessellationShader device
+        // feature so the typed TessellationPipeline path can gate
+        // cleanly without a re-query. The feature is core Vulkan,
+        // not extension-gated.
+        let mut device_features = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
+        unsafe { ffi::vkGetPhysicalDeviceFeatures(pd, &mut device_features) };
+        let tessellation_feature = device_features.tessellation_shader != 0;
+
         let has_vrs_ext = physical_device_has_extension(pd, b"VK_KHR_fragment_shading_rate\0");
         let has_mesh_ext = physical_device_has_extension(pd, b"VK_EXT_mesh_shader\0");
         let has_accel_ext = physical_device_has_extension(pd, b"VK_KHR_acceleration_structure\0");
@@ -856,6 +869,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             vrs_set_rate_fn,
             mesh_draw_fn,
             trace_rays_fn,
+            tessellation_feature,
         }));
 
         break; // Use first suitable device

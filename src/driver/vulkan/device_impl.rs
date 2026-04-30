@@ -1165,6 +1165,16 @@ impl GpuDevice for VulkanDevice {
         topology: u8,
         _control_points: u32,
     ) -> Result<u64, QuantaError> {
+        // Step 063 slice 6 — gate on the tessellationShader device
+        // feature cached at discovery. Without it, even the
+        // software-MVP factor buffers can't be promoted to a real
+        // pipeline; surfacing NotSupported up-front matches the
+        // pipeline_create gate (slice 5).
+        if !self.tessellation_feature {
+            return Err(QuantaError::not_supported(
+                "Vulkan tessellation requires VkPhysicalDeviceFeatures.tessellationShader — not available on this physical device",
+            ));
+        }
         let (outer_count, inner_count) = match topology {
             0 => (3usize, 1usize),
             1 => (4usize, 2usize),
