@@ -657,6 +657,83 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
       state.handles.release(pass);
     },
 
+    // ── render bundles (steps 032 + 033) ──────────────────────────────────
+
+    quanta_create_render_bundle_encoder(
+      device: number,
+      color_format_code: number,
+      depth_format_code: number,
+      sample_count: number,
+    ): number {
+      const dev = state.handles.get<GPUDevice>(device);
+      const desc: GPURenderBundleEncoderDescriptor = {
+        colorFormats: [formatName(color_format_code)],
+        sampleCount: sample_count > 0 ? sample_count : 1,
+      };
+      if (depth_format_code !== 0) {
+        desc.depthStencilFormat = formatName(depth_format_code);
+      }
+      const enc = dev.createRenderBundleEncoder(desc);
+      return state.handles.alloc(enc);
+    },
+
+    quanta_render_bundle_set_pipeline(encoder: number, pipeline: number): void {
+      const enc = state.handles.get<GPURenderBundleEncoder>(encoder);
+      const p = state.handles.get<GPURenderPipeline>(pipeline);
+      enc.setPipeline(p);
+    },
+
+    quanta_render_bundle_set_bind_group(
+      encoder: number,
+      index: number,
+      group: number,
+    ): void {
+      const enc = state.handles.get<GPURenderBundleEncoder>(encoder);
+      const g = state.handles.get<GPUBindGroup>(group);
+      enc.setBindGroup(index, g);
+    },
+
+    quanta_render_bundle_set_vertex_buffer(
+      encoder: number,
+      slot: number,
+      buffer: number,
+      offset: number,
+    ): void {
+      const enc = state.handles.get<GPURenderBundleEncoder>(encoder);
+      const b = state.handles.get<GPUBuffer>(buffer);
+      enc.setVertexBuffer(slot, b, size(offset));
+    },
+
+    quanta_render_bundle_draw(
+      encoder: number,
+      vertex_count: number,
+      instance_count: number,
+    ): void {
+      const enc = state.handles.get<GPURenderBundleEncoder>(encoder);
+      enc.draw(vertex_count, instance_count);
+    },
+
+    quanta_render_bundle_finish(encoder: number): number {
+      const enc = state.handles.get<GPURenderBundleEncoder>(encoder);
+      const bundle = enc.finish();
+      state.handles.release(encoder);
+      return state.handles.alloc(bundle);
+    },
+
+    quanta_render_pass_execute_bundles(
+      pass: number,
+      bundles_ptr: number,
+      count: number,
+    ): void {
+      const rp = state.handles.get<GPURenderPassEncoder>(pass);
+      const view = new Uint32Array(state.memory.buffer, bundles_ptr, count);
+      const arr: GPURenderBundle[] = [];
+      for (let i = 0; i < count; i++) {
+        arr.push(state.handles.get<GPURenderBundle>(view[i]));
+      }
+      rp.executeBundles(arr);
+    },
+
     // ── queue ──────────────────────────────────────────────────────────────
 
     quanta_queue_submit(device: number, command_buffer: number): void {

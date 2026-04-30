@@ -337,6 +337,25 @@ unsafe extern "C" {
     pub fn quanta_render_pass_set_stencil_reference(pass: u32, reference: u32);
     pub fn quanta_render_pass_end(pass: u32);
 
+    // Render bundle (steps 032 + 033, render path).
+    pub fn quanta_create_render_bundle_encoder(
+        device: u32,
+        color_format_code: u32,
+        depth_format_code: u32,
+        sample_count: u32,
+    ) -> u32;
+    pub fn quanta_render_bundle_set_pipeline(encoder: u32, pipeline: u32);
+    pub fn quanta_render_bundle_set_bind_group(encoder: u32, index: u32, group: u32);
+    pub fn quanta_render_bundle_set_vertex_buffer(
+        encoder: u32,
+        slot: u32,
+        buffer: u32,
+        offset: f64,
+    );
+    pub fn quanta_render_bundle_draw(encoder: u32, vertex_count: u32, instance_count: u32);
+    pub fn quanta_render_bundle_finish(encoder: u32) -> u32;
+    pub fn quanta_render_pass_execute_bundles(pass: u32, bundles_ptr: *const u32, count: u32);
+
     // Queue.
     pub fn quanta_queue_submit(device: u32, command_buffer: u32);
     pub fn quanta_queue_on_submitted_work_done(device: u32, task: u32);

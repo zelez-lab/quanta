@@ -1131,11 +1131,59 @@ impl QGpuDevice for WebgpuDevice {
                         "WebGPU render: indirect draw pending (Tier A 032+033)",
                     ));
                 }
-                RenderOp::ExecuteRenderBundle { .. } => {
-                    unsafe { ffi::quanta_render_pass_end(rp) };
-                    return Err(Self::err(
-                        "WebGPU render: GPURenderBundle.executeBundles not yet wired",
-                    ));
+                RenderOp::ExecuteRenderBundle {
+                    bundle_handle,
+                    count,
+                } => {
+                    let bundles = self.state.render_bundles.0.borrow();
+                    let bundle = bundles
+                        .get(bundle_handle)
+                        .ok_or_else(|| Self::err("render bundle handle not found in execute"))?;
+                    if *count > bundle.draws.len() as u32 {
+                        unsafe { ffi::quanta_render_pass_end(rp) };
+                        return Err(Self::err("execute_bundle count exceeds recorded length"));
+                    }
+                    if *count == 0 {
+                        continue;
+                    }
+                    // Build a fresh GPURenderBundleEncoder against the
+                    // active render target's format, replay snapshots,
+                    // finish, and pass.executeBundles.
+                    let target_format = format_code(target.format)?;
+                    let depth_format = if let Some(depth) = &pass.depth_target {
+                        let depth_tex = textures
+                            .get(&depth.texture)
+                            .ok_or_else(|| Self::err("unknown depth target in execute_bundle"))?;
+                        format_code(depth_tex.format)?
+                    } else {
+                        0
+                    };
+                    let bundle_enc = unsafe {
+                        ffi::quanta_create_render_bundle_encoder(
+                            device,
+                            target_format,
+                            depth_format,
+                            1,
+                        )
+                    };
+                    for draw in bundle.draws.iter().take(*count as usize) {
+                        if let Some(pe) = pipelines.get(&draw.pipeline_handle) {
+                            unsafe {
+                                ffi::quanta_render_bundle_set_pipeline(bundle_enc, pe.pipeline);
+                                ffi::quanta_render_bundle_draw(
+                                    bundle_enc,
+                                    draw.vertex_count,
+                                    draw.instance_count.max(1),
+                                );
+                            }
+                        }
+                    }
+                    let bundle_h = unsafe { ffi::quanta_render_bundle_finish(bundle_enc) };
+                    let bundles_arr = [bundle_h];
+                    unsafe {
+                        ffi::quanta_render_pass_execute_bundles(rp, bundles_arr.as_ptr(), 1);
+                        ffi::quanta_release(bundle_h);
+                    }
                 }
                 RenderOp::BeginOcclusionQuery { .. } | RenderOp::EndOcclusionQuery { .. } => {
                     unsafe { ffi::quanta_render_pass_end(rp) };
@@ -1373,6 +1421,60 @@ impl QGpuDevice for WebgpuDevice {
         self.state.icbs.0.borrow_mut().remove(&handle);
         Ok(())
     }
+
+    // === Render bundles (steps 032 + 033, render path) ===
+    //
+    // Native lowering: store recorded draws as snapshots; translate
+    // RenderOp::ExecuteRenderBundle into a fresh
+    // GPURenderBundleEncoder + draw calls + finish() + executeBundles
+    // on the active render pass. The bundle's color/depth format
+    // is taken from the render target at execute time.
+
+    fn render_bundle_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        let handle = self.state.alloc_handle();
+        self.state.render_bundles.0.borrow_mut().insert(
+            handle,
+            state::WebgpuRenderBundle {
+                cap: max_commands,
+                draws: alloc::vec::Vec::with_capacity(max_commands as usize),
+            },
+        );
+        Ok(handle)
+    }
+
+    fn render_bundle_record_draw(
+        &self,
+        handle: u64,
+        index: u32,
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        let mut bundles = self.state.render_bundles.0.borrow_mut();
+        let bundle = bundles
+            .get_mut(&handle)
+            .ok_or_else(|| Self::err("render bundle handle not found"))?;
+        if index != bundle.draws.len() as u32 {
+            return Err(Self::err(
+                "render bundle record index must equal current length",
+            ));
+        }
+        if index >= bundle.cap {
+            return Err(Self::err("render bundle index >= capacity"));
+        }
+        bundle.draws.push(state::RenderBundleDraw {
+            pipeline_handle: pipeline,
+            vertex_count,
+            instance_count,
+        });
+        Ok(())
+    }
+
+    fn render_bundle_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.state.render_bundles.0.borrow_mut().remove(&handle);
+        Ok(())
+    }
+
     fn bind_texture_array(&self, _textures: &[u64]) -> Result<u64, QuantaError> {
         Err(Self::err("WebGPU bindless pending"))
     }

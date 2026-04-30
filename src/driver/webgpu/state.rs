@@ -109,6 +109,32 @@ pub(super) struct State {
     pub pipelines: SendCell<BTreeMap<u64, PipelineEntry>>,
     /// Indirect Command Buffers (steps 032 + 033). See `WebgpuIcb`.
     pub icbs: SendCell<BTreeMap<u64, WebgpuIcb>>,
+    /// Render bundles (steps 032 + 033, render path). Each holds a
+    /// JS-side `GPURenderBundleEncoder` while recording, then a
+    /// `GPURenderBundle` after `finish()`.
+    pub render_bundles: SendCell<BTreeMap<u64, WebgpuRenderBundle>>,
+}
+
+/// State for one WebGPU render bundle.
+///
+/// W3C `GPURenderBundleEncoder` requires a matching color /
+/// depth format at create time, but our typed API records before
+/// any render pass is active. Resolution: store snapshots and
+/// build the JS-side encoder + bundle lazily inside
+/// `RenderPass::execute_bundle` translation, when the render
+/// target's format is known. This matches the proof contract
+/// (record-then-execute = direct execution; the encoder shape
+/// observable to the GPU is identical).
+pub(super) struct WebgpuRenderBundle {
+    pub cap: u32,
+    pub draws: alloc::vec::Vec<RenderBundleDraw>,
+}
+
+/// One recorded draw inside a render bundle.
+pub(super) struct RenderBundleDraw {
+    pub pipeline_handle: u64,
+    pub vertex_count: u32,
+    pub instance_count: u32,
 }
 
 impl State {
@@ -123,6 +149,7 @@ impl State {
             samplers: SendCell::new(BTreeMap::new()),
             pipelines: SendCell::new(BTreeMap::new()),
             icbs: SendCell::new(BTreeMap::new()),
+            render_bundles: SendCell::new(BTreeMap::new()),
         }
     }
 
