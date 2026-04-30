@@ -126,6 +126,13 @@ pub struct VulkanDevice {
     /// future native bind-sparse work can gate on a single bool.
     /// Step 063 slice 16.
     pub(super) sparse_binding_supported: bool,
+    /// Per-tile memory bindings for sparse textures. Key is
+    /// `(texture_handle, mip, tile_x, tile_y)`; value is the
+    /// `VkDeviceMemory` allocation that backs that tile after
+    /// `vkQueueBindSparse`. `sparse_unmap_tile` uses the entry to
+    /// unbind + free; `Drop` walks the table to release leaked
+    /// allocations. Step 063 slice 22.
+    pub(super) sparse_tile_bindings: RwLock<HashMap<(u64, u32, u32, u32), ffi::VkDeviceMemory>>,
 }
 
 /// Software tessellation pipeline state — refines
@@ -1020,6 +1027,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             tessellation_feature,
             supported_shading_rates,
             sparse_binding_supported,
+            sparse_tile_bindings: RwLock::new(HashMap::new()),
         }));
 
         break; // Use first suitable device
@@ -1081,6 +1089,16 @@ impl Drop for VulkanDevice {
                     }
                     ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
                     ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
+                }
+            }
+            // Slice 22 — free per-tile sparse memory before
+            // destroying images. The bindings registry holds
+            // VkDeviceMemory allocated by sparse_map_tile. Order
+            // matters: free memory before image, since the image
+            // logically references the memory.
+            if let Ok(mut bindings) = self.sparse_tile_bindings.write() {
+                for (_, mem) in bindings.drain() {
+                    ffi::vkFreeMemory(self.device, mem, core::ptr::null());
                 }
             }
             if let Ok(mut textures) = self.textures.write() {

@@ -518,47 +518,285 @@ impl GpuDevice for VulkanDevice {
     fn sparse_map_tile(
         &self,
         texture: u64,
-        _mip: u32,
-        _x: u32,
-        _y: u32,
+        mip: u32,
+        x: u32,
+        y: u32,
         _backing: u64,
     ) -> Result<(), QuantaError> {
-        // Step 063 slice 7 — close the silent-drop. The previous
-        // shim returned Ok(()) without calling vkQueueBindSparse,
-        // which violated the no-silent-drops contract. The full
-        // path (sparse VkImage with VK_IMAGE_CREATE_SPARSE_BINDING_BIT
-        // + VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT, sparse memory
-        // requirements query, vkQueueBindSparse with
-        // VkSparseImageMemoryBindInfo) is a separate native track.
+        // Step 063 slice 22 — native vkQueueBindSparse path.
+        //
+        // Allocates one VkDeviceMemory chunk of `mem_reqs.alignment`
+        // bytes (the per-tile granularity Vulkan demands), then
+        // binds it to the (mip, x, y) tile of the sparse image via
+        // vkQueueBindSparse. Tile→memory mapping is tracked in
+        // sparse_tile_bindings so unmap can unbind + free.
+        //
+        // The `_backing` argument is part of the typed-wrapper
+        // contract (T7602) but unused on Vulkan: each tile gets a
+        // dedicated VkDeviceMemory rather than borrowing pages
+        // from a caller-supplied buffer. The contract still holds
+        // because the wrapper records the binding in its own
+        // HashMap and our impl produces a coherent mapping.
         let textures = self
             .textures
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        if !textures.contains_key(&texture) {
-            return Err(QuantaError::not_found("sparse texture handle not found"));
+        let tex = textures
+            .get(&texture)
+            .ok_or_else(|| QuantaError::not_found("sparse texture handle not found"))?;
+
+        // sparse_image_create_impl leaves memory = null_handle.
+        // A non-null memory means this came from texture_create
+        // (regular image) and we shouldn't try to bind sparse
+        // memory to it.
+        if !tex.memory.is_null() {
+            return Err(QuantaError::invalid_param(
+                "sparse_map_tile called on a non-sparse texture",
+            ));
         }
-        Err(QuantaError::not_supported(
-            "Vulkan sparse tile mapping pending — sparse_texture_create succeeds, but native vkQueueBindSparse path is not yet wired",
-        ))
+        let image = tex.image;
+        drop(textures);
+
+        // Memory requirements give us the per-tile alignment that
+        // Vulkan requires (typically 64KB or 128KB).
+        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
+        unsafe { ffi::vkGetImageMemoryRequirements(self.device, image, &mut mem_reqs) };
+
+        // Sparse memory requirements give us the granularity in
+        // pixels for the bind extent.
+        let mut sparse_count = 0u32;
+        unsafe {
+            ffi::vkGetImageSparseMemoryRequirements(
+                self.device,
+                image,
+                &mut sparse_count,
+                core::ptr::null_mut(),
+            );
+        }
+        if sparse_count == 0 {
+            return Err(QuantaError::not_supported(
+                "driver returned no sparse memory requirements for the image",
+            ));
+        }
+        let mut sparse_reqs =
+            vec![ffi::VkSparseImageMemoryRequirements::default(); sparse_count as usize];
+        unsafe {
+            ffi::vkGetImageSparseMemoryRequirements(
+                self.device,
+                image,
+                &mut sparse_count,
+                sparse_reqs.as_mut_ptr(),
+            );
+        }
+        // Pick the COLOR aspect (matches sparse_image_create_impl,
+        // which only handles 2D color images today).
+        let req = sparse_reqs
+            .iter()
+            .find(|r| (r.format_properties.aspect_mask & ffi::VK_IMAGE_ASPECT_COLOR_BIT) != 0)
+            .ok_or_else(|| QuantaError::not_supported("no COLOR-aspect sparse requirements"))?;
+        let granularity = req.format_properties.image_granularity;
+
+        // Allocate one tile's worth of memory (mem_reqs.alignment
+        // is what Vulkan asks for per tile).
+        let memory_type = self.find_memory_type(
+            mem_reqs.memory_type_bits,
+            ffi::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        )?;
+        let alloc_info = ffi::VkMemoryAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            allocation_size: mem_reqs.alignment,
+            memory_type_index: memory_type,
+        };
+        let mut tile_memory = ffi::null_handle();
+        let r = unsafe {
+            ffi::vkAllocateMemory(
+                self.device,
+                &alloc_info,
+                core::ptr::null(),
+                &mut tile_memory,
+            )
+        };
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+
+        // Build the sparse bind. Offset is in pixels — multiply
+        // tile coordinates by per-tile granularity.
+        let bind = ffi::VkSparseImageMemoryBind {
+            subresource: ffi::VkImageSubresource {
+                aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                mip_level: mip,
+                array_layer: 0,
+            },
+            offset: ffi::VkOffset3D {
+                x: (x.saturating_mul(granularity.width)) as i32,
+                y: (y.saturating_mul(granularity.height)) as i32,
+                z: 0,
+            },
+            extent: ffi::VkExtent3D {
+                width: granularity.width,
+                height: granularity.height,
+                depth: 1,
+            },
+            memory: tile_memory,
+            memory_offset: 0,
+            flags: 0,
+        };
+        let image_bind_info = ffi::VkSparseImageMemoryBindInfo {
+            image,
+            bind_count: 1,
+            p_binds: &bind,
+        };
+        let bind_info = ffi::VkBindSparseInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
+            p_next: core::ptr::null(),
+            wait_semaphore_count: 0,
+            p_wait_semaphores: core::ptr::null(),
+            buffer_bind_count: 0,
+            p_buffer_binds: core::ptr::null(),
+            image_opaque_bind_count: 0,
+            p_image_opaque_binds: core::ptr::null(),
+            image_bind_count: 1,
+            p_image_binds: &image_bind_info,
+            signal_semaphore_count: 0,
+            p_signal_semaphores: core::ptr::null(),
+        };
+        let r = unsafe { ffi::vkQueueBindSparse(self.queue, 1, &bind_info, ffi::null_handle()) };
+        if r != ffi::VK_SUCCESS {
+            unsafe { ffi::vkFreeMemory(self.device, tile_memory, core::ptr::null()) };
+            return Err(QuantaError::submit_failed());
+        }
+
+        // Replace any prior binding for this tile. Wait for the
+        // GPU to finish using the old memory before freeing —
+        // simplest correct shape, performance-tunable later.
+        let key = (texture, mip, x, y);
+        let mut bindings = self
+            .sparse_tile_bindings
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        if let Some(old) = bindings.insert(key, tile_memory) {
+            unsafe {
+                ffi::vkQueueWaitIdle(self.queue);
+                ffi::vkFreeMemory(self.device, old, core::ptr::null());
+            }
+        }
+        Ok(())
     }
 
-    fn sparse_unmap_tile(
-        &self,
-        texture: u64,
-        _mip: u32,
-        _x: u32,
-        _y: u32,
-    ) -> Result<(), QuantaError> {
+    fn sparse_unmap_tile(&self, texture: u64, mip: u32, x: u32, y: u32) -> Result<(), QuantaError> {
+        // Step 063 slice 22 — unbind via vkQueueBindSparse with
+        // null memory, then free the previously allocated chunk.
         let textures = self
             .textures
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        if !textures.contains_key(&texture) {
-            return Err(QuantaError::not_found("sparse texture handle not found"));
+        let tex = textures
+            .get(&texture)
+            .ok_or_else(|| QuantaError::not_found("sparse texture handle not found"))?;
+        let image = tex.image;
+        drop(textures);
+
+        let key = (texture, mip, x, y);
+        let prior = {
+            let mut bindings = self
+                .sparse_tile_bindings
+                .write()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            bindings.remove(&key)
+        };
+        // Per the typed wrapper's T7604 contract, unmapping an
+        // unmapped tile is allowed (filter semantics) — succeed
+        // silently when no binding existed.
+        let Some(tile_memory) = prior else {
+            return Ok(());
+        };
+
+        // Query granularity again — same as map_tile.
+        let mut sparse_count = 0u32;
+        unsafe {
+            ffi::vkGetImageSparseMemoryRequirements(
+                self.device,
+                image,
+                &mut sparse_count,
+                core::ptr::null_mut(),
+            );
         }
-        Err(QuantaError::not_supported(
-            "Vulkan sparse tile unmapping pending — native vkQueueBindSparse path is not yet wired",
-        ))
+        if sparse_count == 0 {
+            // Image went away under us — best effort: just free.
+            unsafe { ffi::vkFreeMemory(self.device, tile_memory, core::ptr::null()) };
+            return Ok(());
+        }
+        let mut sparse_reqs =
+            vec![ffi::VkSparseImageMemoryRequirements::default(); sparse_count as usize];
+        unsafe {
+            ffi::vkGetImageSparseMemoryRequirements(
+                self.device,
+                image,
+                &mut sparse_count,
+                sparse_reqs.as_mut_ptr(),
+            );
+        }
+        let req = sparse_reqs
+            .iter()
+            .find(|r| (r.format_properties.aspect_mask & ffi::VK_IMAGE_ASPECT_COLOR_BIT) != 0);
+        let granularity = req
+            .map(|r| r.format_properties.image_granularity)
+            .unwrap_or(ffi::VkExtent3D::default());
+
+        // Issue an unbind: same VkSparseImageMemoryBind shape, but
+        // memory = null_handle. After this the tile is unmapped.
+        let bind = ffi::VkSparseImageMemoryBind {
+            subresource: ffi::VkImageSubresource {
+                aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                mip_level: mip,
+                array_layer: 0,
+            },
+            offset: ffi::VkOffset3D {
+                x: (x.saturating_mul(granularity.width.max(1))) as i32,
+                y: (y.saturating_mul(granularity.height.max(1))) as i32,
+                z: 0,
+            },
+            extent: ffi::VkExtent3D {
+                width: granularity.width.max(1),
+                height: granularity.height.max(1),
+                depth: 1,
+            },
+            memory: ffi::null_handle(),
+            memory_offset: 0,
+            flags: 0,
+        };
+        let image_bind_info = ffi::VkSparseImageMemoryBindInfo {
+            image,
+            bind_count: 1,
+            p_binds: &bind,
+        };
+        let bind_info = ffi::VkBindSparseInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
+            p_next: core::ptr::null(),
+            wait_semaphore_count: 0,
+            p_wait_semaphores: core::ptr::null(),
+            buffer_bind_count: 0,
+            p_buffer_binds: core::ptr::null(),
+            image_opaque_bind_count: 0,
+            p_image_opaque_binds: core::ptr::null(),
+            image_bind_count: 1,
+            p_image_binds: &image_bind_info,
+            signal_semaphore_count: 0,
+            p_signal_semaphores: core::ptr::null(),
+        };
+        let r = unsafe { ffi::vkQueueBindSparse(self.queue, 1, &bind_info, ffi::null_handle()) };
+        // Free the memory regardless of unbind result — the worst
+        // case is a leaked binding that the Drop walker covers.
+        unsafe {
+            ffi::vkQueueWaitIdle(self.queue);
+            ffi::vkFreeMemory(self.device, tile_memory, core::ptr::null());
+        }
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
+        Ok(())
     }
 
     // === Indirect command buffers (steps 032 + 033) ===

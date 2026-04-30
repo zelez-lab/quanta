@@ -77,37 +77,49 @@ fn sparse_create_either_succeeds_or_surfaces_capability_error() {
 }
 
 #[test]
-fn sparse_map_tile_still_returns_not_supported() {
-    // Slice 22 (vkQueueBindSparse wiring) hasn't landed yet. The
-    // typed wrapper's map_tile must continue to surface
-    // NotSupported with the slice-7 message even after slice 21
-    // creates a real sparse VkImage. This test will flip to
-    // expecting Ok once slice 22 lands.
+fn sparse_map_unmap_tile_native() {
+    // Slice 22 — vkQueueBindSparse wiring shipped. Allocate a
+    // backing field, map a tile, unmap it, then map two
+    // different tiles. Each step must return Ok on a backend
+    // with sparseBinding (lavapipe, real GPU) or skip when the
+    // device gates fail.
     let Some(gpu) = try_vulkan() else {
         eprintln!("skipping: no Vulkan GPU available");
         return;
     };
+    if !gpu.supports_sparse_residency() {
+        eprintln!("skipping: sparse residency not supported on this device");
+        return;
+    }
 
-    let st = match gpu.sparse_texture(&TextureDesc {
-        width: 256,
-        height: 256,
-        ..TextureDesc::default()
-    }) {
-        Ok(st) => st,
-        Err(_) => {
-            eprintln!("skipping: sparse not supported on this device");
-            return;
-        }
-    };
+    let st = gpu
+        .sparse_texture(&TextureDesc {
+            width: 1024,
+            height: 1024,
+            ..TextureDesc::default()
+        })
+        .expect("sparse_texture create");
 
     let backing = gpu.field::<u32>(64).expect("backing alloc");
-    let r = st.map_tile(0, 0, 0, backing.handle());
-    match r {
-        Ok(()) => panic!("slice 22 not yet shipped — map_tile should NotSupported"),
-        Err(e) => assert!(
-            matches!(e.kind, QuantaErrorKind::NotSupported(_)),
-            "expected NotSupported, got {:?}",
-            e.kind
-        ),
-    }
+
+    // T7602 refinement: map_tile on a live texture succeeds.
+    st.map_tile(0, 0, 0, backing.handle())
+        .expect("map_tile (0,0,0) → vkQueueBindSparse should succeed");
+    st.map_tile(0, 1, 0, backing.handle())
+        .expect("map_tile (0,1,0) → second tile should succeed");
+
+    // T7602 boundary: re-mapping the same tile overwrites.
+    st.map_tile(0, 0, 0, backing.handle())
+        .expect("map_tile re-bind should succeed");
+
+    // T7604 refinement: unmap_tile after map succeeds.
+    st.unmap_tile(0, 0, 0).expect("unmap_tile (0,0,0)");
+
+    // Idempotent unmap (filter semantics): unmapping an already-
+    // unmapped tile is allowed.
+    st.unmap_tile(0, 0, 0)
+        .expect("unmap_tile of already-unmapped tile should be Ok");
+
+    // Drop frees remaining bindings via the registry walker.
+    drop(st);
 }

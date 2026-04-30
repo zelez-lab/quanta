@@ -228,6 +228,28 @@ pub struct VkImageSubresource {
     pub array_layer: u32,
 }
 
+/// Sparse-image format properties returned by
+/// `vkGetImageSparseMemoryRequirements`. Step 063 slice 22.
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct VkSparseImageFormatProperties {
+    pub aspect_mask: u32,
+    pub image_granularity: VkExtent3D,
+    pub flags: u32,
+}
+
+/// Per-aspect sparse memory requirements: granularity (in pixels)
+/// and mip-tail layout. Step 063 slice 22.
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct VkSparseImageMemoryRequirements {
+    pub format_properties: VkSparseImageFormatProperties,
+    pub image_mip_tail_first_lod: u32,
+    pub image_mip_tail_size: u64,
+    pub image_mip_tail_offset: u64,
+    pub image_mip_tail_stride: u64,
+}
+
 /// One sparse image tile binding: which (mip, x, y, z) tile maps to
 /// which slice of which `VkDeviceMemory`. Used inside a
 /// `VkSparseImageMemoryBindInfo` (step 063 slice 16).

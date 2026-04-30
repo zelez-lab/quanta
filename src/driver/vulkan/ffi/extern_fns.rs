@@ -476,6 +476,14 @@ macro_rules! vk_extern_fns {
                 physical_device: VkPhysicalDevice,
                 p_features: *mut VkPhysicalDeviceFeatures,
             );
+            /// Per-aspect sparse memory requirements (granularity in
+            /// pixels, mip-tail layout). Step 063 slice 22.
+            pub fn vkGetImageSparseMemoryRequirements(
+                device: VkDevice,
+                image: VkImage,
+                p_count: *mut u32,
+                p_requirements: *mut VkSparseImageMemoryRequirements,
+            );
             /// Submit sparse-bind operations to a queue.
             /// Step 063 slice 16. Only the image-bind path is
             /// exercised; buffer/opaque arrays stay zeroed in the
