@@ -505,6 +505,13 @@ impl GpuDevice for MetalDevice {
     }
 
     fn dispatch_rays(&self, _pipeline: u64, _width: u32, _height: u32) -> Result<(), QuantaError> {
+        // Step 063 slice 10 — close the silent-drop. The previous
+        // shim returned Ok(()) on supported hardware without
+        // dispatching the intersection compute encoder, which
+        // violated the no-silent-drops contract. The full path
+        // (encode an intersection compute pipeline with visible
+        // function tables, dispatch (width × height × 1) threads)
+        // is a separate native track.
         let supports_rt = unsafe {
             let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
                 core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
@@ -515,8 +522,9 @@ impl GpuDevice for MetalDevice {
                 "ray dispatch requires Apple GPU family 6+ (A14/M1)",
             ));
         }
-        // Full implementation would encode an intersection compute dispatch.
-        Ok(())
+        Err(QuantaError::not_supported(
+            "Metal ray-tracing dispatch pending — hardware supports it, but the intersection compute pipeline integration is not yet wired",
+        ))
     }
 
     fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {
