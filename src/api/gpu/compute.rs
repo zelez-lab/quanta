@@ -174,6 +174,32 @@ impl Gpu {
     // === M5.3: Bindless resources ===
 
     /// Create a bindless texture array (all textures accessible by index in shaders).
+    /// Allocate a typed
+    /// [`BindlessTextureArray`](crate::BindlessTextureArray) with
+    /// the given capacity. Steps 034 + 035.
+    pub fn bindless_textures(&self, cap: u32) -> Result<crate::BindlessTextureArray, QuantaError> {
+        let handle = self.inner.bindless_texture_create(cap)?;
+        Ok(crate::BindlessTextureArray {
+            handle,
+            cap,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
+    /// Allocate a typed
+    /// [`BindlessBufferArray`](crate::BindlessBufferArray) with the
+    /// given capacity. Steps 034 + 035.
+    pub fn bindless_buffers(&self, cap: u32) -> Result<crate::BindlessBufferArray, QuantaError> {
+        let handle = self.inner.bindless_buffer_create(cap)?;
+        Ok(crate::BindlessBufferArray {
+            handle,
+            cap,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
     pub fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
         self.inner.bind_texture_array(textures)
     }

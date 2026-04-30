@@ -56,6 +56,19 @@ pub struct VulkanDevice {
     /// against the pipeline's compatible render pass; replayed via
     /// vkCmdExecuteCommands inside an active render pass.
     pub(super) render_bundles: RwLock<HashMap<u64, VulkanRenderBundle>>,
+    /// Bindless texture arrays (steps 034 + 035). MVP: software
+    /// table of texture handles; perf upgrade via
+    /// VK_EXT_descriptor_indexing is a follow-up.
+    pub(super) bindless_textures: RwLock<HashMap<u64, VulkanBindlessArray>>,
+    /// Bindless buffer arrays (steps 034 + 035). MVP: software
+    /// table of buffer handles.
+    pub(super) bindless_buffers: RwLock<HashMap<u64, VulkanBindlessArray>>,
+}
+
+/// Software bindless table — refines `Quanta.Bindless.Array`.
+pub(super) struct VulkanBindlessArray {
+    pub(super) cap: u32,
+    pub(super) entries: Vec<u64>,
 }
 
 /// State for one Vulkan render bundle.
@@ -672,6 +685,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             layout_cache: Mutex::new(HashMap::new()),
             icbs: RwLock::new(HashMap::new()),
             render_bundles: RwLock::new(HashMap::new()),
+            bindless_textures: RwLock::new(HashMap::new()),
+            bindless_buffers: RwLock::new(HashMap::new()),
         }));
 
         break; // Use first suitable device

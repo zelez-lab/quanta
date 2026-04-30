@@ -1475,6 +1475,78 @@ impl QGpuDevice for WebgpuDevice {
         Ok(())
     }
 
+    // === Bindless typed wrappers (steps 034 + 035) ===
+    //
+    // WebGPU has no native bindless in the W3C spec — the closest
+    // primitive is a fixed-size sampled-texture-array binding. MVP
+    // here is a software table: the host maintains a list of
+    // resource handles, and shaders that want to index into the
+    // array must rebind the matching slot per draw. Refines the
+    // proven `Quanta.Bindless.Array` model exactly.
+
+    fn bindless_texture_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        let handle = self.state.alloc_handle();
+        self.state.bindless_textures.0.borrow_mut().insert(
+            handle,
+            state::WebgpuBindlessArray {
+                cap,
+                entries: alloc::vec![0u64; cap as usize],
+            },
+        );
+        Ok(handle)
+    }
+
+    fn bindless_texture_set(
+        &self,
+        handle: u64,
+        index: u32,
+        texture: u64,
+    ) -> Result<(), QuantaError> {
+        let mut arrays = self.state.bindless_textures.0.borrow_mut();
+        let arr = arrays
+            .get_mut(&handle)
+            .ok_or_else(|| Self::err("bindless texture array not found"))?;
+        if index >= arr.cap {
+            return Err(Self::err("bindless texture index >= capacity"));
+        }
+        arr.entries[index as usize] = texture;
+        Ok(())
+    }
+
+    fn bindless_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.state.bindless_textures.0.borrow_mut().remove(&handle);
+        Ok(())
+    }
+
+    fn bindless_buffer_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        let handle = self.state.alloc_handle();
+        self.state.bindless_buffers.0.borrow_mut().insert(
+            handle,
+            state::WebgpuBindlessArray {
+                cap,
+                entries: alloc::vec![0u64; cap as usize],
+            },
+        );
+        Ok(handle)
+    }
+
+    fn bindless_buffer_set(&self, handle: u64, index: u32, buffer: u64) -> Result<(), QuantaError> {
+        let mut arrays = self.state.bindless_buffers.0.borrow_mut();
+        let arr = arrays
+            .get_mut(&handle)
+            .ok_or_else(|| Self::err("bindless buffer array not found"))?;
+        if index >= arr.cap {
+            return Err(Self::err("bindless buffer index >= capacity"));
+        }
+        arr.entries[index as usize] = buffer;
+        Ok(())
+    }
+
+    fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.state.bindless_buffers.0.borrow_mut().remove(&handle);
+        Ok(())
+    }
+
     fn bind_texture_array(&self, _textures: &[u64]) -> Result<u64, QuantaError> {
         Err(Self::err("WebGPU bindless pending"))
     }

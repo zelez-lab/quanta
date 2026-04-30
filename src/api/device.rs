@@ -438,7 +438,63 @@ pub trait GpuDevice: Send + Sync {
     /// Destroy an indirect command buffer.
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError>;
 
-    // === M5.3: Bindless resources ===
+    // === M5.3: Bindless resources (steps 034 + 035) ===
+    //
+    // Bindless typed wrappers (`BindlessTextureArray`,
+    // `BindlessBufferArray`) refine `Quanta.Bindless.Array` from the
+    // Lean equivalence theorems (T7100-T7106).
+
+    /// Allocate a bindless texture array with the given capacity.
+    /// Default returns "not yet implemented"; backends override.
+    fn bindless_texture_create(&self, _cap: u32) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "bindless texture arrays not yet implemented on this backend",
+        ))
+    }
+
+    /// Update slot `index` of a bindless texture array.
+    fn bindless_texture_set(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _texture: u64,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "bindless texture arrays not yet implemented on this backend",
+        ))
+    }
+
+    /// Destroy a bindless texture array. Default no-ops so backends
+    /// without an implementation don't error on `Drop`.
+    fn bindless_texture_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    /// Allocate a bindless buffer array with the given capacity.
+    fn bindless_buffer_create(&self, _cap: u32) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "bindless buffer arrays not yet implemented on this backend",
+        ))
+    }
+
+    /// Update slot `index` of a bindless buffer array.
+    fn bindless_buffer_set(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _buffer: u64,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "bindless buffer arrays not yet implemented on this backend",
+        ))
+    }
+
+    /// Destroy a bindless buffer array.
+    fn bindless_buffer_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    // ── Legacy bind-array creation (one-shot, no update path) ──────
 
     /// Create a bindless texture array (all textures accessible by index in shaders).
     fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError>;

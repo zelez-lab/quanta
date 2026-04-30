@@ -113,6 +113,17 @@ pub(super) struct State {
     /// JS-side `GPURenderBundleEncoder` while recording, then a
     /// `GPURenderBundle` after `finish()`.
     pub render_bundles: SendCell<BTreeMap<u64, WebgpuRenderBundle>>,
+    /// Bindless texture arrays (steps 034 + 035). WebGPU has no
+    /// native bindless; this maintains a software table of texture
+    /// handles. Shaders that want to index into the array must do
+    /// so via host-side rebinding before each dispatch.
+    pub bindless_textures: SendCell<BTreeMap<u64, WebgpuBindlessArray>>,
+    pub bindless_buffers: SendCell<BTreeMap<u64, WebgpuBindlessArray>>,
+}
+
+pub(super) struct WebgpuBindlessArray {
+    pub cap: u32,
+    pub entries: alloc::vec::Vec<u64>,
 }
 
 /// State for one WebGPU render bundle.
@@ -150,6 +161,8 @@ impl State {
             pipelines: SendCell::new(BTreeMap::new()),
             icbs: SendCell::new(BTreeMap::new()),
             render_bundles: SendCell::new(BTreeMap::new()),
+            bindless_textures: SendCell::new(BTreeMap::new()),
+            bindless_buffers: SendCell::new(BTreeMap::new()),
         }
     }
 

@@ -420,6 +420,35 @@ impl GpuDevice for ValidationDevice {
 
     // === Bindless resources ===
 
+    fn bindless_texture_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        self.inner.bindless_texture_create(cap)
+    }
+
+    fn bindless_texture_set(
+        &self,
+        handle: u64,
+        index: u32,
+        texture: u64,
+    ) -> Result<(), QuantaError> {
+        self.inner.bindless_texture_set(handle, index, texture)
+    }
+
+    fn bindless_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.bindless_texture_destroy(handle)
+    }
+
+    fn bindless_buffer_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        self.inner.bindless_buffer_create(cap)
+    }
+
+    fn bindless_buffer_set(&self, handle: u64, index: u32, buffer: u64) -> Result<(), QuantaError> {
+        self.inner.bindless_buffer_set(handle, index, buffer)
+    }
+
+    fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.bindless_buffer_destroy(handle)
+    }
+
     fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
         self.inner.bind_texture_array(textures)
     }

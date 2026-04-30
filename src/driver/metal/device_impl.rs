@@ -982,6 +982,124 @@ impl GpuDevice for MetalDevice {
             .insert(handle, arg_buf);
         Ok(handle)
     }
+
+    // === Bindless typed wrappers (steps 034 + 035) ===
+    //
+    // Metal argument buffers (Tier 2 on M1+) hold an array of
+    // resource IDs. We allocate a shared MTLBuffer sized for `cap`
+    // 8-byte slots; `update(index, handle)` writes the resource's
+    // gpuResourceID into slot `index`. Shaders index this argument
+    // buffer to access resources bindlessly.
+
+    fn bindless_texture_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        let size = ((cap.max(1) as usize) * 8) as u64;
+        let buf = unsafe {
+            ffi::msg_new_buffer(self.device, size, ffi::MTL_RESOURCE_STORAGE_MODE_SHARED)
+        };
+        if buf.is_null() {
+            return Err(QuantaError::internal(
+                "failed to create Metal argument buffer for bindless textures",
+            ));
+        }
+        unsafe {
+            let ptr = ffi::msg_ptr(buf, b"contents\0");
+            core::ptr::write_bytes(ptr, 0, size as usize);
+        }
+        let handle = self.alloc_handle();
+        self.buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, buf);
+        Ok(handle)
+    }
+
+    fn bindless_texture_set(
+        &self,
+        handle: u64,
+        index: u32,
+        texture: u64,
+    ) -> Result<(), QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let arg_buf = *buffers
+            .get(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("bindless texture array handle not found"))?;
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let tex = *textures
+            .get(&texture)
+            .ok_or_else(|| QuantaError::invalid_param("bindless: bad texture handle"))?;
+        let cap = unsafe { ffi::msg_u64(arg_buf, b"length\0") } / 8;
+        if (index as u64) >= cap {
+            return Err(QuantaError::invalid_param(
+                "bindless texture index >= capacity",
+            ));
+        }
+        unsafe {
+            // Read MTLResourceID for the texture.
+            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel) -> u64 =
+                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
+            let res_id = f(tex, ffi::sel(b"gpuResourceID\0"));
+            let ptr = ffi::msg_ptr(arg_buf, b"contents\0") as *mut u64;
+            *ptr.add(index as usize) = res_id;
+        }
+        Ok(())
+    }
+
+    fn bindless_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let removed = self
+            .buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(buf) = removed {
+            unsafe {
+                ffi::msg_void(buf, b"release\0");
+            }
+        }
+        Ok(())
+    }
+
+    fn bindless_buffer_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        // Same shape as bindless_texture_create — argument buffer
+        // holds resource IDs (8 bytes each).
+        self.bindless_texture_create(cap)
+    }
+
+    fn bindless_buffer_set(&self, handle: u64, index: u32, buffer: u64) -> Result<(), QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let arg_buf = *buffers
+            .get(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("bindless buffer array handle not found"))?;
+        let target = *buffers
+            .get(&buffer)
+            .ok_or_else(|| QuantaError::invalid_param("bindless: bad buffer handle"))?;
+        let cap = unsafe { ffi::msg_u64(arg_buf, b"length\0") } / 8;
+        if (index as u64) >= cap {
+            return Err(QuantaError::invalid_param(
+                "bindless buffer index >= capacity",
+            ));
+        }
+        unsafe {
+            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel) -> u64 =
+                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
+            let res_id = f(target, ffi::sel(b"gpuAddress\0"));
+            let ptr = ffi::msg_ptr(arg_buf, b"contents\0") as *mut u64;
+            *ptr.add(index as usize) = res_id;
+        }
+        Ok(())
+    }
+
+    fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.bindless_texture_destroy(handle)
+    }
 }
 
 // ============================================================================

@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod bindless;
 pub mod device;
 pub mod error;
 pub mod field;
@@ -14,6 +15,7 @@ pub mod types;
 pub mod wave;
 
 pub use batch::Batch;
+pub use bindless::{BindlessBufferArray, BindlessTextureArray};
 pub use device::GpuDevice;
 pub use error::{QuantaError, QuantaErrorKind};
 pub use field::{Field, MappedField};

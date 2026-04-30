@@ -1010,6 +1010,100 @@ impl GpuDevice for VulkanDevice {
 
     // === Bindless resources (M5.3) ===
 
+    // === Bindless typed wrappers (steps 034 + 035) ===
+    //
+    // MVP: software table mirroring `Quanta.Bindless.Array`. The
+    // perf-grade path goes through VK_EXT_descriptor_indexing (core
+    // in Vulkan 1.2) which requires enabling the device feature at
+    // device-create time and rebuilding the descriptor-set
+    // infrastructure. Future commit; the proof contract holds for
+    // the MVP today.
+
+    fn bindless_texture_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.bindless_textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::VulkanBindlessArray {
+                    cap,
+                    entries: vec![0u64; cap as usize],
+                },
+            );
+        Ok(handle)
+    }
+
+    fn bindless_texture_set(
+        &self,
+        handle: u64,
+        index: u32,
+        texture: u64,
+    ) -> Result<(), QuantaError> {
+        let mut arrays = self
+            .bindless_textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let arr = arrays
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("bindless texture array not found"))?;
+        if index >= arr.cap {
+            return Err(QuantaError::invalid_param(
+                "bindless texture index >= capacity",
+            ));
+        }
+        arr.entries[index as usize] = texture;
+        Ok(())
+    }
+
+    fn bindless_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.bindless_textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        Ok(())
+    }
+
+    fn bindless_buffer_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.bindless_buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::VulkanBindlessArray {
+                    cap,
+                    entries: vec![0u64; cap as usize],
+                },
+            );
+        Ok(handle)
+    }
+
+    fn bindless_buffer_set(&self, handle: u64, index: u32, buffer: u64) -> Result<(), QuantaError> {
+        let mut arrays = self
+            .bindless_buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let arr = arrays
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("bindless buffer array not found"))?;
+        if index >= arr.cap {
+            return Err(QuantaError::invalid_param(
+                "bindless buffer index >= capacity",
+            ));
+        }
+        arr.entries[index as usize] = buffer;
+        Ok(())
+    }
+
+    fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.bindless_buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        Ok(())
+    }
+
     fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
         // Vulkan descriptor indexing (VK_EXT_descriptor_indexing) is core in Vulkan 1.2+.
         // Validate texture handles.

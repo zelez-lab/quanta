@@ -69,6 +69,15 @@ struct CpuIcb {
     commands: Vec<RecordedCommand>,
 }
 
+/// CPU bindless texture/buffer array. Mirrors `Quanta.Bindless.Array`:
+/// fixed capacity at create, slot updates via `set`, destroy
+/// invalidates the handle. Texture and buffer arrays share the
+/// same shape; backend differentiates by which trait method is called.
+struct CpuBindlessArray {
+    cap: u32,
+    entries: Vec<u64>,
+}
+
 /// CPU software device — executes GPU kernel IR without hardware.
 pub struct CpuDevice {
     caps: Caps,
@@ -77,6 +86,10 @@ pub struct CpuDevice {
     kernels: Mutex<HashMap<u64, CpuKernel>>,
     /// Indirect command buffers indexed by handle.
     icbs: Mutex<HashMap<u64, CpuIcb>>,
+    /// Bindless texture arrays indexed by handle.
+    bindless_textures: Mutex<HashMap<u64, CpuBindlessArray>>,
+    /// Bindless buffer arrays indexed by handle.
+    bindless_buffers: Mutex<HashMap<u64, CpuBindlessArray>>,
 }
 
 impl CpuDevice {
@@ -97,6 +110,8 @@ impl CpuDevice {
             buffers: Mutex::new(HashMap::new()),
             kernels: Mutex::new(HashMap::new()),
             icbs: Mutex::new(HashMap::new()),
+            bindless_textures: Mutex::new(HashMap::new()),
+            bindless_buffers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -691,6 +706,80 @@ impl GpuDevice for CpuDevice {
         Err(QuantaError::invalid_param(
             "bindless resources not supported on CPU device",
         ))
+    }
+
+    // === Bindless typed wrappers (steps 034 + 035) ===
+    //
+    // CPU implementation refines the abstract `Quanta.Bindless.Array`:
+    // - create allocates a Vec<u64> sized to cap, all zeroed.
+    // - set updates one slot, bounds-checked.
+    // - destroy removes the handle.
+
+    fn bindless_texture_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.bindless_textures.lock().unwrap().insert(
+            handle,
+            CpuBindlessArray {
+                cap,
+                entries: vec![0u64; cap as usize],
+            },
+        );
+        Ok(handle)
+    }
+
+    fn bindless_texture_set(
+        &self,
+        handle: u64,
+        index: u32,
+        texture: u64,
+    ) -> Result<(), QuantaError> {
+        let mut arrays = self.bindless_textures.lock().unwrap();
+        let arr = arrays
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("bindless texture array not found"))?;
+        if index >= arr.cap {
+            return Err(QuantaError::invalid_param(
+                "bindless texture index >= capacity",
+            ));
+        }
+        arr.entries[index as usize] = texture;
+        Ok(())
+    }
+
+    fn bindless_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.bindless_textures.lock().unwrap().remove(&handle);
+        Ok(())
+    }
+
+    fn bindless_buffer_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.bindless_buffers.lock().unwrap().insert(
+            handle,
+            CpuBindlessArray {
+                cap,
+                entries: vec![0u64; cap as usize],
+            },
+        );
+        Ok(handle)
+    }
+
+    fn bindless_buffer_set(&self, handle: u64, index: u32, buffer: u64) -> Result<(), QuantaError> {
+        let mut arrays = self.bindless_buffers.lock().unwrap();
+        let arr = arrays
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("bindless buffer array not found"))?;
+        if index >= arr.cap {
+            return Err(QuantaError::invalid_param(
+                "bindless buffer index >= capacity",
+            ));
+        }
+        arr.entries[index as usize] = buffer;
+        Ok(())
+    }
+
+    fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.bindless_buffers.lock().unwrap().remove(&handle);
+        Ok(())
     }
 }
 
