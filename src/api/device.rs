@@ -397,6 +397,12 @@ pub trait GpuDevice: Send + Sync {
     /// Unmap a sparse texture tile (release backing memory).
     fn sparse_unmap_tile(&self, texture: u64, mip: u32, x: u32, y: u32) -> Result<(), QuantaError>;
 
+    /// Destroy a sparse texture handle. Default no-ops so backends
+    /// without an explicit registry don't error on Drop.
+    fn sparse_texture_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     // === M5.2: Indirect command buffers (steps 032 + 033) ===
 
     /// Create an indirect command buffer (GPU-driven draw/dispatch).

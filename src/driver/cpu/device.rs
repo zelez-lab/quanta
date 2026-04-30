@@ -96,6 +96,16 @@ struct CpuMeshPipeline {
     dispatched: Vec<[u32; 3]>,
 }
 
+/// CPU sparse-texture state. Mirrors `Quanta.SparseTexture.Texture`:
+/// dimensions captured at create + a tile-association map keyed by
+/// (mip, x, y).
+#[allow(dead_code)]
+struct CpuSparseTexture {
+    width: u32,
+    height: u32,
+    tiles: HashMap<(u32, u32, u32), u64>,
+}
+
 /// CPU VRS state. Mirrors `Quanta.Vrs.State`: a single rate code
 /// (0 = 1×1, …, 6 = 4×4) writable until destroy.
 #[allow(dead_code)]
@@ -143,6 +153,8 @@ pub struct CpuDevice {
     rt_pipelines: Mutex<HashMap<u64, CpuRtPipeline>>,
     /// VRS states indexed by handle.
     vrs_states: Mutex<HashMap<u64, CpuVrsState>>,
+    /// Sparse textures indexed by handle.
+    sparse_textures: Mutex<HashMap<u64, CpuSparseTexture>>,
 }
 
 impl CpuDevice {
@@ -170,6 +182,7 @@ impl CpuDevice {
             accel_structures: Mutex::new(HashMap::new()),
             rt_pipelines: Mutex::new(HashMap::new()),
             vrs_states: Mutex::new(HashMap::new()),
+            sparse_textures: Mutex::new(HashMap::new()),
         }
     }
 
@@ -564,37 +577,61 @@ impl GpuDevice for CpuDevice {
         Ok(())
     }
 
-    // === M5.1: Sparse textures ===
+    // === M5.1: Sparse textures (steps 030 + 031) ===
+    //
+    // CPU implementation refines `Quanta.SparseTexture.Texture`:
+    // - sparse_texture_create stores width/height with an empty
+    //   tile map.
+    // - sparse_map_tile inserts (mip, x, y) -> backing into the map.
+    // - sparse_unmap_tile removes (mip, x, y).
+    // - sparse_texture_destroy removes the handle.
 
-    fn sparse_texture_create(&self, _desc: &TextureDesc) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "sparse textures not supported on CPU device",
-        ))
+    fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError> {
+        if desc.width == 0 || desc.height == 0 {
+            return Err(QuantaError::invalid_param(
+                "sparse texture requires non-zero dimensions",
+            ));
+        }
+        let handle = self.alloc_handle();
+        self.sparse_textures.lock().unwrap().insert(
+            handle,
+            CpuSparseTexture {
+                width: desc.width,
+                height: desc.height,
+                tiles: HashMap::new(),
+            },
+        );
+        Ok(handle)
     }
 
     fn sparse_map_tile(
         &self,
-        _texture: u64,
-        _mip: u32,
-        _x: u32,
-        _y: u32,
-        _backing: u64,
+        texture: u64,
+        mip: u32,
+        x: u32,
+        y: u32,
+        backing: u64,
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
-            "sparse textures not supported on CPU device",
-        ))
+        let mut texs = self.sparse_textures.lock().unwrap();
+        let tex = texs
+            .get_mut(&texture)
+            .ok_or_else(|| QuantaError::invalid_param("sparse texture not found"))?;
+        tex.tiles.insert((mip, x, y), backing);
+        Ok(())
     }
 
-    fn sparse_unmap_tile(
-        &self,
-        _texture: u64,
-        _mip: u32,
-        _x: u32,
-        _y: u32,
-    ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
-            "sparse textures not supported on CPU device",
-        ))
+    fn sparse_unmap_tile(&self, texture: u64, mip: u32, x: u32, y: u32) -> Result<(), QuantaError> {
+        let mut texs = self.sparse_textures.lock().unwrap();
+        let tex = texs
+            .get_mut(&texture)
+            .ok_or_else(|| QuantaError::invalid_param("sparse texture not found"))?;
+        tex.tiles.remove(&(mip, x, y));
+        Ok(())
+    }
+
+    fn sparse_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.sparse_textures.lock().unwrap().remove(&handle);
+        Ok(())
     }
 
     // === M5.2: Indirect command buffers (steps 032 + 033) ===

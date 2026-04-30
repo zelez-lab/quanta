@@ -35,6 +35,28 @@ impl Gpu {
         })
     }
 
+    /// Allocate a typed
+    /// [`SparseTexture`](crate::SparseTexture) (virtual texture
+    /// whose physical memory is allocated lazily per tile).
+    /// Steps 030 + 031.
+    ///
+    /// Backends without sparse-binding support
+    /// (`VK_EXT_sparse_binding`, Apple Silicon) return
+    /// `NotSupported` here so user code can branch.
+    pub fn sparse_texture(
+        &self,
+        desc: &crate::TextureDesc,
+    ) -> Result<crate::SparseTexture, QuantaError> {
+        let handle = self.inner.sparse_texture_create(desc)?;
+        Ok(crate::SparseTexture {
+            handle,
+            width: desc.width,
+            height: desc.height,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
     /// Allocate a typed [`VrsState`](crate::VrsState) for variable
     /// rate shading. Default rate is 1×1 (no reduction).
     /// Steps 028 + 029.
