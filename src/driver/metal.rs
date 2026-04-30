@@ -10,6 +10,7 @@ mod device_impl;
 pub(crate) mod ffi;
 mod memory;
 mod render;
+mod sparse;
 mod texture;
 
 // Re-export public API from submodules.

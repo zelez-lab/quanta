@@ -97,6 +97,24 @@ pub(crate) struct MetalRenderBundle {
     pub(crate) used_buffers: Vec<u64>,
 }
 
+/// Native Metal sparse texture state. Each entry binds a sparse
+/// texture handle to its backing `MTLHeap` (placement type) and
+/// the per-tile granularity Metal returns from
+/// `sparseTileSizeWithTextureType:pixelFormat:sampleCount:`.
+/// `sparse_map_tile` / `sparse_unmap_tile` issue
+/// `updateTextureMapping:mode:region:mipLevel:slice:` calls on a
+/// resource state encoder against this heap. Step 063 follow-up.
+pub(crate) struct MetalSparseTexture {
+    /// Backing `MTLHeap` (kept alive — Metal heap-allocated
+    /// textures borrow pages from this heap; releasing it would
+    /// invalidate the texture). Unread today because Drop teardown
+    /// for sparse textures isn't a separate path yet.
+    #[allow(dead_code)]
+    pub(crate) heap: ffi::Id,
+    pub(crate) tile_w: u64,
+    pub(crate) tile_h: u64,
+}
+
 /// Metal-backed GPU device.
 pub struct MetalDevice {
     pub(crate) device: ffi::Id,
@@ -116,6 +134,8 @@ pub struct MetalDevice {
     pub(crate) tess_pipelines: RwLock<HashMap<u64, MetalTessPipeline>>,
     pub(crate) mesh_pipelines: RwLock<HashMap<u64, MetalMeshPipeline>>,
     pub(crate) vrs_states: RwLock<HashMap<u64, MetalVrsState>>,
+    /// Sparse-texture native state (handle → heap + tile size).
+    pub(crate) sparse_textures: RwLock<HashMap<u64, MetalSparseTexture>>,
     pub(crate) next_handle: AtomicU64,
     /// Whether the device supports MTLSparseTexture
     /// (`supportsFamily:MTLGPUFamilyApple7` = 1007). Cached at
@@ -215,6 +235,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         tess_pipelines: RwLock::new(HashMap::new()),
         mesh_pipelines: RwLock::new(HashMap::new()),
         vrs_states: RwLock::new(HashMap::new()),
+        sparse_textures: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
         sparse_supported,
         tessellation_supported,

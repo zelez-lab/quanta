@@ -552,64 +552,31 @@ impl GpuDevice for MetalDevice {
     // === Sparse textures (M5.1) ===
 
     fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError> {
-        // Slice 17 — gate on the cached supportsFamily check from
-        // device discovery instead of issuing objc_msgSend per call.
         if !self.sparse_supported {
             return Err(QuantaError::not_supported(
                 "sparse textures require Apple GPU family 7+ (A15/M2)",
             ));
         }
-        // Create a texture with sparse storage. For now, create a regular private texture
-        // as backing — full sparse tile mapping requires MTLSparseTexture API.
-        let tex = self.texture_create_impl(desc)?;
-        let handle = tex.handle();
-        Ok(handle)
+        self.sparse_texture_create_native(desc)
     }
 
     fn sparse_map_tile(
         &self,
         texture: u64,
-        _mip: u32,
-        _x: u32,
-        _y: u32,
+        mip: u32,
+        x: u32,
+        y: u32,
         _backing: u64,
     ) -> Result<(), QuantaError> {
-        // Step 063 slice 7 — close the silent-drop. The previous
-        // shim returned Ok(()) on supported hardware without
-        // actually mapping anything, which violated the
-        // no-silent-drops contract. Native MTLSparseTexture tile
-        // mapping (MTLHeap.makeAliasable: + sparse texture
-        // updateMappingsWithLevel:slice:region: ...) is a
-        // separate native track; surface NotSupported until then.
-        let textures = self
-            .textures
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        if !textures.contains_key(&texture) {
-            return Err(QuantaError::not_found("sparse texture handle not found"));
-        }
-        Err(QuantaError::not_supported(
-            "Metal sparse tile mapping pending — sparse_texture_create succeeds, but native MTLSparseTexture updateMappings is not yet wired",
-        ))
+        // _backing is part of the typed-wrapper contract (T7602)
+        // but unused on Metal — placement-heap pages are committed
+        // by the resource state encoder, not borrowed from a
+        // caller-supplied buffer. Same shape as Vulkan slice 22.
+        self.sparse_update_tile(texture, mip, x, y, /*map=*/ true)
     }
 
-    fn sparse_unmap_tile(
-        &self,
-        texture: u64,
-        _mip: u32,
-        _x: u32,
-        _y: u32,
-    ) -> Result<(), QuantaError> {
-        let textures = self
-            .textures
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        if !textures.contains_key(&texture) {
-            return Err(QuantaError::not_found("sparse texture handle not found"));
-        }
-        Err(QuantaError::not_supported(
-            "Metal sparse tile unmapping pending — native MTLSparseTexture updateMappings is not yet wired",
-        ))
+    fn sparse_unmap_tile(&self, texture: u64, mip: u32, x: u32, y: u32) -> Result<(), QuantaError> {
+        self.sparse_update_tile(texture, mip, x, y, /*map=*/ false)
     }
 
     // === Indirect command buffers (steps 032 + 033) ===

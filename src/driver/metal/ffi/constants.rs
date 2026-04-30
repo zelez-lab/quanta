@@ -43,6 +43,19 @@ pub const MTL_PIXEL_FORMAT_EAC_RGBA8: NSUInteger = 178;
 pub const MTL_RESOURCE_STORAGE_MODE_SHARED: NSUInteger = 0 << 4;
 pub const MTL_RESOURCE_STORAGE_MODE_PRIVATE: NSUInteger = 2 << 4;
 
+// ─── Sparse residency (Apple GPU family 7+) ─────────────────────────────────
+
+/// `MTLHeapType.placement` — heaps used to back sparse textures.
+/// Sparse textures live in a placement heap whose pages are
+/// committed lazily by `MTLResourceStateCommandEncoder
+/// .updateTextureMappings:mode:regions:mipLevels:slices:numRegions:`.
+pub const MTL_HEAP_TYPE_PLACEMENT: NSUInteger = 1;
+
+/// `MTLSparseTextureMappingMode.map`
+pub const MTL_SPARSE_TEXTURE_MAPPING_MODE_MAP: NSUInteger = 0;
+/// `MTLSparseTextureMappingMode.unmap`
+pub const MTL_SPARSE_TEXTURE_MAPPING_MODE_UNMAP: NSUInteger = 1;
+
 // ─── Metal storage modes (for texture descriptors) ──────────────────────────
 
 pub const MTL_STORAGE_MODE_SHARED: NSUInteger = 0;
