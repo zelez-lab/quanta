@@ -1126,6 +1126,21 @@ impl GpuDevice for MetalDevice {
         topology: u8,
         _control_points: u32,
     ) -> Result<u64, QuantaError> {
+        // Step 063 slice 8 — gate on Metal's tessellation support.
+        // MTLGPUFamilyApple4 (= 1004, A11+) is the threshold for
+        // hardware tessellation (drawIndexedPatches +
+        // tessellationFactorBuffer). Symmetric to the Vulkan
+        // tessellationShader gate from slice 6.
+        let supports_tess = unsafe {
+            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
+                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
+            f(self.device, ffi::sel(b"supportsFamily:\0"), 1004) != 0
+        };
+        if !supports_tess {
+            return Err(QuantaError::not_supported(
+                "Metal tessellation requires Apple GPU family 4+ (A11+) — not available on this device",
+            ));
+        }
         let (outer_count, inner_count) = match topology {
             0 => (3u32, 1u32),
             1 => (4u32, 2u32),
@@ -1246,6 +1261,22 @@ impl GpuDevice for MetalDevice {
         max_primitives: u32,
         task_threads: u32,
     ) -> Result<u64, QuantaError> {
+        // Step 063 slice 9 — gate on Metal mesh shader support.
+        // MTLGPUFamilyMetal3 (= 5001) is the threshold for
+        // MTLMeshRenderPipelineDescriptor + per-stage mesh /
+        // object shader support (Apple Silicon M1 with macOS
+        // Sonoma+, M2/M3 universally). Symmetric to slice 5's
+        // pipeline-desc mesh gate.
+        let supports_mesh = unsafe {
+            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
+                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
+            f(self.device, ffi::sel(b"supportsFamily:\0"), 5001) != 0
+        };
+        if !supports_mesh {
+            return Err(QuantaError::not_supported(
+                "Metal mesh shaders require Metal 3 (MTLGPUFamilyMetal3) — not available on this device",
+            ));
+        }
         let handle = self.alloc_handle();
         self.mesh_pipelines
             .write()
