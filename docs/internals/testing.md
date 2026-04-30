@@ -133,34 +133,69 @@ Tests that run on RPi 5 verify:
 ## CI strategy
 
 ```
-+-- GitHub Actions (every push) ----+
++-- GitHub Actions (per-PR) ---------+
 |                                    |
 |  [Linux x86_64]                    |
 |    Tier 1: host tests              |
+|    Differential CI (software lane) |
 |    Compiler: IR -> LLVM IR text    |
 |    spirv-val on SPIR-V output      |
 |                                    |
-|  [macOS arm64]                     |
-|    Tier 1: host tests              |
-|    Tier 2: GPU tests (Metal)       |
-|    Tier 3: visual tests (Metal)    |
-|    metallib compilation            |
+|  [chromium-webgpu via Playwright]  |
+|    web smoke tests (4 examples)    |
+|    + golden-image SHA assertion    |
 |                                    |
 +------------------------------------+
 
-+-- Self-hosted (nightly) ----------+
++-- GitHub Actions (nightly cron) ---+
 |                                    |
-|  [Linux + NVIDIA GPU]              |
-|    Tier 2: GPU tests (Vulkan)      |
-|    ptxas validation                |
-|    Tier 4: stress tests            |
+|  [macOS-14 / Apple GPU]            |
+|    Differential CI (Metal lane)    |
 |                                    |
-|  [RPi 5]                           |
-|    Tier 2: GPU tests (Vulkan)      |
-|    Low-memory stress tests         |
+|  [Linux + lavapipe]                |
+|    Differential CI (Vulkan lane)   |
+|                                    |
++------------------------------------+
+
++-- Self-hosted (label-gated) -------+
+|                                    |
+|  [Linux + AMD GPU + RADV]          |
+|    Differential CI (Vulkan lane)   |
+|    Triggered by `run-amd-diff`     |
+|    label on a PR.                  |
 |                                    |
 +------------------------------------+
 ```
+
+### Registering the AMDGPU self-hosted runner
+
+The `diff-amdgpu` job in
+[`.github/workflows/diff-full.yml`](../../.github/workflows/diff-full.yml)
+expects a runner with the labels `[self-hosted, linux, gpu-amd]`. Until
+the runner is registered the job stays inert (skipped on every event)
+because it gates on `workflow_dispatch` or the `run-amd-diff` PR label,
+neither of which fires by default.
+
+One-time setup:
+
+1. Provision a Linux box with an AMD GPU (gfx9+ recommended).
+2. Install drivers + Vulkan tools:
+   ```sh
+   sudo apt-get install \
+     mesa-vulkan-drivers libvulkan-dev vulkan-tools \
+     vulkan-validationlayers
+   ```
+   Confirm `vulkaninfo --summary` shows `AMD RADV ...`.
+3. **Settings → Actions → Runners → New self-hosted runner** in the
+   GitHub repo.
+4. Tag the runner with all three labels: `self-hosted`, `linux`,
+   `gpu-amd`.
+5. Verify with a manual `workflow_dispatch` of `Differential CI (full
+   lanes)` — the `diff-amdgpu` job should pick up and pass.
+
+The job uses `run-amd-diff` (not `run-full-diff`) as its PR-label gate
+so that ordinary "run the full diff matrix" PR labels don't queue
+against a runner that may be offline.
 
 ## Writing a new conformance test
 
