@@ -62,7 +62,12 @@ jobs:
             macos-14-cargo-
 
       - name: Differential tests (software + metal lanes)
-        run: cargo test --test differential --features software,metal
+        # `jit` is required: the differential tests construct
+        # KernelDef IR at runtime and feed it through wave_jit. The
+        # `metal` feature alone leaves wave_jit returning the
+        # default trait error "JIT compilation not supported by
+        # this driver".
+        run: cargo test --test differential --features software,metal,jit
 
   # Step 063 follow-up — promoted to per-PR alongside diff-metal.
   # lavapipe gives free Vulkan coverage for the foundation slices
