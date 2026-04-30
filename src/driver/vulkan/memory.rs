@@ -37,6 +37,15 @@ impl VulkanDevice {
                 | ffi::VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         }
 
+        // Slice 23 — add SHADER_DEVICE_ADDRESS + AS-build-input
+        // usage when the device has bufferDeviceAddress enabled.
+        // Free when feature is on; required so user-supplied
+        // vertex Fields can be referenced by AS builds.
+        if self.buffer_device_address_enabled {
+            vk_usage |= ffi::VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                | ffi::VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+        }
+
         let buf_info = ffi::VkBufferCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             p_next: core::ptr::null(),

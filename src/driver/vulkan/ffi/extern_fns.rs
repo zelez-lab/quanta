@@ -484,6 +484,17 @@ macro_rules! vk_extern_fns {
                 p_count: *mut u32,
                 p_requirements: *mut VkSparseImageMemoryRequirements,
             );
+            /// Resolve a buffer to its GPU device address.
+            /// Vulkan 1.2 core; the underlying buffer must have been
+            /// created with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+            /// and the device must have bufferDeviceAddress enabled.
+            /// Required by acceleration-structure builds (vertex /
+            /// index / scratch / AS-storage buffers all reference
+            /// each other by device address). Step 063 slice 23.
+            pub fn vkGetBufferDeviceAddress(
+                device: VkDevice,
+                p_info: *const VkBufferDeviceAddressInfo,
+            ) -> u64;
             /// Submit sparse-bind operations to a queue.
             /// Step 063 slice 16. Only the image-bind path is
             /// exercised; buffer/opaque arrays stay zeroed in the

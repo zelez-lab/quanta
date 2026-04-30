@@ -133,7 +133,29 @@ pub struct VulkanDevice {
     /// unbind + free; `Drop` walks the table to release leaked
     /// allocations. Step 063 slice 22.
     pub(super) sparse_tile_bindings: RwLock<HashMap<(u64, u32, u32, u32), ffi::VkDeviceMemory>>,
+    /// Whether `bufferDeviceAddress` was enabled at vkCreateDevice
+    /// — true iff `has_accel_ext` was true at discovery. Drives
+    /// whether `field_alloc_impl` adds the SHADER_DEVICE_ADDRESS
+    /// usage bit (free when feature is on, illegal when off).
+    /// Step 063 slice 23.
+    pub(super) buffer_device_address_enabled: bool,
+    /// Acceleration structure registry. Each entry holds the AS
+    /// handle plus the storage buffer + memory it lives in;
+    /// destroy_acceleration_structure (and Drop) walks the map to
+    /// release everything in the right order. Step 063 slice 23.
+    pub(super) acceleration_structures: RwLock<HashMap<u64, VulkanAccelerationStructure>>,
 }
+
+/// Native Vulkan acceleration structure — the AS handle plus the
+/// storage VkBuffer it lives in. Step 063 slice 23.
+pub(super) struct VulkanAccelerationStructure {
+    pub(super) as_handle: *mut core::ffi::c_void,
+    pub(super) storage_buffer: ffi::VkBuffer,
+    pub(super) storage_memory: ffi::VkDeviceMemory,
+}
+
+unsafe impl Send for VulkanAccelerationStructure {}
+unsafe impl Sync for VulkanAccelerationStructure {}
 
 /// Software tessellation pipeline state — refines
 /// `Quanta.Tessellation.Pipeline`.
@@ -696,19 +718,6 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             p_queue_priorities: queue_priorities.as_ptr(),
         };
 
-        // Enable synchronization2 (Vulkan 1.3 core) for vkCmdPipelineBarrier2
-        #[repr(C)]
-        struct VkPhysicalDeviceSynchronization2Features {
-            s_type: u32,
-            p_next: *const core::ffi::c_void,
-            synchronization2: u32,
-        }
-        let sync2_features = VkPhysicalDeviceSynchronization2Features {
-            s_type: 1000314007, // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES
-            p_next: core::ptr::null(),
-            synchronization2: 1, // VK_TRUE
-        };
-
         // Step 063 — enable advanced render extensions when present
         // on the physical device. Each block:
         //   * Detects the extension.
@@ -723,6 +732,48 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         let has_rt_pipeline_ext =
             physical_device_has_extension(pd, b"VK_KHR_ray_tracing_pipeline\0");
         let has_rt = has_accel_ext && has_rt_pipeline_ext;
+
+        // Slice 23 — chain buffer-device-address + acceleration-
+        // structure features after sync2 when the device advertises
+        // them. Buffer device addresses are needed by AS builds
+        // (geometry inputs, scratch, AS-storage all reference each
+        // other by device address). The feature is core in Vulkan
+        // 1.2; chaining a 1.2 features struct works on 1.3 devices
+        // that don't already promote it.
+        let bda_features = ffi::VkPhysicalDeviceBufferDeviceAddressFeatures {
+            s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+            p_next: core::ptr::null_mut(),
+            buffer_device_address: if has_accel_ext { 1 } else { 0 },
+            buffer_device_address_capture_replay: 0,
+            buffer_device_address_multi_device: 0,
+        };
+        let accel_features = ffi::VkPhysicalDeviceAccelerationStructureFeaturesKHR {
+            s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+            p_next: &bda_features as *const _ as *mut core::ffi::c_void,
+            acceleration_structure: if has_accel_ext { 1 } else { 0 },
+            acceleration_structure_capture_replay: 0,
+            acceleration_structure_indirect_build: 0,
+            acceleration_structure_host_commands: 0,
+            descriptor_binding_acceleration_structure_update_after_bind: 0,
+        };
+
+        // Enable synchronization2 (Vulkan 1.3 core) for vkCmdPipelineBarrier2
+        #[repr(C)]
+        struct VkPhysicalDeviceSynchronization2Features {
+            s_type: u32,
+            p_next: *const core::ffi::c_void,
+            synchronization2: u32,
+        }
+        let sync2_p_next: *const core::ffi::c_void = if has_accel_ext {
+            &accel_features as *const _ as *const core::ffi::c_void
+        } else {
+            core::ptr::null()
+        };
+        let sync2_features = VkPhysicalDeviceSynchronization2Features {
+            s_type: 1000314007, // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES
+            p_next: sync2_p_next,
+            synchronization2: 1, // VK_TRUE
+        };
 
         let mut enabled_extensions: Vec<*const core::ffi::c_char> = Vec::new();
         if has_vrs_ext {
@@ -1028,6 +1079,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             supported_shading_rates,
             sparse_binding_supported,
             sparse_tile_bindings: RwLock::new(HashMap::new()),
+            buffer_device_address_enabled: has_accel_ext,
+            acceleration_structures: RwLock::new(HashMap::new()),
         }));
 
         break; // Use first suitable device
@@ -1099,6 +1152,18 @@ impl Drop for VulkanDevice {
             if let Ok(mut bindings) = self.sparse_tile_bindings.write() {
                 for (_, mem) in bindings.drain() {
                     ffi::vkFreeMemory(self.device, mem, core::ptr::null());
+                }
+            }
+            // Slice 23 — destroy AS handles (must precede their
+            // storage buffer free; AS objects have an implicit
+            // backref to the storage buffer they were created on).
+            if let Ok(mut as_map) = self.acceleration_structures.write()
+                && let Some(destroy) = self.accel_destroy_fn
+            {
+                for (_, ax) in as_map.drain() {
+                    destroy(self.device, ax.as_handle, core::ptr::null());
+                    ffi::vkDestroyBuffer(self.device, ax.storage_buffer, core::ptr::null());
+                    ffi::vkFreeMemory(self.device, ax.storage_memory, core::ptr::null());
                 }
             }
             if let Ok(mut textures) = self.textures.write() {

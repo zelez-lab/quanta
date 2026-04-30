@@ -228,6 +228,127 @@ pub struct VkImageSubresource {
     pub array_layer: u32,
 }
 
+// ─── Buffer device address + acceleration structure (step 063 slice 23) ────
+
+/// Argument to `vkGetBufferDeviceAddress`. Step 063 slice 23.
+#[repr(C)]
+pub struct VkBufferDeviceAddressInfo {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub buffer: VkBuffer,
+}
+
+/// `VkPhysicalDeviceBufferDeviceAddressFeatures` — chain into
+/// `VkDeviceCreateInfo.p_next` to enable buffer device addresses.
+/// Step 063 slice 23.
+#[repr(C)]
+pub struct VkPhysicalDeviceBufferDeviceAddressFeatures {
+    pub s_type: u32,
+    pub p_next: *mut c_void,
+    pub buffer_device_address: u32,
+    pub buffer_device_address_capture_replay: u32,
+    pub buffer_device_address_multi_device: u32,
+}
+
+/// `VkPhysicalDeviceAccelerationStructureFeaturesKHR` — chain to
+/// enable acceleration-structure builds.
+#[repr(C)]
+pub struct VkPhysicalDeviceAccelerationStructureFeaturesKHR {
+    pub s_type: u32,
+    pub p_next: *mut c_void,
+    pub acceleration_structure: u32,
+    pub acceleration_structure_capture_replay: u32,
+    pub acceleration_structure_indirect_build: u32,
+    pub acceleration_structure_host_commands: u32,
+    pub descriptor_binding_acceleration_structure_update_after_bind: u32,
+}
+
+/// Vertex geometry input for a BLAS triangles entry. Step 063
+/// slice 23.
+#[repr(C)]
+pub struct VkAccelerationStructureGeometryTrianglesDataKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub vertex_format: u32,
+    pub vertex_data_device_address: u64,
+    pub vertex_stride: u64,
+    pub max_vertex: u32,
+    pub index_type: u32,
+    pub index_data_device_address: u64,
+    pub transform_data_device_address: u64,
+}
+
+/// Geometry-data union — only the triangles arm is used today.
+#[repr(C)]
+pub union VkAccelerationStructureGeometryDataKHR {
+    pub triangles: core::mem::ManuallyDrop<VkAccelerationStructureGeometryTrianglesDataKHR>,
+    /// Reserve space for the union's other arms so the size is
+    /// correct. AABBs / instances arms are larger; pick the
+    /// largest known size as a safety pad.
+    _max_size: [u8; 96],
+}
+
+/// One geometry entry inside a BLAS / TLAS build. Step 063 slice 23.
+#[repr(C)]
+pub struct VkAccelerationStructureGeometryKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub geometry_type: u32,
+    pub geometry: VkAccelerationStructureGeometryDataKHR,
+    pub flags: u32,
+}
+
+/// Top-level build geometry info passed to `vkGetAccelerationStructureBuildSizesKHR`
+/// and `vkCmdBuildAccelerationStructuresKHR`.
+#[repr(C)]
+pub struct VkAccelerationStructureBuildGeometryInfoKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub r#type: u32,
+    pub flags: u32,
+    pub mode: u32,
+    pub src_acceleration_structure: *mut c_void,
+    pub dst_acceleration_structure: *mut c_void,
+    pub geometry_count: u32,
+    pub p_geometries: *const VkAccelerationStructureGeometryKHR,
+    pub pp_geometries: *const *const VkAccelerationStructureGeometryKHR,
+    pub scratch_data_device_address: u64,
+}
+
+/// Result of `vkGetAccelerationStructureBuildSizesKHR`.
+#[repr(C)]
+#[derive(Default)]
+pub struct VkAccelerationStructureBuildSizesInfoKHR {
+    pub s_type: u32,
+    pub p_next: *mut c_void,
+    pub acceleration_structure_size: u64,
+    pub update_scratch_size: u64,
+    pub build_scratch_size: u64,
+}
+
+/// Per-geometry build range (offset + count + first vertex etc.).
+#[repr(C)]
+pub struct VkAccelerationStructureBuildRangeInfoKHR {
+    pub primitive_count: u32,
+    pub primitive_offset: u32,
+    pub first_vertex: u32,
+    pub transform_offset: u32,
+}
+
+/// Argument to `vkCreateAccelerationStructureKHR` — describes the
+/// AS shape and which buffer slice backs its storage.
+#[repr(C)]
+pub struct VkAccelerationStructureCreateInfoKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub create_flags: u32,
+    pub buffer: VkBuffer,
+    pub offset: u64,
+    pub size: u64,
+    pub r#type: u32,
+    pub device_address: u64,
+}
+
 /// Sparse-image format properties returned by
 /// `vkGetImageSparseMemoryRequirements`. Step 063 slice 22.
 #[repr(C)]

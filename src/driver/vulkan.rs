@@ -4,6 +4,7 @@
 //! Covers compute dispatch, render pass execution, texture management,
 //! depth/stencil, instanced/indexed/indirect draw, MRT, and debug labels.
 
+mod accel;
 mod compute;
 mod device;
 mod device_impl;

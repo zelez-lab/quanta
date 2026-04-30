@@ -425,28 +425,7 @@ impl GpuDevice for VulkanDevice {
     // === Ray tracing (M4.3) ===
 
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
-        // Step 063 slice 15 — gate on the resolved AS proc set
-        // (slice 4 + 15 cached at device discovery). When all four
-        // procs are present, we have everything needed to build a
-        // BLAS; the actual build wiring is the next slice.
-        if self.accel_create_fn.is_none() || self.accel_build_fn.is_none() {
-            return Err(QuantaError::not_supported(
-                "ray tracing requires VK_KHR_acceleration_structure — extension or proc address unavailable on this device",
-            ));
-        }
-        if geometry.is_empty() {
-            return Err(QuantaError::invalid_param(
-                "acceleration structure requires at least one geometry descriptor",
-            ));
-        }
-        // Until the native vkCreateAccelerationStructureKHR +
-        // vkCmdBuildAccelerationStructuresKHR call sequence lands,
-        // surface a more specific NotSupported pointing at the
-        // unwired build path. Allocating a placeholder buffer
-        // would lie to callers about the handle's residency.
-        Err(QuantaError::not_supported(
-            "Vulkan acceleration-structure build pending — proc addresses loaded, awaiting native build sequence (vkCreateAccelerationStructureKHR + vkCmdBuildAccelerationStructuresKHR)",
-        ))
+        self.build_acceleration_structure_native(geometry)
     }
 
     fn create_ray_tracing_pipeline(
@@ -482,7 +461,14 @@ impl GpuDevice for VulkanDevice {
     }
 
     fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {
-        // Release the backing buffer.
+        // Slice 23 — try the AS registry first; if the handle was
+        // produced by build_acceleration_structure_native, we have
+        // a real VkAccelerationStructureKHR to destroy + storage
+        // buffer to free. Fall through to field_free_impl for
+        // compatibility with handles from older shim paths.
+        if self.destroy_as_native_if_present(handle) {
+            return Ok(());
+        }
         self.field_free_impl(handle);
         Ok(())
     }
