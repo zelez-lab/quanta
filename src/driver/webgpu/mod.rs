@@ -711,6 +711,27 @@ impl QGpuDevice for WebgpuDevice {
     // ── Render path ────────────────────────────────────────────────────────
 
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
+        // Step 063 slice 11 — WebGPU spec doesn't include
+        // tessellation, mesh shaders, or conservative rasterization.
+        // Surface NotSupported up-front rather than silently dropping
+        // the request when the user sets these on PipelineDesc
+        // (matches Kani T418 / T419 no-silent-drops contract,
+        // symmetric to slices 5 and 8/9).
+        if desc.tessellation.is_some() {
+            return Err(Self::not_supported(
+                "WebGPU render pipelines: tessellation is not in the WebGPU spec",
+            ));
+        }
+        if desc.mesh_shader.is_some() {
+            return Err(Self::not_supported(
+                "WebGPU render pipelines: mesh shaders are not in the WebGPU spec",
+            ));
+        }
+        if desc.conservative_rasterization {
+            return Err(Self::not_supported(
+                "WebGPU render pipelines: conservative rasterization is not in the WebGPU spec",
+            ));
+        }
         let device = self.dev()?;
 
         let combined = desc.source;
