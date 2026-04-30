@@ -237,6 +237,98 @@ impl MetalDevice {
                 }
             }
 
+            // VRS native lowering (step 063 slice 3). Metal's VRS
+            // path is pass-descriptor-level (MTLRasterizationRateMap)
+            // rather than per-draw, so the rate must be applied
+            // before the encoder begins. Pre-walk pass.ops to find
+            // the first SetShadingRate; if present and the device
+            // supports it, build a single-layer rate map and attach
+            // it to the descriptor. The in-encoder SetShadingRate
+            // op then becomes a no-op below.
+            let target_size = textures.get(&pass.handle).and_then(|t| {
+                let w: u64 = ffi::msg_u64(*t, b"width\0");
+                let h: u64 = ffi::msg_u64(*t, b"height\0");
+                if w > 0 && h > 0 { Some((w, h)) } else { None }
+            });
+            let requested_rate = pass.ops.iter().find_map(|op| {
+                if let RenderOp::SetShadingRate(rate) = op {
+                    Some(*rate)
+                } else {
+                    None
+                }
+            });
+            let mut metal_vrs_active = false;
+            if let (Some(rate), Some((w, h))) = (requested_rate, target_size) {
+                let supports = ffi::msg_bool_u64(
+                    self.device,
+                    b"supportsRasterizationRateMapWithLayerCount:\0",
+                    1,
+                );
+                if !supports {
+                    return Err(QuantaError::not_supported(
+                        "Metal render encoder: device does not support MTLRasterizationRateMap",
+                    ));
+                }
+                // Build a 1-sample-per-axis layer descriptor. Each
+                // sample value is the screen-space density at that
+                // axis position; uniform 1/rate gives a uniform
+                // rate across the attachment.
+                let layer_cls = ffi::cls(b"MTLRasterizationRateLayerDescriptor\0") as ffi::Id;
+                let layer_alloc = ffi::msg_id(layer_cls, b"alloc\0");
+                let one_one_one = ffi::MTLSize {
+                    width: 1,
+                    height: 1,
+                    depth: 1,
+                };
+                let layer =
+                    ffi::msg_id_mtlsize(layer_alloc, b"initWithSampleCount:\0", one_one_one);
+                let h_storage = ffi::msg_ptr_f32(layer, b"horizontalSampleStorage\0");
+                let v_storage = ffi::msg_ptr_f32(layer, b"verticalSampleStorage\0");
+                if h_storage.is_null() || v_storage.is_null() {
+                    ffi::msg_void(layer, b"release\0");
+                    return Err(QuantaError::internal(
+                        "Metal render encoder: rasterization rate layer storage was null",
+                    ));
+                }
+                *h_storage = 1.0_f32 / rate.x_axis() as f32;
+                *v_storage = 1.0_f32 / rate.y_axis() as f32;
+
+                let map_desc_cls = ffi::cls(b"MTLRasterizationRateMapDescriptor\0") as ffi::Id;
+                let screen_size = ffi::MTLSize {
+                    width: w,
+                    height: h,
+                    depth: 0,
+                };
+                // +rasterizationRateMapDescriptorWithScreenSize:layer:
+                let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, ffi::MTLSize, ffi::Id) -> ffi::Id =
+                    core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
+                let map_desc = f(
+                    map_desc_cls,
+                    ffi::sel(b"rasterizationRateMapDescriptorWithScreenSize:layer:\0"),
+                    screen_size,
+                    layer,
+                );
+                ffi::msg_void(layer, b"release\0");
+                if map_desc.is_null() {
+                    return Err(QuantaError::internal(
+                        "Metal render encoder: failed to build MTLRasterizationRateMapDescriptor",
+                    ));
+                }
+                let map = ffi::msg_id_id(
+                    self.device,
+                    b"newRasterizationRateMapWithDescriptor:\0",
+                    map_desc,
+                );
+                if map.is_null() {
+                    return Err(QuantaError::not_supported(
+                        "Metal render encoder: device declined to build rasterization rate map (rate unsupported)",
+                    ));
+                }
+                ffi::msg_void_id(rpd, b"setRasterizationRateMap:\0", map);
+                ffi::msg_void(map, b"release\0");
+                metal_vrs_active = true;
+            }
+
             let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
             let encoder = ffi::msg_new_render_encoder(cmd, rpd);
 
@@ -504,16 +596,26 @@ impl MetalDevice {
                         );
                     }
 
-                    // VRS native lowering lands with step 063
-                    // (rasterization-rate map). Per Kani T418 (no
-                    // silent RenderOp drops on Metal) we surface a
-                    // concrete error; NotSupported is the right
-                    // category — the feature is hardware-gated, not
-                    // an invariant violation.
-                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
+                    // VRS native lowering (step 063 slice 3). The
+                    // rate was already applied to the render pass
+                    // descriptor as an MTLRasterizationRateMap above
+                    // (Metal's VRS is pass-level, not per-draw), so
+                    // the in-encoder op is a no-op — but only when
+                    // the descriptor-build path actually ran. If
+                    // metal_vrs_active is false, the rate map could
+                    // not be built; surface that as NotSupported.
+                    RenderOp::SetShadingRate(_) => {
+                        if !metal_vrs_active {
+                            ffi::msg_void(encoder, b"endEncoding\0");
+                            return Err(QuantaError::not_supported(
+                                "Metal render encoder: VRS rate not applied (no rate map built)",
+                            ));
+                        }
+                    }
+                    RenderOp::SetShadingRateImage { .. } => {
                         ffi::msg_void(encoder, b"endEncoding\0");
                         return Err(QuantaError::not_supported(
-                            "Metal render encoder: variable-rate shading deferred to step 063",
+                            "Metal render encoder: shading-rate-image (texel-driven VRS) deferred",
                         ));
                     }
 

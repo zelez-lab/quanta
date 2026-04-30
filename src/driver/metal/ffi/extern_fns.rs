@@ -151,6 +151,30 @@ pub unsafe fn msg_mtlsize(obj: Id, name: &[u8]) -> MTLSize {
     f(obj, sel(name))
 }
 
+/// Send message taking one MTLSize, returning Id (e.g.
+/// `[MTLRasterizationRateLayerDescriptor alloc] initWithSampleCount:`).
+pub unsafe fn msg_id_mtlsize(obj: Id, name: &[u8], size: MTLSize) -> Id {
+    let f: unsafe extern "C" fn(Id, Sel, MTLSize) -> Id =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(obj, sel(name), size)
+}
+
+/// Send message returning a `*mut f32` (e.g.
+/// `MTLRasterizationRateLayerDescriptor.horizontalSampleStorage`).
+pub unsafe fn msg_ptr_f32(obj: Id, name: &[u8]) -> *mut f32 {
+    let f: unsafe extern "C" fn(Id, Sel) -> *mut f32 =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(obj, sel(name))
+}
+
+/// Send message taking one NSUInteger, returning BOOL — used for
+/// `MTLDevice.supportsRasterizationRateMapWithLayerCount:`.
+pub unsafe fn msg_bool_u64(obj: Id, name: &[u8], v: u64) -> bool {
+    let f: unsafe extern "C" fn(Id, Sel, u64) -> BOOL =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(obj, sel(name), v) != NO
+}
+
 /// newBufferWithBytes:length:options: -> Id
 pub unsafe fn msg_new_buffer_with_bytes(
     device: Id,
