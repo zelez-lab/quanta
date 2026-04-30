@@ -193,16 +193,17 @@ pub(crate) fn emit_op(
             "{}threadgroup_barrier(mem_flags::mem_threadgroup);\n",
             pad
         )),
-        KernelOp::Fence { order } => out.push_str(&format!(
-            "{}atomic_thread_fence(mem_flags::mem_device, {});\n",
+        KernelOp::Fence { order: _ } => out.push_str(&format!(
+            // Metal Shading Language only supports
+            // `memory_order_relaxed` on device atomics — every
+            // other ordering is rejected by `xcrun metal` with
+            // "use of undeclared identifier" errors. Clamp here
+            // so kernels written with stronger orderings still
+            // compile to MSL; the actual fencing comes from the
+            // explicit thread-group / device barriers around the
+            // atomic, not from the C++-style memory order.
+            "{}atomic_thread_fence(mem_flags::mem_device, memory_order_relaxed);\n",
             pad,
-            match order {
-                quanta_ir::MemoryOrder::Relaxed => "memory_order_relaxed",
-                quanta_ir::MemoryOrder::Acquire => "memory_order_acquire",
-                quanta_ir::MemoryOrder::Release => "memory_order_release",
-                quanta_ir::MemoryOrder::AcqRel => "memory_order_acq_rel",
-                quanta_ir::MemoryOrder::SeqCst => "memory_order_seq_cst",
-            }
         )),
         KernelOp::SharedDecl { id, ty, count } => {
             out.push_str(&format!(
@@ -236,17 +237,16 @@ pub(crate) fn emit_op(
             val,
             op,
             ty,
-            order,
+            order: _,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             let f = atomic_fn_str(op);
-            let mo = match order {
-                quanta_ir::MemoryOrder::Relaxed => "memory_order_relaxed",
-                quanta_ir::MemoryOrder::Acquire => "memory_order_acquire",
-                quanta_ir::MemoryOrder::Release => "memory_order_release",
-                quanta_ir::MemoryOrder::AcqRel => "memory_order_acq_rel",
-                quanta_ir::MemoryOrder::SeqCst => "memory_order_seq_cst",
-            };
+            // Metal device atomics: `memory_order_relaxed` is the
+            // only ordering MSL accepts on `device atomic_*`
+            // pointers. Strongerorders are silent-rejected by
+            // xcrun metal. Clamp every IR ordering down to relaxed
+            // here — see the matching note on Fence above.
+            let mo = "memory_order_relaxed";
             out.push_str(&format!(
                 "{}{} r{} = {}((device atomic_{}*)&{}[r{}], r{}, {});\n",
                 pad,

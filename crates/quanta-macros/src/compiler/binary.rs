@@ -31,7 +31,6 @@ pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
 /// Try to find and call the quanta-compiler binary.
 fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
     let binary = find_compiler_binary()?;
-    // Compiler binary found
 
     // Serialize KernelDef to bincode
     let input = quanta_ir::serialize_kernel(kernel);
@@ -65,6 +64,15 @@ fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
         return None;
     }
 
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        // Surface compiler-side warnings (metallib failures, etc.)
+        // so build authors see the real reason a kernel target is
+        // missing — without this, `metallib: None` silently ships
+        // and the runtime panics with a generic
+        // "no compiled kernel for vendor Apple".
+        eprintln!("{}", stderr);
+    }
     let result = quanta_ir::deserialize_output(&output.stdout);
     if let Err(ref e) = result {
         eprintln!("[quanta] deserialize error: {}", e);
