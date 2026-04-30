@@ -20,13 +20,27 @@
       texture should end up the triangle's solid blue.
     </p>
     <p id="status">Loading…</p>
+    <p id="sha" data-sha="">framebuffer SHA-256: …</p>
     <canvas id="canvas" width="16" height="16"></canvas>
 
     <script type="module">
       import { instantiate } from "./quanta.js";
 
       const statusEl = document.getElementById("status");
+      const shaEl    = document.getElementById("sha");
       const canvas   = document.getElementById("canvas");
+
+      // Golden framebuffer SHA-256 — vendored. Update only when the
+      // expected rendering changes (e.g. shader / clear color). A
+      // mismatch is the canary for sub-pixel drift the rgb-tolerance
+      // check below would miss.
+      const GOLDEN_SHA = "ded669beaf14718db7ae6f7b233900e98c7393118ceacbe5ca38f46cc022650d";
+
+      async function sha256Hex(bytes) {
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        return Array.from(new Uint8Array(digest))
+          .map(b => b.toString(16).padStart(2, "0")).join("");
+      }
 
       async function main() {
         const mod   = await instantiate("./web_triangle.wasm");
@@ -36,15 +50,29 @@
         img.data.set(bytes);
         ctx.putImageData(img, 0, 0);
 
-        // Sample center pixel to validate.
+        // Compute framebuffer SHA — exact-match canary.
+        const sha = await sha256Hex(bytes);
+        shaEl.dataset.sha = sha;
+        shaEl.textContent = "framebuffer SHA-256: " + sha;
+
+        // Sample center pixel to validate (loose rgb tolerance).
         const off = (8 * 16 + 8) * 4;
         const r = bytes[off], g = bytes[off+1], b = bytes[off+2];
         const expectedB = Math.round(0.9 * 255);
-        const ok = b > 200 && r < 80 && g < 130;
+        const rgbOk = b > 200 && r < 80 && g < 130;
+        const shaOk = sha === GOLDEN_SHA;
+        const ok = rgbOk && shaOk;
         statusEl.className = ok ? "ok" : "fail";
-        statusEl.textContent =
-          ok ? `PASS — center pixel rgb(${r},${g},${b}) ≈ triangle blue (expected b≈${expectedB})`
-             : `FAIL — center pixel rgb(${r},${g},${b}) does not match triangle blue`;
+        if (ok) {
+          statusEl.textContent =
+            `PASS — center pixel rgb(${r},${g},${b}) ≈ triangle blue (b≈${expectedB}); sha matches golden`;
+        } else if (rgbOk && !shaOk) {
+          statusEl.textContent =
+            `FAIL — rgb tolerance ok but framebuffer SHA drifted (got ${sha}, expected ${GOLDEN_SHA})`;
+        } else {
+          statusEl.textContent =
+            `FAIL — center pixel rgb(${r},${g},${b}) does not match triangle blue`;
+        }
       }
 
       main().catch(err => {

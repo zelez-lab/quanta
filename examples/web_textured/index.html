@@ -23,13 +23,24 @@
       source color (within ±2 LSBs of rounding).
     </p>
     <p id="status">Loading…</p>
+    <p id="sha" data-sha="">framebuffer SHA-256: …</p>
     <canvas id="canvas" width="4" height="4"></canvas>
 
     <script type="module">
       import { instantiate } from "./quanta.js";
 
       const statusEl = document.getElementById("status");
+      const shaEl    = document.getElementById("sha");
       const canvas   = document.getElementById("canvas");
+
+      // Golden framebuffer SHA-256 — vendored.
+      const GOLDEN_SHA = "0aa80fb0e376614aecdd5b68676710dced707cd512db36c25a2d6c4fa3050910";
+
+      async function sha256Hex(bytes) {
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        return Array.from(new Uint8Array(digest))
+          .map(b => b.toString(16).padStart(2, "0")).join("");
+      }
 
       async function main() {
         const mod   = await instantiate("./web_textured.wasm");
@@ -39,6 +50,10 @@
         const img = ctx.createImageData(4, 4);
         img.data.set(bytes);
         ctx.putImageData(img, 0, 0);
+
+        const sha = await sha256Hex(bytes);
+        shaEl.dataset.sha = sha;
+        shaEl.textContent = "framebuffer SHA-256: " + sha;
 
         // Validate every pixel matches the source color (±2 LSB).
         const expected = [255, 165, 64, 255];
@@ -58,11 +73,18 @@
             }
           }
         }
+        const rgbOk = mismatches === 0;
+        const shaOk = sha === GOLDEN_SHA;
+        const ok = rgbOk && shaOk;
 
-        if (mismatches === 0) {
+        if (ok) {
           statusEl.className = "ok";
           statusEl.textContent =
-            `PASS — all 16 pixels match source rgba(${expected.join(",")}); SetTexture+SetSampler wiring verified end-to-end on real WebGPU`;
+            `PASS — all 16 pixels match source rgba(${expected.join(",")}); sha matches golden`;
+        } else if (rgbOk && !shaOk) {
+          statusEl.className = "fail";
+          statusEl.textContent =
+            `FAIL — rgb tolerance ok but framebuffer SHA drifted (got ${sha}, expected ${GOLDEN_SHA})`;
         } else {
           statusEl.className = "fail";
           statusEl.textContent =

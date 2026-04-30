@@ -90,6 +90,9 @@ test("web_triangle — render path produces triangle blue", async ({ page }) => 
     const status = page.locator("#status");
     await expect(status).toContainText("PASS", { timeout: 30_000 });
     await expect(status).toContainText("center pixel");
+    // Golden-image SHA assertion — catches sub-pixel drift the
+    // rgb-tolerance check would miss.
+    await expect(status).toContainText("sha matches golden");
   } finally {
     server.close();
   }
@@ -102,6 +105,7 @@ test("web_textured — SetTexture+SetSampler wiring (step C)", async ({ page }) 
     const status = page.locator("#status");
     await expect(status).toContainText("PASS", { timeout: 30_000 });
     await expect(status).toContainText("all 16 pixels match");
+    await expect(status).toContainText("sha matches golden");
   } finally {
     server.close();
   }
