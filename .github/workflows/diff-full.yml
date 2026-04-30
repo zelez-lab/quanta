@@ -33,12 +33,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Skip on labeled PRs unless the label is `run-full-diff`.
-  # Schedule / workflow_dispatch always run.
+  # Step 063 follow-up — promoted from label-gated to per-PR. The
+  # 18 062/063 slices added foundation work (proc-addr loading,
+  # capability caches, sparseBinding feature enable, no-silent-drops
+  # gates) that needs continuous coverage on real Apple Silicon, not
+  # nightly. macos-14 is free for public repos so the cost is just
+  # cache reuse. The `run-full-diff` label is no longer required —
+  # ordinary PRs get Metal coverage automatically.
   diff-metal:
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'run-full-diff')
     runs-on: macos-14
     timeout-minutes: 25
     steps:
@@ -62,10 +64,13 @@ jobs:
       - name: Differential tests (software + metal lanes)
         run: cargo test --test differential --features software,metal
 
+  # Step 063 follow-up — promoted to per-PR alongside diff-metal.
+  # lavapipe gives free Vulkan coverage for the foundation slices
+  # (proc-addr loading, extension detection, sparse-binding enable,
+  # gating). Extension-gated paths (VRS, mesh shaders) stay
+  # NotSupported on lavapipe — that's still a useful per-PR signal
+  # because it confirms the `is_none()` fallthroughs work.
   diff-vulkan:
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'run-full-diff')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

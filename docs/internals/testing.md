@@ -115,20 +115,26 @@ quanta-compiler --test-ptx > /tmp/test.ptx
 ptxas --gpu-name=sm_86 /tmp/test.ptx
 ```
 
-## RPi 5 Vulkan testing
+## Local Vulkan testing on alternative hardware
 
-The Raspberry Pi 5 has a V3D 7.1 GPU with Vulkan 1.2 support.
-Used for testing on real (low-end) Vulkan hardware:
+Beyond CI, you can run `cargo test --features vulkan` against any
+device that exposes a Vulkan ICD. Useful when the AMDGPU
+self-hosted runner isn't registered yet:
 
-```bash
-# On RPi 5
-cargo test --features vulkan --target aarch64-unknown-linux-gnu
-```
+- **Raspberry Pi 5** (BCM2712, V3D 7.1, Vulkan 1.2 via Mesa V3DV).
+  Validates basic compute + sparseBinding (slice 16 cache + slice
+  18 enable). Does **not** expose VK_KHR_fragment_shading_rate /
+  VK_EXT_mesh_shader / ray-tracing extensions, so those slices'
+  hardware paths stay NotSupported there.
+- **Linux + AMD GPU** (gfx1030+ / RDNA2). RADV exposes all the
+  extensions we ship gates for (VRS, mesh shaders, ray tracing).
+  Same setup as the AMDGPU CI runner without the registration.
+- **Linux + lavapipe** (any x86_64 box with Mesa). Software
+  Vulkan, same coverage as the per-PR CI lane.
 
-Tests that run on RPi 5 verify:
-- Basic compute dispatch works on mobile-class Vulkan.
-- Memory-constrained scenarios (8GB shared with CPU).
-- Vulkan 1.2 features (no 1.3 extensions available).
+Run with `cargo test --features vulkan --target
+aarch64-unknown-linux-gnu` (RPi 5) or just
+`cargo test --features vulkan` (x86_64).
 
 ## CI strategy
 
@@ -145,15 +151,21 @@ Tests that run on RPi 5 verify:
 |    web smoke tests (4 examples)    |
 |    + golden-image SHA assertion    |
 |                                    |
+|  [macOS-14 / Apple GPU]            |
+|    Differential CI (Metal lane)    |
+|    [promoted from nightly @ 063]   |
+|                                    |
+|  [Linux + lavapipe]                |
+|    Differential CI (Vulkan lane)   |
+|    [promoted from nightly @ 063]   |
+|                                    |
 +------------------------------------+
 
 +-- GitHub Actions (nightly cron) ---+
 |                                    |
-|  [macOS-14 / Apple GPU]            |
-|    Differential CI (Metal lane)    |
-|                                    |
-|  [Linux + lavapipe]                |
-|    Differential CI (Vulkan lane)   |
+|  Same lanes as per-PR — the cron   |
+|  schedule is the safety net for    |
+|  branches without recent activity. |
 |                                    |
 +------------------------------------+
 
@@ -162,7 +174,9 @@ Tests that run on RPi 5 verify:
 |  [Linux + AMD GPU + RADV]          |
 |    Differential CI (Vulkan lane)   |
 |    Triggered by `run-amd-diff`     |
-|    label on a PR.                  |
+|    label on a PR. Covers VRS /     |
+|    mesh-shader / ray-tracing       |
+|    extensions lavapipe lacks.      |
 |                                    |
 +------------------------------------+
 ```
