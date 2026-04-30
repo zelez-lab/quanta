@@ -1276,6 +1276,45 @@ impl GpuDevice for MetalDevice {
             .remove(&handle);
         Ok(())
     }
+
+    // === Variable rate shading (steps 028 + 029) ===
+    //
+    // MVP: software state mirroring `Quanta.Vrs.State`. Native path
+    // builds an `MTLRasterizationRateMap` per render pass on Apple
+    // Silicon; that lowering lands when the render encoder is
+    // rebuilt to consume rate maps. Proof contract holds today.
+
+    fn vrs_create(&self) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.vrs_states
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, super::device::MetalVrsState { rate_code: 0 });
+        Ok(handle)
+    }
+
+    fn vrs_set_rate(&self, handle: u64, rate_code: u8) -> Result<(), QuantaError> {
+        if rate_code > 6 {
+            return Err(QuantaError::invalid_param("VRS rate code out of range"));
+        }
+        let mut states = self
+            .vrs_states
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let st = states
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("VRS state not found"))?;
+        st.rate_code = rate_code;
+        Ok(())
+    }
+
+    fn vrs_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.vrs_states
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        Ok(())
+    }
 }
 
 // ============================================================================

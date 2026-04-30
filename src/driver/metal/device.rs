@@ -60,6 +60,17 @@ pub(crate) struct MetalTessPipeline {
 /// integration (replacing the classical vertex stage with the
 /// object/mesh path) lands when the render path is rebuilt to
 /// support meshlets.
+/// State for one Metal VRS handle. Steps 028 + 029.
+///
+/// Native lowering uses `MTLRasterizationRateMap` per render pass on
+/// Apple Silicon. MVP here is a software state container — current
+/// rate code, immutable on destroy. The native rate-map integration
+/// lands when the render path is rebuilt to support per-tile rates.
+#[allow(dead_code)]
+pub(crate) struct MetalVrsState {
+    pub(crate) rate_code: u8,
+}
+
 #[allow(dead_code)]
 pub(crate) struct MetalMeshPipeline {
     pub(crate) max_vertices: u32,
@@ -104,6 +115,7 @@ pub struct MetalDevice {
     pub(crate) render_bundles: RwLock<HashMap<u64, MetalRenderBundle>>,
     pub(crate) tess_pipelines: RwLock<HashMap<u64, MetalTessPipeline>>,
     pub(crate) mesh_pipelines: RwLock<HashMap<u64, MetalMeshPipeline>>,
+    pub(crate) vrs_states: RwLock<HashMap<u64, MetalVrsState>>,
     pub(crate) next_handle: AtomicU64,
 }
 
@@ -164,6 +176,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         render_bundles: RwLock::new(HashMap::new()),
         tess_pipelines: RwLock::new(HashMap::new()),
         mesh_pipelines: RwLock::new(HashMap::new()),
+        vrs_states: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
     })]
 }

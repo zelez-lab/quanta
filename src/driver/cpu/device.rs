@@ -96,6 +96,13 @@ struct CpuMeshPipeline {
     dispatched: Vec<[u32; 3]>,
 }
 
+/// CPU VRS state. Mirrors `Quanta.Vrs.State`: a single rate code
+/// (0 = 1×1, …, 6 = 4×4) writable until destroy.
+#[allow(dead_code)]
+struct CpuVrsState {
+    rate_code: u8,
+}
+
 /// CPU acceleration-structure state. Mirrors
 /// `Quanta.RayTracing.AccelerationStructure`: kind + geometry count
 /// captured at build, immutable until `destroy`.
@@ -134,6 +141,8 @@ pub struct CpuDevice {
     accel_structures: Mutex<HashMap<u64, CpuAccelStructure>>,
     /// Ray-tracing pipelines indexed by handle.
     rt_pipelines: Mutex<HashMap<u64, CpuRtPipeline>>,
+    /// VRS states indexed by handle.
+    vrs_states: Mutex<HashMap<u64, CpuVrsState>>,
 }
 
 impl CpuDevice {
@@ -160,6 +169,7 @@ impl CpuDevice {
             mesh_pipelines: Mutex::new(HashMap::new()),
             accel_structures: Mutex::new(HashMap::new()),
             rt_pipelines: Mutex::new(HashMap::new()),
+            vrs_states: Mutex::new(HashMap::new()),
         }
     }
 
@@ -984,6 +994,40 @@ impl GpuDevice for CpuDevice {
 
     fn mesh_pipeline_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.mesh_pipelines.lock().unwrap().remove(&handle);
+        Ok(())
+    }
+
+    // === Variable rate shading (steps 028 + 029) ===
+    //
+    // CPU implementation refines `Quanta.Vrs.State`:
+    // - vrs_create allocates a state at default rate code 0 (1×1).
+    // - vrs_set_rate writes the rate code (the typed wrapper has
+    //   already encoded it from the ShadingRate enum).
+    // - vrs_destroy removes the handle.
+
+    fn vrs_create(&self) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.vrs_states
+            .lock()
+            .unwrap()
+            .insert(handle, CpuVrsState { rate_code: 0 });
+        Ok(handle)
+    }
+
+    fn vrs_set_rate(&self, handle: u64, rate_code: u8) -> Result<(), QuantaError> {
+        let mut states = self.vrs_states.lock().unwrap();
+        let st = states
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("VRS state not found"))?;
+        if rate_code > 6 {
+            return Err(QuantaError::invalid_param("VRS rate code out of range"));
+        }
+        st.rate_code = rate_code;
+        Ok(())
+    }
+
+    fn vrs_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.vrs_states.lock().unwrap().remove(&handle);
         Ok(())
     }
 }

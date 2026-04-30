@@ -14,6 +14,7 @@ pub mod render_pass;
 pub mod tessellation;
 pub mod texture;
 pub mod types;
+pub mod vrs;
 pub mod wave;
 
 pub use batch::Batch;
@@ -35,4 +36,5 @@ pub use render_pass::*;
 pub use tessellation::{MAX_PATCH_SIZE, MAX_TESS_LEVEL, TessTopology, TessellationPipeline};
 pub use texture::*;
 pub use types::*;
+pub use vrs::{ShadingRate, VrsState};
 pub use wave::Wave;

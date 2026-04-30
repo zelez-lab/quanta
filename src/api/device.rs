@@ -591,6 +591,37 @@ pub trait GpuDevice: Send + Sync {
         Ok(())
     }
 
+    // === Variable rate shading (steps 028 + 029) ===
+    //
+    // VRS typed wrapper (`VrsState`) refines `Quanta.Vrs.State` from
+    // the Lean equivalence theorems (T7500–T7505). Backends opt in
+    // by overriding these methods; defaults return NotSupported so
+    // the typed wrapper surfaces a clear error on platforms without
+    // VRS (WebGPU, devices without VK_KHR_fragment_shading_rate /
+    // pre-Apple-Silicon Metal).
+
+    /// Create a fresh VRS state. Default rate is 1×1 (no reduction).
+    fn vrs_create(&self) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "variable rate shading not yet implemented on this backend",
+        ))
+    }
+
+    /// Set the current shading rate. `rate_code` is the Verus
+    /// encoding (0 = 1×1, 1 = 1×2, … 6 = 4×4). The typed wrapper
+    /// has already validated the code.
+    fn vrs_set_rate(&self, _handle: u64, _rate_code: u8) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "variable rate shading not yet implemented on this backend",
+        ))
+    }
+
+    /// Destroy a VRS state. Default no-ops so backends without an
+    /// implementation don't error on `Drop`.
+    fn vrs_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     // ── Legacy bind-array creation (one-shot, no update path) ──────
 
     /// Create a bindless texture array (all textures accessible by index in shaders).

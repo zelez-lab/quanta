@@ -35,6 +35,23 @@ impl Gpu {
         })
     }
 
+    /// Allocate a typed [`VrsState`](crate::VrsState) for variable
+    /// rate shading. Default rate is 1×1 (no reduction).
+    /// Steps 028 + 029.
+    ///
+    /// Backends without VRS (WebGPU, pre-Apple-Silicon Metal,
+    /// Vulkan without `VK_KHR_fragment_shading_rate`) return
+    /// `NotSupported` here so user code can branch.
+    pub fn vrs_state(&self) -> Result<crate::VrsState, QuantaError> {
+        let handle = self.inner.vrs_create()?;
+        Ok(crate::VrsState {
+            handle,
+            current: crate::ShadingRate::R1x1,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
     /// Allocate a typed
     /// [`MeshPipeline`](crate::MeshPipeline) for the given mesh
     /// pipeline descriptor. Steps 024 + 025.

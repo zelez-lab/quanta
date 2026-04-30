@@ -76,6 +76,8 @@ pub struct VulkanDevice {
     /// is deferred to the render-pipeline rebuild that lands with
     /// 062/063.
     pub(super) mesh_pipelines: RwLock<HashMap<u64, VulkanMeshPipeline>>,
+    /// VRS states (steps 028 + 029). MVP: software lifecycle.
+    pub(super) vrs_states: RwLock<HashMap<u64, VulkanVrsState>>,
 }
 
 /// Software tessellation pipeline state — refines
@@ -83,6 +85,16 @@ pub struct VulkanDevice {
 pub(super) struct VulkanTessPipeline {
     pub(super) outer: Vec<u32>,
     pub(super) inner: Vec<u32>,
+}
+
+/// Software VRS state — refines `Quanta.Vrs.State`. Native lowering
+/// goes through `vkCmdSetFragmentShadingRateKHR(rate, combiner_op)`
+/// on render pipelines that enable the
+/// `VK_KHR_fragment_shading_rate` extension; that wiring lands with
+/// the render-encoder rebuild.
+#[allow(dead_code)]
+pub(super) struct VulkanVrsState {
+    pub(super) rate_code: u8,
 }
 
 /// Software mesh-shader pipeline state — refines
@@ -721,6 +733,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             bindless_buffers: RwLock::new(HashMap::new()),
             tess_pipelines: RwLock::new(HashMap::new()),
             mesh_pipelines: RwLock::new(HashMap::new()),
+            vrs_states: RwLock::new(HashMap::new()),
         }));
 
         break; // Use first suitable device
