@@ -217,6 +217,58 @@ pub struct VkImageSubresourceLayers {
     pub layer_count: u32,
 }
 
+/// Single (aspect, mip, layer) coordinate. Used by sparse image
+/// bindings (step 063 slice 16) to identify the subresource the
+/// bind targets.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VkImageSubresource {
+    pub aspect_mask: u32,
+    pub mip_level: u32,
+    pub array_layer: u32,
+}
+
+/// One sparse image tile binding: which (mip, x, y, z) tile maps to
+/// which slice of which `VkDeviceMemory`. Used inside a
+/// `VkSparseImageMemoryBindInfo` (step 063 slice 16).
+#[repr(C)]
+pub struct VkSparseImageMemoryBind {
+    pub subresource: VkImageSubresource,
+    pub offset: VkOffset3D,
+    pub extent: VkExtent3D,
+    pub memory: VkDeviceMemory,
+    pub memory_offset: u64,
+    pub flags: u32,
+}
+
+/// Group of sparse-image bindings targeting one image. Step 063
+/// slice 16.
+#[repr(C)]
+pub struct VkSparseImageMemoryBindInfo {
+    pub image: VkImage,
+    pub bind_count: u32,
+    pub p_binds: *const VkSparseImageMemoryBind,
+}
+
+/// Top-level argument to `vkQueueBindSparse`. Only the
+/// image-bind path is exercised today; buffer/image-opaque arrays
+/// are zeroed. Step 063 slice 16.
+#[repr(C)]
+pub struct VkBindSparseInfo {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub wait_semaphore_count: u32,
+    pub p_wait_semaphores: *const VkSemaphore,
+    pub buffer_bind_count: u32,
+    pub p_buffer_binds: *const c_void,
+    pub image_opaque_bind_count: u32,
+    pub p_image_opaque_binds: *const c_void,
+    pub image_bind_count: u32,
+    pub p_image_binds: *const VkSparseImageMemoryBindInfo,
+    pub signal_semaphore_count: u32,
+    pub p_signal_semaphores: *const VkSemaphore,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VkExtent3D {

@@ -476,6 +476,16 @@ macro_rules! vk_extern_fns {
                 physical_device: VkPhysicalDevice,
                 p_features: *mut VkPhysicalDeviceFeatures,
             );
+            /// Submit sparse-bind operations to a queue.
+            /// Step 063 slice 16. Only the image-bind path is
+            /// exercised; buffer/opaque arrays stay zeroed in the
+            /// argument struct.
+            pub fn vkQueueBindSparse(
+                queue: VkQueue,
+                bind_info_count: u32,
+                p_bind_info: *const VkBindSparseInfo,
+                fence: VkFence,
+            ) -> VkResult;
         }
     };
 }

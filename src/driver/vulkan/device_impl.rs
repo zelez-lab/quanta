@@ -462,16 +462,25 @@ impl GpuDevice for VulkanDevice {
     // === Sparse textures (M5.1) ===
 
     fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError> {
-        // Check for sparse binding support via physical device features.
-        let mut features = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
-        unsafe { ffi::vkGetPhysicalDeviceFeatures(self.physical_device, &mut features) };
-        if features.sparse_binding == 0 {
+        // Step 063 slice 16 — gate on the cached pair from device
+        // discovery: VkPhysicalDeviceFeatures.sparseBinding AND
+        // VK_QUEUE_SPARSE_BINDING_BIT on the active queue family.
+        // Caching at discovery avoids a per-request
+        // vkGetPhysicalDeviceFeatures call and pre-checks that the
+        // chosen queue can actually issue vkQueueBindSparse — a
+        // prerequisite that the previous shim ignored.
+        if !self.sparse_binding_supported {
             return Err(QuantaError::not_supported(
-                "sparse textures require VK_EXT_sparse_binding — not available on this device",
+                "sparse textures require VkPhysicalDeviceFeatures.sparseBinding + a queue family with VK_QUEUE_SPARSE_BINDING_BIT — not available on this device",
             ));
         }
-        // Create a regular texture as the sparse resource. Full implementation would
-        // use VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT.
+        // The created texture is a regular VkImage today; the typed
+        // wrapper proof contract (T7600 dimensions check + handle
+        // is a live texture) doesn't require sparse residency. The
+        // bind-sparse path that promotes this to a real sparse
+        // image with VK_IMAGE_CREATE_SPARSE_BINDING_BIT lives in a
+        // follow-up slice; sparse_map_tile / sparse_unmap_tile
+        // already surface NotSupported (slice 7) until then.
         let tex = self.texture_create_impl(desc)?;
         let handle = tex.handle();
         Ok(handle)

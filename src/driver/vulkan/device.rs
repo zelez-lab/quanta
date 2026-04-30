@@ -118,6 +118,14 @@ pub struct VulkanDevice {
     /// instead of a generic Vulkan validation message.
     /// Step 063 slice 14.
     pub(super) supported_shading_rates: Vec<(u32, u32)>,
+    /// Whether `VkPhysicalDeviceFeatures.sparseBinding` is
+    /// available on this physical device, AND the chosen queue
+    /// family supports `VK_QUEUE_SPARSE_BINDING_BIT`. Caching
+    /// both at discovery means `sparse_texture_create` no longer
+    /// calls `vkGetPhysicalDeviceFeatures` per request, and
+    /// future native bind-sparse work can gate on a single bool.
+    /// Step 063 slice 16.
+    pub(super) sparse_binding_supported: bool,
 }
 
 /// Software tessellation pipeline state — refines
@@ -647,15 +655,29 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             )
         };
 
+        // Slice 6 + 16 — query device features once up-front so
+        // both queue-family selection (sparse_binding) and later
+        // gating (tessellationShader) can read the cached value.
+        let mut device_features = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
+        unsafe { ffi::vkGetPhysicalDeviceFeatures(pd, &mut device_features) };
+        let tessellation_feature = device_features.tessellation_shader != 0;
+
         // Find a queue family that supports compute + graphics
         let queue_family = queue_families.iter().enumerate().find(|(_, qf)| {
             (qf.queue_flags & ffi::VK_QUEUE_GRAPHICS_BIT) != 0
                 && (qf.queue_flags & ffi::VK_QUEUE_COMPUTE_BIT) != 0
         });
 
-        let Some((qf_index, _)) = queue_family else {
+        let Some((qf_index, qf_props)) = queue_family else {
             continue;
         };
+        // Slice 16 — cache whether the chosen queue family also
+        // advertises VK_QUEUE_SPARSE_BINDING_BIT. Combined with
+        // VkPhysicalDeviceFeatures.sparseBinding from the cached
+        // features above, determines whether the future bind-sparse
+        // path can run without picking a different queue family.
+        let queue_has_sparse = (qf_props.queue_flags & ffi::VK_QUEUE_SPARSE_BINDING_BIT) != 0;
+        let sparse_binding_supported = queue_has_sparse && device_features.sparse_binding != 0;
 
         let queue_priorities = [1.0f32];
         let queue_create = ffi::VkDeviceQueueCreateInfo {
@@ -688,14 +710,6 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         //   * Stores the resolved Pfn in VulkanDevice; absence keeps
         //     the existing NotSupported behavior on the matching
         //     render-encoder / dispatch arm.
-        // Step 063 slice 6 — query the tessellationShader device
-        // feature so the typed TessellationPipeline path can gate
-        // cleanly without a re-query. The feature is core Vulkan,
-        // not extension-gated.
-        let mut device_features = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
-        unsafe { ffi::vkGetPhysicalDeviceFeatures(pd, &mut device_features) };
-        let tessellation_feature = device_features.tessellation_shader != 0;
-
         let has_vrs_ext = physical_device_has_extension(pd, b"VK_KHR_fragment_shading_rate\0");
         let has_mesh_ext = physical_device_has_extension(pd, b"VK_EXT_mesh_shader\0");
         let has_accel_ext = physical_device_has_extension(pd, b"VK_KHR_acceleration_structure\0");
@@ -993,6 +1007,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             accel_build_fn,
             tessellation_feature,
             supported_shading_rates,
+            sparse_binding_supported,
         }));
 
         break; // Use first suitable device

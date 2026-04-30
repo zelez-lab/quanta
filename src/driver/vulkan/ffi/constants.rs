@@ -408,6 +408,13 @@ pub type PfnVkCmdTraceRaysKHR = unsafe extern "C" fn(
     depth: u32,
 );
 
+// ─── Sparse residency (step 063 slice 16) ───────────────────────────────────
+
+pub const VK_IMAGE_CREATE_SPARSE_BINDING_BIT: u32 = 0x00000001;
+pub const VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT: u32 = 0x00000002;
+pub const VK_QUEUE_SPARSE_BINDING_BIT: u32 = 0x00000010;
+pub const VK_STRUCTURE_TYPE_BIND_SPARSE_INFO: u32 = 7;
+
 // ─── VK_KHR_acceleration_structure (step 063 slice 15) ──────────────────────
 //
 // Acceleration structure builds: typed handle is opaque; the actual
