@@ -785,6 +785,50 @@ impl GpuDevice for VulkanDevice {
         Ok(())
     }
 
+    fn sparse_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        // Free any tile bindings the caller skipped explicit unmap
+        // for (Drop path on SparseTexture only calls
+        // sparse_texture_destroy, not unmap_tile per tile). Order:
+        //   1. Drain bindings keyed by this texture handle.
+        //   2. vkQueueWaitIdle so the GPU is finished using them.
+        //   3. vkFreeMemory each tile chunk.
+        //   4. Destroy the VkImage itself.
+        let mut tile_mems: Vec<ffi::VkDeviceMemory> = Vec::new();
+        if let Ok(mut bindings) = self.sparse_tile_bindings.write() {
+            bindings.retain(|key, mem| {
+                if key.0 == handle {
+                    tile_mems.push(*mem);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if !tile_mems.is_empty() {
+            unsafe { ffi::vkQueueWaitIdle(self.queue) };
+            for mem in tile_mems {
+                unsafe { ffi::vkFreeMemory(self.device, mem, core::ptr::null()) };
+            }
+        }
+        let removed = self
+            .textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(tex) = removed {
+            unsafe {
+                if !tex.view.is_null() {
+                    ffi::vkDestroyImageView(self.device, tex.view, core::ptr::null());
+                }
+                ffi::vkDestroyImage(self.device, tex.image, core::ptr::null());
+                if !tex.memory.is_null() {
+                    ffi::vkFreeMemory(self.device, tex.memory, core::ptr::null());
+                }
+            }
+        }
+        Ok(())
+    }
+
     // === Indirect command buffers (steps 032 + 033) ===
     //
     // Refines the Lean `Quanta.Icb.execute` semantics. The IR-level

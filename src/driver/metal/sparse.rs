@@ -33,6 +33,22 @@ impl MetalDevice {
         &self,
         desc: &TextureDesc,
     ) -> Result<u64, QuantaError> {
+        // Sparse residency native today supports 2D color textures
+        // only. 3D / cube / array sparse textures need a slice-aware
+        // tile-key shape (sparse_update_tile passes slice = 0); wire
+        // them once the 2D path is stable. Also gate multi-mip —
+        // partial-residency across mips needs the mip-tail handling
+        // that mirrors Vulkan's image-sparse-memory-requirements.
+        if !matches!(desc.kind, crate::TextureKind::D2) {
+            return Err(QuantaError::not_supported(
+                "Metal sparse residency native: only 2D textures are supported today (3D / Cube / Array pending)",
+            ));
+        }
+        if desc.mip_levels > 1 {
+            return Err(QuantaError::not_supported(
+                "Metal sparse residency native: only single-mip textures are supported today",
+            ));
+        }
         unsafe {
             let format_code = format_to_metal(desc.format);
             // Tile size in pixels. Per Apple, this depends on

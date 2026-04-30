@@ -579,6 +579,34 @@ impl GpuDevice for MetalDevice {
         self.sparse_update_tile(texture, mip, x, y, /*map=*/ false)
     }
 
+    fn sparse_texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        // Release the texture and its placement heap. The texture
+        // borrows pages from the heap, so release the texture
+        // first; ObjC `release` decrements the retain count, the
+        // actual free happens when it hits zero. Without this
+        // override the trait default no-op leaks the heap until
+        // device Drop.
+        let removed_tex = self
+            .textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        let removed_sparse = self
+            .sparse_textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        unsafe {
+            if let Some(tex) = removed_tex {
+                ffi::msg_void(tex, b"release\0");
+            }
+            if let Some(s) = removed_sparse {
+                ffi::msg_void(s.heap, b"release\0");
+            }
+        }
+        Ok(())
+    }
+
     // === Indirect command buffers (steps 032 + 033) ===
     //
     // Refines the Lean `Quanta.Icb.execute` semantics + the Verus

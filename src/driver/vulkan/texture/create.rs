@@ -158,6 +158,23 @@ impl VulkanDevice {
         &self,
         desc: &TextureDesc,
     ) -> Result<Texture, QuantaError> {
+        // Sparse residency native today supports 2D color textures
+        // only. 3D / array / cube sparse textures use a different
+        // tile-key shape (need mip + slice/depth in the binding
+        // registry) and per-face alignment rules; wire them once
+        // the 2D path is stable. Also gate multi-mip — partial
+        // residency across mips needs the mip-tail metadata that
+        // `vkGetImageSparseMemoryRequirements` returns.
+        if !matches!(desc.kind, crate::TextureKind::D2) {
+            return Err(QuantaError::not_supported(
+                "Vulkan sparse residency native: only 2D textures are supported today (3D / Array / Cube pending)",
+            ));
+        }
+        if desc.mip_levels > 1 {
+            return Err(QuantaError::not_supported(
+                "Vulkan sparse residency native: only single-mip textures are supported today (mip-tail handling pending)",
+            ));
+        }
         let vk_format = format_to_vulkan(desc.format);
 
         let mut vk_usage =
