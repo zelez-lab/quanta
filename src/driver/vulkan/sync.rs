@@ -73,7 +73,7 @@ impl VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let buf = buffers
             .get(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("buffer not found"))?;
+            .ok_or_else(|| QuantaError::not_found("buffer not found"))?;
 
         let cmd = self.alloc_command_buffer()?;
         let begin_info = ffi::VkCommandBufferBeginInfo {
@@ -140,7 +140,7 @@ impl VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let tex = textures
             .get(&texture.handle())
-            .ok_or_else(|| QuantaError::invalid_param("texture not found"))?;
+            .ok_or_else(|| QuantaError::not_found("texture not found"))?;
 
         let cmd = self.alloc_command_buffer()?;
         let begin_info = ffi::VkCommandBufferBeginInfo {

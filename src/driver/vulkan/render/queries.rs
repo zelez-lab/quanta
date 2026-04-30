@@ -48,7 +48,7 @@ impl VulkanDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let qp = pools.get(&query_handle).ok_or_else(|| {
-            QuantaError::invalid_param("query pool not found")
+            QuantaError::not_found("query pool not found")
                 .with_context(&format!("timestamp_write: handle {query_handle}"))
         })?;
 
@@ -86,7 +86,7 @@ impl VulkanDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let qp = pools.get(&handle).ok_or_else(|| {
-            QuantaError::invalid_param("query pool not found")
+            QuantaError::not_found("query pool not found")
                 .with_context(&format!("timestamp_query_read: handle {handle}"))
         })?;
 
@@ -123,11 +123,11 @@ impl VulkanDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let src = textures.get(&src_handle).ok_or_else(|| {
-            QuantaError::invalid_param("source texture not found")
+            QuantaError::not_found("source texture not found")
                 .with_context(&format!("resolve_texture: src handle {src_handle}"))
         })?;
         let dst = textures.get(&dst_handle).ok_or_else(|| {
-            QuantaError::invalid_param("destination texture not found")
+            QuantaError::not_found("destination texture not found")
                 .with_context(&format!("resolve_texture: dst handle {dst_handle}"))
         })?;
 

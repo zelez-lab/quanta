@@ -23,8 +23,19 @@ pub enum QuantaErrorKind {
     Timeout,
     /// The device was lost (hardware removed, driver crash).
     DeviceLost,
-    /// Invalid parameter.
+    /// Invalid parameter — caller passed a value outside the
+    /// documented range. Distinct from `NotSupported` (feature is
+    /// genuinely unavailable) and `NotFound` (handle does not exist).
     InvalidParam(&'static str),
+    /// The requested feature is not implemented on this backend
+    /// (e.g. mesh shaders on a software CPU device, ray tracing on
+    /// pre-Apple-family-6 Metal). Callers should branch on this to
+    /// fall back to a non-accelerated path.
+    NotSupported(&'static str),
+    /// The given handle does not refer to a live resource. Usually
+    /// means the wrapping typed handle was double-freed or never
+    /// allocated by this device.
+    NotFound(&'static str),
     /// Internal error (e.g. poisoned mutex).
     Internal(&'static str),
 }
@@ -87,6 +98,24 @@ impl QuantaError {
         }
     }
 
+    /// Construct a `NotSupported` error — the feature is genuinely
+    /// unavailable on this backend / device.
+    pub fn not_supported(msg: &'static str) -> Self {
+        Self {
+            kind: QuantaErrorKind::NotSupported(msg),
+            context: None,
+        }
+    }
+
+    /// Construct a `NotFound` error — the given handle does not
+    /// refer to a live resource.
+    pub fn not_found(msg: &'static str) -> Self {
+        Self {
+            kind: QuantaErrorKind::NotFound(msg),
+            context: None,
+        }
+    }
+
     pub fn internal(msg: &'static str) -> Self {
         Self {
             kind: QuantaErrorKind::Internal(msg),
@@ -113,6 +142,8 @@ impl core::fmt::Display for QuantaError {
             QuantaErrorKind::Timeout => String::from("GPU operation timed out"),
             QuantaErrorKind::DeviceLost => String::from("GPU device lost"),
             QuantaErrorKind::InvalidParam(msg) => format!("invalid parameter: {msg}"),
+            QuantaErrorKind::NotSupported(msg) => format!("not supported on this backend: {msg}"),
+            QuantaErrorKind::NotFound(msg) => format!("not found: {msg}"),
             QuantaErrorKind::Internal(msg) => format!("internal error: {msg}"),
         };
         if let Some(ctx) = &self.context {

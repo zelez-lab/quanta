@@ -14,7 +14,7 @@ impl MetalDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let target = textures.get(&pass.handle).ok_or_else(|| {
-            QuantaError::invalid_param("render target not found")
+            QuantaError::not_found("render target not found")
                 .with_context(&format!("render_end: target handle {}", pass.handle))
         })?;
 
@@ -47,9 +47,9 @@ impl MetalDevice {
                         b"objectAtIndexedSubscript:\0",
                         i as u64,
                     );
-                    let ct_tex = textures.get(&ct.texture).ok_or_else(|| {
-                        QuantaError::invalid_param("color target texture not found")
-                    })?;
+                    let ct_tex = textures
+                        .get(&ct.texture)
+                        .ok_or_else(|| QuantaError::not_found("color target texture not found"))?;
                     ffi::msg_void_id(ca, b"setTexture:\0", *ct_tex);
 
                     // Load action
@@ -113,7 +113,7 @@ impl MetalDevice {
                 let depth_attach = ffi::msg_id(rpd, b"depthAttachment\0");
                 let dt_tex = textures
                     .get(&dt.texture)
-                    .ok_or_else(|| QuantaError::invalid_param("depth target texture not found"))?;
+                    .ok_or_else(|| QuantaError::not_found("depth target texture not found"))?;
                 ffi::msg_void_id(depth_attach, b"setTexture:\0", *dt_tex);
 
                 // Depth load action
@@ -531,7 +531,7 @@ impl MetalDevice {
                             .read()
                             .map_err(|_| QuantaError::internal("lock poisoned"))?;
                         let bundle = bundles.get(bundle_handle).ok_or_else(|| {
-                            QuantaError::invalid_param("render bundle handle not found")
+                            QuantaError::not_found("render bundle handle not found")
                         })?;
                         if *count > bundle.recorded {
                             return Err(QuantaError::invalid_param(

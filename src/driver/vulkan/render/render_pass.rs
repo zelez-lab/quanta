@@ -46,7 +46,7 @@ impl VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
 
         let target_tex = textures.get(&pass.handle).ok_or_else(|| {
-            QuantaError::invalid_param("render target not found")
+            QuantaError::not_found("render target not found")
                 .with_context(&format!("render_end: target handle {}", pass.handle))
         })?;
 
@@ -55,7 +55,7 @@ impl VulkanDevice {
 
         let (vk_render_pass, pipeline_ref) = if let Some(ph) = pipeline_handle {
             let rp = render_pipelines.get(&ph).ok_or_else(|| {
-                QuantaError::invalid_param("pipeline not found")
+                QuantaError::not_found("pipeline not found")
                     .with_context(&format!("render_end: pipeline handle {}", ph))
             })?;
             (rp.render_pass, Some(rp))
@@ -68,7 +68,7 @@ impl VulkanDevice {
 
             for (i, ct) in pass.color_targets.iter().enumerate() {
                 let ct_tex = textures.get(&ct.texture).ok_or_else(|| {
-                    QuantaError::invalid_param("color target texture not found")
+                    QuantaError::not_found("color target texture not found")
                         .with_context(&format!("render_end: color target {i}"))
                 })?;
                 let load_op = match ct.load_op {
@@ -103,7 +103,7 @@ impl VulkanDevice {
                 if let Some(rh) = resolve_handle {
                     has_resolve = true;
                     let resolve_tex = textures.get(&rh).ok_or_else(|| {
-                        QuantaError::invalid_param("resolve target texture not found")
+                        QuantaError::not_found("resolve target texture not found")
                             .with_context(&format!("render_end: resolve target for attachment {i}"))
                     })?;
                     let resolve_idx = attachments.len() as u32;
@@ -832,7 +832,7 @@ impl VulkanDevice {
                             .read()
                             .map_err(|_| QuantaError::internal("lock poisoned"))?;
                         let bundle = bundles.get(bundle_handle).ok_or_else(|| {
-                            QuantaError::invalid_param("render bundle handle not found")
+                            QuantaError::not_found("render bundle handle not found")
                         })?;
                         if *count > bundle.recorded {
                             ffi::vkCmdEndRenderPass(cmd);

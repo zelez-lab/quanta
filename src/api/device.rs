@@ -26,12 +26,12 @@ pub trait GpuDevice: Send + Sync {
 
     /// Map a GPU buffer into CPU address space for direct read/write access.
     fn field_map(&self, _handle: u64, _size: usize) -> Result<*mut u8, QuantaError> {
-        Err(QuantaError::invalid_param("mapped buffers not supported"))
+        Err(QuantaError::not_supported("mapped buffers not supported"))
     }
 
     /// Unmap a previously mapped GPU buffer.
     fn field_unmap(&self, _handle: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("mapped buffers not supported"))
+        Err(QuantaError::not_supported("mapped buffers not supported"))
     }
 
     /// Create a buffer that is permanently mapped into CPU address space.
@@ -41,7 +41,7 @@ pub trait GpuDevice: Send + Sync {
         _size: usize,
         _usage: FieldUsage,
     ) -> Result<(u64, *mut u8), QuantaError> {
-        Err(QuantaError::invalid_param("mapped buffers not supported"))
+        Err(QuantaError::not_supported("mapped buffers not supported"))
     }
 
     // === Textures ===
@@ -88,7 +88,7 @@ pub trait GpuDevice: Send + Sync {
     // === Batch ===
 
     fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
-        Err(QuantaError::invalid_param("batch dispatch not supported"))
+        Err(QuantaError::not_supported("batch dispatch not supported"))
     }
 
     // === Render ===
@@ -106,7 +106,7 @@ pub trait GpuDevice: Send + Sync {
 
     /// Create a timestamp query set.
     fn query_set_create(&self, _count: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param("queries not supported"))
+        Err(QuantaError::not_supported("queries not supported"))
     }
 
     /// Read query results.
@@ -116,24 +116,24 @@ pub trait GpuDevice: Send + Sync {
         _first: u32,
         _count: u32,
     ) -> Result<Vec<u64>, QuantaError> {
-        Err(QuantaError::invalid_param("queries not supported"))
+        Err(QuantaError::not_supported("queries not supported"))
     }
 
     // === Timestamps ===
 
     /// Create a timestamp query set with `count` slots.
     fn timestamp_query_create(&self, _count: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param("timestamps not supported"))
+        Err(QuantaError::not_supported("timestamps not supported"))
     }
 
     /// Write a timestamp at the given index in the query set.
     fn timestamp_write(&self, _query_handle: u64, _index: u32) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("timestamps not supported"))
+        Err(QuantaError::not_supported("timestamps not supported"))
     }
 
     /// Read timestamp values from a query set.
     fn timestamp_query_read(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
-        Err(QuantaError::invalid_param("timestamps not supported"))
+        Err(QuantaError::not_supported("timestamps not supported"))
     }
 
     /// GPU timestamp counter frequency in Hz. Default: 1 GHz (timestamps in nanoseconds).
@@ -155,7 +155,7 @@ pub trait GpuDevice: Send + Sync {
         _wave: &Wave,
         _groups: [u32; 3],
     ) -> Result<Pulse, QuantaError> {
-        Err(QuantaError::invalid_param("async compute not supported"))
+        Err(QuantaError::not_supported("async compute not supported"))
     }
 
     // === Timeline semaphores ===
@@ -221,7 +221,7 @@ pub trait GpuDevice: Send + Sync {
 
     /// Resolve an MSAA texture to a single-sample texture.
     fn resolve_texture(&self, _src_handle: u64, _dst_handle: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("MSAA resolve not supported"))
+        Err(QuantaError::not_supported("MSAA resolve not supported"))
     }
 
     // === M2.2: Format capability queries ===
@@ -246,12 +246,12 @@ pub trait GpuDevice: Send + Sync {
         _texture: u64,
         _desc: &TextureViewDesc,
     ) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param("texture views not supported"))
+        Err(QuantaError::not_supported("texture views not supported"))
     }
 
     /// Destroy a texture view.
     fn texture_view_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("texture views not supported"))
+        Err(QuantaError::not_supported("texture views not supported"))
     }
 
     // === M2.6: Stencil read-back ===
@@ -275,7 +275,7 @@ pub trait GpuDevice: Send + Sync {
 
     /// Create a queue of the given type.
     fn create_queue(&self, _queue_type: QueueType) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param("multi-queue not supported"))
+        Err(QuantaError::not_supported("multi-queue not supported"))
     }
 
     /// Submit a compute dispatch to a specific queue.
@@ -285,17 +285,17 @@ pub trait GpuDevice: Send + Sync {
         _wave: &Wave,
         _groups: [u32; 3],
     ) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("multi-queue not supported"))
+        Err(QuantaError::not_supported("multi-queue not supported"))
     }
 
     /// Signal a semaphore from a queue.
     fn queue_signal(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("multi-queue not supported"))
+        Err(QuantaError::not_supported("multi-queue not supported"))
     }
 
     /// Wait on a semaphore before executing more work on a queue.
     fn queue_wait(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param("multi-queue not supported"))
+        Err(QuantaError::not_supported("multi-queue not supported"))
     }
 
     /// Destroy a queue handle. Default no-ops so backends without

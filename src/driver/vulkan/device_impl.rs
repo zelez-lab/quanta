@@ -351,7 +351,7 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let qp = pools
             .get(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("occlusion query pool not found"))?;
+            .ok_or_else(|| QuantaError::not_found("occlusion query pool not found"))?;
 
         let count = qp.count as usize;
         let mut results = vec![0u64; count];
@@ -380,7 +380,7 @@ impl GpuDevice for VulkanDevice {
         // is available on this physical device.
         let has_ext = self.has_device_extension(b"VK_EXT_mesh_shader\0");
         if !has_ext {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "mesh shaders require VK_EXT_mesh_shader — not available on this device",
             ));
         }
@@ -393,7 +393,7 @@ impl GpuDevice for VulkanDevice {
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
         let has_accel = self.has_device_extension(b"VK_KHR_acceleration_structure\0");
         if !has_accel {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "ray tracing requires VK_KHR_acceleration_structure — not available on this device",
             ));
         }
@@ -421,7 +421,7 @@ impl GpuDevice for VulkanDevice {
     ) -> Result<u64, QuantaError> {
         let has_rt = self.has_device_extension(b"VK_KHR_ray_tracing_pipeline\0");
         if !has_rt {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "ray tracing pipelines require VK_KHR_ray_tracing_pipeline — not available on this device",
             ));
         }
@@ -433,7 +433,7 @@ impl GpuDevice for VulkanDevice {
     fn dispatch_rays(&self, _pipeline: u64, _width: u32, _height: u32) -> Result<(), QuantaError> {
         let has_rt = self.has_device_extension(b"VK_KHR_ray_tracing_pipeline\0");
         if !has_rt {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "ray dispatch requires VK_KHR_ray_tracing_pipeline — not available on this device",
             ));
         }
@@ -454,7 +454,7 @@ impl GpuDevice for VulkanDevice {
         let mut features = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
         unsafe { ffi::vkGetPhysicalDeviceFeatures(self.physical_device, &mut features) };
         if features.sparse_binding == 0 {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "sparse textures require VK_EXT_sparse_binding — not available on this device",
             ));
         }
@@ -478,9 +478,7 @@ impl GpuDevice for VulkanDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         if !textures.contains_key(&texture) {
-            return Err(QuantaError::invalid_param(
-                "sparse texture handle not found",
-            ));
+            return Err(QuantaError::not_found("sparse texture handle not found"));
         }
         // Full implementation would use vkQueueBindSparse.
         Ok(())
@@ -498,9 +496,7 @@ impl GpuDevice for VulkanDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         if !textures.contains_key(&texture) {
-            return Err(QuantaError::invalid_param(
-                "sparse texture handle not found",
-            ));
+            return Err(QuantaError::not_found("sparse texture handle not found"));
         }
         Ok(())
     }
@@ -632,7 +628,7 @@ impl GpuDevice for VulkanDevice {
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
             let icb = icbs
                 .get_mut(&handle)
-                .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+                .ok_or_else(|| QuantaError::not_found("ICB handle not found"))?;
             if index != icb.commands.len() as u32 {
                 return Err(QuantaError::invalid_param(
                     "ICB record index must equal current length",
@@ -780,7 +776,7 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let icb = icbs
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("ICB handle not found"))?;
         if index != icb.commands.len() as u32 {
             return Err(QuantaError::invalid_param(
                 "ICB record index must equal current length",
@@ -810,7 +806,7 @@ impl GpuDevice for VulkanDevice {
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
             let icb = icbs
                 .get(&handle)
-                .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+                .ok_or_else(|| QuantaError::not_found("ICB handle not found"))?;
             if count > icb.commands.len() as u32 {
                 return Err(QuantaError::invalid_param(
                     "ICB execute count exceeds recorded length",
@@ -913,7 +909,7 @@ impl GpuDevice for VulkanDevice {
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
             let bundle = bundles
                 .get_mut(&handle)
-                .ok_or_else(|| QuantaError::invalid_param("render bundle handle not found"))?;
+                .ok_or_else(|| QuantaError::not_found("render bundle handle not found"))?;
             if index != bundle.recorded {
                 return Err(QuantaError::invalid_param(
                     "render bundle record index must equal current length",
@@ -1046,7 +1042,7 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let arr = arrays
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("bindless texture array not found"))?;
+            .ok_or_else(|| QuantaError::not_found("bindless texture array not found"))?;
         if index >= arr.cap {
             return Err(QuantaError::invalid_param(
                 "bindless texture index >= capacity",
@@ -1086,7 +1082,7 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let arr = arrays
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("bindless buffer array not found"))?;
+            .ok_or_else(|| QuantaError::not_found("bindless buffer array not found"))?;
         if index >= arr.cap {
             return Err(QuantaError::invalid_param(
                 "bindless buffer index >= capacity",
@@ -1192,7 +1188,7 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipe = pipes
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("tessellation pipeline not found"))?;
         if (index as usize) >= pipe.outer.len() {
             return Err(QuantaError::invalid_param(
                 "tessellation outer index out of range",
@@ -1214,7 +1210,7 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipe = pipes
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("tessellation pipeline not found"))?;
         if (index as usize) >= pipe.inner.len() {
             return Err(QuantaError::invalid_param(
                 "tessellation inner index out of range",
@@ -1271,7 +1267,7 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipe = pipes
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("mesh pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("mesh pipeline not found"))?;
         pipe.dispatched.push(groups);
         Ok(())
     }
@@ -1311,7 +1307,7 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let st = states
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("VRS state not found"))?;
+            .ok_or_else(|| QuantaError::not_found("VRS state not found"))?;
         st.rate_code = rate_code;
         Ok(())
     }

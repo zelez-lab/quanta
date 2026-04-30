@@ -260,7 +260,7 @@ impl GpuDevice for CpuDevice {
         let mut bufs = self.buffers.lock().unwrap();
         let buf = bufs
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("field handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
         let len = data.len().min(buf.data.len());
         buf.data[..len].copy_from_slice(&data[..len]);
         Ok(())
@@ -270,7 +270,7 @@ impl GpuDevice for CpuDevice {
         let bufs = self.buffers.lock().unwrap();
         let buf = bufs
             .get(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("field handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
         let len = size.min(buf.data.len());
         Ok(buf.data[..len].to_vec())
     }
@@ -281,13 +281,13 @@ impl GpuDevice for CpuDevice {
         let src_data = {
             let src_buf = bufs
                 .get(&src)
-                .ok_or_else(|| QuantaError::invalid_param("src field not found"))?;
+                .ok_or_else(|| QuantaError::not_found("src field not found"))?;
             let len = size.min(src_buf.data.len());
             src_buf.data[..len].to_vec()
         };
         let dst_buf = bufs
             .get_mut(&dst)
-            .ok_or_else(|| QuantaError::invalid_param("dst field not found"))?;
+            .ok_or_else(|| QuantaError::not_found("dst field not found"))?;
         let len = src_data.len().min(dst_buf.data.len());
         dst_buf.data[..len].copy_from_slice(&src_data[..len]);
         Ok(())
@@ -297,7 +297,7 @@ impl GpuDevice for CpuDevice {
         let mut bufs = self.buffers.lock().unwrap();
         let buf = bufs
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("field handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
         Ok(buf.data.as_mut_ptr())
     }
 
@@ -407,7 +407,7 @@ impl GpuDevice for CpuDevice {
         let kernels = self.kernels.lock().unwrap();
         let kernel = kernels
             .get(&wave.handle)
-            .ok_or_else(|| QuantaError::invalid_param("wave handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("wave handle not found"))?;
 
         let wg = kernel.def.workgroup_size;
         let total_groups = groups[0] as u64 * groups[1] as u64 * groups[2] as u64;
@@ -598,7 +598,7 @@ impl GpuDevice for CpuDevice {
         let mut pipes = self.rt_pipelines.lock().unwrap();
         let pipe = pipes
             .get_mut(&pipeline)
-            .ok_or_else(|| QuantaError::invalid_param("ray tracing pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("ray tracing pipeline not found"))?;
         pipe.dispatched.push((width, height));
         Ok(())
     }
@@ -651,7 +651,7 @@ impl GpuDevice for CpuDevice {
         let mut texs = self.sparse_textures.lock().unwrap();
         let tex = texs
             .get_mut(&texture)
-            .ok_or_else(|| QuantaError::invalid_param("sparse texture not found"))?;
+            .ok_or_else(|| QuantaError::not_found("sparse texture not found"))?;
         tex.tiles.insert((mip, x, y), backing);
         Ok(())
     }
@@ -660,7 +660,7 @@ impl GpuDevice for CpuDevice {
         let mut texs = self.sparse_textures.lock().unwrap();
         let tex = texs
             .get_mut(&texture)
-            .ok_or_else(|| QuantaError::invalid_param("sparse texture not found"))?;
+            .ok_or_else(|| QuantaError::not_found("sparse texture not found"))?;
         tex.tiles.remove(&(mip, x, y));
         Ok(())
     }
@@ -717,7 +717,7 @@ impl GpuDevice for CpuDevice {
             let mut qs = self.queues.lock().unwrap();
             let q = qs
                 .get_mut(&queue)
-                .ok_or_else(|| QuantaError::invalid_param("queue not found"))?;
+                .ok_or_else(|| QuantaError::not_found("queue not found"))?;
             q.submit_count += 1;
         }
         // Execute serially against the existing wave_dispatch path.
@@ -729,7 +729,7 @@ impl GpuDevice for CpuDevice {
         let mut qs = self.queues.lock().unwrap();
         let q = qs
             .get_mut(&queue)
-            .ok_or_else(|| QuantaError::invalid_param("queue not found"))?;
+            .ok_or_else(|| QuantaError::not_found("queue not found"))?;
         q.last_signal = Some((semaphore, q.submit_count as u64));
         Ok(())
     }
@@ -737,7 +737,7 @@ impl GpuDevice for CpuDevice {
     fn queue_wait(&self, queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
         let qs = self.queues.lock().unwrap();
         if !qs.contains_key(&queue) {
-            return Err(QuantaError::invalid_param("queue not found"));
+            return Err(QuantaError::not_found("queue not found"));
         }
         Ok(())
     }
@@ -776,7 +776,7 @@ impl GpuDevice for CpuDevice {
             let mut qs = self.async_copy_queues.lock().unwrap();
             let q = qs
                 .get_mut(&queue)
-                .ok_or_else(|| QuantaError::invalid_param("async copy queue not found"))?;
+                .ok_or_else(|| QuantaError::not_found("async copy queue not found"))?;
             q.submitted.push((dst, src, size));
         }
         // Execute the copy synchronously through the existing path.
@@ -818,7 +818,7 @@ impl GpuDevice for CpuDevice {
         let mut bufs = self.printf_buffers.lock().unwrap();
         let buf = bufs
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("printf buffer not found"))?;
+            .ok_or_else(|| QuantaError::not_found("printf buffer not found"))?;
         if buf.messages.len() as u32 >= buf.cap {
             return Err(QuantaError::invalid_param("printf buffer is full"));
         }
@@ -830,7 +830,7 @@ impl GpuDevice for CpuDevice {
         let mut bufs = self.printf_buffers.lock().unwrap();
         let buf = bufs
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("printf buffer not found"))?;
+            .ok_or_else(|| QuantaError::not_found("printf buffer not found"))?;
         Ok(core::mem::take(&mut buf.messages))
     }
 
@@ -870,7 +870,7 @@ impl GpuDevice for CpuDevice {
         let mut icbs = self.icbs.lock().unwrap();
         let icb = icbs
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("ICB handle not found"))?;
         if index != icb.commands.len() as u32 {
             return Err(QuantaError::invalid_param(
                 "ICB record index must equal current length",
@@ -905,7 +905,7 @@ impl GpuDevice for CpuDevice {
         let mut icbs = self.icbs.lock().unwrap();
         let icb = icbs
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("ICB handle not found"))?;
         if index != icb.commands.len() as u32 {
             return Err(QuantaError::invalid_param(
                 "ICB record index must equal current length",
@@ -930,7 +930,7 @@ impl GpuDevice for CpuDevice {
             let icbs = self.icbs.lock().unwrap();
             let icb = icbs
                 .get(&handle)
-                .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+                .ok_or_else(|| QuantaError::not_found("ICB handle not found"))?;
             if count as usize > icb.commands.len() {
                 return Err(QuantaError::invalid_param(
                     "ICB execute count exceeds recorded length",
@@ -1069,7 +1069,7 @@ impl GpuDevice for CpuDevice {
         let mut arrays = self.bindless_textures.lock().unwrap();
         let arr = arrays
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("bindless texture array not found"))?;
+            .ok_or_else(|| QuantaError::not_found("bindless texture array not found"))?;
         if index >= arr.cap {
             return Err(QuantaError::invalid_param(
                 "bindless texture index >= capacity",
@@ -1100,7 +1100,7 @@ impl GpuDevice for CpuDevice {
         let mut arrays = self.bindless_buffers.lock().unwrap();
         let arr = arrays
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("bindless buffer array not found"))?;
+            .ok_or_else(|| QuantaError::not_found("bindless buffer array not found"))?;
         if index >= arr.cap {
             return Err(QuantaError::invalid_param(
                 "bindless buffer index >= capacity",
@@ -1158,7 +1158,7 @@ impl GpuDevice for CpuDevice {
         let mut pipes = self.tess_pipelines.lock().unwrap();
         let pipe = pipes
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("tessellation pipeline not found"))?;
         if (index as usize) >= pipe.outer.len() {
             return Err(QuantaError::invalid_param(
                 "tessellation outer index out of range",
@@ -1177,7 +1177,7 @@ impl GpuDevice for CpuDevice {
         let mut pipes = self.tess_pipelines.lock().unwrap();
         let pipe = pipes
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("tessellation pipeline not found"))?;
         if (index as usize) >= pipe.inner.len() {
             return Err(QuantaError::invalid_param(
                 "tessellation inner index out of range",
@@ -1226,7 +1226,7 @@ impl GpuDevice for CpuDevice {
         let mut pipes = self.mesh_pipelines.lock().unwrap();
         let pipe = pipes
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("mesh pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("mesh pipeline not found"))?;
         pipe.dispatched.push(groups);
         let _ = pipe.max_vertices;
         let _ = pipe.max_primitives;
@@ -1260,7 +1260,7 @@ impl GpuDevice for CpuDevice {
         let mut states = self.vrs_states.lock().unwrap();
         let st = states
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("VRS state not found"))?;
+            .ok_or_else(|| QuantaError::not_found("VRS state not found"))?;
         if rate_code > 6 {
             return Err(QuantaError::invalid_param("VRS rate code out of range"));
         }

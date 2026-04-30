@@ -428,7 +428,7 @@ impl GpuDevice for MetalDevice {
     fn dispatch_mesh(&self, _pipeline: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {
         // Metal mesh shaders require MTLMeshRenderPipelineDescriptor (Metal 3, Apple M3+).
         // Check GPU family: mesh shaders need Apple GPU family 9 (M3).
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "mesh shaders require Metal 3 (Apple M3+) — not available on this device",
         ))
     }
@@ -444,7 +444,7 @@ impl GpuDevice for MetalDevice {
             f(self.device, ffi::sel(b"supportsFamily:\0"), 1006) != 0
         };
         if !supports_rt {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "ray tracing requires Apple GPU family 6+ (A14/M1)",
             ));
         }
@@ -494,7 +494,7 @@ impl GpuDevice for MetalDevice {
             f(self.device, ffi::sel(b"supportsFamily:\0"), 1006) != 0
         };
         if !supports_rt {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "ray tracing pipelines require Apple GPU family 6+ (A14/M1)",
             ));
         }
@@ -511,7 +511,7 @@ impl GpuDevice for MetalDevice {
             f(self.device, ffi::sel(b"supportsFamily:\0"), 1006) != 0
         };
         if !supports_rt {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "ray dispatch requires Apple GPU family 6+ (A14/M1)",
             ));
         }
@@ -538,7 +538,7 @@ impl GpuDevice for MetalDevice {
             f(self.device, ffi::sel(b"supportsFamily:\0"), 1007) != 0
         };
         if !supports_sparse {
-            return Err(QuantaError::invalid_param(
+            return Err(QuantaError::not_supported(
                 "sparse textures require Apple GPU family 7+ (A15/M2)",
             ));
         }
@@ -562,9 +562,7 @@ impl GpuDevice for MetalDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         if !textures.contains_key(&texture) {
-            return Err(QuantaError::invalid_param(
-                "sparse texture handle not found",
-            ));
+            return Err(QuantaError::not_found("sparse texture handle not found"));
         }
         // Tile mapping with MTLSparseTexture is not yet wired.
         // Succeeds silently on supported hardware (tile is considered mapped).
@@ -583,9 +581,7 @@ impl GpuDevice for MetalDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         if !textures.contains_key(&texture) {
-            return Err(QuantaError::invalid_param(
-                "sparse texture handle not found",
-            ));
+            return Err(QuantaError::not_found("sparse texture handle not found"));
         }
         Ok(())
     }
@@ -694,7 +690,7 @@ impl GpuDevice for MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let icb_state = icbs
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("ICB handle not found"))?;
         if index != icb_state.recorded {
             return Err(QuantaError::invalid_param(
                 "ICB record index must equal current length",
@@ -738,7 +734,7 @@ impl GpuDevice for MetalDevice {
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
             let icb_state = icbs
                 .get(&handle)
-                .ok_or_else(|| QuantaError::invalid_param("ICB handle not found"))?;
+                .ok_or_else(|| QuantaError::not_found("ICB handle not found"))?;
             if count > icb_state.recorded {
                 return Err(QuantaError::invalid_param(
                     "ICB execute count exceeds recorded length",
@@ -859,7 +855,7 @@ impl GpuDevice for MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let bundle = bundles
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("render bundle handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("render bundle handle not found"))?;
         if index != bundle.recorded {
             return Err(QuantaError::invalid_param(
                 "render bundle record index must equal current length",
@@ -1025,7 +1021,7 @@ impl GpuDevice for MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let arg_buf = *buffers
             .get(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("bindless texture array handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("bindless texture array handle not found"))?;
         let textures = self
             .textures
             .read()
@@ -1077,7 +1073,7 @@ impl GpuDevice for MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let arg_buf = *buffers
             .get(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("bindless buffer array handle not found"))?;
+            .ok_or_else(|| QuantaError::not_found("bindless buffer array handle not found"))?;
         let target = *buffers
             .get(&buffer)
             .ok_or_else(|| QuantaError::invalid_param("bindless: bad buffer handle"))?;
@@ -1175,7 +1171,7 @@ impl GpuDevice for MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipe = pipes
             .get(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("tessellation pipeline not found"))?;
         if index >= pipe.outer_count {
             return Err(QuantaError::invalid_param(
                 "tessellation outer index out of range",
@@ -1200,7 +1196,7 @@ impl GpuDevice for MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipe = pipes
             .get(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("tessellation pipeline not found"))?;
         if index >= pipe.inner_count {
             return Err(QuantaError::invalid_param(
                 "tessellation inner index out of range",
@@ -1264,7 +1260,7 @@ impl GpuDevice for MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let pipe = pipes
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("mesh pipeline not found"))?;
+            .ok_or_else(|| QuantaError::not_found("mesh pipeline not found"))?;
         pipe.dispatched.push(groups);
         Ok(())
     }
@@ -1303,7 +1299,7 @@ impl GpuDevice for MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let st = states
             .get_mut(&handle)
-            .ok_or_else(|| QuantaError::invalid_param("VRS state not found"))?;
+            .ok_or_else(|| QuantaError::not_found("VRS state not found"))?;
         st.rate_code = rate_code;
         Ok(())
     }
