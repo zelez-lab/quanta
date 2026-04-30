@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.47.0",
+    "@webgpu/types": "^0.1.40",
     "typescript": "^5.4.0"
   }
 }

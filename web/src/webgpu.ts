@@ -667,11 +667,11 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
     ): number {
       const dev = state.handles.get<GPUDevice>(device);
       const desc: GPURenderBundleEncoderDescriptor = {
-        colorFormats: [formatName(color_format_code)],
+        colorFormats: [formatName(color_format_code) as GPUTextureFormat],
         sampleCount: sample_count > 0 ? sample_count : 1,
       };
       if (depth_format_code !== 0) {
-        desc.depthStencilFormat = formatName(depth_format_code);
+        desc.depthStencilFormat = formatName(depth_format_code) as GPUTextureFormat;
       }
       const enc = dev.createRenderBundleEncoder(desc);
       return state.handles.alloc(enc);
@@ -729,7 +729,7 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
       const view = new Uint32Array(state.memory.buffer, bundles_ptr, count);
       const arr: GPURenderBundle[] = [];
       for (let i = 0; i < count; i++) {
-        arr.push(state.handles.get<GPURenderBundle>(view[i]));
+        arr.push(state.handles.get<GPURenderBundle>(view[i]!));
       }
       rp.executeBundles(arr);
     },
