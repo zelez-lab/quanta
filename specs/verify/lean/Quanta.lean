@@ -60,6 +60,9 @@ import Quanta.Bindless
 -- Tessellation pipelines (steps 022 + 023)
 import Quanta.Tessellation
 
+-- Mesh shaders (steps 024 + 025)
+import Quanta.MeshShader
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
