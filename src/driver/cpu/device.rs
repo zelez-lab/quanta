@@ -96,6 +96,24 @@ struct CpuMeshPipeline {
     dispatched: Vec<[u32; 3]>,
 }
 
+/// CPU acceleration-structure state. Mirrors
+/// `Quanta.RayTracing.AccelerationStructure`: kind + geometry count
+/// captured at build, immutable until `destroy`.
+#[allow(dead_code)]
+struct CpuAccelStructure {
+    kind: u8, // 0 = bottom, 1 = top
+    geom_count: u32,
+}
+
+/// CPU ray-tracing pipeline state. Mirrors
+/// `Quanta.RayTracing.Pipeline`: max recursion depth set at create +
+/// an in-order dispatch history.
+#[allow(dead_code)]
+struct CpuRtPipeline {
+    max_recursion: u32,
+    dispatched: Vec<(u32, u32)>,
+}
+
 /// CPU software device — executes GPU kernel IR without hardware.
 pub struct CpuDevice {
     caps: Caps,
@@ -112,6 +130,10 @@ pub struct CpuDevice {
     tess_pipelines: Mutex<HashMap<u64, CpuTessPipeline>>,
     /// Mesh-shader pipelines indexed by handle.
     mesh_pipelines: Mutex<HashMap<u64, CpuMeshPipeline>>,
+    /// Ray-tracing acceleration structures indexed by handle.
+    accel_structures: Mutex<HashMap<u64, CpuAccelStructure>>,
+    /// Ray-tracing pipelines indexed by handle.
+    rt_pipelines: Mutex<HashMap<u64, CpuRtPipeline>>,
 }
 
 impl CpuDevice {
@@ -136,6 +158,8 @@ impl CpuDevice {
             bindless_buffers: Mutex::new(HashMap::new()),
             tess_pipelines: Mutex::new(HashMap::new()),
             mesh_pipelines: Mutex::new(HashMap::new()),
+            accel_structures: Mutex::new(HashMap::new()),
+            rt_pipelines: Mutex::new(HashMap::new()),
         }
     }
 
@@ -470,30 +494,63 @@ impl GpuDevice for CpuDevice {
         ))
     }
 
-    // === M4.3: Ray tracing ===
+    // === M4.3: Ray tracing (steps 026 + 027) ===
+    //
+    // CPU implementation refines `Quanta.RayTracing` lifecycle:
+    // build_acceleration_structure stores kind + geom_count; create_
+    // ray_tracing_pipeline stores max_recursion + empty dispatch list;
+    // dispatch_rays appends (width, height); destroy_* removes the
+    // handle. Rasterization / intersection are not modeled — the
+    // proven contract is lifecycle + dispatch ordering only.
 
-    fn build_acceleration_structure(&self, _geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "ray tracing not supported on CPU device",
-        ))
+    fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
+        if geometry.is_empty() {
+            return Err(QuantaError::invalid_param(
+                "acceleration structure requires at least one geometry descriptor",
+            ));
+        }
+        let handle = self.alloc_handle();
+        self.accel_structures.lock().unwrap().insert(
+            handle,
+            CpuAccelStructure {
+                kind: 0,
+                geom_count: geometry.len() as u32,
+            },
+        );
+        Ok(handle)
     }
 
     fn create_ray_tracing_pipeline(
         &self,
-        _desc: &RayTracingPipelineDesc,
+        desc: &RayTracingPipelineDesc,
     ) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "ray tracing not supported on CPU device",
-        ))
+        let handle = self.alloc_handle();
+        self.rt_pipelines.lock().unwrap().insert(
+            handle,
+            CpuRtPipeline {
+                max_recursion: desc.max_recursion,
+                dispatched: Vec::new(),
+            },
+        );
+        Ok(handle)
     }
 
-    fn dispatch_rays(&self, _pipeline: u64, _width: u32, _height: u32) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
-            "ray tracing not supported on CPU device",
-        ))
+    fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError> {
+        let mut pipes = self.rt_pipelines.lock().unwrap();
+        let pipe = pipes
+            .get_mut(&pipeline)
+            .ok_or_else(|| QuantaError::invalid_param("ray tracing pipeline not found"))?;
+        pipe.dispatched.push((width, height));
+        Ok(())
     }
 
-    fn destroy_acceleration_structure(&self, _handle: u64) -> Result<(), QuantaError> {
+    fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {
+        self.accel_structures.lock().unwrap().remove(&handle);
+        Ok(())
+    }
+
+    fn destroy_ray_tracing_pipeline(&self, handle: u64) -> Result<(), QuantaError> {
+        self.rt_pipelines.lock().unwrap().remove(&handle);
         Ok(())
     }
 

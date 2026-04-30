@@ -142,6 +142,8 @@ impl Gpu {
     // === M4.3: Ray tracing ===
 
     /// Build a bottom-level acceleration structure from geometry.
+    /// Raw-handle API; prefer `acceleration_structure_blas` for the
+    /// Drop-safe typed wrapper.
     pub fn build_acceleration_structure(
         &self,
         geometry: &[GeometryDesc],
@@ -149,7 +151,35 @@ impl Gpu {
         self.inner.build_acceleration_structure(geometry)
     }
 
-    /// Create a ray tracing pipeline from shader stages.
+    /// Build a typed bottom-level
+    /// [`AccelerationStructure`](crate::AccelerationStructure)
+    /// (BLAS) from geometry. Steps 026 + 027.
+    ///
+    /// Returns `Err(NotSupported)` when the backend does not
+    /// implement ray tracing (WebGPU, devices without
+    /// `VK_KHR_acceleration_structure`).
+    pub fn acceleration_structure_blas(
+        &self,
+        geometry: &[GeometryDesc],
+    ) -> Result<crate::AccelerationStructure, QuantaError> {
+        if geometry.is_empty() {
+            return Err(QuantaError::invalid_param(
+                "acceleration structure requires at least one geometry descriptor",
+            ));
+        }
+        let handle = self.inner.build_acceleration_structure(geometry)?;
+        Ok(crate::AccelerationStructure {
+            handle,
+            kind: crate::AsKind::Bottom,
+            geom_count: geometry.len() as u32,
+            device: Some(self.inner.clone()),
+            live: true,
+        })
+    }
+
+    /// Create a ray tracing pipeline from shader stages. Raw-handle
+    /// API; prefer `ray_tracing_pipeline` for the Drop-safe typed
+    /// wrapper.
     pub fn create_ray_tracing_pipeline(
         &self,
         desc: &RayTracingPipelineDesc,
@@ -157,12 +187,36 @@ impl Gpu {
         self.inner.create_ray_tracing_pipeline(desc)
     }
 
-    /// Dispatch rays through a ray tracing pipeline.
+    /// Allocate a typed
+    /// [`RayTracingPipeline`](crate::RayTracingPipeline) from the
+    /// given descriptor. Steps 026 + 027.
+    ///
+    /// Bounds-checks `max_recursion` against the proven
+    /// hardware-minimum cap before dispatching to the backend.
+    pub fn ray_tracing_pipeline(
+        &self,
+        desc: &RayTracingPipelineDesc,
+    ) -> Result<crate::RayTracingPipeline, QuantaError> {
+        if desc.max_recursion > crate::MAX_RECURSION_DEPTH {
+            return Err(QuantaError::invalid_param(
+                "max_recursion exceeds MAX_RECURSION_DEPTH",
+            ));
+        }
+        let handle = self.inner.create_ray_tracing_pipeline(desc)?;
+        Ok(crate::RayTracingPipeline {
+            handle,
+            max_recursion: desc.max_recursion,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
+    /// Dispatch rays through a ray tracing pipeline (raw-handle API).
     pub fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError> {
         self.inner.dispatch_rays(pipeline, width, height)
     }
 
-    /// Destroy an acceleration structure.
+    /// Destroy an acceleration structure (raw-handle API).
     pub fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {
         self.inner.destroy_acceleration_structure(handle)
     }

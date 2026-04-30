@@ -373,6 +373,12 @@ pub trait GpuDevice: Send + Sync {
     /// Destroy an acceleration structure.
     fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError>;
 
+    /// Destroy a ray tracing pipeline. Default no-ops so backends
+    /// without a registry don't error on `Drop`.
+    fn destroy_ray_tracing_pipeline(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     // === M5.1: Sparse textures ===
 
     /// Create a sparse (virtual) texture — memory is not committed until tiles are mapped.
