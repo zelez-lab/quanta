@@ -743,6 +743,18 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             (enabled_extensions.len() as u32, enabled_extensions.as_ptr())
         };
 
+        // Slice 18 — enable the device features we depend on.
+        // Each field is set only when the physical device already
+        // advertises support; enabling an unsupported feature would
+        // make vkCreateDevice fail. Today: sparseBinding (used by
+        // the future bind-sparse path that builds on slice 16).
+        // tessellationShader can join here when the TCS+TES
+        // pipeline-create path lands.
+        let mut enabled_feats = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
+        if device_features.sparse_binding != 0 {
+            enabled_feats.sparse_binding = 1;
+        }
+
         let device_create = ffi::VkDeviceCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             p_next: &sync2_features as *const _ as *const core::ffi::c_void,
@@ -753,7 +765,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             pp_enabled_layer_names: core::ptr::null(),
             enabled_extension_count: enabled_ext_count,
             pp_enabled_extension_names: enabled_ext_ptr,
-            p_enabled_features: core::ptr::null(),
+            p_enabled_features: &enabled_feats as *const _ as *const core::ffi::c_void,
         };
 
         let mut device = ffi::null_handle();
