@@ -50,6 +50,19 @@ pub struct VulkanDevice {
     /// transformer, so this list-of-dispatches refinement satisfies
     /// the proof contract on every Vulkan implementation.
     pub(super) icbs: RwLock<HashMap<u64, VkIcb>>,
+    /// Render-path Indirect Command Buffers (steps 032 + 033). One
+    /// pre-allocated secondary VkCommandBuffer per command slot,
+    /// recorded with VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT
+    /// against the pipeline's compatible render pass; replayed via
+    /// vkCmdExecuteCommands inside an active render pass.
+    pub(super) render_bundles: RwLock<HashMap<u64, VulkanRenderBundle>>,
+}
+
+/// State for one Vulkan render bundle.
+pub(super) struct VulkanRenderBundle {
+    pub(super) cap: u32,
+    pub(super) recorded: u32,
+    pub(super) secondaries: Vec<ffi::VkCommandBuffer>,
 }
 
 /// State for one Vulkan ICB.
@@ -658,6 +671,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             staging_pool: Mutex::new(Vec::new()),
             layout_cache: Mutex::new(HashMap::new()),
             icbs: RwLock::new(HashMap::new()),
+            render_bundles: RwLock::new(HashMap::new()),
         }));
 
         break; // Use first suitable device

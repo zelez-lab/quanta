@@ -575,7 +575,37 @@ impl VulkanDevice {
                 clear_value_count: clear_values.len() as u32,
                 p_clear_values: clear_values.as_ptr(),
             };
-            ffi::vkCmdBeginRenderPass(cmd, &rp_begin, ffi::VK_SUBPASS_CONTENTS_INLINE);
+            // If any op is `ExecuteRenderBundle`, the pass must be
+            // begun with SECONDARY_COMMAND_BUFFERS contents (Vulkan
+            // forbids mixing inline + secondary inside one
+            // subpass). Pre-validate that inline draws and bundle
+            // execute don't coexist in the same pass.
+            let uses_bundles = pass
+                .ops
+                .iter()
+                .any(|op| matches!(op, RenderOp::ExecuteRenderBundle { .. }));
+            if uses_bundles {
+                let has_inline_draw = pass.ops.iter().any(|op| {
+                    matches!(
+                        op,
+                        RenderOp::Draw { .. }
+                            | RenderOp::DrawIndexed { .. }
+                            | RenderOp::DrawIndirect { .. }
+                            | RenderOp::DrawIndexedIndirect { .. }
+                    )
+                });
+                if has_inline_draw {
+                    return Err(QuantaError::invalid_param(
+                        "Vulkan render: cannot mix inline draws with execute_bundle in one render pass",
+                    ));
+                }
+            }
+            let subpass_contents = if uses_bundles {
+                ffi::VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS
+            } else {
+                ffi::VK_SUBPASS_CONTENTS_INLINE
+            };
+            ffi::vkCmdBeginRenderPass(cmd, &rp_begin, subpass_contents);
 
             let mut current_index_buffer: Option<ffi::VkBuffer> = None;
 
@@ -793,16 +823,26 @@ impl VulkanDevice {
                             "Vulkan render: variable-rate shading pending (Tier A 029)",
                         ));
                     }
-                    RenderOp::ExecuteRenderBundle { .. } => {
-                        // Native lowering: secondary CB recorded with
-                        // VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT
-                        // replayed via vkCmdExecuteCommands. Pending
-                        // commit; the proof contract (T7006) is met
-                        // by the recording shape alone.
-                        ffi::vkCmdEndRenderPass(cmd);
-                        return Err(QuantaError::invalid_param(
-                            "Vulkan render: secondary-CB execute_bundle not yet wired",
-                        ));
+                    RenderOp::ExecuteRenderBundle {
+                        bundle_handle,
+                        count,
+                    } => {
+                        let bundles = self
+                            .render_bundles
+                            .read()
+                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                        let bundle = bundles.get(bundle_handle).ok_or_else(|| {
+                            QuantaError::invalid_param("render bundle handle not found")
+                        })?;
+                        if *count > bundle.recorded {
+                            ffi::vkCmdEndRenderPass(cmd);
+                            return Err(QuantaError::invalid_param(
+                                "execute_bundle count exceeds recorded length",
+                            ));
+                        }
+                        if *count > 0 {
+                            ffi::vkCmdExecuteCommands(cmd, *count, bundle.secondaries.as_ptr());
+                        }
                     }
                 }
             }

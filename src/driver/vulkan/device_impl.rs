@@ -843,6 +843,149 @@ impl GpuDevice for VulkanDevice {
         Ok(())
     }
 
+    // === Render bundles (steps 032 + 033, render path) ===
+    //
+    // Native lowering: pre-allocate `max_commands` secondary command
+    // buffers (LEVEL_SECONDARY). On record_draw, begin the
+    // secondary CB with RENDER_PASS_CONTINUE_BIT against the
+    // pipeline's compatible VkRenderPass, vkCmdBindPipeline +
+    // vkCmdDraw, end. RenderOp::ExecuteRenderBundle in the parent
+    // render pass calls vkCmdExecuteCommands with the recorded
+    // secondaries. Mixing inline draws with bundle execute in the
+    // same pass is rejected (Vulkan subpass-contents rule).
+
+    fn render_bundle_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        let alloc_info = ffi::VkCommandBufferAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            command_pool: self.command_pool,
+            level: ffi::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+            command_buffer_count: max_commands,
+        };
+        let mut secondaries: Vec<ffi::VkCommandBuffer> =
+            vec![ffi::null_handle(); max_commands as usize];
+        if max_commands > 0 {
+            let r = unsafe {
+                ffi::vkAllocateCommandBuffers(self.device, &alloc_info, secondaries.as_mut_ptr())
+            };
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        let handle = self.alloc_handle();
+        self.render_bundles
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::VulkanRenderBundle {
+                    cap: max_commands,
+                    recorded: 0,
+                    secondaries,
+                },
+            );
+        Ok(handle)
+    }
+
+    fn render_bundle_record_draw(
+        &self,
+        handle: u64,
+        index: u32,
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        let (vk_pipeline, vk_render_pass) = {
+            let rps = self
+                .render_pipelines
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let rp = rps
+                .get(&pipeline)
+                .ok_or_else(|| QuantaError::invalid_param("bad pipeline in render bundle"))?;
+            (rp.pipeline, rp.render_pass)
+        };
+
+        let secondary_cb = {
+            let mut bundles = self
+                .render_bundles
+                .write()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let bundle = bundles
+                .get_mut(&handle)
+                .ok_or_else(|| QuantaError::invalid_param("render bundle handle not found"))?;
+            if index != bundle.recorded {
+                return Err(QuantaError::invalid_param(
+                    "render bundle record index must equal current length",
+                ));
+            }
+            if index >= bundle.cap {
+                return Err(QuantaError::invalid_param(
+                    "render bundle index >= capacity",
+                ));
+            }
+            let cb = bundle.secondaries[index as usize];
+            bundle.recorded += 1;
+            cb
+        };
+
+        let inheritance = ffi::VkCommandBufferInheritanceInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+            p_next: core::ptr::null(),
+            render_pass: vk_render_pass,
+            subpass: 0,
+            framebuffer: ffi::null_handle(),
+            occlusion_query_enable: 0,
+            query_flags: 0,
+            pipeline_statistics: 0,
+        };
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT
+                | ffi::VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
+            p_inheritance_info: &inheritance as *const _ as *const core::ffi::c_void,
+        };
+        unsafe {
+            let r = ffi::vkBeginCommandBuffer(secondary_cb, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+            ffi::vkCmdBindPipeline(
+                secondary_cb,
+                ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                vk_pipeline,
+            );
+            ffi::vkCmdDraw(secondary_cb, vertex_count, instance_count.max(1), 0, 0);
+            let r = ffi::vkEndCommandBuffer(secondary_cb);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        Ok(())
+    }
+
+    fn render_bundle_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let removed = self
+            .render_bundles
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(bundle) = removed
+            && !bundle.secondaries.is_empty()
+        {
+            unsafe {
+                ffi::vkFreeCommandBuffers(
+                    self.device,
+                    self.command_pool,
+                    bundle.secondaries.len() as u32,
+                    bundle.secondaries.as_ptr(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         let removed = self
             .icbs
