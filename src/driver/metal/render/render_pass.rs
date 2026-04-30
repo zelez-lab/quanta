@@ -515,6 +515,46 @@ impl MetalDevice {
                             "Metal render: variable-rate shading pending (Tier A 028)",
                         ));
                     }
+
+                    // Indirect render bundle replay (steps 032 + 033).
+                    // Metal: executeCommandsInBuffer:withRange: on the
+                    // active render encoder. The bundle's recorded
+                    // resources must be declared via useResource on
+                    // the encoder so the GPU hazard tracker sees
+                    // them.
+                    RenderOp::ExecuteRenderBundle {
+                        bundle_handle,
+                        count,
+                    } => {
+                        let bundles = self
+                            .render_bundles
+                            .read()
+                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                        let bundle = bundles.get(bundle_handle).ok_or_else(|| {
+                            QuantaError::invalid_param("render bundle handle not found")
+                        })?;
+                        if *count > bundle.recorded {
+                            return Err(QuantaError::invalid_param(
+                                "execute_bundle count exceeds recorded length",
+                            ));
+                        }
+                        const MTL_RESOURCE_USAGE_READ: ffi::NSUInteger = 1;
+                        const MTL_RESOURCE_USAGE_WRITE: ffi::NSUInteger = 2;
+                        for buf_handle in &bundle.used_buffers {
+                            if let Some(buf) = buffers.get(buf_handle) {
+                                ffi::msg_use_resource(
+                                    encoder,
+                                    *buf,
+                                    MTL_RESOURCE_USAGE_READ | MTL_RESOURCE_USAGE_WRITE,
+                                );
+                            }
+                        }
+                        let range = ffi::NSRange {
+                            location: 0,
+                            length: *count as u64,
+                        };
+                        ffi::msg_execute_commands_in_buffer(encoder, bundle.icb, range);
+                    }
                 }
             }
 

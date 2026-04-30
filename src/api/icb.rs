@@ -154,3 +154,85 @@ impl Drop for IndirectCommandBuffer {
         }
     }
 }
+
+/// A render-path Indirect Command Buffer.
+///
+/// Holds recorded draw commands that the GPU replays inside an
+/// active render pass via
+/// [`RenderPass::execute_bundle`](crate::RenderPass::execute_bundle).
+/// Backends lower this to Metal `MTLIndirectCommandBuffer` with
+/// DRAW command types, Vulkan secondary command buffers recorded
+/// in `RENDER_PASS_CONTINUE` mode, or WebGPU `GPURenderBundle`.
+///
+/// Refines the `Quanta.Icb.Command.draw` constructor from the Lean
+/// equivalence theorem (T7000 / T7006). The buffer has a fixed
+/// capacity supplied at create time; records past `capacity()`
+/// return an error; `Drop` releases the underlying handle.
+pub struct IndirectRenderBundle {
+    pub(crate) handle: u64,
+    pub(crate) cap: u32,
+    pub(crate) recorded: u32,
+    pub(crate) device: Arc<dyn GpuDevice>,
+    pub(crate) live: bool,
+}
+
+impl IndirectRenderBundle {
+    /// Underlying device handle.
+    pub fn handle(&self) -> u64 {
+        self.handle
+    }
+
+    /// Maximum number of draws this bundle can hold.
+    pub fn capacity(&self) -> u32 {
+        self.cap
+    }
+
+    /// Number of draws recorded so far.
+    pub fn len(&self) -> u32 {
+        self.recorded
+    }
+
+    /// Whether no draws have been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.recorded == 0
+    }
+
+    /// Append a draw command to the bundle.
+    ///
+    /// Records the render pipeline, vertex / instance counts. The
+    /// recorded draw is replayed when a `RenderPass` calls
+    /// `execute_bundle(self, count)`.
+    ///
+    /// Refines `Quanta.Icb.Command.draw`.
+    pub fn record_draw(
+        &mut self,
+        pipeline: &Pipeline,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        if !self.live {
+            return Err(QuantaError::invalid_param("render bundle is not live"));
+        }
+        if self.recorded >= self.cap {
+            return Err(QuantaError::invalid_param("render bundle is full"));
+        }
+        self.device.render_bundle_record_draw(
+            self.handle,
+            self.recorded,
+            pipeline.handle(),
+            vertex_count,
+            instance_count,
+        )?;
+        self.recorded += 1;
+        Ok(())
+    }
+}
+
+impl Drop for IndirectRenderBundle {
+    fn drop(&mut self) {
+        if self.live {
+            let _ = self.device.render_bundle_destroy(self.handle);
+            self.live = false;
+        }
+    }
+}

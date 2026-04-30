@@ -673,6 +673,54 @@ pub unsafe fn msg_use_resource(encoder: Id, resource: Id, usage: NSUInteger) {
     f(encoder, sel(b"useResource:usage:\0"), resource, usage)
 }
 
+/// `[icb indirectRenderCommandAtIndex:]` — render-path counterpart
+/// to `indirectComputeCommandAtIndex:`. Returns the
+/// MTLIndirectRenderCommand slot the caller writes pipeline +
+/// vertex buffers + draw into.
+pub unsafe fn msg_icb_render_command_at_index(icb: Id, index: NSUInteger) -> Id {
+    msg_id_u64(icb, b"indirectRenderCommandAtIndex:\0", index)
+}
+
+/// `[indirectRenderCommand setRenderPipelineState:]`
+pub unsafe fn msg_irc_set_render_pipeline(cmd: Id, pipeline: Id) {
+    msg_void_id(cmd, b"setRenderPipelineState:\0", pipeline)
+}
+
+/// `[indirectRenderCommand setVertexBuffer:offset:atIndex:]`
+pub unsafe fn msg_irc_set_vertex_buffer(cmd: Id, buffer: Id, offset: u64, index: u64) {
+    msg_set_buffer(
+        cmd,
+        b"setVertexBuffer:offset:atIndex:\0",
+        buffer,
+        offset,
+        index,
+    )
+}
+
+/// `[indirectRenderCommand drawPrimitives:vertexStart:vertexCount:
+///   instanceCount:baseInstance:]` — record a non-indexed draw
+/// into the ICB slot.
+pub unsafe fn msg_irc_draw_primitives(
+    cmd: Id,
+    primitive_type: NSUInteger,
+    vertex_start: u64,
+    vertex_count: u64,
+    instance_count: u64,
+    base_instance: u64,
+) {
+    let f: unsafe extern "C" fn(Id, Sel, NSUInteger, u64, u64, u64, u64) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        cmd,
+        sel(b"drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:\0"),
+        primitive_type,
+        vertex_start,
+        vertex_count,
+        instance_count,
+        base_instance,
+    )
+}
+
 /// generateMipmapsForTexture: on blit encoder
 pub unsafe fn msg_generate_mipmaps(blit: Id, texture: Id) {
     msg_void_id(blit, b"generateMipmapsForTexture:\0", texture)

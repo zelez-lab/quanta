@@ -15,6 +15,26 @@ impl Gpu {
         self.inner.pipeline_create(desc)
     }
 
+    /// Allocate a render-path Indirect Command Buffer
+    /// ([`IndirectRenderBundle`](crate::IndirectRenderBundle)) with
+    /// the given capacity.
+    ///
+    /// Backends with no native render-bundle support return an error
+    /// at create time. Steps 032 + 033, render path.
+    pub fn render_bundle(
+        &self,
+        max_commands: u32,
+    ) -> Result<crate::IndirectRenderBundle, QuantaError> {
+        let handle = self.inner.render_bundle_create(max_commands)?;
+        Ok(crate::IndirectRenderBundle {
+            handle,
+            cap: max_commands,
+            recorded: 0,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
     /// Begin a chainable render pass targeting a texture.
     ///
     /// Returns a `RenderBuilder` that records draw commands via method

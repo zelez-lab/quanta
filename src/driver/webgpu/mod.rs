@@ -1131,6 +1131,12 @@ impl QGpuDevice for WebgpuDevice {
                         "WebGPU render: indirect draw pending (Tier A 032+033)",
                     ));
                 }
+                RenderOp::ExecuteRenderBundle { .. } => {
+                    unsafe { ffi::quanta_render_pass_end(rp) };
+                    return Err(Self::err(
+                        "WebGPU render: GPURenderBundle.executeBundles not yet wired",
+                    ));
+                }
                 RenderOp::BeginOcclusionQuery { .. } | RenderOp::EndOcclusionQuery { .. } => {
                     unsafe { ffi::quanta_render_pass_end(rp) };
                     return Err(Self::err("WebGPU render: occlusion queries pending"));

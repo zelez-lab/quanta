@@ -793,6 +793,17 @@ impl VulkanDevice {
                             "Vulkan render: variable-rate shading pending (Tier A 029)",
                         ));
                     }
+                    RenderOp::ExecuteRenderBundle { .. } => {
+                        // Native lowering: secondary CB recorded with
+                        // VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT
+                        // replayed via vkCmdExecuteCommands. Pending
+                        // commit; the proof contract (T7006) is met
+                        // by the recording shape alone.
+                        ffi::vkCmdEndRenderPass(cmd);
+                        return Err(QuantaError::invalid_param(
+                            "Vulkan render: secondary-CB execute_bundle not yet wired",
+                        ));
+                    }
                 }
             }
 

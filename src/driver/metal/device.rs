@@ -26,6 +26,24 @@ pub(crate) struct MetalIcb {
     pub(crate) recorded: u32,
 }
 
+/// State for one Metal MTLIndirectCommandBuffer used as a *render*
+/// bundle (DRAW command type instead of ConcurrentDispatch). Steps
+/// 032 + 033, render path. Replayed from inside an active render
+/// pass via `executeCommandsInBuffer:withRange:` on the render
+/// encoder; see `RenderOp::ExecuteRenderBundle`.
+pub(crate) struct MetalRenderBundle {
+    /// The MTLIndirectCommandBuffer object (DRAW-typed).
+    pub(crate) icb: ffi::Id,
+    /// Capacity (max command count) supplied at create time.
+    pub(crate) cap: u32,
+    /// Number of draws recorded so far. Always ≤ cap.
+    pub(crate) recorded: u32,
+    /// Resource buffer handles touched by recorded draws — declared
+    /// via `useResource:usage:` on the render encoder before
+    /// execution.
+    pub(crate) used_buffers: Vec<u64>,
+}
+
 /// Metal-backed GPU device.
 pub struct MetalDevice {
     pub(crate) device: ffi::Id,
@@ -41,6 +59,7 @@ pub struct MetalDevice {
     pub(crate) samplers: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) queues: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) icbs: RwLock<HashMap<u64, MetalIcb>>,
+    pub(crate) render_bundles: RwLock<HashMap<u64, MetalRenderBundle>>,
     pub(crate) next_handle: AtomicU64,
 }
 
@@ -98,6 +117,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         samplers: RwLock::new(HashMap::new()),
         queues: RwLock::new(HashMap::new()),
         icbs: RwLock::new(HashMap::new()),
+        render_bundles: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
     })]
 }

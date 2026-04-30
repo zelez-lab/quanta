@@ -139,6 +139,18 @@ pub(crate) enum RenderOp {
     SetShadingRateImage {
         texture_handle: u64,
     },
+
+    // Indirect render bundle (steps 032 + 033, render path)
+    /// Replay the first `count` recorded draws from an
+    /// `IndirectRenderBundle`. Lowered to Metal
+    /// `executeCommandsInBuffer:withRange:`, Vulkan
+    /// `vkCmdExecuteCommands` (with secondary CBs recorded in
+    /// VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT mode), or
+    /// WebGPU `pass.executeBundles`.
+    ExecuteRenderBundle {
+        bundle_handle: u64,
+        count: u32,
+    },
 }
 
 /// Texture sampling configuration.
@@ -425,6 +437,24 @@ impl RenderPass {
     pub fn set_shading_rate_image(&mut self, texture: &Texture) {
         self.ops.push(RenderOp::SetShadingRateImage {
             texture_handle: texture.handle(),
+        });
+    }
+
+    // === Indirect render bundles (steps 032 + 033) ===
+
+    /// Replay the first `count` recorded draws from an
+    /// [`IndirectRenderBundle`](crate::IndirectRenderBundle).
+    ///
+    /// Backends translate this to Metal
+    /// `executeCommandsInBuffer:withRange:` on the active render
+    /// encoder, Vulkan `vkCmdExecuteCommands` inside the parent
+    /// render pass, or WebGPU `pass.executeBundles`. The proof
+    /// contract — recorded order is preserved on execute (T7000) —
+    /// applies regardless of backend.
+    pub fn execute_bundle(&mut self, bundle: &crate::IndirectRenderBundle, count: u32) {
+        self.ops.push(RenderOp::ExecuteRenderBundle {
+            bundle_handle: bundle.handle(),
+            count,
         });
     }
 

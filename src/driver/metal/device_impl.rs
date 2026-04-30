@@ -792,20 +792,112 @@ impl GpuDevice for MetalDevice {
         _vertex_count: u32,
         _instance_count: u32,
     ) -> Result<(), QuantaError> {
-        // Metal's MTLIndirectRenderCommand uses a *separate*
-        // descriptor (DRAW / DRAW_INDEXED command types) and is
-        // recorded via `indirectRenderCommandAtIndex:`, then
-        // executed via `executeCommandsInBuffer:withRange:` on a
-        // *render* encoder inside an active render pass. Mixing
-        // it with the existing ConcurrentDispatch ICB requires a
-        // separate handle type. The proof contract (T7006) is met
-        // by the typed API; the native lowering lands as a future
-        // commit.
         Err(QuantaError::invalid_param(
-            "Metal render-path ICB record_draw not yet implemented \
-             (requires a separate MTLIndirectCommandBuffer with \
-             DRAW command types)",
+            "use IndirectRenderBundle (gpu.render_bundle()) for Metal \
+             render-path ICB; the dispatch ICB cannot mix DRAW commands",
         ))
+    }
+
+    // === Indirect render bundles (Metal native MTLIndirectRenderCommand) ===
+
+    fn render_bundle_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        // Allocate an ICB whose command type is DRAW. Distinct from
+        // the compute ICB's ConcurrentDispatch type.
+        let icb = unsafe {
+            let desc = ffi::msg_new_icb_descriptor(
+                ffi::MTL_INDIRECT_COMMAND_TYPE_DRAW,
+                crate::api::wave::MAX_BINDINGS as ffi::NSUInteger,
+            );
+            ffi::msg_new_icb(
+                self.device,
+                desc,
+                max_commands as ffi::NSUInteger,
+                ffi::MTL_RESOURCE_STORAGE_MODE_SHARED,
+            )
+        };
+        if icb.is_null() {
+            return Err(QuantaError::internal(
+                "failed to create MTLIndirectCommandBuffer (DRAW)",
+            ));
+        }
+        let handle = self.alloc_handle();
+        self.render_bundles
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::MetalRenderBundle {
+                    icb,
+                    cap: max_commands,
+                    recorded: 0,
+                    used_buffers: Vec::new(),
+                },
+            );
+        Ok(handle)
+    }
+
+    fn render_bundle_record_draw(
+        &self,
+        handle: u64,
+        index: u32,
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        let render_pipelines = self
+            .render_pipelines
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipeline_id = *render_pipelines
+            .get(&pipeline)
+            .ok_or_else(|| QuantaError::invalid_param("bad pipeline handle in render bundle"))?;
+        drop(render_pipelines);
+
+        let mut bundles = self
+            .render_bundles
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let bundle = bundles
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("render bundle handle not found"))?;
+        if index != bundle.recorded {
+            return Err(QuantaError::invalid_param(
+                "render bundle record index must equal current length",
+            ));
+        }
+        if index >= bundle.cap {
+            return Err(QuantaError::invalid_param(
+                "render bundle index >= capacity",
+            ));
+        }
+        unsafe {
+            let cmd = ffi::msg_icb_render_command_at_index(bundle.icb, index as ffi::NSUInteger);
+            ffi::msg_irc_set_render_pipeline(cmd, pipeline_id);
+            ffi::msg_irc_draw_primitives(
+                cmd,
+                ffi::MTL_PRIMITIVE_TYPE_TRIANGLE,
+                0,
+                vertex_count as u64,
+                instance_count.max(1) as u64,
+                0,
+            );
+        }
+        bundle.recorded += 1;
+        Ok(())
+    }
+
+    fn render_bundle_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let removed = self
+            .render_bundles
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(bundle) = removed {
+            unsafe {
+                ffi::msg_void(bundle.icb, b"release\0");
+            }
+        }
+        Ok(())
     }
 
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {

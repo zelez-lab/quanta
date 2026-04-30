@@ -394,6 +394,44 @@ pub trait GpuDevice: Send + Sync {
         ))
     }
 
+    // === Indirect render bundles (steps 032 + 033, render path) ===
+    //
+    // A render bundle is a separate ICB type from the compute
+    // `indirect_buffer_*` family — it's recorded with DRAW command
+    // types and must be replayed inside an active render pass via
+    // `RenderPass::execute_bundle`. Backends with no native render
+    // bundle support fall through to the default error.
+
+    /// Allocate a render-path Indirect Command Buffer with capacity
+    /// `max_commands`. Returns a fresh handle that the typed
+    /// [`IndirectRenderBundle`](crate::IndirectRenderBundle)
+    /// wraps. Default returns "not yet implemented".
+    fn render_bundle_create(&self, _max_commands: u32) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "render-path indirect command buffers not yet implemented on this backend",
+        ))
+    }
+
+    /// Record one draw into a render bundle at `index`.
+    fn render_bundle_record_draw(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _pipeline: u64,
+        _vertex_count: u32,
+        _instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "render-path indirect command buffers not yet implemented on this backend",
+        ))
+    }
+
+    /// Destroy a render bundle handle. Default no-ops so backends
+    /// without an implementation don't error on `Drop`.
+    fn render_bundle_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     /// Execute commands from an indirect command buffer.
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError>;
 

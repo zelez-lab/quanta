@@ -390,6 +390,26 @@ impl GpuDevice for ValidationDevice {
             .icb_record_draw(handle, index, pipeline, vertex_count, instance_count)
     }
 
+    fn render_bundle_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        self.inner.render_bundle_create(max_commands)
+    }
+
+    fn render_bundle_record_draw(
+        &self,
+        handle: u64,
+        index: u32,
+        pipeline: u64,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Result<(), QuantaError> {
+        self.inner
+            .render_bundle_record_draw(handle, index, pipeline, vertex_count, instance_count)
+    }
+
+    fn render_bundle_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.render_bundle_destroy(handle)
+    }
+
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
         self.inner.indirect_buffer_execute(handle, count)
     }

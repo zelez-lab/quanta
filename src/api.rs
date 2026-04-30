@@ -18,7 +18,7 @@ pub use device::GpuDevice;
 pub use error::{QuantaError, QuantaErrorKind};
 pub use field::{Field, MappedField};
 pub use gpu::Gpu;
-pub use icb::IndirectCommandBuffer;
+pub use icb::{IndirectCommandBuffer, IndirectRenderBundle};
 pub use pipeline::*;
 pub use pulse::{OcclusionQuery, Pulse, Timeline, TimestampQuery};
 pub use ray_tracing::*;
