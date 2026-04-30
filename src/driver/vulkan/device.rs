@@ -85,6 +85,17 @@ pub struct VulkanDevice {
     /// `NotSupported` from the `RenderOp::SetShadingRate` arm
     /// (step 063 native VRS lowering).
     pub(super) vrs_set_rate_fn: Option<ffi::PfnVkCmdSetFragmentShadingRateKHR>,
+    /// Function pointer for `vkCmdDrawMeshTasksEXT`. Resolved when
+    /// `VK_EXT_mesh_shader` is enabled; `None` otherwise. Mesh
+    /// pipelines surface NotSupported when this is None
+    /// (step 063 native mesh-shader scaffolding).
+    pub(super) mesh_draw_fn: Option<ffi::PfnVkCmdDrawMeshTasksEXT>,
+    /// Function pointer for `vkCmdTraceRaysKHR`. Resolved when
+    /// both `VK_KHR_ray_tracing_pipeline` and
+    /// `VK_KHR_acceleration_structure` are enabled; `None`
+    /// otherwise. Ray-tracing dispatch surfaces NotSupported when
+    /// None (step 063 native ray-tracing scaffolding).
+    pub(super) trace_rays_fn: Option<ffi::PfnVkCmdTraceRaysKHR>,
 }
 
 /// Software tessellation pipeline state — refines
@@ -623,18 +634,45 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             synchronization2: 1, // VK_TRUE
         };
 
-        // Step 063 — enable VK_KHR_fragment_shading_rate when the
-        // physical device advertises it. The render encoder loads
-        // `vkCmdSetFragmentShadingRateKHR` after device creation and
-        // wires `RenderOp::SetShadingRate` to it; absence of the
-        // extension keeps the existing NotSupported behavior.
+        // Step 063 — enable advanced render extensions when present
+        // on the physical device. Each block:
+        //   * Detects the extension.
+        //   * Adds its null-terminated name to enabled_extensions.
+        //   * Resolves its entry-point proc address after vkCreateDevice.
+        //   * Stores the resolved Pfn in VulkanDevice; absence keeps
+        //     the existing NotSupported behavior on the matching
+        //     render-encoder / dispatch arm.
         let has_vrs_ext = physical_device_has_extension(pd, b"VK_KHR_fragment_shading_rate\0");
-        let vrs_ext_name = b"VK_KHR_fragment_shading_rate\0".as_ptr() as *const core::ffi::c_char;
-        let enabled_extensions: [*const core::ffi::c_char; 1] = [vrs_ext_name];
-        let (enabled_ext_count, enabled_ext_ptr) = if has_vrs_ext {
-            (1u32, enabled_extensions.as_ptr())
-        } else {
+        let has_mesh_ext = physical_device_has_extension(pd, b"VK_EXT_mesh_shader\0");
+        let has_accel_ext = physical_device_has_extension(pd, b"VK_KHR_acceleration_structure\0");
+        let has_rt_pipeline_ext =
+            physical_device_has_extension(pd, b"VK_KHR_ray_tracing_pipeline\0");
+        let has_rt = has_accel_ext && has_rt_pipeline_ext;
+
+        let mut enabled_extensions: Vec<*const core::ffi::c_char> = Vec::new();
+        if has_vrs_ext {
+            enabled_extensions
+                .push(b"VK_KHR_fragment_shading_rate\0".as_ptr() as *const core::ffi::c_char);
+        }
+        if has_mesh_ext {
+            enabled_extensions.push(b"VK_EXT_mesh_shader\0".as_ptr() as *const core::ffi::c_char);
+        }
+        if has_rt {
+            enabled_extensions
+                .push(b"VK_KHR_acceleration_structure\0".as_ptr() as *const core::ffi::c_char);
+            enabled_extensions
+                .push(b"VK_KHR_ray_tracing_pipeline\0".as_ptr() as *const core::ffi::c_char);
+            // Both ray-tracing extensions require deferred-host-ops.
+            enabled_extensions
+                .push(b"VK_KHR_deferred_host_operations\0".as_ptr() as *const core::ffi::c_char);
+            // VK_KHR_acceleration_structure requires VK_KHR_buffer_device_address.
+            enabled_extensions
+                .push(b"VK_KHR_buffer_device_address\0".as_ptr() as *const core::ffi::c_char);
+        }
+        let (enabled_ext_count, enabled_ext_ptr) = if enabled_extensions.is_empty() {
             (0u32, core::ptr::null())
+        } else {
+            (enabled_extensions.len() as u32, enabled_extensions.as_ptr())
         };
 
         let device_create = ffi::VkDeviceCreateInfo {
@@ -660,27 +698,60 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         let mut queue = ffi::null_handle();
         unsafe { ffi::vkGetDeviceQueue(device, qf_index as u32, 0, &mut queue) };
 
-        // Resolve the VRS extension proc address. Even with the
-        // extension enabled at vkCreateDevice, an underlying driver
-        // can return null (e.g. lavapipe without the optional
-        // feature). Treat null the same as "extension absent" so the
-        // render encoder falls through to NotSupported.
+        // Resolve extension proc addresses. Even with an extension
+        // enabled at vkCreateDevice, the driver can return null
+        // (lavapipe without the optional feature, partial
+        // implementations, etc.). Treat null the same as "extension
+        // absent" so the matching arm falls through to NotSupported.
+        //
+        // SAFETY for each transmute below: vkGetDeviceProcAddr
+        // returns a valid function pointer of the documented
+        // signature when non-null, per the Vulkan spec.
         let vrs_set_rate_fn: Option<ffi::PfnVkCmdSetFragmentShadingRateKHR> = if has_vrs_ext {
             let name = b"vkCmdSetFragmentShadingRateKHR\0";
-            let proc_ptr = unsafe {
+            let p = unsafe {
                 ffi::vkGetDeviceProcAddr(device, name.as_ptr() as *const core::ffi::c_char)
             };
-            if proc_ptr.is_null() {
+            if p.is_null() {
                 None
             } else {
-                // SAFETY: vkGetDeviceProcAddr returns a valid
-                // function pointer of the documented signature when
-                // non-null, per the Vulkan spec.
                 Some(unsafe {
                     core::mem::transmute::<
                         *const core::ffi::c_void,
                         ffi::PfnVkCmdSetFragmentShadingRateKHR,
-                    >(proc_ptr)
+                    >(p)
+                })
+            }
+        } else {
+            None
+        };
+        let mesh_draw_fn: Option<ffi::PfnVkCmdDrawMeshTasksEXT> = if has_mesh_ext {
+            let name = b"vkCmdDrawMeshTasksEXT\0";
+            let p = unsafe {
+                ffi::vkGetDeviceProcAddr(device, name.as_ptr() as *const core::ffi::c_char)
+            };
+            if p.is_null() {
+                None
+            } else {
+                Some(unsafe {
+                    core::mem::transmute::<*const core::ffi::c_void, ffi::PfnVkCmdDrawMeshTasksEXT>(
+                        p,
+                    )
+                })
+            }
+        } else {
+            None
+        };
+        let trace_rays_fn: Option<ffi::PfnVkCmdTraceRaysKHR> = if has_rt {
+            let name = b"vkCmdTraceRaysKHR\0";
+            let p = unsafe {
+                ffi::vkGetDeviceProcAddr(device, name.as_ptr() as *const core::ffi::c_char)
+            };
+            if p.is_null() {
+                None
+            } else {
+                Some(unsafe {
+                    core::mem::transmute::<*const core::ffi::c_void, ffi::PfnVkCmdTraceRaysKHR>(p)
                 })
             }
         } else {
@@ -783,6 +854,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             mesh_pipelines: RwLock::new(HashMap::new()),
             vrs_states: RwLock::new(HashMap::new()),
             vrs_set_rate_fn,
+            mesh_draw_fn,
+            trace_rays_fn,
         }));
 
         break; // Use first suitable device

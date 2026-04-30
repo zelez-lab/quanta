@@ -376,16 +376,22 @@ impl GpuDevice for VulkanDevice {
     // === Mesh shaders (M4.2) ===
 
     fn dispatch_mesh(&self, _pipeline: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {
-        // Mesh shaders require VK_EXT_mesh_shader. Check if the extension
-        // is available on this physical device.
-        let has_ext = self.has_device_extension(b"VK_EXT_mesh_shader\0");
-        if !has_ext {
+        // Step 063 — gate on actual proc-addr availability rather
+        // than just extension presence. `mesh_draw_fn` is `Some`
+        // only when both the extension was enabled at vkCreateDevice
+        // and `vkGetDeviceProcAddr` returned a non-null pointer.
+        // The full draw call (vkCmdDrawMeshTasksEXT inside an active
+        // render pass with a mesh-shader pipeline bound) requires
+        // mesh-shader pipeline-creation support that doesn't yet
+        // exist; surface that as a separate, more specific status.
+        if self.mesh_draw_fn.is_none() {
             return Err(QuantaError::not_supported(
-                "mesh shaders require VK_EXT_mesh_shader — not available on this device",
+                "mesh shaders require VK_EXT_mesh_shader — extension or proc address unavailable on this device",
             ));
         }
-        // Full implementation would use vkCmdDrawMeshTasksEXT.
-        Ok(())
+        Err(QuantaError::not_supported(
+            "Vulkan mesh-shader pipeline integration pending — proc address loaded, awaiting object/mesh shader-stage support",
+        ))
     }
 
     // === Ray tracing (M4.3) ===
@@ -431,14 +437,20 @@ impl GpuDevice for VulkanDevice {
     }
 
     fn dispatch_rays(&self, _pipeline: u64, _width: u32, _height: u32) -> Result<(), QuantaError> {
-        let has_rt = self.has_device_extension(b"VK_KHR_ray_tracing_pipeline\0");
-        if !has_rt {
+        // Step 063 — gate on actual proc-addr availability. The
+        // full vkCmdTraceRaysKHR call needs ray-tracing pipeline
+        // creation + shader binding tables, which require the
+        // bigger M4.3 native build-out (BLAS/TLAS via
+        // vkBuildAccelerationStructuresKHR + SBT layout). The proc
+        // is loaded so that work has a foundation to land on.
+        if self.trace_rays_fn.is_none() {
             return Err(QuantaError::not_supported(
-                "ray dispatch requires VK_KHR_ray_tracing_pipeline — not available on this device",
+                "ray dispatch requires VK_KHR_ray_tracing_pipeline + VK_KHR_acceleration_structure — extension or proc address unavailable on this device",
             ));
         }
-        // Full implementation would use vkCmdTraceRaysKHR.
-        Ok(())
+        Err(QuantaError::not_supported(
+            "Vulkan ray-tracing dispatch pending — proc address loaded, awaiting acceleration-structure builds + SBT support",
+        ))
     }
 
     fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {

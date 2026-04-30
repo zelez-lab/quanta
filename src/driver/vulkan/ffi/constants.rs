@@ -363,6 +363,41 @@ pub type PfnVkCmdSetFragmentShadingRateKHR = unsafe extern "C" fn(
     combiner_ops: *const u32,
 );
 
+// ─── VK_EXT_mesh_shader (step 063) ──────────────────────────────────────────
+
+/// Function-pointer type for `vkCmdDrawMeshTasksEXT`. Issued from
+/// inside a render pass with a mesh-shader pipeline bound. Loaded at
+/// device init when the `VK_EXT_mesh_shader` extension is enabled.
+pub type PfnVkCmdDrawMeshTasksEXT = unsafe extern "C" fn(
+    cmd_buf: VkCommandBuffer,
+    group_count_x: u32,
+    group_count_y: u32,
+    group_count_z: u32,
+);
+
+// ─── VK_KHR_ray_tracing_pipeline (step 063) ─────────────────────────────────
+
+/// Function-pointer type for `vkCmdTraceRaysKHR`. Issued from a
+/// command buffer outside a render pass; consumes shader binding
+/// tables (raygen / miss / hit / callable). Loaded at device init
+/// when both `VK_KHR_ray_tracing_pipeline` and
+/// `VK_KHR_acceleration_structure` are enabled.
+///
+/// The shader-binding-table arguments are `VkStridedDeviceAddressRegionKHR`
+/// pointers; we type them as opaque `*const c_void` here because the
+/// SBT layout is owned by callers and the layered structs are not
+/// otherwise needed in the FFI surface.
+pub type PfnVkCmdTraceRaysKHR = unsafe extern "C" fn(
+    cmd_buf: VkCommandBuffer,
+    raygen_sbt: *const c_void,
+    miss_sbt: *const c_void,
+    hit_sbt: *const c_void,
+    callable_sbt: *const c_void,
+    width: u32,
+    height: u32,
+    depth: u32,
+);
+
 // ─── Vulkan API version helper ──────────────────────────────────────────────
 
 #[inline]
