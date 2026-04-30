@@ -1141,4 +1141,94 @@ impl GpuDevice for VulkanDevice {
         let handle = self.field_alloc_impl(size, FieldUsage::READ.union(FieldUsage::TRANSFER))?;
         Ok(handle)
     }
+
+    // === Tessellation pipelines (steps 022 + 023) ===
+    //
+    // MVP: software state mirroring `Quanta.Tessellation.Pipeline`.
+    // The native path requires enabling the `tessellationShader`
+    // device feature at create time, attaching TCS+TES SPIR-V modules
+    // to pipeline-create info, and adding
+    // `VkPipelineTessellationStateCreateInfo` with patch-control-
+    // points. Future commit; the proof contract from
+    // `Quanta.Tessellation` holds today.
+
+    fn tessellation_pipeline_create(
+        &self,
+        topology: u8,
+        _control_points: u32,
+    ) -> Result<u64, QuantaError> {
+        let (outer_count, inner_count) = match topology {
+            0 => (3usize, 1usize),
+            1 => (4usize, 2usize),
+            _ => {
+                return Err(QuantaError::invalid_param(
+                    "tessellation topology must be 0 (triangle) or 1 (quad)",
+                ));
+            }
+        };
+        let handle = self.alloc_handle();
+        self.tess_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::VulkanTessPipeline {
+                    outer: vec![1u32; outer_count],
+                    inner: vec![1u32; inner_count],
+                },
+            );
+        Ok(handle)
+    }
+
+    fn tessellation_set_outer(
+        &self,
+        handle: u64,
+        index: u32,
+        factor: u32,
+    ) -> Result<(), QuantaError> {
+        let mut pipes = self
+            .tess_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipe = pipes
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+        if (index as usize) >= pipe.outer.len() {
+            return Err(QuantaError::invalid_param(
+                "tessellation outer index out of range",
+            ));
+        }
+        pipe.outer[index as usize] = factor;
+        Ok(())
+    }
+
+    fn tessellation_set_inner(
+        &self,
+        handle: u64,
+        index: u32,
+        factor: u32,
+    ) -> Result<(), QuantaError> {
+        let mut pipes = self
+            .tess_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipe = pipes
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+        if (index as usize) >= pipe.inner.len() {
+            return Err(QuantaError::invalid_param(
+                "tessellation inner index out of range",
+            ));
+        }
+        pipe.inner[index as usize] = factor;
+        Ok(())
+    }
+
+    fn tessellation_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.tess_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        Ok(())
+    }
 }

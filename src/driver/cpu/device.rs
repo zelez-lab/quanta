@@ -78,6 +78,14 @@ struct CpuBindlessArray {
     entries: Vec<u64>,
 }
 
+/// CPU tessellation pipeline state. Mirrors
+/// `Quanta.Tessellation.Pipeline`: fixed topology and control-point
+/// count at create, mutable inner / outer factor lists.
+struct CpuTessPipeline {
+    outer: Vec<u32>,
+    inner: Vec<u32>,
+}
+
 /// CPU software device — executes GPU kernel IR without hardware.
 pub struct CpuDevice {
     caps: Caps,
@@ -90,6 +98,8 @@ pub struct CpuDevice {
     bindless_textures: Mutex<HashMap<u64, CpuBindlessArray>>,
     /// Bindless buffer arrays indexed by handle.
     bindless_buffers: Mutex<HashMap<u64, CpuBindlessArray>>,
+    /// Tessellation pipelines indexed by handle.
+    tess_pipelines: Mutex<HashMap<u64, CpuTessPipeline>>,
 }
 
 impl CpuDevice {
@@ -112,6 +122,7 @@ impl CpuDevice {
             icbs: Mutex::new(HashMap::new()),
             bindless_textures: Mutex::new(HashMap::new()),
             bindless_buffers: Mutex::new(HashMap::new()),
+            tess_pipelines: Mutex::new(HashMap::new()),
         }
     }
 
@@ -779,6 +790,83 @@ impl GpuDevice for CpuDevice {
 
     fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.bindless_buffers.lock().unwrap().remove(&handle);
+        Ok(())
+    }
+
+    // === Tessellation pipelines (steps 022 + 023) ===
+    //
+    // CPU implementation refines `Quanta.Tessellation.Pipeline`:
+    // - create allocates outer/inner Vecs sized to topology, all 1s.
+    // - set_{outer,inner} updates one slot, bounds-checked. The typed
+    //   wrapper has already clamped the factor into [1, MAX_TESS_LEVEL].
+    // - destroy removes the handle.
+
+    fn tessellation_pipeline_create(
+        &self,
+        topology: u8,
+        _control_points: u32,
+    ) -> Result<u64, QuantaError> {
+        let (outer_count, inner_count) = match topology {
+            0 => (3usize, 1usize),
+            1 => (4usize, 2usize),
+            _ => {
+                return Err(QuantaError::invalid_param(
+                    "tessellation topology must be 0 (triangle) or 1 (quad)",
+                ));
+            }
+        };
+        let _ = topology;
+        let handle = self.alloc_handle();
+        self.tess_pipelines.lock().unwrap().insert(
+            handle,
+            CpuTessPipeline {
+                outer: vec![1u32; outer_count],
+                inner: vec![1u32; inner_count],
+            },
+        );
+        Ok(handle)
+    }
+
+    fn tessellation_set_outer(
+        &self,
+        handle: u64,
+        index: u32,
+        factor: u32,
+    ) -> Result<(), QuantaError> {
+        let mut pipes = self.tess_pipelines.lock().unwrap();
+        let pipe = pipes
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+        if (index as usize) >= pipe.outer.len() {
+            return Err(QuantaError::invalid_param(
+                "tessellation outer index out of range",
+            ));
+        }
+        pipe.outer[index as usize] = factor;
+        Ok(())
+    }
+
+    fn tessellation_set_inner(
+        &self,
+        handle: u64,
+        index: u32,
+        factor: u32,
+    ) -> Result<(), QuantaError> {
+        let mut pipes = self.tess_pipelines.lock().unwrap();
+        let pipe = pipes
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+        if (index as usize) >= pipe.inner.len() {
+            return Err(QuantaError::invalid_param(
+                "tessellation inner index out of range",
+            ));
+        }
+        pipe.inner[index as usize] = factor;
+        Ok(())
+    }
+
+    fn tessellation_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.tess_pipelines.lock().unwrap().remove(&handle);
         Ok(())
     }
 }

@@ -63,6 +63,21 @@ pub struct VulkanDevice {
     /// Bindless buffer arrays (steps 034 + 035). MVP: software
     /// table of buffer handles.
     pub(super) bindless_buffers: RwLock<HashMap<u64, VulkanBindlessArray>>,
+    /// Tessellation pipeline state (steps 022 + 023). MVP: software
+    /// table of (topology, outer factors, inner factors). Vulkan
+    /// hardware tessellation requires enabling the `tessellationShader`
+    /// device feature at create time and rebuilding pipeline-create
+    /// info to include `VkPipelineTessellationStateCreateInfo` plus
+    /// TCS+TES SPIR-V modules — that's a future commit. The proof
+    /// contract from `Quanta.Tessellation` holds today.
+    pub(super) tess_pipelines: RwLock<HashMap<u64, VulkanTessPipeline>>,
+}
+
+/// Software tessellation pipeline state — refines
+/// `Quanta.Tessellation.Pipeline`.
+pub(super) struct VulkanTessPipeline {
+    pub(super) outer: Vec<u32>,
+    pub(super) inner: Vec<u32>,
 }
 
 /// Software bindless table — refines `Quanta.Bindless.Array`.
@@ -687,6 +702,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             render_bundles: RwLock::new(HashMap::new()),
             bindless_textures: RwLock::new(HashMap::new()),
             bindless_buffers: RwLock::new(HashMap::new()),
+            tess_pipelines: RwLock::new(HashMap::new()),
         }));
 
         break; // Use first suitable device

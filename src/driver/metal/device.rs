@@ -26,6 +26,29 @@ pub(crate) struct MetalIcb {
     pub(crate) recorded: u32,
 }
 
+/// State for one tessellation pipeline. Steps 022 + 023.
+///
+/// Metal has no fixed-function tessellator: factors are written into
+/// an `MTLBuffer` by a compute kernel (or by the host, as we do
+/// here), then bound to the render pipeline via
+/// `setTessellationFactorBuffer:offset:instanceStride:` and consumed
+/// by `drawIndexedPatches:`. The factor buffer here is the real
+/// MTLBuffer a future render-pipeline integration will bind directly.
+///
+/// The buffer is laid out as `cap` × u32 outer slots followed by
+/// `cap` × u32 inner slots. We keep u32 storage (matching the typed
+/// API); a future commit converts to half-precision per Metal's
+/// `MTL{Triangle,Quad}TessellationFactorsHalf` layout when the
+/// drawIndexedPatches call site is wired.
+pub(crate) struct MetalTessPipeline {
+    /// Factor buffer (host-visible MTLBuffer, storageModeShared).
+    pub(crate) factor_buf: ffi::Id,
+    /// Number of outer factors (3 for triangle, 4 for quad).
+    pub(crate) outer_count: u32,
+    /// Number of inner factors (1 for triangle, 2 for quad).
+    pub(crate) inner_count: u32,
+}
+
 /// State for one Metal MTLIndirectCommandBuffer used as a *render*
 /// bundle (DRAW command type instead of ConcurrentDispatch). Steps
 /// 032 + 033, render path. Replayed from inside an active render
@@ -60,6 +83,7 @@ pub struct MetalDevice {
     pub(crate) queues: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) icbs: RwLock<HashMap<u64, MetalIcb>>,
     pub(crate) render_bundles: RwLock<HashMap<u64, MetalRenderBundle>>,
+    pub(crate) tess_pipelines: RwLock<HashMap<u64, MetalTessPipeline>>,
     pub(crate) next_handle: AtomicU64,
 }
 
@@ -118,6 +142,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         queues: RwLock::new(HashMap::new()),
         icbs: RwLock::new(HashMap::new()),
         render_bundles: RwLock::new(HashMap::new()),
+        tess_pipelines: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
     })]
 }

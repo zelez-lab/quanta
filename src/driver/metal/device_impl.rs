@@ -1100,6 +1100,132 @@ impl GpuDevice for MetalDevice {
     fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.bindless_texture_destroy(handle)
     }
+
+    // === Tessellation pipelines (steps 022 + 023) ===
+    //
+    // Metal has no fixed-function tessellator. The factor buffer
+    // we allocate here is the real `MTLBuffer` that a future
+    // render-pipeline integration will bind via
+    // `setTessellationFactorBuffer:offset:instanceStride:`. Each
+    // factor write goes straight into the buffer's host-visible
+    // contents pointer.
+    //
+    // MVP: factors are stored as u32 (matching the typed wrapper
+    // input). Hardware consumes `MTL{Triangle,Quad}TessellationFactorsHalf`
+    // (u16); the conversion + drawIndexedPatches wiring lands when
+    // the render path is rebuilt to include tessellation. The proof
+    // contract from `Quanta.Tessellation` holds today.
+
+    fn tessellation_pipeline_create(
+        &self,
+        topology: u8,
+        _control_points: u32,
+    ) -> Result<u64, QuantaError> {
+        let (outer_count, inner_count) = match topology {
+            0 => (3u32, 1u32),
+            1 => (4u32, 2u32),
+            _ => {
+                return Err(QuantaError::invalid_param(
+                    "tessellation topology must be 0 (triangle) or 1 (quad)",
+                ));
+            }
+        };
+        // 4 bytes per factor (u32). Layout: outer[..outer_count], then
+        // inner[..inner_count]. Initialized to 1 (no subdivision).
+        let total_factors = (outer_count + inner_count) as usize;
+        let size = (total_factors * 4) as u64;
+        let buf = unsafe {
+            ffi::msg_new_buffer(self.device, size, ffi::MTL_RESOURCE_STORAGE_MODE_SHARED)
+        };
+        if buf.is_null() {
+            return Err(QuantaError::internal(
+                "failed to create Metal tessellation factor buffer",
+            ));
+        }
+        unsafe {
+            let ptr = ffi::msg_ptr(buf, b"contents\0") as *mut u32;
+            for i in 0..total_factors {
+                *ptr.add(i) = 1;
+            }
+        }
+        let handle = self.alloc_handle();
+        self.tess_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::MetalTessPipeline {
+                    factor_buf: buf,
+                    outer_count,
+                    inner_count,
+                },
+            );
+        Ok(handle)
+    }
+
+    fn tessellation_set_outer(
+        &self,
+        handle: u64,
+        index: u32,
+        factor: u32,
+    ) -> Result<(), QuantaError> {
+        let pipes = self
+            .tess_pipelines
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipe = pipes
+            .get(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+        if index >= pipe.outer_count {
+            return Err(QuantaError::invalid_param(
+                "tessellation outer index out of range",
+            ));
+        }
+        unsafe {
+            let ptr = ffi::msg_ptr(pipe.factor_buf, b"contents\0") as *mut u32;
+            *ptr.add(index as usize) = factor;
+        }
+        Ok(())
+    }
+
+    fn tessellation_set_inner(
+        &self,
+        handle: u64,
+        index: u32,
+        factor: u32,
+    ) -> Result<(), QuantaError> {
+        let pipes = self
+            .tess_pipelines
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipe = pipes
+            .get(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("tessellation pipeline not found"))?;
+        if index >= pipe.inner_count {
+            return Err(QuantaError::invalid_param(
+                "tessellation inner index out of range",
+            ));
+        }
+        unsafe {
+            let ptr = ffi::msg_ptr(pipe.factor_buf, b"contents\0") as *mut u32;
+            *ptr.add((pipe.outer_count + index) as usize) = factor;
+        }
+        Ok(())
+    }
+
+    fn tessellation_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let removed = self
+            .tess_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(pipe) = removed {
+            unsafe {
+                ffi::msg_void(pipe.factor_buf, b"release\0");
+            }
+        }
+        Ok(())
+    }
 }
 
 // ============================================================================

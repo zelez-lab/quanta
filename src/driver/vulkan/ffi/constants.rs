@@ -302,10 +302,6 @@ pub const VK_ATTACHMENT_LOAD_OP_DONT_CARE: u32 = 2;
 pub const VK_ATTACHMENT_STORE_OP_STORE: u32 = 0;
 pub const VK_ATTACHMENT_STORE_OP_DONT_CARE: u32 = 1;
 
-// ─── Subpass contents ───────────────────────────────────────────────────────
-
-pub const VK_SUBPASS_CONTENTS_INLINE: u32 = 0;
-
 // ─── Filter / address mode / mipmap mode ────────────────────────────────────
 
 pub const VK_FILTER_NEAREST: u32 = 0;

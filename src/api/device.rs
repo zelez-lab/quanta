@@ -494,6 +494,60 @@ pub trait GpuDevice: Send + Sync {
         Ok(())
     }
 
+    // === Tessellation pipelines (steps 022 + 023) ===
+    //
+    // Tessellation typed wrapper (`TessellationPipeline`) refines
+    // `Quanta.Tessellation.Pipeline` from the Lean equivalence
+    // theorems (T7200–T7206). Backends opt in by overriding these
+    // methods; defaults return `NotSupported` so the typed wrapper
+    // surfaces a clear error on platforms without tessellation
+    // (WebGPU, software-only fallbacks).
+
+    /// Create a tessellation pipeline state with the given topology
+    /// and control-point count. `topology` is `0` for triangle, `1`
+    /// for quad. Default returns "not yet implemented".
+    fn tessellation_pipeline_create(
+        &self,
+        _topology: u8,
+        _control_points: u32,
+    ) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "tessellation not yet implemented on this backend",
+        ))
+    }
+
+    /// Update the outer (edge) tessellation factor at `index`. The
+    /// factor is already clamped into `[1, MAX_TESS_LEVEL]` by the
+    /// typed wrapper.
+    fn tessellation_set_outer(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _factor: u32,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "tessellation not yet implemented on this backend",
+        ))
+    }
+
+    /// Update the inner (interior) tessellation factor at `index`.
+    fn tessellation_set_inner(
+        &self,
+        _handle: u64,
+        _index: u32,
+        _factor: u32,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "tessellation not yet implemented on this backend",
+        ))
+    }
+
+    /// Destroy a tessellation pipeline. Default no-ops so backends
+    /// without an implementation don't error on `Drop`.
+    fn tessellation_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     // ── Legacy bind-array creation (one-shot, no update path) ──────
 
     /// Create a bindless texture array (all textures accessible by index in shaders).

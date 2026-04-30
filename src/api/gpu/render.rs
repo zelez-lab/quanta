@@ -35,6 +35,39 @@ impl Gpu {
         })
     }
 
+    /// Allocate a typed
+    /// [`TessellationPipeline`](crate::TessellationPipeline) for the
+    /// given patch topology and control-point count. Steps 022 + 023.
+    ///
+    /// Backends without tessellation (WebGPU, CPU-only fallbacks
+    /// missing the feature) return `NotSupported` here so user code
+    /// can branch.
+    pub fn tessellation_pipeline(
+        &self,
+        topology: crate::TessTopology,
+        control_points: u32,
+    ) -> Result<crate::TessellationPipeline, QuantaError> {
+        if !(1..=crate::MAX_PATCH_SIZE).contains(&control_points) {
+            return Err(QuantaError::invalid_param(
+                "tessellation control_points must be in [1, MAX_PATCH_SIZE]",
+            ));
+        }
+        let topo_byte: u8 = match topology {
+            crate::TessTopology::Triangle => 0,
+            crate::TessTopology::Quad => 1,
+        };
+        let handle = self
+            .inner
+            .tessellation_pipeline_create(topo_byte, control_points)?;
+        Ok(crate::TessellationPipeline {
+            handle,
+            topology,
+            control_points,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
     /// Begin a chainable render pass targeting a texture.
     ///
     /// Returns a `RenderBuilder` that records draw commands via method
