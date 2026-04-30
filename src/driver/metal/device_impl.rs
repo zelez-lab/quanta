@@ -438,12 +438,7 @@ impl GpuDevice for MetalDevice {
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
         // Metal ray tracing requires Apple GPU family 6+ (A14/M1 and later).
         // Check via supportsFamily: with MTLGPUFamilyApple6 (= 1006).
-        let supports_rt = unsafe {
-            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
-                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
-            f(self.device, ffi::sel(b"supportsFamily:\0"), 1006) != 0
-        };
-        if !supports_rt {
+        if !self.ray_tracing_supported {
             return Err(QuantaError::not_supported(
                 "ray tracing requires Apple GPU family 6+ (A14/M1)",
             ));
@@ -488,12 +483,7 @@ impl GpuDevice for MetalDevice {
     ) -> Result<u64, QuantaError> {
         // Metal ray tracing uses compute pipelines with intersection functions.
         // Check hardware support first.
-        let supports_rt = unsafe {
-            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
-                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
-            f(self.device, ffi::sel(b"supportsFamily:\0"), 1006) != 0
-        };
-        if !supports_rt {
+        if !self.ray_tracing_supported {
             return Err(QuantaError::not_supported(
                 "ray tracing pipelines require Apple GPU family 6+ (A14/M1)",
             ));
@@ -512,12 +502,7 @@ impl GpuDevice for MetalDevice {
         // (encode an intersection compute pipeline with visible
         // function tables, dispatch (width × height × 1) threads)
         // is a separate native track.
-        let supports_rt = unsafe {
-            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
-                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
-            f(self.device, ffi::sel(b"supportsFamily:\0"), 1006) != 0
-        };
-        if !supports_rt {
+        if !self.ray_tracing_supported {
             return Err(QuantaError::not_supported(
                 "ray dispatch requires Apple GPU family 6+ (A14/M1)",
             ));
@@ -539,13 +524,9 @@ impl GpuDevice for MetalDevice {
     // === Sparse textures (M5.1) ===
 
     fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError> {
-        // Metal sparse textures (MTLSparseTexture) require Apple GPU family 7+ (A15/M2).
-        let supports_sparse = unsafe {
-            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
-                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
-            f(self.device, ffi::sel(b"supportsFamily:\0"), 1007) != 0
-        };
-        if !supports_sparse {
+        // Slice 17 — gate on the cached supportsFamily check from
+        // device discovery instead of issuing objc_msgSend per call.
+        if !self.sparse_supported {
             return Err(QuantaError::not_supported(
                 "sparse textures require Apple GPU family 7+ (A15/M2)",
             ));
@@ -1134,17 +1115,8 @@ impl GpuDevice for MetalDevice {
         topology: u8,
         _control_points: u32,
     ) -> Result<u64, QuantaError> {
-        // Step 063 slice 8 — gate on Metal's tessellation support.
-        // MTLGPUFamilyApple4 (= 1004, A11+) is the threshold for
-        // hardware tessellation (drawIndexedPatches +
-        // tessellationFactorBuffer). Symmetric to the Vulkan
-        // tessellationShader gate from slice 6.
-        let supports_tess = unsafe {
-            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
-                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
-            f(self.device, ffi::sel(b"supportsFamily:\0"), 1004) != 0
-        };
-        if !supports_tess {
+        // Slice 8 + 17 — cached supportsFamily:Apple4 check.
+        if !self.tessellation_supported {
             return Err(QuantaError::not_supported(
                 "Metal tessellation requires Apple GPU family 4+ (A11+) — not available on this device",
             ));
@@ -1269,18 +1241,8 @@ impl GpuDevice for MetalDevice {
         max_primitives: u32,
         task_threads: u32,
     ) -> Result<u64, QuantaError> {
-        // Step 063 slice 9 — gate on Metal mesh shader support.
-        // MTLGPUFamilyMetal3 (= 5001) is the threshold for
-        // MTLMeshRenderPipelineDescriptor + per-stage mesh /
-        // object shader support (Apple Silicon M1 with macOS
-        // Sonoma+, M2/M3 universally). Symmetric to slice 5's
-        // pipeline-desc mesh gate.
-        let supports_mesh = unsafe {
-            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
-                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
-            f(self.device, ffi::sel(b"supportsFamily:\0"), 5001) != 0
-        };
-        if !supports_mesh {
+        // Slice 9 + 17 — cached supportsFamily:Metal3 check.
+        if !self.mesh_shader_supported {
             return Err(QuantaError::not_supported(
                 "Metal mesh shaders require Metal 3 (MTLGPUFamilyMetal3) — not available on this device",
             ));

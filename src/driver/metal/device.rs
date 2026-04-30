@@ -117,6 +117,27 @@ pub struct MetalDevice {
     pub(crate) mesh_pipelines: RwLock<HashMap<u64, MetalMeshPipeline>>,
     pub(crate) vrs_states: RwLock<HashMap<u64, MetalVrsState>>,
     pub(crate) next_handle: AtomicU64,
+    /// Whether the device supports MTLSparseTexture
+    /// (`supportsFamily:MTLGPUFamilyApple7` = 1007). Cached at
+    /// discovery so `sparse_texture_create` doesn't dynamically
+    /// query per request, and so a future native sparse-tile
+    /// updateMappings path can gate uniformly.
+    /// Step 063 slice 17 — symmetric to the Vulkan slice-16 cache.
+    pub(crate) sparse_supported: bool,
+    /// Whether the device supports tessellation
+    /// (`supportsFamily:MTLGPUFamilyApple4` = 1004). Cached at
+    /// discovery so `tessellation_pipeline_create` doesn't query
+    /// per request — symmetric to the Vulkan tessellation_feature
+    /// cache (slice 6).
+    pub(crate) tessellation_supported: bool,
+    /// Whether the device supports MTLMeshRenderPipelineDescriptor
+    /// (`supportsFamily:MTLGPUFamilyMetal3` = 5001). Cached at
+    /// discovery — symmetric to slice 9's per-call check.
+    pub(crate) mesh_shader_supported: bool,
+    /// Whether the device supports ray tracing
+    /// (`supportsFamily:MTLGPUFamilyApple6` = 1006). Cached at
+    /// discovery — symmetric to slice 10's per-call check.
+    pub(crate) ray_tracing_supported: bool,
 }
 
 // Safety: Metal objects (MTLDevice, MTLCommandQueue, etc.) are thread-safe.
@@ -161,6 +182,23 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
 
     let queue = unsafe { ffi::msg_id(device, b"newCommandQueue\0") };
 
+    // Slice 17 — query Apple GPU family + Metal 3 support once at
+    // discovery so per-call gates on sparse / tessellation / mesh /
+    // ray-tracing don't re-issue Objective-C messages on every
+    // create_*. Each `supports_family` value is a Metal-stable
+    // GPU-family enum from Apple's MTLGPUFamily.
+    let supports_family = |fam: u64| -> bool {
+        unsafe {
+            let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, u64) -> ffi::BOOL =
+                core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
+            f(device, ffi::sel(b"supportsFamily:\0"), fam) != 0
+        }
+    };
+    let sparse_supported = supports_family(1007); // MTLGPUFamilyApple7
+    let tessellation_supported = supports_family(1004); // MTLGPUFamilyApple4
+    let mesh_shader_supported = supports_family(5001); // MTLGPUFamilyMetal3
+    let ray_tracing_supported = supports_family(1006); // MTLGPUFamilyApple6
+
     vec![Box::new(MetalDevice {
         device,
         queue,
@@ -178,5 +216,9 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         mesh_pipelines: RwLock::new(HashMap::new()),
         vrs_states: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
+        sparse_supported,
+        tessellation_supported,
+        mesh_shader_supported,
+        ray_tracing_supported,
     })]
 }
