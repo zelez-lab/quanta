@@ -16,6 +16,59 @@ pub trait GpuDevice: Send + Sync {
 
     fn caps(&self) -> &Caps;
 
+    // === Feature support queries (step 063 slice 20) ===
+    //
+    // Public surface for the per-backend capability caches added by
+    // slices 6 / 14 / 16 / 17. Default returns `false` so a caller
+    // doing `if gpu.supports_vrs() { … }` correctly skips the path
+    // on backends that don't override (CPU, WebGPU). Backends that
+    // cache the answer at device discovery override these with a
+    // simple `self.<cached_field>` read.
+
+    /// Whether the backend can lower `RenderOp::SetShadingRate` to
+    /// a native VRS path (Vulkan vkCmdSetFragmentShadingRateKHR or
+    /// Metal MTLRasterizationRateMap). Returns `false` when the
+    /// extension / device-family is absent.
+    fn supports_variable_rate_shading(&self) -> bool {
+        false
+    }
+
+    /// Whether the backend can build acceleration structures and
+    /// dispatch ray tracing pipelines. Returns `true` only when
+    /// every prerequisite (extensions, family-7+ on Apple,
+    /// proc-addr resolution) is in place.
+    fn supports_ray_tracing(&self) -> bool {
+        false
+    }
+
+    /// Whether the backend can create mesh-shader pipelines
+    /// (Vulkan VK_EXT_mesh_shader / Metal 3
+    /// MTLMeshRenderPipelineDescriptor).
+    fn supports_mesh_shaders(&self) -> bool {
+        false
+    }
+
+    /// Whether the backend can create tessellation pipelines
+    /// (Vulkan tessellationShader feature / Metal Apple GPU
+    /// family 4+).
+    fn supports_tessellation(&self) -> bool {
+        false
+    }
+
+    /// Whether the backend can create sparse textures with real
+    /// residency control (Vulkan sparseBinding feature + queue
+    /// support / Metal Apple GPU family 7+).
+    fn supports_sparse_residency(&self) -> bool {
+        false
+    }
+
+    /// Hardware-supported shading rates as `(width, height)` pairs.
+    /// Empty when VRS isn't supported. The render encoder validates
+    /// requested rates against this list before submission.
+    fn supported_shading_rates(&self) -> Vec<(u32, u32)> {
+        Vec::new()
+    }
+
     // === Fields (GPU memory) ===
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError>;

@@ -53,6 +53,53 @@ impl Gpu {
         self.caps().total_quarks()
     }
 
+    // === Feature support queries (step 063 slice 20) ===
+    //
+    // Lets callers check whether a feature has a native lowering
+    // on the active backend before submitting work. The
+    // alternative is trial-and-error: submit and inspect the
+    // returned `QuantaError::NotSupported`. These queries return
+    // exactly the bool the device's render path will gate on.
+
+    /// Whether the active backend can lower
+    /// `RenderOp::SetShadingRate` to a native VRS path. `false`
+    /// when the extension / device-family is missing — the typed
+    /// API still accepts VRS state, but the render encoder will
+    /// surface NotSupported at submit time.
+    pub fn supports_vrs(&self) -> bool {
+        self.inner.supports_variable_rate_shading()
+    }
+
+    /// Whether the active backend can build acceleration structures
+    /// and dispatch ray tracing.
+    pub fn supports_ray_tracing(&self) -> bool {
+        self.inner.supports_ray_tracing()
+    }
+
+    /// Whether the active backend can create mesh-shader pipelines.
+    pub fn supports_mesh_shaders(&self) -> bool {
+        self.inner.supports_mesh_shaders()
+    }
+
+    /// Whether the active backend can create tessellation pipelines
+    /// (Vulkan tessellationShader feature / Metal Apple GPU
+    /// family 4+).
+    pub fn supports_tessellation(&self) -> bool {
+        self.inner.supports_tessellation()
+    }
+
+    /// Whether the active backend can create sparse textures with
+    /// residency control.
+    pub fn supports_sparse_residency(&self) -> bool {
+        self.inner.supports_sparse_residency()
+    }
+
+    /// Hardware-supported VRS shading rates as `(width, height)`
+    /// pairs. Empty when VRS isn't supported.
+    pub fn supported_shading_rates(&self) -> Vec<(u32, u32)> {
+        self.inner.supported_shading_rates()
+    }
+
     pub fn name(&self) -> &str {
         &self.caps().name
     }

@@ -19,6 +19,34 @@ impl GpuDevice for MetalDevice {
         &self.caps
     }
 
+    // === Feature support — slice 20 ===
+    //
+    // VRS via MTLRasterizationRateMap is gated on Apple7 family
+    // alongside sparse, but the encoder also needs the descriptor
+    // attachment path which MTLRasterizationRateMap supports
+    // universally on supported families. Use sparse_supported as
+    // the proxy since both gate on family Apple7.
+
+    fn supports_variable_rate_shading(&self) -> bool {
+        self.sparse_supported
+    }
+
+    fn supports_ray_tracing(&self) -> bool {
+        self.ray_tracing_supported
+    }
+
+    fn supports_mesh_shaders(&self) -> bool {
+        self.mesh_shader_supported
+    }
+
+    fn supports_tessellation(&self) -> bool {
+        self.tessellation_supported
+    }
+
+    fn supports_sparse_residency(&self) -> bool {
+        self.sparse_supported
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {

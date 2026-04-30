@@ -18,6 +18,34 @@ impl GpuDevice for VulkanDevice {
         &self.caps
     }
 
+    // === Feature support — slice 20 ===
+
+    fn supports_variable_rate_shading(&self) -> bool {
+        self.vrs_set_rate_fn.is_some()
+    }
+
+    fn supports_ray_tracing(&self) -> bool {
+        self.trace_rays_fn.is_some()
+            && self.accel_create_fn.is_some()
+            && self.accel_build_fn.is_some()
+    }
+
+    fn supports_mesh_shaders(&self) -> bool {
+        self.mesh_draw_fn.is_some()
+    }
+
+    fn supports_tessellation(&self) -> bool {
+        self.tessellation_feature
+    }
+
+    fn supports_sparse_residency(&self) -> bool {
+        self.sparse_binding_supported
+    }
+
+    fn supported_shading_rates(&self) -> Vec<(u32, u32)> {
+        self.supported_shading_rates.clone()
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {
