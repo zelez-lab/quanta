@@ -69,6 +69,9 @@ import Quanta.RayTracing
 -- Variable rate shading (steps 028 + 029)
 import Quanta.Vrs
 
+-- Sparse textures (steps 030 + 031)
+import Quanta.SparseTexture
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
