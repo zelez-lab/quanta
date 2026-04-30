@@ -63,6 +63,9 @@ import Quanta.Tessellation
 -- Mesh shaders (steps 024 + 025)
 import Quanta.MeshShader
 
+-- Ray tracing (steps 026 + 027)
+import Quanta.RayTracing
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
