@@ -86,6 +86,16 @@ struct CpuTessPipeline {
     inner: Vec<u32>,
 }
 
+/// CPU mesh-shader pipeline state. Mirrors
+/// `Quanta.MeshShader.Pipeline`: bounded limits set at create + an
+/// in-order dispatch history, both immutable on `destroy`.
+struct CpuMeshPipeline {
+    max_vertices: u32,
+    max_primitives: u32,
+    task_threads: u32,
+    dispatched: Vec<[u32; 3]>,
+}
+
 /// CPU software device — executes GPU kernel IR without hardware.
 pub struct CpuDevice {
     caps: Caps,
@@ -100,6 +110,8 @@ pub struct CpuDevice {
     bindless_buffers: Mutex<HashMap<u64, CpuBindlessArray>>,
     /// Tessellation pipelines indexed by handle.
     tess_pipelines: Mutex<HashMap<u64, CpuTessPipeline>>,
+    /// Mesh-shader pipelines indexed by handle.
+    mesh_pipelines: Mutex<HashMap<u64, CpuMeshPipeline>>,
 }
 
 impl CpuDevice {
@@ -123,6 +135,7 @@ impl CpuDevice {
             bindless_textures: Mutex::new(HashMap::new()),
             bindless_buffers: Mutex::new(HashMap::new()),
             tess_pipelines: Mutex::new(HashMap::new()),
+            mesh_pipelines: Mutex::new(HashMap::new()),
         }
     }
 
@@ -867,6 +880,53 @@ impl GpuDevice for CpuDevice {
 
     fn tessellation_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.tess_pipelines.lock().unwrap().remove(&handle);
+        Ok(())
+    }
+
+    // === Mesh shader pipelines (steps 024 + 025) ===
+    //
+    // CPU implementation refines `Quanta.MeshShader.Pipeline`:
+    // - create stores the requested limits with an empty dispatch list.
+    // - mesh_dispatch appends one [gx, gy, gz] entry to dispatched.
+    // - destroy removes the handle.
+    //
+    // Rasterization is not modeled — the CPU device is a software
+    // device with no display path, and the proven contract concerns
+    // only lifecycle + dispatch ordering (T7302).
+
+    fn mesh_pipeline_create(
+        &self,
+        max_vertices: u32,
+        max_primitives: u32,
+        task_threads: u32,
+    ) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.mesh_pipelines.lock().unwrap().insert(
+            handle,
+            CpuMeshPipeline {
+                max_vertices,
+                max_primitives,
+                task_threads,
+                dispatched: Vec::new(),
+            },
+        );
+        Ok(handle)
+    }
+
+    fn mesh_dispatch(&self, handle: u64, groups: [u32; 3]) -> Result<(), QuantaError> {
+        let mut pipes = self.mesh_pipelines.lock().unwrap();
+        let pipe = pipes
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("mesh pipeline not found"))?;
+        pipe.dispatched.push(groups);
+        let _ = pipe.max_vertices;
+        let _ = pipe.max_primitives;
+        let _ = pipe.task_threads;
+        Ok(())
+    }
+
+    fn mesh_pipeline_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.mesh_pipelines.lock().unwrap().remove(&handle);
         Ok(())
     }
 }

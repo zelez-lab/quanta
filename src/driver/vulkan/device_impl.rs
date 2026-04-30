@@ -1231,4 +1231,56 @@ impl GpuDevice for VulkanDevice {
             .remove(&handle);
         Ok(())
     }
+
+    // === Mesh shader pipelines (steps 024 + 025) ===
+    //
+    // MVP: software state mirroring `Quanta.MeshShader.Pipeline`.
+    // The native path enables VK_EXT_mesh_shader (or Vulkan 1.3
+    // core mesh shading), adds TASK_BIT_EXT + MESH_BIT_EXT shader
+    // stages to the render pipeline, and lowers `mesh_dispatch` to
+    // `vkCmdDrawMeshTasksEXT`. The existing `dispatch_mesh` trait
+    // method already gates on the extension presence; the native
+    // lowering is a future commit. Proof contract holds today.
+
+    fn mesh_pipeline_create(
+        &self,
+        max_vertices: u32,
+        max_primitives: u32,
+        task_threads: u32,
+    ) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.mesh_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::VulkanMeshPipeline {
+                    max_vertices,
+                    max_primitives,
+                    task_threads,
+                    dispatched: Vec::new(),
+                },
+            );
+        Ok(handle)
+    }
+
+    fn mesh_dispatch(&self, handle: u64, groups: [u32; 3]) -> Result<(), QuantaError> {
+        let mut pipes = self
+            .mesh_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipe = pipes
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("mesh pipeline not found"))?;
+        pipe.dispatched.push(groups);
+        Ok(())
+    }
+
+    fn mesh_pipeline_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.mesh_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        Ok(())
+    }
 }

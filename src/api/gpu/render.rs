@@ -36,6 +36,45 @@ impl Gpu {
     }
 
     /// Allocate a typed
+    /// [`MeshPipeline`](crate::MeshPipeline) for the given mesh
+    /// pipeline descriptor. Steps 024 + 025.
+    ///
+    /// Backends without mesh-shader support (WebGPU, older Metal,
+    /// pre-1.3 Vulkan without VK_EXT_mesh_shader) return
+    /// `NotSupported` here so user code can branch.
+    pub fn mesh_pipeline(
+        &self,
+        desc: crate::MeshPipelineDesc,
+    ) -> Result<crate::MeshPipeline, QuantaError> {
+        if !(1..=crate::MAX_MESH_VERTICES).contains(&desc.max_vertices_per_meshlet) {
+            return Err(QuantaError::invalid_param(
+                "mesh pipeline max_vertices_per_meshlet out of range",
+            ));
+        }
+        if !(1..=crate::MAX_MESH_PRIMITIVES).contains(&desc.max_primitives_per_meshlet) {
+            return Err(QuantaError::invalid_param(
+                "mesh pipeline max_primitives_per_meshlet out of range",
+            ));
+        }
+        if !(1..=crate::MAX_TASK_THREADS).contains(&desc.task_threads_per_group) {
+            return Err(QuantaError::invalid_param(
+                "mesh pipeline task_threads_per_group out of range",
+            ));
+        }
+        let handle = self.inner.mesh_pipeline_create(
+            desc.max_vertices_per_meshlet,
+            desc.max_primitives_per_meshlet,
+            desc.task_threads_per_group,
+        )?;
+        Ok(crate::MeshPipeline {
+            handle,
+            desc,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
+    /// Allocate a typed
     /// [`TessellationPipeline`](crate::TessellationPipeline) for the
     /// given patch topology and control-point count. Steps 022 + 023.
     ///

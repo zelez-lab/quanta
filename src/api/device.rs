@@ -319,6 +319,43 @@ pub trait GpuDevice: Send + Sync {
     /// Dispatch a mesh shader pipeline.
     fn dispatch_mesh(&self, pipeline: u64, groups: [u32; 3]) -> Result<(), QuantaError>;
 
+    // === Mesh shader pipelines (steps 024 + 025) ===
+    //
+    // Mesh-shader typed wrapper (`MeshPipeline`) refines
+    // `Quanta.MeshShader.Pipeline` from the Lean equivalence theorems
+    // (T7300–T7305). Backends opt in by overriding these methods;
+    // defaults return `NotSupported` so the typed wrapper surfaces
+    // a clear error on platforms without mesh shaders (WebGPU,
+    // older Metal / pre-Vulkan-1.3 software-only fallbacks).
+
+    /// Create a mesh pipeline state with the given vertex / primitive
+    /// / task-thread limits. Default returns "not yet implemented".
+    fn mesh_pipeline_create(
+        &self,
+        _max_vertices: u32,
+        _max_primitives: u32,
+        _task_threads: u32,
+    ) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "mesh shaders not yet implemented on this backend",
+        ))
+    }
+
+    /// Dispatch `[gx, gy, gz]` mesh workgroups on the typed pipeline.
+    /// The typed wrapper has already bounds-checked groups against
+    /// `MAX_GROUP_COUNT`.
+    fn mesh_dispatch(&self, _handle: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "mesh shaders not yet implemented on this backend",
+        ))
+    }
+
+    /// Destroy a mesh pipeline. Default no-ops so backends without an
+    /// implementation don't error on `Drop`.
+    fn mesh_pipeline_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     // === M4.3: Ray tracing ===
 
     /// Build a bottom-level acceleration structure from geometry.

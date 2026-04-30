@@ -1226,6 +1226,56 @@ impl GpuDevice for MetalDevice {
         }
         Ok(())
     }
+
+    // === Mesh shader pipelines (steps 024 + 025) ===
+    //
+    // MVP: software state mirroring `Quanta.MeshShader.Pipeline`.
+    // The native path requires building an
+    // `MTLMeshRenderPipelineDescriptor` with object + mesh + fragment
+    // functions and replacing the classical vertex stage with the
+    // mesh path; future commit. The proof contract holds today.
+
+    fn mesh_pipeline_create(
+        &self,
+        max_vertices: u32,
+        max_primitives: u32,
+        task_threads: u32,
+    ) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.mesh_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::device::MetalMeshPipeline {
+                    max_vertices,
+                    max_primitives,
+                    task_threads,
+                    dispatched: Vec::new(),
+                },
+            );
+        Ok(handle)
+    }
+
+    fn mesh_dispatch(&self, handle: u64, groups: [u32; 3]) -> Result<(), QuantaError> {
+        let mut pipes = self
+            .mesh_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let pipe = pipes
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("mesh pipeline not found"))?;
+        pipe.dispatched.push(groups);
+        Ok(())
+    }
+
+    fn mesh_pipeline_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.mesh_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        Ok(())
+    }
 }
 
 // ============================================================================

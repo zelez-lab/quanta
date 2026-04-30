@@ -49,6 +49,25 @@ pub(crate) struct MetalTessPipeline {
     pub(crate) inner_count: u32,
 }
 
+/// State for one Metal mesh-shader pipeline. Steps 024 + 025.
+///
+/// Metal 3+ supports mesh shaders via
+/// `MTLMeshRenderPipelineDescriptor` (object + mesh + fragment
+/// functions) and `drawMeshThreadgroups:` on the render encoder.
+/// MVP here is a software state container — limits + recorded
+/// dispatch sequence — that satisfies the
+/// `Quanta.MeshShader.Pipeline` contract today. The render-pipeline
+/// integration (replacing the classical vertex stage with the
+/// object/mesh path) lands when the render path is rebuilt to
+/// support meshlets.
+#[allow(dead_code)]
+pub(crate) struct MetalMeshPipeline {
+    pub(crate) max_vertices: u32,
+    pub(crate) max_primitives: u32,
+    pub(crate) task_threads: u32,
+    pub(crate) dispatched: Vec<[u32; 3]>,
+}
+
 /// State for one Metal MTLIndirectCommandBuffer used as a *render*
 /// bundle (DRAW command type instead of ConcurrentDispatch). Steps
 /// 032 + 033, render path. Replayed from inside an active render
@@ -84,6 +103,7 @@ pub struct MetalDevice {
     pub(crate) icbs: RwLock<HashMap<u64, MetalIcb>>,
     pub(crate) render_bundles: RwLock<HashMap<u64, MetalRenderBundle>>,
     pub(crate) tess_pipelines: RwLock<HashMap<u64, MetalTessPipeline>>,
+    pub(crate) mesh_pipelines: RwLock<HashMap<u64, MetalMeshPipeline>>,
     pub(crate) next_handle: AtomicU64,
 }
 
@@ -143,6 +163,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         icbs: RwLock::new(HashMap::new()),
         render_bundles: RwLock::new(HashMap::new()),
         tess_pipelines: RwLock::new(HashMap::new()),
+        mesh_pipelines: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
     })]
 }

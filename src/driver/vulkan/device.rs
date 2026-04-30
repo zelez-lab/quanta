@@ -71,6 +71,11 @@ pub struct VulkanDevice {
     /// TCS+TES SPIR-V modules — that's a future commit. The proof
     /// contract from `Quanta.Tessellation` holds today.
     pub(super) tess_pipelines: RwLock<HashMap<u64, VulkanTessPipeline>>,
+    /// Mesh-shader pipeline state (steps 024 + 025). MVP: software
+    /// lifecycle table. Native `vkCmdDrawMeshTasksEXT` integration
+    /// is deferred to the render-pipeline rebuild that lands with
+    /// 062/063.
+    pub(super) mesh_pipelines: RwLock<HashMap<u64, VulkanMeshPipeline>>,
 }
 
 /// Software tessellation pipeline state — refines
@@ -78,6 +83,18 @@ pub struct VulkanDevice {
 pub(super) struct VulkanTessPipeline {
     pub(super) outer: Vec<u32>,
     pub(super) inner: Vec<u32>,
+}
+
+/// Software mesh-shader pipeline state — refines
+/// `Quanta.MeshShader.Pipeline`. Native lowering goes through
+/// `vkCmdDrawMeshTasksEXT` once the render-pipeline rebuild lands;
+/// the proof contract holds for the MVP today.
+#[allow(dead_code)]
+pub(super) struct VulkanMeshPipeline {
+    pub(super) max_vertices: u32,
+    pub(super) max_primitives: u32,
+    pub(super) task_threads: u32,
+    pub(super) dispatched: Vec<[u32; 3]>,
 }
 
 /// Software bindless table — refines `Quanta.Bindless.Array`.
@@ -703,6 +720,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             bindless_textures: RwLock::new(HashMap::new()),
             bindless_buffers: RwLock::new(HashMap::new()),
             tess_pipelines: RwLock::new(HashMap::new()),
+            mesh_pipelines: RwLock::new(HashMap::new()),
         }));
 
         break; // Use first suitable device
