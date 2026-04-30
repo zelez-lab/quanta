@@ -96,6 +96,15 @@ struct CpuMeshPipeline {
     dispatched: Vec<[u32; 3]>,
 }
 
+/// CPU printf buffer state. Mirrors `Quanta.Printf.Buffer`:
+/// capacity-bounded FIFO of message ids; record appends, drain
+/// empties.
+#[allow(dead_code)]
+struct CpuPrintfBuffer {
+    cap: u32,
+    messages: Vec<u64>,
+}
+
 /// CPU async-copy queue state. Mirrors `Quanta.AsyncCopy.Queue`:
 /// in-order list of (dst, src, size) triples.
 #[allow(dead_code)]
@@ -177,6 +186,8 @@ pub struct CpuDevice {
     queues: Mutex<HashMap<u64, CpuQueue>>,
     /// Async-copy queues indexed by handle.
     async_copy_queues: Mutex<HashMap<u64, CpuAsyncCopyQueue>>,
+    /// Printf buffers indexed by handle.
+    printf_buffers: Mutex<HashMap<u64, CpuPrintfBuffer>>,
 }
 
 impl CpuDevice {
@@ -207,6 +218,7 @@ impl CpuDevice {
             sparse_textures: Mutex::new(HashMap::new()),
             queues: Mutex::new(HashMap::new()),
             async_copy_queues: Mutex::new(HashMap::new()),
+            printf_buffers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -774,6 +786,56 @@ impl GpuDevice for CpuDevice {
 
     fn async_copy_destroy(&self, queue: u64) -> Result<(), QuantaError> {
         self.async_copy_queues.lock().unwrap().remove(&queue);
+        Ok(())
+    }
+
+    // === GPU printf (step 049) ===
+    //
+    // CPU implementation refines `Quanta.Printf.Buffer`:
+    // - printf_create allocates a Vec<u64> sized to cap.
+    // - printf_record appends if not full.
+    // - printf_drain returns the messages and empties the buffer.
+    // - printf_destroy removes the handle.
+
+    fn printf_create(&self, cap: u32) -> Result<u64, QuantaError> {
+        if cap == 0 {
+            return Err(QuantaError::invalid_param(
+                "printf buffer capacity must be >= 1",
+            ));
+        }
+        let handle = self.alloc_handle();
+        self.printf_buffers.lock().unwrap().insert(
+            handle,
+            CpuPrintfBuffer {
+                cap,
+                messages: Vec::new(),
+            },
+        );
+        Ok(handle)
+    }
+
+    fn printf_record(&self, handle: u64, msg_id: u64) -> Result<(), QuantaError> {
+        let mut bufs = self.printf_buffers.lock().unwrap();
+        let buf = bufs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("printf buffer not found"))?;
+        if buf.messages.len() as u32 >= buf.cap {
+            return Err(QuantaError::invalid_param("printf buffer is full"));
+        }
+        buf.messages.push(msg_id);
+        Ok(())
+    }
+
+    fn printf_drain(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
+        let mut bufs = self.printf_buffers.lock().unwrap();
+        let buf = bufs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::invalid_param("printf buffer not found"))?;
+        Ok(core::mem::take(&mut buf.messages))
+    }
+
+    fn printf_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.printf_buffers.lock().unwrap().remove(&handle);
         Ok(())
     }
 

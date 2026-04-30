@@ -9,6 +9,7 @@ pub mod icb;
 pub mod mesh_shader;
 pub mod multi_queue;
 pub mod pipeline;
+pub mod printf;
 pub mod pulse;
 pub mod ray_tracing;
 pub mod render_builder;
@@ -34,6 +35,7 @@ pub use mesh_shader::{
 };
 pub use multi_queue::Queue;
 pub use pipeline::*;
+pub use printf::PrintfBuffer;
 pub use pulse::{OcclusionQuery, Pulse, Timeline, TimestampQuery};
 pub use ray_tracing::*;
 pub use render_builder::RenderBuilder;

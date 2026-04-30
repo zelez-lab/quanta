@@ -86,6 +86,26 @@ impl Gpu {
     /// Backends that don't expose multi-queue (single-queue
     /// software fallbacks, WebGPU global queue) return
     /// `NotSupported` here so user code can branch.
+    /// Allocate a typed [`PrintfBuffer`](crate::PrintfBuffer)
+    /// with the given message capacity. Step 049.
+    ///
+    /// Backends without printf return `NotSupported`. Use
+    /// `cap >= 1`; the typed wrapper rejects 0.
+    pub fn printf_buffer(&self, cap: u32) -> Result<crate::PrintfBuffer, QuantaError> {
+        if cap == 0 {
+            return Err(QuantaError::invalid_param(
+                "printf buffer capacity must be >= 1",
+            ));
+        }
+        let handle = self.inner.printf_create(cap)?;
+        Ok(crate::PrintfBuffer {
+            handle,
+            cap,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
     /// Allocate a typed
     /// [`AsyncCopyQueue`](crate::AsyncCopyQueue) for off-graphics
     /// DMA copies. Step 044.

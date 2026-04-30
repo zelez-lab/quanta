@@ -339,6 +339,40 @@ pub trait GpuDevice: Send + Sync {
         Ok(())
     }
 
+    // === GPU printf (step 049) ===
+    //
+    // Printf typed wrapper (`PrintfBuffer`) refines
+    // `Quanta.Printf.Buffer` from the Lean equivalence theorems
+    // (T7900–T7905). Backends opt in by overriding these methods;
+    // defaults return NotSupported.
+
+    /// Allocate a printf buffer with capacity for `cap` messages.
+    fn printf_create(&self, _cap: u32) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "GPU printf not yet implemented on this backend",
+        ))
+    }
+
+    /// Record a message id into the printf buffer.
+    fn printf_record(&self, _handle: u64, _msg_id: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "GPU printf not yet implemented on this backend",
+        ))
+    }
+
+    /// Drain recorded messages, leaving the buffer empty.
+    fn printf_drain(&self, _handle: u64) -> Result<Vec<u64>, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "GPU printf not yet implemented on this backend",
+        ))
+    }
+
+    /// Destroy a printf buffer. Default no-ops so backends without
+    /// an explicit registry don't error on Drop.
+    fn printf_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     // === M3.3: Occlusion queries ===
 
     /// Create an occlusion query set with `count` slots.
