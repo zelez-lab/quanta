@@ -304,6 +304,41 @@ pub trait GpuDevice: Send + Sync {
         Ok(())
     }
 
+    // === Async memory copy (step 044) ===
+    //
+    // Async-copy typed wrapper (`AsyncCopyQueue`) refines
+    // `Quanta.AsyncCopy.Queue` from the Lean equivalence theorems
+    // (T7800–T7804). Backends opt in by overriding these methods;
+    // defaults return NotSupported so the typed wrapper surfaces a
+    // clear error on platforms without a dedicated DMA engine.
+
+    /// Allocate a fresh async-copy queue. Default returns
+    /// "not yet implemented".
+    fn async_copy_create(&self) -> Result<u64, QuantaError> {
+        Err(QuantaError::invalid_param(
+            "async memory copy not yet implemented on this backend",
+        ))
+    }
+
+    /// Submit a buffer-to-buffer copy on the async-copy queue.
+    fn async_copy_submit(
+        &self,
+        _queue: u64,
+        _dst: u64,
+        _src: u64,
+        _size: usize,
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::invalid_param(
+            "async memory copy not yet implemented on this backend",
+        ))
+    }
+
+    /// Destroy an async-copy queue. Default no-ops so backends
+    /// without an explicit registry don't error on Drop.
+    fn async_copy_destroy(&self, _queue: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     // === M3.3: Occlusion queries ===
 
     /// Create an occlusion query set with `count` slots.

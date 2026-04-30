@@ -1,3 +1,4 @@
+pub mod async_copy;
 pub mod batch;
 pub mod bindless;
 pub mod device;
@@ -19,6 +20,7 @@ pub mod types;
 pub mod vrs;
 pub mod wave;
 
+pub use async_copy::AsyncCopyQueue;
 pub use batch::Batch;
 pub use bindless::{BindlessBufferArray, BindlessTextureArray};
 pub use device::GpuDevice;

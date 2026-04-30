@@ -96,6 +96,13 @@ struct CpuMeshPipeline {
     dispatched: Vec<[u32; 3]>,
 }
 
+/// CPU async-copy queue state. Mirrors `Quanta.AsyncCopy.Queue`:
+/// in-order list of (dst, src, size) triples.
+#[allow(dead_code)]
+struct CpuAsyncCopyQueue {
+    submitted: Vec<(u64, u64, usize)>,
+}
+
 /// CPU queue state. Mirrors `Quanta.MultiQueue.Queue`: kind set at
 /// create + an in-order submitted command counter + last_signal
 /// pair. Software FIFO satisfies the contract; cross-queue ordering
@@ -168,6 +175,8 @@ pub struct CpuDevice {
     sparse_textures: Mutex<HashMap<u64, CpuSparseTexture>>,
     /// Queues indexed by handle.
     queues: Mutex<HashMap<u64, CpuQueue>>,
+    /// Async-copy queues indexed by handle.
+    async_copy_queues: Mutex<HashMap<u64, CpuAsyncCopyQueue>>,
 }
 
 impl CpuDevice {
@@ -197,6 +206,7 @@ impl CpuDevice {
             vrs_states: Mutex::new(HashMap::new()),
             sparse_textures: Mutex::new(HashMap::new()),
             queues: Mutex::new(HashMap::new()),
+            async_copy_queues: Mutex::new(HashMap::new()),
         }
     }
 
@@ -722,6 +732,48 @@ impl GpuDevice for CpuDevice {
 
     fn queue_destroy(&self, queue: u64) -> Result<(), QuantaError> {
         self.queues.lock().unwrap().remove(&queue);
+        Ok(())
+    }
+
+    // === Async memory copy (step 044) ===
+    //
+    // CPU implementation refines `Quanta.AsyncCopy.Queue` as a
+    // software FIFO. Submitted copies execute serially via the
+    // existing field_copy_bytes path; the recorded sequence
+    // satisfies T7801 directly.
+
+    fn async_copy_create(&self) -> Result<u64, QuantaError> {
+        let handle = self.alloc_handle();
+        self.async_copy_queues.lock().unwrap().insert(
+            handle,
+            CpuAsyncCopyQueue {
+                submitted: Vec::new(),
+            },
+        );
+        Ok(handle)
+    }
+
+    fn async_copy_submit(
+        &self,
+        queue: u64,
+        dst: u64,
+        src: u64,
+        size: usize,
+    ) -> Result<(), QuantaError> {
+        {
+            let mut qs = self.async_copy_queues.lock().unwrap();
+            let q = qs
+                .get_mut(&queue)
+                .ok_or_else(|| QuantaError::invalid_param("async copy queue not found"))?;
+            q.submitted.push((dst, src, size));
+        }
+        // Execute the copy synchronously through the existing path.
+        self.field_copy_bytes(dst, src, size)?;
+        Ok(())
+    }
+
+    fn async_copy_destroy(&self, queue: u64) -> Result<(), QuantaError> {
+        self.async_copy_queues.lock().unwrap().remove(&queue);
         Ok(())
     }
 

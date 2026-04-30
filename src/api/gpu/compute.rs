@@ -86,6 +86,22 @@ impl Gpu {
     /// Backends that don't expose multi-queue (single-queue
     /// software fallbacks, WebGPU global queue) return
     /// `NotSupported` here so user code can branch.
+    /// Allocate a typed
+    /// [`AsyncCopyQueue`](crate::AsyncCopyQueue) for off-graphics
+    /// DMA copies. Step 044.
+    ///
+    /// Backends without a dedicated transfer engine return
+    /// `NotSupported` here so user code can fall back to the main
+    /// queue.
+    pub fn async_copy_queue(&self) -> Result<crate::AsyncCopyQueue, QuantaError> {
+        let handle = self.inner.async_copy_create()?;
+        Ok(crate::AsyncCopyQueue {
+            handle,
+            device: self.inner.clone(),
+            live: true,
+        })
+    }
+
     pub fn queue(&self, queue_type: QueueType) -> Result<crate::Queue, QuantaError> {
         let handle = self.inner.create_queue(queue_type)?;
         Ok(crate::Queue {
