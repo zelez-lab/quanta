@@ -485,6 +485,13 @@ impl GpuDevice for VulkanDevice {
         _y: u32,
         _backing: u64,
     ) -> Result<(), QuantaError> {
+        // Step 063 slice 7 — close the silent-drop. The previous
+        // shim returned Ok(()) without calling vkQueueBindSparse,
+        // which violated the no-silent-drops contract. The full
+        // path (sparse VkImage with VK_IMAGE_CREATE_SPARSE_BINDING_BIT
+        // + VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT, sparse memory
+        // requirements query, vkQueueBindSparse with
+        // VkSparseImageMemoryBindInfo) is a separate native track.
         let textures = self
             .textures
             .read()
@@ -492,8 +499,9 @@ impl GpuDevice for VulkanDevice {
         if !textures.contains_key(&texture) {
             return Err(QuantaError::not_found("sparse texture handle not found"));
         }
-        // Full implementation would use vkQueueBindSparse.
-        Ok(())
+        Err(QuantaError::not_supported(
+            "Vulkan sparse tile mapping pending — sparse_texture_create succeeds, but native vkQueueBindSparse path is not yet wired",
+        ))
     }
 
     fn sparse_unmap_tile(
@@ -510,7 +518,9 @@ impl GpuDevice for VulkanDevice {
         if !textures.contains_key(&texture) {
             return Err(QuantaError::not_found("sparse texture handle not found"));
         }
-        Ok(())
+        Err(QuantaError::not_supported(
+            "Vulkan sparse tile unmapping pending — native vkQueueBindSparse path is not yet wired",
+        ))
     }
 
     // === Indirect command buffers (steps 032 + 033) ===

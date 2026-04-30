@@ -557,6 +557,13 @@ impl GpuDevice for MetalDevice {
         _y: u32,
         _backing: u64,
     ) -> Result<(), QuantaError> {
+        // Step 063 slice 7 — close the silent-drop. The previous
+        // shim returned Ok(()) on supported hardware without
+        // actually mapping anything, which violated the
+        // no-silent-drops contract. Native MTLSparseTexture tile
+        // mapping (MTLHeap.makeAliasable: + sparse texture
+        // updateMappingsWithLevel:slice:region: ...) is a
+        // separate native track; surface NotSupported until then.
         let textures = self
             .textures
             .read()
@@ -564,9 +571,9 @@ impl GpuDevice for MetalDevice {
         if !textures.contains_key(&texture) {
             return Err(QuantaError::not_found("sparse texture handle not found"));
         }
-        // Tile mapping with MTLSparseTexture is not yet wired.
-        // Succeeds silently on supported hardware (tile is considered mapped).
-        Ok(())
+        Err(QuantaError::not_supported(
+            "Metal sparse tile mapping pending — sparse_texture_create succeeds, but native MTLSparseTexture updateMappings is not yet wired",
+        ))
     }
 
     fn sparse_unmap_tile(
@@ -583,7 +590,9 @@ impl GpuDevice for MetalDevice {
         if !textures.contains_key(&texture) {
             return Err(QuantaError::not_found("sparse texture handle not found"));
         }
-        Ok(())
+        Err(QuantaError::not_supported(
+            "Metal sparse tile unmapping pending — native MTLSparseTexture updateMappings is not yet wired",
+        ))
     }
 
     // === Indirect command buffers (steps 032 + 033) ===
