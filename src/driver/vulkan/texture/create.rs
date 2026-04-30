@@ -139,6 +139,103 @@ impl VulkanDevice {
         })
     }
 
+    /// Create a sparse-residency `VkImage` — step 063 slice 21.
+    ///
+    /// Differs from `texture_create_impl` in three ways:
+    /// 1. The image flags include `VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+    ///    VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT` so the driver knows
+    ///    memory backing arrives later via `vkQueueBindSparse`.
+    /// 2. No `vkAllocateMemory` / `vkBindImageMemory` — sparse images
+    ///    forbid that path. Tile memory is allocated lazily inside
+    ///    `sparse_map_tile`.
+    /// 3. No image-view creation — without bound memory, sampling
+    ///    or rendering would fail. The view can be lazily created
+    ///    when the first tile is mapped.
+    ///
+    /// The returned `VkTexture` has `memory = null_handle()` and
+    /// `view = null_handle()`. The destroy path tolerates both.
+    pub(crate) fn sparse_image_create_impl(
+        &self,
+        desc: &TextureDesc,
+    ) -> Result<Texture, QuantaError> {
+        let vk_format = format_to_vulkan(desc.format);
+
+        let mut vk_usage =
+            ffi::VK_IMAGE_USAGE_TRANSFER_SRC_BIT | ffi::VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if desc.usage.has(TextureUsage::SHADER_READ) {
+            vk_usage |= ffi::VK_IMAGE_USAGE_SAMPLED_BIT;
+        }
+        if desc.usage.has(TextureUsage::SHADER_WRITE) {
+            vk_usage |= ffi::VK_IMAGE_USAGE_STORAGE_BIT;
+        }
+        if desc.usage.has(TextureUsage::RENDER_TARGET) {
+            if matches!(desc.format, Format::Depth32Float) {
+                vk_usage |= ffi::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            } else {
+                vk_usage |= ffi::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            }
+        }
+
+        let image_info = ffi::VkImageCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_IMAGE_CREATE_SPARSE_BINDING_BIT
+                | ffi::VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT,
+            image_type: ffi::VK_IMAGE_TYPE_2D,
+            format: vk_format,
+            extent: ffi::VkExtent3D {
+                width: desc.width,
+                height: desc.height,
+                depth: desc.depth.max(1),
+            },
+            mip_levels: desc.mip_levels.max(1),
+            array_layers: desc.array_length.max(1),
+            samples: sample_count_to_vk(desc.sample_count),
+            tiling: ffi::VK_IMAGE_TILING_OPTIMAL,
+            usage: vk_usage,
+            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: core::ptr::null(),
+            initial_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        let mut image = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkCreateImage(self.device, &image_info, core::ptr::null(), &mut image) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory()
+                .with_context(&format!("sparse vkCreateImage VkResult {}", result)));
+        }
+
+        let handle = self.alloc_handle();
+        self.textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                VkTexture {
+                    image,
+                    view: ffi::null_handle(),
+                    memory: ffi::null_handle(),
+                    width: desc.width,
+                    height: desc.height,
+                    format: vk_format,
+                    mip_levels: desc.mip_levels.max(1),
+                    current_layout: std::sync::atomic::AtomicU32::new(
+                        ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                    ),
+                },
+            );
+
+        Ok(Texture {
+            handle,
+            width: desc.width,
+            height: desc.height,
+            format: desc.format,
+            device: None,
+        })
+    }
+
     pub(crate) fn sampler_create_impl(
         &self,
         desc: &crate::render_pass::SamplerDesc,

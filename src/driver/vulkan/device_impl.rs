@@ -502,14 +502,15 @@ impl GpuDevice for VulkanDevice {
                 "sparse textures require VkPhysicalDeviceFeatures.sparseBinding + a queue family with VK_QUEUE_SPARSE_BINDING_BIT — not available on this device",
             ));
         }
-        // The created texture is a regular VkImage today; the typed
-        // wrapper proof contract (T7600 dimensions check + handle
-        // is a live texture) doesn't require sparse residency. The
-        // bind-sparse path that promotes this to a real sparse
-        // image with VK_IMAGE_CREATE_SPARSE_BINDING_BIT lives in a
-        // follow-up slice; sparse_map_tile / sparse_unmap_tile
-        // already surface NotSupported (slice 7) until then.
-        let tex = self.texture_create_impl(desc)?;
+        // Step 063 slice 21 — create a real sparse VkImage with
+        // SPARSE_BINDING_BIT + SPARSE_RESIDENCY_BIT, no memory
+        // bound. Memory backing is attached lazily by
+        // `sparse_map_tile` (slice 22, still NotSupported today).
+        // The typed-wrapper proof contract (T7600 dimensions +
+        // T7605 lifecycle) holds because the returned handle is a
+        // live texture in the registry; the destroy path tolerates
+        // null memory / null view.
+        let tex = self.sparse_image_create_impl(desc)?;
         let handle = tex.handle();
         Ok(handle)
     }
