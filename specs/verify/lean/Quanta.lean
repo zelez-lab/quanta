@@ -57,6 +57,9 @@ import Quanta.Icb
 -- Bindless resource arrays (steps 034 + 035)
 import Quanta.Bindless
 
+-- Tessellation pipelines (steps 022 + 023)
+import Quanta.Tessellation
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
