@@ -6,6 +6,8 @@ libopcodes_complete.rlib
 
 # Verus side-effect build artifacts (`verus --crate-type=lib` drops
 # .rlib files in the cwd of the verifier — they're not source).
+# `just verus` redirects them to target/verus/; this catches stragglers
+# from manual invocations.
 /lib*.rlib
 
 # Kani per-harness side-effect outputs (run from specs/verify/kani/).

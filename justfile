@@ -91,6 +91,14 @@ test-deqp-compute:
 test-deqp-memory:
     ssh {{PI_HOST}} "deqp-vk --deqp-case=dEQP-VK.memory.*"
 
+# Verus — emits rlib side-effect outputs into target/verus/ instead of the
+# repo root (`verus --crate-type=lib` would otherwise drop libfoo.rlib in cwd).
+# Pass anything you'd pass to verus directly.
+#   Example: just verus specs/verify/verus/quanta/api_invariants.rs --crate-type=lib
+verus +ARGS:
+    mkdir -p target/verus
+    verus {{ARGS}} -- --out-dir target/verus
+
 # Quality
 fmt:
     cargo fmt --all
