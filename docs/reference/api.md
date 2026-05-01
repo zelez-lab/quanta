@@ -21,6 +21,23 @@ let gpu = quanta::init()?;
 | `total_quarks()` | `u32` | Total parallel execution units |
 | `name()` | `&str` | Device name string |
 
+### Feature support queries
+
+Cheap, side-effect-free booleans reading the per-driver capability cache
+populated at device discovery. Always check before constructing the
+matching typed wrapper — the constructors return `NotSupported` on a
+no-capability device, but checking up front lets you take a fallback
+path without throwing.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `supports_vrs()` | `bool` | Variable rate shading available |
+| `supports_ray_tracing()` | `bool` | Hardware ray-tracing extensions present |
+| `supports_mesh_shaders()` | `bool` | Mesh + task shader stages available |
+| `supports_tessellation()` | `bool` | Tessellation control / evaluation stages |
+| `supports_sparse_residency()` | `bool` | Sparse textures (`vkQueueBindSparse` / `MTLHeap` placement) |
+| `supported_shading_rates()` | `Vec<(u32, u32)>` | Concrete (x,y) shading rates the device exposes (e.g. `[(1,1), (2,2), (4,4)]`). Empty when VRS is not supported. |
+
 ### Fields (typed GPU memory)
 
 | Method | Returns | Description |
@@ -55,6 +72,11 @@ let gpu = quanta::init()?;
 | `dispatch_indirect(wave, buf, off)` | `Result<Pulse>` | GPU-driven dispatch |
 | `reload_wave(wave, kernel)` | `Result<()>` | Hot-reload kernel binary |
 | `batch()` | `Result<Batch>` | Begin multi-dispatch batch |
+| `indirect_command_buffer(cap)` | `Result<IndirectCommandBuffer>` | Pre-record `cap` dispatch / draw commands then `execute(n)` |
+| `async_copy_queue()` | `Result<AsyncCopyQueue>` | Transfer queue concurrent with compute / graphics |
+| `printf_buffer(cap)` | `Result<PrintfBuffer>` | Capacity-bounded shader printf ring |
+| `queue(QueueType)` | `Result<Queue>` | Typed queue wrapper (graphics / compute / transfer) |
+| `create_queue(QueueType)` | `Result<u64>` | Raw queue handle (escape hatch — prefer `queue`) |
 
 ### Render
 
@@ -63,6 +85,12 @@ let gpu = quanta::init()?;
 | `pipeline(desc)` | `Result<Pipeline>` | Create render pipeline |
 | `render(target)` | `Result<RenderBuilder>` | Begin render pass (builder chain) |
 | `dispatch_mesh(pipeline, groups)` | `Result<()>` | Mesh shader dispatch |
+| `mesh_pipeline(desc)` | `Result<Pipeline>` | Create a mesh-shader pipeline (gated on `supports_mesh_shaders`) |
+| `tessellation_pipeline(desc)` | `Result<Pipeline>` | Create a tessellation pipeline (gated on `supports_tessellation`) |
+| `sparse_texture(desc)` | `Result<SparseTexture>` | Virtual texture with on-demand tile residency (2D, single-mip in v0.1) |
+| `acceleration_structure_blas(geoms)` | `Result<AccelerationStructure>` | Build a bottom-level BVH (foundation only in v0.1 — build dispatch returns `NotSupported`) |
+| `ray_tracing_pipeline(desc)` | `Result<RayTracingPipeline>` | Construct a ray-tracing pipeline; `dispatch_rays(w, h)` traces |
+| `vrs_state()` | `Result<VrsState>` | Variable rate shading handle — `set_rate(ShadingRate)` to switch |
 
 ### Sync
 
@@ -89,7 +117,12 @@ let gpu = quanta::init()?;
 | `read_timestamps(query)` | `Result<Vec<u64>>` | Read all timestamps |
 | `timestamp_to_ns(ticks)` | `u64` | Convert ticks to nanoseconds |
 | `occlusion_query_create(count)` | `Result<OcclusionQuery>` | Create occlusion query |
-| `occlusion_query_read(query)` | `Result<Vec<u64>>` | Read fragment counts |
+| `occlusion_query_read(query)` | `Result<Vec<u64>>` | Read fragment counts (synchronous, native backends only) |
+
+> **WebGPU note.** WebGPU has no synchronous readback of query results.
+> On the WebGPU backend, `occlusion_query_read` returns
+> `NotSupported`; use `occlusion_query_read_async(query).await` on
+> the WebGPU driver directly for the Promise-based path.
 
 ### Multi-queue
 
@@ -325,6 +358,162 @@ Compiled render pipeline (vertex + fragment + state).
 | `handle()` | `u64` | Raw GPU handle |
 
 Created via `gpu.pipeline(&PipelineDesc { ... })`.
+
+---
+
+## `IndirectCommandBuffer`
+
+Pre-recorded sequence of GPU dispatches / draws. Created via
+`gpu.indirect_command_buffer(capacity)`. Drop releases the backend
+handle.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `record_dispatch(&wave, [x,y,z])` | `Result<()>` | Append a compute dispatch |
+| `record_draw(&pipeline, vc, ic)` | `Result<()>` | Append a draw |
+| `execute(count)` | `Result<()>` | Replay the first `count` recorded commands |
+| `execute_all()` | `Result<()>` | Replay every recorded command |
+| `len()` / `capacity()` / `is_empty()` | `u32` / `bool` | Sizes |
+| `handle()` | `u64` | Raw GPU handle |
+
+`record_*` returns `InvalidParam` if full or destroyed. `execute(count)`
+returns `InvalidParam` if `count > len()`.
+
+---
+
+## `IndirectRenderBundle`
+
+Render-path equivalent of `IndirectCommandBuffer` — replayed inside
+an active render pass via `pass.execute_bundle(&bundle, count)`.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `record_draw(&pipeline, vc, ic)` | `Result<()>` | Append a draw |
+| `len()` / `capacity()` / `is_empty()` | `u32` / `bool` | Sizes |
+| `handle()` | `u64` | Raw GPU handle |
+
+---
+
+## `SparseTexture`
+
+Virtual texture with on-demand page residency. Created via
+`gpu.sparse_texture(&TextureDesc)`. Drop walks remaining tile bindings,
+waits for the queue, and releases the heap / image.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `map_tile(mip, x, y, backing)` | `Result<()>` | Commit physical pages for tile `(mip, x, y)` |
+| `unmap_tile(mip, x, y)` | `Result<()>` | Release the binding (idempotent) |
+| `width()` / `height()` | `u32` | Virtual extent in pixels |
+| `handle()` | `u64` | Raw GPU handle |
+
+v0.1 limit: 2D color textures with single mip only (3D / Cube / Array
+return `NotSupported` at create time). See `docs/expert/sparse-textures.md`.
+
+---
+
+## `AccelerationStructure`
+
+Bottom-level (BLAS) or top-level (TLAS) BVH over geometry. Created via
+`gpu.acceleration_structure_blas(&[GeometryDesc])`. Drop tears down
+the AS handle + storage buffer.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `kind()` | `AsKind` | `Bottom` (BLAS) or `Top` (TLAS) |
+| `geom_count()` | `u32` | Number of geometries (BLAS) / instances (TLAS) |
+| `handle` | `u64` | Public field — raw GPU handle |
+
+v0.1 ships the AS proc-addr foundation; the GPU-side build dispatch
+returns `NotSupported` until the AMDGPU runner validates the path.
+See `docs/expert/ray-tracing.md`.
+
+---
+
+## `RayTracingPipeline`
+
+Three-stage ray-tracing pipeline (raygen / closest-hit / miss).
+Created via `gpu.ray_tracing_pipeline(&desc)`. Drop releases the
+pipeline.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `dispatch_rays(w, h)` | `Result<()>` | Trace `w × h` rays |
+| `max_recursion()` | `u32` | Recursion depth this pipeline was built with |
+| `handle()` | `u64` | Raw GPU handle |
+
+`MAX_DISPATCH_DIM = 65535`, `MAX_RECURSION_DEPTH = 31`.
+
+---
+
+## `Queue`
+
+Typed multi-queue submission handle. Created via `gpu.queue(QueueType)`.
+Drop releases the backend handle.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `submit(&wave, [x,y,z])` | `Result<()>` | Submit compute dispatch on this queue |
+| `signal(semaphore)` | `Result<()>` | Signal a semaphore from this queue |
+| `wait(semaphore)` | `Result<()>` | Wait on a semaphore before continuing |
+| `kind()` | `QueueType` | Capability tier (graphics / compute / transfer) |
+| `handle()` | `u64` | Raw GPU handle |
+
+---
+
+## `AsyncCopyQueue`
+
+Transfer queue running concurrently with compute / graphics. Created
+via `gpu.async_copy_queue()`. Drop releases the backend handle.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `copy_buffer::<T>(&dst, &src, size)` | `Result<()>` | Buffer-to-buffer copy on this queue |
+| `copy_buffer_raw(dst, src, size)` | `Result<()>` | Raw-handle copy (escape hatch) |
+| `handle()` | `u64` | Raw GPU handle |
+
+Cross-queue ordering must be established via `Queue::signal` /
+`Queue::wait` if other queues need to observe the copy.
+
+---
+
+## `PrintfBuffer`
+
+Capacity-bounded shader-printf ring drained by the host. Created via
+`gpu.printf_buffer(capacity)`. Drop releases the backend handle.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `record(msg_id)` | `Result<()>` | Host-side record (testing / shim path) |
+| `drain()` | `Result<Vec<u64>>` | Drain all recorded messages, leaving the buffer empty |
+| `capacity()` | `u32` | Maximum recorded messages |
+| `handle()` | `u64` | Raw GPU handle |
+
+---
+
+## `VrsState`
+
+Variable rate shading state. Created via `gpu.vrs_state()`. Drop
+releases the backend handle.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `set_rate(ShadingRate)` | `Result<()>` | Switch to a new shading rate |
+| `current()` | `ShadingRate` | Currently bound rate |
+| `handle()` | `u64` | Raw GPU handle |
+
+---
+
+## `ShadingRate`
+
+```rust
+enum ShadingRate { R1x1, R1x2, R2x1, R2x2, R2x4, R4x2, R4x4 }
+```
+
+Cross-vendor shading rate. `R2x2` means one fragment-shader invocation
+covers a 2×2 pixel block. `x_axis()` / `y_axis()` return the per-axis
+factor. Use `gpu.supported_shading_rates()` to enumerate concrete
+rates the device exposes.
 
 ---
 

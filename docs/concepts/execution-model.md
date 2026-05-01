@@ -166,7 +166,29 @@ tiled matrix multiply and reductions.
 | Quarks within a proton | Lockstep (same instruction, same cycle)         |
 | Protons in a workgroup | No guaranteed order (use `barrier()` to sync)   |
 | Workgroups             | No guaranteed order (fully independent)          |
-| Dispatches             | Sequential unless using async compute            |
+| Dispatches on one queue| Sequential (same queue serializes)              |
+| Dispatches on different queues | Concurrent (use semaphores to order)     |
 
 The only way to enforce ordering is explicit synchronization: `barrier()` within
-a workgroup, `gpu.wait()` between dispatches.
+a workgroup, `pulse.wait()` between dispatches on the same queue, and
+queue-level signal/wait semaphores between dispatches on different queues.
+
+## Queues
+
+Most desktop GPUs expose three hardware queue families that can run in
+parallel:
+
+| Family   | Typical use                                         |
+|----------|-----------------------------------------------------|
+| Graphics | Render passes, general compute                      |
+| Compute  | Async compute (culling, post-process, simulation)   |
+| Transfer | Memory copies overlapped with the other two queues  |
+
+Quanta's `Gpu::queue_families()` reports what the active backend exposes;
+`gpu.queue(QueueType::Compute)` returns a typed `Queue` you can `submit` on.
+WebGPU has only a single global queue; multiple `Queue` handles there share
+that queue. See [Guide: Multi-queue](../guide/15-multi-queue.md).
+
+The mental model: a queue is a single timeline. Two submits on the same queue
+happen in submit order. Two submits on different queues happen in arbitrary
+order unless you stitch them with `signal` / `wait` on a shared semaphore.

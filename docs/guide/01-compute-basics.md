@@ -167,15 +167,34 @@ tiled_reduce::<256>(&gpu, &mut data, n)?.wait()?;
 
 All GPU operations return `Result<T, QuantaError>`. Error kinds:
 
-| Kind                | Meaning                                |
-|---------------------|----------------------------------------|
-| `NoDevice`          | No GPU found on the system             |
-| `OutOfMemory`       | GPU memory allocation failed           |
-| `CompilationFailed` | Kernel compilation error (with message)|
-| `SubmitFailed`      | Command submission failed              |
-| `Timeout`           | GPU operation timed out                |
-| `DeviceLost`        | GPU disconnected or driver crashed     |
-| `InvalidParam`      | Bad parameter (with message)           |
+| Kind                | Meaning                                                       |
+|---------------------|---------------------------------------------------------------|
+| `NoDevice`          | No GPU found on the system                                    |
+| `OutOfMemory`       | GPU memory allocation failed                                  |
+| `CompilationFailed` | Kernel compilation error (with message)                       |
+| `SubmitFailed`      | Command submission failed                                     |
+| `Timeout`           | GPU operation timed out                                       |
+| `DeviceLost`        | GPU disconnected or driver crashed                            |
+| `InvalidParam`      | Bad parameter (with message) -- caller passed an OOB value    |
+| `NotSupported`      | Feature not implemented on this backend -- branch to fallback |
+| `NotFound`          | Handle does not refer to a live resource -- usually a double-free |
+| `Internal`          | Internal invariant violation (poisoned mutex, etc.)           |
+
+The three `&'static str` variants (`InvalidParam`, `NotSupported`, `NotFound`)
+are deliberately distinct so callers can branch:
+
+```rust
+match gpu.mesh_pipeline(desc) {
+    Ok(pipe) => /* use mesh shaders */,
+    Err(e) if matches!(e.kind, QuantaErrorKind::NotSupported(_)) => {
+        // backend doesn't support mesh shaders -- fall back
+    }
+    Err(e) => return Err(e),
+}
+```
+
+`InvalidParam` means *you passed bad input* (out of range, zero capacity, etc.).
+`NotSupported` means *the backend can't do this at all* — different remedies.
 
 Attach context to errors for debugging:
 

@@ -94,6 +94,60 @@ fn cas_increment(counter: &mut [u32]) {
 CAS enables lock-free algorithms: linked lists, queues, custom reduction
 patterns. Use `atomic_add` when possible -- it is faster than a CAS loop.
 
+## Memory ordering
+
+Atomic operations and fences carry a memory-ordering parameter that tells the
+GPU what surrounding loads and stores are allowed to do. Quanta's IR exposes
+five orderings (matching Rust / C++):
+
+| Order      | Guarantee                                                        |
+|------------|------------------------------------------------------------------|
+| `Relaxed`  | The atomic itself is atomic; nothing else is ordered.            |
+| `Acquire`  | This op + every load that follows it can't move ahead.           |
+| `Release`  | Every store before this op must be visible before it.            |
+| `AcqRel`   | Both `Acquire` and `Release` (read-modify-write).                |
+| `SeqCst`   | A single global total order across all `SeqCst` ops.             |
+
+In v0.1, `atomic_*` intrinsics implicitly use `SeqCst` on every backend; per-op
+ordering on `AtomicOp` is plumbed at the IR level but not yet exposed in the
+kernel DSL. `Fence` already accepts a per-op order:
+
+```rust
+#[quanta::kernel]
+fn producer_consumer(slot: &mut [u32], data: &mut [f32]) {
+    // ... write data[slot[0]] ...
+    fence(MemoryOrder::Release);  // make data writes visible
+    atomic_add(&mut slot[0], 1u32);
+}
+```
+
+### Compare-and-swap takes two orders
+
+`atomic_cas` accepts a `success_order` (applied when the swap succeeds) and a
+`failure_order` (applied when the comparison fails and no store happens). The
+constraint is `failure_order <= success_order`, and `failure_order` may not be
+`Release` or `AcqRel` (LLVM's `cmpxchg` rules). When backends only expose a
+single ordering they use `success_order`.
+
+### Backend-specific lowering
+
+Most of the time you don't need to think about this — the compiler picks the
+right thing. Two facts worth knowing:
+
+- **Metal device atomics are always `memory_order_relaxed`.** MSL rejects any
+  stronger ordering on `device atomic_*` pointers; `xcrun metal` errors out.
+  Quanta clamps every IR ordering down to `Relaxed` at MSL emission. The
+  cross-device ordering you actually get comes from the explicit
+  `threadgroup_barrier` / device barriers around the atomic, not from the
+  C++-style flags. This applies to `AtomicOp`, `AtomicCas` (both success and
+  failure), and `Fence`. Threadgroup atomics are unaffected.
+- **WGSL has no per-op ordering.** Non-`Relaxed` `Fence` lowers to
+  `storageBarrier()`; `Relaxed` is a no-op. CAS uses `success_order` only.
+
+If you need fine-grained ordering control today (Rust `AtomicXxxx::fetch_add`
+parity), reach for `Fence` around your atomics rather than expecting the
+ordering parameter on the atomic itself to round-trip on every backend.
+
 ## Performance considerations
 
 - Atomics to the **same** address serialize. If all quarks atomically update

@@ -244,6 +244,32 @@ let mut pulse = gpu.render(&target)?
 pulse.wait()?;
 ```
 
+## v0.1 advanced features
+
+WebGPU intentionally exposes a narrower surface than Vulkan or Metal. Quanta
+follows the spec where it can and returns `QuantaErrorKind::NotSupported` for
+features WebGPU doesn't include, so the same code compiles on the desktop
+backends and degrades gracefully on the web.
+
+| WebGPU                                  | Quanta                                                             |
+|-----------------------------------------|--------------------------------------------------------------------|
+| `pass.drawIndirect(buffer, offset)`     | `render_pass.draw_indirect(&buffer, offset)`                       |
+| `pass.drawIndexedIndirect(...)`         | `render_pass.draw_indexed_indirect(&buffer, offset, &indices)`     |
+| `GPURenderBundle` + `executeBundles`    | `gpu.render_bundle(cap)` + `render_pass.execute_bundle(&b, count)` |
+| `GPUQueue.copyBufferToBuffer`           | `gpu.async_copy_queue().copy_buffer(&dst, &src, n)`                |
+| Single global queue                     | `gpu.queue_families()` reports one `Graphics` family               |
+| (not in spec)                           | `gpu.acceleration_structure_blas(...)` -- `NotSupported` on web    |
+| (not in spec)                           | `gpu.mesh_pipeline(...)` -- `NotSupported` on web                  |
+| (not in spec)                           | `gpu.tessellation_pipeline(...)` -- `NotSupported` on web          |
+| (not in spec)                           | `gpu.vrs_state()` -- `NotSupported` on web                         |
+| (not in spec)                           | `gpu.sparse_texture(...)` -- `NotSupported` on web                 |
+
+Always pair an advanced-feature call with the matching capability query
+(`gpu.supports_ray_tracing()`, `supports_mesh_shaders()`,
+`supports_tessellation()`, `supports_vrs()`, `supports_sparse_residency()`)
+or branch on `QuantaErrorKind::NotSupported` to fall back gracefully on the
+web target.
+
 ## When to stay with wgpu
 
 - You need WebGPU-specific features (surface/swapchain management for browsers).

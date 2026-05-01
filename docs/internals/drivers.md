@@ -288,6 +288,139 @@ All three are dev-only — `quanta-cli` and `quanta-codegen` never
 ship to user codebases. The user-facing `quanta` library crate has
 zero transitive deps; the browser sees only `quanta.js` + the wasm.
 
+## Capability discovery
+
+Each driver populates a per-device capability cache at discovery time
+so `gpu.supports_*()` queries are O(1) reads, never re-probing the
+hardware. The cache is a simple `Caps` struct on the device:
+
+```rust
+struct Caps {
+    has_vrs: bool,
+    has_ray_tracing: bool,
+    has_mesh_shaders: bool,
+    has_tessellation: bool,
+    has_sparse_residency: bool,
+    supported_shading_rates: Vec<(u32, u32)>,
+    // ...
+}
+```
+
+### Vulkan capability discovery
+
+At `vkCreateDevice` time the driver enumerates extensions
+(`vkEnumerateDeviceExtensionProperties`) and chains
+`VkPhysicalDeviceFeatures2 → ...Features extensions` on the create
+chain so each feature is *enabled* alongside being *enumerated*:
+
+| Capability | Extension(s) | Feature struct |
+|------------|--------------|----------------|
+| Sparse residency | (core) | `VkPhysicalDeviceFeatures.sparseBinding` |
+| VRS | `VK_KHR_fragment_shading_rate` | `VkPhysicalDeviceFragmentShadingRateFeaturesKHR` |
+| Mesh shaders | `VK_EXT_mesh_shader` | `VkPhysicalDeviceMeshShaderFeaturesEXT` |
+| Tessellation | (core) | `VkPhysicalDeviceFeatures.tessellationShader` |
+| Ray tracing | `VK_KHR_ray_tracing_pipeline` + `VK_KHR_acceleration_structure` + `VK_KHR_buffer_device_address` + `VK_KHR_deferred_host_operations` | `accelerationStructure` + `bufferDeviceAddress` |
+
+`bufferDeviceAddress` is required for ray tracing because the
+acceleration-structure build inputs reference vertex / index buffers
+by GPU device address. When enabled, `field_alloc_impl` augments the
+buffer-creation usage with `SHADER_DEVICE_ADDRESS_BIT` +
+`AS_BUILD_INPUT_READ_ONLY_BIT_KHR` so user-allocated `Field`s can be
+fed into the AS build without a re-create.
+
+VRS supported rates are enumerated via
+`vkGetPhysicalDeviceFragmentShadingRatesKHR` and cached as
+`supported_shading_rates: Vec<(u32, u32)>`.
+
+### Metal capability discovery
+
+Metal exposes capabilities via family-feature gates:
+
+| Capability | Gate |
+|------------|------|
+| Sparse residency | `[device supportsFamily:Apple7]` (M1 / A15+) |
+| Ray tracing | `[device supportsFamily:Apple6]` |
+| Mesh shaders | `[device supportsFamily:Mac2]` or Apple9 |
+| Tessellation | always (all Metal 2 devices) |
+| VRS | `[device supportsFamily:Apple6]` + rasterization-rate-map API present |
+
+The Metal driver caches `MTLDevice.supportsFamily:` answers once at
+device creation rather than calling them per-allocation.
+
+### WebGPU capability discovery
+
+WebGPU has no fine-grained capability bits in the spec for ray tracing
+/ mesh shaders / sparse residency (none of which are in W3C). The
+WebGPU driver reports them all as `false`; constructors return
+`NotSupported` with feature-named messages.
+
+The W3C spec exposes a few features (e.g. `timestamp-query`,
+`depth-clip-control`) via `device.features`; the driver translates
+those into the corresponding `Caps` bits at discovery time.
+
+### CPU software device
+
+Returns `false` for every capability except the always-software
+ones (basic compute, plain texture write, etc.). All advanced-feature
+constructors return `NotSupported` with a software-CPU-specific
+message.
+
+## Feature support queries
+
+Public API for the cache:
+
+```rust
+gpu.supports_vrs()              // bool
+gpu.supports_ray_tracing()      // bool
+gpu.supports_mesh_shaders()     // bool
+gpu.supports_tessellation()     // bool
+gpu.supports_sparse_residency() // bool
+gpu.supported_shading_rates()   // Vec<(u32, u32)>
+```
+
+These read the cached `Caps` and never re-probe — cheap to call in
+hot loops. The convention across the codebase is *capability-check
+first, then construct*: callers branch on `supports_*` and either
+construct the typed wrapper or take a fallback path. Constructors
+themselves still gate (returning `NotSupported`) so callers who skip
+the up-front check fail explicitly rather than silently.
+
+## Native feature lowerings (v0.1)
+
+| Feature | Vulkan | Metal | WebGPU | CPU |
+|---------|--------|-------|--------|-----|
+| Compute / draw / blit | ✅ native | ✅ native | ✅ native | ✅ software |
+| Async copy | ✅ `MTLBlitCommandEncoder` |  | `GPUQueue.copyBufferToBuffer` | software memcpy |
+| Multi-queue | ✅ per family | ✅ per family | single queue | software FIFO |
+| Tessellation | ✅ device-feature gated; software MVP, native render-pipeline pending | ✅ MTLBuffer-backed; native draw pending | `NotSupported` | ✅ full software |
+| Mesh shaders | ✅ extension-gated; software MVP, native pipeline pending | ✅ family-gated; software MVP, native pipeline pending | `NotSupported` | ✅ full software |
+| Variable rate shading | ✅ native (rate enumeration + `vkCmdSetFragmentShadingRateKHR`) | ✅ native (`MTLRasterizationRateMap`) | `NotSupported` | software lifecycle |
+| Sparse residency | ✅ native (`vkQueueBindSparse`, 2D / single-mip) | ✅ native (`MTLHeap` placement, 2D / single-mip) | `NotSupported` | software lifecycle |
+| Ray tracing | ⚠️ AS proc-addr foundation; build dispatch returns `NotSupported` (lavapipe segfault, awaiting AMDGPU runner) | ⚠️ family-gated; intersector dispatch pending | `NotSupported` | software lifecycle |
+| Indirect command buffer | software MVP, native pending | software MVP, native pending | `NotSupported` (render bundles are a separate path) | ✅ full software |
+| Occlusion queries | ✅ native | ✅ native | ✅ native (async read via `mapAsync`; sync `occlusion_query_read` returns `NotSupported`) | ✅ software |
+
+### Occlusion queries on WebGPU
+
+Native backends expose `gpu.occlusion_query_read(query) -> Result<Vec<u64>>`
+synchronously. WebGPU has no synchronous readback — query results must
+go through `GPUQuerySet.resolveQuerySet` into a staging buffer with
+`COPY_SRC | COPY_DST | QUERY_RESOLVE | MAP_READ` usage, then
+`buffer.mapAsync(GPUMapMode.READ)` resolves to a `Promise<void>` the
+host awaits. The WebGPU driver therefore:
+
+1. Returns `NotSupported` from the synchronous `occlusion_query_read`
+   with a message pointing at the async path.
+2. Provides `pub async fn occlusion_query_read_async(&self, query: u64)
+   -> Result<Vec<u64>>` as a driver-level extension method that drives
+   the resolve + mapAsync sequence and decodes the per-slot 8-byte
+   little-endian `u64` count.
+
+The render encoder pre-walks `pass.ops` to attach the query set to
+the `RenderPassDescriptor.occlusionQuerySet` field before
+`beginRenderPass`, since WebGPU validates the attachment up front
+rather than letting `begin_occlusion_query` discover the missing set.
+
 ## Validation layer (`src/driver/validation.rs`)
 
 Wraps any `GpuDevice` and adds runtime checks:

@@ -238,6 +238,50 @@ let sampler = gpu.sampler(&SamplerDesc {
 | `Repeat`             | Tile the texture                   |
 | `MirrorRepeat`       | Tile with alternating mirror       |
 
+## Sparse textures
+
+A sparse texture is a texture whose virtual extent (e.g. 16384 × 16384) is
+declared up front, but whose backing memory is allocated tile-by-tile on demand.
+Use it when the working set is far smaller than the address space — virtual
+texturing, terrain megatextures, very large 3D volumes.
+
+```rust
+if !gpu.supports_sparse_residency() {
+    // fall back to a regular texture
+}
+
+let tex = gpu.sparse_texture(&TextureDesc {
+    width: 16384,
+    height: 16384,
+    format: Format::RGBA8,
+    ..TextureDesc::default()
+})?;
+
+// Allocate one 256x256 backing tile and map it at (mip=0, x=0, y=0).
+let backing = gpu.field::<u8>(256 * 256 * 4, FieldUsage::default_compute())?;
+tex.map_tile(0, 0, 0, backing.handle())?;
+
+// Later, when the tile leaves the working set:
+tex.unmap_tile(0, 0, 0)?;
+```
+
+`map_tile`/`unmap_tile` are blocking: the queue serializes them with following
+work. The tile coordinate system is driver-defined — typically 256 × 256 texels
+on Vulkan and Metal. Resident pages persist until you unmap them or drop the
+`SparseTexture`.
+
+### Capability matrix
+
+| Backend | Status                                               |
+|---------|------------------------------------------------------|
+| Vulkan  | `vkQueueBindSparse` + `VK_EXT_sparse_binding`        |
+| Metal   | `MTLHeap` (Apple family 7+: M1, M2, ...)            |
+| WebGPU  | `NotSupported` (sparse residency is not in the spec) |
+| CPU     | Software (`HashMap<(mip, x, y), backing>`)            |
+
+See [Expert: Sparse textures](../expert/sparse-textures.md) for the lowering
+details and per-driver caveats.
+
 ## MSAA resolve
 
 After rendering to an MSAA target, resolve to a single-sample texture:

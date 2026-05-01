@@ -138,3 +138,37 @@ let raw_handle = field.handle();
 - No more memory type enumeration — the driver picks `HOST_VISIBLE` or `DEVICE_LOCAL`.
 - Pipeline barriers are still explicit (`gpu.barrier_texture()`) because Metal cannot
   infer the source stage. On Metal these are no-ops (automatic hazard tracking).
+
+## v0.1 advanced features
+
+Quanta wraps the modern advanced surface as typed handles. Each is gated by a
+capability query and returns `QuantaErrorKind::NotSupported` on backends that
+don't implement it.
+
+| Vulkan / Metal extension                                  | Quanta                                                           |
+|-----------------------------------------------------------|------------------------------------------------------------------|
+| `VK_KHR_acceleration_structure` / `MTLAccelerationStructure` | `gpu.acceleration_structure_blas(&[GeometryDesc { .. }])`     |
+| `VK_KHR_ray_tracing_pipeline` / Metal intersector tables  | `gpu.ray_tracing_pipeline(&RayTracingPipelineDesc { .. })`       |
+| `vkCmdTraceRaysKHR` / `dispatchThreads` on intersector    | `pipeline.dispatch_rays(w, h)`                                   |
+| `VK_EXT_mesh_shader` / `MTLMeshRenderPipelineDescriptor`  | `gpu.mesh_pipeline(MeshPipelineDesc { .. })`                     |
+| `vkCmdDrawMeshTasksEXT` / `drawMeshThreadgroups:`         | `pipeline.dispatch([gx, gy, gz])`                                |
+| Tessellation control / evaluation stages                  | `gpu.tessellation_pipeline(TessTopology::Triangle, control_pts)` |
+| `VK_KHR_fragment_shading_rate` / `MTLRasterizationRateMap`| `gpu.vrs_state()` + `set_shading_rate(ShadingRate::R2x2)`        |
+| `VK_EXT_sparse_binding` / `MTLHeap`                       | `gpu.sparse_texture(&desc)` + `map_tile` / `unmap_tile`          |
+| `vkQueueBindSparse`                                       | (transparent — `map_tile` does the bind)                          |
+| Multi-queue (graphics / compute / transfer)               | `gpu.queue(QueueType::Compute)`, `gpu.queue_families()`          |
+| Transfer queue + `vkCmdCopyBuffer` / `MTLBlitCommandEncoder`| `gpu.async_copy_queue().copy_buffer(&dst, &src, n)`             |
+| Secondary command buffers / `MTLIndirectCommandBuffer`    | `gpu.render_bundle(cap)`, `gpu.indirect_command_buffer(cap)`     |
+| `vkCmdDrawIndirect` / `drawPrimitives:indirectBuffer:`    | `render_pass.draw_indirect(&buffer, offset)`                     |
+| `VK_EXT_debug_printf`                                     | `gpu.printf_buffer(cap)?.drain()?`                               |
+
+The argument layout for indirect draws follows the Vulkan / Metal convention
+exactly — see [Guide: Indirect commands](../guide/14-indirect-commands.md).
+
+### Memory ordering note for Vulkan developers
+
+Vulkan's `OpMemoryBarrier` accepts arbitrary semantics. Metal's `device atomic_*`
+pointers accept *only* `memory_order_relaxed` — `xcrun metal` rejects anything
+stronger. Quanta clamps device-atomic ordering to `Relaxed` at MSL emission and
+leans on explicit `threadgroup_barrier` / device barriers for cross-queue
+visibility. See [Guide: Atomics: Memory ordering](../guide/04-atomics.md#memory-ordering).

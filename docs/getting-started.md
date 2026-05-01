@@ -172,7 +172,48 @@ a.write(&data_a)?;
 See [Expert: Manual API](expert/manual-api.md) for manual field allocation,
 explicit wave binding, double-buffering, and raw handles.
 
+## Capability queries and graceful fallback
+
+Some features only exist on certain backends or device families: ray tracing,
+mesh shaders, variable rate shading, sparse residency. Query before you build:
+
+```rust
+let gpu = quanta::init()?;
+
+if gpu.supports_ray_tracing() {
+    // build BLAS, dispatch rays
+} else if gpu.supports_mesh_shaders() {
+    // mesh-shader culling fast path
+} else {
+    // classic vertex/fragment fallback
+}
+```
+
+When a feature is not implemented for the active backend, the call returns
+`QuantaError { kind: NotSupported(reason), .. }` rather than panicking. Branch on
+the error kind to fall back without giving up:
+
+```rust
+match gpu.sparse_texture(&desc) {
+    Ok(tex) => /* use sparse */,
+    Err(e) if matches!(e.kind, QuantaErrorKind::NotSupported(_)) => {
+        // fall back to a regular texture
+    }
+    Err(e) => return Err(e),
+}
+```
+
+`NotFound` is the partner variant — it means a handle no longer points at a
+live resource (typically a double-free or use-after-drop).
+
+See [Compute basics: Error handling](guide/01-compute-basics.md#error-handling)
+and [Reference: Errors](reference/errors.md) for the full kind list.
+
 ## Next
 
 - [Compute basics](guide/01-compute-basics.md) -- execution model, workgroups, optimization
 - [Fields and types](guide/02-fields-and-types.md) -- GPU memory management
+- [Multi-queue](guide/15-multi-queue.md), [Indirect commands](guide/14-indirect-commands.md),
+  [Tessellation](guide/10-tessellation.md), [Mesh shaders](guide/11-mesh-shaders.md),
+  [Ray tracing](guide/12-ray-tracing.md), [VRS](guide/13-variable-rate-shading.md),
+  [Async copy + printf](guide/16-async-copy-and-printf.md) -- v0.1 advanced surface

@@ -251,6 +251,33 @@ dispatches the exact number of quarks needed.
 **Type safety.** `Field<f32>` cannot be bound where `Field<u32>` is expected. CUDA uses
 `void*` everywhere.
 
+## v0.1 advanced features
+
+CUDA developers reaching for OptiX, mesh shaders, or multi-stream work will
+find typed wrappers in Quanta:
+
+| CUDA / NVIDIA            | Quanta                                                       |
+|--------------------------|--------------------------------------------------------------|
+| OptiX `optixAccel*` BLAS | `gpu.acceleration_structure_blas(&[GeometryDesc { .. }])`    |
+| OptiX pipeline           | `gpu.ray_tracing_pipeline(&RayTracingPipelineDesc { .. })`   |
+| `optixLaunch`            | `pipeline.dispatch_rays(width, height)`                       |
+| Mesh shader extension    | `gpu.mesh_pipeline(MeshPipelineDesc { .. })` + `dispatch`     |
+| Tessellation             | `gpu.tessellation_pipeline(TessTopology::Triangle, n)`        |
+| `cudaStreamCreate`       | `gpu.queue(QueueType::Compute)?` (one queue per stream)       |
+| `cudaMemcpyAsync` on stream | `gpu.async_copy_queue()?.copy_buffer(&dst, &src, n)`       |
+| `printf` from kernel     | `gpu.printf_buffer(cap)?.drain()?`                            |
+| Indirect launch (CUDA Graphs) | `gpu.indirect_command_buffer(cap)?` + `record_dispatch` |
+| Sparse memory (`cuMemMap`)| `gpu.sparse_texture(&desc)?.map_tile(mip, x, y, backing)`    |
+
+Each typed wrapper has a capability query — call
+`gpu.supports_ray_tracing()`, `supports_mesh_shaders()`,
+`supports_tessellation()`, `supports_vrs()`, `supports_sparse_residency()`
+before constructing, and branch on `QuantaErrorKind::NotSupported` to fall
+back when the active backend doesn't implement the feature.
+
+See [Compute basics: Capability queries](../getting-started.md#capability-queries-and-graceful-fallback)
+for the full pattern.
+
 ## What you won't miss
 
 - `cudaError_t` checking after every call (Quanta uses `Result<T, QuantaError>`)

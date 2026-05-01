@@ -10,14 +10,26 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Proven theorems**        |  ~232  |
-| **TCB axioms (A1–A13 + `kernel_body_compose`)** |   35   |
+| **Proven Lean theorems**   |  ~300  |
+| **Lean sorrys**            |   0    |
+| **Lean TCB axioms** (narrow) | 15 (11 FFI + 2 WGSL spec + 1 opaque float + 1 step-level `stmt_heap_step_helper`) |
+| **Verus theorems**         |  87 / 87 |
+| **Verus `external_body`**  |   1 (hazard tracking) |
 | **Tools used**             |   5    |
 | **Backends covered**       |   5    |
 | **Source preservation (E)** |  proven (T590-T5B0) |
-| **Headless smoke tests** | 3 in CI (per-PR) |
+| **Headless smoke tests** | 3 in CI (per-PR) — `web_triangle` + `web_textured` also assert framebuffer SHA-256 against vendored golden bytes |
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
+| **Verified Tier-A tracks** | 9 (ICB, tessellation, mesh shaders, ray tracing, VRS, sparse textures, multi-queue, async copy, printf) |
+
+**Sustainment state (2026-04-30).** The post-E finalization closed
+`kernel_body_compose` from a single monolithic axiom to a body-level
+*theorem* (`kernel_body_compose_nil`, `kernel_body_compose_cons`,
+`kernel_body_compose`, `t5b0_kernel_preservation` all closed). The
+residual `stmt_heap_step_helper` axiom is narrower — single-stmt
+translation shape + one-step heap projection. See
+`memory/verification_finalized_2026-04-30.md` for the audit.
 
 Verifiers in active use: **Lean 4** (semantics + axioms), **Verus**
 (code-matches-spec), **Kani** (bounded model checking), **herd7**
@@ -30,9 +42,11 @@ This is the **CompCert shape** — every property below ground level
 is named as an axiom; nothing is silently trusted.
 
 ```
-   Source preservation         (T590-T5B0 ✅ — Lean, route a, step E; +
-                                kernel_body_compose axiom for body
-                                induction)
+   Source preservation         (T590-T5B0 ✅ — Lean, route a, step E.
+                                Body-level induction now a closed
+                                theorem; residual TCB is the narrow
+                                `stmt_heap_step_helper` axiom on
+                                single-stmt heap projection.)
             │
    Race freedom                (T606/T607 — Verus; step 057.
                                 Level 2 may-happen-in-parallel: open)
@@ -67,8 +81,12 @@ headless Chromium with `--enable-unsafe-webgpu`:
 | Test | Path | Validates |
 |------|------|-----------|
 | `web_add_one` | compute | buffer = `[1, 2, …, 64]` byte-equal |
-| `web_triangle` | render | center pixel ≈ triangle blue |
-| `web_textured` | render w/ texture | 16 pixels match source `rgba(255,165,64,255)`; SetTexture+SetSampler wiring (step C) |
+| `web_triangle` | render | center pixel ≈ triangle blue **and** framebuffer SHA-256 matches vendored golden (`ded669be…22650d`) |
+| `web_textured` | render w/ texture | 16 pixels match source `rgba(255,165,64,255)`; SetTexture+SetSampler wiring (step C); framebuffer SHA-256 matches vendored golden (`0aa80fb0…050910`) |
+
+The SHA assertions catch sub-pixel drift — e.g. a half-pixel shift in
+a viewport scissor, or a one-bit tonemap change — that the rgb-tolerance
+spot check would otherwise smooth over.
 
 Local: `cd web && npm run smoke` — 3 passed, 3.3s.
 CI: `.github/workflows/web-smoke.yml`.
@@ -324,29 +342,37 @@ herd7 specs/verify/herd7/<test>.litmus
 
 ## Roadmap toward more verification
 
-Open items the verification track is working on, in priority order:
+Closed in this v0.1 cycle:
 
-1. **WGSL grammar mirror** — promotes T410 from "every variant
-   handled" to "produces parseable WGSL." Lifts T414 from depending
-   on the T410 axiom-in-Lean to a fully proved chain.
-2. **T416 end-to-end round-trip** — composes T410 + T1003 (cross-
-   emitter agreement) + A10.6 (mapAsync visibility) to prove
-   `field_read_bytes_async ∘ wave_dispatch ∘ field_write_bytes`
-   round-trips a kernel `f` to `f(input)`.
-3. **Step 058 + 059** — full Rust → WASM → KernelOps semantic
-   preservation proof. Closes the entire source-to-ISA gap.
-4. **Step 077 / step D + D-extended** — ✅ shipped 2026-04-29.
-   Differential CI: 4 kernels × 5 lanes (software per-PR, WGSL
-   per-PR, Metal nightly+label, Vulkan/lavapipe nightly+label,
-   AMDGPU manual+label-inert). Full IR memory-order surface in
-   place: `MemoryOrder { Relaxed, Acquire, Release, AcqRel, SeqCst }`
-   threaded through `AtomicOp`, `AtomicCas`, and the new
-   `KernelOp::Fence`; per-emitter lowering wired across WGSL,
-   MSL, SPIR-V, LLVM, CPU; proc-macro `fence(...)` builtin.
-   Trace-membership comparator (`compare_u32_in_set`) accepts
-   model-permitted outcome sets — first user is the `race` litmus
-   kernel. Future MP / SB / IRIW litmus kernels can compose from
-   the existing primitives without further IR changes.
+* ✅ **WGSL grammar mirror** (step B) — `Quanta/Wgsl/{Grammar,Serialize,
+  OpPatterns}.lean`; A12 + A13 lift T410 to a Lean theorem.
+* ✅ **WebIDL conformance** (step B″) — T1710-T1713 from `webgpu.idl`
+  alone, by `native_decide`.
+* ✅ **Source preservation** (step E, route a) — T590-T5B0 + post-E
+  sustainment closing the body-induction axiom.
+* ✅ **Differential CI** (step D + D-extended) — 4 kernels × 5 lanes,
+  full memory-order primitive set wired across all 5 emitters.
+* ✅ **Golden-image SHA** — vendored framebuffer canaries on
+  `web_triangle` + `web_textured`, asserted per-PR.
+
+Still open, by priority:
+
+1. **AMDGPU runner activation** — infra-only; the `diff-amdgpu`
+   workflow stays inert until a self-hosted runner with labels
+   `[self-hosted, linux, gpu-amd]` is registered. Once activated,
+   the Vulkan ray-tracing build dispatch (`NotSupported` today)
+   can be flipped on with empirical confidence.
+2. **W3C CTS lane** — pull the upstream WebGPU Conformance Test
+   Suite into the per-PR matrix to broaden the WebGPU host check
+   beyond Quanta's own smoke tests.
+3. **Firefox lane** — second WebGPU implementation in CI for
+   cross-vendor agreement on the WGSL emitter output.
+4. **Race-freedom Level 2** — may-happen-in-parallel analysis
+   beyond the Level 1 single-source-binding gate. Genuinely novel
+   research, multi-month estimate.
+5. **MP / SB / IRIW litmus kernels** — IR primitives are in place
+   (memory-order × {AtomicOp, AtomicCas, Fence}); awaits a
+   workload-driven use case.
 
 Every shipped theorem above moves us further along the
 `hardware → IR → user source` chain. Every named axiom names something

@@ -22,6 +22,13 @@
 - [Rendering](guide/07-rendering.md)
 - [Vertex and Fragment Shaders](guide/08-vertex-fragment.md)
 - [Device Functions](guide/09-device-functions.md)
+- [Tessellation](guide/10-tessellation.md)
+- [Mesh Shaders](guide/11-mesh-shaders.md)
+- [Ray Tracing](guide/12-ray-tracing.md)
+- [Variable Rate Shading](guide/13-variable-rate-shading.md)
+- [Indirect Commands](guide/14-indirect-commands.md)
+- [Multi-Queue](guide/15-multi-queue.md)
+- [Async Copy and Printf](guide/16-async-copy-and-printf.md)
 
 # Expert
 

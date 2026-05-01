@@ -332,6 +332,25 @@ Math functions (30 total): `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
 `mix`, `step`, `smoothstep`, `pow`, `exp`, `log`, `exp2`, `log2`,
 `normalize`, `length`, `distance`, `cross`, `fma`, `atan2`, `inverseSqrt`.
 
+## Other shader stages
+
+`#[quanta::vertex]` and `#[quanta::fragment]` are the two stages most projects
+need. v0.1 also ships these stage attributes for advanced pipelines:
+
+| Macro                      | Stage                                            |
+|----------------------------|--------------------------------------------------|
+| `#[quanta::tess_control]`  | Tessellation control (M4.1)                      |
+| `#[quanta::tess_eval]`     | Tessellation evaluation (M4.1)                   |
+| `#[quanta::task]`          | Task / amplification shader (M4.2 mesh pipeline) |
+| `#[quanta::mesh]`          | Mesh shader (M4.2)                               |
+| `#[quanta::ray_gen]`       | Ray generation (M4.3)                            |
+| `#[quanta::closest_hit]`   | Closest-hit shader (M4.3)                        |
+| `#[quanta::miss]`          | Miss shader (M4.3)                               |
+
+Each is gated by a capability query — see the corresponding chapter
+([Tessellation](10-tessellation.md), [Mesh shaders](11-mesh-shaders.md),
+[Ray tracing](12-ray-tracing.md)) for the typed pipeline that consumes them.
+
 ## Next
 
 - [Device functions](09-device-functions.md) -- reusable GPU helper functions

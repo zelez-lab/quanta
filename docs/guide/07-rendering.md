@@ -151,13 +151,20 @@ let pipeline = gpu.pipeline(&PipelineDesc {
 
 All available via the render builder:
 
-| Builder method                              | Description                    |
-|---------------------------------------------|--------------------------------|
-| `.draw(vertex_count)`                      | Non-indexed draw               |
-| `.draw_instanced(verts, instances)`        | Instanced draw                 |
-| `.draw_indexed(index_count)`               | Indexed draw (requires `.indices()`) |
-| `.draw_indexed_instanced(idx, inst)`       | Indexed + instanced           |
-| `.draw_indirect(&buffer, offset)`          | GPU-driven draw                |
+| Builder method                                       | Description                          |
+|------------------------------------------------------|--------------------------------------|
+| `.draw(vertex_count)`                               | Non-indexed draw                     |
+| `.draw_instanced(verts, instances)`                 | Instanced draw                       |
+| `.draw_indexed(index_count)`                        | Indexed draw (requires `.indices()`) |
+| `.draw_indexed_instanced(idx, inst)`                | Indexed + instanced                  |
+| `.draw_indirect(&buffer, offset)`                   | GPU-driven non-indexed draw          |
+| `.draw_indexed_indirect(&buffer, offset, &indices)` | GPU-driven indexed draw              |
+| `.execute_bundle(&bundle, count)`                   | Replay a pre-recorded render bundle  |
+
+For indirect draws the GPU reads the draw arguments (vertex count, instance
+count, etc.) out of a buffer the GPU itself wrote — useful for compute-driven
+culling. See [Indirect command buffers](14-indirect-commands.md) for the
+argument layout and `IndirectRenderBundle`.
 
 ## Depth testing
 
@@ -240,6 +247,23 @@ gpu.render(&target)?
     .pulse()?
     .wait()?;
 ```
+
+## Beyond vertex/fragment
+
+Quanta exposes the full v0.1 advanced pipeline surface as typed wrappers, each
+gated by a capability query:
+
+| Feature              | Capability query                  | Chapter                                      |
+|----------------------|-----------------------------------|----------------------------------------------|
+| Tessellation         | `gpu.supports_tessellation()`     | [Tessellation](10-tessellation.md)            |
+| Mesh shaders         | `gpu.supports_mesh_shaders()`     | [Mesh shaders](11-mesh-shaders.md)            |
+| Ray tracing          | `gpu.supports_ray_tracing()`      | [Ray tracing](12-ray-tracing.md)              |
+| Variable rate shading| `gpu.supports_vrs()`              | [VRS](13-variable-rate-shading.md)            |
+| Indirect commands    | always (CPU fallback exists)      | [Indirect commands](14-indirect-commands.md)  |
+
+When a feature isn't implemented for the active backend the constructor returns
+`QuantaErrorKind::NotSupported(reason)` rather than panicking — branch on the
+error to fall back to the classic vertex/fragment path.
 
 ## Next
 

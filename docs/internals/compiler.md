@@ -177,9 +177,13 @@ Key passes that run:
 
 ## MSL emitter (`emit_msl.rs`)
 
-Reserved for the JIT path. Translates `KernelOp` directly to Metal Shading
-Language text. Not used in the standard build pipeline (which produces
-metallib via SPIR-V instead).
+Translates `KernelOp` directly to Metal Shading Language text. Used by both
+the JIT path **and** the standard build pipeline — the build-time path
+goes through `crates/quanta-macros/src/compiler/metallib.rs::compile_msl_to_metallib`,
+which writes the emitted MSL to a temp `.metal` file and shells out to
+`xcrun metal` + `xcrun metallib` to produce the metallib that ships in
+the binary. (SPIR-V is also emitted, but the Metal backend prefers the
+direct-MSL artifact when present.)
 
 ```
 KernelDef { name: "foo", params: [FieldRead("a", 0, F32), ...], body: [...] }
@@ -197,10 +201,33 @@ Emits:
     }
 ```
 
+### Metal atomic-order clamp
+
+MSL's `device` address space only supports `memory_order_relaxed` for
+atomic ops and fences. `memory_order_seq_cst` and `memory_order_acquire` /
+`memory_order_release` are valid in the C++ standard but rejected by the
+Metal compiler with `error: atomic operation must have memory_order_relaxed`.
+
+The MSL emitter therefore **ignores the per-op `MemoryOrder`** on
+`AtomicOp` / `AtomicCas` / `Fence` and unconditionally emits
+`memory_order_relaxed`. The emitter for SPIR-V / LLVM / WGSL preserves
+the requested order; only Metal clamps. This is documented in the
+emitter source and was the root cause of the dev-Mac `gpu_atomics`
+breakage closed in commit `d37e3ab`.
+
+The behavioral consequence: cross-threadgroup ordering on Metal relies
+on the implicit barriers from `Fence` / `Barrier` ops rather than on
+the relaxed atomic itself. For most GPU-style workloads this matches
+how Vulkan / D3D programs are written anyway (relaxed atomics +
+explicit fences), so the clamp does not change correctness for any
+shipped Quanta kernel.
+
 ## WGSL emitter (`emit_wgsl.rs`)
 
-Reserved for the JIT path. Same approach as MSL — direct text generation
-from `KernelOp`.
+Direct text generation from `KernelOp`, same shape as the MSL emitter.
+Used by the WebGPU backend on every platform — `quanta-macros` embeds
+the WGSL string in the binary via `embed_wgsl`, and the runtime hands
+it to `device.createShaderModule({ code })` at pipeline-build time.
 
 ```wgsl
 @group(0) @binding(0) var<storage, read> a: array<f32>;

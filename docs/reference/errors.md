@@ -144,7 +144,9 @@ The GPU device was lost and can no longer be used.
 
 ### `InvalidParam(&'static str)`
 
-An API function was called with invalid arguments.
+An API function was called with invalid arguments **the caller could
+have caught**. Distinct from `NotSupported` (feature is genuinely
+unavailable on this backend) and `NotFound` (handle does not exist).
 
 **Causes:**
 - Zero-size allocation
@@ -159,6 +161,67 @@ An API function was called with invalid arguments.
 ```rust
 let field = gpu.compute_field::<f32>(0); // Error: zero count
 ```
+
+### `NotSupported(&'static str)`
+
+The requested feature is not implemented on this backend or hardware.
+This is an *expected* return value, not a bug — callers should branch on
+it and fall back to a non-accelerated path or skip the feature.
+
+**Causes:**
+- Backend gap: e.g. ray tracing on WebGPU, sparse residency on the
+  software CPU device, mesh shaders on a backend that doesn't expose
+  `VK_EXT_mesh_shader`.
+- Hardware gap: e.g. ray tracing on Apple GPUs older than family 6,
+  sparse textures on Apple GPUs older than family 7.
+- v0.1 limit: e.g. sparse textures restricted to 2D + single-mip,
+  ray-tracing build dispatch gated until AMDGPU validation lands.
+
+**Resolution:**
+- Capability-check first: `gpu.supports_ray_tracing()`,
+  `gpu.supports_sparse_residency()`, `gpu.supports_mesh_shaders()`,
+  `gpu.supported_shading_rates()`, etc.
+- On `NotSupported`, take the fallback path explicitly. Do not retry
+  blindly — the answer will not change for this device.
+
+```rust
+let blas = if gpu.supports_ray_tracing() {
+    Some(gpu.acceleration_structure_blas(&[geom])?)
+} else {
+    None  // fall back to rasterizer
+};
+```
+
+The error message identifies *which* feature and *why* (backend gap vs.
+hardware gap vs. v0.1 limit), so it's safe to log and surface to the
+end user.
+
+### `NotFound(&'static str)`
+
+The given handle does not refer to a live resource on this device.
+
+**Causes:**
+- The wrapping typed handle (`Field`, `Texture`, `Wave`, `Pulse`,
+  `AccelerationStructure`, `SparseTexture`, ...) was already dropped.
+  Its backend handle was freed, so subsequent calls referring to it by
+  raw `u64` no longer resolve.
+- A handle from a different `Gpu` instance was passed in. Each driver
+  maintains its own handle table; cross-device handles never resolve.
+- Internal bookkeeping bug — the typed wrapper recorded the handle but
+  the driver's table doesn't know about it. Reproduce + file an issue.
+
+**Resolution:**
+- Keep typed wrappers alive for the full duration you need the GPU
+  resource. `Drop` is what frees the handle — nothing else.
+- If you're using raw `u64` handles via `.handle()`, do not let the
+  owning typed wrapper drop while the handle is still in flight.
+- Don't pass handles from one `Gpu` to another.
+
+### `Internal(&'static str)`
+
+Something inside Quanta went wrong that the caller cannot fix. Lock
+poisoning, broken invariants, "this code path was supposed to be
+unreachable." File a bug.
 
 ---
 
@@ -187,7 +250,30 @@ QuantaError::submit_failed()
 QuantaError::timeout()
 QuantaError::device_lost()
 QuantaError::invalid_param("field count must be > 0")
+QuantaError::not_supported("ray tracing requires Apple GPU family 6+")
+QuantaError::not_found("field handle not found")
+QuantaError::internal("lock poisoned")
 ```
+
+## Display strings
+
+Each variant produces a category-prefixed display string. The prefix
+lets you grep for an error category without inspecting the kind:
+
+| Variant                | Display prefix            |
+|------------------------|---------------------------|
+| `NoDevice`             | `no GPU device found`     |
+| `OutOfMemory`          | `GPU out of memory`       |
+| `CompilationFailed(m)` | `compilation failed: {m}` |
+| `SubmitFailed`         | `command submission failed` |
+| `Timeout`              | `GPU operation timed out` |
+| `DeviceLost`           | `GPU device lost`         |
+| `InvalidParam(m)`      | `invalid parameter: {m}`  |
+| `NotSupported(m)`      | `not supported on this backend: {m}` |
+| `NotFound(m)`          | `not found: {m}`          |
+| `Internal(m)`          | `internal error: {m}`     |
+
+When `with_context()` has been applied, the suffix `[ctx]` is appended.
 
 ---
 
