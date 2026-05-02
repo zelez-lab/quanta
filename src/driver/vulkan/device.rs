@@ -221,6 +221,9 @@ pub(super) struct VkIcb {
 
 /// One recorded ICB command. Compute = Dispatch; render = Draw.
 /// Mirrors the Lean `Quanta.Icb.Command` sum type.
+/// Fields are written at record time and consumed by the replay
+/// path — suppressed until native vkCmdExecuteCommands lands.
+#[allow(dead_code)]
 pub(super) enum VkIcbCommand {
     Dispatch {
         wave_handle: u64,
