@@ -310,9 +310,6 @@ impl SpvEmitter {
         let mut ops = vec![result_ty, result, ext_id, glsl_op];
         ops.extend_from_slice(&operand_ids);
         Self::emit_op(&mut self.sec_function, OP_EXT_INST, &ops);
-        if is_float {
-            self.decorate(result, DECORATION_FP_FAST_MATH_MODE, &[FP_FAST_MATH_FAST]);
-        }
         self.set_reg(dst, result, result_ty);
         Ok(())
     }

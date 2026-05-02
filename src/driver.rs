@@ -1,4 +1,4 @@
-#[cfg(feature = "metal")]
+#[cfg(all(feature = "metal", target_os = "macos"))]
 pub mod metal;
 
 #[cfg(feature = "vulkan")]

@@ -109,14 +109,16 @@ jobs:
             vulkan-tools \
             libvulkan-dev \
             vulkan-validationlayers
-          vulkaninfo --summary || true
+
+      - name: Locate lavapipe ICD
+        run: |
+          ICD=$(find /usr/share/vulkan/icd.d/ -name "lvp_icd*.json" | head -1)
+          test -n "$ICD" || { echo "::error::lavapipe ICD not found in /usr/share/vulkan/icd.d/"; ls /usr/share/vulkan/icd.d/ || true; exit 1; }
+          echo "VK_ICD_FILENAMES=$ICD" >> $GITHUB_ENV
+          echo "lavapipe ICD: $ICD"
+          VK_ICD_FILENAMES="$ICD" vulkaninfo --summary
 
       - name: Differential tests (vulkan lane via lavapipe)
-        env:
-          # Force lavapipe (the LLVM-based software rasterizer) so the
-          # job is deterministic regardless of which ICDs Mesa
-          # registers on the runner image.
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: cargo test --test differential --no-default-features --features vulkan
 
   # ─── AMDGPU lane (real-hardware Vulkan via Mesa radv) ────────────────

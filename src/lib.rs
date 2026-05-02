@@ -117,7 +117,7 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
     #[allow(unused_mut)]
     let mut devs: alloc::vec::Vec<alloc::boxed::Box<dyn GpuDevice>> = alloc::vec::Vec::new();
 
-    #[cfg(feature = "metal")]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
     devs.extend(driver::metal::discover());
 
     #[cfg(feature = "vulkan")]
