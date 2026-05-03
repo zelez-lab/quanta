@@ -191,3 +191,80 @@ jobs:
           # lavapipe if the runner has both ICDs registered.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
         run: cargo test --test differential --no-default-features --features vulkan
+
+  # ─── NVIDIA lane (real-hardware Vulkan via NVIDIA proprietary driver) ───
+  #
+  # Runs on a self-hosted Linux runner with an NVIDIA GPU. The Quanta
+  # vulkan driver code is identical to the lavapipe and AMDGPU lanes —
+  # only the runner config and ICD selection differ. Validates that
+  # NVIDIA's Vulkan driver accepts our SPIR-V output and produces the
+  # expected results on real silicon.
+  #
+  # Why Vulkan, not CUDA/PTX: the differential test harness (tests/diff/
+  # lane.rs) routes through `quanta::init()`, which on Linux+NVIDIA
+  # picks up Vulkan through the proprietary `libnvidia` ICD. PTX is
+  # only generated as compiler artifact today; running it would
+  # require a separate CUDA-runtime test path, which doesn't exist
+  # yet. The PTX `ptxas` validation in ci.yml covers PTX *syntax*;
+  # this lane covers SPIR-V *execution* on NVIDIA silicon.
+  #
+  # ## Setup the runner once:
+  #
+  #   1. Provision a Linux box with an NVIDIA GPU (Turing+ recommended
+  #      for Vulkan 1.3 + cooperative-matrix coverage).
+  #   2. Install the proprietary driver and Vulkan tools:
+  #        sudo apt-get install \
+  #          nvidia-driver-550 libvulkan1 vulkan-tools \
+  #          libvulkan-dev vulkan-validationlayers
+  #      Confirm `vulkaninfo --summary` shows `NVIDIA ...` and
+  #      `nvidia-smi` reports the device.
+  #   3. Register the runner with this repo via Settings → Actions →
+  #      Runners → New self-hosted runner.
+  #   4. Tag it with all three labels: self-hosted, linux, gpu-nvidia.
+  #   5. Verify with a manual workflow_dispatch — the diff-nvidia job
+  #      should pick up and pass.
+  #
+  # The job uses `run-nvidia-diff` as its PR-label gate so that
+  # ordinary "run the full diff matrix" PR labels don't queue against
+  # a runner that may be offline.
+  diff-nvidia:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-nvidia-diff'))
+    runs-on: [self-hosted, linux, gpu-nvidia]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: nvidia-cargo-diff-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            nvidia-cargo-diff-
+            nvidia-cargo-
+
+      - name: Sanity-check the GPU
+        run: |
+          nvidia-smi
+          vulkaninfo --summary
+          # Fail fast if no NVIDIA device is exposed — the rest of
+          # the job would silently fall through to whichever ICD
+          # got picked, which would defeat the purpose.
+          vulkaninfo --summary | grep -E "NVIDIA" || \
+            { echo "::error::no NVIDIA device visible to Vulkan"; exit 1; }
+
+      - name: Differential tests (vulkan lane on real NVIDIA)
+        env:
+          # Pin to NVIDIA's ICD so we don't accidentally fall back
+          # to lavapipe if the runner has both ICDs registered.
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/nvidia_icd.json
+        run: cargo test --test differential --no-default-features --features vulkan
