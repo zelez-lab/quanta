@@ -181,7 +181,10 @@ pub mod store_op {
 }
 
 // ── Imports — everything below MUST mirror `web/src/webgpu.ts` ──────────────
+// `wasm_import_module = "env"` matches the `env` namespace the TypeScript
+// host provides at WebAssembly.instantiate time (quanta.ts line ~102).
 
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     // Adapter / device acquisition (async).
     pub fn quanta_request_adapter(task: u32);
