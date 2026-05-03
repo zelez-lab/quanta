@@ -80,15 +80,36 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         shell: msys2 {0}
         run: |
-          # MSYS2 CLANG64 root → /clang64 (Windows path: C:\msys64\clang64)
-          # llvm-config lives at /clang64/bin/llvm-config.exe.
-          LLVM_PREFIX="C:\msys64\clang64"
-          echo "LLVM_SYS_221_PREFIX=$LLVM_PREFIX" >> $GITHUB_ENV
-          # Add MSYS2 clang64 bin to PATH so DLLs are reachable at link
-          # and runtime.
-          echo "C:\msys64\clang64\bin" >> $GITHUB_PATH
-          # Surface the version for diagnostics.
-          /clang64/bin/llvm-config.exe --version
+          set -e
+          # Resolve the actual install prefix from llvm-config rather
+          # than guessing — msys2/setup-msys2 may install to a path
+          # other than C:\msys64.
+          LLVM_PREFIX_UNIX=$(llvm-config --prefix)
+          echo "llvm-config --prefix → $LLVM_PREFIX_UNIX"
+          echo "llvm-config --version → $(llvm-config --version)"
+          ls -la "$LLVM_PREFIX_UNIX/bin/llvm-config"* || true
+          ls "$LLVM_PREFIX_UNIX/lib/" | head -20 || true
+          # Convert MSYS2 path (/clang64/...) to a Windows path so the
+          # rust toolchain (running outside MSYS2) finds it.
+          LLVM_PREFIX_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX")
+          echo "Windows prefix: $LLVM_PREFIX_WIN"
+          BIN_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin")
+          echo "LLVM_SYS_221_PREFIX=$LLVM_PREFIX_WIN" >> $GITHUB_ENV
+          echo "$BIN_WIN" >> $GITHUB_PATH
+
+      - name: Verify LLVM is reachable from pwsh (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          echo "LLVM_SYS_221_PREFIX = $env:LLVM_SYS_221_PREFIX"
+          if (Test-Path "$env:LLVM_SYS_221_PREFIX\bin\llvm-config.exe") {
+            & "$env:LLVM_SYS_221_PREFIX\bin\llvm-config.exe" --version
+            & "$env:LLVM_SYS_221_PREFIX\bin\llvm-config.exe" --libdir
+          } else {
+            Write-Error "llvm-config.exe NOT found at $env:LLVM_SYS_221_PREFIX\bin\"
+            Get-ChildItem "$env:LLVM_SYS_221_PREFIX" -ErrorAction SilentlyContinue
+            exit 1
+          }
 
       - name: Build quanta-compiler
         run: cargo build -p quanta-compiler --release
