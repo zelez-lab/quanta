@@ -167,11 +167,14 @@ fn home_dir() -> Option<std::path::PathBuf> {
 }
 
 /// Detect the current compilation target triple.
+///
+/// macOS Intel (`x86_64-apple-darwin`) is intentionally excluded —
+/// Apple discontinued Intel Macs in 2023 and Quanta v0.1 is Apple
+/// Silicon-only on macOS. Intel Mac users will hit the "unknown"
+/// branch and the JIT fallback covers them at dispatch time.
 fn current_target() -> &'static str {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     return "aarch64-apple-darwin";
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "x86_64-apple-darwin";
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     return "x86_64-unknown-linux-gnu";
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -180,7 +183,6 @@ fn current_target() -> &'static str {
     return "x86_64-pc-windows-msvc";
     #[cfg(not(any(
         all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "windows", target_arch = "x86_64"),

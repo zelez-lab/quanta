@@ -67,17 +67,16 @@ else is needed.
 | Platform | Compute | Render | Auto-installed compiler | Notes |
 |---|---|---|---|---|
 | macOS Apple Silicon | ✅ Metal | ✅ Metal | ✅ aarch64 | Best-tested target |
-| macOS Intel x86_64 | ✅ Metal | ✅ Metal | ⚠️ build from source | Prebuilt binary blocked on paid macOS runner |
+| macOS Intel x86_64 | ❌ unsupported | ❌ unsupported | ❌ | Apple discontinued Intel hardware in 2023 — out of scope for v0.1 |
 | Linux x86_64 + NVIDIA | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 | Needs proprietary driver |
 | Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 | Needs Mesa |
 | Linux aarch64 (Pi 5, Graviton, …) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 | Validated on UTM Ubuntu via lavapipe |
 | Windows x86_64 | ⚠️ headless only | ⚠️ headless only | ✅ x86_64 | Compiles + builds; live GPU execution untested in v0.1-alpha |
 | Web (any OS) | ✅ WebGPU | ✅ WebGPU | n/a | Browser-side runtime |
 
-JIT fallback: when a platform has no prebuilt compiler binary
-(macOS Intel today), or runs on a Vulkan driver Quanta doesn't
-recognize the vendor of (lavapipe, niche software ICDs), kernels
-JIT-compile from the embedded IR at dispatch time. No user action
+JIT fallback: when a kernel runs on a Vulkan driver Quanta doesn't
+recognize the vendor of (lavapipe, niche software ICDs), it
+JIT-compiles from the embedded IR at dispatch time. No user action
 needed.
 
 GPU drivers are installed separately: Metal ships with macOS; Vulkan via
