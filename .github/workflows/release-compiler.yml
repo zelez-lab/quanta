@@ -72,7 +72,15 @@ jobs:
         run: |
           cd target/release
           tar czf quanta-compiler-${{ matrix.target }}.tar.gz quanta-compiler
-          sha256sum quanta-compiler-${{ matrix.target }}.tar.gz > quanta-compiler-${{ matrix.target }}.tar.gz.sha256
+          # macOS doesn't ship `sha256sum`; `shasum -a 256` exists on
+          # both macOS and Linux.
+          if command -v sha256sum >/dev/null; then
+            sha256sum quanta-compiler-${{ matrix.target }}.tar.gz \
+              > quanta-compiler-${{ matrix.target }}.tar.gz.sha256
+          else
+            shasum -a 256 quanta-compiler-${{ matrix.target }}.tar.gz \
+              > quanta-compiler-${{ matrix.target }}.tar.gz.sha256
+          fi
 
       - name: Package (zip)
         if: matrix.archive == 'zip'
