@@ -187,14 +187,17 @@ pub fn make_test_kernel() -> KernelDef {
 }
 
 /// Test: compile vector_add to PTX and print it.
+///
+/// Banner + size footer go to stderr so stdout is pure PTX,
+/// safe to redirect to a file and feed straight into ptxas.
 pub fn test_ptx() {
     let kernel = make_test_kernel();
-    println!("=== Compiling vector_add to NVIDIA PTX ===\n");
+    eprintln!("=== Compiling vector_add to NVIDIA PTX ===");
     match emit_llvm::compile_to_binary(&kernel, GpuTarget::Nvptx) {
         Ok(ptx) => {
             let ptx_text = String::from_utf8_lossy(&ptx);
-            println!("{}", ptx_text);
-            println!("\n=== PTX size: {} bytes ===", ptx.len());
+            print!("{}", ptx_text);
+            eprintln!("=== PTX size: {} bytes ===", ptx.len());
         }
         Err(e) => eprintln!("Error: {}", e),
     }
@@ -523,7 +526,7 @@ pub fn test_spirv() {
                 println!();
                 let magic = u32::from_le_bytes([spirv[0], spirv[1], spirv[2], spirv[3]]);
                 if magic == 0x07230203 {
-                    println!("Valid SPIR-V magic");
+                    println!("Valid SPIR-V binary (magic 0x07230203)");
                 }
             }
             // Write to tmp for spirv-val
