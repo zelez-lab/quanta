@@ -119,6 +119,13 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     }
     let const_generic_setters = quote! { #(#const_setters)* };
 
+    let serialized_ir = quanta_ir::serialize_kernel(&kernel_def);
+    let ir_lit = proc_macro2::Literal::byte_string(&serialized_ir);
+    let ir_static_name = syn::Ident::new(
+        &format!("__{}_IR", wave_fn_name.to_string().to_uppercase()),
+        wave_fn_name.span(),
+    );
+
     let wave_fn = quote! {
         pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
             amd: #amd_expr,
@@ -128,12 +135,18 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
             wgsl: #wgsl_expr,
         };
 
+        // Embedded KernelDef IR — used as JIT fallback when the
+        // device's vendor isn't in the precompiled binary table
+        // (lavapipe, niche drivers, etc.).
+        pub static #ir_static_name: &[u8] = #ir_lit;
+
         pub fn #wave_fn_name #generics (device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
-            let binary = #binary_name.for_vendor(device.caps().vendor)
-                .ok_or_else(|| ::quanta::QuantaError::compilation_failed(
-                    format!("no compiled kernel for vendor {:?}", device.caps().vendor)
-                ))?;
-            let mut wave = device.wave(binary)?;
+            let mut wave = match #binary_name.for_vendor(device.caps().vendor) {
+                Some(binary) => device.wave(binary)?,
+                // No precompiled binary for this vendor — JIT-compile
+                // from the embedded IR.
+                None => device.wave_jit(#ir_static_name)?,
+            };
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
             #const_generic_setters
             Ok(wave)
