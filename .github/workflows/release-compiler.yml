@@ -60,21 +60,22 @@ jobs:
       # release ships clang/lld/lldb but not the static libs + headers
       # `llvm-sys` needs. Chocolatey is in the same boat.
       #
-      # We install LLVM 22 via the `mingw-w64-clang-x86_64-llvm` package
-      # under MSYS2's CLANG64 environment, which provides
-      # `<prefix>/bin/llvm-config.exe`, the static archives, and the
-      # headers `llvm-sys` introspects.
+      # UCRT64 (not CLANG64) is required: Rust's `x86_64-pc-windows-gnu`
+      # toolchain links against `libgcc`/`libgcc_eh`, which CLANG64
+      # doesn't ship (it uses compiler-rt). UCRT64 gives us GCC's
+      # MinGW runtime AND LLVM 22 dev libs side by side.
       - name: Install MSYS2 + LLVM 22 (Windows)
         if: startsWith(matrix.os, 'windows')
         uses: msys2/setup-msys2@v2
         with:
-          msystem: CLANG64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-clang-x86_64-llvm
-            mingw-w64-clang-x86_64-polly
-            mingw-w64-clang-x86_64-clang
-            mingw-w64-clang-x86_64-lld
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-polly
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-gcc
 
       - name: Wire LLVM_SYS_221_PREFIX (Windows)
         if: startsWith(matrix.os, 'windows')
@@ -93,13 +94,16 @@ jobs:
           # rust toolchain (running outside MSYS2) finds it.
           LLVM_PREFIX_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX")
           BIN_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin")
-          CLANG_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin/clang.exe")
-          CLANGXX_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin/clang++.exe")
+          # The GNU triple expects gcc as the linker driver — it knows
+          # how to find libgcc/libgcc_eh, where clang on its own does
+          # not. Both ship in UCRT64.
+          GCC_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin/gcc.exe")
+          GXX_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin/g++.exe")
           echo "Windows prefix: $LLVM_PREFIX_WIN"
-          echo "Windows clang:  $CLANG_WIN"
+          echo "Windows gcc:    $GCC_WIN"
           echo "LLVM_SYS_221_PREFIX=$LLVM_PREFIX_WIN" >> $GITHUB_ENV
-          echo "MSYS2_CLANG=$CLANG_WIN" >> $GITHUB_ENV
-          echo "MSYS2_CLANGXX=$CLANGXX_WIN" >> $GITHUB_ENV
+          echo "MSYS2_GCC=$GCC_WIN" >> $GITHUB_ENV
+          echo "MSYS2_GXX=$GXX_WIN" >> $GITHUB_ENV
           echo "$BIN_WIN" >> $GITHUB_PATH
 
       - name: Verify LLVM is reachable from pwsh (Windows)
@@ -125,17 +129,17 @@ jobs:
         shell: pwsh
         run: |
           rustup target add x86_64-pc-windows-gnu --toolchain nightly
-          # Pin cargo to the MSYS2 clang resolved in the previous step
-          # via llvm-config — works regardless of where setup-msys2
-          # installed (C:\msys64\clang64, D:\..., etc.).
-          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$env:MSYS2_CLANG" >> $env:GITHUB_ENV
-          echo "CC_x86_64-pc-windows-gnu=$env:MSYS2_CLANG" >> $env:GITHUB_ENV
-          echo "CXX_x86_64-pc-windows-gnu=$env:MSYS2_CLANGXX" >> $env:GITHUB_ENV
-          # Sanity-check the clang the next step will use.
-          if (Test-Path $env:MSYS2_CLANG) {
-            & $env:MSYS2_CLANG --version
+          # Pin cargo to the MSYS2 UCRT64 gcc resolved in the previous
+          # step via llvm-config — works regardless of where
+          # setup-msys2 installed.
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$env:MSYS2_GCC" >> $env:GITHUB_ENV
+          echo "CC_x86_64-pc-windows-gnu=$env:MSYS2_GCC" >> $env:GITHUB_ENV
+          echo "CXX_x86_64-pc-windows-gnu=$env:MSYS2_GXX" >> $env:GITHUB_ENV
+          # Sanity-check the gcc the next step will use.
+          if (Test-Path $env:MSYS2_GCC) {
+            & $env:MSYS2_GCC --version
           } else {
-            Write-Error "MSYS2 clang not found at $env:MSYS2_CLANG"
+            Write-Error "MSYS2 gcc not found at $env:MSYS2_GCC"
             exit 1
           }
 
