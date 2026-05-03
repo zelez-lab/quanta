@@ -20,13 +20,15 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             archive: zip
-          # macOS Intel (macos-13) and Linux aarch64 (ubuntu-22.04-arm64)
-          # are deferred until current GitHub-hosted runner labels are
-          # confirmed (`macos-13` deprecated, `ubuntu-22.04-arm64` no
-          # longer assigning runners). Re-add when names are settled.
+          # macOS Intel (macos-13 deprecated; macos-13-large is paid)
+          # is deferred. Native ARM Linux runner above covers Pi 5 +
+          # Graviton + UTM-Ubuntu users.
 
     runs-on: ${{ matrix.os }}
 
@@ -47,8 +49,12 @@ jobs:
       - name: Install LLVM 22 (Linux)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
+          # Use the apt.llvm.org repo matching the runner's Ubuntu
+          # codename (lsb_release -cs). Works for jammy (22.04) and
+          # noble (24.04) on both x86_64 and arm64.
+          CODENAME=$(lsb_release -cs)
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
           sudo apt-get install -y llvm-22-dev libpolly-22-dev
           echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> $GITHUB_ENV
