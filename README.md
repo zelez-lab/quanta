@@ -67,15 +67,18 @@ else is needed.
 | Platform | Compute | Render | Auto-installed compiler | Notes |
 |---|---|---|---|---|
 | macOS Apple Silicon | ✅ Metal | ✅ Metal | ✅ aarch64 | Best-tested target |
-| macOS Intel x86_64 | ✅ Metal | ✅ Metal | ⚠️ build from source | Prebuilt binary deferred to next alpha |
+| macOS Intel x86_64 | ✅ Metal | ✅ Metal | ⚠️ build from source | Prebuilt binary blocked on paid macOS runner |
 | Linux x86_64 + NVIDIA | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 | Needs proprietary driver |
 | Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 | Needs Mesa |
-| Linux aarch64 (Pi 5, …) | ✅ Vulkan | ✅ Vulkan | ⚠️ build from source | Prebuilt binary deferred to next alpha |
+| Linux aarch64 (Pi 5, Graviton, …) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 | Validated on UTM Ubuntu via lavapipe |
 | Windows x86_64 | ⚠️ headless only | ⚠️ headless only | ✅ x86_64 | Compiles + builds; live GPU execution untested in v0.1-alpha |
 | Web (any OS) | ✅ WebGPU | ✅ WebGPU | n/a | Browser-side runtime |
 
-The "build from source" entries above will get prebuilt binaries once
-GitHub-hosted runner labels for those targets are re-stabilized.
+JIT fallback: when a platform has no prebuilt compiler binary
+(macOS Intel today), or runs on a Vulkan driver Quanta doesn't
+recognize the vendor of (lavapipe, niche software ICDs), kernels
+JIT-compile from the embedded IR at dispatch time. No user action
+needed.
 
 GPU drivers are installed separately: Metal ships with macOS; Vulkan via
 [LunarG SDK](https://vulkan.lunarg.com/) or your distribution's package
