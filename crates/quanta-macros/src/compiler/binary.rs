@@ -142,10 +142,15 @@ fn find_compiler_binary() -> Option<String> {
         return Some(downloaded);
     }
 
+    // The compiler is optional — kernels without precompiled PTX/AMDGPU
+    // ISA fall through to the JIT path (`device.wave_jit(...)`) at
+    // dispatch time. So this is only a notice, not an error.
     eprintln!(
-        "[quanta] Compiler not available. GPU kernels will not include LLVM-compiled targets."
+        "[quanta] note: ahead-of-time LLVM compiler not present; \
+         kernels will JIT-compile at runtime instead. \
+         Set QUANTA_COMPILER, run `cargo install quanta-compiler`, \
+         or upgrade to a release that ships your platform binary."
     );
-    eprintln!("[quanta] Install: cargo install quanta-compiler, or set QUANTA_COMPILER env var.");
     None
 }
 
@@ -243,30 +248,24 @@ fn download_compiler_binary() -> Option<String> {
     );
 
     eprintln!(
-        "[quanta] Downloading compiler v{} for {}...",
+        "[quanta] fetching ahead-of-time compiler v{} for {}...",
         version, target
     );
-    eprintln!("[quanta] URL: {}", url);
 
     // Download using curl (ships with macOS, Linux, and Windows 10 1803+).
+    // Use --silent so a 404 doesn't spew progress noise; we already
+    // print our own diagnostic if the download fails.
     let output = std::process::Command::new("curl")
-        .args(["-fsSL", &url, "-o"])
+        .args(["-fsSL", "--silent", &url, "-o"])
         .arg(&download_path)
         .output()
         .ok()?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("[quanta] Download failed: {}", stderr.trim());
-        eprintln!(
-            "[quanta] No prebuilt binary published for `{}` at v{} (or release does not exist yet).",
-            target, version
-        );
-        eprintln!(
-            "[quanta] Build from source: `cargo install quanta-compiler` (requires LLVM 22),"
-        );
-        eprintln!("[quanta] or set QUANTA_COMPILER=/path/to/quanta-compiler.");
-        // Clean up partial download
+        // Quietly clean up — the caller (find_compiler_binary) will
+        // print the single, JIT-aware notice. Spamming the build log
+        // here was the old behavior and made users think something
+        // was broken when JIT was about to handle it transparently.
         let _ = std::fs::remove_file(&download_path);
         return None;
     }
