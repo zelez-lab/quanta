@@ -56,25 +56,8 @@ jobs:
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
           echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
-          # `force-static` mode pulls in Polly + system deps that LLVM's
-          # static archives reference (libffi, libxml2, libzstd, zlib).
-          # Without these, llvm-sys's link step fails with "could not
-          # find native static library".
-          sudo apt-get install -y \
-            llvm-22-dev \
-            libpolly-22-dev \
-            libffi-dev \
-            libxml2-dev \
-            libzstd-dev \
-            zlib1g-dev
+          sudo apt-get install -y llvm-22-dev libpolly-22-dev
           echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> $GITHUB_ENV
-          # Surface what landed where, for diagnostics if static link
-          # fails again.
-          echo "=== LLVM 22 layout ==="
-          ls -la /usr/lib/llvm-22/lib/ | head -20
-          echo "=== Polly archive ==="
-          find /usr/lib/llvm-22 -name 'libPolly*' 2>/dev/null || echo "(no Polly found in /usr/lib/llvm-22)"
-          find / -name 'libPolly.a' 2>/dev/null | head -5 || true
 
       # MSYS2 is the only practical source of `llvm-sys`-compatible
       # LLVM dev packages on Windows runners. The official LLVM Windows

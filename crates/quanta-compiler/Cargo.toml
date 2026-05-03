@@ -11,22 +11,16 @@ categories = ["compilers", "command-line-utilities"]
 [dependencies]
 quanta-ir = { workspace = true, features = ["jit"] }
 
-# macOS + Windows: link dynamically.
-#   - macOS: Homebrew's `llvm@22` ships libLLVM.dylib but omits some
-#     static archives (CodeGenTargetMachineImpl, MCRegisterInfo).
-#   - Windows: MSYS2 UCRT64's static LLVM transitively pulls in
-#     libffi + pthread + libmingwex symbols that don't resolve cleanly
+# Dynamic link to libLLVM on every platform. Static linking was
+# attempted (commit 386befd → 9e4a562) but each platform fights the
+# LLVM packaging ecosystem at a different step:
+#   - macOS Homebrew: missing CodeGenTargetMachineImpl,
+#     MCRegisterInfo static archives.
+#   - Linux apt.llvm.org: Polly is integrated into libLLVM in 18+;
+#     llvm-sys still asks for libPolly.a which no longer exists.
+#   - Windows MSYS2: libffi/pthread/libmingwex symbol mismatches
 #     against rust-mingw's sysroot.
-# Both platforms expect the user to have LLVM 22 installed (per the
-# README). When they don't, the JIT fallback in the macro covers them.
-[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+# The JIT fallback in the macro means users without LLVM 22
+# installed just transparently use the runtime path — same correct
+# results, no AOT binary embedded. Documented in README.
 inkwell = { version = "0.9", features = ["llvm22-1-force-dynamic"] }
-
-# Linux: link statically so the released binary has no runtime
-# libLLVM.so dependency. Users on a stock Ubuntu can run
-# quanta-compiler without installing LLVM 22 first. Binary grows
-# to ~50-150 MB but is self-contained — the right tradeoff for a
-# redistributable tool. apt.llvm.org's `llvm-22-dev` ships the full
-# set of static archives needed.
-[target.'cfg(target_os = "linux")'.dependencies]
-inkwell = { version = "0.9", features = ["llvm22-1-force-static"] }
