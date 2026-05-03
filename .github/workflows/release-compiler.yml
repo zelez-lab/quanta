@@ -92,9 +92,14 @@ jobs:
           # Convert MSYS2 path (/clang64/...) to a Windows path so the
           # rust toolchain (running outside MSYS2) finds it.
           LLVM_PREFIX_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX")
-          echo "Windows prefix: $LLVM_PREFIX_WIN"
           BIN_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin")
+          CLANG_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin/clang.exe")
+          CLANGXX_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin/clang++.exe")
+          echo "Windows prefix: $LLVM_PREFIX_WIN"
+          echo "Windows clang:  $CLANG_WIN"
           echo "LLVM_SYS_221_PREFIX=$LLVM_PREFIX_WIN" >> $GITHUB_ENV
+          echo "MSYS2_CLANG=$CLANG_WIN" >> $GITHUB_ENV
+          echo "MSYS2_CLANGXX=$CLANGXX_WIN" >> $GITHUB_ENV
           echo "$BIN_WIN" >> $GITHUB_PATH
 
       - name: Verify LLVM is reachable from pwsh (Windows)
@@ -120,11 +125,19 @@ jobs:
         shell: pwsh
         run: |
           rustup target add x86_64-pc-windows-gnu --toolchain nightly
-          # Make sure cargo picks the MSYS2 MinGW gcc/ld, not the
-          # stock C:\mingw64 the runner image ships.
-          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=C:\msys64\clang64\bin\clang.exe" >> $env:GITHUB_ENV
-          echo "CC_x86_64-pc-windows-gnu=C:\msys64\clang64\bin\clang.exe" >> $env:GITHUB_ENV
-          echo "CXX_x86_64-pc-windows-gnu=C:\msys64\clang64\bin\clang++.exe" >> $env:GITHUB_ENV
+          # Pin cargo to the MSYS2 clang resolved in the previous step
+          # via llvm-config — works regardless of where setup-msys2
+          # installed (C:\msys64\clang64, D:\..., etc.).
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$env:MSYS2_CLANG" >> $env:GITHUB_ENV
+          echo "CC_x86_64-pc-windows-gnu=$env:MSYS2_CLANG" >> $env:GITHUB_ENV
+          echo "CXX_x86_64-pc-windows-gnu=$env:MSYS2_CLANGXX" >> $env:GITHUB_ENV
+          # Sanity-check the clang the next step will use.
+          if (Test-Path $env:MSYS2_CLANG) {
+            & $env:MSYS2_CLANG --version
+          } else {
+            Write-Error "MSYS2 clang not found at $env:MSYS2_CLANG"
+            exit 1
+          }
 
       - name: Build quanta-compiler (Linux/macOS — MSVC-style host)
         if: ${{ !startsWith(matrix.os, 'windows') }}
