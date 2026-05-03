@@ -201,13 +201,27 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
+          path: artifacts
           merge-multiple: true
+
+      - name: Flatten artifacts
+        run: |
+          # actions/upload-artifact@v4 keeps the path-relative-to-LCA
+          # structure, so each archive arrives nested under
+          # release/, x86_64-pc-windows-gnu/release/, etc. Flatten so
+          # softprops/action-gh-release sees the files directly.
+          mkdir -p dist
+          find artifacts -type f \( -name 'quanta-compiler-*.tar.gz' \
+                                  -o -name 'quanta-compiler-*.zip' \
+                                  -o -name 'quanta-compiler-*.sha256' \) \
+            -exec cp {} dist/ \;
+          ls -la dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            quanta-compiler-*.tar.gz
-            quanta-compiler-*.zip
-            quanta-compiler-*.sha256
+            dist/quanta-compiler-*.tar.gz
+            dist/quanta-compiler-*.zip
+            dist/quanta-compiler-*.sha256
           generate_release_notes: true
