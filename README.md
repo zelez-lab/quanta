@@ -57,14 +57,41 @@ cargo add quanta
 
 ### System requirements
 
-- **Rust 1.85+** (edition 2024)
-- **LLVM 22.1** (dynamically linked) — install via `brew install llvm@22` on macOS or [apt.llvm.org](https://apt.llvm.org/) on Debian/Ubuntu
-- **Quanta compiler** (one-time install):
-  ```sh
-  cargo install quanta-compiler
-  ```
-  Without it, only MSL and WGSL targets compile. With it, all five ISAs are emitted.
-- **GPU runtime** for your platform (Metal ships with macOS; Vulkan via [LunarG SDK](https://vulkan.lunarg.com/); CUDA driver from NVIDIA; ROCm from AMD)
+**Rust 1.85+** (edition 2024) is the only universal requirement. The MSL
+and WGSL emitters are built into the proc-macro and run in-process, so on
+Apple Silicon (Metal) or web (WebGPU) nothing else is needed.
+
+### Platform support matrix (v0.1)
+
+| Platform | Compute | Render | Auto-installed compiler | Notes |
+|---|---|---|---|---|
+| macOS Apple Silicon | ✅ Metal | ✅ Metal | ✅ aarch64 | Best-tested target |
+| macOS Intel x86_64 | ✅ Metal | ✅ Metal | ✅ x86_64 | |
+| Linux x86_64 + NVIDIA | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 | Needs proprietary driver |
+| Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 | Needs Mesa |
+| Linux aarch64 (Pi 5, …) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 | V3D driver |
+| Windows x86_64 | ⚠️ headless only | ⚠️ headless only | ✅ x86_64 | Compiles + builds; live GPU execution untested in v0.1-alpha |
+| Web (any OS) | ✅ WebGPU | ✅ WebGPU | n/a | Browser-side runtime |
+
+GPU drivers are installed separately: Metal ships with macOS; Vulkan via
+[LunarG SDK](https://vulkan.lunarg.com/) or your distribution's package
+manager; CUDA driver from NVIDIA; ROCm from AMD.
+
+#### Cross-targeting NVIDIA / AMD / SPIR-V
+
+To emit PTX, GCN, or generic SPIR-V you need the `quanta-compiler` LLVM
+backend. Quanta ships pre-built binaries for every supported host triple
+above and **downloads the matching one to `~/.quanta/bin/` on first use** —
+no manual install needed for `cargo add quanta` users.
+
+If you prefer to build it from source (or your host triple isn't in the
+release matrix):
+
+- Install **LLVM 22.1** (`brew install llvm@22` on macOS, [apt.llvm.org](https://apt.llvm.org/) on Linux, `choco install llvm --version=22.1.0` on Windows)
+- `cargo install quanta-compiler`
+- Or set `QUANTA_COMPILER=/path/to/quanta-compiler` to point at a custom build
+
+Set `QUANTA_NO_DOWNLOAD=1` in your environment to disable auto-download.
 
 ---
 

@@ -16,12 +16,19 @@ jobs:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
+            archive: tar.gz
           - os: macos-13
             target: x86_64-apple-darwin
+            archive: tar.gz
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
           - os: ubuntu-22.04-arm64
             target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive: zip
 
     runs-on: ${{ matrix.os }}
 
@@ -48,14 +55,33 @@ jobs:
           sudo apt-get install -y llvm-22-dev libpolly-22-dev
           echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> $GITHUB_ENV
 
+      - name: Install LLVM 22 (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          # Use chocolatey to install LLVM. Pin to a 22.x build.
+          choco install llvm --version=22.1.0 -y
+          echo "LLVM_SYS_221_PREFIX=C:\Program Files\LLVM" >> $env:GITHUB_ENV
+
       - name: Build quanta-compiler
         run: cargo build -p quanta-compiler --release
 
-      - name: Package
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
         run: |
           cd target/release
           tar czf quanta-compiler-${{ matrix.target }}.tar.gz quanta-compiler
           sha256sum quanta-compiler-${{ matrix.target }}.tar.gz > quanta-compiler-${{ matrix.target }}.tar.gz.sha256
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          cd target/release
+          Compress-Archive -Path quanta-compiler.exe -DestinationPath quanta-compiler-${{ matrix.target }}.zip
+          $hash = (Get-FileHash quanta-compiler-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  quanta-compiler-${{ matrix.target }}.zip" | Out-File -Encoding ASCII quanta-compiler-${{ matrix.target }}.zip.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -64,6 +90,8 @@ jobs:
           path: |
             target/release/quanta-compiler-${{ matrix.target }}.tar.gz
             target/release/quanta-compiler-${{ matrix.target }}.tar.gz.sha256
+            target/release/quanta-compiler-${{ matrix.target }}.zip
+            target/release/quanta-compiler-${{ matrix.target }}.zip.sha256
 
   release:
     needs: build
@@ -81,5 +109,6 @@ jobs:
         with:
           files: |
             quanta-compiler-*.tar.gz
+            quanta-compiler-*.zip
             quanta-compiler-*.sha256
           generate_release_notes: true

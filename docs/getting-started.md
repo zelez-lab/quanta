@@ -63,17 +63,22 @@ fn vector_add(data: &VecAdd) {
 fn main() -> Result<(), QuantaError> {
     let gpu = init()?;
 
+    // Per-lane inputs so the output varies across the 1024 quarks —
+    // result[i] = i + 2*i = 3*i.
     let mut data = VecAdd {
-        a: vec![1.0f32; 1024],
-        b: vec![2.0f32; 1024],
+        a: (0..1024).map(|i| i as f32).collect(),
+        b: (0..1024).map(|i| (i * 2) as f32).collect(),
         result: vec![0.0f32; 1024],
     };
 
     // One line: upload, bind, dispatch, readback
     vector_add(&gpu, &mut data, 1024)?.wait()?;
 
-    assert_eq!(data.result[0], 3.0);
+    assert_eq!(data.result[0], 0.0);
+    assert_eq!(data.result[1023], 3069.0);
     println!("GPU computed: {} elements", data.result.len());
+    println!("first 5: {:?}", &data.result[..5]);
+    println!("last 5:  {:?}", &data.result[data.result.len() - 5..]);
     Ok(())
 }
 ```
@@ -86,6 +91,11 @@ vector_add(&gpu, &mut data, 1024)?.wait()?;
 
 That is the entire GPU interaction. Define your data, call the kernel, read
 the results back from the same struct.
+
+> **Note:** `main` returns `Result<(), QuantaError>` so the `?` operator can
+> propagate errors out of the program. If you copy only the body of `main`,
+> keep the signature too — `?` does not work inside a `fn main()` that
+> returns `()`.
 
 ## What happened
 

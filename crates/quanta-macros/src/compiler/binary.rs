@@ -98,13 +98,14 @@ fn find_compiler_binary() -> Option<String> {
 
     // 2. Development: workspace target directory
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
     for sub in &[
-        "target/release/quanta-compiler",
-        "../target/release/quanta-compiler",
-        "../../target/release/quanta-compiler",
-        "target/debug/quanta-compiler",
-        "../target/debug/quanta-compiler",
-        "../../target/debug/quanta-compiler",
+        format!("target/release/quanta-compiler{exe_suffix}"),
+        format!("../target/release/quanta-compiler{exe_suffix}"),
+        format!("../../target/release/quanta-compiler{exe_suffix}"),
+        format!("target/debug/quanta-compiler{exe_suffix}"),
+        format!("../target/debug/quanta-compiler{exe_suffix}"),
+        format!("../../target/debug/quanta-compiler{exe_suffix}"),
     ] {
         let path = std::path::PathBuf::from(&manifest_dir).join(sub);
         if path.exists() {
@@ -112,13 +113,20 @@ fn find_compiler_binary() -> Option<String> {
         }
     }
 
-    // 3. PATH
-    if let Ok(output) = std::process::Command::new("which")
+    // 3. PATH — `which` on Unix, `where` on Windows.
+    let path_lookup = if cfg!(windows) { "where" } else { "which" };
+    if let Ok(output) = std::process::Command::new(path_lookup)
         .arg("quanta-compiler")
         .output()
         && output.status.success()
     {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // `where` may return multiple paths separated by newlines — take the first.
+        let path = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if !path.is_empty() {
             return Some(path);
         }
@@ -183,8 +191,16 @@ fn compiler_cache_dir() -> Option<std::path::PathBuf> {
 /// Return the expected cached binary path for the current version.
 fn cached_compiler_path() -> Option<std::path::PathBuf> {
     let version = env!("CARGO_PKG_VERSION");
-    let binary_name = format!("quanta-compiler-{}", version);
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let binary_name = format!("quanta-compiler-{}{}", version, suffix);
     Some(compiler_cache_dir()?.join(binary_name))
+}
+
+/// Archive extension for the host triple. Windows ships .zip; everything
+/// else ships .tar.gz. Must match the `archive` matrix entry in
+/// `.github/workflows/release-compiler.yml`.
+fn archive_ext() -> &'static str {
+    if cfg!(windows) { "zip" } else { "tar.gz" }
 }
 
 /// Check if a previously downloaded compiler binary exists in the cache.
@@ -218,11 +234,12 @@ fn download_compiler_binary() -> Option<String> {
     std::fs::create_dir_all(&cache_dir).ok()?;
 
     let cached_path = cached_compiler_path()?;
-    let download_path = cache_dir.join("download.tar.gz");
+    let ext = archive_ext();
+    let download_path = cache_dir.join(format!("download.{ext}"));
 
     let url = format!(
-        "https://github.com/zelez-lab/quanta/releases/download/v{}/quanta-compiler-{}.tar.gz",
-        version, target
+        "https://github.com/zelez-lab/quanta/releases/download/v{}/quanta-compiler-{}.{}",
+        version, target, ext
     );
 
     eprintln!(
@@ -231,7 +248,7 @@ fn download_compiler_binary() -> Option<String> {
     );
     eprintln!("[quanta] URL: {}", url);
 
-    // Download using curl (available on macOS + Linux by default)
+    // Download using curl (ships with macOS, Linux, and Windows 10 1803+).
     let output = std::process::Command::new("curl")
         .args(["-fsSL", &url, "-o"])
         .arg(&download_path)
@@ -241,15 +258,23 @@ fn download_compiler_binary() -> Option<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         eprintln!("[quanta] Download failed: {}", stderr.trim());
-        eprintln!("[quanta] Build will continue without LLVM-compiled GPU targets.");
+        eprintln!(
+            "[quanta] No prebuilt binary published for `{}` at v{} (or release does not exist yet).",
+            target, version
+        );
+        eprintln!(
+            "[quanta] Build from source: `cargo install quanta-compiler` (requires LLVM 22),"
+        );
+        eprintln!("[quanta] or set QUANTA_COMPILER=/path/to/quanta-compiler.");
         // Clean up partial download
         let _ = std::fs::remove_file(&download_path);
         return None;
     }
 
-    // Extract the archive
+    // Extract the archive — `tar` ships with Win10 1803+ and unpacks both
+    // .tar.gz and .zip. On Unix it's the canonical tool for .tar.gz.
     let extract = std::process::Command::new("tar")
-        .args(["xzf"])
+        .args(["xf"])
         .arg(&download_path)
         .current_dir(&cache_dir)
         .output()
@@ -264,16 +289,17 @@ fn download_compiler_binary() -> Option<String> {
         return None;
     }
 
-    // The archive is expected to contain a `quanta-compiler` binary at its root.
-    // Rename to the version-pinned name to avoid mismatches.
-    let extracted = cache_dir.join("quanta-compiler");
+    // The archive is expected to contain a `quanta-compiler[.exe]` binary
+    // at its root. Rename to the version-pinned name to avoid mismatches.
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let extracted = cache_dir.join(format!("quanta-compiler{suffix}"));
     if extracted.exists() {
         if std::fs::rename(&extracted, &cached_path).is_err() {
             eprintln!("[quanta] Failed to rename downloaded binary.");
             return None;
         }
     } else {
-        eprintln!("[quanta] Archive did not contain expected 'quanta-compiler' binary.");
+        eprintln!("[quanta] Archive did not contain expected 'quanta-compiler{suffix}' binary.");
         return None;
     }
 

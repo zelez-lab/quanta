@@ -12,10 +12,15 @@ env:
 
 jobs:
   # ─── Tier 1: Host tests (no GPU, runs everywhere) ────────────────────
+  # Windows is included for compile + headless-test coverage. GitHub
+  # Windows runners don't expose a GPU, so the differential software
+  # lane is what actually exercises the kernel-execution path on
+  # Windows. Real Windows + Vulkan/DX execution stays deferred until
+  # a self-hosted Windows GPU runner is registered.
   host-tests:
     strategy:
       matrix:
-        os: [macos-14, ubuntu-latest]
+        os: [macos-14, ubuntu-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

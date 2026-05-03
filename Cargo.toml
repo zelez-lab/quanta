@@ -14,13 +14,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zelez-lab/quanta"
 
 [workspace.dependencies]
-quanta-ir = { path = "crates/quanta-ir", version = "0.1.0" }
+quanta-ir = { path = "crates/quanta-ir", version = "0.1.0-alpha.1" }
 
 [package]
 name = "quanta"
@@ -53,7 +53,7 @@ jit = ["quanta-ir/jit"]
 webgpu = ["std", "jit"]
 
 [dependencies]
-quanta-macros = { path = "crates/quanta-macros", version = "0.1.0" }
+quanta-macros = { path = "crates/quanta-macros", version = "0.1.0-alpha.1" }
 quanta-ir.workspace = true
 
 [dev-dependencies]
