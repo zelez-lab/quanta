@@ -111,8 +111,33 @@ jobs:
             exit 1
           }
 
-      - name: Build quanta-compiler
+      # MSYS2 CLANG64 is a MinGW-w64/GNU toolchain. Rust's default
+      # Windows host (`x86_64-pc-windows-msvc`) uses the MSVC ABI and
+      # is incompatible. Build with the GNU triple so the LLVM libs
+      # MSYS2 ships actually link.
+      - name: Switch Rust to GNU triple (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          rustup target add x86_64-pc-windows-gnu --toolchain nightly
+          # Make sure cargo picks the MSYS2 MinGW gcc/ld, not the
+          # stock C:\mingw64 the runner image ships.
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=C:\msys64\clang64\bin\clang.exe" >> $env:GITHUB_ENV
+          echo "CC_x86_64-pc-windows-gnu=C:\msys64\clang64\bin\clang.exe" >> $env:GITHUB_ENV
+          echo "CXX_x86_64-pc-windows-gnu=C:\msys64\clang64\bin\clang++.exe" >> $env:GITHUB_ENV
+
+      - name: Build quanta-compiler (Linux/macOS — MSVC-style host)
+        if: ${{ !startsWith(matrix.os, 'windows') }}
         run: cargo build -p quanta-compiler --release
+
+      # Windows: build through the GNU triple because MSYS2's LLVM is
+      # MinGW/GNU. The output .exe is standalone and runs on any
+      # Windows; the asset is named using the MSVC matrix.target so
+      # the downloader's `current_target()` lookup matches what most
+      # Windows users default to.
+      - name: Build quanta-compiler (Windows — GNU build)
+        if: startsWith(matrix.os, 'windows')
+        run: cargo build -p quanta-compiler --release --target x86_64-pc-windows-gnu
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
@@ -134,7 +159,8 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          cd target/release
+          # GNU build lands under target/x86_64-pc-windows-gnu/release/.
+          cd target\x86_64-pc-windows-gnu\release
           Compress-Archive -Path quanta-compiler.exe -DestinationPath quanta-compiler-${{ matrix.target }}.zip
           $hash = (Get-FileHash quanta-compiler-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower()
           "$hash  quanta-compiler-${{ matrix.target }}.zip" | Out-File -Encoding ASCII quanta-compiler-${{ matrix.target }}.zip.sha256
@@ -146,8 +172,8 @@ jobs:
           path: |
             target/release/quanta-compiler-${{ matrix.target }}.tar.gz
             target/release/quanta-compiler-${{ matrix.target }}.tar.gz.sha256
-            target/release/quanta-compiler-${{ matrix.target }}.zip
-            target/release/quanta-compiler-${{ matrix.target }}.zip.sha256
+            target/x86_64-pc-windows-gnu/release/quanta-compiler-${{ matrix.target }}.zip
+            target/x86_64-pc-windows-gnu/release/quanta-compiler-${{ matrix.target }}.zip.sha256
 
   release:
     needs: build
