@@ -57,9 +57,10 @@ cargo add quanta
 
 ### System requirements
 
-**Rust 1.85+** (edition 2024) is the only universal requirement. The MSL
-and WGSL emitters are built into the proc-macro and run in-process, so on
-Apple Silicon (Metal) or web (WebGPU) nothing else is needed.
+**Rust 1.85+** stable (edition 2024) is the only universal requirement —
+no nightly needed. The MSL and WGSL emitters are built into the proc-macro
+and run in-process, so on Apple Silicon (Metal) or web (WebGPU) nothing
+else is needed.
 
 ### Platform support matrix (v0.1.0-alpha.1)
 

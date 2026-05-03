@@ -33,9 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust nightly
+      - name: Install Rust stable
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Install LLVM 22 (macOS)
@@ -126,7 +126,7 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         shell: pwsh
         run: |
-          rustup target add x86_64-pc-windows-gnu --toolchain nightly
+          rustup target add x86_64-pc-windows-gnu --toolchain stable
           # Pin cargo to the MSYS2 UCRT64 gcc resolved in the previous
           # step via llvm-config — works regardless of where
           # setup-msys2 installed.

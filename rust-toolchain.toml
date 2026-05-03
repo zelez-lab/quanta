@@ -1,0 +1,5 @@
+[toolchain]
+# Quanta builds on stable Rust. Edition 2024 requires 1.85+.
+# Pin to a recent stable so CI + local dev resolve to the same toolchain.
+channel = "stable"
+components = ["rustfmt", "clippy"]
