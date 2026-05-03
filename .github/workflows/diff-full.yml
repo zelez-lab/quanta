@@ -41,6 +41,13 @@ jobs:
   # cache reuse. The `run-full-diff` label is no longer required —
   # ordinary PRs get Metal coverage automatically.
   diff-metal:
+    # Gated on the `run-metal` PR label until a self-hosted Metal runner
+    # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-metal'))
     runs-on: macos-14
     timeout-minutes: 25
     steps:

@@ -54,7 +54,13 @@ jobs:
         run: cargo test --test differential --features software --no-default-features
 
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
+  # Gated on the `run-metal` PR label until a self-hosted Metal runner
+  # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
   gpu-tests-metal:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-metal'))
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -93,7 +99,12 @@ jobs:
         run: cargo test --test gpu_advanced --test gpu_queue --test gpu_timeline --test gpu_texture_views --test gpu_occlusion --test gpu_indirect_dispatch --test gpu_debug --test gpu_reload -- --test-threads=1
 
   # ─── Metal validation layer ──────────────────────────────────────────
+  # Same gate as gpu-tests-metal — needs real Metal hardware.
   metal-validation:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-metal'))
     runs-on: macos-14
     needs: gpu-tests-metal
     steps:
@@ -190,7 +201,15 @@ jobs:
           echo "ptxas validation passed"
 
   # ─── Performance regression gate (step 069) ─────────────────────────
+  # Gated on the `run-perf` PR label until a self-hosted Metal runner
+  # is registered. GitHub-hosted macos-14 VMs don't expose the GPU,
+  # so `quanta::init()` fails with NoDevice. Apply the label manually
+  # before merging anything that touches perf-sensitive paths.
   perf-regression:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-perf'))
     runs-on: macos-14
     needs: gpu-tests-metal
     steps:
