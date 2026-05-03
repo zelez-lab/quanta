@@ -55,13 +55,40 @@ jobs:
           sudo apt-get install -y llvm-22-dev libpolly-22-dev
           echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> $GITHUB_ENV
 
-      - name: Install LLVM 22 (Windows)
+      # MSYS2 is the only practical source of `llvm-sys`-compatible
+      # LLVM dev packages on Windows runners. The official LLVM Windows
+      # release ships clang/lld/lldb but not the static libs + headers
+      # `llvm-sys` needs. Chocolatey is in the same boat.
+      #
+      # We install LLVM 22 via the `mingw-w64-clang-x86_64-llvm` package
+      # under MSYS2's CLANG64 environment, which provides
+      # `<prefix>/bin/llvm-config.exe`, the static archives, and the
+      # headers `llvm-sys` introspects.
+      - name: Install MSYS2 + LLVM 22 (Windows)
         if: startsWith(matrix.os, 'windows')
-        shell: pwsh
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-llvm
+            mingw-w64-clang-x86_64-polly
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+
+      - name: Wire LLVM_SYS_221_PREFIX (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: msys2 {0}
         run: |
-          # Use chocolatey to install LLVM. Pin to a 22.x build.
-          choco install llvm --version=22.1.0 -y
-          echo "LLVM_SYS_221_PREFIX=C:\Program Files\LLVM" >> $env:GITHUB_ENV
+          # MSYS2 CLANG64 root → /clang64 (Windows path: C:\msys64\clang64)
+          # llvm-config lives at /clang64/bin/llvm-config.exe.
+          LLVM_PREFIX="C:\msys64\clang64"
+          echo "LLVM_SYS_221_PREFIX=$LLVM_PREFIX" >> $GITHUB_ENV
+          # Add MSYS2 clang64 bin to PATH so DLLs are reachable at link
+          # and runtime.
+          echo "C:\msys64\clang64\bin" >> $GITHUB_PATH
+          # Surface the version for diagnostics.
+          /clang64/bin/llvm-config.exe --version
 
       - name: Build quanta-compiler
         run: cargo build -p quanta-compiler --release
