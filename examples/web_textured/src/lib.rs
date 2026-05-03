@@ -31,6 +31,7 @@ use quanta::{
     TextureDesc, TextureUsage,
 };
 
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn quanta_complete_bytes(task: u32, ptr: *const u8, len: usize);
     fn quanta_complete_err(task: u32, ptr: *const u8, len: usize);
