@@ -190,8 +190,16 @@ pub(crate) fn emit_auto_dispatch(
     let expanded = quote! {
         // Per-field type assertions — emitted at item scope so they
         // typecheck independently of the dispatch function body.
-        #(#type_check_stmts)*
+        // cfg-gated to non-wasm32 because the wasm-twin (emitted by
+        // wasm_twin::emit_wasm_twin) reuses the kernel name for the
+        // raw-pointer extern "C" entry on wasm32 — the two would
+        // otherwise collide.
+        #(
+            #[cfg(not(target_arch = "wasm32"))]
+            #type_check_stmts
+        )*
 
+        #[cfg(not(target_arch = "wasm32"))]
         pub fn #func_name #generics (
             device: &::quanta::Gpu,
             #param_ident: &mut #type_tokens,

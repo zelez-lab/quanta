@@ -154,14 +154,23 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     };
 
     // For struct-ref kernels, also generate the auto-dispatch wrapper
+    // and the wasm-twin (roadmap step 058 phase 1.2). The twin is a
+    // `#[cfg(target_arch = "wasm32")] extern "C" fn` that rustc lowers
+    // to wasm32 — the future WASM → KernelOps lowering pass consumes
+    // it. Today nothing reads it; emitting it now keeps the kernel
+    // surface honest (any kernel that can't be flattened to raw
+    // pointers fails the build immediately) and gives step 2.2 working
+    // input on day one.
     if let Some(sr) = struct_ref {
         let field_accesses = parse::scan_struct_field_accesses(&func, &sr.param_name);
         let dispatch_info = build_dispatch_info(&sr, &field_accesses, &kernel_def);
         let dispatch_fn = auto_dispatch::emit_auto_dispatch(&func, &dispatch_info, &wave_fn_name);
+        let wasm_twin_fn = crate::wasm_twin::emit_wasm_twin(&func, &dispatch_info);
 
         let expanded = quote! {
             #wave_fn
             #dispatch_fn
+            #wasm_twin_fn
         };
         return expanded.into();
     }
