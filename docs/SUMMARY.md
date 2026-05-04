@@ -50,6 +50,13 @@
 - [Mandelbrot](cookbook/mandelbrot.md)
 - [Shadow Mapping](cookbook/shadow-mapping.md)
 - [Deferred Rendering](cookbook/deferred-rendering.md)
+- [Tessellation](cookbook/tessellation.md)
+- [Mesh Shaders](cookbook/mesh-shaders.md)
+- [Ray Tracing](cookbook/ray-tracing.md)
+- [Variable Rate Shading](cookbook/variable-rate-shading.md)
+- [Indirect Commands](cookbook/indirect-commands.md)
+- [Multi-Queue](cookbook/multi-queue.md)
+- [Async Copy and GPU Printf](cookbook/async-copy-and-printf.md)
 
 # Migration
 
