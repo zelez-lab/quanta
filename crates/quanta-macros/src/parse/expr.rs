@@ -2,6 +2,7 @@
 //! Expression emission — returns (register, type).
 
 use quanta_ir::{AtomicOp, BinOp, ConstValue, KernelOp, Reg, ScalarType, UnaryOp};
+use std::collections::HashMap;
 use syn::{BinOp as SynBinOp, Expr, Stmt, Type, UnOp as SynUnOp};
 
 use super::stmt::emit_stmt;
@@ -208,14 +209,74 @@ fn emit_binary(bin: &syn::ExprBinary, ctx: &mut EmitCtx) -> Result<(Reg, ScalarT
 
     // Arithmetic/bitwise
     let op = syn_binop_to_ir(&bin.op)?;
+    // Bitwise ops (`& | ^ << >>`) require an integer result type. If
+    // the LHS is a float (e.g. a read-only buffer field whose element
+    // type defaulted to F32 because Path A only refines via writes),
+    // promote to the matching-width unsigned integer so the MSL/SPIRV
+    // emitters produce valid code. Also retroactively patch the
+    // upstream Load ops that produced these operand registers, so
+    // their type matches the integer interpretation we're about to
+    // perform — otherwise the emitter declares the buffer-load result
+    // as `float` while the bitwise op requires `uint`.
+    let is_bitwise = matches!(
+        op,
+        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+    );
+    let result_ty = if is_bitwise {
+        match ty_a {
+            ScalarType::F16 => ScalarType::U16,
+            ScalarType::F32 => ScalarType::U32,
+            ScalarType::F64 => ScalarType::U64,
+            int_ty => int_ty,
+        }
+    } else {
+        ty_a
+    };
+    if is_bitwise {
+        retypecast_load_chain_to_int(&mut ctx.ops, &mut ctx.params, a, result_ty);
+        retypecast_load_chain_to_int(&mut ctx.ops, &mut ctx.params, b, result_ty);
+    }
     ctx.ops.push(KernelOp::BinOp {
         dst,
         a,
         b,
         op,
-        ty: ty_a,
+        ty: result_ty,
     });
-    Ok((dst, ty_a))
+    Ok((dst, result_ty))
+}
+
+/// Walk backwards through emitted ops to find any `Load` that wrote
+/// the given destination register. If found, retype it to the integer
+/// `int_ty` (and update the corresponding param's scalar_type so the
+/// auto-dispatch probe sees the right element type).
+///
+/// Why this exists: Path A (1cedee5) refines buffer-field types only
+/// at *store* sites. Read-only u32 buffer fields stay at the F32
+/// default, then their `Load` ops emit MSL like `float r = buf[idx]`
+/// — invalid when followed by a bitwise op. This patcher closes the
+/// gap retroactively at bit-op emission time.
+fn retypecast_load_chain_to_int(
+    ops: &mut [KernelOp],
+    params: &mut HashMap<String, super::ParamInfo>,
+    target: Reg,
+    int_ty: ScalarType,
+) {
+    for op in ops.iter_mut().rev() {
+        if let KernelOp::Load { dst, field, ty, .. } = op {
+            if *dst == target {
+                *ty = int_ty;
+                // Find the param matching this slot and update it too.
+                for info in params.values_mut() {
+                    if info.slot == *field {
+                        info.scalar_type = int_ty;
+                        break;
+                    }
+                }
+                return;
+            }
+        }
+    }
 }
 
 fn emit_unary(unary: &syn::ExprUnary, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType), syn::Error> {
@@ -307,6 +368,33 @@ fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
     let func_name = expr_to_name(&call.func).ok_or_else(|| {
         syn::Error::new_spanned(&call.func, "function call must be a simple name")
     })?;
+
+    // `Ty::from_bits(x)` — bit-reinterpret an integer as a float of
+    // the same width. The Ty qualifier determines the target type;
+    // we extract it from the path's penultimate segment.
+    if func_name == "from_bits" {
+        let to = match qualifier_segment(&call.func) {
+            Some(s) if s == "f16" => ScalarType::F16,
+            Some(s) if s == "f32" => ScalarType::F32,
+            Some(s) if s == "f64" => ScalarType::F64,
+            other => {
+                return Err(syn::Error::new_spanned(
+                    &call.func,
+                    format!("from_bits requires an `f16`/`f32`/`f64` qualifier; got {other:?}"),
+                ));
+            }
+        };
+        if call.args.len() != 1 {
+            return Err(syn::Error::new_spanned(
+                call,
+                "from_bits takes exactly 1 argument",
+            ));
+        }
+        let (src, from) = emit_expr(&call.args[0], ctx)?;
+        let dst = ctx.alloc_reg();
+        ctx.ops.push(KernelOp::Bitcast { dst, src, from, to });
+        return Ok((dst, to));
+    }
 
     match func_name.as_str() {
         // Thread indexing
@@ -486,6 +574,19 @@ fn emit_call(call: &syn::ExprCall, ctx: &mut EmitCtx) -> Result<(Reg, ScalarType
     }
 }
 
+/// For a path expression like `f32::from_bits`, return the second-to-
+/// last segment ("f32"). Used to disambiguate calls like `Ty::from_bits`
+/// where the qualifier carries the target type.
+fn qualifier_segment(expr: &Expr) -> Option<String> {
+    if let Expr::Path(p) = expr {
+        let segs = &p.path.segments;
+        if segs.len() >= 2 {
+            return Some(segs[segs.len() - 2].ident.to_string());
+        }
+    }
+    None
+}
+
 fn emit_atomic_call(
     name: &str,
     call: &syn::ExprCall,
@@ -597,6 +698,38 @@ fn emit_method_call(
             ty,
         });
         return Ok((dst, ty));
+    }
+
+    // x.to_bits() — reinterpret f16/f32/f64 as their unsigned-int
+    // bit pattern via Bitcast IR op. Output type is the
+    // corresponding-width unsigned integer.
+    if method == "to_bits" {
+        let (src, ty) = emit_expr(&mc.receiver, ctx)?;
+        if !mc.args.is_empty() {
+            return Err(syn::Error::new_spanned(
+                &mc.method,
+                "to_bits() takes no arguments",
+            ));
+        }
+        let to = match ty {
+            ScalarType::F16 => ScalarType::U16,
+            ScalarType::F32 => ScalarType::U32,
+            ScalarType::F64 => ScalarType::U64,
+            other => {
+                return Err(syn::Error::new_spanned(
+                    &mc.method,
+                    format!("to_bits() not supported for {other:?}"),
+                ));
+            }
+        };
+        let dst = ctx.alloc_reg();
+        ctx.ops.push(KernelOp::Bitcast {
+            dst,
+            src,
+            from: ty,
+            to,
+        });
+        return Ok((dst, to));
     }
 
     // x.sin(), x.cos(), x.sqrt(), x.abs()

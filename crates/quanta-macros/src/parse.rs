@@ -512,14 +512,31 @@ fn walk_expr_for_const_hint(
     }
 }
 
-/// Returns true if `expr` is exactly `param.field_name`.
+/// Returns true if `expr` is exactly `param.field_name`, OR
+/// `param.field_name[any_index]` (buffer indexed access).
+/// Both forms produce a Load that needs the right scalar type.
 fn expr_is_field(expr: &Expr, param_name: &str, field_name: &str) -> bool {
+    // p.field — direct scalar access
     if let Expr::Field(f) = expr {
         if let Expr::Path(p) = f.base.as_ref() {
             if let Some(seg) = p.path.segments.last() {
                 if seg.ident == param_name {
                     if let syn::Member::Named(ident) = &f.member {
                         return ident == field_name;
+                    }
+                }
+            }
+        }
+    }
+    // p.field[idx] — buffer indexed access
+    if let Expr::Index(i) = expr {
+        if let Expr::Field(f) = i.expr.as_ref() {
+            if let Expr::Path(p) = f.base.as_ref() {
+                if let Some(seg) = p.path.segments.last() {
+                    if seg.ident == param_name {
+                        if let syn::Member::Named(ident) = &f.member {
+                            return ident == field_name;
+                        }
                     }
                 }
             }
@@ -778,6 +795,20 @@ impl EmitCtx {
             {
                 // Variable was reassigned inside child scope -- update parent
                 self.vars.insert(name.clone(), (*reg, *ty));
+            }
+        }
+        // Propagate scalar_type refinements made inside the child
+        // scope back to the parent — needed so retroactive type
+        // patches done inside loop bodies (e.g. expr.rs's
+        // retypecast_load_chain_to_int for read-only u32 buffers)
+        // survive the loop scope. Without this, Path A's end-of-parse
+        // projection sees the parent's stale (default F32) type and
+        // the auto-dispatch type-probe rejects the user's `Vec<u32>`.
+        for (name, child_info) in &child.params {
+            if let Some(parent_info) = self.params.get_mut(name) {
+                if parent_info.scalar_type != child_info.scalar_type {
+                    parent_info.scalar_type = child_info.scalar_type;
+                }
             }
         }
         child.ops
