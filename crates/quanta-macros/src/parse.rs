@@ -341,6 +341,256 @@ fn scan_expr_for_field_accesses(
     }
 }
 
+/// Infer the scalar type of a struct push-constant field by walking
+/// the kernel body looking for usage-context hints. Returns `None` if
+/// no hint can be derived; caller should fall back to the historical
+/// default (`ScalarType::U32`).
+///
+/// Why this exists: the body parser refines *buffer-field* scalar
+/// types at write sites (parse/stmt.rs:561 — Path A, commit 1cedee5),
+/// but `Constant` push-const scalars never get refined by body parse.
+/// Without this pre-pass, an `f32` push-const is loaded with kernel-
+/// side type `uint` and the dispatch path's verbatim f32 byte upload
+/// gets read as a u32 bit pattern (e.g., `0.5_f32` → `1056964608`).
+///
+/// The hints we recognise (in priority order):
+/// 1. **Type annotation**: `let x: f32 = p.field;`
+/// 2. **Cast on the other side of a binop**: `(i as f32) * p.field`
+/// 3. **Literal on the other side of a binop**: `p.field * 2.0_f32`
+/// 4. **`as` cast applied to the field directly**: `(p.field as f32)`
+///    — though this is unusual; the result would already be f32.
+///
+/// Heuristic only — doesn't promise to catch every case. When a hint
+/// can't be derived, the default is preserved and the user can either
+/// adjust their kernel or use the manual API.
+pub(crate) fn infer_const_scalar_type(
+    func: &ItemFn,
+    param_name: &str,
+    field_name: &str,
+) -> Option<ScalarType> {
+    let mut hint: Option<ScalarType> = None;
+    walk_block_for_const_hint(&func.block, param_name, field_name, &mut hint);
+    hint
+}
+
+fn walk_block_for_const_hint(
+    block: &syn::Block,
+    param_name: &str,
+    field_name: &str,
+    hint: &mut Option<ScalarType>,
+) {
+    for stmt in &block.stmts {
+        walk_stmt_for_const_hint(stmt, param_name, field_name, hint);
+        if hint.is_some() {
+            return;
+        }
+    }
+}
+
+fn walk_stmt_for_const_hint(
+    stmt: &Stmt,
+    param_name: &str,
+    field_name: &str,
+    hint: &mut Option<ScalarType>,
+) {
+    match stmt {
+        // `let x: T = p.field` — direct type annotation.
+        Stmt::Local(local) => {
+            if let syn::Pat::Type(pat_ty) = &local.pat {
+                if let Some(init) = &local.init {
+                    if expr_is_field(&init.expr, param_name, field_name) {
+                        if let Some(ty) = ty_to_scalar(&pat_ty.ty) {
+                            *hint = Some(ty);
+                            return;
+                        }
+                    }
+                }
+            }
+            if let Some(init) = &local.init {
+                walk_expr_for_const_hint(&init.expr, param_name, field_name, hint);
+            }
+        }
+        Stmt::Expr(e, _) => walk_expr_for_const_hint(e, param_name, field_name, hint),
+        Stmt::Macro(_) | Stmt::Item(_) => {}
+    }
+}
+
+fn walk_expr_for_const_hint(
+    expr: &Expr,
+    param_name: &str,
+    field_name: &str,
+    hint: &mut Option<ScalarType>,
+) {
+    if hint.is_some() {
+        return;
+    }
+    match expr {
+        Expr::Binary(b) => {
+            // If one side is `p.field`, try to infer from the other.
+            let left_is_field = expr_is_field(&b.left, param_name, field_name);
+            let right_is_field = expr_is_field(&b.right, param_name, field_name);
+            if left_is_field {
+                if let Some(ty) = expr_to_scalar(&b.right) {
+                    *hint = Some(ty);
+                    return;
+                }
+            }
+            if right_is_field {
+                if let Some(ty) = expr_to_scalar(&b.left) {
+                    *hint = Some(ty);
+                    return;
+                }
+            }
+            walk_expr_for_const_hint(&b.left, param_name, field_name, hint);
+            if hint.is_none() {
+                walk_expr_for_const_hint(&b.right, param_name, field_name, hint);
+            }
+        }
+        Expr::Cast(c) => {
+            // `(p.field as T)` — the cast target is the field's effective type
+            // *after* the cast. The pre-cast type is whatever the field is.
+            // We cannot recover that from the cast alone; skip this case.
+            walk_expr_for_const_hint(&c.expr, param_name, field_name, hint);
+        }
+        Expr::Paren(p) => walk_expr_for_const_hint(&p.expr, param_name, field_name, hint),
+        Expr::Group(g) => walk_expr_for_const_hint(&g.expr, param_name, field_name, hint),
+        Expr::Block(b) => walk_block_for_const_hint(&b.block, param_name, field_name, hint),
+        Expr::If(i) => {
+            walk_expr_for_const_hint(&i.cond, param_name, field_name, hint);
+            walk_block_for_const_hint(&i.then_branch, param_name, field_name, hint);
+            if let Some((_, else_branch)) = &i.else_branch {
+                walk_expr_for_const_hint(else_branch, param_name, field_name, hint);
+            }
+        }
+        Expr::While(w) => {
+            walk_expr_for_const_hint(&w.cond, param_name, field_name, hint);
+            walk_block_for_const_hint(&w.body, param_name, field_name, hint);
+        }
+        Expr::ForLoop(f) => {
+            walk_expr_for_const_hint(&f.expr, param_name, field_name, hint);
+            walk_block_for_const_hint(&f.body, param_name, field_name, hint);
+        }
+        Expr::Assign(a) => {
+            // `p.buffer[idx] = p.field * something` — recurse into RHS;
+            // the LHS being a typed buffer slot is also a hint, but
+            // we don't yet plumb that through.
+            walk_expr_for_const_hint(&a.left, param_name, field_name, hint);
+            if hint.is_none() {
+                walk_expr_for_const_hint(&a.right, param_name, field_name, hint);
+            }
+        }
+        Expr::Call(c) => {
+            for arg in &c.args {
+                walk_expr_for_const_hint(arg, param_name, field_name, hint);
+                if hint.is_some() {
+                    return;
+                }
+            }
+        }
+        Expr::MethodCall(m) => {
+            walk_expr_for_const_hint(&m.receiver, param_name, field_name, hint);
+            for arg in &m.args {
+                walk_expr_for_const_hint(arg, param_name, field_name, hint);
+                if hint.is_some() {
+                    return;
+                }
+            }
+        }
+        Expr::Index(i) => {
+            walk_expr_for_const_hint(&i.expr, param_name, field_name, hint);
+            if hint.is_none() {
+                walk_expr_for_const_hint(&i.index, param_name, field_name, hint);
+            }
+        }
+        Expr::Unary(u) => walk_expr_for_const_hint(&u.expr, param_name, field_name, hint),
+        Expr::Return(r) => {
+            if let Some(e) = &r.expr {
+                walk_expr_for_const_hint(e, param_name, field_name, hint);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Returns true if `expr` is exactly `param.field_name`.
+fn expr_is_field(expr: &Expr, param_name: &str, field_name: &str) -> bool {
+    if let Expr::Field(f) = expr {
+        if let Expr::Path(p) = f.base.as_ref() {
+            if let Some(seg) = p.path.segments.last() {
+                if seg.ident == param_name {
+                    if let syn::Member::Named(ident) = &f.member {
+                        return ident == field_name;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// If `expr` carries a definite scalar type (cast or typed literal),
+/// return it. Otherwise None.
+fn expr_to_scalar(expr: &Expr) -> Option<ScalarType> {
+    match expr {
+        Expr::Cast(c) => ty_to_scalar(&c.ty),
+        Expr::Lit(l) => lit_to_scalar(&l.lit),
+        Expr::Paren(p) => expr_to_scalar(&p.expr),
+        Expr::Group(g) => expr_to_scalar(&g.expr),
+        Expr::Unary(u) => expr_to_scalar(&u.expr),
+        _ => None,
+    }
+}
+
+fn ty_to_scalar(ty: &Type) -> Option<ScalarType> {
+    let path = match ty {
+        Type::Path(p) => p,
+        Type::Reference(r) => return ty_to_scalar(&r.elem),
+        Type::Paren(p) => return ty_to_scalar(&p.elem),
+        _ => return None,
+    };
+    let seg = path.path.segments.last()?;
+    Some(match seg.ident.to_string().as_str() {
+        "f16" => ScalarType::F16,
+        "f32" => ScalarType::F32,
+        "f64" => ScalarType::F64,
+        "u8" => ScalarType::U8,
+        "u16" => ScalarType::U16,
+        "u32" => ScalarType::U32,
+        "u64" => ScalarType::U64,
+        "i8" => ScalarType::I8,
+        "i16" => ScalarType::I16,
+        "i32" => ScalarType::I32,
+        "i64" => ScalarType::I64,
+        "bool" => ScalarType::Bool,
+        _ => return None,
+    })
+}
+
+fn lit_to_scalar(lit: &syn::Lit) -> Option<ScalarType> {
+    match lit {
+        syn::Lit::Float(f) => match f.suffix() {
+            "f16" => Some(ScalarType::F16),
+            "f32" | "" => Some(ScalarType::F32),
+            "f64" => Some(ScalarType::F64),
+            _ => None,
+        },
+        syn::Lit::Int(i) => match i.suffix() {
+            "u8" => Some(ScalarType::U8),
+            "u16" => Some(ScalarType::U16),
+            "u32" => Some(ScalarType::U32),
+            "u64" => Some(ScalarType::U64),
+            "i8" => Some(ScalarType::I8),
+            "i16" => Some(ScalarType::I16),
+            "i32" => Some(ScalarType::I32),
+            "i64" => Some(ScalarType::I64),
+            "" => None, // unsuffixed int literal — ambiguous
+            _ => None,
+        },
+        syn::Lit::Bool(_) => Some(ScalarType::Bool),
+        _ => None,
+    }
+}
+
 /// Extract the field name from a `p.field_name` expression, if it matches
 /// the given struct parameter name.
 fn extract_struct_field_name(expr: &Expr, param_name: &str) -> Option<String> {
@@ -566,11 +816,27 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
                     });
                 }
             } else {
-                // Scalar field: push constant
+                // Scalar field: push constant.
+                //
+                // The body parser only refines *buffer* field types
+                // (via stmt::emit_stmt's index-store case at parse/
+                // stmt.rs:561). Push-const scalar types stay at their
+                // default unless we infer them from usage context up
+                // front. Without this inference, a struct field like
+                // `scale: f32` gets kernel-side type `uint`; the
+                // dispatch path uploads f32 bytes verbatim, the
+                // kernel reads them as u32, and arithmetic on the
+                // resulting Reg uses the bit-pattern integer instead
+                // of the float — producing nonsense output (e.g.
+                // `0.5_f32` ↦ `1056964608`). See
+                // research/dual_form_layer_norm_gpu_probe/README.md
+                // for the diagnostic.
+                let inferred = infer_const_scalar_type(func, &sr.param_name, &access.name)
+                    .unwrap_or(ScalarType::U32);
                 params.push(KernelParam::Constant {
                     name: access.name.clone(),
                     slot,
-                    scalar_type: ScalarType::U32, // default, refined by body parse
+                    scalar_type: inferred,
                 });
             }
             slot += 1;
