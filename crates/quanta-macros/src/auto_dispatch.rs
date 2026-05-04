@@ -75,6 +75,56 @@ pub(crate) fn emit_auto_dispatch(
     let mut bind_stmts = Vec::new();
     let mut readback_stmts = Vec::new();
 
+    // Per-field type checks (kernel-IR inference gap; tracked by the
+    // step 058/059 roadmap entry "Verifiable Rust kernel subset").
+    //
+    // The kernel-IR inference today does not always recover the
+    // correct scalar type for buffer-field writes — see Mandelbrot's
+    // `Vec<u32>` being mis-inferred as `Vec<f32>` because the
+    // surrounding kernel body computes f32 values. Without a guard,
+    // a mismatch surfaces as a confusing `expected Vec<X>, found
+    // Vec<Y>` error inside the macro-generated function body.
+    //
+    // The probe below pushes the type assertion to *item* scope
+    // (a sibling function whose signature must typecheck): when the
+    // user's struct field type disagrees with the IR's inference,
+    // the resulting error is at function-signature level which is
+    // clearer to debug. The doc-comment carries the diagnostic
+    // string so it shows up in rustdoc output even though `rustc`
+    // does not surface it in error notes.
+    //
+    // Until step 058/059 closes (proven Rust-subset → IR
+    // translation), users with mixed-type buffers can either declare
+    // the field type to match what the IR infers, or fall back to
+    // the manual API (gpu.field + wave.bind + gpu.dispatch).
+    let mut type_check_stmts = Vec::new();
+    for field in buffer_fields.iter() {
+        let field_ident = format_ident!("{}", field.name);
+        let scalar_ty = scalar_type_to_rust_tokens(field.scalar_type_name.as_str());
+        let probe_ident = format_ident!("__quanta_check_{}", field.name);
+        let mismatch_msg = format!(
+            "quanta::kernel: struct field `{}` element type does not match \
+             the IR-inferred scalar type `{}`. Either declare the field as \
+             `Vec<{}>`, or use the manual API (gpu.field + wave.bind + \
+             gpu.dispatch) to control element types explicitly. This is the \
+             kernel-IR inference gap tracked by step 058/059.",
+            field.name, field.scalar_type_name, field.scalar_type_name,
+        );
+        type_check_stmts.push(quote! {
+            // Static type assertion — never called, only typechecked.
+            // If the user's struct field element type doesn't match
+            // `#scalar_ty`, rustc emits a "expected Vec<X>, found
+            // Vec<Y>" mismatch on this function. The doc comment
+            // surfaces in the error context so users know where to
+            // look. Tracked by step 058/059 (kernel-IR inference).
+            #[doc = #mismatch_msg]
+            #[allow(dead_code, non_snake_case)]
+            fn #probe_ident(__data: &mut #type_tokens) -> &mut Vec<#scalar_ty> {
+                &mut __data.#field_ident
+            }
+        });
+    }
+
     for (i, field) in buffer_fields.iter().enumerate() {
         let field_var = format_ident!("__f{}", i);
         let field_ident = format_ident!("{}", field.name);
@@ -138,6 +188,10 @@ pub(crate) fn emit_auto_dispatch(
     let generics = &func.sig.generics;
 
     let expanded = quote! {
+        // Per-field type assertions — emitted at item scope so they
+        // typecheck independently of the dispatch function body.
+        #(#type_check_stmts)*
+
         pub fn #func_name #generics (
             device: &::quanta::Gpu,
             #param_ident: &mut #type_tokens,

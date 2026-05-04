@@ -1,6 +1,6 @@
 # Quanta
 
-**GPU compute and rendering for Rust. One function, every GPU, formally verified.**
+**GPU compute and rendering for Rust. One function, every GPU, formally verified IR.**
 
 ```rust
 use quanta::*;
@@ -41,7 +41,7 @@ That struct compiles to GPU binaries for five targets at build time. At runtime,
 
 2. **5 GPU backends.** Metal (Apple), SPIR-V (Vulkan), WGSL (WebGPU), PTX (NVIDIA), GCN (AMD). All compiled at build time and embedded in your binary. The right ISA loads at runtime.
 
-3. **Formally verified.** 232+ theorems proven with Lean 4, Kani, Verus, Miri, and proptest. Axiom-grounded from GPU hardware semantics to user-facing API invariants. 35 narrow TCB axioms, zero proof-level sorrys.
+3. **Formally verified IR + emitters.** 232+ theorems proven with Lean 4, Kani, Verus, Miri, and proptest, axiom-grounded from GPU hardware semantics up to user-facing API invariants. 35 narrow TCB axioms, zero proof-level sorrys. The Rust-source → IR translator inside the proc-macro is the trust boundary today; closing that gap is on the roadmap (steps 058/059).
 
 4. **Zero dependencies on GPU crate ecosystem.** Raw Metal FFI (`objc_msgSend`), raw Vulkan FFI. No ash, no wgpu, no objc crate.
 
@@ -195,7 +195,7 @@ cargo run --release --example bench_nbody
 
 ## Formal Verification
 
-Every behavioral property in the codebase is tracked and proven.
+Every behavioral property of the **IR and what's below it** is tracked and proven.
 
 | Tool | Role | Scope |
 |---|---|---|
@@ -220,6 +220,19 @@ Hardware axioms (A1-A13)    assumed correct: GPU executes submitted shader
         |
     Integration tests       real GPUs produce expected output (the WHERE)
 ```
+
+### Trust boundary
+
+The proofs cover the **kernel IR (`KernelDef`) and everything downstream** —
+the five emitters, the drivers, the API wrappers, the dispatch lifecycle.
+The translator from your `#[quanta::kernel]` Rust source *into* the IR
+runs in `quanta-macros` at compile time and is **not formally proven
+today**. Closing that gap is roadmap step 058/059 (replace the Rust-AST
+parser with a `rustc → wasm32 → KernelOps` pipeline plus a CompCert-shape
+preservation proof). A class of inference bugs — most visibly
+mixed-element-type buffer fields — lives there until that step closes;
+see [roadmap/080_kernel_ir_inference](../../roadmap/080_kernel_ir_inference)
+for the workaround and long-term plan.
 
 ---
 
