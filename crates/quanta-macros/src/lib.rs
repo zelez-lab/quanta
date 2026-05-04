@@ -15,6 +15,9 @@ mod validate;
 mod vertex_derive;
 mod wasm_twin;
 
+#[cfg(test)]
+mod diff_test;
+
 use proc_macro::TokenStream;
 use syn::{ItemFn, parse_macro_input};
 

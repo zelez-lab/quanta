@@ -23,6 +23,7 @@ repository = "https://github.com/zelez-lab/quanta"
 
 [workspace.dependencies]
 quanta-ir = { path = "crates/quanta-ir", version = "0.1.0-alpha.1" }
+quanta-wasm-lowering = { path = "crates/quanta-wasm-lowering", version = "0.1.0-alpha.1" }
 
 [package]
 name = "quanta"

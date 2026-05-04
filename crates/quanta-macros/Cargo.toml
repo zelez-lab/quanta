@@ -16,3 +16,6 @@ syn = { version = "2", features = ["full", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"
 quanta-ir.workspace = true
+
+[dev-dependencies]
+quanta-wasm-lowering.workspace = true
