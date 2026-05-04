@@ -542,7 +542,12 @@ pub(crate) fn emit_store_or_reassign(
             // Try struct-ref field store: p.field[idx] = value
             if let Some(field_name) = super::expr::extract_struct_field_from_expr(&index.expr, ctx)
             {
-                let info = ctx
+                // Path A (roadmap step 080): the source register's actual
+                // scalar type is the source of truth for the field's element
+                // type. The original ctx.params type was a placeholder
+                // (F32 default) until we got here. Refine it now so the
+                // KernelDef carries the correct per-slot type.
+                let slot = ctx
                     .params
                     .get(&field_name)
                     .ok_or_else(|| {
@@ -551,13 +556,16 @@ pub(crate) fn emit_store_or_reassign(
                             format!("unknown struct field: {}", field_name),
                         )
                     })?
-                    .clone();
+                    .slot;
+                if let Some(info) = ctx.params.get_mut(&field_name) {
+                    info.scalar_type = src_ty;
+                }
                 let (idx_reg, _) = emit_expr(&index.index, ctx)?;
                 ctx.ops.push(KernelOp::Store {
-                    field: info.slot,
+                    field: slot,
                     index: idx_reg,
                     src: src_reg,
-                    ty: info.scalar_type,
+                    ty: src_ty,
                 });
                 return Ok(());
             }

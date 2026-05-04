@@ -1,16 +1,12 @@
 //! Mandelbrot — auto-dispatch struct-ref form.
 //!
-//! Output is `Vec<f32>` (iteration count cast to f32) to work around
-//! the kernel-IR inference gap tracked by roadmap step 080. Convert
-//! back to u32 on the host if needed.
-//!
 //! Run: cargo run --example cookbook_mandelbrot --release
 
 use quanta::*;
 
 #[derive(quanta::Fields)]
 struct MandelbrotData {
-    output: Vec<f32>,
+    output: Vec<u32>,
     width: u32,
     height: u32,
     max_iter: u32,
@@ -36,7 +32,7 @@ fn mandelbrot(d: &MandelbrotData) {
         iter += 1u32;
     }
 
-    d.output[idx] = iter as f32;
+    d.output[idx] = iter;
 }
 
 fn main() -> Result<(), QuantaError> {
@@ -49,7 +45,7 @@ fn main() -> Result<(), QuantaError> {
     let count = (width * height) as usize;
 
     let mut data = MandelbrotData {
-        output: vec![0.0f32; count],
+        output: vec![0u32; count],
         width,
         height,
         max_iter,
@@ -57,8 +53,7 @@ fn main() -> Result<(), QuantaError> {
 
     mandelbrot(&gpu, &mut data, count as u32)?.wait()?;
 
-    let max_iter_f = max_iter as f32;
-    let in_set = data.output.iter().filter(|&&v| v >= max_iter_f).count();
+    let in_set = data.output.iter().filter(|&&v| v == max_iter).count();
     println!(
         "{width}×{height} Mandelbrot: {in_set} pixels in set ({:.1}%)",
         in_set as f64 / count as f64 * 100.0,

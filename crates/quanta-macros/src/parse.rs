@@ -610,6 +610,38 @@ pub fn parse_kernel(func: &ItemFn) -> Result<KernelDef, syn::Error> {
         stmt::emit_stmt(s, &mut ctx)?;
     }
 
+    // Path A (roadmap step 080): refine each param's scalar_type from the
+    // body-parse context. The struct-ref pass initially pushes params with
+    // placeholder types (F32 for buffers, U32 for scalars); the body
+    // parser updates ctx.params.scalar_type as it observes actual writes
+    // and reads. Project those refinements back into the final params
+    // vec so the KernelDef carries the user's true element types.
+    for p in params.iter_mut() {
+        let (name, slot) = match p {
+            KernelParam::FieldRead { name, slot, .. }
+            | KernelParam::FieldWrite { name, slot, .. }
+            | KernelParam::Constant { name, slot, .. }
+            | KernelParam::Texture2DRead { name, slot, .. }
+            | KernelParam::Texture2DWrite { name, slot, .. }
+            | KernelParam::Texture3DRead { name, slot, .. } => (name.clone(), *slot),
+        };
+        if let Some(info) = ctx.params.get(&name) {
+            if info.slot == slot {
+                let new_ty = info.scalar_type;
+                match p {
+                    KernelParam::FieldRead { scalar_type, .. }
+                    | KernelParam::FieldWrite { scalar_type, .. }
+                    | KernelParam::Constant { scalar_type, .. }
+                    | KernelParam::Texture2DRead { scalar_type, .. }
+                    | KernelParam::Texture2DWrite { scalar_type, .. }
+                    | KernelParam::Texture3DRead { scalar_type, .. } => {
+                        *scalar_type = new_ty;
+                    }
+                }
+            }
+        }
+    }
+
     Ok(KernelDef {
         name,
         params,
