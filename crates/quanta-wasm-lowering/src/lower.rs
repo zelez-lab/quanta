@@ -235,25 +235,19 @@ impl<'a> LowerCtx<'a> {
     }
 
     fn lower(mut self) -> Result<KernelDef, LoweringError> {
-        // Initialise scalar push-constant locals: emit a Load from
-        // the constant slot before any user code runs.
+        // Initialise scalar push-constant locals: emit one Load from
+        // the constant slot at function entry, seed the local with
+        // its register. SPIR-V/MSL emitters dispatch push-const reads
+        // on `index.0 == u32::MAX` (see emit_spirv/ops.rs:113,
+        // emit_msl/ops.rs:43) — the sentinel must be threaded through
+        // verbatim, not replaced with a real zero-const register.
         for (i, slot) in self.side_table.params.iter().enumerate() {
             if matches!(slot.kind, ParamKind::Scalar) {
                 let dst = self.alloc_reg();
-                let zero = self.alloc_reg();
-                self.emit(KernelOp::Const {
-                    dst: zero,
-                    value: ConstValue::U32(0),
-                });
                 self.emit(KernelOp::Load {
                     dst,
                     field: slot.slot,
-                    // Push constants are loaded with index = sentinel
-                    // 0xFFFFFFFF in the legacy parser, but the IR
-                    // ops have `Load { index: Reg, ... }` — we pass
-                    // `zero` here and rely on emitters' push-const
-                    // handling (slot identifies the constant).
-                    index: zero,
+                    index: Reg(u32::MAX),
                     ty: slot.scalar,
                 });
                 self.locals[i].val = Some(SymVal::Reg(dst, slot.scalar));
@@ -443,13 +437,32 @@ impl<'a> LowerCtx<'a> {
                         });
                     }
                     None => {
-                        // Defined-function call — not supported yet
-                        // (would need to recursively lower the
-                        // callee).
-                        return Err(LoweringError::UnsupportedOp {
-                            op: format!(
-                                "call to defined function {idx} (only intrinsic imports supported today)"
+                        // Defined-function call — refused with a
+                        // source-mapped name when available. rustc
+                        // injects stdlib helpers (e.g. `core::f32::
+                        // <impl f32>::powi`) at function indices the
+                        // lowering pass cannot yet inline. The user-
+                        // visible message points at the callee so the
+                        // gap is actionable.
+                        let resolved = self
+                            .module
+                            .function_names
+                            .get(*idx as usize)
+                            .and_then(|n| n.as_deref());
+                        let detail = match resolved {
+                            Some(name) => format!(
+                                "call to defined function {idx} (`{name}`) — \
+                                 inlining not yet supported; rewrite the \
+                                 kernel to avoid this call or expose the \
+                                 callee as a Quanta intrinsic"
                             ),
+                            None => format!(
+                                "call to defined function {idx} (no debug \
+                                 name) — inlining not yet supported"
+                            ),
+                        };
+                        return Err(LoweringError::UnsupportedOp {
+                            op: detail,
                             at: self.body.body_offset,
                         });
                     }

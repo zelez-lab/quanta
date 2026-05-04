@@ -15,7 +15,9 @@
 #![allow(dead_code)]
 
 use quanta_ir::{KernelDef, ScalarType};
-use wasmparser::{ExternalKind, FuncType, FunctionBody, Operator, Parser, Payload, ValType};
+use wasmparser::{
+    ExternalKind, FuncType, FunctionBody, KnownCustom, Name, Operator, Parser, Payload, ValType,
+};
 
 // ── Public types ───────────────────────────────────────────────────────
 
@@ -104,6 +106,12 @@ pub struct Module {
     pub imports: Vec<ImportInfo>,
     /// Exported names (for finding kernels).
     pub exports: Vec<ExportInfo>,
+    /// Function debug names from the WASM `name` custom section,
+    /// indexed by WASM function index. `None` entries mean rustc
+    /// didn't emit a name for that index. Used to surface meaningful
+    /// errors when the lowering pass hits an unsupported defined-
+    /// function call (e.g. a stdlib helper).
+    pub function_names: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -442,6 +450,7 @@ pub fn parse_module(wasm: &[u8]) -> Result<Module, LoweringError> {
     let mut function_type_indices: Vec<u32> = Vec::new();
     let mut function_bodies: Vec<FunctionBodyInfo> = Vec::new();
     let mut exports: Vec<ExportInfo> = Vec::new();
+    let mut function_name_pairs: Vec<(u32, String)> = Vec::new();
 
     for payload in parser.parse_all(wasm) {
         match payload? {
@@ -505,6 +514,19 @@ pub fn parse_module(wasm: &[u8]) -> Result<Module, LoweringError> {
             Payload::CodeSectionEntry(body) => {
                 function_bodies.push(decode_body(&body)?);
             }
+            Payload::CustomSection(reader) => {
+                if let KnownCustom::Name(name_reader) = reader.as_known() {
+                    for sub in name_reader {
+                        let Ok(sub) = sub else { continue };
+                        if let Name::Function(map) = sub {
+                            for naming in map {
+                                let Ok(naming) = naming else { continue };
+                                function_name_pairs.push((naming.index, naming.name.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -537,11 +559,19 @@ pub fn parse_module(wasm: &[u8]) -> Result<Module, LoweringError> {
         });
     }
 
+    let mut function_names = vec![None; functions.len()];
+    for (idx, name) in function_name_pairs {
+        if let Some(slot) = function_names.get_mut(idx as usize) {
+            *slot = Some(name);
+        }
+    }
+
     Ok(Module {
         types,
         functions,
         imports,
         exports,
+        function_names,
     })
 }
 
