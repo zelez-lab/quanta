@@ -1,0 +1,13 @@
+[package]
+name = "quanta-wasm-lowering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WASM → Quanta KernelOps lowering pass — input to PTX/GCN/SPIR-V/MSL/WGSL emitters."
+keywords = ["gpu", "wasm", "compiler", "ir"]
+categories = ["compilers"]
+
+[dependencies]
+quanta-ir.workspace = true
+wasmparser = "0.220"
