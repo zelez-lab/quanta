@@ -21,7 +21,7 @@ geometry.
 use quanta::*;
 
 // 12 vertices = 4 triangles, 3 floats per vertex.
-let vertices = gpu.field::<f32>(36, FieldUsage::default_compute())?;
+let vertices = gpu.field::<f32>(36)?;
 vertices.write(&[
     // triangle 1
     0.0, 0.0, 0.0,   1.0, 0.0, 0.0,   0.5, 1.0, 0.0,

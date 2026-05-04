@@ -27,7 +27,7 @@ if !gpu.supports_ray_tracing() {
 ```rust
 use quanta::*;
 
-let vertices = gpu.field::<f32>(36, FieldUsage::default_compute())?;
+let vertices = gpu.field::<f32>(36)?;
 vertices.write(&[/* 12 positions × 3 floats */])?;
 
 let blas = gpu.acceleration_structure_blas(&[GeometryDesc {

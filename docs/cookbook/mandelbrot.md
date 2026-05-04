@@ -57,7 +57,7 @@ fn main() -> Result<(), quanta::QuantaError> {
     let max_iter: u32 = 1000;
     let count = (width * height) as usize;
 
-    let output = gpu.compute_field::<u32>(count)?;
+    let output = gpu.field::<u32>(count)?;
 
     let mut wave = mandelbrot(&gpu)?;
     wave.bind(0, &output);

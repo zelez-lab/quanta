@@ -90,7 +90,7 @@ fn main() {
     wave.set_value(2, 3u32); // radius = 3 -> 7x7 box
 
     let mut pulse = gpu.dispatch(&wave, pixel_count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
     // Read blurred result
     let result = gpu.texture_read(&output_tex).unwrap();

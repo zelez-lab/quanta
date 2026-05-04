@@ -162,7 +162,7 @@ fn main() {
     // ... bind vertex buffers, uniforms, draw geometry ...
     pass.draw(vertex_count);
     let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
     // --- Lighting pipeline: fullscreen, reads G-buffer textures ---
     let light_pipeline = gpu.pipeline(&PipelineDesc {
@@ -182,7 +182,7 @@ fn main() {
     // ... bind light uniforms ...
     pass.draw(3); // Fullscreen triangle
     let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 }
 ```
 

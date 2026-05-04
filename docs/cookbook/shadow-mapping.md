@@ -141,7 +141,7 @@ fn main() {
     // ... bind vertex buffers, uniforms, draw scene geometry ...
     pass.draw(scene_vertex_count);
     let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
     // --- Pass 2: Render scene with shadows ---
     let mut pass = gpu.render_begin(&color_target).unwrap();
@@ -156,7 +156,7 @@ fn main() {
     // ... bind vertex buffers, camera uniforms, draw scene ...
     pass.draw(scene_vertex_count);
     let mut pulse = gpu.render_end(pass).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 }
 ```
 

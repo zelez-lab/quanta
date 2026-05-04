@@ -93,9 +93,9 @@ fn main() -> Result<(), quanta::QuantaError> {
         .map(|i| (i % 13) as f32 * 0.1)
         .collect();
 
-    let a = gpu.compute_field::<f32>((m * k) as usize)?;
-    let b = gpu.compute_field::<f32>((k * n) as usize)?;
-    let c = gpu.compute_field::<f32>((m * n) as usize)?;
+    let a = gpu.field::<f32>((m * k) as usize)?;
+    let b = gpu.field::<f32>((k * n) as usize)?;
+    let c = gpu.field::<f32>((m * n) as usize)?;
 
     a.write(&a_data)?;
     b.write(&b_data)?;

@@ -13,8 +13,8 @@ or compute, or to keep your main queue uncluttered.
 use quanta::*;
 
 let async_copy = gpu.async_copy_queue()?;
-let dst = gpu.field::<f32>(N, FieldUsage::default_compute())?;
-let src = gpu.field::<f32>(N, FieldUsage::default_compute())?;
+let dst = gpu.field::<f32>(N)?;
+let src = gpu.field::<f32>(N)?;
 
 async_copy.copy_buffer(&dst, &src, N)?;
 ```

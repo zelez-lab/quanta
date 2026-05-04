@@ -30,12 +30,12 @@ fn main() {
     // Generate random-ish input data
     let data: Vec<u32> = (0..count).map(|i| ((i * 7 + 13) % 1000) as u32).collect();
 
-    let input = gpu.compute_field::<u32>(count).unwrap();
-    let bins = gpu.compute_field::<u32>(num_bins).unwrap();
+    let input = gpu.field::<u32>(count).unwrap();
+    let bins = gpu.field::<u32>(num_bins).unwrap();
 
-    gpu.write_field(&input, &data).unwrap();
+    input.write(&data).unwrap();
     // Zero-initialize bins
-    gpu.write_field(&bins, &vec![0u32; num_bins]).unwrap();
+    bins.write(&vec![0u32; num_bins]).unwrap();
 
     let mut wave = histogram(&gpu).unwrap();
     wave.bind(0, &input);
@@ -43,9 +43,9 @@ fn main() {
     wave.set_value(2, count as u32);
 
     let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
-    let result = gpu.read_field(&bins).unwrap();
+    let result = bins.read().unwrap();
     let total: u32 = result.iter().sum();
     assert_eq!(total, count as u32);
 

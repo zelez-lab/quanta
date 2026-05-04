@@ -21,7 +21,7 @@ struct Particle {
 
 `#[quanta::gpu_type]` replaces the manual `#[repr(C)]` + `#[derive(Copy, Clone)]`.
 It also generates MSL/WGSL struct declarations and implements `GpuType`, so the
-struct can be used directly with `gpu.compute_field::<Particle>(n)`.
+struct can be used directly with `gpu.field::<Particle>(n)`.
 ```
 
 ## Compute kernel (update physics)
@@ -148,7 +148,7 @@ fn main() {
         particle_count as usize * floats_per_particle,
         FieldUsage::default_compute().union(FieldUsage::RENDER),
     ).unwrap();
-    gpu.write_field(&particles, &data).unwrap();
+    particles.write(&data).unwrap();
 
     // --- Compute wave (physics update) ---
     let mut update_wave = update_particles(&gpu).unwrap();
@@ -188,7 +188,7 @@ fn main() {
     for _frame in 0..300 {
         // Step 1: Compute — update positions
         let mut pulse = gpu.dispatch(&update_wave, particle_count).unwrap();
-        gpu.wait(&mut pulse).unwrap();
+        pulse.wait().unwrap();
 
         // Step 2: Barrier — transition from compute write to vertex read
         gpu.barrier_buffer(&particles, ResourceState::ComputeWrite, ResourceState::ShaderRead).unwrap();
@@ -200,7 +200,7 @@ fn main() {
         pass.bind_vertices(0, &particles);
         pass.draw(particle_count);
         let mut pulse = gpu.render_end(pass).unwrap();
-        gpu.wait(&mut pulse).unwrap();
+        pulse.wait().unwrap();
     }
 }
 ```

@@ -67,8 +67,8 @@ fn main() -> Result<(), quanta::QuantaError> {
 
     let data: Vec<f32> = (0..count).map(|i| (i % 7) as f32).collect();
 
-    let input = gpu.compute_field::<f32>(count)?;
-    let partial = gpu.compute_field::<f32>(num_blocks as usize)?;
+    let input = gpu.field::<f32>(count)?;
+    let partial = gpu.field::<f32>(num_blocks as usize)?;
 
     input.write(&data)?;
 

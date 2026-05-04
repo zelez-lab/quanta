@@ -154,8 +154,8 @@ fn main() -> Result<(), quanta::QuantaError> {
         pos_data.push(1.0);                  // mass
     }
 
-    let positions = gpu.compute_field::<f32>(count as usize * 4)?;
-    let velocities = gpu.compute_field::<f32>(count as usize * 4)?;
+    let positions = gpu.field::<f32>(count as usize * 4)?;
+    let velocities = gpu.field::<f32>(count as usize * 4)?;
     positions.write(&pos_data)?;
     velocities.write(&vel_data)?;
 

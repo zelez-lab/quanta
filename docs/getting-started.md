@@ -174,7 +174,7 @@ For power users who need fine-grained control over GPU memory, binding,
 and dispatch, Quanta exposes the full manual API:
 
 ```rust
-let a = gpu.field::<f32>(1024, FieldUsage::default_compute())?;
+let a = gpu.field::<f32>(1024)?;
 a.write(&data_a)?;
 // ... see Expert: Manual API for the full story
 ```

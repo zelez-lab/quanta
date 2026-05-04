@@ -5,63 +5,53 @@ Add two arrays element-wise on the GPU.
 ## Kernel
 
 ```rust
-#[quanta::kernel]
-fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
-    let i = quark_id();
-    result[i] = a[i] + b[i];
-}
-```
-
-Each quark (GPU thread) computes one element. `quark_id()` returns the global
-thread index, so element `i` is handled by quark `i`.
-
-## Host code (derive API)
-
-```rust
 #[derive(quanta::Fields)]
-struct VectorData {
+struct VecAdd {
     a: Vec<f32>,
     b: Vec<f32>,
     result: Vec<f32>,
 }
 
-fn main() -> Result<(), quanta::QuantaError> {
+#[quanta::kernel]
+fn vector_add(d: &VecAdd) {
+    let i = quark_id();
+    d.result[i] = d.a[i] + d.b[i];
+}
+```
+
+Each quark (GPU thread) computes one element. `quark_id()` returns the
+global thread index. The struct ties data layout to the kernel — every
+`Vec<T>` field becomes a GPU storage buffer, allocated and bound
+automatically.
+
+## Host code
+
+```rust
+use quanta::*;
+
+fn main() -> Result<(), QuantaError> {
     let gpu = quanta::init()?;
 
-    let count = 1_000_000;
-    let a_data: Vec<f32> = (0..count).map(|i| i as f32).collect();
-    let b_data: Vec<f32> = (0..count).map(|i| (i * 2) as f32).collect();
+    let mut data = VecAdd {
+        a: (0..1024).map(|i| i as f32).collect(),
+        b: (0..1024).map(|i| (i * 2) as f32).collect(),
+        result: vec![0.0f32; 1024],
+    };
 
-    // Allocate GPU fields
-    let a = gpu.compute_field::<f32>(count)?;
-    let b = gpu.compute_field::<f32>(count)?;
-    let result = gpu.compute_field::<f32>(count)?;
+    // One line: upload, bind, dispatch, readback.
+    vector_add(&gpu, &mut data, 1024)?.wait()?;
 
-    // Upload data
-    a.write(&a_data)?;
-    b.write(&b_data)?;
-
-    // Create a wave (bound kernel) and bind fields
-    let mut wave = vector_add(&gpu)?;
-    wave.bind(0, &a);
-    wave.bind(1, &b);
-    wave.bind(2, &result);
-
-    // Dispatch one quark per element and wait
-    let mut pulse = gpu.dispatch(&wave, count as u32)?;
-    pulse.wait()?;
-
-    // Read back
-    let output = result.read()?;
-    assert!((output[42] - (42.0 + 84.0)).abs() < 0.001);
+    assert_eq!(data.result[1023], 3069.0);
+    println!("first 5: {:?}", &data.result[..5]);
+    println!("last 5:  {:?}", &data.result[data.result.len() - 5..]);
     Ok(())
 }
 ```
 
-The `#[derive(quanta::Fields)]` macro generates compile-time metadata for the
-struct: which fields are `Vec<T>` (GPU storage buffers) and which are scalars
-(push constants). This metadata drives automatic slot assignment and type
-checking.
+The single call `vector_add(&gpu, &mut data, 1024)?.wait()?` does
+*everything*: allocates the three GPU buffers, uploads `a` and `b`,
+dispatches 1024 quarks, blocks until they finish, and reads `result`
+back into `data.result`.
 
 ## Comparison with CUDA
 
@@ -97,48 +87,41 @@ let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
     label: None,
     source: wgpu::ShaderSource::Wgsl(include_str!("vector_add.wgsl").into()),
 });
-let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-    entries: &[
-        wgpu::BindGroupLayoutEntry { binding: 0, /* ... 8 fields ... */ },
-        wgpu::BindGroupLayoutEntry { binding: 1, /* ... 8 fields ... */ },
-        wgpu::BindGroupLayoutEntry { binding: 2, /* ... 8 fields ... */ },
-    ],
-    label: None,
-});
-let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-    bind_group_layouts: &[&bgl], push_constant_ranges: &[], label: None,
-});
-let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-    layout: Some(&pipeline_layout), module: &shader, entry_point: Some("main"),
-    ..Default::default()
-});
-// ... create buffers, bind group, encoder, pass, dispatch, submit, readback ...
+let bgl = device.create_bind_group_layout(/* … 8 fields per binding … */);
+let pipeline_layout = device.create_pipeline_layout(/* … */);
+let pipeline = device.create_compute_pipeline(/* … */);
+// … create buffers, bind group, encoder, pass, dispatch, submit, readback …
 ```
 
-**Quanta**: kernel + 10 lines of host code. No WGSL file, no bind group layouts,
-no pipeline layouts, no command encoders.
+**Quanta**: kernel + ~10 lines of host code. No WGSL file, no bind group
+layouts, no pipeline layouts, no command encoders.
 
 ## How it works
 
-1. `#[quanta::kernel]` compiles the function to GPU machine code at build time
-   (MSL for Apple, PTX for NVIDIA, GCN for AMD, WGSL for WebGPU).
-2. `#[derive(quanta::Fields)]` generates metadata for `VectorData` — three
+1. `#[quanta::kernel]` compiles the function to GPU machine code at build
+   time (MSL for Apple, PTX for NVIDIA, GCN for AMD, WGSL for WebGPU,
+   SPIR-V for Vulkan).
+2. `#[derive(quanta::Fields)]` generates metadata for `VecAdd` — three
    `Vec<f32>` fields become three GPU storage buffer slots.
-3. `vector_add(&gpu)` returns a `Wave` — the compiled kernel bound to this device.
-4. `wave.bind(slot, &field)` attaches GPU buffers to kernel parameters by position.
-5. `gpu.dispatch(&wave, N)` launches N quarks in parallel.
-6. `pulse.wait()` blocks until the GPU finishes.
+3. `vector_add(&gpu, &mut data, N)` is the auto-dispatch wrapper the
+   `#[quanta::kernel]` macro emits for struct-ref kernels. It allocates,
+   uploads, dispatches `N` quarks, and on `wait()` reads results back.
+4. The returned `Pulse` is a GPU completion signal — `.wait()?` blocks
+   until done.
 
 ## Slot mapping
 
-Kernel parameters map to binding slots by declaration order:
+The fields map to binding slots by declaration order:
 
-| Slot | Parameter | Direction |
-|------|-----------|-----------|
-| 0    | `a`       | read      |
-| 1    | `b`       | read      |
-| 2    | `result`  | write     |
+| Slot | Field    | Direction |
+|------|----------|-----------|
+| 0    | `a`      | read      |
+| 1    | `b`      | read      |
+| 2    | `result` | write     |
 
-> **Note on deprecated methods.** Older examples may use `gpu.write_field(&f, &data)`,
-> `gpu.read_field(&f)`, and `gpu.wait(&mut pulse)`. These still work but are
-> deprecated. Prefer `field.write(data)`, `field.read()`, and `pulse.wait()`.
+## Manual API (advanced)
+
+For finer control over allocation, binding, and dispatch — useful when
+you want to reuse buffers across many dispatches, or call `wave_jit`
+with a runtime-built `KernelDef` — see
+[Expert: Manual API](../expert/manual-api.md).
