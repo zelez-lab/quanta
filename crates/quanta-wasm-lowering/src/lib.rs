@@ -603,20 +603,18 @@ pub fn find_kernel<'a>(
     Ok((index, info))
 }
 
-// ── Lowering entry point (stub) ────────────────────────────────────────
+// ── Lowering entry point ───────────────────────────────────────────────
+
+mod lower;
 
 /// Lower a WASM module + side table into a `KernelDef`.
 ///
-/// Stubbed today; the next commit walks the instruction stream and
-/// emits `KernelOp`s.
-pub fn lower(_wasm: &[u8], side_table: &SideTable) -> Result<KernelDef, LoweringError> {
-    Err(LoweringError::UnsupportedOp {
-        op: format!(
-            "lowering not yet implemented (kernel `{}`)",
-            side_table.kernel_name
-        ),
-        at: 0,
-    })
+/// Walks the WASM instruction stream of the kernel named in the side
+/// table, simulating the WASM stack machine with a symbolic abstract
+/// domain that recognizes the canonical buffer-access patterns rustc
+/// emits, and produces an equivalent `KernelOp` list.
+pub fn lower(wasm: &[u8], side_table: &SideTable) -> Result<KernelDef, LoweringError> {
+    lower::lower_module(wasm, side_table)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
