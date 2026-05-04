@@ -101,7 +101,12 @@ pub(crate) fn emit_auto_dispatch(
     for field in buffer_fields.iter() {
         let field_ident = format_ident!("{}", field.name);
         let scalar_ty = scalar_type_to_rust_tokens(field.scalar_type_name.as_str());
-        let probe_ident = format_ident!("__quanta_check_{}", field.name);
+        // Probe ident includes the kernel function name so multiple
+        // kernels in the same module don't collide on shared field
+        // names (e.g. two kernels both having a `Vec<f32> output`
+        // field would otherwise produce duplicate
+        // `__quanta_check_output` items).
+        let probe_ident = format_ident!("__quanta_check_{}_{}", func_name, field.name);
         let mismatch_msg = format!(
             "quanta::kernel: struct field `{}` element type does not match \
              the IR-inferred scalar type `{}`. Either declare the field as \
