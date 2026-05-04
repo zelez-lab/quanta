@@ -27,6 +27,7 @@ mod build;
 mod check;
 mod codegen;
 mod serve;
+mod wasm_experiment;
 mod workspace;
 
 /// Boxed-error result alias used across subcommand modules.
@@ -58,6 +59,22 @@ enum Cmd {
     /// Run code generators that derive Rust + TS source from a spec
     /// (currently: WebGPU IDL → enum tables for both sides).
     Codegen(CodegenArgs),
+    /// Research: extract a kernel function as wasm32 and dump the
+    /// resulting WASM module (text + binary). Used to scope the
+    /// long-term WASM-route translator (roadmap 058 / 059 / 080).
+    WasmExperiment(WasmExperimentArgs),
+}
+
+#[derive(clap::Args)]
+struct WasmExperimentArgs {
+    /// Path to a Rust source file containing a `#[quanta::kernel]`
+    /// function. The harness wraps the file as a wasm32 lib crate
+    /// and emits the WASM rustc produces.
+    source: String,
+    /// Output directory for `kernel.wasm` and `kernel.wat`. Defaults
+    /// to `target/wasm-experiment/`.
+    #[arg(long, default_value = "target/wasm-experiment")]
+    out_dir: String,
 }
 
 #[derive(clap::Args)]
@@ -129,6 +146,9 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Codegen(CodegenArgs {
             target: CodegenTarget::Webgpu,
         }) => codegen::webgpu(),
+        Cmd::WasmExperiment(WasmExperimentArgs { source, out_dir }) => {
+            wasm_experiment::run(&source, &out_dir)
+        }
     }
 }
 
