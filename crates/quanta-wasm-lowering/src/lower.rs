@@ -118,11 +118,39 @@ struct LowerCtx<'a> {
 
     locals: Vec<LocalInfo>,
     stack: Vec<SymVal>,
-    ops: Vec<KernelOp>,
+    /// Stack of control-flow frames. Index 0 is the function-level
+    /// frame; each block/loop/if pushes a new frame on top. Ops are
+    /// always emitted to the topmost frame's `ops`. When a frame
+    /// closes (End op), it folds back into its parent — Block flushes
+    /// its ops, Loop wraps in a `KernelOp::Loop`, If/Else wrap in a
+    /// `KernelOp::Branch`.
+    frames: Vec<Frame>,
     next_reg: u32,
     /// Known imported function indices keyed by their import name —
     /// used to recognize `call $quark_id` etc.
     intrinsic_names: Vec<String>,
+}
+
+/// One control-flow frame on the lowering stack.
+struct Frame {
+    kind: FrameKind,
+    ops: Vec<KernelOp>,
+}
+
+enum FrameKind {
+    /// The outermost frame — the function itself.
+    Function,
+    /// `block ... end`. WASM blocks are label scopes only; on close
+    /// we just splice our ops into the parent.
+    Block,
+    /// `loop ... end`. Closes into `KernelOp::Loop { count, iter_reg, body }`.
+    Loop { count_reg: Reg, iter_reg: Reg },
+    /// `if ... end` (no else clause yet). Closes into
+    /// `KernelOp::Branch { cond, then_ops: this.ops, else_ops: [] }`.
+    If { cond: Reg },
+    /// `if ... else ... end`. The `then_ops` we collected before the
+    /// `else` are saved here; current `ops` collect the else-arm.
+    Else { cond: Reg, then_ops: Vec<KernelOp> },
 }
 
 impl<'a> LowerCtx<'a> {
@@ -176,7 +204,10 @@ impl<'a> LowerCtx<'a> {
             module,
             locals,
             stack: Vec::new(),
-            ops: Vec::new(),
+            frames: vec![Frame {
+                kind: FrameKind::Function,
+                ops: Vec::new(),
+            }],
             next_reg: 0,
             intrinsic_names,
         }
@@ -188,6 +219,21 @@ impl<'a> LowerCtx<'a> {
         r
     }
 
+    /// Append an op to the current (topmost) frame.
+    fn emit(&mut self, op: KernelOp) {
+        self.frames
+            .last_mut()
+            .expect("frame stack must always have at least the function-level frame")
+            .ops
+            .push(op);
+    }
+
+    /// Inspect a frame N levels above the current top (0 = current).
+    fn frame_at_depth(&self, depth: u32) -> Option<&Frame> {
+        let idx = self.frames.len().checked_sub(1 + depth as usize)?;
+        self.frames.get(idx)
+    }
+
     fn lower(mut self) -> Result<KernelDef, LoweringError> {
         // Initialise scalar push-constant locals: emit a Load from
         // the constant slot before any user code runs.
@@ -195,11 +241,11 @@ impl<'a> LowerCtx<'a> {
             if matches!(slot.kind, ParamKind::Scalar) {
                 let dst = self.alloc_reg();
                 let zero = self.alloc_reg();
-                self.ops.push(KernelOp::Const {
+                self.emit(KernelOp::Const {
                     dst: zero,
                     value: ConstValue::U32(0),
                 });
-                self.ops.push(KernelOp::Load {
+                self.emit(KernelOp::Load {
                     dst,
                     field: slot.slot,
                     // Push constants are loaded with index = sentinel
@@ -243,7 +289,7 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32Const(v) => self.stack.push(SymVal::I32Const(*v)),
             RawInstr::F32Const(v) => {
                 let dst = self.alloc_reg();
-                self.ops.push(KernelOp::Const {
+                self.emit(KernelOp::Const {
                     dst,
                     value: ConstValue::F32(*v),
                 });
@@ -264,7 +310,7 @@ impl<'a> LowerCtx<'a> {
                     let (br, _) = self.commit(a)?;
                     let (kr, _) = self.commit(b)?;
                     let dst = self.alloc_reg();
-                    self.ops.push(KernelOp::BinOp {
+                    self.emit(KernelOp::BinOp {
                         dst,
                         a: br,
                         b: kr,
@@ -299,7 +345,7 @@ impl<'a> LowerCtx<'a> {
                         let (br, ty_b) = self.commit(b)?;
                         let ty = if ty_a == ty_b { ty_a } else { ScalarType::I32 };
                         let dst = self.alloc_reg();
-                        self.ops.push(KernelOp::BinOp {
+                        self.emit(KernelOp::BinOp {
                             dst,
                             a: ar,
                             b: br,
@@ -320,7 +366,7 @@ impl<'a> LowerCtx<'a> {
                         scale: 4,
                     } => {
                         let dst = self.alloc_reg();
-                        self.ops.push(KernelOp::Load {
+                        self.emit(KernelOp::Load {
                             dst,
                             field: slot,
                             index: base,
@@ -347,7 +393,7 @@ impl<'a> LowerCtx<'a> {
                         base,
                         scale: 4,
                     } => {
-                        self.ops.push(KernelOp::Store {
+                        self.emit(KernelOp::Store {
                             field: slot,
                             index: base,
                             src: val_reg,
@@ -373,21 +419,21 @@ impl<'a> LowerCtx<'a> {
                 match name.as_deref() {
                     Some("quark_id") => {
                         let dst = self.alloc_reg();
-                        self.ops.push(KernelOp::QuarkId { dst });
+                        self.emit(KernelOp::QuarkId { dst });
                         self.stack.push(SymVal::Reg(dst, ScalarType::U32));
                     }
                     Some("local_id") => {
                         let dst = self.alloc_reg();
-                        self.ops.push(KernelOp::ProtonId { dst });
+                        self.emit(KernelOp::ProtonId { dst });
                         self.stack.push(SymVal::Reg(dst, ScalarType::U32));
                     }
                     Some("group_id") => {
                         let dst = self.alloc_reg();
-                        self.ops.push(KernelOp::NucleusId { dst });
+                        self.emit(KernelOp::NucleusId { dst });
                         self.stack.push(SymVal::Reg(dst, ScalarType::U32));
                     }
                     Some("barrier") => {
-                        self.ops.push(KernelOp::Barrier);
+                        self.emit(KernelOp::Barrier);
                     }
                     Some("sqrt_f32") => self.math_call_unary(MathFn::Sqrt)?,
                     Some(other) => {
@@ -410,11 +456,209 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
-            RawInstr::End => {
-                // Top-level End at function exit. Inside blocks/loops
-                // it's the structured-control-flow terminator — we'll
-                // handle that when block/loop/if lowering lands.
+            RawInstr::Block { .. } => {
+                self.frames.push(Frame {
+                    kind: FrameKind::Block,
+                    ops: Vec::new(),
+                });
             }
+
+            RawInstr::Loop { .. } => {
+                // Quanta's KernelOp::Loop is a bounded `for i in 0..count`.
+                // For an unbounded WASM loop we use a sentinel max
+                // count (10000, matching the legacy parser's
+                // emit_while_loop). The loop body breaks early via
+                // br_if when the user's condition becomes false.
+                let count_reg = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: count_reg,
+                    value: ConstValue::U32(10_000),
+                });
+                let iter_reg = self.alloc_reg();
+                self.frames.push(Frame {
+                    kind: FrameKind::Loop {
+                        count_reg,
+                        iter_reg,
+                    },
+                    ops: Vec::new(),
+                });
+            }
+
+            RawInstr::If { .. } => {
+                let cond_sv = self.pop()?;
+                let (cond, _) = self.commit(cond_sv)?;
+                self.frames.push(Frame {
+                    kind: FrameKind::If { cond },
+                    ops: Vec::new(),
+                });
+            }
+
+            RawInstr::Else => {
+                let frame = self.frames.pop().ok_or_else(|| {
+                    LoweringError::ShapeMismatch("Else with empty frame stack".into())
+                })?;
+                let cond = match frame.kind {
+                    FrameKind::If { cond } => cond,
+                    _ => {
+                        return Err(LoweringError::ShapeMismatch(
+                            "Else not preceded by an If frame".into(),
+                        ));
+                    }
+                };
+                self.frames.push(Frame {
+                    kind: FrameKind::Else {
+                        cond,
+                        then_ops: frame.ops,
+                    },
+                    ops: Vec::new(),
+                });
+            }
+
+            RawInstr::End => {
+                let frame = self.frames.pop().ok_or_else(|| {
+                    LoweringError::ShapeMismatch("End with empty frame stack".into())
+                })?;
+                match frame.kind {
+                    FrameKind::Function => {
+                        // Function-level End — done. Push back onto
+                        // the stack so into_kernel_def can read it.
+                        self.frames.push(Frame {
+                            kind: FrameKind::Function,
+                            ops: frame.ops,
+                        });
+                    }
+                    FrameKind::Block => {
+                        // Block was a label scope — splice ops into parent.
+                        for op in frame.ops {
+                            self.emit(op);
+                        }
+                    }
+                    FrameKind::Loop {
+                        count_reg,
+                        iter_reg,
+                    } => {
+                        self.emit(KernelOp::Loop {
+                            count: count_reg,
+                            iter_reg,
+                            body: frame.ops,
+                        });
+                    }
+                    FrameKind::If { cond } => {
+                        self.emit(KernelOp::Branch {
+                            cond,
+                            then_ops: frame.ops,
+                            else_ops: Vec::new(),
+                        });
+                    }
+                    FrameKind::Else { cond, then_ops } => {
+                        self.emit(KernelOp::Branch {
+                            cond,
+                            then_ops,
+                            else_ops: frame.ops,
+                        });
+                    }
+                }
+            }
+
+            RawInstr::Br(depth) => {
+                // br N: jump to the Nth enclosing scope. We support
+                // two cases:
+                //   - Target is a Block while we're inside a Loop —
+                //     this exits the loop. Emit Break.
+                //   - Target is the innermost Loop — this is a
+                //     continue back to loop start. Falls through
+                //     naturally for our structured Loop. No-op.
+                let target = self.frame_at_depth(*depth).ok_or_else(|| {
+                    LoweringError::ShapeMismatch(format!("br {depth} out of range"))
+                })?;
+                match target.kind {
+                    FrameKind::Loop { .. } => {
+                        // Continue. No-op for structured Loop.
+                    }
+                    FrameKind::Block | FrameKind::If { .. } | FrameKind::Else { .. } => {
+                        self.emit(KernelOp::Break);
+                    }
+                    FrameKind::Function => {
+                        self.emit(KernelOp::Break);
+                    }
+                }
+            }
+
+            RawInstr::BrIf(depth) => {
+                let cond_sv = self.pop()?;
+                let (cond, _) = self.commit(cond_sv)?;
+                let target = self.frame_at_depth(*depth).ok_or_else(|| {
+                    LoweringError::ShapeMismatch(format!("br_if {depth} out of range"))
+                })?;
+                let then_ops = match target.kind {
+                    FrameKind::Loop { .. } => {
+                        // Conditional continue. Currently no Continue
+                        // op in the IR; we'd need one for mid-body
+                        // continues. The common pattern (br 0 at end
+                        // of loop) is handled by the loop wrap-around,
+                        // so this branch only fires for mid-body
+                        // continues which we report as unsupported.
+                        return Err(LoweringError::UnsupportedOp {
+                            op: "br_if to enclosing Loop (mid-body continue) — not yet \
+                                  representable in Quanta IR (no Continue op)"
+                                .into(),
+                            at: self.body.body_offset,
+                        });
+                    }
+                    _ => vec![KernelOp::Break],
+                };
+                self.emit(KernelOp::Branch {
+                    cond,
+                    then_ops,
+                    else_ops: Vec::new(),
+                });
+            }
+
+            RawInstr::I32Eqz => {
+                let a = self.pop()?;
+                let (ar, ty) = self.commit(a)?;
+                let zero = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: zero,
+                    value: ConstValue::I32(0),
+                });
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::Cmp {
+                    dst,
+                    a: ar,
+                    b: zero,
+                    op: quanta_ir::CmpOp::Eq,
+                    ty,
+                });
+                self.stack.push(SymVal::Reg(dst, ScalarType::Bool));
+            }
+
+            RawInstr::I32And => self.bin_op_int(BinOp::BitAnd)?,
+            RawInstr::I32Or => self.bin_op_int(BinOp::BitOr)?,
+            RawInstr::I32Xor => self.bin_op_int(BinOp::BitXor)?,
+            RawInstr::I32Sub => self.bin_op_int(BinOp::Sub)?,
+            RawInstr::I32Mul => self.bin_op_int(BinOp::Mul)?,
+            RawInstr::I32DivU | RawInstr::I32DivS => self.bin_op_int(BinOp::Div)?,
+            RawInstr::I32RemU | RawInstr::I32RemS => self.bin_op_int(BinOp::Rem)?,
+
+            RawInstr::I32LtU | RawInstr::I32LtS => self.cmp_op_int(quanta_ir::CmpOp::Lt)?,
+            RawInstr::I32LeU | RawInstr::I32LeS => self.cmp_op_int(quanta_ir::CmpOp::Le)?,
+            RawInstr::I32GtU | RawInstr::I32GtS => self.cmp_op_int(quanta_ir::CmpOp::Gt)?,
+            RawInstr::I32GeU | RawInstr::I32GeS => self.cmp_op_int(quanta_ir::CmpOp::Ge)?,
+            RawInstr::I32Eq => self.cmp_op_int(quanta_ir::CmpOp::Eq)?,
+            RawInstr::I32Ne => self.cmp_op_int(quanta_ir::CmpOp::Ne)?,
+
+            RawInstr::F32Lt => self.cmp_op_float(quanta_ir::CmpOp::Lt)?,
+            RawInstr::F32Le => self.cmp_op_float(quanta_ir::CmpOp::Le)?,
+            RawInstr::F32Gt => self.cmp_op_float(quanta_ir::CmpOp::Gt)?,
+            RawInstr::F32Ge => self.cmp_op_float(quanta_ir::CmpOp::Ge)?,
+            RawInstr::F32Eq => self.cmp_op_float(quanta_ir::CmpOp::Eq)?,
+            RawInstr::F32Ne => self.cmp_op_float(quanta_ir::CmpOp::Ne)?,
+
+            RawInstr::F32ConvertI32U => self.cast_op(ScalarType::U32, ScalarType::F32)?,
+            RawInstr::F32ConvertI32S => self.cast_op(ScalarType::I32, ScalarType::F32)?,
+            RawInstr::I32TruncF32U => self.cast_op(ScalarType::F32, ScalarType::U32)?,
+            RawInstr::I32TruncF32S => self.cast_op(ScalarType::F32, ScalarType::I32)?,
 
             other => {
                 return Err(LoweringError::UnsupportedOp {
@@ -432,7 +676,7 @@ impl<'a> LowerCtx<'a> {
         let (ar, _) = self.commit(a)?;
         let (br, _) = self.commit(b)?;
         let dst = self.alloc_reg();
-        self.ops.push(KernelOp::BinOp {
+        self.emit(KernelOp::BinOp {
             dst,
             a: ar,
             b: br,
@@ -443,11 +687,76 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
+    fn bin_op_int(&mut self, op: BinOp) -> Result<(), LoweringError> {
+        let b = self.pop()?;
+        let a = self.pop()?;
+        let (ar, _) = self.commit(a)?;
+        let (br, _) = self.commit(b)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst,
+            a: ar,
+            b: br,
+            op,
+            ty: ScalarType::I32,
+        });
+        self.stack.push(SymVal::Reg(dst, ScalarType::I32));
+        Ok(())
+    }
+
+    fn cmp_op_int(&mut self, op: quanta_ir::CmpOp) -> Result<(), LoweringError> {
+        let b = self.pop()?;
+        let a = self.pop()?;
+        let (ar, _) = self.commit(a)?;
+        let (br, _) = self.commit(b)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::Cmp {
+            dst,
+            a: ar,
+            b: br,
+            op,
+            ty: ScalarType::I32,
+        });
+        self.stack.push(SymVal::Reg(dst, ScalarType::Bool));
+        Ok(())
+    }
+
+    fn cmp_op_float(&mut self, op: quanta_ir::CmpOp) -> Result<(), LoweringError> {
+        let b = self.pop()?;
+        let a = self.pop()?;
+        let (ar, _) = self.commit(a)?;
+        let (br, _) = self.commit(b)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::Cmp {
+            dst,
+            a: ar,
+            b: br,
+            op,
+            ty: ScalarType::F32,
+        });
+        self.stack.push(SymVal::Reg(dst, ScalarType::Bool));
+        Ok(())
+    }
+
+    fn cast_op(&mut self, from: ScalarType, to: ScalarType) -> Result<(), LoweringError> {
+        let a = self.pop()?;
+        let (ar, _) = self.commit(a)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::Cast {
+            dst,
+            src: ar,
+            from,
+            to,
+        });
+        self.stack.push(SymVal::Reg(dst, to));
+        Ok(())
+    }
+
     fn math_call_unary(&mut self, func: MathFn) -> Result<(), LoweringError> {
         let a = self.pop()?;
         let (ar, ty) = self.commit(a)?;
         let dst = self.alloc_reg();
-        self.ops.push(KernelOp::MathCall {
+        self.emit(KernelOp::MathCall {
             dst,
             func,
             args: vec![ar],
@@ -472,7 +781,7 @@ impl<'a> LowerCtx<'a> {
             SymVal::Reg(r, ty) | SymVal::Opaque(r, ty) => Ok((r, ty)),
             SymVal::I32Const(c) => {
                 let dst = self.alloc_reg();
-                self.ops.push(KernelOp::Const {
+                self.emit(KernelOp::Const {
                     dst,
                     value: ConstValue::I32(c),
                 });
@@ -489,7 +798,17 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
-    fn into_kernel_def(self) -> KernelDef {
+    fn into_kernel_def(mut self) -> KernelDef {
+        // The function-level frame holds the final ops list.
+        let func_frame = self
+            .frames
+            .pop()
+            .expect("function-level frame must be present at end of lowering");
+        debug_assert!(
+            self.frames.is_empty(),
+            "frame stack should be empty after function-level pop"
+        );
+        let body_ops = func_frame.ops;
         // Build params from the side table.
         let params = self
             .side_table
@@ -517,7 +836,7 @@ impl<'a> LowerCtx<'a> {
         KernelDef {
             name: self.side_table.kernel_name.clone(),
             params,
-            body: self.ops,
+            body: body_ops,
             body_source: None,
             next_reg: self.next_reg,
             opt_level: 3,
