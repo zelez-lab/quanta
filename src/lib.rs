@@ -52,6 +52,12 @@ mod driver;
 pub mod kernel;
 pub mod scan;
 
+/// GPU intrinsics — `extern "C"` imports surfaced as
+/// `import "quanta" "<name>"` in the WASM emitted by
+/// `#[quanta::kernel]`. cfg-gated to wasm32; the lowering pass on the
+/// host side resolves them. See roadmap step 058.
+pub mod intrinsics;
+
 /// Spec enum tables for the WebGPU IDL (B′ track of FFI TCB shrink).
 /// Generated from `web/webgpu.idl` by `quanta codegen webgpu`; the
 /// `tests` block inside checks that every enum string Quanta hands

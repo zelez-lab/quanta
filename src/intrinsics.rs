@@ -1,0 +1,148 @@
+//! GPU intrinsics declared as `extern "C"` imports.
+//!
+//! When `#[quanta::kernel]` emits its WASM-compilable twin
+//! (the `extern "C" fn` rustc lowers to wasm32 and the lowering pass
+//! consumes), it injects `use quanta::intrinsics::*` so kernel bodies
+//! can call these functions naturally. Each appears in the output
+//! WASM module as `import "quanta" "<name>"`. The lowering pass
+//! resolves them to `KernelOp::Intrinsic` nodes; the existing
+//! per-backend emitters lower those to PTX / GCN / MSL / SPIR-V /
+//! WGSL equivalents.
+//!
+//! On wasm32 the imports are stubs the host (Quanta's lowering pass)
+//! never actually calls — they exist only so rustc's typechecker is
+//! happy and so the symbols appear in the WASM module's import
+//! section, which the lowering pass then walks.
+//!
+//! On native targets these functions are unused (kernel code only
+//! runs on GPU, never on host). The module is `cfg`-gated to
+//! `wasm32` so we don't accidentally make them callable from host
+//! Rust.
+
+#![cfg(target_arch = "wasm32")]
+#![allow(unused, dead_code)]
+
+// ── Identity ───────────────────────────────────────────────────────────
+
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    /// Global thread index. `0..total_quarks_dispatched`.
+    pub fn quark_id() -> u32;
+
+    /// Thread index within the workgroup. `0..workgroup_size`.
+    pub fn local_id() -> u32;
+
+    /// Workgroup index within the dispatch grid.
+    pub fn group_id() -> u32;
+
+    /// Configured workgroup size (set by the `#[quanta::kernel(workgroup = ...)]` attribute).
+    pub fn workgroup_size() -> u32;
+}
+
+// ── Synchronization ────────────────────────────────────────────────────
+
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    /// Workgroup-scope barrier. All quarks in the workgroup wait until
+    /// every quark has reached this point.
+    pub fn barrier();
+
+    /// Memory fence with the given ordering. `order` matches
+    /// `quanta::MemoryOrder` discriminants:
+    /// 0 = Relaxed, 1 = Acquire, 2 = Release, 3 = AcqRel, 4 = SeqCst.
+    pub fn memory_fence(order: u32);
+}
+
+// ── Atomics ────────────────────────────────────────────────────────────
+
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    pub fn atomic_add_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    pub fn atomic_sub_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    pub fn atomic_min_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    pub fn atomic_max_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    pub fn atomic_and_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    pub fn atomic_or_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    pub fn atomic_xor_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    pub fn atomic_exchange_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+
+    /// Compare-and-swap. Returns the value found at `*addr` before
+    /// the operation. Updates `*addr` to `desired` only if the
+    /// previous value equalled `expected`.
+    pub fn atomic_cas_u32(
+        addr: *mut u32,
+        expected: u32,
+        desired: u32,
+        success_order: u32,
+        failure_order: u32,
+    ) -> u32;
+
+    pub fn atomic_add_i32(addr: *mut i32, val: i32, order: u32) -> i32;
+    pub fn atomic_sub_i32(addr: *mut i32, val: i32, order: u32) -> i32;
+}
+
+// ── Math ───────────────────────────────────────────────────────────────
+
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    pub fn sqrt_f32(x: f32) -> f32;
+    pub fn rsqrt_f32(x: f32) -> f32;
+    pub fn sin_f32(x: f32) -> f32;
+    pub fn cos_f32(x: f32) -> f32;
+    pub fn tan_f32(x: f32) -> f32;
+    pub fn exp_f32(x: f32) -> f32;
+    pub fn log_f32(x: f32) -> f32;
+    pub fn pow_f32(base: f32, exp: f32) -> f32;
+    pub fn abs_f32(x: f32) -> f32;
+    pub fn floor_f32(x: f32) -> f32;
+    pub fn ceil_f32(x: f32) -> f32;
+    pub fn round_f32(x: f32) -> f32;
+    pub fn min_f32(a: f32, b: f32) -> f32;
+    pub fn max_f32(a: f32, b: f32) -> f32;
+    pub fn clamp_f32(x: f32, lo: f32, hi: f32) -> f32;
+    pub fn fma_f32(a: f32, b: f32, c: f32) -> f32;
+}
+
+// ── Subgroup / wave ────────────────────────────────────────────────────
+
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    pub fn subgroup_size() -> u32;
+    pub fn subgroup_id() -> u32;
+    pub fn shuffle_u32(value: u32, src_lane: u32) -> u32;
+    pub fn ballot_u32(predicate: u32) -> u32;
+    pub fn reduce_add_u32(value: u32) -> u32;
+    pub fn scan_add_u32(value: u32) -> u32;
+    pub fn any_u32(predicate: u32) -> u32;
+    pub fn all_u32(predicate: u32) -> u32;
+}
+
+// ── Workgroup-shared memory ────────────────────────────────────────────
+
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    /// Load from workgroup-shared memory at `(slot, index)`.
+    pub fn shared_load_f32(slot: u32, index: u32) -> f32;
+    pub fn shared_load_u32(slot: u32, index: u32) -> u32;
+    pub fn shared_load_i32(slot: u32, index: u32) -> i32;
+
+    /// Store to workgroup-shared memory at `(slot, index)`.
+    pub fn shared_store_f32(slot: u32, index: u32, val: f32);
+    pub fn shared_store_u32(slot: u32, index: u32, val: u32);
+    pub fn shared_store_i32(slot: u32, index: u32, val: i32);
+}
+
+// ── Memory-order discriminants ─────────────────────────────────────────
+
+/// Memory ordering values used by `*_order` parameters above.
+/// Mirrors `quanta::MemoryOrder` so kernel code can name them
+/// symbolically:
+///
+/// ```ignore
+/// atomic_add_u32(p, 1, ORDER_RELAXED);
+/// ```
+pub const ORDER_RELAXED: u32 = 0;
+pub const ORDER_ACQUIRE: u32 = 1;
+pub const ORDER_RELEASE: u32 = 2;
+pub const ORDER_ACQ_REL: u32 = 3;
+pub const ORDER_SEQ_CST: u32 = 4;
