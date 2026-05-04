@@ -57,43 +57,116 @@ cargo add quanta
 
 ### System requirements
 
-**Rust 1.85+** stable (edition 2024) is the only universal requirement —
-no nightly needed. The MSL and WGSL emitters are built into the proc-macro
-and run in-process, so on Apple Silicon (Metal) or web (WebGPU) nothing
-else is needed.
+**Universal:** Rust 1.85+ stable (edition 2024). No nightly needed.
 
-### Platform support matrix (v0.1.0-alpha.1)
+The MSL and WGSL emitters are built into the proc-macro and run
+in-process, so on Apple Silicon (Metal) or in the browser (WebGPU)
+**nothing else is required** — `cargo add quanta` is the whole story.
 
-| Platform | Compute | Render | Auto-installed compiler | Notes |
-|---|---|---|---|---|
-| macOS Apple Silicon | ✅ Metal | ✅ Metal | ✅ aarch64 | Best-tested target |
-| macOS Intel x86_64 | ❌ unsupported | ❌ unsupported | ❌ | Apple discontinued Intel hardware in 2023 — out of scope for v0.1 |
-| Linux x86_64 + NVIDIA | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 | Needs proprietary driver |
-| Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 | Needs Mesa |
-| Linux aarch64 (Pi 5, Graviton, …) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 | Validated on UTM Ubuntu via lavapipe |
-| Windows x86_64 | ⚠️ headless only | ⚠️ headless only | ✅ x86_64 | Compiles + builds; live GPU execution untested in v0.1-alpha |
-| Web (any OS) | ✅ WebGPU | ✅ WebGPU | n/a | Browser-side runtime |
+For Vulkan platforms (Linux, Windows) you need a Vulkan driver
+installed (instructions below). The optional `quanta-compiler` LLVM
+backend (PTX / GCN / SPIR-V emission) downloads itself on first use;
+when it can't run on your platform, the JIT fallback transparently
+takes over.
+
+### Per-platform install
+
+#### macOS Apple Silicon (best-tested)
+
+```sh
+# That's it. Metal ships with macOS.
+cargo add quanta
+```
+
+Optional, only if you want ahead-of-time PTX/GCN/SPIR-V emission
+embedded in your binary (uncommon — JIT covers most cases):
+
+```sh
+brew install llvm@22
+```
+
+#### Linux (Debian / Ubuntu, x86_64 or aarch64)
+
+```sh
+# Vulkan driver. Pick one stack:
+sudo apt install mesa-vulkan-drivers vulkan-tools libvulkan-dev    # AMD/Intel
+sudo apt install nvidia-driver-550                                  # NVIDIA proprietary
+
+# Sanity check:
+vulkaninfo --summary
+
+# Then:
+cargo add quanta --no-default-features --features vulkan,jit
+```
+
+`mesa-vulkan-drivers` includes lavapipe, a software Vulkan ICD that
+works even without a real GPU (useful in VMs and CI).
+
+Optional LLVM 22 for the AOT compiler:
+
+```sh
+# https://apt.llvm.org/
+wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+CODENAME=$(lsb_release -cs)
+echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+sudo apt update && sudo apt install -y llvm-22-dev libpolly-22-dev
+```
+
+#### Windows x86_64
+
+```powershell
+# Vulkan driver: install your GPU vendor's Windows driver (NVIDIA,
+# AMD, or Intel). The Vulkan loader (`vulkan-1.dll`) ships with the
+# driver. No separate Vulkan SDK needed for runtime.
+cargo add quanta --no-default-features --features vulkan,jit
+```
+
+Live GPU execution on Windows is untested in v0.1-alpha — the build
+and headless paths work; vendor driver compatibility is your testing.
+
+Optional LLVM 22 for the AOT compiler:
+
+```powershell
+choco install llvm --version=22.1.0
+# or via MSYS2 UCRT64: pacman -S mingw-w64-ucrt-x86_64-llvm
+```
+
+#### Web (any host OS)
+
+No host install. Build with `--target wasm32-unknown-unknown`; the
+WebGPU runtime is the user's browser (Chromium 113+ or Firefox
+Nightly with `dom.webgpu.enabled`).
+
+### Platform support matrix
+
+| Platform | Compute | Render | Auto-installed AOT compiler |
+|---|---|---|---|
+| macOS Apple Silicon | ✅ Metal | ✅ Metal | ✅ aarch64 |
+| macOS Intel x86_64 | ❌ unsupported (Apple discontinued 2023) | ❌ | ❌ |
+| Linux x86_64 + NVIDIA | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
+| Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
+| Linux aarch64 (Pi 5, Graviton) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 |
+| Windows x86_64 | ⚠️ untested | ⚠️ untested | ✅ x86_64 |
+| Web | ✅ WebGPU | ✅ WebGPU | n/a |
 
 JIT fallback: when a kernel runs on a Vulkan driver Quanta doesn't
-recognize the vendor of (lavapipe, niche software ICDs), it
-JIT-compiles from the embedded IR at dispatch time. No user action
+recognize the vendor of (lavapipe, niche software ICDs), or when the
+AOT compiler binary can't load on the user's machine, kernels
+JIT-compile from the embedded IR at dispatch time. No user action
 needed.
 
-GPU drivers are installed separately: Metal ships with macOS; Vulkan via
-[LunarG SDK](https://vulkan.lunarg.com/) or your distribution's package
-manager; CUDA driver from NVIDIA; ROCm from AMD.
+#### Cross-targeting NVIDIA / AMD / SPIR-V (advanced)
 
-#### Cross-targeting NVIDIA / AMD / SPIR-V
+To emit PTX, GCN, or generic SPIR-V *ahead of time* you need the
+`quanta-compiler` LLVM backend. Quanta ships pre-built binaries for
+every supported host triple and **downloads the matching one to
+`~/.quanta/bin/` on first use** — no manual install needed for
+`cargo add quanta` users.
 
-To emit PTX, GCN, or generic SPIR-V you need the `quanta-compiler` LLVM
-backend. Quanta ships pre-built binaries for every supported host triple
-above and **downloads the matching one to `~/.quanta/bin/` on first use** —
-no manual install needed for `cargo add quanta` users.
+If you prefer to build it from source (or your host triple isn't in
+the release matrix):
 
-If you prefer to build it from source (or your host triple isn't in the
-release matrix):
-
-- Install **LLVM 22.1** (`brew install llvm@22` on macOS, [apt.llvm.org](https://apt.llvm.org/) on Linux, `choco install llvm --version=22.1.0` on Windows)
+- Install **LLVM 22.1** (see per-platform sections above)
 - `cargo install quanta-compiler`
 - Or set `QUANTA_COMPILER=/path/to/quanta-compiler` to point at a custom build
 
