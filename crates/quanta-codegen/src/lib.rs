@@ -33,7 +33,6 @@
 //! does end-to-end parse + emit + write. Used by
 //! `quanta-cli`'s `codegen` subcommand.
 
-pub mod emit_krust;
 mod emit_lean;
 mod emit_rust;
 mod emit_ts;

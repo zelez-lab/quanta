@@ -236,18 +236,61 @@ pub unsafe fn msg_new_library_with_data(device: Id, data: *const c_void, len: u6
     (lib, error)
 }
 
-/// newComputePipelineStateWithFunction:error: -> Id
+/// newComputePipelineStateWithFunction(/Descriptor):error: -> Id
+///
+/// Tries to create a pipeline with `supportIndirectCommandBuffers =
+/// YES` first. That flag is required for the resulting pipeline to
+/// be usable in `MTLIndirectComputeCommand.setComputePipelineState:`
+/// — without it, calling `setComputePipelineState:` on an
+/// MTLIndirectComputeCommand is undefined behavior on Apple Silicon
+/// (the observable failure is a SIGSEGV in `record_dispatch`,
+/// steps 032 + 033).
+///
+/// Some compute functions (notably ones that read textures) cannot
+/// be compiled with the ICB flag set — Metal rejects them with
+/// "Compute function cannot be used with indirect command buffers".
+/// For those, the pipeline can't be used in an ICB *and* the flag
+/// must NOT be set, so we fall back to the flagless form. The
+/// resulting pipeline still works for direct dispatch.
 pub unsafe fn msg_new_compute_pipeline(device: Id, func: Id) -> (Id, Id) {
-    let f: unsafe extern "C" fn(Id, Sel, Id, *mut Id) -> Id =
+    // First attempt: descriptor with supportIndirectCommandBuffers = YES.
+    let cls_id = cls(b"MTLComputePipelineDescriptor\0") as Id;
+    let alloc: Id = msg_id(cls_id, b"alloc\0");
+    let desc: Id = msg_id(alloc, b"init\0");
+    msg_void_id(desc, b"setComputeFunction:\0", func);
+    msg_void_bool(desc, b"setSupportIndirectCommandBuffers:\0", true);
+
+    let f_desc: unsafe extern "C" fn(Id, Sel, Id, NSUInteger, *mut Id, *mut Id) -> Id =
         mem::transmute(objc_msgSend as *const c_void);
     let mut error: Id = NIL;
+    let mut reflection: Id = NIL;
+    let pipeline = f_desc(
+        device,
+        sel(b"newComputePipelineStateWithDescriptor:options:reflection:error:\0"),
+        desc,
+        0, // MTLPipelineOption.none
+        &mut reflection,
+        &mut error,
+    );
+    msg_void(desc, b"release\0");
+
+    if !pipeline.is_null() {
+        return (pipeline, error);
+    }
+
+    // Fallback: function-only form, no ICB support. The error from
+    // the first attempt is discarded since the second form is the
+    // user-facing path.
+    let f: unsafe extern "C" fn(Id, Sel, Id, *mut Id) -> Id =
+        mem::transmute(objc_msgSend as *const c_void);
+    let mut error2: Id = NIL;
     let pipeline = f(
         device,
         sel(b"newComputePipelineStateWithFunction:error:\0"),
         func,
-        &mut error,
+        &mut error2,
     );
-    (pipeline, error)
+    (pipeline, error2)
 }
 
 /// newRenderPipelineStateWithDescriptor:error: -> Id
@@ -673,6 +716,16 @@ pub unsafe fn msg_icc_concurrent_dispatch_threadgroups(
         groups,
         group_size,
     )
+}
+
+/// `[indirectComputeCommand setBarrier]` — marks this command as a
+/// barrier point: subsequent commands in the same `executeCommandsInBuffer`
+/// won't begin executing until this one completes. Without it,
+/// `MTLIndirectCommandTypeConcurrentDispatch` commands within an ICB
+/// can run concurrently and observe stale data from earlier commands
+/// in the same execute call.
+pub unsafe fn msg_icc_set_barrier(cmd: Id) {
+    msg_void(cmd, b"setBarrier\0")
 }
 
 /// `[encoder executeCommandsInBuffer:withRange:]` — executes a range

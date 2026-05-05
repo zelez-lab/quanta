@@ -723,6 +723,11 @@ impl GpuDevice for MetalDevice {
         unsafe {
             let cmd =
                 ffi::msg_icb_compute_command_at_index(icb_state.icb, index as ffi::NSUInteger);
+            if cmd.is_null() {
+                return Err(QuantaError::internal(
+                    "MTLIndirectCommandBuffer.indirectComputeCommandAtIndex returned null",
+                ));
+            }
             ffi::msg_icc_set_compute_pipeline(cmd, pipeline);
             for (slot, buf, _) in &bound {
                 ffi::msg_icc_set_kernel_buffer(cmd, *buf, 0, *slot as u64);
@@ -734,6 +739,12 @@ impl GpuDevice for MetalDevice {
             );
             let groups_3d = ffi::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
             ffi::msg_icc_concurrent_dispatch_threadgroups(cmd, groups_3d, group_size);
+            // Sequence subsequent commands after this one. Without
+            // this, two ICB dispatches that touch the same buffer
+            // race — both read the initial value, both write the
+            // same +1 result, second clobbers first. With the
+            // barrier, command N sees command N-1's writes.
+            ffi::msg_icc_set_barrier(cmd);
         }
         for (_, _, h) in bound {
             if !icb_state.used_buffers.contains(&h) {
