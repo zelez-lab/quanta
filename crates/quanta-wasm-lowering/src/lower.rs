@@ -682,6 +682,24 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
+            // Narrow loads (`i32.load8_u`, `i32.load8_s`) — rustc's
+            // optimizer narrows `buf[i] & 0xFF` (where `buf` is a u32
+            // buffer) to a byte-wide load to save WASM bytes. Since
+            // Quanta IR has no byte-addressed loads, we lower these
+            // as a regular element load + a synthetic mask: u32 load
+            // + And(0xFF) for unsigned, sign-extend (`(x << 24) >> 24`)
+            // for signed. Only the bottom byte is meaningful in either
+            // case, mirroring WASM's semantics.
+            RawInstr::I32Load8U { .. } => self.narrow_load(8, false)?,
+            RawInstr::I32Load8S { .. } => self.narrow_load(8, true)?,
+
+            // Narrow stores (`i32.store8`) — only the bottom byte of
+            // the value is written. We emit a regular Store after
+            // masking the source register to its low byte. Note: this
+            // only matches the user's intent when the slot really is
+            // a u32 buffer being updated with byte-granular values.
+            RawInstr::I32Store8 { .. } => self.narrow_store(8)?,
+
             RawInstr::F32Add => self.bin_op_float(BinOp::Add)?,
             RawInstr::F32Sub => self.bin_op_float(BinOp::Sub)?,
             RawInstr::F32Mul => self.bin_op_float(BinOp::Mul)?,
@@ -1086,7 +1104,10 @@ impl<'a> LowerCtx<'a> {
             // val_b, cond), push val_a if cond is non-zero else
             // val_b. Quanta IR has no native select, so we model it
             // with a `Branch` whose arms each Copy the chosen value
-            // into a freshly-allocated destination register.
+            // into a destination register that's pre-initialized
+            // (unconditionally defined) so the post-Select read
+            // doesn't see a possibly-undefined reg — same SSA-join
+            // discipline as 5d.2's stable per-local registers.
             RawInstr::Select => {
                 let cond_sv = self.pop()?;
                 let b_sv = self.pop()?;
@@ -1095,6 +1116,20 @@ impl<'a> LowerCtx<'a> {
                 let (a_reg, ty) = self.commit(a_sv)?;
                 let (b_reg, _) = self.commit(b_sv)?;
                 let dst = self.alloc_reg();
+                let init = match ty {
+                    ScalarType::F16 | ScalarType::F32 => ConstValue::F32(0.0),
+                    ScalarType::F64 => ConstValue::F64(0.0),
+                    ScalarType::Bool => ConstValue::Bool(false),
+                    ScalarType::I8
+                    | ScalarType::I16
+                    | ScalarType::I32
+                    | ScalarType::I64 => ConstValue::I32(0),
+                    ScalarType::U8
+                    | ScalarType::U16
+                    | ScalarType::U32
+                    | ScalarType::U64 => ConstValue::U32(0),
+                };
+                self.emit(KernelOp::Const { dst, value: init });
                 self.emit(KernelOp::Branch {
                     cond,
                     then_ops: vec![KernelOp::Copy {
@@ -1291,6 +1326,131 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
+    /// Lower a narrow WASM load (`i32.load8_u`, `i32.load8_s`,
+    /// `i32.load16_u`, `i32.load16_s`) to `Load + mask` (unsigned)
+    /// or `Load + (x << k) >> k` (signed). The slot is read at full
+    /// element width; the narrowing is recovered by bitwise ops on
+    /// the loaded register. `width_bits` is 8 or 16; `signed` controls
+    /// whether to sign-extend.
+    fn narrow_load(&mut self, width_bits: u32, signed: bool) -> Result<(), LoweringError> {
+        let addr = self.pop()?;
+        let (slot, base) = match addr {
+            SymVal::BufferAccess { slot, base, .. } => (slot, base),
+            SymVal::BufferPtr(slot) => {
+                let zero = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: zero,
+                    value: ConstValue::U32(0),
+                });
+                (slot, zero)
+            }
+            other => {
+                return Err(LoweringError::UnsupportedOp {
+                    op: format!("narrow i32.load on non-buffer address {other:?}"),
+                    at: self.body.body_offset,
+                });
+            }
+        };
+        let slot_ty = self.scalar_type_for_slot(slot);
+        let elem_reg = self.alloc_reg();
+        self.emit(KernelOp::Load {
+            dst: elem_reg,
+            field: slot,
+            index: base,
+            ty: slot_ty,
+        });
+        let mask_val: u32 = (1u32 << width_bits) - 1;
+        let mask_reg = self.alloc_reg();
+        self.emit(KernelOp::Const {
+            dst: mask_reg,
+            value: ConstValue::U32(mask_val),
+        });
+        let masked = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst: masked,
+            a: elem_reg,
+            b: mask_reg,
+            op: BinOp::BitAnd,
+            ty: ScalarType::U32,
+        });
+        if !signed {
+            self.stack.push(SymVal::Reg(masked, ScalarType::U32));
+            return Ok(());
+        }
+        // Signed: sign-extend by `(x << (32 - width)) >> (32 - width)`.
+        let shift = 32 - width_bits;
+        let shift_reg = self.alloc_reg();
+        self.emit(KernelOp::Const {
+            dst: shift_reg,
+            value: ConstValue::U32(shift),
+        });
+        let shifted_left = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst: shifted_left,
+            a: masked,
+            b: shift_reg,
+            op: BinOp::Shl,
+            ty: ScalarType::I32,
+        });
+        let final_reg = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst: final_reg,
+            a: shifted_left,
+            b: shift_reg,
+            op: BinOp::Shr,
+            ty: ScalarType::I32,
+        });
+        self.stack.push(SymVal::Reg(final_reg, ScalarType::I32));
+        Ok(())
+    }
+
+    /// Lower a narrow WASM store (`i32.store8`, `i32.store16`) to
+    /// `Store` with the source masked to its low `width_bits`.
+    fn narrow_store(&mut self, width_bits: u32) -> Result<(), LoweringError> {
+        let val = self.pop()?;
+        let addr = self.pop()?;
+        let (val_reg, _) = self.commit(val)?;
+        let (slot, base) = match addr {
+            SymVal::BufferAccess { slot, base, .. } => (slot, base),
+            SymVal::BufferPtr(slot) => {
+                let zero = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: zero,
+                    value: ConstValue::U32(0),
+                });
+                (slot, zero)
+            }
+            other => {
+                return Err(LoweringError::UnsupportedOp {
+                    op: format!("narrow i32.store on non-buffer address {other:?}"),
+                    at: self.body.body_offset,
+                });
+            }
+        };
+        let mask_val: u32 = (1u32 << width_bits) - 1;
+        let mask_reg = self.alloc_reg();
+        self.emit(KernelOp::Const {
+            dst: mask_reg,
+            value: ConstValue::U32(mask_val),
+        });
+        let masked = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst: masked,
+            a: val_reg,
+            b: mask_reg,
+            op: BinOp::BitAnd,
+            ty: ScalarType::U32,
+        });
+        let slot_ty = self.scalar_type_for_slot(slot);
+        self.emit(KernelOp::Store {
+            field: slot,
+            index: base,
+            src: masked,
+            ty: slot_ty,
+        });
+        Ok(())
+    }
+
     /// Lower an `atomic_<op>_<ty>(addr, val, order)` extern call into
     /// a `KernelOp::AtomicOp`. Args on the symbolic stack (top→bottom):
     /// order, val, addr. The order is a compile-time const; addr must
@@ -1302,7 +1462,11 @@ impl<'a> LowerCtx<'a> {
         let order = order_const_to_enum(order_sv)?;
         let (val_reg, _) = self.commit(val_sv)?;
         let (field, index) = match addr_sv {
-            SymVal::BufferAccess { slot, base, scale: _ } => (slot, base),
+            SymVal::BufferAccess {
+                slot,
+                base,
+                scale: _,
+            } => (slot, base),
             // rustc's optimizer drops the offset arithmetic when the
             // index is a compile-time zero (`&mut buf[0]`), leaving
             // just the BufferPtr on the stack. Synthesize a Const 0
