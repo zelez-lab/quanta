@@ -1058,6 +1058,35 @@ impl<'a> LowerCtx<'a> {
             // no IR.
             RawInstr::Unreachable | RawInstr::Nop => {}
 
+            // WASM `select` is a value-level ternary: pop (val_a,
+            // val_b, cond), push val_a if cond is non-zero else
+            // val_b. Quanta IR has no native select, so we model it
+            // with a `Branch` whose arms each Copy the chosen value
+            // into a freshly-allocated destination register.
+            RawInstr::Select => {
+                let cond_sv = self.pop()?;
+                let b_sv = self.pop()?;
+                let a_sv = self.pop()?;
+                let (cond, _) = self.commit(cond_sv)?;
+                let (a_reg, ty) = self.commit(a_sv)?;
+                let (b_reg, _) = self.commit(b_sv)?;
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::Branch {
+                    cond,
+                    then_ops: vec![KernelOp::Copy {
+                        dst,
+                        src: a_reg,
+                        ty,
+                    }],
+                    else_ops: vec![KernelOp::Copy {
+                        dst,
+                        src: b_reg,
+                        ty,
+                    }],
+                });
+                self.stack.push(SymVal::Reg(dst, ty));
+            }
+
             // `return` is a function-level early exit. Quanta kernels
             // are all `() -> ()` so there's nothing to push; we model
             // it as a redirect on the Function frame (or a `Break` if
