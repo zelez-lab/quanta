@@ -38,10 +38,16 @@ import Quanta.Axioms.Wgsl
 -- (Syntax / Semantics / Translate / Preservation / EndToEnd) was
 -- deleted in the WASM-route cutover (2026-05-05) — its production
 -- translator is gone and the Lean files no longer correspond to
--- anything that ships. Step 059 will reintroduce a source-language
--- preservation theorem on top of the WASM operator subset.
+-- anything that ships. Step 059 reintroduces the source-preservation
+-- theorem on top of the WASM operator subset (`Quanta.Wasm.*`).
 import Quanta.KOps.Syntax
 import Quanta.KOps.Semantics
+
+-- WASM source-language view + semantics + translator (step 059).
+import Quanta.Wasm.Syntax
+import Quanta.Wasm.Semantics
+import Quanta.Wasm.Translate
+import Quanta.Wasm.Preservation
 
 -- Indirect Command Buffers (steps 032 + 033)
 import Quanta.Icb
