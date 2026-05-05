@@ -328,6 +328,27 @@ impl<'a> LowerCtx<'a> {
         self.frames.get_mut(idx)
     }
 
+    /// True if any frame strictly between the top and `depth` is a
+    /// `KernelOp::Loop`. Used by `Br`/`BrIf` to decide whether the
+    /// branch crosses a loop boundary — if so, the redirect-chain
+    /// approach would leave a register referenced outside the loop
+    /// body it was defined in. Falls back to a `Break` (or
+    /// conditional Break) instead.
+    fn has_loop_between_top_and_depth(&self, depth: u32) -> bool {
+        let top = self.frames.len();
+        let target_idx = match top.checked_sub(1 + depth as usize) {
+            Some(i) => i,
+            None => return false,
+        };
+        // Frames strictly above target, up to and including top-1.
+        for f in &self.frames[target_idx + 1..] {
+            if matches!(f.kind, FrameKind::Loop { .. }) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Materialize a boolean constant as a `KernelOp::Const` written
     /// into the active sink of the frame at `depth`. Used by `Br` to
     /// install a redirect with cond=true.
@@ -843,20 +864,19 @@ impl<'a> LowerCtx<'a> {
 
             RawInstr::Br(depth) => {
                 // br N: unconditional jump to end of Nth enclosing
-                // label. Two cases:
+                // label. Cases:
                 //   - Target is a Loop: continue. Quanta's structured
                 //     Loop wraps automatically, so this is a no-op.
-                //   - Target is a non-Loop frame: this is "skip to end
-                //     of frame N". All subsequent ops in this and
-                //     intermediate frames are dead code on the
-                //     control-flow path that took the br. We model
-                //     this by installing a redirect on the target
-                //     pointing at a Branch with cond=true and empty
-                //     else_ops — which means "drop everything emitted
-                //     here on out". (Subsequent ops still go SOMEWHERE
-                //     so we don't drop the symbolic stack discipline,
-                //     but they end up unreachable and are pruned by
-                //     downstream codegen.)
+                //   - Target is non-Loop, NO loop is between us and
+                //     target: install redirect on target with cond=true
+                //     so subsequent ops flow into an unreachable
+                //     else-arm.
+                //   - Target is non-Loop AND there's a Loop between us
+                //     and target: emit `Break` from the loop. The
+                //     post-loop redirect can't carry a loop-internal
+                //     cond (registers don't escape `KernelOp::Loop.body`)
+                //     so we trust the post-loop trajectory is the same
+                //     for early-exit and natural-exit. See 5d.3 docs.
                 let target_kind = self
                     .frame_at_depth(*depth)
                     .ok_or_else(|| {
@@ -865,6 +885,10 @@ impl<'a> LowerCtx<'a> {
                     .kind_discriminant();
                 if matches!(target_kind, FrameKindTag::Loop) {
                     // Continue; no-op for structured Loop.
+                    return Ok(());
+                }
+                if self.has_loop_between_top_and_depth(*depth) {
+                    self.emit(KernelOp::Break);
                     return Ok(());
                 }
                 let dst = self.alloc_reg();
@@ -888,6 +912,21 @@ impl<'a> LowerCtx<'a> {
                             .into(),
                         at: self.body.body_offset,
                     });
+                }
+                // br_if from inside a loop targeting outside: emit
+                // `Branch { cond, then_ops: [Break], else_ops: [] }`
+                // so the cond register stays inside the Loop body
+                // where it was defined. The redirect-chain can't be
+                // used here — its `cond` would be referenced from the
+                // outer frame, but `KernelOp::Loop.body` encapsulates
+                // the cond and prevents codegen from finding it.
+                if self.has_loop_between_top_and_depth(*depth) {
+                    self.emit(KernelOp::Branch {
+                        cond,
+                        then_ops: vec![KernelOp::Break],
+                        else_ops: Vec::new(),
+                    });
+                    return Ok(());
                 }
                 self.install_redirect_at(*depth, cond);
             }
