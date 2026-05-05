@@ -3,16 +3,19 @@
 extern crate proc_macro;
 
 mod auto_dispatch;
+mod compile_via_wasm;
 mod compiler;
 mod device_macro;
 mod fields_derive;
 mod gpu_type;
 mod kernel_macro;
+mod kernel_signature;
 mod parse;
 mod shader_macro;
 mod uniforms_derive;
 mod validate;
 mod vertex_derive;
+mod wasm_compile;
 mod wasm_twin;
 
 #[cfg(test)]
