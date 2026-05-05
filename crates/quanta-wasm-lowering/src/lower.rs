@@ -705,7 +705,35 @@ impl<'a> LowerCtx<'a> {
                     Some("barrier") => {
                         self.emit(KernelOp::Barrier);
                     }
+                    Some("workgroup_size") => {
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::ProtonSize { dst });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+
+                    // Unary f32 math — these match the F32Ext polyfill in
+                    // wasm_compile's wrapper plus direct extern calls.
                     Some("sqrt_f32") => self.math_call_unary(MathFn::Sqrt)?,
+                    Some("rsqrt_f32") => self.math_call_unary(MathFn::Rsqrt)?,
+                    Some("sin_f32") => self.math_call_unary(MathFn::Sin)?,
+                    Some("cos_f32") => self.math_call_unary(MathFn::Cos)?,
+                    Some("tan_f32") => self.math_call_unary(MathFn::Tan)?,
+                    Some("exp_f32") => self.math_call_unary(MathFn::Exp)?,
+                    Some("log_f32") => self.math_call_unary(MathFn::Log)?,
+                    Some("abs_f32") => self.math_call_unary(MathFn::Abs)?,
+                    Some("floor_f32") => self.math_call_unary(MathFn::Floor)?,
+                    Some("ceil_f32") => self.math_call_unary(MathFn::Ceil)?,
+                    Some("round_f32") => self.math_call_unary(MathFn::Round)?,
+
+                    // Binary f32 math.
+                    Some("min_f32") => self.math_call_binary(MathFn::Min)?,
+                    Some("max_f32") => self.math_call_binary(MathFn::Max)?,
+                    Some("pow_f32") => self.math_call_binary(MathFn::Pow)?,
+
+                    // Ternary f32 math.
+                    Some("clamp_f32") => self.math_call_ternary(MathFn::Clamp)?,
+                    Some("fma_f32") => self.math_call_ternary(MathFn::Fma)?,
+
                     Some(other) => {
                         return Err(LoweringError::UnsupportedOp {
                             op: format!("intrinsic call `{other}` not yet lowered"),
@@ -906,12 +934,23 @@ impl<'a> LowerCtx<'a> {
                     })?
                     .kind_discriminant();
                 if matches!(target_kind, FrameKindTag::Loop) {
-                    return Err(LoweringError::UnsupportedOp {
-                        op: "br_if to enclosing Loop (mid-body continue) — not yet \
-                              representable in Quanta IR (no Continue op)"
-                            .into(),
-                        at: self.body.body_offset,
+                    // `br_if cond 0` to the enclosing Loop = "continue
+                    // if cond, else fall through". rustc emits this at
+                    // the bottom of `for`/`while` loops as the
+                    // iteration check. Quanta's structured Loop has no
+                    // explicit continue, but its body wrapper auto-
+                    // continues on natural fall-through. So we model
+                    // the inverse: Break when cond is false. The
+                    // emitted `Branch { cond, then_ops: [], else_ops:
+                    // [Break] }` runs Break only on the !cond path,
+                    // letting the cond=true path fall through to the
+                    // loop wrap-around.
+                    self.emit(KernelOp::Branch {
+                        cond,
+                        then_ops: Vec::new(),
+                        else_ops: vec![KernelOp::Break],
                     });
+                    return Ok(());
                 }
                 // br_if from inside a loop targeting outside: emit
                 // `Branch { cond, then_ops: [Break], else_ops: [] }`
@@ -977,10 +1016,47 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32TruncF32U => self.cast_op(ScalarType::F32, ScalarType::U32)?,
             RawInstr::I32TruncF32S => self.cast_op(ScalarType::F32, ScalarType::I32)?,
 
+            // Inline f32 math ops. rustc's optimizer collapses calls
+            // to F32Ext methods (`.sqrt()`, `.abs()`) into LLVM
+            // intrinsics that lower to these WASM operators directly,
+            // so the call-table path alone isn't enough to cover them.
+            RawInstr::F32Sqrt => self.math_call_unary(MathFn::Sqrt)?,
+            RawInstr::F32Abs => self.math_call_unary(MathFn::Abs)?,
+            RawInstr::F32Neg => {
+                let a = self.pop()?;
+                let (ar, ty) = self.commit(a)?;
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::UnaryOp {
+                    dst,
+                    a: ar,
+                    op: quanta_ir::UnaryOp::Neg,
+                    ty,
+                });
+                self.stack.push(SymVal::Reg(dst, ty));
+            }
+            RawInstr::F32Min => self.math_call_binary(MathFn::Min)?,
+            RawInstr::F32Max => self.math_call_binary(MathFn::Max)?,
+
             // `unreachable` follows an elided panic call as rustc's
             // dead-code marker; `nop` is a literal no-op. Both produce
             // no IR.
             RawInstr::Unreachable | RawInstr::Nop => {}
+
+            // `return` is a function-level early exit. Quanta kernels
+            // are all `() -> ()` so there's nothing to push; we model
+            // it as a redirect on the Function frame (or a `Break` if
+            // we're crossing a Loop boundary, since cond regs can't
+            // escape a Loop body — same constraint as 5d.3).
+            RawInstr::Return => {
+                let depth = (self.frames.len() - 1) as u32;
+                if self.has_loop_between_top_and_depth(depth) {
+                    self.emit(KernelOp::Break);
+                } else {
+                    let dst = self.alloc_reg();
+                    self.emit_const_bool_to_target(depth, dst, true);
+                    self.install_redirect_at(depth, dst);
+                }
+            }
 
             // `drop` discards the top of the symbolic stack.
             RawInstr::Drop => {
@@ -1124,6 +1200,40 @@ impl<'a> LowerCtx<'a> {
             dst,
             func,
             args: vec![ar],
+            ty,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    fn math_call_binary(&mut self, func: MathFn) -> Result<(), LoweringError> {
+        let b = self.pop()?;
+        let a = self.pop()?;
+        let (ar, ty) = self.commit(a)?;
+        let (br, _) = self.commit(b)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::MathCall {
+            dst,
+            func,
+            args: vec![ar, br],
+            ty,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    fn math_call_ternary(&mut self, func: MathFn) -> Result<(), LoweringError> {
+        let c = self.pop()?;
+        let b = self.pop()?;
+        let a = self.pop()?;
+        let (ar, ty) = self.commit(a)?;
+        let (br, _) = self.commit(b)?;
+        let (cr, _) = self.commit(c)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::MathCall {
+            dst,
+            func,
+            args: vec![ar, br, cr],
             ty,
         });
         self.stack.push(SymVal::Reg(dst, ty));
