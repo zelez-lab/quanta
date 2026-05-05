@@ -135,6 +135,21 @@ struct LowerCtx<'a> {
 struct Frame {
     kind: FrameKind,
     ops: Vec<KernelOp>,
+    /// Path through nested `Branch.else_ops` where the *next* op
+    /// emitted to this frame should land. Empty = push directly to
+    /// `ops`. Each entry is the index of a `KernelOp::Branch` whose
+    /// `else_ops` is the next descent step.
+    ///
+    /// Used to model WASM `br`/`br_if` to non-Loop targets without a
+    /// labeled-break primitive in Quanta IR. When `br_if cond N`
+    /// targets a Block frame, we push `Branch { cond, then_ops: [],
+    /// else_ops: [] }` to that frame's current sink and append its
+    /// index to the redirect path. From then on, every op emitted to
+    /// that frame (and every inner frame that closes into it) flows
+    /// into the Branch's `else_ops` — i.e. runs only when cond is
+    /// false. Nests: a second br_if to the same frame chains another
+    /// Branch inside the first's `else_ops`.
+    redirect: Vec<usize>,
 }
 
 enum FrameKind {
@@ -151,6 +166,30 @@ enum FrameKind {
     /// `if ... else ... end`. The `then_ops` we collected before the
     /// `else` are saved here; current `ops` collect the else-arm.
     Else { cond: Reg, then_ops: Vec<KernelOp> },
+}
+
+/// Lightweight discriminant tag used to peek at a frame's kind without
+/// holding a borrow — needed when we want to inspect the target of a
+/// `br`/`br_if` then mutate it.
+#[derive(Copy, Clone)]
+enum FrameKindTag {
+    Function,
+    Block,
+    Loop,
+    If,
+    Else,
+}
+
+impl Frame {
+    fn kind_discriminant(&self) -> FrameKindTag {
+        match self.kind {
+            FrameKind::Function => FrameKindTag::Function,
+            FrameKind::Block => FrameKindTag::Block,
+            FrameKind::Loop { .. } => FrameKindTag::Loop,
+            FrameKind::If { .. } => FrameKindTag::If,
+            FrameKind::Else { .. } => FrameKindTag::Else,
+        }
+    }
 }
 
 impl<'a> LowerCtx<'a> {
@@ -207,6 +246,7 @@ impl<'a> LowerCtx<'a> {
             frames: vec![Frame {
                 kind: FrameKind::Function,
                 ops: Vec::new(),
+                redirect: Vec::new(),
             }],
             next_reg: 0,
             intrinsic_names,
@@ -219,19 +259,84 @@ impl<'a> LowerCtx<'a> {
         r
     }
 
-    /// Append an op to the current (topmost) frame.
+    /// Append an op to the current (topmost) frame, honoring its
+    /// redirect chain. See `Frame::redirect`.
     fn emit(&mut self, op: KernelOp) {
-        self.frames
-            .last_mut()
-            .expect("frame stack must always have at least the function-level frame")
-            .ops
-            .push(op);
+        let top = self.frames.len() - 1;
+        Self::sink_at_mut(&mut self.frames[top]).push(op);
+    }
+
+    /// Append a sequence of ops to a specific frame's current sink
+    /// (honoring its redirect chain). Used when an inner frame closes
+    /// and its accumulated ops splice into the parent's sink — the
+    /// parent might be in a redirect after a br_if.
+    fn splice_into_frame(target: &mut Frame, ops: impl IntoIterator<Item = KernelOp>) {
+        let sink = Self::sink_at_mut(target);
+        for op in ops {
+            sink.push(op);
+        }
+    }
+
+    /// Resolve a frame's current sink: walks `redirect` indices into
+    /// nested `Branch.else_ops`. Empty redirect = `frame.ops`.
+    fn sink_at_mut(frame: &mut Frame) -> &mut Vec<KernelOp> {
+        let mut sink = &mut frame.ops;
+        for &idx in &frame.redirect {
+            match &mut sink[idx] {
+                KernelOp::Branch { else_ops, .. } => {
+                    sink = else_ops;
+                }
+                other => {
+                    panic!("redirect chain pointed at non-Branch op: {other:?} (lowering bug)")
+                }
+            }
+        }
+        sink
     }
 
     /// Inspect a frame N levels above the current top (0 = current).
     fn frame_at_depth(&self, depth: u32) -> Option<&Frame> {
         let idx = self.frames.len().checked_sub(1 + depth as usize)?;
         self.frames.get(idx)
+    }
+
+    /// Mutable counterpart to `frame_at_depth`.
+    fn frame_at_depth_mut(&mut self, depth: u32) -> Option<&mut Frame> {
+        let idx = self.frames.len().checked_sub(1 + depth as usize)?;
+        self.frames.get_mut(idx)
+    }
+
+    /// Materialize a boolean constant as a `KernelOp::Const` written
+    /// into the active sink of the frame at `depth`. Used by `Br` to
+    /// install a redirect with cond=true.
+    fn emit_const_bool_to_target(&mut self, depth: u32, dst: Reg, value: bool) {
+        let target = self
+            .frame_at_depth_mut(depth)
+            .expect("caller must verify target depth before emit_const_bool_to_target");
+        Self::sink_at_mut(target).push(KernelOp::Const {
+            dst,
+            value: ConstValue::Bool(value),
+        });
+    }
+
+    /// Install a redirect on the frame at `depth`: append a
+    /// `Branch { cond, then_ops: [], else_ops: [] }` to that frame's
+    /// active sink and extend its redirect chain to point at the new
+    /// Branch's `else_ops`. Subsequent ops emitted to that frame —
+    /// and inner frames closing into it — flow into the Branch's
+    /// `else_ops`, modeling "skip to end of target frame on cond".
+    fn install_redirect_at(&mut self, depth: u32, cond: Reg) {
+        let target = self
+            .frame_at_depth_mut(depth)
+            .expect("caller must verify target depth before install_redirect_at");
+        let sink = Self::sink_at_mut(target);
+        let new_idx = sink.len();
+        sink.push(KernelOp::Branch {
+            cond,
+            then_ops: Vec::new(),
+            else_ops: Vec::new(),
+        });
+        target.redirect.push(new_idx);
     }
 
     fn lower(mut self) -> Result<KernelDef, LoweringError> {
@@ -534,6 +639,7 @@ impl<'a> LowerCtx<'a> {
                 self.frames.push(Frame {
                     kind: FrameKind::Block,
                     ops: Vec::new(),
+                    redirect: Vec::new(),
                 });
             }
 
@@ -555,6 +661,7 @@ impl<'a> LowerCtx<'a> {
                         iter_reg,
                     },
                     ops: Vec::new(),
+                    redirect: Vec::new(),
                 });
             }
 
@@ -564,6 +671,7 @@ impl<'a> LowerCtx<'a> {
                 self.frames.push(Frame {
                     kind: FrameKind::If { cond },
                     ops: Vec::new(),
+                    redirect: Vec::new(),
                 });
             }
 
@@ -585,6 +693,7 @@ impl<'a> LowerCtx<'a> {
                         then_ops: frame.ops,
                     },
                     ops: Vec::new(),
+                    redirect: Vec::new(),
                 });
             }
 
@@ -599,13 +708,15 @@ impl<'a> LowerCtx<'a> {
                         self.frames.push(Frame {
                             kind: FrameKind::Function,
                             ops: frame.ops,
+                            redirect: Vec::new(),
                         });
                     }
                     FrameKind::Block => {
-                        // Block was a label scope — splice ops into parent.
-                        for op in frame.ops {
-                            self.emit(op);
-                        }
+                        // Block was a label scope — splice ops into the
+                        // parent's *active sink* (honors any redirect on
+                        // the parent set by a prior br/br_if).
+                        let parent_idx = self.frames.len() - 1;
+                        Self::splice_into_frame(&mut self.frames[parent_idx], frame.ops);
                     }
                     FrameKind::Loop {
                         count_reg,
@@ -635,57 +746,54 @@ impl<'a> LowerCtx<'a> {
             }
 
             RawInstr::Br(depth) => {
-                // br N: jump to the Nth enclosing scope. We support
-                // two cases:
-                //   - Target is a Block while we're inside a Loop —
-                //     this exits the loop. Emit Break.
-                //   - Target is the innermost Loop — this is a
-                //     continue back to loop start. Falls through
-                //     naturally for our structured Loop. No-op.
-                let target = self.frame_at_depth(*depth).ok_or_else(|| {
-                    LoweringError::ShapeMismatch(format!("br {depth} out of range"))
-                })?;
-                match target.kind {
-                    FrameKind::Loop { .. } => {
-                        // Continue. No-op for structured Loop.
-                    }
-                    FrameKind::Block | FrameKind::If { .. } | FrameKind::Else { .. } => {
-                        self.emit(KernelOp::Break);
-                    }
-                    FrameKind::Function => {
-                        self.emit(KernelOp::Break);
-                    }
+                // br N: unconditional jump to end of Nth enclosing
+                // label. Two cases:
+                //   - Target is a Loop: continue. Quanta's structured
+                //     Loop wraps automatically, so this is a no-op.
+                //   - Target is a non-Loop frame: this is "skip to end
+                //     of frame N". All subsequent ops in this and
+                //     intermediate frames are dead code on the
+                //     control-flow path that took the br. We model
+                //     this by installing a redirect on the target
+                //     pointing at a Branch with cond=true and empty
+                //     else_ops — which means "drop everything emitted
+                //     here on out". (Subsequent ops still go SOMEWHERE
+                //     so we don't drop the symbolic stack discipline,
+                //     but they end up unreachable and are pruned by
+                //     downstream codegen.)
+                let target_kind = self
+                    .frame_at_depth(*depth)
+                    .ok_or_else(|| {
+                        LoweringError::ShapeMismatch(format!("br {depth} out of range"))
+                    })?
+                    .kind_discriminant();
+                if matches!(target_kind, FrameKindTag::Loop) {
+                    // Continue; no-op for structured Loop.
+                    return Ok(());
                 }
+                let dst = self.alloc_reg();
+                self.emit_const_bool_to_target(*depth, dst, true);
+                self.install_redirect_at(*depth, dst);
             }
 
             RawInstr::BrIf(depth) => {
                 let cond_sv = self.pop()?;
                 let (cond, _) = self.commit(cond_sv)?;
-                let target = self.frame_at_depth(*depth).ok_or_else(|| {
-                    LoweringError::ShapeMismatch(format!("br_if {depth} out of range"))
-                })?;
-                let then_ops = match target.kind {
-                    FrameKind::Loop { .. } => {
-                        // Conditional continue. Currently no Continue
-                        // op in the IR; we'd need one for mid-body
-                        // continues. The common pattern (br 0 at end
-                        // of loop) is handled by the loop wrap-around,
-                        // so this branch only fires for mid-body
-                        // continues which we report as unsupported.
-                        return Err(LoweringError::UnsupportedOp {
-                            op: "br_if to enclosing Loop (mid-body continue) — not yet \
-                                  representable in Quanta IR (no Continue op)"
-                                .into(),
-                            at: self.body.body_offset,
-                        });
-                    }
-                    _ => vec![KernelOp::Break],
-                };
-                self.emit(KernelOp::Branch {
-                    cond,
-                    then_ops,
-                    else_ops: Vec::new(),
-                });
+                let target_kind = self
+                    .frame_at_depth(*depth)
+                    .ok_or_else(|| {
+                        LoweringError::ShapeMismatch(format!("br_if {depth} out of range"))
+                    })?
+                    .kind_discriminant();
+                if matches!(target_kind, FrameKindTag::Loop) {
+                    return Err(LoweringError::UnsupportedOp {
+                        op: "br_if to enclosing Loop (mid-body continue) — not yet \
+                              representable in Quanta IR (no Continue op)"
+                            .into(),
+                        at: self.body.body_offset,
+                    });
+                }
+                self.install_redirect_at(*depth, cond);
             }
 
             RawInstr::I32Eqz => {

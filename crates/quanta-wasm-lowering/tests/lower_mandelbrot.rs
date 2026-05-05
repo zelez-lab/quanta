@@ -78,6 +78,17 @@ fn lowers_mandelbrot_to_kerneldef() {
         !debug.contains("panic"),
         "lowered body must not retain any reference to a panic helper"
     );
+
+    // `KernelOp::Break` only makes sense inside a `KernelOp::Loop`.
+    // The earlier flat `Break` emission for `br_if` to a non-Loop
+    // target tripped the Metal/SPIR-V emitters with "break statement
+    // not in loop or switch context". The redirect-chain rewrite
+    // turns those into structured `Branch.else_ops`, so any `Break`
+    // appearing outside a Loop body is a regression.
+    assert!(
+        no_break_outside_loop(&kernel_def.body),
+        "found KernelOp::Break outside a Loop body — br_if-to-Block rewrite regressed"
+    );
 }
 
 fn body_ops_recursive(ops: &[KernelOp]) -> Vec<&KernelOp> {
@@ -96,4 +107,24 @@ fn body_ops_recursive(ops: &[KernelOp]) -> Vec<&KernelOp> {
         }
     }
     out
+}
+
+fn no_break_outside_loop(ops: &[KernelOp]) -> bool {
+    for op in ops {
+        match op {
+            KernelOp::Break => return false,
+            KernelOp::Loop { .. } => {
+                // Inside a Loop body, Break is fine — skip recursion.
+            }
+            KernelOp::Branch {
+                then_ops, else_ops, ..
+            } => {
+                if !no_break_outside_loop(then_ops) || !no_break_outside_loop(else_ops) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
