@@ -27,7 +27,7 @@
 #![allow(dead_code)]
 
 use proc_macro2::{Span, TokenStream};
-use quanta_ir::{KernelDef, ScalarType};
+use quanta_ir::{KernelDef, KernelOp, ScalarType};
 use quanta_wasm_lowering::{ParamKind, ParamSlot, SideTable, lower};
 use quote::{format_ident, quote};
 use syn::visit_mut::{self, VisitMut};
@@ -37,7 +37,8 @@ use crate::kernel_signature::{StructFieldAccess, StructRefParam};
 use crate::wasm_compile::compile_kernel_to_wasm;
 
 use quanta_ir::KernelParam;
-use syn::{FnArg, Pat, Type};
+use std::collections::HashMap;
+use syn::{Attribute, FnArg, Local, Pat, Stmt, Type};
 
 /// Inputs needed to drive the WASM route on a struct-ref kernel.
 pub(crate) struct StructRefKernelInputs<'a> {
@@ -58,10 +59,27 @@ pub(crate) struct StructRefKernelInputs<'a> {
 pub(crate) fn compile_struct_ref_kernel_via_wasm(
     inputs: &StructRefKernelInputs<'_>,
 ) -> Result<KernelDef, String> {
-    let source = emit_kernel_source(inputs)?;
+    // Pre-pass: harvest `#[quanta::shared] let NAME: [TY; N];` decls
+    // from the body so we can (a) strip them from the source we hand
+    // to rustc and rewrite `NAME[idx]` accesses to extern calls, and
+    // (b) inject `KernelOp::SharedDecl` ops at the head of the
+    // resulting KernelDef body.
+    let mut func = inputs.func.clone();
+    let shared_decls = harvest_and_rewrite_shared(&mut func)?;
+    let local_inputs = StructRefKernelInputs {
+        func: &func,
+        struct_ref: inputs.struct_ref,
+        field_accesses: inputs.field_accesses.clone(),
+        workgroup_size: inputs.workgroup_size,
+    };
+
+    let source = emit_kernel_source(&local_inputs)?;
     let wasm_bytes = compile_kernel_to_wasm(&source)?;
-    let side_table = build_side_table(inputs);
-    lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))
+    let side_table = build_side_table(&local_inputs);
+    let mut def =
+        lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))?;
+    prepend_shared_decls(&mut def, &shared_decls);
+    Ok(def)
 }
 
 /// Emit the wasm-compilable extern "C" source for a struct-ref kernel.
@@ -262,6 +280,236 @@ fn _unused_span_anchor() -> Span {
     Span::call_site()
 }
 
+// ── Workgroup-shared memory ────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct SharedDeclInfo {
+    name: String,
+    id: u32,
+    ty: ScalarType,
+    count: u32,
+}
+
+/// Walk the function body, collect every `#[quanta::shared] let NAME:
+/// [TY; N];` declaration, strip those `let` statements from the body,
+/// and rewrite every `NAME[idx]` access to a call to the matching
+/// `shared_load_<ty>` / `shared_store_<ty>` extern. Returns the
+/// collected declarations so the caller can prepend `KernelOp::SharedDecl`
+/// ops to the lowered KernelDef body.
+fn harvest_and_rewrite_shared(func: &mut ItemFn) -> Result<Vec<SharedDeclInfo>, String> {
+    let mut decls: Vec<SharedDeclInfo> = Vec::new();
+    let mut name_to_info: HashMap<String, (u32, ScalarType)> = HashMap::new();
+    let mut next_id: u32 = 0;
+
+    // Scan + strip in a single pass over the top-level statement list.
+    func.block.stmts.retain_mut(|stmt| {
+        if let Stmt::Local(local) = stmt
+            && has_shared_attr(&local.attrs)
+        {
+            match parse_shared_decl(local) {
+                Ok((name, ty, count)) => {
+                    let id = next_id;
+                    next_id += 1;
+                    decls.push(SharedDeclInfo {
+                        name: name.clone(),
+                        id,
+                        ty,
+                        count,
+                    });
+                    name_to_info.insert(name, (id, ty));
+                    return false;
+                }
+                Err(_e) => {
+                    // Leave the statement in place so rustc errors with
+                    // a clear span. The downstream wasm compile will
+                    // surface the resulting rustc error to the user.
+                    return true;
+                }
+            }
+        }
+        true
+    });
+
+    if !name_to_info.is_empty() {
+        let mut rewriter = SharedAccessRewriter { name_to_info };
+        rewriter.visit_block_mut(&mut func.block);
+    }
+
+    Ok(decls)
+}
+
+fn has_shared_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        let segs: Vec<String> = a
+            .path()
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
+        // Match `#[quanta::shared]` or `#[shared]`. We deliberately
+        // don't try to handle `#[quanta::shared(dyn)]` here — dynamic
+        // shared memory has its own IR op (`SharedDeclDyn`) and isn't
+        // supported by the WASM route yet.
+        matches!(segs.as_slice(), [a] if a == "shared")
+            || matches!(segs.as_slice(), [a, b] if a == "quanta" && b == "shared")
+    })
+}
+
+/// Parse a `let NAME: [TY; COUNT];` decl into its component pieces.
+fn parse_shared_decl(local: &Local) -> Result<(String, ScalarType, u32), String> {
+    // Pattern: either `Pat::Ident` or `Pat::Type { pat: Ident, ty }`.
+    let (name, ty_ref) = match &local.pat {
+        Pat::Type(pat_type) => {
+            let name = match pat_type.pat.as_ref() {
+                Pat::Ident(id) => id.ident.to_string(),
+                _ => return Err("shared-memory variable must be a simple ident".into()),
+            };
+            (name, pat_type.ty.as_ref())
+        }
+        _ => {
+            return Err(
+                "shared-memory let must have an explicit type: `let NAME: [TY; N];`".into(),
+            );
+        }
+    };
+    let (scalar, count) = parse_array_type(ty_ref)?;
+    Ok((name, scalar, count))
+}
+
+fn parse_array_type(ty: &Type) -> Result<(ScalarType, u32), String> {
+    let arr = match ty {
+        Type::Array(a) => a,
+        _ => return Err("expected an array type `[TY; N]`".into()),
+    };
+    let elem_ty = match arr.elem.as_ref() {
+        Type::Path(p) => p
+            .path
+            .segments
+            .last()
+            .ok_or("empty type path")?
+            .ident
+            .to_string(),
+        _ => return Err("array element type must be a primitive name".into()),
+    };
+    let scalar = name_to_scalar_type(&elem_ty)
+        .ok_or_else(|| format!("unsupported shared-memory element type: {elem_ty}"))?;
+    let count = match &arr.len {
+        Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::Int(i) => i
+                .base10_parse::<u32>()
+                .map_err(|e| format!("array length must be u32: {e}"))?,
+            _ => return Err("array length must be an integer literal".into()),
+        },
+        _ => return Err("array length must be a const integer literal".into()),
+    };
+    Ok((scalar, count))
+}
+
+struct SharedAccessRewriter {
+    name_to_info: HashMap<String, (u32, ScalarType)>,
+}
+
+impl SharedAccessRewriter {
+    fn intrinsic_call(&self, name: &str, args: TokenStream) -> Expr {
+        let ident = format_ident!("{}", name);
+        syn::parse_quote! { #ident( #args ) }
+    }
+}
+
+impl VisitMut for SharedAccessRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        // Special-case `NAME[idx] = val` BEFORE recursing — otherwise
+        // the recursion rewrites the LHS `NAME[idx]` into a load call
+        // and we lose the chance to recognize it as a store.
+        if let Expr::Assign(assign) = expr
+            && let Expr::Index(ExprIndex {
+                expr: base, index, ..
+            }) = assign.left.as_ref()
+            && let Expr::Path(ExprPath { path, .. }) = base.as_ref()
+            && let Some(seg) = path.segments.last()
+            && let Some((id, ty)) = self.name_to_info.get(&seg.ident.to_string()).copied()
+        {
+            let store_fn = format_ident!("{}", shared_store_fn_name(ty));
+            let id_lit = id;
+            let idx = index.clone();
+            let mut val = assign.right.clone();
+            // The RHS may itself contain shared-load reads — recurse
+            // on it before splicing into the call expression.
+            self.visit_expr_mut(&mut val);
+            // The index expression too.
+            let mut idx_expr: Expr = (*idx).clone();
+            self.visit_expr_mut(&mut idx_expr);
+            *expr = syn::parse_quote! {
+                #store_fn(#id_lit, (#idx_expr) as u32, #val)
+            };
+            return;
+        }
+
+        // Recurse for everything else so nested shared reads get
+        // rewritten before we look at the parent.
+        visit_mut::visit_expr_mut(self, expr);
+
+        // `NAME[idx]`: shared-slot read (encountered outside the
+        // Assign-LHS context handled above).
+        if let Expr::Index(ExprIndex {
+            expr: base, index, ..
+        }) = expr
+            && let Expr::Path(ExprPath { path, .. }) = base.as_ref()
+            && let Some(seg) = path.segments.last()
+            && let Some((id, ty)) = self.name_to_info.get(&seg.ident.to_string()).copied()
+        {
+            let load_fn = format_ident!("{}", shared_load_fn_name(ty));
+            let id_lit = id;
+            let idx = index.clone();
+            *expr = syn::parse_quote! {
+                #load_fn(#id_lit, (#idx) as u32)
+            };
+        }
+
+        let _ = SharedAccessRewriter::intrinsic_call;
+    }
+}
+
+fn shared_load_fn_name(ty: ScalarType) -> &'static str {
+    match ty {
+        ScalarType::F32 => "shared_load_f32",
+        ScalarType::U32 => "shared_load_u32",
+        ScalarType::I32 => "shared_load_i32",
+        // Other types fall back to f32 — the lowerer rejects with a
+        // clear error if the kernel actually instantiates them.
+        _ => "shared_load_f32",
+    }
+}
+
+fn shared_store_fn_name(ty: ScalarType) -> &'static str {
+    match ty {
+        ScalarType::F32 => "shared_store_f32",
+        ScalarType::U32 => "shared_store_u32",
+        ScalarType::I32 => "shared_store_i32",
+        _ => "shared_store_f32",
+    }
+}
+
+/// Prepend `KernelOp::SharedDecl` ops to the lowered body so emitters
+/// (Metal/SPIR-V/WGSL/MSL) know which shared arrays to declare. The
+/// IR's `id` field matches the call-time slot constant we wove into
+/// the rewritten body.
+fn prepend_shared_decls(def: &mut KernelDef, decls: &[SharedDeclInfo]) {
+    if decls.is_empty() {
+        return;
+    }
+    let mut prefix: Vec<KernelOp> = decls
+        .iter()
+        .map(|d| KernelOp::SharedDecl {
+            id: d.id,
+            ty: d.ty,
+            count: d.count,
+        })
+        .collect();
+    prefix.append(&mut def.body);
+    def.body = prefix;
+}
+
 // ── Flat-param kernels ─────────────────────────────────────────────────
 
 /// Inputs needed to drive the WASM route on a flat-param kernel —
@@ -282,10 +530,21 @@ pub(crate) struct FlatParamKernelInputs<'a> {
 pub(crate) fn compile_flat_param_kernel_via_wasm(
     inputs: &FlatParamKernelInputs<'_>,
 ) -> Result<KernelDef, String> {
-    let source = emit_flat_param_source(inputs)?;
+    let mut func = inputs.func.clone();
+    let shared_decls = harvest_and_rewrite_shared(&mut func)?;
+    let local_inputs = FlatParamKernelInputs {
+        func: &func,
+        params: inputs.params.clone(),
+        workgroup_size: inputs.workgroup_size,
+    };
+
+    let source = emit_flat_param_source(&local_inputs)?;
     let wasm_bytes = compile_kernel_to_wasm(&source)?;
-    let side_table = build_flat_side_table(inputs);
-    lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))
+    let side_table = build_flat_side_table(&local_inputs);
+    let mut def =
+        lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))?;
+    prepend_shared_decls(&mut def, &shared_decls);
+    Ok(def)
 }
 
 fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, String> {

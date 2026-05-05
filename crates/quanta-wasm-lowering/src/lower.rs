@@ -734,6 +734,17 @@ impl<'a> LowerCtx<'a> {
                     Some("clamp_f32") => self.math_call_ternary(MathFn::Clamp)?,
                     Some("fma_f32") => self.math_call_ternary(MathFn::Fma)?,
 
+                    // Workgroup-shared memory. The `slot` (first arg)
+                    // must be a compile-time `i32.const` so we can lift
+                    // it into the IR's `id` field. The `index` is a
+                    // runtime register.
+                    Some("shared_load_f32") => self.shared_load(ScalarType::F32)?,
+                    Some("shared_load_u32") => self.shared_load(ScalarType::U32)?,
+                    Some("shared_load_i32") => self.shared_load(ScalarType::I32)?,
+                    Some("shared_store_f32") => self.shared_store(ScalarType::F32)?,
+                    Some("shared_store_u32") => self.shared_store(ScalarType::U32)?,
+                    Some("shared_store_i32") => self.shared_store(ScalarType::I32)?,
+
                     Some(other) => {
                         return Err(LoweringError::UnsupportedOp {
                             op: format!("intrinsic call `{other}` not yet lowered"),
@@ -996,6 +1007,11 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32Mul => self.bin_op_int(BinOp::Mul)?,
             RawInstr::I32DivU | RawInstr::I32DivS => self.bin_op_int(BinOp::Div)?,
             RawInstr::I32RemU | RawInstr::I32RemS => self.bin_op_int(BinOp::Rem)?,
+            // Right-shift: unsigned and signed map to the same Quanta
+            // BinOp::Shr; the slot's scalar type (set elsewhere)
+            // determines the codegen-time arithmetic vs logical
+            // distinction.
+            RawInstr::I32ShrU | RawInstr::I32ShrS => self.bin_op_int(BinOp::Shr)?,
 
             RawInstr::I32LtU | RawInstr::I32LtS => self.cmp_op_int(quanta_ir::CmpOp::Lt)?,
             RawInstr::I32LeU | RawInstr::I32LeS => self.cmp_op_int(quanta_ir::CmpOp::Le)?,
@@ -1222,6 +1238,60 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
+    /// Lower a `shared_load_<ty>(slot, index)` extern call into a
+    /// `KernelOp::SharedLoad`. The slot must be a compile-time
+    /// constant (the IR carries it as `id: u32`); the index is a
+    /// runtime register.
+    fn shared_load(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let index_sv = self.pop()?;
+        let slot_sv = self.pop()?;
+        let id = match slot_sv {
+            SymVal::I32Const(c) => c as u32,
+            other => {
+                return Err(LoweringError::UnsupportedOp {
+                    op: format!("shared_load slot must be a compile-time constant, got {other:?}"),
+                    at: self.body.body_offset,
+                });
+            }
+        };
+        let (idx_reg, _) = self.commit(index_sv)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::SharedLoad {
+            dst,
+            id,
+            index: idx_reg,
+            ty,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower a `shared_store_<ty>(slot, index, val)` extern call into
+    /// a `KernelOp::SharedStore`. Slot is compile-time-constant.
+    fn shared_store(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let val_sv = self.pop()?;
+        let index_sv = self.pop()?;
+        let slot_sv = self.pop()?;
+        let id = match slot_sv {
+            SymVal::I32Const(c) => c as u32,
+            other => {
+                return Err(LoweringError::UnsupportedOp {
+                    op: format!("shared_store slot must be a compile-time constant, got {other:?}"),
+                    at: self.body.body_offset,
+                });
+            }
+        };
+        let (idx_reg, _) = self.commit(index_sv)?;
+        let (val_reg, _) = self.commit(val_sv)?;
+        self.emit(KernelOp::SharedStore {
+            id,
+            index: idx_reg,
+            src: val_reg,
+            ty,
+        });
+        Ok(())
+    }
+
     fn math_call_ternary(&mut self, func: MathFn) -> Result<(), LoweringError> {
         let c = self.pop()?;
         let b = self.pop()?;
@@ -1261,7 +1331,29 @@ impl<'a> LowerCtx<'a> {
                 });
                 Ok((dst, ScalarType::I32))
             }
-            SymVal::BufferPtr(_) | SymVal::ScaledIdx { .. } | SymVal::BufferAccess { .. } => {
+            // ScaledIdx represents `base << log2(scale)` — used as a
+            // byte offset by the buffer-load/store pattern recognizer.
+            // When it surfaces in non-buffer arithmetic (e.g. rustc's
+            // optimizer does its own pointer-arith hoisting), we have
+            // to materialize the shift back into a real Reg.
+            SymVal::ScaledIdx { base, scale } => {
+                let log2 = scale.trailing_zeros();
+                let shift_amt = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: shift_amt,
+                    value: ConstValue::U32(log2),
+                });
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::BinOp {
+                    dst,
+                    a: base,
+                    b: shift_amt,
+                    op: BinOp::Shl,
+                    ty: ScalarType::U32,
+                });
+                Ok((dst, ScalarType::U32))
+            }
+            SymVal::BufferPtr(_) | SymVal::BufferAccess { .. } => {
                 Err(LoweringError::UnsupportedOp {
                     op: "cannot commit pointer/address SymVal to a register — \
                      buffer pointer arithmetic not yet supported"

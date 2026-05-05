@@ -97,6 +97,32 @@ fn wrap_kernel_source(kernel_decl: &str) -> String {
                  // a trait that delegates to the matching `*_f32` extern\n\
                  // functions above. The kernel's `use quanta::intrinsics::*;`\n\
                  // brings this into scope so `x.sqrt()` resolves.\n\
+                 // Public-API aliases for Quanta's identifier and math\n\
+                 // intrinsics. Kernel sources use `proton_id`,\n\
+                 // `nucleus_id`, `rsqrt`, `sqrt`, etc. (no `_f32`\n\
+                 // suffix); the WASM imports use `local_id`/`group_id`/\n\
+                 // `*_f32`. These inline wrappers bridge the two so\n\
+                 // kernel sources compile unchanged.\n\
+                 #[inline] pub fn proton_id() -> u32 {{ unsafe {{ local_id() }} }}\n\
+                 #[inline] pub fn nucleus_id() -> u32 {{ unsafe {{ group_id() }} }}\n\
+                 #[inline] pub fn proton_size() -> u32 {{ unsafe {{ workgroup_size() }} }}\n\
+                 #[inline] pub fn rsqrt(x: f32) -> f32 {{ unsafe {{ rsqrt_f32(x) }} }}\n\
+                 #[inline] pub fn sqrt(x: f32) -> f32 {{ unsafe {{ sqrt_f32(x) }} }}\n\
+                 #[inline] pub fn sin(x: f32) -> f32 {{ unsafe {{ sin_f32(x) }} }}\n\
+                 #[inline] pub fn cos(x: f32) -> f32 {{ unsafe {{ cos_f32(x) }} }}\n\
+                 #[inline] pub fn tan(x: f32) -> f32 {{ unsafe {{ tan_f32(x) }} }}\n\
+                 #[inline] pub fn exp(x: f32) -> f32 {{ unsafe {{ exp_f32(x) }} }}\n\
+                 #[inline] pub fn ln(x: f32) -> f32 {{ unsafe {{ log_f32(x) }} }}\n\
+                 #[inline] pub fn fabs(x: f32) -> f32 {{ unsafe {{ abs_f32(x) }} }}\n\
+                 #[inline] pub fn floor(x: f32) -> f32 {{ unsafe {{ floor_f32(x) }} }}\n\
+                 #[inline] pub fn ceil(x: f32) -> f32 {{ unsafe {{ ceil_f32(x) }} }}\n\
+                 #[inline] pub fn round(x: f32) -> f32 {{ unsafe {{ round_f32(x) }} }}\n\
+                 #[inline] pub fn fmin(a: f32, b: f32) -> f32 {{ unsafe {{ min_f32(a, b) }} }}\n\
+                 #[inline] pub fn fmax(a: f32, b: f32) -> f32 {{ unsafe {{ max_f32(a, b) }} }}\n\
+                 #[inline] pub fn powf(b: f32, e: f32) -> f32 {{ unsafe {{ pow_f32(b, e) }} }}\n\
+                 #[inline] pub fn fma(a: f32, b: f32, c: f32) -> f32 {{ unsafe {{ fma_f32(a, b, c) }} }}\n\
+                 #[inline] pub fn clamp_f(x: f32, lo: f32, hi: f32) -> f32 {{ unsafe {{ clamp_f32(x, lo, hi) }} }}\n\
+                 \n\
                  pub trait F32Ext: Sized {{\n\
                      fn sqrt(self) -> Self;\n\
                      fn sin(self) -> Self;\n\
