@@ -444,6 +444,51 @@ impl<'a> LowerCtx<'a> {
         Ok(self.into_kernel_def())
     }
 
+    /// Lazily allocate a stable register for a local that didn't get
+    /// one at function entry. rustc's optimizer freely reuses local
+    /// slots — most notably, a buffer-pointer param's slot can be
+    /// recycled as an integer counter once the pointer is no longer
+    /// live. The function-entry pass leaves `stable_reg = None` for
+    /// buffer-pointer params (they're symbolic, no value-reg yet);
+    /// when a `local.set`/`local.tee` later writes a value-typed
+    /// SymVal there, we need a stable reg or every read is a
+    /// degenerate const.
+    fn ensure_stable_reg_for(&mut self, idx: usize, v: &SymVal) {
+        if self.locals[idx].stable_reg.is_some() {
+            return;
+        }
+        // Pick the scalar type from the value being stored. For
+        // Reg/Opaque carry it; for I32Const default to U32 (matching
+        // the function-entry default for declared locals).
+        let ty = match v {
+            SymVal::Reg(_, ty) | SymVal::Opaque(_, ty) => *ty,
+            SymVal::I32Const(_) => ScalarType::U32,
+            _ => ScalarType::U32,
+        };
+        let dst = self.alloc_reg();
+        let init = match ty {
+            ScalarType::F16 | ScalarType::F32 => ConstValue::F32(0.0),
+            ScalarType::F64 => ConstValue::F64(0.0),
+            ScalarType::Bool => ConstValue::Bool(false),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
+                ConstValue::I32(0)
+            }
+            ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64 => {
+                ConstValue::U32(0)
+            }
+        };
+        // Emit the init const at the function-frame level (not the
+        // current frame), so the stable reg is defined before any
+        // control-flow that might run before this set. We use the
+        // function frame's main `ops` directly to avoid the redirect
+        // chain on the function frame (the init must be the very
+        // first thing that runs).
+        let function_frame = &mut self.frames[0];
+        function_frame.ops.insert(0, KernelOp::Const { dst, value: init });
+        self.locals[idx].stable_reg = Some(dst);
+        self.locals[idx].stable_ty = ty;
+    }
+
     /// Materialize a `local.set` / `local.tee` against the stable
     /// per-local register: emits `KernelOp::Copy { dst: stable_reg,
     /// src }` and updates `locals[idx].val` to point at the stable
@@ -485,7 +530,8 @@ impl<'a> LowerCtx<'a> {
                 // BufferAccess) carry no scalar value to copy and keep
                 // their existing symbolic binding — they're consumed
                 // by load/store pattern recognition, not arithmetic.
-                if self.locals[*idx as usize].stable_reg.is_some() && is_value_symval(&v) {
+                if is_value_symval(&v) {
+                    self.ensure_stable_reg_for(*idx as usize, &v);
                     self.write_local_via_copy(*idx as usize, v)?;
                 } else {
                     self.locals[*idx as usize].val = Some(v);
@@ -495,8 +541,9 @@ impl<'a> LowerCtx<'a> {
                 let v = self.stack.last().copied().ok_or_else(|| {
                     LoweringError::ShapeMismatch("local.tee on empty stack".into())
                 })?;
-                if self.locals[*idx as usize].stable_reg.is_some() && is_value_symval(&v) {
+                if is_value_symval(&v) {
                     let _ = self.pop()?;
+                    self.ensure_stable_reg_for(*idx as usize, &v);
                     let (reg, ty) = self.write_local_via_copy(*idx as usize, v)?;
                     // tee leaves the value on stack — the post-tee
                     // value is the stable reg's contents.
@@ -1154,19 +1201,42 @@ impl<'a> LowerCtx<'a> {
             }
 
             // `return` is a function-level early exit. Quanta kernels
-            // are all `() -> ()` so there's nothing to push; we model
-            // it as a redirect on the Function frame (or a `Break` if
-            // we're crossing a Loop boundary, since cond regs can't
-            // escape a Loop body — same constraint as 5d.3).
+            // are all `() -> ()` so there's nothing to push.
+            //
+            // The naive "install a function-level redirect on Return"
+            // approach is wrong inside a block: the block's ops have
+            // been emitted but not yet spliced (splice happens at
+            // `End`), so when the block closes its already-emitted
+            // pre-Return ops would land *inside* the function-level
+            // redirect's `else_ops` and get skipped (the redirect's
+            // cond=true → take then_ops which is empty). Instead:
+            //
+            //   - At function top-level (no enclosing block/loop):
+            //     install the redirect normally; subsequent ops are
+            //     genuinely after Return and should be skipped.
+            //   - Inside any frame: emit nothing. Subsequent ops in
+            //     the same block run if reached (they're WASM
+            //     polymorphic-stack dead code, so usually trivial),
+            //     and the surrounding control-flow drops them
+            //     naturally on the Return path. Ops AFTER the
+            //     enclosing block (typically the elided panic for
+            //     the alternate path) are dead too.
+            //   - Crossing a Loop: emit `Break` (the existing 5d.3
+            //     fallback) so we exit the loop body cleanly.
             RawInstr::Return => {
                 let depth = (self.frames.len() - 1) as u32;
+                let inside_block = self.frames.len() > 1;
                 if self.has_loop_between_top_and_depth(depth) {
                     self.emit(KernelOp::Break);
-                } else {
+                } else if !inside_block {
                     let dst = self.alloc_reg();
                     self.emit_const_bool_to_target(depth, dst, true);
                     self.install_redirect_at(depth, dst);
                 }
+                // else: inside a block but not crossing a loop —
+                // emit nothing. The block's End will close cleanly
+                // and any post-block ops are typically panic-elided
+                // dead code.
             }
 
             // `drop` discards the top of the symbolic stack.
