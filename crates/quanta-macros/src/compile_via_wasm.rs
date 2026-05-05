@@ -555,6 +555,7 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
     // body rewriter can recognize `a[i]` / `a[i] = …` patterns.
     let mut params_emitted = Vec::new();
     let mut slice_param_names = Vec::new();
+    let arg_count = inputs.func.sig.inputs.len();
     for (i, arg) in inputs.func.sig.inputs.iter().enumerate() {
         let FnArg::Typed(pat_ty) = arg else {
             return Err("flat-param kernel cannot take `self`".into());
@@ -590,6 +591,30 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
                 ));
             }
         }
+    }
+
+    // Append const-generic params as runtime scalars. The legacy
+    // dispatch glue calls `wave.set_value(slot, VAL)` so they arrive
+    // at the kernel as push-constants, identical in shape to a
+    // regular scalar param. The wasm-twin must declare them as
+    // explicit u32 args so rustc resolves the body's `VAL`
+    // identifier — kernels written `fn k<const VAL: u32>(...)` use
+    // VAL as a value.
+    for (gi, generic) in inputs.func.sig.generics.params.iter().enumerate() {
+        let cp = match generic {
+            syn::GenericParam::Const(c) => c,
+            _ => continue,
+        };
+        let ident = cp.ident.clone();
+        let slot_idx = arg_count + gi;
+        let p = inputs.params.get(slot_idx).ok_or_else(|| {
+            format!(
+                "const generic `{ident}` (#{slot_idx}) has no matching KernelParam in scalar-type bridge"
+            )
+        })?;
+        let ty_str = scalar_type_to_short_name(scalar_type_of(p));
+        let ty = scalar_to_rust_ty(ty_str)?;
+        params_emitted.push(quote! { #ident: #ty });
     }
 
     // Rewrite body: `slice_name[idx]` → `*slice_name.add(idx as usize)`.
