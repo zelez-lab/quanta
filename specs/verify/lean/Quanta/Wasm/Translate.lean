@@ -4,14 +4,16 @@
 Mirrors the production translator at
 `crates/quanta-wasm-lowering/src/lower.rs`. The Rust pass simulates
 WASM's stack with a richer symbolic abstract domain (buffer pointers,
-scaled indices, etc.) so it can recognize buffer-access patterns. For
-the slice-1 subset (no memory, no buffers), the symbolic domain
-collapses to "every stack slot is a Quanta IR register" — that's what
-this Lean port models.
+scaled indices, etc.) so it can recognize buffer-access patterns.
+The Lean port now carries the full `SymVal` alphabet on the stack;
+existing slice-1/2/3 ops push only `.reg r .u32` and pop only on
+that shape. The richer SymVals (`bufferPtr`, `scaledIdx`,
+`i32ConstSym`, `bufferAccess`) are introduced by buffer-pattern
+recognition arms (slice-4 step 7).
 
 State carried during lowering:
 * `nextReg` — fresh-register counter (matches `LowerCtx::next_reg`).
-* `stack`  — list of Quanta IR registers, top = stack top.
+* `stack`  — list of `SymVal`s, top first.
 * `localReg` — `localIdx → Reg` map (`stable_reg` in the Rust pass).
   Allocated lazily on first read; later writes emit `KernelOp.copy`.
 * `localTy` — Quanta IR scalar type for each local (slice 1 only
@@ -83,13 +85,13 @@ end SymVal
 
 structure LowerState where
   nextReg  : Nat
-  /-- Symbolic stack — top first. **Slices 1-3 model the stack as
-      a list of `Reg`s** (every value-typed slot is a plain register).
-      Slice 4 will replace this with `List SymVal` to support the
-      buffer-pattern recognition, at the cost of cascading through
-      every per-op proof. The `SymVal` type is defined above as
-      preparatory scope marker. -/
-  stack    : List Reg
+  /-- Symbolic stack — top first. Slice 4 lifts this to `List SymVal`
+      so buffer-pattern recognition (the `<bufferPtr> + <byte_offset>
+      i32.add | i32.load` chain) can fold into a typed `KernelOp.Load`.
+      Every value-typed slot ops outside the buffer-pattern arms push
+      `SymVal.reg r .u32`; the richer SymVals only appear in the
+      transient sequence introduced by buffer-pattern recognition. -/
+  stack    : List SymVal
   /-- `localIdx → Reg`. Stored as an association list keyed by `Nat`. -/
   localReg : List (Nat × Reg)
   /-- `localIdx → Scalar` — kept in lockstep with `localReg`. -/
@@ -104,13 +106,32 @@ namespace LowerState
 def alloc (s : LowerState) : Reg × LowerState :=
   (s.nextReg, { s with nextReg := s.nextReg + 1 })
 
+/-- Push a plain `.reg r .u32` SymVal onto the stack. The default
+    push every value-producing op uses; buffer-pattern recognition
+    uses `pushSym` directly with a richer SymVal. -/
 def push (s : LowerState) (r : Reg) : LowerState :=
-  { s with stack := r :: s.stack }
+  { s with stack := SymVal.reg r .u32 :: s.stack }
 
+/-- Push a generic SymVal onto the stack. Used by the buffer-pattern
+    recognition arms (slice-4 step 7) — produces e.g. `bufferPtr`,
+    `scaledIdx`, `bufferAccess` entries. -/
+def pushSym (s : LowerState) (sv : SymVal) : LowerState :=
+  { s with stack := sv :: s.stack }
+
+/-- Pop the top stack slot as a plain register. Succeeds only when
+    the top is `.reg r _`; richer SymVals are consumed by the
+    buffer-pattern arms via `popSym` instead. -/
 def pop (s : LowerState) : Option (Reg × LowerState) :=
   match s.stack with
-  | []      => none
-  | r :: rs => some (r, { s with stack := rs })
+  | SymVal.reg r _ :: rs => some (r, { s with stack := rs })
+  | _                    => none
+
+/-- Pop any SymVal off the top — used by buffer-pattern recognition
+    arms that need to inspect the symbolic shape (slice-4 step 7). -/
+def popSym (s : LowerState) : Option (SymVal × LowerState) :=
+  match s.stack with
+  | []        => none
+  | sv :: rs  => some (sv, { s with stack := rs })
 
 def lookupLocal (s : LowerState) (i : Nat) : Option Reg :=
   s.localReg.find? (fun p => p.fst = i) |>.map Prod.snd
