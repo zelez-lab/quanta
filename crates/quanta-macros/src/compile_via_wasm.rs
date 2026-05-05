@@ -120,6 +120,9 @@ pub(crate) fn emit_kernel_source(inputs: &StructRefKernelInputs<'_>) -> Result<S
     let mut body_block = inputs.func.block.clone();
     rewriter.visit_block_mut(&mut body_block);
 
+    // Drop f16 casts/type-annotations — see F16CastEliminator docs.
+    F16CastEliminator.visit_block_mut(&mut body_block);
+
     let stream: TokenStream = quote! {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #kernel_name(#(#params),*) {
@@ -649,6 +652,9 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
     let mut body_block = inputs.func.block.clone();
     rewriter.visit_block_mut(&mut body_block);
 
+    // Drop f16 casts/type-annotations — see F16CastEliminator docs.
+    F16CastEliminator.visit_block_mut(&mut body_block);
+
     // Rewrite texture API calls. `texture_load_2d(tex, x, y)` becomes
     // `texture_load_2d_f32(<slot>, x, y)`; the `tex` ident
     // disappears since it doesn't appear in the emitted WASM
@@ -769,6 +775,55 @@ impl VisitMut for FlatSliceRewriter {
             let idx = index.clone();
             *expr = syn::parse_quote! { *(#ident.add((#idx) as usize)) };
         }
+    }
+}
+
+/// Walk the kernel body and replace `expr as f16` casts and `f16`
+/// type annotations with their f32 equivalents. `f16` is unstable
+/// on stable rustc (issue #116909), so the wasm-twin source can't
+/// use it directly — but kernels written for native compilation
+/// commonly use `as f16` casts to model half-precision arithmetic
+/// (input/output buffers stay f32; the f16 just rounds intermediate
+/// values).
+///
+/// Today the WASM route downgrades f16 to f32 — kernels run at full
+/// precision rather than half, sacrificing the precision-truncation
+/// behavior. This is acceptable because (a) f16 kernels in the
+/// workspace today (gpu_f16) only test that arithmetic stays within
+/// f16-typical tolerance, which f32 trivially satisfies; (b) on-GPU
+/// f16 codegen still happens via the legacy parser's typed
+/// KernelOps until rustc stabilizes f16. Once rustc supports f16 in
+/// stable, we can drop this rewrite and let f16 flow through end-to-
+/// end.
+struct F16CastEliminator;
+
+impl F16CastEliminator {
+    fn rewrite_type(ty: &mut Type) {
+        if let Type::Path(p) = ty
+            && let Some(seg) = p.path.segments.last_mut()
+            && seg.ident == "f16"
+        {
+            seg.ident = format_ident!("f32");
+        }
+    }
+}
+
+impl VisitMut for F16CastEliminator {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        // `expr as f16` → `expr as f32`. Recurse first so the inner
+        // expression has its own f16 casts dealt with.
+        visit_mut::visit_expr_mut(self, expr);
+        if let Expr::Cast(c) = expr {
+            Self::rewrite_type(&mut c.ty);
+        }
+    }
+
+    fn visit_local_mut(&mut self, local: &mut Local) {
+        // `let x: f16 = …;` → `let x: f32 = …;`.
+        if let Pat::Type(pat_ty) = &mut local.pat {
+            Self::rewrite_type(&mut pat_ty.ty);
+        }
+        syn::visit_mut::visit_local_mut(self, local);
     }
 }
 
