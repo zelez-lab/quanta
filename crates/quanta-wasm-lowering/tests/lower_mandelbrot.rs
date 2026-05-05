@@ -43,37 +43,57 @@ fn mandelbrot_side_table() -> SideTable {
 #[test]
 fn lowers_mandelbrot_to_kerneldef() {
     let side_table = mandelbrot_side_table();
-    let result = lower(MANDELBROT_WASM, &side_table);
+    let kernel_def = lower(MANDELBROT_WASM, &side_table)
+        .expect("mandelbrot must lower cleanly end-to-end after panic-call elision");
 
-    // Mandelbrot exercises control flow (block / loop / br_if) plus
-    // mid-loop control patterns (continue) and ops we may not yet
-    // support. The lowering pass is allowed to fail for now — what
-    // we want to assert is that it either produces a valid KernelDef
-    // *or* fails with a precise UnsupportedOp pointing at the gap,
-    // not a panic.
-    match result {
-        Ok(kernel_def) => {
-            assert_eq!(kernel_def.name, "mandelbrot");
-            assert_eq!(kernel_def.params.len(), 4);
+    assert_eq!(kernel_def.name, "mandelbrot");
+    assert_eq!(kernel_def.params.len(), 4);
 
-            let mut saw_quark_id = false;
-            let mut saw_loop = false;
-            for op in &kernel_def.body {
-                if matches!(op, KernelOp::QuarkId { .. }) {
-                    saw_quark_id = true;
-                }
-                if matches!(op, KernelOp::Loop { .. }) {
-                    saw_loop = true;
-                }
-            }
-            assert!(saw_quark_id, "expected QuarkId at top of mandelbrot");
-            assert!(saw_loop, "expected at least one Loop (the while)");
+    let mut saw_quark_id = false;
+    let mut saw_loop = false;
+    let mut saw_store = false;
+    for op in body_ops_recursive(&kernel_def.body) {
+        if matches!(op, KernelOp::QuarkId { .. }) {
+            saw_quark_id = true;
         }
-        Err(e) => {
-            // Surface the exact gap so we know what to implement next.
-            // This branch will turn into a hard assert once Mandelbrot
-            // lowers cleanly end-to-end.
-            eprintln!("[mandelbrot lowering gap] {e}");
+        if matches!(op, KernelOp::Loop { .. }) {
+            saw_loop = true;
+        }
+        if matches!(op, KernelOp::Store { .. }) {
+            saw_store = true;
         }
     }
+    assert!(saw_quark_id, "expected QuarkId at top of mandelbrot");
+    assert!(saw_loop, "expected at least one Loop (the while)");
+    assert!(
+        saw_store,
+        "expected an i32.store of the iteration count to output buffer"
+    );
+
+    // The panic-helper call rustc emits for `idx % d.width` is the
+    // canary for panic-call elision. If anything in the lowered body
+    // mentions a `panic_const_*` or unreachable, the elision regressed.
+    let debug = format!("{:?}", kernel_def.body);
+    assert!(
+        !debug.contains("panic"),
+        "lowered body must not retain any reference to a panic helper"
+    );
+}
+
+fn body_ops_recursive(ops: &[KernelOp]) -> Vec<&KernelOp> {
+    let mut out = Vec::new();
+    for op in ops {
+        out.push(op);
+        match op {
+            KernelOp::Loop { body, .. } => out.extend(body_ops_recursive(body)),
+            KernelOp::Branch {
+                then_ops, else_ops, ..
+            } => {
+                out.extend(body_ops_recursive(then_ops));
+                out.extend(body_ops_recursive(else_ops));
+            }
+            _ => {}
+        }
+    }
+    out
 }

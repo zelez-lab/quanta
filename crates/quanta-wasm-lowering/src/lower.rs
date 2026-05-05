@@ -403,6 +403,60 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
+            RawInstr::I32Load { .. } => {
+                let addr = self.pop()?;
+                match addr {
+                    SymVal::BufferAccess {
+                        slot,
+                        base,
+                        scale: 4,
+                    } => {
+                        let ty = self.scalar_type_for_slot(slot);
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::Load {
+                            dst,
+                            field: slot,
+                            index: base,
+                            ty,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ty));
+                    }
+                    other => {
+                        return Err(LoweringError::UnsupportedOp {
+                            op: format!("i32.load on non-buffer address {other:?}"),
+                            at: self.body.body_offset,
+                        });
+                    }
+                }
+            }
+
+            RawInstr::I32Store { .. } => {
+                let val = self.pop()?;
+                let addr = self.pop()?;
+                let (val_reg, _) = self.commit(val)?;
+                match addr {
+                    SymVal::BufferAccess {
+                        slot,
+                        base,
+                        scale: 4,
+                    } => {
+                        let ty = self.scalar_type_for_slot(slot);
+                        self.emit(KernelOp::Store {
+                            field: slot,
+                            index: base,
+                            src: val_reg,
+                            ty,
+                        });
+                    }
+                    other => {
+                        return Err(LoweringError::UnsupportedOp {
+                            op: format!("i32.store on non-buffer address {other:?}"),
+                            at: self.body.body_offset,
+                        });
+                    }
+                }
+            }
+
             RawInstr::F32Add => self.bin_op_float(BinOp::Add)?,
             RawInstr::F32Sub => self.bin_op_float(BinOp::Sub)?,
             RawInstr::F32Mul => self.bin_op_float(BinOp::Mul)?,
@@ -437,34 +491,41 @@ impl<'a> LowerCtx<'a> {
                         });
                     }
                     None => {
-                        // Defined-function call — refused with a
-                        // source-mapped name when available. rustc
-                        // injects stdlib helpers (e.g. `core::f32::
-                        // <impl f32>::powi`) at function indices the
-                        // lowering pass cannot yet inline. The user-
-                        // visible message points at the callee so the
-                        // gap is actionable.
+                        // Defined-function call. rustc injects stdlib
+                        // helpers (panic family, alloc shims, etc.) at
+                        // function indices the lowering pass cannot
+                        // inline. We special-case the panic family —
+                        // the GPU contract is UB on division by zero,
+                        // so the eqz-guarded panic-then-unreachable
+                        // tail rustc emits for `%`/`/` is dead code.
+                        // Pop the call's args and emit nothing; the
+                        // surrounding control flow already routes the
+                        // safe path past this region.
                         let resolved = self
                             .module
                             .function_names
                             .get(*idx as usize)
                             .and_then(|n| n.as_deref());
-                        let detail = match resolved {
-                            Some(name) => format!(
-                                "call to defined function {idx} (`{name}`) — \
-                                 inlining not yet supported; rewrite the \
-                                 kernel to avoid this call or expose the \
-                                 callee as a Quanta intrinsic"
-                            ),
-                            None => format!(
-                                "call to defined function {idx} (no debug \
-                                 name) — inlining not yet supported"
-                            ),
-                        };
-                        return Err(LoweringError::UnsupportedOp {
-                            op: detail,
-                            at: self.body.body_offset,
-                        });
+                        if resolved.is_some_and(is_panic_helper) {
+                            self.elide_panic_call(*idx)?;
+                        } else {
+                            let detail = match resolved {
+                                Some(name) => format!(
+                                    "call to defined function {idx} (`{name}`) — \
+                                     inlining not yet supported; rewrite the \
+                                     kernel to avoid this call or expose the \
+                                     callee as a Quanta intrinsic"
+                                ),
+                                None => format!(
+                                    "call to defined function {idx} (no debug \
+                                     name) — inlining not yet supported"
+                                ),
+                            };
+                            return Err(LoweringError::UnsupportedOp {
+                                op: detail,
+                                at: self.body.body_offset,
+                            });
+                        }
                     }
                 }
             }
@@ -673,6 +734,16 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32TruncF32U => self.cast_op(ScalarType::F32, ScalarType::U32)?,
             RawInstr::I32TruncF32S => self.cast_op(ScalarType::F32, ScalarType::I32)?,
 
+            // `unreachable` follows an elided panic call as rustc's
+            // dead-code marker; `nop` is a literal no-op. Both produce
+            // no IR.
+            RawInstr::Unreachable | RawInstr::Nop => {}
+
+            // `drop` discards the top of the symbolic stack.
+            RawInstr::Drop => {
+                let _ = self.pop()?;
+            }
+
             other => {
                 return Err(LoweringError::UnsupportedOp {
                     op: format!("{other:?}"),
@@ -762,6 +833,43 @@ impl<'a> LowerCtx<'a> {
             to,
         });
         self.stack.push(SymVal::Reg(dst, to));
+        Ok(())
+    }
+
+    /// Resolve a buffer slot's scalar type from the side table.
+    /// Falls back to `U32` if the slot isn't found — that's the
+    /// default rustc emits for raw integer pointers.
+    fn scalar_type_for_slot(&self, slot: u32) -> ScalarType {
+        self.side_table
+            .params
+            .iter()
+            .find(|p| p.slot == slot)
+            .map(|p| p.scalar)
+            .unwrap_or(ScalarType::U32)
+    }
+
+    /// Drop the args of an elided panic helper from the symbolic
+    /// stack and emit nothing. Caller has already verified the
+    /// callee name belongs to the panic family.
+    fn elide_panic_call(&mut self, fn_idx: u32) -> Result<(), LoweringError> {
+        let info = self.module.functions.get(fn_idx as usize).ok_or_else(|| {
+            LoweringError::ShapeMismatch(format!(
+                "panic-helper function index {fn_idx} out of range"
+            ))
+        })?;
+        let sig = self
+            .module
+            .types
+            .get(info.type_index as usize)
+            .ok_or_else(|| {
+                LoweringError::ShapeMismatch(format!(
+                    "panic-helper type index {} out of range",
+                    info.type_index
+                ))
+            })?;
+        for _ in 0..sig.params.len() {
+            let _ = self.pop()?;
+        }
         Ok(())
     }
 
@@ -860,4 +968,15 @@ impl<'a> LowerCtx<'a> {
             dynamic_shared_bytes: 0,
         }
     }
+}
+
+/// Recognize rustc's panic helpers by mangled-name prefix. The
+/// `_ZN4core9panicking` Itanium prefix covers the whole panic family
+/// (panic_const_*, panic_fmt, panic_bounds_check, …). On `%`/`/` by
+/// zero rustc emits `panic_const_rem_by_zero` / `panic_const_div_by_zero`,
+/// guarded by an `i32.eqz; if/br_if` shape — the GPU contract is UB on
+/// zero-divide so this region is dead at runtime, and the lowering pass
+/// elides the call + the trailing `unreachable`.
+fn is_panic_helper(name: &str) -> bool {
+    name.starts_with("_ZN4core9panicking")
 }
