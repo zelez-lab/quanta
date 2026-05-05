@@ -10,6 +10,7 @@ mod fields_derive;
 mod gpu_type;
 mod kernel_macro;
 mod kernel_signature;
+mod kernel_type_inference;
 mod parse;
 mod shader_macro;
 mod uniforms_derive;
@@ -17,9 +18,6 @@ mod validate;
 mod vertex_derive;
 mod wasm_compile;
 mod wasm_twin;
-
-#[cfg(test)]
-mod diff_test;
 
 use proc_macro::TokenStream;
 use syn::{ItemFn, parse_macro_input};

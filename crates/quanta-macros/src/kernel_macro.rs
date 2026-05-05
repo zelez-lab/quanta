@@ -10,8 +10,10 @@ use crate::compile_via_wasm::{
     compile_struct_ref_kernel_via_wasm,
 };
 use crate::compiler;
-use crate::kernel_signature::{StructRefParam, scan_struct_field_accesses};
-use crate::parse;
+use crate::kernel_signature::{
+    StructRefParam, detect_struct_ref_param, scan_struct_field_accesses,
+};
+use crate::kernel_type_inference::infer_kernel;
 use crate::validate;
 
 /// Core implementation of the `#[quanta::kernel]` attribute macro.
@@ -25,9 +27,9 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     }
 
     // Detect struct-ref parameter: single param typed as `p: &MyStruct`
-    let struct_ref = parse::detect_struct_ref_param(&func);
+    let struct_ref = detect_struct_ref_param(&func);
 
-    let mut kernel_def = match parse::parse_kernel(&func) {
+    let mut kernel_def = match infer_kernel(&func) {
         Ok(def) => def,
         Err(err) => return err.to_compile_error().into(),
     };
@@ -183,7 +185,7 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     // pointers fails the build immediately) and gives step 2.2 working
     // input on day one.
     if let Some(sr) = struct_ref {
-        let field_accesses = parse::scan_struct_field_accesses(&func, &sr.param_name);
+        let field_accesses = scan_struct_field_accesses(&func, &sr.param_name);
         let dispatch_info = build_dispatch_info(&sr, &field_accesses, &kernel_def);
         let dispatch_fn = auto_dispatch::emit_auto_dispatch(&func, &dispatch_info, &wave_fn_name);
         let wasm_twin_fn = crate::wasm_twin::emit_wasm_twin(&func, &dispatch_info);
@@ -199,11 +201,11 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     wave_fn.into()
 }
 
-/// Build the auto_dispatch::StructParamInfo by bridging parse.rs types to
-/// auto_dispatch.rs types, filling in scalar_type_name from the compiled KernelDef.
+/// Build the auto_dispatch::StructParamInfo from kernel_signature
+/// outputs, filling in scalar_type_name from the inferred KernelDef.
 fn build_dispatch_info(
-    sr: &parse::StructRefParam,
-    field_accesses: &[parse::StructFieldAccess],
+    sr: &crate::kernel_signature::StructRefParam,
+    field_accesses: &[crate::kernel_signature::StructFieldAccess],
     kernel_def: &quanta_ir::KernelDef,
 ) -> auto_dispatch::StructParamInfo {
     let fields = field_accesses
