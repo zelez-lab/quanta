@@ -1,4 +1,9 @@
 /target
+# Per-crate target dirs created when cargo runs scoped to a subcrate
+# (e.g. `cargo test -p quanta-macros` from within the crate). The
+# proc-macro's wasm-cache also lands here when CARGO_MANIFEST_DIR
+# points at the crate rather than the workspace root.
+crates/*/target/
 Cargo.lock
 .cargo/config.toml
 dist/
