@@ -67,14 +67,29 @@ impl SymVal {
 /// Per-local information: parameters in slots 0..N, then declared
 /// locals N..M. Each local has a current `SymVal` that lives in it
 /// (for params, it's their initial assignment; for declared locals,
-/// it's whatever the most recent `local.set`/`local.tee` stored).
+/// it's the stable_reg seeded with a default at function entry, then
+/// re-assigned by `local.set`/`local.tee` via `KernelOp::Copy`).
 struct LocalInfo {
     /// Underlying WASM type (i32/i64/f32/f64).
     wasm_ty: WasmTy,
-    /// What's in this local right now. None = uninitialized
-    /// (declared locals start uninitialized; params start with the
-    /// SymVal corresponding to the side-table param).
+    /// What's in this local right now. None = symbolic-only param
+    /// (BufferPtr) that doesn't have a value-register; reads of such
+    /// locals rely on the existing buffer-access pattern recognition.
     val: Option<SymVal>,
+    /// Pre-allocated register that holds the local's value across
+    /// control-flow merges. Allocated unconditionally at function
+    /// entry for every value-typed local (declared or scalar param);
+    /// `None` for buffer-pointer params. Every `local.set`/`local.tee`
+    /// emits `KernelOp::Copy { dst: stable_reg, src: <rhs> }` so the
+    /// reg is *always* defined before any post-merge `local.get` reads
+    /// it — fixes the "register defined inside Branch.else_ops" bug
+    /// when WASM locals are written along multiple paths.
+    stable_reg: Option<Reg>,
+    /// The Quanta IR scalar type carried by `stable_reg`. Mirrors
+    /// `wasm_ty` for declared locals; for scalar params it's the
+    /// side-table-declared type (which may be u32/i32/u8/… all of
+    /// which are i32 in WASM).
+    stable_ty: ScalarType,
 }
 
 /// Top-level lowering driver: WASM bytes + side table → KernelDef.
@@ -215,7 +230,12 @@ impl<'a> LowerCtx<'a> {
                     None
                 }
             };
-            locals.push(LocalInfo { wasm_ty: *ty, val });
+            locals.push(LocalInfo {
+                wasm_ty: *ty,
+                val,
+                stable_reg: None,
+                stable_ty: slot.scalar,
+            });
         }
         // Append declared locals (after params) — uninitialized.
         for (count, ty) in &body.locals {
@@ -223,6 +243,8 @@ impl<'a> LowerCtx<'a> {
                 locals.push(LocalInfo {
                     wasm_ty: *ty,
                     val: None,
+                    stable_reg: None,
+                    stable_ty: scalar_type_for_wasm_ty(*ty),
                 });
             }
         }
@@ -356,7 +378,38 @@ impl<'a> LowerCtx<'a> {
                     ty: slot.scalar,
                 });
                 self.locals[i].val = Some(SymVal::Reg(dst, slot.scalar));
+                // Scalar params don't need a separate stable_reg: the
+                // load above produces a single reg that's already
+                // function-entry-defined.
+                self.locals[i].stable_reg = Some(dst);
             }
+        }
+
+        // Pre-allocate stable registers for every value-typed declared
+        // local (after params), with a default-zero initializer.
+        // Allocating unconditionally at function entry means every
+        // subsequent `local.get` reads a register that was defined
+        // before any control-flow split — fixes the SSA-join issue
+        // when a local is written along multiple paths and read after
+        // the merge.
+        let param_count = self.side_table.params.len();
+        for i in param_count..self.locals.len() {
+            let ty = self.locals[i].stable_ty;
+            let dst = self.alloc_reg();
+            let init = match ty {
+                ScalarType::F16 | ScalarType::F32 => ConstValue::F32(0.0),
+                ScalarType::F64 => ConstValue::F64(0.0),
+                ScalarType::Bool => ConstValue::Bool(false),
+                ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
+                    ConstValue::I32(0)
+                }
+                ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64 => {
+                    ConstValue::U32(0)
+                }
+            };
+            self.emit(KernelOp::Const { dst, value: init });
+            self.locals[i].stable_reg = Some(dst);
+            self.locals[i].val = Some(SymVal::Reg(dst, ty));
         }
 
         let instrs = self.body.instructions.clone();
@@ -365,6 +418,31 @@ impl<'a> LowerCtx<'a> {
         }
 
         Ok(self.into_kernel_def())
+    }
+
+    /// Materialize a `local.set` / `local.tee` against the stable
+    /// per-local register: emits `KernelOp::Copy { dst: stable_reg,
+    /// src }` and updates `locals[idx].val` to point at the stable
+    /// reg. Returns the stable reg + scalar type.
+    fn write_local_via_copy(
+        &mut self,
+        idx: usize,
+        v: SymVal,
+    ) -> Result<(Reg, ScalarType), LoweringError> {
+        let (src, _src_ty) = self.commit(v)?;
+        let stable_reg = self.locals[idx].stable_reg.ok_or_else(|| {
+            LoweringError::ShapeMismatch(format!(
+                "local {idx} has no stable register — buffer-pointer params can't be set"
+            ))
+        })?;
+        let stable_ty = self.locals[idx].stable_ty;
+        self.emit(KernelOp::Copy {
+            dst: stable_reg,
+            src,
+            ty: stable_ty,
+        });
+        self.locals[idx].val = Some(SymVal::Reg(stable_reg, stable_ty));
+        Ok((stable_reg, stable_ty))
     }
 
     fn lower_instr(&mut self, instr: &RawInstr) -> Result<(), LoweringError> {
@@ -377,13 +455,31 @@ impl<'a> LowerCtx<'a> {
             }
             RawInstr::LocalSet(idx) => {
                 let v = self.pop()?;
-                self.locals[*idx as usize].val = Some(v);
+                // Route value-typed SymVals (Reg/Opaque/Const) through
+                // the stable register so post-merge reads see a defined
+                // value. Buffer/address SymVals (BufferPtr/ScaledIdx/
+                // BufferAccess) carry no scalar value to copy and keep
+                // their existing symbolic binding — they're consumed
+                // by load/store pattern recognition, not arithmetic.
+                if self.locals[*idx as usize].stable_reg.is_some() && is_value_symval(&v) {
+                    self.write_local_via_copy(*idx as usize, v)?;
+                } else {
+                    self.locals[*idx as usize].val = Some(v);
+                }
             }
             RawInstr::LocalTee(idx) => {
                 let v = self.stack.last().copied().ok_or_else(|| {
                     LoweringError::ShapeMismatch("local.tee on empty stack".into())
                 })?;
-                self.locals[*idx as usize].val = Some(v);
+                if self.locals[*idx as usize].stable_reg.is_some() && is_value_symval(&v) {
+                    let _ = self.pop()?;
+                    let (reg, ty) = self.write_local_via_copy(*idx as usize, v)?;
+                    // tee leaves the value on stack — the post-tee
+                    // value is the stable reg's contents.
+                    self.stack.push(SymVal::Reg(reg, ty));
+                } else {
+                    self.locals[*idx as usize].val = Some(v);
+                }
             }
             RawInstr::I32Const(v) => self.stack.push(SymVal::I32Const(*v)),
             RawInstr::F32Const(v) => {
@@ -1075,6 +1171,31 @@ impl<'a> LowerCtx<'a> {
             subgroup_size: None,
             dynamic_shared_bytes: 0,
         }
+    }
+}
+
+/// True if a SymVal carries a scalar value (committable to a Reg via
+/// `commit`). Buffer pointers and address-arithmetic SymVals don't —
+/// they're consumed by the load/store pattern recognizer instead.
+fn is_value_symval(v: &SymVal) -> bool {
+    matches!(
+        v,
+        SymVal::Reg(..) | SymVal::Opaque(..) | SymVal::I32Const(..)
+    )
+}
+
+/// Map a raw WASM value type to the closest Quanta IR scalar type.
+/// WASM only carries i32/i64/f32/f64 — signed/unsigned and narrower
+/// widths (u8/u16/etc.) are erased by rustc's wasm32 backend. We pick
+/// `U32`/`U64` for integer locals because that matches how rustc emits
+/// most pointer-arithmetic and unsigned-by-default kernels; for typed
+/// per-slot reads, `scalar_type_for_slot` overrides per the side table.
+fn scalar_type_for_wasm_ty(ty: WasmTy) -> ScalarType {
+    match ty {
+        WasmTy::I32 => ScalarType::U32,
+        WasmTy::I64 => ScalarType::U64,
+        WasmTy::F32 => ScalarType::F32,
+        WasmTy::F64 => ScalarType::F64,
     }
 }
 
