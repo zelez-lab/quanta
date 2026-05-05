@@ -1,11 +1,20 @@
-//! Verus mirror of `quanta-macros::parse::stmt` — GPU kernel statement parser.
+//! Verus proof of abstract GPU-kernel statement-to-KernelOp mappings.
 //!
-//! Mirrors: crates/quanta-macros/src/parse/stmt.rs
+//! Pre-cutover this file mirrored
+//! `crates/quanta-macros/src/parse/stmt.rs` — that file (and its
+//! `parse/expr.rs` sibling) was the legacy syn-AST body translator
+//! that the WASM-route cutover (2026-05-05) deleted. The
+//! production path is now `compile_via_wasm` +
+//! `quanta-wasm-lowering`, which is UNVERIFIED — see
+//! `memory/verification_status_post_cutover.md`.
 //!
-//! The statement parser transforms Rust AST statements into KernelOp IR nodes.
-//! This is the core of the macro-side compiler: it converts let bindings,
-//! for loops, if/else, barriers, shared memory declarations, assignments,
-//! and compound assignments into the register-based IR.
+//! The properties proven below remain meaningful because they
+//! describe what ANY correct kernel-source translator must do
+//! (let-bindings allocate registers, for-loops produce
+//! `KernelOp::Loop`, etc.). They no longer correspond 1:1 to a
+//! production Rust function — they're abstract spec artifacts
+//! pending the step-059 preservation proof for the WASM-route
+//! translator.
 //!
 //! Proves:
 //!   T950: `let x = expr` produces a variable binding (register allocation)

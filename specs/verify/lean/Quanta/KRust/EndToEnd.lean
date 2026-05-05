@@ -39,8 +39,13 @@ open Quanta.KOps (KernelOp)
 -- ════════════════════════════════════════════════════════════════════
 
 /-- Build a translator context populated with the kernel's
-    parameters before walking the body. Mirrors what the proc
-    macro does in `parse.rs::parse_kernel`. -/
+    parameters before walking the body. Specifies the
+    SHAPE of an abstract kernel translator. The legacy syn-AST
+    `parse.rs::parse_kernel` translator that this used to mirror
+    was deleted in the WASM-route cutover (2026-05-05); the
+    production path is now `compile_via_wasm` +
+    `quanta-wasm-lowering`, which is currently UNVERIFIED. See
+    memory/verification_status_post_cutover.md. -/
 def Kernel.initialCtx (k : Kernel) : EmitCtx :=
   let params := k.params.map (fun p => (p.name, p.slot))
   EmitCtx.empty params

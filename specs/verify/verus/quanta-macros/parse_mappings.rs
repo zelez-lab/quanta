@@ -1,11 +1,21 @@
-//! Verus mirror of `quanta-macros::parse` — function-name-to-KernelOp
-//! and operator-to-IR-enum mappings.
+//! Verus proof of abstract mappings: function-name-to-KernelOp,
+//! operator-to-IR-enum, scalar-name-to-type.
 //!
-//! Mirrors:
-//!   crates/quanta-macros/src/parse.rs      — syn_binop_to_ir, syn_binop_to_cmp,
-//!                                            assign_op_to_binop, name_to_math_fn,
-//!                                            scalar_type_from_path
-//!   crates/quanta-macros/src/parse/expr.rs — emit_call (quark_id, proton_id, etc.)
+//! These mappings used to mirror specific functions in the legacy
+//! syn-AST kernel parser (`syn_binop_to_ir`, `name_to_math_fn`,
+//! `scalar_type_from_path` in `crates/quanta-macros/src/parse.rs`,
+//! plus `emit_call` in `crates/quanta-macros/src/parse/expr.rs`).
+//! That translator was deleted in the WASM-route cutover
+//! (2026-05-05). The proven properties below remain valid because
+//! they describe abstract injection / well-typedness invariants
+//! that any kernel-source translator must respect — including the
+//! new `compile_via_wasm` + `quanta-wasm-lowering` path.
+//!
+//! See `memory/verification_status_post_cutover.md` for the
+//! end-to-end picture: these mappings + the Lean abstract
+//! translator + verified backend emitters cover the OUT shape of
+//! the IR; the rustc → wasm32 → KernelOps translator itself is
+//! UNVERIFIED pending step 059.
 //!
 //! Proves:
 //!   T800: Each Rust function name maps to exactly one KernelOp variant

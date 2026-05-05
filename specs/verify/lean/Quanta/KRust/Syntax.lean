@@ -68,11 +68,18 @@ def Scalar.surface : Scalar → String
 -- Literals
 -- ════════════════════════════════════════════════════════════════════
 --
--- Mirrors `Expr::Lit` cases handled by `emit_literal` in
--- `crates/quanta-macros/src/parse/expr.rs`. Bool, signed int,
--- unsigned int, float (f32 / f64). The `whole`/`frac` shape on
--- floats avoids modeling IEEE-754 in the syntax layer — the
--- semantics module recovers a numeric value from those fields.
+-- Abstract literal shape covering bool, signed int, unsigned
+-- int, and float (f32 / f64). The `whole`/`frac` shape on floats
+-- avoids modeling IEEE-754 in the syntax layer — the semantics
+-- module recovers a numeric value from those fields.
+--
+-- This used to mirror `emit_literal` in
+-- `crates/quanta-macros/src/parse/expr.rs`, which was deleted in
+-- the WASM-route cutover (2026-05-05). The production path now
+-- uses `compile_via_wasm` + `quanta-wasm-lowering`. See
+-- memory/verification_status_post_cutover.md for what this Lean
+-- model still covers (abstract spec) vs. what's unverified (the
+-- WASM-route translator implementation).
 
 inductive Lit where
   | bool   (b : Bool)
@@ -129,9 +136,13 @@ inductive WaveFn where
 -- Expressions
 -- ════════════════════════════════════════════════════════════════════
 --
--- One constructor per `syn::Expr` arm `emit_expr` accepts (see
--- `crates/quanta-macros/src/parse/expr.rs::emit_expr`). Order
--- preserved for diff legibility against the Rust source.
+-- Abstract expression syntax — one constructor per syn::Expr
+-- arm a kernel-source translator should accept. Used to be a
+-- direct mirror of `emit_expr` in
+-- `crates/quanta-macros/src/parse/expr.rs`; that translator was
+-- deleted in the WASM-route cutover (2026-05-05) and the
+-- production path is no longer this Lean spec's direct image.
+-- See memory/verification_status_post_cutover.md.
 
 mutual
 inductive Expr where

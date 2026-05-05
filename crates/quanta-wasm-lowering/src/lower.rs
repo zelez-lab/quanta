@@ -484,7 +484,9 @@ impl<'a> LowerCtx<'a> {
         // chain on the function frame (the init must be the very
         // first thing that runs).
         let function_frame = &mut self.frames[0];
-        function_frame.ops.insert(0, KernelOp::Const { dst, value: init });
+        function_frame
+            .ops
+            .insert(0, KernelOp::Const { dst, value: init });
         self.locals[idx].stable_reg = Some(dst);
         self.locals[idx].stable_ty = ty;
     }
