@@ -74,7 +74,8 @@ pub(crate) fn compile_kernel_to_wasm(kernel_decl: &str) -> Result<Vec<u8>, Strin
 }
 
 /// Wrap a kernel decl in a self-contained no_std crate with the
-/// intrinsic externs in scope as `quanta::intrinsics::*`.
+/// intrinsic externs (and the `F32Ext` math-method polyfill) in
+/// scope as `quanta::intrinsics::*`.
 fn wrap_kernel_source(kernel_decl: &str) -> String {
     let intrinsics = strip_intrinsics_top_attrs(INTRINSICS_SRC);
     format!(
@@ -88,6 +89,40 @@ fn wrap_kernel_source(kernel_decl: &str) -> String {
          pub mod quanta {{\n\
              pub mod intrinsics {{\n\
                  {intrinsics}\n\
+                 \n\
+                 // F32Ext polyfill: in no_std the float math methods\n\
+                 // (`.sqrt()`, `.sin()`, …) don't live on `f32` because\n\
+                 // they're in `std::f32`. Kernels written for native\n\
+                 // compilation use those ergonomic methods, so we provide\n\
+                 // a trait that delegates to the matching `*_f32` extern\n\
+                 // functions above. The kernel's `use quanta::intrinsics::*;`\n\
+                 // brings this into scope so `x.sqrt()` resolves.\n\
+                 pub trait F32Ext: Sized {{\n\
+                     fn sqrt(self) -> Self;\n\
+                     fn sin(self) -> Self;\n\
+                     fn cos(self) -> Self;\n\
+                     fn tan(self) -> Self;\n\
+                     fn exp(self) -> Self;\n\
+                     fn ln(self) -> Self;\n\
+                     fn abs(self) -> Self;\n\
+                     fn floor(self) -> Self;\n\
+                     fn ceil(self) -> Self;\n\
+                     fn round(self) -> Self;\n\
+                     fn powf(self, exp: Self) -> Self;\n\
+                 }}\n\
+                 impl F32Ext for f32 {{\n\
+                     #[inline] fn sqrt(self) -> Self {{ unsafe {{ sqrt_f32(self) }} }}\n\
+                     #[inline] fn sin(self) -> Self {{ unsafe {{ sin_f32(self) }} }}\n\
+                     #[inline] fn cos(self) -> Self {{ unsafe {{ cos_f32(self) }} }}\n\
+                     #[inline] fn tan(self) -> Self {{ unsafe {{ tan_f32(self) }} }}\n\
+                     #[inline] fn exp(self) -> Self {{ unsafe {{ exp_f32(self) }} }}\n\
+                     #[inline] fn ln(self) -> Self {{ unsafe {{ log_f32(self) }} }}\n\
+                     #[inline] fn abs(self) -> Self {{ unsafe {{ abs_f32(self) }} }}\n\
+                     #[inline] fn floor(self) -> Self {{ unsafe {{ floor_f32(self) }} }}\n\
+                     #[inline] fn ceil(self) -> Self {{ unsafe {{ ceil_f32(self) }} }}\n\
+                     #[inline] fn round(self) -> Self {{ unsafe {{ round_f32(self) }} }}\n\
+                     #[inline] fn powf(self, exp: Self) -> Self {{ unsafe {{ pow_f32(self, exp) }} }}\n\
+                 }}\n\
              }}\n\
          }}\n\
          \n\

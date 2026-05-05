@@ -5,7 +5,10 @@ use quote::{format_ident, quote};
 use syn::{Expr, ItemFn, Lit, parse::Parser};
 
 use crate::auto_dispatch;
-use crate::compile_via_wasm::{StructRefKernelInputs, compile_struct_ref_kernel_via_wasm};
+use crate::compile_via_wasm::{
+    FlatParamKernelInputs, StructRefKernelInputs, compile_flat_param_kernel_via_wasm,
+    compile_struct_ref_kernel_via_wasm,
+};
 use crate::compiler;
 use crate::kernel_signature::{StructRefParam, scan_struct_field_accesses};
 use crate::parse;
@@ -32,15 +35,18 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     kernel_def.workgroup_size = kernel_attrs.workgroup_size;
     kernel_def.subgroup_size = kernel_attrs.subgroup_size;
 
-    // WASM-route cutover gate (slice 5d). When `QUANTA_WASM_ROUTE=1`,
-    // re-derive `kernel_def.body` from rustc → wasm32 → KernelOps for
-    // struct-ref kernels. The legacy parser still runs to produce the
-    // params + their inferred scalar types — only the body emission is
-    // swapped out. Off by default while we close coverage gaps in
-    // `quanta-wasm-lowering` against the cookbook examples.
+    // WASM-route cutover (slice 5d). When `QUANTA_WASM_ROUTE=1` is
+    // set, re-derive `kernel_def.body` (and `next_reg`) by routing
+    // through `rustc → wasm32 → KernelOps`. The legacy parser still
+    // produces `kernel_def.params` with inferred scalar types — those
+    // bridge into the WASM lowerer's SideTable. Off by default while
+    // we close coverage gaps in `quanta-wasm-lowering` against the
+    // workspace's kernels (texture/f16/shared/continue/intrinsic
+    // calls beyond `quark_id` and `sqrt_f32` — see slices 5d.5–5d.7).
+    // The end state is gate removed and legacy body translator
+    // deleted; until then we route opt-in.
     if wasm_route_enabled()
-        && let Some(sr) = &struct_ref
-        && let Err(err) = swap_body_via_wasm_route(&mut kernel_def, &func, sr)
+        && let Err(err) = swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref())
     {
         let msg = format!("WASM route (QUANTA_WASM_ROUTE=1) failed: {err}");
         return syn::Error::new_spanned(&func.sig.ident, msg)
@@ -408,48 +414,57 @@ fn parse_workgroup_expr(expr: &Expr) -> Option<[u32; 3]> {
     None
 }
 
-/// True when the WASM-route cutover gate is on. Slice 5d ships this
-/// behind `QUANTA_WASM_ROUTE=1` so we can validate cookbook coverage
-/// kernel-by-kernel before flipping the default.
+/// True when the WASM-route cutover gate is on. Off by default;
+/// callers opt in by setting `QUANTA_WASM_ROUTE=1` at build time.
 fn wasm_route_enabled() -> bool {
     std::env::var_os("QUANTA_WASM_ROUTE").as_deref() == Some(std::ffi::OsStr::new("1"))
 }
 
 /// Re-derive `kernel_def.body` (and `next_reg`) by routing the kernel
 /// through `rustc → wasm32 → KernelOps`. The legacy parser already
-/// produced `kernel_def.params` with inferred scalar types — those get
-/// projected into `field_accesses[*].scalar_type_name` to seed the
-/// SideTable for the WASM lowerer. On success the body is replaced
-/// in place; on failure the caller surfaces a `compile_error!`.
+/// produced `kernel_def.params` with inferred scalar types — those
+/// bridge into the SideTable for the WASM lowerer. Dispatches to the
+/// struct-ref or flat-param emitter based on the kernel signature.
 fn swap_body_via_wasm_route(
     kernel_def: &mut quanta_ir::KernelDef,
     func: &ItemFn,
-    sr: &StructRefParam,
+    sr: Option<&StructRefParam>,
 ) -> Result<(), String> {
-    let mut accesses = scan_struct_field_accesses(func, &sr.param_name);
-    for access in accesses.iter_mut() {
-        let ty = kernel_def
-            .params
-            .iter()
-            .find(|p| param_slot(p) == access.slot as u32)
-            .map(param_scalar_type)
-            .ok_or_else(|| {
-                format!(
-                    "no legacy KernelParam for slot {} (field `{}`); cannot \
-                     bridge scalar type into WASM SideTable",
-                    access.slot, access.name
-                )
-            })?;
-        access.scalar_type_name = scalar_type_to_name(ty);
-    }
-
-    let inputs = StructRefKernelInputs {
-        func,
-        struct_ref: sr,
-        field_accesses: accesses,
-        workgroup_size: kernel_def.workgroup_size,
+    let wasm_def = match sr {
+        Some(sr) => {
+            let mut accesses = scan_struct_field_accesses(func, &sr.param_name);
+            for access in accesses.iter_mut() {
+                let ty = kernel_def
+                    .params
+                    .iter()
+                    .find(|p| param_slot(p) == access.slot as u32)
+                    .map(param_scalar_type)
+                    .ok_or_else(|| {
+                        format!(
+                            "no legacy KernelParam for slot {} (field `{}`); cannot \
+                             bridge scalar type into WASM SideTable",
+                            access.slot, access.name
+                        )
+                    })?;
+                access.scalar_type_name = scalar_type_to_name(ty);
+            }
+            let inputs = StructRefKernelInputs {
+                func,
+                struct_ref: sr,
+                field_accesses: accesses,
+                workgroup_size: kernel_def.workgroup_size,
+            };
+            compile_struct_ref_kernel_via_wasm(&inputs)?
+        }
+        None => {
+            let inputs = FlatParamKernelInputs {
+                func,
+                params: kernel_def.params.clone(),
+                workgroup_size: kernel_def.workgroup_size,
+            };
+            compile_flat_param_kernel_via_wasm(&inputs)?
+        }
     };
-    let wasm_def = compile_struct_ref_kernel_via_wasm(&inputs)?;
 
     kernel_def.body = wasm_def.body;
     kernel_def.next_reg = wasm_def.next_reg;

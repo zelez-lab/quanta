@@ -36,6 +36,9 @@ use syn::{Expr, ExprField, ExprIndex, ExprPath, ItemFn, Member};
 use crate::kernel_signature::{StructFieldAccess, StructRefParam};
 use crate::wasm_compile::compile_kernel_to_wasm;
 
+use quanta_ir::KernelParam;
+use syn::{FnArg, Pat, Type};
+
 /// Inputs needed to drive the WASM route on a struct-ref kernel.
 pub(crate) struct StructRefKernelInputs<'a> {
     /// The original kernel `fn item` as written by the user.
@@ -257,6 +260,193 @@ impl VisitMut for StructRefRewriter {
 #[allow(dead_code)]
 fn _unused_span_anchor() -> Span {
     Span::call_site()
+}
+
+// ── Flat-param kernels ─────────────────────────────────────────────────
+
+/// Inputs needed to drive the WASM route on a flat-param kernel —
+/// `fn k(a: &[f32], b: &mut [f32], n: u32)` shape.
+pub(crate) struct FlatParamKernelInputs<'a> {
+    /// The original kernel `fn item` as written by the user.
+    pub func: &'a ItemFn,
+    /// Typed kernel params (slot + scalar type), one per fn arg.
+    /// Comes from the legacy parser; carries scalar-type inference
+    /// the WASM lowerer needs to build a SideTable. Order MUST
+    /// match `func.sig.inputs`.
+    pub params: Vec<KernelParam>,
+    /// Workgroup dims; carried verbatim into the SideTable.
+    pub workgroup_size: [u32; 3],
+}
+
+/// Drive the full WASM-route pipeline for a flat-param kernel.
+pub(crate) fn compile_flat_param_kernel_via_wasm(
+    inputs: &FlatParamKernelInputs<'_>,
+) -> Result<KernelDef, String> {
+    let source = emit_flat_param_source(inputs)?;
+    let wasm_bytes = compile_kernel_to_wasm(&source)?;
+    let side_table = build_flat_side_table(inputs);
+    lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))
+}
+
+fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, String> {
+    let kernel_name = &inputs.func.sig.ident;
+
+    // Iterate fn args in declaration order. Slices become raw
+    // pointers; scalars stay. We also collect each arg's name so the
+    // body rewriter can recognize `a[i]` / `a[i] = …` patterns.
+    let mut params_emitted = Vec::new();
+    let mut slice_param_names = Vec::new();
+    for (i, arg) in inputs.func.sig.inputs.iter().enumerate() {
+        let FnArg::Typed(pat_ty) = arg else {
+            return Err("flat-param kernel cannot take `self`".into());
+        };
+        let name = match pat_ty.pat.as_ref() {
+            Pat::Ident(id) => id.ident.to_string(),
+            _ => return Err("flat-param kernel arg pattern must be a plain ident".into()),
+        };
+        let ident = format_ident!("{}", name);
+        let p = inputs.params.get(i).ok_or_else(|| {
+            format!(
+                "flat-param input #{i} `{name}` has no matching KernelParam in scalar-type bridge"
+            )
+        })?;
+        let ty_str = scalar_type_to_short_name(scalar_type_of(p));
+        let ty = scalar_to_rust_ty(ty_str)?;
+        match (&*pat_ty.ty, p) {
+            (Type::Reference(r), KernelParam::FieldRead { .. }) if is_slice(&r.elem) => {
+                params_emitted.push(quote! { #ident: *const #ty });
+                slice_param_names.push(name);
+            }
+            (Type::Reference(r), KernelParam::FieldWrite { .. }) if is_slice(&r.elem) => {
+                params_emitted.push(quote! { #ident: *mut #ty });
+                slice_param_names.push(name);
+            }
+            (_, KernelParam::Constant { .. }) => {
+                params_emitted.push(quote! { #ident: #ty });
+            }
+            _ => {
+                return Err(format!(
+                    "flat-param arg `{name}` has an unsupported shape — expected `&[T]`, `&mut [T]`, or a scalar; KernelParam was {:?}",
+                    p
+                ));
+            }
+        }
+    }
+
+    // Rewrite body: `slice_name[idx]` → `*slice_name.add(idx as usize)`.
+    let mut rewriter = FlatSliceRewriter {
+        slice_names: slice_param_names,
+    };
+    let mut body_block = inputs.func.block.clone();
+    rewriter.visit_block_mut(&mut body_block);
+
+    let stream: TokenStream = quote! {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #kernel_name(#(#params_emitted),*) {
+            #[allow(unused_imports)]
+            use crate::quanta::intrinsics::*;
+            unsafe { #body_block }
+        }
+    };
+    Ok(stream.to_string())
+}
+
+fn build_flat_side_table(inputs: &FlatParamKernelInputs<'_>) -> SideTable {
+    let mut params = Vec::new();
+    for (i, p) in inputs.params.iter().enumerate() {
+        let (slot, kind, scalar) = match p {
+            KernelParam::FieldRead {
+                slot, scalar_type, ..
+            } => (*slot, ParamKind::BufferRead, *scalar_type),
+            KernelParam::FieldWrite {
+                slot, scalar_type, ..
+            } => (*slot, ParamKind::BufferWrite, *scalar_type),
+            KernelParam::Constant {
+                slot, scalar_type, ..
+            } => (*slot, ParamKind::Scalar, *scalar_type),
+            other => {
+                // Texture-typed flat params aren't supported by the
+                // WASM route yet; keep them out of the side table so
+                // the lowerer surfaces a clear error.
+                let _ = other;
+                continue;
+            }
+        };
+        params.push(ParamSlot {
+            wasm_index: i as u32,
+            slot,
+            kind,
+            scalar,
+        });
+    }
+    SideTable {
+        kernel_name: inputs.func.sig.ident.to_string(),
+        params,
+        workgroup_size: inputs.workgroup_size,
+    }
+}
+
+fn scalar_type_of(p: &KernelParam) -> ScalarType {
+    match p {
+        KernelParam::FieldRead { scalar_type, .. }
+        | KernelParam::FieldWrite { scalar_type, .. }
+        | KernelParam::Constant { scalar_type, .. }
+        | KernelParam::Texture2DRead { scalar_type, .. }
+        | KernelParam::Texture2DWrite { scalar_type, .. }
+        | KernelParam::Texture3DRead { scalar_type, .. } => *scalar_type,
+    }
+}
+
+fn scalar_type_to_short_name(ty: ScalarType) -> &'static str {
+    match ty {
+        ScalarType::F16 => "f16",
+        ScalarType::F32 => "f32",
+        ScalarType::F64 => "f64",
+        ScalarType::U8 => "u8",
+        ScalarType::U16 => "u16",
+        ScalarType::U32 => "u32",
+        ScalarType::U64 => "u64",
+        ScalarType::I8 => "i8",
+        ScalarType::I16 => "i16",
+        ScalarType::I32 => "i32",
+        ScalarType::I64 => "i64",
+        ScalarType::Bool => "bool",
+    }
+}
+
+fn is_slice(ty: &Type) -> bool {
+    matches!(ty, Type::Slice(_))
+}
+
+/// Rewrites `slice_name[idx]` → `*slice_name.add(idx as usize)` for
+/// every slice param. Mirrors the struct-ref rewriter but matches on
+/// a plain Path expression instead of `param.field`.
+struct FlatSliceRewriter {
+    slice_names: Vec<String>,
+}
+
+impl FlatSliceRewriter {
+    fn is_slice_ident(&self, name: &str) -> bool {
+        self.slice_names.iter().any(|n| n == name)
+    }
+}
+
+impl VisitMut for FlatSliceRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        visit_mut::visit_expr_mut(self, expr);
+
+        if let Expr::Index(ExprIndex {
+            expr: base, index, ..
+        }) = expr
+            && let Expr::Path(ExprPath { path, .. }) = base.as_ref()
+            && let Some(seg) = path.segments.last()
+            && self.is_slice_ident(&seg.ident.to_string())
+        {
+            let ident = seg.ident.clone();
+            let idx = index.clone();
+            *expr = syn::parse_quote! { *(#ident.add((#idx) as usize)) };
+        }
+    }
 }
 
 #[cfg(test)]
