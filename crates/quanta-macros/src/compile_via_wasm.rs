@@ -551,10 +551,14 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
     let kernel_name = &inputs.func.sig.ident;
 
     // Iterate fn args in declaration order. Slices become raw
-    // pointers; scalars stay. We also collect each arg's name so the
-    // body rewriter can recognize `a[i]` / `a[i] = …` patterns.
+    // pointers; scalars stay; textures are STRIPPED (they're bound
+    // by slot at dispatch time, not passed at runtime — see
+    // TextureCallRewriter below). We also collect each arg's name so
+    // the body rewriter can recognize `a[i]` / `a[i] = …` patterns
+    // and `texture_load_2d(t, x, y)` calls.
     let mut params_emitted = Vec::new();
     let mut slice_param_names = Vec::new();
+    let mut texture_params: Vec<(String, u32, ScalarType, TextureKind)> = Vec::new();
     let arg_count = inputs.func.sig.inputs.len();
     for (i, arg) in inputs.func.sig.inputs.iter().enumerate() {
         let FnArg::Typed(pat_ty) = arg else {
@@ -570,6 +574,27 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
                 "flat-param input #{i} `{name}` has no matching KernelParam in scalar-type bridge"
             )
         })?;
+        match p {
+            KernelParam::Texture2DRead {
+                slot, scalar_type, ..
+            } => {
+                texture_params.push((name, *slot, *scalar_type, TextureKind::Tex2DRead));
+                continue;
+            }
+            KernelParam::Texture2DWrite {
+                slot, scalar_type, ..
+            } => {
+                texture_params.push((name, *slot, *scalar_type, TextureKind::Tex2DWrite));
+                continue;
+            }
+            KernelParam::Texture3DRead {
+                slot, scalar_type, ..
+            } => {
+                texture_params.push((name, *slot, *scalar_type, TextureKind::Tex3DRead));
+                continue;
+            }
+            _ => {}
+        }
         let ty_str = scalar_type_to_short_name(scalar_type_of(p));
         let ty = scalar_to_rust_ty(ty_str)?;
         match (&*pat_ty.ty, p) {
@@ -586,7 +611,7 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
             }
             _ => {
                 return Err(format!(
-                    "flat-param arg `{name}` has an unsupported shape — expected `&[T]`, `&mut [T]`, or a scalar; KernelParam was {:?}",
+                    "flat-param arg `{name}` has an unsupported shape — expected `&[T]`, `&mut [T]`, `&Texture2D<T>`, `&mut Texture2D<T>`, `&Texture3D<T>`, or a scalar; KernelParam was {:?}",
                     p
                 ));
             }
@@ -624,6 +649,17 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
     let mut body_block = inputs.func.block.clone();
     rewriter.visit_block_mut(&mut body_block);
 
+    // Rewrite texture API calls. `texture_load_2d(tex, x, y)` becomes
+    // `texture_load_2d_f32(<slot>, x, y)`; the `tex` ident
+    // disappears since it doesn't appear in the emitted WASM
+    // signature anymore. Same shape for sample/write/3D variants.
+    if !texture_params.is_empty() {
+        let mut tex_rewriter = TextureCallRewriter {
+            params: texture_params,
+        };
+        tex_rewriter.visit_block_mut(&mut body_block);
+    }
+
     let stream: TokenStream = quote! {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #kernel_name(#(#params_emitted),*) {
@@ -637,7 +673,8 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
 
 fn build_flat_side_table(inputs: &FlatParamKernelInputs<'_>) -> SideTable {
     let mut params = Vec::new();
-    for (i, p) in inputs.params.iter().enumerate() {
+    let mut wasm_index: u32 = 0;
+    for p in inputs.params.iter() {
         let (slot, kind, scalar) = match p {
             KernelParam::FieldRead {
                 slot, scalar_type, ..
@@ -648,20 +685,22 @@ fn build_flat_side_table(inputs: &FlatParamKernelInputs<'_>) -> SideTable {
             KernelParam::Constant {
                 slot, scalar_type, ..
             } => (*slot, ParamKind::Scalar, *scalar_type),
-            other => {
-                // Texture-typed flat params aren't supported by the
-                // WASM route yet; keep them out of the side table so
-                // the lowerer surfaces a clear error.
-                let _ = other;
-                continue;
-            }
+            // Textures are bound by slot at dispatch time, not passed
+            // to the kernel as runtime args. They're stripped from the
+            // emitted WASM signature, so they don't appear in the
+            // SideTable either (lower_module's arity check enforces
+            // SideTable.params.len() == WASM sig.params.len()).
+            KernelParam::Texture2DRead { .. }
+            | KernelParam::Texture2DWrite { .. }
+            | KernelParam::Texture3DRead { .. } => continue,
         };
         params.push(ParamSlot {
-            wasm_index: i as u32,
+            wasm_index,
             slot,
             kind,
             scalar,
         });
+        wasm_index += 1;
     }
     SideTable {
         kernel_name: inputs.func.sig.ident.to_string(),
@@ -731,6 +770,121 @@ impl VisitMut for FlatSliceRewriter {
             *expr = syn::parse_quote! { *(#ident.add((#idx) as usize)) };
         }
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum TextureKind {
+    Tex2DRead,
+    Tex2DWrite,
+    Tex3DRead,
+}
+
+/// Rewrites texture API calls so the kernel source compiles without
+/// the `Texture2D<T>` placeholder type. The kernel writes
+/// `texture_load_2d(tex, x, y)` etc. with `tex` being a function arg
+/// of texture-ref type. The flat-param emitter strips the texture
+/// arg from the WASM signature (textures are bound by slot, not
+/// passed at runtime); this rewriter likewise replaces every
+/// `texture_<op>(<tex_arg>, …)` call with `texture_<op>_<ty>(<slot>,
+/// …)`, where `<slot>` is a `u32` literal so the lowerer can lift it
+/// into the IR's `texture: u32` field.
+///
+/// `params` carries `(arg_name, slot, scalar_type, kind)` for every
+/// texture param of the kernel. Only the canonical free-function
+/// call shapes are matched — method-style `tex.load(x, y)` is not
+/// rewritten yet (kernels in the workspace today use the free-function
+/// API exclusively).
+struct TextureCallRewriter {
+    params: Vec<(String, u32, ScalarType, TextureKind)>,
+}
+
+impl TextureCallRewriter {
+    fn lookup<'a>(&'a self, name: &str) -> Option<&'a (String, u32, ScalarType, TextureKind)> {
+        self.params.iter().find(|(n, _, _, _)| n == name)
+    }
+}
+
+impl VisitMut for TextureCallRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        // Recurse first so nested patterns get rewritten before we
+        // check the parent.
+        visit_mut::visit_expr_mut(self, expr);
+
+        let Expr::Call(call) = expr else {
+            return;
+        };
+        let Expr::Path(ExprPath { path, .. }) = call.func.as_ref() else {
+            return;
+        };
+        let Some(seg) = path.segments.last() else {
+            return;
+        };
+        let fn_name = seg.ident.to_string();
+
+        // Match the canonical free-function texture API:
+        //   texture_load_2d   → texture_load_2d_<ty>
+        //   texture_sample_2d → texture_sample_2d_<ty>
+        //   texture_load_3d   → texture_load_3d_<ty>
+        //   texture_write_2d  → texture_write_2d_<ty>
+        let (suffix_kind, expects_kind): (&str, TextureKind) = match fn_name.as_str() {
+            "texture_load_2d" => ("texture_load_2d", TextureKind::Tex2DRead),
+            "texture_sample_2d" => ("texture_sample_2d", TextureKind::Tex2DRead),
+            "texture_load_3d" => ("texture_load_3d", TextureKind::Tex3DRead),
+            "texture_write_2d" => ("texture_write_2d", TextureKind::Tex2DWrite),
+            _ => return,
+        };
+        // First arg must be the texture-param ident.
+        let Some(first) = call.args.first() else {
+            return;
+        };
+        let tex_name = match first {
+            Expr::Path(ExprPath { path, .. }) => path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default(),
+            // `&tex` reference form.
+            Expr::Reference(r) => match r.expr.as_ref() {
+                Expr::Path(ExprPath { path, .. }) => path
+                    .segments
+                    .last()
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default(),
+                _ => return,
+            },
+            _ => return,
+        };
+        let Some((_, slot, scalar_ty, kind)) = self.lookup(&tex_name) else {
+            return;
+        };
+        // Sanity: the call shape must match the texture's declared
+        // kind (read vs write). Mismatch leaves the call alone so
+        // rustc surfaces a clear error.
+        if !kinds_compatible(*kind, expects_kind) {
+            return;
+        }
+
+        let suffix = scalar_type_to_short_name(*scalar_ty);
+        let new_fn = format_ident!("{}_{}", suffix_kind, suffix);
+        let slot_val = *slot;
+        let rest_args: Vec<Expr> = call.args.iter().skip(1).cloned().collect();
+        *expr = syn::parse_quote! {
+            #new_fn(#slot_val, #(#rest_args),*)
+        };
+    }
+}
+
+fn kinds_compatible(decl: TextureKind, used: TextureKind) -> bool {
+    matches!(
+        (decl, used),
+        (TextureKind::Tex2DRead, TextureKind::Tex2DRead)
+            | (TextureKind::Tex2DWrite, TextureKind::Tex2DWrite)
+            | (TextureKind::Tex3DRead, TextureKind::Tex3DRead)
+            // A `Tex2DWrite` texture can also be read in some APIs;
+            // accept Tex2DRead lookups against a Write-declared
+            // texture as a permissive default.
+            | (TextureKind::Tex2DWrite, TextureKind::Tex2DRead)
+    )
 }
 
 #[cfg(test)]

@@ -132,6 +132,23 @@ unsafe extern "C" {
     pub fn shared_store_i32(slot: u32, index: u32, val: i32);
 }
 
+// ── Textures ───────────────────────────────────────────────────────────
+
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    /// Sampled texture read. Slot is bound to a Texture2D<T> at
+    /// dispatch time via `wave.bind_texture(slot, tex)`.
+    pub fn texture_sample_2d_f32(slot: u32, x: u32, y: u32) -> f32;
+
+    /// Unsampled (raw integer-coord) texture read.
+    pub fn texture_load_2d_f32(slot: u32, x: u32, y: u32) -> f32;
+    pub fn texture_load_3d_f32(slot: u32, x: u32, y: u32, z: u32) -> f32;
+
+    /// Texture write (storage texture). Slot must be bound to a
+    /// `Texture2D<T>` declared as writable.
+    pub fn texture_write_2d_f32(slot: u32, x: u32, y: u32, val: f32);
+}
+
 // ── Memory-order discriminants ─────────────────────────────────────────
 
 /// Memory ordering values used by `*_order` parameters above.

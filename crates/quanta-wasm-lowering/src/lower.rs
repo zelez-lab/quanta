@@ -787,6 +787,15 @@ impl<'a> LowerCtx<'a> {
 
                     Some("memory_fence") => self.fence_call()?,
 
+                    // Texture access. The slot (first arg) is a
+                    // compile-time `i32.const` that lifts into the
+                    // IR's `texture: u32` field; remaining args are
+                    // runtime registers.
+                    Some("texture_load_2d_f32") => self.texture_load_2d(ScalarType::F32)?,
+                    Some("texture_sample_2d_f32") => self.texture_sample_2d(ScalarType::F32)?,
+                    Some("texture_load_3d_f32") => self.texture_load_3d(ScalarType::F32)?,
+                    Some("texture_write_2d_f32") => self.texture_write_2d(ScalarType::F32)?,
+
                     Some(other) => {
                         return Err(LoweringError::UnsupportedOp {
                             op: format!("intrinsic call `{other}` not yet lowered"),
@@ -1120,14 +1129,12 @@ impl<'a> LowerCtx<'a> {
                     ScalarType::F16 | ScalarType::F32 => ConstValue::F32(0.0),
                     ScalarType::F64 => ConstValue::F64(0.0),
                     ScalarType::Bool => ConstValue::Bool(false),
-                    ScalarType::I8
-                    | ScalarType::I16
-                    | ScalarType::I32
-                    | ScalarType::I64 => ConstValue::I32(0),
-                    ScalarType::U8
-                    | ScalarType::U16
-                    | ScalarType::U32
-                    | ScalarType::U64 => ConstValue::U32(0),
+                    ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
+                        ConstValue::I32(0)
+                    }
+                    ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64 => {
+                        ConstValue::U32(0)
+                    }
                 };
                 self.emit(KernelOp::Const { dst, value: init });
                 self.emit(KernelOp::Branch {
@@ -1502,6 +1509,93 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
+    /// Lower `texture_load_2d_<ty>(slot, x, y)` to `TextureLoad2D`.
+    fn texture_load_2d(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let y_sv = self.pop()?;
+        let x_sv = self.pop()?;
+        let slot_sv = self.pop()?;
+        let texture = const_u32(slot_sv, "texture_load_2d slot")?;
+        let (y, _) = self.commit(y_sv)?;
+        let (x, _) = self.commit(x_sv)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::TextureLoad2D {
+            dst,
+            texture,
+            x,
+            y,
+            ty,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower `texture_sample_2d_<ty>(slot, x, y)` to `TextureSample2D`.
+    fn texture_sample_2d(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let y_sv = self.pop()?;
+        let x_sv = self.pop()?;
+        let slot_sv = self.pop()?;
+        let texture = const_u32(slot_sv, "texture_sample_2d slot")?;
+        let (y, _) = self.commit(y_sv)?;
+        let (x, _) = self.commit(x_sv)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::TextureSample2D {
+            dst,
+            texture,
+            x,
+            y,
+            ty,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower `texture_load_3d_<ty>(slot, x, y, z)` to `TextureSample3D`.
+    /// (3D unsampled load shares the same IR op as the sampled form;
+    /// downstream emitters distinguish via texture kind.)
+    fn texture_load_3d(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let z_sv = self.pop()?;
+        let y_sv = self.pop()?;
+        let x_sv = self.pop()?;
+        let slot_sv = self.pop()?;
+        let texture = const_u32(slot_sv, "texture_load_3d slot")?;
+        let (z, _) = self.commit(z_sv)?;
+        let (y, _) = self.commit(y_sv)?;
+        let (x, _) = self.commit(x_sv)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::TextureSample3D {
+            dst,
+            texture,
+            x,
+            y,
+            z,
+            ty,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower `texture_write_2d_<ty>(slot, x, y, val)` to `TextureWrite2D`.
+    /// Returns no value (the call is `-> ()`); we don't push to the
+    /// symbolic stack.
+    fn texture_write_2d(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let val_sv = self.pop()?;
+        let y_sv = self.pop()?;
+        let x_sv = self.pop()?;
+        let slot_sv = self.pop()?;
+        let texture = const_u32(slot_sv, "texture_write_2d slot")?;
+        let (value, _) = self.commit(val_sv)?;
+        let (y, _) = self.commit(y_sv)?;
+        let (x, _) = self.commit(x_sv)?;
+        self.emit(KernelOp::TextureWrite2D {
+            texture,
+            x,
+            y,
+            value,
+            ty,
+        });
+        Ok(())
+    }
+
     /// Lower a `memory_fence(order)` extern call into `KernelOp::Fence`.
     fn fence_call(&mut self) -> Result<(), LoweringError> {
         let order_sv = self.pop()?;
@@ -1684,6 +1778,18 @@ impl<'a> LowerCtx<'a> {
             subgroup_size: None,
             dynamic_shared_bytes: 0,
         }
+    }
+}
+
+/// Pop a SymVal that must be a compile-time `i32.const` and return
+/// its u32 value. Used by texture / shared-mem call lowerings where
+/// the slot must lift into a static field of the IR op.
+fn const_u32(v: SymVal, ctx: &'static str) -> Result<u32, LoweringError> {
+    match v {
+        SymVal::I32Const(c) => Ok(c as u32),
+        other => Err(LoweringError::ShapeMismatch(format!(
+            "{ctx} must be a compile-time constant, got {other:?}"
+        ))),
     }
 }
 
