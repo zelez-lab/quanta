@@ -34,22 +34,14 @@ import Quanta.Wgsl.Serialize
 import Quanta.Wgsl.OpPatterns
 import Quanta.Axioms.Wgsl
 
--- Kernel Rust syntax (E.1a) — top of the source-preservation track
-import Quanta.KRust.Syntax
-import Quanta.KRust.Semantics
-
--- KernelOps view + semantics (E.2)
+-- KernelOps view + semantics (E.2). The legacy KRust source track
+-- (Syntax / Semantics / Translate / Preservation / EndToEnd) was
+-- deleted in the WASM-route cutover (2026-05-05) — its production
+-- translator is gone and the Lean files no longer correspond to
+-- anything that ships. Step 059 will reintroduce a source-language
+-- preservation theorem on top of the WASM operator subset.
 import Quanta.KOps.Syntax
 import Quanta.KOps.Semantics
-
--- KRust → KernelOps translator (E.3)
-import Quanta.KRust.Translate
-
--- Per-rule preservation theorems (E.4)
-import Quanta.KRust.Preservation
-
--- End-to-end source preservation (E.5)
-import Quanta.KRust.EndToEnd
 
 -- Indirect Command Buffers (steps 032 + 033)
 import Quanta.Icb

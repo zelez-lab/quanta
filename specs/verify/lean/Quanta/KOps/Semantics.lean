@@ -1,26 +1,25 @@
 /-
 # KernelOps big-step semantics
 
-Step **E.2b** of the source-preservation track. Big-step ⇓ over
-`Quanta.KOps.KernelOp` and `List KernelOp`. Targets the same `Value`
-alphabet as `Quanta.KRust.Semantics` so the per-rule preservation
-theorems (E.4) can state `evalKRust ≡ evalKOps ∘ translate`
-syntactically, with no value-conversion noise.
+Big-step ⇓ over `Quanta.KOps.KernelOp` and `List KernelOp`. Defines
+the `Value` alphabet directly here — the legacy KRust source
+preservation track (formerly the `Quanta.KRust.*` modules) was
+deleted alongside its production translator in the WASM-route
+cutover (2026-05-05). Step 059 will reintroduce a source-language
+preservation theorem on top of the WASM operator subset, at which
+point the Value alphabet may be shared again.
 
 State shape:
 - `RegFile` — `Reg → Value`. SSA-style: each register is written
   once during a kernel invocation, but the structure here is a
   flat association list updated by `Reg.write` (last-write-wins),
   matching how the executor actually behaves.
-- `Heap` — same `(Slot, idx) → Value` shape as KRust uses, since
-  buffers are the only mutable state both views share.
+- `Heap` — `(Slot, idx) → Value`, modeling flat-buffer storage.
 - `Dispatch` — thread-id values supplied by the runtime
   (`quark_id`, `proton_id`, …). Treated as a pure value tuple at
-  this layer; the per-thread interpretation lands in E.5 when the
-  dispatch grid composes.
+  this layer.
 
-Loops carry a fuel parameter (same shape as `KRust.Semantics`); the
-function is total given fuel.
+Loops carry a fuel parameter; the function is total given fuel.
 
 Conventions match `crates/quanta-ir/src/driver/cpu/eval.rs` via the
 shared primitives in `Quanta.Semantics.Cpu` — wrapping arithmetic,
@@ -28,7 +27,6 @@ div-by-zero returns 0.
 -/
 
 import Quanta.KOps.Syntax
-import Quanta.KRust.Semantics
 import Quanta.Semantics.Cpu
 
 namespace Quanta.KOps
@@ -39,16 +37,21 @@ open Quanta.Semantics.Cpu
 -- Value alphabet
 -- ════════════════════════════════════════════════════════════════════
 
-/-- Reuse the `KRust.Value` alphabet. Source preservation talks
-    about *the same* runtime values flowing through both views. -/
-abbrev Value : Type := Quanta.KRust.Value
+/-- The runtime value alphabet. Trapped / undefined results surface
+    as `none` from the eval functions, not as a constructor here —
+    keeps `Value.eq?` decidable. -/
+inductive Value where
+  | vBool (b : Bool)
+  | vI32  (n : Int)
+  | vU32  (n : UInt32)
+  | vF32  (bits : UInt32)   -- IEEE-754 bits, evaluated via Cpu.eval_f32_*
+  deriving Repr, DecidableEq
 
--- Convenience aliases so the dispatcher reads the same as in
--- `Quanta.KRust.Semantics` even though the namespaces differ.
-@[inline] def vBool : Bool   → Value := Quanta.KRust.Value.vBool
-@[inline] def vI32  : Int    → Value := Quanta.KRust.Value.vI32
-@[inline] def vU32  : UInt32 → Value := Quanta.KRust.Value.vU32
-@[inline] def vF32  : UInt32 → Value := Quanta.KRust.Value.vF32
+-- Convenience aliases so the dispatcher reads naturally.
+@[inline] def vBool : Bool   → Value := Value.vBool
+@[inline] def vI32  : Int    → Value := Value.vI32
+@[inline] def vU32  : UInt32 → Value := Value.vU32
+@[inline] def vF32  : UInt32 → Value := Value.vF32
 
 -- ════════════════════════════════════════════════════════════════════
 -- State (RegFile + Heap + dispatch context + break flag)
