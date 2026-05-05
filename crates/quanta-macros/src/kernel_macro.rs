@@ -35,20 +35,17 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
     kernel_def.workgroup_size = kernel_attrs.workgroup_size;
     kernel_def.subgroup_size = kernel_attrs.subgroup_size;
 
-    // WASM-route cutover (slice 5d). When `QUANTA_WASM_ROUTE=1` is
-    // set, re-derive `kernel_def.body` (and `next_reg`) by routing
-    // through `rustc → wasm32 → KernelOps`. The legacy parser still
-    // produces `kernel_def.params` with inferred scalar types — those
-    // bridge into the WASM lowerer's SideTable. Off by default while
-    // we close coverage gaps in `quanta-wasm-lowering` against the
-    // workspace's kernels (texture/f16/shared/continue/intrinsic
-    // calls beyond `quark_id` and `sqrt_f32` — see slices 5d.5–5d.7).
-    // The end state is gate removed and legacy body translator
-    // deleted; until then we route opt-in.
-    if wasm_route_enabled()
-        && let Err(err) = swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref())
-    {
-        let msg = format!("WASM route (QUANTA_WASM_ROUTE=1) failed: {err}");
+    // WASM-route cutover (slice 5d, complete). The legacy parser ran
+    // above to produce `kernel_def.params` with inferred scalar types;
+    // those bridge into the SideTable for the WASM lowerer. Then the
+    // body is *unconditionally* re-derived from `rustc → wasm32 →
+    // KernelOps`, replacing the legacy body emission. Struct-ref and
+    // flat-param kernels dispatch to their respective emitters inside
+    // `swap_body_via_wasm_route`. The legacy parser's body translator
+    // (`parse::parse_kernel`'s body walk + `parse/{stmt,expr}.rs`) is
+    // now dead-output code; slice 5e deletes it.
+    if let Err(err) = swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref()) {
+        let msg = format!("WASM route failed: {err}");
         return syn::Error::new_spanned(&func.sig.ident, msg)
             .to_compile_error()
             .into();
@@ -412,12 +409,6 @@ fn parse_workgroup_expr(expr: &Expr) -> Option<[u32; 3]> {
         }
     }
     None
-}
-
-/// True when the WASM-route cutover gate is on. Off by default;
-/// callers opt in by setting `QUANTA_WASM_ROUTE=1` at build time.
-fn wasm_route_enabled() -> bool {
-    std::env::var_os("QUANTA_WASM_ROUTE").as_deref() == Some(std::ffi::OsStr::new("1"))
 }
 
 /// Re-derive `kernel_def.body` (and `next_reg`) by routing the kernel
