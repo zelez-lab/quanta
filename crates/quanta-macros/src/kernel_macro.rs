@@ -188,12 +188,10 @@ pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
         let field_accesses = scan_struct_field_accesses(&func, &sr.param_name);
         let dispatch_info = build_dispatch_info(&sr, &field_accesses, &kernel_def);
         let dispatch_fn = auto_dispatch::emit_auto_dispatch(&func, &dispatch_info, &wave_fn_name);
-        let wasm_twin_fn = crate::wasm_twin::emit_wasm_twin(&func, &dispatch_info);
 
         let expanded = quote! {
             #wave_fn
             #dispatch_fn
-            #wasm_twin_fn
         };
         return expanded.into();
     }

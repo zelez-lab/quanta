@@ -17,8 +17,6 @@ mod uniforms_derive;
 mod validate;
 mod vertex_derive;
 mod wasm_compile;
-mod wasm_twin;
-
 use proc_macro::TokenStream;
 use syn::{ItemFn, parse_macro_input};
 
