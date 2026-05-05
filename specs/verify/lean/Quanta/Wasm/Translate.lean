@@ -208,7 +208,11 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       pure (s2, [.copy fresh stable])
   | .localSet i => do
       let (src, s1) ← s.pop
-      let ty ← s1.lookupLocalTy i |>.getDM (some .u32)
+      -- ty defaults to `.u32` when the local has no recorded type yet
+      -- (slice 1 only models i32). Using `getD` (not `getDM`) keeps the
+      -- result a plain `Scalar` instead of an `Option Scalar`, which
+      -- avoids an extra monadic bind in the proof.
+      let ty : Scalar := (s1.lookupLocalTy i).getD .u32
       match s1.lookupLocal i with
       | some dst =>
           -- Local already has a stable register → emit a copy into it.
@@ -224,7 +228,7 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       -- not the local's stable register. Same alias-free invariant
       -- as `localGet`.
       let (src, s1) ← s.pop
-      let ty ← s1.lookupLocalTy i |>.getDM (some .u32)
+      let ty : Scalar := (s1.lookupLocalTy i).getD .u32
       match s1.lookupLocal i with
       | some dst =>
           let s2 := s1.setLocalReg i dst ty

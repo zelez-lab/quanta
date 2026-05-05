@@ -233,9 +233,9 @@ theorem regLookup_preserved_of_fresh
 
 /-- Encoding is preserved under a fresh-register write, provided every
     reg referenced by the SymVal is strictly below the freshly-written
-    register. The single load-bearing lemma every per-op preservation
-    proof uses to thread `R.stk` / `R.locs` past a `regWrite kst.rf
-    s.nextReg _`. -/
+    register. The single load-bearing lemma every fresh-write per-op
+    preservation proof uses to thread `R.stk` / `R.locs` past a
+    `regWrite kst.rf s.nextReg _`. -/
 theorem WasmValue.encodes_preserved_of_fresh
     {v : WasmValue} {rf : Quanta.KOps.RegFile} {sv : SymVal}
     {nr : Reg} {newval : Quanta.KOps.Value}
@@ -249,6 +249,40 @@ theorem WasmValue.encodes_preserved_of_fresh
     show regLookup (regWrite rf nr newval) r = some (Quanta.KOps.Value.vU32 n)
     rw [regLookup_preserved_of_fresh hr_lt]
     exact h'
+
+/-- Encoding is preserved under any register write disjoint from the
+    SymVal's reg projection. The general-form companion to
+    `encodes_preserved_of_fresh` used by `localSet` / `localTee`
+    preservation, where the write target is an existing stable_reg
+    (not strictly above all held regs) but is disjoint from the
+    stack's regs by `AliasFree`. -/
+theorem WasmValue.encodes_preserved_of_disjoint
+    {v : WasmValue} {rf : Quanta.KOps.RegFile} {sv : SymVal}
+    {dst : Reg} {newval : Quanta.KOps.Value}
+    (h_disj : dst ∉ sv.regs)
+    (h : v.encodes rf sv) :
+    v.encodes (regWrite rf dst newval) sv := by
+  match v, sv, h with
+  | .wI32 n, .reg r .u32, h =>
+    have h' : regLookup rf r = some (Quanta.KOps.Value.vU32 n) := h
+    have hr_ne : r ≠ dst := by
+      intro h_eq
+      apply h_disj
+      simp [SymVal.regs, h_eq]
+    show regLookup (regWrite rf dst newval) r = some (Quanta.KOps.Value.vU32 n)
+    rw [regLookup_regWrite_of_ne rf dst r newval hr_ne]
+    exact h'
+
+/-- Inverting a `wI32`-encoding-via-`.reg`: forces the scalar type to
+    `.u32` and exposes the underlying regfile lookup. Used by the
+    `localSet` / `localTee` proofs to extract the encoding constraint
+    after `R.stk.right 0` returns a `.reg src tysrc` SymVal. -/
+theorem WasmValue.encodes_wI32_reg_inv
+    {n : UInt32} {rf : Quanta.KOps.RegFile} {r : Reg} {ty : Quanta.KOps.Scalar}
+    (h : (WasmValue.wI32 n).encodes rf (.reg r ty)) :
+    ty = .u32 ∧ regLookup rf r = some (Quanta.KOps.Value.vU32 n) := by
+  match ty, h with
+  | .u32, h => exact ⟨rfl, h⟩
 
 -- ════════════════════════════════════════════════════════════════════
 -- Per-instruction preservation — slice 1 closed proofs
@@ -469,6 +503,20 @@ theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         unfold WasmValue.encodes at henc_local
         exact henc_local.elim
   | none, hw => simp [hloc] at hw
+
+-- ════════════════════════════════════════════════════════════════════
+-- Slice 3 follow-up: local.set / local.tee preservation
+--
+-- The helper lemmas above (`WasmValue.encodes_preserved_of_disjoint`,
+-- `WasmValue.encodes_wI32_reg_inv`) are the proof-foundation pieces
+-- every localSet/localTee preservation proof needs. The full theorems
+-- themselves are ~200-300 LoC each and stay queued for the next
+-- slice-3 session — the cleanups here (translator simplified to
+-- `getD .u32` instead of `getDM`, helper lemmas in place) make that
+-- session significantly tractable. A `find?_filter_keep_of_ne`
+-- variant will land alongside those proofs (it's a list-list lemma,
+-- not load-bearing on the cascade).
+-- ════════════════════════════════════════════════════════════════════
 
 -- ════════════════════════════════════════════════════════════════════
 -- Slice 3: i32 binop archetype
