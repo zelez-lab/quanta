@@ -16,6 +16,7 @@ syn = { version = "2", features = ["full", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"
 quanta-ir.workspace = true
-
-[dev-dependencies]
+# Used by `compile_via_wasm` (slice 5c bridge) to call into the
+# WASM lowerer directly. Once the cutover lands this becomes
+# load-bearing for every kernel build.
 quanta-wasm-lowering.workspace = true
