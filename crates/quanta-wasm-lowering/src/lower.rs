@@ -658,7 +658,6 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32Store { .. } => {
                 let val = self.pop()?;
                 let addr = self.pop()?;
-                let (val_reg, _) = self.commit(val)?;
                 match addr {
                     SymVal::BufferAccess {
                         slot,
@@ -666,6 +665,7 @@ impl<'a> LowerCtx<'a> {
                         scale: 4,
                     } => {
                         let ty = self.scalar_type_for_slot(slot);
+                        let val_reg = self.materialize_for_typed_store(val, ty)?;
                         self.emit(KernelOp::Store {
                             field: slot,
                             index: base,
@@ -1331,6 +1331,36 @@ impl<'a> LowerCtx<'a> {
         });
         self.stack.push(SymVal::Reg(dst, ty));
         Ok(())
+    }
+
+    /// Commit a SymVal to a register, but if the slot is f32-typed
+    /// and the value is an `i32.const`, reinterpret the bits as f32
+    /// rather than treating the int as a numeric value to convert.
+    /// rustc's optimizer collapses `buf[i] = 42.0f32` (where `buf`
+    /// is `*mut f32`) into `i32.const <bit_pattern>; i32.store` on
+    /// the WASM byte-array memory model. Without this, the lowerer
+    /// would emit `Store { ty: F32, src: <reg holding 1109917696> }`
+    /// and the backend codegens (Metal/SPIR-V/WGSL/MSL) would do an
+    /// integer-to-float CONVERSION (1.1099e9) instead of a bitcast
+    /// (42.0). Affects every constant float-buffer assignment that
+    /// the optimizer reaches.
+    fn materialize_for_typed_store(
+        &mut self,
+        v: SymVal,
+        slot_ty: ScalarType,
+    ) -> Result<Reg, LoweringError> {
+        if let SymVal::I32Const(c) = v
+            && matches!(slot_ty, ScalarType::F32 | ScalarType::F16)
+        {
+            let dst = self.alloc_reg();
+            self.emit(KernelOp::Const {
+                dst,
+                value: ConstValue::F32(f32::from_bits(c as u32)),
+            });
+            return Ok(dst);
+        }
+        let (reg, _) = self.commit(v)?;
+        Ok(reg)
     }
 
     /// Lower a narrow WASM load (`i32.load8_u`, `i32.load8_s`,
