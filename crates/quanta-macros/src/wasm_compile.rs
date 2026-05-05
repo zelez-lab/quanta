@@ -123,6 +123,34 @@ fn wrap_kernel_source(kernel_decl: &str) -> String {
                  #[inline] pub fn fma(a: f32, b: f32, c: f32) -> f32 {{ unsafe {{ fma_f32(a, b, c) }} }}\n\
                  #[inline] pub fn clamp_f(x: f32, lo: f32, hi: f32) -> f32 {{ unsafe {{ clamp_f32(x, lo, hi) }} }}\n\
                  \n\
+                 // Atomic-API wrappers — kernels call `atomic_add(&mut\n\
+                 // buf[i], v)` etc. The wrappers forward to the\n\
+                 // explicitly-suffixed externs with relaxed memory\n\
+                 // ordering. The lowerer recognizes the suffixed names\n\
+                 // and produces `KernelOp::AtomicOp` from the call site.\n\
+                 #[inline] pub unsafe fn atomic_add(addr: &mut u32, val: u32) -> u32 {{ unsafe {{ atomic_add_u32(addr as *mut u32, val, ORDER_RELAXED) }} }}\n\
+                 #[inline] pub unsafe fn atomic_sub(addr: &mut u32, val: u32) -> u32 {{ unsafe {{ atomic_sub_u32(addr as *mut u32, val, ORDER_RELAXED) }} }}\n\
+                 #[inline] pub unsafe fn atomic_min(addr: &mut u32, val: u32) -> u32 {{ unsafe {{ atomic_min_u32(addr as *mut u32, val, ORDER_RELAXED) }} }}\n\
+                 #[inline] pub unsafe fn atomic_max(addr: &mut u32, val: u32) -> u32 {{ unsafe {{ atomic_max_u32(addr as *mut u32, val, ORDER_RELAXED) }} }}\n\
+                 #[inline] pub unsafe fn atomic_and(addr: &mut u32, val: u32) -> u32 {{ unsafe {{ atomic_and_u32(addr as *mut u32, val, ORDER_RELAXED) }} }}\n\
+                 #[inline] pub unsafe fn atomic_or(addr: &mut u32, val: u32) -> u32 {{ unsafe {{ atomic_or_u32(addr as *mut u32, val, ORDER_RELAXED) }} }}\n\
+                 #[inline] pub unsafe fn atomic_xor(addr: &mut u32, val: u32) -> u32 {{ unsafe {{ atomic_xor_u32(addr as *mut u32, val, ORDER_RELAXED) }} }}\n\
+                 #[inline] pub unsafe fn atomic_exchange(addr: &mut u32, val: u32) -> u32 {{ unsafe {{ atomic_exchange_u32(addr as *mut u32, val, ORDER_RELAXED) }} }}\n\
+                 \n\
+                 // Memory fence wrapper — kernels call `fence(order)`.\n\
+                 #[inline] pub unsafe fn fence(order: u32) {{ unsafe {{ memory_fence(order) }} }}\n\
+                 \n\
+                 // MemoryOrder enum-style constants. Kernels write\n\
+                 // `fence(Release)` etc. with bare identifiers; expose\n\
+                 // them as `pub const` aliases of the integer-tagged\n\
+                 // intrinsics constants. The non-upper-case allow\n\
+                 // matches the Rust API convention for these names.\n\
+                 #[allow(non_upper_case_globals)] pub const Relaxed: u32 = ORDER_RELAXED;\n\
+                 #[allow(non_upper_case_globals)] pub const Acquire: u32 = ORDER_ACQUIRE;\n\
+                 #[allow(non_upper_case_globals)] pub const Release: u32 = ORDER_RELEASE;\n\
+                 #[allow(non_upper_case_globals)] pub const AcqRel: u32 = ORDER_ACQ_REL;\n\
+                 #[allow(non_upper_case_globals)] pub const SeqCst: u32 = ORDER_SEQ_CST;\n\
+                 \n\
                  pub trait F32Ext: Sized {{\n\
                      fn sqrt(self) -> Self;\n\
                      fn sin(self) -> Self;\n\

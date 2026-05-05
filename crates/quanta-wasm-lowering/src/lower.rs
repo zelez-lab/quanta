@@ -18,7 +18,10 @@
 //! lowering (block / loop / if / br_if), atomics, shared memory, and
 //! intrinsic dispatch beyond `quark_id` come in subsequent commits.
 
-use quanta_ir::{BinOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType};
+use quanta_ir::{
+    AtomicOp, BinOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, MemoryOrder, Reg,
+    ScalarType,
+};
 
 use crate::{
     FunctionBodyInfo, FunctionKind, LoweringError, Module, ParamKind, RawInstr, SideTable, WasmTy,
@@ -745,6 +748,27 @@ impl<'a> LowerCtx<'a> {
                     Some("shared_store_u32") => self.shared_store(ScalarType::U32)?,
                     Some("shared_store_i32") => self.shared_store(ScalarType::I32)?,
 
+                    // Atomic RMW family. Args: (addr: *mut T, val: T,
+                    // order: u32). `addr` is the BufferAccess SymVal
+                    // pushed by `&mut buf[i]` rewriting; we lift its
+                    // slot+index into the IR's `field`/`index`. The
+                    // order arg is a compile-time const mapped to
+                    // `MemoryOrder`.
+                    Some("atomic_add_u32") => self.atomic_rmw(AtomicOp::Add, ScalarType::U32)?,
+                    Some("atomic_sub_u32") => self.atomic_rmw(AtomicOp::Sub, ScalarType::U32)?,
+                    Some("atomic_min_u32") => self.atomic_rmw(AtomicOp::Min, ScalarType::U32)?,
+                    Some("atomic_max_u32") => self.atomic_rmw(AtomicOp::Max, ScalarType::U32)?,
+                    Some("atomic_and_u32") => self.atomic_rmw(AtomicOp::And, ScalarType::U32)?,
+                    Some("atomic_or_u32") => self.atomic_rmw(AtomicOp::Or, ScalarType::U32)?,
+                    Some("atomic_xor_u32") => self.atomic_rmw(AtomicOp::Xor, ScalarType::U32)?,
+                    Some("atomic_exchange_u32") => {
+                        self.atomic_rmw(AtomicOp::Exchange, ScalarType::U32)?
+                    }
+                    Some("atomic_add_i32") => self.atomic_rmw(AtomicOp::Add, ScalarType::I32)?,
+                    Some("atomic_sub_i32") => self.atomic_rmw(AtomicOp::Sub, ScalarType::I32)?,
+
+                    Some("memory_fence") => self.fence_call()?,
+
                     Some(other) => {
                         return Err(LoweringError::UnsupportedOp {
                             op: format!("intrinsic call `{other}` not yet lowered"),
@@ -1267,6 +1291,61 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
+    /// Lower an `atomic_<op>_<ty>(addr, val, order)` extern call into
+    /// a `KernelOp::AtomicOp`. Args on the symbolic stack (top→bottom):
+    /// order, val, addr. The order is a compile-time const; addr must
+    /// be a `BufferAccess` (produced by `&mut buf[idx]`-style rewrites).
+    fn atomic_rmw(&mut self, op: AtomicOp, ty: ScalarType) -> Result<(), LoweringError> {
+        let order_sv = self.pop()?;
+        let val_sv = self.pop()?;
+        let addr_sv = self.pop()?;
+        let order = order_const_to_enum(order_sv)?;
+        let (val_reg, _) = self.commit(val_sv)?;
+        let (field, index) = match addr_sv {
+            SymVal::BufferAccess { slot, base, scale: _ } => (slot, base),
+            // rustc's optimizer drops the offset arithmetic when the
+            // index is a compile-time zero (`&mut buf[0]`), leaving
+            // just the BufferPtr on the stack. Synthesize a Const 0
+            // index so AtomicOp gets a real index Reg.
+            SymVal::BufferPtr(slot) => {
+                let zero = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: zero,
+                    value: ConstValue::U32(0),
+                });
+                (slot, zero)
+            }
+            other => {
+                return Err(LoweringError::UnsupportedOp {
+                    op: format!(
+                        "atomic addr must be `&mut buf[i]` (BufferAccess) or `&mut buf[0]` (BufferPtr), got {other:?}"
+                    ),
+                    at: self.body.body_offset,
+                });
+            }
+        };
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::AtomicOp {
+            dst,
+            field,
+            index,
+            val: val_reg,
+            op,
+            ty,
+            order,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower a `memory_fence(order)` extern call into `KernelOp::Fence`.
+    fn fence_call(&mut self) -> Result<(), LoweringError> {
+        let order_sv = self.pop()?;
+        let order = order_const_to_enum(order_sv)?;
+        self.emit(KernelOp::Fence { order });
+        Ok(())
+    }
+
     /// Lower a `shared_load_<ty>(slot, index)` extern call into a
     /// `KernelOp::SharedLoad`. The slot must be a compile-time
     /// constant (the IR carries it as `id: u32`); the index is a
@@ -1441,6 +1520,28 @@ impl<'a> LowerCtx<'a> {
             subgroup_size: None,
             dynamic_shared_bytes: 0,
         }
+    }
+}
+
+/// Map a compile-time `i32.const` order argument to the IR's
+/// `MemoryOrder` enum. Atomics + fences accept the order as a u32
+/// arg whose value mirrors the `ORDER_*` consts in
+/// `quanta::intrinsics`.
+fn order_const_to_enum(v: SymVal) -> Result<MemoryOrder, LoweringError> {
+    match v {
+        SymVal::I32Const(c) => match c {
+            0 => Ok(MemoryOrder::Relaxed),
+            1 => Ok(MemoryOrder::Acquire),
+            2 => Ok(MemoryOrder::Release),
+            3 => Ok(MemoryOrder::AcqRel),
+            4 => Ok(MemoryOrder::SeqCst),
+            other => Err(LoweringError::ShapeMismatch(format!(
+                "memory-order arg out of range: {other}"
+            ))),
+        },
+        other => Err(LoweringError::ShapeMismatch(format!(
+            "memory-order arg must be a compile-time constant, got {other:?}"
+        ))),
     }
 }
 
