@@ -229,6 +229,47 @@ structure Refines (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
   heapRefines : HeapRefines ws.mem kst.heap layout
 
 -- ════════════════════════════════════════════════════════════════════
+-- evalOps composition lemma
+--
+-- `lowerI32Bin` (and any future op whose lowering chains multiple
+-- sub-ops via `commit`) emits an op-list of the form
+-- `opsA ++ opsB ++ [op_main]`. `evalOps` short-circuits on `broke`
+-- between ops, so chaining `evalOps 0 kst opsA = some kst1` then
+-- `evalOps 0 kst1 opsB = some kst2` requires both intermediate states
+-- to have `broke = false`. The lemma below packages that as a
+-- one-step rewrite.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem evalOps_append {fuel : Nat} {s : Quanta.KOps.State}
+    {l1 l2 : List KernelOp} {s1 : Quanta.KOps.State}
+    (h : evalOps fuel s l1 = some s1) (h_ok : s1.broke = false) :
+    evalOps fuel s (l1 ++ l2) = evalOps fuel s1 l2 := by
+  induction l1 generalizing s with
+  | nil =>
+    simp only [evalOps] at h
+    rw [List.nil_append, ← (Option.some.injEq _ _).mp h]
+  | cons op rest ih =>
+    simp only [List.cons_append, evalOps] at h ⊢
+    rcases ho : Quanta.KOps.evalOp fuel s op with _ | s_after
+    · simp [ho] at h
+    · simp only [ho, Option.some_bind, bind, Option.bind] at h ⊢
+      by_cases hbroke : s_after.broke = true
+      · simp only [if_pos hbroke] at h
+        -- h : some s_after = some s1, but s_after.broke = true and s1.broke = false: contradiction.
+        have h_eq : s_after = s1 := (Option.some.injEq _ _).mp h
+        rw [h_eq] at hbroke
+        rw [hbroke] at h_ok
+        cases h_ok
+      · have hbroke' : s_after.broke = false := by
+          cases hb : s_after.broke
+          · rfl
+          · exact (hbroke hb).elim
+        simp only [if_neg hbroke, hbroke'] at h ⊢
+        -- Goal: evalOps fuel s_after (rest ++ l2) = evalOps fuel s1 l2.
+        -- IH gives this from h : evalOps fuel s_after rest = some s1.
+        exact ih h
+
+-- ════════════════════════════════════════════════════════════════════
 -- Register-file lemmas
 -- ════════════════════════════════════════════════════════════════════
 
@@ -329,6 +370,25 @@ theorem WasmValue.encodes_preserved_of_disjoint
   | .wI32 _, .i32ConstSym _, h =>
     exact h
 
+/-- Encoding is preserved under any regfile transition that agrees on
+    the SymVal's regs. The full-strength companion to
+    `encodes_preserved_of_fresh` / `encodes_preserved_of_disjoint`,
+    used when a sequence of ops (e.g. `commit svb`'s `opsB`) writes
+    only to fresh registers — we collapse that into a pointwise
+    `regLookup` equality on the regs of any older SymVal. -/
+theorem WasmValue.encodes_preserved_of_lookup_eq
+    {v : WasmValue} {rf rf' : Quanta.KOps.RegFile} {sv : SymVal}
+    (h_lookup : ∀ r ∈ sv.regs, regLookup rf' r = regLookup rf r)
+    (h : v.encodes rf sv) :
+    v.encodes rf' sv := by
+  match v, sv, h with
+  | .wI32 n, .reg r .u32, h =>
+    have h' : regLookup rf r = some (Quanta.KOps.Value.vU32 n) := h
+    have h_eq := h_lookup r (by simp [SymVal.regs])
+    show regLookup rf' r = some (Quanta.KOps.Value.vU32 n)
+    rw [h_eq]; exact h'
+  | .wI32 _, .i32ConstSym _, h => exact h
+
 /-- Inverting a `wI32`-encoding-via-`.reg`: forces the scalar type to
     `.u32` and exposes the underlying regfile lookup. Used by the
     `localSet` / `localTee` proofs to extract the encoding constraint
@@ -372,22 +432,41 @@ open Quanta.KOps (vU32) in
     Used by every per-op preservation theorem whose translator arm
     consumes a popped `SymVal`: rather than case-splitting on the
     SymVal shape, the theorem applies `commit_correct` to thread the
-    encoding into a real reg + propagate the `Refines` bundle. -/
+    encoding into a real reg + propagate the `Refines` bundle.
+
+    Also exposes three structural facts every chained-commit caller
+    needs — `kst'` agrees with `kst` on every reg strictly below
+    `s.nextReg`, `s'.nextReg ≥ s.nextReg`, and the materialized reg
+    `r` is `< s'.nextReg`. The first lets a second commit's encoding
+    hypothesis lift through the first commit's regfile changes via
+    `encodes_preserved_of_lookup_eq`. The third is what justifies
+    re-using `r` as a binop operand after the second commit, since
+    the freshness invariant on `s'` only constrains regs strictly
+    less than `s'.nextReg`.
+
+    The `h_regs_lt` precondition is naturally satisfied by every
+    caller: the popped SymVal comes from the stack, and `R.fresh.left`
+    bounds every reg in any stack SymVal by `s.nextReg`. -/
 theorem commit_correct
     {ws : WasmState} {s : LowerState} {kst : Quanta.KOps.State}
     {layout : BufferLayout} (R : Refines ws s kst layout)
-    {sv : SymVal} {r : Reg} {s' : LowerState} {ops : List KernelOp}
+    {sv : SymVal} (h_regs_lt : ∀ r ∈ sv.regs, r < s.nextReg)
+    {r : Reg} {s' : LowerState} {ops : List KernelOp}
     (h_commit : s.commit sv = some (r, s', ops))
     {v_w : WasmValue} (h_enc : v_w.encodes kst.rf sv) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧
             Refines ws s' kst' layout ∧
-            v_w.encodes kst'.rf (.reg r .u32) := by
+            v_w.encodes kst'.rf (.reg r .u32) ∧
+            (∀ r', r' < s.nextReg → regLookup kst'.rf r' = regLookup kst.rf r') ∧
+            s.nextReg ≤ s'.nextReg ∧
+            r < s'.nextReg := by
   match sv, h_commit with
   | .reg rsv tysv, h_commit =>
     -- commit returns (rsv, s, []).
     simp [LowerState.commit] at h_commit
     obtain ⟨hr, hs', hops⟩ := h_commit
-    refine ⟨kst, ?_, ?_, ?_⟩
+    have hrsv_lt : rsv < s.nextReg := h_regs_lt rsv (by simp [SymVal.regs])
+    refine ⟨kst, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · subst hops; simp [evalOps]
     · subst hs'; exact R
     · subst hr
@@ -395,11 +474,14 @@ theorem commit_correct
       subst hv_eq htysv
       -- Goal: (wI32 n).encodes kst.rf (.reg rsv .u32) = regLookup kst.rf rsv = some (vU32 n).
       simpa [WasmValue.encodes] using h_lookup
+    · intro r' _; rfl
+    · subst hs'; exact Nat.le_refl _
+    · subst hs' hr; exact hrsv_lt
   | .i32ConstSym n, h_commit =>
     simp [LowerState.commit, LowerState.alloc] at h_commit
     obtain ⟨hr, hs', hops⟩ := h_commit
     refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
-                          (vU32 (UInt32.ofNat n.toNat)) }, ?_, ?_, ?_⟩
+                          (vU32 (UInt32.ofNat n.toNat)) }, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · subst hops
       simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst]
     · subst hs'
@@ -434,17 +516,23 @@ theorem commit_correct
       subst hv_eq
       simp [WasmValue.encodes, regLookup_regWrite_self]
       rfl
+    · -- Lookups below s.nextReg are preserved through the single fresh write.
+      intro r' hr'_lt
+      exact regLookup_preserved_of_fresh hr'_lt
+    · subst hs'; exact Nat.le_succ _
+    · subst hs' hr; exact Nat.lt_succ_self _
   | .bufferPtr _,        h_commit => simp [LowerState.commit] at h_commit
   | .scaledIdx _ _,      h_commit => simp [LowerState.commit] at h_commit
   | .bufferAccess _ _ _, h_commit => simp [LowerState.commit] at h_commit
 
-/-- `commit` preserves the stack. Only the `.reg` and `.i32ConstSym`
-    arms can succeed; both leave `s.stack` untouched (the latter only
-    bumps `nextReg` via `alloc`). -/
-theorem commit_preserves_stack {s : LowerState} {sv : SymVal}
+/-- `commit` only bumps `nextReg`; `stack`, `localReg`, `localTy`
+    are preserved. The `.reg` arm is identity, the `.i32ConstSym` arm
+    only calls `alloc` (which bumps `nextReg`). The address SymVals
+    refuse, so unreachable. -/
+theorem commit_only_bumps_nextReg {s : LowerState} {sv : SymVal}
     {r : Reg} {s' : LowerState} {ops : List KernelOp}
     (h : s.commit sv = some (r, s', ops)) :
-    s'.stack = s.stack := by
+    s' = { s with nextReg := s'.nextReg } := by
   match sv, h with
   | .reg _ _, h =>
     simp [LowerState.commit] at h
@@ -454,6 +542,51 @@ theorem commit_preserves_stack {s : LowerState} {sv : SymVal}
     simp [LowerState.commit, LowerState.alloc] at h
     obtain ⟨_, hs', _⟩ := h
     rw [← hs']
+
+/-- `commit` preserves the stack. Corollary of
+    `commit_only_bumps_nextReg`. -/
+theorem commit_preserves_stack {s : LowerState} {sv : SymVal}
+    {r : Reg} {s' : LowerState} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) :
+    s'.stack = s.stack := by
+  rw [commit_only_bumps_nextReg h]
+
+/-- `commit` preserves both local maps. Corollary of
+    `commit_only_bumps_nextReg`. -/
+theorem commit_preserves_locals {s : LowerState} {sv : SymVal}
+    {r : Reg} {s' : LowerState} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) :
+    s'.localReg = s.localReg ∧ s'.localTy = s.localTy := by
+  rw [commit_only_bumps_nextReg h]
+  exact ⟨rfl, rfl⟩
+
+/-- The KOps `evalOps` of a commit's emitted op list preserves the
+    `broke` flag — `.reg` emits no ops, `.i32ConstSym` emits a single
+    `.const` write that doesn't touch `broke`. The address SymVals
+    refuse, so unreachable. Used to chain `evalOps_append` across
+    multiple commits in a binop preservation proof — each
+    intermediate state inherits the input's `broke = false`. -/
+theorem commit_preserves_broke {s : LowerState} {sv : SymVal}
+    {r : Reg} {s' : LowerState} {ops : List KernelOp}
+    (h_commit : s.commit sv = some (r, s', ops))
+    {kst kst' : Quanta.KOps.State}
+    (h_eval : evalOps 0 kst ops = some kst') :
+    kst'.broke = kst.broke := by
+  match sv, h_commit with
+  | .reg _ _, h_commit =>
+    simp [LowerState.commit] at h_commit
+    obtain ⟨_, _, hops⟩ := h_commit
+    rw [hops] at h_eval
+    simp [evalOps] at h_eval
+    rw [← h_eval]
+  | .i32ConstSym _, h_commit =>
+    simp [LowerState.commit, LowerState.alloc] at h_commit
+    obtain ⟨_, _, hops⟩ := h_commit
+    -- simp leaves `hops` in `[const …] = ops` form (RHS = ops); rw ←
+    -- substitutes `ops` with the literal list.
+    rw [← hops] at h_eval
+    simp [evalOps, Quanta.KOps.evalOp] at h_eval
+    rw [← h_eval]
 
 /-- For an association list keyed by `Nat`, `find?` over the
     post-`setLocalReg` list (which prepends a new entry and filters
@@ -769,40 +902,85 @@ theorem cmpI32_some_shape {p : UInt32 → UInt32 → Bool} {s s' : WasmState}
     | wF32 _ => cases a <;> simp [hs, WasmState.pop] at h
     | wF64 _ => cases a <;> simp [hs, WasmState.pop] at h
 
-/-- Successful `lowerI32Bin` runs imply the symbolic stack had two
-    `.reg _ _` slots on top (pop refuses other shapes), and the
-    resulting state allocated a fresh register, pushed it boxed as
-    `.reg s.nextReg .u32`, and emitted a single `binOp`. -/
+/-- Successful `lowerI32Bin` runs split into a deterministic 6-step
+    chain: `popSym` × 2 to extract two SymVals from the top of the
+    stack, `commit` × 2 to materialize them into real regs (with any
+    materialization ops emitted into `opsA` / `opsB`), then `alloc`
+    + `push` for the destination register.
+
+    The shape lemma exposes the two intermediate states `s3` (post-
+    first-commit) and `s4` (post-second-commit) so the preservation
+    proof can apply `commit_correct` once per operand. The
+    intermediate states inherit `s.localReg` / `s.localTy` and have
+    `lrest` as their stack — derived via `commit_preserves_stack` /
+    `commit_preserves_locals`. -/
 theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
     {ops : List KernelOp} (h : lowerI32Bin s bop = some (s', ops)) :
-    ∃ ra rb tya tyb lrest,
-      s.stack = SymVal.reg rb tyb :: SymVal.reg ra tya :: lrest ∧
-      s' = { nextReg := s.nextReg + 1,
-             stack := SymVal.reg s.nextReg .u32 :: lrest,
+    ∃ svb sva lrest ra s3 opsA rb s4 opsB,
+      s.stack = svb :: sva :: lrest ∧
+      ({ s with stack := lrest } : LowerState).commit sva = some (ra, s3, opsA) ∧
+      s3.commit svb = some (rb, s4, opsB) ∧
+      s4.stack = lrest ∧
+      s4.localReg = s.localReg ∧ s4.localTy = s.localTy ∧
+      s.nextReg ≤ s4.nextReg ∧
+      s' = { nextReg := s4.nextReg + 1,
+             stack := SymVal.reg s4.nextReg .u32 :: lrest,
              localReg := s.localReg,
              localTy := s.localTy } ∧
-      ops = [.binOp s.nextReg ra rb bop .u32] := by
+      ops = opsA ++ opsB ++ [.binOp s4.nextReg ra rb bop .u32] := by
   unfold lowerI32Bin at h
-  rcases hs : s.stack with _ | ⟨svb, srest⟩
-  · simp [hs, LowerState.pop] at h
-  · cases svb with
-    | reg rb tyb =>
-      rcases hsr : srest with _ | ⟨sva, lrest⟩
-      · simp [hs, hsr, LowerState.pop] at h
-      · cases sva with
-        | reg ra tya =>
-          simp [hs, hsr, LowerState.pop, LowerState.alloc, LowerState.push] at h
-          obtain ⟨hs', hops'⟩ := h
-          refine ⟨ra, rb, tya, tyb, lrest, rfl, ?_, hops'.symm⟩
-          exact hs'.symm
-        | bufferPtr _          => simp [hs, hsr, LowerState.pop] at h
-        | scaledIdx _ _        => simp [hs, hsr, LowerState.pop] at h
-        | i32ConstSym _        => simp [hs, hsr, LowerState.pop] at h
-        | bufferAccess _ _ _   => simp [hs, hsr, LowerState.pop] at h
-    | bufferPtr _          => simp [hs, LowerState.pop] at h
-    | scaledIdx _ _        => simp [hs, LowerState.pop] at h
-    | i32ConstSym _        => simp [hs, LowerState.pop] at h
-    | bufferAccess _ _ _   => simp [hs, LowerState.pop] at h
+  rcases hs : s.stack with _ | ⟨svb, _ | ⟨sva, lrest⟩⟩
+  · simp [hs, LowerState.popSym] at h
+  · simp [hs, LowerState.popSym] at h
+  ·
+    -- Both popSyms succeed; s_pop = { s with stack := lrest }.
+    simp only [hs, LowerState.popSym, Option.bind_eq_bind, Option.some_bind] at h
+    -- Branch on commit sva success.
+    rcases hca : ({s with stack := lrest} : LowerState).commit sva
+        with _ | ⟨ra, s3, opsA⟩
+    · simp [hca] at h
+    ·
+      simp only [hca, Option.some_bind] at h
+      -- Branch on commit svb success.
+      rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+      · simp [hcb] at h
+      ·
+        simp only [hcb, Option.some_bind, LowerState.alloc, LowerState.push] at h
+        -- h : some ({...post-state...}, opsA ++ opsB ++ [...]) = some (s', ops)
+        obtain ⟨hs_eq, hops_eq⟩ := Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        -- Derive stack/locals/nextReg facts about s3, s4.
+        have h_locA := commit_preserves_locals hca
+        have h_stkA := commit_preserves_stack hca
+        have h_locB := commit_preserves_locals hcb
+        have h_stkB := commit_preserves_stack hcb
+        have h_s4_stack : s4.stack = lrest := by rw [h_stkB, h_stkA]
+        have h_s4_lr   : s4.localReg = s.localReg := by rw [h_locB.1, h_locA.1]
+        have h_s4_lt   : s4.localTy  = s.localTy  := by rw [h_locB.2, h_locA.2]
+        have h_s3_nr   : s.nextReg ≤ s3.nextReg := by
+          -- commit returns either s (no bump) or s.alloc.snd (bump by 1).
+          match sva, hca with
+          | .reg _ _, hca =>
+            simp [LowerState.commit] at hca
+            obtain ⟨_, hs3, _⟩ := hca; rw [← hs3]; exact Nat.le_refl _
+          | .i32ConstSym _, hca =>
+            simp [LowerState.commit, LowerState.alloc] at hca
+            obtain ⟨_, hs3, _⟩ := hca; rw [← hs3]; exact Nat.le_succ _
+        have h_s4_nr : s3.nextReg ≤ s4.nextReg := by
+          match svb, hcb with
+          | .reg _ _, hcb =>
+            simp [LowerState.commit] at hcb
+            obtain ⟨_, hs4, _⟩ := hcb; rw [← hs4]; exact Nat.le_refl _
+          | .i32ConstSym _, hcb =>
+            simp [LowerState.commit, LowerState.alloc] at hcb
+            obtain ⟨_, hs4, _⟩ := hcb; rw [← hs4]; exact Nat.le_succ _
+        refine ⟨svb, sva, lrest, ra, s3, opsA, rb, s4, opsB,
+                rfl, hca, hcb, h_s4_stack, h_s4_lr, h_s4_lt,
+                Nat.le_trans h_s3_nr h_s4_nr, ?_, hops_eq.symm⟩
+        rw [← hs_eq]
+        -- Goal: { s4 with nextReg := s4.nextReg + 1, stack := SymVal.reg s4.nextReg .u32 :: s4.stack }
+        --     = { nextReg := s4.nextReg + 1, stack := SymVal.reg s4.nextReg .u32 :: lrest,
+        --         localReg := s.localReg, localTy := s.localTy }
+        rw [h_s4_stack, h_s4_lr, h_s4_lt]
 
 /-- Shape for `lowerI32Cmp`. The lowering emits TWO ops — `cmp` writing
     a vBool to `s.nextReg`, then `cast` lifting that vBool back into
@@ -857,7 +1035,17 @@ open Quanta.KOps (vU32) in
     * `h_agree` — the KOps eval matches the WASM eval on u32 values.
 
     Each of the 10 i32-binop preservation theorems below is one line:
-    instantiate with `rfl rfl (by intro …; rfl)`. -/
+    instantiate with `rfl rfl (by intro …; rfl)`.
+
+    The lowering now consumes operands via `popSym + commit` (not raw
+    `pop`), so the emitted op list is `opsA ++ opsB ++ [binOp]` where
+    `opsA` / `opsB` are the (possibly empty) materialization ops from
+    each `commit` — matching production's pull-based const folding.
+    The proof applies `commit_correct` once per popped operand,
+    threading encodings through the regfile evolution. The
+    `kst.broke = false` precondition is required (was implicit before
+    when only one op was emitted) because `evalOps_append` short-
+    circuits on `broke` between ops. -/
 theorem preservation_i32Bin_generic
     (instr : WasmInstr) (op_w : UInt32 → UInt32 → UInt32)
     (op_k : Quanta.KOps.BinOp)
@@ -866,7 +1054,7 @@ theorem preservation_i32Bin_generic
     (h_agree : ∀ av bv,
        Quanta.KOps.evalBinOp op_k (vU32 av) (vU32 bv) = some (vU32 (op_w av bv)))
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (layout : BufferLayout) (R : Refines ws s kst layout)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws instr = some ws')
     (hl : lowerInstr s instr = some (s', ops)) :
@@ -874,73 +1062,149 @@ theorem preservation_i32Bin_generic
   rw [h_w] at hw
   rw [h_l] at hl
   obtain ⟨av, bv, rest, hwstack, hws_eq⟩ := binI32_some_shape hw
-  obtain ⟨ra, rb, tya, tyb, lrest, hlstack, hs_eq, hops_eq⟩ := lowerI32Bin_some_shape hl
-  -- Extract reg encodings from R.stk applied at indices 0, 1.
-  -- The encodings expose `regLookup … rb / ra = some (vU32 …)` only
-  -- when the SymVal is `.reg _ .u32`; the shape-extraction helper
-  -- handed us `.reg rb tyb / .reg ra tya`, but `WasmValue.encodes`
-  -- being non-False forces tyb = tya = .u32.
-  have hrb_enc : regLookup kst.rf rb = some (vU32 bv) := by
+  obtain ⟨svb, sva, lrest, ra, s3, opsA, rb, s4, opsB, hlstack, hca, hcb,
+          h_s4_stack, h_s4_lr, h_s4_lt, h_s_le_s4, hs_eq, hops_eq⟩ :=
+    lowerI32Bin_some_shape hl
+  -- Operand encodings in kst.rf — extracted from R.stk before any commit.
+  have h_enc_svb : (WasmValue.wI32 bv).encodes kst.rf svb := by
     have hb := R.stk.right 0 (.wI32 bv) (by rw [hwstack]; simp)
     obtain ⟨sv0, hsv0_get, henc⟩ := hb
-    have hs0 : s.stack.get? 0 = some (SymVal.reg rb tyb) := by rw [hlstack]; simp
+    have hs0 : s.stack.get? 0 = some svb := by rw [hlstack]; simp
     rw [hs0] at hsv0_get
-    have h_eq : SymVal.reg rb tyb = sv0 := (Option.some.injEq _ _).mp hsv0_get
-    subst h_eq
-    cases tyb <;> simp only [WasmValue.encodes] at henc <;>
-      first | exact henc | exact henc.elim
-  have hra_enc : regLookup kst.rf ra = some (vU32 av) := by
+    have h_eq : svb = sv0 := (Option.some.injEq _ _).mp hsv0_get
+    rw [h_eq]; exact henc
+  have h_enc_sva : (WasmValue.wI32 av).encodes kst.rf sva := by
     have ha := R.stk.right 1 (.wI32 av) (by rw [hwstack]; simp)
     obtain ⟨sv1, hsv1_get, henc⟩ := ha
-    have hs1 : s.stack.get? 1 = some (SymVal.reg ra tya) := by rw [hlstack]; simp
+    have hs1 : s.stack.get? 1 = some sva := by rw [hlstack]; simp
     rw [hs1] at hsv1_get
-    have h_eq : SymVal.reg ra tya = sv1 := (Option.some.injEq _ _).mp hsv1_get
-    subst h_eq
-    cases tya <;> simp only [WasmValue.encodes] at henc <;>
-      first | exact henc | exact henc.elim
-  -- Build the final kst'.
-  refine ⟨{ kst with rf := regWrite kst.rf s.nextReg (vU32 (op_w av bv)) }, ?_, ?_⟩
-  · subst hops_eq
-    simp [evalOps, Quanta.KOps.evalOp, hra_enc, hrb_enc, h_agree]
-  · subst hs_eq; subst hws_eq
-    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
-    · -- Stack refinement.
+    have h_eq : sva = sv1 := (Option.some.injEq _ _).mp hsv1_get
+    rw [h_eq]; exact henc
+  -- Membership of svb, sva in s.stack — used to extract Fresh / AliasFree facts.
+  have h_svb_in : svb ∈ s.stack := by rw [hlstack]; simp
+  have h_sva_in : sva ∈ s.stack := by rw [hlstack]; simp
+  -- Fresh-bound on each operand's regs.
+  have h_svb_lt : ∀ r ∈ svb.regs, r < s.nextReg :=
+    fun r hr => R.fresh.left svb h_svb_in r hr
+  have h_sva_lt : ∀ r ∈ sva.regs, r < s.nextReg :=
+    fun r hr => R.fresh.left sva h_sva_in r hr
+  -- Construct Refines for the popped state s_pop = { s with stack := lrest }
+  -- on ws_pop = { ws with stack := rest }. Each clause weakens trivially.
+  have h_rest_lrest_len : rest.length = lrest.length := by
+    have hl_orig := R.stk.left
+    rw [hwstack, hlstack] at hl_orig
+    simpa using hl_orig
+  let s_pop : LowerState :=
+    { nextReg := s.nextReg, stack := lrest,
+      localReg := s.localReg, localTy := s.localTy }
+  let ws_pop : WasmState :=
+    { ws with stack := rest }
+  have R_pop : Refines ws_pop s_pop kst layout := by
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    · -- StackRefines on the (rest, lrest) suffix — shift indices by 2 and reuse R.stk.
+      intro i v hv
+      have hrest_get : ws.stack.get? (i + 2) = some v := by
+        rw [hwstack]; simpa using hv
+      obtain ⟨svi, hsvi_get, henc⟩ := R.stk.right (i + 2) v hrest_get
+      have hlrest_get : lrest.get? i = some svi := by
+        have h2 : s.stack.get? (i + 2) = some svi := hsvi_get
+        rw [hlstack] at h2; simpa using h2
+      exact ⟨svi, by simpa using hlrest_get, henc⟩
+    · -- Fresh: s_pop.stack ⊆ s.stack and same locals.
+      refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r hr
+      have hsv_in : sv ∈ s.stack := by rw [hlstack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+      exact R.fresh.left sv hsv_in r hr
+    · -- AliasFree: same projection on the lrest suffix.
+      intro ir hir sv hsv
+      have hsv_in : sv ∈ s.stack := by rw [hlstack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+      exact R.aliasFree ir hir sv hsv_in
+  -- First commit: materialize sva → ra. Emits opsA, evolves kst → kst1.
+  obtain ⟨kst1, h_evalA, R1, h_enc_ra1, h_lookupA, h_s_le_s3, h_ra_lt_s3⟩ :=
+    commit_correct R_pop h_sva_lt hca h_enc_sva
+  -- After opsA, broke is preserved (commit emits only `.const` ops, which
+  -- write the regfile and inherit `broke`).
+  have h_kst1_ok : kst1.broke = false := by
+    rw [commit_preserves_broke hca h_evalA]; exact h_kst_ok
+  -- Encoding of svb at kst1.rf — lift through opsA via lookup-preservation.
+  have h_enc_svb1 : (WasmValue.wI32 bv).encodes kst1.rf svb :=
+    WasmValue.encodes_preserved_of_lookup_eq
+      (fun r hr => h_lookupA r (h_svb_lt r hr)) h_enc_svb
+  -- Fresh-bound on svb at s3.nextReg.
+  have h_svb_lt_s3 : ∀ r ∈ svb.regs, r < s3.nextReg :=
+    fun r hr => Nat.lt_of_lt_of_le (h_svb_lt r hr) h_s_le_s3
+  -- Second commit: materialize svb → rb on R1. Emits opsB, evolves kst1 → kst2.
+  obtain ⟨kst2, h_evalB, R2, h_enc_rb2, h_lookupB, h_s3_le_s4, h_rb_lt_s4⟩ :=
+    commit_correct R1 h_svb_lt_s3 hcb h_enc_svb1
+  have h_kst2_ok : kst2.broke = false := by
+    rw [commit_preserves_broke hcb h_evalB]; exact h_kst1_ok
+  -- Lift ra's encoding from kst1 to kst2 via the second commit's lookup-preservation.
+  have h_enc_ra2 : (WasmValue.wI32 av).encodes kst2.rf (.reg ra .u32) :=
+    WasmValue.encodes_preserved_of_lookup_eq
+      (fun r hr => by
+        simp [SymVal.regs] at hr
+        rw [hr]
+        exact h_lookupB ra h_ra_lt_s3)
+      h_enc_ra1
+  -- Extract reg lookups in kst2 from the encodings (used by the binOp eval).
+  have h_lookup_ra : regLookup kst2.rf ra = some (vU32 av) := h_enc_ra2
+  have h_lookup_rb : regLookup kst2.rf rb = some (vU32 bv) := h_enc_rb2
+  -- Final kst'. Note: `broke := false` rather than `kst2.broke` so the
+  -- post-binOp simp output (which substitutes h_kst2_ok) matches without
+  -- an extra rewrite. heap and dispatch carry through from kst2.
+  refine ⟨{ rf := regWrite kst2.rf s4.nextReg (vU32 (op_w av bv)),
+            heap := kst2.heap, dispatch := kst2.dispatch, broke := false }, ?_, ?_⟩
+  · -- evalOps 0 kst (opsA ++ opsB ++ [binOp …]) = some kst3.
+    subst hops_eq
+    -- Glue the three sub-evaluations via evalOps_append.
+    rw [show opsA ++ opsB ++ [KernelOp.binOp s4.nextReg ra rb op_k Quanta.KOps.Scalar.u32]
+          = opsA ++ (opsB ++ [KernelOp.binOp s4.nextReg ra rb op_k Quanta.KOps.Scalar.u32]) from
+        by rw [List.append_assoc]]
+    rw [evalOps_append h_evalA h_kst1_ok]
+    rw [evalOps_append h_evalB h_kst2_ok]
+    -- Now reduce the single-op `evalOps 0 kst2 [binOp …]`.
+    simp [evalOps, Quanta.KOps.evalOp, h_lookup_ra, h_lookup_rb, h_agree, h_kst2_ok]
+  · -- Refines ws' s' kst3 layout.
+    subst hs_eq; subst hws_eq
+    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines⟩
+    · -- StackRefines on (wI32 (op_w av bv) :: rest, .reg s4.nextReg .u32 :: lrest).
       refine ⟨?_, ?_⟩
-      · -- Length: rest.length = lrest.length (from old R.stk on the
-        -- 2-deep stacks).
-        have hl_orig := R.stk.left
-        rw [hwstack, hlstack] at hl_orig
-        simpa using hl_orig
+      · -- Length.
+        simp; exact h_rest_lrest_len
       · intro j v hv
         cases j with
         | zero =>
           simp at hv
-          refine ⟨SymVal.reg s.nextReg .u32, by simp, ?_⟩
+          refine ⟨SymVal.reg s4.nextReg .u32, by simp, ?_⟩
           subst hv
-          simp [WasmValue.encodes]
-          rfl
+          show regLookup (regWrite kst2.rf s4.nextReg (vU32 (op_w av bv))) s4.nextReg
+                 = some (vU32 (op_w av bv))
+          simp [regLookup_regWrite_self]
         | succ k =>
-          have hrest_get : ws.stack.get? (k + 2) = some v := by
-            rw [hwstack]; simpa using hv
-          obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right (k + 2) v hrest_get
-          have hlrest_get : lrest.get? k = some svk := by
-            have h2 : s.stack.get? (k + 2) = some svk := hsvk_get
-            rw [hlstack] at h2; simpa using h2
-          refine ⟨svk, by simpa using hlrest_get, ?_⟩
-          have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk_get
+          -- Re-extract via R2.stk.right at index k. ws_pop.stack = rest, s4.stack = lrest.
+          have hk : ws_pop.stack.get? k = some v := by
+            show rest.get? k = some v
+            simpa using hv
+          obtain ⟨svk, hsvk_get, henc⟩ := R2.stk.right k v hk
+          -- s4.stack = lrest, so unfolding yields s4.stack.get? k = some svk.
+          have h_s4_get : s4.stack.get? k = some svk := hsvk_get
+          rw [h_s4_stack] at h_s4_get
+          refine ⟨svk, by simpa using h_s4_get, ?_⟩
+          have hsvk_in : svk ∈ s4.stack := List.mem_of_get? hsvk_get
           apply WasmValue.encodes_preserved_of_fresh _ henc
-          intro r' hr'_in
-          exact R.fresh.left svk hsvk_in r' hr'_in
-    · -- Locals refinement.
+          intro r' hr'
+          exact R2.fresh.left svk hsvk_in r' hr'
+    · -- LocalsRefines: localReg unchanged through commits + binOp.
       intro i r hfind v hv
-      have hpair : (i, r) ∈ s.localReg := List.mem_of_find?_eq_some hfind
-      have hr_lt : r < s.nextReg := R.fresh.right (i, r) hpair
-      have henc := R.locs i r hfind v hv
+      rw [← h_s4_lr] at hfind
+      have hpair : (i, r) ∈ s4.localReg := List.mem_of_find?_eq_some hfind
+      have hr_lt : r < s4.nextReg := R2.fresh.right (i, r) hpair
+      have henc := R2.locs i r hfind v hv
       apply WasmValue.encodes_preserved_of_fresh _ henc
       intro r' hr'_in
       simp [SymVal.regs] at hr'_in
       subst hr'_in; exact hr_lt
-    · -- Freshness: new top is .reg s.nextReg .u32; lrest ⊆ s.stack.
+    · -- Fresh on s' — top is .reg s4.nextReg .u32, lrest ⊆ s4.stack, locals from s4.
       refine ⟨?_, ?_⟩
       · intro sv hsv r' hr'
         simp at hsv
@@ -948,25 +1212,26 @@ theorem preservation_i32Bin_generic
         · subst h_eq
           simp [SymVal.regs] at hr'
           subst hr'; exact Nat.lt_succ_self _
-        · have hsv_in : sv ∈ s.stack := by rw [hlstack]; simp; right; right; exact h_in
-          exact Nat.lt_succ_of_lt (R.fresh.left sv hsv_in r' hr')
+        · have hsv_in_s4 : sv ∈ s4.stack := by rw [h_s4_stack]; exact h_in
+          exact Nat.lt_succ_of_lt (R2.fresh.left sv hsv_in_s4 r' hr')
       · intro ir hir
-        exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
-    · -- AliasFree: localReg unchanged, new stack drops top 2 + adds
-      -- .reg s.nextReg .u32. For the new top, regs = [s.nextReg],
-      -- fresh ≠ any stable_reg. For lrest entries, IH AliasFree on
-      -- s.stack ⊇ lrest applies.
+        rw [← h_s4_lr] at hir
+        exact Nat.lt_succ_of_lt (R2.fresh.right ir hir)
+    · -- AliasFree on s'.
       intro ir hir sv hsv
-      have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+      rw [← h_s4_lr] at hir
+      have hir_lt : ir.snd < s4.nextReg := R2.fresh.right ir hir
       simp at hsv
       rcases hsv with h_eq | h_in
       · subst h_eq
         simp [SymVal.regs]
         exact Nat.ne_of_lt hir_lt
-      · have hsv_in : sv ∈ s.stack := by rw [hlstack]; simp; right; right; exact h_in
-        exact R.aliasFree ir hir sv hsv_in
-    · -- InjectiveLocals: localReg unchanged.
-      exact R.injLocals
+      · have hsv_in_s4 : sv ∈ s4.stack := by rw [h_s4_stack]; exact h_in
+        exact R2.aliasFree ir hir sv hsv_in_s4
+    · -- InjectiveLocals: localReg unchanged through commits and binOp.
+      intro p q hp hq
+      rw [← h_s4_lr] at hp hq
+      exact R2.injLocals p q hp hq
 
 -- ── Per-op specializations (10 binops) ─────────────────────────────────
 

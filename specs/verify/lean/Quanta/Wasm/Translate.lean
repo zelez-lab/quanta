@@ -177,22 +177,25 @@ end LowerState
   let s2 := s1.push r
   (r, s2, [mk r])
 
-/-- Lower a single i32 binary op: pop two operand regs, allocate a
-    result reg, emit the corresponding KOps `binOp`, push the result.
-    `none` on stack underflow.
+/-- Lower a single i32 binary op: pop two SymVals, materialize each to
+    a real register via `commit` (no-op for `.reg`, fresh-alloc + const
+    op for `.i32ConstSym`, refusal for the address SymVals), allocate a
+    result reg, emit the matching `binOp`, push the result. `none` on
+    stack underflow or on either operand being a non-committable
+    SymVal (the buffer-pattern arms intercept those before this fires).
 
-    TODO: extend to `popSym + commit` so non-`.reg` SymVals (notably
-    `.i32ConstSym` from the symbolic-const lowering) can flow into
-    binops. The `commit_correct` + `commit_preserves_stack` lemmas in
-    `Quanta.Wasm.Preservation` are the load-bearing pieces; the
-    blocker is the shape-lemma rework (must distinguish `commit`
-    success/failure × inner-popSym empty-stack across the bind chain). -/
+    Mirrors production `lower.rs` `RawInstr::I32Add`: pop b then a,
+    commit a then b, alloc dst, emit. The op order in the emitted
+    list is `opsA ++ opsB ++ [binOp]` so that ra/rb are written before
+    the binOp reads them. -/
 def lowerI32Bin (s : LowerState) (op : BinOp) : Option (LowerState × List KernelOp) := do
-  let (b, s1) ← s.pop
-  let (a, s2) ← s1.pop
-  let (dst, s3) := s2.alloc
-  let s4 := s3.push dst
-  pure (s4, [.binOp dst a b op .u32])
+  let (svb, s1) ← s.popSym
+  let (sva, s2) ← s1.popSym
+  let (ra, s3, opsA) ← s2.commit sva
+  let (rb, s4, opsB) ← s3.commit svb
+  let (dst, s5) := s4.alloc
+  let s6 := s5.push dst
+  pure (s6, opsA ++ opsB ++ [.binOp dst ra rb op .u32])
 
 /-- Lower a single i32 comparison. KOps `Cmp` produces a `vBool`, but
     WASM's `i32.{eq,ne,lt,le,gt,ge}` push an `wI32 0/1` — so we emit
