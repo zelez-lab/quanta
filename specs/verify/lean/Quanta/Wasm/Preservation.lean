@@ -162,17 +162,24 @@ def HeapRefines (mem : WasmMem) (heap : Quanta.KOps.Heap) (layout : BufferLayout
 -- Refinement relation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- A WASM value is encoded by a SymVal stack slot if the slot is a
-    plain `.reg r .u32` and the regfile holds the matching `vU32` at
-    that register. Other SymVal shapes (`bufferPtr`, `scaledIdx`,
-    `i32ConstSym`, `bufferAccess`) only appear in the transient
-    sequence of buffer-pattern recognition (slice-4 step 7); they are
-    consumed inline before any value consumer fires, so they never
-    need to satisfy a value refinement. -/
+/-- A WASM value is encoded by a SymVal stack slot if either:
+    * the slot is `.reg r .u32` and the regfile holds the matching
+      `vU32` at that register, or
+    * the slot is `.i32ConstSym m` and the WASM value is the matching
+      `wI32 (UInt32.ofNat m.toNat)` — purely symbolic, no regfile
+      dependency. The translator pushes `i32ConstSym` for every
+      `i32.const`; the buffer-pattern arms (or a `commit` materializer)
+      consume it before any reg-typed consumer fires.
+
+    Other SymVal shapes (`bufferPtr`, `scaledIdx`, `bufferAccess`)
+    are addresses, not values — their encoding stays `False`. They
+    are consumed inline by the buffer-pattern arms in slice-4 step 7+
+    and never satisfy a value refinement. -/
 def WasmValue.encodes (v : WasmValue) (rf : Quanta.KOps.RegFile) (sv : SymVal) : Prop :=
   match v, sv with
-  | .wI32 n, .reg r .u32 => regLookup rf r = some (Quanta.KOps.Value.vU32 n)
-  | _, _ => False
+  | .wI32 n, .reg r .u32      => regLookup rf r = some (Quanta.KOps.Value.vU32 n)
+  | .wI32 n, .i32ConstSym m   => n = UInt32.ofNat m.toNat
+  | _, _                      => False
 
 /-- Stack refinement: WASM stack and symbolic stack zip element-wise
     through `WasmValue.encodes`. Length-aligned, top-aligned. -/
@@ -293,6 +300,9 @@ theorem WasmValue.encodes_preserved_of_fresh
     show regLookup (regWrite rf nr newval) r = some (Quanta.KOps.Value.vU32 n)
     rw [regLookup_preserved_of_fresh hr_lt]
     exact h'
+  | .wI32 _, .i32ConstSym _, h =>
+    -- i32ConstSym encoding is regfile-independent.
+    exact h
 
 /-- Encoding is preserved under any register write disjoint from the
     SymVal's reg projection. The general-form companion to
@@ -316,6 +326,8 @@ theorem WasmValue.encodes_preserved_of_disjoint
     show regLookup (regWrite rf dst newval) r = some (Quanta.KOps.Value.vU32 n)
     rw [regLookup_regWrite_of_ne rf dst r newval hr_ne]
     exact h'
+  | .wI32 _, .i32ConstSym _, h =>
+    exact h
 
 /-- Inverting a `wI32`-encoding-via-`.reg`: forces the scalar type to
     `.u32` and exposes the underlying regfile lookup. Used by the
@@ -444,63 +456,42 @@ theorem preservation_i32Const (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     (hl : lowerInstr s (.i32Const n) = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   simp [evalInstr, WasmState.push] at hw
-  simp [lowerInstr, freshAndPush, LowerState.alloc, LowerState.push] at hl
+  simp [lowerInstr] at hl
   obtain ⟨hs_eq, hops_eq⟩ := hl
-  refine ⟨{ kst with rf := regWrite kst.rf s.nextReg (vU32 (UInt32.ofNat n.toNat)) }, ?_, ?_⟩
-  · subst hops_eq
-    simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst]
+  -- New shape: ops = [] (no IR emitted), s'.stack = .i32ConstSym n :: s.stack,
+  -- s'.nextReg unchanged. kst' = kst (regfile untouched).
+  refine ⟨kst, ?_, ?_⟩
+  · subst hops_eq; simp [evalOps]
   · subst hw hs_eq
     refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
-    · -- Stack refinement.
+    · -- StackRefines: top is .i32ConstSym n encoding wI32 (UInt32.ofNat n.toNat);
+      -- below entries are unchanged from the old stack with kst.rf unchanged.
       refine ⟨by simp [R.stk.left], ?_⟩
       intro i v hv
       cases i with
       | zero =>
-        -- Top: WASM v = wI32 (UInt32.ofNat n.toNat), new top sv = .reg s.nextReg .u32.
         simp at hv
-        refine ⟨SymVal.reg s.nextReg .u32, by simp, ?_⟩
+        refine ⟨SymVal.i32ConstSym n, by simp, ?_⟩
         subst hv
         simp [WasmValue.encodes]
-        rfl
       | succ k =>
-        -- Below the top: prior stack survives the fresh write.
         have hwsk : ws.stack.get? k = some v := by simpa using hv
         obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right k v hwsk
-        refine ⟨svk, by simpa using hsvk_get, ?_⟩
-        have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk_get
-        apply WasmValue.encodes_preserved_of_fresh _ henc
-        intro r hr_in
-        exact R.fresh.left svk hsvk_in r hr_in
-    · -- Locals refinement: stable regs are < s.nextReg by Fresh.right.
-      intro i r hfind v hv
-      have hpair : (i, r) ∈ s.localReg := List.mem_of_find?_eq_some hfind
-      have hr_lt : r < s.nextReg := R.fresh.right (i, r) hpair
-      have henc := R.locs i r hfind v hv
-      apply WasmValue.encodes_preserved_of_fresh _ henc
-      intro r' hr'_in
-      simp [SymVal.regs] at hr'_in
-      subst hr'_in; exact hr_lt
-    · -- Freshness: nextReg bumps to nextReg + 1; new top is .reg s.nextReg .u32.
-      refine ⟨?_, ?_⟩
-      · intro sv hsv r' hr'
-        simp at hsv
-        rcases hsv with h_eq | h_in
-        · subst h_eq
-          simp [SymVal.regs] at hr'
-          subst hr'; exact Nat.lt_succ_self _
-        · exact Nat.lt_succ_of_lt (R.fresh.left sv h_in r' hr')
-      · intro ir hir
-        exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
-    · -- AliasFree: localReg unchanged; new stack adds .reg s.nextReg .u32,
-      -- whose regs = [s.nextReg]. Every stable_reg < s.nextReg by Fresh,
-      -- so no collision; for old stack entries, IH AliasFree applies.
-      intro ir hir sv hsv
-      have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+        exact ⟨svk, by simpa using hsvk_get, henc⟩
+    · -- LocalsRefines: regfile unchanged, localReg unchanged.
+      exact R.locs
+    · -- Fresh: nextReg unchanged; new top is .i32ConstSym n with regs = [].
+      refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r' hr'
       simp at hsv
       rcases hsv with h_eq | h_in
-      · subst h_eq
-        simp [SymVal.regs]
-        exact Nat.ne_of_lt hir_lt
+      · subst h_eq; simp [SymVal.regs] at hr'
+      · exact R.fresh.left sv h_in r' hr'
+    · -- AliasFree: new top has empty regs ⇒ trivially disjoint.
+      intro ir hir sv hsv
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq; simp [SymVal.regs]
       · exact R.aliasFree ir hir sv h_in
     · -- InjectiveLocals: localReg unchanged.
       exact R.injLocals

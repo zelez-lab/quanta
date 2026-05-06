@@ -191,13 +191,17 @@ def lowerI32Cmp (s : LowerState) (op : CmpOp) : Option (LowerState × List Kerne
     KOps. `none` for ops outside the subset (matches the production
     pass's `UnsupportedOp` error). -/
 def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List KernelOp)
-  -- Constants. WASM `i32.const n` produces a fresh register holding the
-  -- low-32 bits of `n`; we encode it as `ConstValue.u32` because the
-  -- IR's u32 alphabet matches WASM i32 wrapping semantics exactly.
+  -- Constants. WASM `i32.const n` pushes the constant *symbolically*
+  -- as `SymVal.i32ConstSym n` and emits no IR ops. The const is
+  -- materialized later, either by a buffer-pattern arm consuming it
+  -- (e.g., `<reg> <i32ConstSym k> i32.shl` → `ScaledIdx { base, 1<<k }`,
+  -- no const op needed) or by a generic consumer that demands a real
+  -- register, which calls `commit` to emit the const op then. This
+  -- matches the production translator's pull-based materialization;
+  -- before this change, every i32.const eagerly emitted a `.const`
+  -- op, which would defeat the buffer-pattern recognition.
   | .i32Const n =>
-      let (_, s1, ops) := freshAndPush s
-        (fun r => .const r (.u32 (UInt32.ofNat n.toNat)))
-      some (s1, ops)
+      some ({ s with stack := .i32ConstSym n :: s.stack }, [])
   -- Locals
   --
   -- `localGet` allocates a fresh register and emits `Copy { dst, src }`
