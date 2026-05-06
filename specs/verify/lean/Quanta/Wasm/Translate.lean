@@ -144,6 +144,25 @@ def setLocalReg (s : LowerState) (i : Nat) (r : Reg) (ty : Scalar) : LowerState 
   let tys'  := (i, ty) :: s.localTy.filter (fun p => p.fst ≠ i)
   { s with localReg := regs', localTy := tys' }
 
+/-- Materialize a `SymVal` into a real `Reg` + the ops needed to
+    produce that reg's value. Mirrors production's `commit()`:
+    * `.reg r _` is already a register — no ops, no alloc.
+    * `.i32ConstSym n` allocates a fresh reg and emits `.const r ...`
+      (the const op the eager `i32.const` arm used to emit).
+    * Address SymVals (`.bufferPtr`, `.scaledIdx`, `.bufferAccess`)
+      cannot commit to a value reg — they're consumed by the buffer-
+      pattern load/store arms instead. (Future: scaledIdx could
+      commit by emitting a shift; deferred until needed.) -/
+def commit (s : LowerState) (sv : SymVal) : Option (Reg × LowerState × List KernelOp) :=
+  match sv with
+  | .reg r _              => some (r, s, [])
+  | .i32ConstSym n        =>
+      let (dst, s1) := s.alloc
+      some (dst, s1, [.const dst (.u32 (UInt32.ofNat n.toNat))])
+  | .bufferPtr _          => none
+  | .scaledIdx _ _        => none
+  | .bufferAccess _ _ _   => none
+
 end LowerState
 
 -- ════════════════════════════════════════════════════════════════════

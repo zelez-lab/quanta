@@ -352,6 +352,92 @@ theorem WasmValue.encodes_reg_shape
   match v, ty, h with
   | .wI32 n, .u32, h => exact ⟨n, rfl, rfl, h⟩
 
+/-- Inversion for `i32ConstSym` encoding. -/
+theorem WasmValue.encodes_i32ConstSym_inv
+    {v : WasmValue} {rf : Quanta.KOps.RegFile} {n : Int}
+    (h : v.encodes rf (.i32ConstSym n)) :
+    v = .wI32 (UInt32.ofNat n.toNat) := by
+  match v, h with
+  | .wI32 m, h =>
+    have h' : m = UInt32.ofNat n.toNat := h
+    rw [h']
+
+open Quanta.KOps (vU32) in
+/-- `commit` correctness. Materializing a `SymVal` to a real `Reg`
+    preserves both the encoding (the resulting reg encodes the same
+    `wI32` value the SymVal did) and the `Refines` bundle (any state
+    bumps are fresh, so existing stack/locals encodings lift through
+    `encodes_preserved_of_fresh`).
+
+    Used by every per-op preservation theorem whose translator arm
+    consumes a popped `SymVal`: rather than case-splitting on the
+    SymVal shape, the theorem applies `commit_correct` to thread the
+    encoding into a real reg + propagate the `Refines` bundle. -/
+theorem commit_correct
+    {ws : WasmState} {s : LowerState} {kst : Quanta.KOps.State}
+    {layout : BufferLayout} (R : Refines ws s kst layout)
+    {sv : SymVal} {r : Reg} {s' : LowerState} {ops : List KernelOp}
+    (h_commit : s.commit sv = some (r, s', ops))
+    {v_w : WasmValue} (h_enc : v_w.encodes kst.rf sv) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧
+            Refines ws s' kst' layout ∧
+            v_w.encodes kst'.rf (.reg r .u32) := by
+  match sv, h_commit with
+  | .reg rsv tysv, h_commit =>
+    -- commit returns (rsv, s, []).
+    simp [LowerState.commit] at h_commit
+    obtain ⟨hr, hs', hops⟩ := h_commit
+    refine ⟨kst, ?_, ?_, ?_⟩
+    · subst hops; simp [evalOps]
+    · subst hs'; exact R
+    · subst hr
+      obtain ⟨n, hv_eq, htysv, h_lookup⟩ := WasmValue.encodes_reg_shape h_enc
+      subst hv_eq htysv
+      -- Goal: (wI32 n).encodes kst.rf (.reg rsv .u32) = regLookup kst.rf rsv = some (vU32 n).
+      simpa [WasmValue.encodes] using h_lookup
+  | .i32ConstSym n, h_commit =>
+    simp [LowerState.commit, LowerState.alloc] at h_commit
+    obtain ⟨hr, hs', hops⟩ := h_commit
+    refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
+                          (vU32 (UInt32.ofNat n.toNat)) }, ?_, ?_, ?_⟩
+    · subst hops
+      simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst]
+    · subst hs'
+      refine ⟨?_, ?_, ?_, R.aliasFree, R.injLocals, R.heapRefines⟩
+      · -- StackRefines: stack unchanged; lift each entry past the fresh write.
+        refine ⟨R.stk.left, ?_⟩
+        intro i v hv
+        obtain ⟨svi, hsvi_get, henc⟩ := R.stk.right i v hv
+        refine ⟨svi, hsvi_get, ?_⟩
+        have hsvi_in : svi ∈ s.stack := List.mem_of_get? hsvi_get
+        apply WasmValue.encodes_preserved_of_fresh _ henc
+        intro r' hr'
+        exact R.fresh.left svi hsvi_in r' hr'
+      · -- LocalsRefines: localReg unchanged; lift past the fresh write.
+        intro i r' hfind v hv
+        have hpair : (i, r') ∈ s.localReg := List.mem_of_find?_eq_some hfind
+        have hr'_lt : r' < s.nextReg := R.fresh.right (i, r') hpair
+        have henc := R.locs i r' hfind v hv
+        apply WasmValue.encodes_preserved_of_fresh _ henc
+        intro r'' hr''_in
+        simp [SymVal.regs] at hr''_in
+        subst hr''_in; exact hr'_lt
+      · -- Fresh: nextReg bumps by 1; stack/locals unchanged.
+        refine ⟨?_, ?_⟩
+        · intro sv' hsv' r'' hr''
+          exact Nat.lt_succ_of_lt (R.fresh.left sv' hsv' r'' hr'')
+        · intro ir hir
+          exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
+    · -- v_w encodes via .reg s.nextReg .u32 in the new regfile.
+      subst hr
+      have hv_eq := WasmValue.encodes_i32ConstSym_inv h_enc
+      subst hv_eq
+      simp [WasmValue.encodes, regLookup_regWrite_self]
+      rfl
+  | .bufferPtr _,        h_commit => simp [LowerState.commit] at h_commit
+  | .scaledIdx _ _,      h_commit => simp [LowerState.commit] at h_commit
+  | .bufferAccess _ _ _, h_commit => simp [LowerState.commit] at h_commit
+
 /-- For an association list keyed by `Nat`, `find?` over the
     post-`setLocalReg` list (which prepends a new entry and filters
     out any older ones with the same key) behaves like `find?` on
