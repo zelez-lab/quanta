@@ -32,10 +32,13 @@ Refinement structure:
   unchanged. Slice-4 buffer-pattern arms are the first consumers.
 
 ## What ships now (slices 1 + 2 + 3 + slice-4 stack-type cascade
-   + popSym/commit unification + slice-4 step 7 translator arms)
+   + popSym/commit unification + slice-4 step 7 translator arms
+   + slice-4 step 8 buffer-typed `localGet` preservation)
 
 * The full refinement bundle (`Refines` = stack + locals + freshness +
-  alias-free + injective-locals + heap).
+  alias-free + injective-locals + heap). `WasmValue.encodes` now takes
+  `BufferLayout` and has a `bufferPtr` arm: `wI32 n` encodes via
+  `.bufferPtr slot` when `n.toNat = layout.startAddr slot`.
 * Register-file lemmas: `regLookup_regWrite_self`,
   `regLookup_regWrite_of_ne` (closed via `find?_pred_eq` induction),
   `regLookup_preserved_of_fresh`.
@@ -56,9 +59,11 @@ Refinement structure:
   - `preservation_nop`
   - `preservation_return`
   - `preservation_i32Const`
-  - `preservation_localGet` (precondition: `s.lookupBufferSlot i = none`
-    — the buffer-typed `localGet` arm pushes `bufferPtr` symbolically
-    and lands with HeapRefines in step 8)
+  - `preservation_localGet` (precondition: `s.lookupBufferSlot i = none`)
+  - `preservation_localGet_bufferSlot` (precondition:
+    `s.lookupBufferSlot i = some slot` AND the WASM local matches
+    `layout.startAddr slot`; the per-call `h_loc_buf` will be
+    discharged at kernel-entry by the future composition theorem)
   - `preservation_localSet`
   - `preservation_localTee`
   - `preservation_i32{Add,Shl}` (precondition: stack does not match the
@@ -66,25 +71,29 @@ Refinement structure:
   - `preservation_i32{Sub,Mul,And,Or,Xor,ShrU,DivU,RemU}`
   - `preservation_i32{Eq,Ne,LtU,LeU,GtU,GeU}`
 
-That's **22 closed preservation theorems**. Slice 4 step 7 added the
-translator's buffer-pattern fast-paths (`lowerI32Add`, `lowerI32Shl`,
-`lowerI32Load`, `lowerI32Store`) plus the `bufferSlots` field on
-`LowerState` for buffer-typed `localGet`. The folded paths (push
-`bufferPtr` / `scaledIdx` / `bufferAccess` symbolically, emit
-typed `KernelOp.Load`/`Store`) compile through; their preservation
-proofs need `HeapRefines` consumers and land in step 8.
+That's **23 closed preservation theorems** (the new
+`preservation_localGet_bufferSlot` joins the existing 22). Slice 4
+step 7 added the translator's buffer-pattern fast-paths
+(`lowerI32Add`, `lowerI32Shl`, `lowerI32Load`, `lowerI32Store`) plus
+the `bufferSlots` field on `LowerState` for buffer-typed `localGet`.
+Slice 4 step 8 starts with the simplest of those paths: the buffer-
+typed `localGet` (no IR, no register, just push `bufferPtr`
+symbolically). The remaining folded paths (`scaledIdx`,
+`bufferAccess`, typed `Load`/`Store`) need encoding arms for
+`scaledIdx` / `bufferAccess` plus the first uses of `HeapRefines`.
 
 ## What's next
 
-**Slice 4 step 8 — HeapRefines consumers**: extend `WasmValue.encodes`
-to relate `wI32 addr ↔ .bufferPtr slot` (via `BufferLayout.startAddr`),
-prove preservation for the buffer-typed `localGet` arm + the four
-folded paths (`i32.add → bufferAccess`, `i32.shl → scaledIdx`,
-`i32.load`/`i32.store` against `bufferAccess`). The `HeapRefines`
-clause (already in `Refines`) gets used for the first time here:
-`i32.load` reads `KOps.Heap.get? slot base` and pushes a `vU32`
-register that — by `HeapRefines` — encodes the same byte-level
-WASM value `mem.load_u32 (layout.startAddr slot + base.toNat * 4)`.
+**Slice 4 step 8 — remaining buffer-pattern preservations**:
+* `preservation_i32Shl_bufferPattern` — `<reg> <i32ConstSym k>` folds
+  to `scaledIdx`; encoding requires `wI32 n ↔ .scaledIdx base scale`
+  via `n.toNat = (lookup base).toNat * scale`.
+* `preservation_i32Add_bufferPattern` (both orders) — `<bufferPtr>
+  <scaledIdx>` folds to `bufferAccess`; encoding requires `wI32 n ↔
+  .bufferAccess slot base scale` via the address-arithmetic identity.
+* `preservation_i32Load` and `preservation_i32Store` — typed memory
+  ops against `bufferAccess` use `HeapRefines` for the first time
+  to bridge the byte-level WASM memory to the typed KOps heap.
 
 **Slice 5** — control flow: frame reflection in `LowerState`;
 proofs for `block`, `loop`, `if`/`else`, `br`, `br_if`, plus the
@@ -150,37 +159,47 @@ def HeapRefines (mem : WasmMem) (heap : Quanta.KOps.Heap) (layout : BufferLayout
 -- Refinement relation
 -- ════════════════════════════════════════════════════════════════════
 
-/-- A WASM value is encoded by a SymVal stack slot if either:
+/-- A WASM value is encoded by a SymVal stack slot if any of:
     * the slot is `.reg r .u32` and the regfile holds the matching
       `vU32` at that register, or
     * the slot is `.i32ConstSym m` and the WASM value is the matching
       `wI32 (UInt32.ofNat m.toNat)` — purely symbolic, no regfile
-      dependency. The translator pushes `i32ConstSym` for every
-      `i32.const`; the buffer-pattern arms (or a `commit` materializer)
-      consume it before any reg-typed consumer fires.
+      dependency, or
+    * the slot is `.bufferPtr slot` and the WASM value is the i32
+      byte-pointer to that slot's start in linear memory
+      (`layout.startAddr slot`). The translator's buffer-typed
+      `localGet` produces this; buffer-pattern arms consume it.
 
-    Other SymVal shapes (`bufferPtr`, `scaledIdx`, `bufferAccess`)
-    are addresses, not values — their encoding stays `False`. They
-    are consumed inline by the buffer-pattern arms in slice-4 step 7+
-    and never satisfy a value refinement. -/
-def WasmValue.encodes (v : WasmValue) (rf : Quanta.KOps.RegFile) (sv : SymVal) : Prop :=
+    Other SymVal shapes (`scaledIdx`, `bufferAccess`) are addresses
+    that depend on register lookups; their encoding arms land
+    alongside the corresponding consumer proofs.
+
+    The `layout` parameter ties WASM byte-pointer values to KOps heap
+    slots. Every preservation theorem fixes a layout across input and
+    output (`layout` is static in the lowered program). -/
+def WasmValue.encodes
+    (v : WasmValue) (layout : BufferLayout)
+    (rf : Quanta.KOps.RegFile) (sv : SymVal) : Prop :=
   match v, sv with
   | .wI32 n, .reg r .u32      => regLookup rf r = some (Quanta.KOps.Value.vU32 n)
   | .wI32 n, .i32ConstSym m   => n = UInt32.ofNat m.toNat
+  | .wI32 n, .bufferPtr slot  => n.toNat = layout.startAddr slot
   | _, _                      => False
 
 /-- Stack refinement: WASM stack and symbolic stack zip element-wise
     through `WasmValue.encodes`. Length-aligned, top-aligned. -/
-def StackRefines (ws : List WasmValue) (svs : List SymVal) (rf : Quanta.KOps.RegFile) : Prop :=
+def StackRefines (layout : BufferLayout)
+    (ws : List WasmValue) (svs : List SymVal) (rf : Quanta.KOps.RegFile) : Prop :=
   ws.length = svs.length ∧
-  ∀ i, ∀ v, ws.get? i = some v → ∃ sv, svs.get? i = some sv ∧ v.encodes rf sv
+  ∀ i, ∀ v, ws.get? i = some v → ∃ sv, svs.get? i = some sv ∧ v.encodes layout rf sv
 
 /-- Locals refinement: every local with a stable register encodes
     through that register, lifted into the symbolic alphabet as
     `.reg r .u32`. Locals not in `localReg` are unconstrained. -/
-def LocalsRefines (locs : List WasmValue) (lreg : List (Nat × Reg)) (rf : Quanta.KOps.RegFile) : Prop :=
+def LocalsRefines (layout : BufferLayout)
+    (locs : List WasmValue) (lreg : List (Nat × Reg)) (rf : Quanta.KOps.RegFile) : Prop :=
   ∀ i r, lreg.find? (fun p => p.fst = i) = some (i, r) →
-    ∀ v, locs.get? i = some v → v.encodes rf (SymVal.reg r .u32)
+    ∀ v, locs.get? i = some v → v.encodes layout rf (SymVal.reg r .u32)
 
 /-- Freshness invariant: every register the lowering currently holds
     (any reg referenced by any stack SymVal, plus every local stable
@@ -209,8 +228,8 @@ def InjectiveLocals (s : LowerState) : Prop :=
     static in the lowered program). -/
 structure Refines (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
                   (layout : BufferLayout) : Prop where
-  stk         : StackRefines ws.stack s.stack kst.rf
-  locs        : LocalsRefines ws.locals s.localReg kst.rf
+  stk         : StackRefines layout ws.stack s.stack kst.rf
+  locs        : LocalsRefines layout ws.locals s.localReg kst.rf
   fresh       : Fresh s
   aliasFree   : AliasFree s
   injLocals   : InjectiveLocals s
@@ -317,11 +336,11 @@ theorem regLookup_preserved_of_fresh
     preservation proof uses to thread `R.stk` / `R.locs` past a
     `regWrite kst.rf s.nextReg _`. -/
 theorem WasmValue.encodes_preserved_of_fresh
-    {v : WasmValue} {rf : Quanta.KOps.RegFile} {sv : SymVal}
+    {v : WasmValue} {layout : BufferLayout} {rf : Quanta.KOps.RegFile} {sv : SymVal}
     {nr : Reg} {newval : Quanta.KOps.Value}
     (h_lt : ∀ r ∈ sv.regs, r < nr)
-    (h : v.encodes rf sv) :
-    v.encodes (regWrite rf nr newval) sv := by
+    (h : v.encodes layout rf sv) :
+    v.encodes layout (regWrite rf nr newval) sv := by
   match v, sv, h with
   | .wI32 n, .reg r .u32, h =>
     have h' : regLookup rf r = some (Quanta.KOps.Value.vU32 n) := h
@@ -332,6 +351,10 @@ theorem WasmValue.encodes_preserved_of_fresh
   | .wI32 _, .i32ConstSym _, h =>
     -- i32ConstSym encoding is regfile-independent.
     exact h
+  | .wI32 _, .bufferPtr _, h =>
+    -- bufferPtr encoding (n.toNat = layout.startAddr slot) is
+    -- regfile-independent.
+    exact h
 
 /-- Encoding is preserved under any register write disjoint from the
     SymVal's reg projection. The general-form companion to
@@ -340,11 +363,11 @@ theorem WasmValue.encodes_preserved_of_fresh
     (not strictly above all held regs) but is disjoint from the
     stack's regs by `AliasFree`. -/
 theorem WasmValue.encodes_preserved_of_disjoint
-    {v : WasmValue} {rf : Quanta.KOps.RegFile} {sv : SymVal}
+    {v : WasmValue} {layout : BufferLayout} {rf : Quanta.KOps.RegFile} {sv : SymVal}
     {dst : Reg} {newval : Quanta.KOps.Value}
     (h_disj : dst ∉ sv.regs)
-    (h : v.encodes rf sv) :
-    v.encodes (regWrite rf dst newval) sv := by
+    (h : v.encodes layout rf sv) :
+    v.encodes layout (regWrite rf dst newval) sv := by
   match v, sv, h with
   | .wI32 n, .reg r .u32, h =>
     have h' : regLookup rf r = some (Quanta.KOps.Value.vU32 n) := h
@@ -357,6 +380,8 @@ theorem WasmValue.encodes_preserved_of_disjoint
     exact h'
   | .wI32 _, .i32ConstSym _, h =>
     exact h
+  | .wI32 _, .bufferPtr _, h =>
+    exact h
 
 /-- Encoding is preserved under any regfile transition that agrees on
     the SymVal's regs. The full-strength companion to
@@ -365,10 +390,11 @@ theorem WasmValue.encodes_preserved_of_disjoint
     only to fresh registers — we collapse that into a pointwise
     `regLookup` equality on the regs of any older SymVal. -/
 theorem WasmValue.encodes_preserved_of_lookup_eq
-    {v : WasmValue} {rf rf' : Quanta.KOps.RegFile} {sv : SymVal}
+    {v : WasmValue} {layout : BufferLayout}
+    {rf rf' : Quanta.KOps.RegFile} {sv : SymVal}
     (h_lookup : ∀ r ∈ sv.regs, regLookup rf' r = regLookup rf r)
-    (h : v.encodes rf sv) :
-    v.encodes rf' sv := by
+    (h : v.encodes layout rf sv) :
+    v.encodes layout rf' sv := by
   match v, sv, h with
   | .wI32 n, .reg r .u32, h =>
     have h' : regLookup rf r = some (Quanta.KOps.Value.vU32 n) := h
@@ -376,14 +402,16 @@ theorem WasmValue.encodes_preserved_of_lookup_eq
     show regLookup rf' r = some (Quanta.KOps.Value.vU32 n)
     rw [h_eq]; exact h'
   | .wI32 _, .i32ConstSym _, h => exact h
+  | .wI32 _, .bufferPtr _, h => exact h
 
 /-- Inverting a `wI32`-encoding-via-`.reg`: forces the scalar type to
     `.u32` and exposes the underlying regfile lookup. Used by the
     `localSet` / `localTee` proofs to extract the encoding constraint
     after `R.stk.right 0` returns a `.reg src tysrc` SymVal. -/
 theorem WasmValue.encodes_wI32_reg_inv
-    {n : UInt32} {rf : Quanta.KOps.RegFile} {r : Reg} {ty : Quanta.KOps.Scalar}
-    (h : (WasmValue.wI32 n).encodes rf (.reg r ty)) :
+    {n : UInt32} {layout : BufferLayout} {rf : Quanta.KOps.RegFile}
+    {r : Reg} {ty : Quanta.KOps.Scalar}
+    (h : (WasmValue.wI32 n).encodes layout rf (.reg r ty)) :
     ty = .u32 ∧ regLookup rf r = some (Quanta.KOps.Value.vU32 n) := by
   match ty, h with
   | .u32, h => exact ⟨rfl, h⟩
@@ -394,16 +422,17 @@ theorem WasmValue.encodes_wI32_reg_inv
     `(wI32, reg _ .u32)` shape; every other case is `False`, so a
     proof of the non-False predicate forces the value/type shape. -/
 theorem WasmValue.encodes_reg_shape
-    {v : WasmValue} {rf : Quanta.KOps.RegFile} {r : Reg} {ty : Quanta.KOps.Scalar}
-    (h : v.encodes rf (.reg r ty)) :
+    {v : WasmValue} {layout : BufferLayout} {rf : Quanta.KOps.RegFile}
+    {r : Reg} {ty : Quanta.KOps.Scalar}
+    (h : v.encodes layout rf (.reg r ty)) :
     ∃ n, v = .wI32 n ∧ ty = .u32 ∧ regLookup rf r = some (Quanta.KOps.Value.vU32 n) := by
   match v, ty, h with
   | .wI32 n, .u32, h => exact ⟨n, rfl, rfl, h⟩
 
 /-- Inversion for `i32ConstSym` encoding. -/
 theorem WasmValue.encodes_i32ConstSym_inv
-    {v : WasmValue} {rf : Quanta.KOps.RegFile} {n : Int}
-    (h : v.encodes rf (.i32ConstSym n)) :
+    {v : WasmValue} {layout : BufferLayout} {rf : Quanta.KOps.RegFile} {n : Int}
+    (h : v.encodes layout rf (.i32ConstSym n)) :
     v = .wI32 (UInt32.ofNat n.toNat) := by
   match v, h with
   | .wI32 m, h =>
@@ -441,10 +470,10 @@ theorem commit_correct
     {sv : SymVal} (h_regs_lt : ∀ r ∈ sv.regs, r < s.nextReg)
     {r : Reg} {s' : LowerState} {ops : List KernelOp}
     (h_commit : s.commit sv = some (r, s', ops))
-    {v_w : WasmValue} (h_enc : v_w.encodes kst.rf sv) :
+    {v_w : WasmValue} (h_enc : v_w.encodes layout kst.rf sv) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧
             Refines ws s' kst' layout ∧
-            v_w.encodes kst'.rf (.reg r .u32) ∧
+            v_w.encodes layout kst'.rf (.reg r .u32) ∧
             (∀ r', r' < s.nextReg → regLookup kst'.rf r' = regLookup kst.rf r') ∧
             s.nextReg ≤ s'.nextReg ∧
             r < s'.nextReg := by
@@ -829,6 +858,76 @@ theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         exact henc_local.elim
   | none, hw => simp [hloc] at hw
 
+/-- `local.get i` preservation for a buffer-typed local. The
+    translator's buffer-slot fast-path pushes `SymVal.bufferPtr slot`
+    symbolically — no register is allocated, no IR is emitted. The
+    WASM-side push of `locals[i]` (an i32 byte-pointer to the buffer)
+    encodes via the new `bufferPtr` arm of `WasmValue.encodes`,
+    provided the WASM value at `locals[i]` matches the layout's
+    `startAddr` for `slot`.
+
+    The `h_loc_buf` precondition captures that match. It is the per-
+    call obligation a future top-level composition theorem will
+    discharge from the kernel-entry layout (every buffer-typed
+    parameter local is initialized to its slot's start address). -/
+theorem preservation_localGet_bufferSlot
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
+    (i : Nat) (slot : Nat)
+    (h_buf : s.lookupBufferSlot i = some slot)
+    (h_loc_buf : ∀ v, ws.locals.get? i = some v →
+      ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr slot)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws (.localGet i) = some ws')
+    (hl : lowerInstr s (.localGet i) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  simp only [evalInstr, WasmState.getLocal, WasmState.push,
+             Option.bind_eq_bind, Option.bind, pure] at hw
+  match hloc : ws.locals.get? i, hw with
+  | some v, hw =>
+    simp only [lowerInstr, LowerState.pushSym,
+               Option.bind_eq_bind, Option.bind, pure, h_buf] at hl
+    -- After simp, hl : some ({s with stack := .bufferPtr slot :: s.stack}, []) = some (s', ops).
+    -- Extract via Option.some.injEq + Prod.mk.injEq.
+    obtain ⟨hs_eq, hops_eq⟩ :=
+      Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp hl)
+    simp at hw
+    obtain ⟨n, hv_eq, h_n_eq⟩ := h_loc_buf v hloc
+    -- ops = [], so kst' = kst.
+    refine ⟨kst, ?_, ?_⟩
+    · rw [← hops_eq]; simp [evalOps]
+    · rw [← hs_eq]; subst hw
+      refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+      · -- StackRefines: top = wI32 n encodes via .bufferPtr slot, tail by R.stk.
+        refine ⟨by simp [R.stk.left], ?_⟩
+        intro j vj hvj
+        cases j with
+        | zero =>
+          simp at hvj
+          refine ⟨SymVal.bufferPtr slot, by simp, ?_⟩
+          subst hvj
+          subst hv_eq
+          show (WasmValue.wI32 n).encodes layout kst.rf (.bufferPtr slot)
+          simp [WasmValue.encodes, h_n_eq]
+        | succ k =>
+          have hwsk : ws.stack.get? k = some vj := by simpa using hvj
+          obtain ⟨svk, hsvk, henc⟩ := R.stk.right k vj hwsk
+          refine ⟨svk, by simpa using hsvk, henc⟩
+      · -- Fresh: nextReg unchanged; new top is .bufferPtr with regs = [].
+        refine ⟨?_, R.fresh.right⟩
+        intro sv hsv r' hr'
+        simp at hsv
+        rcases hsv with h_eq | h_in
+        · subst h_eq; simp [SymVal.regs] at hr'
+        · exact R.fresh.left sv h_in r' hr'
+      · -- AliasFree: new top has empty regs.
+        intro ir hir sv hsv
+        simp at hsv
+        rcases hsv with h_eq | h_in
+        · subst h_eq; simp [SymVal.regs]
+        · exact R.aliasFree ir hir sv h_in
+  | none, hw => simp [hloc] at hw
+
 -- ════════════════════════════════════════════════════════════════════
 -- Slice 3 follow-up: local.set / local.tee preservation
 --
@@ -1099,14 +1198,14 @@ theorem preservation_i32Bin_generic
           h_s4_stack, h_s4_lr, h_s4_lt, h_s_le_s4, hs_eq, hops_eq⟩ :=
     lowerI32Bin_some_shape hl
   -- Operand encodings in kst.rf — extracted from R.stk before any commit.
-  have h_enc_svb : (WasmValue.wI32 bv).encodes kst.rf svb := by
+  have h_enc_svb : (WasmValue.wI32 bv).encodes layout kst.rf svb := by
     have hb := R.stk.right 0 (.wI32 bv) (by rw [hwstack]; simp)
     obtain ⟨sv0, hsv0_get, henc⟩ := hb
     have hs0 : s.stack.get? 0 = some svb := by rw [hlstack]; simp
     rw [hs0] at hsv0_get
     have h_eq : svb = sv0 := (Option.some.injEq _ _).mp hsv0_get
     rw [h_eq]; exact henc
-  have h_enc_sva : (WasmValue.wI32 av).encodes kst.rf sva := by
+  have h_enc_sva : (WasmValue.wI32 av).encodes layout kst.rf sva := by
     have ha := R.stk.right 1 (.wI32 av) (by rw [hwstack]; simp)
     obtain ⟨sv1, hsv1_get, henc⟩ := ha
     have hs1 : s.stack.get? 1 = some sva := by rw [hlstack]; simp
@@ -1161,7 +1260,7 @@ theorem preservation_i32Bin_generic
   have h_kst1_ok : kst1.broke = false := by
     rw [commit_preserves_broke hca h_evalA]; exact h_kst_ok
   -- Encoding of svb at kst1.rf — lift through opsA via lookup-preservation.
-  have h_enc_svb1 : (WasmValue.wI32 bv).encodes kst1.rf svb :=
+  have h_enc_svb1 : (WasmValue.wI32 bv).encodes layout kst1.rf svb :=
     WasmValue.encodes_preserved_of_lookup_eq
       (fun r hr => h_lookupA r (h_svb_lt r hr)) h_enc_svb
   -- Fresh-bound on svb at s3.nextReg.
@@ -1173,7 +1272,7 @@ theorem preservation_i32Bin_generic
   have h_kst2_ok : kst2.broke = false := by
     rw [commit_preserves_broke hcb h_evalB]; exact h_kst1_ok
   -- Lift ra's encoding from kst1 to kst2 via the second commit's lookup-preservation.
-  have h_enc_ra2 : (WasmValue.wI32 av).encodes kst2.rf (.reg ra .u32) :=
+  have h_enc_ra2 : (WasmValue.wI32 av).encodes layout kst2.rf (.reg ra .u32) :=
     WasmValue.encodes_preserved_of_lookup_eq
       (fun r hr => by
         simp [SymVal.regs] at hr
@@ -1466,14 +1565,14 @@ theorem preservation_i32Cmp_generic
           h_s4_stack, h_s4_lr, h_s4_lt, h_s_le_s4, hs_eq, hops_eq⟩ :=
     lowerI32Cmp_some_shape hl
   -- Operand encodings in kst.rf.
-  have h_enc_svb : (WasmValue.wI32 bv).encodes kst.rf svb := by
+  have h_enc_svb : (WasmValue.wI32 bv).encodes layout kst.rf svb := by
     have hb := R.stk.right 0 (.wI32 bv) (by rw [hwstack]; simp)
     obtain ⟨sv0, hsv0_get, henc⟩ := hb
     have hs0 : s.stack.get? 0 = some svb := by rw [hlstack]; simp
     rw [hs0] at hsv0_get
     have h_eq : svb = sv0 := (Option.some.injEq _ _).mp hsv0_get
     rw [h_eq]; exact henc
-  have h_enc_sva : (WasmValue.wI32 av).encodes kst.rf sva := by
+  have h_enc_sva : (WasmValue.wI32 av).encodes layout kst.rf sva := by
     have ha := R.stk.right 1 (.wI32 av) (by rw [hwstack]; simp)
     obtain ⟨sv1, hsv1_get, henc⟩ := ha
     have hs1 : s.stack.get? 1 = some sva := by rw [hlstack]; simp
@@ -1523,7 +1622,7 @@ theorem preservation_i32Cmp_generic
     commit_correct R_pop h_sva_lt hca h_enc_sva
   have h_kst1_ok : kst1.broke = false := by
     rw [commit_preserves_broke hca h_evalA]; exact h_kst_ok
-  have h_enc_svb1 : (WasmValue.wI32 bv).encodes kst1.rf svb :=
+  have h_enc_svb1 : (WasmValue.wI32 bv).encodes layout kst1.rf svb :=
     WasmValue.encodes_preserved_of_lookup_eq
       (fun r hr => h_lookupA r (h_svb_lt r hr)) h_enc_svb
   have h_svb_lt_s3 : ∀ r ∈ svb.regs, r < s3.nextReg :=
@@ -1533,7 +1632,7 @@ theorem preservation_i32Cmp_generic
     commit_correct R1 h_svb_lt_s3 hcb h_enc_svb1
   have h_kst2_ok : kst2.broke = false := by
     rw [commit_preserves_broke hcb h_evalB]; exact h_kst1_ok
-  have h_enc_ra2 : (WasmValue.wI32 av).encodes kst2.rf (.reg ra .u32) :=
+  have h_enc_ra2 : (WasmValue.wI32 av).encodes layout kst2.rf (.reg ra .u32) :=
     WasmValue.encodes_preserved_of_lookup_eq
       (fun r hr => by
         simp [SymVal.regs] at hr
@@ -1568,8 +1667,8 @@ theorem preservation_i32Cmp_generic
     -- h_lift: any encoding whose SymVal-regs are < s4.nextReg lifts past the two writes.
     let h_lift : ∀ (sv : SymVal) (v : WasmValue),
         (∀ r ∈ sv.regs, r < s4.nextReg) →
-        v.encodes kst2.rf sv →
-        v.encodes (regWrite (regWrite kst2.rf s4.nextReg
+        v.encodes layout kst2.rf sv →
+        v.encodes layout (regWrite (regWrite kst2.rf s4.nextReg
                               (Quanta.KOps.Value.vBool (p_w av bv)))
                             (s4.nextReg + 1)
                             (Quanta.KOps.Value.vU32 (if p_w av bv then 1 else 0))) sv :=
@@ -1728,7 +1827,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   · simp [hca] at hl
   simp only [hca, Option.some_bind] at hl
   -- v_w must be wI32 (encoding non-False on stack); extract n_w.
-  have hv_enc : v_w.encodes kst.rf sva := by
+  have hv_enc : v_w.encodes layout kst.rf sva := by
     have hb := R.stk.right 0 v_w (by rw [hws_stack]; simp)
     obtain ⟨sv0, hsv0_get, henc⟩ := hb
     have hs0 : s.stack.get? 0 = some sva := by rw [hls_stack]; simp
@@ -2075,7 +2174,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   · simp [hca] at hl
   simp only [hca, Option.some_bind] at hl
   -- v_w must be wI32 (encoding non-False on stack); extract n_w.
-  have hv_enc : v_w.encodes kst.rf sva := by
+  have hv_enc : v_w.encodes layout kst.rf sva := by
     have hb := R.stk.right 0 v_w (by rw [hws_stack]; simp)
     obtain ⟨sv0, hsv0_get, henc⟩ := hb
     have hs0 : s.stack.get? 0 = some sva := by rw [hls_stack]; simp
