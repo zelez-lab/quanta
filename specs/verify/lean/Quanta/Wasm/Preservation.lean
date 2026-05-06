@@ -184,6 +184,13 @@ def WasmValue.encodes
   | .wI32 n, .reg r .u32      => regLookup rf r = some (Quanta.KOps.Value.vU32 n)
   | .wI32 n, .i32ConstSym m   => n = UInt32.ofNat m.toNat
   | .wI32 n, .bufferPtr slot  => n.toNat = layout.startAddr slot
+  -- `scaledIdx base scale` represents the byte offset
+  -- `(lookup base) * scale`. The Nat-equation form refuses overflow:
+  -- `n.toNat = b.toNat * scale` forces `b.toNat * scale < 2^32`.
+  -- Future kernel-entry composition theorem will discharge that.
+  | .wI32 n, .scaledIdx base scale =>
+      ∃ b : UInt32, regLookup rf base = some (Quanta.KOps.Value.vU32 b) ∧
+                    n.toNat = b.toNat * scale
   | _, _                      => False
 
 /-- Stack refinement: WASM stack and symbolic stack zip element-wise
@@ -355,6 +362,14 @@ theorem WasmValue.encodes_preserved_of_fresh
     -- bufferPtr encoding (n.toNat = layout.startAddr slot) is
     -- regfile-independent.
     exact h
+  | .wI32 n, .scaledIdx base scale, h =>
+    -- Existential ⟨b, regLookup rf base = some (vU32 b), n.toNat = b.toNat * scale⟩.
+    -- The base reg lookup lifts past the fresh write because `base ∈ sv.regs`.
+    obtain ⟨b, h_lookup, h_eq⟩ := h
+    refine ⟨b, ?_, h_eq⟩
+    have hb_lt : base < nr := h_lt base (by simp [SymVal.regs])
+    rw [regLookup_preserved_of_fresh hb_lt]
+    exact h_lookup
 
 /-- Encoding is preserved under any register write disjoint from the
     SymVal's reg projection. The general-form companion to
@@ -382,6 +397,15 @@ theorem WasmValue.encodes_preserved_of_disjoint
     exact h
   | .wI32 _, .bufferPtr _, h =>
     exact h
+  | .wI32 _, .scaledIdx base _, h =>
+    obtain ⟨b, h_lookup, h_eq⟩ := h
+    refine ⟨b, ?_, h_eq⟩
+    have hb_ne : base ≠ dst := by
+      intro h_eq2
+      apply h_disj
+      simp [SymVal.regs, h_eq2]
+    rw [regLookup_regWrite_of_ne rf dst base newval hb_ne]
+    exact h_lookup
 
 /-- Encoding is preserved under any regfile transition that agrees on
     the SymVal's regs. The full-strength companion to
@@ -403,6 +427,11 @@ theorem WasmValue.encodes_preserved_of_lookup_eq
     rw [h_eq]; exact h'
   | .wI32 _, .i32ConstSym _, h => exact h
   | .wI32 _, .bufferPtr _, h => exact h
+  | .wI32 _, .scaledIdx base _, h =>
+    obtain ⟨b, h_lup, h_eq⟩ := h
+    refine ⟨b, ?_, h_eq⟩
+    have h_lup_eq := h_lookup base (by simp [SymVal.regs])
+    rw [h_lup_eq]; exact h_lup
 
 /-- Inverting a `wI32`-encoding-via-`.reg`: forces the scalar type to
     `.u32` and exposes the underlying regfile lookup. Used by the
@@ -1518,6 +1547,123 @@ theorem preservation_i32Shl
   exact preservation_i32Bin_generic .i32Shl (fun a b => a <<< b) .shl
     (fun _ => rfl) (by intro av bv; rfl)
     ws s kst layout R h_kst_ok ws' s' ops h_l hw hl
+
+/-- Folded `i32.shl` preservation: when the popped stack matches
+    `<i32ConstSym k> :: <reg base ty> :: rest`, the lowering emits no
+    IR and pushes `SymVal.scaledIdx base (1 <<< k.toNat)`. The new
+    top encodes the WASM shift result `wI32 (a <<< (UInt32.ofNat
+    k.toNat))` via the `scaledIdx` arm, witnessed by `b := a` (the
+    register base's value).
+
+    The `h_shift_eq` precondition captures both "shift amount in
+    range" (`k.toNat < 32`) and "no overflow" (`a.toNat * 2^k.toNat
+    < 2^32`) — when either fails, the WASM `<<<` truncates and the
+    encoding's `n.toNat = b.toNat * scale` Nat-equation breaks.
+    Future kernel-entry composition theorem will discharge it from
+    layout bounds (typical kernels have `scale ≤ 8` and indices
+    `< 2^29`). -/
+theorem preservation_i32Shl_bufferPattern
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
+    (k : Int) (base : Reg) (ty : Quanta.KOps.Scalar) (rest : List SymVal)
+    (h_stack : s.stack = .i32ConstSym k :: .reg base ty :: rest)
+    (h_shift_eq : ∀ a : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 a) →
+       (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Shl = some ws')
+    (hl : lowerInstr s .i32Shl = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- 1. Reduce hl using h_stack: the buffer-pattern arm fires.
+  have hl_reduced : lowerInstr s .i32Shl =
+      some ({ s with stack := .scaledIdx base (1 <<< k.toNat) :: rest }, []) := by
+    show lowerI32Shl s = _
+    unfold lowerI32Shl
+    rw [h_stack]
+  rw [hl_reduced] at hl
+  obtain ⟨hs_eq, hops_eq⟩ :=
+    Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp hl)
+  -- 2. Reduce hw via binI32 shape lemma.
+  have hw' : binI32 (fun a b => a <<< b) ws = some ws' := hw
+  obtain ⟨a_w, b_w, ws_rest, h_ws_stack, h_ws_eq⟩ := binI32_some_shape hw'
+  -- 3. From R.stk, derive a_w / b_w identities.
+  have h_stk0 := R.stk.right 0 (.wI32 b_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv0, hsv0_get, henc0⟩ := h_stk0
+  have hs0_eq : s.stack.get? 0 = some (.i32ConstSym k) := by rw [h_stack]; simp
+  rw [hs0_eq] at hsv0_get
+  have hsv0_eq : sv0 = .i32ConstSym k :=
+    ((Option.some.injEq _ _).mp hsv0_get).symm
+  rw [hsv0_eq] at henc0
+  -- `encodes_i32ConstSym_inv` returns `wI32 b_w = wI32 (UInt32.ofNat k.toNat)`;
+  -- strip the wI32 constructor.
+  have h_b_eq : b_w = UInt32.ofNat k.toNat := by
+    have := WasmValue.encodes_i32ConstSym_inv henc0
+    exact WasmValue.wI32.injEq _ _ |>.mp this
+  have h_stk1 := R.stk.right 1 (.wI32 a_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv1, hsv1_get, henc1⟩ := h_stk1
+  have hs1_eq : s.stack.get? 1 = some (.reg base ty) := by rw [h_stack]; simp
+  rw [hs1_eq] at hsv1_get
+  have hsv1_eq : sv1 = .reg base ty :=
+    ((Option.some.injEq _ _).mp hsv1_get).symm
+  rw [hsv1_eq] at henc1
+  obtain ⟨_h_ty_eq, h_lookup_a⟩ := WasmValue.encodes_wI32_reg_inv henc1
+  -- 4. ops = [] → kst' = kst.
+  refine ⟨kst, ?_, ?_⟩
+  · rw [← hops_eq]; simp [evalOps]
+  · rw [← hs_eq]; subst h_ws_eq
+    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    · -- StackRefines: top encodes via .scaledIdx; tail unchanged.
+      refine ⟨?_, ?_⟩
+      · -- Length: ws_rest.length = rest.length, derived from R.stk.left.
+        have hlen := R.stk.left
+        rw [h_stack, h_ws_stack] at hlen
+        simp at hlen
+        simp; exact hlen
+      · intro j vj hvj
+        cases j with
+        | zero =>
+          simp at hvj; subst hvj
+          refine ⟨.scaledIdx base (1 <<< k.toNat), by simp, ?_⟩
+          show (WasmValue.wI32 (a_w <<< b_w)).encodes layout kst.rf
+                 (.scaledIdx base (1 <<< k.toNat))
+          rw [h_b_eq]
+          refine ⟨a_w, h_lookup_a, h_shift_eq a_w h_lookup_a⟩
+        | succ j' =>
+          have hwsk : ws.stack.get? (j' + 2) = some vj := by
+            rw [h_ws_stack]; simpa using hvj
+          obtain ⟨svk, hsvk, henck⟩ := R.stk.right (j' + 2) vj hwsk
+          have hsk : s.stack.get? (j' + 2) = some svk := hsvk
+          rw [h_stack] at hsk
+          simp at hsk
+          refine ⟨svk, by simpa using hsk, henck⟩
+    · -- Fresh: new top has regs = [base], existing in s.stack via h_stack.
+      refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r' hr'
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        simp [SymVal.regs] at hr'
+        -- hr' : r' = base. Rewrite the goal's r' to base, then bound base.
+        rw [hr']
+        have hbase_in_stack : (.reg base ty : SymVal) ∈ s.stack := by
+          rw [h_stack]; simp
+        exact R.fresh.left _ hbase_in_stack base (by simp [SymVal.regs])
+      · have hsv_in_s : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.fresh.left sv hsv_in_s r' hr'
+    · -- AliasFree: new top's reg is base; reuse R.aliasFree on the original .reg base ty entry.
+      intro ir hir sv hsv
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        have hbase_in_stack : (.reg base ty : SymVal) ∈ s.stack := by
+          rw [h_stack]; simp
+        have hb_disj := R.aliasFree ir hir _ hbase_in_stack
+        simp [SymVal.regs] at hb_disj ⊢
+        exact hb_disj
+      · have hsv_in_s : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.aliasFree ir hir sv hsv_in_s
 
 -- ════════════════════════════════════════════════════════════════════
 -- Generic i32 comparison preservation (instantiates for the 6-op family)
