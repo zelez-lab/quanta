@@ -191,6 +191,12 @@ def WasmValue.encodes
   | .wI32 n, .scaledIdx base scale =>
       ∃ b : UInt32, regLookup rf base = some (Quanta.KOps.Value.vU32 b) ∧
                     n.toNat = b.toNat * scale
+  -- `bufferAccess slot base scale` represents the absolute address
+  -- `layout.startAddr slot + (lookup base) * scale`. Same Nat-
+  -- equation form refuses overflow on the address arithmetic.
+  | .wI32 n, .bufferAccess slot base scale =>
+      ∃ b : UInt32, regLookup rf base = some (Quanta.KOps.Value.vU32 b) ∧
+                    n.toNat = layout.startAddr slot + b.toNat * scale
   | _, _                      => False
 
 /-- Stack refinement: WASM stack and symbolic stack zip element-wise
@@ -370,6 +376,12 @@ theorem WasmValue.encodes_preserved_of_fresh
     have hb_lt : base < nr := h_lt base (by simp [SymVal.regs])
     rw [regLookup_preserved_of_fresh hb_lt]
     exact h_lookup
+  | .wI32 n, .bufferAccess slot base scale, h =>
+    obtain ⟨b, h_lookup, h_eq⟩ := h
+    refine ⟨b, ?_, h_eq⟩
+    have hb_lt : base < nr := h_lt base (by simp [SymVal.regs])
+    rw [regLookup_preserved_of_fresh hb_lt]
+    exact h_lookup
 
 /-- Encoding is preserved under any register write disjoint from the
     SymVal's reg projection. The general-form companion to
@@ -406,6 +418,15 @@ theorem WasmValue.encodes_preserved_of_disjoint
       simp [SymVal.regs, h_eq2]
     rw [regLookup_regWrite_of_ne rf dst base newval hb_ne]
     exact h_lookup
+  | .wI32 _, .bufferAccess _ base _, h =>
+    obtain ⟨b, h_lookup, h_eq⟩ := h
+    refine ⟨b, ?_, h_eq⟩
+    have hb_ne : base ≠ dst := by
+      intro h_eq2
+      apply h_disj
+      simp [SymVal.regs, h_eq2]
+    rw [regLookup_regWrite_of_ne rf dst base newval hb_ne]
+    exact h_lookup
 
 /-- Encoding is preserved under any regfile transition that agrees on
     the SymVal's regs. The full-strength companion to
@@ -428,6 +449,11 @@ theorem WasmValue.encodes_preserved_of_lookup_eq
   | .wI32 _, .i32ConstSym _, h => exact h
   | .wI32 _, .bufferPtr _, h => exact h
   | .wI32 _, .scaledIdx base _, h =>
+    obtain ⟨b, h_lup, h_eq⟩ := h
+    refine ⟨b, ?_, h_eq⟩
+    have h_lup_eq := h_lookup base (by simp [SymVal.regs])
+    rw [h_lup_eq]; exact h_lup
+  | .wI32 _, .bufferAccess _ base _, h =>
     obtain ⟨b, h_lup, h_eq⟩ := h
     refine ⟨b, ?_, h_eq⟩
     have h_lup_eq := h_lookup base (by simp [SymVal.regs])
@@ -1657,6 +1683,227 @@ theorem preservation_i32Shl_bufferPattern
       rcases hsv with h_eq | h_in
       · subst h_eq
         have hbase_in_stack : (.reg base ty : SymVal) ∈ s.stack := by
+          rw [h_stack]; simp
+        have hb_disj := R.aliasFree ir hir _ hbase_in_stack
+        simp [SymVal.regs] at hb_disj ⊢
+        exact hb_disj
+      · have hsv_in_s : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.aliasFree ir hir sv hsv_in_s
+
+/-- Folded `i32.add` preservation, scaled-first order: when the popped
+    stack matches `<scaledIdx base scale> :: <bufferPtr slot> :: rest`,
+    the lowering emits no IR and pushes
+    `SymVal.bufferAccess slot base scale`. The new top encodes the
+    WASM add result via the `bufferAccess` arm.
+
+    The `h_addr_eq` precondition captures no-overflow on the address
+    arithmetic — the WASM UInt32 add must equal the corresponding Nat
+    add of `layout.startAddr slot + b.toNat * scale`. Future
+    kernel-entry composition theorem will discharge it from layout
+    bounds (typical kernels have addresses `< 2^31`). -/
+theorem preservation_i32Add_bufferPattern_scaledFirst
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
+    (slot : Nat) (base : Reg) (scale : Nat) (rest : List SymVal)
+    (h_stack : s.stack = .scaledIdx base scale :: .bufferPtr slot :: rest)
+    (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       a.toNat = b.toNat * scale →
+       b_ptr.toNat = layout.startAddr slot →
+       (b_ptr + a).toNat = layout.startAddr slot + b.toNat * scale)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Add = some ws')
+    (hl : lowerInstr s .i32Add = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- 1. Reduce hl using h_stack: scaled-first arm fires.
+  have hl_reduced : lowerInstr s .i32Add =
+      some ({ s with stack := .bufferAccess slot base scale :: rest }, []) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+  rw [hl_reduced] at hl
+  obtain ⟨hs_eq, hops_eq⟩ :=
+    Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp hl)
+  -- 2. Reduce hw via binI32 shape.
+  have hw' : binI32 eval_u32_wrapping_add ws = some ws' := hw
+  obtain ⟨a_w, b_w, ws_rest, h_ws_stack, h_ws_eq⟩ := binI32_some_shape hw'
+  -- 3. From R.stk, derive a_w / b_w identities.
+  -- ws.stack[0] = wI32 b_w ↔ s.stack[0] = .scaledIdx base scale.
+  have h_stk0 := R.stk.right 0 (.wI32 b_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv0, hsv0_get, henc0⟩ := h_stk0
+  have hs0_eq : s.stack.get? 0 = some (.scaledIdx base scale) := by
+    rw [h_stack]; simp
+  rw [hs0_eq] at hsv0_get
+  have hsv0_eq : sv0 = .scaledIdx base scale :=
+    ((Option.some.injEq _ _).mp hsv0_get).symm
+  rw [hsv0_eq] at henc0
+  -- henc0 : ∃ b, regLookup kst.rf base = some (vU32 b) ∧ b_w.toNat = b.toNat * scale.
+  obtain ⟨b, h_lookup_b, h_bw_eq⟩ := henc0
+  -- ws.stack[1] = wI32 a_w ↔ s.stack[1] = .bufferPtr slot.
+  have h_stk1 := R.stk.right 1 (.wI32 a_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv1, hsv1_get, henc1⟩ := h_stk1
+  have hs1_eq : s.stack.get? 1 = some (.bufferPtr slot) := by
+    rw [h_stack]; simp
+  rw [hs1_eq] at hsv1_get
+  have hsv1_eq : sv1 = .bufferPtr slot :=
+    ((Option.some.injEq _ _).mp hsv1_get).symm
+  rw [hsv1_eq] at henc1
+  -- henc1 : a_w.toNat = layout.startAddr slot.
+  have h_aw_eq : a_w.toNat = layout.startAddr slot := henc1
+  -- 4. ops = [] → kst' = kst.
+  refine ⟨kst, ?_, ?_⟩
+  · rw [← hops_eq]; simp [evalOps]
+  · rw [← hs_eq]; subst h_ws_eq
+    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    · -- StackRefines: top encodes via .bufferAccess; tail unchanged.
+      refine ⟨?_, ?_⟩
+      · have hlen := R.stk.left
+        rw [h_stack, h_ws_stack] at hlen
+        simp at hlen
+        simp; exact hlen
+      · intro j vj hvj
+        cases j with
+        | zero =>
+          simp at hvj; subst hvj
+          refine ⟨.bufferAccess slot base scale, by simp, ?_⟩
+          show (WasmValue.wI32 (eval_u32_wrapping_add a_w b_w)).encodes layout kst.rf
+                 (.bufferAccess slot base scale)
+          -- eval_u32_wrapping_add av bv := av + bv.
+          show ∃ b', regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b') ∧
+                 (eval_u32_wrapping_add a_w b_w).toNat =
+                   layout.startAddr slot + b'.toNat * scale
+          refine ⟨b, h_lookup_b, ?_⟩
+          show (a_w + b_w).toNat = layout.startAddr slot + b.toNat * scale
+          exact h_addr_eq b_w a_w b h_lookup_b h_bw_eq h_aw_eq
+        | succ j' =>
+          have hwsk : ws.stack.get? (j' + 2) = some vj := by
+            rw [h_ws_stack]; simpa using hvj
+          obtain ⟨svk, hsvk, henck⟩ := R.stk.right (j' + 2) vj hwsk
+          have hsk : s.stack.get? (j' + 2) = some svk := hsvk
+          rw [h_stack] at hsk
+          simp at hsk
+          refine ⟨svk, by simpa using hsk, henck⟩
+    · -- Fresh: new top has regs = [base], existing in s.stack via h_stack.
+      refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r' hr'
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        simp [SymVal.regs] at hr'
+        rw [hr']
+        have hbase_in_stack : (.scaledIdx base scale : SymVal) ∈ s.stack := by
+          rw [h_stack]; simp
+        exact R.fresh.left _ hbase_in_stack base (by simp [SymVal.regs])
+      · have hsv_in_s : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.fresh.left sv hsv_in_s r' hr'
+    · -- AliasFree: new top's reg is base; reuse R.aliasFree.
+      intro ir hir sv hsv
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        have hbase_in_stack : (.scaledIdx base scale : SymVal) ∈ s.stack := by
+          rw [h_stack]; simp
+        have hb_disj := R.aliasFree ir hir _ hbase_in_stack
+        simp [SymVal.regs] at hb_disj ⊢
+        exact hb_disj
+      · have hsv_in_s : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.aliasFree ir hir sv hsv_in_s
+
+/-- Folded `i32.add` preservation, ptr-first order: when the popped
+    stack matches `<bufferPtr slot> :: <scaledIdx base scale> :: rest`,
+    the lowering emits no IR and pushes `bufferAccess`. Same shape as
+    the scaled-first variant; only the WASM add direction flips
+    (`a + b` vs `b + a`, both equal by commutativity). -/
+theorem preservation_i32Add_bufferPattern_ptrFirst
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
+    (slot : Nat) (base : Reg) (scale : Nat) (rest : List SymVal)
+    (h_stack : s.stack = .bufferPtr slot :: .scaledIdx base scale :: rest)
+    (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       a.toNat = b.toNat * scale →
+       b_ptr.toNat = layout.startAddr slot →
+       (a + b_ptr).toNat = layout.startAddr slot + b.toNat * scale)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Add = some ws')
+    (hl : lowerInstr s .i32Add = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  have hl_reduced : lowerInstr s .i32Add =
+      some ({ s with stack := .bufferAccess slot base scale :: rest }, []) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+  rw [hl_reduced] at hl
+  obtain ⟨hs_eq, hops_eq⟩ :=
+    Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp hl)
+  have hw' : binI32 eval_u32_wrapping_add ws = some ws' := hw
+  obtain ⟨a_w, b_w, ws_rest, h_ws_stack, h_ws_eq⟩ := binI32_some_shape hw'
+  have h_stk0 := R.stk.right 0 (.wI32 b_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv0, hsv0_get, henc0⟩ := h_stk0
+  have hs0_eq : s.stack.get? 0 = some (.bufferPtr slot) := by rw [h_stack]; simp
+  rw [hs0_eq] at hsv0_get
+  have hsv0_eq : sv0 = .bufferPtr slot :=
+    ((Option.some.injEq _ _).mp hsv0_get).symm
+  rw [hsv0_eq] at henc0
+  -- henc0 : b_w.toNat = layout.startAddr slot.
+  have h_bw_eq : b_w.toNat = layout.startAddr slot := henc0
+  have h_stk1 := R.stk.right 1 (.wI32 a_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv1, hsv1_get, henc1⟩ := h_stk1
+  have hs1_eq : s.stack.get? 1 = some (.scaledIdx base scale) := by rw [h_stack]; simp
+  rw [hs1_eq] at hsv1_get
+  have hsv1_eq : sv1 = .scaledIdx base scale :=
+    ((Option.some.injEq _ _).mp hsv1_get).symm
+  rw [hsv1_eq] at henc1
+  obtain ⟨b, h_lookup_b, h_aw_eq⟩ := henc1
+  refine ⟨kst, ?_, ?_⟩
+  · rw [← hops_eq]; simp [evalOps]
+  · rw [← hs_eq]; subst h_ws_eq
+    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    · refine ⟨?_, ?_⟩
+      · have hlen := R.stk.left
+        rw [h_stack, h_ws_stack] at hlen
+        simp at hlen
+        simp; exact hlen
+      · intro j vj hvj
+        cases j with
+        | zero =>
+          simp at hvj; subst hvj
+          refine ⟨.bufferAccess slot base scale, by simp, ?_⟩
+          show ∃ b', regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b') ∧
+                 (eval_u32_wrapping_add a_w b_w).toNat =
+                   layout.startAddr slot + b'.toNat * scale
+          refine ⟨b, h_lookup_b, ?_⟩
+          show (a_w + b_w).toNat = layout.startAddr slot + b.toNat * scale
+          exact h_addr_eq a_w b_w b h_lookup_b h_aw_eq h_bw_eq
+        | succ j' =>
+          have hwsk : ws.stack.get? (j' + 2) = some vj := by
+            rw [h_ws_stack]; simpa using hvj
+          obtain ⟨svk, hsvk, henck⟩ := R.stk.right (j' + 2) vj hwsk
+          have hsk : s.stack.get? (j' + 2) = some svk := hsvk
+          rw [h_stack] at hsk
+          simp at hsk
+          refine ⟨svk, by simpa using hsk, henck⟩
+    · refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r' hr'
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        simp [SymVal.regs] at hr'
+        rw [hr']
+        have hbase_in_stack : (.scaledIdx base scale : SymVal) ∈ s.stack := by
+          rw [h_stack]; simp
+        exact R.fresh.left _ hbase_in_stack base (by simp [SymVal.regs])
+      · have hsv_in_s : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.fresh.left sv hsv_in_s r' hr'
+    · intro ir hir sv hsv
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        have hbase_in_stack : (.scaledIdx base scale : SymVal) ∈ s.stack := by
           rw [h_stack]; simp
         have hb_disj := R.aliasFree ir hir _ hbase_in_stack
         simp [SymVal.regs] at hb_disj ⊢
