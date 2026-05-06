@@ -179,7 +179,14 @@ end LowerState
 
 /-- Lower a single i32 binary op: pop two operand regs, allocate a
     result reg, emit the corresponding KOps `binOp`, push the result.
-    `none` on stack underflow. -/
+    `none` on stack underflow.
+
+    TODO: extend to `popSym + commit` so non-`.reg` SymVals (notably
+    `.i32ConstSym` from the symbolic-const lowering) can flow into
+    binops. The `commit_correct` + `commit_preserves_stack` lemmas in
+    `Quanta.Wasm.Preservation` are the load-bearing pieces; the
+    blocker is the shape-lemma rework (must distinguish `commit`
+    success/failure × inner-popSym empty-stack across the bind chain). -/
 def lowerI32Bin (s : LowerState) (op : BinOp) : Option (LowerState × List KernelOp) := do
   let (b, s1) ← s.pop
   let (a, s2) ← s1.pop

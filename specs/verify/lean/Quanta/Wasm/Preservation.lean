@@ -438,6 +438,23 @@ theorem commit_correct
   | .scaledIdx _ _,      h_commit => simp [LowerState.commit] at h_commit
   | .bufferAccess _ _ _, h_commit => simp [LowerState.commit] at h_commit
 
+/-- `commit` preserves the stack. Only the `.reg` and `.i32ConstSym`
+    arms can succeed; both leave `s.stack` untouched (the latter only
+    bumps `nextReg` via `alloc`). -/
+theorem commit_preserves_stack {s : LowerState} {sv : SymVal}
+    {r : Reg} {s' : LowerState} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) :
+    s'.stack = s.stack := by
+  match sv, h with
+  | .reg _ _, h =>
+    simp [LowerState.commit] at h
+    obtain ⟨_, hs', _⟩ := h
+    rw [← hs']
+  | .i32ConstSym _, h =>
+    simp [LowerState.commit, LowerState.alloc] at h
+    obtain ⟨_, hs', _⟩ := h
+    rw [← hs']
+
 /-- For an association list keyed by `Nat`, `find?` over the
     post-`setLocalReg` list (which prepends a new entry and filters
     out any older ones with the same key) behaves like `find?` on
