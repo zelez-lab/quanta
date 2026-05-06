@@ -31,17 +31,27 @@ Refinement structure:
   preservation theorem propagates the input `R.heapRefines` through
   unchanged. Slice-4 buffer-pattern arms are the first consumers.
 
-## What ships now (slices 1 + 2 + 3 + slice-4 stack-type cascade)
+## What ships now (slices 1 + 2 + 3 + slice-4 stack-type cascade
+   + popSym/commit unification of every popping arm)
 
 * The full refinement bundle (`Refines` = stack + locals + freshness +
-  alias-free).
+  alias-free + injective-locals + heap).
 * Register-file lemmas: `regLookup_regWrite_self`,
   `regLookup_regWrite_of_ne` (closed via `find?_pred_eq` induction),
   `regLookup_preserved_of_fresh`.
+* Encoding-lifting lemmas: `encodes_preserved_of_fresh`,
+  `encodes_preserved_of_disjoint`, `encodes_preserved_of_lookup_eq`.
+* `commit_correct` + four sibling helpers (`commit_only_bumps_nextReg`,
+  `commit_preserves_stack` / `_locals` / `_broke`) — every popping arm
+  applies `commit_correct` to the popped SymVal and threads encodings
+  through the regfile evolution.
+* `evalOps_append` for chaining `opsCommit ++ [op_main]` evaluations
+  past `broke` short-circuits.
 * Shape-extraction helpers: `binI32_some_shape`, `cmpI32_some_shape`,
   `lowerI32Bin_some_shape`, `lowerI32Cmp_some_shape`.
-* Generic binop preservation `preservation_i32Bin_generic`, plus 10
-  specializations covering the entire i32-binop family.
+* Generic binop preservation `preservation_i32Bin_generic` + 10
+  specializations; generic cmp `preservation_i32Cmp_generic` + 6
+  specializations.
 * Closed per-instruction theorems:
   - `preservation_nop`
   - `preservation_return`
@@ -52,51 +62,24 @@ Refinement structure:
   - `preservation_i32{Add,Sub,Mul,And,Or,Xor,Shl,ShrU,DivU,RemU}`
   - `preservation_i32{Eq,Ne,LtU,LeU,GtU,GeU}`
 
-That's **22 closed preservation theorems**. Slice 3 is now fully
-closed — every i32 instruction in the lowered subset has a
-preservation proof. The seven archetypes — empty-emit
-no-state-change (`nop`), empty-emit halted-flag (`wreturn`),
-single-op fresh-write (`i32Const`), no-op stack-push (`localGet`),
-the **two-pop one-fresh-write binop** archetype (`i32Bin`), the
-**two-pop two-op cmp+cast** archetype (`i32Cmp`, requires
-`kst.broke = false`), the **single-op stable-write** archetype
-(`localSet`), and the **two-op stable+fresh-write** archetype
-(`localTee`, requires `kst.broke = false`) — cover the entire
-slice-3 surface.
+That's **22 closed preservation theorems**. Slice 3 is fully closed
+— every i32 instruction in the lowered subset has a preservation
+proof, and every popping arm consumes a SymVal via `popSym + commit`
+(matching production's pull-based const-folding) instead of refusing
+on `i32ConstSym`. `drop` uses `popSym` alone; binop / cmp / localSet
+/ localTee chain `commit_correct` once or twice plus the per-op
+emission step glued via `evalOps_append`.
 
 ## What's next
 
-**Slice 3 fully closed.** Remaining work is slice-4 (buffer-pattern
-arms + HeapRefines) and beyond:
-* alias-free invariant is now baked into
-  `Refines.aliasFree`, and the Lean translator's `localGet`/`localTee`
-  allocate fresh registers + Copy to break aliasing. The remaining
-  gap is an `InjectiveLocals` invariant: distinct local indices map
-  to distinct stable_regs. Without it, `localSet i` writing to
-  stable_reg(i) could clobber the encoding of stable_reg(j) for
-  j ≠ i. Add the invariant to `Refines` and prove preservation
-  (mostly trivial — only `localSet`/`localTee` mutate `localReg`,
-  and they always allocate fresh stable_regs when introducing a new
-  key).
-
-**Slice 4 — stack-type cascade (THIS COMMIT)**: `LowerState.stack`
-is now `List SymVal`, `WasmValue.encodes` consumes a `SymVal`,
-`Fresh` / `AliasFree` flatten through `SymVal.regs`, and the load-
-bearing `WasmValue.encodes_preserved_of_fresh` lemma threads encoding
-past every `regWrite kst.rf s.nextReg _`. Every existing per-op
-proof now produces a `Refines` bundle parameterized by the new
-SymVal-indexed stack. The buffer-pattern recognition arms
-(`bufferPtr + scaledIdx → bufferAccess → typed Load/Store`) and a
-`HeapRefines` clause are still future work — slice 4 steps 7-8 in
-the original plan.
-
-The cascade was expected to produce a clean delta because every
-per-op proof was already structured to thread `R.fresh.left` /
-`R.aliasFree` over the stack's reg projection. The single `regs`
-helper added to `SymVal` collapses the projection into a list of
-regs, and `WasmValue.encodes_preserved_of_fresh` collapses the
-fresh-write preservation reasoning that previously inlined into
-each proof's `cases v` ladder.
+**Slice 4 step 7 — buffer-pattern recognition**: add lowerInstr
+arms that detect `<reg> <i32ConstSym k> i32.shl → ScaledIdx`,
+`<bufferPtr> <ScaledIdx> i32.add → BufferAccess`, and consume a
+`BufferAccess` via `i32.load`/`i32.store` into a typed
+`KernelOp.Load`/`Store`. Requires extending `LowerState` with a
+buffer-slot map (parameter analysis), giving each buffer SymVal a
+non-False encoding tied to `BufferLayout`, and lifting `HeapRefines`
+through the new typed memory ops.
 
 **Slice 5** — control flow: frame reflection in `LowerState`;
 proofs for `block`, `loop`, `if`/`else`, `br`, `br_if`, plus the
