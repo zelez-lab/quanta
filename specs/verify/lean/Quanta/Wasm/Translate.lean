@@ -254,20 +254,26 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       let s2 := s1.push fresh
       pure (s2, [.copy fresh stable])
   | .localSet i => do
-      let (src, s1) ← s.pop
+      -- popSym + commit (matches binop/cmp/localTee): a popped
+      -- `.i32ConstSym` materializes via a const-op prefix, while
+      -- buffer SymVals refuse at `commit` (and never reach localSet
+      -- in well-formed code — the buffer-pattern arms intercept
+      -- them earlier).
+      let (sv, s1) ← s.popSym
+      let (src, s2, opsCommit) ← s1.commit sv
       -- ty defaults to `.u32` when the local has no recorded type yet
       -- (slice 1 only models i32). Using `getD` (not `getDM`) keeps the
       -- result a plain `Scalar` instead of an `Option Scalar`, which
       -- avoids an extra monadic bind in the proof.
-      let ty : Scalar := (s1.lookupLocalTy i).getD .u32
-      match s1.lookupLocal i with
+      let ty : Scalar := (s2.lookupLocalTy i).getD .u32
+      match s2.lookupLocal i with
       | some dst =>
           -- Local already has a stable register → emit a copy into it.
-          pure (s1.setLocalReg i dst ty, [.copy dst src])
+          pure (s2.setLocalReg i dst ty, opsCommit ++ [.copy dst src])
       | none =>
           -- First write: allocate the local's stable reg, copy in.
-          let (dst, s2) := s1.alloc
-          pure (s2.setLocalReg i dst ty, [.copy dst src])
+          let (dst, s3) := s2.alloc
+          pure (s3.setLocalReg i dst ty, opsCommit ++ [.copy dst src])
   | .localTee i => do
       -- `local.tee` = `local.set i` followed by `local.get i`. The
       -- `localGet` half breaks aliasing by emitting a Copy into a
