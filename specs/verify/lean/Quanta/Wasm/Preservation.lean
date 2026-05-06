@@ -43,27 +43,27 @@ Refinement structure:
   - `preservation_i32Const`
   - `preservation_localGet`
   - `preservation_localSet`
+  - `preservation_localTee`
   - `preservation_i32{Add,Sub,Mul,And,Or,Xor,Shl,ShrU,DivU,RemU}`
   - `preservation_i32{Eq,Ne,LtU,LeU,GtU,GeU}`
 
-That's **21 closed preservation theorems**. The six archetypes —
-empty-emit no-state-change (`nop`), empty-emit halted-flag (`wreturn`),
+That's **22 closed preservation theorems**. Slice 3 is now fully
+closed — every i32 instruction in the lowered subset has a
+preservation proof. The seven archetypes — empty-emit
+no-state-change (`nop`), empty-emit halted-flag (`wreturn`),
 single-op fresh-write (`i32Const`), no-op stack-push (`localGet`),
 the **two-pop one-fresh-write binop** archetype (`i32Bin`), the
 **two-pop two-op cmp+cast** archetype (`i32Cmp`, requires
-`kst.broke = false`), and the **single-op stable-write** archetype
-(`localSet`, splits on existing-vs-fresh dst with five `Refines`
-clauses each) — now all have at least one closed instance.
-Every remaining op outside slices 4+ rides on these archetypes.
+`kst.broke = false`), the **single-op stable-write** archetype
+(`localSet`), and the **two-op stable+fresh-write** archetype
+(`localTee`, requires `kst.broke = false`) — cover the entire
+slice-3 surface.
 
 ## What's next
 
-**Slice 3 follow-ups still open** (deferred to slice 4 entry):
-* `localTee` — same archetype as `localSet` but emits two ops
-  (`copy dst src; copy fresh dst`), so it'll need `kst.broke = false`
-  like the cmp generic. The setup ladder is identical — it should
-  reuse most of `preservation_localSet`'s scaffolding.
-* `localSet`/`localTee` — alias-free invariant is now baked into
+**Slice 3 fully closed.** Remaining work is slice-4 (buffer-pattern
+arms + HeapRefines) and beyond:
+* alias-free invariant is now baked into
   `Refines.aliasFree`, and the Lean translator's `localGet`/`localTee`
   allocate fresh registers + Copy to break aliasing. The remaining
   gap is an `InjectiveLocals` invariant: distinct local indices map
@@ -1393,6 +1393,364 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           · exact R.injLocals p q hp_in hq_in
 
 -- ════════════════════════════════════════════════════════════════════
+-- Slice 3 follow-up: localTee preservation
+--
+-- `local.tee i` = `local.set i` then re-push. The translator emits two
+-- ops: `.copy dst src` (mirrors localSet's stable-write) followed by
+-- `.copy post_fresh dst` (mirrors localGet's alias-breaking copy).
+-- Two-op sequence ⇒ `kst.broke = false` precondition required.
+-- The post-tee top of the stack is `.reg post_fresh .u32`, encoding
+-- the same `wI32 n_w` value the popped `src` register held.
+--
+-- Same existing-vs-fresh dst split as localSet, with these tweaks:
+--   * Two regWrites in the produced `kst'` (at `dst`, then at
+--     `post_fresh`).
+--   * `Refines.stk` adds the new top entry encoding `wI32 n_w`.
+--   * `ws'.stack = v_w :: rest` (top preserved, unlike localSet).
+-- ════════════════════════════════════════════════════════════════════
+
+open Quanta.KOps (vU32) in
+/-- `local.tee i` preservation. -/
+theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (R : Refines ws s kst) (h_kst_ok : kst.broke = false)
+    (i : Nat)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws (.localTee i) = some ws')
+    (hl : lowerInstr s (.localTee i) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+  -- WASM side: pop v_w, setLocal i v_w (on the popped state), push v_w back.
+  simp only [evalInstr, WasmState.pop, WasmState.push,
+             Option.bind_eq_bind, Option.bind, pure] at hw
+  rcases hws_stack : ws.stack with _ | ⟨v_w, rest⟩
+  · simp [hws_stack] at hw
+  simp only [hws_stack, WasmState.setLocal] at hw
+  by_cases hbound : i < List.length ws.locals
+  case neg => simp [if_neg hbound] at hw
+  simp only [if_pos hbound] at hw
+  have hws'_eq : ws' = { locals := ws.locals.set i v_w, stack := v_w :: rest,
+                          mem := ws.mem, halted := ws.halted } :=
+    ((Option.some.injEq _ _).mp hw).symm
+  subst hws'_eq
+  -- Lean side.
+  simp only [lowerInstr, LowerState.pop, LowerState.lookupLocal,
+             LowerState.lookupLocalTy, LowerState.alloc, LowerState.setLocalReg,
+             LowerState.push, Option.bind_eq_bind, Option.bind, pure] at hl
+  rcases hls_stack : s.stack with _ | ⟨svsrc, lrest⟩
+  · simp [hls_stack] at hl
+  cases svsrc with
+  | bufferPtr _          => simp [hls_stack] at hl
+  | scaledIdx _ _        => simp [hls_stack] at hl
+  | i32ConstSym _        => simp [hls_stack] at hl
+  | bufferAccess _ _ _   => simp [hls_stack] at hl
+  | reg src tysrc =>
+    simp only [hls_stack] at hl
+    have hv_enc_raw : v_w.encodes kst.rf (.reg src tysrc) := by
+      have h := R.stk.right 0 v_w (by rw [hws_stack]; simp)
+      obtain ⟨sv0, hsv0_get, henc⟩ := h
+      have hs0 : s.stack.get? 0 = some (.reg src tysrc) := by rw [hls_stack]; simp
+      rw [hs0] at hsv0_get
+      have h_eq : SymVal.reg src tysrc = sv0 := (Option.some.injEq _ _).mp hsv0_get
+      rwa [← h_eq] at henc
+    obtain ⟨n_w, hv_w_eq, htysrc, hsrc_lookup⟩ :=
+      WasmValue.encodes_reg_shape hv_enc_raw
+    subst hv_w_eq htysrc
+    rcases hreg_find : s.localReg.find? (fun p => p.fst = i) with _ | entry
+    -- Case B: fresh dst = s.nextReg, post_fresh = s.nextReg + 1.
+    · simp [hreg_find] at hl
+      obtain ⟨hs_eq, hops_eq⟩ := hl
+      refine ⟨{ kst with rf :=
+                  regWrite (regWrite kst.rf s.nextReg
+                              (Quanta.KOps.Value.vU32 n_w))
+                            (s.nextReg + 1)
+                            (Quanta.KOps.Value.vU32 n_w) }, ?_, ?_⟩
+      · subst hops_eq
+        simp [evalOps, Quanta.KOps.evalOp, hsrc_lookup, regLookup_regWrite_self,
+              h_kst_ok]
+      · subst hs_eq
+        refine ⟨?_, ?_, ?_, ?_, ?_⟩
+        · -- StackRefines.
+          refine ⟨?_, ?_⟩
+          · have hl_orig := R.stk.left
+            rw [hws_stack, hls_stack] at hl_orig
+            simpa using hl_orig
+          · intro j v hv
+            cases j with
+            | zero =>
+              simp at hv
+              refine ⟨SymVal.reg (s.nextReg + 1) .u32, by simp, ?_⟩
+              subst hv
+              simp [WasmValue.encodes, regLookup_regWrite_self]
+            | succ k =>
+              have hrest_get : ws.stack.get? (k + 1) = some v := by
+                rw [hws_stack]; simpa using hv
+              obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right (k + 1) v hrest_get
+              have hlrest_get : lrest.get? k = some svk := by
+                have h2 : s.stack.get? (k + 1) = some svk := hsvk_get
+                rw [hls_stack] at h2; simpa using h2
+              refine ⟨svk, hlrest_get, ?_⟩
+              have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk_get
+              have h_lt : ∀ r ∈ svk.regs, r < s.nextReg :=
+                fun r hr => R.fresh.left svk hsvk_in r hr
+              exact WasmValue.encodes_preserved_of_fresh
+                (fun r hr => Nat.lt_succ_of_lt (h_lt r hr))
+                (WasmValue.encodes_preserved_of_fresh h_lt henc)
+        · -- LocalsRefines.
+          intro k r hfind v hv
+          by_cases hki : k = i
+          · subst hki
+            change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                     ((k, s.nextReg) :: List.filter (fun p => !decide (p.fst = k)) s.localReg)
+                   = some (k, r) at hfind
+            change (ws.locals.set k (WasmValue.wI32 n_w)).get? k = some v at hv
+            rw [List.find?_cons] at hfind
+            simp only [show decide ((k, s.nextReg).fst = k) = true from by simp] at hfind
+            injection hfind with h_pair
+            have hr_eq : s.nextReg = r := (Prod.ext_iff.mp h_pair).2
+            subst hr_eq
+            have hv_eq : v = WasmValue.wI32 n_w := by
+              have hget : (ws.locals.set k (.wI32 n_w)).get? k =
+                          some (WasmValue.wI32 n_w) := by
+                rw [List.get?_eq_getElem?]
+                exact List.getElem?_set_self (by simpa using hbound)
+              rw [hget] at hv
+              exact ((Option.some.injEq _ _).mp hv).symm
+            subst hv_eq
+            -- Encoding via reg s.nextReg in kst'.rf = regWrite² ...
+            -- s.nextReg ≠ s.nextReg + 1, so the second regWrite preserves the lookup.
+            simp [WasmValue.encodes]
+            rw [regLookup_regWrite_of_ne _ _ _ _
+                  (Nat.ne_of_lt (Nat.lt_succ_self _))]
+            simp [regLookup_regWrite_self]
+          · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                     ((i, s.nextReg) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
+                   = some (k, r) at hfind
+            rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+            have hv_old : ws.locals.get? k = some v := by
+              rw [List.get?_eq_getElem?] at hv ⊢
+              rw [List.getElem?_set_ne (Ne.symm hki)] at hv
+              exact hv
+            have henc := R.locs k r hfind v hv_old
+            have hkr_in : (k, r) ∈ s.localReg := List.mem_of_find?_eq_some hfind
+            have hr_lt : r < s.nextReg := R.fresh.right (k, r) hkr_in
+            have h_lt : ∀ r' ∈ (SymVal.reg r .u32).regs, r' < s.nextReg := by
+              intro r' hr'_in
+              simp [SymVal.regs] at hr'_in
+              subst hr'_in; exact hr_lt
+            exact WasmValue.encodes_preserved_of_fresh
+              (fun r' hr' => Nat.lt_succ_of_lt (h_lt r' hr'))
+              (WasmValue.encodes_preserved_of_fresh h_lt henc)
+        · -- Fresh: nextReg = s.nextReg + 2.
+          refine ⟨?_, ?_⟩
+          · intro sv hsv r hr
+            simp at hsv
+            rcases hsv with h_eq | h_in
+            · subst h_eq
+              simp [SymVal.regs] at hr
+              subst hr
+              exact Nat.lt_succ_self _
+            · have hsv_in : sv ∈ s.stack := by
+                rw [hls_stack]; exact List.mem_cons_of_mem _ h_in
+              have : r < s.nextReg := R.fresh.left sv hsv_in r hr
+              exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt this)
+          · intro ir hir
+            simp at hir
+            rcases hir with h_eq | ⟨h_in, _⟩
+            · subst h_eq
+              exact Nat.lt_succ_of_lt (Nat.lt_succ_self _)
+            · exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R.fresh.right ir h_in))
+        · -- AliasFree.
+          intro ir hir sv hsv
+          simp at hir hsv
+          rcases hir with hir_eq | ⟨hir_in, _⟩ <;>
+          rcases hsv with hsv_eq | hsv_in
+          · subst hir_eq; subst hsv_eq
+            simp [SymVal.regs]
+          · subst hir_eq
+            have hsv_in_s : sv ∈ s.stack := by
+              rw [hls_stack]; exact List.mem_cons_of_mem _ hsv_in
+            intro hcontra
+            have : s.nextReg < s.nextReg :=
+              R.fresh.left sv hsv_in_s s.nextReg hcontra
+            exact Nat.lt_irrefl _ this
+          · subst hsv_eq
+            have ir_lt : ir.snd < s.nextReg := R.fresh.right ir hir_in
+            simp [SymVal.regs]
+            exact Nat.ne_of_lt (Nat.lt_succ_of_lt ir_lt)
+          · have hsv_in_s : sv ∈ s.stack := by
+              rw [hls_stack]; exact List.mem_cons_of_mem _ hsv_in
+            exact R.aliasFree ir hir_in sv hsv_in_s
+        · -- InjectiveLocals.
+          intro p q hp hq
+          simp at hp hq
+          rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
+          rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
+          · subst hp_eq; subst hq_eq; left; rfl
+          · right
+            subst hp_eq
+            have : q.snd < s.nextReg := R.fresh.right q hq_in
+            exact (Nat.ne_of_lt this).symm
+          · right
+            subst hq_eq
+            have : p.snd < s.nextReg := R.fresh.right p hp_in
+            exact Nat.ne_of_lt this
+          · exact R.injLocals p q hp_in hq_in
+    -- Case A: existing dst = entry.snd, post_fresh = s.nextReg.
+    · simp [hreg_find] at hl
+      obtain ⟨hs_eq, hops_eq⟩ := hl
+      have hentry_fst : entry.fst = i := by
+        have := List.find?_some hreg_find
+        simpa using this
+      refine ⟨{ kst with rf :=
+                  regWrite (regWrite kst.rf entry.snd
+                              (Quanta.KOps.Value.vU32 n_w))
+                            s.nextReg
+                            (Quanta.KOps.Value.vU32 n_w) }, ?_, ?_⟩
+      · subst hops_eq
+        simp [evalOps, Quanta.KOps.evalOp, hsrc_lookup, regLookup_regWrite_self,
+              h_kst_ok]
+      · subst hs_eq
+        have hentry_in : entry ∈ s.localReg := List.mem_of_find?_eq_some hreg_find
+        have hentry_pair : (i, entry.snd) ∈ s.localReg := by
+          have : entry = (i, entry.snd) := by
+            rcases entry with ⟨ek, er⟩
+            simp at hentry_fst; simp [hentry_fst]
+          rw [← this]; exact hentry_in
+        have hdst_lt : entry.snd < s.nextReg := R.fresh.right entry hentry_in
+        refine ⟨?_, ?_, ?_, ?_, ?_⟩
+        · -- StackRefines.
+          refine ⟨?_, ?_⟩
+          · have hl_orig := R.stk.left
+            rw [hws_stack, hls_stack] at hl_orig
+            simpa using hl_orig
+          · intro j v hv
+            cases j with
+            | zero =>
+              simp at hv
+              refine ⟨SymVal.reg s.nextReg .u32, by simp, ?_⟩
+              subst hv
+              simp [WasmValue.encodes, regLookup_regWrite_self]
+            | succ k =>
+              have hrest_get : ws.stack.get? (k + 1) = some v := by
+                rw [hws_stack]; simpa using hv
+              obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right (k + 1) v hrest_get
+              have hlrest_get : lrest.get? k = some svk := by
+                have h2 : s.stack.get? (k + 1) = some svk := hsvk_get
+                rw [hls_stack] at h2; simpa using h2
+              refine ⟨svk, hlrest_get, ?_⟩
+              have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk_get
+              -- First write at entry.snd: AliasFree gives entry.snd ∉ svk.regs.
+              -- Second write at s.nextReg: freshness gives svk's regs < s.nextReg.
+              have h_disj : entry.snd ∉ svk.regs :=
+                R.aliasFree entry hentry_in svk hsvk_in
+              have h_lt : ∀ r ∈ svk.regs, r < s.nextReg :=
+                fun r hr => R.fresh.left svk hsvk_in r hr
+              exact WasmValue.encodes_preserved_of_fresh h_lt
+                (WasmValue.encodes_preserved_of_disjoint h_disj henc)
+        · -- LocalsRefines.
+          intro k r hfind v hv
+          by_cases hki : k = i
+          · subst hki
+            change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                     ((k, entry.snd) :: List.filter (fun p => !decide (p.fst = k)) s.localReg)
+                   = some (k, r) at hfind
+            change (ws.locals.set k (WasmValue.wI32 n_w)).get? k = some v at hv
+            rw [List.find?_cons] at hfind
+            simp only [show decide ((k, entry.snd).fst = k) = true from by simp] at hfind
+            injection hfind with h_pair
+            have hr_eq : entry.snd = r := (Prod.ext_iff.mp h_pair).2
+            subst hr_eq
+            have hv_eq : v = WasmValue.wI32 n_w := by
+              have hget : (ws.locals.set k (.wI32 n_w)).get? k =
+                          some (WasmValue.wI32 n_w) := by
+                rw [List.get?_eq_getElem?]
+                exact List.getElem?_set_self (by simpa using hbound)
+              rw [hget] at hv
+              exact ((Option.some.injEq _ _).mp hv).symm
+            subst hv_eq
+            -- Encoding via reg entry.snd; entry.snd ≠ s.nextReg (entry.snd < s.nextReg).
+            simp [WasmValue.encodes]
+            rw [regLookup_regWrite_of_ne _ _ _ _ (Nat.ne_of_lt hdst_lt)]
+            simp [regLookup_regWrite_self]
+          · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                     ((i, entry.snd) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
+                   = some (k, r) at hfind
+            rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+            have hv_old : ws.locals.get? k = some v := by
+              rw [List.get?_eq_getElem?] at hv ⊢
+              rw [List.getElem?_set_ne (Ne.symm hki)] at hv
+              exact hv
+            have henc := R.locs k r hfind v hv_old
+            have hkr_in : (k, r) ∈ s.localReg := List.mem_of_find?_eq_some hfind
+            have hr_ne : r ≠ entry.snd := by
+              have := R.injLocals (k, r) (i, entry.snd) hkr_in hentry_pair
+              rcases this with h_keq | h_rne
+              · exact absurd h_keq hki
+              · exact h_rne
+            have hr_lt : r < s.nextReg := R.fresh.right (k, r) hkr_in
+            have h_disj : entry.snd ∉ (SymVal.reg r .u32).regs := by
+              simp [SymVal.regs]; exact hr_ne.symm
+            have h_lt : ∀ r' ∈ (SymVal.reg r .u32).regs, r' < s.nextReg := by
+              intro r' hr'_in
+              simp [SymVal.regs] at hr'_in
+              subst hr'_in; exact hr_lt
+            exact WasmValue.encodes_preserved_of_fresh h_lt
+              (WasmValue.encodes_preserved_of_disjoint h_disj henc)
+        · -- Fresh: nextReg = s.nextReg + 1.
+          refine ⟨?_, ?_⟩
+          · intro sv hsv r hr
+            simp at hsv
+            rcases hsv with h_eq | h_in
+            · subst h_eq
+              simp [SymVal.regs] at hr
+              subst hr
+              exact Nat.lt_succ_self _
+            · have hsv_in : sv ∈ s.stack := by
+                rw [hls_stack]; exact List.mem_cons_of_mem _ h_in
+              exact Nat.lt_succ_of_lt (R.fresh.left sv hsv_in r hr)
+          · intro ir hir
+            simp at hir
+            rcases hir with h_eq | ⟨h_in, _⟩
+            · subst h_eq; exact Nat.lt_succ_of_lt hdst_lt
+            · exact Nat.lt_succ_of_lt (R.fresh.right ir h_in)
+        · -- AliasFree.
+          intro ir hir sv hsv
+          simp at hir hsv
+          rcases hir with hir_eq | ⟨hir_in, _⟩ <;>
+          rcases hsv with hsv_eq | hsv_in
+          · subst hir_eq; subst hsv_eq
+            simp [SymVal.regs]
+            exact Nat.ne_of_lt hdst_lt
+          · subst hir_eq
+            have hsv_in_s : sv ∈ s.stack := by
+              rw [hls_stack]; exact List.mem_cons_of_mem _ hsv_in
+            exact R.aliasFree entry hentry_in sv hsv_in_s
+          · subst hsv_eq
+            simp [SymVal.regs]
+            exact Nat.ne_of_lt (R.fresh.right ir hir_in)
+          · have hsv_in_s : sv ∈ s.stack := by
+              rw [hls_stack]; exact List.mem_cons_of_mem _ hsv_in
+            exact R.aliasFree ir hir_in sv hsv_in_s
+        · -- InjectiveLocals.
+          intro p q hp hq
+          simp at hp hq
+          rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
+          rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
+          · subst hp_eq; subst hq_eq; left; rfl
+          · right
+            subst hp_eq
+            have h_old := R.injLocals q (i, entry.snd) hq_in hentry_pair
+            rcases h_old with h_keq | h_rne
+            · exact absurd h_keq hq_ne
+            · exact h_rne.symm
+          · right
+            subst hq_eq
+            have h_old := R.injLocals p (i, entry.snd) hp_in hentry_pair
+            rcases h_old with h_keq | h_rne
+            · exact absurd h_keq hp_ne
+            · exact h_rne
+          · exact R.injLocals p q hp_in hq_in
+
+-- ════════════════════════════════════════════════════════════════════
 -- Slice 3 follow-up status
 --
 -- The `Refines.injLocals` invariant is in place, bringing the bundle
@@ -1404,16 +1762,20 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
 --   * aliasFree  — no stable_reg appears on the symbolic stack
 --   * injLocals  — distinct local indices map to distinct stable_regs
 --
--- All 21 closed per-instr theorems (nop, return, i32Const, localGet,
--- localSet, 10 binops, 6 cmps) produce a Refines bundle with all 5
--- clauses.
+-- All 22 closed per-instr theorems (nop, return, i32Const, localGet,
+-- localSet, localTee, 10 binops, 6 cmps) produce a Refines bundle
+-- with all 5 clauses. Slice 3 is fully closed.
 --
--- The `preservation_localTee` theorem is the last open Slice-3 item.
--- It emits `[.copy dst src, .copy fresh dst]` (two ops), so it needs
--- `kst.broke = false` like the cmp generic, but otherwise reuses the
--- same existing-vs-fresh dst split + 5 Refines clauses pattern as
--- localSet. The find?/filter helpers + WasmValue.encodes_reg_shape
--- already in this file are sufficient.
+-- Slice 4 — what's next:
+--   * Buffer-pattern recognition arms in `lowerInstr` (steps 7-8 of
+--     the original plan): bufferPtr / scaledIdx / bufferAccess SymVals
+--     consumed by the next i32.load/i32.store into a typed Load/Store.
+--   * `HeapRefines` clause added to `Refines` — the first non-stack-
+--     non-locals refinement clause; will cascade through every
+--     existing per-op proof (each adds a `heapRefines := R.heapRefines`
+--     line).
+--   * One archetype memory-op preservation proof for the bufferAccess
+--     consumer.
 -- ════════════════════════════════════════════════════════════════════
 
 end Quanta.Wasm
