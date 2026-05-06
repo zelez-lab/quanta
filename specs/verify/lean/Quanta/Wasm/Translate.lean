@@ -280,18 +280,25 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       -- fresh register, so the post-tee stack value is `post_fresh`,
       -- not the local's stable register. Same alias-free invariant
       -- as `localGet`.
-      let (src, s1) ← s.pop
-      let ty : Scalar := (s1.lookupLocalTy i).getD .u32
-      match s1.lookupLocal i with
+      --
+      -- popSym + commit to materialize the popped SymVal into a real
+      -- register (matches localSet / binop / cmp). `i32ConstSym`
+      -- emits a const-op prefix in `opsCommit`.
+      let (sv, s1) ← s.popSym
+      let (src, s2, opsCommit) ← s1.commit sv
+      let ty : Scalar := (s2.lookupLocalTy i).getD .u32
+      match s2.lookupLocal i with
       | some dst =>
-          let s2 := s1.setLocalReg i dst ty
-          let (post_fresh, s3) := s2.alloc
-          pure (s3.push post_fresh, [.copy dst src, .copy post_fresh dst])
-      | none =>
-          let (dst, s2) := s1.alloc
           let s3 := s2.setLocalReg i dst ty
           let (post_fresh, s4) := s3.alloc
-          pure (s4.push post_fresh, [.copy dst src, .copy post_fresh dst])
+          pure (s4.push post_fresh,
+                opsCommit ++ [.copy dst src, .copy post_fresh dst])
+      | none =>
+          let (dst, s3) := s2.alloc
+          let s4 := s3.setLocalReg i dst ty
+          let (post_fresh, s5) := s4.alloc
+          pure (s5.push post_fresh,
+                opsCommit ++ [.copy dst src, .copy post_fresh dst])
   -- i32 arithmetic
   | .i32Add  => lowerI32Bin s .add
   | .i32Sub  => lowerI32Bin s .sub
