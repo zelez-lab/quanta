@@ -25,6 +25,11 @@ Refinement structure:
   fresh regs and Copy to break aliasing.
 * **InjectiveLocals** — distinct local indices map to distinct
   stable_regs.
+* **HeapRefines** — every in-bounds `(slot, idx)` in the KOps heap
+  matches the 4-byte WASM-memory slice at the layout-derived
+  address. Slice-3 ops don't touch memory or heap, so each per-op
+  preservation theorem propagates the input `R.heapRefines` through
+  unchanged. Slice-4 buffer-pattern arms are the first consumers.
 
 ## What ships now (slices 1 + 2 + 3 + slice-4 stack-type cascade)
 
@@ -124,6 +129,36 @@ open Quanta.KOps (KernelOp Reg evalOps regLookup regWrite)
 open Quanta.Semantics.Cpu
 
 -- ════════════════════════════════════════════════════════════════════
+-- BufferLayout — mapping from heap slot to WASM-memory byte address
+--
+-- Each `#[quanta::shared]` buffer parameter occupies a contiguous
+-- region of WASM linear memory; `BufferLayout` records the byte
+-- address where each slot starts and the slot's element count. The
+-- element type is always u32 in the slice-3 surface (4 bytes each);
+-- richer element types lift in a later slice.
+-- ════════════════════════════════════════════════════════════════════
+
+structure BufferLayout where
+  /-- Byte address in WASM linear memory where slot `s`'s data starts. -/
+  startAddr : Nat → Nat
+  /-- Number of u32 elements in slot `s`. -/
+  length    : Nat → Nat
+
+/-- Heap refinement: every in-bounds `(slot, idx)` pair in the KOps
+    heap matches the 4-byte WASM-memory slice at the layout-derived
+    address. Slice-3 ops don't touch `ws.mem` or `kst.heap`, so each
+    per-op preservation theorem just propagates the input
+    `HeapRefines` to the output. The slice-4 buffer-pattern arms
+    (`i32.load`/`i32.store` consuming a `bufferAccess`) are the first
+    consumers that USE this clause to bridge the byte-level WASM
+    memory to the typed KOps heap. -/
+def HeapRefines (mem : WasmMem) (heap : Quanta.KOps.Heap) (layout : BufferLayout) : Prop :=
+  ∀ slot idx, idx < layout.length slot →
+    ∃ n : UInt32,
+      Quanta.KOps.heapLookup heap slot idx = some (Quanta.KOps.Value.vU32 n) ∧
+      mem.load_u32 (layout.startAddr slot + idx * 4) = some n
+
+-- ════════════════════════════════════════════════════════════════════
 -- Refinement relation
 -- ════════════════════════════════════════════════════════════════════
 
@@ -173,13 +208,18 @@ def AliasFree (s : LowerState) : Prop :=
 def InjectiveLocals (s : LowerState) : Prop :=
   ∀ p q, p ∈ s.localReg → q ∈ s.localReg → p.fst = q.fst ∨ p.snd ≠ q.snd
 
-/-- Bundle. -/
-structure Refines (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State) : Prop where
+/-- Bundle. The `layout : BufferLayout` parameter is the shared side-
+    channel that relates WASM linear memory to the KOps heap; each
+    theorem fixes `layout` across input and output (the layout is
+    static in the lowered program). -/
+structure Refines (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+                  (layout : BufferLayout) : Prop where
   stk         : StackRefines ws.stack s.stack kst.rf
   locs        : LocalsRefines ws.locals s.localReg kst.rf
   fresh       : Fresh s
   aliasFree   : AliasFree s
   injLocals   : InjectiveLocals s
+  heapRefines : HeapRefines ws.mem kst.heap layout
 
 -- ════════════════════════════════════════════════════════════════════
 -- Register-file lemmas
@@ -346,11 +386,11 @@ private theorem find?_setLocalReg_ne {α : Type}
 /-- `nop` preservation. Both sides leave state untouched and emit
     nothing. -/
 theorem preservation_nop (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (R : Refines ws s kst)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws .nop = some ws')
     (hl : lowerInstr s .nop = some (s', ops)) :
-    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   simp [evalInstr] at hw
   simp [lowerInstr] at hl
   obtain ⟨hs_eq, hops_eq⟩ := hl
@@ -365,11 +405,11 @@ theorem preservation_nop (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.St
     locals/stack are untouched, so the refinement bundle survives —
     the WASM state's `halted` field isn't constrained by `Refines`. -/
 theorem preservation_return (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (R : Refines ws s kst)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws .wreturn = some ws')
     (hl : lowerInstr s .wreturn = some (s', ops)) :
-    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   simp [evalInstr] at hw
   simp [lowerInstr] at hl
   obtain ⟨hs_eq, hops_eq⟩ := hl
@@ -377,11 +417,14 @@ theorem preservation_return (ws : WasmState) (s : LowerState) (kst : Quanta.KOps
   · subst hops_eq
     simp [evalOps]
   · subst hs_eq
-    refine ⟨?_, ?_, R.fresh, R.aliasFree, R.injLocals⟩
+    refine ⟨?_, ?_, R.fresh, R.aliasFree, R.injLocals, ?_⟩
     · have : ws'.stack = ws.stack := by rw [← hw]
       rw [this]; exact R.stk
     · have : ws'.locals = ws.locals := by rw [← hw]
       rw [this]; exact R.locs
+    · -- HeapRefines: ws'.mem = ws.mem (return doesn't touch memory).
+      have : ws'.mem = ws.mem := by rw [← hw]
+      rw [this]; exact R.heapRefines
 
 -- ════════════════════════════════════════════════════════════════════
 -- Slice 2: i32 constants + local reads
@@ -394,12 +437,12 @@ open Quanta.KOps (vU32) in
     register the prior `Refines` constrained, because every such
     register is `< s.nextReg` by `Fresh`. -/
 theorem preservation_i32Const (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (R : Refines ws s kst)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
     (n : Int)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws (.i32Const n) = some ws')
     (hl : lowerInstr s (.i32Const n) = some (s', ops)) :
-    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   simp [evalInstr, WasmState.push] at hw
   simp [lowerInstr, freshAndPush, LowerState.alloc, LowerState.push] at hl
   obtain ⟨hs_eq, hops_eq⟩ := hl
@@ -407,7 +450,7 @@ theorem preservation_i32Const (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   · subst hops_eq
     simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst]
   · subst hw hs_eq
-    refine ⟨?_, ?_, ?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
     · -- Stack refinement.
       refine ⟨by simp [R.stk.left], ?_⟩
       intro i v hv
@@ -470,12 +513,12 @@ open Quanta.KOps (vU32) in
     encoding to the fresh reg, and freshness keeps every prior reg
     readable. -/
 theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (R : Refines ws s kst)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
     (i : Nat)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws (.localGet i) = some ws')
     (hl : lowerInstr s (.localGet i) = some (s', ops)) :
-    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   simp only [evalInstr, WasmState.getLocal, WasmState.push,
              Option.bind_eq_bind, Option.bind, pure] at hw
   match hloc : ws.locals.get? i, hw with
@@ -504,7 +547,7 @@ theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         · subst hops_eq
           simp [evalOps, Quanta.KOps.evalOp, henc_local]
         · subst hs_eq; subst hw
-          refine ⟨?_, ?_, ?_, ?_, ?_⟩
+          refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
           · -- Stack refinement.
             refine ⟨by simp [R.stk.left], ?_⟩
             intro j vj hvj
@@ -729,11 +772,11 @@ theorem preservation_i32Bin_generic
     (h_agree : ∀ av bv,
        Quanta.KOps.evalBinOp op_k (vU32 av) (vU32 bv) = some (vU32 (op_w av bv)))
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (R : Refines ws s kst)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws instr = some ws')
     (hl : lowerInstr s instr = some (s', ops)) :
-    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   rw [h_w] at hw
   rw [h_l] at hl
   obtain ⟨av, bv, rest, hwstack, hws_eq⟩ := binI32_some_shape hw
@@ -766,7 +809,7 @@ theorem preservation_i32Bin_generic
   · subst hops_eq
     simp [evalOps, Quanta.KOps.evalOp, hra_enc, hrb_enc, h_agree]
   · subst hs_eq; subst hws_eq
-    refine ⟨?_, ?_, ?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
     · -- Stack refinement.
       refine ⟨?_, ?_⟩
       · -- Length: rest.length = lrest.length (from old R.stk on the
@@ -913,11 +956,11 @@ theorem preservation_i32Cmp_generic
        Quanta.KOps.evalCmpOp op_k (vU32 av) (vU32 bv)
          = some (Quanta.KOps.Value.vBool (p_w av bv)))
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (R : Refines ws s kst) (h_kst_ok : kst.broke = false)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws instr = some ws')
     (hl : lowerInstr s instr = some (s', ops)) :
-    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   rw [h_w] at hw
   rw [h_l] at hl
   obtain ⟨av, bv, rest, hwstack, hws_eq⟩ := cmpI32_some_shape hw
@@ -967,7 +1010,7 @@ theorem preservation_i32Cmp_generic
         WasmValue.encodes_preserved_of_fresh
           (fun r hr => Nat.lt_succ_of_lt (h_lt r hr))
           (WasmValue.encodes_preserved_of_fresh h_lt henc)
-    refine ⟨?_, ?_, ?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
     · -- Stack refinement.
       refine ⟨?_, ?_⟩
       · -- Length: rest.length = lrest.length (from old R.stk on the
@@ -1087,12 +1130,12 @@ open Quanta.KOps (vU32) in
     so the inter-op short-circuit doesn't fire and we don't need
     `kst.broke = false`. -/
 theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (R : Refines ws s kst)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
     (i : Nat)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws (.localSet i) = some ws')
     (hl : lowerInstr s (.localSet i) = some (s', ops)) :
-    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   -- WASM side: pop v_w from ws.stack, then setLocal i v_w.
   simp only [evalInstr, WasmState.pop,
              Option.bind_eq_bind, Option.bind, pure] at hw
@@ -1144,7 +1187,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · subst hops_eq
         simp [evalOps, Quanta.KOps.evalOp, hsrc_lookup]
       · subst hs_eq
-        refine ⟨?_, ?_, ?_, ?_, ?_⟩
+        refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
         · -- StackRefines: ws'.stack = rest, s'.stack = lrest. Lift each
           -- entry past the fresh write at s.nextReg.
           refine ⟨?_, ?_⟩
@@ -1286,7 +1329,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             simp [hentry_fst]
           rw [← this]; exact hentry_in
         have hdst_lt : entry.snd < s.nextReg := R.fresh.right entry hentry_in
-        refine ⟨?_, ?_, ?_, ?_, ?_⟩
+        refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
         · -- StackRefines: lift past regWrite at entry.snd (a stable_reg, disjoint by AliasFree).
           refine ⟨?_, ?_⟩
           · have hl_orig := R.stk.left
@@ -1412,12 +1455,12 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
 open Quanta.KOps (vU32) in
 /-- `local.tee i` preservation. -/
 theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
-    (R : Refines ws s kst) (h_kst_ok : kst.broke = false)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
     (i : Nat)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws (.localTee i) = some ws')
     (hl : lowerInstr s (.localTee i) = some (s', ops)) :
-    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   -- WASM side: pop v_w, setLocal i v_w (on the popped state), push v_w back.
   simp only [evalInstr, WasmState.pop, WasmState.push,
              Option.bind_eq_bind, Option.bind, pure] at hw
@@ -1467,7 +1510,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         simp [evalOps, Quanta.KOps.evalOp, hsrc_lookup, regLookup_regWrite_self,
               h_kst_ok]
       · subst hs_eq
-        refine ⟨?_, ?_, ?_, ?_, ?_⟩
+        refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
         · -- StackRefines.
           refine ⟨?_, ?_⟩
           · have hl_orig := R.stk.left
@@ -1616,7 +1659,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             simp at hentry_fst; simp [hentry_fst]
           rw [← this]; exact hentry_in
         have hdst_lt : entry.snd < s.nextReg := R.fresh.right entry hentry_in
-        refine ⟨?_, ?_, ?_, ?_, ?_⟩
+        refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
         · -- StackRefines.
           refine ⟨?_, ?_⟩
           · have hl_orig := R.stk.left
