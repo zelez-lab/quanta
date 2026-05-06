@@ -33,67 +33,61 @@ Refinement structure:
 
 ## What ships now (slices 1 + 2 + 3 + slice-4 stack-type cascade
    + popSym/commit unification + slice-4 step 7 translator arms
-   + slice-4 step 8 buffer-typed `localGet` preservation)
+   + slice-4 step 8 buffer-pattern preservation through `i32.load`)
 
 * The full refinement bundle (`Refines` = stack + locals + freshness +
   alias-free + injective-locals + heap). `WasmValue.encodes` now takes
-  `BufferLayout` and has a `bufferPtr` arm: `wI32 n` encodes via
-  `.bufferPtr slot` when `n.toNat = layout.startAddr slot`.
+  `BufferLayout` with three address-SymVal arms:
+  - `wI32 n ↔ .bufferPtr slot` when `n.toNat = layout.startAddr slot`.
+  - `wI32 n ↔ .scaledIdx base scale` when `∃ b, regLookup rf base =
+    some (vU32 b) ∧ n.toNat = b.toNat * scale`.
+  - `wI32 n ↔ .bufferAccess slot base scale` when `∃ b, regLookup rf
+    base = some (vU32 b) ∧ n.toNat = layout.startAddr slot + b.toNat
+    * scale`. The Nat-equation form refuses overflow on the address
+    arithmetic.
 * Register-file lemmas: `regLookup_regWrite_self`,
-  `regLookup_regWrite_of_ne` (closed via `find?_pred_eq` induction),
-  `regLookup_preserved_of_fresh`.
+  `regLookup_regWrite_of_ne`, `regLookup_preserved_of_fresh`.
 * Encoding-lifting lemmas: `encodes_preserved_of_fresh`,
-  `encodes_preserved_of_disjoint`, `encodes_preserved_of_lookup_eq`.
-* `commit_correct` + five sibling helpers (`commit_only_bumps_nextReg`,
-  `commit_preserves_stack` / `_locals` / `_broke` /
-  `_bufferSlots`) — every popping arm applies `commit_correct` to the
-  popped SymVal and threads encodings through the regfile evolution.
-* `evalOps_append` for chaining `opsCommit ++ [op_main]` evaluations
-  past `broke` short-circuits.
-* Shape-extraction helpers: `binI32_some_shape`, `cmpI32_some_shape`,
+  `encodes_preserved_of_disjoint`, `encodes_preserved_of_lookup_eq`,
+  plus inversion lemmas (`encodes_wI32_reg_inv`, `encodes_reg_shape`,
+  `encodes_i32ConstSym_inv`, `encodes_bufferAccess_wI32_inv`).
+* `commit_correct` + five sibling helpers.
+* `evalOps_append` for chaining op-list evaluations past broke flags.
+* Shape lemmas: `binI32_some_shape`, `cmpI32_some_shape`,
   `lowerI32Bin_some_shape`, `lowerI32Cmp_some_shape`.
-* Generic binop preservation `preservation_i32Bin_generic` (per-state
-  `h_l`) + 10 specializations; generic cmp `preservation_i32Cmp_generic`
-  + 6 specializations.
+* Generic binop / cmp preservation theorems (per-state `h_l`).
 * Closed per-instruction theorems:
-  - `preservation_nop`
-  - `preservation_return`
-  - `preservation_i32Const`
-  - `preservation_localGet` (precondition: `s.lookupBufferSlot i = none`)
-  - `preservation_localGet_bufferSlot` (precondition:
-    `s.lookupBufferSlot i = some slot` AND the WASM local matches
-    `layout.startAddr slot`; the per-call `h_loc_buf` will be
-    discharged at kernel-entry by the future composition theorem)
-  - `preservation_localSet`
-  - `preservation_localTee`
-  - `preservation_i32{Add,Shl}` (precondition: stack does not match the
-    buffer-pattern shape — folded path lands in step 8)
+  - `preservation_nop`, `preservation_return`, `preservation_i32Const`
+  - `preservation_localGet` (precondition: not buffer slot)
+  - `preservation_localGet_bufferSlot` (buffer-typed; `HeapRefines`
+    not yet consumed — bufferPtr push only)
+  - `preservation_localSet`, `preservation_localTee`
+  - `preservation_i32{Add,Shl}` (precondition: stack not buffer-pattern)
   - `preservation_i32{Sub,Mul,And,Or,Xor,ShrU,DivU,RemU}`
   - `preservation_i32{Eq,Ne,LtU,LeU,GtU,GeU}`
+  - `preservation_i32Shl_bufferPattern` (folded `scaledIdx`)
+  - `preservation_i32Add_bufferPattern_{scaledFirst,ptrFirst}`
+    (folded `bufferAccess`)
+  - `preservation_i32Load` (folded typed Load — first use of
+    `HeapRefines`)
 
-That's **23 closed preservation theorems** (the new
-`preservation_localGet_bufferSlot` joins the existing 22). Slice 4
-step 7 added the translator's buffer-pattern fast-paths
-(`lowerI32Add`, `lowerI32Shl`, `lowerI32Load`, `lowerI32Store`) plus
-the `bufferSlots` field on `LowerState` for buffer-typed `localGet`.
-Slice 4 step 8 starts with the simplest of those paths: the buffer-
-typed `localGet` (no IR, no register, just push `bufferPtr`
-symbolically). The remaining folded paths (`scaledIdx`,
-`bufferAccess`, typed `Load`/`Store`) need encoding arms for
-`scaledIdx` / `bufferAccess` plus the first uses of `HeapRefines`.
+That's **27 closed preservation theorems**, 0 sorries, 0 new TCB
+axioms. Slice 4 step 7 (translator arms) and step 8 (preservation
+through `i32.load`) ship complete. The only remaining buffer-pattern
+op is `i32.store`, which requires:
+* Two TCB axioms about WasmMem byte load/store roundtrip
+  (`store_load_same`, `store_load_disjoint`) — well-known WASM spec
+  facts; mechanical to verify but tedious to mechanize.
+* `heapLookup_heapStore_self` / `_other` helper lemmas in
+  `KOps.Semantics`.
+* Layout no-overlap precondition.
+* ~150-line preservation proof.
 
 ## What's next
 
-**Slice 4 step 8 — remaining buffer-pattern preservations**:
-* `preservation_i32Shl_bufferPattern` — `<reg> <i32ConstSym k>` folds
-  to `scaledIdx`; encoding requires `wI32 n ↔ .scaledIdx base scale`
-  via `n.toNat = (lookup base).toNat * scale`.
-* `preservation_i32Add_bufferPattern` (both orders) — `<bufferPtr>
-  <scaledIdx>` folds to `bufferAccess`; encoding requires `wI32 n ↔
-  .bufferAccess slot base scale` via the address-arithmetic identity.
-* `preservation_i32Load` and `preservation_i32Store` — typed memory
-  ops against `bufferAccess` use `HeapRefines` for the first time
-  to bridge the byte-level WASM memory to the typed KOps heap.
+**Slice 4 step 8 close — `preservation_i32Store`**: combine the items
+above. Once landed, the entire buffer-pattern recognition chain
+(localGet → shl → add → load/store) is preserved end-to-end.
 
 **Slice 5** — control flow: frame reflection in `LowerState`;
 proofs for `block`, `loop`, `if`/`else`, `br`, `br_if`, plus the
