@@ -1912,6 +1912,171 @@ theorem preservation_i32Add_bufferPattern_ptrFirst
           rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
         exact R.aliasFree ir hir sv hsv_in_s
 
+/-- Inversion for `bufferAccess` encoding: the encoded WASM value
+    must be `wI32` (every other constructor encodes to `False`). -/
+theorem WasmValue.encodes_bufferAccess_wI32_inv
+    {v : WasmValue} {layout : BufferLayout} {rf : Quanta.KOps.RegFile}
+    {slot : Nat} {base : Reg} {scale : Nat}
+    (h : v.encodes layout rf (.bufferAccess slot base scale)) :
+    ∃ n : UInt32, v = .wI32 n := by
+  cases v with
+  | wI32 n => exact ⟨n, rfl⟩
+  | wI64 _ => simp [WasmValue.encodes] at h
+  | wF32 _ => simp [WasmValue.encodes] at h
+  | wF64 _ => simp [WasmValue.encodes] at h
+
+/-- `i32.load` preservation against a recognized `bufferAccess` shape.
+    The lowering allocates a fresh register and emits
+    `KernelOp.load dst slot base .u32`. KOps eval reads
+    `heapLookup heap slot b.toNat` (where `b = regLookup base`); WASM
+    eval reads `mem.load_u32 (addr.toNat + offset)`. `HeapRefines`
+    bridges them: when `b.toNat < layout.length slot`, both reads
+    return the same `vU32 n`.
+
+    Preconditions:
+    * `h_offset` — the WASM `offset` immediate is zero. Production
+      ignores `offset` in the buffer-access arm because rustc folds
+      memory offsets into the byte-offset arithmetic before the
+      `i32.load`; this proof faithfully assumes that fold.
+    * `h_in_bounds` — for any `b` matching the base reg's value,
+      `b.toNat < layout.length slot`. This bounds the heap/memory
+      access; outside the layout's length, `HeapRefines` doesn't
+      relate the two views. Future kernel-entry composition theorem
+      will discharge it from the kernel's array bounds. -/
+theorem preservation_i32Load
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
+    (slot : Nat) (base : Reg) (rest : List SymVal)
+    (offset align : Nat)
+    (h_stack : s.stack = .bufferAccess slot base 4 :: rest)
+    (h_offset : offset = 0)
+    (h_in_bounds : ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       b.toNat < layout.length slot)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws (.i32Load offset align) = some ws')
+    (hl : lowerInstr s (.i32Load offset align) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- 1. Reduce hl using h_stack.
+  have hl_reduced : lowerInstr s (.i32Load offset align) =
+      some ({ s with nextReg := s.nextReg + 1,
+                     stack := .reg s.nextReg .u32 :: rest },
+             [.load s.nextReg slot base .u32]) := by
+    show lowerI32Load s = _
+    unfold lowerI32Load
+    rw [h_stack]
+    rfl
+  rw [hl_reduced] at hl
+  obtain ⟨hs_eq, hops_eq⟩ :=
+    Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp hl)
+  -- 2. Reduce hw via loadI32.
+  have hw' : loadI32 ws offset = some ws' := hw
+  unfold loadI32 at hw'
+  -- ws.stack must be vaddr :: ws_rest.
+  rcases hws : ws.stack with _ | ⟨vaddr, ws_rest⟩
+  · simp [hws, WasmState.pop] at hw'
+  simp [hws, WasmState.pop] at hw'
+  -- 3. Derive bufferAccess encoding for vaddr from R.stk; vaddr must be wI32.
+  have h_stk0 := R.stk.right 0 vaddr (by rw [hws]; simp)
+  obtain ⟨sv0, hsv0_get, henc0⟩ := h_stk0
+  have hs0_eq : s.stack.get? 0 = some (.bufferAccess slot base 4) := by
+    rw [h_stack]; simp
+  rw [hs0_eq] at hsv0_get
+  have hsv0_eq : sv0 = .bufferAccess slot base 4 :=
+    ((Option.some.injEq _ _).mp hsv0_get).symm
+  rw [hsv0_eq] at henc0
+  -- vaddr must be wI32 by encodes_bufferAccess_wI32_inv.
+  obtain ⟨addr_w, h_vaddr_eq⟩ := WasmValue.encodes_bufferAccess_wI32_inv henc0
+  subst h_vaddr_eq
+  -- Now henc0 : (wI32 addr_w).encodes layout kst.rf (.bufferAccess slot base 4)
+  --          = ∃ b, regLookup kst.rf base = some (vU32 b) ∧ addr_w.toNat = layout.startAddr slot + b.toNat * 4.
+  obtain ⟨b, h_lookup_b, h_addr_eq⟩ := henc0
+  -- 4. Reduce hw' fully using addr_w being wI32.
+  simp at hw'
+  rcases hmem : (ws.mem.load_u32 (addr_w.toNat + offset)) with _ | n
+  · simp [hmem] at hw'
+  simp [hmem, WasmState.push] at hw'
+  -- hw' : ws' = { ws with stack := wI32 n :: ws_rest }.
+  -- 5. From HeapRefines + in-bounds, get the heap/mem agreement.
+  obtain ⟨nh, h_heap_lookup, h_mem_load⟩ :=
+    R.heapRefines slot b.toNat (h_in_bounds b h_lookup_b)
+  have h_addr_total : addr_w.toNat + offset = layout.startAddr slot + b.toNat * 4 := by
+    rw [h_offset, h_addr_eq, Nat.add_zero]
+  have h_mem_eq : ws.mem.load_u32 (addr_w.toNat + offset) = some nh := by
+    rw [h_addr_total]; exact h_mem_load
+  have h_n_eq : n = nh := by
+    rw [h_mem_eq] at hmem
+    exact ((Option.some.injEq _ _).mp hmem).symm
+  -- 6. Compute kst' via the load op. Use vU32 nh (the heap's value);
+  -- the StackRefines proof bridges to wI32 n via h_n_eq.
+  refine ⟨{ kst with rf := regWrite kst.rf s.nextReg (Quanta.KOps.Value.vU32 nh) }, ?_, ?_⟩
+  · rw [← hops_eq]
+    simp [evalOps, Quanta.KOps.evalOp, h_lookup_b, h_heap_lookup]
+  · rw [← hs_eq]; rw [← hw']
+    refine ⟨?_, ?_, ?_, ?_, R.injLocals, ?_⟩
+    · -- StackRefines: top wI32 n ↔ .reg s.nextReg .u32; tail past fresh write.
+      refine ⟨?_, ?_⟩
+      · have hlen := R.stk.left
+        rw [h_stack, hws] at hlen
+        simp at hlen
+        simp; exact hlen
+      · intro j vj hvj
+        cases j with
+        | zero =>
+          simp at hvj; subst hvj
+          refine ⟨.reg s.nextReg .u32, by simp, ?_⟩
+          show regLookup (regWrite kst.rf s.nextReg (Quanta.KOps.Value.vU32 nh)) s.nextReg
+                 = some (Quanta.KOps.Value.vU32 n)
+          rw [h_n_eq]
+          simp [regLookup_regWrite_self]
+        | succ j' =>
+          have hwsk : ws.stack.get? (j' + 1) = some vj := by
+            rw [hws]; simpa using hvj
+          obtain ⟨svk, hsvk, henck⟩ := R.stk.right (j' + 1) vj hwsk
+          have hsk : s.stack.get? (j' + 1) = some svk := hsvk
+          rw [h_stack] at hsk
+          simp at hsk
+          refine ⟨svk, by simpa using hsk, ?_⟩
+          have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk
+          apply WasmValue.encodes_preserved_of_fresh _ henck
+          intro r' hr'
+          exact R.fresh.left svk hsvk_in r' hr'
+    · -- LocalsRefines: localReg unchanged; lift past fresh write.
+      intro k r hfind v hv
+      have hpair : (k, r) ∈ s.localReg := List.mem_of_find?_eq_some hfind
+      have hr_lt : r < s.nextReg := R.fresh.right (k, r) hpair
+      have henc := R.locs k r hfind v hv
+      apply WasmValue.encodes_preserved_of_fresh _ henc
+      intro r' hr'_in
+      simp [SymVal.regs] at hr'_in
+      subst hr'_in; exact hr_lt
+    · -- Fresh: nextReg bumps by 1; new top is .reg s.nextReg .u32; rest ⊆ s.stack.
+      refine ⟨?_, ?_⟩
+      · intro sv hsv r' hr'
+        simp at hsv
+        rcases hsv with h_eq | h_in
+        · subst h_eq
+          simp [SymVal.regs] at hr'
+          subst hr'; exact Nat.lt_succ_self _
+        · have hsv_in : sv ∈ s.stack := by
+            rw [h_stack]; exact List.mem_cons_of_mem _ h_in
+          exact Nat.lt_succ_of_lt (R.fresh.left sv hsv_in r' hr')
+      · intro ir hir
+        exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
+    · -- AliasFree: new top has regs = [s.nextReg]; fresh ≠ any stable_reg.
+      intro ir hir sv hsv
+      have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        simp [SymVal.regs]
+        exact Nat.ne_of_lt hir_lt
+      · have hsv_in : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ h_in
+        exact R.aliasFree ir hir sv hsv_in
+    · -- HeapRefines: heap unchanged; mem unchanged.
+      exact R.heapRefines
+
 -- ════════════════════════════════════════════════════════════════════
 -- Generic i32 comparison preservation (instantiates for the 6-op family)
 --
