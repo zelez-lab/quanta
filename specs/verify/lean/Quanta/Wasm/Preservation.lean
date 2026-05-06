@@ -43,22 +43,19 @@ Refinement structure:
   - `preservation_i32Const`
   - `preservation_localGet`
   - `preservation_i32{Add,Sub,Mul,And,Or,Xor,Shl,ShrU,DivU,RemU}`
+  - `preservation_i32{Eq,Ne,LtU,LeU,GtU,GeU}`
 
-That's **14 closed preservation theorems**. The four archetypes —
+That's **20 closed preservation theorems**. The five archetypes —
 empty-emit no-state-change (`nop`), empty-emit halted-flag (`wreturn`),
 single-op fresh-write (`i32Const`), no-op stack-push (`localGet`),
-plus the **two-pop one-fresh-write binop** archetype (`i32Bin`) — now
-all have at least one closed instance. Every remaining op outside
-slices 4+ rides on these archetypes.
+the **two-pop one-fresh-write binop** archetype (`i32Bin`), and the
+**two-pop two-op cmp+cast** archetype (`i32Cmp`, requires
+`kst.broke = false`) — now all have at least one closed instance.
+Every remaining op outside slices 4+ rides on these archetypes.
 
 ## What's next
 
 **Slice 3 follow-ups still open** (deferred to slice 4 entry):
-* i32-comparison family — needs a generalized `WasmValue.encodes`
-  that recognizes `wI32 0/1` ↔ `vBool b`. WASM's i32-encoded booleans
-  don't match KOps's native `Value.vBool` shape; production handles
-  this via a Bool→U32 cast in `commit` when a bool-typed reg flows
-  into arithmetic. The Lean port should mirror that.
 * `localSet`/`localTee` — alias-free invariant is now baked into
   `Refines.aliasFree`, and the Lean translator's `localGet`/`localTee`
   allocate fresh registers + Copy to break aliasing. The remaining
@@ -612,16 +609,21 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
     | i32ConstSym _        => simp [hs, LowerState.pop] at h
     | bufferAccess _ _ _   => simp [hs, LowerState.pop] at h
 
-/-- Same shape for `lowerI32Cmp`. -/
+/-- Shape for `lowerI32Cmp`. The lowering emits TWO ops — `cmp` writing
+    a vBool to `s.nextReg`, then `cast` lifting that vBool back into
+    the u32 alphabet at `s.nextReg + 1`. The pushed slot is the cast's
+    destination, typed `.u32` (matching every other value-producing
+    arm). -/
 theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
     {ops : List KernelOp} (h : lowerI32Cmp s cop = some (s', ops)) :
     ∃ ra rb tya tyb lrest,
       s.stack = SymVal.reg rb tyb :: SymVal.reg ra tya :: lrest ∧
-      s' = { nextReg := s.nextReg + 1,
-             stack := SymVal.reg s.nextReg .u32 :: lrest,
+      s' = { nextReg := s.nextReg + 2,
+             stack := SymVal.reg (s.nextReg + 1) .u32 :: lrest,
              localReg := s.localReg,
              localTy := s.localTy } ∧
-      ops = [.cmp s.nextReg ra rb cop .u32] := by
+      ops = [.cmp s.nextReg ra rb cop .bool,
+             .cast (s.nextReg + 1) s.nextReg .bool .u32] := by
   unfold lowerI32Cmp at h
   rcases hs : s.stack with _ | ⟨svb, srest⟩
   · simp [hs, LowerState.pop] at h
@@ -634,7 +636,8 @@ theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
           simp [hs, hsr, LowerState.pop, LowerState.alloc, LowerState.push] at h
           obtain ⟨hs', hops'⟩ := h
           refine ⟨ra, rb, tya, tyb, lrest, rfl, ?_, hops'.symm⟩
-          exact hs'.symm
+          -- s' fields agree after two `alloc`s and one `push`.
+          rw [← hs']
         | bufferPtr _          => simp [hs, hsr, LowerState.pop] at h
         | scaledIdx _ _        => simp [hs, hsr, LowerState.pop] at h
         | i32ConstSym _        => simp [hs, hsr, LowerState.pop] at h
@@ -823,11 +826,194 @@ def preservation_i32RemU :=
     (by intro av bv; rfl)
 
 -- ════════════════════════════════════════════════════════════════════
+-- Generic i32 comparison preservation (instantiates for the 6-op family)
+--
+-- Mirrors `preservation_i32Bin_generic` but the lowering emits TWO
+-- ops — `.cmp` (vBool result at `s.nextReg`) followed by
+-- `.cast .bool .u32` (vU32 0/1 at `s.nextReg + 1`). The two-op
+-- `evalOps` requires `kst.broke = false` so the inter-op short-circuit
+-- doesn't fire; binops only emit one op so they didn't need this.
+-- ════════════════════════════════════════════════════════════════════
+
+open Quanta.KOps (vU32) in
+/-- Generic preservation for any WASM i32 comparison the lowering pass
+    handles. Takes:
+    * `instr`    — the WASM instruction.
+    * `p_w`      — the u32 → u32 → Bool predicate the WASM semantics dispatches.
+    * `op_k`     — the matching `KOps.CmpOp` the lowering emits.
+    * `h_w`      — `evalInstr s instr = cmpI32 p_w s` (by rfl per-arm).
+    * `h_l`      — `lowerInstr s instr = lowerI32Cmp s op_k` (by rfl).
+    * `h_agree`  — KOps `evalCmpOp op_k (vU32 av) (vU32 bv) = some (vBool (p_w av bv))`.
+
+    Each of the 6 i32-cmp preservation theorems below is one line. -/
+theorem preservation_i32Cmp_generic
+    (instr : WasmInstr) (p_w : UInt32 → UInt32 → Bool)
+    (op_k : Quanta.KOps.CmpOp)
+    (h_w : ∀ s, evalInstr s instr = cmpI32 p_w s)
+    (h_l : ∀ s, lowerInstr s instr = lowerI32Cmp s op_k)
+    (h_agree : ∀ av bv,
+       Quanta.KOps.evalCmpOp op_k (vU32 av) (vU32 bv)
+         = some (Quanta.KOps.Value.vBool (p_w av bv)))
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (R : Refines ws s kst) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws instr = some ws')
+    (hl : lowerInstr s instr = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' := by
+  rw [h_w] at hw
+  rw [h_l] at hl
+  obtain ⟨av, bv, rest, hwstack, hws_eq⟩ := cmpI32_some_shape hw
+  obtain ⟨ra, rb, tya, tyb, lrest, hlstack, hs_eq, hops_eq⟩ := lowerI32Cmp_some_shape hl
+  -- Operand encodings — same shape ladder as the binop generic.
+  have hrb_enc : regLookup kst.rf rb = some (vU32 bv) := by
+    have hb := R.stk.right 0 (.wI32 bv) (by rw [hwstack]; simp)
+    obtain ⟨sv0, hsv0_get, henc⟩ := hb
+    have hs0 : s.stack.get? 0 = some (SymVal.reg rb tyb) := by rw [hlstack]; simp
+    rw [hs0] at hsv0_get
+    have h_eq : SymVal.reg rb tyb = sv0 := (Option.some.injEq _ _).mp hsv0_get
+    subst h_eq
+    cases tyb <;> simp only [WasmValue.encodes] at henc <;>
+      first | exact henc | exact henc.elim
+  have hra_enc : regLookup kst.rf ra = some (vU32 av) := by
+    have ha := R.stk.right 1 (.wI32 av) (by rw [hwstack]; simp)
+    obtain ⟨sv1, hsv1_get, henc⟩ := ha
+    have hs1 : s.stack.get? 1 = some (SymVal.reg ra tya) := by rw [hlstack]; simp
+    rw [hs1] at hsv1_get
+    have h_eq : SymVal.reg ra tya = sv1 := (Option.some.injEq _ _).mp hsv1_get
+    subst h_eq
+    cases tya <;> simp only [WasmValue.encodes] at henc <;>
+      first | exact henc | exact henc.elim
+  -- Final kst' has both writes applied: vBool at nextReg (transient),
+  -- vU32 (if p_w av bv then 1 else 0) at nextReg + 1.
+  refine ⟨{ kst with rf :=
+              regWrite (regWrite kst.rf s.nextReg
+                          (Quanta.KOps.Value.vBool (p_w av bv)))
+                        (s.nextReg + 1)
+                        (vU32 (if p_w av bv then 1 else 0)) }, ?_, ?_⟩
+  · subst hops_eq
+    simp [evalOps, Quanta.KOps.evalOp, hra_enc, hrb_enc, h_agree,
+          regLookup_regWrite_self, Quanta.KOps.evalCast, h_kst_ok]
+  · subst hs_eq; subst hws_eq
+    -- Helper: lift any encoding past the two fresh writes (nextReg
+    -- and nextReg+1), provided the encoding's regs are all < nextReg.
+    -- Stated as a universally-quantified function so each clause can
+    -- discharge its preservation obligation in one application.
+    let h_lift : ∀ (sv : SymVal) (v : WasmValue),
+        (∀ r ∈ sv.regs, r < s.nextReg) →
+        v.encodes kst.rf sv →
+        v.encodes (regWrite (regWrite kst.rf s.nextReg
+                              (Quanta.KOps.Value.vBool (p_w av bv)))
+                            (s.nextReg + 1)
+                            (Quanta.KOps.Value.vU32 (if p_w av bv then 1 else 0))) sv :=
+      fun sv v h_lt henc =>
+        WasmValue.encodes_preserved_of_fresh
+          (fun r hr => Nat.lt_succ_of_lt (h_lt r hr))
+          (WasmValue.encodes_preserved_of_fresh h_lt henc)
+    refine ⟨?_, ?_, ?_, ?_, ?_⟩
+    · -- Stack refinement.
+      refine ⟨?_, ?_⟩
+      · -- Length: rest.length = lrest.length (from old R.stk on the
+        -- 2-deep stacks).
+        have hl_orig := R.stk.left
+        rw [hwstack, hlstack] at hl_orig
+        simpa using hl_orig
+      · intro j v hv
+        cases j with
+        | zero =>
+          -- Top: WASM v = wI32 (if p_w av bv then 1 else 0); SymVal = .reg (nextReg+1) .u32.
+          simp at hv
+          refine ⟨SymVal.reg (s.nextReg + 1) .u32, by simp, ?_⟩
+          subst hv
+          simp [WasmValue.encodes, regLookup_regWrite_self]
+          rfl
+        | succ k =>
+          -- Below the top: lift IH StackRefines past the two writes.
+          have hrest_get : ws.stack.get? (k + 2) = some v := by
+            rw [hwstack]; simpa using hv
+          obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right (k + 2) v hrest_get
+          have hlrest_get : lrest.get? k = some svk := by
+            have h2 : s.stack.get? (k + 2) = some svk := hsvk_get
+            rw [hlstack] at h2; simpa using h2
+          refine ⟨svk, by simpa using hlrest_get, ?_⟩
+          have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk_get
+          exact h_lift svk v (fun r hr => R.fresh.left svk hsvk_in r hr) henc
+    · -- Locals refinement.
+      intro i r hfind v hv
+      have hpair : (i, r) ∈ s.localReg := List.mem_of_find?_eq_some hfind
+      have hr_lt : r < s.nextReg := R.fresh.right (i, r) hpair
+      have henc := R.locs i r hfind v hv
+      apply h_lift _ _ _ henc
+      intro r' hr'_in
+      simp [SymVal.regs] at hr'_in
+      subst hr'_in; exact hr_lt
+    · -- Freshness: nextReg bumps by 2; new top reg = nextReg + 1; lrest ⊆ s.stack.
+      refine ⟨?_, ?_⟩
+      · intro sv hsv r' hr'
+        simp at hsv
+        rcases hsv with h_eq | h_in
+        · subst h_eq
+          simp [SymVal.regs] at hr'
+          subst hr'
+          exact Nat.lt_succ_self _
+        · have hsv_in : sv ∈ s.stack := by
+            rw [hlstack]; simp; right; right; exact h_in
+          have : r' < s.nextReg := R.fresh.left sv hsv_in r' hr'
+          exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt this)
+      · intro ir hir
+        have : ir.snd < s.nextReg := R.fresh.right ir hir
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt this)
+    · -- AliasFree: localReg unchanged; new stack drops top 2 + adds
+      -- .reg (nextReg+1) .u32. Stable_regs are < nextReg < nextReg+1.
+      intro ir hir sv hsv
+      have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        simp [SymVal.regs]
+        exact Nat.ne_of_lt (Nat.lt_succ_of_lt hir_lt)
+      · have hsv_in : sv ∈ s.stack := by
+          rw [hlstack]; simp; right; right; exact h_in
+        exact R.aliasFree ir hir sv hsv_in
+    · -- InjectiveLocals: localReg unchanged.
+      exact R.injLocals
+
+-- ── Per-op specializations (6 cmps) ────────────────────────────────────
+
+def preservation_i32Eq :=
+  preservation_i32Cmp_generic .i32Eq (· == ·) .eq
+    (fun _ => rfl) (fun _ => rfl)
+    (by intro av bv; rfl)
+
+def preservation_i32Ne :=
+  preservation_i32Cmp_generic .i32Ne (· != ·) .ne
+    (fun _ => rfl) (fun _ => rfl)
+    (by intro av bv; rfl)
+
+def preservation_i32LtU :=
+  preservation_i32Cmp_generic .i32LtU (· < ·) .lt
+    (fun _ => rfl) (fun _ => rfl)
+    (by intro av bv; rfl)
+
+def preservation_i32LeU :=
+  preservation_i32Cmp_generic .i32LeU (· <= ·) .le
+    (fun _ => rfl) (fun _ => rfl)
+    (by intro av bv; rfl)
+
+def preservation_i32GtU :=
+  preservation_i32Cmp_generic .i32GtU (· > ·) .gt
+    (fun _ => rfl) (fun _ => rfl)
+    (by intro av bv; rfl)
+
+def preservation_i32GeU :=
+  preservation_i32Cmp_generic .i32GeU (· >= ·) .ge
+    (fun _ => rfl) (fun _ => rfl)
+    (by intro av bv; rfl)
+
+-- ════════════════════════════════════════════════════════════════════
 -- Slice 3 follow-up status
 --
--- The `Refines.injLocals` invariant is now in place (this commit),
--- bringing the bundle to the 5 clauses needed for `localSet` /
--- `localTee` preservation:
+-- The `Refines.injLocals` invariant is in place, bringing the bundle
+-- to the 5 clauses needed for `localSet` / `localTee` preservation:
 --
 --   * stk        — stack encoding refinement
 --   * locs       — locals encoding refinement
@@ -835,8 +1021,8 @@ def preservation_i32RemU :=
 --   * aliasFree  — no stable_reg appears on the symbolic stack
 --   * injLocals  — distinct local indices map to distinct stable_regs
 --
--- All 14 closed per-instr theorems (nop, return, i32Const, localGet,
--- 10 binops) now produce a Refines bundle with all 5 clauses.
+-- All 20 closed per-instr theorems (nop, return, i32Const, localGet,
+-- 10 binops, 6 cmps) produce a Refines bundle with all 5 clauses.
 --
 -- The `preservation_localSet` and `preservation_localTee` theorems
 -- themselves are deferred to slice 4 entry. The blocker is only proof

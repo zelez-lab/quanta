@@ -168,15 +168,24 @@ def lowerI32Bin (s : LowerState) (op : BinOp) : Option (LowerState × List Kerne
   let s4 := s3.push dst
   pure (s4, [.binOp dst a b op .u32])
 
-/-- Lower a single i32 comparison: pops two regs, allocates a result
-    reg, emits the comparison; the result is bool-typed but pushed
-    as-is — KOps `cmp` already produces a bool register. -/
+/-- Lower a single i32 comparison. KOps `Cmp` produces a `vBool`, but
+    WASM's `i32.{eq,ne,lt,le,gt,ge}` push an `wI32 0/1` — so we emit
+    `Cmp` followed by a `Cast bool→u32` to re-enter the u32 alphabet
+    before the value flows back onto the stack as `.reg _ .u32`.
+
+    Production's lowering pushes a `.reg _ .bool` slot and casts at
+    consume-time via `commit()`. The Lean port casts eagerly here to
+    keep `WasmValue.encodes` single-shape (always `.u32`) and avoid a
+    cascade through every existing per-op preservation proof. The
+    end-to-end IR shape is identical (cmp + cast); only the placement
+    of the cast in the lowering pass differs. -/
 def lowerI32Cmp (s : LowerState) (op : CmpOp) : Option (LowerState × List KernelOp) := do
   let (b, s1) ← s.pop
   let (a, s2) ← s1.pop
-  let (dst, s3) := s2.alloc
-  let s4 := s3.push dst
-  pure (s4, [.cmp dst a b op .u32])
+  let (boolReg, s3) := s2.alloc
+  let (dst, s4) := s3.alloc
+  let s5 := s4.push dst
+  pure (s5, [.cmp boolReg a b op .bool, .cast dst boolReg .bool .u32])
 
 /-- Lower one WASM instruction. Returns the new state and the emitted
     KOps. `none` for ops outside the subset (matches the production

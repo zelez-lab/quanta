@@ -215,13 +215,20 @@ def evalCmpOp : CmpOp → Value → Value → Option Value
     inferable from the runtime value. -/
 def evalCast (v : Value) : Scalar → Option Value
   | .u32  => match v with
-      | .vU32 n => some (vU32 n)
-      | .vI32 n => some (vU32 (UInt32.ofNat n.toNat))
-      | _       => none
+      | .vU32 n  => some (vU32 n)
+      | .vI32 n  => some (vU32 (UInt32.ofNat n.toNat))
+      -- Bool→U32: WASM encodes booleans as i32 0/1. The WASM-route
+      -- translator emits `Cmp ; Cast bool→u32` so the cmp result re-
+      -- enters the u32 arithmetic alphabet immediately. The Rust
+      -- `bool as u32` lowering matches: `false → 0`, `true → 1`.
+      | .vBool b => some (vU32 (if b then 1 else 0))
+      | _        => none
   | .i32  => match v with
-      | .vI32 n => some (vI32 n)
-      | .vU32 n => some (vI32 n.toNat)
-      | _       => none
+      | .vI32 n  => some (vI32 n)
+      | .vU32 n  => some (vI32 n.toNat)
+      -- Bool→I32 added for symmetry with Bool→U32; same numeric mapping.
+      | .vBool b => some (vI32 (if b then 1 else 0))
+      | _        => none
   | .bool => match v with
       | .vBool b => some (vBool b)
       | _        => none
