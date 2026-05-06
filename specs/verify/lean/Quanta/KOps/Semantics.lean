@@ -82,6 +82,73 @@ def heapLookup (h : Heap) (slot idx : Nat) : Option Value :=
 def heapStore (h : Heap) (slot idx : Nat) (v : Value) : Heap :=
   ((slot, idx), v) :: h.filter (fun p => p.fst ≠ (slot, idx))
 
+/-- A `heapStore` at `(slot, idx)` makes the lookup at the same key
+    return the stored value. Direct from the head-of-list structure. -/
+@[simp] theorem heapLookup_heapStore_self
+    (h : Heap) (slot idx : Nat) (v : Value) :
+    heapLookup (heapStore h slot idx v) slot idx = some v := by
+  unfold heapLookup heapStore
+  simp [List.find?]
+
+/-- For an association list keyed by `Nat × Nat`, dropping all entries
+    matching one key (via `filter ≠ target`) doesn't perturb the
+    `find?` result for any other key. -/
+private theorem find?_filter_ne_target
+    (h : Heap) (target search : Nat × Nat) (h_ne : search ≠ target) :
+    (h.filter (fun p => p.fst ≠ target)).find? (fun p => decide (p.fst = search)) =
+    h.find? (fun p => decide (p.fst = search)) := by
+  induction h with
+  | nil => rfl
+  | cons p ps ih =>
+    by_cases hp_target : p.fst = target
+    · -- Filter drops p; original-list find? skips p (since p.fst = target ≠ search).
+      have hp_ne_search : ¬ p.fst = search := by
+        intro heq; exact h_ne (heq.symm.trans hp_target)
+      have h_filter_drop : List.filter (fun q => decide (q.fst ≠ target)) (p :: ps) =
+                           List.filter (fun q => decide (q.fst ≠ target)) ps := by
+        simp [List.filter, hp_target]
+      rw [h_filter_drop]
+      -- Reduce the RHS via List.find?_cons + decide-false on the head check.
+      conv => rhs; rw [List.find?_cons]
+      have h_search_false : decide (p.fst = search) = false := decide_eq_false hp_ne_search
+      simp only [h_search_false, Bool.false_eq_true, ite_false]
+      exact ih
+    · -- Filter keeps p.
+      have h_filter_keep : List.filter (fun q => decide (q.fst ≠ target)) (p :: ps) =
+                           p :: List.filter (fun q => decide (q.fst ≠ target)) ps := by
+        simp [List.filter, hp_target]
+      rw [h_filter_keep]
+      conv => lhs; rw [List.find?_cons]
+      conv => rhs; rw [List.find?_cons]
+      by_cases hp_search : p.fst = search
+      · -- Head matches search; both `if`s take the true branch.
+        have h_search_true : decide (p.fst = search) = true := decide_eq_true hp_search
+        simp only [h_search_true, ite_true]
+      · -- Head doesn't match; both `if`s take the false branch; recurse.
+        have h_search_false : decide (p.fst = search) = false := decide_eq_false hp_search
+        simp only [h_search_false, Bool.false_eq_true, ite_false]
+        exact ih
+
+/-- `heapStore` at `(slot, idx)` doesn't affect the lookup at any
+    other key. Cons-of-store doesn't match, filter preserves the
+    target key's entry by hypothesis. -/
+theorem heapLookup_heapStore_other
+    (h : Heap) (slot idx : Nat) (v : Value)
+    (slot' idx' : Nat) (h_ne : (slot', idx') ≠ (slot, idx)) :
+    heapLookup (heapStore h slot idx v) slot' idx' = heapLookup h slot' idx' := by
+  unfold heapLookup heapStore
+  -- Strip cons head: ((slot, idx), v) doesn't match (slot', idx') by h_ne.
+  have h_head_ne_decide : decide (((slot, idx) : Nat × Nat) = (slot', idx')) = false := by
+    apply decide_eq_false
+    intro heq; exact h_ne heq.symm
+  show Option.map Prod.snd (List.find? (fun p => decide (p.fst = (slot', idx')))
+        (((slot, idx), v) :: h.filter (fun p => p.fst ≠ (slot, idx)))) =
+       Option.map Prod.snd (List.find? (fun p => decide (p.fst = (slot', idx'))) h)
+  rw [List.find?_cons]
+  simp only [h_head_ne_decide, ite_false]
+  congr 1
+  exact find?_filter_ne_target h (slot, idx) (slot', idx') h_ne
+
 /-- Dispatch context — the per-thread identity values. Every kernel
     runs at a position in the dispatch grid; these are reads-only
     from the kernel's perspective. -/

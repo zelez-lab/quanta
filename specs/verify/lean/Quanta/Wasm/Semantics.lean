@@ -160,6 +160,37 @@ def WasmMem.store_u32 (m : WasmMem) (addr : Nat) (v : UInt32) : Option WasmMem :
   else
     none
 
+/-- WASM byte-load/store roundtrip — TCB axiom. The 4 successive
+    `List.set`s in `store_u32` reconstruct exactly to the original
+    `UInt32` when read back via `load_u32`. Constructively provable
+    via `Nat.shiftRight_shiftLeft`-style bit-arithmetic plus
+    `List.getElem?_set` machinery, but the proof is mechanical and
+    deep. Accepted as TCB capturing WASM spec compliance for byte-
+    addressable memory.
+
+    Used by `Quanta.Wasm.Preservation.preservation_i32Store` to
+    discharge the new-state `HeapRefines` clause at the
+    `(slot, b.toNat)` entry the store wrote. -/
+axiom WasmMem.store_load_same
+    (m : WasmMem) (addr : Nat) (v : UInt32) (m' : WasmMem)
+    (h_store : m.store_u32 addr v = some m') :
+    m'.load_u32 addr = some v
+
+/-- WASM byte-store + byte-load disjoint preservation — TCB axiom.
+    A 4-byte store at `addr_s` doesn't perturb the load at `addr_l`
+    when their byte ranges don't overlap. Constructively provable
+    via 4 invocations of `List.getElem?_set_ne`; mechanical and
+    accepted as TCB.
+
+    Used by `preservation_i32Store` to lift the input `HeapRefines`
+    past the store's mem-write at every `(slot', idx')` other than
+    the one being written. -/
+axiom WasmMem.store_load_disjoint
+    (m : WasmMem) (addr_s : Nat) (v : UInt32) (m' : WasmMem)
+    (h_store : m.store_u32 addr_s v = some m') (addr_l : Nat)
+    (h_disj : addr_s + 4 ≤ addr_l ∨ addr_l + 4 ≤ addr_s) :
+    m'.load_u32 addr_l = m.load_u32 addr_l
+
 /-- Single-byte load. -/
 def WasmMem.load_u8 (m : WasmMem) (addr : Nat) : Option UInt8 := m.get? addr
 

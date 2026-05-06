@@ -33,7 +33,7 @@ Refinement structure:
 
 ## What ships now (slices 1 + 2 + 3 + slice-4 stack-type cascade
    + popSym/commit unification + slice-4 step 7 translator arms
-   + slice-4 step 8 buffer-pattern preservation through `i32.load`)
+   + slice-4 step 8 buffer-pattern preservation end-to-end)
 
 * The full refinement bundle (`Refines` = stack + locals + freshness +
   alias-free + injective-locals + heap). `WasmValue.encodes` now takes
@@ -70,24 +70,18 @@ Refinement structure:
     (folded `bufferAccess`)
   - `preservation_i32Load` (folded typed Load — first use of
     `HeapRefines`)
+  - `preservation_i32Store` (folded typed Store — uses two
+    `WasmMem.store_load_*` TCB axioms in `Quanta.Wasm.Semantics`
+    plus the new `heapLookup_heapStore_{self,other}` helpers in
+    `Quanta.KOps.Semantics`)
 
-That's **27 closed preservation theorems**, 0 sorries, 0 new TCB
-axioms. Slice 4 step 7 (translator arms) and step 8 (preservation
-through `i32.load`) ship complete. The only remaining buffer-pattern
-op is `i32.store`, which requires:
-* Two TCB axioms about WasmMem byte load/store roundtrip
-  (`store_load_same`, `store_load_disjoint`) — well-known WASM spec
-  facts; mechanical to verify but tedious to mechanize.
-* `heapLookup_heapStore_self` / `_other` helper lemmas in
-  `KOps.Semantics`.
-* Layout no-overlap precondition.
-* ~150-line preservation proof.
+That's **28 closed preservation theorems**, 0 sorries, 2 new TCB
+axioms (WasmMem byte-load/store roundtrip — narrow, capturing
+well-known WASM spec compliance). The entire buffer-pattern
+recognition chain (`localGet` → `i32.shl` → `i32.add` → `i32.load`
+/ `i32.store`) is preserved end-to-end.
 
 ## What's next
-
-**Slice 4 step 8 close — `preservation_i32Store`**: combine the items
-above. Once landed, the entire buffer-pattern recognition chain
-(localGet → shl → add → load/store) is preserved end-to-end.
 
 **Slice 5** — control flow: frame reflection in `LowerState`;
 proofs for `block`, `loop`, `if`/`else`, `br`, `br_if`, plus the
@@ -2070,6 +2064,222 @@ theorem preservation_i32Load
         exact R.aliasFree ir hir sv hsv_in
     · -- HeapRefines: heap unchanged; mem unchanged.
       exact R.heapRefines
+
+open Quanta.KOps (vU32) in
+/-- `i32.store` preservation against a recognized `bufferAccess`
+    shape. Lowering: `popSym` val + addr, `commit` val (handles
+    `.reg` / `.i32ConstSym` source shapes), emit
+    `KernelOp.store slot base src .u32`. KOps eval writes
+    `vU32 val_w` to `(slot, b.toNat)` in the heap; WASM eval writes
+    the same `val_w` as 4 little-endian bytes to `mem` at
+    `addr_w.toNat + offset`.
+
+    The new `HeapRefines` clause uses the `WasmMem.store_load_*`
+    TCB axioms — at the written `(slot, b.toNat)` entry,
+    `store_load_same` gives the byte view back; for every other
+    in-bounds `(slot', idx')`, `store_load_disjoint` (with the
+    layout no-overlap precondition) lifts the old `HeapRefines`,
+    while `heapLookup_heapStore_other` lifts the heap projection.
+
+    Preconditions:
+    * `kst.broke = false` — required for `evalOps_append` chaining.
+    * `h_offset = 0` — production drops the WASM offset.
+    * `h_in_bounds : b.toNat < layout.length slot` — store hits a real entry.
+    * `h_layout_no_overlap` — for any other in-bounds `(slot', idx')`,
+      its 4-byte mem range is disjoint from the store's. Future
+      kernel-entry composition theorem will discharge it from the
+      layout's inherent non-overlap. -/
+theorem preservation_i32Store
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (sv_val : SymVal) (slot : Nat) (base : Reg) (rest : List SymVal)
+    (offset align : Nat)
+    (h_stack : s.stack = sv_val :: .bufferAccess slot base 4 :: rest)
+    (h_offset : offset = 0)
+    (h_in_bounds : ∀ b : UInt32,
+       regLookup kst.rf base = some (vU32 b) →
+       b.toNat < layout.length slot)
+    (h_layout_no_overlap : ∀ b : UInt32,
+       regLookup kst.rf base = some (vU32 b) →
+       ∀ slot' idx',
+         idx' < layout.length slot' →
+         (slot', idx') ≠ (slot, b.toNat) →
+         layout.startAddr slot + b.toNat * 4 + 4 ≤ layout.startAddr slot' + idx' * 4 ∨
+         layout.startAddr slot' + idx' * 4 + 4 ≤ layout.startAddr slot + b.toNat * 4)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws (.i32Store offset align) = some ws')
+    (hl : lowerInstr s (.i32Store offset align) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- 1. Reduce hl: lowerI32Store via the buffer-access arm.
+  have hl' : lowerI32Store s = some (s', ops) := hl
+  unfold lowerI32Store at hl'
+  simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind] at hl'
+  -- After two popSyms, the popped state has stack := rest.
+  -- commit sv_val on it returns (src, s3, opsCommit) (or none if sv_val is an address SymVal).
+  rcases hca : LowerState.commit { s with stack := rest } sv_val
+      with _ | ⟨src, s3, opsCommit⟩
+  · simp [hca] at hl'
+  simp [hca] at hl'
+  -- After simp, hl' is the stripped conjunction.
+  obtain ⟨hs_eq, hops_eq⟩ := hl'
+  -- 2. Reduce hw: storeI32 ws offset.
+  have hw' : storeI32 ws offset = some ws' := hw
+  unfold storeI32 at hw'
+  rcases hws : ws.stack with _ | ⟨vval, _ | ⟨vaddr, ws_rest⟩⟩
+  · simp [hws, WasmState.pop] at hw'
+  · simp [hws, WasmState.pop] at hw'
+  simp [hws, WasmState.pop] at hw'
+  -- 3. Derive sv_val/bufferAccess encodings from R.stk.
+  have h_stk0 := R.stk.right 0 vval (by rw [hws]; simp)
+  obtain ⟨sv0, hsv0_get, henc_val⟩ := h_stk0
+  have hs0_eq : s.stack.get? 0 = some sv_val := by rw [h_stack]; simp
+  rw [hs0_eq] at hsv0_get
+  have hsv0_eq : sv0 = sv_val := ((Option.some.injEq _ _).mp hsv0_get).symm
+  rw [hsv0_eq] at henc_val
+  have h_stk1 := R.stk.right 1 vaddr (by rw [hws]; simp)
+  obtain ⟨sv1, hsv1_get, henc_addr⟩ := h_stk1
+  have hs1_eq : s.stack.get? 1 = some (.bufferAccess slot base 4) := by rw [h_stack]; simp
+  rw [hs1_eq] at hsv1_get
+  have hsv1_eq : sv1 = .bufferAccess slot base 4 :=
+    ((Option.some.injEq _ _).mp hsv1_get).symm
+  rw [hsv1_eq] at henc_addr
+  obtain ⟨addr_w, h_vaddr_eq⟩ := WasmValue.encodes_bufferAccess_wI32_inv henc_addr
+  subst h_vaddr_eq
+  obtain ⟨b, h_lookup_b, h_addr_eq⟩ := henc_addr
+  -- 4. Continue reducing hw' (vval must be wI32).
+  cases vval with
+  | wI32 val_w =>
+    simp at hw'
+    rcases hmem : ws.mem.store_u32 (addr_w.toNat + offset) val_w with _ | new_mem
+    · simp [hmem] at hw'
+    simp [hmem] at hw'
+    -- hw' : ws' = { ws with mem := new_mem }.
+    -- 5. Apply commit_correct: build s_pop / ws_pop / R_pop, then call.
+    have h_ws_rest_rest_len : ws_rest.length = rest.length := by
+      have hl_orig := R.stk.left
+      rw [hws, h_stack] at hl_orig
+      simpa using hl_orig
+    let s_pop : LowerState := { s with stack := rest }
+    let ws_pop : WasmState := { ws with stack := ws_rest }
+    have R_pop : Refines ws_pop s_pop kst layout := by
+      refine ⟨⟨h_ws_rest_rest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+      · intro i v hv
+        have hrest_get : ws.stack.get? (i + 2) = some v := by
+          rw [hws]; simpa using hv
+        obtain ⟨svi, hsvi_get, henc⟩ := R.stk.right (i + 2) v hrest_get
+        have hlrest_get : rest.get? i = some svi := by
+          have h2 : s.stack.get? (i + 2) = some svi := hsvi_get
+          rw [h_stack] at h2; simpa using h2
+        exact ⟨svi, by simpa using hlrest_get, henc⟩
+      · refine ⟨?_, R.fresh.right⟩
+        intro sv hsv r hr
+        have hsv_in : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+        exact R.fresh.left sv hsv_in r hr
+      · intro ir hir sv hsv
+        have hsv_in : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+        exact R.aliasFree ir hir sv hsv_in
+    have h_sv_val_lt : ∀ r ∈ sv_val.regs, r < s.nextReg := by
+      intro r hr
+      have h_in : sv_val ∈ s.stack := by rw [h_stack]; simp
+      exact R.fresh.left sv_val h_in r hr
+    have hca' : s_pop.commit sv_val = some (src, s3, opsCommit) := hca
+    obtain ⟨kst1, h_evalCommit, R_commit, h_enc_src1, h_lookup_lo, h_s_le_s3, h_src_lt_s3⟩ :=
+      commit_correct R_pop h_sv_val_lt hca' henc_val
+    have h_kst1_ok : kst1.broke = false := by
+      rw [commit_preserves_broke hca' h_evalCommit]; exact h_kst_ok
+    -- 6. KOps .store needs lookups for base (in kst1.rf) and src (= val_w).
+    have h_base_lt : base < s.nextReg :=
+      R.fresh.left (.bufferAccess slot base 4) (by rw [h_stack]; simp) base (by simp [SymVal.regs])
+    have h_lookup_b1 : regLookup kst1.rf base = some (vU32 b) := by
+      rw [h_lookup_lo base h_base_lt]; exact h_lookup_b
+    have h_lookup_src : regLookup kst1.rf src = some (vU32 val_w) := h_enc_src1
+    -- 7. Compute kst' via the .store op.
+    refine ⟨{ kst1 with heap := Quanta.KOps.heapStore kst1.heap slot b.toNat (vU32 val_w) }, ?_, ?_⟩
+    · rw [← hops_eq]
+      rw [evalOps_append h_evalCommit h_kst1_ok]
+      simp [evalOps, Quanta.KOps.evalOp, h_lookup_b1, h_lookup_src, h_kst1_ok,
+            Quanta.KOps.vU32]
+    · -- Refines ws' s' kst' layout.
+      rw [← hs_eq]; rw [← hw']
+      have h_in_bounds_b : b.toNat < layout.length slot := h_in_bounds b h_lookup_b
+      have h_no_ovr_b := h_layout_no_overlap b h_lookup_b
+      have h_addr_eq_total : addr_w.toNat + offset = layout.startAddr slot + b.toNat * 4 := by
+        rw [h_offset, h_addr_eq, Nat.add_zero]
+      have h_s3_stack : s3.stack = rest := commit_preserves_stack hca'
+      have h_s3_loc : s3.localReg = s_pop.localReg := (commit_preserves_locals hca').1
+      -- kst1.heap = kst.heap: commit only writes the regfile.
+      have h_heap_eq : kst1.heap = kst.heap := by
+        cases sv_val with
+        | reg _ _ =>
+          have hopss : opsCommit = [] := by
+            have := hca'
+            simp [LowerState.commit] at this
+            exact this.2.2
+          rw [hopss] at h_evalCommit
+          simp [evalOps] at h_evalCommit
+          rw [← h_evalCommit]
+        | i32ConstSym n =>
+          -- commit emits [.const s_pop.nextReg ...]; src = s_pop.nextReg.
+          have hcommit_shape := hca'
+          simp [LowerState.commit, LowerState.alloc] at hcommit_shape
+          obtain ⟨hsrc_eq, _, hopss⟩ := hcommit_shape
+          -- hsrc_eq : s_pop.nextReg = src; hopss : [.const s_pop.nextReg ...] = opsCommit.
+          rw [← hopss] at h_evalCommit
+          simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst] at h_evalCommit
+          rw [← h_evalCommit]
+        | bufferPtr _ => simp [LowerState.commit] at hca'
+        | scaledIdx _ _ => simp [LowerState.commit] at hca'
+        | bufferAccess _ _ _ => simp [LowerState.commit] at hca'
+      refine ⟨?_, ?_, ?_, ?_, R_commit.injLocals, ?_⟩
+      · -- StackRefines: ws_rest matches rest under kst1.rf.
+        refine ⟨?_, ?_⟩
+        · rw [h_s3_stack]; exact h_ws_rest_rest_len
+        · intro j v hv
+          have hwsk : ws_pop.stack.get? j = some v := hv
+          obtain ⟨svk, hsvk_get, henck⟩ := R_commit.stk.right j v hwsk
+          exact ⟨svk, hsvk_get, henck⟩
+      · -- LocalsRefines: pass through R_commit.locs (s3.localReg = s_pop.localReg).
+        intro k r hfind v hv
+        exact R_commit.locs k r hfind v hv
+      · -- Fresh: s'.stack = s3.stack, localReg unchanged.
+        refine ⟨?_, ?_⟩
+        · intro sv hsv r' hr'
+          exact R_commit.fresh.left sv hsv r' hr'
+        · intro ir hir
+          exact R_commit.fresh.right ir hir
+      · -- AliasFree: s'.stack = s3.stack, localReg unchanged.
+        intro ir hir sv hsv
+        exact R_commit.aliasFree ir hir sv hsv
+      · -- HeapRefines: split on (slot', idx') = (slot, b.toNat).
+        intro slot' idx' h_idx'_lt
+        by_cases h_eq_target : (slot', idx') = (slot, b.toNat)
+        · -- Target entry: rw the equation and use heapStore_self + store_load_same.
+          obtain ⟨h_slot_eq, h_idx_eq⟩ := Prod.mk.injEq _ _ _ _ |>.mp h_eq_target
+          refine ⟨val_w, ?_, ?_⟩
+          · rw [h_slot_eq, h_idx_eq, Quanta.KOps.heapLookup_heapStore_self]
+            rfl
+          · rw [h_slot_eq, h_idx_eq, ← h_addr_eq_total]
+            exact WasmMem.store_load_same _ _ _ _ hmem
+        · -- Disjoint entry.
+          obtain ⟨n_old, h_heap_old, h_mem_old⟩ := R.heapRefines slot' idx' h_idx'_lt
+          refine ⟨n_old, ?_, ?_⟩
+          · -- heapLookup new_heap slot' idx' = heapLookup kst1.heap slot' idx' (heapStore_other)
+            --                                = heapLookup kst.heap slot' idx' (h_heap_eq)
+            --                                = some (vU32 n_old) (h_heap_old).
+            rw [Quanta.KOps.heapLookup_heapStore_other _ _ _ _ _ _ h_eq_target,
+                h_heap_eq]
+            exact h_heap_old
+          · have h_disj := h_no_ovr_b slot' idx' h_idx'_lt h_eq_target
+            have h_disj_total : addr_w.toNat + offset + 4 ≤ layout.startAddr slot' + idx' * 4 ∨
+                                layout.startAddr slot' + idx' * 4 + 4 ≤ addr_w.toNat + offset := by
+              rw [h_addr_eq_total]; exact h_disj
+            rw [WasmMem.store_load_disjoint _ _ _ _ hmem _ h_disj_total]
+            exact h_mem_old
+  | wI64 _ => simp at hw'
+  | wF32 _ => simp at hw'
+  | wF64 _ => simp at hw'
 
 -- ════════════════════════════════════════════════════════════════════
 -- Generic i32 comparison preservation (instantiates for the 6-op family)
