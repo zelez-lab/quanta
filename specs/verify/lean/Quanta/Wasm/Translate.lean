@@ -308,7 +308,11 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
   | .wreturn => some (s, [])
   | .nop     => some (s, [])
   | .drop    => do
-      let (_, s1) ← s.pop
+      -- `popSym` (not `pop`): accept any SymVal on top, including
+      -- `i32ConstSym` and the buffer-pattern address SymVals. Drop
+      -- emits no IR — discards the popped value with no
+      -- materialization.
+      let (_, s1) ← s.popSym
       pure (s1, [])
   -- Outside slice 1 — refused, matching `UnsupportedOp` in production.
   | _ => none
