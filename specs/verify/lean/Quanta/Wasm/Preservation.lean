@@ -982,43 +982,70 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
         --         localReg := s.localReg, localTy := s.localTy }
         rw [h_s4_stack, h_s4_lr, h_s4_lt]
 
-/-- Shape for `lowerI32Cmp`. The lowering emits TWO ops — `cmp` writing
-    a vBool to `s.nextReg`, then `cast` lifting that vBool back into
-    the u32 alphabet at `s.nextReg + 1`. The pushed slot is the cast's
-    destination, typed `.u32` (matching every other value-producing
-    arm). -/
+/-- Shape for `lowerI32Cmp`. Same `popSym + commit` chain as
+    `lowerI32Bin_some_shape`, but the final emission is the two-op
+    `cmp + cast` pair (vBool at `s4.nextReg`, vU32 at
+    `s4.nextReg + 1`) and the pushed slot points at the cast's
+    destination. -/
 theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
     {ops : List KernelOp} (h : lowerI32Cmp s cop = some (s', ops)) :
-    ∃ ra rb tya tyb lrest,
-      s.stack = SymVal.reg rb tyb :: SymVal.reg ra tya :: lrest ∧
-      s' = { nextReg := s.nextReg + 2,
-             stack := SymVal.reg (s.nextReg + 1) .u32 :: lrest,
+    ∃ svb sva lrest ra s3 opsA rb s4 opsB,
+      s.stack = svb :: sva :: lrest ∧
+      ({ s with stack := lrest } : LowerState).commit sva = some (ra, s3, opsA) ∧
+      s3.commit svb = some (rb, s4, opsB) ∧
+      s4.stack = lrest ∧
+      s4.localReg = s.localReg ∧ s4.localTy = s.localTy ∧
+      s.nextReg ≤ s4.nextReg ∧
+      s' = { nextReg := s4.nextReg + 2,
+             stack := SymVal.reg (s4.nextReg + 1) .u32 :: lrest,
              localReg := s.localReg,
              localTy := s.localTy } ∧
-      ops = [.cmp s.nextReg ra rb cop .bool,
-             .cast (s.nextReg + 1) s.nextReg .bool .u32] := by
+      ops = opsA ++ opsB ++ [.cmp s4.nextReg ra rb cop .bool,
+                              .cast (s4.nextReg + 1) s4.nextReg .bool .u32] := by
   unfold lowerI32Cmp at h
-  rcases hs : s.stack with _ | ⟨svb, srest⟩
-  · simp [hs, LowerState.pop] at h
-  · cases svb with
-    | reg rb tyb =>
-      rcases hsr : srest with _ | ⟨sva, lrest⟩
-      · simp [hs, hsr, LowerState.pop] at h
-      · cases sva with
-        | reg ra tya =>
-          simp [hs, hsr, LowerState.pop, LowerState.alloc, LowerState.push] at h
-          obtain ⟨hs', hops'⟩ := h
-          refine ⟨ra, rb, tya, tyb, lrest, rfl, ?_, hops'.symm⟩
-          -- s' fields agree after two `alloc`s and one `push`.
-          rw [← hs']
-        | bufferPtr _          => simp [hs, hsr, LowerState.pop] at h
-        | scaledIdx _ _        => simp [hs, hsr, LowerState.pop] at h
-        | i32ConstSym _        => simp [hs, hsr, LowerState.pop] at h
-        | bufferAccess _ _ _   => simp [hs, hsr, LowerState.pop] at h
-    | bufferPtr _          => simp [hs, LowerState.pop] at h
-    | scaledIdx _ _        => simp [hs, LowerState.pop] at h
-    | i32ConstSym _        => simp [hs, LowerState.pop] at h
-    | bufferAccess _ _ _   => simp [hs, LowerState.pop] at h
+  rcases hs : s.stack with _ | ⟨svb, _ | ⟨sva, lrest⟩⟩
+  · simp [hs, LowerState.popSym] at h
+  · simp [hs, LowerState.popSym] at h
+  ·
+    simp only [hs, LowerState.popSym, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hca : ({s with stack := lrest} : LowerState).commit sva
+        with _ | ⟨ra, s3, opsA⟩
+    · simp [hca] at h
+    ·
+      simp only [hca, Option.some_bind] at h
+      rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+      · simp [hcb] at h
+      ·
+        simp only [hcb, Option.some_bind, LowerState.alloc, LowerState.push] at h
+        obtain ⟨hs_eq, hops_eq⟩ := Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        have h_locA := commit_preserves_locals hca
+        have h_stkA := commit_preserves_stack hca
+        have h_locB := commit_preserves_locals hcb
+        have h_stkB := commit_preserves_stack hcb
+        have h_s4_stack : s4.stack = lrest := by rw [h_stkB, h_stkA]
+        have h_s4_lr   : s4.localReg = s.localReg := by rw [h_locB.1, h_locA.1]
+        have h_s4_lt   : s4.localTy  = s.localTy  := by rw [h_locB.2, h_locA.2]
+        have h_s3_nr   : s.nextReg ≤ s3.nextReg := by
+          match sva, hca with
+          | .reg _ _, hca =>
+            simp [LowerState.commit] at hca
+            obtain ⟨_, hs3, _⟩ := hca; rw [← hs3]; exact Nat.le_refl _
+          | .i32ConstSym _, hca =>
+            simp [LowerState.commit, LowerState.alloc] at hca
+            obtain ⟨_, hs3, _⟩ := hca; rw [← hs3]; exact Nat.le_succ _
+        have h_s4_nr : s3.nextReg ≤ s4.nextReg := by
+          match svb, hcb with
+          | .reg _ _, hcb =>
+            simp [LowerState.commit] at hcb
+            obtain ⟨_, hs4, _⟩ := hcb; rw [← hs4]; exact Nat.le_refl _
+          | .i32ConstSym _, hcb =>
+            simp [LowerState.commit, LowerState.alloc] at hcb
+            obtain ⟨_, hs4, _⟩ := hcb; rw [← hs4]; exact Nat.le_succ _
+        refine ⟨svb, sva, lrest, ra, s3, opsA, rb, s4, opsB,
+                rfl, hca, hcb, h_s4_stack, h_s4_lr, h_s4_lt,
+                Nat.le_trans h_s3_nr h_s4_nr, ?_, hops_eq.symm⟩
+        rw [← hs_eq]
+        rw [h_s4_stack, h_s4_lr, h_s4_lt]
 
 -- ════════════════════════════════════════════════════════════════════
 -- Generic i32 binop preservation (instantiates for the 10-op family)
@@ -1305,7 +1332,11 @@ open Quanta.KOps (vU32) in
     * `h_l`      — `lowerInstr s instr = lowerI32Cmp s op_k` (by rfl).
     * `h_agree`  — KOps `evalCmpOp op_k (vU32 av) (vU32 bv) = some (vBool (p_w av bv))`.
 
-    Each of the 6 i32-cmp preservation theorems below is one line. -/
+    Each of the 6 i32-cmp preservation theorems below is one line.
+
+    Same `popSym + commit` chain as `preservation_i32Bin_generic`,
+    plus a final 2-op `cmp + cast` emission whose result reg
+    `s4.nextReg + 1` is what the new stack top points at. -/
 theorem preservation_i32Cmp_generic
     (instr : WasmInstr) (p_w : UInt32 → UInt32 → Bool)
     (op_k : Quanta.KOps.CmpOp)
@@ -1323,119 +1354,187 @@ theorem preservation_i32Cmp_generic
   rw [h_w] at hw
   rw [h_l] at hl
   obtain ⟨av, bv, rest, hwstack, hws_eq⟩ := cmpI32_some_shape hw
-  obtain ⟨ra, rb, tya, tyb, lrest, hlstack, hs_eq, hops_eq⟩ := lowerI32Cmp_some_shape hl
-  -- Operand encodings — same shape ladder as the binop generic.
-  have hrb_enc : regLookup kst.rf rb = some (vU32 bv) := by
+  obtain ⟨svb, sva, lrest, ra, s3, opsA, rb, s4, opsB, hlstack, hca, hcb,
+          h_s4_stack, h_s4_lr, h_s4_lt, h_s_le_s4, hs_eq, hops_eq⟩ :=
+    lowerI32Cmp_some_shape hl
+  -- Operand encodings in kst.rf.
+  have h_enc_svb : (WasmValue.wI32 bv).encodes kst.rf svb := by
     have hb := R.stk.right 0 (.wI32 bv) (by rw [hwstack]; simp)
     obtain ⟨sv0, hsv0_get, henc⟩ := hb
-    have hs0 : s.stack.get? 0 = some (SymVal.reg rb tyb) := by rw [hlstack]; simp
+    have hs0 : s.stack.get? 0 = some svb := by rw [hlstack]; simp
     rw [hs0] at hsv0_get
-    have h_eq : SymVal.reg rb tyb = sv0 := (Option.some.injEq _ _).mp hsv0_get
-    subst h_eq
-    cases tyb <;> simp only [WasmValue.encodes] at henc <;>
-      first | exact henc | exact henc.elim
-  have hra_enc : regLookup kst.rf ra = some (vU32 av) := by
+    have h_eq : svb = sv0 := (Option.some.injEq _ _).mp hsv0_get
+    rw [h_eq]; exact henc
+  have h_enc_sva : (WasmValue.wI32 av).encodes kst.rf sva := by
     have ha := R.stk.right 1 (.wI32 av) (by rw [hwstack]; simp)
     obtain ⟨sv1, hsv1_get, henc⟩ := ha
-    have hs1 : s.stack.get? 1 = some (SymVal.reg ra tya) := by rw [hlstack]; simp
+    have hs1 : s.stack.get? 1 = some sva := by rw [hlstack]; simp
     rw [hs1] at hsv1_get
-    have h_eq : SymVal.reg ra tya = sv1 := (Option.some.injEq _ _).mp hsv1_get
-    subst h_eq
-    cases tya <;> simp only [WasmValue.encodes] at henc <;>
-      first | exact henc | exact henc.elim
-  -- Final kst' has both writes applied: vBool at nextReg (transient),
-  -- vU32 (if p_w av bv then 1 else 0) at nextReg + 1.
-  refine ⟨{ kst with rf :=
-              regWrite (regWrite kst.rf s.nextReg
-                          (Quanta.KOps.Value.vBool (p_w av bv)))
-                        (s.nextReg + 1)
-                        (vU32 (if p_w av bv then 1 else 0)) }, ?_, ?_⟩
-  · subst hops_eq
-    simp [evalOps, Quanta.KOps.evalOp, hra_enc, hrb_enc, h_agree,
-          regLookup_regWrite_self, Quanta.KOps.evalCast, h_kst_ok]
-  · subst hs_eq; subst hws_eq
-    -- Helper: lift any encoding past the two fresh writes (nextReg
-    -- and nextReg+1), provided the encoding's regs are all < nextReg.
-    -- Stated as a universally-quantified function so each clause can
-    -- discharge its preservation obligation in one application.
-    let h_lift : ∀ (sv : SymVal) (v : WasmValue),
-        (∀ r ∈ sv.regs, r < s.nextReg) →
-        v.encodes kst.rf sv →
-        v.encodes (regWrite (regWrite kst.rf s.nextReg
+    have h_eq : sva = sv1 := (Option.some.injEq _ _).mp hsv1_get
+    rw [h_eq]; exact henc
+  -- Stack-membership and Fresh-bound on each operand.
+  have h_svb_in : svb ∈ s.stack := by rw [hlstack]; simp
+  have h_sva_in : sva ∈ s.stack := by rw [hlstack]; simp
+  have h_svb_lt : ∀ r ∈ svb.regs, r < s.nextReg :=
+    fun r hr => R.fresh.left svb h_svb_in r hr
+  have h_sva_lt : ∀ r ∈ sva.regs, r < s.nextReg :=
+    fun r hr => R.fresh.left sva h_sva_in r hr
+  -- Length agreement on the popped suffix.
+  have h_rest_lrest_len : rest.length = lrest.length := by
+    have hl_orig := R.stk.left
+    rw [hwstack, hlstack] at hl_orig
+    simpa using hl_orig
+  -- Refines bundle for the popped state s_pop / ws_pop.
+  let s_pop : LowerState :=
+    { nextReg := s.nextReg, stack := lrest,
+      localReg := s.localReg, localTy := s.localTy }
+  let ws_pop : WasmState :=
+    { ws with stack := rest }
+  have R_pop : Refines ws_pop s_pop kst layout := by
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    · intro i v hv
+      have hrest_get : ws.stack.get? (i + 2) = some v := by
+        rw [hwstack]; simpa using hv
+      obtain ⟨svi, hsvi_get, henc⟩ := R.stk.right (i + 2) v hrest_get
+      have hlrest_get : lrest.get? i = some svi := by
+        have h2 : s.stack.get? (i + 2) = some svi := hsvi_get
+        rw [hlstack] at h2; simpa using h2
+      exact ⟨svi, by simpa using hlrest_get, henc⟩
+    · refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r hr
+      have hsv_in : sv ∈ s.stack := by
+        rw [hlstack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+      exact R.fresh.left sv hsv_in r hr
+    · intro ir hir sv hsv
+      have hsv_in : sv ∈ s.stack := by
+        rw [hlstack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+      exact R.aliasFree ir hir sv hsv_in
+  -- First commit: sva → ra. Emits opsA, evolves kst → kst1.
+  obtain ⟨kst1, h_evalA, R1, h_enc_ra1, h_lookupA, h_s_le_s3, h_ra_lt_s3⟩ :=
+    commit_correct R_pop h_sva_lt hca h_enc_sva
+  have h_kst1_ok : kst1.broke = false := by
+    rw [commit_preserves_broke hca h_evalA]; exact h_kst_ok
+  have h_enc_svb1 : (WasmValue.wI32 bv).encodes kst1.rf svb :=
+    WasmValue.encodes_preserved_of_lookup_eq
+      (fun r hr => h_lookupA r (h_svb_lt r hr)) h_enc_svb
+  have h_svb_lt_s3 : ∀ r ∈ svb.regs, r < s3.nextReg :=
+    fun r hr => Nat.lt_of_lt_of_le (h_svb_lt r hr) h_s_le_s3
+  -- Second commit: svb → rb on R1. Emits opsB, evolves kst1 → kst2.
+  obtain ⟨kst2, h_evalB, R2, h_enc_rb2, h_lookupB, h_s3_le_s4, h_rb_lt_s4⟩ :=
+    commit_correct R1 h_svb_lt_s3 hcb h_enc_svb1
+  have h_kst2_ok : kst2.broke = false := by
+    rw [commit_preserves_broke hcb h_evalB]; exact h_kst1_ok
+  have h_enc_ra2 : (WasmValue.wI32 av).encodes kst2.rf (.reg ra .u32) :=
+    WasmValue.encodes_preserved_of_lookup_eq
+      (fun r hr => by
+        simp [SymVal.regs] at hr
+        rw [hr]
+        exact h_lookupB ra h_ra_lt_s3)
+      h_enc_ra1
+  have h_lookup_ra : regLookup kst2.rf ra = some (vU32 av) := h_enc_ra2
+  have h_lookup_rb : regLookup kst2.rf rb = some (vU32 bv) := h_enc_rb2
+  -- Final kst' has both writes applied (vBool at s4.nextReg, vU32 at s4.nextReg+1).
+  -- broke := false matches the simp output (h_kst2_ok normalizes kst2.broke).
+  refine ⟨{ rf := regWrite (regWrite kst2.rf s4.nextReg
                               (Quanta.KOps.Value.vBool (p_w av bv)))
-                            (s.nextReg + 1)
+                            (s4.nextReg + 1)
+                            (vU32 (if p_w av bv then 1 else 0)),
+            heap := kst2.heap, dispatch := kst2.dispatch, broke := false }, ?_, ?_⟩
+  · -- evalOps 0 kst (opsA ++ opsB ++ [cmp …, cast …]) = some kst3.
+    subst hops_eq
+    rw [show opsA ++ opsB ++ [KernelOp.cmp s4.nextReg ra rb op_k Quanta.KOps.Scalar.bool,
+                              KernelOp.cast (s4.nextReg + 1) s4.nextReg
+                                Quanta.KOps.Scalar.bool Quanta.KOps.Scalar.u32]
+          = opsA ++ (opsB ++ [KernelOp.cmp s4.nextReg ra rb op_k Quanta.KOps.Scalar.bool,
+                              KernelOp.cast (s4.nextReg + 1) s4.nextReg
+                                Quanta.KOps.Scalar.bool Quanta.KOps.Scalar.u32]) from
+        by rw [List.append_assoc]]
+    rw [evalOps_append h_evalA h_kst1_ok]
+    rw [evalOps_append h_evalB h_kst2_ok]
+    -- Now reduce the 2-op `evalOps 0 kst2 [cmp …, cast …]`.
+    simp [evalOps, Quanta.KOps.evalOp, h_lookup_ra, h_lookup_rb, h_agree,
+          regLookup_regWrite_self, Quanta.KOps.evalCast, h_kst2_ok]
+  · -- Refines ws' s' kst3 layout.
+    subst hs_eq; subst hws_eq
+    -- h_lift: any encoding whose SymVal-regs are < s4.nextReg lifts past the two writes.
+    let h_lift : ∀ (sv : SymVal) (v : WasmValue),
+        (∀ r ∈ sv.regs, r < s4.nextReg) →
+        v.encodes kst2.rf sv →
+        v.encodes (regWrite (regWrite kst2.rf s4.nextReg
+                              (Quanta.KOps.Value.vBool (p_w av bv)))
+                            (s4.nextReg + 1)
                             (Quanta.KOps.Value.vU32 (if p_w av bv then 1 else 0))) sv :=
       fun sv v h_lt henc =>
         WasmValue.encodes_preserved_of_fresh
           (fun r hr => Nat.lt_succ_of_lt (h_lt r hr))
           (WasmValue.encodes_preserved_of_fresh h_lt henc)
-    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
-    · -- Stack refinement.
+    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines⟩
+    · -- StackRefines on (wI32 (if p_w av bv then 1 else 0) :: rest, .reg (s4.nextReg+1) .u32 :: lrest).
       refine ⟨?_, ?_⟩
-      · -- Length: rest.length = lrest.length (from old R.stk on the
-        -- 2-deep stacks).
-        have hl_orig := R.stk.left
-        rw [hwstack, hlstack] at hl_orig
-        simpa using hl_orig
+      · simp; exact h_rest_lrest_len
       · intro j v hv
         cases j with
         | zero =>
-          -- Top: WASM v = wI32 (if p_w av bv then 1 else 0); SymVal = .reg (nextReg+1) .u32.
           simp at hv
-          refine ⟨SymVal.reg (s.nextReg + 1) .u32, by simp, ?_⟩
+          refine ⟨SymVal.reg (s4.nextReg + 1) .u32, by simp, ?_⟩
           subst hv
-          simp [WasmValue.encodes, regLookup_regWrite_self]
-          rfl
+          show regLookup
+                 (regWrite (regWrite kst2.rf s4.nextReg
+                              (Quanta.KOps.Value.vBool (p_w av bv)))
+                            (s4.nextReg + 1)
+                            (vU32 (if p_w av bv then 1 else 0)))
+                 (s4.nextReg + 1) = some (vU32 (if p_w av bv then 1 else 0))
+          simp [regLookup_regWrite_self]
         | succ k =>
-          -- Below the top: lift IH StackRefines past the two writes.
-          have hrest_get : ws.stack.get? (k + 2) = some v := by
-            rw [hwstack]; simpa using hv
-          obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right (k + 2) v hrest_get
-          have hlrest_get : lrest.get? k = some svk := by
-            have h2 : s.stack.get? (k + 2) = some svk := hsvk_get
-            rw [hlstack] at h2; simpa using h2
-          refine ⟨svk, by simpa using hlrest_get, ?_⟩
-          have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk_get
-          exact h_lift svk v (fun r hr => R.fresh.left svk hsvk_in r hr) henc
-    · -- Locals refinement.
+          have hk : ws_pop.stack.get? k = some v := by
+            show rest.get? k = some v
+            simpa using hv
+          obtain ⟨svk, hsvk_get, henc⟩ := R2.stk.right k v hk
+          have h_s4_get : s4.stack.get? k = some svk := hsvk_get
+          rw [h_s4_stack] at h_s4_get
+          refine ⟨svk, by simpa using h_s4_get, ?_⟩
+          have hsvk_in : svk ∈ s4.stack := List.mem_of_get? hsvk_get
+          exact h_lift svk v (fun r hr => R2.fresh.left svk hsvk_in r hr) henc
+    · -- LocalsRefines: localReg unchanged through commits + cmp+cast.
       intro i r hfind v hv
-      have hpair : (i, r) ∈ s.localReg := List.mem_of_find?_eq_some hfind
-      have hr_lt : r < s.nextReg := R.fresh.right (i, r) hpair
-      have henc := R.locs i r hfind v hv
+      rw [← h_s4_lr] at hfind
+      have hpair : (i, r) ∈ s4.localReg := List.mem_of_find?_eq_some hfind
+      have hr_lt : r < s4.nextReg := R2.fresh.right (i, r) hpair
+      have henc := R2.locs i r hfind v hv
       apply h_lift _ _ _ henc
       intro r' hr'_in
       simp [SymVal.regs] at hr'_in
       subst hr'_in; exact hr_lt
-    · -- Freshness: nextReg bumps by 2; new top reg = nextReg + 1; lrest ⊆ s.stack.
+    · -- Fresh on s' — top reg is s4.nextReg + 1, lrest ⊆ s4.stack, locals from s4.
       refine ⟨?_, ?_⟩
       · intro sv hsv r' hr'
         simp at hsv
         rcases hsv with h_eq | h_in
         · subst h_eq
           simp [SymVal.regs] at hr'
-          subst hr'
-          exact Nat.lt_succ_self _
-        · have hsv_in : sv ∈ s.stack := by
-            rw [hlstack]; simp; right; right; exact h_in
-          have : r' < s.nextReg := R.fresh.left sv hsv_in r' hr'
+          subst hr'; exact Nat.lt_succ_self _
+        · have hsv_in_s4 : sv ∈ s4.stack := by rw [h_s4_stack]; exact h_in
+          have : r' < s4.nextReg := R2.fresh.left sv hsv_in_s4 r' hr'
           exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt this)
       · intro ir hir
-        have : ir.snd < s.nextReg := R.fresh.right ir hir
+        rw [← h_s4_lr] at hir
+        have : ir.snd < s4.nextReg := R2.fresh.right ir hir
         exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt this)
-    · -- AliasFree: localReg unchanged; new stack drops top 2 + adds
-      -- .reg (nextReg+1) .u32. Stable_regs are < nextReg < nextReg+1.
+    · -- AliasFree on s'.
       intro ir hir sv hsv
-      have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+      rw [← h_s4_lr] at hir
+      have hir_lt : ir.snd < s4.nextReg := R2.fresh.right ir hir
       simp at hsv
       rcases hsv with h_eq | h_in
       · subst h_eq
         simp [SymVal.regs]
         exact Nat.ne_of_lt (Nat.lt_succ_of_lt hir_lt)
-      · have hsv_in : sv ∈ s.stack := by
-          rw [hlstack]; simp; right; right; exact h_in
-        exact R.aliasFree ir hir sv hsv_in
-    · -- InjectiveLocals: localReg unchanged.
-      exact R.injLocals
+      · have hsv_in_s4 : sv ∈ s4.stack := by rw [h_s4_stack]; exact h_in
+        exact R2.aliasFree ir hir sv hsv_in_s4
+    · -- InjectiveLocals: localReg unchanged through commits.
+      intro p q hp hq
+      rw [← h_s4_lr] at hp hq
+      exact R2.injLocals p q hp hq
 
 -- ── Per-op specializations (6 cmps) ────────────────────────────────────
 

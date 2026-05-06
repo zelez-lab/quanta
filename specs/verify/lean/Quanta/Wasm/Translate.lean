@@ -207,14 +207,19 @@ def lowerI32Bin (s : LowerState) (op : BinOp) : Option (LowerState × List Kerne
     keep `WasmValue.encodes` single-shape (always `.u32`) and avoid a
     cascade through every existing per-op preservation proof. The
     end-to-end IR shape is identical (cmp + cast); only the placement
-    of the cast in the lowering pass differs. -/
+    of the cast in the lowering pass differs.
+
+    Operands flow through `popSym + commit` (same as `lowerI32Bin`),
+    so an `i32ConstSym` operand materializes via a const op prefix. -/
 def lowerI32Cmp (s : LowerState) (op : CmpOp) : Option (LowerState × List KernelOp) := do
-  let (b, s1) ← s.pop
-  let (a, s2) ← s1.pop
-  let (boolReg, s3) := s2.alloc
-  let (dst, s4) := s3.alloc
-  let s5 := s4.push dst
-  pure (s5, [.cmp boolReg a b op .bool, .cast dst boolReg .bool .u32])
+  let (svb, s1) ← s.popSym
+  let (sva, s2) ← s1.popSym
+  let (ra, s3, opsA) ← s2.commit sva
+  let (rb, s4, opsB) ← s3.commit svb
+  let (boolReg, s5) := s4.alloc
+  let (dst, s6) := s5.alloc
+  let s7 := s6.push dst
+  pure (s7, opsA ++ opsB ++ [.cmp boolReg ra rb op .bool, .cast dst boolReg .bool .u32])
 
 /-- Lower one WASM instruction. Returns the new state and the emitted
     KOps. `none` for ops outside the subset (matches the production
