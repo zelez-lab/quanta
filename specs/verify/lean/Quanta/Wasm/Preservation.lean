@@ -32,7 +32,7 @@ Refinement structure:
   unchanged. Slice-4 buffer-pattern arms are the first consumers.
 
 ## What ships now (slices 1 + 2 + 3 + slice-4 stack-type cascade
-   + popSym/commit unification of every popping arm)
+   + popSym/commit unification + slice-4 step 7 translator arms)
 
 * The full refinement bundle (`Refines` = stack + locals + freshness +
   alias-free + injective-locals + heap).
@@ -41,45 +41,50 @@ Refinement structure:
   `regLookup_preserved_of_fresh`.
 * Encoding-lifting lemmas: `encodes_preserved_of_fresh`,
   `encodes_preserved_of_disjoint`, `encodes_preserved_of_lookup_eq`.
-* `commit_correct` + four sibling helpers (`commit_only_bumps_nextReg`,
-  `commit_preserves_stack` / `_locals` / `_broke`) — every popping arm
-  applies `commit_correct` to the popped SymVal and threads encodings
-  through the regfile evolution.
+* `commit_correct` + five sibling helpers (`commit_only_bumps_nextReg`,
+  `commit_preserves_stack` / `_locals` / `_broke` /
+  `_bufferSlots`) — every popping arm applies `commit_correct` to the
+  popped SymVal and threads encodings through the regfile evolution.
 * `evalOps_append` for chaining `opsCommit ++ [op_main]` evaluations
   past `broke` short-circuits.
 * Shape-extraction helpers: `binI32_some_shape`, `cmpI32_some_shape`,
   `lowerI32Bin_some_shape`, `lowerI32Cmp_some_shape`.
-* Generic binop preservation `preservation_i32Bin_generic` + 10
-  specializations; generic cmp `preservation_i32Cmp_generic` + 6
-  specializations.
+* Generic binop preservation `preservation_i32Bin_generic` (per-state
+  `h_l`) + 10 specializations; generic cmp `preservation_i32Cmp_generic`
+  + 6 specializations.
 * Closed per-instruction theorems:
   - `preservation_nop`
   - `preservation_return`
   - `preservation_i32Const`
-  - `preservation_localGet`
+  - `preservation_localGet` (precondition: `s.lookupBufferSlot i = none`
+    — the buffer-typed `localGet` arm pushes `bufferPtr` symbolically
+    and lands with HeapRefines in step 8)
   - `preservation_localSet`
   - `preservation_localTee`
-  - `preservation_i32{Add,Sub,Mul,And,Or,Xor,Shl,ShrU,DivU,RemU}`
+  - `preservation_i32{Add,Shl}` (precondition: stack does not match the
+    buffer-pattern shape — folded path lands in step 8)
+  - `preservation_i32{Sub,Mul,And,Or,Xor,ShrU,DivU,RemU}`
   - `preservation_i32{Eq,Ne,LtU,LeU,GtU,GeU}`
 
-That's **22 closed preservation theorems**. Slice 3 is fully closed
-— every i32 instruction in the lowered subset has a preservation
-proof, and every popping arm consumes a SymVal via `popSym + commit`
-(matching production's pull-based const-folding) instead of refusing
-on `i32ConstSym`. `drop` uses `popSym` alone; binop / cmp / localSet
-/ localTee chain `commit_correct` once or twice plus the per-op
-emission step glued via `evalOps_append`.
+That's **22 closed preservation theorems**. Slice 4 step 7 added the
+translator's buffer-pattern fast-paths (`lowerI32Add`, `lowerI32Shl`,
+`lowerI32Load`, `lowerI32Store`) plus the `bufferSlots` field on
+`LowerState` for buffer-typed `localGet`. The folded paths (push
+`bufferPtr` / `scaledIdx` / `bufferAccess` symbolically, emit
+typed `KernelOp.Load`/`Store`) compile through; their preservation
+proofs need `HeapRefines` consumers and land in step 8.
 
 ## What's next
 
-**Slice 4 step 7 — buffer-pattern recognition**: add lowerInstr
-arms that detect `<reg> <i32ConstSym k> i32.shl → ScaledIdx`,
-`<bufferPtr> <ScaledIdx> i32.add → BufferAccess`, and consume a
-`BufferAccess` via `i32.load`/`i32.store` into a typed
-`KernelOp.Load`/`Store`. Requires extending `LowerState` with a
-buffer-slot map (parameter analysis), giving each buffer SymVal a
-non-False encoding tied to `BufferLayout`, and lifting `HeapRefines`
-through the new typed memory ops.
+**Slice 4 step 8 — HeapRefines consumers**: extend `WasmValue.encodes`
+to relate `wI32 addr ↔ .bufferPtr slot` (via `BufferLayout.startAddr`),
+prove preservation for the buffer-typed `localGet` arm + the four
+folded paths (`i32.add → bufferAccess`, `i32.shl → scaledIdx`,
+`i32.load`/`i32.store` against `bufferAccess`). The `HeapRefines`
+clause (already in `Refines`) gets used for the first time here:
+`i32.load` reads `KOps.Heap.get? slot base` and pushes a `vU32`
+register that — by `HeapRefines` — encodes the same byte-level
+WASM value `mem.load_u32 (layout.startAddr slot + base.toNat * 4)`.
 
 **Slice 5** — control flow: frame reflection in `LowerState`;
 proofs for `block`, `loop`, `if`/`else`, `br`, `br_if`, plus the
@@ -543,6 +548,16 @@ theorem commit_preserves_locals {s : LowerState} {sv : SymVal}
   rw [commit_only_bumps_nextReg h]
   exact ⟨rfl, rfl⟩
 
+/-- `commit` preserves the `bufferSlots` map. Corollary of
+    `commit_only_bumps_nextReg`. Used by the shape lemmas
+    (`lowerI32Bin_some_shape`, `lowerI32Cmp_some_shape`) to discharge
+    the `bufferSlots` field of the post-state literal. -/
+theorem commit_preserves_bufferSlots {s : LowerState} {sv : SymVal}
+    {r : Reg} {s' : LowerState} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) :
+    s'.bufferSlots = s.bufferSlots := by
+  rw [commit_only_bumps_nextReg h]
+
 /-- The KOps `evalOps` of a commit's emitted op list preserves the
     `broke` flag — `.reg` emits no ops, `.i32ConstSym` emits a single
     `.const` write that doesn't touch `broke`. The address SymVals
@@ -725,6 +740,7 @@ open Quanta.KOps (vU32) in
 theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout) (R : Refines ws s kst layout)
     (i : Nat)
+    (h_no_buf : s.lookupBufferSlot i = none)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws (.localGet i) = some ws')
     (hl : lowerInstr s (.localGet i) = some (s', ops)) :
@@ -734,7 +750,8 @@ theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   match hloc : ws.locals.get? i, hw with
   | some v, hw =>
     simp only [lowerInstr, LowerState.lookupLocal, LowerState.alloc,
-               LowerState.push, Option.bind_eq_bind, Option.bind, pure] at hl
+               LowerState.push, Option.bind_eq_bind, Option.bind, pure,
+               h_no_buf] at hl
     rcases hregfind : s.localReg.find? (fun p => p.fst = i) with _ | entry
     · simp [hregfind] at hl
     · simp [hregfind] at hl
@@ -909,7 +926,8 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
       s' = { nextReg := s4.nextReg + 1,
              stack := SymVal.reg s4.nextReg .u32 :: lrest,
              localReg := s.localReg,
-             localTy := s.localTy } ∧
+             localTy := s.localTy,
+             bufferSlots := s.bufferSlots } ∧
       ops = opsA ++ opsB ++ [.binOp s4.nextReg ra rb bop .u32] := by
   unfold lowerI32Bin at h
   rcases hs : s.stack with _ | ⟨svb, _ | ⟨sva, lrest⟩⟩
@@ -939,6 +957,8 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
         have h_s4_stack : s4.stack = lrest := by rw [h_stkB, h_stkA]
         have h_s4_lr   : s4.localReg = s.localReg := by rw [h_locB.1, h_locA.1]
         have h_s4_lt   : s4.localTy  = s.localTy  := by rw [h_locB.2, h_locA.2]
+        have h_s4_bs   : s4.bufferSlots = s.bufferSlots := by
+          rw [commit_preserves_bufferSlots hcb, commit_preserves_bufferSlots hca]
         have h_s3_nr   : s.nextReg ≤ s3.nextReg := by
           -- commit returns either s (no bump) or s.alloc.snd (bump by 1).
           match sva, hca with
@@ -962,8 +982,8 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
         rw [← hs_eq]
         -- Goal: { s4 with nextReg := s4.nextReg + 1, stack := SymVal.reg s4.nextReg .u32 :: s4.stack }
         --     = { nextReg := s4.nextReg + 1, stack := SymVal.reg s4.nextReg .u32 :: lrest,
-        --         localReg := s.localReg, localTy := s.localTy }
-        rw [h_s4_stack, h_s4_lr, h_s4_lt]
+        --         localReg := s.localReg, localTy := s.localTy, bufferSlots := s.bufferSlots }
+        rw [h_s4_stack, h_s4_lr, h_s4_lt, h_s4_bs]
 
 /-- Shape for `lowerI32Cmp`. Same `popSym + commit` chain as
     `lowerI32Bin_some_shape`, but the final emission is the two-op
@@ -982,7 +1002,8 @@ theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
       s' = { nextReg := s4.nextReg + 2,
              stack := SymVal.reg (s4.nextReg + 1) .u32 :: lrest,
              localReg := s.localReg,
-             localTy := s.localTy } ∧
+             localTy := s.localTy,
+             bufferSlots := s.bufferSlots } ∧
       ops = opsA ++ opsB ++ [.cmp s4.nextReg ra rb cop .bool,
                               .cast (s4.nextReg + 1) s4.nextReg .bool .u32] := by
   unfold lowerI32Cmp at h
@@ -1008,6 +1029,8 @@ theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
         have h_s4_stack : s4.stack = lrest := by rw [h_stkB, h_stkA]
         have h_s4_lr   : s4.localReg = s.localReg := by rw [h_locB.1, h_locA.1]
         have h_s4_lt   : s4.localTy  = s.localTy  := by rw [h_locB.2, h_locA.2]
+        have h_s4_bs   : s4.bufferSlots = s.bufferSlots := by
+          rw [commit_preserves_bufferSlots hcb, commit_preserves_bufferSlots hca]
         have h_s3_nr   : s.nextReg ≤ s3.nextReg := by
           match sva, hca with
           | .reg _ _, hca =>
@@ -1028,7 +1051,7 @@ theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
                 rfl, hca, hcb, h_s4_stack, h_s4_lr, h_s4_lt,
                 Nat.le_trans h_s3_nr h_s4_nr, ?_, hops_eq.symm⟩
         rw [← hs_eq]
-        rw [h_s4_stack, h_s4_lr, h_s4_lt]
+        rw [h_s4_stack, h_s4_lr, h_s4_lt, h_s4_bs]
 
 -- ════════════════════════════════════════════════════════════════════
 -- Generic i32 binop preservation (instantiates for the 10-op family)
@@ -1060,12 +1083,12 @@ theorem preservation_i32Bin_generic
     (instr : WasmInstr) (op_w : UInt32 → UInt32 → UInt32)
     (op_k : Quanta.KOps.BinOp)
     (h_w : ∀ s, evalInstr s instr = binI32 op_w s)
-    (h_l : ∀ s, lowerInstr s instr = lowerI32Bin s op_k)
     (h_agree : ∀ av bv,
        Quanta.KOps.evalBinOp op_k (vU32 av) (vU32 bv) = some (vU32 (op_w av bv)))
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (h_l : lowerInstr s instr = lowerI32Bin s op_k)
     (hw : evalInstr ws instr = some ws')
     (hl : lowerInstr s instr = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
@@ -1106,7 +1129,8 @@ theorem preservation_i32Bin_generic
     simpa using hl_orig
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
-      localReg := s.localReg, localTy := s.localTy }
+      localReg := s.localReg, localTy := s.localTy,
+      bufferSlots := s.bufferSlots }
   let ws_pop : WasmState :=
     { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
@@ -1244,56 +1268,157 @@ theorem preservation_i32Bin_generic
       exact R2.injLocals p q hp hq
 
 -- ── Per-op specializations (10 binops) ─────────────────────────────────
+--
+-- Each per-op preservation is a thin wrapper around
+-- `preservation_i32Bin_generic`. For the 8 ops without a buffer-pattern
+-- fast-path (Sub, Mul, And, Or, Xor, ShrU, DivU, RemU), the wrapper
+-- supplies `h_l := rfl` — `lowerInstr s .i32Foo = lowerI32Bin s .Foo`
+-- holds definitionally for any `s`. For `Add` and `Shl`, the lowering
+-- arm dispatches into `lowerI32Add` / `lowerI32Shl` whose buffer-
+-- pattern fast-paths return a folded `bufferAccess` / `scaledIdx`
+-- without emitting IR — the wrapper takes a `h_no_buf` precondition
+-- that excludes the buffer-pattern stack shape, and derives the
+-- `h_l` equation from it. The folded-path preservation lands with
+-- `HeapRefines` consumers in slice-4 step 8.
 
-def preservation_i32Add :=
-  preservation_i32Bin_generic .i32Add eval_u32_wrapping_add .add
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
-
-def preservation_i32Sub :=
+theorem preservation_i32Sub
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Sub = some ws')
+    (hl : lowerInstr s .i32Sub = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32Sub eval_u32_wrapping_sub .sub
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
-def preservation_i32Mul :=
+theorem preservation_i32Mul
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Mul = some ws')
+    (hl : lowerInstr s .i32Mul = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32Mul eval_u32_wrapping_mul .mul
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
-def preservation_i32And :=
+theorem preservation_i32And
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32And = some ws')
+    (hl : lowerInstr s .i32And = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32And eval_u32_bitand .bAnd
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
-def preservation_i32Or :=
+theorem preservation_i32Or
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Or = some ws')
+    (hl : lowerInstr s .i32Or = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32Or eval_u32_bitor .bOr
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
-def preservation_i32Xor :=
+theorem preservation_i32Xor
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Xor = some ws')
+    (hl : lowerInstr s .i32Xor = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32Xor eval_u32_bitxor .bXor
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
-def preservation_i32Shl :=
-  preservation_i32Bin_generic .i32Shl (fun a b => a <<< b) .shl
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
-
-def preservation_i32ShrU :=
+theorem preservation_i32ShrU
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32ShrU = some ws')
+    (hl : lowerInstr s .i32ShrU = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32ShrU (fun a b => a >>> b) .shr
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
-def preservation_i32DivU :=
+theorem preservation_i32DivU
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32DivU = some ws')
+    (hl : lowerInstr s .i32DivU = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32DivU eval_u32_div .div
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
-def preservation_i32RemU :=
+theorem preservation_i32RemU
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32RemU = some ws')
+    (hl : lowerInstr s .i32RemU = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32RemU eval_u32_rem .rem
-    (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
+
+/-- The buffer-pattern stack shape `lowerI32Add` recognizes:
+    `<scaledIdx> :: <bufferPtr> :: _` or its order-flipped twin. When
+    excluded by `h_no_buf`, `lowerI32Add s = lowerI32Bin s .add` and
+    the generic binop preservation closes the proof. The folded-path
+    preservation (push `bufferAccess` symbolically) lands in
+    slice-4 step 8 alongside `i32.load`/`i32.store` consumers. -/
+theorem preservation_i32Add
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (h_no_buf : ∀ slot base scale rest,
+      s.stack ≠ .scaledIdx base scale :: .bufferPtr slot :: rest ∧
+      s.stack ≠ .bufferPtr slot :: .scaledIdx base scale :: rest)
+    (hw : evalInstr ws .i32Add = some ws')
+    (hl : lowerInstr s .i32Add = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  have h_l : lowerInstr s .i32Add = lowerI32Bin s .add := by
+    show lowerI32Add s = lowerI32Bin s .add
+    unfold lowerI32Add
+    split
+    next base scale slot rest hs => exact absurd hs (h_no_buf slot base scale rest).left
+    next slot base scale rest hs => exact absurd hs (h_no_buf slot base scale rest).right
+    next => rfl
+  exact preservation_i32Bin_generic .i32Add eval_u32_wrapping_add .add
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops h_l hw hl
+
+/-- The buffer-pattern stack shape `lowerI32Shl` recognizes:
+    `<i32ConstSym k> :: <reg base _> :: _`. When excluded by
+    `h_no_buf`, `lowerI32Shl s = lowerI32Bin s .shl` and the generic
+    binop preservation closes the proof. The folded-path preservation
+    (push `scaledIdx` symbolically) lands in slice-4 step 8. -/
+theorem preservation_i32Shl
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (h_no_buf : ∀ k base ty rest,
+      s.stack ≠ .i32ConstSym k :: .reg base ty :: rest)
+    (hw : evalInstr ws .i32Shl = some ws')
+    (hl : lowerInstr s .i32Shl = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  have h_l : lowerInstr s .i32Shl = lowerI32Bin s .shl := by
+    show lowerI32Shl s = lowerI32Bin s .shl
+    unfold lowerI32Shl
+    split
+    next k base ty rest hs => exact absurd hs (h_no_buf k base ty rest)
+    next => rfl
+  exact preservation_i32Bin_generic .i32Shl (fun a b => a <<< b) .shl
+    (fun _ => rfl) (by intro av bv; rfl)
+    ws s kst layout R h_kst_ok ws' s' ops h_l hw hl
 
 -- ════════════════════════════════════════════════════════════════════
 -- Generic i32 comparison preservation (instantiates for the 6-op family)
@@ -1370,7 +1495,8 @@ theorem preservation_i32Cmp_generic
   -- Refines bundle for the popped state s_pop / ws_pop.
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
-      localReg := s.localReg, localTy := s.localTy }
+      localReg := s.localReg, localTy := s.localTy,
+      bufferSlots := s.bufferSlots }
   let ws_pop : WasmState :=
     { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
@@ -1627,7 +1753,8 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     simpa using hl_orig
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
-      localReg := s.localReg, localTy := s.localTy }
+      localReg := s.localReg, localTy := s.localTy,
+      bufferSlots := s.bufferSlots }
   let ws_pop : WasmState := { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
     refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
@@ -1972,7 +2099,8 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     simpa using hl_orig
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
-      localReg := s.localReg, localTy := s.localTy }
+      localReg := s.localReg, localTy := s.localTy,
+      bufferSlots := s.bufferSlots }
   let ws_pop : WasmState := { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
     refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩

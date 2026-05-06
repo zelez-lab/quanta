@@ -96,10 +96,19 @@ structure LowerState where
   localReg : List (Nat × Reg)
   /-- `localIdx → Scalar` — kept in lockstep with `localReg`. -/
   localTy  : List (Nat × Scalar)
+  /-- `localIdx → bufferSlot`. Records which locals were seeded as
+      `#[quanta::shared]` buffer-pointer parameters (production: the
+      `ParamKind::BufferRead | BufferWrite` arms in
+      `crates/quanta-wasm-lowering/src/lower.rs` `LowerCtx::new`).
+      Used by `localGet` to push `SymVal.bufferPtr slot` instead of
+      reading a stable register, so the subsequent `<scaledIdx>
+      i32.add | i32.load` chain can fold into a typed
+      `KernelOp.Load`. -/
+  bufferSlots : List (Nat × Nat)
   deriving Repr
 
 def LowerState.empty : LowerState :=
-  { nextReg := 0, stack := [], localReg := [], localTy := [] }
+  { nextReg := 0, stack := [], localReg := [], localTy := [], bufferSlots := [] }
 
 namespace LowerState
 
@@ -138,6 +147,13 @@ def lookupLocal (s : LowerState) (i : Nat) : Option Reg :=
 
 def lookupLocalTy (s : LowerState) (i : Nat) : Option Scalar :=
   s.localTy.find? (fun p => p.fst = i) |>.map Prod.snd
+
+/-- Lookup which buffer slot a local was seeded as. `none` for a
+    plain scalar local; `some slot` for a `#[quanta::shared]` buffer
+    parameter. Used by `localGet` to dispatch into the buffer-pattern
+    arm instead of the generic stable-reg read. -/
+def lookupBufferSlot (s : LowerState) (i : Nat) : Option Nat :=
+  s.bufferSlots.find? (fun p => p.fst = i) |>.map Prod.snd
 
 def setLocalReg (s : LowerState) (i : Nat) (r : Reg) (ty : Scalar) : LowerState :=
   let regs' := (i, r) :: s.localReg.filter (fun p => p.fst ≠ i)
@@ -221,6 +237,62 @@ def lowerI32Cmp (s : LowerState) (op : CmpOp) : Option (LowerState × List Kerne
   let s7 := s6.push dst
   pure (s7, opsA ++ opsB ++ [.cmp boolReg ra rb op .bool, .cast dst boolReg .bool .u32])
 
+/-- Lower `i32.shl`. Production fast-path: if the popped operands are
+    `<reg base> <i32ConstSym k>`, fold to `SymVal.scaledIdx base
+    (1 <<< k)` with no IR emitted (the canonical "element index → byte
+    offset" pattern rustc emits). Otherwise fall through to the
+    generic `lowerI32Bin .shl`. Mirrors `RawInstr::I32Shl` in
+    `crates/quanta-wasm-lowering/src/lower.rs`. -/
+def lowerI32Shl (s : LowerState) : Option (LowerState × List KernelOp) :=
+  match s.stack with
+  | .i32ConstSym k :: .reg base _ :: rest =>
+      let scale := 1 <<< k.toNat
+      some ({ s with stack := .scaledIdx base scale :: rest }, [])
+  | _ => lowerI32Bin s .shl
+
+/-- Lower `i32.add`. Production fast-path: if the popped operands are
+    `<bufferPtr slot> <scaledIdx base scale>` (in either order), fold
+    to `SymVal.bufferAccess slot base scale` with no IR emitted. The
+    typed `KernelOp.Load`/`Store` consumes the `bufferAccess` in the
+    next memory op. Otherwise fall through to `lowerI32Bin .add`.
+    Mirrors `RawInstr::I32Add` in `lower.rs`. -/
+def lowerI32Add (s : LowerState) : Option (LowerState × List KernelOp) :=
+  match s.stack with
+  | .scaledIdx base scale :: .bufferPtr slot :: rest =>
+      some ({ s with stack := .bufferAccess slot base scale :: rest }, [])
+  | .bufferPtr slot :: .scaledIdx base scale :: rest =>
+      some ({ s with stack := .bufferAccess slot base scale :: rest }, [])
+  | _ => lowerI32Bin s .add
+
+/-- Lower `i32.load`. Only succeeds on a `BufferAccess { scale := 4 }`
+    address — the buffer-pattern arms above (`localGet` for buffer
+    locals, `i32.shl` for scaledIdx, `i32.add` for bufferAccess) are
+    the only producers of that shape, so a successful match certifies
+    the source is a `<bufferPtr>+<i*4>` chain. Allocates a fresh reg
+    and emits `KernelOp.Load { field := slot, index := base, ty := .u32 }`.
+    `none` on any other address shape (no plain-address fallback —
+    matches production `lower.rs::I32Load`'s `UnsupportedOp` arm). -/
+def lowerI32Load (s : LowerState) : Option (LowerState × List KernelOp) :=
+  match s.stack with
+  | .bufferAccess slot base 4 :: rest =>
+      let (dst, s1) := s.alloc
+      some ({ s1 with stack := .reg dst .u32 :: rest }, [.load dst slot base .u32])
+  | _ => none
+
+/-- Lower `i32.store`. Pops val (top), then addr; commits val into a
+    real register (`commit` materializes a `.i32ConstSym` source via a
+    prefix const op), then emits `KernelOp.Store` against the
+    `BufferAccess { scale := 4 }` addr. `none` on any other address
+    shape — matches `lower.rs::I32Store`. -/
+def lowerI32Store (s : LowerState) : Option (LowerState × List KernelOp) := do
+  let (sv_val, s1) ← s.popSym
+  let (sv_addr, s2) ← s1.popSym
+  let (src, s3, opsCommit) ← s2.commit sv_val
+  match sv_addr with
+  | .bufferAccess slot base 4 =>
+      pure (s3, opsCommit ++ [.store slot base src .u32])
+  | _ => none
+
 /-- Lower one WASM instruction. Returns the new state and the emitted
     KOps. `none` for ops outside the subset (matches the production
     pass's `UnsupportedOp` error). -/
@@ -248,11 +320,22 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
   -- preservation proof tractable. The semantic effect is identical
   -- (one extra IR copy); production likely doesn't hit the alias bug
   -- because rustc-emitted WASM avoids the pattern.
-  | .localGet i => do
-      let stable ← s.lookupLocal i
-      let (fresh, s1) := s.alloc
-      let s2 := s1.push fresh
-      pure (s2, [.copy fresh stable])
+  | .localGet i =>
+      -- Buffer-typed locals (seeded from `#[quanta::shared]`
+      -- parameters) push their `SymVal.bufferPtr slot` symbolically:
+      -- no register allocated, no IR emitted. The subsequent
+      -- `<scaledIdx> i32.add | i32.load` chain folds into a typed
+      -- `KernelOp.Load` against `slot`. Mirrors production
+      -- `LowerCtx::process_instruction`'s LocalGet path which reads
+      -- the local's initial `Some(SymVal::BufferPtr(slot))` if any.
+      match s.lookupBufferSlot i with
+      | some slot =>
+          some (s.pushSym (.bufferPtr slot), [])
+      | none => do
+          let stable ← s.lookupLocal i
+          let (fresh, s1) := s.alloc
+          let s2 := s1.push fresh
+          pure (s2, [.copy fresh stable])
   | .localSet i => do
       -- popSym + commit (matches binop/cmp/localTee): a popped
       -- `.i32ConstSym` materializes via a const-op prefix, while
@@ -299,17 +382,25 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
           let (post_fresh, s5) := s4.alloc
           pure (s5.push post_fresh,
                 opsCommit ++ [.copy dst src, .copy post_fresh dst])
-  -- i32 arithmetic
-  | .i32Add  => lowerI32Bin s .add
+  -- i32 arithmetic. `i32.shl` and `i32.add` carry the buffer-pattern
+  -- recognition fast-paths; the others dispatch directly to the
+  -- generic binop lowering.
+  | .i32Add  => lowerI32Add s
   | .i32Sub  => lowerI32Bin s .sub
   | .i32Mul  => lowerI32Bin s .mul
   | .i32And  => lowerI32Bin s .bAnd
   | .i32Or   => lowerI32Bin s .bOr
   | .i32Xor  => lowerI32Bin s .bXor
-  | .i32Shl  => lowerI32Bin s .shl
+  | .i32Shl  => lowerI32Shl s
   | .i32ShrU => lowerI32Bin s .shr
   | .i32DivU => lowerI32Bin s .div
   | .i32RemU => lowerI32Bin s .rem
+  -- Memory: typed loads/stores against `#[quanta::shared]` buffers.
+  -- Only the buffer-pattern address shape (BufferAccess from the
+  -- recognized `<bufferPtr>+<i*4>` chain) is accepted — production
+  -- refuses any other shape with `UnsupportedOp`.
+  | .i32Load _offset _align  => lowerI32Load s
+  | .i32Store _offset _align => lowerI32Store s
   -- i32 comparisons (unsigned only — signed lift in a later slice).
   | .i32Eq  => lowerI32Cmp s .eq
   | .i32Ne  => lowerI32Cmp s .ne
