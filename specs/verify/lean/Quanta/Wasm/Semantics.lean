@@ -317,7 +317,7 @@ def evalInstr (s : WasmState) : WasmInstr → Option WasmState
 def evalInstrs (fuel : Nat) (s : WasmState) : List WasmInstr → Option WasmState
   | [] => some s
   | i :: rest =>
-      if s.halted ∨ s.branchTarget.isSome then some s
+      if s.halted || s.branchTarget.isSome then some s
       else
         match i with
         | .block _ =>
