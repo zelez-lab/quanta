@@ -137,4 +137,116 @@ theorem preservation_br_loop_zero
     -- in branchTarget, which Refines doesn't see.
     refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
 
+-- ════════════════════════════════════════════════════════════════════
+-- `br depth` with cross-Loop break (emits [.breakOp])
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `br depth` to a non-Loop frame with a `loopK` between top and
+    target: lowering emits `[KernelOp.breakOp]` so the cond register
+    stays inside the surrounding Loop body. WASM-side semantics is
+    the same as any `br`: set `branchTarget := some depth`, then
+    short-circuit on `rest`.
+
+    `Refines` is preserved because none of its components looks at
+    either `WasmState.branchTarget` (set by br) or `KOps.State.broke`
+    (set by `evalOp .breakOp`). -/
+theorem preservation_br_break_nonLoop
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (depth : Nat) (rest : List WasmInstr)
+    (kind : FrameKind) (h_kind_ne_loop : kind ≠ .loopK)
+    (h_target : frames.get? depth = some kind)
+    (h_loop_above : hasLoopAbove frames depth = true)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Lowering side: br arm with `frames.get? depth = some kind` (kind ≠ loopK)
+  -- and `hasLoopAbove = true` selects the `[.breakOp]` arm.
+  have h_lower : lowerInstrs fuel frames s (.br depth :: rest)
+                  = some (s, [KernelOp.breakOp]) := by
+    cases kind with
+    | block => simp only [lowerInstrs, h_target, h_loop_above, ↓reduceIte]
+    | wif   => simp only [lowerInstrs, h_target, h_loop_above, ↓reduceIte]
+    | loopK => exact (h_kind_ne_loop rfl).elim
+  rw [h_lower] at hl
+  have hl' : (s, [KernelOp.breakOp]) = (s', ops) :=
+    (Option.some.injEq _ _).mp hl
+  have hs_eq : s = s' := congrArg Prod.fst hl'
+  have hops_eq : [KernelOp.breakOp] = ops := congrArg Prod.snd hl'
+  -- Eval side: `br depth` step + short-circuit on rest.
+  have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+    rw [h_no_halt, h_no_branch]; rfl
+  let ws_post : WasmState := { ws with branchTarget := some depth }
+  have h_post_branch : ws_post.branchTarget = some depth := rfl
+  have h_evalInstr : evalInstr ws (.br depth) = some ws_post := rfl
+  have h_step : evalInstrs fuel ws (.br depth :: rest)
+                  = evalInstrs fuel ws_post rest := by
+    conv => lhs; unfold evalInstrs
+    rw [h_cond]
+    simp [h_evalInstr]
+  rw [h_step] at hw
+  rw [evalInstrs_branchTarget_some fuel ws_post rest depth h_post_branch] at hw
+  have hws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+  -- KOps side: `[.breakOp]` runs to `{ kst with broke := true }`.
+  let kst_post : Quanta.KOps.State := { kst with broke := true }
+  refine ⟨kst_post, ?_, ?_⟩
+  · rw [← hops_eq]; simp [evalOps, Quanta.KOps.evalOp, kst_post]
+  · rw [← hs_eq, hws'_eq]
+    -- Refines lifts: Refines doesn't see branchTarget or broke. The
+    -- regfile / heap / stack / locals all carry over from R.
+    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
+
+/-- `br depth` targeting an outer Loop frame (`depth ≠ 0`) with a
+    Loop frame between top and target: lowering emits
+    `[KernelOp.breakOp]` to escape the inner loop. Same shape as
+    `preservation_br_break_nonLoop` but the target frame kind is
+    `.loopK` (and `depth > 0` is required for the inner `if-else`
+    to fall through to the `hasLoopAbove` check). -/
+theorem preservation_br_loop_outer_break
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (depth : Nat) (rest : List WasmInstr)
+    (h_depth_pos : depth ≠ 0)
+    (h_target : frames.get? depth = some .loopK)
+    (h_loop_above : hasLoopAbove frames depth = true)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  have h_lower : lowerInstrs fuel frames s (.br depth :: rest)
+                  = some (s, [KernelOp.breakOp]) := by
+    simp only [lowerInstrs, h_target, h_depth_pos, ↓reduceIte, h_loop_above]
+  rw [h_lower] at hl
+  have hl' : (s, [KernelOp.breakOp]) = (s', ops) :=
+    (Option.some.injEq _ _).mp hl
+  have hs_eq : s = s' := congrArg Prod.fst hl'
+  have hops_eq : [KernelOp.breakOp] = ops := congrArg Prod.snd hl'
+  have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+    rw [h_no_halt, h_no_branch]; rfl
+  let ws_post : WasmState := { ws with branchTarget := some depth }
+  have h_post_branch : ws_post.branchTarget = some depth := rfl
+  have h_evalInstr : evalInstr ws (.br depth) = some ws_post := rfl
+  have h_step : evalInstrs fuel ws (.br depth :: rest)
+                  = evalInstrs fuel ws_post rest := by
+    conv => lhs; unfold evalInstrs
+    rw [h_cond]
+    simp [h_evalInstr]
+  rw [h_step] at hw
+  rw [evalInstrs_branchTarget_some fuel ws_post rest depth h_post_branch] at hw
+  have hws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+  let kst_post : Quanta.KOps.State := { kst with broke := true }
+  refine ⟨kst_post, ?_, ?_⟩
+  · rw [← hops_eq]; simp [evalOps, Quanta.KOps.evalOp, kst_post]
+  · rw [← hs_eq, hws'_eq]
+    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
+
 end Quanta.Wasm
