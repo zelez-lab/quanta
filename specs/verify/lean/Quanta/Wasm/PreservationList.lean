@@ -876,4 +876,143 @@ theorem preservation_evalInstrs_cons_localSet
               · rw [← h_ops_eq]; exact h_eval''
               · rw [← h_s_eq]; exact R''
 
+-- ════════════════════════════════════════════════════════════════════
+-- localTee cons case
+--
+-- Head ops are `opsCommit ++ [.copy dst src, .copy post_fresh dst]`
+-- — same `popSym + commit` prefix as localSet, with an extra `.copy`
+-- to break aliasing when the post-tee stack value is read back. Both
+-- `lookupLocal` arms emit the same op-shape; only `dst` differs.
+-- ════════════════════════════════════════════════════════════════════
+
+private theorem lowerInstr_localTee_emits_loopFreeNoBreak
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (h : lowerInstr s (.localTee i) = some (s', ops)) :
+    loopFreeNoBreak ops = true := by
+  unfold lowerInstr at h
+  rcases hs : s.stack with _ | ⟨sva, lrest⟩
+  · simp [hs, LowerState.popSym] at h
+  simp only [hs, LowerState.popSym, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hca : ({s with stack := lrest} : LowerState).commit sva
+      with _ | ⟨src, s2, opsCommit⟩
+  · simp [hca] at h
+  simp only [hca, Option.some_bind] at h
+  have h_lf_commit : loopFreeNoBreak opsCommit = true :=
+    commit_emits_loopFreeNoBreak hca
+  cases hlk : s2.lookupLocal i with
+  | none =>
+      simp [hlk, LowerState.alloc, LowerState.setLocalReg, LowerState.push] at h
+      obtain ⟨_, hops⟩ := h
+      cases hops
+      simp only [loopFreeNoBreak_append, h_lf_commit, Bool.true_and]
+      rfl
+  | some dst =>
+      simp [hlk, LowerState.setLocalReg, LowerState.alloc, LowerState.push] at h
+      obtain ⟨_, hops⟩ := h
+      cases hops
+      simp only [loopFreeNoBreak_append, h_lf_commit, Bool.true_and]
+      rfl
+
+/-- `localTee i :: rest` preservation. Head ops are `opsCommit ++
+    [.copy dst src, .copy post_fresh dst]` — same broke-preservation
+    discharge pattern as localSet. -/
+theorem preservation_evalInstrs_cons_localTee
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (i : Nat)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.localTee i :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.localTee i :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  rw [lowerInstrs_cons_default fuel frames s (.localTee i) rest rfl] at hl
+  cases h_head : lowerInstr s (.localTee i) with
+  | none =>
+      rw [h_head] at hl
+      simp at hl
+  | some head_pair =>
+      rcases head_pair with ⟨s_after, ops_head⟩
+      rw [h_head] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind] at hl
+      cases h_post : lowerInstrs fuel frames s_after rest with
+      | none => simp [h_post] at hl
+      | some post_pair =>
+          rcases post_pair with ⟨s_post, postOps⟩
+          simp [h_post] at hl
+          rcases hl with ⟨h_s_eq, h_ops_eq⟩
+          rw [evalInstrs_cons_default fuel ws (.localTee i) rest h_no_branch h_no_halt rfl] at hw
+          cases h_eval_head : evalInstr ws (.localTee i) with
+          | none =>
+              rw [h_eval_head] at hw
+              simp at hw
+          | some ws_after =>
+              rw [h_eval_head] at hw
+              simp only at hw
+              obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+                preservation_localTee ws s kst layout R h_kst_no_broke i
+                  ws_after s_after ops_head
+                  h_eval_head h_head
+              have h_lf_head : loopFreeNoBreak ops_head = true :=
+                lowerInstr_localTee_emits_loopFreeNoBreak h_head
+              have h_lf_head_shallow : loopFree ops_head = true :=
+                loopFreeNoBreak_implies_loopFree h_lf_head
+              have h_mid_broke : kst_mid.broke = false :=
+                evalOps_loopFreeNoBreak_preserves_broke
+                  h_lf_head h_kst_no_broke h_kst_eval
+              -- localTee preserves branchTarget / halted (same as localSet,
+              -- with an extra push of the same v_w).
+              have h_mid_no_branch : ws_after.branchTarget = none := by
+                simp only [evalInstr, WasmState.pop, WasmState.push, WasmState.setLocal,
+                           Option.bind_eq_bind, Option.bind, pure] at h_eval_head
+                rcases hws : ws.stack with _ | ⟨v_w, rest_ws⟩
+                · simp [hws] at h_eval_head
+                · simp only [hws] at h_eval_head
+                  by_cases hbnd : i < ws.locals.length
+                  · simp only [if_pos hbnd] at h_eval_head
+                    have := ((Option.some.injEq _ _).mp h_eval_head).symm
+                    rw [this]; simp [h_no_branch]
+                  · simp only [if_neg hbnd] at h_eval_head
+                    simp at h_eval_head
+              have h_mid_no_halt : ws_after.halted = false := by
+                simp only [evalInstr, WasmState.pop, WasmState.push, WasmState.setLocal,
+                           Option.bind_eq_bind, Option.bind, pure] at h_eval_head
+                rcases hws : ws.stack with _ | ⟨v_w, rest_ws⟩
+                · simp [hws] at h_eval_head
+                · simp only [hws] at h_eval_head
+                  by_cases hbnd : i < ws.locals.length
+                  · simp only [if_pos hbnd] at h_eval_head
+                    have := ((Option.some.injEq _ _).mp h_eval_head).symm
+                    rw [this]; simp [h_no_halt]
+                  · simp only [if_neg hbnd] at h_eval_head
+                    simp at h_eval_head
+              obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+              have h_chained :
+                  ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
+                    ∧ Refines ws' s_post kst'' layout :=
+                preservation_evalInstrs_cons_compose_shallow
+                  h_lf_head_shallow h_kst_eval h_mid_broke
+                  ⟨kst'_mid, h_eval_rest, R_rest⟩
+              obtain ⟨kst'', h_eval'', R''⟩ := h_chained
+              refine ⟨kst'', F_rest, ?_, ?_⟩
+              · rw [← h_ops_eq]; exact h_eval''
+              · rw [← h_s_eq]; exact R''
+
 end Quanta.Wasm
