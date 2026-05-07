@@ -1015,4 +1015,119 @@ theorem preservation_evalInstrs_cons_localTee
               · rw [← h_ops_eq]; exact h_eval''
               · rw [← h_s_eq]; exact R''
 
+-- ════════════════════════════════════════════════════════════════════
+-- drop cons case
+--
+-- `drop` emits no IR — head ops is `[]`. WASM pops one value from the
+-- stack; lowering pops one SymVal from the symbolic stack. Refines
+-- lifts via the same suffix-shift pattern used for the popped state in
+-- `lowerI32Bin_some_shape` callers — Stack indices shift by 1, all
+-- other components carry over.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `drop :: rest` preservation. Head ops empty; mid-state is the
+    popped state on both sides. -/
+theorem preservation_evalInstrs_cons_drop
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.drop :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.drop :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Both sides require a non-empty stack; case-split.
+  rcases hws_stack : ws.stack with _ | ⟨v_w, rest_ws⟩
+  · -- WASM-side pop fails → evalInstrs returns none → contradiction with hw.
+    rw [evalInstrs_cons_default fuel ws .drop rest h_no_branch h_no_halt rfl] at hw
+    have h_ev : evalInstr ws .drop = none := by
+      show (do let (_, s1) ← ws.pop; pure s1) = none
+      simp [WasmState.pop, hws_stack]
+    rw [h_ev] at hw
+    simp at hw
+  rcases hls_stack : s.stack with _ | ⟨sva, lrest⟩
+  · -- Symbolic-side pop fails → lowerInstrs returns none → contradiction with hl.
+    rw [lowerInstrs_cons_default fuel frames s .drop rest rfl] at hl
+    have h_lw : lowerInstr s .drop = none := by
+      show (do let (_, s1) ← s.popSym; pure (s1, ([] : List KernelOp))) = none
+      simp [LowerState.popSym, hls_stack]
+    rw [h_lw] at hl
+    simp at hl
+  -- Both pops succeed. Build mid-states.
+  let ws_mid : WasmState := { ws with stack := rest_ws }
+  let s_mid : LowerState :=
+    { nextReg := s.nextReg, stack := lrest,
+      localReg := s.localReg, localTy := s.localTy,
+      bufferSlots := s.bufferSlots }
+  -- Lowering side: lowerInstrs fuel frames s_mid rest = some (s', ops).
+  have hl' : lowerInstrs fuel frames s_mid rest = some (s', ops) := by
+    rw [lowerInstrs_cons_default fuel frames s .drop rest rfl] at hl
+    have h_lw : lowerInstr s .drop = some (s_mid, []) := by
+      show (do let (_, s1) ← s.popSym; pure (s1, ([] : List KernelOp))) = some (s_mid, [])
+      unfold LowerState.popSym
+      rw [hls_stack]
+      rfl
+    rw [h_lw] at hl
+    simp only [Option.bind_eq_bind, Option.some_bind, List.nil_append] at hl
+    show lowerInstrs fuel frames s_mid rest = some (s', ops)
+    exact cons_default_lowerInstrs_collapse_empty_head hl
+  -- Eval side: evalInstrs fuel ws_mid rest = some ws'.
+  have hw' : evalInstrs fuel ws_mid rest = some ws' := by
+    rw [evalInstrs_cons_default fuel ws .drop rest h_no_branch h_no_halt rfl] at hw
+    have h_ev : evalInstr ws .drop = some ws_mid := by
+      show (do let (_, s1) ← ws.pop; pure s1) = some ws_mid
+      unfold WasmState.pop
+      rw [hws_stack]
+      rfl
+    rw [h_ev] at hw
+    simp only at hw
+    exact hw
+  -- Refines lift on the pop.
+  have h_rest_lrest_len : rest_ws.length = lrest.length := by
+    have hl_orig := R.stk.left
+    rw [hws_stack, hls_stack] at hl_orig
+    simpa using hl_orig
+  have R_mid : Refines ws_mid s_mid kst layout := by
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    · -- StackRefines on suffixes (indices shift by 1).
+      intro k v hv
+      have hrest_get : ws.stack.get? (k + 1) = some v := by
+        rw [hws_stack]; simpa using hv
+      obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right (k + 1) v hrest_get
+      have hlrest_get : lrest.get? k = some svk := by
+        have h2 : s.stack.get? (k + 1) = some svk := hsvk_get
+        rw [hls_stack] at h2; simpa using h2
+      exact ⟨svk, by simpa using hlrest_get, henc⟩
+    · -- Fresh: s_mid.stack ⊆ s.stack (we removed sva).
+      refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r hr
+      have hsv_in : sv ∈ s.stack := by
+        rw [hls_stack]; exact List.mem_cons_of_mem _ hsv
+      exact R.fresh.left sv hsv_in r hr
+    · -- AliasFree: same projection on the lrest suffix.
+      intro ir hir sv hsv
+      have hsv_in : sv ∈ s.stack := by
+        rw [hls_stack]; exact List.mem_cons_of_mem _ hsv
+      exact R.aliasFree ir hir sv hsv_in
+  have h_mid_no_branch : ws_mid.branchTarget = none := by
+    simp [ws_mid, h_no_branch]
+  have h_mid_no_halt : ws_mid.halted = false := by
+    simp [ws_mid, h_no_halt]
+  exact preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw' hl'
+
 end Quanta.Wasm
