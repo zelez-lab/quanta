@@ -1832,4 +1832,52 @@ theorem preservation_evalInstrs_cons_localGet_bufferSlot
             exact h_eval_rest
           · rw [← h_s_eq]; exact R_rest
 
+-- ════════════════════════════════════════════════════════════════════
+-- i32Shl (non-buffer path) cons case
+--
+-- Same shape as i32Add: when the popped stack doesn't match
+-- `<i32ConstSym k> :: <reg base ty> :: rest`, lowerI32Shl falls
+-- through to lowerI32Bin s .shl. h_no_buf supplies the equational
+-- reduction; the binop generic does the rest.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem preservation_evalInstrs_cons_i32Shl
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_no_buf : ∀ k base ty rest,
+      s.stack ≠ .i32ConstSym k :: .reg base ty :: rest)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Shl :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Shl :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  have h_l_eq : lowerInstr s .i32Shl = lowerI32Bin s .shl := by
+    show lowerI32Shl s = lowerI32Bin s .shl
+    unfold lowerI32Shl
+    split
+    next k base ty rest hs => exact absurd hs (h_no_buf k base ty rest)
+    next => rfl
+  exact preservation_evalInstrs_cons_i32Bin_generic
+    .i32Shl (fun a b => a <<< b) .shl
+    (fun _ => rfl) (by intro av bv; rfl)
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke h_l_eq rfl rfl rest
+    preservation_rest ws' s' ops hw hl
+
 end Quanta.Wasm
