@@ -132,4 +132,65 @@ theorem evalOps_append_loopFree_head
   rw [evalOps_append h_head_F h_no_broke]
   exact h_rest
 
+-- ════════════════════════════════════════════════════════════════════
+-- Cons-default unfold lemmas
+--
+-- `lowerInstrs` (5 structured arms: block / wloop / wif / br / brIf)
+-- and `evalInstrs` (3 structured arms: block / wloop / wif — `br`/`brIf`
+-- go through `evalInstr` and the surrounding `branchTarget` short-
+-- circuit) both fall through a default arm for non-structured
+-- instructions. The `isStructuredLower` and `isStructuredEval` Bool
+-- predicates carve out the structured constructors; the lemmas below
+-- expose the default-arm shape so the cons-composer can rewrite the
+-- list-level call into a per-instruction call + recursion on the rest.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `WasmInstr` arms that take a structured arm in `lowerInstrs`. -/
+def isStructuredLower : WasmInstr → Bool
+  | .block _ | .wloop _ | .wif _ | .br _ | .brIf _ => true
+  | _ => false
+
+/-- `WasmInstr` arms that take a structured arm in `evalInstrs`. Note
+    that `br` / `brIf` are NOT here — they go through `evalInstr` which
+    sets `branchTarget`, and the surrounding `evalInstrs` short-
+    circuits via the `branchTarget.isSome` check. -/
+def isStructuredEval : WasmInstr → Bool
+  | .block _ | .wloop _ | .wif _ => true
+  | _ => false
+
+/-- `lowerInstrs` on a non-structured head delegates to `lowerInstr`
+    and recurses on the rest. -/
+theorem lowerInstrs_cons_default
+    (fuel : Nat) (frames : List FrameKind) (s : LowerState)
+    (i : WasmInstr) (rest : List WasmInstr)
+    (h_ns : isStructuredLower i = false) :
+    lowerInstrs fuel frames s (i :: rest) =
+      (do
+        let (s1, ops1) ← lowerInstr s i
+        let (s2, ops2) ← lowerInstrs fuel frames s1 rest
+        pure (s2, ops1 ++ ops2)) := by
+  cases i
+  all_goals try simp [isStructuredLower] at h_ns
+  all_goals (rw [lowerInstrs.eq_def])
+
+/-- `evalInstrs` on a non-structured head with a clean pre-state
+    (no halt, no pending branch) delegates to `evalInstr` and recurses
+    on the rest. -/
+theorem evalInstrs_cons_default
+    (fuel : Nat) (ws : WasmState) (i : WasmInstr) (rest : List WasmInstr)
+    (h_no_branch : ws.branchTarget = none) (h_no_halt : ws.halted = false)
+    (h_ns : isStructuredEval i = false) :
+    evalInstrs fuel ws (i :: rest) =
+      (match evalInstr ws i with
+        | none => none
+        | some ws' => evalInstrs fuel ws' rest) := by
+  cases i
+  all_goals try simp [isStructuredEval] at h_ns
+  all_goals
+    (rw [evalInstrs.eq_def]
+     have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+       rw [h_no_halt, h_no_branch]; rfl
+     simp only [h_cond, Bool.false_eq_true, ↓reduceIte])
+  all_goals rfl
+
 end Quanta.Wasm
