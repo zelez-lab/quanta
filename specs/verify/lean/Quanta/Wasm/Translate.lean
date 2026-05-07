@@ -422,29 +422,56 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
   -- Outside slice 1 — refused, matching `UnsupportedOp` in production.
   | _ => none
 
+/-- True if any frame strictly above the target depth (i.e. inside
+    the current emission scope's view of the frame stack) is a
+    `loopK`. Mirrors `LowerCtx::has_loop_between_top_and_depth` in
+    `lower.rs`. Used by `br`/`brIf` to decide whether the branch
+    crosses a loop boundary — if so, we emit `KernelOp.breakOp`
+    rather than the (unimplemented) redirect-chain approach. -/
+def hasLoopAbove (frames : List FrameKind) (depth : Nat) : Bool :=
+  (frames.take depth).any (· = .loopK)
+
 /-- Lower a list of WASM instructions, threading state. Concatenates
     the per-instr op lists. `none` if any single op refuses or stack
     underflows.
 
-    Structured-control ops (`block`, `wif`) are handled here (not in
-    `lowerInstr`) because they consume the inner body out of the
-    instruction stream. We use the splitter helpers in
-    `Quanta.Wasm.Structured` to pre-extract the body, recurse, then
-    wrap into the appropriate `KernelOp`:
+    Structured-control ops are handled here (not in `lowerInstr`)
+    because they consume the inner body out of the instruction
+    stream. We use the splitter helpers in `Quanta.Wasm.Structured`
+    to pre-extract the body, recurse with a `frames : List FrameKind`
+    stack (innermost = head), then wrap into the appropriate
+    `KernelOp`:
 
-    * `block ... wend` is a label scope only — its body's ops splice
+    * `block ... wend` is a label scope — its body's ops splice
       directly into the parent's op list (matches the
       `FrameKind::Block` arm in `lower.rs::End`).
-    * `wif ... welse ... wend` (or `... wend` without else) commits
-      the popped cond into a real reg, lowers each arm separately,
-      then emits a single `KernelOp.branch cond thenOps elseOps`.
-      Mirrors `RawInstr::If` + `RawInstr::Else` + `RawInstr::End`'s
-      `FrameKind::If`/`Else` arms in `lower.rs`.
+    * `wloop ... wend` lowers to `[KernelOp.loopOp body_ops]`. Inner
+      `br_if 0` continues the loop (no IR emitted at the br_if site);
+      inner `br depth ≥ 1` cross-Loop emits `KernelOp.breakOp`.
+    * `wif ... welse ... wend` commits the popped cond and emits
+      `KernelOp.branch cond thenOps elseOps` (or `... [] elseOps` for
+      no-else). Mirrors `RawInstr::If`/`Else`/`End` in `lower.rs`.
+
+    `br depth` lowering:
+    * target is Loop and `depth = 0`: emit nothing (continue at
+      structured-Loop's natural fall-through). Drops the rest of the
+      current scope (dead code in WASM validation).
+    * target is non-Loop AND a Loop is between current top and
+      target: emit `[.breakOp]`, drop rest.
+    * else: refuse with `none` (redirect-chain unsupported in this
+      slice).
+
+    `brIf depth` lowering:
+    * target is Loop, `depth = 0`: emit
+      `[.branch cond [] [.breakOp]]` — break on `!cond`. The cond
+      register is committed beforehand. Continues with `rest`.
+    * target is non-Loop with Loop between: emit
+      `[.branch cond [.breakOp] []]` — break on `cond`. Continues.
+    * else: refuse with `none`.
 
     `fuel : Nat` bounds the recursion depth of the structured arms;
-    a kernel with `N` levels of nesting needs `fuel ≥ N`.
-    `wloop` and `br`/`brIf` arrive in slice 5b. -/
-def lowerInstrs (fuel : Nat) (s : LowerState) :
+    a kernel with `N` levels of nesting needs `fuel ≥ N`. -/
+def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
     List WasmInstr → Option (LowerState × List KernelOp)
   | [] => some (s, [])
   | i :: rest =>
@@ -456,9 +483,19 @@ def lowerInstrs (fuel : Nat) (s : LowerState) :
               match splitAtEnd rest with
               | none => none
               | some (body, post) => do
-                  let (s1, innerOps) ← lowerInstrs f s body
-                  let (s2, postOps)  ← lowerInstrs f s1 post
+                  let (s1, innerOps) ← lowerInstrs f (.block :: frames) s body
+                  let (s2, postOps)  ← lowerInstrs f frames s1 post
                   pure (s2, innerOps ++ postOps)
+      | .wloop _ =>
+          match fuel with
+          | 0 => none
+          | f + 1 =>
+              match splitAtEnd rest with
+              | none => none
+              | some (body, post) => do
+                  let (s1, bodyOps) ← lowerInstrs f (.loopK :: frames) s body
+                  let (s2, postOps) ← lowerInstrs f frames s1 post
+                  pure (s2, [.loopOp bodyOps] ++ postOps)
       | .wif _ =>
           match fuel with
           | 0 => none
@@ -468,13 +505,61 @@ def lowerInstrs (fuel : Nat) (s : LowerState) :
               | some (thenBody, elseBody, post) => do
                   let (svCond, s0) ← s.popSym
                   let (cond, s1, opsCommit) ← s0.commit svCond
-                  let (s2, thenOps) ← lowerInstrs f s1 thenBody
-                  let (s3, elseOps) ← lowerInstrs f s2 elseBody
-                  let (s4, postOps) ← lowerInstrs f s3 post
+                  let (s2, thenOps) ← lowerInstrs f (.wif :: frames) s1 thenBody
+                  let (s3, elseOps) ← lowerInstrs f (.wif :: frames) s2 elseBody
+                  let (s4, postOps) ← lowerInstrs f frames s3 post
                   pure (s4, opsCommit ++ [.branch cond thenOps elseOps] ++ postOps)
+      | .br depth =>
+          -- Code after `br` is dead (WASM validator-rejected if
+          -- reached); we simply don't recurse on `rest`.
+          match frames.get? depth with
+          | none => none
+          | some .loopK =>
+              -- depth = 0 inside the loop body: continue at fall-through.
+              -- depth > 0 with .loopK at that frame: break out of the
+              -- *containing* loop (cross-Loop) — emit Break.
+              if depth = 0 then some (s, [])
+              else if hasLoopAbove frames depth then some (s, [.breakOp])
+              else some (s, [])  -- continue an outer loop: still no IR.
+          | some _ =>
+              if hasLoopAbove frames depth then some (s, [.breakOp])
+              else none  -- redirect-chain: not supported in this slice.
+      | .brIf depth => do
+          let (svCond, s0) ← s.popSym
+          let (cond, s1, opsCommit) ← s0.commit svCond
+          match frames.get? depth with
+          | none => none
+          | some .loopK =>
+              if depth = 0 then do
+                -- br_if 0 to Loop: continue if cond, break if !cond.
+                let (s2, postOps) ← lowerInstrs fuel frames s1 rest
+                pure (s2,
+                  opsCommit
+                  ++ [.branch cond [] [.breakOp]]
+                  ++ postOps)
+              else if hasLoopAbove frames depth then do
+                -- br_if to outer Loop with another Loop between:
+                -- break the inner loop on cond.
+                let (s2, postOps) ← lowerInstrs fuel frames s1 rest
+                pure (s2,
+                  opsCommit
+                  ++ [.branch cond [.breakOp] []]
+                  ++ postOps)
+              else do
+                -- Continue an outer loop directly: no IR.
+                let (s2, postOps) ← lowerInstrs fuel frames s1 rest
+                pure (s2, opsCommit ++ postOps)
+          | some _ =>
+              if hasLoopAbove frames depth then do
+                let (s2, postOps) ← lowerInstrs fuel frames s1 rest
+                pure (s2,
+                  opsCommit
+                  ++ [.branch cond [.breakOp] []]
+                  ++ postOps)
+              else none
       | _ => do
           let (s1, ops1) ← lowerInstr s i
-          let (s2, ops2) ← lowerInstrs fuel s1 rest
+          let (s2, ops2) ← lowerInstrs fuel frames s1 rest
           pure (s2, ops1 ++ ops2)
 
 end Quanta.Wasm

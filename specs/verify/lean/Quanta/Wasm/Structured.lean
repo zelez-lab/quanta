@@ -44,6 +44,18 @@ namespace Quanta.Wasm
   | .wif _   => true
   | _ => false
 
+/-- The static kind of an open structured-control frame. Threaded as
+    `frames : List FrameKind` (innermost = head) through
+    `Quanta.Wasm.Translate.lowerInstrs` so `br`/`brIf` know whether
+    the target is a Loop (continue) or a non-Loop (break out).
+    Eval-side does not need this — the runtime branch direction is
+    carried by `WasmState.branchTarget`. -/
+inductive FrameKind where
+  | block
+  | loopK
+  | wif
+  deriving Repr, DecidableEq
+
 /-- Generic walker. Consumes from the head, accumulates into `acc` in
     reverse order, and stops at the first depth-0 `wend` or `welse`.
     Returns `(acc.reverse, marker, rest)` where `marker` is the

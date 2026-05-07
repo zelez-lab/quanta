@@ -2574,7 +2574,8 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   case neg => simp [if_neg hbound] at hw
   simp only [if_pos hbound] at hw
   have hws'_eq : ws' = { locals := ws.locals.set i v_w, stack := rest,
-                          mem := ws.mem, halted := ws.halted } :=
+                          mem := ws.mem, halted := ws.halted,
+                          branchTarget := ws.branchTarget } :=
     ((Option.some.injEq _ _).mp hw).symm
   subst hws'_eq
   -- Lean side: popSym first (always succeeds for non-empty stack), then commit
@@ -2923,7 +2924,8 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   case neg => simp [if_neg hbound] at hw
   simp only [if_pos hbound] at hw
   have hws'_eq : ws' = { locals := ws.locals.set i v_w, stack := v_w :: rest,
-                          mem := ws.mem, halted := ws.halted } :=
+                          mem := ws.mem, halted := ws.halted,
+                          branchTarget := ws.branchTarget } :=
     ((Option.some.injEq _ _).mp hw).symm
   subst hws'_eq
   -- Lean side: popSym + commit (matches localSet / binop / cmp).

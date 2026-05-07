@@ -73,6 +73,17 @@ structure WasmState where
   stack  : WasmStack
   mem    : WasmMem := []
   halted : Bool := false
+  /-- In-flight branch target. `some d` means a `br` (or active
+      `br_if`) is propagating up to the `d`-th enclosing structured
+      frame; `none` means execution is proceeding normally.
+
+      Set by `evalInstr` (well, the structured arm of `evalInstrs`)
+      for `br` / `br_if`; cleared on arrival at the target frame
+      (Block/wif: continue with `post`; Loop at depth 0: re-iterate).
+      Decremented when an inner frame closes without consuming the
+      branch. The flat per-instruction `evalInstr` stops on a non-
+      `none` `branchTarget` (treated like `halted`). -/
+  branchTarget : Option Nat := none
   deriving Repr
 
 namespace WasmState
@@ -267,6 +278,19 @@ def evalInstr (s : WasmState) : WasmInstr → Option WasmState
   | .i32Store offset _align => storeI32 s offset
   -- Return halts; subsequent instructions short-circuit.
   | .wreturn => some { s with halted := true }
+  -- Unconditional branch. `evalInstrs`'s structured arms catch a
+  -- non-`none` `branchTarget` and either consume it (target frame
+  -- reached) or decrement and propagate.
+  | .br depth => some { s with branchTarget := some depth }
+  -- Conditional branch: pop i32 cond; if non-zero, set branchTarget;
+  -- else fall through. Stack effect matches WASM spec.
+  | .brIf depth => do
+      let (vc, s1) ← s.pop
+      match vc with
+      | .wI32 c =>
+          if c = 0 then some s1
+          else some { s1 with branchTarget := some depth }
+      | _ => none
   -- Misc
   | .nop  => some s
   | .drop => do let (_, s1) ← s.pop; pure s1
@@ -293,7 +317,7 @@ def evalInstr (s : WasmState) : WasmInstr → Option WasmState
 def evalInstrs (fuel : Nat) (s : WasmState) : List WasmInstr → Option WasmState
   | [] => some s
   | i :: rest =>
-      if s.halted then some s
+      if s.halted ∨ s.branchTarget.isSome then some s
       else
         match i with
         | .block _ =>
@@ -305,7 +329,43 @@ def evalInstrs (fuel : Nat) (s : WasmState) : List WasmInstr → Option WasmStat
                 | some (body, post) =>
                     match evalInstrs f s body with
                     | none => none
-                    | some s' => evalInstrs f s' post
+                    | some s' =>
+                        -- Block consumes a `branchTarget = some 0`
+                        -- (jump to end of this block); decrements
+                        -- `some (n+1)` and propagates; `none` falls
+                        -- through normally.
+                        match s'.branchTarget with
+                        | none => evalInstrs f s' post
+                        | some 0 =>
+                            evalInstrs f { s' with branchTarget := none } post
+                        | some (n + 1) =>
+                            some { s' with branchTarget := some n }
+        | .wloop _ =>
+            match fuel with
+            | 0 => none
+            | f + 1 =>
+                match splitAtEnd rest with
+                | none => none
+                | some (body, post) =>
+                    -- A `branchTarget = some 0` from inside the body
+                    -- means "continue this loop": clear and re-iter.
+                    -- The fuel parameter caps total iterations.
+                    let rec iterLoop (f' : Nat) (st : WasmState) :
+                        Option WasmState :=
+                      match f' with
+                      | 0 => none
+                      | f'' + 1 =>
+                          match evalInstrs f st body with
+                          | none => none
+                          | some st' =>
+                              match st'.branchTarget with
+                              | none => evalInstrs f st' post
+                              | some 0 =>
+                                  iterLoop f''
+                                    { st' with branchTarget := none }
+                              | some (n + 1) =>
+                                  some { st' with branchTarget := some n }
+                    iterLoop f s
         | .wif _ =>
             match fuel with
             | 0 => none
@@ -321,7 +381,14 @@ def evalInstrs (fuel : Nat) (s : WasmState) : List WasmInstr → Option WasmStat
                             let body := if c = 0 then elseBody else thenBody
                             match evalInstrs f s0 body with
                             | none => none
-                            | some s' => evalInstrs f s' post
+                            | some s' =>
+                                match s'.branchTarget with
+                                | none => evalInstrs f s' post
+                                | some 0 =>
+                                    evalInstrs f
+                                      { s' with branchTarget := none } post
+                                | some (n + 1) =>
+                                    some { s' with branchTarget := some n }
                         | _ => none
         | _ =>
             match evalInstr s i with
