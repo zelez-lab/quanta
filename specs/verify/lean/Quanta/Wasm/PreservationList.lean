@@ -33,7 +33,7 @@ import Quanta.Wasm.PreservationFuel
 
 namespace Quanta.Wasm
 
-open Quanta.KOps (KernelOp evalOps)
+open Quanta.KOps (KernelOp evalOps regLookup)
 open Quanta.Semantics.Cpu
 
 -- ════════════════════════════════════════════════════════════════════
@@ -1879,5 +1879,243 @@ theorem preservation_evalInstrs_cons_i32Shl
     (fun _ => rfl) (by intro av bv; rfl)
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke h_l_eq rfl rfl rest
     preservation_rest ws' s' ops hw hl
+
+-- ════════════════════════════════════════════════════════════════════
+-- Buffer-pattern fold cons cases
+--
+-- i32Shl folds <reg base> :: <i32ConstSym k> into SymVal.scaledIdx.
+-- i32Add folds <bufferPtr> :: <scaledIdx> (or scaled-first) into
+-- SymVal.bufferAccess. All three are no-IR: head ops empty,
+-- mid-state symbolic stack rewritten with the folded SymVal.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem preservation_evalInstrs_cons_i32Shl_bufferPattern
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (k : Int) (base : Quanta.KOps.Reg) (ty : Quanta.KOps.Scalar)
+    (lstk_rest : List SymVal)
+    (h_stack : s.stack = .i32ConstSym k :: .reg base ty :: lstk_rest)
+    (h_shift_eq : ∀ a : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 a) →
+       (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Shl :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Shl :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  rw [lowerInstrs_cons_default fuel frames s .i32Shl rest rfl] at hl
+  -- Per-op fold reduces lowerInstr to a no-IR push of scaledIdx.
+  have h_head : lowerInstr s .i32Shl =
+      some ({ s with stack := .scaledIdx base (1 <<< k.toNat) :: lstk_rest }, []) := by
+    show lowerI32Shl s = _
+    unfold lowerI32Shl
+    rw [h_stack]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ s with stack := .scaledIdx base (1 <<< k.toNat) :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Shl rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Shl with
+      | none =>
+          rw [h_eval_head] at hw
+          simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Shl_bufferPattern ws s kst layout R k base ty lstk_rest
+              h_stack h_shift_eq
+              ws_after _ [] h_eval_head h_head
+          have h_kst_mid_eq : kst_mid = kst := by
+            simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          -- Mid-state branch/halt: binI32 preserves both.
+          have h_w : evalInstr ws .i32Shl = binI32 (· <<< ·) ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by
+            rw [h_ws_eq]; simp [h_no_halt]
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+          refine ⟨kst'_mid, F_rest, ?_, ?_⟩
+          · rw [← h_ops_eq]
+            rw [h_kst_mid_eq] at h_eval_rest
+            exact h_eval_rest
+          · rw [← h_s_eq]; exact R_rest
+
+theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
+    (h_stack : s.stack = .scaledIdx base scale :: .bufferPtr slot :: lstk_rest)
+    (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       a.toNat = b.toNat * scale →
+       b_ptr.toNat = layout.startAddr slot →
+       (b_ptr + a).toNat = layout.startAddr slot + b.toNat * scale)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  rw [lowerInstrs_cons_default fuel frames s .i32Add rest rfl] at hl
+  have h_head : lowerInstr s .i32Add =
+      some ({ s with stack := .bufferAccess slot base scale :: lstk_rest }, []) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ s with stack := .bufferAccess slot base scale :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Add rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Add with
+      | none =>
+          rw [h_eval_head] at hw
+          simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Add_bufferPattern_scaledFirst ws s kst layout R
+              slot base scale lstk_rest h_stack h_addr_eq
+              ws_after _ [] h_eval_head h_head
+          have h_kst_mid_eq : kst_mid = kst := by
+            simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by
+            rw [h_ws_eq]; simp [h_no_halt]
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+          refine ⟨kst'_mid, F_rest, ?_, ?_⟩
+          · rw [← h_ops_eq]
+            rw [h_kst_mid_eq] at h_eval_rest
+            exact h_eval_rest
+          · rw [← h_s_eq]; exact R_rest
+
+theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
+    (h_stack : s.stack = .bufferPtr slot :: .scaledIdx base scale :: lstk_rest)
+    (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       a.toNat = b.toNat * scale →
+       b_ptr.toNat = layout.startAddr slot →
+       (a + b_ptr).toNat = layout.startAddr slot + b.toNat * scale)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  rw [lowerInstrs_cons_default fuel frames s .i32Add rest rfl] at hl
+  have h_head : lowerInstr s .i32Add =
+      some ({ s with stack := .bufferAccess slot base scale :: lstk_rest }, []) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ s with stack := .bufferAccess slot base scale :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Add rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Add with
+      | none =>
+          rw [h_eval_head] at hw
+          simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Add_bufferPattern_ptrFirst ws s kst layout R
+              slot base scale lstk_rest h_stack h_addr_eq
+              ws_after _ [] h_eval_head h_head
+          have h_kst_mid_eq : kst_mid = kst := by
+            simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by
+            rw [h_ws_eq]; simp [h_no_halt]
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+          refine ⟨kst'_mid, F_rest, ?_, ?_⟩
+          · rw [← h_ops_eq]
+            rw [h_kst_mid_eq] at h_eval_rest
+            exact h_eval_rest
+          · rw [← h_s_eq]; exact R_rest
 
 end Quanta.Wasm
