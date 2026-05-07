@@ -133,6 +133,156 @@ theorem evalOps_append_loopFree_head
   exact h_rest
 
 -- ════════════════════════════════════════════════════════════════════
+-- Deep loop-free predicate
+--
+-- The shallow `loopFreeOp` rejects `.branch` outright. That works for
+-- the 28 per-op preservation theorems (whose lowered ops never include
+-- `.branch`), but it is too restrictive for the structured-control
+-- preservation arms — `brIf 0` lowers to `opsCommit ++ [.branch cond
+-- [] [.breakOp]] ++ postOps`, where the `.branch` carries loop-free
+-- sub-payloads (the `.breakOp` arm is itself loop-free).
+--
+-- `loopFreeOpDeep` recurses into `.branch` payloads but still rejects
+-- `.loopOp` outright. Since `.loopOp` is the only constructor whose
+-- evaluation actually consumes fuel (the `opLoop` iteration counter),
+-- this is the maximal fuel-irrelevance class without invoking full
+-- mutual fuel monotonicity.
+-- ════════════════════════════════════════════════════════════════════
+
+mutual
+/-- Deep loop-free: a `KernelOp` is deep loop-free iff it is not
+    `.loopOp` and (if it is `.branch`) both sub-payloads are deep
+    loop-free. All non-control-flow constructors are trivially deep
+    loop-free. -/
+def loopFreeOpDeep : KernelOp → Bool
+  | .loopOp _ => false
+  | .branch _ thenOps elseOps => loopFreeDeep thenOps && loopFreeDeep elseOps
+  | _ => true
+
+/-- A list is deep loop-free iff every element is. -/
+def loopFreeDeep : List KernelOp → Bool
+  | [] => true
+  | op :: rest => loopFreeOpDeep op && loopFreeDeep rest
+end
+
+@[simp] theorem loopFreeDeep_nil : loopFreeDeep [] = true := rfl
+
+@[simp] theorem loopFreeDeep_cons (op : KernelOp) (rest : List KernelOp) :
+    loopFreeDeep (op :: rest) = (loopFreeOpDeep op && loopFreeDeep rest) := rfl
+
+@[simp] theorem loopFreeDeep_append (xs ys : List KernelOp) :
+    loopFreeDeep (xs ++ ys) = (loopFreeDeep xs && loopFreeDeep ys) := by
+  induction xs with
+  | nil => simp
+  | cons x rest ih =>
+    simp [loopFreeDeep_cons, ih, Bool.and_assoc]
+
+/-- Shallow loop-free implies deep: shallow rejects `.branch`/`.loopOp`
+    outright, so `loopFreeOpDeep` evaluates trivially for every
+    surviving constructor. -/
+theorem loopFreeOp_implies_deep (op : KernelOp) (h : loopFreeOp op = true) :
+    loopFreeOpDeep op = true := by
+  cases op
+  case branch _ _ _ => simp [loopFreeOp] at h
+  case loopOp _     => simp [loopFreeOp] at h
+  all_goals rfl
+
+theorem loopFree_implies_deep (ops : List KernelOp) (h : loopFree ops = true) :
+    loopFreeDeep ops = true := by
+  induction ops with
+  | nil => rfl
+  | cons op rest ih =>
+    rw [loopFree_cons] at h
+    have h_op : loopFreeOp op = true := (Bool.and_eq_true _ _).mp h |>.left
+    have h_rest : loopFree rest = true := (Bool.and_eq_true _ _).mp h |>.right
+    rw [loopFreeDeep_cons]
+    exact (Bool.and_eq_true _ _).mpr
+      ⟨loopFreeOp_implies_deep op h_op, ih h_rest⟩
+
+-- Fuel-irrelevance for deep loop-free op lists, mutually with the
+-- single-op variant. The proof mirrors the shallow case but routes
+-- through `.branch` sub-payloads recursively. `.loopOp` is still
+-- forbidden, so no `opLoop` iteration counter to wrangle.
+mutual
+theorem evalOp_loopFreeOpDeep_fuel_eq
+    (fuel fuel' : Nat) (s : State) (op : KernelOp)
+    (h : loopFreeOpDeep op = true) :
+    evalOp fuel s op = evalOp fuel' s op := by
+  cases op
+  case loopOp _ => simp [loopFreeOpDeep] at h
+  case branch cond thenOps elseOps =>
+    simp only [loopFreeOpDeep] at h
+    have h_then : loopFreeDeep thenOps = true := (Bool.and_eq_true _ _).mp h |>.left
+    have h_else : loopFreeDeep elseOps = true := (Bool.and_eq_true _ _).mp h |>.right
+    rw [Quanta.KOps.evalOp.eq_def, Quanta.KOps.evalOp.eq_def]
+    -- After unfolding, both sides bind on `regLookup s.rf cond` and
+    -- match on the resulting Value. The `none`-lookup and non-bool
+    -- arms close by `rfl`; the `vBool` arms need the mutual IH.
+    cases hr : Quanta.KOps.regLookup s.rf cond with
+    | none => simp [hr]
+    | some v =>
+      cases v with
+      | vBool b =>
+        cases b
+        · simp [hr, evalOps_loopFreeDeep_fuel_eq fuel fuel' s elseOps h_else]
+        · simp [hr, evalOps_loopFreeDeep_fuel_eq fuel fuel' s thenOps h_then]
+      | _ => simp [hr]
+  all_goals (rw [Quanta.KOps.evalOp.eq_def, Quanta.KOps.evalOp.eq_def])
+termination_by sizeOf op
+
+theorem evalOps_loopFreeDeep_fuel_eq
+    (fuel fuel' : Nat) (s : State) (ops : List KernelOp)
+    (h : loopFreeDeep ops = true) :
+    evalOps fuel s ops = evalOps fuel' s ops := by
+  cases ops with
+  | nil => rw [Quanta.KOps.evalOps.eq_def, Quanta.KOps.evalOps.eq_def]
+  | cons op rest =>
+    rw [loopFreeDeep_cons] at h
+    have h_op : loopFreeOpDeep op = true := (Bool.and_eq_true _ _).mp h |>.left
+    have h_rest : loopFreeDeep rest = true := (Bool.and_eq_true _ _).mp h |>.right
+    rw [Quanta.KOps.evalOps.eq_def, Quanta.KOps.evalOps.eq_def]
+    simp only []
+    rw [evalOp_loopFreeOpDeep_fuel_eq fuel fuel' s op h_op]
+    cases h_eo : evalOp fuel' s op with
+    | none => rfl
+    | some s_mid =>
+      by_cases hbr : s_mid.broke = true
+      · simp [hbr]
+      · have hbr' : s_mid.broke = false := by
+          cases hb : s_mid.broke
+          · rfl
+          · exact (hbr hb).elim
+        simp [hbr']
+        exact evalOps_loopFreeDeep_fuel_eq fuel fuel' s_mid rest h_rest
+termination_by sizeOf ops
+end
+
+/-- Implication form of `evalOps_loopFreeDeep_fuel_eq`. -/
+theorem evalOps_loopFreeDeep_fuel_irrel
+    {fuel fuel' : Nat} {s : State} {ops : List KernelOp} {s' : State}
+    (h_lf : loopFreeDeep ops = true)
+    (h : evalOps fuel s ops = some s') :
+    evalOps fuel' s ops = some s' := by
+  rw [evalOps_loopFreeDeep_fuel_eq fuel' fuel s ops h_lf]
+  exact h
+
+/-- Deep variant of `evalOps_append_loopFree_head`: bridges the fuel
+    gap on the head op-list (which may contain `.branch` with
+    loop-free sub-payloads) and chains via `evalOps_append`. -/
+theorem evalOps_append_loopFreeDeep_head
+    {F : Nat} {kst kst_mid kst' : State}
+    {ops_head ops_rest : List KernelOp}
+    (h_lf : loopFreeDeep ops_head = true)
+    (h_head : evalOps 0 kst ops_head = some kst_mid)
+    (h_no_broke : kst_mid.broke = false)
+    (h_rest : evalOps F kst_mid ops_rest = some kst') :
+    evalOps F kst (ops_head ++ ops_rest) = some kst' := by
+  have h_head_F : evalOps F kst ops_head = some kst_mid :=
+    evalOps_loopFreeDeep_fuel_irrel h_lf h_head
+  rw [evalOps_append h_head_F h_no_broke]
+  exact h_rest
+
+-- ════════════════════════════════════════════════════════════════════
 -- Cons-default unfold lemmas
 --
 -- `lowerInstrs` (5 structured arms: block / wloop / wif / br / brIf)
