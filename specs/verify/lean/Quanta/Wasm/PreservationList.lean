@@ -1726,4 +1726,110 @@ theorem preservation_evalInstrs_cons_i32GeU
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest ws' s' ops hw hl
 
+-- ════════════════════════════════════════════════════════════════════
+-- localGet (buffer-slot path) cons case
+--
+-- When `lookupBufferSlot i = some slot`, lowering pushes a `.bufferPtr
+-- slot` SymVal and emits NO IR. The mid-state's symbolic stack gains
+-- the buffer pointer; the regfile is untouched. The semantic
+-- precondition `h_loc_buf` (the WASM local at `i` encodes the buffer's
+-- start address) is the same one the per-op theorem requires.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem preservation_evalInstrs_cons_localGet_bufferSlot
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (i : Nat) (slot : Nat)
+    (h_buf : s.lookupBufferSlot i = some slot)
+    (h_loc_buf : ∀ v, ws.locals.get? i = some v →
+      ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr slot)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.localGet i :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.localGet i :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  rw [lowerInstrs_cons_default fuel frames s (.localGet i) rest rfl] at hl
+  -- Buffer path: lowerInstr s (.localGet i) reduces to
+  -- some (s.pushSym (.bufferPtr slot), []).
+  have h_head : lowerInstr s (.localGet i)
+                  = some (s.pushSym (.bufferPtr slot), []) := by
+    show (match s.lookupBufferSlot i with
+          | some slot => some (s.pushSym (.bufferPtr slot), [])
+          | none =>
+              (s.lookupLocal i).bind (fun stable =>
+                let (fresh, s1) := s.alloc
+                let s2 := s1.push fresh
+                some (s2, [KernelOp.copy fresh stable])))
+              = some (s.pushSym (.bufferPtr slot), [])
+    rw [h_buf]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames (s.pushSym (.bufferPtr slot)) rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws (.localGet i) rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws (.localGet i) with
+      | none =>
+          rw [h_eval_head] at hw
+          simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          -- Apply per-op preservation_localGet_bufferSlot to derive R_mid.
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_localGet_bufferSlot ws s kst layout R i slot h_buf h_loc_buf
+              ws_after (s.pushSym (.bufferPtr slot)) []
+              h_eval_head h_head
+          -- ops_head = [] → kst_mid = kst (regfile / heap unchanged).
+          have h_kst_mid_eq : kst_mid = kst := by
+            simp [evalOps] at h_kst_eval
+            exact h_kst_eval.symm
+          -- Extract ws_after's shape once: ws_after = ws.push v for some v.
+          have h_ws_after_shape : ∃ v, ws_after = ws.push v := by
+            cases hloc : ws.getLocal i with
+            | none =>
+                have h_ev : evalInstr ws (.localGet i) = none := by
+                  show (do let v ← ws.getLocal i; pure (ws.push v)) = none
+                  rw [hloc]; rfl
+                rw [h_ev] at h_eval_head; exact (Option.noConfusion h_eval_head)
+            | some v =>
+                refine ⟨v, ?_⟩
+                have h_ev : evalInstr ws (.localGet i) = some (ws.push v) := by
+                  show (do let v ← ws.getLocal i; pure (ws.push v)) = some (ws.push v)
+                  rw [hloc]; rfl
+                rw [h_ev] at h_eval_head
+                exact ((Option.some.injEq _ _).mp h_eval_head).symm
+          obtain ⟨v_pushed, h_ws_after_eq⟩ := h_ws_after_shape
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            rw [h_ws_after_eq]; simp [WasmState.push, h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by
+            rw [h_ws_after_eq]; simp [WasmState.push, h_no_halt]
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+          refine ⟨kst'_mid, F_rest, ?_, ?_⟩
+          · -- ops_head = [], so ops = postOps; kst_mid = kst.
+            rw [← h_ops_eq]
+            rw [h_kst_mid_eq] at h_eval_rest
+            exact h_eval_rest
+          · rw [← h_s_eq]; exact R_rest
+
 end Quanta.Wasm
