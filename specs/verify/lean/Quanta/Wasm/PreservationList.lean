@@ -2118,4 +2118,287 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst
             exact h_eval_rest
           · rw [← h_s_eq]; exact R_rest
 
+-- ════════════════════════════════════════════════════════════════════
+-- i32Load / i32Store (buffer-access path) cons cases
+--
+-- i32Load emits a single `.load` op against the BufferAccess address.
+-- i32Store emits opsCommit ++ [.store ...]. Both heads are loop-free
+-- no-break; the generic broke-preservation helper handles the
+-- cons-composer mid-state. Both use loadI32 / storeI32 on the WASM
+-- side, which preserve branchTarget / halted.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem preservation_evalInstrs_cons_i32Load
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (slot : Nat) (base : Quanta.KOps.Reg) (lstk_rest : List SymVal)
+    (offset align : Nat)
+    (h_stack : s.stack = .bufferAccess slot base 4 :: lstk_rest)
+    (h_offset : offset = 0)
+    (h_in_bounds : ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       b.toNat < layout.length slot)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Load offset align :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Load offset align :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  rw [lowerInstrs_cons_default fuel frames s (.i32Load offset align) rest rfl] at hl
+  -- Per-op fold reduces lowerInstr to a single `.load` op.
+  have h_head : lowerInstr s (.i32Load offset align) =
+      some ({ s with nextReg := s.nextReg + 1,
+                     stack := .reg s.nextReg .u32 :: lstk_rest },
+             [.load s.nextReg slot base .u32]) := by
+    show lowerI32Load s = _
+    unfold lowerI32Load
+    rw [h_stack]
+    rfl
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ s with nextReg := s.nextReg + 1,
+                            stack := .reg s.nextReg .u32 :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws (.i32Load offset align) rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws (.i32Load offset align) with
+      | none =>
+          rw [h_eval_head] at hw
+          simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Load ws s kst layout R slot base lstk_rest offset align
+              h_stack h_offset h_in_bounds
+              ws_after _ _ h_eval_head h_head
+          -- Head ops = [.load ...] is loop-free no-break.
+          have h_lf_head : loopFreeNoBreak [KernelOp.load s.nextReg slot base .u32] = true :=
+            rfl
+          have h_lf_head_shallow : loopFree [KernelOp.load s.nextReg slot base .u32] = true :=
+            loopFreeNoBreak_implies_loopFree h_lf_head
+          have h_mid_broke : kst_mid.broke = false :=
+            evalOps_loopFreeNoBreak_preserves_broke
+              h_lf_head h_kst_no_broke h_kst_eval
+          -- Mid-state branch/halt: loadI32 only mutates stack.
+          have h_w : evalInstr ws (.i32Load offset align) = loadI32 ws offset := rfl
+          rw [h_w] at h_eval_head
+          -- loadI32 success implies ws_after = { ws with stack := wI32 n :: ws_rest }
+          -- for some n, ws_rest. Extract via the loadI32 unfold.
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            unfold loadI32 at h_eval_head
+            rcases hws : ws.stack with _ | ⟨vaddr, ws_rest⟩
+            · simp [hws, WasmState.pop] at h_eval_head
+            · simp [hws, WasmState.pop] at h_eval_head
+              cases vaddr with
+              | wI32 addr_w =>
+                  simp at h_eval_head
+                  rcases hmem : ws.mem.load_u32 (addr_w.toNat + offset) with _ | n
+                  · simp [hmem] at h_eval_head
+                  · simp [hmem, WasmState.push] at h_eval_head
+                    rw [← h_eval_head]; simp [h_no_branch]
+              | wI64 _ => simp at h_eval_head
+              | wF32 _ => simp at h_eval_head
+              | wF64 _ => simp at h_eval_head
+          have h_mid_no_halt : ws_after.halted = false := by
+            unfold loadI32 at h_eval_head
+            rcases hws : ws.stack with _ | ⟨vaddr, ws_rest⟩
+            · simp [hws, WasmState.pop] at h_eval_head
+            · simp [hws, WasmState.pop] at h_eval_head
+              cases vaddr with
+              | wI32 addr_w =>
+                  simp at h_eval_head
+                  rcases hmem : ws.mem.load_u32 (addr_w.toNat + offset) with _ | n
+                  · simp [hmem] at h_eval_head
+                  · simp [hmem, WasmState.push] at h_eval_head
+                    rw [← h_eval_head]; simp [h_no_halt]
+              | wI64 _ => simp at h_eval_head
+              | wF32 _ => simp at h_eval_head
+              | wF64 _ => simp at h_eval_head
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+          have h_chained :
+              ∃ kst'', evalOps F_rest kst
+                          ([KernelOp.load s.nextReg slot base .u32] ++ postOps) = some kst''
+                ∧ Refines ws' s_post kst'' layout :=
+            preservation_evalInstrs_cons_compose_shallow
+              h_lf_head_shallow h_kst_eval h_mid_broke
+              ⟨kst'_mid, h_eval_rest, R_rest⟩
+          obtain ⟨kst'', h_eval'', R''⟩ := h_chained
+          refine ⟨kst'', F_rest, ?_, ?_⟩
+          · rw [← h_ops_eq]; exact h_eval''
+          · rw [← h_s_eq]; exact R''
+
+theorem preservation_evalInstrs_cons_i32Store
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (sv_val : SymVal) (slot : Nat) (base : Quanta.KOps.Reg) (lstk_rest : List SymVal)
+    (offset align : Nat)
+    (h_stack : s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest)
+    (h_offset : offset = 0)
+    (h_in_bounds : ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       b.toNat < layout.length slot)
+    (h_layout_no_overlap : ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       ∀ slot' idx',
+         idx' < layout.length slot' →
+         (slot', idx') ≠ (slot, b.toNat) →
+         layout.startAddr slot + b.toNat * 4 + 4 ≤ layout.startAddr slot' + idx' * 4 ∨
+         layout.startAddr slot' + idx' * 4 + 4 ≤ layout.startAddr slot + b.toNat * 4)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Store offset align :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Store offset align :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  rw [lowerInstrs_cons_default fuel frames s (.i32Store offset align) rest rfl] at hl
+  -- Extract the head pair via h_stack: lowerI32Store reduces to a commit + [.store ...].
+  let s_pop : LowerState :=
+    { nextReg := s.nextReg, stack := lstk_rest,
+      localReg := s.localReg, localTy := s.localTy,
+      bufferSlots := s.bufferSlots }
+  cases hca : s_pop.commit sv_val with
+  | none =>
+      have h_lw : lowerInstr s (.i32Store offset align) = none := by
+        show lowerI32Store s = none
+        unfold lowerI32Store
+        simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind]
+        rw [show ({ nextReg := s.nextReg, stack := lstk_rest,
+                    localReg := s.localReg, localTy := s.localTy,
+                    bufferSlots := s.bufferSlots } : LowerState).commit sv_val
+                = s_pop.commit sv_val from rfl]
+        rw [hca]
+        rfl
+      rw [h_lw] at hl
+      simp at hl
+  | some commit_pair =>
+      rcases commit_pair with ⟨src, s3, opsCommit⟩
+      let s_after : LowerState := s3
+      let ops_head : List KernelOp := opsCommit ++ [.store slot base src .u32]
+      have h_head : lowerInstr s (.i32Store offset align) = some (s_after, ops_head) := by
+        show lowerI32Store s = some (s_after, ops_head)
+        unfold lowerI32Store
+        simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind]
+        rw [show ({ nextReg := s.nextReg, stack := lstk_rest,
+                    localReg := s.localReg, localTy := s.localTy,
+                    bufferSlots := s.bufferSlots } : LowerState).commit sv_val
+                = s_pop.commit sv_val from rfl]
+        rw [hca]
+        rfl
+      rw [h_head] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind] at hl
+      cases h_post : lowerInstrs fuel frames s_after rest with
+      | none => simp [h_post] at hl
+      | some post_pair =>
+          rcases post_pair with ⟨s_post, postOps⟩
+          simp [h_post] at hl
+          rcases hl with ⟨h_s_eq, h_ops_eq⟩
+          rw [evalInstrs_cons_default fuel ws (.i32Store offset align) rest h_no_branch h_no_halt rfl] at hw
+          cases h_eval_head : evalInstr ws (.i32Store offset align) with
+          | none =>
+              rw [h_eval_head] at hw
+              simp at hw
+          | some ws_after =>
+              rw [h_eval_head] at hw
+              simp only at hw
+              obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+                preservation_i32Store ws s kst layout R h_kst_no_broke
+                  sv_val slot base lstk_rest offset align
+                  h_stack h_offset h_in_bounds h_layout_no_overlap
+                  ws_after s_after ops_head h_eval_head h_head
+              -- loopFreeNoBreak on opsCommit (commit emits .const-only) + .store.
+              have h_lf_commit : loopFreeNoBreak opsCommit = true :=
+                commit_emits_loopFreeNoBreak hca
+              have h_lf_store :
+                  loopFreeNoBreak [KernelOp.store slot base src .u32] = true := rfl
+              have h_lf_head : loopFreeNoBreak ops_head = true := by
+                show loopFreeNoBreak (opsCommit ++ [KernelOp.store slot base src .u32]) = true
+                simp [loopFreeNoBreak_append, h_lf_commit, h_lf_store]
+              have h_lf_head_shallow : loopFree ops_head = true :=
+                loopFreeNoBreak_implies_loopFree h_lf_head
+              have h_mid_broke : kst_mid.broke = false :=
+                evalOps_loopFreeNoBreak_preserves_broke
+                  h_lf_head h_kst_no_broke h_kst_eval
+              -- Mid-state branch/halt: storeI32 only mutates mem and pops.
+              have h_w : evalInstr ws (.i32Store offset align) = storeI32 ws offset := rfl
+              rw [h_w] at h_eval_head
+              have h_ws_after_shape : ∃ ws_rest m',
+                  ws_after = { ws with stack := ws_rest, mem := m' } := by
+                unfold storeI32 at h_eval_head
+                rcases hws : ws.stack with _ | ⟨vval, _ | ⟨vaddr, ws_rest⟩⟩
+                · simp [hws, WasmState.pop] at h_eval_head
+                · simp [hws, WasmState.pop] at h_eval_head
+                · simp [hws, WasmState.pop] at h_eval_head
+                  cases vaddr with
+                  | wI32 addr_w =>
+                      cases vval with
+                      | wI32 v_w =>
+                          simp at h_eval_head
+                          rcases hmem : ws.mem.store_u32 (addr_w.toNat + offset) v_w with _ | m'
+                          · simp [hmem] at h_eval_head
+                          · simp [hmem] at h_eval_head
+                            refine ⟨ws_rest, m', ?_⟩
+                            rw [← h_eval_head]
+                      | wI64 _ => simp at h_eval_head
+                      | wF32 _ => simp at h_eval_head
+                      | wF64 _ => simp at h_eval_head
+                  | wI64 _ => simp at h_eval_head
+                  | wF32 _ => simp at h_eval_head
+                  | wF64 _ => simp at h_eval_head
+              obtain ⟨_, _, h_ws_after_eq⟩ := h_ws_after_shape
+              have h_mid_no_branch : ws_after.branchTarget = none := by
+                rw [h_ws_after_eq]; simp [h_no_branch]
+              have h_mid_no_halt : ws_after.halted = false := by
+                rw [h_ws_after_eq]; simp [h_no_halt]
+              obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+              have h_chained :
+                  ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
+                    ∧ Refines ws' s_post kst'' layout :=
+                preservation_evalInstrs_cons_compose_shallow
+                  h_lf_head_shallow h_kst_eval h_mid_broke
+                  ⟨kst'_mid, h_eval_rest, R_rest⟩
+              obtain ⟨kst'', h_eval'', R''⟩ := h_chained
+              refine ⟨kst'', F_rest, ?_, ?_⟩
+              · rw [← h_ops_eq]; exact h_eval''
+              · rw [← h_s_eq]; exact R''
+
 end Quanta.Wasm
