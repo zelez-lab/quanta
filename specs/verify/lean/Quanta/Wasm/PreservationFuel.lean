@@ -343,4 +343,61 @@ theorem evalInstrs_cons_default
      simp only [h_cond, Bool.false_eq_true, ↓reduceIte])
   all_goals rfl
 
+-- ════════════════════════════════════════════════════════════════════
+-- Cons-composer: bundle head + tail Refines existentials
+--
+-- The list-level preservation theorems for non-control-flow cons-cases
+-- have the shape:
+--   * lowering returns `ops_head ++ ops_rest` where `ops_rest` is a
+--     recursive `lowerInstrs` call on the tail;
+--   * the head's per-op preservation (or a structured-control proof)
+--     yields a partial `evalOps 0 kst ops_head = some kst_mid` plus a
+--     `Refines ws_mid s_mid kst_mid layout` for the post-head state;
+--   * the IH on the tail, given that mid-state, yields the final
+--     `∃ kst', evalOps F kst_mid ops_rest = some kst' ∧ Refines ws' s' kst' layout`.
+--
+-- The bridge is: chain via `evalOps_append_loopFreeDeep_head` (deep
+-- variant covers `.branch` heads such as those `brIf` emits), then
+-- repackage the existential.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Compose head + tail Refines existentials into a bundled `evalOps F`
+    on `ops_head ++ ops_rest` and a final `Refines`. Uses the deep
+    loop-free fuel bridge so callers may include `.branch` heads with
+    loop-free sub-payloads (the exact shape `brIf` lowers to). -/
+theorem preservation_evalInstrs_cons_compose
+    {F : Nat} {kst kst_mid : Quanta.KOps.State}
+    {ops_head ops_rest : List KernelOp}
+    {ws' : WasmState} {s' : LowerState}
+    {layout : BufferLayout}
+    (h_lf : loopFreeDeep ops_head = true)
+    (h_head : evalOps 0 kst ops_head = some kst_mid)
+    (h_no_broke : kst_mid.broke = false)
+    (h_rest : ∃ kst', evalOps F kst_mid ops_rest = some kst'
+                       ∧ Refines ws' s' kst' layout) :
+    ∃ kst', evalOps F kst (ops_head ++ ops_rest) = some kst'
+              ∧ Refines ws' s' kst' layout := by
+  obtain ⟨kst', h_eval', R'⟩ := h_rest
+  refine ⟨kst', ?_, R'⟩
+  exact evalOps_append_loopFreeDeep_head h_lf h_head h_no_broke h_eval'
+
+/-- Shallow variant of `preservation_evalInstrs_cons_compose` — for
+    cons-cases whose head ops are entirely non-control-flow (no
+    `.branch` constructor). Avoids needing to chase `loopFreeDeep`
+    structure on the head. -/
+theorem preservation_evalInstrs_cons_compose_shallow
+    {F : Nat} {kst kst_mid : Quanta.KOps.State}
+    {ops_head ops_rest : List KernelOp}
+    {ws' : WasmState} {s' : LowerState}
+    {layout : BufferLayout}
+    (h_lf : loopFree ops_head = true)
+    (h_head : evalOps 0 kst ops_head = some kst_mid)
+    (h_no_broke : kst_mid.broke = false)
+    (h_rest : ∃ kst', evalOps F kst_mid ops_rest = some kst'
+                       ∧ Refines ws' s' kst' layout) :
+    ∃ kst', evalOps F kst (ops_head ++ ops_rest) = some kst'
+              ∧ Refines ws' s' kst' layout :=
+  preservation_evalInstrs_cons_compose
+    (loopFree_implies_deep _ h_lf) h_head h_no_broke h_rest
+
 end Quanta.Wasm
