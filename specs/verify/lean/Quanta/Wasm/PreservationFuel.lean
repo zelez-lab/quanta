@@ -450,4 +450,232 @@ theorem evalOps_copy_singleton_preserves_broke
       rw [← h]
       exact h_mid_broke
 
+-- ════════════════════════════════════════════════════════════════════
+-- Generic broke preservation for non-`.breakOp` shallow loop-free ops
+--
+-- Generalizes `evalOp_copy_preserves_broke` to every `KernelOp`
+-- constructor that is `loopFreeOp` (excludes `.branch` / `.loopOp`)
+-- AND not `.breakOp`. Inspecting the `evalOp` definition: every
+-- surviving constructor either updates `rf` (most arithmetic, dispatch
+-- IDs), updates `heap` (`.store`), or returns `s` unchanged
+-- (`.barrier`). None of them touches `broke`, so any successful
+-- evaluation has `s'.broke = s.broke`.
+--
+-- The list-level companion `evalOps_loopFree_no_break_preserves_broke`
+-- chains this through the cons short-circuit on `broke`, which is
+-- vacuous when every op preserves `broke = false`. Used by every
+-- non-control-flow cons preservation case (i32Add, localSet, drop, …)
+-- to discharge the `kst_mid.broke = false` precondition of the
+-- cons-composer.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Single-op broke preservation. -/
+theorem evalOp_loopFree_no_break_preserves_broke
+    {fuel : Nat} {s s' : State} {op : KernelOp}
+    (h_lf : loopFreeOp op = true)
+    (h_no_break : op ≠ .breakOp)
+    (h : evalOp fuel s op = some s') :
+    s'.broke = s.broke := by
+  cases op with
+  | branch _ _ _ => simp [loopFreeOp] at h_lf
+  | loopOp _     => simp [loopFreeOp] at h_lf
+  | breakOp      => exact (h_no_break rfl).elim
+  | const _ _ =>
+      rw [Quanta.KOps.evalOp.eq_def] at h
+      simp at h; rw [← h]
+  | binOp dst a b op _ty =>
+      cases ha : Quanta.KOps.regLookup s.rf a with
+      | none => simp [Quanta.KOps.evalOp, ha] at h
+      | some va =>
+        cases hb : Quanta.KOps.regLookup s.rf b with
+        | none => simp [Quanta.KOps.evalOp, ha, hb] at h
+        | some vb =>
+          cases he : Quanta.KOps.evalBinOp op va vb with
+          | none => simp [Quanta.KOps.evalOp, ha, hb, he] at h
+          | some v =>
+            simp [Quanta.KOps.evalOp, ha, hb, he] at h
+            rw [← h]
+  | unaryOp dst a op _ty =>
+      cases ha : Quanta.KOps.regLookup s.rf a with
+      | none => simp [Quanta.KOps.evalOp, ha] at h
+      | some va =>
+        cases he : Quanta.KOps.evalUnaryOp op va with
+        | none => simp [Quanta.KOps.evalOp, ha, he] at h
+        | some v =>
+          simp [Quanta.KOps.evalOp, ha, he] at h
+          rw [← h]
+  | cmp dst a b op _ty =>
+      cases ha : Quanta.KOps.regLookup s.rf a with
+      | none => simp [Quanta.KOps.evalOp, ha] at h
+      | some va =>
+        cases hb : Quanta.KOps.regLookup s.rf b with
+        | none => simp [Quanta.KOps.evalOp, ha, hb] at h
+        | some vb =>
+          cases he : Quanta.KOps.evalCmpOp op va vb with
+          | none => simp [Quanta.KOps.evalOp, ha, hb, he] at h
+          | some v =>
+            simp [Quanta.KOps.evalOp, ha, hb, he] at h
+            rw [← h]
+  | cast dst src _fromTy to =>
+      cases ha : Quanta.KOps.regLookup s.rf src with
+      | none => simp [Quanta.KOps.evalOp, ha] at h
+      | some va =>
+        cases he : Quanta.KOps.evalCast va to with
+        | none => simp [Quanta.KOps.evalOp, ha, he] at h
+        | some v =>
+          simp [Quanta.KOps.evalOp, ha, he] at h
+          rw [← h]
+  | bitcast dst src _fromTy to =>
+      cases ha : Quanta.KOps.regLookup s.rf src with
+      | none => simp [Quanta.KOps.evalOp, ha] at h
+      | some va =>
+        cases he : Quanta.KOps.evalBitcast va to with
+        | none => simp [Quanta.KOps.evalOp, ha, he] at h
+        | some v =>
+          simp [Quanta.KOps.evalOp, ha, he] at h
+          rw [← h]
+  | copy dst src =>
+      exact evalOp_copy_preserves_broke h
+  | load dst field idx _ty =>
+      cases hi : Quanta.KOps.regLookup s.rf idx with
+      | none => simp [Quanta.KOps.evalOp, hi] at h
+      | some vi =>
+        cases vi with
+        | vBool _ => simp [Quanta.KOps.evalOp, hi] at h
+        | vI32 _  => simp [Quanta.KOps.evalOp, hi] at h
+        | vF32 _  => simp [Quanta.KOps.evalOp, hi] at h
+        | vU32 n =>
+          cases hl : Quanta.KOps.heapLookup s.heap field n.toNat with
+          | none => simp [Quanta.KOps.evalOp, hi, hl] at h
+          | some v =>
+            simp [Quanta.KOps.evalOp, hi, hl] at h
+            rw [← h]
+  | store field idx src _ty =>
+      cases hi : Quanta.KOps.regLookup s.rf idx with
+      | none => simp [Quanta.KOps.evalOp, hi] at h
+      | some vi =>
+        cases hs2 : Quanta.KOps.regLookup s.rf src with
+        | none => simp [Quanta.KOps.evalOp, hi, hs2] at h
+        | some vs =>
+          cases vi with
+          | vBool _ => simp [Quanta.KOps.evalOp, hi, hs2] at h
+          | vI32 _  => simp [Quanta.KOps.evalOp, hi, hs2] at h
+          | vF32 _  => simp [Quanta.KOps.evalOp, hi, hs2] at h
+          | vU32 n =>
+            simp [Quanta.KOps.evalOp, hi, hs2] at h
+            rw [← h]
+  | quarkId _ =>
+      rw [Quanta.KOps.evalOp.eq_def] at h
+      simp at h; rw [← h]
+  | protonId _ =>
+      rw [Quanta.KOps.evalOp.eq_def] at h
+      simp at h; rw [← h]
+  | nucleusId _ =>
+      rw [Quanta.KOps.evalOp.eq_def] at h
+      simp at h; rw [← h]
+  | protonSize _ =>
+      rw [Quanta.KOps.evalOp.eq_def] at h
+      simp at h; rw [← h]
+  | quarkCount _ =>
+      rw [Quanta.KOps.evalOp.eq_def] at h
+      simp at h; rw [← h]
+  | barrier =>
+      rw [Quanta.KOps.evalOp.eq_def] at h
+      simp at h; rw [← h]
+
+/-- Boolean check for "is not the `.breakOp` constructor". Avoids
+    needing `DecidableEq KernelOp` (which the `.branch`/`.loopOp`
+    constructors carrying `List KernelOp` would force a recursive
+    derivation for). -/
+def isNotBreakOp : KernelOp → Bool
+  | .breakOp => false
+  | _        => true
+
+/-- Predicate: every op in the list is `loopFreeOp` AND not `.breakOp`.
+    All per-op-emitted ops fall into this class — only the structured-
+    control arms emit `.branch` / `.loopOp`, and `.breakOp` only appears
+    in the cross-Loop break of `br`. Defined recursively (rather than
+    via `List.all`) to keep the cons-unfolding rfl-simple. -/
+def loopFreeNoBreak : List KernelOp → Bool
+  | []          => true
+  | op :: rest  => loopFreeOp op && isNotBreakOp op && loopFreeNoBreak rest
+
+@[simp] theorem loopFreeNoBreak_nil : loopFreeNoBreak [] = true := rfl
+
+@[simp] theorem loopFreeNoBreak_cons (op : KernelOp) (rest : List KernelOp) :
+    loopFreeNoBreak (op :: rest)
+      = (loopFreeOp op && isNotBreakOp op && loopFreeNoBreak rest) := rfl
+
+@[simp] theorem loopFreeNoBreak_append (xs ys : List KernelOp) :
+    loopFreeNoBreak (xs ++ ys) = (loopFreeNoBreak xs && loopFreeNoBreak ys) := by
+  induction xs with
+  | nil => simp
+  | cons x rest ih => simp [loopFreeNoBreak_cons, ih, Bool.and_assoc]
+
+theorem loopFreeNoBreak_implies_loopFree {ops : List KernelOp}
+    (h : loopFreeNoBreak ops = true) : loopFree ops = true := by
+  induction ops with
+  | nil => rfl
+  | cons op rest ih =>
+    simp only [loopFreeNoBreak_cons, Bool.and_eq_true] at h
+    obtain ⟨⟨h_op, _⟩, h_rest⟩ := h
+    rw [loopFree_cons]
+    simp [h_op, ih h_rest]
+
+/-- `isNotBreakOp op = true` ↔ `op ≠ .breakOp`. -/
+theorem isNotBreakOp_iff_ne {op : KernelOp} :
+    isNotBreakOp op = true ↔ op ≠ .breakOp := by
+  cases op <;> simp [isNotBreakOp]
+
+/-- List-level broke preservation. By induction on `ops`, using the
+    single-op variant on the head and the `evalOps` cons short-circuit
+    on `broke` (which is vacuous when the head preserves `broke = false`). -/
+theorem evalOps_loopFreeNoBreak_preserves_broke
+    {fuel : Nat} {s s' : State} {ops : List KernelOp}
+    (h_lf : loopFreeNoBreak ops = true)
+    (h_kst_ok : s.broke = false)
+    (h : evalOps fuel s ops = some s') :
+    s'.broke = false := by
+  induction ops generalizing s with
+  | nil =>
+    rw [Quanta.KOps.evalOps.eq_def] at h
+    simp at h
+    rw [← h]; exact h_kst_ok
+  | cons op rest ih =>
+    simp only [loopFreeNoBreak_cons, Bool.and_eq_true] at h_lf
+    obtain ⟨⟨h_op_lf, h_op_nb_bool⟩, h_rest⟩ := h_lf
+    have h_op_nb : op ≠ .breakOp :=
+      isNotBreakOp_iff_ne.mp h_op_nb_bool
+    rw [Quanta.KOps.evalOps.eq_def] at h
+    cases h_eo : evalOp fuel s op with
+    | none => simp [h_eo] at h
+    | some s_mid =>
+      have h_mid_eq : s_mid.broke = s.broke :=
+        evalOp_loopFree_no_break_preserves_broke h_op_lf h_op_nb h_eo
+      have h_mid_ok : s_mid.broke = false := by rw [h_mid_eq]; exact h_kst_ok
+      simp [h_eo, h_mid_ok] at h
+      exact ih h_rest h_mid_ok h
+
+/-- `commit` emits either `[]` (for `.reg`) or `[.const ...]` (for
+    `.i32ConstSym`); both are loop-free with no `.breakOp`. The address
+    SymVals (`bufferPtr`/`scaledIdx`/`bufferAccess`) make `commit`
+    return `none`, so a `some` result is always one of the two
+    well-shaped lists. -/
+theorem commit_emits_loopFreeNoBreak
+    {s : LowerState} {sv : SymVal} {r : Quanta.KOps.Reg}
+    {s' : LowerState} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) :
+    loopFreeNoBreak ops = true := by
+  match sv, h with
+  | .reg _ _, h =>
+    simp [LowerState.commit] at h
+    obtain ⟨_, _, hops⟩ := h
+    -- After `simp`, `hops : ops = []` (orientation may vary, so we
+    -- pattern-match either direction).
+    cases hops <;> rfl
+  | .i32ConstSym _, h =>
+    simp [LowerState.commit, LowerState.alloc] at h
+    obtain ⟨_, _, hops⟩ := h
+    cases hops <;> rfl
+
 end Quanta.Wasm

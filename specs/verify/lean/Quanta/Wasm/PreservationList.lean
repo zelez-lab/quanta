@@ -589,4 +589,143 @@ theorem preservation_evalInstrs_cons_localGet
               · rw [← h_ops_eq]; exact h_eval''
               · rw [← h_s_eq]; exact R''
 
+-- ════════════════════════════════════════════════════════════════════
+-- i32Add (non-buffer path) cons case
+--
+-- First multi-op cons case: head emits `opsA ++ opsB ++ [.binOp …]`,
+-- where each commit result `opsA`/`opsB` is `[]` or `[.const …]`.
+-- All three sub-lists are loopFreeNoBreak, so the generic broke-
+-- preservation helper applied to the full head list discharges the
+-- cons-composer's `kst_mid.broke = false` precondition without
+-- needing per-op .const/.binOp helpers.
+--
+-- The `h_no_buf` precondition matches the per-op `preservation_i32Add`
+-- — it excludes the two buffer-pattern stack shapes that
+-- `lowerI32Add` folds without emitting IR. Buffer-pattern cases land
+-- as separate cons theorems alongside the existing per-op
+-- `preservation_i32Add_bufferPattern_*` theorems.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `i32Add :: rest` preservation (non-buffer path). Head ops are the
+    generic binop emission `opsA ++ opsB ++ [.binOp …]`. Each commit
+    result is loop-free with no break, so the generic broke-
+    preservation helper closes the cons-composer's mid-state requirement. -/
+theorem preservation_evalInstrs_cons_i32Add
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_no_buf : ∀ slot base scale rest,
+      s.stack ≠ .scaledIdx base scale :: .bufferPtr slot :: rest ∧
+      s.stack ≠ .bufferPtr slot :: .scaledIdx base scale :: rest)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Cons-default unfold of the lowering side.
+  rw [lowerInstrs_cons_default fuel frames s .i32Add rest rfl] at hl
+  -- Extract head pair from `lowerInstr s .i32Add`. Must succeed for hl to succeed.
+  cases h_head : lowerInstr s .i32Add with
+  | none =>
+      rw [h_head] at hl
+      simp at hl
+  | some head_pair =>
+      rcases head_pair with ⟨s_after, ops_head⟩
+      rw [h_head] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind] at hl
+      cases h_post : lowerInstrs fuel frames s_after rest with
+      | none => simp [h_post] at hl
+      | some post_pair =>
+          rcases post_pair with ⟨s_post, postOps⟩
+          simp [h_post] at hl
+          rcases hl with ⟨h_s_eq, h_ops_eq⟩
+          -- Eval side: cons-default unfold + evalInstr (.i32Add) = some ws_after.
+          rw [evalInstrs_cons_default fuel ws .i32Add rest h_no_branch h_no_halt rfl] at hw
+          cases h_eval_head : evalInstr ws .i32Add with
+          | none =>
+              rw [h_eval_head] at hw
+              simp at hw
+          | some ws_after =>
+              rw [h_eval_head] at hw
+              simp only at hw
+              -- Apply per-op preservation_i32Add to the head.
+              obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+                preservation_i32Add ws s kst layout R h_kst_no_broke
+                  ws_after s_after ops_head h_no_buf
+                  h_eval_head h_head
+              -- Reduce h_head to the lowerI32Bin form (non-buffer guard).
+              have h_l_eq : lowerInstr s .i32Add = lowerI32Bin s .add := by
+                show lowerI32Add s = lowerI32Bin s .add
+                unfold lowerI32Add
+                split
+                next base scale slot rest hs =>
+                    exact absurd hs (h_no_buf slot base scale rest).left
+                next slot base scale rest hs =>
+                    exact absurd hs (h_no_buf slot base scale rest).right
+                next => rfl
+              rw [h_l_eq] at h_head
+              -- Derive ops_head shape via lowerI32Bin_some_shape.
+              obtain ⟨svb, sva, lrest, ra, s3, opsA, rb, s4, opsB,
+                      _h_stk, hca, hcb, _h_s4_stk, _h_s4_lr, _h_s4_lt,
+                      _h_nr_le, _h_s_eq_shape, h_ops_head_eq⟩ :=
+                lowerI32Bin_some_shape h_head
+              -- loopFreeNoBreak on each piece.
+              have h_lf_opsA : loopFreeNoBreak opsA = true :=
+                commit_emits_loopFreeNoBreak hca
+              have h_lf_opsB : loopFreeNoBreak opsB = true :=
+                commit_emits_loopFreeNoBreak hcb
+              have h_lf_binOp :
+                  loopFreeNoBreak [KernelOp.binOp s4.nextReg ra rb .add .u32] = true := rfl
+              have h_lf_head : loopFreeNoBreak ops_head = true := by
+                rw [h_ops_head_eq]
+                simp [loopFreeNoBreak_append, h_lf_opsA, h_lf_opsB, h_lf_binOp]
+              have h_lf_head_shallow : loopFree ops_head = true :=
+                loopFreeNoBreak_implies_loopFree h_lf_head
+              -- Derive kst_mid.broke = false from the generic broke-preservation
+              -- helper applied at the head's F=0 evaluation.
+              have h_mid_broke : kst_mid.broke = false :=
+                evalOps_loopFreeNoBreak_preserves_broke
+                  h_lf_head h_kst_no_broke h_kst_eval
+              -- Mid-state preconditions: branchTarget / halted preserved by i32Add.
+              have h_mid_no_branch : ws_after.branchTarget = none := by
+                have h_w : evalInstr ws .i32Add = binI32 (· + ·) ws := rfl
+                rw [h_w] at h_eval_head
+                obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+                rw [h_ws_eq]; simp [h_no_branch]
+              have h_mid_no_halt : ws_after.halted = false := by
+                have h_w : evalInstr ws .i32Add = binI32 (· + ·) ws := rfl
+                rw [h_w] at h_eval_head
+                obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+                rw [h_ws_eq]; simp [h_no_halt]
+              -- Apply IH-on-rest.
+              obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+              -- Chain via cons-composer (shallow).
+              have h_chained :
+                  ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
+                    ∧ Refines ws' s_post kst'' layout :=
+                preservation_evalInstrs_cons_compose_shallow
+                  h_lf_head_shallow h_kst_eval h_mid_broke
+                  ⟨kst'_mid, h_eval_rest, R_rest⟩
+              obtain ⟨kst'', h_eval'', R''⟩ := h_chained
+              refine ⟨kst'', F_rest, ?_, ?_⟩
+              · rw [← h_ops_eq]; exact h_eval''
+              · rw [← h_s_eq]; exact R''
+
 end Quanta.Wasm
