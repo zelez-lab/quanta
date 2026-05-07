@@ -400,4 +400,54 @@ theorem preservation_evalInstrs_cons_compose_shallow
   preservation_evalInstrs_cons_compose
     (loopFree_implies_deep _ h_lf) h_head h_no_broke h_rest
 
+-- ════════════════════════════════════════════════════════════════════
+-- Single-op broke preservation for `.copy`
+--
+-- The cons-localGet preservation chain needs `kst_mid.broke = false`
+-- after running the `[.copy fresh stable]` op-list. `.copy` only
+-- updates the regfile (`{ s with rf := regWrite s.rf dst v }`), so
+-- the broke flag passes through untouched. The lemma below extracts
+-- that fact from a successful `evalOps` run.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `evalOp .copy` preserves the broke flag. -/
+theorem evalOp_copy_preserves_broke
+    {fuel : Nat} {s s' : State} {dst src : Quanta.KOps.Reg}
+    (h : evalOp fuel s (.copy dst src) = some s') :
+    s'.broke = s.broke := by
+  rw [Quanta.KOps.evalOp.eq_def] at h
+  cases h_v : Quanta.KOps.regLookup s.rf src with
+  | none => simp [h_v] at h
+  | some v =>
+      simp [h_v] at h
+      rw [← h]
+
+/-- `evalOps fuel s [.copy dst src] = some s'` implies `s'.broke = s.broke`.
+    Single-op specialization sufficient for the `localGet` cons preservation
+    chain (which produces `[.copy fresh stable]` as its head ops). -/
+theorem evalOps_copy_singleton_preserves_broke
+    {fuel : Nat} {s s' : State} {dst src : Quanta.KOps.Reg}
+    (h : evalOps fuel s [.copy dst src] = some s') :
+    s'.broke = s.broke := by
+  -- Unfold one cons step.
+  rw [Quanta.KOps.evalOps.eq_def] at h
+  -- Case-split on evalOp result.
+  cases h_eo : evalOp fuel s (.copy dst src) with
+  | none => simp [h_eo] at h
+  | some s_mid =>
+    have h_mid_broke : s_mid.broke = s.broke :=
+      evalOp_copy_preserves_broke h_eo
+    simp [h_eo] at h
+    by_cases hbr : s_mid.broke = true
+    · simp [hbr] at h
+      rw [← h]
+      exact h_mid_broke
+    · have hbr' : s_mid.broke = false := Bool.eq_false_iff.mpr hbr
+      simp [hbr'] at h
+      -- h : evalOps fuel s_mid [] = some s'
+      rw [Quanta.KOps.evalOps.eq_def] at h
+      simp at h
+      rw [← h]
+      exact h_mid_broke
+
 end Quanta.Wasm

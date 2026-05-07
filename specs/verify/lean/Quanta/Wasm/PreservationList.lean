@@ -444,4 +444,149 @@ theorem preservation_evalInstrs_cons_i32Const
   -- Apply IH on `rest` with the mid-state.
   exact preservation_rest R_mid h_no_branch_mid h_no_halt_mid hw' hl'
 
+-- ════════════════════════════════════════════════════════════════════
+-- localGet (non-buffer) cons case
+--
+-- First non-trivial cons-composer use: head emits a single `.copy
+-- fresh stable` op. The proof structure is:
+--   1. Unfold lowerInstrs / evalInstrs cons-default.
+--   2. Apply preservation_localGet to get (kst_mid, h_eval, R_mid).
+--   3. Derive kst_mid.broke = false via evalOps_copy_singleton_preserves_broke.
+--   4. Apply IH-on-rest with R_mid.
+--   5. Chain via preservation_evalInstrs_cons_compose_shallow.
+--
+-- The `kst.broke = false` precondition is what we need to discharge
+-- the cons-composer's no-broke-mid-state requirement (`.copy`'s
+-- semantics preserve broke, so kst_mid.broke = kst.broke).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `localGet i :: rest` preservation (non-buffer path). Head ops are
+    `[.copy s.nextReg stable]` — a single non-control-flow op that
+    preserves the `broke` flag. The cons-composer chains the head's
+    per-op result with the IH-on-rest. -/
+theorem preservation_evalInstrs_cons_localGet
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (i : Nat) (h_no_buf : s.lookupBufferSlot i = none)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.localGet i :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.localGet i :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Unfold the lowering's cons-default arm.
+  rw [lowerInstrs_cons_default fuel frames s (.localGet i) rest rfl] at hl
+  -- Extract the per-op lowering result for `.localGet i`.
+  -- lowerInstr s (.localGet i) for non-buffer path returns
+  -- `(s_after, [.copy fresh stable])` where fresh = s.nextReg, stable
+  -- comes from R.locs / R.injLocals via lookupLocal.
+  -- We extract the head pair by case-splitting on lookupLocal.
+  cases h_stable : s.lookupLocal i with
+  | none =>
+      -- lookupLocal failed → lowerInstr returns none → lowerInstrs returns none.
+      simp only [lowerInstr, h_no_buf, h_stable, Option.bind_eq_bind,
+                 Option.some_bind, Option.none_bind, LowerState.alloc,
+                 LowerState.push] at hl
+      exact (Option.noConfusion hl)
+  | some stable =>
+      -- Head pair: (s_after, ops_head) where s_after = ((s.alloc.snd).push s.nextReg)
+      -- and ops_head = [.copy s.nextReg stable].
+      let s_after : LowerState :=
+        { s with nextReg := s.nextReg + 1,
+                 stack := SymVal.reg s.nextReg .u32 :: s.stack }
+      let ops_head : List KernelOp := [.copy s.nextReg stable]
+      have hl_head : lowerInstr s (.localGet i) = some (s_after, ops_head) := by
+        show (match s.lookupBufferSlot i with
+              | some slot => some (s.pushSym (.bufferPtr slot), [])
+              | none => do
+                  let stable ← s.lookupLocal i
+                  let (fresh, s1) := s.alloc
+                  let s2 := s1.push fresh
+                  pure (s2, [.copy fresh stable])) = some (s_after, ops_head)
+        rw [h_no_buf, h_stable]
+        rfl
+      -- After cons-default unfold, hl is:
+      -- (do let (s1, ops1) ← lowerInstr s (.localGet i); let (s2, ops2) ← lowerInstrs ... rest;
+      --     pure (s2, ops1 ++ ops2)) = some (s', ops)
+      -- Substitute hl_head and reduce.
+      rw [hl_head] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind] at hl
+      -- hl is now: (do let (s2, ops2) ← lowerInstrs fuel frames s_after rest;
+      --                 pure (s2, ops_head ++ ops2)) = some (s', ops)
+      -- Extract postOps from the rest's lowering.
+      cases h_post : lowerInstrs fuel frames s_after rest with
+      | none => simp [h_post] at hl
+      | some post_pair =>
+          rcases post_pair with ⟨s_post, postOps⟩
+          simp [h_post] at hl
+          -- hl : (s_post, ops_head ++ postOps) = (s', ops)
+          rcases hl with ⟨h_s_eq, h_ops_eq⟩
+          -- Now h_s_eq : s_post = s', h_ops_eq : ops_head ++ postOps = ops.
+          -- Eval side: cons-default unfold + evalInstr (.localGet i) = some ws_after.
+          rw [evalInstrs_cons_default fuel ws (.localGet i) rest h_no_branch h_no_halt rfl] at hw
+          -- Match on locals.get? i — splitting via the structure of evalInstr ws (.localGet i).
+          cases h_loc : ws.getLocal i with
+          | none =>
+              -- evalInstr returns none, the match branch returns none, hw : none = some ws'.
+              have hw_step : evalInstr ws (.localGet i) = none := by
+                show (do let v ← ws.getLocal i; pure (ws.push v)) = none
+                rw [h_loc]; rfl
+              rw [hw_step] at hw
+              simp at hw
+          | some v =>
+              let ws_after : WasmState := ws.push v
+              have hw_step : evalInstr ws (.localGet i) = some ws_after := by
+                show (do let v ← ws.getLocal i; pure (ws.push v)) = some ws_after
+                rw [h_loc]
+                rfl
+              rw [hw_step] at hw
+              simp only at hw
+              -- hw : evalInstrs fuel ws_after rest = some ws'.
+              -- Now apply preservation_localGet to the head pair (single-instr level).
+              obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+                preservation_localGet ws s kst layout R i h_no_buf
+                  ws_after s_after ops_head
+                  hw_step hl_head
+              -- Derive kst_mid.broke = false via .copy preservation lemma.
+              have h_mid_broke : kst_mid.broke = false := by
+                have := evalOps_copy_singleton_preserves_broke h_kst_eval
+                rw [this]; exact h_kst_no_broke
+              -- Mid-state preconditions: branchTarget / halted unchanged through localGet.
+              have h_mid_no_branch : ws_after.branchTarget = none := by
+                simp [ws_after, WasmState.push, h_no_branch]
+              have h_mid_no_halt : ws_after.halted = false := by
+                simp [ws_after, WasmState.push, h_no_halt]
+              -- Apply IH-on-rest. Returns `∃ kst'_mid F, ...` (double existential).
+              obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+              -- Chain via cons-composer (shallow: ops_head = [.copy] is shallow loop-free).
+              have h_lf : loopFree ops_head = true := by
+                simp [loopFree, loopFreeOp, ops_head]
+              have h_chained :
+                  ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
+                    ∧ Refines ws' s_post kst'' layout :=
+                preservation_evalInstrs_cons_compose_shallow
+                  h_lf h_kst_eval h_mid_broke ⟨kst'_mid, h_eval_rest, R_rest⟩
+              -- Bridge ops shape: ops = ops_head ++ postOps, s' = s_post.
+              obtain ⟨kst'', h_eval'', R''⟩ := h_chained
+              refine ⟨kst'', F_rest, ?_, ?_⟩
+              · rw [← h_ops_eq]; exact h_eval''
+              · rw [← h_s_eq]; exact R''
+
 end Quanta.Wasm
