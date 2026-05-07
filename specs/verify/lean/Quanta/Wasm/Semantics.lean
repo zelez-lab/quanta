@@ -30,6 +30,7 @@ Design notes:
 -/
 
 import Quanta.Wasm.Syntax
+import Quanta.Wasm.Structured
 import Quanta.Semantics.Cpu
 
 namespace Quanta.Wasm
@@ -272,15 +273,59 @@ def evalInstr (s : WasmState) : WasmInstr → Option WasmState
   -- Everything else is outside this slice's coverage.
   | _ => none
 
-/-- Sequential big-step over an instruction list. Halted state
-    short-circuits — matches WASM's `return` semantics. -/
-def evalInstrs (s : WasmState) : List WasmInstr → Option WasmState
+/-- Sequential big-step over an instruction list.
+
+    Halted state short-circuits — matches WASM's `return` semantics.
+
+    `block` and `wif` are handled here (not in `evalInstr`) because
+    the structured-control semantics has to inspect the instruction
+    stream past the head: a `block` at position 0 needs to consume
+    the inner body up to the matching `wend`. We use the splitter
+    helpers in `Quanta.Wasm.Structured` to pre-extract the inner
+    body, recurse on it, then continue with the suffix.
+
+    `fuel : Nat` bounds the recursion depth of the structured calls
+    — each `block`/`wif` recursion costs one unit. The flat per-
+    instruction sequence in the `_ => evalInstr` arm uses no fuel
+    (structural recursion on the list tail). For a kernel of `N`
+    structured-control nesting levels, `fuel ≥ N` suffices.
+    `wloop` and `br`/`br_if` arrive in slice 5b. -/
+def evalInstrs (fuel : Nat) (s : WasmState) : List WasmInstr → Option WasmState
   | [] => some s
   | i :: rest =>
       if s.halted then some s
       else
-        match evalInstr s i with
-        | none    => none
-        | some s' => evalInstrs s' rest
+        match i with
+        | .block _ =>
+            match fuel with
+            | 0 => none
+            | f + 1 =>
+                match splitAtEnd rest with
+                | none => none
+                | some (body, post) =>
+                    match evalInstrs f s body with
+                    | none => none
+                    | some s' => evalInstrs f s' post
+        | .wif _ =>
+            match fuel with
+            | 0 => none
+            | f + 1 =>
+                match s.pop with
+                | none => none
+                | some (vc, s0) =>
+                    match splitAtElseOrEnd rest with
+                    | none => none
+                    | some (thenBody, elseBody, post) =>
+                        match vc with
+                        | .wI32 c =>
+                            let body := if c = 0 then elseBody else thenBody
+                            match evalInstrs f s0 body with
+                            | none => none
+                            | some s' => evalInstrs f s' post
+                        | _ => none
+        | _ =>
+            match evalInstr s i with
+            | none    => none
+            | some s' => evalInstrs fuel s' rest
 
 end Quanta.Wasm

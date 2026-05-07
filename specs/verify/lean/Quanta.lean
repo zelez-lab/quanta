@@ -45,6 +45,7 @@ import Quanta.KOps.Semantics
 
 -- WASM source-language view + semantics + translator (step 059).
 import Quanta.Wasm.Syntax
+import Quanta.Wasm.Structured
 import Quanta.Wasm.Semantics
 import Quanta.Wasm.Translate
 import Quanta.Wasm.Preservation

@@ -28,6 +28,7 @@ matching `LoweringError::UnsupportedOp` in production.
 -/
 
 import Quanta.Wasm.Syntax
+import Quanta.Wasm.Structured
 import Quanta.KOps.Syntax
 
 namespace Quanta.Wasm
@@ -423,12 +424,57 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
 
 /-- Lower a list of WASM instructions, threading state. Concatenates
     the per-instr op lists. `none` if any single op refuses or stack
-    underflows. -/
-def lowerInstrs (s : LowerState) : List WasmInstr → Option (LowerState × List KernelOp)
+    underflows.
+
+    Structured-control ops (`block`, `wif`) are handled here (not in
+    `lowerInstr`) because they consume the inner body out of the
+    instruction stream. We use the splitter helpers in
+    `Quanta.Wasm.Structured` to pre-extract the body, recurse, then
+    wrap into the appropriate `KernelOp`:
+
+    * `block ... wend` is a label scope only — its body's ops splice
+      directly into the parent's op list (matches the
+      `FrameKind::Block` arm in `lower.rs::End`).
+    * `wif ... welse ... wend` (or `... wend` without else) commits
+      the popped cond into a real reg, lowers each arm separately,
+      then emits a single `KernelOp.branch cond thenOps elseOps`.
+      Mirrors `RawInstr::If` + `RawInstr::Else` + `RawInstr::End`'s
+      `FrameKind::If`/`Else` arms in `lower.rs`.
+
+    `fuel : Nat` bounds the recursion depth of the structured arms;
+    a kernel with `N` levels of nesting needs `fuel ≥ N`.
+    `wloop` and `br`/`brIf` arrive in slice 5b. -/
+def lowerInstrs (fuel : Nat) (s : LowerState) :
+    List WasmInstr → Option (LowerState × List KernelOp)
   | [] => some (s, [])
-  | i :: rest => do
-      let (s1, ops1) ← lowerInstr s i
-      let (s2, ops2) ← lowerInstrs s1 rest
-      pure (s2, ops1 ++ ops2)
+  | i :: rest =>
+      match i with
+      | .block _ =>
+          match fuel with
+          | 0 => none
+          | f + 1 =>
+              match splitAtEnd rest with
+              | none => none
+              | some (body, post) => do
+                  let (s1, innerOps) ← lowerInstrs f s body
+                  let (s2, postOps)  ← lowerInstrs f s1 post
+                  pure (s2, innerOps ++ postOps)
+      | .wif _ =>
+          match fuel with
+          | 0 => none
+          | f + 1 =>
+              match splitAtElseOrEnd rest with
+              | none => none
+              | some (thenBody, elseBody, post) => do
+                  let (svCond, s0) ← s.popSym
+                  let (cond, s1, opsCommit) ← s0.commit svCond
+                  let (s2, thenOps) ← lowerInstrs f s1 thenBody
+                  let (s3, elseOps) ← lowerInstrs f s2 elseBody
+                  let (s4, postOps) ← lowerInstrs f s3 post
+                  pure (s4, opsCommit ++ [.branch cond thenOps elseOps] ++ postOps)
+      | _ => do
+          let (s1, ops1) ← lowerInstr s i
+          let (s2, ops2) ← lowerInstrs fuel s1 rest
+          pure (s2, ops1 ++ ops2)
 
 end Quanta.Wasm
