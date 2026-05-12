@@ -314,12 +314,14 @@ theorem preservation_evalInstrs_cons_nop
     (R : Refines ws s kst layout)
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
     (rest : List WasmInstr)
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -345,7 +347,7 @@ theorem preservation_evalInstrs_cons_nop
     simp only [evalInstr] at hw
     exact hw
   -- Apply the IH on `rest` with the unchanged state.
-  exact preservation_rest R h_no_branch h_no_halt hw' hl'
+  exact preservation_rest R h_no_branch h_no_halt h_kst_no_broke hw' hl'
 
 /-- `i32Const n :: rest` preservation. `i32Const` emits no IR — it
     only pushes `SymVal.i32ConstSym n` onto the lowering stack, which
@@ -365,12 +367,14 @@ theorem preservation_evalInstrs_cons_i32Const
     (R : Refines ws s kst layout)
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
     (n : Int) (rest : List WasmInstr)
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -443,7 +447,7 @@ theorem preservation_evalInstrs_cons_i32Const
   have h_no_halt_mid : ws_mid.halted = false := by
     simp [ws_mid, WasmState.push, h_no_halt]
   -- Apply IH on `rest` with the mid-state.
-  exact preservation_rest R_mid h_no_branch_mid h_no_halt_mid hw' hl'
+  exact preservation_rest R_mid h_no_branch_mid h_no_halt_mid h_kst_no_broke hw' hl'
 
 -- ════════════════════════════════════════════════════════════════════
 -- localGet (non-buffer) cons case
@@ -480,6 +484,7 @@ theorem preservation_evalInstrs_cons_localGet
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -575,7 +580,7 @@ theorem preservation_evalInstrs_cons_localGet
                 simp [ws_after, WasmState.push, h_no_halt]
               -- Apply IH-on-rest. Returns `∃ kst'_mid F, ...` (double existential).
               obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
               -- Chain via cons-composer (shallow: ops_head = [.copy] is shallow loop-free).
               have h_lf : loopFree ops_head = true := by
                 simp [loopFree, loopFreeOp, ops_head]
@@ -635,6 +640,7 @@ theorem preservation_evalInstrs_cons_i32Bin_generic
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -703,7 +709,7 @@ theorem preservation_evalInstrs_cons_i32Bin_generic
                 obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
                 rw [h_ws_eq]; simp [h_no_halt]
               obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
               have h_chained :
                   ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
                     ∧ Refines ws' s_post kst'' layout :=
@@ -734,6 +740,7 @@ theorem preservation_evalInstrs_cons_i32Add
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -775,6 +782,7 @@ theorem preservation_evalInstrs_cons_i32Sub
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -807,6 +815,7 @@ theorem preservation_evalInstrs_cons_i32Mul
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -839,6 +848,7 @@ theorem preservation_evalInstrs_cons_i32And
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -871,6 +881,7 @@ theorem preservation_evalInstrs_cons_i32Or
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -903,6 +914,7 @@ theorem preservation_evalInstrs_cons_i32Xor
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -935,6 +947,7 @@ theorem preservation_evalInstrs_cons_i32ShrU
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -967,6 +980,7 @@ theorem preservation_evalInstrs_cons_i32DivU
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -999,6 +1013,7 @@ theorem preservation_evalInstrs_cons_i32RemU
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1076,6 +1091,7 @@ theorem preservation_evalInstrs_cons_localSet
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1152,7 +1168,7 @@ theorem preservation_evalInstrs_cons_localSet
                   · simp only [if_neg hbnd] at h_eval_head
                     simp at h_eval_head
               obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
               have h_chained :
                   ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
                     ∧ Refines ws' s_post kst'' layout :=
@@ -1219,6 +1235,7 @@ theorem preservation_evalInstrs_cons_localTee
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1291,7 +1308,7 @@ theorem preservation_evalInstrs_cons_localTee
                   · simp only [if_neg hbnd] at h_eval_head
                     simp at h_eval_head
               obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
               have h_chained :
                   ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
                     ∧ Refines ws' s_post kst'' layout :=
@@ -1322,12 +1339,14 @@ theorem preservation_evalInstrs_cons_drop
     (R : Refines ws s kst layout)
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
     (rest : List WasmInstr)
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1416,7 +1435,7 @@ theorem preservation_evalInstrs_cons_drop
     simp [ws_mid, h_no_branch]
   have h_mid_no_halt : ws_mid.halted = false := by
     simp [ws_mid, h_no_halt]
-  exact preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw' hl'
+  exact preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_kst_no_broke hw' hl'
 
 -- ════════════════════════════════════════════════════════════════════
 -- i32 comparison cons cases
@@ -1453,6 +1472,7 @@ theorem preservation_evalInstrs_cons_i32Cmp_generic
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1522,7 +1542,7 @@ theorem preservation_evalInstrs_cons_i32Cmp_generic
                 obtain ⟨_, _, _, _, h_ws_eq⟩ := cmpI32_some_shape h_eval_head
                 rw [h_ws_eq]; simp [h_no_halt]
               obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
               have h_chained :
                   ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
                     ∧ Refines ws' s_post kst'' layout :=
@@ -1549,6 +1569,7 @@ theorem preservation_evalInstrs_cons_i32Eq
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1581,6 +1602,7 @@ theorem preservation_evalInstrs_cons_i32Ne
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1613,6 +1635,7 @@ theorem preservation_evalInstrs_cons_i32LtU
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1645,6 +1668,7 @@ theorem preservation_evalInstrs_cons_i32LeU
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1677,6 +1701,7 @@ theorem preservation_evalInstrs_cons_i32GtU
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1709,6 +1734,7 @@ theorem preservation_evalInstrs_cons_i32GeU
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1743,6 +1769,7 @@ theorem preservation_evalInstrs_cons_localGet_bufferSlot
     (R : Refines ws s kst layout)
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
     (i : Nat) (slot : Nat)
     (h_buf : s.lookupBufferSlot i = some slot)
     (h_loc_buf : ∀ v, ws.locals.get? i = some v →
@@ -1753,6 +1780,7 @@ theorem preservation_evalInstrs_cons_localGet_bufferSlot
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1823,8 +1851,10 @@ theorem preservation_evalInstrs_cons_localGet_bufferSlot
             rw [h_ws_after_eq]; simp [WasmState.push, h_no_branch]
           have h_mid_no_halt : ws_after.halted = false := by
             rw [h_ws_after_eq]; simp [WasmState.push, h_no_halt]
+          have h_mid_broke : kst_mid.broke = false := by
+            rw [h_kst_mid_eq]; exact h_kst_no_broke
           obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
           refine ⟨kst'_mid, F_rest, ?_, ?_⟩
           · -- ops_head = [], so ops = postOps; kst_mid = kst.
             rw [← h_ops_eq]
@@ -1857,6 +1887,7 @@ theorem preservation_evalInstrs_cons_i32Shl
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1896,6 +1927,7 @@ theorem preservation_evalInstrs_cons_i32Shl_bufferPattern
     (R : Refines ws s kst layout)
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
     (k : Int) (base : Quanta.KOps.Reg) (ty : Quanta.KOps.Scalar)
     (lstk_rest : List SymVal)
     (h_stack : s.stack = .i32ConstSym k :: .reg base ty :: lstk_rest)
@@ -1908,6 +1940,7 @@ theorem preservation_evalInstrs_cons_i32Shl_bufferPattern
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1950,6 +1983,8 @@ theorem preservation_evalInstrs_cons_i32Shl_bufferPattern
               ws_after _ [] h_eval_head h_head
           have h_kst_mid_eq : kst_mid = kst := by
             simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          have h_mid_broke : kst_mid.broke = false := by
+            rw [h_kst_mid_eq]; exact h_kst_no_broke
           -- Mid-state branch/halt: binI32 preserves both.
           have h_w : evalInstr ws .i32Shl = binI32 (· <<< ·) ws := rfl
           rw [h_w] at h_eval_head
@@ -1959,7 +1994,7 @@ theorem preservation_evalInstrs_cons_i32Shl_bufferPattern
           have h_mid_no_halt : ws_after.halted = false := by
             rw [h_ws_eq]; simp [h_no_halt]
           obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
           refine ⟨kst'_mid, F_rest, ?_, ?_⟩
           · rw [← h_ops_eq]
             rw [h_kst_mid_eq] at h_eval_rest
@@ -1973,6 +2008,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
     (R : Refines ws s kst layout)
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
     (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
     (h_stack : s.stack = .scaledIdx base scale :: .bufferPtr slot :: lstk_rest)
     (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
@@ -1986,6 +2022,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2027,6 +2064,8 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
               ws_after _ [] h_eval_head h_head
           have h_kst_mid_eq : kst_mid = kst := by
             simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          have h_mid_broke : kst_mid.broke = false := by
+            rw [h_kst_mid_eq]; exact h_kst_no_broke
           have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
           rw [h_w] at h_eval_head
           obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
@@ -2035,7 +2074,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
           have h_mid_no_halt : ws_after.halted = false := by
             rw [h_ws_eq]; simp [h_no_halt]
           obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
           refine ⟨kst'_mid, F_rest, ?_, ?_⟩
           · rw [← h_ops_eq]
             rw [h_kst_mid_eq] at h_eval_rest
@@ -2049,6 +2088,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst
     (R : Refines ws s kst layout)
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
     (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
     (h_stack : s.stack = .bufferPtr slot :: .scaledIdx base scale :: lstk_rest)
     (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
@@ -2062,6 +2102,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2103,6 +2144,8 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst
               ws_after _ [] h_eval_head h_head
           have h_kst_mid_eq : kst_mid = kst := by
             simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          have h_mid_broke : kst_mid.broke = false := by
+            rw [h_kst_mid_eq]; exact h_kst_no_broke
           have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
           rw [h_w] at h_eval_head
           obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
@@ -2111,7 +2154,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst
           have h_mid_no_halt : ws_after.halted = false := by
             rw [h_ws_eq]; simp [h_no_halt]
           obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
           refine ⟨kst'_mid, F_rest, ?_, ?_⟩
           · rw [← h_ops_eq]
             rw [h_kst_mid_eq] at h_eval_rest
@@ -2149,6 +2192,7 @@ theorem preservation_evalInstrs_cons_i32Load
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2237,7 +2281,7 @@ theorem preservation_evalInstrs_cons_i32Load
               | wF32 _ => simp at h_eval_head
               | wF64 _ => simp at h_eval_head
           obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-            preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
           have h_chained :
               ∃ kst'', evalOps F_rest kst
                           ([KernelOp.load s.nextReg slot base .u32] ++ postOps) = some kst''
@@ -2278,6 +2322,7 @@ theorem preservation_evalInstrs_cons_i32Store
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2389,7 +2434,7 @@ theorem preservation_evalInstrs_cons_i32Store
               have h_mid_no_halt : ws_after.halted = false := by
                 rw [h_ws_after_eq]; simp [h_no_halt]
               obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt hw h_post
+                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
               have h_chained :
                   ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
                     ∧ Refines ws' s_post kst'' layout :=
