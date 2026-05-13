@@ -1,0 +1,25 @@
+[package]
+name = "quanta-rand"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Counter-based RNG primitives for Quanta kernels"
+
+[lib]
+name = "quanta_rand"
+path = "src/lib.rs"
+
+[features]
+default = []
+# `gpu` feature pulls in the full Quanta runtime and exposes the
+# `#[quanta::kernel]` entry points + a `fill_buffer_gpu` helper. Off
+# by default so the crate is usable as a pure-Rust RNG on hosts
+# (correctness oracle for downstream tests).
+gpu = ["dep:quanta"]
+
+[dependencies]
+quanta = { path = "../..", default-features = false, features = ["software"], optional = true }
+
+[[example]]
+name = "fill_buffer"
+required-features = ["gpu"]
