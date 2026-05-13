@@ -11,8 +11,15 @@
 //!
 //! let mut rng = Rng::from_seed(0xC0FFEE);
 //! let x: u32 = rng.next_u32();
+//! let y: u64 = rng.next_u64();
 //! let f: f32 = rng.next_f32();
+//! let d: f64 = rng.next_f64();
 //! assert!((0.0..1.0).contains(&f));
+//! assert!((0.0..1.0).contains(&d));
+//!
+//! // Spawn an independent sub-stream by jumping ahead 2^64 steps:
+//! let mut other = rng.clone();
+//! other.jump();
 //! ```
 //!
 //! ## GPU usage (with `gpu` feature)
@@ -32,28 +39,31 @@
 //! ## Scope and limits (v0)
 //!
 //! Shipped:
-//! - `Rng::from_seed`, `Rng::next_u32`, `Rng::next_f32` on CPU.
-//! - Per-quark seeded `fill_buffer` kernel on GPU (under `gpu` feature).
-//! - Bit-exact correctness test: GPU output matches CPU reference
-//!   when both are seeded identically.
+//! - CPU `Rng`: `from_seed`, `next_u32`, `next_u64`, `next_f32`,
+//!   `next_f64`, `jump`, `long_jump`.
+//! - Per-quark one-shot `quark_next_u32` / `quark_next_u64` on
+//!   both CPU (host-reference) and inside `#[quanta::kernel]`
+//!   bodies.
+//! - Per-quark seeded `fill_buffer` kernel on GPU (under the `gpu`
+//!   feature) — bit-exact with the CPU reference.
 //!
 //! Deferred:
-//! - `next_u64`, `next_f64` (Quanta WASM-route doesn't lower i64 yet).
-//! - Jump-ahead (independent streams via `jump()` / `long_jump()`).
-//! - Distributions beyond uniform-`[0, 1)` (normal, exponential, etc.).
+//! - Distributions beyond uniform `[0, 1)` (normal, exponential, etc.).
 //! - Other algorithms (PCG, threefry, philox).
+//! - GPU-side `jump` / `long_jump` (these are constant-time on CPU
+//!   but require a long fixed loop on GPU; pending a use case).
 //!
-//! ## Why a u32 seed (and not u64)
+//! ## Why a u32 seed surface on the GPU kernel
 //!
-//! The standard xoshiro128++ seeds from a u64 via the splitmix64
-//! ladder. Quanta's WASM-route currently only lowers u32 arithmetic
-//! (slice-1), so the GPU kernel can't construct a u64 seed mixer.
-//! v0 takes a u32 seed on both CPU and GPU sides to keep the streams
-//! bit-identical; v0.2 will switch to u64 once i64 lowering lands.
+//! The CPU `Rng` is fully u64-internal-state and u64-arithmetic-
+//! capable (Track C C2 added i64 lowering, but the kernel-side
+//! algorithm is unchanged from v0 because per-quark mixing only
+//! needs u32). The kernel takes the seed as a `(seed_lo, seed_hi)`
+//! pair to stay backwards-compatible with the bit-exact reference.
 
 pub mod xoshiro128pp;
 
-pub use xoshiro128pp::{State, next_u32, u32_to_unit_f32};
+pub use xoshiro128pp::{State, jump, long_jump, next_u32, u32_to_unit_f32, u64_to_unit_f64};
 
 /// A CPU-side stream of pseudo-random numbers.
 #[derive(Clone, Debug)]
@@ -78,10 +88,42 @@ impl Rng {
         v
     }
 
+    /// Return the next u64 — two consecutive u32 outputs packed
+    /// with the first output in the high half. The packing order is
+    /// stable: `((first as u64) << 32) | (second as u64)`.
+    #[inline]
+    pub fn next_u64(&mut self) -> u64 {
+        let hi = self.next_u32();
+        let lo = self.next_u32();
+        ((hi as u64) << 32) | (lo as u64)
+    }
+
     /// Return a uniform `f32` in `[0, 1)` — exactly 24 bits of entropy.
     #[inline]
     pub fn next_f32(&mut self) -> f32 {
         u32_to_unit_f32(self.next_u32())
+    }
+
+    /// Return a uniform `f64` in `[0, 1)` — exactly 53 bits of entropy.
+    #[inline]
+    pub fn next_f64(&mut self) -> f64 {
+        u64_to_unit_f64(self.next_u64())
+    }
+
+    /// Fast-forward this stream by 2^64 steps. Equivalent to calling
+    /// `next_u32` 2^64 times but constant-time. Use to spawn
+    /// non-overlapping inner streams from a common seed.
+    #[inline]
+    pub fn jump(&mut self) {
+        self.state = jump(self.state);
+    }
+
+    /// Fast-forward this stream by 2^96 steps. Use for outer-level
+    /// parallelism (one `long_jump` per worker thread, one `jump`
+    /// per inner stream).
+    #[inline]
+    pub fn long_jump(&mut self) {
+        self.state = long_jump(self.state);
     }
 }
 
@@ -121,6 +163,20 @@ pub const fn quark_next_u32(seed_lo: u32, seed_hi: u32, id: u32) -> u32 {
 
     let sum = s0.wrapping_add(s3);
     sum.rotate_left(7).wrapping_add(s0)
+}
+
+/// Per-quark one-shot u64 RNG output. Computes two
+/// `quark_next_u32` values (using `id` and `id + half_id_space`
+/// to avoid trivial correlation) and packs them. Bit-identical
+/// with what a host-side `Rng` reseeded per-quark would produce
+/// if it called `next_u64`.
+#[inline]
+pub const fn quark_next_u64(seed_lo: u32, seed_hi: u32, id: u32) -> u64 {
+    let hi = quark_next_u32(seed_lo, seed_hi, id);
+    // Use `id ^ 0x8000_0000` for the second draw so the two outputs
+    // come from well-separated points in the splitmix32 ladder.
+    let lo = quark_next_u32(seed_lo, seed_hi, id ^ 0x8000_0000u32);
+    ((hi as u64) << 32) | (lo as u64)
 }
 
 // ────────────────────────────────────────────────────────────────────

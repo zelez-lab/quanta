@@ -14,8 +14,9 @@
 use quanta::*;
 
 /// Auto-dispatch struct for `fill_buffer`. `seed_lo` / `seed_hi` are
-/// the two u32 halves of the 64-bit seed (Quanta kernels only see
-/// u32 scalars in v0.1).
+/// the two u32 halves of the 64-bit seed — Quanta scalar push consts
+/// are u32 in the macro surface, so we pass the seed as a pair and
+/// reconstruct on the kernel side via shift+or.
 #[derive(quanta::Fields)]
 pub struct FillBufferData {
     pub out: Vec<u32>,
@@ -27,17 +28,20 @@ pub struct FillBufferData {
 /// quark. Each quark's value is derived from the shared seed
 /// `(d.seed_hi, d.seed_lo)` mixed with its own `quark_id`.
 ///
-/// Implementation note: the splitmix32 and xoshiro128++ steps are
-/// inlined here as straight-line arithmetic because the
-/// `#[quanta::kernel]` WASM-route extractor doesn't currently
-/// propagate helper functions defined in the same crate. v0.2 will
-/// factor these into reusable helpers once the macro supports it.
+/// Implementation note (still v0.1): the splitmix32 rounds and
+/// xoshiro128++ output mix are inlined here as straight-line
+/// arithmetic. C5 (lowering-side helper inlining) lets the WASM-
+/// route consume `call $helper` instructions, but the macro's
+/// **wasm-shell generator** doesn't yet pull same-crate helper
+/// functions into the generated crate — so any `fn` called from the
+/// kernel body would be unresolved at rustc-compile time. Closing
+/// that gap is a macro-side change queued as a follow-up; for now
+/// we inline.
 #[quanta::kernel]
 pub fn fill_buffer(d: &FillBufferData) {
     let id = quark_id();
-    // V0 kernel: per_quark_seed via u32 mix, four rounds of
-    // splitmix32 expansion to build the 4×u32 state, then one
-    // xoshiro128++ output step.
+    // per_quark_seed: mix each half of the 64-bit seed with the
+    // per-quark id via independent multiplies.
     let mixed_lo: u32 = d.seed_lo ^ id.wrapping_mul(0x9E37_79B9u32);
     let mixed_hi: u32 = d.seed_hi ^ id.wrapping_mul(0x7F4A_7C15u32);
 
@@ -54,9 +58,6 @@ pub fn fill_buffer(d: &FillBufferData) {
     let s3: u32 = c3 ^ (c3 >> 16u32);
 
     // Standard xoshiro128++ output: rotl(s0 + s3, 7) + s0.
-    // The WASM-route lowering now accepts i32.rotl, so we use
-    // `rotate_left` directly; LLVM emits the WASM `i32.rotl`
-    // instruction which the lowering maps to BinOp::Rotl.
     let sum: u32 = s0.wrapping_add(s3);
     let result: u32 = sum.rotate_left(7).wrapping_add(s0);
     d.out[id as usize] = result;

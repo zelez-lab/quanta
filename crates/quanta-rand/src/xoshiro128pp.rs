@@ -76,6 +76,66 @@ pub const fn u32_to_unit_f32(n: u32) -> f32 {
     (bits as f32) * (1.0 / 16777216.0)
 }
 
+/// Convert a u64 output to a uniform f64 in `[0, 1)`. Standard
+/// technique: take the top 53 bits as the mantissa, scale by
+/// `2^-53`. The result is one of `2^53` evenly spaced values in
+/// `[0, 1)`.
+#[inline]
+pub fn u64_to_unit_f64(n: u64) -> f64 {
+    // Top 53 bits → integer in `[0, 2^53)`.
+    let bits = n >> 11;
+    (bits as f64) * (1.0 / 9_007_199_254_740_992.0)
+}
+
+/// Jump-ahead constants for xoshiro128++ — published in the
+/// upstream reference (`xoshiro128plusplus.c`). `JUMP` advances the
+/// state by 2^64 steps; `LONG_JUMP` by 2^96 steps. Used to spawn
+/// independent streams from one seed.
+const JUMP: [u32; 4] = [0x8764000B, 0xF542D2D3, 0x6FA035C3, 0x77F2DB5B];
+const LONG_JUMP: [u32; 4] = [0xB523952E, 0x0B6F099F, 0xCCF5A0EF, 0x1C580662];
+
+/// Apply a polynomial-jump constant array to a State, returning the
+/// new state. Used by both `jump` (2^64) and `long_jump` (2^96).
+/// Algorithm from the upstream reference: walk each bit of each
+/// constant word; for set bits, XOR the current state into an
+/// accumulator; then advance the state by one xoshiro128++ step.
+fn apply_jump(state: State, jump_const: &[u32; 4]) -> State {
+    let mut s0: u32 = 0;
+    let mut s1: u32 = 0;
+    let mut s2: u32 = 0;
+    let mut s3: u32 = 0;
+    let mut st = state;
+    for word in jump_const {
+        for b in 0..32 {
+            if (word >> b) & 1 == 1 {
+                s0 ^= st.s0;
+                s1 ^= st.s1;
+                s2 ^= st.s2;
+                s3 ^= st.s3;
+            }
+            let (_v, next) = next_u32(st);
+            st = next;
+        }
+    }
+    State { s0, s1, s2, s3 }
+}
+
+/// Advance the state by 2^64 steps. Equivalent to calling
+/// `next_u32` 2^64 times, but constant-time. Used to spawn
+/// non-overlapping streams from a common seed.
+#[inline]
+pub fn jump(state: State) -> State {
+    apply_jump(state, &JUMP)
+}
+
+/// Advance the state by 2^96 steps. Use for outer-level parallelism
+/// (e.g. one `long_jump` per worker thread, one `jump` per inner
+/// stream).
+#[inline]
+pub fn long_jump(state: State) -> State {
+    apply_jump(state, &LONG_JUMP)
+}
+
 /// 32-bit splitmix step. Murmur3 finaliser shape, 32-bit variant.
 #[inline]
 const fn splitmix32(mut x: u32) -> u32 {
