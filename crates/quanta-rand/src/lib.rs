@@ -1,8 +1,30 @@
-//! Counter-based RNG primitives for Quanta kernels.
+//! Random number generators and probability distributions for
+//! Quanta kernels.
 //!
-//! v0 ships the xoshiro128++ generator with a single-stream API on
-//! CPU (this crate) and a per-quark seeded variant inside a
-//! `#[quanta::kernel]` (under the `gpu` feature flag).
+//! v0.1 ships three counter-based generator algorithms plus six
+//! probability distributions. Every kernel produces output that is
+//! bit-exact reproducible across host and GPU when given the same
+//! `(seed, quark_count)` — the integration tests in
+//! `tests/uniform_fill_correctness.rs` validate this on every
+//! distribution, and `tests/ks_goodness_of_fit.rs` validates the
+//! distributional shape against analytic CDFs.
+//!
+//! ## Algorithms
+//!
+//! - **xoshiro128++** (`xoshiro128pp`): the state-based generator,
+//!   2^128 period, exposed via the host-side `Rng` API. Includes
+//!   constant-time `jump` (2^64) and `long_jump` (2^96) for spawning
+//!   independent streams.
+//! - **Philox4×32-10** (`philox4x32`): counter-based, BigCrush-clean,
+//!   bit-exact with D. E. Shaw's Random123 reference. The default
+//!   in-kernel generator — every `fill_*` kernel calls Philox.
+//! - **Threefry4×32-20** (`threefry4x32`): the alternative counter-
+//!   based generator (rotation-based, no integer multiply).
+//!   Bit-exact with Random123 at 13, 20, and 72 rounds.
+//!
+//! Counter-based generators are stateless: every quark computes its
+//! own output from `(seed, quark_id)` with zero coordination — the
+//! ideal fit for GPU parallelism.
 //!
 //! ## CPU usage
 //!
@@ -20,46 +42,72 @@
 //! // Spawn an independent sub-stream by jumping ahead 2^64 steps:
 //! let mut other = rng.clone();
 //! other.jump();
+//!
+//! // Normal draw via Box-Muller:
+//! let z = rng.next_normal_f32();
 //! ```
 //!
 //! ## GPU usage (with `gpu` feature)
 //!
 //! ```ignore
-//! use quanta_rand::fill_buffer_gpu;
+//! use quanta_rand::{
+//!     fill_uniform_f32_gpu, fill_normal_f32_gpu, fill_bernoulli_u32_gpu,
+//! };
 //!
 //! let gpu = quanta::init()?;
-//! let out = fill_buffer_gpu(&gpu, /* len = */ 1024, /* seed = */ 42)?;
-//! // `out` is a Vec<u32> of deterministic pseudo-random values.
+//! let seed = 0xCAFE_BABE_DEAD_BEEFu64;
+//!
+//! let unif = fill_uniform_f32_gpu(&gpu, 1024, seed)?;
+//! let norm = fill_normal_f32_gpu(&gpu, 1024, seed)?;
+//! let mask = fill_bernoulli_u32_gpu(&gpu, 1024, seed, /* p = */ 0.5)?;
 //! ```
 //!
-//! Each quark uses its own `quark_id` as a counter, salted by the
-//! shared `seed`. Output is deterministic — running the same kernel
-//! with the same seed produces bit-identical results.
+//! ## Distribution surface (v0.1)
 //!
-//! ## Scope and limits (v0)
+//! Host-side fill kernels (all under `gpu` feature):
+//!
+//! | Distribution | Fill function                        | Notes                  |
+//! |--------------|--------------------------------------|------------------------|
+//! | Uniform u32  | `fill_uniform_u32_gpu`               | Raw Philox output      |
+//! | Uniform u64  | `fill_uniform_u64_gpu`               | Two Philox draws       |
+//! | Uniform f32  | `fill_uniform_f32_gpu`               | `[0, 1)`               |
+//! | Uniform f64  | `fill_uniform_f64_gpu`               | `[0, 1)` from u64      |
+//! | Normal       | `fill_normal_f32_gpu`                | Box-Muller, μ=0, σ=1   |
+//! | Exponential  | `fill_exponential_f32_gpu`           | Inverse CDF            |
+//! | LogNormal    | `fill_lognormal_f32_gpu`             | `exp(μ + σN)`          |
+//! | Bernoulli    | `fill_bernoulli_u32_gpu`             | u32, 1 with prob p     |
+//! | Poisson      | `fill_poisson_u32_gpu`               | Knuth, lambda ≤ ~30    |
+//!
+//! ## Determinism
+//!
+//! Every fill is deterministic: same `(seed, len)` → bit-identical
+//! output. Order across quarks is irrelevant — each quark's output
+//! is a pure function of `(seed, quark_id)`.
+//!
+//! ## v0.1 scope and limits
 //!
 //! Shipped:
-//! - CPU `Rng`: `from_seed`, `next_u32`, `next_u64`, `next_f32`,
-//!   `next_f64`, `jump`, `long_jump`.
-//! - Per-quark one-shot `quark_next_u32` / `quark_next_u64` on
-//!   both CPU (host-reference) and inside `#[quanta::kernel]`
-//!   bodies.
-//! - Per-quark seeded `fill_buffer` kernel on GPU (under the `gpu`
-//!   feature) — bit-exact with the CPU reference.
+//! - CPU `Rng`: integer + float + normal draws, jump-ahead.
+//! - Three RNG algorithms (xoshiro128++ on CPU; Philox + Threefry
+//!   for in-kernel and reference).
+//! - Six distributions on GPU + CPU.
+//! - 68 tests including K-S goodness-of-fit at n=50,000.
 //!
-//! Deferred:
-//! - Distributions beyond uniform `[0, 1)` (normal, exponential, etc.).
-//! - Other algorithms (PCG, threefry, philox).
-//! - GPU-side `jump` / `long_jump` (these are constant-time on CPU
-//!   but require a long fixed loop on GPU; pending a use case).
+//! Deferred to a future release:
+//! - **f64 normal / exponential / lognormal**: blocked on f64 math
+//!   intrinsics (`sqrt_f64`, `ln_f64`, etc.) which only exist in
+//!   `src/intrinsics.rs` for f32 today. Cross-backend emitter work.
+//! - **Large-λ Poisson** (transformed-rejection / PTRD): the
+//!   current Knuth kernel caps at 64 iterations, fine for λ ≤ ~30.
+//! - **GPU-side jump-ahead**: constant-time on CPU; requires a
+//!   long fixed loop on GPU. Pending a use case.
+//! - **Other distributions**: gamma, beta, Dirichlet, geometric,
+//!   categorical, multinomial.
 //!
-//! ## Why a u32 seed surface on the GPU kernel
-//!
-//! The CPU `Rng` is fully u64-internal-state and u64-arithmetic-
-//! capable (Track C C2 added i64 lowering, but the kernel-side
-//! algorithm is unchanged from v0 because per-quark mixing only
-//! needs u32). The kernel takes the seed as a `(seed_lo, seed_hi)`
-//! pair to stay backwards-compatible with the bit-exact reference.
+//! Cross-crate `#[quanta::device]` import is also deferred — kernels
+//! that want to call a quanta-rand device fn from another crate
+//! currently must transcribe the source. See `examples/smoke_philox_kernel.rs`
+//! for the pattern.
 
 pub mod philox4x32;
 pub mod threefry4x32;

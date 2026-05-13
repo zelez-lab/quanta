@@ -23,3 +23,7 @@ quanta = { path = "../..", default-features = false, features = ["software"], op
 [[example]]
 name = "fill_buffer"
 required-features = ["gpu"]
+
+[[example]]
+name = "bench_distributions"
+required-features = ["gpu"]
