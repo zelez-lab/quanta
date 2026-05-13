@@ -448,6 +448,83 @@ pub fn fill_bernoulli_u32_gpu(
     Ok(data.out)
 }
 
+// ── Poisson (Knuth, small lambda only) ───────────────────────────────
+//
+// Knuth's algorithm: draw uniforms until their product drops below
+// `exp(-lambda)`. The expected iteration count is `lambda + 1`, so
+// this is efficient for small lambda. v0.1 caps iterations at
+// `POISSON_MAX_K = 64` — adequate for `lambda <= ~30` with vanishing
+// truncation probability. Large-lambda (transformed-rejection /
+// PTRD) variants are queued for a future release.
+//
+// Each quark draws an independent stream of uniforms from
+// Philox4×32 by bumping the second counter slot — every iteration
+// uses `(quark_id, iter, 0, 0)` as its counter.
+
+const POISSON_MAX_K_U32: u32 = 64u32;
+
+#[derive(quanta::Fields)]
+pub struct FillPoissonU32Data {
+    pub out: Vec<u32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    /// Mean of the Poisson distribution. v0.1 supports lambda up to
+    /// ~30 with the iteration cap at 64.
+    pub lambda: f32,
+}
+
+/// Per-quark Poisson(lambda) draw via Knuth's algorithm. Bounded at
+/// 64 iterations; for the small-lambda regime this is effectively
+/// the same as the unbounded algorithm.
+#[quanta::kernel]
+pub fn fill_poisson_u32(d: &FillPoissonU32Data) {
+    let id = quark_id();
+    let lam: f32 = d.lambda;
+    let l_threshold: f32 = exp(0.0f32 - lam);
+    let mut p: f32 = 1.0f32;
+    let mut k: u32 = 0u32;
+    let mut iter: u32 = 0u32;
+    while iter < 64u32 {
+        let r: u32 = philox4x32_10_first_u32_kernel(id, iter, 0u32, 0u32, d.seed_lo, d.seed_hi);
+        let bits: u32 = r >> 8u32;
+        let u: f32 = (bits as f32) * (1.0f32 / 16_777_216.0f32);
+        p = p * u;
+        if p <= l_threshold {
+            // Found the stopping iteration — Knuth returns k.
+            break;
+        }
+        k = k + 1u32;
+        iter = iter + 1u32;
+    }
+    d.out[id as usize] = k;
+}
+
+/// Host-side dispatch for `fill_poisson_u32`.
+///
+/// Caveat: v0.1 caps the inner iteration at 64, so `lambda` above
+/// ~30 will under-sample the tail. For larger means, downstream
+/// users should use the host-side `Rng` API and a proper rejection
+/// sampler until a transformed-rejection kernel ships.
+pub fn fill_poisson_u32_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f32,
+) -> Result<Vec<u32>, QuantaError> {
+    let mut data = FillPoissonU32Data {
+        out: vec![0u32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        lambda,
+    };
+    fill_poisson_u32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// Unused but kept for doc consistency with the iteration cap.
+#[allow(dead_code)]
+const POISSON_MAX_K_HOST: u32 = POISSON_MAX_K_U32;
+
 // ── Backwards-compat aliases ─────────────────────────────────────────
 //
 // The original v0 API was `fill_buffer` / `fill_buffer_gpu` (always

@@ -213,6 +213,6 @@ pub mod gpu_kernel;
 #[cfg(feature = "gpu")]
 pub use gpu_kernel::{
     fill_bernoulli_u32_gpu, fill_buffer_gpu, fill_exponential_f32_gpu, fill_lognormal_f32_gpu,
-    fill_normal_f32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu,
-    fill_uniform_u64_gpu,
+    fill_normal_f32_gpu, fill_poisson_u32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu,
+    fill_uniform_u32_gpu, fill_uniform_u64_gpu,
 };

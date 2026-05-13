@@ -16,7 +16,8 @@ use quanta_rand::philox4x32::philox4x32_10_first_u32;
 use quanta_rand::uniform::{u32_to_open_unit_f32, u32_to_unit_f32, u64_to_unit_f64};
 use quanta_rand::{
     fill_bernoulli_u32_gpu, fill_exponential_f32_gpu, fill_lognormal_f32_gpu, fill_normal_f32_gpu,
-    fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu, fill_uniform_u64_gpu,
+    fill_poisson_u32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu,
+    fill_uniform_u64_gpu,
 };
 
 const SEED: u64 = 0xCAFE_BABE_DEAD_BEEFu64;
@@ -332,4 +333,72 @@ fn fill_bernoulli_u32_proportion_is_close_to_p() {
     assert!(out0.iter().all(|&v| v == 0));
     let out1 = fill_bernoulli_u32_gpu(&gpu, 32, SEED, 1.0).expect("p=1");
     assert!(out1.iter().all(|&v| v == 1));
+}
+
+// ── M9 — Poisson (Knuth) ────────────────────────────────────────────
+
+/// Host-side reference for `fill_poisson_u32`. Mirrors the kernel
+/// body exactly: 64-iter cap, same Philox draws, same uniform
+/// conversion, same comparison.
+fn host_poisson_knuth(id: u32, lo: u32, hi: u32, lambda: f32) -> u32 {
+    let l = (-lambda).exp();
+    let mut p: f32 = 1.0;
+    let mut k: u32 = 0;
+    for iter in 0..64u32 {
+        // Per-iteration Philox draw with counter=(id, iter, 0, 0)
+        // — matches the kernel body exactly.
+        let r = philox4x32_10_first_u32(id, iter, 0, 0, lo, hi);
+        let u = u32_to_unit_f32(r);
+        p *= u;
+        if p <= l {
+            return k;
+        }
+        k += 1;
+    }
+    k
+}
+
+#[test]
+fn fill_poisson_u32_matches_host_knuth() {
+    let gpu = quanta::init_cpu();
+    let len = 64;
+    let lambda: f32 = 4.0;
+    let out = fill_poisson_u32_gpu(&gpu, len, SEED, lambda).expect("dispatch");
+
+    let (lo, hi) = seed_words();
+    let expected: Vec<u32> = (0..len as u32)
+        .map(|id| host_poisson_knuth(id, lo, hi, lambda))
+        .collect();
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn fill_poisson_u32_mean_close_to_lambda() {
+    let gpu = quanta::init_cpu();
+    let n = 10_000;
+    let lambda: f32 = 5.0;
+    let out = fill_poisson_u32_gpu(&gpu, n, SEED, lambda).expect("dispatch");
+    let sum: u64 = out.iter().map(|&v| v as u64).sum();
+    let mean = sum as f32 / n as f32;
+    // Std error ~ sqrt(lambda/n) ≈ 0.022 at n=10k, lambda=5.
+    assert!(
+        (mean - lambda).abs() < 0.1,
+        "Poisson({lambda}) sample mean {mean} too far from {lambda}",
+    );
+    // All values non-negative; with lambda=5, exceeding 64 is
+    // essentially impossible (we cap at 64 anyway).
+    for &v in &out {
+        assert!(v <= 64, "Poisson sample {v} exceeded the iteration cap");
+    }
+}
+
+#[test]
+fn fill_poisson_u32_lambda_zero_returns_zeros() {
+    let gpu = quanta::init_cpu();
+    let out = fill_poisson_u32_gpu(&gpu, 64, SEED, 0.0).expect("lambda=0");
+    // exp(-0) = 1, so the very first uniform u<=1 always satisfies
+    // p*u <= 1 — k stays at 0 for every quark.
+    for &v in &out {
+        assert_eq!(v, 0);
+    }
 }
