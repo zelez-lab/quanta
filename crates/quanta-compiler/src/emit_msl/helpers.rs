@@ -34,6 +34,13 @@ pub(crate) fn binop_str(op: &BinOp) -> &'static str {
         BinOp::Shr => ">>",
         BinOp::SatAdd => "+", // handled specially above
         BinOp::SatSub => "-", // handled specially above
+        // Rotates are not binary operators in MSL — they go through the
+        // `rotate(...)` built-in via the special-case emit path. This
+        // branch is unreachable when the caller routes Rotl/Rotr
+        // through that path.
+        BinOp::Rotl | BinOp::Rotr => {
+            unreachable!("rotate emitted via MSL `rotate(...)` function call, not operator")
+        }
     }
 }
 

@@ -190,6 +190,10 @@ fn emit_msl_op(
                 quanta_ir::BinOp::Shr => ">>",
                 quanta_ir::BinOp::SatAdd => "+", // handled via clamp below
                 quanta_ir::BinOp::SatSub => "-",
+                // Rotates emitted via the `rotate(...)` MSL builtin
+                // in the special-case branch below; this arm is
+                // never read for them.
+                quanta_ir::BinOp::Rotl | quanta_ir::BinOp::Rotr => "",
             };
             if matches!(op, quanta_ir::BinOp::SatAdd) {
                 out.push_str(&format!(
@@ -214,6 +218,39 @@ fn emit_msl_op(
                     ty.msl_name(),
                     a.0,
                     b.0
+                ));
+            } else if matches!(op, quanta_ir::BinOp::Rotl) {
+                out.push_str(&format!(
+                    "{}{} r{} = rotate(r{}, r{});\n",
+                    pad,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    b.0,
+                ));
+            } else if matches!(op, quanta_ir::BinOp::Rotr) {
+                let width: u32 = match ty {
+                    quanta_ir::ScalarType::U8 | quanta_ir::ScalarType::I8 => 8,
+                    quanta_ir::ScalarType::U16
+                    | quanta_ir::ScalarType::I16
+                    | quanta_ir::ScalarType::F16 => 16,
+                    quanta_ir::ScalarType::U32
+                    | quanta_ir::ScalarType::I32
+                    | quanta_ir::ScalarType::F32 => 32,
+                    quanta_ir::ScalarType::U64
+                    | quanta_ir::ScalarType::I64
+                    | quanta_ir::ScalarType::F64 => 64,
+                    quanta_ir::ScalarType::Bool => 1,
+                };
+                out.push_str(&format!(
+                    "{}{} r{} = rotate(r{}, ({}) - (r{} % {}));\n",
+                    pad,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    width,
+                    b.0,
+                    width,
                 ));
             } else {
                 out.push_str(&format!(

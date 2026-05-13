@@ -73,6 +73,72 @@ pub(super) fn binop_wgsl(
             ));
             return;
         }
+        BinOp::Rotl | BinOp::Rotr => {
+            // WGSL has no rotate builtin. Emit the masked manual
+            // decomposition `(x << k) | (x >> (W - k))` with `k`
+            // masked to [0, W) so the (W - k) shift never reaches W
+            // (UB territory).
+            let width: u32 = match ty {
+                ScalarType::U8 | ScalarType::I8 => 8,
+                ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
+                ScalarType::U32 | ScalarType::I32 | ScalarType::F32 => 32,
+                ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
+                ScalarType::Bool => 1,
+            };
+            let mask = width - 1;
+            if matches!(op, BinOp::Rotl) {
+                out.push_str(&format!(
+                    "{}let r{}_k: u32 = u32(r{}) & {}u; \
+                     let r{}_l: {} = r{} << r{}_k; \
+                     let r{}_r: {} = r{} >> (({}u - r{}_k) & {}u); \
+                     let r{}: {} = r{}_l | r{}_r;\n",
+                    pad,
+                    dst,
+                    b,
+                    mask,
+                    dst,
+                    ty_w,
+                    a,
+                    dst,
+                    dst,
+                    ty_w,
+                    a,
+                    width,
+                    dst,
+                    mask,
+                    dst,
+                    ty_w,
+                    dst,
+                    dst,
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}let r{}_k: u32 = u32(r{}) & {}u; \
+                     let r{}_r: {} = r{} >> r{}_k; \
+                     let r{}_l: {} = r{} << (({}u - r{}_k) & {}u); \
+                     let r{}: {} = r{}_l | r{}_r;\n",
+                    pad,
+                    dst,
+                    b,
+                    mask,
+                    dst,
+                    ty_w,
+                    a,
+                    dst,
+                    dst,
+                    ty_w,
+                    a,
+                    width,
+                    dst,
+                    mask,
+                    dst,
+                    ty_w,
+                    dst,
+                    dst,
+                ));
+            }
+            return;
+        }
     };
     // WGSL's shift operators require unsigned RHS — cast explicitly.
     if matches!(op, BinOp::Shl | BinOp::Shr) {

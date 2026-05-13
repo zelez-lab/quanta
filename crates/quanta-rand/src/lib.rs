@@ -97,10 +97,8 @@ impl Rng {
 /// reference and the GPU kernel produce bit-identical streams when
 /// given the same `(seed_lo, seed_hi)`.
 ///
-/// V0 output is `s0 + s3` (no rotation). The standard xoshiro128++
-/// final mix is `rotl(s0 + s3, 7) + s0`, but `i32.rotl` is not in
-/// the slice-1 WASM-route lowering subset. v0.2 will land rotl
-/// support and switch to the standard output.
+/// Output: `rotl(s0 + s3, 7) + s0` — the standard xoshiro128++ final
+/// mix, now that the WASM-route lowering supports `i32.rotl`.
 #[inline]
 pub const fn quark_next_u32(seed_lo: u32, seed_hi: u32, id: u32) -> u32 {
     const GOLDEN_LO: u32 = 0x9E37_79B9;
@@ -121,7 +119,8 @@ pub const fn quark_next_u32(seed_lo: u32, seed_hi: u32, id: u32) -> u32 {
     let c3 = (b3 ^ (b3 >> 13)).wrapping_mul(0xC2B2_AE35);
     let s3 = c3 ^ (c3 >> 16);
 
-    s0.wrapping_add(s3)
+    let sum = s0.wrapping_add(s3);
+    sum.rotate_left(7).wrapping_add(s0)
 }
 
 // ────────────────────────────────────────────────────────────────────

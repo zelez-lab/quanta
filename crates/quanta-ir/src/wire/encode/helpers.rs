@@ -27,7 +27,7 @@ pub(crate) fn write_scalar_type(w: &mut Writer, ty: &ScalarType) {
 }
 
 // ---------------------------------------------------------------------------
-// BinOp  (10 variants, tags 0..9)
+// BinOp  (14 variants, tags 0..13)
 // ---------------------------------------------------------------------------
 
 pub(in crate::wire) fn write_binop(w: &mut Writer, op: &BinOp) {
@@ -44,6 +44,8 @@ pub(in crate::wire) fn write_binop(w: &mut Writer, op: &BinOp) {
         BinOp::Shr => 9,
         BinOp::SatAdd => 10,
         BinOp::SatSub => 11,
+        BinOp::Rotl => 12,
+        BinOp::Rotr => 13,
     };
     w.u8(tag);
 }

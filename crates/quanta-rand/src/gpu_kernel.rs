@@ -53,14 +53,12 @@ pub fn fill_buffer(d: &FillBufferData) {
     let c3: u32 = (b3 ^ (b3 >> 13u32)).wrapping_mul(0xC2B2_AE35u32);
     let s3: u32 = c3 ^ (c3 >> 16u32);
 
-    // V0 output: s0 + s3 (degenerate from real xoshiro128++). The
-    // standard algorithm uses `rotl(s0 + s3, 7) + s0`, but LLVM
-    // recognises that pattern and emits `i32.rotl`, which is not in
-    // the slice-1 WASM lowering subset. v0.2 will land i32.rotl
-    // lowering and switch to the standard output function. For now
-    // the CPU reference matches this simplified output exactly, so
-    // the bit-exactness contract holds.
-    let result: u32 = s0.wrapping_add(s3);
+    // Standard xoshiro128++ output: rotl(s0 + s3, 7) + s0.
+    // The WASM-route lowering now accepts i32.rotl, so we use
+    // `rotate_left` directly; LLVM emits the WASM `i32.rotl`
+    // instruction which the lowering maps to BinOp::Rotl.
+    let sum: u32 = s0.wrapping_add(s3);
+    let result: u32 = sum.rotate_left(7).wrapping_add(s0);
     d.out[id as usize] = result;
 }
 

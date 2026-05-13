@@ -63,6 +63,8 @@ const fn binop_to_tag(op: BinOp) -> u8 {
         BinOp::Shr => 9,
         BinOp::SatAdd => 10,
         BinOp::SatSub => 11,
+        BinOp::Rotl => 12,
+        BinOp::Rotr => 13,
     }
 }
 
@@ -80,6 +82,8 @@ const fn tag_to_binop(tag: u8) -> Option<BinOp> {
         9 => Some(BinOp::Shr),
         10 => Some(BinOp::SatAdd),
         11 => Some(BinOp::SatSub),
+        12 => Some(BinOp::Rotl),
+        13 => Some(BinOp::Rotr),
         _ => None,
     }
 }

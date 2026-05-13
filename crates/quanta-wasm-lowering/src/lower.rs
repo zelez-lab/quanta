@@ -1112,6 +1112,8 @@ impl<'a> LowerCtx<'a> {
             // determines the codegen-time arithmetic vs logical
             // distinction.
             RawInstr::I32ShrU | RawInstr::I32ShrS => self.bin_op_int(BinOp::Shr)?,
+            RawInstr::I32Rotl => self.bin_op_int(BinOp::Rotl)?,
+            RawInstr::I32Rotr => self.bin_op_int(BinOp::Rotr)?,
 
             RawInstr::I32LtU | RawInstr::I32LtS => self.cmp_op_int(quanta_ir::CmpOp::Lt)?,
             RawInstr::I32LeU | RawInstr::I32LeS => self.cmp_op_int(quanta_ir::CmpOp::Le)?,

@@ -28,7 +28,7 @@ pub(crate) fn read_scalar_type(r: &mut Reader) -> Result<ScalarType, &'static st
 }
 
 // ---------------------------------------------------------------------------
-// BinOp  (10 variants, tags 0..9)
+// BinOp  (14 variants, tags 0..13)
 // ---------------------------------------------------------------------------
 
 pub(in crate::wire) fn read_binop(r: &mut Reader) -> Result<BinOp, &'static str> {
@@ -46,6 +46,8 @@ pub(in crate::wire) fn read_binop(r: &mut Reader) -> Result<BinOp, &'static str>
         9 => Ok(BinOp::Shr),
         10 => Ok(BinOp::SatAdd),
         11 => Ok(BinOp::SatSub),
+        12 => Ok(BinOp::Rotl),
+        13 => Ok(BinOp::Rotr),
         _ => Err("invalid BinOp tag"),
     }
 }

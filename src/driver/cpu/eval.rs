@@ -58,6 +58,8 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb),
                 BinOp::Shr => va.wrapping_shr(vb),
+                BinOp::Rotl => va.rotate_left(vb),
+                BinOp::Rotr => va.rotate_right(vb),
                 BinOp::SatAdd => va.saturating_add(vb),
                 BinOp::SatSub => va.saturating_sub(vb),
             })
@@ -88,6 +90,8 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb as u32),
                 BinOp::Shr => va.wrapping_shr(vb as u32),
+                BinOp::Rotl => va.rotate_left(vb as u32),
+                BinOp::Rotr => va.rotate_right(vb as u32),
                 BinOp::SatAdd => va.saturating_add(vb),
                 BinOp::SatSub => va.saturating_sub(vb),
             })
@@ -118,6 +122,8 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb as u32),
                 BinOp::Shr => va.wrapping_shr(vb as u32),
+                BinOp::Rotl => va.rotate_left(vb as u32),
+                BinOp::Rotr => va.rotate_right(vb as u32),
                 BinOp::SatAdd => va.saturating_add(vb),
                 BinOp::SatSub => va.saturating_sub(vb),
             })
@@ -148,6 +154,8 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb as u32),
                 BinOp::Shr => va.wrapping_shr(vb as u32),
+                BinOp::Rotl => va.rotate_left(vb as u32),
+                BinOp::Rotr => va.rotate_right(vb as u32),
                 BinOp::SatAdd => va.saturating_add(vb),
                 BinOp::SatSub => va.saturating_sub(vb),
             })

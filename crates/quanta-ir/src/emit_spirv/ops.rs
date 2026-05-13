@@ -195,6 +195,87 @@ impl SpvEmitter {
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
                 );
 
+                // Rotate ops: SPIR-V has no native rotate. Emit the
+                // manual decomposition `(a << k) | (a >> (W - k))`
+                // with k masked to [0, W). Falls out of the standard
+                // shift + or + and + sub primitives.
+                if matches!(op, BinOp::Rotl | BinOp::Rotr) {
+                    let width: u32 = match ty {
+                        ScalarType::U8 | ScalarType::I8 => 8,
+                        ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
+                        ScalarType::U32 | ScalarType::I32 | ScalarType::F32 => 32,
+                        ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
+                        ScalarType::Bool => 1,
+                    };
+                    let mask = width - 1;
+                    // Const ids for width and mask. SPIR-V shift
+                    // operands are matched on width-class; for our
+                    // slice-1 surface (i32 rotations) we use u32
+                    // constants. (Future i64 rotations will need
+                    // u64 constants via a parallel emit_constant_u64.)
+                    let mask_val = self.emit_constant_u32(mask);
+                    let width_val = self.emit_constant_u32(width);
+                    // k_masked = b & mask
+                    let k_masked = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_BITWISE_AND,
+                        &[result_ty, k_masked, b_val, mask_val],
+                    );
+                    // Determine left/right shift amounts.
+                    let (shl_amt, shr_amt) = if matches!(op, BinOp::Rotl) {
+                        // Rotl: shl by k_masked, shr by (width - k_masked) & mask
+                        let w_minus_k = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_ISUB,
+                            &[result_ty, w_minus_k, width_val, k_masked],
+                        );
+                        let w_minus_k_masked = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_BITWISE_AND,
+                            &[result_ty, w_minus_k_masked, w_minus_k, mask_val],
+                        );
+                        (k_masked, w_minus_k_masked)
+                    } else {
+                        // Rotr: shr by k_masked, shl by (width - k_masked) & mask
+                        let w_minus_k = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_ISUB,
+                            &[result_ty, w_minus_k, width_val, k_masked],
+                        );
+                        let w_minus_k_masked = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_BITWISE_AND,
+                            &[result_ty, w_minus_k_masked, w_minus_k, mask_val],
+                        );
+                        (w_minus_k_masked, k_masked)
+                    };
+                    let lo = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_SHIFT_LEFT_LOGICAL,
+                        &[result_ty, lo, a_val, shl_amt],
+                    );
+                    let hi = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_SHIFT_RIGHT_LOGICAL,
+                        &[result_ty, hi, a_val, shr_amt],
+                    );
+                    let result = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_BITWISE_OR,
+                        &[result_ty, result, lo, hi],
+                    );
+                    self.set_reg(*dst, result, result_ty);
+                    return Ok(());
+                }
+
                 let opcode = match (op, is_float, is_signed) {
                     (BinOp::Add, true, _) => OP_FADD,
                     (BinOp::Add, false, _) => OP_IADD,
@@ -219,6 +300,8 @@ impl SpvEmitter {
                     (BinOp::SatAdd, false, _) => OP_IADD,
                     (BinOp::SatSub, true, _) => OP_FSUB,
                     (BinOp::SatSub, false, _) => OP_ISUB,
+                    // Rotates handled by the early-return above.
+                    (BinOp::Rotl, _, _) | (BinOp::Rotr, _, _) => unreachable!(),
                 };
 
                 let result = self.alloc_id();

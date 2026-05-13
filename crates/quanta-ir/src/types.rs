@@ -85,6 +85,10 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+    /// Rotate left by k bits (k taken mod bit-width). Integer-only.
+    Rotl,
+    /// Rotate right by k bits (k taken mod bit-width). Integer-only.
+    Rotr,
     SatAdd,
     SatSub,
 }

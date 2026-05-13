@@ -92,6 +92,43 @@ pub(super) fn emit_binop<'ctx>(
                     .build_select(underflow, zero, diff, "")
                     .map_err(|e| e.to_string());
             }
+            BinOp::Rotl | BinOp::Rotr => {
+                // LLVM has llvm.fshl/llvm.fshr intrinsics for funnel
+                // shifts (rotate is the same-operand case), but
+                // inkwell 0.9 doesn't expose builders for them. Emit
+                // the manual decomposition:
+                //   rotl(a, k) = (a << (k & mask)) | (a >> ((W - k) & mask))
+                //   rotr(a, k) = (a >> (k & mask)) | (a << ((W - k) & mask))
+                // where mask = W - 1, W = bit width.
+                let width_bits = a.get_type().get_bit_width();
+                let int_ty = a.get_type();
+                let width_const = int_ty.const_int(width_bits as u64, false);
+                let mask_const = int_ty.const_int((width_bits - 1) as u64, false);
+                let k_masked = builder
+                    .build_and(b, mask_const, "rot_k_masked")
+                    .map_err(|e| e.to_string())?;
+                let w_minus_k = builder
+                    .build_int_sub(width_const, k_masked, "rot_w_minus_k")
+                    .map_err(|e| e.to_string())?;
+                let w_minus_k_masked = builder
+                    .build_and(w_minus_k, mask_const, "rot_w_minus_k_masked")
+                    .map_err(|e| e.to_string())?;
+                let (shl_amt, shr_amt) = if matches!(op, BinOp::Rotl) {
+                    (k_masked, w_minus_k_masked)
+                } else {
+                    (w_minus_k_masked, k_masked)
+                };
+                let lo = builder
+                    .build_left_shift(a, shl_amt, "rot_lo")
+                    .map_err(|e| e.to_string())?;
+                let hi = builder
+                    .build_right_shift(a, shr_amt, false, "rot_hi")
+                    .map_err(|e| e.to_string())?;
+                return builder
+                    .build_or(lo, hi, "rot_result")
+                    .map(|v| v.into())
+                    .map_err(|e| e.to_string());
+            }
         }
         .map_err(|e| e.to_string())?;
         Ok(r.into())

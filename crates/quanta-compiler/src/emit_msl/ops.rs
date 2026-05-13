@@ -92,6 +92,36 @@ pub(crate) fn emit_op(
                         b.0
                     ));
                 }
+            } else if matches!(op, BinOp::Rotl) {
+                // MSL: `rotate(x, k)` rotates left by k bits.
+                out.push_str(&format!(
+                    "{}{} r{} = rotate(r{}, r{});\n",
+                    pad,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    b.0,
+                ));
+            } else if matches!(op, BinOp::Rotr) {
+                // No native rotate-right; rewrite as rotate-left by
+                // (width - k mod width).
+                let width: u32 = match ty {
+                    ScalarType::U8 | ScalarType::I8 => 8,
+                    ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
+                    ScalarType::U32 | ScalarType::I32 | ScalarType::F32 => 32,
+                    ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
+                    ScalarType::Bool => 1,
+                };
+                out.push_str(&format!(
+                    "{}{} r{} = rotate(r{}, ({}) - (r{} % {}));\n",
+                    pad,
+                    ty.msl_name(),
+                    dst.0,
+                    a.0,
+                    width,
+                    b.0,
+                    width,
+                ));
             } else {
                 let o = binop_str(op);
                 out.push_str(&format!(

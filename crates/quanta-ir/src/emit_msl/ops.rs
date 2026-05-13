@@ -60,16 +60,52 @@ pub(super) fn emit_op(
             out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
         }
         KernelOp::BinOp { dst, a, b, op, ty } => {
-            let o = binop_str(op);
-            out.push_str(&format!(
-                "{}{} r{} = r{} {} r{};\n",
-                pad,
-                ty.msl_name(),
-                dst.0,
-                a.0,
-                o,
-                b.0
-            ));
+            match op {
+                BinOp::Rotl => {
+                    // MSL: `rotate(x, k)` rotates left by k positions.
+                    out.push_str(&format!(
+                        "{}{} r{} = rotate(r{}, r{});\n",
+                        pad,
+                        ty.msl_name(),
+                        dst.0,
+                        a.0,
+                        b.0
+                    ));
+                }
+                BinOp::Rotr => {
+                    // MSL doesn't have a rotate-right built-in. Rewrite
+                    // as rotate-left by (width - k mod width).
+                    let width: u32 = match ty {
+                        ScalarType::U8 | ScalarType::I8 => 8,
+                        ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
+                        ScalarType::U32 | ScalarType::I32 | ScalarType::F32 => 32,
+                        ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
+                        ScalarType::Bool => 1,
+                    };
+                    out.push_str(&format!(
+                        "{}{} r{} = rotate(r{}, ({}) - (r{} % {}));\n",
+                        pad,
+                        ty.msl_name(),
+                        dst.0,
+                        a.0,
+                        width,
+                        b.0,
+                        width
+                    ));
+                }
+                _ => {
+                    let o = binop_str(op);
+                    out.push_str(&format!(
+                        "{}{} r{} = r{} {} r{};\n",
+                        pad,
+                        ty.msl_name(),
+                        dst.0,
+                        a.0,
+                        o,
+                        b.0
+                    ));
+                }
+            }
         }
         KernelOp::Cmp { dst, a, b, op, .. } => {
             let o = cmpop_str(op);

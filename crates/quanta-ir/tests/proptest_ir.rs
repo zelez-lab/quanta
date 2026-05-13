@@ -27,10 +27,10 @@ proptest! {
 // ── BinOp tag roundtrip ─────────────────────────────────────────────────────
 
 proptest! {
-    /// Every valid BinOp tag (0..12) should roundtrip when embedded in a
+    /// Every valid BinOp tag (0..14) should roundtrip when embedded in a
     /// KernelOp::BinOp inside a KernelDef.
     #[test]
-    fn binop_roundtrip(tag in 0u8..12) {
+    fn binop_roundtrip(tag in 0u8..14) {
         let op = binop_from_tag(tag);
         let k = KernelDef {
             name: String::from("binop_rt"),
@@ -322,6 +322,8 @@ fn binop_from_tag(tag: u8) -> BinOp {
         9 => BinOp::Shr,
         10 => BinOp::SatAdd,
         11 => BinOp::SatSub,
+        12 => BinOp::Rotl,
+        13 => BinOp::Rotr,
         _ => unreachable!(),
     }
 }

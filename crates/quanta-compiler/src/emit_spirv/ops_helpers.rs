@@ -119,6 +119,68 @@ impl SpvEmitter {
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
         );
 
+        // Rotate ops: SPIR-V has no native rotate. Emit the manual
+        // decomposition `(a << k) | (a >> (W - k))` with k masked
+        // to [0, W).
+        if matches!(op, BinOp::Rotl | BinOp::Rotr) {
+            let width: u32 = match ty {
+                ScalarType::U8 | ScalarType::I8 => 8,
+                ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
+                ScalarType::U32 | ScalarType::I32 | ScalarType::F32 => 32,
+                ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
+                ScalarType::Bool => 1,
+            };
+            let mask = width - 1;
+            // For slice-1 surface (i32/u32 rotations) the shift
+            // operand width is u32. Future i64 rotations need an
+            // emit_constant_u64 + matching width type.
+            let mask_val = self.emit_constant_u32(mask);
+            let width_val = self.emit_constant_u32(width);
+            let k_masked = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_BITWISE_AND,
+                &[result_ty, k_masked, b_val, mask_val],
+            );
+            let w_minus_k = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_ISUB,
+                &[result_ty, w_minus_k, width_val, k_masked],
+            );
+            let w_minus_k_masked = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_BITWISE_AND,
+                &[result_ty, w_minus_k_masked, w_minus_k, mask_val],
+            );
+            let (shl_amt, shr_amt) = if matches!(op, BinOp::Rotl) {
+                (k_masked, w_minus_k_masked)
+            } else {
+                (w_minus_k_masked, k_masked)
+            };
+            let lo = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SHIFT_LEFT_LOGICAL,
+                &[result_ty, lo, a_val, shl_amt],
+            );
+            let hi = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SHIFT_RIGHT_LOGICAL,
+                &[result_ty, hi, a_val, shr_amt],
+            );
+            let result = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_BITWISE_OR,
+                &[result_ty, result, lo, hi],
+            );
+            self.set_reg(dst, result, result_ty);
+            return Ok(());
+        }
+
         let opcode = match (op, is_float, is_signed) {
             (BinOp::Add, true, _) => OP_FADD,
             (BinOp::Add, false, _) => OP_IADD,
@@ -139,6 +201,7 @@ impl SpvEmitter {
             (BinOp::Shr, _, true) => OP_SHIFT_RIGHT_ARITHMETIC,
             (BinOp::Shr, _, false) => OP_SHIFT_RIGHT_LOGICAL,
             (BinOp::SatAdd, _, _) | (BinOp::SatSub, _, _) => 0,
+            (BinOp::Rotl, _, _) | (BinOp::Rotr, _, _) => unreachable!(),
         };
 
         if matches!(op, BinOp::SatAdd | BinOp::SatSub) {

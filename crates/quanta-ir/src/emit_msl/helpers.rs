@@ -33,6 +33,11 @@ pub(super) fn binop_str(op: &BinOp) -> &'static str {
         // Saturating ops: MSL doesn't have a native operator, use regular +/-
         BinOp::SatAdd => "+",
         BinOp::SatSub => "-",
+        // Rotates aren't binary operators in MSL — they're emitted via
+        // the manual decomposition in the caller. This branch is
+        // unreachable when the caller routes Rotl/Rotr through the
+        // special-case emit path.
+        BinOp::Rotl | BinOp::Rotr => unreachable!("rotate emitted via function call, not operator"),
     }
 }
 
