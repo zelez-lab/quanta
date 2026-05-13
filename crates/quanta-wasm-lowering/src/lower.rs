@@ -1016,13 +1016,16 @@ impl<'a> LowerCtx<'a> {
                             .and_then(|n| n.as_deref());
                         if resolved.is_some_and(is_panic_helper) {
                             self.elide_panic_call(*idx)?;
+                        } else if self.try_inline_defined_call(*idx)? {
+                            // Successfully inlined the callee body —
+                            // the callee's return value (if any) is
+                            // now on top of self.stack.
                         } else {
                             let detail = match resolved {
                                 Some(name) => format!(
                                     "call to defined function {idx} (`{name}`) — \
-                                     inlining not yet supported; rewrite the \
-                                     kernel to avoid this call or expose the \
-                                     callee as a Quanta intrinsic"
+                                     inlining not yet supported (callee has unsupported \
+                                     control flow or is imported)"
                                 ),
                                 None => format!(
                                     "call to defined function {idx} (no debug \
@@ -2003,6 +2006,135 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
+    /// Try to inline a same-crate defined-function call. Looks up the
+    /// callee's body, sets up its params + locals on top of the
+    /// caller's `self.locals`, then walks the callee's instruction
+    /// stream — with `LocalGet`/`Set`/`Tee` indices rewritten to point
+    /// at the appended slots — through the existing `lower_instr`
+    /// machinery.
+    ///
+    /// Returns `Ok(true)` on success. Returns `Ok(false)` if the
+    /// callee can't be inlined under this v1 (contains `Return`, uses
+    /// structured control flow, etc.) — caller should fall back to
+    /// the unsupported-call error.
+    ///
+    /// V1 restrictions:
+    ///   - The callee body must be straight-line: no `Return`, no
+    ///     `Block`/`Loop`/`If`/`BrIf`/`Br`/`Else`/`End` except the
+    ///     terminating `End`. Real helper-style functions
+    ///     (splitmix32, hash mixers, byte rotates) all fit.
+    fn try_inline_defined_call(&mut self, callee_idx: u32) -> Result<bool, LoweringError> {
+        // Look up callee body + signature.
+        let callee = match self.module.functions.get(callee_idx as usize) {
+            Some(f) => f,
+            None => return Ok(false),
+        };
+        let callee_body = match &callee.kind {
+            FunctionKind::Defined(b) => b.clone(),
+            FunctionKind::Imported { .. } => return Ok(false),
+        };
+        let callee_sig = match self.module.types.get(callee.type_index as usize) {
+            Some(s) => s.clone(),
+            None => return Ok(false),
+        };
+
+        // V1: reject anything beyond straight-line ops + the terminating End.
+        // We accept the very last instruction being End (function epilogue
+        // rustc always emits) and reject all other control-flow constructs.
+        for (i, instr) in callee_body.instructions.iter().enumerate() {
+            let is_terminal_end =
+                i + 1 == callee_body.instructions.len() && matches!(instr, RawInstr::End);
+            match instr {
+                RawInstr::Block { .. }
+                | RawInstr::Loop { .. }
+                | RawInstr::If { .. }
+                | RawInstr::Else
+                | RawInstr::Br(_)
+                | RawInstr::BrIf(_)
+                | RawInstr::Return => return Ok(false),
+                RawInstr::End if !is_terminal_end => return Ok(false),
+                _ => {}
+            }
+        }
+
+        // Reserve callee-local slot space, append to self.locals.
+        let base_offset = self.locals.len();
+        let arity = callee_sig.params.len();
+        // Params first (with the right wasm_ty / stable_ty for each).
+        for ty in &callee_sig.params {
+            self.locals.push(LocalInfo {
+                wasm_ty: *ty,
+                val: None,
+                stable_reg: None,
+                stable_ty: scalar_type_for_wasm_ty(*ty),
+            });
+        }
+        // Declared locals after params.
+        for (count, ty) in &callee_body.locals {
+            for _ in 0..*count {
+                self.locals.push(LocalInfo {
+                    wasm_ty: *ty,
+                    val: None,
+                    stable_reg: None,
+                    stable_ty: scalar_type_for_wasm_ty(*ty),
+                });
+            }
+        }
+
+        // Pop args off the operand stack in reverse, then assign in
+        // declaration order to the freshly appended param slots. WASM
+        // call ABI: the last arg is on top of the stack.
+        let mut args: Vec<SymVal> = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            args.push(self.pop()?);
+        }
+        args.reverse();
+        for (i, arg) in args.into_iter().enumerate() {
+            let slot = base_offset + i;
+            if is_value_symval(&arg) {
+                self.ensure_stable_reg_for(slot, &arg);
+                self.write_local_via_copy(slot, arg)?;
+            } else {
+                self.locals[slot].val = Some(arg);
+            }
+        }
+
+        // Initialise declared-local stable regs to default-zero, same
+        // as the function-entry pass does for the top-level kernel.
+        let decl_locals_start = base_offset + arity;
+        for i in decl_locals_start..self.locals.len() {
+            let ty = self.locals[i].stable_ty;
+            let dst = self.alloc_reg();
+            let init = match ty {
+                ScalarType::F16 | ScalarType::F32 => ConstValue::F32(0.0),
+                ScalarType::F64 => ConstValue::F64(0.0),
+                ScalarType::Bool => ConstValue::Bool(false),
+                ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+                ScalarType::I64 => ConstValue::I64(0),
+                ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
+                ScalarType::U64 => ConstValue::U64(0),
+            };
+            self.emit(KernelOp::Const { dst, value: init });
+            self.locals[i].stable_reg = Some(dst);
+            self.locals[i].val = Some(SymVal::Reg(dst, ty));
+        }
+
+        // Walk the callee body, rewriting local indices by base_offset.
+        let base = base_offset as u32;
+        for instr in &callee_body.instructions {
+            let rewritten = remap_locals(instr, base);
+            // Skip the terminating End (the callee's function epilogue
+            // — we're inlining the body, not finishing a function).
+            if matches!(rewritten, RawInstr::End) {
+                continue;
+            }
+            self.lower_instr(&rewritten)?;
+        }
+
+        // Callee's return value (if any) is on top of self.stack now.
+        Ok(true)
+    }
+
     /// Lower an `atomic_<op>_<ty>(addr, val, order)` extern call into
     /// a `KernelOp::AtomicOp`. Args on the symbolic stack (top→bottom):
     /// order, val, addr. The order is a compile-time const; addr must
@@ -2402,4 +2534,16 @@ fn scalar_type_for_wasm_ty(ty: WasmTy) -> ScalarType {
 /// elides the call + the trailing `unreachable`.
 fn is_panic_helper(name: &str) -> bool {
     name.starts_with("_ZN4core9panicking")
+}
+
+/// Rewrite a `RawInstr`'s local indices by `base_offset` so a callee
+/// body can be spliced into a caller without local-index collisions.
+/// All other instruction variants pass through unchanged.
+fn remap_locals(instr: &RawInstr, base_offset: u32) -> RawInstr {
+    match instr {
+        RawInstr::LocalGet(i) => RawInstr::LocalGet(i + base_offset),
+        RawInstr::LocalSet(i) => RawInstr::LocalSet(i + base_offset),
+        RawInstr::LocalTee(i) => RawInstr::LocalTee(i + base_offset),
+        other => other.clone(),
+    }
 }
