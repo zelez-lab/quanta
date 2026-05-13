@@ -164,12 +164,15 @@ impl ShaderBinary {
 impl KernelBinary {
     /// Select the best binary for the given vendor.
     /// Apple: metallib binary. Vulkan: SPIR-V. NVIDIA: PTX. AMD: GCN ELF.
+    /// Software (CPU): always None — the CPU device only executes the
+    /// JIT path (`wave_jit`) on the embedded `KernelDef` IR.
     pub fn for_vendor(&self, vendor: crate::Vendor) -> Option<&[u8]> {
         match vendor {
             crate::Vendor::Amd => self.amd.or(self.spirv),
             crate::Vendor::Nvidia => self.nvidia.or(self.spirv),
             crate::Vendor::Apple => self.metallib,
             crate::Vendor::Intel => self.spirv.or(self.amd),
+            crate::Vendor::Software => None,
             _ => self.spirv,
         }
     }

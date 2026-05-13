@@ -324,6 +324,31 @@ pub enum RawInstr {
         offset: u64,
         align: u32,
     },
+    // i64 memory ops. `I64Load` / `I64Store` read/write 8-byte
+    // values from a u64/i64 buffer slot. The narrow variants
+    // (Load32U / Load32S / Store32) mirror the i32 narrow load/
+    // store family — used when rustc fuses `(u32_buf[i] as u64)`
+    // into a single load+widen instruction.
+    I64Load {
+        offset: u64,
+        align: u32,
+    },
+    I64Store {
+        offset: u64,
+        align: u32,
+    },
+    I64Load32U {
+        offset: u64,
+        align: u32,
+    },
+    I64Load32S {
+        offset: u64,
+        align: u32,
+    },
+    I64Store32 {
+        offset: u64,
+        align: u32,
+    },
     // Control flow
     Block {
         ty_arity: u32,
@@ -469,6 +494,26 @@ impl RawInstr {
                 align: memarg.align as u32,
             },
             Operator::I32Store8 { memarg } => Self::I32Store8 {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Load { memarg } => Self::I64Load {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Store { memarg } => Self::I64Store {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Load32U { memarg } => Self::I64Load32U {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Load32S { memarg } => Self::I64Load32S {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Store32 { memarg } => Self::I64Store32 {
                 offset: memarg.offset,
                 align: memarg.align as u32,
             },

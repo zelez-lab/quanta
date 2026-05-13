@@ -751,6 +751,80 @@ impl<'a> LowerCtx<'a> {
             // a u32 buffer being updated with byte-granular values.
             RawInstr::I32Store8 { .. } => self.narrow_store(8)?,
 
+            // ── i64 memory ops ──────────────────────────────────────
+            // Wide i64 load/store — used for `&[u64]` buffer access
+            // where rustc emits a single 8-byte memory op. Mirrors
+            // the i32.load / i32.store arms but matches scale=8
+            // (the rustc-emitted stride for u64 element arrays).
+            RawInstr::I64Load { .. } => {
+                let addr = self.pop()?;
+                match addr {
+                    SymVal::BufferAccess {
+                        slot,
+                        base,
+                        scale: 8,
+                    } => {
+                        let ty = self.scalar_type_for_slot(slot);
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::Load {
+                            dst,
+                            field: slot,
+                            index: base,
+                            ty,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ty));
+                    }
+                    other => {
+                        return Err(LoweringError::UnsupportedOp {
+                            op: format!("i64.load on non-buffer address {other:?}"),
+                            at: self.body.body_offset,
+                        });
+                    }
+                }
+            }
+
+            RawInstr::I64Store { .. } => {
+                let val = self.pop()?;
+                let addr = self.pop()?;
+                match addr {
+                    SymVal::BufferAccess {
+                        slot,
+                        base,
+                        scale: 8,
+                    } => {
+                        let ty = self.scalar_type_for_slot(slot);
+                        let val_reg = self.materialize_for_typed_store(val, ty)?;
+                        self.emit(KernelOp::Store {
+                            field: slot,
+                            index: base,
+                            src: val_reg,
+                            ty,
+                        });
+                    }
+                    other => {
+                        return Err(LoweringError::UnsupportedOp {
+                            op: format!("i64.store on non-buffer address {other:?}"),
+                            at: self.body.body_offset,
+                        });
+                    }
+                }
+            }
+
+            // Narrow i64 load (`i64.load32_u` / `_s`) — load 4 bytes
+            // from a u32-typed buffer slot and zero/sign-extend the
+            // result to u64. rustc emits this when a kernel reads
+            // `buf[i] as u64` where `buf: &[u32]`. We lower as
+            // Load(ty=slot_ty) followed by Cast(slot_ty, U64/I64).
+            RawInstr::I64Load32U { .. } => self.narrow_load_widen_i64(false)?,
+            RawInstr::I64Load32S { .. } => self.narrow_load_widen_i64(true)?,
+
+            // Narrow i64 store (`i64.store32`) — write the low 32
+            // bits of a u64 value to a u32-typed buffer slot. rustc
+            // emits this when a kernel writes `buf[i] = wide as u32`
+            // (and the wrap-then-store gets fused). We lower as
+            // Cast(U64, U32) followed by Store(ty=slot_ty).
+            RawInstr::I64Store32 { .. } => self.narrow_store_truncate_i64()?,
+
             RawInstr::F32Add => self.bin_op_float(BinOp::Add)?,
             RawInstr::F32Sub => self.bin_op_float(BinOp::Sub)?,
             RawInstr::F32Mul => self.bin_op_float(BinOp::Mul)?,
@@ -1636,6 +1710,94 @@ impl<'a> LowerCtx<'a> {
             field: slot,
             index: base,
             src: masked,
+            ty: slot_ty,
+        });
+        Ok(())
+    }
+
+    /// Lower `i64.load32_u` / `i64.load32_s` — load 4 bytes from a
+    /// u32-typed slot and zero/sign-extend to u64/i64. Address must
+    /// be a scale-4 BufferAccess (the standard u32 buffer index
+    /// shape). Result is pushed as a U64-typed register.
+    fn narrow_load_widen_i64(&mut self, signed: bool) -> Result<(), LoweringError> {
+        let addr = self.pop()?;
+        let (slot, base) = match addr {
+            SymVal::BufferAccess {
+                slot,
+                base,
+                scale: 4,
+            } => (slot, base),
+            other => {
+                return Err(LoweringError::UnsupportedOp {
+                    op: format!("narrow i64 load on non-scale-4 buffer address {other:?}"),
+                    at: self.body.body_offset,
+                });
+            }
+        };
+        let slot_ty = self.scalar_type_for_slot(slot);
+        let loaded = self.alloc_reg();
+        self.emit(KernelOp::Load {
+            dst: loaded,
+            field: slot,
+            index: base,
+            ty: slot_ty,
+        });
+        // Widen the loaded value to 64-bit via Cast.
+        let from_ty = if signed {
+            ScalarType::I32
+        } else {
+            ScalarType::U32
+        };
+        let to_ty = if signed {
+            ScalarType::I64
+        } else {
+            ScalarType::U64
+        };
+        let widened = self.alloc_reg();
+        self.emit(KernelOp::Cast {
+            dst: widened,
+            src: loaded,
+            from: from_ty,
+            to: to_ty,
+        });
+        self.stack.push(SymVal::Reg(widened, to_ty));
+        Ok(())
+    }
+
+    /// Lower `i64.store32` — truncate a u64 value to its low 32 bits
+    /// and store at a u32-typed slot. Address must be a scale-4
+    /// BufferAccess.
+    fn narrow_store_truncate_i64(&mut self) -> Result<(), LoweringError> {
+        let val = self.pop()?;
+        let addr = self.pop()?;
+        let (val_reg, _) = self.commit(val)?;
+        let (slot, base) = match addr {
+            SymVal::BufferAccess {
+                slot,
+                base,
+                scale: 4,
+            } => (slot, base),
+            other => {
+                return Err(LoweringError::UnsupportedOp {
+                    op: format!("i64.store32 on non-scale-4 buffer address {other:?}"),
+                    at: self.body.body_offset,
+                });
+            }
+        };
+        // Truncate via Cast(U64, U32) — same semantics as WASM's
+        // i32.wrap_i64 (drops the high word).
+        let truncated = self.alloc_reg();
+        self.emit(KernelOp::Cast {
+            dst: truncated,
+            src: val_reg,
+            from: ScalarType::U64,
+            to: ScalarType::U32,
+        });
+        let slot_ty = self.scalar_type_for_slot(slot);
+        self.emit(KernelOp::Store {
+            field: slot,
+            index: base,
+            src: truncated,
             ty: slot_ty,
         });
         Ok(())
