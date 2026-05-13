@@ -565,6 +565,14 @@ impl<'a> LowerCtx<'a> {
                 });
                 self.stack.push(SymVal::Reg(dst, ScalarType::F32));
             }
+            RawInstr::F64Const(v) => {
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst,
+                    value: ConstValue::F64(*v),
+                });
+                self.stack.push(SymVal::Reg(dst, ScalarType::F64));
+            }
 
             RawInstr::I32Shl => {
                 // Pattern: <reg> <const k> i32.shl → ScaledIdx{base, 1<<k}
@@ -673,6 +681,58 @@ impl<'a> LowerCtx<'a> {
                     other => {
                         return Err(LoweringError::UnsupportedOp {
                             op: format!("f32.store on non-buffer address {other:?}"),
+                            at: self.body.body_offset,
+                        });
+                    }
+                }
+            }
+
+            RawInstr::F64Load { .. } => {
+                let addr = self.pop()?;
+                match addr {
+                    SymVal::BufferAccess {
+                        slot,
+                        base,
+                        scale: 8,
+                    } => {
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::Load {
+                            dst,
+                            field: slot,
+                            index: base,
+                            ty: ScalarType::F64,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::F64));
+                    }
+                    other => {
+                        return Err(LoweringError::UnsupportedOp {
+                            op: format!("f64.load on non-buffer address {other:?}"),
+                            at: self.body.body_offset,
+                        });
+                    }
+                }
+            }
+
+            RawInstr::F64Store { .. } => {
+                let val = self.pop()?;
+                let addr = self.pop()?;
+                let (val_reg, _) = self.commit(val)?;
+                match addr {
+                    SymVal::BufferAccess {
+                        slot,
+                        base,
+                        scale: 8,
+                    } => {
+                        self.emit(KernelOp::Store {
+                            field: slot,
+                            index: base,
+                            src: val_reg,
+                            ty: ScalarType::F64,
+                        });
+                    }
+                    other => {
+                        return Err(LoweringError::UnsupportedOp {
+                            op: format!("f64.store on non-buffer address {other:?}"),
                             at: self.body.body_offset,
                         });
                     }
@@ -831,10 +891,15 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I64Store16 { .. } => self.narrow_store_truncate_i64(16)?,
             RawInstr::I64Store8 { .. } => self.narrow_store_truncate_i64(8)?,
 
-            RawInstr::F32Add => self.bin_op_float(BinOp::Add)?,
-            RawInstr::F32Sub => self.bin_op_float(BinOp::Sub)?,
-            RawInstr::F32Mul => self.bin_op_float(BinOp::Mul)?,
-            RawInstr::F32Div => self.bin_op_float(BinOp::Div)?,
+            RawInstr::F32Add => self.bin_op_float(BinOp::Add, ScalarType::F32)?,
+            RawInstr::F32Sub => self.bin_op_float(BinOp::Sub, ScalarType::F32)?,
+            RawInstr::F32Mul => self.bin_op_float(BinOp::Mul, ScalarType::F32)?,
+            RawInstr::F32Div => self.bin_op_float(BinOp::Div, ScalarType::F32)?,
+
+            RawInstr::F64Add => self.bin_op_float(BinOp::Add, ScalarType::F64)?,
+            RawInstr::F64Sub => self.bin_op_float(BinOp::Sub, ScalarType::F64)?,
+            RawInstr::F64Mul => self.bin_op_float(BinOp::Mul, ScalarType::F64)?,
+            RawInstr::F64Div => self.bin_op_float(BinOp::Div, ScalarType::F64)?,
 
             RawInstr::Call(idx) => {
                 let name = self.intrinsic_names.get(*idx as usize).cloned();
@@ -1273,12 +1338,19 @@ impl<'a> LowerCtx<'a> {
                 self.stack.push(SymVal::Reg(dst, ScalarType::Bool));
             }
 
-            RawInstr::F32Lt => self.cmp_op_float(quanta_ir::CmpOp::Lt)?,
-            RawInstr::F32Le => self.cmp_op_float(quanta_ir::CmpOp::Le)?,
-            RawInstr::F32Gt => self.cmp_op_float(quanta_ir::CmpOp::Gt)?,
-            RawInstr::F32Ge => self.cmp_op_float(quanta_ir::CmpOp::Ge)?,
-            RawInstr::F32Eq => self.cmp_op_float(quanta_ir::CmpOp::Eq)?,
-            RawInstr::F32Ne => self.cmp_op_float(quanta_ir::CmpOp::Ne)?,
+            RawInstr::F32Lt => self.cmp_op_float(quanta_ir::CmpOp::Lt, ScalarType::F32)?,
+            RawInstr::F32Le => self.cmp_op_float(quanta_ir::CmpOp::Le, ScalarType::F32)?,
+            RawInstr::F32Gt => self.cmp_op_float(quanta_ir::CmpOp::Gt, ScalarType::F32)?,
+            RawInstr::F32Ge => self.cmp_op_float(quanta_ir::CmpOp::Ge, ScalarType::F32)?,
+            RawInstr::F32Eq => self.cmp_op_float(quanta_ir::CmpOp::Eq, ScalarType::F32)?,
+            RawInstr::F32Ne => self.cmp_op_float(quanta_ir::CmpOp::Ne, ScalarType::F32)?,
+
+            RawInstr::F64Lt => self.cmp_op_float(quanta_ir::CmpOp::Lt, ScalarType::F64)?,
+            RawInstr::F64Le => self.cmp_op_float(quanta_ir::CmpOp::Le, ScalarType::F64)?,
+            RawInstr::F64Gt => self.cmp_op_float(quanta_ir::CmpOp::Gt, ScalarType::F64)?,
+            RawInstr::F64Ge => self.cmp_op_float(quanta_ir::CmpOp::Ge, ScalarType::F64)?,
+            RawInstr::F64Eq => self.cmp_op_float(quanta_ir::CmpOp::Eq, ScalarType::F64)?,
+            RawInstr::F64Ne => self.cmp_op_float(quanta_ir::CmpOp::Ne, ScalarType::F64)?,
 
             RawInstr::F32ConvertI32U => self.cast_op(ScalarType::U32, ScalarType::F32)?,
             RawInstr::F32ConvertI32S => self.cast_op(ScalarType::I32, ScalarType::F32)?,
@@ -1292,6 +1364,24 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I64ExtendI32U => self.cast_op(ScalarType::U32, ScalarType::U64)?,
             RawInstr::I64ExtendI32S => self.cast_op(ScalarType::I32, ScalarType::I64)?,
             RawInstr::I32WrapI64 => self.cast_op(ScalarType::U64, ScalarType::U32)?,
+
+            // f32 ↔ f64 width conversions.
+            RawInstr::F64PromoteF32 => self.cast_op(ScalarType::F32, ScalarType::F64)?,
+            RawInstr::F32DemoteF64 => self.cast_op(ScalarType::F64, ScalarType::F32)?,
+            // f64 ↔ int. Sign of the source picks the from-type for
+            // conversions to f64; for truncations to int, the dest
+            // signedness picks the to-type. Reinterpret is a bitcast
+            // — same width on both sides.
+            RawInstr::F64ConvertI32U => self.cast_op(ScalarType::U32, ScalarType::F64)?,
+            RawInstr::F64ConvertI32S => self.cast_op(ScalarType::I32, ScalarType::F64)?,
+            RawInstr::F64ConvertI64U => self.cast_op(ScalarType::U64, ScalarType::F64)?,
+            RawInstr::F64ConvertI64S => self.cast_op(ScalarType::I64, ScalarType::F64)?,
+            RawInstr::I32TruncF64U => self.cast_op(ScalarType::F64, ScalarType::U32)?,
+            RawInstr::I32TruncF64S => self.cast_op(ScalarType::F64, ScalarType::I32)?,
+            RawInstr::I64TruncF64U => self.cast_op(ScalarType::F64, ScalarType::U64)?,
+            RawInstr::I64TruncF64S => self.cast_op(ScalarType::F64, ScalarType::I64)?,
+            RawInstr::F64ReinterpretI64 => self.cast_op(ScalarType::U64, ScalarType::F64)?,
+            RawInstr::I64ReinterpretF64 => self.cast_op(ScalarType::F64, ScalarType::U64)?,
 
             // Inline f32 math ops. rustc's optimizer collapses calls
             // to F32Ext methods (`.sqrt()`, `.abs()`) into LLVM
@@ -1313,6 +1403,27 @@ impl<'a> LowerCtx<'a> {
             }
             RawInstr::F32Min => self.math_call_binary(MathFn::Min)?,
             RawInstr::F32Max => self.math_call_binary(MathFn::Max)?,
+
+            // f64 unary / binary — same shape as the f32 arms above.
+            // math_call_unary / math_call_binary are polymorphic via
+            // the operand's commit-time type, so they pick up F64 from
+            // the popped SymVal automatically.
+            RawInstr::F64Sqrt => self.math_call_unary(MathFn::Sqrt)?,
+            RawInstr::F64Abs => self.math_call_unary(MathFn::Abs)?,
+            RawInstr::F64Neg => {
+                let a = self.pop()?;
+                let (ar, ty) = self.commit(a)?;
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::UnaryOp {
+                    dst,
+                    a: ar,
+                    op: quanta_ir::UnaryOp::Neg,
+                    ty,
+                });
+                self.stack.push(SymVal::Reg(dst, ty));
+            }
+            RawInstr::F64Min => self.math_call_binary(MathFn::Min)?,
+            RawInstr::F64Max => self.math_call_binary(MathFn::Max)?,
 
             // `unreachable` follows an elided panic call as rustc's
             // dead-code marker; `nop` is a literal no-op. Both produce
@@ -1417,7 +1528,7 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
-    fn bin_op_float(&mut self, op: BinOp) -> Result<(), LoweringError> {
+    fn bin_op_float(&mut self, op: BinOp, ty: ScalarType) -> Result<(), LoweringError> {
         let b = self.pop()?;
         let a = self.pop()?;
         let (ar, _) = self.commit(a)?;
@@ -1428,9 +1539,9 @@ impl<'a> LowerCtx<'a> {
             a: ar,
             b: br,
             op,
-            ty: ScalarType::F32,
+            ty,
         });
-        self.stack.push(SymVal::Reg(dst, ScalarType::F32));
+        self.stack.push(SymVal::Reg(dst, ty));
         Ok(())
     }
 
@@ -1468,7 +1579,7 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
-    fn cmp_op_float(&mut self, op: quanta_ir::CmpOp) -> Result<(), LoweringError> {
+    fn cmp_op_float(&mut self, op: quanta_ir::CmpOp, ty: ScalarType) -> Result<(), LoweringError> {
         let b = self.pop()?;
         let a = self.pop()?;
         let (ar, _) = self.commit(a)?;
@@ -1479,7 +1590,7 @@ impl<'a> LowerCtx<'a> {
             a: ar,
             b: br,
             op,
-            ty: ScalarType::F32,
+            ty,
         });
         self.stack.push(SymVal::Reg(dst, ScalarType::Bool));
         Ok(())

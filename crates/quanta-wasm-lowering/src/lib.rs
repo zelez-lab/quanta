@@ -285,6 +285,23 @@ pub enum RawInstr {
     F32Sqrt,
     F32Min,
     F32Max,
+    // f64 arithmetic — mirrors the f32 surface above. Lowered with
+    // the F64 width class.
+    F64Add,
+    F64Sub,
+    F64Mul,
+    F64Div,
+    F64Eq,
+    F64Ne,
+    F64Lt,
+    F64Gt,
+    F64Le,
+    F64Ge,
+    F64Neg,
+    F64Abs,
+    F64Sqrt,
+    F64Min,
+    F64Max,
     // Conversions
     I32WrapI64,
     I64ExtendI32S,
@@ -295,6 +312,20 @@ pub enum RawInstr {
     I32TruncF32U,
     F32ReinterpretI32,
     I32ReinterpretF32,
+    // f32 ↔ f64 width conversions.
+    F64PromoteF32,
+    F32DemoteF64,
+    // f64 ↔ int conversions.
+    F64ConvertI32S,
+    F64ConvertI32U,
+    F64ConvertI64S,
+    F64ConvertI64U,
+    I32TruncF64S,
+    I32TruncF64U,
+    I64TruncF64S,
+    I64TruncF64U,
+    F64ReinterpretI64,
+    I64ReinterpretF64,
     // Memory
     I32Load {
         offset: u64,
@@ -309,6 +340,14 @@ pub enum RawInstr {
         align: u32,
     },
     F32Store {
+        offset: u64,
+        align: u32,
+    },
+    F64Load {
+        offset: u64,
+        align: u32,
+    },
+    F64Store {
         offset: u64,
         align: u32,
     },
@@ -483,6 +522,22 @@ impl RawInstr {
             Operator::F32Min => Self::F32Min,
             Operator::F32Max => Self::F32Max,
 
+            Operator::F64Add => Self::F64Add,
+            Operator::F64Sub => Self::F64Sub,
+            Operator::F64Mul => Self::F64Mul,
+            Operator::F64Div => Self::F64Div,
+            Operator::F64Eq => Self::F64Eq,
+            Operator::F64Ne => Self::F64Ne,
+            Operator::F64Lt => Self::F64Lt,
+            Operator::F64Gt => Self::F64Gt,
+            Operator::F64Le => Self::F64Le,
+            Operator::F64Ge => Self::F64Ge,
+            Operator::F64Neg => Self::F64Neg,
+            Operator::F64Abs => Self::F64Abs,
+            Operator::F64Sqrt => Self::F64Sqrt,
+            Operator::F64Min => Self::F64Min,
+            Operator::F64Max => Self::F64Max,
+
             Operator::I32WrapI64 => Self::I32WrapI64,
             Operator::I64ExtendI32S => Self::I64ExtendI32S,
             Operator::I64ExtendI32U => Self::I64ExtendI32U,
@@ -492,6 +547,19 @@ impl RawInstr {
             Operator::I32TruncF32U => Self::I32TruncF32U,
             Operator::F32ReinterpretI32 => Self::F32ReinterpretI32,
             Operator::I32ReinterpretF32 => Self::I32ReinterpretF32,
+
+            Operator::F64PromoteF32 => Self::F64PromoteF32,
+            Operator::F32DemoteF64 => Self::F32DemoteF64,
+            Operator::F64ConvertI32S => Self::F64ConvertI32S,
+            Operator::F64ConvertI32U => Self::F64ConvertI32U,
+            Operator::F64ConvertI64S => Self::F64ConvertI64S,
+            Operator::F64ConvertI64U => Self::F64ConvertI64U,
+            Operator::I32TruncF64S => Self::I32TruncF64S,
+            Operator::I32TruncF64U => Self::I32TruncF64U,
+            Operator::I64TruncF64S => Self::I64TruncF64S,
+            Operator::I64TruncF64U => Self::I64TruncF64U,
+            Operator::F64ReinterpretI64 => Self::F64ReinterpretI64,
+            Operator::I64ReinterpretF64 => Self::I64ReinterpretF64,
 
             Operator::I32Load { memarg } => Self::I32Load {
                 offset: memarg.offset,
@@ -506,6 +574,14 @@ impl RawInstr {
                 align: memarg.align as u32,
             },
             Operator::F32Store { memarg } => Self::F32Store {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::F64Load { memarg } => Self::F64Load {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::F64Store { memarg } => Self::F64Store {
                 offset: memarg.offset,
                 align: memarg.align as u32,
             },
