@@ -240,23 +240,19 @@ theorem lowerI32Load_preserves_bufferSlots
   · rw [hs] at h
     cases sv with
     | bufferAccess slot base scale =>
-        cases scale with
-        | zero =>
-            simp at h
-        | succ n =>
-            cases n with
-            | zero => simp at h
-            | succ n2 =>
-                cases n2 with
-                | zero => simp at h
-                | succ n3 =>
-                    cases n3 with
-                    | zero =>
-                        -- scale = 4 — the success arm.
-                        simp [LowerState.alloc] at h
-                        rcases h with ⟨h_s_eq, _⟩
-                        rw [← h_s_eq]
-                    | succ _ => simp at h
+        by_cases hscale : scale = 4
+        · subst hscale
+          simp [LowerState.alloc] at h
+          rcases h with ⟨h_s_eq, _⟩
+          rw [← h_s_eq]
+        · exfalso
+          split at h
+          · rename_i _ _ _ _ hp
+            -- hp : SymVal.bufferAccess slot base scale :: rs
+            --      = SymVal.bufferAccess _ _ 4 :: _
+            cases hp
+            exact hscale rfl
+          · exact Option.noConfusion h
     | reg _ _ => simp at h
     | i32ConstSym _ => simp at h
     | bufferPtr _ => simp at h
@@ -332,41 +328,30 @@ theorem lowerInstr_preserves_bufferSlots
         show s2.bufferSlots = _
         rw [hc_inv, hpop_inv]
   | i32Add  =>
-      show lowerI32Add s = some (s', ops) at h
       exact lowerI32Add_preserves_bufferSlots h
   | i32Sub  =>
-      show lowerI32Bin s .sub = some (s', ops) at h
       exact lowerI32Bin_preserves_bufferSlots h
   | i32Mul  =>
-      show lowerI32Bin s .mul = some (s', ops) at h
       exact lowerI32Bin_preserves_bufferSlots h
   | i32And  =>
-      show lowerI32Bin s .bAnd = some (s', ops) at h
       exact lowerI32Bin_preserves_bufferSlots h
   | i32Or   =>
-      show lowerI32Bin s .bOr = some (s', ops) at h
       exact lowerI32Bin_preserves_bufferSlots h
   | i32Xor  =>
-      show lowerI32Bin s .bXor = some (s', ops) at h
       exact lowerI32Bin_preserves_bufferSlots h
   | i32Shl  =>
-      show lowerI32Shl s = some (s', ops) at h
       exact lowerI32Shl_preserves_bufferSlots h
   | i32ShrU =>
-      show lowerI32Bin s .shr = some (s', ops) at h
       exact lowerI32Bin_preserves_bufferSlots h
   | i32DivU =>
-      show lowerI32Bin s .div = some (s', ops) at h
       exact lowerI32Bin_preserves_bufferSlots h
   | i32RemU =>
-      show lowerI32Bin s .rem = some (s', ops) at h
       exact lowerI32Bin_preserves_bufferSlots h
   | i32Load _ _ =>
-      show lowerI32Load s = some (s', ops) at h
       exact lowerI32Load_preserves_bufferSlots h
   | i32Store _ _ =>
       -- lowerI32Store: popSym + popSym + commit + match on bufferAccess.
-      show lowerI32Store s = some (s', ops) at h
+      unfold lowerInstr at h
       unfold lowerI32Store at h
       rcases h1 : s.popSym with _ | ⟨svv, s1⟩
       · simp [h1] at h
@@ -382,42 +367,34 @@ theorem lowerInstr_preserves_bufferSlots
       have hc_inv := LowerState.commit_preserves_bufferSlots hc
       cases sva with
       | bufferAccess slot base scale =>
-          cases scale with
-          | zero => simp at h
-          | succ n =>
-              cases n with
-              | zero => simp at h
-              | succ n2 =>
-                  cases n2 with
-                  | zero => simp at h
-                  | succ n3 =>
-                      cases n3 with
-                      | zero =>
-                          simp at h
-                          rcases h with ⟨h_s_eq, _⟩
-                          rw [← h_s_eq]; rw [hc_inv, h2_inv, h1_inv]
-                      | succ _ => simp at h
+          -- Only scale = 4 produces some(...); other scales yield none.
+          by_cases hscale : scale = 4
+          · subst hscale
+            simp at h
+            rcases h with ⟨h_s_eq, _⟩
+            rw [← h_s_eq]; rw [hc_inv, h2_inv, h1_inv]
+          · exfalso
+            simp only [pure, Pure.pure] at h
+            split at h
+            · rename_i _ _ _ hp
+              cases hp
+              exact hscale rfl
+            · exact Option.noConfusion h
       | reg _ _ => simp at h
       | i32ConstSym _ => simp at h
       | bufferPtr _ => simp at h
       | scaledIdx _ _ => simp at h
   | i32Eq  =>
-      show lowerI32Cmp s .eq = some (s', ops) at h
       exact lowerI32Cmp_preserves_bufferSlots h
   | i32Ne  =>
-      show lowerI32Cmp s .ne = some (s', ops) at h
       exact lowerI32Cmp_preserves_bufferSlots h
   | i32LtU =>
-      show lowerI32Cmp s .lt = some (s', ops) at h
       exact lowerI32Cmp_preserves_bufferSlots h
   | i32LeU =>
-      show lowerI32Cmp s .le = some (s', ops) at h
       exact lowerI32Cmp_preserves_bufferSlots h
   | i32GtU =>
-      show lowerI32Cmp s .gt = some (s', ops) at h
       exact lowerI32Cmp_preserves_bufferSlots h
   | i32GeU =>
-      show lowerI32Cmp s .ge = some (s', ops) at h
       exact lowerI32Cmp_preserves_bufferSlots h
   | wreturn =>
       simp [lowerInstr] at h
