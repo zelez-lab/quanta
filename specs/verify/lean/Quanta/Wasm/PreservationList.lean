@@ -2990,4 +2990,434 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
                     exact h_eval''
                   · rw [← h_s_eq]; exact R''
 
+-- ════════════════════════════════════════════════════════════════════
+-- L1c: full 6-step buffer-access LOAD chain (closes L1)
+--
+-- Composes the canonical buffer-access load chain:
+--   localGet bufSlot :: localGet idx :: i32Const k :: i32Shl ::
+--   i32Add :: i32Load 0 align :: rest
+-- After the 6-step chain the symbolic stack has
+--   .reg (s.nextReg + 1) .u32 :: s.stack
+-- and the emitted IR is
+--   [.copy s.nextReg stable, .load (s.nextReg + 1) bSlot s.nextReg .u32]
+--
+-- The chain captures the canonical kernel idiom `buffer[i]` for u32
+-- buffers (the load reads 4 bytes from `bSlot + i * 4`). The user
+-- supplies `k = 2` (so `1 <<< k.toNat = 4` matches `lowerI32Load`'s
+-- scale-4 requirement), plus arithmetic witnesses `h_shift_eq`,
+-- `h_addr_eq` (UInt32 add as multiplication-by-stride) and the
+-- load-bounds witness `h_in_bounds`.
+--
+-- Proof structure: full-inline. All 6 lowering unfolds + 6 eval
+-- unfolds + 6 per-op preservation invocations are interleaved at
+-- this level, with the user's `preservation_rest` applied on the
+-- tail. The final ops are composed via two `evalOps_append`
+-- applications (one for the step-2 `.copy`, one for the step-6
+-- `.load`).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- L1c: the full 6-step buffer-access LOAD chain. -/
+theorem preservation_evalInstrs_chain_buffer_load_6step
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (bufSlotIdx : Nat) (bSlot : Nat)
+    (h_buf : s.lookupBufferSlot bufSlotIdx = some bSlot)
+    (h_loc_buf : ∀ v, ws.locals.get? bufSlotIdx = some v →
+      ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr bSlot)
+    (idxIdx : Nat) (h_no_buf_idx : s.lookupBufferSlot idxIdx = none)
+    (k : Int) (h_k_eq_2 : k = 2)
+    (h_shift_eq : ∀ a : UInt32,
+       (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
+    (h_addr_eq : ∀ a b_ptr b : UInt32,
+       a.toNat = b.toNat * (1 <<< k.toNat) →
+       b_ptr.toNat = layout.startAddr bSlot →
+       (b_ptr + a).toNat = layout.startAddr bSlot + b.toNat * (1 <<< k.toNat))
+    (offset align : Nat) (h_offset : offset = 0)
+    (h_in_bounds : ∀ b : UInt32, b.toNat < layout.length bSlot)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws
+            (.localGet bufSlotIdx :: .localGet idxIdx ::
+             .i32Const k :: .i32Shl :: .i32Add ::
+             .i32Load offset align :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s
+            (.localGet bufSlotIdx :: .localGet idxIdx ::
+             .i32Const k :: .i32Shl :: .i32Add ::
+             .i32Load offset align :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- ── Lowering side: unfold all 6 cons_default steps ─────────────────
+  rw [lowerInstrs_cons_default fuel frames s (.localGet bufSlotIdx) _ rfl] at hl
+  have h_head_1 : lowerInstr s (.localGet bufSlotIdx)
+                    = some (s.pushSym (.bufferPtr bSlot), []) := by
+    show (match s.lookupBufferSlot bufSlotIdx with
+          | some slot => some (s.pushSym (.bufferPtr slot), [])
+          | none =>
+              (s.lookupLocal bufSlotIdx).bind (fun stable =>
+                let (fresh, s1) := s.alloc
+                let s2 := s1.push fresh
+                some (s2, [KernelOp.copy fresh stable])))
+              = some (s.pushSym (.bufferPtr bSlot), [])
+    rw [h_buf]
+  rw [h_head_1] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind, List.nil_append] at hl
+  let s_1 : LowerState := s.pushSym (.bufferPtr bSlot)
+  have h_bufs_eq_1 : s_1.bufferSlots = s.bufferSlots := by
+    simp [s_1, LowerState.pushSym]
+  have h_no_buf_idx_1 : s_1.lookupBufferSlot idxIdx = none := by
+    rw [LowerState.lookupBufferSlot_of_bufferSlots_eq idxIdx h_bufs_eq_1]
+    exact h_no_buf_idx
+  rw [lowerInstrs_cons_default fuel frames s_1 (.localGet idxIdx) _ rfl] at hl
+  cases h_stable : s_1.lookupLocal idxIdx with
+  | none =>
+      simp only [lowerInstr, h_no_buf_idx_1, h_stable, Option.bind_eq_bind,
+                 Option.some_bind, Option.none_bind, LowerState.alloc,
+                 LowerState.push] at hl
+      exact (Option.noConfusion hl)
+  | some stable =>
+      let s_2 : LowerState :=
+        { s_1 with nextReg := s_1.nextReg + 1,
+                   stack := SymVal.reg s_1.nextReg .u32 :: s_1.stack }
+      let ops_2 : List KernelOp := [.copy s_1.nextReg stable]
+      have h_head_2 : lowerInstr s_1 (.localGet idxIdx) = some (s_2, ops_2) := by
+        show (match s_1.lookupBufferSlot idxIdx with
+              | some slot => some (s_1.pushSym (.bufferPtr slot), [])
+              | none => do
+                  let stable ← s_1.lookupLocal idxIdx
+                  let (fresh, s1) := s_1.alloc
+                  let s2 := s1.push fresh
+                  pure (s2, [.copy fresh stable])) = some (s_2, ops_2)
+        rw [h_no_buf_idx_1, h_stable]
+        rfl
+      rw [h_head_2] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind] at hl
+      rw [lowerInstrs_cons_default fuel frames s_2 (.i32Const k) _ rfl] at hl
+      have h_head_3 : lowerInstr s_2 (.i32Const k) =
+          some (s_2.pushSym (.i32ConstSym k), []) := rfl
+      rw [h_head_3] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind, List.nil_append] at hl
+      let s_3 : LowerState := s_2.pushSym (.i32ConstSym k)
+      have h_s_3_stack : s_3.stack = .i32ConstSym k :: .reg s_1.nextReg .u32 ::
+                                      .bufferPtr bSlot :: s.stack := by
+        show (s_2.pushSym (.i32ConstSym k)).stack = _
+        simp [s_2, s_1, LowerState.pushSym]
+      rw [lowerInstrs_cons_default fuel frames s_3 .i32Shl _ rfl] at hl
+      let s_4 : LowerState :=
+        { s_3 with stack := .scaledIdx s_1.nextReg (1 <<< k.toNat) ::
+                             .bufferPtr bSlot :: s.stack }
+      have h_head_4 : lowerInstr s_3 .i32Shl = some (s_4, []) := by
+        show lowerI32Shl s_3 = some (s_4, [])
+        unfold lowerI32Shl
+        rw [h_s_3_stack]
+      rw [h_head_4] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind, List.nil_append] at hl
+      have h_s_4_stack : s_4.stack = .scaledIdx s_1.nextReg (1 <<< k.toNat) ::
+                                       .bufferPtr bSlot :: s.stack := rfl
+      rw [lowerInstrs_cons_default fuel frames s_4 .i32Add _ rfl] at hl
+      let s_5 : LowerState :=
+        { s_4 with stack := .bufferAccess bSlot s_1.nextReg (1 <<< k.toNat) :: s.stack }
+      have h_head_5 : lowerInstr s_4 .i32Add = some (s_5, []) := by
+        show lowerI32Add s_4 = some (s_5, [])
+        unfold lowerI32Add
+        rw [h_s_4_stack]
+      rw [h_head_5] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind, List.nil_append] at hl
+      have h_scale_4 : (1 <<< k.toNat) = 4 := by rw [h_k_eq_2]; rfl
+      have h_s_5_stack : s_5.stack = .bufferAccess bSlot s_1.nextReg 4 :: s.stack := by
+        show (.bufferAccess bSlot s_1.nextReg (1 <<< k.toNat) :: s.stack) = _
+        rw [h_scale_4]
+      rw [lowerInstrs_cons_default fuel frames s_5 (.i32Load offset align) _ rfl] at hl
+      let s_6 : LowerState :=
+        { s_5 with nextReg := s_5.nextReg + 1,
+                   stack := .reg s_5.nextReg .u32 :: s.stack }
+      let ops_6 : List KernelOp := [.load s_5.nextReg bSlot s_1.nextReg .u32]
+      have h_head_6 : lowerInstr s_5 (.i32Load offset align) = some (s_6, ops_6) := by
+        show lowerI32Load s_5 = some (s_6, ops_6)
+        unfold lowerI32Load
+        rw [h_s_5_stack]
+        rfl
+      rw [h_head_6] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind] at hl
+      cases h_post : lowerInstrs fuel frames s_6 rest with
+      | none => simp [h_post] at hl
+      | some post_pair =>
+          rcases post_pair with ⟨s_post, postOps⟩
+          simp [h_post] at hl
+          rcases hl with ⟨h_s_eq, h_ops_eq⟩
+          -- ── Eval side: unfold all 6 cons_default steps ────────────
+          rw [evalInstrs_cons_default fuel ws (.localGet bufSlotIdx) _
+                h_no_branch h_no_halt rfl] at hw
+          cases h_eval_1 : evalInstr ws (.localGet bufSlotIdx) with
+          | none =>
+              rw [h_eval_1] at hw
+              simp at hw
+          | some ws_1 =>
+              rw [h_eval_1] at hw
+              simp only at hw
+              obtain ⟨kst_1, h_kst_eval_1, R_1⟩ :=
+                preservation_localGet_bufferSlot ws s kst layout R bufSlotIdx bSlot
+                  h_buf h_loc_buf
+                  ws_1 s_1 []
+                  h_eval_1 h_head_1
+              have h_kst_1_eq : kst_1 = kst := by
+                simp [evalOps] at h_kst_eval_1
+                exact h_kst_eval_1.symm
+              have h_ws_1_shape : ∃ v, ws_1 = ws.push v := by
+                cases h_loc : ws.getLocal bufSlotIdx with
+                | none =>
+                    have h_ev : evalInstr ws (.localGet bufSlotIdx) = none := by
+                      show (do let v ← ws.getLocal bufSlotIdx; pure (ws.push v)) = none
+                      rw [h_loc]; rfl
+                    rw [h_ev] at h_eval_1; exact (Option.noConfusion h_eval_1)
+                | some v =>
+                    refine ⟨v, ?_⟩
+                    have h_ev : evalInstr ws (.localGet bufSlotIdx) = some (ws.push v) := by
+                      show (do let v ← ws.getLocal bufSlotIdx; pure (ws.push v)) = some (ws.push v)
+                      rw [h_loc]; rfl
+                    rw [h_ev] at h_eval_1
+                    exact ((Option.some.injEq _ _).mp h_eval_1).symm
+              obtain ⟨v_1, h_ws_1_eq⟩ := h_ws_1_shape
+              have h_1_no_branch : ws_1.branchTarget = none := by
+                rw [h_ws_1_eq]; simp [WasmState.push, h_no_branch]
+              have h_1_no_halt : ws_1.halted = false := by
+                rw [h_ws_1_eq]; simp [WasmState.push, h_no_halt]
+              rw [evalInstrs_cons_default fuel ws_1 (.localGet idxIdx) _
+                    h_1_no_branch h_1_no_halt rfl] at hw
+              cases h_eval_2 : evalInstr ws_1 (.localGet idxIdx) with
+              | none =>
+                  rw [h_eval_2] at hw
+                  simp at hw
+              | some ws_2 =>
+                  rw [h_eval_2] at hw
+                  simp only at hw
+                  obtain ⟨kst_2, h_kst_eval_2, R_2⟩ :=
+                    preservation_localGet ws_1 s_1 kst_1 layout R_1 idxIdx h_no_buf_idx_1
+                      ws_2 s_2 ops_2
+                      h_eval_2 h_head_2
+                  have h_2_broke : kst_2.broke = false := by
+                    have := evalOps_copy_singleton_preserves_broke h_kst_eval_2
+                    rw [this]; rw [h_kst_1_eq]; exact h_kst_no_broke
+                  have h_ws_2_shape : ∃ v, ws_2 = ws_1.push v := by
+                    cases h_loc : ws_1.getLocal idxIdx with
+                    | none =>
+                        have h_ev : evalInstr ws_1 (.localGet idxIdx) = none := by
+                          show (do let v ← ws_1.getLocal idxIdx; pure (ws_1.push v)) = none
+                          rw [h_loc]; rfl
+                        rw [h_ev] at h_eval_2; exact (Option.noConfusion h_eval_2)
+                    | some v =>
+                        refine ⟨v, ?_⟩
+                        have h_ev : evalInstr ws_1 (.localGet idxIdx) = some (ws_1.push v) := by
+                          show (do let v ← ws_1.getLocal idxIdx; pure (ws_1.push v)) = some (ws_1.push v)
+                          rw [h_loc]; rfl
+                        rw [h_ev] at h_eval_2
+                        exact ((Option.some.injEq _ _).mp h_eval_2).symm
+                  obtain ⟨v_2, h_ws_2_eq⟩ := h_ws_2_shape
+                  have h_2_no_branch : ws_2.branchTarget = none := by
+                    rw [h_ws_2_eq]; simp [WasmState.push, h_1_no_branch]
+                  have h_2_no_halt : ws_2.halted = false := by
+                    rw [h_ws_2_eq]; simp [WasmState.push, h_1_no_halt]
+                  rw [evalInstrs_cons_default fuel ws_2 (.i32Const k) _
+                        h_2_no_branch h_2_no_halt rfl] at hw
+                  have h_eval_3 : evalInstr ws_2 (.i32Const k) =
+                      some (ws_2.push (.wI32 (UInt32.ofNat k.toNat))) := rfl
+                  rw [h_eval_3] at hw
+                  simp only at hw
+                  let ws_3 := ws_2.push (.wI32 (UInt32.ofNat k.toNat))
+                  obtain ⟨kst_3, h_kst_eval_3, R_3⟩ :=
+                    preservation_i32Const ws_2 s_2 kst_2 layout R_2 k
+                      ws_3 s_3 []
+                      h_eval_3 h_head_3
+                  have h_kst_3_eq : kst_3 = kst_2 := by
+                    simp [evalOps] at h_kst_eval_3
+                    exact h_kst_eval_3.symm
+                  have h_3_no_branch : ws_3.branchTarget = none := by
+                    simp [ws_3, WasmState.push, h_2_no_branch]
+                  have h_3_no_halt : ws_3.halted = false := by
+                    simp [ws_3, WasmState.push, h_2_no_halt]
+                  have h_3_broke : kst_3.broke = false := by
+                    rw [h_kst_3_eq]; exact h_2_broke
+                  rw [evalInstrs_cons_default fuel ws_3 .i32Shl _
+                        h_3_no_branch h_3_no_halt rfl] at hw
+                  cases h_eval_4 : evalInstr ws_3 .i32Shl with
+                  | none =>
+                      rw [h_eval_4] at hw
+                      simp at hw
+                  | some ws_4 =>
+                      rw [h_eval_4] at hw
+                      simp only at hw
+                      have h_shift_eq_spec :
+                          ∀ a : UInt32,
+                            regLookup kst_3.rf s_1.nextReg = some (Quanta.KOps.Value.vU32 a) →
+                            (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat) := by
+                        intro a _; exact h_shift_eq a
+                      obtain ⟨kst_4, h_kst_eval_4, R_4⟩ :=
+                        preservation_i32Shl_bufferPattern ws_3 s_3 kst_3 layout R_3
+                          k s_1.nextReg .u32 (.bufferPtr bSlot :: s.stack)
+                          h_s_3_stack h_shift_eq_spec
+                          ws_4 s_4 []
+                          h_eval_4 h_head_4
+                      have h_kst_4_eq : kst_4 = kst_3 := by
+                        simp [evalOps] at h_kst_eval_4
+                        exact h_kst_eval_4.symm
+                      have h_ws_4_shape : ∃ ws_rest a_v b_v,
+                          ws_4 = { ws_3 with stack := .wI32 (b_v <<< a_v) :: ws_rest } := by
+                        have h_w_eq : evalInstr ws_3 .i32Shl =
+                            binI32 (fun a b => a <<< b) ws_3 := rfl
+                        rw [h_w_eq] at h_eval_4
+                        obtain ⟨a, b, ws_rest, _, h_ws_4_eq⟩ := binI32_some_shape h_eval_4
+                        exact ⟨ws_rest, b, a, h_ws_4_eq⟩
+                      obtain ⟨ws_rest_4, a_v_4, b_v_4, h_ws_4_eq⟩ := h_ws_4_shape
+                      have h_4_no_branch : ws_4.branchTarget = none := by
+                        rw [h_ws_4_eq]; simp [h_3_no_branch]
+                      have h_4_no_halt : ws_4.halted = false := by
+                        rw [h_ws_4_eq]; simp [h_3_no_halt]
+                      have h_4_broke : kst_4.broke = false := by
+                        rw [h_kst_4_eq]; exact h_3_broke
+                      rw [evalInstrs_cons_default fuel ws_4 .i32Add _
+                            h_4_no_branch h_4_no_halt rfl] at hw
+                      cases h_eval_5 : evalInstr ws_4 .i32Add with
+                      | none =>
+                          rw [h_eval_5] at hw
+                          simp at hw
+                      | some ws_5 =>
+                          rw [h_eval_5] at hw
+                          simp only at hw
+                          have h_addr_eq_spec :
+                              ∀ a b_ptr : UInt32, ∀ b : UInt32,
+                                regLookup kst_4.rf s_1.nextReg = some (Quanta.KOps.Value.vU32 b) →
+                                a.toNat = b.toNat * (1 <<< k.toNat) →
+                                b_ptr.toNat = layout.startAddr bSlot →
+                                (b_ptr + a).toNat = layout.startAddr bSlot + b.toNat * (1 <<< k.toNat) := by
+                            intro a b_ptr b _ h_a h_bp
+                            exact h_addr_eq a b_ptr b h_a h_bp
+                          obtain ⟨kst_5, h_kst_eval_5, R_5⟩ :=
+                            preservation_i32Add_bufferPattern_scaledFirst
+                              ws_4 s_4 kst_4 layout R_4
+                              bSlot s_1.nextReg (1 <<< k.toNat) s.stack
+                              h_s_4_stack h_addr_eq_spec
+                              ws_5 s_5 []
+                              h_eval_5 h_head_5
+                          have h_kst_5_eq : kst_5 = kst_4 := by
+                            simp [evalOps] at h_kst_eval_5
+                            exact h_kst_eval_5.symm
+                          have h_ws_5_shape : ∃ ws_rest a_v b_v,
+                              ws_5 = { ws_4 with stack := .wI32 (b_v + a_v) :: ws_rest } := by
+                            have h_w_eq : evalInstr ws_4 .i32Add =
+                                binI32 eval_u32_wrapping_add ws_4 := rfl
+                            rw [h_w_eq] at h_eval_5
+                            obtain ⟨a, b, ws_rest, _, h_ws_5_eq⟩ := binI32_some_shape h_eval_5
+                            exact ⟨ws_rest, b, a, h_ws_5_eq⟩
+                          obtain ⟨ws_rest_5, a_v_5, b_v_5, h_ws_5_eq⟩ := h_ws_5_shape
+                          have h_5_no_branch : ws_5.branchTarget = none := by
+                            rw [h_ws_5_eq]; simp [h_4_no_branch]
+                          have h_5_no_halt : ws_5.halted = false := by
+                            rw [h_ws_5_eq]; simp [h_4_no_halt]
+                          have h_5_broke : kst_5.broke = false := by
+                            rw [h_kst_5_eq]; exact h_4_broke
+                          rw [evalInstrs_cons_default fuel ws_5 (.i32Load offset align) _
+                                h_5_no_branch h_5_no_halt rfl] at hw
+                          cases h_eval_6 : evalInstr ws_5 (.i32Load offset align) with
+                          | none =>
+                              rw [h_eval_6] at hw
+                              simp at hw
+                          | some ws_6 =>
+                              rw [h_eval_6] at hw
+                              simp only at hw
+                              have h_in_bounds_spec :
+                                  ∀ b : UInt32,
+                                    regLookup kst_5.rf s_1.nextReg = some (Quanta.KOps.Value.vU32 b) →
+                                    b.toNat < layout.length bSlot := by
+                                intro b _; exact h_in_bounds b
+                              obtain ⟨kst_6, h_kst_eval_6, R_6⟩ :=
+                                preservation_i32Load ws_5 s_5 kst_5 layout R_5
+                                  bSlot s_1.nextReg s.stack offset align
+                                  h_s_5_stack h_offset h_in_bounds_spec
+                                  ws_6 s_6 ops_6
+                                  h_eval_6 h_head_6
+                              have h_lf_6 : loopFreeNoBreak ops_6 = true := rfl
+                              have h_6_broke : kst_6.broke = false :=
+                                evalOps_loopFreeNoBreak_preserves_broke
+                                  h_lf_6 h_5_broke h_kst_eval_6
+                              have h_ws_6_shape : ∃ ws_rest n,
+                                  ws_6 = { ws_5 with stack := .wI32 n :: ws_rest } := by
+                                have h_w_eq : evalInstr ws_5 (.i32Load offset align) =
+                                    loadI32 ws_5 offset := rfl
+                                rw [h_w_eq] at h_eval_6
+                                unfold loadI32 at h_eval_6
+                                rcases hws : ws_5.stack with _ | ⟨vaddr, ws_rest⟩
+                                · simp [hws, WasmState.pop] at h_eval_6
+                                · simp [hws, WasmState.pop] at h_eval_6
+                                  cases vaddr with
+                                  | wI32 addr_w =>
+                                      simp at h_eval_6
+                                      rcases hmem : ws_5.mem.load_u32 (addr_w.toNat + offset)
+                                        with _ | n
+                                      · simp [hmem] at h_eval_6
+                                      · simp [hmem, WasmState.push] at h_eval_6
+                                        refine ⟨ws_rest, n, ?_⟩
+                                        rw [← h_eval_6]
+                                  | wI64 _ => simp at h_eval_6
+                                  | wF32 _ => simp at h_eval_6
+                                  | wF64 _ => simp at h_eval_6
+                              obtain ⟨ws_rest_6, n_6, h_ws_6_eq⟩ := h_ws_6_shape
+                              have h_6_no_branch : ws_6.branchTarget = none := by
+                                rw [h_ws_6_eq]; simp [h_5_no_branch]
+                              have h_6_no_halt : ws_6.halted = false := by
+                                rw [h_ws_6_eq]; simp [h_5_no_halt]
+                              obtain ⟨kst', F_rest, h_eval_rest, R_rest⟩ :=
+                                preservation_rest R_6 h_6_no_branch h_6_no_halt h_6_broke
+                                  hw h_post
+                              -- Compose: total ops contributions are ops_2 ++ ops_6 ++ postOps
+                              -- (since steps 1, 3, 4, 5 emit []). h_ops_eq gives the equation.
+                              -- evalOps chain:
+                              --   evalOps F_rest kst   ops_2     = some kst_2  (via h_kst_eval_2 + kst_1=kst)
+                              --   evalOps F_rest kst_2 ops_6     = some kst_6  (via h_kst_eval_6 + kst chain)
+                              --   evalOps F_rest kst_6 postOps   = some kst'   (via h_eval_rest)
+                              -- Compose via evalOps_append twice.
+                              rw [h_kst_1_eq] at h_kst_eval_2
+                              rw [h_kst_5_eq, h_kst_4_eq, h_kst_3_eq] at h_kst_eval_6
+                              -- Lift h_kst_eval_2 and h_kst_eval_6 to fuel F_rest.
+                              -- ops_2 = [.copy ...] and ops_6 = [.load ...] are both
+                              -- loopFreeNoBreak, hence fuel-irrelevant per
+                              -- evalOps_loopFreeNoBreak_preserves_broke's evalOp arm.
+                              -- Use the existing evalOps_loopFree_fuel_irrel helper.
+                              have h_lf_2 : loopFree ops_2 = true := by
+                                simp [loopFree, loopFreeOp, ops_2]
+                              have h_lf_6_shallow : loopFree ops_6 = true :=
+                                loopFreeNoBreak_implies_loopFree h_lf_6
+                              have h_kst_eval_2_F :
+                                  evalOps F_rest kst ops_2 = some kst_2 :=
+                                evalOps_loopFree_fuel_irrel h_lf_2 h_kst_eval_2
+                              have h_kst_eval_6_F :
+                                  evalOps F_rest kst_2 ops_6 = some kst_6 :=
+                                evalOps_loopFree_fuel_irrel h_lf_6_shallow h_kst_eval_6
+                              have h_eval_a :
+                                  evalOps F_rest kst (ops_2 ++ ops_6) = some kst_6 := by
+                                rw [evalOps_append h_kst_eval_2_F h_2_broke]
+                                exact h_kst_eval_6_F
+                              have h_eval_b :
+                                  evalOps F_rest kst (ops_2 ++ ops_6 ++ postOps) = some kst' := by
+                                rw [evalOps_append h_eval_a h_6_broke]
+                                exact h_eval_rest
+                              refine ⟨kst', F_rest, ?_, ?_⟩
+                              · rw [← h_ops_eq]; exact h_eval_b
+                              · rw [← h_s_eq]; exact R_rest
+
 end Quanta.Wasm
