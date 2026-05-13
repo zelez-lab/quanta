@@ -15,8 +15,8 @@
 use quanta_rand::philox4x32::philox4x32_10_first_u32;
 use quanta_rand::uniform::{u32_to_open_unit_f32, u32_to_unit_f32, u64_to_unit_f64};
 use quanta_rand::{
-    fill_normal_f32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu,
-    fill_uniform_u64_gpu,
+    fill_bernoulli_u32_gpu, fill_exponential_f32_gpu, fill_lognormal_f32_gpu, fill_normal_f32_gpu,
+    fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu, fill_uniform_u64_gpu,
 };
 
 const SEED: u64 = 0xCAFE_BABE_DEAD_BEEFu64;
@@ -206,4 +206,130 @@ fn fill_normal_f32_handles_odd_length() {
     // First 4 must match a 4-output call (same quarks 0,1 → pairs).
     let out_even = fill_normal_f32_gpu(&gpu, 4, SEED).expect("dispatch");
     assert_eq!(&out[..4], &out_even[..]);
+}
+
+// ── M8 — Exponential / LogNormal / Bernoulli ────────────────────────
+
+#[test]
+fn fill_exponential_f32_matches_host_inverse_cdf() {
+    let gpu = quanta::init_cpu();
+    let len = 64;
+    let lambda: f32 = 2.0;
+    let out = fill_exponential_f32_gpu(&gpu, len, SEED, lambda).expect("dispatch");
+
+    let (lo, hi) = seed_words();
+    let expected: Vec<f32> = (0..len as u32)
+        .map(|id| {
+            let r = philox4x32_10_first_u32(id, 0, 0, 0, lo, hi);
+            let u = u32_to_open_unit_f32(r);
+            -u.ln() / lambda
+        })
+        .collect();
+    for (i, (got, want)) in out.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "exp[{i}] bit-exact mismatch: got {got} want {want}"
+        );
+    }
+}
+
+#[test]
+fn fill_exponential_f32_distribution_is_approximately_exponential() {
+    let gpu = quanta::init_cpu();
+    let n = 10_000;
+    let lambda: f32 = 1.5;
+    let out = fill_exponential_f32_gpu(&gpu, n, SEED, lambda).expect("dispatch");
+    // E[X] = 1/lambda, Var[X] = 1/lambda^2.
+    let mean: f32 = out.iter().sum::<f32>() / n as f32;
+    let expected_mean = 1.0 / lambda;
+    assert!(
+        (mean - expected_mean).abs() < 0.05,
+        "sample mean {mean} too far from {expected_mean} for Exp({lambda})"
+    );
+    // All draws non-negative.
+    for &v in &out {
+        assert!(v >= 0.0, "negative exponential sample: {v}");
+    }
+}
+
+#[test]
+fn fill_lognormal_f32_bit_exact_pair_with_host() {
+    let gpu = quanta::init_cpu();
+    let len = 16;
+    let mu: f32 = 0.5;
+    let sigma: f32 = 1.0;
+    let out = fill_lognormal_f32_gpu(&gpu, len, SEED, mu, sigma).expect("dispatch");
+
+    let (lo, hi) = seed_words();
+    let mut expected = Vec::with_capacity(len);
+    for id in 0..(len.div_ceil(2)) as u32 {
+        let r0 = philox4x32_10_first_u32(id, 0, 0, 0, lo, hi);
+        let r1 = philox4x32_10_first_u32(id, 1, 0, 0, lo, hi);
+        let u1 = u32_to_open_unit_f32(r0);
+        let u2 = u32_to_open_unit_f32(r1);
+        let r = (-2.0f32 * u1.ln()).sqrt();
+        let theta = 6.2831_8530_7179_586f32 * u2;
+        let n1 = r * theta.cos();
+        let n2 = r * theta.sin();
+        expected.push((mu + sigma * n1).exp());
+        if expected.len() < len {
+            expected.push((mu + sigma * n2).exp());
+        }
+    }
+    for (i, (got, want)) in out.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "lognormal[{i}] mismatch: got {got} want {want}"
+        );
+    }
+}
+
+#[test]
+fn fill_lognormal_f32_is_positive() {
+    let gpu = quanta::init_cpu();
+    let out = fill_lognormal_f32_gpu(&gpu, 1024, SEED, 0.0, 1.0).expect("dispatch");
+    for &v in &out {
+        assert!(v > 0.0, "non-positive lognormal sample: {v}");
+    }
+}
+
+#[test]
+fn fill_bernoulli_u32_matches_host() {
+    let gpu = quanta::init_cpu();
+    let len = 64;
+    let p: f32 = 0.3;
+    let out = fill_bernoulli_u32_gpu(&gpu, len, SEED, p).expect("dispatch");
+
+    let (lo, hi) = seed_words();
+    let expected: Vec<u32> = (0..len as u32)
+        .map(|id| {
+            let r = philox4x32_10_first_u32(id, 0, 0, 0, lo, hi);
+            let u = u32_to_unit_f32(r);
+            if u < p { 1 } else { 0 }
+        })
+        .collect();
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn fill_bernoulli_u32_proportion_is_close_to_p() {
+    let gpu = quanta::init_cpu();
+    let n = 10_000;
+    let p: f32 = 0.2;
+    let out = fill_bernoulli_u32_gpu(&gpu, n, SEED, p).expect("dispatch");
+    let ones = out.iter().filter(|&&v| v == 1).count();
+    let frac = ones as f32 / n as f32;
+    // Standard error ~ sqrt(p(1-p)/n) ≈ 0.004 at n=10k, p=0.2.
+    // Allow 3 standard errors of slack.
+    assert!(
+        (frac - p).abs() < 0.02,
+        "Bernoulli proportion {frac} too far from p={p}"
+    );
+    // Edge cases: p=0 → all zeros, p=1 → all ones.
+    let out0 = fill_bernoulli_u32_gpu(&gpu, 32, SEED, 0.0).expect("p=0");
+    assert!(out0.iter().all(|&v| v == 0));
+    let out1 = fill_bernoulli_u32_gpu(&gpu, 32, SEED, 1.0).expect("p=1");
+    assert!(out1.iter().all(|&v| v == 1));
 }

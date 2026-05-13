@@ -292,6 +292,162 @@ pub fn fill_normal_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>,
     Ok(data.out)
 }
 
+// ── Exponential ──────────────────────────────────────────────────────
+//
+// Exponential distribution via inverse-CDF: `X = -ln(1 - U) / lambda`.
+// With `U` uniform in `(0, 1]`, `1 - U` is uniform in `[0, 1)` and
+// `ln(0)` would be `-inf`. We use the open-on-zero conversion so
+// `U > 0`, then sample `-ln(U) / lambda` — equivalent in
+// distribution because U and 1-U have the same uniform law.
+
+#[derive(quanta::Fields)]
+pub struct FillExponentialF32Data {
+    pub out: Vec<f32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    /// Rate parameter `lambda` (mean of the distribution is `1/lambda`).
+    pub lambda: f32,
+}
+
+/// Per-quark Exponential(lambda) draw, inverse-CDF.
+#[quanta::kernel]
+pub fn fill_exponential_f32(d: &FillExponentialF32Data) {
+    let id = quark_id();
+    let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let bits: u32 = r >> 8u32;
+    let u: f32 = (bits as f32) * (1.0f32 / 16_777_216.0f32) + (1.0f32 / 33_554_432.0f32);
+    let v: f32 = -ln(u) / d.lambda;
+    d.out[id as usize] = v;
+}
+
+/// Host-side dispatch for `fill_exponential_f32`.
+pub fn fill_exponential_f32_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f32,
+) -> Result<Vec<f32>, QuantaError> {
+    let mut data = FillExponentialF32Data {
+        out: vec![0.0f32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        lambda,
+    };
+    fill_exponential_f32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── LogNormal ────────────────────────────────────────────────────────
+//
+// LogNormal(mu, sigma): `X = exp(mu + sigma * N)` where `N ~ N(0, 1)`.
+// Uses Box-Muller for the normal, same shape as `fill_normal_f32`.
+
+#[derive(quanta::Fields)]
+pub struct FillLogNormalF32Data {
+    pub out: Vec<f32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    pub mu: f32,
+    pub sigma: f32,
+}
+
+/// Per-quark LogNormal(mu, sigma). Each quark produces two outputs
+/// (same Box-Muller pair structure as `fill_normal_f32`), exp'd
+/// through the (mu, sigma) shift+scale.
+#[quanta::kernel]
+pub fn fill_lognormal_f32(d: &FillLogNormalF32Data) {
+    let id = quark_id();
+    let r0: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let bits0: u32 = r0 >> 8u32;
+    let bits1: u32 = r1 >> 8u32;
+    let u1: f32 = (bits0 as f32) * (1.0f32 / 16_777_216.0f32) + (1.0f32 / 33_554_432.0f32);
+    let u2: f32 = (bits1 as f32) * (1.0f32 / 16_777_216.0f32) + (1.0f32 / 33_554_432.0f32);
+    let r: f32 = sqrt(-2.0f32 * ln(u1));
+    let two_pi: f32 = 6.2831_8530_7179_586f32;
+    let theta: f32 = two_pi * u2;
+    let n1: f32 = r * cos(theta);
+    let n2: f32 = r * sin(theta);
+    let v1: f32 = exp(d.mu + d.sigma * n1);
+    let v2: f32 = exp(d.mu + d.sigma * n2);
+    let idx0: u32 = id.wrapping_mul(2u32);
+    let idx1: u32 = id.wrapping_mul(2u32).wrapping_add(1u32);
+    d.out[idx0 as usize] = v1;
+    d.out[idx1 as usize] = v2;
+}
+
+/// Host-side dispatch for `fill_lognormal_f32`.
+pub fn fill_lognormal_f32_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    mu: f32,
+    sigma: f32,
+) -> Result<Vec<f32>, QuantaError> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let quarks = len.div_ceil(2);
+    let padded = quarks * 2;
+    let mut data = FillLogNormalF32Data {
+        out: vec![0.0f32; padded],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        mu,
+        sigma,
+    };
+    fill_lognormal_f32(gpu, &mut data, quarks as u32)?.wait()?;
+    data.out.truncate(len);
+    Ok(data.out)
+}
+
+// ── Bernoulli ────────────────────────────────────────────────────────
+//
+// Bernoulli(p): output 1 with probability p, 0 otherwise. Implemented
+// as `u < p` where `u` is uniform in `[0, 1)`. Output stored as u32
+// (1 or 0) for compactness; users who want bool can cast on host.
+
+#[derive(quanta::Fields)]
+pub struct FillBernoulliU32Data {
+    pub out: Vec<u32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    /// Success probability in `[0, 1]`. Out-of-range values still
+    /// produce defined behaviour: p ≤ 0 → all zeros, p ≥ 1 → all ones.
+    pub p: f32,
+}
+
+/// Per-quark Bernoulli(p) draw.
+#[quanta::kernel]
+pub fn fill_bernoulli_u32(d: &FillBernoulliU32Data) {
+    let id = quark_id();
+    let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let bits: u32 = r >> 8u32;
+    let u: f32 = (bits as f32) * (1.0f32 / 16_777_216.0f32);
+    // Branchless cast: `(u < p) as u32`. Using arithmetic so the
+    // WASM lowering doesn't depend on a bool-store path.
+    let v: u32 = if u < d.p { 1u32 } else { 0u32 };
+    d.out[id as usize] = v;
+}
+
+/// Host-side dispatch for `fill_bernoulli_u32`. Returns a `Vec<u32>`
+/// of length `len` containing 1s and 0s (1 with probability `p`).
+pub fn fill_bernoulli_u32_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    p: f32,
+) -> Result<Vec<u32>, QuantaError> {
+    let mut data = FillBernoulliU32Data {
+        out: vec![0u32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        p,
+    };
+    fill_bernoulli_u32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
 // ── Backwards-compat aliases ─────────────────────────────────────────
 //
 // The original v0 API was `fill_buffer` / `fill_buffer_gpu` (always
