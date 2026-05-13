@@ -1,0 +1,171 @@
+//! Philox4×32-10 counter-based RNG — pure Rust port.
+//!
+//! Reference: D. E. Shaw Research, "Parallel Random Numbers: As Easy
+//! as 1, 2, 3" (SC11). The bit-exact algorithm matches
+//! `random123/include/Random123/philox.h`. Output passes the full
+//! TestU01 BigCrush battery and is the default counter-based
+//! generator in cuRAND / rocRAND.
+//!
+//! ## Why Philox
+//!
+//! Counter-based RNGs are stateless functions `(counter, key) → output`.
+//! Every quark can compute its own output from `(seed, quark_id)`
+//! with zero coordination — perfect for GPU parallelism. Unlike
+//! xoshiro128++, there's no state to carry between draws and no
+//! `jump`/`long_jump` machinery: the counter *is* the position in
+//! the stream.
+//!
+//! ## State and output shape
+//!
+//! - **counter**: 4×u32 (128-bit). Increment between draws to step
+//!   through the stream.
+//! - **key**: 2×u32 (64-bit). Acts as the "seed" — pick a key once,
+//!   then iterate over counters.
+//! - **output**: 4×u32 per `philox4x32_10` call. Each draw produces
+//!   four independent uniform u32s.
+//!
+//! ## Bit-exact with the reference
+//!
+//! The `tests/philox_kat.rs` integration test runs the three
+//! published known-answer vectors from
+//! `random123/tests/kat_vectors` through this implementation and
+//! asserts equality. If those tests pass, the algorithm matches the
+//! Random123 reference C for these inputs.
+
+/// One-counter-one-key Philox4×32 type. `counter` is a 4×u32 array;
+/// `key` is a 2×u32 array. The output of `next` is a 4×u32 array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Counter(pub [u32; 4]);
+
+/// 64-bit Philox key, stored as 2×u32 to match the reference layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Key(pub [u32; 2]);
+
+/// Multiplier constants for the round function — irrational-number-
+/// derived 32-bit values picked by the original Philox authors to
+/// avoid weak diffusion. From `random123/include/Random123/philox.h`.
+const M0: u32 = 0xD251_1F53;
+const M1: u32 = 0xCD9E_8D57;
+
+/// Key-bump constants — golden ratio (W0) and `sqrt(3) - 1` (W1)
+/// scaled to 32-bit. Added to `key[0]` and `key[1]` between rounds.
+const W0: u32 = 0x9E37_79B9;
+const W1: u32 = 0xBB67_AE85;
+
+/// Number of Philox rounds. 10 is the standard published variant
+/// (`philox4x32_10`); produces BigCrush-clean output. Fewer rounds
+/// trade diffusion for speed but only `_10` is sanctioned.
+pub const ROUNDS: u32 = 10;
+
+/// 32×32 → 64-bit multiply, returning `(hi, lo)` halves of the
+/// 64-bit product. Compilers fold this to a single `mul` instruction
+/// on every modern target (x86, ARM, RISC-V); the apparent u64
+/// intermediate is free.
+#[inline]
+const fn mulhilo32(a: u32, b: u32) -> (u32, u32) {
+    let product = (a as u64).wrapping_mul(b as u64);
+    let hi = (product >> 32) as u32;
+    let lo = product as u32;
+    (hi, lo)
+}
+
+/// One Philox4×32 round: counter ← f(counter, key).
+#[inline]
+const fn round(ctr: Counter, key: Key) -> Counter {
+    let (hi0, lo0) = mulhilo32(M0, ctr.0[0]);
+    let (hi1, lo1) = mulhilo32(M1, ctr.0[2]);
+    Counter([
+        hi1 ^ ctr.0[1] ^ key.0[0],
+        lo1,
+        hi0 ^ ctr.0[3] ^ key.0[1],
+        lo0,
+    ])
+}
+
+/// Key-bump between rounds.
+#[inline]
+const fn bumpkey(key: Key) -> Key {
+    Key([key.0[0].wrapping_add(W0), key.0[1].wrapping_add(W1)])
+}
+
+/// Philox4×32-R bijection: run `R` rounds starting from `(ctr, key)`.
+/// The standard `_10` variant is exposed as `philox4x32_10` below;
+/// this parameterised form is here for KAT-vector validation against
+/// the reference's 7-round set.
+#[inline]
+pub const fn philox4x32_r(rounds: u32, mut ctr: Counter, mut key: Key) -> Counter {
+    // Unrolled identical to Random123's `_philoxNxW_tpl` macro — one
+    // round, then alternating bumpkey+round up to `R`.
+    let mut i = 0;
+    while i < rounds {
+        if i > 0 {
+            key = bumpkey(key);
+        }
+        ctr = round(ctr, key);
+        i += 1;
+    }
+    ctr
+}
+
+/// Standard Philox4×32-10. Returns four u32s for one
+/// `(counter, key)` pair.
+///
+/// To produce a stream, hold `key` fixed and increment `ctr` between
+/// draws. To spawn independent streams from one seed, pick different
+/// keys (or partition the counter space).
+#[inline]
+pub const fn philox4x32_10(ctr: Counter, key: Key) -> Counter {
+    philox4x32_r(ROUNDS, ctr, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mulhilo32_basic() {
+        // 2 * 3 = 6, hi = 0
+        assert_eq!(mulhilo32(2, 3), (0, 6));
+        // u32::MAX * u32::MAX = 0xFFFFFFFE_00000001
+        assert_eq!(mulhilo32(u32::MAX, u32::MAX), (0xFFFF_FFFE, 0x0000_0001));
+        // 1 << 16 squared = 1 << 32 = (hi=1, lo=0)
+        assert_eq!(mulhilo32(1 << 16, 1 << 16), (1, 0));
+    }
+
+    #[test]
+    fn round_does_not_panic() {
+        let _ = round(Counter([0, 0, 0, 0]), Key([0, 0]));
+        let _ = round(
+            Counter([0xDEAD_BEEF, 0xCAFE_BABE, 0x1234_5678, 0x9ABC_DEF0]),
+            Key([0xA5A5_A5A5, 0x5A5A_5A5A]),
+        );
+    }
+
+    #[test]
+    fn bumpkey_advances_both_words() {
+        let k = Key([0, 0]);
+        let k1 = bumpkey(k);
+        assert_eq!(k1.0[0], W0);
+        assert_eq!(k1.0[1], W1);
+        let k2 = bumpkey(k1);
+        assert_eq!(k2.0[0], W0.wrapping_mul(2));
+        assert_eq!(k2.0[1], W1.wrapping_mul(2));
+    }
+
+    #[test]
+    fn philox4x32_10_is_deterministic() {
+        let ctr = Counter([0xDEAD_BEEF, 0xCAFE_BABE, 0x1234_5678, 0x9ABC_DEF0]);
+        let key = Key([0xA5A5_A5A5, 0x5A5A_5A5A]);
+        let a = philox4x32_10(ctr, key);
+        let b = philox4x32_10(ctr, key);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn distinct_counters_produce_distinct_output() {
+        let key = Key([0xC0FF_EE00, 0xBAD_F00D]);
+        let a = philox4x32_10(Counter([0, 0, 0, 0]), key);
+        let b = philox4x32_10(Counter([1, 0, 0, 0]), key);
+        assert_ne!(a, b);
+    }
+}
