@@ -11,14 +11,16 @@ needs no precondition beyond `Refines`, `branchTarget = none`,
 `halted = false`, and `kst.broke = false`. That covers:
 
 * `nop` / `i32Const _` / `drop` — head ops empty, kst unchanged.
+* `localSet _` / `localTee _` — index-only; the cons theorems carry
+  no extra logical precondition.
 * Eight buffer-pattern-free `i32` binops — `i32Sub`, `i32Mul`,
   `i32And`, `i32Or`, `i32Xor`, `i32ShrU`, `i32DivU`, `i32RemU`.
   (`i32Add` and `i32Shl` need `h_no_buf`; excluded.)
 * Six unsigned `i32` comparisons — `i32Eq`, `i32Ne`, `i32LtU`,
   `i32LeU`, `i32GtU`, `i32GeU`.
 
-Total: 17 of the 30 cons-case theorems in `PreservationList`. The
-remaining 13 carry per-instruction preconditions (`h_no_buf`,
+Total: 19 of the 30 cons-case theorems in `PreservationList`. The
+remaining 11 carry per-instruction preconditions (`h_no_buf`,
 `h_stack`, `h_in_bounds`, `h_layout_no_overlap`, …) that don't fit a
 uniform predicate; their cons theorems remain individually applicable.
 
@@ -41,11 +43,17 @@ open Quanta.Semantics.Cpu
     `closedInstr i = true` has a cons-case theorem in
     `PreservationList` whose only preconditions are the four
     standard ones (`Refines`, `branchTarget = none`,
-    `halted = false`, `kst.broke = false`). -/
+    `halted = false`, `kst.broke = false`).
+
+    Note: `localSet _` and `localTee _` are also closed in this
+    sense — their cons theorems carry an index `i` as data but
+    impose no extra logical precondition. -/
 def closedInstr : WasmInstr → Bool
   | .nop          => true
   | .i32Const _   => true
   | .drop         => true
+  | .localSet _   => true
+  | .localTee _   => true
   | .i32Sub       => true
   | .i32Mul       => true
   | .i32And       => true
@@ -203,11 +211,17 @@ theorem preservation_evalInstrs_main
           exact preservation_evalInstrs_cons_i32GeU fuel frames ws s kst layout R
             h_no_branch h_no_halt h_kst_no_broke rest preservation_rest
             ws' s' ops hw hl
+      | localSet idx =>
+          exact preservation_evalInstrs_cons_localSet fuel frames ws s kst layout R
+            h_no_branch h_no_halt h_kst_no_broke idx rest preservation_rest
+            ws' s' ops hw hl
+      | localTee idx =>
+          exact preservation_evalInstrs_cons_localTee fuel frames ws s kst layout R
+            h_no_branch h_no_halt h_kst_no_broke idx rest preservation_rest
+            ws' s' ops hw hl
       -- All non-closed-shape instructions: closedInstr returns false,
       -- so h_head_closed contradicts via `simp [closedInstr] at h_head_closed`.
       | localGet _   => simp [closedInstr] at h_head_closed
-      | localSet _   => simp [closedInstr] at h_head_closed
-      | localTee _   => simp [closedInstr] at h_head_closed
       | i64Const _   => simp [closedInstr] at h_head_closed
       | f32Const _   => simp [closedInstr] at h_head_closed
       | f64Const _   => simp [closedInstr] at h_head_closed
