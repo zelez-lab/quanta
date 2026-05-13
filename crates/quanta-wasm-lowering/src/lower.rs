@@ -698,7 +698,7 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
-            RawInstr::F32Store { .. } => {
+            RawInstr::F32Store { offset, .. } => {
                 let val = self.pop()?;
                 let addr = self.pop()?;
                 let (val_reg, _) = self.commit(val)?;
@@ -707,7 +707,7 @@ impl<'a> LowerCtx<'a> {
                         slot,
                         base,
                         scale: 4,
-                    } => {
+                    } if *offset == 0 => {
                         self.emit(KernelOp::Store {
                             field: slot,
                             index: base,
@@ -715,9 +715,59 @@ impl<'a> LowerCtx<'a> {
                             ty: ScalarType::F32,
                         });
                     }
+                    // Scaled-pair pattern: rustc folds writes of
+                    // `out[id*2]` / `out[id*2+1]` into one address
+                    // base `out + id*8` plus immediate offsets 0 and
+                    // 4. Reconstruct the element index as
+                    // `base * 2 + offset / sizeof(f32)`.
+                    SymVal::BufferAccess {
+                        slot,
+                        base,
+                        scale: 8,
+                    } if (*offset % 4) == 0 => {
+                        let two = self.alloc_reg();
+                        self.emit(KernelOp::Const {
+                            dst: two,
+                            value: ConstValue::U32(2),
+                        });
+                        let scaled = self.alloc_reg();
+                        self.emit(KernelOp::BinOp {
+                            dst: scaled,
+                            a: base,
+                            b: two,
+                            op: BinOp::Mul,
+                            ty: ScalarType::U32,
+                        });
+                        let index = if *offset == 0 {
+                            scaled
+                        } else {
+                            let off_reg = self.alloc_reg();
+                            self.emit(KernelOp::Const {
+                                dst: off_reg,
+                                value: ConstValue::U32((*offset / 4) as u32),
+                            });
+                            let idx = self.alloc_reg();
+                            self.emit(KernelOp::BinOp {
+                                dst: idx,
+                                a: scaled,
+                                b: off_reg,
+                                op: BinOp::Add,
+                                ty: ScalarType::U32,
+                            });
+                            idx
+                        };
+                        self.emit(KernelOp::Store {
+                            field: slot,
+                            index,
+                            src: val_reg,
+                            ty: ScalarType::F32,
+                        });
+                    }
                     other => {
                         return Err(LoweringError::UnsupportedOp {
-                            op: format!("f32.store on non-buffer address {other:?}"),
+                            op: format!(
+                                "f32.store on non-buffer address {other:?} (offset={offset})"
+                            ),
                             at: self.body.body_offset,
                         });
                     }

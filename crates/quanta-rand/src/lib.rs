@@ -119,6 +119,21 @@ impl Rng {
         u64_to_unit_f64(self.next_u64())
     }
 
+    /// Draw a single `f32` from the standard normal distribution
+    /// `N(0, 1)` via Box-Muller. Each call burns two uniform draws
+    /// from the underlying stream — Box-Muller produces a pair of
+    /// normals but this convenience API discards the second one to
+    /// keep the surface scalar. For batched normal draws on GPU,
+    /// see `fill_normal_f32_gpu` which uses the pair.
+    #[inline]
+    pub fn next_normal_f32(&mut self) -> f32 {
+        let u1 = u32_to_open_unit_f32(self.next_u32());
+        let u2 = u32_to_open_unit_f32(self.next_u32());
+        let r = (-2.0f32 * u1.ln()).sqrt();
+        let theta = core::f32::consts::TAU * u2;
+        r * theta.cos()
+    }
+
     /// Fast-forward this stream by 2^64 steps. Equivalent to calling
     /// `next_u32` 2^64 times but constant-time. Use to spawn
     /// non-overlapping inner streams from a common seed.
@@ -197,6 +212,6 @@ pub mod gpu_kernel;
 
 #[cfg(feature = "gpu")]
 pub use gpu_kernel::{
-    fill_buffer_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu,
-    fill_uniform_u64_gpu,
+    fill_buffer_gpu, fill_normal_f32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu,
+    fill_uniform_u32_gpu, fill_uniform_u64_gpu,
 };
