@@ -191,6 +191,33 @@ fn wrap_kernel_source(kernel_decl: &str, helper_sources: &[String]) -> String {
                      #[inline] fn round(self) -> Self {{ unsafe {{ round_f32(self) }} }}\n\
                      #[inline] fn powf(self, exp: Self) -> Self {{ unsafe {{ pow_f32(self, exp) }} }}\n\
                  }}\n\
+                 \n\
+                 pub trait F64Ext: Sized {{\n\
+                     fn sqrt(self) -> Self;\n\
+                     fn sin(self) -> Self;\n\
+                     fn cos(self) -> Self;\n\
+                     fn tan(self) -> Self;\n\
+                     fn exp(self) -> Self;\n\
+                     fn ln(self) -> Self;\n\
+                     fn abs(self) -> Self;\n\
+                     fn floor(self) -> Self;\n\
+                     fn ceil(self) -> Self;\n\
+                     fn round(self) -> Self;\n\
+                     fn powf(self, exp: Self) -> Self;\n\
+                 }}\n\
+                 impl F64Ext for f64 {{\n\
+                     #[inline] fn sqrt(self) -> Self {{ unsafe {{ sqrt_f64(self) }} }}\n\
+                     #[inline] fn sin(self) -> Self {{ unsafe {{ sin_f64(self) }} }}\n\
+                     #[inline] fn cos(self) -> Self {{ unsafe {{ cos_f64(self) }} }}\n\
+                     #[inline] fn tan(self) -> Self {{ unsafe {{ tan_f64(self) }} }}\n\
+                     #[inline] fn exp(self) -> Self {{ unsafe {{ exp_f64(self) }} }}\n\
+                     #[inline] fn ln(self) -> Self {{ unsafe {{ log_f64(self) }} }}\n\
+                     #[inline] fn abs(self) -> Self {{ unsafe {{ abs_f64(self) }} }}\n\
+                     #[inline] fn floor(self) -> Self {{ unsafe {{ floor_f64(self) }} }}\n\
+                     #[inline] fn ceil(self) -> Self {{ unsafe {{ ceil_f64(self) }} }}\n\
+                     #[inline] fn round(self) -> Self {{ unsafe {{ round_f64(self) }} }}\n\
+                     #[inline] fn powf(self, exp: Self) -> Self {{ unsafe {{ pow_f64(self, exp) }} }}\n\
+                 }}\n\
              }}\n\
          }}\n\
          \n\

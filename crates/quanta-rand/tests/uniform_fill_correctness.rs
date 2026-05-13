@@ -13,9 +13,12 @@
 #![cfg(feature = "gpu")]
 
 use quanta_rand::philox4x32::philox4x32_10_first_u32;
-use quanta_rand::uniform::{u32_to_open_unit_f32, u32_to_unit_f32, u64_to_unit_f64};
+use quanta_rand::uniform::{
+    u32_to_open_unit_f32, u32_to_unit_f32, u64_to_open_unit_f64, u64_to_unit_f64,
+};
 use quanta_rand::{
-    fill_bernoulli_u32_gpu, fill_exponential_f32_gpu, fill_lognormal_f32_gpu, fill_normal_f32_gpu,
+    fill_bernoulli_u32_gpu, fill_exponential_f32_gpu, fill_exponential_f64_gpu,
+    fill_lognormal_f32_gpu, fill_lognormal_f64_gpu, fill_normal_f32_gpu, fill_normal_f64_gpu,
     fill_poisson_u32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu,
     fill_uniform_u64_gpu,
 };
@@ -400,5 +403,98 @@ fn fill_poisson_u32_lambda_zero_returns_zeros() {
     // p*u <= 1 — k stays at 0 for every quark.
     for &v in &out {
         assert_eq!(v, 0);
+    }
+}
+
+// ── f64 distributions ────────────────────────────────────────────────
+
+fn host_normal_pair_f64(id: u32, lo: u32, hi: u32) -> (f64, f64) {
+    let r0a = philox4x32_10_first_u32(id, 0, 0, 0, lo, hi);
+    let r0b = philox4x32_10_first_u32(id, 1, 0, 0, lo, hi);
+    let r1a = philox4x32_10_first_u32(id, 2, 0, 0, lo, hi);
+    let r1b = philox4x32_10_first_u32(id, 3, 0, 0, lo, hi);
+    let packed0 = ((r0a as u64) << 32) | (r0b as u64);
+    let packed1 = ((r1a as u64) << 32) | (r1b as u64);
+    let u1 = u64_to_open_unit_f64(packed0);
+    let u2 = u64_to_open_unit_f64(packed1);
+    let r = (-2.0f64 * u1.ln()).sqrt();
+    let two_pi = 6.283_185_307_179_586f64;
+    let theta = two_pi * u2;
+    (r * theta.cos(), r * theta.sin())
+}
+
+#[test]
+fn fill_normal_f64_matches_host_box_muller() {
+    let gpu = quanta::init_cpu();
+    let len = 64;
+    let out = fill_normal_f64_gpu(&gpu, len, SEED).expect("dispatch");
+
+    let (lo, hi) = seed_words();
+    let mut expected = Vec::with_capacity(len);
+    for id in 0..(len.div_ceil(2)) as u32 {
+        let (n1, n2) = host_normal_pair_f64(id, lo, hi);
+        expected.push(n1);
+        if expected.len() < len {
+            expected.push(n2);
+        }
+    }
+    for (i, (got, want)) in out.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "normal_f64[{i}] bit-exact mismatch: got {got} want {want}"
+        );
+    }
+}
+
+#[test]
+fn fill_normal_f64_distribution_is_approximately_standard() {
+    let gpu = quanta::init_cpu();
+    let n = 10_000;
+    let out = fill_normal_f64_gpu(&gpu, n, SEED).expect("dispatch");
+    let mean: f64 = out.iter().sum::<f64>() / (n as f64);
+    let var: f64 = out.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (n as f64);
+    assert!(mean.abs() < 0.05, "f64 sample mean {mean} too far from 0");
+    assert!(
+        (var - 1.0).abs() < 0.1,
+        "f64 sample variance {var} too far from 1"
+    );
+}
+
+#[test]
+fn fill_exponential_f64_matches_host_inverse_cdf() {
+    let gpu = quanta::init_cpu();
+    let len = 64;
+    let lambda: f64 = 2.0;
+    let out = fill_exponential_f64_gpu(&gpu, len, SEED, lambda).expect("dispatch");
+
+    let (lo, hi) = seed_words();
+    let expected: Vec<f64> = (0..len as u32)
+        .map(|id| {
+            let ra = philox4x32_10_first_u32(id, 0, 0, 0, lo, hi);
+            let rb = philox4x32_10_first_u32(id, 1, 0, 0, lo, hi);
+            let packed = ((ra as u64) << 32) | (rb as u64);
+            let u = u64_to_open_unit_f64(packed);
+            -u.ln() / lambda
+        })
+        .collect();
+    for (i, (got, want)) in out.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "exp_f64[{i}] bit-exact mismatch"
+        );
+    }
+    for &v in &out {
+        assert!(v >= 0.0, "negative f64 exponential sample: {v}");
+    }
+}
+
+#[test]
+fn fill_lognormal_f64_is_positive() {
+    let gpu = quanta::init_cpu();
+    let out = fill_lognormal_f64_gpu(&gpu, 1024, SEED, 0.0, 1.0).expect("dispatch");
+    for &v in &out {
+        assert!(v > 0.0, "non-positive f64 lognormal sample: {v}");
     }
 }

@@ -21,9 +21,12 @@ RNGs, six probability distributions, host↔GPU bit-exact reproducibility.
   | Uniform u64  | `fill_uniform_u64_gpu`           | `Vec<u64>`    | two Philox draws     |
   | Uniform f32  | `fill_uniform_f32_gpu`           | `Vec<f32>`    | `[0, 1)`             |
   | Uniform f64  | `fill_uniform_f64_gpu`           | `Vec<f64>`    | `[0, 1)`             |
-  | Normal       | `fill_normal_f32_gpu`            | `Vec<f32>`    | Box-Muller, N(0, 1)  |
-  | Exponential  | `fill_exponential_f32_gpu`       | `Vec<f32>`    | inverse-CDF          |
-  | LogNormal    | `fill_lognormal_f32_gpu`         | `Vec<f32>`    | `exp(μ + σN)`        |
+  | Normal f32   | `fill_normal_f32_gpu`            | `Vec<f32>`    | Box-Muller, N(0, 1)  |
+  | Normal f64   | `fill_normal_f64_gpu`            | `Vec<f64>`    | Box-Muller, N(0, 1)  |
+  | Exponential f32 | `fill_exponential_f32_gpu`    | `Vec<f32>`    | inverse-CDF          |
+  | Exponential f64 | `fill_exponential_f64_gpu`    | `Vec<f64>`    | inverse-CDF          |
+  | LogNormal f32 | `fill_lognormal_f32_gpu`        | `Vec<f32>`    | `exp(μ + σN)`        |
+  | LogNormal f64 | `fill_lognormal_f64_gpu`        | `Vec<f64>`    | `exp(μ + σN)`        |
   | Bernoulli    | `fill_bernoulli_u32_gpu`         | `Vec<u32>`    | 1 with prob p        |
   | Poisson      | `fill_poisson_u32_gpu`           | `Vec<u32>`    | Knuth, λ ≤ ~30       |
 
@@ -185,9 +188,6 @@ and produces ~5× more random bytes per round than xoshiro.
 
 ## v0.1 limits, deferred to v0.2
 
-- **f64 normal / exponential / lognormal**: blocked on f64 math
-  intrinsics (`sqrt_f64`, `ln_f64`, …) which only exist for f32
-  today. Cross-backend emitter work.
 - **Large-λ Poisson** (transformed-rejection / PTRD): the current
   Knuth kernel caps at 64 inner iterations — fine for λ ≤ ~30,
   truncates above.
@@ -198,15 +198,16 @@ and produces ~5× more random bytes per round than xoshiro.
 
 ## Validation
 
-68 tests, all green:
+76 tests, all green:
 
 - 7 Random123 known-answer vectors for Philox (3 inputs × 2 round
   counts + alias check)
 - 10 KAT vectors for Threefry (3 inputs × 3 round counts + alias)
 - 8 uniform-conversion unit tests
 - 7 CPU `Rng` surface tests
-- 18 host↔GPU bit-exact correctness tests across all 9 fill kernels
-- 6 Kolmogorov-Smirnov goodness-of-fit checks at n=50,000
+- 22 host↔GPU bit-exact correctness tests across all 12 fill kernels
+- 9 Kolmogorov-Smirnov / χ² goodness-of-fit checks at n=50,000
+  (including f64 normal / exponential / lognormal)
 
 Run with:
 

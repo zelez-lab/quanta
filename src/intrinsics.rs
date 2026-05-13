@@ -103,6 +103,41 @@ unsafe extern "C" {
     pub fn fma_f32(a: f32, b: f32, c: f32) -> f32;
 }
 
+// ── Math intrinsics (f64) ──────────────────────────────────────────────
+//
+// f64 variants of the math intrinsics above. Used by f64-precision
+// distribution kernels (`fill_normal_f64`, `fill_exponential_f64`,
+// `fill_lognormal_f64`) and by any user kernel that needs double-
+// precision math.
+//
+// Per-backend support:
+//   - LLVM / CPU JIT: `llvm.sqrt.f64`, `llvm.sin.f64`, ... all native.
+//   - Metal MSL: `metal::sqrt(double)` etc. — requires Metal 2.4+.
+//   - SPIR-V / Vulkan: OpExtInst with f64 result type; needs the
+//     `Float64` capability declared on the module.
+//   - WGSL / WebGPU: `f64` is not a WGSL primitive type. f64 math
+//     in a kernel returns `NotSupported` from the WGSL emitter.
+
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    pub fn sqrt_f64(x: f64) -> f64;
+    pub fn rsqrt_f64(x: f64) -> f64;
+    pub fn sin_f64(x: f64) -> f64;
+    pub fn cos_f64(x: f64) -> f64;
+    pub fn tan_f64(x: f64) -> f64;
+    pub fn exp_f64(x: f64) -> f64;
+    pub fn log_f64(x: f64) -> f64;
+    pub fn pow_f64(base: f64, exp: f64) -> f64;
+    pub fn abs_f64(x: f64) -> f64;
+    pub fn floor_f64(x: f64) -> f64;
+    pub fn ceil_f64(x: f64) -> f64;
+    pub fn round_f64(x: f64) -> f64;
+    pub fn min_f64(a: f64, b: f64) -> f64;
+    pub fn max_f64(a: f64, b: f64) -> f64;
+    pub fn clamp_f64(x: f64, lo: f64, hi: f64) -> f64;
+    pub fn fma_f64(a: f64, b: f64, c: f64) -> f64;
+}
+
 // ── Subgroup / wave ────────────────────────────────────────────────────
 
 #[link(wasm_import_module = "quanta")]

@@ -72,9 +72,12 @@
 //! | Uniform u64  | `fill_uniform_u64_gpu`               | Two Philox draws       |
 //! | Uniform f32  | `fill_uniform_f32_gpu`               | `[0, 1)`               |
 //! | Uniform f64  | `fill_uniform_f64_gpu`               | `[0, 1)` from u64      |
-//! | Normal       | `fill_normal_f32_gpu`                | Box-Muller, μ=0, σ=1   |
-//! | Exponential  | `fill_exponential_f32_gpu`           | Inverse CDF            |
-//! | LogNormal    | `fill_lognormal_f32_gpu`             | `exp(μ + σN)`          |
+//! | Normal f32   | `fill_normal_f32_gpu`                | Box-Muller, N(0, 1)    |
+//! | Normal f64   | `fill_normal_f64_gpu`                | Box-Muller, N(0, 1)    |
+//! | Exp f32      | `fill_exponential_f32_gpu`           | Inverse CDF            |
+//! | Exp f64      | `fill_exponential_f64_gpu`           | Inverse CDF            |
+//! | LogNormal f32 | `fill_lognormal_f32_gpu`            | `exp(μ + σN)`          |
+//! | LogNormal f64 | `fill_lognormal_f64_gpu`            | `exp(μ + σN)`          |
 //! | Bernoulli    | `fill_bernoulli_u32_gpu`             | u32, 1 with prob p     |
 //! | Poisson      | `fill_poisson_u32_gpu`               | Knuth, lambda ≤ ~30    |
 //!
@@ -87,16 +90,15 @@
 //! ## v0.1 scope and limits
 //!
 //! Shipped:
-//! - CPU `Rng`: integer + float + normal draws, jump-ahead.
+//! - CPU `Rng`: integer + float + f32/f64 normal draws, jump-ahead.
 //! - Three RNG algorithms (xoshiro128++ on CPU; Philox + Threefry
 //!   for in-kernel and reference).
-//! - Six distributions on GPU + CPU.
-//! - 68 tests including K-S goodness-of-fit at n=50,000.
+//! - Six distributions on GPU + CPU, including f64 variants of
+//!   normal / exponential / lognormal.
+//! - 76 tests including K-S goodness-of-fit at n=50,000 on both
+//!   f32 and f64.
 //!
 //! Deferred to a future release:
-//! - **f64 normal / exponential / lognormal**: blocked on f64 math
-//!   intrinsics (`sqrt_f64`, `ln_f64`, etc.) which only exist in
-//!   `src/intrinsics.rs` for f32 today. Cross-backend emitter work.
 //! - **Large-λ Poisson** (transformed-rejection / PTRD): the
 //!   current Knuth kernel caps at 64 iterations, fine for λ ≤ ~30.
 //! - **GPU-side jump-ahead**: constant-time on CPU; requires a
@@ -195,6 +197,19 @@ impl Rng {
         r * theta.cos()
     }
 
+    /// Draw a single `f64` from the standard normal distribution
+    /// `N(0, 1)` via Box-Muller. Same algorithm as `next_normal_f32`
+    /// but with f64 precision throughout — uses two u64 draws (four
+    /// u32 internally) for the uniforms.
+    #[inline]
+    pub fn next_normal_f64(&mut self) -> f64 {
+        let u1 = u64_to_open_unit_f64(self.next_u64());
+        let u2 = u64_to_open_unit_f64(self.next_u64());
+        let r = (-2.0f64 * u1.ln()).sqrt();
+        let theta = core::f64::consts::TAU * u2;
+        r * theta.cos()
+    }
+
     /// Fast-forward this stream by 2^64 steps. Equivalent to calling
     /// `next_u32` 2^64 times but constant-time. Use to spawn
     /// non-overlapping inner streams from a common seed.
@@ -273,7 +288,8 @@ pub mod gpu_kernel;
 
 #[cfg(feature = "gpu")]
 pub use gpu_kernel::{
-    fill_bernoulli_u32_gpu, fill_buffer_gpu, fill_exponential_f32_gpu, fill_lognormal_f32_gpu,
-    fill_normal_f32_gpu, fill_poisson_u32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu,
-    fill_uniform_u32_gpu, fill_uniform_u64_gpu,
+    fill_bernoulli_u32_gpu, fill_buffer_gpu, fill_exponential_f32_gpu, fill_exponential_f64_gpu,
+    fill_lognormal_f32_gpu, fill_lognormal_f64_gpu, fill_normal_f32_gpu, fill_normal_f64_gpu,
+    fill_poisson_u32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu,
+    fill_uniform_u64_gpu,
 };

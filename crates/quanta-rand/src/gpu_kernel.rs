@@ -292,6 +292,68 @@ pub fn fill_normal_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>,
     Ok(data.out)
 }
 
+// ── Normal f64 ───────────────────────────────────────────────────────
+
+#[derive(quanta::Fields)]
+pub struct FillNormalF64Data {
+    pub out: Vec<f64>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+}
+
+/// f64 Box-Muller. Same algorithm as the f32 form but draws four
+/// Philox words per quark to build TWO u64 → two f64 uniforms in
+/// `(0, 1]`, then `(r*cos, r*sin)` with f64 math.
+#[quanta::kernel]
+pub fn fill_normal_f64(d: &FillNormalF64Data) {
+    let id = quark_id();
+
+    // Two independent u64 uniforms. Each needs two Philox draws.
+    let r0a: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r0b: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1a: u32 = philox4x32_10_first_u32_kernel(id, 2u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1b: u32 = philox4x32_10_first_u32_kernel(id, 3u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+
+    let packed0: u64 = ((r0a as u64) << 32u32) | (r0b as u64);
+    let packed1: u64 = ((r1a as u64) << 32u32) | (r1b as u64);
+
+    // Open-on-zero f64 in (0, 1]: top 53 bits + half-ULP.
+    let bits0: u64 = packed0 >> 11u32;
+    let bits1: u64 = packed1 >> 11u32;
+    let u1: f64 = (bits0 as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+    let u2: f64 = (bits1 as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+
+    let ln_u1: f64 = log_f64(u1);
+    let r: f64 = sqrt_f64(-2.0f64 * ln_u1);
+    let two_pi: f64 = 6.283_185_307_179_586f64;
+    let theta: f64 = two_pi * u2;
+    let n1: f64 = r * cos_f64(theta);
+    let n2: f64 = r * sin_f64(theta);
+
+    let idx0: u32 = id.wrapping_mul(2u32);
+    let idx1: u32 = id.wrapping_mul(2u32).wrapping_add(1u32);
+    d.out[idx0 as usize] = n1;
+    d.out[idx1 as usize] = n2;
+}
+
+pub fn fill_normal_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>, QuantaError> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let quarks = len.div_ceil(2);
+    let padded = quarks * 2;
+    let mut data = FillNormalF64Data {
+        out: vec![0.0f64; padded],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+    };
+    fill_normal_f64(gpu, &mut data, quarks as u32)?.wait()?;
+    data.out.truncate(len);
+    Ok(data.out)
+}
+
 // ── Exponential ──────────────────────────────────────────────────────
 //
 // Exponential distribution via inverse-CDF: `X = -ln(1 - U) / lambda`.
@@ -334,6 +396,111 @@ pub fn fill_exponential_f32_gpu(
         lambda,
     };
     fill_exponential_f32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── Exponential f64 ─────────────────────────────────────────────────
+
+#[derive(quanta::Fields)]
+pub struct FillExponentialF64Data {
+    pub out: Vec<f64>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    pub lambda: f64,
+}
+
+#[quanta::kernel]
+pub fn fill_exponential_f64(d: &FillExponentialF64Data) {
+    let id = quark_id();
+    let ra: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let rb: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let packed: u64 = ((ra as u64) << 32u32) | (rb as u64);
+    let bits: u64 = packed >> 11u32;
+    let u: f64 = (bits as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+    let lam: f64 = d.lambda;
+    let v: f64 = -log_f64(u) / lam;
+    d.out[id as usize] = v;
+}
+
+pub fn fill_exponential_f64_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f64,
+) -> Result<Vec<f64>, QuantaError> {
+    let mut data = FillExponentialF64Data {
+        out: vec![0.0f64; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        lambda,
+    };
+    fill_exponential_f64(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── LogNormal f64 ────────────────────────────────────────────────────
+
+#[derive(quanta::Fields)]
+pub struct FillLogNormalF64Data {
+    pub out: Vec<f64>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    pub mu: f64,
+    pub sigma: f64,
+}
+
+#[quanta::kernel]
+pub fn fill_lognormal_f64(d: &FillLogNormalF64Data) {
+    let id = quark_id();
+    let r0a: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r0b: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1a: u32 = philox4x32_10_first_u32_kernel(id, 2u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1b: u32 = philox4x32_10_first_u32_kernel(id, 3u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let packed0: u64 = ((r0a as u64) << 32u32) | (r0b as u64);
+    let packed1: u64 = ((r1a as u64) << 32u32) | (r1b as u64);
+    let bits0: u64 = packed0 >> 11u32;
+    let bits1: u64 = packed1 >> 11u32;
+    let u1: f64 = (bits0 as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+    let u2: f64 = (bits1 as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+    let r: f64 = sqrt_f64(-2.0f64 * log_f64(u1));
+    let two_pi: f64 = 6.283_185_307_179_586f64;
+    let theta: f64 = two_pi * u2;
+    let n1: f64 = r * cos_f64(theta);
+    let n2: f64 = r * sin_f64(theta);
+    let mu: f64 = d.mu;
+    let sigma: f64 = d.sigma;
+    let v1: f64 = exp_f64(mu + sigma * n1);
+    let v2: f64 = exp_f64(mu + sigma * n2);
+    let idx0: u32 = id.wrapping_mul(2u32);
+    let idx1: u32 = id.wrapping_mul(2u32).wrapping_add(1u32);
+    d.out[idx0 as usize] = v1;
+    d.out[idx1 as usize] = v2;
+}
+
+pub fn fill_lognormal_f64_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    mu: f64,
+    sigma: f64,
+) -> Result<Vec<f64>, QuantaError> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let quarks = len.div_ceil(2);
+    let padded = quarks * 2;
+    let mut data = FillLogNormalF64Data {
+        out: vec![0.0f64; padded],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        mu,
+        sigma,
+    };
+    fill_lognormal_f64(gpu, &mut data, quarks as u32)?.wait()?;
+    data.out.truncate(len);
     Ok(data.out)
 }
 

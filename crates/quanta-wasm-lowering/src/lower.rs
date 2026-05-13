@@ -800,7 +800,7 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
-            RawInstr::F64Store { .. } => {
+            RawInstr::F64Store { offset, .. } => {
                 let val = self.pop()?;
                 let addr = self.pop()?;
                 let (val_reg, _) = self.commit(val)?;
@@ -809,7 +809,7 @@ impl<'a> LowerCtx<'a> {
                         slot,
                         base,
                         scale: 8,
-                    } => {
+                    } if *offset == 0 => {
                         self.emit(KernelOp::Store {
                             field: slot,
                             index: base,
@@ -817,9 +817,59 @@ impl<'a> LowerCtx<'a> {
                             ty: ScalarType::F64,
                         });
                     }
+                    // Scaled-pair pattern: rustc folds writes of
+                    // `out[id*2]` / `out[id*2+1]` for an f64 buffer
+                    // into one byte-base `out + id*16` plus immediate
+                    // offsets 0 and 8. Reconstruct the element index
+                    // as `base * 2 + offset / sizeof(f64)`.
+                    SymVal::BufferAccess {
+                        slot,
+                        base,
+                        scale: 16,
+                    } if (*offset % 8) == 0 => {
+                        let two = self.alloc_reg();
+                        self.emit(KernelOp::Const {
+                            dst: two,
+                            value: ConstValue::U32(2),
+                        });
+                        let scaled = self.alloc_reg();
+                        self.emit(KernelOp::BinOp {
+                            dst: scaled,
+                            a: base,
+                            b: two,
+                            op: BinOp::Mul,
+                            ty: ScalarType::U32,
+                        });
+                        let index = if *offset == 0 {
+                            scaled
+                        } else {
+                            let off_reg = self.alloc_reg();
+                            self.emit(KernelOp::Const {
+                                dst: off_reg,
+                                value: ConstValue::U32((*offset / 8) as u32),
+                            });
+                            let idx = self.alloc_reg();
+                            self.emit(KernelOp::BinOp {
+                                dst: idx,
+                                a: scaled,
+                                b: off_reg,
+                                op: BinOp::Add,
+                                ty: ScalarType::U32,
+                            });
+                            idx
+                        };
+                        self.emit(KernelOp::Store {
+                            field: slot,
+                            index,
+                            src: val_reg,
+                            ty: ScalarType::F64,
+                        });
+                    }
                     other => {
                         return Err(LoweringError::UnsupportedOp {
-                            op: format!("f64.store on non-buffer address {other:?}"),
+                            op: format!(
+                                "f64.store on non-buffer address {other:?} (offset={offset})"
+                            ),
                             at: self.body.body_offset,
                         });
                     }
@@ -1037,6 +1087,27 @@ impl<'a> LowerCtx<'a> {
                     // Ternary f32 math.
                     Some("clamp_f32") => self.math_call_ternary(MathFn::Clamp)?,
                     Some("fma_f32") => self.math_call_ternary(MathFn::Fma)?,
+
+                    // f64 math — same MathFn enum, the `ty` field
+                    // on KernelOp::MathCall comes from the popped
+                    // operand's ScalarType so per-backend emitters
+                    // dispatch f32 vs f64 automatically.
+                    Some("sqrt_f64") => self.math_call_unary(MathFn::Sqrt)?,
+                    Some("rsqrt_f64") => self.math_call_unary(MathFn::Rsqrt)?,
+                    Some("sin_f64") => self.math_call_unary(MathFn::Sin)?,
+                    Some("cos_f64") => self.math_call_unary(MathFn::Cos)?,
+                    Some("tan_f64") => self.math_call_unary(MathFn::Tan)?,
+                    Some("exp_f64") => self.math_call_unary(MathFn::Exp)?,
+                    Some("log_f64") => self.math_call_unary(MathFn::Log)?,
+                    Some("abs_f64") => self.math_call_unary(MathFn::Abs)?,
+                    Some("floor_f64") => self.math_call_unary(MathFn::Floor)?,
+                    Some("ceil_f64") => self.math_call_unary(MathFn::Ceil)?,
+                    Some("round_f64") => self.math_call_unary(MathFn::Round)?,
+                    Some("min_f64") => self.math_call_binary(MathFn::Min)?,
+                    Some("max_f64") => self.math_call_binary(MathFn::Max)?,
+                    Some("pow_f64") => self.math_call_binary(MathFn::Pow)?,
+                    Some("clamp_f64") => self.math_call_ternary(MathFn::Clamp)?,
+                    Some("fma_f64") => self.math_call_ternary(MathFn::Fma)?,
 
                     // Workgroup-shared memory. The `slot` (first arg)
                     // must be a compile-time `i32.const` so we can lift

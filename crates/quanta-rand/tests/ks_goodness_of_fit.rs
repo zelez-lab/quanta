@@ -18,7 +18,8 @@
 #![cfg(feature = "gpu")]
 
 use quanta_rand::{
-    fill_bernoulli_u32_gpu, fill_exponential_f32_gpu, fill_lognormal_f32_gpu, fill_normal_f32_gpu,
+    fill_bernoulli_u32_gpu, fill_exponential_f32_gpu, fill_exponential_f64_gpu,
+    fill_lognormal_f32_gpu, fill_lognormal_f64_gpu, fill_normal_f32_gpu, fill_normal_f64_gpu,
     fill_poisson_u32_gpu, fill_uniform_f32_gpu,
 };
 
@@ -52,6 +53,27 @@ fn ks_statistic_continuous(samples: &mut [f32], cdf: impl Fn(f32) -> f64) -> f64
     d_max
 }
 
+/// f64 variant of `ks_statistic_continuous`.
+fn ks_statistic_continuous_f64(samples: &mut [f64], cdf: impl Fn(f64) -> f64) -> f64 {
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = samples.len() as f64;
+    let mut d_max: f64 = 0.0;
+    for (i, &x) in samples.iter().enumerate() {
+        let fx = cdf(x);
+        let fn_below = i as f64 / n;
+        let fn_at = (i as f64 + 1.0) / n;
+        let d1 = (fx - fn_below).abs();
+        let d2 = (fn_at - fx).abs();
+        if d1 > d_max {
+            d_max = d1;
+        }
+        if d2 > d_max {
+            d_max = d2;
+        }
+    }
+    d_max
+}
+
 // ── Standard CDFs ───────────────────────────────────────────────────
 
 fn cdf_uniform_01(x: f32) -> f64 {
@@ -63,6 +85,26 @@ fn cdf_normal_standard(x: f32) -> f64 {
     let x = x as f64;
     // Φ(x) = 0.5 * (1 + erf(x / sqrt(2)))
     0.5 * (1.0 + erf(x / std::f64::consts::SQRT_2))
+}
+
+fn cdf_normal_standard_f64(x: f64) -> f64 {
+    0.5 * (1.0 + erf(x / std::f64::consts::SQRT_2))
+}
+
+fn cdf_exponential_f64(x: f64, lambda: f64) -> f64 {
+    if x < 0.0 {
+        0.0
+    } else {
+        1.0 - (-lambda * x).exp()
+    }
+}
+
+fn cdf_lognormal_f64(x: f64, mu: f64, sigma: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let z = (x.ln() - mu) / sigma;
+    0.5 * (1.0 + erf(z / std::f64::consts::SQRT_2))
 }
 
 /// Abramowitz & Stegun rational approximation for erf, accurate to
@@ -204,5 +246,46 @@ fn chi_square_poisson() {
     assert!(
         chi2 < 40.0,
         "Poisson chi-square failed: chi2 = {chi2:.3}, threshold = 40"
+    );
+}
+
+// ── f64 distributions ───────────────────────────────────────────────
+
+#[test]
+fn ks_normal_f64() {
+    let gpu = quanta::init_cpu();
+    let mut samples = fill_normal_f64_gpu(&gpu, SAMPLE_N, SEED).expect("dispatch");
+    let d = ks_statistic_continuous_f64(&mut samples, cdf_normal_standard_f64);
+    let threshold = ks_threshold(SAMPLE_N);
+    assert!(
+        d < threshold,
+        "normal_f64 K-S failed: D = {d:.6}, threshold = {threshold:.6}"
+    );
+}
+
+#[test]
+fn ks_exponential_f64() {
+    let gpu = quanta::init_cpu();
+    let lambda: f64 = 1.5;
+    let mut samples = fill_exponential_f64_gpu(&gpu, SAMPLE_N, SEED, lambda).expect("dispatch");
+    let d = ks_statistic_continuous_f64(&mut samples, |x| cdf_exponential_f64(x, lambda));
+    let threshold = ks_threshold(SAMPLE_N);
+    assert!(
+        d < threshold,
+        "exp_f64 K-S failed: D = {d:.6}, threshold = {threshold:.6}"
+    );
+}
+
+#[test]
+fn ks_lognormal_f64() {
+    let gpu = quanta::init_cpu();
+    let mu: f64 = 0.0;
+    let sigma: f64 = 0.5;
+    let mut samples = fill_lognormal_f64_gpu(&gpu, SAMPLE_N, SEED, mu, sigma).expect("dispatch");
+    let d = ks_statistic_continuous_f64(&mut samples, |x| cdf_lognormal_f64(x, mu, sigma));
+    let threshold = ks_threshold(SAMPLE_N);
+    assert!(
+        d < threshold,
+        "lognormal_f64 K-S failed: D = {d:.6}, threshold = {threshold:.6}"
     );
 }
