@@ -69,23 +69,11 @@ pub const fn next_u32(state: State) -> (u32, State) {
     (result, State { s0, s1, s2, s3 })
 }
 
-/// Convert a u32 output to a uniform f32 in `[0, 1)`.
-#[inline]
-pub const fn u32_to_unit_f32(n: u32) -> f32 {
-    let bits = n >> 8;
-    (bits as f32) * (1.0 / 16777216.0)
-}
-
-/// Convert a u64 output to a uniform f64 in `[0, 1)`. Standard
-/// technique: take the top 53 bits as the mantissa, scale by
-/// `2^-53`. The result is one of `2^53` evenly spaced values in
-/// `[0, 1)`.
-#[inline]
-pub fn u64_to_unit_f64(n: u64) -> f64 {
-    // Top 53 bits → integer in `[0, 2^53)`.
-    let bits = n >> 11;
-    (bits as f64) * (1.0 / 9_007_199_254_740_992.0)
-}
+// Float-conversion utilities live in the dedicated `uniform`
+// module so every algorithm in the crate shares the same bit-exact
+// implementation. Re-export the two most-used variants here for
+// backwards compatibility with existing call sites.
+pub use crate::uniform::{u32_to_unit_f32, u64_to_unit_f64};
 
 /// Jump-ahead constants for xoshiro128++ — published in the
 /// upstream reference (`xoshiro128plusplus.c`). `JUMP` advances the

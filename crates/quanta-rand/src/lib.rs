@@ -63,11 +63,16 @@
 
 pub mod philox4x32;
 pub mod threefry4x32;
+pub mod uniform;
 pub mod xoshiro128pp;
 
 pub use philox4x32::{philox4x32_10, philox4x32_r};
 pub use threefry4x32::{threefry4x32_20, threefry4x32_r};
-pub use xoshiro128pp::{State, jump, long_jump, next_u32, u32_to_unit_f32, u64_to_unit_f64};
+pub use uniform::{
+    u32_to_open_unit_f32, u32_to_unit_f32, u32_to_unit11_f32, u64_to_open_unit_f64,
+    u64_to_unit_f64, u64_to_unit11_f64,
+};
+pub use xoshiro128pp::{State, jump, long_jump, next_u32};
 
 /// A CPU-side stream of pseudo-random numbers.
 #[derive(Clone, Debug)]
