@@ -44,6 +44,9 @@ enum SymVal {
     /// A WASM i32 constant — kept as a SymVal so we can recognize
     /// `i32.const 2; i32.shl` as a left-shift-by-2 (= scale by 4).
     I32Const(i32),
+    /// A WASM i64 constant. Materialized via `KernelOp::Const` when
+    /// committed; no buffer-pattern recognition for the wide form.
+    I64Const(i64),
     /// `BufferPtr(slot) + ScaledIdx{base, scale}` — emitted by
     /// recognizing the canonical `<ptr> <byte_offset> i32.add` pattern.
     /// Consumed by the next f32.load/f32.store op into a
@@ -463,6 +466,7 @@ impl<'a> LowerCtx<'a> {
         let ty = match v {
             SymVal::Reg(_, ty) | SymVal::Opaque(_, ty) => *ty,
             SymVal::I32Const(_) => ScalarType::U32,
+            SymVal::I64Const(_) => ScalarType::U64,
             _ => ScalarType::U32,
         };
         let dst = self.alloc_reg();
@@ -470,12 +474,10 @@ impl<'a> LowerCtx<'a> {
             ScalarType::F16 | ScalarType::F32 => ConstValue::F32(0.0),
             ScalarType::F64 => ConstValue::F64(0.0),
             ScalarType::Bool => ConstValue::Bool(false),
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
-                ConstValue::I32(0)
-            }
-            ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64 => {
-                ConstValue::U32(0)
-            }
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+            ScalarType::I64 => ConstValue::I64(0),
+            ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
+            ScalarType::U64 => ConstValue::U64(0),
         };
         // Emit the init const at the function-frame level (not the
         // current frame), so the stable reg is defined before any
@@ -1100,27 +1102,96 @@ impl<'a> LowerCtx<'a> {
                 self.stack.push(SymVal::Reg(dst, ScalarType::Bool));
             }
 
-            RawInstr::I32And => self.bin_op_int(BinOp::BitAnd)?,
-            RawInstr::I32Or => self.bin_op_int(BinOp::BitOr)?,
-            RawInstr::I32Xor => self.bin_op_int(BinOp::BitXor)?,
-            RawInstr::I32Sub => self.bin_op_int(BinOp::Sub)?,
-            RawInstr::I32Mul => self.bin_op_int(BinOp::Mul)?,
-            RawInstr::I32DivU | RawInstr::I32DivS => self.bin_op_int(BinOp::Div)?,
-            RawInstr::I32RemU | RawInstr::I32RemS => self.bin_op_int(BinOp::Rem)?,
+            RawInstr::I32And => self.bin_op_int(BinOp::BitAnd, ScalarType::I32)?,
+            RawInstr::I32Or => self.bin_op_int(BinOp::BitOr, ScalarType::I32)?,
+            RawInstr::I32Xor => self.bin_op_int(BinOp::BitXor, ScalarType::I32)?,
+            RawInstr::I32Sub => self.bin_op_int(BinOp::Sub, ScalarType::I32)?,
+            RawInstr::I32Mul => self.bin_op_int(BinOp::Mul, ScalarType::I32)?,
+            RawInstr::I32DivU | RawInstr::I32DivS => {
+                self.bin_op_int(BinOp::Div, ScalarType::I32)?
+            }
+            RawInstr::I32RemU | RawInstr::I32RemS => {
+                self.bin_op_int(BinOp::Rem, ScalarType::I32)?
+            }
             // Right-shift: unsigned and signed map to the same Quanta
             // BinOp::Shr; the slot's scalar type (set elsewhere)
             // determines the codegen-time arithmetic vs logical
             // distinction.
-            RawInstr::I32ShrU | RawInstr::I32ShrS => self.bin_op_int(BinOp::Shr)?,
-            RawInstr::I32Rotl => self.bin_op_int(BinOp::Rotl)?,
-            RawInstr::I32Rotr => self.bin_op_int(BinOp::Rotr)?,
+            RawInstr::I32ShrU | RawInstr::I32ShrS => {
+                self.bin_op_int(BinOp::Shr, ScalarType::I32)?
+            }
+            RawInstr::I32Rotl => self.bin_op_int(BinOp::Rotl, ScalarType::I32)?,
+            RawInstr::I32Rotr => self.bin_op_int(BinOp::Rotr, ScalarType::I32)?,
 
-            RawInstr::I32LtU | RawInstr::I32LtS => self.cmp_op_int(quanta_ir::CmpOp::Lt)?,
-            RawInstr::I32LeU | RawInstr::I32LeS => self.cmp_op_int(quanta_ir::CmpOp::Le)?,
-            RawInstr::I32GtU | RawInstr::I32GtS => self.cmp_op_int(quanta_ir::CmpOp::Gt)?,
-            RawInstr::I32GeU | RawInstr::I32GeS => self.cmp_op_int(quanta_ir::CmpOp::Ge)?,
-            RawInstr::I32Eq => self.cmp_op_int(quanta_ir::CmpOp::Eq)?,
-            RawInstr::I32Ne => self.cmp_op_int(quanta_ir::CmpOp::Ne)?,
+            RawInstr::I32LtU | RawInstr::I32LtS => {
+                self.cmp_op_int(quanta_ir::CmpOp::Lt, ScalarType::I32)?
+            }
+            RawInstr::I32LeU | RawInstr::I32LeS => {
+                self.cmp_op_int(quanta_ir::CmpOp::Le, ScalarType::I32)?
+            }
+            RawInstr::I32GtU | RawInstr::I32GtS => {
+                self.cmp_op_int(quanta_ir::CmpOp::Gt, ScalarType::I32)?
+            }
+            RawInstr::I32GeU | RawInstr::I32GeS => {
+                self.cmp_op_int(quanta_ir::CmpOp::Ge, ScalarType::I32)?
+            }
+            RawInstr::I32Eq => self.cmp_op_int(quanta_ir::CmpOp::Eq, ScalarType::I32)?,
+            RawInstr::I32Ne => self.cmp_op_int(quanta_ir::CmpOp::Ne, ScalarType::I32)?,
+
+            // i64 arithmetic + comparison. Mirrors the i32 surface above;
+            // dispatched through the same generic bin_op_int/cmp_op_int
+            // helpers with the U64 width class.
+            RawInstr::I64Const(v) => self.stack.push(SymVal::I64Const(*v)),
+            RawInstr::I64Add => self.bin_op_int(BinOp::Add, ScalarType::I64)?,
+            RawInstr::I64Sub => self.bin_op_int(BinOp::Sub, ScalarType::I64)?,
+            RawInstr::I64Mul => self.bin_op_int(BinOp::Mul, ScalarType::I64)?,
+            RawInstr::I64DivU | RawInstr::I64DivS => {
+                self.bin_op_int(BinOp::Div, ScalarType::I64)?
+            }
+            RawInstr::I64RemU | RawInstr::I64RemS => {
+                self.bin_op_int(BinOp::Rem, ScalarType::I64)?
+            }
+            RawInstr::I64And => self.bin_op_int(BinOp::BitAnd, ScalarType::I64)?,
+            RawInstr::I64Or => self.bin_op_int(BinOp::BitOr, ScalarType::I64)?,
+            RawInstr::I64Xor => self.bin_op_int(BinOp::BitXor, ScalarType::I64)?,
+            RawInstr::I64Shl => self.bin_op_int(BinOp::Shl, ScalarType::I64)?,
+            RawInstr::I64ShrU | RawInstr::I64ShrS => {
+                self.bin_op_int(BinOp::Shr, ScalarType::I64)?
+            }
+            RawInstr::I64Rotl => self.bin_op_int(BinOp::Rotl, ScalarType::I64)?,
+            RawInstr::I64Rotr => self.bin_op_int(BinOp::Rotr, ScalarType::I64)?,
+            RawInstr::I64Eq => self.cmp_op_int(quanta_ir::CmpOp::Eq, ScalarType::I64)?,
+            RawInstr::I64Ne => self.cmp_op_int(quanta_ir::CmpOp::Ne, ScalarType::I64)?,
+            RawInstr::I64LtU | RawInstr::I64LtS => {
+                self.cmp_op_int(quanta_ir::CmpOp::Lt, ScalarType::I64)?
+            }
+            RawInstr::I64LeU | RawInstr::I64LeS => {
+                self.cmp_op_int(quanta_ir::CmpOp::Le, ScalarType::I64)?
+            }
+            RawInstr::I64GtU | RawInstr::I64GtS => {
+                self.cmp_op_int(quanta_ir::CmpOp::Gt, ScalarType::I64)?
+            }
+            RawInstr::I64GeU | RawInstr::I64GeS => {
+                self.cmp_op_int(quanta_ir::CmpOp::Ge, ScalarType::I64)?
+            }
+            RawInstr::I64Eqz => {
+                let a = self.pop()?;
+                let (ar, _) = self.commit(a)?;
+                let zero = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: zero,
+                    value: ConstValue::I64(0),
+                });
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::Cmp {
+                    dst,
+                    a: ar,
+                    b: zero,
+                    op: quanta_ir::CmpOp::Eq,
+                    ty: ScalarType::I64,
+                });
+                self.stack.push(SymVal::Reg(dst, ScalarType::Bool));
+            }
 
             RawInstr::F32Lt => self.cmp_op_float(quanta_ir::CmpOp::Lt)?,
             RawInstr::F32Le => self.cmp_op_float(quanta_ir::CmpOp::Le)?,
@@ -1275,7 +1346,7 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
-    fn bin_op_int(&mut self, op: BinOp) -> Result<(), LoweringError> {
+    fn bin_op_int(&mut self, op: BinOp, ty: ScalarType) -> Result<(), LoweringError> {
         let b = self.pop()?;
         let a = self.pop()?;
         let (ar, _) = self.commit(a)?;
@@ -1286,13 +1357,13 @@ impl<'a> LowerCtx<'a> {
             a: ar,
             b: br,
             op,
-            ty: ScalarType::I32,
+            ty,
         });
-        self.stack.push(SymVal::Reg(dst, ScalarType::I32));
+        self.stack.push(SymVal::Reg(dst, ty));
         Ok(())
     }
 
-    fn cmp_op_int(&mut self, op: quanta_ir::CmpOp) -> Result<(), LoweringError> {
+    fn cmp_op_int(&mut self, op: quanta_ir::CmpOp, ty: ScalarType) -> Result<(), LoweringError> {
         let b = self.pop()?;
         let a = self.pop()?;
         let (ar, _) = self.commit(a)?;
@@ -1303,7 +1374,7 @@ impl<'a> LowerCtx<'a> {
             a: ar,
             b: br,
             op,
-            ty: ScalarType::I32,
+            ty,
         });
         self.stack.push(SymVal::Reg(dst, ScalarType::Bool));
         Ok(())
@@ -1801,6 +1872,14 @@ impl<'a> LowerCtx<'a> {
                 });
                 Ok((dst, ScalarType::I32))
             }
+            SymVal::I64Const(c) => {
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst,
+                    value: ConstValue::I64(c),
+                });
+                Ok((dst, ScalarType::I64))
+            }
             // ScaledIdx represents `base << log2(scale)` — used as a
             // byte offset by the buffer-load/store pattern recognizer.
             // When it surfaces in non-buffer arithmetic (e.g. rustc's
@@ -1925,7 +2004,7 @@ fn order_const_to_enum(v: SymVal) -> Result<MemoryOrder, LoweringError> {
 fn is_value_symval(v: &SymVal) -> bool {
     matches!(
         v,
-        SymVal::Reg(..) | SymVal::Opaque(..) | SymVal::I32Const(..)
+        SymVal::Reg(..) | SymVal::Opaque(..) | SymVal::I32Const(..) | SymVal::I64Const(..)
     )
 }
 
