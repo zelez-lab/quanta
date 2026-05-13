@@ -196,4 +196,7 @@ pub const fn quark_next_u64(seed_lo: u32, seed_hi: u32, id: u32) -> u64 {
 pub mod gpu_kernel;
 
 #[cfg(feature = "gpu")]
-pub use gpu_kernel::fill_buffer_gpu;
+pub use gpu_kernel::{
+    fill_buffer_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu, fill_uniform_u32_gpu,
+    fill_uniform_u64_gpu,
+};
