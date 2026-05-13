@@ -509,6 +509,43 @@ impl<'a> LowerCtx<'a> {
             ))
         })?;
         let stable_ty = self.locals[idx].stable_ty;
+        // Copy-on-write for stack-held aliases. A `BufferAccess` or
+        // `ScaledIdx` on the operand stack carries a `base` register
+        // that was captured when the index was formed. If that base
+        // is *this local's* stable register, the upcoming Copy below
+        // would clobber the index out from under any pending
+        // load/store. Snapshot to a fresh register first, then
+        // rewrite the stack entries to point at the snapshot.
+        let aliased = self.stack.iter().any(|sv| match sv {
+            SymVal::ScaledIdx { base, .. } => *base == stable_reg,
+            SymVal::BufferAccess { base, .. } => *base == stable_reg,
+            // Plain Reg/Opaque on the stack can also alias, but the
+            // wasm operand stack treats them as ephemerals — by the
+            // time we set the local they've usually been consumed
+            // or assigned to another stable reg. Restrict the
+            // snapshot to the index-bearing forms where the bug
+            // actually shows up.
+            _ => false,
+        });
+        if aliased {
+            let snapshot = self.alloc_reg();
+            self.emit(KernelOp::Copy {
+                dst: snapshot,
+                src: stable_reg,
+                ty: stable_ty,
+            });
+            for sv in self.stack.iter_mut() {
+                match sv {
+                    SymVal::ScaledIdx { base, .. } if *base == stable_reg => {
+                        *base = snapshot;
+                    }
+                    SymVal::BufferAccess { base, .. } if *base == stable_reg => {
+                        *base = snapshot;
+                    }
+                    _ => {}
+                }
+            }
+        }
         self.emit(KernelOp::Copy {
             dst: stable_reg,
             src,

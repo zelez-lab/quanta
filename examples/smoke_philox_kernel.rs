@@ -1,40 +1,68 @@
-//! End-to-end smoke for in-kernel device-function calls + push consts.
+//! End-to-end smoke for in-kernel Philox4×32-10.
 //!
-//! The kernel calls a `#[quanta::device]`-marked helper that does
-//! u32 arithmetic (no i64 multiply — that path has a separate
-//! lowering bug being tracked). Validates that a real device fn
-//! with non-trivial body can be invoked from inside a kernel via
-//! the source-splicing machinery, and that push-constant scalars
-//! reach the kernel body correctly.
+//! Each quark runs the full 10-round Philox bijection with its own
+//! `quark_id` as the counter and a shared (seed_lo, seed_hi) key,
+//! and stores the first output word into `out[id]`. The kernel uses
+//! the exact source from `quanta_rand::philox4x32::philox4x32_10_first_u32`
+//! (transcribed locally because `#[quanta::device]`'s source
+//! registry is per-crate — cross-crate import isn't supported yet).
+//! Validated bit-for-bit against the host-side reference using the
+//! same fn.
 //!
 //! Runs on the CPU backend (no Metal Toolchain needed).
 //!
 //! Run: cargo run --example smoke_philox_kernel --features software
 
 #[quanta::device]
-fn splitmix32(mut x: u32) -> u32 {
-    // Splitmix32 finaliser — same algorithm used inside Philox's
-    // key-schedule and inside the Rng seed expander. Pure u32, no
-    // 64-bit arithmetic.
-    x = x.wrapping_add(0x9E3779B9u32);
-    x = (x ^ (x >> 16u32)).wrapping_mul(0x85EBCA6Bu32);
-    x = (x ^ (x >> 13u32)).wrapping_mul(0xC2B2AE35u32);
-    x ^ (x >> 16u32)
+fn philox4x32_10_first_u32(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k1: u32) -> u32 {
+    const M0_K: u32 = 0xD251_1F53;
+    const M1_K: u32 = 0xCD9E_8D57;
+    const W0_K: u32 = 0x9E37_79B9;
+    const W1_K: u32 = 0xBB67_AE85;
+
+    let mut x0 = c0;
+    let mut x1 = c1;
+    let mut x2 = c2;
+    let mut x3 = c3;
+    let mut key0 = k0;
+    let mut key1 = k1;
+
+    let mut i: u32 = 0;
+    while i < 10u32 {
+        if i > 0 {
+            key0 = key0.wrapping_add(W0_K);
+            key1 = key1.wrapping_add(W1_K);
+        }
+        let product0 = (M0_K as u64).wrapping_mul(x0 as u64);
+        let hi0 = (product0 >> 32) as u32;
+        let lo0 = product0 as u32;
+        let product1 = (M1_K as u64).wrapping_mul(x2 as u64);
+        let hi1 = (product1 >> 32) as u32;
+        let lo1 = product1 as u32;
+        let new_x0 = hi1 ^ x1 ^ key0;
+        let new_x1 = lo1;
+        let new_x2 = hi0 ^ x3 ^ key1;
+        let new_x3 = lo0;
+        x0 = new_x0;
+        x1 = new_x1;
+        x2 = new_x2;
+        x3 = new_x3;
+        i += 1;
+    }
+    x0
 }
 
 #[derive(quanta::Fields)]
-struct SmokeData {
+struct PhiloxFillData {
     out: Vec<u32>,
-    seed: u32,
+    seed_lo: u32,
+    seed_hi: u32,
 }
 
 #[quanta::kernel]
-fn smoke_fill(d: &SmokeData) {
+fn philox_fill(d: &PhiloxFillData) {
     let id = quark_id();
-    // Counter-based pattern: mix the per-quark id with a shared seed
-    // through a device function. Each quark draws independently;
-    // output is bit-exact reproducible from `(seed, id)`.
-    let r: u32 = splitmix32(d.seed ^ id);
+    let r: u32 = philox4x32_10_first_u32(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
     d.out[id as usize] = r;
 }
 
@@ -43,29 +71,29 @@ fn main() {
     println!("GPU: {}", gpu.name());
 
     let count: usize = 32;
-    let seed: u32 = 0xC0FFEE;
+    let seed_lo: u32 = 0xDEAD_BEEF;
+    let seed_hi: u32 = 0xCAFE_BABE;
 
-    let mut data = SmokeData {
+    let mut data = PhiloxFillData {
         out: vec![0u32; count],
-        seed,
+        seed_lo,
+        seed_hi,
     };
-    smoke_fill(&gpu, &mut data, count as u32)
+    philox_fill(&gpu, &mut data, count as u32)
         .expect("dispatch")
         .wait()
         .expect("wait");
 
-    // Host reference uses the same `splitmix32` — the device
-    // attribute emits the fn for CPU use unchanged.
-    let expected: Vec<u32> = (0..count as u32).map(|i| splitmix32(seed ^ i)).collect();
+    let expected: Vec<u32> = (0..count as u32)
+        .map(|i| philox4x32_10_first_u32(i, 0, 0, 0, seed_lo, seed_hi))
+        .collect();
 
-    println!("output = {:?}", data.out);
-    println!("expect = {expected:?}");
+    println!("output  = {:?}", data.out);
+    println!("expect  = {expected:?}");
 
     assert_eq!(
         data.out, expected,
-        "in-kernel device fn must match host reference bit-for-bit",
+        "in-kernel Philox4x32-10 must match host reference bit-for-bit",
     );
-    println!(
-        "OK — device fn called from kernel, push const threaded, all {count} quarks match host"
-    );
+    println!("OK — in-kernel Philox4x32-10 matches host reference for all {count} quarks");
 }

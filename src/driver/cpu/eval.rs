@@ -352,14 +352,38 @@ pub(super) fn eval_math(func: &MathFn, args: &[Value], ty: &ScalarType) -> Value
 }
 
 pub(super) fn eval_cast(val: Value, from: &ScalarType, to: &ScalarType) -> Value {
-    let _ = from; // source type is implicit in the value
+    // Cast semantics: when widening from a narrower unsigned source,
+    // the WASM/IR convention is **zero-extend** the bit pattern. The
+    // raw `val.as_u64()` would sign-extend when `val` happens to be
+    // tagged `Value::I32(-x)` even though the lowerer's `from` says
+    // U32. Honour `from` explicitly so the same bit pattern gives
+    // the same numeric result regardless of how the source Value
+    // was tagged upstream.
+    //
+    // Mask-then-extend matches the WASM `i64.extend_i32_u` / Quanta
+    // `Cast { from: U32, to: U64 }` semantics: drop high bits to the
+    // source width, then widen.
+    let zero_extended_u64: u64 = match from {
+        ScalarType::U8 | ScalarType::I8 => (val.as_u32() & 0xFF) as u64,
+        ScalarType::U16 | ScalarType::I16 => (val.as_u32() & 0xFFFF) as u64,
+        ScalarType::U32 | ScalarType::I32 => val.as_u32() as u64,
+        _ => val.as_u64(),
+    };
+    let sign_extended_i64: i64 = match from {
+        ScalarType::I8 => (val.as_i32() as i8) as i64,
+        ScalarType::I16 => (val.as_i32() as i16) as i64,
+        ScalarType::I32 => val.as_i32() as i64,
+        _ => val.as_i64(),
+    };
     match to {
         ScalarType::F32 | ScalarType::F16 => Value::F32(val.as_f32()),
         ScalarType::F64 => Value::F64(val.as_f64()),
         ScalarType::U32 | ScalarType::U16 | ScalarType::U8 => Value::U32(val.as_u32()),
         ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => Value::I32(val.as_i32()),
-        ScalarType::U64 => Value::U64(val.as_u64()),
-        ScalarType::I64 => Value::I64(val.as_i64()),
+        // For widening to u64: zero-extend honouring `from`.
+        ScalarType::U64 => Value::U64(zero_extended_u64),
+        // For widening to i64: sign-extend honouring `from`.
+        ScalarType::I64 => Value::I64(sign_extended_i64),
         ScalarType::Bool => Value::Bool(val.as_bool()),
     }
 }
