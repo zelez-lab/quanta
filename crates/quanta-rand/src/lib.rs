@@ -95,8 +95,11 @@
 //!   for in-kernel and reference).
 //! - Six distributions on GPU + CPU, including f64 variants of
 //!   normal / exponential / lognormal.
-//! - 76 tests including K-S goodness-of-fit at n=50,000 on both
+//! - 77 tests including K-S goodness-of-fit at n=50,000 on both
 //!   f32 and f64.
+//! - Cross-crate device-fn import via auto-discovery — a kernel in
+//!   any crate can call `quanta_rand::philox4x32_10_first_u32_kernel(...)`
+//!   by its qualified path.
 //!
 //! Deferred to a future release:
 //! - **Large-λ Poisson** (transformed-rejection / PTRD): the

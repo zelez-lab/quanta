@@ -88,11 +88,12 @@ other.jump();
 
 Each is runnable end-to-end:
 
-- **`fill_buffer`** — tour of all 9 fill kernels (one per distribution)
+- **`fill_buffer`** — tour of all 12 fill kernels (one per distribution)
 - **`nn_weight_init`** — Glorot / He initialization for an MLP
 - **`monte_carlo_pi`** — classic Monte Carlo estimate of π
 - **`dropout_mask`** — inverted-dropout training mask
 - **`bench_distributions`** — timing sweep over the full surface
+- **`bench_vs_rand`** — side-by-side throughput vs the standard `rand` crate
 
 Run any of them with:
 
@@ -202,7 +203,7 @@ and produces ~5× more random bytes per round than xoshiro.
 
 ## Validation
 
-76 tests, all green:
+77 tests, all green:
 
 - 7 Random123 known-answer vectors for Philox (3 inputs × 2 round
   counts + alias check)
@@ -210,8 +211,11 @@ and produces ~5× more random bytes per round than xoshiro.
 - 8 uniform-conversion unit tests
 - 7 CPU `Rng` surface tests
 - 22 host↔GPU bit-exact correctness tests across all 12 fill kernels
-- 9 Kolmogorov-Smirnov / χ² goodness-of-fit checks at n=50,000
-  (including f64 normal / exponential / lognormal)
+- 10 Kolmogorov-Smirnov / χ² goodness-of-fit checks at n=50,000
+  (f32 + f64 for uniform / normal / exponential / lognormal,
+  proportion test for bernoulli, χ² for poisson)
+- Cross-crate device-fn import test (`crates/quanta-rand-import-test/`)
+  validating both `import_devices!` and auto-discovery flavors
 
 Run with:
 
