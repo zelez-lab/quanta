@@ -1204,6 +1204,14 @@ impl<'a> LowerCtx<'a> {
             RawInstr::F32ConvertI32S => self.cast_op(ScalarType::I32, ScalarType::F32)?,
             RawInstr::I32TruncF32U => self.cast_op(ScalarType::F32, ScalarType::U32)?,
             RawInstr::I32TruncF32S => self.cast_op(ScalarType::F32, ScalarType::I32)?,
+            // i64 widening / narrowing. ExtendI32U is the `as u64`
+            // path (zero-extend); ExtendI32S is the `as i64` from
+            // signed (sign-extend); WrapI64 truncates the high 32
+            // bits (matches WASM spec — drops upper word regardless
+            // of sign).
+            RawInstr::I64ExtendI32U => self.cast_op(ScalarType::U32, ScalarType::U64)?,
+            RawInstr::I64ExtendI32S => self.cast_op(ScalarType::I32, ScalarType::I64)?,
+            RawInstr::I32WrapI64 => self.cast_op(ScalarType::U64, ScalarType::U32)?,
 
             // Inline f32 math ops. rustc's optimizer collapses calls
             // to F32Ext methods (`.sqrt()`, `.abs()`) into LLVM

@@ -287,6 +287,8 @@ pub enum RawInstr {
     F32Max,
     // Conversions
     I32WrapI64,
+    I64ExtendI32S,
+    I64ExtendI32U,
     F32ConvertI32S,
     F32ConvertI32U,
     I32TruncF32S,
@@ -433,6 +435,8 @@ impl RawInstr {
             Operator::F32Max => Self::F32Max,
 
             Operator::I32WrapI64 => Self::I32WrapI64,
+            Operator::I64ExtendI32S => Self::I64ExtendI32S,
+            Operator::I64ExtendI32U => Self::I64ExtendI32U,
             Operator::F32ConvertI32S => Self::F32ConvertI32S,
             Operator::F32ConvertI32U => Self::F32ConvertI32U,
             Operator::I32TruncF32S => Self::I32TruncF32S,
