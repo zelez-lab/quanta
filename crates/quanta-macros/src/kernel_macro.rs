@@ -1,7 +1,9 @@
 //! Implementation body for `#[quanta::kernel]`.
 
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
+use syn::visit_mut::VisitMut;
 use syn::{Expr, ItemFn, Lit, parse::Parser};
 
 use crate::auto_dispatch;
@@ -10,14 +12,83 @@ use crate::compile_via_wasm::{
     compile_struct_ref_kernel_via_wasm,
 };
 use crate::compiler;
+use crate::device_macro::QualifiedDeviceCallRewriter;
 use crate::kernel_signature::{
     StructRefParam, detect_struct_ref_param, scan_struct_field_accesses,
 };
 use crate::kernel_type_inference::infer_kernel;
 use crate::validate;
 
-/// Core implementation of the `#[quanta::kernel]` attribute macro.
-pub(crate) fn expand_kernel(attr: TokenStream, func: ItemFn) -> TokenStream {
+/// Outer `#[quanta::kernel]` entry. Walks the kernel body for
+/// qualified device-fn calls (`quanta_rand::foo(...)`), rewrites
+/// them to bare-name calls (`foo(...)`), and emits sibling
+/// `<crate>::<fn>_src!()` macro invocations so the device-fn
+/// source registers in this crate's macro process before the real
+/// kernel work happens. The rewritten kernel is then re-emitted
+/// with `#[quanta::__kernel_inner]`, the proc-macro that does the
+/// existing kernel compilation work.
+///
+/// Two-pass design because:
+/// - Auto-discovering the device-fn imports means emitting
+///   `_src!()` invocations as siblings of the kernel item.
+/// - Those `_src!()` invocations must expand BEFORE the kernel
+///   compiles (it needs the device-fn source in the registry).
+/// - But `#[quanta::kernel]` can't directly emit `<crate>::<fn>_src!()`
+///   then continue with kernel work — it would recurse on itself.
+///
+/// Splitting into two attributes solves it: `kernel` does the
+/// discovery + emit + delegate, `__kernel_inner` does the
+/// compilation. Macro expansion proceeds outside-in, so the
+/// `_src!()` siblings expand and register sources before
+/// `__kernel_inner` fires.
+pub(crate) fn expand_kernel(attr: TokenStream, mut func: ItemFn) -> TokenStream {
+    // Phase 1: rewrite the body.
+    let mut rewriter = QualifiedDeviceCallRewriter::new();
+    rewriter.visit_block_mut(&mut func.block);
+
+    // If nothing to do, fall through to the original path directly —
+    // no point in the extra delegation hop.
+    if rewriter.paths.is_empty() {
+        return expand_kernel_core(attr, func);
+    }
+
+    // Emit one `<path>_src!();` per recorded qualified call. The
+    // _src macros are at the crate root of the library that owns
+    // the device fn (because `#[quanta::device]` emits them with
+    // `#[macro_export]`). So we rewrite the path to keep the
+    // crate name but append `_src` to the final segment.
+    let src_invocations: Vec<TokenStream2> = rewriter
+        .paths
+        .into_iter()
+        .map(|mut path| {
+            let last_idx = path.segments.len() - 1;
+            let last = &mut path.segments[last_idx];
+            let new_name = format!("{}_src", last.ident);
+            last.ident = syn::Ident::new(&new_name, last.ident.span());
+            quote! { #path!(); }
+        })
+        .collect();
+
+    // Re-emit the kernel with the inner attribute. Keep the original
+    // attr args verbatim so workgroup/opt/jit settings transfer.
+    let attr_ts: TokenStream2 = attr.into();
+    let func_ts: TokenStream2 = quote! { #func };
+    let expanded = quote! {
+        #(#src_invocations)*
+
+        #[::quanta::__kernel_inner(#attr_ts)]
+        #func_ts
+    };
+    expanded.into()
+}
+
+/// Core implementation of the `#[quanta::kernel]` attribute macro,
+/// called via the inner-attribute delegation in `expand_kernel`.
+/// At this point the body has been rewritten to use bare-name
+/// calls for any cross-crate device fns, and the matching
+/// `_src!()` macros have already expanded and registered the
+/// device-fn source in this crate's macro process.
+pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream {
     let attr_str = attr.to_string();
     let is_jit = attr_str.contains("jit");
     let kernel_attrs = parse_kernel_attrs(attr.clone());

@@ -39,6 +39,17 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     kernel_macro::expand_kernel(attr, func)
 }
 
+/// Internal attribute used by `#[quanta::kernel]` to complete its
+/// expansion after the qualified-call body rewriter and the sibling
+/// `_src!()` invocations have run. NOT a public API — `quanta::kernel`
+/// emits this on its rewritten output.
+#[proc_macro_attribute]
+#[doc(hidden)]
+pub fn __kernel_inner(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    kernel_macro::expand_kernel_core(attr, func)
+}
+
 /// Mark a function as a GPU device function — callable from
 /// `#[quanta::kernel]` bodies. The function is also emitted unchanged
 /// for plain CPU use (host-side reference, tests, doctests).
@@ -70,9 +81,9 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// other device functions; the kernel macro discovers them
 /// recursively.
 #[proc_macro_attribute]
-pub fn device(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn device(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    device_macro::expand_device(func)
+    device_macro::expand_device(attr, func)
 }
 
 /// Mark a variable as shared (workgroup-local) memory inside a kernel.

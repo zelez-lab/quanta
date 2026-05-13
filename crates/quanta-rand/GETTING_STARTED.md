@@ -159,13 +159,11 @@ tests for GPU-side code.
 ## Step 8 — Call Philox / Threefry from your own kernel
 
 If the `fill_*_gpu` helpers don't fit your use case (e.g. you want
-to draw a random number *inside* a larger compute kernel), import
-the device function with `quanta::import_devices!`:
+to draw a random number *inside* a larger compute kernel), just
+qualify the call:
 
 ```rust,no_run
 use quanta::Fields;
-
-quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
 
 #[derive(Fields)]
 struct MyData {
@@ -177,7 +175,7 @@ struct MyData {
 #[quanta::kernel]
 fn my_kernel(d: &MyData) {
     let id = quark_id();
-    let r: u32 = philox4x32_10_first_u32_kernel(
+    let r: u32 = quanta_rand::philox4x32_10_first_u32_kernel(
         id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi,
     );
     // ... do something interesting with r ...
@@ -185,17 +183,22 @@ fn my_kernel(d: &MyData) {
 }
 ```
 
-The single `import_devices!` line splices the Philox implementation
-into your crate at macro-expansion time. From the kernel's
-perspective the device function is local; LLVM inlines it at -O3.
+The `#[quanta::kernel]` macro scans the kernel body for qualified
+calls to `<crate>::<fn>(...)` paths and auto-imports the device-fn
+source. No `import_devices!` line, no `use` statement — just the
+qualified call.
 
-Multiple imports in one call:
+If you prefer an explicit import line (e.g. for documentation or
+consistency with `use` style), it still works:
 
 ```rust,ignore
-quanta::import_devices!(
-    quanta_rand::philox4x32_10_first_u32_kernel,
-    quanta_rand::threefry4x32_20_first_u32_kernel,
-);
+quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
+
+#[quanta::kernel]
+fn my_kernel(d: &MyData) {
+    // can now call by bare name:
+    let r = philox4x32_10_first_u32_kernel(/*…*/);
+}
 ```
 
 ## Where to go next

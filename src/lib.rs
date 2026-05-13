@@ -72,6 +72,7 @@ pub use api::*;
 pub use kernel::{GpuType, KernelBinary, ScalarType, ShaderBinary, ShaderStage};
 
 // Re-export proc macros
+pub use quanta_macros::__kernel_inner;
 pub use quanta_macros::device;
 pub use quanta_macros::fragment;
 pub use quanta_macros::gpu_type;

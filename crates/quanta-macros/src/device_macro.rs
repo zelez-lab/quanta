@@ -35,7 +35,8 @@ use quote::ToTokens;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use syn::visit::{self, Visit};
-use syn::{Block, Expr, ExprCall, ExprPath, ItemFn};
+use syn::visit_mut::{self, VisitMut};
+use syn::{Block, Expr, ExprCall, ExprPath, ItemFn, Path};
 
 /// Process-wide registry of device-function sources, keyed by bare
 /// function name. Populated by `#[quanta::device]`, read by
@@ -80,7 +81,7 @@ fn lookup_device_source(name: &str) -> Option<String> {
 ///    function definition appears as if it were local. The kernel
 ///    macro then finds it via the same in-process registry, no
 ///    cross-process state needed.
-pub(crate) fn expand_device(func: ItemFn) -> TokenStream {
+pub(crate) fn expand_device(attr: TokenStream, func: ItemFn) -> TokenStream {
     use proc_macro2::TokenStream as TokenStream2;
     use quote::quote;
 
@@ -89,30 +90,25 @@ pub(crate) fn expand_device(func: ItemFn) -> TokenStream {
     register_device_source(&name, &source);
 
     let fn_tokens: TokenStream2 = func.to_token_stream();
+
+    // If the attribute carries `register_only`, the caller is the
+    // auto-generated `_src!` macro re-registering this fn in the
+    // downstream crate's macro process. Don't re-emit the `_src!`
+    // macro itself (that would cause an `E0428` duplicate macro
+    // definition on the original ident).
+    let attr_str: String = attr.to_string();
+    if attr_str.contains("register_only") {
+        return fn_tokens.into();
+    }
+
     let src_macro_ident = syn::Ident::new(&format!("{name}_src"), func.sig.ident.span());
 
     // The _src macro expands at the downstream call site to a
-    // `const _: () = { ... }` anonymous block. Inside the block:
-    //
-    //   (a) the device fn is re-declared with `#[quanta::device]`,
-    //       so its source registers in the downstream crate's
-    //       macro process and downstream kernels can find it,
-    //   (b) the block is anonymous (`const _`) — neither the
-    //       constant nor the fn it contains is reachable from
-    //       outside, so we don't leak any new identifier into the
-    //       user's namespace.
-    //
-    // The original v0 approach used `mod __quanta_device_src_<name>`
-    // which DID leak a mod name into the user's crate. `const _`
-    // is the standard Rust idiom for "run this item-level code in
-    // a fresh anonymous scope" — same as how serde / tonic / etc.
-    // emit their auto-generated impls.
-    //
-    // The inner fn shadows any same-named import the downstream
-    // crate might have (e.g. `use quanta_rand::foo;`). That's fine
-    // because the const block creates a fresh scope: `foo` inside
-    // the block is the device-fn definition; `foo` outside the
-    // block is whatever the user imported.
+    // `const _: () = { ... }` anonymous block. Inside the block,
+    // the device fn is re-declared with `#[quanta::device(register_only)]`
+    // — registers in the downstream registry but does NOT re-emit
+    // a `_src!` macro (which would collide if more than one
+    // downstream site invokes the same `_src!`).
     let expanded = quote! {
         #fn_tokens
 
@@ -133,7 +129,7 @@ pub(crate) fn expand_device(func: ItemFn) -> TokenStream {
             () => {
                 const _: () = {
                     #[allow(dead_code, non_snake_case)]
-                    #[quanta::device]
+                    #[::quanta::device(register_only)]
                     #fn_tokens
                 };
             };
@@ -231,4 +227,112 @@ pub(crate) fn collect_device_sources_for(kernel_body: &Block) -> Vec<String> {
     // keeps the wasm-shell hash stable.
     collected.reverse();
     collected.into_iter().map(|(_, s)| s).collect()
+}
+
+/// Rewriter that turns qualified `Expr::Call`s — `crate::path::foo(args)`
+/// — into bare-name calls — `foo(args)`. Records each qualified path
+/// it saw so the kernel macro can emit the matching `_src!()` macro
+/// invocations as siblings.
+///
+/// "Qualified" here means a `Path` with at least 2 segments and no
+/// type args on any of them. Common cases:
+///   - `quanta_rand::philox4x32_10_first_u32_kernel(...)` → rewrite + record
+///   - `crate::my_module::helper(...)` → rewrite + record (treated as cross-mod)
+///   - `Vec::new()` → 2-segment but the receiver is a TYPE not a crate;
+///     filtered by ensuring all earlier segments look like crate/mod
+///     names (lower_snake_case heuristic).
+///
+/// Method calls (`x.foo()`) and bare-path calls (`foo()`) are left
+/// alone — the bare-path collector handles same-crate device fns.
+pub(crate) struct QualifiedDeviceCallRewriter {
+    /// Qualified paths seen, in source order. Used to emit one
+    /// `path_to_fn_src!();` per entry at the kernel-macro callsite.
+    pub paths: Vec<Path>,
+    /// Names already added (to dedupe).
+    seen: HashSet<String>,
+}
+
+impl QualifiedDeviceCallRewriter {
+    pub fn new() -> Self {
+        Self {
+            paths: Vec::new(),
+            seen: HashSet::new(),
+        }
+    }
+}
+
+impl Default for QualifiedDeviceCallRewriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Cheap heuristic: a path segment looks like a *module/crate*
+/// (rather than a type) if its ident is lower_snake_case.
+fn looks_like_mod_or_crate_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+impl VisitMut for QualifiedDeviceCallRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        // Recurse first so nested calls get rewritten too.
+        visit_mut::visit_expr_mut(self, expr);
+
+        let Expr::Call(call) = expr else {
+            return;
+        };
+        let Expr::Path(ExprPath {
+            path,
+            qself: None,
+            attrs,
+        }) = call.func.as_ref()
+        else {
+            return;
+        };
+        if !attrs.is_empty() || path.leading_colon.is_some() {
+            return;
+        }
+        if path.segments.len() < 2 {
+            return;
+        }
+        // The final segment must have no type args and must look
+        // like a free function (heuristic: any-case ident, not
+        // PascalCase like `Vec::new` where the second-to-last seg
+        // is a TYPE).
+        let last = path.segments.last().unwrap();
+        if !last.arguments.is_empty() {
+            return;
+        }
+        // All non-final segments must look like crate/mod names
+        // (lower_snake_case). This rules out `Vec::new`,
+        // `String::from`, `Self::foo`, etc.
+        for seg in path.segments.iter().take(path.segments.len() - 1) {
+            if !looks_like_mod_or_crate_segment(&seg.ident.to_string()) {
+                return;
+            }
+        }
+
+        // Looks like a qualified call to a free fn in another mod
+        // or crate. Record the qualified path and rewrite the call
+        // to use just the final segment.
+        let qualified_str = path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        if self.seen.insert(qualified_str) {
+            self.paths.push(path.clone());
+        }
+        // Rewrite: replace path with just the final segment (bare).
+        let bare = last.ident.clone();
+        let bare_path: Path = syn::parse_quote!(#bare);
+        *call.func = Expr::Path(ExprPath {
+            path: bare_path,
+            qself: None,
+            attrs: Vec::new(),
+        });
+    }
 }

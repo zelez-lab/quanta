@@ -1,19 +1,15 @@
 //! Cross-crate `#[quanta::device]` import test.
 //!
 //! This crate is *separate* from `quanta-rand` — it exercises the
-//! "downstream user" path: invoke the auto-generated `_src!()`
-//! macro at file scope to splice quanta-rand's device-fn source
-//! into the current crate's macro process, then call the fn
-//! unqualified from inside a `#[quanta::kernel]`.
-
-// Splice quanta-rand's Philox4x32 device-fn source into this
-// crate's macro process. After this line, a `#[quanta::kernel]`
-// can call `philox4x32_10_first_u32_kernel(...)` as if the
-// function were defined locally.
-//
-// One-line list of names, no trailing `_src!()` ceremony — the
-// `import_devices!` macro fans out to per-fn invocations.
-quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
+//! "downstream user" path. Two flavors, both end-to-end bit-exact:
+//!
+//! 1. **Explicit `import_devices!`**: user writes one line at file
+//!    scope listing the imports, then calls the device fn by bare
+//!    name in the kernel body.
+//! 2. **Auto-discovery**: user just writes `quanta_rand::foo(...)`
+//!    inside the kernel body. The kernel macro detects the
+//!    qualified call, rewrites it to bare-name, and emits the
+//!    matching `_src!()` invocation automatically.
 
 #[derive(quanta::Fields)]
 pub struct ImportTestData {
@@ -22,10 +18,22 @@ pub struct ImportTestData {
     pub seed_hi: u32,
 }
 
+// Flavor 1: explicit `import_devices!` + bare call site.
+quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
+
 #[quanta::kernel]
 pub fn import_test_kernel(d: &ImportTestData) {
     let id = quark_id();
     let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    d.out[id as usize] = r;
+}
+
+// Flavor 2: auto-discovery — qualified path in body, no import line.
+#[quanta::kernel]
+pub fn auto_discover_test_kernel(d: &ImportTestData) {
+    let id = quark_id();
+    let r: u32 =
+        quanta_rand::philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
     d.out[id as usize] = r;
 }
 
@@ -34,8 +42,13 @@ mod tests {
     use super::*;
     use quanta_rand::philox4x32::philox4x32_10_first_u32;
 
-    #[test]
-    fn cross_crate_device_fn_round_trip() {
+    fn run(
+        kernel: impl Fn(
+            &quanta::Gpu,
+            &mut ImportTestData,
+            u32,
+        ) -> Result<quanta::Pulse, quanta::QuantaError>,
+    ) -> Vec<u32> {
         let gpu = quanta::init_cpu();
         let count: usize = 32;
         let seed_lo: u32 = 0xDEAD_BEEF;
@@ -46,20 +59,38 @@ mod tests {
             seed_lo,
             seed_hi,
         };
-        import_test_kernel(&gpu, &mut data, count as u32)
+        kernel(&gpu, &mut data, count as u32)
             .expect("dispatch")
             .wait()
             .expect("wait");
+        data.out
+    }
 
-        // Host reference: the same algorithm, called via
-        // quanta-rand's public host-side API.
-        let expected: Vec<u32> = (0..count as u32)
+    fn host_expected() -> Vec<u32> {
+        let seed_lo: u32 = 0xDEAD_BEEF;
+        let seed_hi: u32 = 0xCAFE_BABE;
+        (0..32u32)
             .map(|id| philox4x32_10_first_u32(id, 0, 0, 0, seed_lo, seed_hi))
-            .collect();
+            .collect()
+    }
 
+    #[test]
+    fn cross_crate_device_fn_round_trip_via_import_devices() {
+        let out = run(import_test_kernel);
         assert_eq!(
-            data.out, expected,
-            "cross-crate device-fn import must produce bit-exact host↔GPU output"
+            out,
+            host_expected(),
+            "explicit-import variant must match host reference"
+        );
+    }
+
+    #[test]
+    fn cross_crate_device_fn_round_trip_via_auto_discovery() {
+        let out = run(auto_discover_test_kernel);
+        assert_eq!(
+            out,
+            host_expected(),
+            "auto-discovery variant must match host reference"
         );
     }
 }

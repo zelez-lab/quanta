@@ -142,36 +142,38 @@ let layer_b_init = fill_normal_f32_gpu(&gpu, n, seed ^ 1)?;
 
 If you're writing your own `#[quanta::kernel]` and want to call
 quanta-rand's Philox / Threefry primitives directly (instead of
-the `fill_*_gpu` host-side wrappers), splice the source in with
-one line:
+the `fill_*_gpu` host-side wrappers), just qualify the call:
+
+```rust,ignore
+#[quanta::kernel]
+fn my_kernel(d: &MyData) {
+    let id = quark_id();
+    let r = quanta_rand::philox4x32_10_first_u32_kernel(
+        id, 0, 0, 0, d.seed_lo, d.seed_hi,
+    );
+    d.out[id as usize] = r;
+}
+```
+
+The `#[quanta::kernel]` macro scans the body for qualified calls
+to `<crate>::<fn>` paths and automatically splices the device-fn
+source into your crate. LLVM inlines at -O3.
+
+If you prefer an explicit import line at file scope (mirroring
+how `use` looks), that still works:
 
 ```rust,ignore
 quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
 
 #[quanta::kernel]
 fn my_kernel(d: &MyData) {
-    let id = quark_id();
-    let r = philox4x32_10_first_u32_kernel(id, 0, 0, 0, d.seed_lo, d.seed_hi);
-    d.out[id as usize] = r;
+    // can now call by bare name:
+    let r = philox4x32_10_first_u32_kernel(/*…*/);
 }
 ```
 
-The `import_devices!` macro expands to per-fn source-injection
-macros that `#[quanta::device]` auto-generates on the library
-side. The downstream effect is identical to a same-crate device
-fn — bare-name calls work, LLVM inlines at -O3.
-
-Multiple imports in one call:
-
-```rust,ignore
-quanta::import_devices!(
-    quanta_rand::philox4x32_10_first_u32_kernel,
-    quanta_rand::threefry4x32_20_first_u32_kernel,
-);
-```
-
 See `crates/quanta-rand-import-test/` in the Quanta workspace for
-a working end-to-end example with bit-exact validation.
+end-to-end examples of both flavors.
 
 ## Why counter-based?
 
