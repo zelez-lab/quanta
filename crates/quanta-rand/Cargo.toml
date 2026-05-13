@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Counter-based RNG primitives for Quanta kernels"
+readme = "README.md"
 
 [lib]
 name = "quanta_rand"
@@ -26,4 +27,16 @@ required-features = ["gpu"]
 
 [[example]]
 name = "bench_distributions"
+required-features = ["gpu"]
+
+[[example]]
+name = "nn_weight_init"
+required-features = ["gpu"]
+
+[[example]]
+name = "monte_carlo_pi"
+required-features = ["gpu"]
+
+[[example]]
+name = "dropout_mask"
 required-features = ["gpu"]
