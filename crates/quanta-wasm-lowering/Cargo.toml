@@ -11,3 +11,6 @@ categories = ["compilers"]
 [dependencies]
 quanta-ir.workspace = true
 wasmparser = "0.220"
+
+[dev-dependencies]
+wat = "1"
