@@ -91,29 +91,28 @@ pub(crate) fn expand_device(func: ItemFn) -> TokenStream {
     let fn_tokens: TokenStream2 = func.to_token_stream();
     let src_macro_ident = syn::Ident::new(&format!("{name}_src"), func.sig.ident.span());
 
-    // The local-copy fn inside the _src macro must:
-    //   (a) be marked `#[quanta::device]` so its source registers
-    //       in the downstream crate's macro process (and its kernels
-    //       can find it),
-    //   (b) be hidden from rust-analyzer / docs via `#[doc(hidden)]`,
-    //   (c) not collide with the original name if the downstream
-    //       crate also imports the host-side `use quanta_rand::foo;`.
+    // The _src macro expands at the downstream call site to a
+    // `const _: () = { ... }` anonymous block. Inside the block:
     //
-    // We sidestep the collision by wrapping the emitted fn in an
-    // unnameable inline module: the kernel macro will still find
-    // the registered source by name, but the original `use` from
-    // the parent crate keeps resolving to the host-side fn for
-    // CPU calls.
+    //   (a) the device fn is re-declared with `#[quanta::device]`,
+    //       so its source registers in the downstream crate's
+    //       macro process and downstream kernels can find it,
+    //   (b) the block is anonymous (`const _`) — neither the
+    //       constant nor the fn it contains is reachable from
+    //       outside, so we don't leak any new identifier into the
+    //       user's namespace.
     //
-    // Note: the `$crate::quanta::device` reference inside the
-    // macro lets users invoke the _src macro from any crate that
-    // has `quanta` in scope (the typical case — `quanta-rand`
-    // depends on quanta and re-exports it).
-    let mod_ident = syn::Ident::new(
-        &format!("__quanta_device_src_{name}"),
-        func.sig.ident.span(),
-    );
-
+    // The original v0 approach used `mod __quanta_device_src_<name>`
+    // which DID leak a mod name into the user's crate. `const _`
+    // is the standard Rust idiom for "run this item-level code in
+    // a fresh anonymous scope" — same as how serde / tonic / etc.
+    // emit their auto-generated impls.
+    //
+    // The inner fn shadows any same-named import the downstream
+    // crate might have (e.g. `use quanta_rand::foo;`). That's fine
+    // because the const block creates a fresh scope: `foo` inside
+    // the block is the device-fn definition; `foo` outside the
+    // block is whatever the user imported.
     let expanded = quote! {
         #fn_tokens
 
@@ -132,11 +131,11 @@ pub(crate) fn expand_device(func: ItemFn) -> TokenStream {
         #[doc(hidden)]
         macro_rules! #src_macro_ident {
             () => {
-                #[allow(dead_code, non_snake_case)]
-                mod #mod_ident {
+                const _: () = {
+                    #[allow(dead_code, non_snake_case)]
                     #[quanta::device]
                     #fn_tokens
-                }
+                };
             };
         }
     };
