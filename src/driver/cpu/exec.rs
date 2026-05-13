@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use quanta_ir::{BinOp, KernelOp, Reg, ScalarType};
 
 use super::eval::{eval_atomic, eval_binop, eval_cast, eval_cmp, eval_math, eval_unary};
-use super::value::{Value, read_scalar, scalar_size, value_from_const, write_scalar};
+use super::value::{
+    Value, read_scalar, read_scalar_at_offset, scalar_size, value_from_const, write_scalar,
+};
 
 // ── Execution context ────────────────────────────────────────────────────────
 
@@ -27,6 +29,11 @@ pub(super) struct ExecCtx<'a> {
     pub(super) fields: &'a mut [Option<Vec<u8>>; 16],
     /// Shared memory per workgroup, keyed by declaration id.
     pub(super) shared: &'a mut HashMap<u32, Vec<u8>>,
+    /// Push-constant payload, packed as the SPIR-V / MSL emitters
+    /// see it: slot `s` reads from bytes `[s*16 .. s*16+size_of::<T>()]`.
+    /// A `KernelOp::Load` with `index = Reg(u32::MAX)` is the
+    /// sentinel for a push-constant read.
+    pub(super) push_data: &'a [u8; crate::api::wave::PUSH_DATA_CAP],
 }
 
 pub(super) fn execute_ops(
@@ -59,13 +66,25 @@ pub(super) fn execute_ops(
                 index,
                 ty,
             } => {
-                let idx = reg(ctx, index)?;
-                let slot = *field as usize;
-                let buf = ctx.fields[slot]
-                    .as_ref()
-                    .ok_or_else(|| format!("Load: field slot {slot} not bound"))?;
-                let val = read_scalar(buf, idx.as_u32(), ty);
-                ctx.regs.insert(dst.0, val);
+                // index = Reg(u32::MAX) is the SPIR-V/MSL sentinel
+                // for "this is a scalar push-constant Load" — see
+                // `quanta_wasm_lowering::lower` line ~395. Reading
+                // from `ctx.push_data` mirrors what those emitters
+                // do at codegen time.
+                if index.0 == u32::MAX {
+                    let slot = *field as usize;
+                    let offset = slot * 16;
+                    let val = read_scalar_at_offset(&ctx.push_data[..], offset, ty);
+                    ctx.regs.insert(dst.0, val);
+                } else {
+                    let idx = reg(ctx, index)?;
+                    let slot = *field as usize;
+                    let buf = ctx.fields[slot]
+                        .as_ref()
+                        .ok_or_else(|| format!("Load: field slot {slot} not bound"))?;
+                    let val = read_scalar(buf, idx.as_u32(), ty);
+                    ctx.regs.insert(dst.0, val);
+                }
             }
             KernelOp::Store {
                 field,

@@ -125,6 +125,34 @@ pub(super) fn scalar_size(ty: &ScalarType) -> usize {
     }
 }
 
+/// Read a scalar at a byte offset (not an element index). Used by
+/// the push-constant Load path on the CPU backend, where slots are
+/// laid out at fixed 16-byte boundaries inside the push-data buffer.
+pub(super) fn read_scalar_at_offset(buf: &[u8], offset: usize, ty: &ScalarType) -> Value {
+    let size = scalar_size(ty);
+    if offset + size > buf.len() {
+        return Value::U32(0); // out-of-bounds reads zero
+    }
+    let bytes = &buf[offset..offset + size];
+    match ty {
+        ScalarType::F32 => Value::F32(f32::from_le_bytes(bytes.try_into().unwrap())),
+        ScalarType::F64 => Value::F64(f64::from_le_bytes(bytes.try_into().unwrap())),
+        ScalarType::U32 => Value::U32(u32::from_le_bytes(bytes.try_into().unwrap())),
+        ScalarType::I32 => Value::I32(i32::from_le_bytes(bytes.try_into().unwrap())),
+        ScalarType::U64 => Value::U64(u64::from_le_bytes(bytes.try_into().unwrap())),
+        ScalarType::I64 => Value::I64(i64::from_le_bytes(bytes.try_into().unwrap())),
+        ScalarType::U16 => Value::U32(u16::from_le_bytes(bytes.try_into().unwrap()) as u32),
+        ScalarType::I16 => Value::I32(i16::from_le_bytes(bytes.try_into().unwrap()) as i32),
+        ScalarType::U8 => Value::U32(bytes[0] as u32),
+        ScalarType::I8 => Value::I32(bytes[0] as i32),
+        ScalarType::F16 => {
+            let bits = u16::from_le_bytes(bytes.try_into().unwrap());
+            Value::F32(f16_to_f32(bits))
+        }
+        ScalarType::Bool => Value::Bool(bytes[0] != 0),
+    }
+}
+
 pub(super) fn read_scalar(buf: &[u8], index: u32, ty: &ScalarType) -> Value {
     let size = scalar_size(ty);
     let offset = index as usize * size;

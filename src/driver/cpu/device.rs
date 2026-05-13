@@ -464,6 +464,7 @@ impl GpuDevice for CpuDevice {
                         regs: core::mem::take(&mut thread_regs[lid as usize]),
                         fields: &mut field_data,
                         shared: &mut shared,
+                        push_data: &wave.push_data,
                     };
 
                     execute_ops(&mut ctx, segment).map_err(|e| {
