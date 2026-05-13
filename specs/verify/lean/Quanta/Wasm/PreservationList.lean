@@ -30,6 +30,7 @@ arm of `br`) land as separate theorems below as proofs come online.
 
 import Quanta.Wasm.Preservation
 import Quanta.Wasm.PreservationFuel
+import Quanta.Wasm.LowerInvariants
 
 namespace Quanta.Wasm
 
@@ -2445,5 +2446,257 @@ theorem preservation_evalInstrs_cons_i32Store
               refine ⟨kst'', F_rest, ?_, ?_⟩
               · rw [← h_ops_eq]; exact h_eval''
               · rw [← h_s_eq]; exact R''
+
+-- ════════════════════════════════════════════════════════════════════
+-- L1a: 2-step buffer-pointer prelude chain
+--
+-- Composes the first two steps of the canonical buffer-access chain:
+--   localGet bufSlotIdx :: localGet idxIdx :: rest
+-- where `bufSlotIdx` reads a `#[quanta::shared]` buffer parameter
+-- (lookupBufferSlot returns `some bSlot`) and `idxIdx` reads a plain
+-- u32 index local (lookupBufferSlot returns `none`).
+--
+-- After the two steps the symbolic stack has
+--   .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
+-- and the regfile has `s.nextReg ↦ <value of idxIdx>` via the
+-- emitted `.copy s.nextReg stable` op.
+--
+-- User-facing witnesses (the entry-state cleanliness contract):
+--   h_buf            -- bufSlot binding agrees with layout
+--   h_loc_buf        -- the bufSlot local stores the layout start addr
+--   h_no_buf_idx     -- the idx local is non-buffer (at entry state s)
+--
+-- The `h_no_buf_idx` precondition is stated on `s`, but step 2's
+-- `preservation_localGet` requires it on the post-step-1 state `s_1`.
+-- Since `localGet bufSlot` does not modify `s.bufferSlots` (per
+-- `lowerInstr_preserves_bufferSlots`), and `lookupBufferSlot` only
+-- reads `bufferSlots` (per
+-- `LowerState.lookupBufferSlot_of_bufferSlots_eq`), the witness lifts
+-- through step 1 for free.
+--
+-- This is the L1a wedge of the full L1 buffer-access LOAD chain.
+-- L1b extends through `i32Const k :: i32Shl :: rest` to land the
+-- `.scaledIdx` SymVal on the stack; L1c extends through
+-- `i32Add :: i32Load 0 align :: rest` to close the full chain.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- L1a: the 2-step buffer-pointer address prelude. -/
+theorem preservation_evalInstrs_chain_buffer_prelude_2step
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (bufSlotIdx : Nat) (bSlot : Nat)
+    (h_buf : s.lookupBufferSlot bufSlotIdx = some bSlot)
+    (h_loc_buf : ∀ v, ws.locals.get? bufSlotIdx = some v →
+      ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr bSlot)
+    (idxIdx : Nat) (h_no_buf_idx : s.lookupBufferSlot idxIdx = none)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws
+            (.localGet bufSlotIdx :: .localGet idxIdx :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s
+            (.localGet bufSlotIdx :: .localGet idxIdx :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Step 1 of the chain is `localGet bufSlotIdx`. We discharge it by
+  -- delegating to `preservation_evalInstrs_cons_localGet_bufferSlot`
+  -- and supplying the step 2 closure as its `preservation_rest`.
+  --
+  -- The step 2 closure has type access to `s_mid` only via R_mid +
+  -- hl_mid (abstract). Since the cons theorem's conclusion doesn't
+  -- expose the state shape, we cannot directly call
+  -- `preservation_evalInstrs_cons_localGet` with `h_no_buf` —
+  -- the closure needs to derive `s_mid.lookupBufferSlot idxIdx = none`
+  -- from `h_no_buf_idx : s.lookupBufferSlot idxIdx = none` plus the
+  -- fact that step 1 preserves `bufferSlots`.
+  --
+  -- The path that works: inline both steps at this level. Unfold the
+  -- outer `lowerInstrs` to expose step 1's concrete output state s_1,
+  -- apply `preservation_localGet_bufferSlot` to get R_1, then apply
+  -- `LowerInvariants.lookupBufferSlot_of_bufferSlots_eq` to lift
+  -- `h_no_buf_idx` to `s_1`, then proceed as a normal cons proof for
+  -- step 2.
+  rw [lowerInstrs_cons_default fuel frames s (.localGet bufSlotIdx) _ rfl] at hl
+  -- Step 1's per-op head: lowerInstr s (.localGet bufSlotIdx) = some (s.pushSym (.bufferPtr bSlot), [])
+  have h_head_1 : lowerInstr s (.localGet bufSlotIdx)
+                    = some (s.pushSym (.bufferPtr bSlot), []) := by
+    show (match s.lookupBufferSlot bufSlotIdx with
+          | some slot => some (s.pushSym (.bufferPtr slot), [])
+          | none =>
+              (s.lookupLocal bufSlotIdx).bind (fun stable =>
+                let (fresh, s1) := s.alloc
+                let s2 := s1.push fresh
+                some (s2, [KernelOp.copy fresh stable])))
+              = some (s.pushSym (.bufferPtr bSlot), [])
+    rw [h_buf]
+  rw [h_head_1] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind, List.nil_append] at hl
+  -- After step 1, hl reduces to lowerInstrs ... (s.pushSym (.bufferPtr bSlot)) (localGet idxIdx :: rest).
+  -- The bind+pure eta needs the collapse helper.
+  let s_1 : LowerState := s.pushSym (.bufferPtr bSlot)
+  have hl_after_1 : lowerInstrs fuel frames s_1 (.localGet idxIdx :: rest) = some (s', ops) :=
+    cons_default_lowerInstrs_collapse_empty_head hl
+  -- Lift h_no_buf_idx to s_1.
+  have h_bufs_eq : s_1.bufferSlots = s.bufferSlots := by
+    simp [s_1, LowerState.pushSym]
+  have h_no_buf_idx_1 : s_1.lookupBufferSlot idxIdx = none := by
+    rw [LowerState.lookupBufferSlot_of_bufferSlots_eq idxIdx h_bufs_eq]
+    exact h_no_buf_idx
+  -- Unfold step 2.
+  rw [lowerInstrs_cons_default fuel frames s_1 (.localGet idxIdx) _ rfl] at hl_after_1
+  -- Extract step 2's per-op result.
+  cases h_stable : s_1.lookupLocal idxIdx with
+  | none =>
+      -- lookupLocal failed → lowerInstr returns none → lowerInstrs returns none.
+      simp only [lowerInstr, h_no_buf_idx_1, h_stable, Option.bind_eq_bind,
+                 Option.some_bind, Option.none_bind, LowerState.alloc,
+                 LowerState.push] at hl_after_1
+      exact (Option.noConfusion hl_after_1)
+  | some stable =>
+      let s_2 : LowerState :=
+        { s_1 with nextReg := s_1.nextReg + 1,
+                   stack := SymVal.reg s_1.nextReg .u32 :: s_1.stack }
+      let ops_head_2 : List KernelOp := [.copy s_1.nextReg stable]
+      have hl_head_2 : lowerInstr s_1 (.localGet idxIdx) = some (s_2, ops_head_2) := by
+        show (match s_1.lookupBufferSlot idxIdx with
+              | some slot => some (s_1.pushSym (.bufferPtr slot), [])
+              | none => do
+                  let stable ← s_1.lookupLocal idxIdx
+                  let (fresh, s1) := s_1.alloc
+                  let s2 := s1.push fresh
+                  pure (s2, [.copy fresh stable])) = some (s_2, ops_head_2)
+        rw [h_no_buf_idx_1, h_stable]
+        rfl
+      rw [hl_head_2] at hl_after_1
+      simp only [Option.bind_eq_bind, Option.some_bind] at hl_after_1
+      cases h_post : lowerInstrs fuel frames s_2 rest with
+      | none => simp [h_post] at hl_after_1
+      | some post_pair =>
+          rcases post_pair with ⟨s_post, postOps⟩
+          simp [h_post] at hl_after_1
+          rcases hl_after_1 with ⟨h_s_eq, h_ops_eq⟩
+          -- Eval side: unfold both step 1 and step 2.
+          rw [evalInstrs_cons_default fuel ws (.localGet bufSlotIdx) _
+                h_no_branch h_no_halt rfl] at hw
+          cases h_eval_1 : evalInstr ws (.localGet bufSlotIdx) with
+          | none =>
+              rw [h_eval_1] at hw
+              simp at hw
+          | some ws_1 =>
+              rw [h_eval_1] at hw
+              simp only at hw
+              -- Apply per-op preservation_localGet_bufferSlot for step 1.
+              obtain ⟨kst_1, h_kst_eval_1, R_1⟩ :=
+                preservation_localGet_bufferSlot ws s kst layout R bufSlotIdx bSlot
+                  h_buf h_loc_buf
+                  ws_1 (s.pushSym (.bufferPtr bSlot)) []
+                  h_eval_1 h_head_1
+              -- Step 1 emits no IR, so kst_1 = kst.
+              have h_kst_1_eq : kst_1 = kst := by
+                simp [evalOps] at h_kst_eval_1
+                exact h_kst_eval_1.symm
+              -- ws_1 has the pushed wI32 on top.
+              have h_ws_1_shape : ∃ v, ws_1 = ws.push v := by
+                cases h_loc : ws.getLocal bufSlotIdx with
+                | none =>
+                    have h_ev : evalInstr ws (.localGet bufSlotIdx) = none := by
+                      show (do let v ← ws.getLocal bufSlotIdx; pure (ws.push v)) = none
+                      rw [h_loc]; rfl
+                    rw [h_ev] at h_eval_1; exact (Option.noConfusion h_eval_1)
+                | some v =>
+                    refine ⟨v, ?_⟩
+                    have h_ev : evalInstr ws (.localGet bufSlotIdx) = some (ws.push v) := by
+                      show (do let v ← ws.getLocal bufSlotIdx; pure (ws.push v)) = some (ws.push v)
+                      rw [h_loc]; rfl
+                    rw [h_ev] at h_eval_1
+                    exact ((Option.some.injEq _ _).mp h_eval_1).symm
+              obtain ⟨v_1, h_ws_1_eq⟩ := h_ws_1_shape
+              have h_1_no_branch : ws_1.branchTarget = none := by
+                rw [h_ws_1_eq]; simp [WasmState.push, h_no_branch]
+              have h_1_no_halt : ws_1.halted = false := by
+                rw [h_ws_1_eq]; simp [WasmState.push, h_no_halt]
+              -- Step 2's eval head.
+              rw [evalInstrs_cons_default fuel ws_1 (.localGet idxIdx) _
+                    h_1_no_branch h_1_no_halt rfl] at hw
+              cases h_eval_2 : evalInstr ws_1 (.localGet idxIdx) with
+              | none =>
+                  rw [h_eval_2] at hw
+                  simp at hw
+              | some ws_2 =>
+                  rw [h_eval_2] at hw
+                  simp only at hw
+                  -- Apply per-op preservation_localGet for step 2.
+                  -- Refines bundle for s_1 = s.pushSym (.bufferPtr bSlot) comes from R_1.
+                  obtain ⟨kst_2, h_kst_eval_2, R_2⟩ :=
+                    preservation_localGet ws_1 s_1 kst_1 layout R_1 idxIdx h_no_buf_idx_1
+                      ws_2 s_2 ops_head_2
+                      h_eval_2 hl_head_2
+                  -- Derive kst_2.broke = false via .copy preservation.
+                  have h_2_broke : kst_2.broke = false := by
+                    have := evalOps_copy_singleton_preserves_broke h_kst_eval_2
+                    rw [this]; rw [h_kst_1_eq]; exact h_kst_no_broke
+                  -- ws_2 = ws_1.push v_2 — branchTarget / halted preserved.
+                  have h_ws_2_shape : ∃ v, ws_2 = ws_1.push v := by
+                    cases h_loc : ws_1.getLocal idxIdx with
+                    | none =>
+                        have h_ev : evalInstr ws_1 (.localGet idxIdx) = none := by
+                          show (do let v ← ws_1.getLocal idxIdx; pure (ws_1.push v)) = none
+                          rw [h_loc]; rfl
+                        rw [h_ev] at h_eval_2; exact (Option.noConfusion h_eval_2)
+                    | some v =>
+                        refine ⟨v, ?_⟩
+                        have h_ev : evalInstr ws_1 (.localGet idxIdx) = some (ws_1.push v) := by
+                          show (do let v ← ws_1.getLocal idxIdx; pure (ws_1.push v)) = some (ws_1.push v)
+                          rw [h_loc]; rfl
+                        rw [h_ev] at h_eval_2
+                        exact ((Option.some.injEq _ _).mp h_eval_2).symm
+                  obtain ⟨v_2, h_ws_2_eq⟩ := h_ws_2_shape
+                  have h_2_no_branch : ws_2.branchTarget = none := by
+                    rw [h_ws_2_eq]; simp [WasmState.push, h_1_no_branch]
+                  have h_2_no_halt : ws_2.halted = false := by
+                    rw [h_ws_2_eq]; simp [WasmState.push, h_1_no_halt]
+                  -- Apply user's preservation_rest on the tail.
+                  obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+                    preservation_rest R_2 h_2_no_branch h_2_no_halt h_2_broke hw h_post
+                  -- Now compose: step 1 emits [], step 2 emits [.copy ...], tail emits postOps.
+                  -- Total ops = [] ++ [.copy ...] ++ postOps = [.copy ...] ++ postOps.
+                  -- evalOps composition: kst → kst (via step 1) → kst_2 (via step 2) → kst'_mid.
+                  -- step 1's evalOps 0 kst [] = some kst (kst_1 = kst).
+                  -- step 2's evalOps F_2 kst_1 [.copy ...] = some kst_2.
+                  -- tail's evalOps F_rest kst_2 postOps = some kst'_mid.
+                  -- Chain via cons-composer (shallow) on the step-2 head + tail.
+                  have h_lf_2 : loopFree ops_head_2 = true := by
+                    simp [loopFree, loopFreeOp, ops_head_2]
+                  -- Rewrite h_kst_eval_2 in terms of kst (since kst_1 = kst).
+                  rw [h_kst_1_eq] at h_kst_eval_2
+                  have h_chained :
+                      ∃ kst'', evalOps F_rest kst (ops_head_2 ++ postOps) = some kst''
+                        ∧ Refines ws' s_post kst'' layout :=
+                    preservation_evalInstrs_cons_compose_shallow
+                      h_lf_2 h_kst_eval_2 h_2_broke ⟨kst'_mid, h_eval_rest, R_rest⟩
+                  obtain ⟨kst'', h_eval'', R''⟩ := h_chained
+                  refine ⟨kst'', F_rest, ?_, ?_⟩
+                  · -- ops = [] ++ ops_head_2 ++ postOps = ops_head_2 ++ postOps.
+                    rw [← h_ops_eq]
+                    show evalOps F_rest kst ([] ++ (ops_head_2 ++ postOps)) = some kst''
+                    rw [List.nil_append]
+                    exact h_eval''
+                  · rw [← h_s_eq]; exact R''
 
 end Quanta.Wasm
