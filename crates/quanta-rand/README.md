@@ -3,6 +3,9 @@
 GPU-first random number generation for Quanta kernels: counter-based
 RNGs, six probability distributions, host↔GPU bit-exact reproducibility.
 
+**New here?** Start with [GETTING_STARTED.md](GETTING_STARTED.md) — a
+10-minute walkthrough from `cargo new` to a working program.
+
 ## What you get
 
 - **Three algorithms**, all bit-exact with their published references:
