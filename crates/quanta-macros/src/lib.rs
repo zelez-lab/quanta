@@ -398,3 +398,62 @@ pub fn derive_fields(input: TokenStream) -> TokenStream {
         Err(err) => err.to_compile_error().into(),
     }
 }
+
+/// Import one or more `#[quanta::device]` functions from another
+/// crate, splicing their source into the current crate's macro
+/// process so a `#[quanta::kernel]` body can call them by bare name.
+///
+/// ```ignore
+/// quanta::import_devices!(
+///     quanta_rand::philox4x32_10_first_u32_kernel,
+///     quanta_rand::threefry4x32_20_first_u32_kernel,
+/// );
+///
+/// #[quanta::kernel]
+/// fn my_kernel(d: &MyData) {
+///     let r = philox4x32_10_first_u32_kernel(/* … */);
+/// }
+/// ```
+///
+/// Each path is rewritten to append `_src` to its final segment and
+/// emitted as `<path>_src!();`. The `_src!` macro is auto-generated
+/// by `#[quanta::device]` on the library side — see that attribute's
+/// documentation for the mechanism.
+#[proc_macro]
+pub fn import_devices(input: TokenStream) -> TokenStream {
+    use proc_macro2::TokenStream as TokenStream2;
+    use quote::quote;
+    use syn::{
+        Path, Token,
+        parse::{Parse, ParseStream},
+        punctuated::Punctuated,
+    };
+
+    struct ImportList(Punctuated<Path, Token![,]>);
+
+    impl Parse for ImportList {
+        fn parse(input: ParseStream) -> syn::Result<Self> {
+            Ok(ImportList(Punctuated::parse_terminated(input)?))
+        }
+    }
+
+    let paths = parse_macro_input!(input as ImportList);
+
+    let calls: Vec<TokenStream2> = paths
+        .0
+        .into_iter()
+        .map(|mut path| {
+            // Append `_src` to the last segment's ident.
+            let last_idx = path.segments.len() - 1;
+            let last = &mut path.segments[last_idx];
+            let new_name = format!("{}_src", last.ident);
+            last.ident = syn::Ident::new(&new_name, last.ident.span());
+            quote! { #path!(); }
+        })
+        .collect();
+
+    let expanded = quote! {
+        #(#calls)*
+    };
+    expanded.into()
+}

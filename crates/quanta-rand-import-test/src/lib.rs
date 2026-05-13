@@ -10,7 +10,10 @@
 // crate's macro process. After this line, a `#[quanta::kernel]`
 // can call `philox4x32_10_first_u32_kernel(...)` as if the
 // function were defined locally.
-quanta_rand::philox4x32_10_first_u32_kernel_src!();
+//
+// One-line list of names, no trailing `_src!()` ceremony — the
+// `import_devices!` macro fans out to per-fn invocations.
+quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
 
 #[derive(quanta::Fields)]
 pub struct ImportTestData {
