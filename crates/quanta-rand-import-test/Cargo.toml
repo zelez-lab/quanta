@@ -1,0 +1,11 @@
+[package]
+name = "quanta-rand-import-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-crate test: import a #[quanta::device] fn from quanta-rand and use it inside a kernel."
+publish = false
+
+[dependencies]
+quanta = { path = "../..", default-features = false, features = ["software"] }
+quanta-rand = { path = "../quanta-rand", features = ["gpu"] }

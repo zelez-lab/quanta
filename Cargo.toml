@@ -9,6 +9,7 @@ members = [
     "crates/quanta-codegen",
     "crates/quanta-wasm-lowering",
     "crates/quanta-rand",
+    "crates/quanta-rand-import-test",
     "examples/web_add_one",
     "examples/web_triangle",
     "examples/web_textured",
