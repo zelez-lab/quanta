@@ -1261,13 +1261,14 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32RemU | RawInstr::I32RemS => {
                 self.bin_op_int(BinOp::Rem, ScalarType::I32)?
             }
-            // Right-shift: unsigned and signed map to the same Quanta
-            // BinOp::Shr; the slot's scalar type (set elsewhere)
-            // determines the codegen-time arithmetic vs logical
-            // distinction.
-            RawInstr::I32ShrU | RawInstr::I32ShrS => {
-                self.bin_op_int(BinOp::Shr, ScalarType::I32)?
-            }
+            // Right-shift: WASM distinguishes signed (`i32.shr_s`) from
+            // unsigned (`i32.shr_u`) at the instruction level. We
+            // forward that distinction to the IR by picking I32 vs U32
+            // as the BinOp::Shr operand type — the CPU evaluator and
+            // SPIR-V emitter both branch on the sign of the type to
+            // pick arithmetic vs logical shift.
+            RawInstr::I32ShrU => self.bin_op_int(BinOp::Shr, ScalarType::U32)?,
+            RawInstr::I32ShrS => self.bin_op_int(BinOp::Shr, ScalarType::I32)?,
             RawInstr::I32Rotl => self.bin_op_int(BinOp::Rotl, ScalarType::I32)?,
             RawInstr::I32Rotr => self.bin_op_int(BinOp::Rotr, ScalarType::I32)?,
 
@@ -1303,9 +1304,8 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I64Or => self.bin_op_int(BinOp::BitOr, ScalarType::I64)?,
             RawInstr::I64Xor => self.bin_op_int(BinOp::BitXor, ScalarType::I64)?,
             RawInstr::I64Shl => self.bin_op_int(BinOp::Shl, ScalarType::I64)?,
-            RawInstr::I64ShrU | RawInstr::I64ShrS => {
-                self.bin_op_int(BinOp::Shr, ScalarType::I64)?
-            }
+            RawInstr::I64ShrU => self.bin_op_int(BinOp::Shr, ScalarType::U64)?,
+            RawInstr::I64ShrS => self.bin_op_int(BinOp::Shr, ScalarType::I64)?,
             RawInstr::I64Rotl => self.bin_op_int(BinOp::Rotl, ScalarType::I64)?,
             RawInstr::I64Rotr => self.bin_op_int(BinOp::Rotr, ScalarType::I64)?,
             RawInstr::I64Eq => self.cmp_op_int(quanta_ir::CmpOp::Eq, ScalarType::I64)?,
