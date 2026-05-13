@@ -135,6 +135,41 @@ let layer_a_init = fill_normal_f32_gpu(&gpu, n, seed ^ 0)?;
 let layer_b_init = fill_normal_f32_gpu(&gpu, n, seed ^ 1)?;
 ```
 
+## Using quanta-rand's device fns from your own kernels
+
+If you're writing your own `#[quanta::kernel]` and want to call
+quanta-rand's Philox / Threefry primitives directly (instead of
+the `fill_*_gpu` host-side wrappers), splice the source in with
+one line:
+
+```rust,ignore
+quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
+
+#[quanta::kernel]
+fn my_kernel(d: &MyData) {
+    let id = quark_id();
+    let r = philox4x32_10_first_u32_kernel(id, 0, 0, 0, d.seed_lo, d.seed_hi);
+    d.out[id as usize] = r;
+}
+```
+
+The `import_devices!` macro expands to per-fn source-injection
+macros that `#[quanta::device]` auto-generates on the library
+side. The downstream effect is identical to a same-crate device
+fn — bare-name calls work, LLVM inlines at -O3.
+
+Multiple imports in one call:
+
+```rust,ignore
+quanta::import_devices!(
+    quanta_rand::philox4x32_10_first_u32_kernel,
+    quanta_rand::threefry4x32_20_first_u32_kernel,
+);
+```
+
+See `crates/quanta-rand-import-test/` in the Quanta workspace for
+a working end-to-end example with bit-exact validation.
+
 ## Why counter-based?
 
 State-based RNGs like xoshiro need to walk through a sequence — each
@@ -158,10 +193,6 @@ and produces ~5× more random bytes per round than xoshiro.
   truncates above.
 - **GPU-side jump-ahead**: constant-time on CPU; requires a long
   fixed loop on GPU. Pending a use case.
-- **Cross-crate device-fn import**: kernels that want to call a
-  quanta-rand device fn from another crate currently must
-  transcribe the source. See `examples/smoke_philox_kernel.rs` (in
-  the top-level `quanta` crate) for the pattern.
 - **Other distributions**: gamma, beta, Dirichlet, geometric,
   categorical, multinomial.
 

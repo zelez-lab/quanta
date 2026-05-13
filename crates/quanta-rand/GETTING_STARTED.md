@@ -156,6 +156,48 @@ other.jump();
 overhead would dominate), or as a deterministic CPU oracle in
 tests for GPU-side code.
 
+## Step 8 — Call Philox / Threefry from your own kernel
+
+If the `fill_*_gpu` helpers don't fit your use case (e.g. you want
+to draw a random number *inside* a larger compute kernel), import
+the device function with `quanta::import_devices!`:
+
+```rust,no_run
+use quanta::Fields;
+
+quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
+
+#[derive(Fields)]
+struct MyData {
+    out: Vec<u32>,
+    seed_lo: u32,
+    seed_hi: u32,
+}
+
+#[quanta::kernel]
+fn my_kernel(d: &MyData) {
+    let id = quark_id();
+    let r: u32 = philox4x32_10_first_u32_kernel(
+        id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi,
+    );
+    // ... do something interesting with r ...
+    d.out[id as usize] = r;
+}
+```
+
+The single `import_devices!` line splices the Philox implementation
+into your crate at macro-expansion time. From the kernel's
+perspective the device function is local; LLVM inlines it at -O3.
+
+Multiple imports in one call:
+
+```rust,ignore
+quanta::import_devices!(
+    quanta_rand::philox4x32_10_first_u32_kernel,
+    quanta_rand::threefry4x32_20_first_u32_kernel,
+);
+```
+
 ## Where to go next
 
 - **[README.md](README.md)** — full API reference with the

@@ -104,10 +104,23 @@
 //! - **Other distributions**: gamma, beta, Dirichlet, geometric,
 //!   categorical, multinomial.
 //!
-//! Cross-crate `#[quanta::device]` import is also deferred — kernels
-//! that want to call a quanta-rand device fn from another crate
-//! currently must transcribe the source. See `examples/smoke_philox_kernel.rs`
-//! for the pattern.
+//! ## Calling quanta-rand device fns from your own kernels
+//!
+//! Use `quanta::import_devices!(...)` at file scope:
+//!
+//! ```ignore
+//! quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
+//!
+//! #[quanta::kernel]
+//! fn my_kernel(d: &MyData) {
+//!     let id = quark_id();
+//!     let r = philox4x32_10_first_u32_kernel(id, 0, 0, 0, d.seed_lo, d.seed_hi);
+//!     d.out[id as usize] = r;
+//! }
+//! ```
+//!
+//! See `crates/quanta-rand-import-test/` for a complete cross-crate
+//! example with bit-exact validation.
 
 pub mod philox4x32;
 pub mod threefry4x32;
