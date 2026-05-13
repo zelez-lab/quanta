@@ -128,6 +128,127 @@ pub const fn threefry4x32_20(ctr: Counter, key: Key) -> Counter {
     threefry4x32_r(ROUNDS, ctr, key)
 }
 
+/// Kernel-callable scalar form of `threefry4x32_20`. Same algorithm
+/// and bit-exact output, flattened to `(u32, ..., u32) -> u32` so
+/// it can be called from a `#[quanta::kernel]` body via the
+/// `#[quanta::device]` machinery.
+///
+/// Returns only the first u32 of the 4-word output. For more output
+/// words from the same draw, increment a counter component.
+#[allow(clippy::too_many_arguments, clippy::manual_is_multiple_of)]
+#[cfg_attr(feature = "gpu", quanta::device)]
+pub fn threefry4x32_20_first_u32(
+    c0: u32,
+    c1: u32,
+    c2: u32,
+    c3: u32,
+    k0: u32,
+    k1: u32,
+    k2: u32,
+    k3: u32,
+) -> u32 {
+    // Constants and rotations must be local — `#[quanta::device]`
+    // splices the source verbatim into the wasm-shell crate where
+    // module-level items aren't in scope.
+    const PARITY: u32 = 0x1BD1_1BDA;
+    // Rotation pairs (R_32x4_j_0, R_32x4_j_1) for j = 0..8. Stored
+    // inline as 16 scalar locals rather than an array to keep the
+    // lowering simple — the WASM-route doesn't handle fixed-size
+    // array indexing.
+    let r0: [u32; 8] = [10, 11, 13, 23, 6, 17, 25, 18];
+    let r1: [u32; 8] = [26, 21, 27, 5, 20, 11, 10, 20];
+
+    let ks0 = k0;
+    let ks1 = k1;
+    let ks2 = k2;
+    let ks3 = k3;
+    let ks4 = PARITY ^ ks0 ^ ks1 ^ ks2 ^ ks3;
+
+    let mut x0 = c0.wrapping_add(ks0);
+    let mut x1 = c1.wrapping_add(ks1);
+    let mut x2 = c2.wrapping_add(ks2);
+    let mut x3 = c3.wrapping_add(ks3);
+
+    let mut round_idx: u32 = 0;
+    while round_idx < 20u32 {
+        let rot_index = (round_idx % 8u32) as usize;
+        let rot_a = r0[rot_index];
+        let rot_b = r1[rot_index];
+        if round_idx % 2u32 == 0u32 {
+            x0 = x0.wrapping_add(x1);
+            x1 = x1.rotate_left(rot_a);
+            x1 ^= x0;
+            x2 = x2.wrapping_add(x3);
+            x3 = x3.rotate_left(rot_b);
+            x3 ^= x2;
+        } else {
+            x0 = x0.wrapping_add(x3);
+            x3 = x3.rotate_left(rot_a);
+            x3 ^= x0;
+            x2 = x2.wrapping_add(x1);
+            x1 = x1.rotate_left(rot_b);
+            x1 ^= x2;
+        }
+        if round_idx % 4u32 == 3u32 {
+            let inject = (round_idx + 1u32) / 4u32;
+            // Cyclic key schedule: ks[(inject + 0..3) mod 5], plus
+            // X3 += inject. Spelled out as a 5-arm if-chain rather
+            // than an array index since the WASM-route doesn't
+            // lower array indexing.
+            let ks_inject0: u32 = if inject % 5u32 == 0u32 {
+                ks0
+            } else if inject % 5u32 == 1u32 {
+                ks1
+            } else if inject % 5u32 == 2u32 {
+                ks2
+            } else if inject % 5u32 == 3u32 {
+                ks3
+            } else {
+                ks4
+            };
+            let ks_inject1: u32 = if (inject + 1u32) % 5u32 == 0u32 {
+                ks0
+            } else if (inject + 1u32) % 5u32 == 1u32 {
+                ks1
+            } else if (inject + 1u32) % 5u32 == 2u32 {
+                ks2
+            } else if (inject + 1u32) % 5u32 == 3u32 {
+                ks3
+            } else {
+                ks4
+            };
+            let ks_inject2: u32 = if (inject + 2u32) % 5u32 == 0u32 {
+                ks0
+            } else if (inject + 2u32) % 5u32 == 1u32 {
+                ks1
+            } else if (inject + 2u32) % 5u32 == 2u32 {
+                ks2
+            } else if (inject + 2u32) % 5u32 == 3u32 {
+                ks3
+            } else {
+                ks4
+            };
+            let ks_inject3: u32 = if (inject + 3u32) % 5u32 == 0u32 {
+                ks0
+            } else if (inject + 3u32) % 5u32 == 1u32 {
+                ks1
+            } else if (inject + 3u32) % 5u32 == 2u32 {
+                ks2
+            } else if (inject + 3u32) % 5u32 == 3u32 {
+                ks3
+            } else {
+                ks4
+            };
+            x0 = x0.wrapping_add(ks_inject0);
+            x1 = x1.wrapping_add(ks_inject1);
+            x2 = x2.wrapping_add(ks_inject2);
+            x3 = x3.wrapping_add(ks_inject3).wrapping_add(inject);
+        }
+        round_idx += 1u32;
+    }
+    x0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +276,32 @@ mod tests {
         let a = threefry4x32_20(Counter([0, 0, 0, 0]), key);
         let b = threefry4x32_20(Counter([1, 0, 0, 0]), key);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn scalar_form_matches_struct_form_first_word() {
+        // The kernel-callable `threefry4x32_20_first_u32` must
+        // return exactly the first u32 of the canonical
+        // `threefry4x32_20` output. Validated against the three
+        // published KAT inputs.
+        let cases: &[([u32; 4], [u32; 4])] = &[
+            ([0, 0, 0, 0], [0, 0, 0, 0]),
+            (
+                [u32::MAX, u32::MAX, u32::MAX, u32::MAX],
+                [u32::MAX, u32::MAX, u32::MAX, u32::MAX],
+            ),
+            (
+                [0x243f6a88, 0x85a308d3, 0x13198a2e, 0x03707344],
+                [0xa4093822, 0x299f31d0, 0x082efa98, 0xec4e6c89],
+            ),
+        ];
+        for &(c, k) in cases {
+            let canonical = threefry4x32_20(Counter(c), Key(k));
+            let scalar = threefry4x32_20_first_u32(c[0], c[1], c[2], c[3], k[0], k[1], k[2], k[3]);
+            assert_eq!(
+                scalar, canonical.0[0],
+                "scalar form diverges from canonical first word for {c:?} / {k:?}"
+            );
+        }
     }
 }

@@ -118,6 +118,63 @@ pub const fn philox4x32_10(ctr: Counter, key: Key) -> Counter {
     philox4x32_r(ROUNDS, ctr, key)
 }
 
+/// Kernel-callable scalar form of `philox4x32_10`. Same algorithm
+/// and bit-exact output as `philox4x32_10`, expressed as a flat
+/// `(u32, ..., u32) -> u32` so a `#[quanta::kernel]` body can call
+/// it through the `#[quanta::device]` machinery (the WASM-lowering
+/// pipeline doesn't lower structs or fixed-size arrays).
+///
+/// Returns only the first u32 of the 4-word output; that's the
+/// "one random u32 per quark" case real kernels actually want. To
+/// get more output words from the same counter draw, increment a
+/// counter component (e.g. `c0 + 1`, `c0 + 2`, …) — counter-based
+/// RNGs are designed for exactly that.
+///
+/// Host-side use is also supported (the attribute emits the fn
+/// unchanged), so the same source serves CPU reference and GPU
+/// kernel byte-for-byte.
+#[cfg_attr(feature = "gpu", quanta::device)]
+pub fn philox4x32_10_first_u32(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k1: u32) -> u32 {
+    // Constants must be local — `#[quanta::device]` splices the
+    // function source verbatim into the wasm-shell crate where the
+    // module-level `M0`/`M1`/`W0`/`W1` aren't in scope.
+    const M0_K: u32 = 0xD251_1F53;
+    const M1_K: u32 = 0xCD9E_8D57;
+    const W0_K: u32 = 0x9E37_79B9;
+    const W1_K: u32 = 0xBB67_AE85;
+
+    let mut x0 = c0;
+    let mut x1 = c1;
+    let mut x2 = c2;
+    let mut x3 = c3;
+    let mut key0 = k0;
+    let mut key1 = k1;
+
+    let mut i: u32 = 0;
+    while i < 10u32 {
+        if i > 0 {
+            key0 = key0.wrapping_add(W0_K);
+            key1 = key1.wrapping_add(W1_K);
+        }
+        let product0 = (M0_K as u64).wrapping_mul(x0 as u64);
+        let hi0 = (product0 >> 32) as u32;
+        let lo0 = product0 as u32;
+        let product1 = (M1_K as u64).wrapping_mul(x2 as u64);
+        let hi1 = (product1 >> 32) as u32;
+        let lo1 = product1 as u32;
+        let new_x0 = hi1 ^ x1 ^ key0;
+        let new_x1 = lo1;
+        let new_x2 = hi0 ^ x3 ^ key1;
+        let new_x3 = lo0;
+        x0 = new_x0;
+        x1 = new_x1;
+        x2 = new_x2;
+        x3 = new_x3;
+        i += 1;
+    }
+    x0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +224,31 @@ mod tests {
         let a = philox4x32_10(Counter([0, 0, 0, 0]), key);
         let b = philox4x32_10(Counter([1, 0, 0, 0]), key);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn scalar_form_matches_struct_form_first_word() {
+        // The kernel-callable `philox4x32_10_first_u32` must return
+        // exactly the first u32 of the canonical `philox4x32_10`
+        // output. Validated against the three published KAT inputs.
+        let cases: &[([u32; 4], [u32; 2])] = &[
+            ([0, 0, 0, 0], [0, 0]),
+            (
+                [u32::MAX, u32::MAX, u32::MAX, u32::MAX],
+                [u32::MAX, u32::MAX],
+            ),
+            (
+                [0x243f6a88, 0x85a308d3, 0x13198a2e, 0x03707344],
+                [0xa4093822, 0x299f31d0],
+            ),
+        ];
+        for &(c, k) in cases {
+            let canonical = philox4x32_10(Counter(c), Key(k));
+            let scalar = philox4x32_10_first_u32(c[0], c[1], c[2], c[3], k[0], k[1]);
+            assert_eq!(
+                scalar, canonical.0[0],
+                "scalar form diverges from canonical first word for {c:?} / {k:?}"
+            );
+        }
     }
 }
