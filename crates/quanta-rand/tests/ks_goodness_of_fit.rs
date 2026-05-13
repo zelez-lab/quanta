@@ -20,7 +20,7 @@
 use quanta_rand::{
     fill_bernoulli_u32_gpu, fill_exponential_f32_gpu, fill_exponential_f64_gpu,
     fill_lognormal_f32_gpu, fill_lognormal_f64_gpu, fill_normal_f32_gpu, fill_normal_f64_gpu,
-    fill_poisson_u32_gpu, fill_uniform_f32_gpu,
+    fill_poisson_u32_gpu, fill_uniform_f32_gpu, fill_uniform_f64_gpu,
 };
 
 const SEED: u64 = 0x1234_5678_9ABC_DEF0u64;
@@ -85,6 +85,10 @@ fn cdf_normal_standard(x: f32) -> f64 {
     let x = x as f64;
     // Φ(x) = 0.5 * (1 + erf(x / sqrt(2)))
     0.5 * (1.0 + erf(x / std::f64::consts::SQRT_2))
+}
+
+fn cdf_uniform_01_f64(x: f64) -> f64 {
+    x.clamp(0.0, 1.0)
 }
 
 fn cdf_normal_standard_f64(x: f64) -> f64 {
@@ -250,6 +254,18 @@ fn chi_square_poisson() {
 }
 
 // ── f64 distributions ───────────────────────────────────────────────
+
+#[test]
+fn ks_uniform_f64() {
+    let gpu = quanta::init_cpu();
+    let mut samples = fill_uniform_f64_gpu(&gpu, SAMPLE_N, SEED).expect("dispatch");
+    let d = ks_statistic_continuous_f64(&mut samples, cdf_uniform_01_f64);
+    let threshold = ks_threshold(SAMPLE_N);
+    assert!(
+        d < threshold,
+        "uniform_f64 K-S failed: D = {d:.6}, threshold = {threshold:.6}"
+    );
+}
 
 #[test]
 fn ks_normal_f64() {

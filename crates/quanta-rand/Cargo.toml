@@ -21,12 +21,23 @@ gpu = ["dep:quanta"]
 [dependencies]
 quanta = { path = "../..", default-features = false, features = ["software"], optional = true }
 
+[dev-dependencies]
+# `rand` is a dev-dep used only by the `bench_vs_rand` example for a
+# side-by-side throughput comparison. It is NOT on any user's compile
+# path — the workspace's "no transitive runtime deps" policy still
+# holds for `[dependencies]`.
+rand = "0.8"
+
 [[example]]
 name = "fill_buffer"
 required-features = ["gpu"]
 
 [[example]]
 name = "bench_distributions"
+required-features = ["gpu"]
+
+[[example]]
+name = "bench_vs_rand"
 required-features = ["gpu"]
 
 [[example]]

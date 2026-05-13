@@ -4,7 +4,9 @@ GPU-first random number generation for Quanta kernels: counter-based
 RNGs, six probability distributions, host↔GPU bit-exact reproducibility.
 
 **New here?** Start with [GETTING_STARTED.md](GETTING_STARTED.md) — a
-10-minute walkthrough from `cargo new` to a working program.
+10-minute walkthrough from `cargo new` to a working program. Then
+the [COOKBOOK.md](COOKBOOK.md) shows when to use which distribution
+(ML init, dropout, Monte Carlo, MD, RL action sampling, etc.).
 
 ## What you get
 
