@@ -815,15 +815,21 @@ impl<'a> LowerCtx<'a> {
             // result to u64. rustc emits this when a kernel reads
             // `buf[i] as u64` where `buf: &[u32]`. We lower as
             // Load(ty=slot_ty) followed by Cast(slot_ty, U64/I64).
-            RawInstr::I64Load32U { .. } => self.narrow_load_widen_i64(false)?,
-            RawInstr::I64Load32S { .. } => self.narrow_load_widen_i64(true)?,
+            RawInstr::I64Load32U { .. } => self.narrow_load_widen_i64(32, false)?,
+            RawInstr::I64Load32S { .. } => self.narrow_load_widen_i64(32, true)?,
+            RawInstr::I64Load16U { .. } => self.narrow_load_widen_i64(16, false)?,
+            RawInstr::I64Load16S { .. } => self.narrow_load_widen_i64(16, true)?,
+            RawInstr::I64Load8U { .. } => self.narrow_load_widen_i64(8, false)?,
+            RawInstr::I64Load8S { .. } => self.narrow_load_widen_i64(8, true)?,
 
             // Narrow i64 store (`i64.store32`) — write the low 32
             // bits of a u64 value to a u32-typed buffer slot. rustc
             // emits this when a kernel writes `buf[i] = wide as u32`
             // (and the wrap-then-store gets fused). We lower as
             // Cast(U64, U32) followed by Store(ty=slot_ty).
-            RawInstr::I64Store32 { .. } => self.narrow_store_truncate_i64()?,
+            RawInstr::I64Store32 { .. } => self.narrow_store_truncate_i64(32)?,
+            RawInstr::I64Store16 { .. } => self.narrow_store_truncate_i64(16)?,
+            RawInstr::I64Store8 { .. } => self.narrow_store_truncate_i64(8)?,
 
             RawInstr::F32Add => self.bin_op_float(BinOp::Add)?,
             RawInstr::F32Sub => self.bin_op_float(BinOp::Sub)?,
@@ -1715,21 +1721,32 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
-    /// Lower `i64.load32_u` / `i64.load32_s` — load 4 bytes from a
-    /// u32-typed slot and zero/sign-extend to u64/i64. Address must
-    /// be a scale-4 BufferAccess (the standard u32 buffer index
-    /// shape). Result is pushed as a U64-typed register.
-    fn narrow_load_widen_i64(&mut self, signed: bool) -> Result<(), LoweringError> {
+    /// Lower a narrow i64 load (`i64.load{8,16,32}_{u,s}`) — load
+    /// the slot's full element, mask to the requested `width_bits`,
+    /// optionally sign-extend, then Cast to U64 / I64. Mirrors the
+    /// i32 `narrow_load` helper but with a 64-bit result. Accepts
+    /// any BufferAccess scale (the slot's element type from the
+    /// side-table determines the per-element width; the mask
+    /// narrows further as the user requested).
+    fn narrow_load_widen_i64(
+        &mut self,
+        width_bits: u32,
+        signed: bool,
+    ) -> Result<(), LoweringError> {
         let addr = self.pop()?;
         let (slot, base) = match addr {
-            SymVal::BufferAccess {
-                slot,
-                base,
-                scale: 4,
-            } => (slot, base),
+            SymVal::BufferAccess { slot, base, .. } => (slot, base),
+            SymVal::BufferPtr(slot) => {
+                let zero = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: zero,
+                    value: ConstValue::U32(0),
+                });
+                (slot, zero)
+            }
             other => {
                 return Err(LoweringError::UnsupportedOp {
-                    op: format!("narrow i64 load on non-scale-4 buffer address {other:?}"),
+                    op: format!("narrow i64 load on non-buffer address {other:?}"),
                     at: self.body.body_offset,
                 });
             }
@@ -1742,21 +1759,66 @@ impl<'a> LowerCtx<'a> {
             index: base,
             ty: slot_ty,
         });
-        // Widen the loaded value to 64-bit via Cast.
-        let from_ty = if signed {
-            ScalarType::I32
+        // Mask to the requested width in u32-space. For width=32
+        // the mask is 0xFFFFFFFF (all ones), effectively a no-op
+        // but emitted uniformly for code-simplicity.
+        let mask_val: u32 = if width_bits >= 32 {
+            u32::MAX
         } else {
-            ScalarType::U32
+            (1u32 << width_bits) - 1
         };
-        let to_ty = if signed {
-            ScalarType::I64
+        let mask_reg = self.alloc_reg();
+        self.emit(KernelOp::Const {
+            dst: mask_reg,
+            value: ConstValue::U32(mask_val),
+        });
+        let masked = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst: masked,
+            a: loaded,
+            b: mask_reg,
+            op: BinOp::BitAnd,
+            ty: ScalarType::U32,
+        });
+        let mut narrowed = masked;
+        if signed && width_bits < 32 {
+            // Sign-extend within u32: `(x << (32 - width)) >> (32 - width)`
+            // arithmetic shift. The Cast to I64 below picks up the
+            // sign-extended u32 as i32 and widens.
+            let shift = 32 - width_bits;
+            let shift_reg = self.alloc_reg();
+            self.emit(KernelOp::Const {
+                dst: shift_reg,
+                value: ConstValue::U32(shift),
+            });
+            let shifted_left = self.alloc_reg();
+            self.emit(KernelOp::BinOp {
+                dst: shifted_left,
+                a: masked,
+                b: shift_reg,
+                op: BinOp::Shl,
+                ty: ScalarType::I32,
+            });
+            let signed_reg = self.alloc_reg();
+            self.emit(KernelOp::BinOp {
+                dst: signed_reg,
+                a: shifted_left,
+                b: shift_reg,
+                op: BinOp::Shr,
+                ty: ScalarType::I32,
+            });
+            narrowed = signed_reg;
+        }
+        // Widen to 64-bit via Cast.
+        let (from_ty, to_ty) = if signed {
+            (ScalarType::I32, ScalarType::I64)
         } else {
-            ScalarType::U64
+            (ScalarType::U32, ScalarType::U64)
         };
         let widened = self.alloc_reg();
         self.emit(KernelOp::Cast {
             dst: widened,
-            src: loaded,
+            src: narrowed,
             from: from_ty,
             to: to_ty,
         });
@@ -1764,28 +1826,33 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
-    /// Lower `i64.store32` — truncate a u64 value to its low 32 bits
-    /// and store at a u32-typed slot. Address must be a scale-4
-    /// BufferAccess.
-    fn narrow_store_truncate_i64(&mut self) -> Result<(), LoweringError> {
+    /// Lower a narrow i64 store (`i64.store{8,16,32}`) — truncate
+    /// the u64 value to its low `width_bits`, then store at the
+    /// slot's full element width (slot's element type from the
+    /// side-table). The mask narrows the source as the user
+    /// requested; the Store itself writes whatever fits the slot.
+    fn narrow_store_truncate_i64(&mut self, width_bits: u32) -> Result<(), LoweringError> {
         let val = self.pop()?;
         let addr = self.pop()?;
         let (val_reg, _) = self.commit(val)?;
         let (slot, base) = match addr {
-            SymVal::BufferAccess {
-                slot,
-                base,
-                scale: 4,
-            } => (slot, base),
+            SymVal::BufferAccess { slot, base, .. } => (slot, base),
+            SymVal::BufferPtr(slot) => {
+                let zero = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: zero,
+                    value: ConstValue::U32(0),
+                });
+                (slot, zero)
+            }
             other => {
                 return Err(LoweringError::UnsupportedOp {
-                    op: format!("i64.store32 on non-scale-4 buffer address {other:?}"),
+                    op: format!("narrow i64 store on non-buffer address {other:?}"),
                     at: self.body.body_offset,
                 });
             }
         };
-        // Truncate via Cast(U64, U32) — same semantics as WASM's
-        // i32.wrap_i64 (drops the high word).
+        // Truncate u64 → u32 via Cast (drops high word).
         let truncated = self.alloc_reg();
         self.emit(KernelOp::Cast {
             dst: truncated,
@@ -1793,11 +1860,33 @@ impl<'a> LowerCtx<'a> {
             from: ScalarType::U64,
             to: ScalarType::U32,
         });
+        // Mask to the requested width. For width=32 the mask is
+        // all-ones — skip the BitAnd in that case for slightly
+        // cleaner IR.
+        let narrowed = if width_bits >= 32 {
+            truncated
+        } else {
+            let mask_val: u32 = (1u32 << width_bits) - 1;
+            let mask_reg = self.alloc_reg();
+            self.emit(KernelOp::Const {
+                dst: mask_reg,
+                value: ConstValue::U32(mask_val),
+            });
+            let masked = self.alloc_reg();
+            self.emit(KernelOp::BinOp {
+                dst: masked,
+                a: truncated,
+                b: mask_reg,
+                op: BinOp::BitAnd,
+                ty: ScalarType::U32,
+            });
+            masked
+        };
         let slot_ty = self.scalar_type_for_slot(slot);
         self.emit(KernelOp::Store {
             field: slot,
             index: base,
-            src: truncated,
+            src: narrowed,
             ty: slot_ty,
         });
         Ok(())

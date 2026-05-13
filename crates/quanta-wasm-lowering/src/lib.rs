@@ -345,7 +345,31 @@ pub enum RawInstr {
         offset: u64,
         align: u32,
     },
+    I64Load16U {
+        offset: u64,
+        align: u32,
+    },
+    I64Load16S {
+        offset: u64,
+        align: u32,
+    },
+    I64Load8U {
+        offset: u64,
+        align: u32,
+    },
+    I64Load8S {
+        offset: u64,
+        align: u32,
+    },
     I64Store32 {
+        offset: u64,
+        align: u32,
+    },
+    I64Store16 {
+        offset: u64,
+        align: u32,
+    },
+    I64Store8 {
         offset: u64,
         align: u32,
     },
@@ -514,6 +538,30 @@ impl RawInstr {
                 align: memarg.align as u32,
             },
             Operator::I64Store32 { memarg } => Self::I64Store32 {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Load16U { memarg } => Self::I64Load16U {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Load16S { memarg } => Self::I64Load16S {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Load8U { memarg } => Self::I64Load8U {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Load8S { memarg } => Self::I64Load8S {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Store16 { memarg } => Self::I64Store16 {
+                offset: memarg.offset,
+                align: memarg.align as u32,
+            },
+            Operator::I64Store8 { memarg } => Self::I64Store8 {
                 offset: memarg.offset,
                 align: memarg.align as u32,
             },
