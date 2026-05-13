@@ -24,42 +24,47 @@ pub struct FillBufferData {
     pub seed_hi: u32,
 }
 
+/// 32-bit splitmix step. Murmur3 finaliser shape (32-bit variant).
+/// Used to expand each half of the per-quark mixed seed into a
+/// well-diffused state word. Marked `#[quanta::device]` so the macro
+/// splices its source into the wasm shell when a kernel calls it —
+/// the same source survives unchanged for CPU/host use.
+#[allow(dead_code)]
+#[quanta::device]
+fn splitmix32(mut x: u32) -> u32 {
+    x = x.wrapping_add(0x9E3779B9u32);
+    x = (x ^ (x >> 16u32)).wrapping_mul(0x85EBCA6Bu32);
+    x = (x ^ (x >> 13u32)).wrapping_mul(0xC2B2AE35u32);
+    x ^ (x >> 16u32)
+}
+
+/// Final mix of the xoshiro128++ output function.
+#[allow(dead_code)]
+#[quanta::device]
+fn xoshiro_output_mix(s0: u32, s3: u32) -> u32 {
+    let sum = s0.wrapping_add(s3);
+    sum.rotate_left(7u32).wrapping_add(s0)
+}
+
 /// Fill `d.out` with `d.out.len()` pseudo-random u32 values, one per
 /// quark. Each quark's value is derived from the shared seed
 /// `(d.seed_hi, d.seed_lo)` mixed with its own `quark_id`.
 ///
-/// Implementation note (still v0.1): the splitmix32 rounds and
-/// xoshiro128++ output mix are inlined here as straight-line
-/// arithmetic. C5 (lowering-side helper inlining) lets the WASM-
-/// route consume `call $helper` instructions, but the macro's
-/// **wasm-shell generator** doesn't yet pull same-crate helper
-/// functions into the generated crate — so any `fn` called from the
-/// kernel body would be unresolved at rustc-compile time. Closing
-/// that gap is a macro-side change queued as a follow-up; for now
-/// we inline.
+/// The device functions above are spliced into the wasm-shell crate
+/// at macro expansion time, so `splitmix32` and `xoshiro_output_mix`
+/// resolve at rustc-compile time. At -O3 LLVM typically inlines them
+/// into the caller before the WASM lowerer sees the calls.
 #[quanta::kernel]
 pub fn fill_buffer(d: &FillBufferData) {
     let id = quark_id();
-    // per_quark_seed: mix each half of the 64-bit seed with the
-    // per-quark id via independent multiplies.
+    // Mix each half of the 64-bit seed with the per-quark id.
     let mixed_lo: u32 = d.seed_lo ^ id.wrapping_mul(0x9E37_79B9u32);
     let mixed_hi: u32 = d.seed_hi ^ id.wrapping_mul(0x7F4A_7C15u32);
 
-    // splitmix32(mixed_lo) → s0
-    let a0: u32 = mixed_lo.wrapping_add(0x9E37_79B9u32);
-    let b0: u32 = (a0 ^ (a0 >> 16u32)).wrapping_mul(0x85EB_CA6Bu32);
-    let c0: u32 = (b0 ^ (b0 >> 13u32)).wrapping_mul(0xC2B2_AE35u32);
-    let s0: u32 = c0 ^ (c0 >> 16u32);
+    let s0: u32 = splitmix32(mixed_lo);
+    let s3: u32 = splitmix32(mixed_hi);
 
-    // splitmix32(mixed_hi) → s3
-    let a3: u32 = mixed_hi.wrapping_add(0x9E37_79B9u32);
-    let b3: u32 = (a3 ^ (a3 >> 16u32)).wrapping_mul(0x85EB_CA6Bu32);
-    let c3: u32 = (b3 ^ (b3 >> 13u32)).wrapping_mul(0xC2B2_AE35u32);
-    let s3: u32 = c3 ^ (c3 >> 16u32);
-
-    // Standard xoshiro128++ output: rotl(s0 + s3, 7) + s0.
-    let sum: u32 = s0.wrapping_add(s3);
-    let result: u32 = sum.rotate_left(7).wrapping_add(s0);
+    let result: u32 = xoshiro_output_mix(s0, s3);
     d.out[id as usize] = result;
 }
 

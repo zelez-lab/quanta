@@ -74,7 +74,8 @@ pub(crate) fn compile_struct_ref_kernel_via_wasm(
     };
 
     let source = emit_kernel_source(&local_inputs)?;
-    let wasm_bytes = compile_kernel_to_wasm(&source)?;
+    let helpers = crate::device_macro::collect_device_sources_for(&local_inputs.func.block);
+    let wasm_bytes = compile_kernel_to_wasm(&source, &helpers)?;
     let side_table = build_side_table(&local_inputs);
     let mut def =
         lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))?;
@@ -542,7 +543,8 @@ pub(crate) fn compile_flat_param_kernel_via_wasm(
     };
 
     let source = emit_flat_param_source(&local_inputs)?;
-    let wasm_bytes = compile_kernel_to_wasm(&source)?;
+    let helpers = crate::device_macro::collect_device_sources_for(&local_inputs.func.block);
+    let wasm_bytes = compile_kernel_to_wasm(&source, &helpers)?;
     let side_table = build_flat_side_table(&local_inputs);
     let mut def =
         lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))?;

@@ -4,7 +4,8 @@
 //! - #[quanta::kernel] produces KernelBinary with binary fields
 //! - #[quanta::vertex] produces ShaderBinary with spirv/metallib
 //! - #[quanta::fragment] produces ShaderBinary with spirv/metallib
-//! - #[quanta::device] produces __QUANTA_DEVICE_* constant
+//! - #[quanta::device] emits the fn for CPU use and registers it as a
+//!   GPU-callable helper for `#[quanta::kernel]` bodies
 //! - #[quanta::gpu_type] produces GPU_SIZE, GPU_FIELDS, GpuType impl, MSL/WGSL strings
 //!
 //! Run: cargo test --test host_shader
@@ -124,7 +125,8 @@ fn fragment_color_shader() {
 }
 
 // ===========================================================================
-// #[quanta::device] — produces __QUANTA_DEVICE_* constant
+// #[quanta::device] — emits the function unchanged for CPU use and
+// also registers its source so kernels in the same crate may call it.
 // ===========================================================================
 
 #[quanta::device]
@@ -138,27 +140,19 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 #[test]
-fn device_macro_produces_constant() {
-    // The device macro should produce __QUANTA_DEVICE_{NAME_UPPERCASE} constant
-    assert!(
-        !__QUANTA_DEVICE_ACTIVATE.is_empty(),
-        "device macro must produce non-empty source constant"
-    );
-    assert!(
-        __QUANTA_DEVICE_ACTIVATE.contains("activate"),
-        "source must contain function name"
-    );
-    assert!(
-        __QUANTA_DEVICE_ACTIVATE.contains("threshold"),
-        "source must contain parameter names"
-    );
+fn device_fn_callable_from_cpu() {
+    // The device attribute is a "capture and pass-through": the fn
+    // is emitted unchanged so plain CPU code can call it just like
+    // any other Rust fn. This is the host-side observable contract.
+    assert_eq!(activate(1.0, 0.5), 1.0);
+    assert_eq!(activate(0.25, 0.5), 0.25 * 0.01);
 }
 
 #[test]
-fn device_macro_lerp_constant() {
-    assert!(!__QUANTA_DEVICE_LERP.is_empty());
-    assert!(__QUANTA_DEVICE_LERP.contains("lerp"));
-    assert!(__QUANTA_DEVICE_LERP.contains("f32"));
+fn device_fn_lerp_callable() {
+    assert_eq!(lerp(0.0, 10.0, 0.0), 0.0);
+    assert_eq!(lerp(0.0, 10.0, 1.0), 10.0);
+    assert_eq!(lerp(0.0, 10.0, 0.5), 5.0);
 }
 
 // ===========================================================================

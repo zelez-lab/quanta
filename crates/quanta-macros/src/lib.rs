@@ -39,22 +39,36 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     kernel_macro::expand_kernel(attr, func)
 }
 
-/// Mark a function as a GPU device function (callable from kernels).
+/// Mark a function as a GPU device function — callable from
+/// `#[quanta::kernel]` bodies. The function is also emitted unchanged
+/// for plain CPU use (host-side reference, tests, doctests).
 ///
 /// ```ignore
 /// #[quanta::device]
-/// fn activate(x: f32, threshold: f32) -> f32 {
-///     if x > threshold { x } else { x * 0.99 }
+/// fn splitmix32(mut x: u32) -> u32 {
+///     x = x.wrapping_add(0x9E3779B9);
+///     x = (x ^ (x >> 16)).wrapping_mul(0x85EBCA6B);
+///     x = (x ^ (x >> 13)).wrapping_mul(0xC2B2AE35);
+///     x ^ (x >> 16)
+/// }
+///
+/// #[quanta::kernel]
+/// fn fill(d: &MyData) {
+///     let id = quark_id();
+///     d.out[id as usize] = splitmix32(d.seed ^ id);
 /// }
 /// ```
 ///
-/// Device functions are inlined into kernels by LLVM.
-/// They cannot be launched from CPU — only called from `#[quanta::kernel]` functions.
+/// The function's source is captured at attribute-expansion time
+/// and later spliced into the temporary wasm-shell crate that
+/// `#[quanta::kernel]` hands to rustc, so `call $name` resolves at
+/// compile time. At -O3 LLVM typically inlines device functions
+/// into the caller before the WASM lowerer sees them.
 ///
-/// The proc macro captures the function source and emits a hidden constant
-/// `__QUANTA_DEVICE_{NAME_UPPERCASE}` containing the source text. Kernel
-/// compilation picks this up so MSL/WGSL emitters can prepend it as a regular
-/// helper function.
+/// Ordering: define device functions *before* the kernels that call
+/// them in source order. Device functions may transitively call
+/// other device functions; the kernel macro discovers them
+/// recursively.
 #[proc_macro_attribute]
 pub fn device(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
