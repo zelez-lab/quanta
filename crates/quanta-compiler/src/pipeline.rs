@@ -76,7 +76,7 @@ pub fn compile_kernel(args: &[String]) {
             }
         }
     } else {
-        eprintln!("[quanta] skipping metal emission: {}", metal_report);
+        eprintln!("[quanta] {}", metal_report.summary());
     }
 
     // Emit WGSL source for WebGPU.
@@ -87,7 +87,7 @@ pub fn compile_kernel(args: &[String]) {
             Err(e) => eprintln!("[quanta] WGSL emitter error: {}", e),
         }
     } else {
-        eprintln!("[quanta] skipping wgsl emission: {}", webgpu_report);
+        eprintln!("[quanta] {}", webgpu_report.summary());
     }
 
     // Emit Vulkan SPIR-V directly from KernelOps (Shader capability, GLCompute).
@@ -98,7 +98,7 @@ pub fn compile_kernel(args: &[String]) {
             Err(e) => eprintln!("[quanta] SPIR-V emitter error: {}", e),
         }
     } else {
-        eprintln!("[quanta] skipping spirv emission: {}", vulkan_report);
+        eprintln!("[quanta] {}", vulkan_report.summary());
     }
 
     // LLVM compilation for PTX/GCN — run in subprocess to survive fatal errors.

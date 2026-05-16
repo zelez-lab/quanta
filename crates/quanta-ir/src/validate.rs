@@ -47,6 +47,41 @@ impl ValidationReport {
     pub fn is_ok(&self) -> bool {
         self.issues.is_empty()
     }
+
+    /// One-line summary suitable for build-time logging: lists each
+    /// distinct unsupported `ScalarType` once with the occurrence
+    /// count, dropping the per-op locations. The full per-issue
+    /// detail stays available through `Display`, which JIT drivers
+    /// use when surfacing runtime `NotSupported` errors.
+    pub fn summary(&self) -> String {
+        if self.issues.is_empty() {
+            return format!(
+                "kernel `{}` validated for backend `{}`",
+                self.kernel_name, self.backend_name
+            );
+        }
+        // Group by ScalarType, preserve first-seen order.
+        let mut order: Vec<ScalarType> = Vec::new();
+        let mut count: Vec<(ScalarType, usize, &'static str)> = Vec::new();
+        for issue in &self.issues {
+            if let Some(entry) = count.iter_mut().find(|(t, _, _)| *t == issue.ty) {
+                entry.1 += 1;
+            } else {
+                order.push(issue.ty);
+                count.push((issue.ty, 1, issue.reason));
+            }
+        }
+        let types_summary: Vec<String> = count
+            .iter()
+            .map(|(t, n, r)| format!("{:?} ({} sites — {})", t, n, r))
+            .collect();
+        format!(
+            "kernel `{}` cannot be emitted for backend `{}`: {}",
+            self.kernel_name,
+            self.backend_name,
+            types_summary.join(", ")
+        )
+    }
 }
 
 impl core::fmt::Display for ValidationReport {
@@ -456,6 +491,62 @@ mod tests {
             }],
         );
         assert!(validate_for(&VULKAN, &k).is_ok());
+    }
+
+    #[test]
+    fn summary_groups_by_type() {
+        // Three F64 issues + two I64 issues. The summary should
+        // group them so build logs aren't drowned in per-site noise.
+        let k = kernel_with_body(
+            "mixed_64bit",
+            vec![
+                KernelOp::Const {
+                    dst: Reg(0),
+                    value: ConstValue::F64(1.0),
+                },
+                KernelOp::Const {
+                    dst: Reg(1),
+                    value: ConstValue::F64(2.0),
+                },
+                KernelOp::Const {
+                    dst: Reg(2),
+                    value: ConstValue::F64(3.0),
+                },
+                KernelOp::Const {
+                    dst: Reg(3),
+                    value: ConstValue::I64(10),
+                },
+                KernelOp::Const {
+                    dst: Reg(4),
+                    value: ConstValue::I64(20),
+                },
+            ],
+        );
+        let s = validate_for(&METAL, &k).summary();
+        // Metal accepts I64 but rejects F64.
+        assert!(
+            s.contains("F64 (3 sites"),
+            "expected grouped F64 count, got: {}",
+            s
+        );
+        assert!(
+            !s.contains("I64"),
+            "I64 is Native on Metal; should not appear: {}",
+            s
+        );
+        // One-line: no embedded newlines.
+        assert!(!s.contains('\n'), "summary must be single-line: {:?}", s);
+    }
+
+    #[test]
+    fn summary_ok_for_clean_kernel() {
+        let k = kernel_with_body("noop", vec![]);
+        let s = validate_for(&METAL, &k).summary();
+        assert!(
+            s.contains("validated"),
+            "expected 'validated' message, got: {}",
+            s
+        );
     }
 
     #[test]
