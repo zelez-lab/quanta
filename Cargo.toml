@@ -17,15 +17,15 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zelez-lab/quanta"
 
 [workspace.dependencies]
-quanta-ir = { path = "crates/quanta-ir", version = "0.1.0-alpha.1" }
-quanta-wasm-lowering = { path = "crates/quanta-wasm-lowering", version = "0.1.0-alpha.1" }
+quanta-ir = { path = "crates/quanta-ir", version = "0.1.0-alpha.2" }
+quanta-wasm-lowering = { path = "crates/quanta-wasm-lowering", version = "0.1.0-alpha.2" }
 
 [package]
 name = "quanta"
@@ -58,7 +58,7 @@ jit = ["quanta-ir/jit"]
 webgpu = ["std", "jit"]
 
 [dependencies]
-quanta-macros = { path = "crates/quanta-macros", version = "0.1.0-alpha.1" }
+quanta-macros = { path = "crates/quanta-macros", version = "0.1.0-alpha.2" }
 quanta-ir.workspace = true
 
 [dev-dependencies]
