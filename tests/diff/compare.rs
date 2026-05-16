@@ -244,6 +244,10 @@ pub fn compare_bit_exact(oracle: &RawOutput, candidate: &RawOutput) -> Result<()
         // operations (Add/Sub/Mul/Div on f32 are deterministic on every
         // emitter we ship; only transcendentals need >0 ULP).
         (RawValues::F32(_), RawValues::F32(_)) => compare_f32(oracle, candidate, 0),
+        // f64 bit-pattern equality. The op-matrix only generates
+        // finite f64 inputs so direct PartialEq works; NaN-aware
+        // float comparators land when we ship F64 transcendentals.
+        (RawValues::F64(a), RawValues::F64(b)) => f64_bit_pattern_eq(oracle, candidate, a, b),
         _ => Err(div(
             oracle,
             candidate,
@@ -255,6 +259,33 @@ pub fn compare_bit_exact(oracle: &RawOutput, candidate: &RawOutput) -> Result<()
             ),
         )),
     }
+}
+
+fn f64_bit_pattern_eq(
+    oracle: &RawOutput,
+    candidate: &RawOutput,
+    a: &[f64],
+    b: &[f64],
+) -> Result<(), Divergence> {
+    if a.len() != b.len() {
+        return Err(div(
+            oracle,
+            candidate,
+            None,
+            format!("length mismatch: {} vs {}", a.len(), b.len()),
+        ));
+    }
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        if x.to_bits() != y.to_bits() {
+            return Err(div(
+                oracle,
+                candidate,
+                Some(i),
+                format!("f64 oracle={} candidate={}", x, y),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn slice_bit_exact<T: PartialEq + core::fmt::Display>(

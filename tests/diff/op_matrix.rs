@@ -24,6 +24,12 @@ pub const NAME_PREFIX: &str = "op_matrix";
 
 /// One row in the matrix: a single (op, ty, a, b) instance and the
 /// CPU-computed expected output.
+///
+/// `max_ulps` is the comparator tolerance applied to floating-point
+/// outputs. Integer ops set it to 0 (bit-exact). Float Add/Sub/Mul
+/// are bit-exact on every backend we ship; Div is allowed up to 1
+/// ULP — the IEEE 754 spec doesn't pin down rounding of the last
+/// bit across compilers for division.
 #[derive(Clone, Debug)]
 pub struct OpCase {
     pub name: String,
@@ -31,6 +37,11 @@ pub struct OpCase {
     pub input_a: RawValues,
     pub input_b: RawValues,
     pub expected: RawValues,
+    pub max_ulps: u32,
+    /// Some cases can't run on every backend yet — e.g. F64 on
+    /// Metal is unsupported. The driver skips a case when its
+    /// `lane_supports` returns false for the lane under test.
+    pub skip_on_metal: bool,
 }
 
 impl OpCase {
@@ -360,6 +371,8 @@ fn case_u32(op: BinOp, a: u32, b: u32, expected: u32) -> OpCase {
         input_a: RawValues::U32(vec![a]),
         input_b: RawValues::U32(vec![b]),
         expected: RawValues::U32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
     }
 }
 
@@ -377,6 +390,8 @@ fn case_u64(op: BinOp, a: u64, b: u64, expected: u64) -> OpCase {
         input_a: RawValues::U64(vec![a]),
         input_b: RawValues::U64(vec![b]),
         expected: RawValues::U64(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
     }
 }
 
@@ -394,6 +409,8 @@ fn case_i32(op: BinOp, a: i32, b: i32, expected: i32) -> OpCase {
         input_a: RawValues::I32(vec![a]),
         input_b: RawValues::I32(vec![b]),
         expected: RawValues::I32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
     }
 }
 
@@ -411,6 +428,8 @@ fn case_i64(op: BinOp, a: i64, b: i64, expected: i64) -> OpCase {
         input_a: RawValues::I64(vec![a]),
         input_b: RawValues::I64(vec![b]),
         expected: RawValues::I64(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
     }
 }
 
@@ -464,13 +483,170 @@ fn cases_i64() -> Vec<OpCase> {
     out
 }
 
-/// All integer BinOp cases. Order: u32, u64, i32, i64.
+// ── Float cases ──────────────────────────────────────────────────────
+//
+// The four float BinOps are Add, Sub, Mul, Div. Edge inputs target
+// the float-const bug fixed in 85551fa (small magnitudes that the
+// MSL `{:.6}` format used to round to literal zero), plus the
+// standard FP corners (±0, ±denormal, ±MIN_POSITIVE, ±MAX, ±Inf).
+// NaN inputs are excluded for now — `compare_f32` treats NaN-vs-NaN
+// as "unranked" and would generate spurious failures. F32 ops on
+// finite inputs are bit-exact on every backend (we don't ship
+// fast-math today); F32 Div allows 1 ULP per IEEE 754.
+
+const FLOAT_BINOPS: &[BinOp] = &[BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div];
+
+fn f32_inputs() -> &'static [(f32, f32)] {
+    &[
+        (0.0, 0.0),
+        (-0.0, 1.0),
+        (1.0, 1.0),
+        (1.0, 2.0),
+        (-1.0, 2.0),
+        // The exact constant from the 85551fa bug: 2^-24.
+        (0.5, 5.960_464_5e-8),
+        (1.0e-30, 1.0e-30), // subnormal-ish
+        (f32::MIN_POSITIVE, 2.0),
+        (f32::MAX, 0.5),
+        (1.0, f32::EPSILON),
+        (3.0, 7.0), // Div with non-power-of-two divisor — tests rounding
+    ]
+}
+
+fn f64_inputs() -> &'static [(f64, f64)] {
+    &[
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (1.0, 2.0),
+        (-1.0, 2.0),
+        // Same shape as the float-const bug at f64 magnitude.
+        (0.5, 1.110_223_024_625_156_5e-16),
+        (f64::MIN_POSITIVE, 2.0),
+        (3.0, 7.0),
+    ]
+}
+
+/// Apply a float BinOp on the host. Matches the CPU executor's f32
+/// path (`src/driver/cpu/eval.rs:11`).
+fn host_apply_f32(op: BinOp, a: f32, b: f32) -> Option<f32> {
+    Some(match op {
+        BinOp::Add => a + b,
+        BinOp::Sub => a - b,
+        BinOp::Mul => a * b,
+        BinOp::Div => a / b, // 0/0 = NaN, x/0 = ±Inf — both representable
+        _ => return None,
+    })
+}
+
+fn host_apply_f64(op: BinOp, a: f64, b: f64) -> Option<f64> {
+    Some(match op {
+        BinOp::Add => a + b,
+        BinOp::Sub => a - b,
+        BinOp::Mul => a * b,
+        BinOp::Div => a / b,
+        _ => return None,
+    })
+}
+
+/// Float BinOp Div allows ≤ 1 ULP error; other float ops are
+/// bit-exact on every backend we ship.
+fn float_max_ulps(op: BinOp) -> u32 {
+    match op {
+        BinOp::Div => 1,
+        _ => 0,
+    }
+}
+
+fn case_f32(op: BinOp, a: f32, b: f32, expected: f32) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:e}_b{:e}",
+            NAME_PREFIX,
+            binop_tag(op),
+            scalar_tag(ScalarType::F32),
+            a,
+            b
+        ),
+        def: build_binop_def(binop_tag(op), ScalarType::F32, op),
+        input_a: RawValues::F32(vec![a]),
+        input_b: RawValues::F32(vec![b]),
+        expected: RawValues::F32(vec![expected]),
+        max_ulps: float_max_ulps(op),
+        skip_on_metal: false,
+    }
+}
+
+fn case_f64(op: BinOp, a: f64, b: f64, expected: f64) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:e}_b{:e}",
+            NAME_PREFIX,
+            binop_tag(op),
+            scalar_tag(ScalarType::F64),
+            a,
+            b
+        ),
+        def: build_binop_def(binop_tag(op), ScalarType::F64, op),
+        input_a: RawValues::F64(vec![a]),
+        input_b: RawValues::F64(vec![b]),
+        expected: RawValues::F64(vec![expected]),
+        max_ulps: 0, // Software-only path is deterministic.
+        // F64 on Metal: MSL has no `double` type. The structural
+        // fix is queued for step 082 Layer 4 (capability table).
+        // Until then, skip every F64 case on the Metal lane.
+        skip_on_metal: true,
+    }
+}
+
+fn cases_f32() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    for &op in FLOAT_BINOPS {
+        for &(a, b) in f32_inputs() {
+            if let Some(e) = host_apply_f32(op, a, b) {
+                // Skip inputs where the expected result is NaN — the
+                // comparator treats NaN as unranked.
+                if e.is_nan() {
+                    continue;
+                }
+                // Skip subnormal results: Metal defaults to flush-to-
+                // zero on subnormals, which is a documented backend
+                // behavior, not a bug. Once the capability table
+                // (step 082 Layer 4) lands, the FTZ policy becomes a
+                // queryable flag and this can be removed.
+                if e != 0.0 && e.abs() < f32::MIN_POSITIVE {
+                    continue;
+                }
+                out.push(case_f32(op, a, b, e));
+            }
+        }
+    }
+    out
+}
+
+fn cases_f64() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    for &op in FLOAT_BINOPS {
+        for &(a, b) in f64_inputs() {
+            if let Some(e) = host_apply_f64(op, a, b) {
+                if e.is_nan() {
+                    continue;
+                }
+                out.push(case_f64(op, a, b, e));
+            }
+        }
+    }
+    out
+}
+
+/// All BinOp cases. Order: u32, u64, i32, i64, f32, f64.
 pub fn cases() -> Vec<OpCase> {
     let mut all = Vec::new();
     all.extend(cases_u32());
     all.extend(cases_u64());
     all.extend(cases_i32());
     all.extend(cases_i64());
+    all.extend(cases_f32());
+    all.extend(cases_f64());
     all
 }
 
@@ -497,6 +673,12 @@ pub fn dispatch_on(gpu: &quanta::Gpu, case: &OpCase, lane: Lane) -> RawOutput {
         }
         (RawValues::I64(a), RawValues::I64(b)) => {
             dispatch_scalar::<i64>(gpu, &mut wave, a, b, RawValues::I64)
+        }
+        (RawValues::F32(a), RawValues::F32(b)) => {
+            dispatch_scalar::<f32>(gpu, &mut wave, a, b, RawValues::F32)
+        }
+        (RawValues::F64(a), RawValues::F64(b)) => {
+            dispatch_scalar::<f64>(gpu, &mut wave, a, b, RawValues::F64)
         }
         _ => panic!(
             "op_matrix::dispatch_on: input type pair not yet wired (a={}, b={})",
