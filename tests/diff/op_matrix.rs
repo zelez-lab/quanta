@@ -18,7 +18,7 @@
 use super::lane::Lane;
 use super::output::{RawOutput, RawValues};
 
-use quanta_ir::{BinOp, KernelDef, KernelOp, KernelParam, Reg, ScalarType};
+use quanta_ir::{BinOp, CmpOp, KernelDef, KernelOp, KernelParam, Reg, ScalarType, UnaryOp};
 
 pub const NAME_PREFIX: &str = "op_matrix";
 
@@ -168,6 +168,249 @@ fn binop_tag(op: BinOp) -> &'static str {
         BinOp::Rotr => "rotr",
         BinOp::SatAdd => "satadd",
         BinOp::SatSub => "satsub",
+    }
+}
+
+fn unaryop_tag(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Neg => "neg",
+        UnaryOp::BitNot => "bitnot",
+        UnaryOp::LogicalNot => "logicalnot",
+    }
+}
+
+/// Build a `KernelDef` of shape:
+///
+/// ```text
+///   r0 = QuarkId
+///   r1 = Load a[0]
+///   r2 = Load b[0]              (bound but unused — keeps the
+///                                dispatcher uniform with BinOp)
+///   r3 = UnaryOp { op, ty } r1
+///   Store out[0] = r3
+/// ```
+fn build_unary_def(op_name: &str, ty: ScalarType, op: UnaryOp) -> KernelDef {
+    let kernel_name = format!("{}_{}_{}", NAME_PREFIX, op_name, scalar_tag(ty));
+    KernelDef {
+        name: kernel_name,
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: ty,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: ty,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 2,
+                scalar_type: ty,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty,
+            },
+            KernelOp::Load {
+                dst: Reg(2),
+                field: 1,
+                index: Reg(0),
+                ty,
+            },
+            KernelOp::UnaryOp {
+                dst: Reg(3),
+                a: Reg(1),
+                op,
+                ty,
+            },
+            KernelOp::Store {
+                field: 2,
+                index: Reg(0),
+                src: Reg(3),
+                ty,
+            },
+        ],
+        body_source: None,
+        next_reg: 4,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+fn cmpop_tag(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Eq => "eq",
+        CmpOp::Ne => "ne",
+        CmpOp::Lt => "lt",
+        CmpOp::Le => "le",
+        CmpOp::Gt => "gt",
+        CmpOp::Ge => "ge",
+    }
+}
+
+/// Build a `KernelDef` of shape:
+///
+/// ```text
+///   r0 = QuarkId
+///   r1 = Load a[0]      (operand type)
+///   r2 = Load b[0]      (operand type)
+///   r3 = Cmp(r1, r2, op, operand_type)   -> bool
+///   r4 = Cast(r3, Bool, U32)              -> 0 or 1
+///   Store out[0] = r4
+/// ```
+///
+/// `out` is a `Field<u32>` carrying the comparison result encoded
+/// as 0 / 1, which lets us reuse the standard u32 dispatch path.
+fn build_cmp_def(op_name: &str, operand_ty: ScalarType, op: CmpOp) -> KernelDef {
+    let kernel_name = format!("{}_{}_{}", NAME_PREFIX, op_name, scalar_tag(operand_ty));
+    KernelDef {
+        name: kernel_name,
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: operand_ty,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: operand_ty,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 2,
+                scalar_type: ScalarType::U32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty: operand_ty,
+            },
+            KernelOp::Load {
+                dst: Reg(2),
+                field: 1,
+                index: Reg(0),
+                ty: operand_ty,
+            },
+            KernelOp::Cmp {
+                dst: Reg(3),
+                a: Reg(1),
+                b: Reg(2),
+                op,
+                ty: operand_ty,
+            },
+            KernelOp::Cast {
+                dst: Reg(4),
+                src: Reg(3),
+                from: ScalarType::Bool,
+                to: ScalarType::U32,
+            },
+            KernelOp::Store {
+                field: 2,
+                index: Reg(0),
+                src: Reg(4),
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 5,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+/// Build a `KernelDef` of shape:
+///
+/// ```text
+///   r0 = QuarkId
+///   r1 = Load a[0]              (from-type)
+///   r2 = Load b[0]              (from-type, unused)
+///   r3 = Cast(r1, from, to)
+///   Store out[0] = r3           (to-type)
+/// ```
+///
+/// `out` matches the target type. `b` is bound but unused, like in
+/// the Unary builder, so the standard pair-dispatch works.
+fn build_cast_def(from: ScalarType, to: ScalarType) -> KernelDef {
+    let kernel_name = format!(
+        "{}_cast_{}_to_{}",
+        NAME_PREFIX,
+        scalar_tag(from),
+        scalar_tag(to)
+    );
+    KernelDef {
+        name: kernel_name,
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: from,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: from,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 2,
+                scalar_type: to,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty: from,
+            },
+            KernelOp::Load {
+                dst: Reg(2),
+                field: 1,
+                index: Reg(0),
+                ty: from,
+            },
+            KernelOp::Cast {
+                dst: Reg(3),
+                src: Reg(1),
+                from,
+                to,
+            },
+            KernelOp::Store {
+                field: 2,
+                index: Reg(0),
+                src: Reg(3),
+                ty: to,
+            },
+        ],
+        body_source: None,
+        next_reg: 4,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
     }
 }
 
@@ -638,7 +881,390 @@ fn cases_f64() -> Vec<OpCase> {
     out
 }
 
-/// All BinOp cases. Order: u32, u64, i32, i64, f32, f64.
+// ── Unary cases ──────────────────────────────────────────────────────
+//
+// UnaryOp::Neg works on signed ints and floats. Unsigned-int Neg in
+// the IR is wrapping (two's-complement negation) and matches the
+// CPU executor's `-` operator. BitNot is integer-only. LogicalNot
+// is bool-only and not currently produced by the WASM-route
+// translator, so we skip it from the matrix.
+
+fn case_unary_u32(op: UnaryOp, a: u32, expected: u32) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:#010x}",
+            NAME_PREFIX,
+            unaryop_tag(op),
+            scalar_tag(ScalarType::U32),
+            a
+        ),
+        def: build_unary_def(unaryop_tag(op), ScalarType::U32, op),
+        input_a: RawValues::U32(vec![a]),
+        input_b: RawValues::U32(vec![a]), // unused — see build_unary_def
+        expected: RawValues::U32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn case_unary_i32(op: UnaryOp, a: i32, expected: i32) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{}",
+            NAME_PREFIX,
+            unaryop_tag(op),
+            scalar_tag(ScalarType::I32),
+            a
+        ),
+        def: build_unary_def(unaryop_tag(op), ScalarType::I32, op),
+        input_a: RawValues::I32(vec![a]),
+        input_b: RawValues::I32(vec![a]),
+        expected: RawValues::I32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn case_unary_f32(op: UnaryOp, a: f32, expected: f32) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:e}",
+            NAME_PREFIX,
+            unaryop_tag(op),
+            scalar_tag(ScalarType::F32),
+            a
+        ),
+        def: build_unary_def(unaryop_tag(op), ScalarType::F32, op),
+        input_a: RawValues::F32(vec![a]),
+        input_b: RawValues::F32(vec![a]),
+        expected: RawValues::F32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn cases_unary() -> Vec<OpCase> {
+    let mut out = Vec::new();
+
+    // u32 BitNot: !0u32 = 0xFFFFFFFF, !0xFFFFFFFF = 0, ~mid = bitmask.
+    for &a in &[0u32, 0x12345678u32, 0xFFFFFFFFu32, 0x80000000u32] {
+        out.push(case_unary_u32(UnaryOp::BitNot, a, !a));
+    }
+    // u32 Neg: wrapping_neg matches the IR semantics.
+    for &a in &[0u32, 1u32, 0x80000000u32, 0xFFFFFFFFu32] {
+        out.push(case_unary_u32(UnaryOp::Neg, a, a.wrapping_neg()));
+    }
+
+    // i32 Neg: includes i32::MIN which is its own negation under
+    // two's-complement wrap (the case most likely to surface a
+    // signed-overflow bug).
+    for &a in &[0i32, 1i32, -1i32, i32::MAX, i32::MIN, 42, -42] {
+        out.push(case_unary_i32(UnaryOp::Neg, a, a.wrapping_neg()));
+    }
+    // i32 BitNot.
+    for &a in &[0i32, -1i32, i32::MIN, i32::MAX, 42] {
+        out.push(case_unary_i32(UnaryOp::BitNot, a, !a));
+    }
+
+    // f32 Neg: includes ±0 (sign-bit flip must produce the right
+    // ±0 representation, not silently collapse to +0).
+    for &a in &[
+        0.0f32,
+        -0.0f32,
+        1.0f32,
+        -1.0f32,
+        f32::MAX,
+        f32::MIN_POSITIVE,
+    ] {
+        out.push(case_unary_f32(UnaryOp::Neg, a, -a));
+    }
+
+    out
+}
+
+// ── Cmp cases ────────────────────────────────────────────────────────
+//
+// Every CmpOp on every scalar type we natively dispatch (U32, I32,
+// F32). The kernel emits Cmp → Cast(Bool→U32) → Store; the
+// expected output is the bool as 0/1 in a u32 lane. Inputs cover
+// equality (a == b), strict ordering on both sides, and the
+// sign-bit cases that historically miscompiled signed comparisons.
+
+const CMP_OPS: &[CmpOp] = &[
+    CmpOp::Eq,
+    CmpOp::Ne,
+    CmpOp::Lt,
+    CmpOp::Le,
+    CmpOp::Gt,
+    CmpOp::Ge,
+];
+
+fn host_apply_cmp_u32(op: CmpOp, a: u32, b: u32) -> u32 {
+    (match op {
+        CmpOp::Eq => a == b,
+        CmpOp::Ne => a != b,
+        CmpOp::Lt => a < b,
+        CmpOp::Le => a <= b,
+        CmpOp::Gt => a > b,
+        CmpOp::Ge => a >= b,
+    }) as u32
+}
+
+fn host_apply_cmp_i32(op: CmpOp, a: i32, b: i32) -> u32 {
+    (match op {
+        CmpOp::Eq => a == b,
+        CmpOp::Ne => a != b,
+        CmpOp::Lt => a < b,
+        CmpOp::Le => a <= b,
+        CmpOp::Gt => a > b,
+        CmpOp::Ge => a >= b,
+    }) as u32
+}
+
+fn host_apply_cmp_f32(op: CmpOp, a: f32, b: f32) -> u32 {
+    (match op {
+        CmpOp::Eq => a == b,
+        CmpOp::Ne => a != b,
+        CmpOp::Lt => a < b,
+        CmpOp::Le => a <= b,
+        CmpOp::Gt => a > b,
+        CmpOp::Ge => a >= b,
+    }) as u32
+}
+
+fn case_cmp_u32(op: CmpOp, a: u32, b: u32) -> OpCase {
+    let expected = host_apply_cmp_u32(op, a, b);
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:#010x}_b{:#010x}",
+            NAME_PREFIX,
+            cmpop_tag(op),
+            scalar_tag(ScalarType::U32),
+            a,
+            b
+        ),
+        def: build_cmp_def(cmpop_tag(op), ScalarType::U32, op),
+        input_a: RawValues::U32(vec![a]),
+        input_b: RawValues::U32(vec![b]),
+        expected: RawValues::U32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn case_cmp_i32(op: CmpOp, a: i32, b: i32) -> OpCase {
+    let expected = host_apply_cmp_i32(op, a, b);
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{}_b{}",
+            NAME_PREFIX,
+            cmpop_tag(op),
+            scalar_tag(ScalarType::I32),
+            a,
+            b
+        ),
+        def: build_cmp_def(cmpop_tag(op), ScalarType::I32, op),
+        input_a: RawValues::I32(vec![a]),
+        input_b: RawValues::I32(vec![b]),
+        expected: RawValues::U32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn case_cmp_f32(op: CmpOp, a: f32, b: f32) -> OpCase {
+    let expected = host_apply_cmp_f32(op, a, b);
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:e}_b{:e}",
+            NAME_PREFIX,
+            cmpop_tag(op),
+            scalar_tag(ScalarType::F32),
+            a,
+            b
+        ),
+        def: build_cmp_def(cmpop_tag(op), ScalarType::F32, op),
+        input_a: RawValues::F32(vec![a]),
+        input_b: RawValues::F32(vec![b]),
+        expected: RawValues::U32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn cases_cmp() -> Vec<OpCase> {
+    let mut out = Vec::new();
+
+    // u32 comparisons including sign-bit values (unsigned, so high
+    // bit is just a large magnitude — catches any backend that
+    // accidentally signed-compares).
+    let u32_pairs: &[(u32, u32)] = &[
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (0x80000000, 0x7FFFFFFF),
+        (0xFFFFFFFF, 0),
+        (0x12345678, 0x12345678),
+    ];
+    for &op in CMP_OPS {
+        for &(a, b) in u32_pairs {
+            out.push(case_cmp_u32(op, a, b));
+        }
+    }
+
+    // i32 comparisons exercising signed ordering on negatives.
+    let i32_pairs: &[(i32, i32)] = &[
+        (0, 0),
+        (1, -1),
+        (i32::MIN, i32::MAX),
+        (i32::MIN, 0),
+        (-1, 1),
+        (42, 42),
+    ];
+    for &op in CMP_OPS {
+        for &(a, b) in i32_pairs {
+            out.push(case_cmp_i32(op, a, b));
+        }
+    }
+
+    // f32 comparisons (finite only — NaN comparison is well-defined
+    // by IEEE 754 but a separate axis we can fold in later).
+    let f32_pairs: &[(f32, f32)] = &[
+        (0.0, 0.0),
+        (-0.0, 0.0),
+        (1.0, -1.0),
+        (-1.0, 1.0),
+        (f32::INFINITY, f32::MAX),
+        (f32::NEG_INFINITY, f32::INFINITY),
+    ];
+    for &op in CMP_OPS {
+        for &(a, b) in f32_pairs {
+            out.push(case_cmp_f32(op, a, b));
+        }
+    }
+
+    out
+}
+
+// ── Cast cases ───────────────────────────────────────────────────────
+//
+// The cast matrix grows quickly with type permutations. We cover
+// the pairs the WASM-route translator actually emits (u32↔i32,
+// u32↔f32, i32↔f32, and their narrow-int variants) with a small
+// handful of edge inputs per pair.
+
+fn host_cast_u32_to_i32(a: u32) -> i32 {
+    a as i32
+}
+fn host_cast_i32_to_u32(a: i32) -> u32 {
+    a as u32
+}
+fn host_cast_u32_to_f32(a: u32) -> f32 {
+    a as f32
+}
+fn host_cast_f32_to_u32(a: f32) -> u32 {
+    a as u32
+}
+fn host_cast_i32_to_f32(a: i32) -> f32 {
+    a as f32
+}
+fn host_cast_f32_to_i32(a: f32) -> i32 {
+    a as i32
+}
+
+fn case_cast(from_val: RawValues, expected: RawValues, from: ScalarType, to: ScalarType) -> OpCase {
+    // For Cast the dummy `b` field must match `from`'s type; copy
+    // `from_val` into b.
+    OpCase {
+        name: format!(
+            "{}_cast_{}_to_{}_{}",
+            NAME_PREFIX,
+            scalar_tag(from),
+            scalar_tag(to),
+            from_val.type_tag(),
+        ),
+        def: build_cast_def(from, to),
+        input_a: from_val.clone(),
+        input_b: from_val,
+        expected,
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn cases_cast() -> Vec<OpCase> {
+    let mut out = Vec::new();
+
+    // u32 → i32 (bit-pattern reinterpretation).
+    for &a in &[0u32, 1u32, 0x7FFFFFFFu32, 0x80000000u32, 0xFFFFFFFFu32] {
+        out.push(case_cast(
+            RawValues::U32(vec![a]),
+            RawValues::I32(vec![host_cast_u32_to_i32(a)]),
+            ScalarType::U32,
+            ScalarType::I32,
+        ));
+    }
+    // i32 → u32.
+    for &a in &[0i32, 1i32, -1i32, i32::MIN, i32::MAX, 42i32, -42i32] {
+        out.push(case_cast(
+            RawValues::I32(vec![a]),
+            RawValues::U32(vec![host_cast_i32_to_u32(a)]),
+            ScalarType::I32,
+            ScalarType::U32,
+        ));
+    }
+
+    // u32 → f32 (round to nearest).
+    for &a in &[0u32, 1u32, 0xFFFFFFFFu32, 0x80000000u32] {
+        out.push(case_cast(
+            RawValues::U32(vec![a]),
+            RawValues::F32(vec![host_cast_u32_to_f32(a)]),
+            ScalarType::U32,
+            ScalarType::F32,
+        ));
+    }
+    // f32 → u32 (truncate toward zero; saturate on overflow is
+    // platform-defined, so skip out-of-range inputs).
+    for &a in &[0.0f32, 1.0f32, 42.5f32, 4294967040.0f32 /* in-range */] {
+        out.push(case_cast(
+            RawValues::F32(vec![a]),
+            RawValues::U32(vec![host_cast_f32_to_u32(a)]),
+            ScalarType::F32,
+            ScalarType::U32,
+        ));
+    }
+
+    // i32 → f32 and f32 → i32 (in-range only).
+    for &a in &[
+        0i32,
+        1i32,
+        -1i32,
+        42i32,
+        -42i32,
+        1_000_000i32,
+        -1_000_000i32,
+    ] {
+        out.push(case_cast(
+            RawValues::I32(vec![a]),
+            RawValues::F32(vec![host_cast_i32_to_f32(a)]),
+            ScalarType::I32,
+            ScalarType::F32,
+        ));
+    }
+    for &a in &[0.0f32, 1.5f32, -1.5f32, 42.0f32, -42.0f32] {
+        out.push(case_cast(
+            RawValues::F32(vec![a]),
+            RawValues::I32(vec![host_cast_f32_to_i32(a)]),
+            ScalarType::F32,
+            ScalarType::I32,
+        ));
+    }
+
+    out
+}
+
+/// All BinOp + UnaryOp + Cmp + Cast cases. Order: int BinOp, float
+/// BinOp, unary, cmp, cast.
 pub fn cases() -> Vec<OpCase> {
     let mut all = Vec::new();
     all.extend(cases_u32());
@@ -647,6 +1273,9 @@ pub fn cases() -> Vec<OpCase> {
     all.extend(cases_i64());
     all.extend(cases_f32());
     all.extend(cases_f64());
+    all.extend(cases_unary());
+    all.extend(cases_cmp());
+    all.extend(cases_cast());
     all
 }
 
@@ -661,49 +1290,97 @@ pub fn dispatch_on(gpu: &quanta::Gpu, case: &OpCase, lane: Lane) -> RawOutput {
     let bytes = quanta_ir::serialize_kernel(&case.def);
     let mut wave = gpu.wave_jit(&bytes).expect("wave_jit");
 
-    let values = match (&case.input_a, &case.input_b) {
-        (RawValues::U32(a), RawValues::U32(b)) => {
-            dispatch_scalar::<u32>(gpu, &mut wave, a, b, RawValues::U32)
-        }
-        (RawValues::U64(a), RawValues::U64(b)) => {
-            dispatch_scalar::<u64>(gpu, &mut wave, a, b, RawValues::U64)
-        }
-        (RawValues::I32(a), RawValues::I32(b)) => {
-            dispatch_scalar::<i32>(gpu, &mut wave, a, b, RawValues::I32)
-        }
-        (RawValues::I64(a), RawValues::I64(b)) => {
-            dispatch_scalar::<i64>(gpu, &mut wave, a, b, RawValues::I64)
-        }
-        (RawValues::F32(a), RawValues::F32(b)) => {
-            dispatch_scalar::<f32>(gpu, &mut wave, a, b, RawValues::F32)
-        }
-        (RawValues::F64(a), RawValues::F64(b)) => {
-            dispatch_scalar::<f64>(gpu, &mut wave, a, b, RawValues::F64)
-        }
-        _ => panic!(
-            "op_matrix::dispatch_on: input type pair not yet wired (a={}, b={})",
-            case.input_a.type_tag(),
-            case.input_b.type_tag()
-        ),
-    };
+    // The dispatcher picks `Field<T>` allocations from the input
+    // RawValues variants, and the output `Field<U>` from the
+    // expected variant. Cmp produces U32 from any input type
+    // (Bool→U32 cast inside the kernel); Cast produces target-type
+    // from source-type.
+    let values = dispatch_pair_typed(gpu, &mut wave, &case.input_a, &case.input_b, &case.expected);
 
     case.output(lane, values)
 }
 
-/// Allocate two read fields and one write field of type `T`,
-/// upload inputs, bind, dispatch one quark, read back. Caller
-/// re-wraps the `Vec<T>` in the matching `RawValues` variant.
+/// Match on (input_a, input_b, expected) variant triples and pick
+/// the right typed allocation for each field. The four scalar
+/// widths × six RawValues variants × asymmetric in/out types gives
+/// a 36-arm match in principle; this enumerates only the (in_pair,
+/// out) combinations we actually use today and panics on the rest.
 #[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
-fn dispatch_scalar<T: Copy + 'static>(
+fn dispatch_pair_typed(
     gpu: &quanta::Gpu,
     wave: &mut quanta::Wave,
-    a: &[T],
-    b: &[T],
-    wrap: fn(Vec<T>) -> RawValues,
+    in_a: &RawValues,
+    in_b: &RawValues,
+    expected: &RawValues,
 ) -> RawValues {
-    let fa = gpu.field::<T>(1).unwrap();
-    let fb = gpu.field::<T>(1).unwrap();
-    let fout = gpu.field::<T>(1).unwrap();
+    match (in_a, in_b, expected) {
+        // Symmetric: input and output share the type (BinOp, UnaryOp).
+        (RawValues::U32(a), RawValues::U32(b), RawValues::U32(_)) => {
+            dispatch_pair::<u32, u32>(gpu, wave, a, b, RawValues::U32)
+        }
+        (RawValues::U64(a), RawValues::U64(b), RawValues::U64(_)) => {
+            dispatch_pair::<u64, u64>(gpu, wave, a, b, RawValues::U64)
+        }
+        (RawValues::I32(a), RawValues::I32(b), RawValues::I32(_)) => {
+            dispatch_pair::<i32, i32>(gpu, wave, a, b, RawValues::I32)
+        }
+        (RawValues::I64(a), RawValues::I64(b), RawValues::I64(_)) => {
+            dispatch_pair::<i64, i64>(gpu, wave, a, b, RawValues::I64)
+        }
+        (RawValues::F32(a), RawValues::F32(b), RawValues::F32(_)) => {
+            dispatch_pair::<f32, f32>(gpu, wave, a, b, RawValues::F32)
+        }
+        (RawValues::F64(a), RawValues::F64(b), RawValues::F64(_)) => {
+            dispatch_pair::<f64, f64>(gpu, wave, a, b, RawValues::F64)
+        }
+        // Cmp with non-U32 inputs: produces a U32 (0/1) output via
+        // Cast(Bool→U32) in the kernel body. The U32-input variant
+        // is handled by the symmetric arm above.
+        (RawValues::I32(a), RawValues::I32(b), RawValues::U32(_)) => {
+            dispatch_pair::<i32, u32>(gpu, wave, a, b, RawValues::U32)
+        }
+        (RawValues::F32(a), RawValues::F32(b), RawValues::U32(_)) => {
+            dispatch_pair::<f32, u32>(gpu, wave, a, b, RawValues::U32)
+        }
+        // Cast across types: a∈From, b unused, out∈To. The dispatcher
+        // still allocates a `Field<From>` for b because the kernel
+        // emits a `Load` from slot 1 even though the result is dead.
+        (RawValues::U32(a), RawValues::U32(b), RawValues::I32(_)) => {
+            dispatch_pair::<u32, i32>(gpu, wave, a, b, RawValues::I32)
+        }
+        (RawValues::U32(a), RawValues::U32(b), RawValues::F32(_)) => {
+            dispatch_pair::<u32, f32>(gpu, wave, a, b, RawValues::F32)
+        }
+        (RawValues::F32(a), RawValues::F32(b), RawValues::I32(_)) => {
+            dispatch_pair::<f32, i32>(gpu, wave, a, b, RawValues::I32)
+        }
+        (RawValues::I32(a), RawValues::I32(b), RawValues::F32(_)) => {
+            dispatch_pair::<i32, f32>(gpu, wave, a, b, RawValues::F32)
+        }
+        _ => panic!(
+            "op_matrix::read_output: in/out type combo not yet wired \
+             (a={}, b={}, out={})",
+            in_a.type_tag(),
+            in_b.type_tag(),
+            expected.type_tag()
+        ),
+    }
+}
+
+/// Allocate `Field<TIn>` × 2 + `Field<TOut>` × 1, upload, bind,
+/// dispatch one quark, read back as `Vec<TOut>`. Caller picks the
+/// `RawValues` wrapper for the output variant.
+#[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
+fn dispatch_pair<TIn: Copy + 'static, TOut: Copy + 'static>(
+    gpu: &quanta::Gpu,
+    wave: &mut quanta::Wave,
+    a: &[TIn],
+    b: &[TIn],
+    wrap: fn(Vec<TOut>) -> RawValues,
+) -> RawValues {
+    let fa = gpu.field::<TIn>(1).unwrap();
+    let fb = gpu.field::<TIn>(1).unwrap();
+    let fout = gpu.field::<TOut>(1).unwrap();
     fa.write(a).unwrap();
     fb.write(b).unwrap();
     wave.bind(0, &fa);
