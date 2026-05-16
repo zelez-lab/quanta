@@ -128,6 +128,14 @@ let gpu = quanta::init()?;
 println!("backend: {}", gpu.name());
 ```
 
+Note the trailing `?`: the two constructors don't return the same
+type.
+
+- `init_cpu() -> Gpu` — infallible, the software backend always works.
+- `init() -> Result<Gpu, QuantaError>` — fails with `NoDevice` if no
+  supported GPU is present, so the caller must handle the error
+  (here with `?`, propagating it out of `main`).
+
 This picks the best available backend: Metal on macOS, Vulkan on
 Linux/Windows, WebGPU in a browser. Output is bit-identical with
 the software backend — that's the whole point of counter-based
