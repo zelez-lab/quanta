@@ -111,6 +111,28 @@ pub(super) fn emit_op(
                         pad, t, dst.0, t, a.0, o, t, b.0
                     ));
                 }
+                BinOp::SatAdd => {
+                    // MSL has no saturating-add operator; expand to an
+                    // overflow check. Wrapping-add then detect overflow
+                    // via `_sum < a` (unsigned). Saturation literal must
+                    // match the operand width — u32 saturates to
+                    // 0xFFFFFFFFu, u64 to 0xFFFFFFFFFFFFFFFFul, etc.
+                    let t = ty.msl_name();
+                    let max_lit = unsigned_max_lit_msl(ty);
+                    out.push_str(&format!(
+                        "{}{} _sum_{} = r{} + r{}; {} r{} = (_sum_{} < r{}) ? ({}){} : _sum_{};\n",
+                        pad, t, dst.0, a.0, b.0, t, dst.0, dst.0, a.0, t, max_lit, dst.0,
+                    ));
+                }
+                BinOp::SatSub => {
+                    // MSL has no saturating-sub operator; clamp to 0 on
+                    // underflow (unsigned semantics). Mirrors AOT path.
+                    let t = ty.msl_name();
+                    out.push_str(&format!(
+                        "{}{} r{} = (r{} < r{}) ? ({})0 : r{} - r{};\n",
+                        pad, t, dst.0, a.0, b.0, t, a.0, b.0,
+                    ));
+                }
                 _ => {
                     let o = binop_str(op);
                     out.push_str(&format!(
@@ -630,5 +652,21 @@ pub(super) fn emit_op(
             // Cooperative matrix multiply-add not yet supported in MSL; placeholder zero.
             out.push_str(&format!("{}{} r{} = 0;\n", pad, ty.msl_name(), dst.0));
         }
+    }
+}
+
+/// Return the MSL literal for the maximum value of an unsigned
+/// integer type, used to saturate `SatAdd` on overflow. Signed
+/// types fall back to their unsigned-max bit pattern via the cast
+/// in the emitter so the same literal works for both — narrow ints
+/// pick the width below.
+fn unsigned_max_lit_msl(ty: &ScalarType) -> &'static str {
+    match ty {
+        ScalarType::U8 | ScalarType::I8 => "0xFFu",
+        ScalarType::U16 | ScalarType::I16 => "0xFFFFu",
+        ScalarType::U32 | ScalarType::I32 => "0xFFFFFFFFu",
+        ScalarType::U64 | ScalarType::I64 => "0xFFFFFFFFFFFFFFFFul",
+        // SatAdd is integer-only; floats/bools should never reach here.
+        _ => "0u",
     }
 }
