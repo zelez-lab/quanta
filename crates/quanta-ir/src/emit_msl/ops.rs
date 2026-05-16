@@ -93,6 +93,24 @@ pub(super) fn emit_op(
                         width
                     ));
                 }
+                BinOp::Shr | BinOp::Shl => {
+                    // Cast operands to the BinOp's `ty` before shifting so
+                    // the shift's signedness matches the IR's intent.
+                    // Without this, an unsigned shift fed by a signed
+                    // register (e.g. `u32 r = signed_xor >> 8`) compiles
+                    // in MSL as an arithmetic shift in `int` and then
+                    // assigns to `uint`, producing sign-extended garbage
+                    // for the half of lanes where bit 31 is set. The
+                    // WASM-route translator types every i32 XOR/AND/OR
+                    // result as I32 regardless of source signedness, so
+                    // this case is common.
+                    let o = binop_str(op);
+                    let t = ty.msl_name();
+                    out.push_str(&format!(
+                        "{}{} r{} = ({})r{} {} ({})r{};\n",
+                        pad, t, dst.0, t, a.0, o, t, b.0
+                    ));
+                }
                 _ => {
                     let o = binop_str(op);
                     out.push_str(&format!(
