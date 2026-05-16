@@ -4,8 +4,8 @@ use crate::*;
 
 pub(super) fn const_msl(v: &ConstValue) -> (&'static str, String) {
     match v {
-        ConstValue::F32(x) => ("float", format!("{:.6}", x)),
-        ConstValue::F64(x) => ("double", format!("{:.6}", x)),
+        ConstValue::F32(x) => ("float", float_lit_msl(*x)),
+        ConstValue::F64(x) => ("double", float_lit_msl(*x as f32)),
         ConstValue::U32(x) => ("uint", format!("{}u", x)),
         ConstValue::U64(x) => ("ulong", format!("{}ul", x)),
         ConstValue::I32(x) => ("int", format!("{}", x)),
@@ -13,8 +13,29 @@ pub(super) fn const_msl(v: &ConstValue) -> (&'static str, String) {
         ConstValue::Bool(x) => ("bool", if *x { "true" } else { "false" }.to_string()),
         ConstValue::F16(x) => (
             "half",
-            format!("(half){}", f32::from_bits((*x as u32) << 16)),
+            format!("(half){}", float_lit_msl(f32::from_bits((*x as u32) << 16))),
         ),
+    }
+}
+
+/// Format an f32 as an MSL float literal that round-trips bit-exactly.
+///
+/// `{:.6}` silently rounds small constants like `1.0 / (1 << 24)`
+/// (≈5.96e-8) to literal `0.000000`, which makes every kernel using
+/// such constants compute zero. Use Rust's `Debug` formatter for the
+/// shortest round-trip decimal, plus explicit handling for NaN / ±Inf
+/// since MSL doesn't parse those tokens.
+fn float_lit_msl(x: f32) -> String {
+    if x.is_nan() {
+        "as_type<float>(0x7fc00000u)".to_string()
+    } else if x.is_infinite() {
+        if x > 0.0 {
+            "as_type<float>(0x7f800000u)".to_string()
+        } else {
+            "as_type<float>(0xff800000u)".to_string()
+        }
+    } else {
+        format!("{:?}", x)
     }
 }
 
