@@ -7,8 +7,7 @@ draws random numbers on the GPU.
 
 - **Rust 1.85+** (`rustup show` to check)
 - **The wasm32 target**: `rustup target add wasm32-unknown-unknown`
-- This `quanta` workspace cloned somewhere on your machine. The path
-  matters for the local dependency in step 2.
+- **git** on `PATH` (Cargo uses it to fetch the dependency below).
 
 That's it for the software backend (works on any laptop). To run on
 a real GPU you also need Metal Toolchain (macOS), Vulkan SDK (Linux/
@@ -23,22 +22,26 @@ cargo new --bin my_rng_app
 cd my_rng_app
 ```
 
-## Step 2 — Add quanta-rand to `Cargo.toml`
+## Step 2 — Add quanta and quanta-rand
 
-Adjust the path to point at the `quanta-rand` crate inside this
-workspace. If your project sits next to the `quanta_project`
-checkout, that's:
+Both crates live in the same git repository. Name them explicitly
+on the `cargo add` line so Cargo picks the right workspace member:
+
+```sh
+cargo add quanta      --git https://github.com/zelez-lab/quanta
+cargo add quanta-rand --git https://github.com/zelez-lab/quanta --features gpu
+```
+
+That produces the following `[dependencies]` block in `Cargo.toml`:
 
 ```toml
-[package]
-name = "my_rng_app"
-version = "0.1.0"
-edition = "2024"
-
 [dependencies]
-quanta = { path = "../quanta_project/quanta" }
-quanta-rand = { path = "../quanta_project/quanta/crates/quanta-rand", features = ["gpu"] }
+quanta      = { git = "https://github.com/zelez-lab/quanta" }
+quanta-rand = { git = "https://github.com/zelez-lab/quanta", features = ["gpu"] }
 ```
+
+Pin to a specific revision with `--rev <sha>` (or `--tag <tag>` once
+tagged releases exist) if you want reproducible builds.
 
 The `gpu` feature is what makes the `fill_*_gpu` helpers visible.
 Without it you only get the host-side `Rng` (pure CPU, no GPU

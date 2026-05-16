@@ -51,8 +51,10 @@ That struct compiles to GPU binaries for five targets at build time. At runtime,
 
 ## Quick Start
 
+Quanta is not on crates.io yet — add it from the git repository:
+
 ```sh
-cargo add quanta
+cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
 
 ### System requirements
@@ -61,7 +63,8 @@ cargo add quanta
 
 The MSL and WGSL emitters are built into the proc-macro and run
 in-process, so on Apple Silicon (Metal) or in the browser (WebGPU)
-**nothing else is required** — `cargo add quanta` is the whole story.
+**nothing else is required** — the `cargo add` line above is the
+whole story.
 
 For Vulkan platforms (Linux, Windows) you need a Vulkan driver
 installed (instructions below). The optional `quanta-compiler` LLVM
@@ -75,7 +78,7 @@ takes over.
 
 ```sh
 # That's it. Metal ships with macOS.
-cargo add quanta
+cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
 
 Optional, only if you want ahead-of-time PTX/GCN/SPIR-V emission
@@ -96,7 +99,8 @@ sudo apt install nvidia-driver-550                                  # NVIDIA pro
 vulkaninfo --summary
 
 # Then:
-cargo add quanta --no-default-features --features vulkan,jit
+cargo add quanta --git https://github.com/zelez-lab/quanta \
+  --no-default-features --features vulkan,jit
 ```
 
 `mesa-vulkan-drivers` includes lavapipe, a software Vulkan ICD that
@@ -118,7 +122,8 @@ sudo apt update && sudo apt install -y llvm-22-dev libpolly-22-dev
 # Vulkan driver: install your GPU vendor's Windows driver (NVIDIA,
 # AMD, or Intel). The Vulkan loader (`vulkan-1.dll`) ships with the
 # driver. No separate Vulkan SDK needed for runtime.
-cargo add quanta --no-default-features --features vulkan,jit
+cargo add quanta --git https://github.com/zelez-lab/quanta `
+  --no-default-features --features vulkan,jit
 ```
 
 Live GPU execution on Windows is untested in v0.1-alpha — the build
@@ -159,15 +164,15 @@ needed.
 
 To emit PTX, GCN, or generic SPIR-V *ahead of time* you need the
 `quanta-compiler` LLVM backend. Quanta ships pre-built binaries for
-every supported host triple and **downloads the matching one to
-`~/.quanta/bin/` on first use** — no manual install needed for
-`cargo add quanta` users.
+every supported host triple as GitHub Release assets and
+**downloads the matching one to `~/.quanta/bin/` on first use** — no
+manual install needed in the common case.
 
 If you prefer to build it from source (or your host triple isn't in
 the release matrix):
 
 - Install **LLVM 22.1** (see per-platform sections above)
-- `cargo install quanta-compiler`
+- `cargo install --git https://github.com/zelez-lab/quanta quanta-compiler`
 - Or set `QUANTA_COMPILER=/path/to/quanta-compiler` to point at a custom build
 
 Set `QUANTA_NO_DOWNLOAD=1` in your environment to disable auto-download.

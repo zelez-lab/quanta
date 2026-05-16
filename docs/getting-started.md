@@ -4,9 +4,21 @@ GPU compute in 3 minutes. You know Rust. You may not know GPUs.
 
 ## Add dependency
 
+Quanta is not on crates.io yet, so add it from the git repository:
+
 ```sh
-cargo add quanta
+cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
+
+That produces the following line in your `Cargo.toml`:
+
+```toml
+[dependencies]
+quanta = { git = "https://github.com/zelez-lab/quanta" }
+```
+
+Pin to a specific revision with `--rev <sha>` (or `--tag <tag>` once
+tagged releases exist) for reproducible builds.
 
 ## Write a kernel
 

@@ -38,18 +38,29 @@ the [COOKBOOK.md](COOKBOOK.md) shows when to use which distribution
 
 ## Install
 
-In `Cargo.toml`:
+Both crates live in the same git repository — name them explicitly
+so Cargo picks the right workspace member:
+
+```sh
+cargo add quanta      --git https://github.com/zelez-lab/quanta
+cargo add quanta-rand --git https://github.com/zelez-lab/quanta --features gpu
+```
+
+That produces:
 
 ```toml
 [dependencies]
-quanta-rand = { path = "../quanta/crates/quanta-rand", features = ["gpu"] }
-quanta = { path = "../quanta" }   # for the Gpu handle
+quanta      = { git = "https://github.com/zelez-lab/quanta" }
+quanta-rand = { git = "https://github.com/zelez-lab/quanta", features = ["gpu"] }
 ```
 
 The `gpu` feature pulls in the Quanta runtime so the `fill_*_gpu`
 helpers are available. Without it, only the host-side `Rng` and the
 pure-Rust generator modules are exposed — useful as a correctness
 oracle for downstream tests.
+
+See [GETTING_STARTED.md](GETTING_STARTED.md) for a full 10-minute
+walkthrough.
 
 ## Quick start
 
