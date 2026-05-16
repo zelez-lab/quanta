@@ -18,7 +18,9 @@
 use super::lane::Lane;
 use super::output::{RawOutput, RawValues};
 
-use quanta_ir::{BinOp, CmpOp, KernelDef, KernelOp, KernelParam, Reg, ScalarType, UnaryOp};
+use quanta_ir::{
+    BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, UnaryOp,
+};
 
 pub const NAME_PREFIX: &str = "op_matrix";
 
@@ -405,6 +407,182 @@ fn build_cast_def(from: ScalarType, to: ScalarType) -> KernelDef {
         ],
         body_source: None,
         next_reg: 4,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+/// Build a `KernelDef` of shape:
+///
+/// ```text
+///   r0 = QuarkId
+///   r1 = Load a[0]
+///   r2 = Load b[0]              (unused; dispatcher-uniform stub)
+///   r3 = Const(c)
+///   r4 = BinOp { op, ty } r1 r3
+///   Store out[0] = r4
+/// ```
+///
+/// This is the path the `85551fa` float-const bug rode on: the
+/// scaling factor (e.g. `1.0f32 / (1 << 24)`) lowered to a
+/// `KernelOp::Const`, which the MSL emitter then formatted as text.
+/// Without this builder, the matrix never exercises that path —
+/// every BinOp case loads both operands from buffers, so the
+/// constant emitter is untested.
+fn build_const_binop_def(name_suffix: &str, ty: ScalarType, op: BinOp, c: ConstValue) -> KernelDef {
+    let kernel_name = format!(
+        "{}_{}_{}_const_{}",
+        NAME_PREFIX,
+        binop_tag(op),
+        scalar_tag(ty),
+        name_suffix
+    );
+    KernelDef {
+        name: kernel_name,
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: ty,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: ty,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 2,
+                scalar_type: ty,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty,
+            },
+            KernelOp::Load {
+                dst: Reg(2),
+                field: 1,
+                index: Reg(0),
+                ty,
+            },
+            KernelOp::Const {
+                dst: Reg(3),
+                value: c,
+            },
+            KernelOp::BinOp {
+                dst: Reg(4),
+                a: Reg(1),
+                b: Reg(3),
+                op,
+                ty,
+            },
+            KernelOp::Store {
+                field: 2,
+                index: Reg(0),
+                src: Reg(4),
+                ty,
+            },
+        ],
+        body_source: None,
+        next_reg: 5,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+/// Build a `KernelDef` that exercises the **shift-after-signed-op**
+/// path of the `06e764c` bug.
+///
+/// Kernel shape:
+///
+/// ```text
+///   r0 = QuarkId
+///   r1 = Load a[0]                       (uint)
+///   r2 = Load b[0]                       (uint, unused)
+///   r3 = Cast(r1, U32 -> I32)             (int — but holding `a`'s bit pattern)
+///   r4 = Const(8u32)
+///   r5 = BinOp::Shr { ty: U32 } r3 r4    (unsigned shift of int-typed reg)
+///   Store out[0] = r5                    (uint result)
+/// ```
+///
+/// The plain BinOp matrix loads `a` as U32 directly and shifts it,
+/// which the emitter already gets right. To trigger the bug we need
+/// a U32-typed result whose **operand register is int-typed** —
+/// exactly the WASM-route pattern where `i32.xor` produces an I32
+/// register that an unsigned `i32.shr_u` then consumes.
+fn build_shr_after_signed_def() -> KernelDef {
+    KernelDef {
+        name: format!("{}_shr_after_signed", NAME_PREFIX),
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: ScalarType::U32,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: ScalarType::U32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 2,
+                scalar_type: ScalarType::U32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty: ScalarType::U32,
+            },
+            KernelOp::Load {
+                dst: Reg(2),
+                field: 1,
+                index: Reg(0),
+                ty: ScalarType::U32,
+            },
+            KernelOp::Cast {
+                dst: Reg(3),
+                src: Reg(1),
+                from: ScalarType::U32,
+                to: ScalarType::I32,
+            },
+            KernelOp::Const {
+                dst: Reg(4),
+                value: ConstValue::U32(8),
+            },
+            KernelOp::BinOp {
+                dst: Reg(5),
+                a: Reg(3),
+                b: Reg(4),
+                op: BinOp::Shr,
+                ty: ScalarType::U32,
+            },
+            KernelOp::Store {
+                field: 2,
+                index: Reg(0),
+                src: Reg(5),
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 6,
         opt_level: 0,
         device_sources: vec![],
         device_functions: vec![],
@@ -1263,8 +1441,100 @@ fn cases_cast() -> Vec<OpCase> {
     out
 }
 
-/// All BinOp + UnaryOp + Cmp + Cast cases. Order: int BinOp, float
-/// BinOp, unary, cmp, cast.
+// ── Const cases ──────────────────────────────────────────────────────
+//
+// Exercises the `KernelOp::Const` emit path, which the BinOp cases
+// above never touch (they load both operands from buffers). The
+// `85551fa` float-const bug rode this path: small constants like
+// `1.0f32 / (1 << 24)` were emitted as the literal string
+// "0.000000" by the MSL emitter's `{:.6}` format, silently
+// collapsing every kernel using such a scaling factor.
+
+fn case_const_f32_mul(name: &str, a: f32, c: f32, expected: f32) -> OpCase {
+    OpCase {
+        name: format!("{}_const_f32_mul_{}_a{:e}", NAME_PREFIX, name, a),
+        def: build_const_binop_def(name, ScalarType::F32, BinOp::Mul, ConstValue::F32(c)),
+        input_a: RawValues::F32(vec![a]),
+        input_b: RawValues::F32(vec![a]),
+        expected: RawValues::F32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn case_const_u32_add(name: &str, a: u32, c: u32, expected: u32) -> OpCase {
+    OpCase {
+        name: format!("{}_const_u32_add_{}_a{:#010x}", NAME_PREFIX, name, a),
+        def: build_const_binop_def(name, ScalarType::U32, BinOp::Add, ConstValue::U32(c)),
+        input_a: RawValues::U32(vec![a]),
+        input_b: RawValues::U32(vec![a]),
+        expected: RawValues::U32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn cases_const() -> Vec<OpCase> {
+    let mut out = Vec::new();
+
+    // The exact bug case from 85551fa: scale by 1.0 / 2^24.
+    // `(0.5_f32) * (1.0_f32 / (1 << 24)_f32) = 2.9802322e-8`.
+    let small = 1.0f32 / (1u32 << 24) as f32;
+    out.push(case_const_f32_mul(
+        "scale_24bit",
+        0.5f32,
+        small,
+        0.5f32 * small,
+    ));
+
+    // A few neighbouring magnitudes that the `{:.6}` formatter would
+    // also silently round.
+    out.push(case_const_f32_mul(
+        "scale_1e8",
+        4_294_967_295.0f32, // ~2^32
+        1.0e-8f32,
+        4_294_967_295.0f32 * 1.0e-8f32,
+    ));
+    out.push(case_const_f32_mul(
+        "scale_1e7",
+        1000.0f32,
+        1.0e-7f32,
+        1000.0f32 * 1.0e-7f32,
+    ));
+
+    // A small u32 const case for symmetry. Doesn't exercise a known
+    // bug today but cheap insurance against analogous regressions in
+    // integer const emission.
+    out.push(case_const_u32_add(
+        "add_42",
+        0x12345678u32,
+        42u32,
+        0x12345678u32.wrapping_add(42),
+    ));
+
+    // Composed-op case: unsigned shift of an int-typed register.
+    // Exercises the `06e764c` shift sign-extension path. Without
+    // the operand-cast fix in the MSL emitter, `(i32)0x80000000 >>
+    // 8` arithmetic-shifts to 0xFF800000 (sign-extended), which
+    // then assigns to uint — wrong. With the fix, the operands are
+    // cast to uint inside the emit so the shift is logical.
+    let a = 0x80000000u32;
+    let expected_after_shift = a >> 8; // 0x00800000
+    out.push(OpCase {
+        name: format!("{}_shr_after_signed_a{:#010x}", NAME_PREFIX, a),
+        def: build_shr_after_signed_def(),
+        input_a: RawValues::U32(vec![a]),
+        input_b: RawValues::U32(vec![0]),
+        expected: RawValues::U32(vec![expected_after_shift]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+
+    out
+}
+
+/// All BinOp + UnaryOp + Cmp + Cast + Const cases. Order: int BinOp,
+/// float BinOp, unary, cmp, cast, const.
 pub fn cases() -> Vec<OpCase> {
     let mut all = Vec::new();
     all.extend(cases_u32());
@@ -1276,6 +1546,7 @@ pub fn cases() -> Vec<OpCase> {
     all.extend(cases_unary());
     all.extend(cases_cmp());
     all.extend(cases_cast());
+    all.extend(cases_const());
     all
 }
 
