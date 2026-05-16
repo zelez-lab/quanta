@@ -67,6 +67,14 @@ pub fn compile_kernel(args: &[String]) {
     // line on stderr instead of being passed to an emitter that
     // produces invalid backend text (e.g. F64 -> MSL "double",
     // which xcrun rejects with no recovery).
+    // Build-time skip messages are silent by default. The runtime
+    // NotSupported errors thrown by JIT drivers carry the full
+    // ValidationReport via `with_context`, so users who hit a
+    // missing-backend issue at dispatch time still get an
+    // actionable error. To re-enable the build-time per-kernel
+    // skip lines for debugging, set `QUANTA_VALIDATE_VERBOSE=1`.
+    let verbose = std::env::var("QUANTA_VALIDATE_VERBOSE").is_ok();
+
     let metal_report = quanta_ir::validate::validate_for(&quanta_ir::caps::METAL, &kernel);
     if metal_report.is_ok() {
         if let Ok(msl) = emit_msl::emit(&kernel) {
@@ -75,7 +83,7 @@ pub fn compile_kernel(args: &[String]) {
                 Err(e) => eprintln!("[quanta] metallib error: {}", e),
             }
         }
-    } else {
+    } else if verbose {
         eprintln!("[quanta] {}", metal_report.summary());
     }
 
@@ -86,7 +94,7 @@ pub fn compile_kernel(args: &[String]) {
             Ok(wgsl) => output.wgsl = Some(wgsl),
             Err(e) => eprintln!("[quanta] WGSL emitter error: {}", e),
         }
-    } else {
+    } else if verbose {
         eprintln!("[quanta] {}", webgpu_report.summary());
     }
 
@@ -97,7 +105,7 @@ pub fn compile_kernel(args: &[String]) {
             Ok(spirv) => output.spirv = Some(spirv),
             Err(e) => eprintln!("[quanta] SPIR-V emitter error: {}", e),
         }
-    } else {
+    } else if verbose {
         eprintln!("[quanta] {}", vulkan_report.summary());
     }
 
