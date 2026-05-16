@@ -216,6 +216,74 @@ fn div(
     }
 }
 
+/// Bit-exact comparison across any integer `RawValues` variant.
+///
+/// Used by the op-matrix test (step 082 Layer 1). The matrix
+/// instantiates kernels for every `(BinOp, ScalarType, edge-input)`
+/// triple, so we need one comparator that accepts the type-tagged
+/// output of any of them. Float variants still go through
+/// `compare_f32` because they need ULP tolerance.
+pub fn compare_bit_exact(oracle: &RawOutput, candidate: &RawOutput) -> Result<(), Divergence> {
+    if oracle.kernel != candidate.kernel {
+        return Err(div(
+            oracle,
+            candidate,
+            None,
+            format!(
+                "kernel name mismatch: {} vs {}",
+                oracle.kernel, candidate.kernel
+            ),
+        ));
+    }
+    match (&oracle.values, &candidate.values) {
+        (RawValues::U32(a), RawValues::U32(b)) => slice_bit_exact(oracle, candidate, a, b),
+        (RawValues::U64(a), RawValues::U64(b)) => slice_bit_exact(oracle, candidate, a, b),
+        (RawValues::I32(a), RawValues::I32(b)) => slice_bit_exact(oracle, candidate, a, b),
+        (RawValues::I64(a), RawValues::I64(b)) => slice_bit_exact(oracle, candidate, a, b),
+        // f32 falls back to compare_f32 with max_ulps = 0 for bit-exact
+        // operations (Add/Sub/Mul/Div on f32 are deterministic on every
+        // emitter we ship; only transcendentals need >0 ULP).
+        (RawValues::F32(_), RawValues::F32(_)) => compare_f32(oracle, candidate, 0),
+        _ => Err(div(
+            oracle,
+            candidate,
+            None,
+            format!(
+                "compare_bit_exact: type mismatch oracle={} candidate={}",
+                oracle.values.type_tag(),
+                candidate.values.type_tag()
+            ),
+        )),
+    }
+}
+
+fn slice_bit_exact<T: PartialEq + core::fmt::Display>(
+    oracle: &RawOutput,
+    candidate: &RawOutput,
+    a: &[T],
+    b: &[T],
+) -> Result<(), Divergence> {
+    if a.len() != b.len() {
+        return Err(div(
+            oracle,
+            candidate,
+            None,
+            format!("length mismatch: {} vs {}", a.len(), b.len()),
+        ));
+    }
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        if x != y {
+            return Err(div(
+                oracle,
+                candidate,
+                Some(i),
+                format!("{} oracle={} candidate={}", oracle.values.type_tag(), x, y),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Returns `None` if the two values are not ULP-comparable
 /// (any NaN, or finite values of opposite sign that are not both ±0).
 /// Otherwise returns the integer ULP distance.
