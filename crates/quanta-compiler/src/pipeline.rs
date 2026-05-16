@@ -62,25 +62,43 @@ pub fn compile_kernel(args: &[String]) {
         wgsl: None,
     };
 
-    // Compile MSL → metallib via xcrun (if available).
-    // Axiom A1: if xcrun is present and fails, the build must fail.
-    if let Ok(msl) = emit_msl::emit(&kernel) {
-        match metallib::compile_msl_to_metallib(&msl) {
-            Ok(bytes) => output.metallib = bytes,
-            Err(e) => eprintln!("[quanta] metallib error: {}", e),
+    // Step 082 Layer 4: gate each backend's emission on the IR
+    // validator. Kernels using NotSupported types get a clean skip
+    // line on stderr instead of being passed to an emitter that
+    // produces invalid backend text (e.g. F64 -> MSL "double",
+    // which xcrun rejects with no recovery).
+    let metal_report = quanta_ir::validate::validate_for(&quanta_ir::caps::METAL, &kernel);
+    if metal_report.is_ok() {
+        if let Ok(msl) = emit_msl::emit(&kernel) {
+            match metallib::compile_msl_to_metallib(&msl) {
+                Ok(bytes) => output.metallib = bytes,
+                Err(e) => eprintln!("[quanta] metallib error: {}", e),
+            }
         }
+    } else {
+        eprintln!("[quanta] skipping metal emission: {}", metal_report);
     }
 
     // Emit WGSL source for WebGPU.
-    match emit_wgsl::emit(&kernel) {
-        Ok(wgsl) => output.wgsl = Some(wgsl),
-        Err(e) => eprintln!("[quanta] WGSL emitter error: {}", e),
+    let webgpu_report = quanta_ir::validate::validate_for(&quanta_ir::caps::WEBGPU, &kernel);
+    if webgpu_report.is_ok() {
+        match emit_wgsl::emit(&kernel) {
+            Ok(wgsl) => output.wgsl = Some(wgsl),
+            Err(e) => eprintln!("[quanta] WGSL emitter error: {}", e),
+        }
+    } else {
+        eprintln!("[quanta] skipping wgsl emission: {}", webgpu_report);
     }
 
     // Emit Vulkan SPIR-V directly from KernelOps (Shader capability, GLCompute).
-    match emit_spirv::emit(&kernel) {
-        Ok(spirv) => output.spirv = Some(spirv),
-        Err(e) => eprintln!("[quanta] SPIR-V emitter error: {}", e),
+    let vulkan_report = quanta_ir::validate::validate_for(&quanta_ir::caps::VULKAN, &kernel);
+    if vulkan_report.is_ok() {
+        match emit_spirv::emit(&kernel) {
+            Ok(spirv) => output.spirv = Some(spirv),
+            Err(e) => eprintln!("[quanta] SPIR-V emitter error: {}", e),
+        }
+    } else {
+        eprintln!("[quanta] skipping spirv emission: {}", vulkan_report);
     }
 
     // LLVM compilation for PTX/GCN — run in subprocess to survive fatal errors.

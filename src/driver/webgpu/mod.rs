@@ -555,6 +555,18 @@ impl QGpuDevice for WebgpuDevice {
         let kernel = quanta_ir::deserialize_kernel(kernel_def)
             .map_err(|e| Self::err_owned(format!("deserialize KernelDef: {}", e)))?;
 
+        // Step 082 Layer 4: WebGPU's WGSL surface rejects F64,
+        // I64/U64, and narrow ints (u8/u16/i8/i16). Catch those at
+        // validation time so the user gets a clean NotSupported
+        // instead of an opaque "emit_wgsl_jit" error.
+        let report = quanta_ir::validate::validate_for(&quanta_ir::caps::WEBGPU, &kernel);
+        if !report.is_ok() {
+            return Err(QuantaError::not_supported(
+                "kernel uses unsupported scalar type for WebGPU",
+            )
+            .with_context(&format!("{}", report)));
+        }
+
         let wgsl = quanta_ir::emit_wgsl::emit_wgsl_jit(&kernel)
             .map_err(|e| Self::err_owned(format!("emit_wgsl_jit: {}", e)))?;
 

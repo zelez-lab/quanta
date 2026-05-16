@@ -46,6 +46,21 @@ impl VulkanDevice {
     pub(crate) fn wave_jit_impl(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
         let kernel = quanta_ir::deserialize_kernel(kernel_def_bytes)
             .map_err(|e| QuantaError::compilation_failed(format!("JIT deserialize: {}", e)))?;
+
+        // Step 082 Layer 4: validate against Vulkan's capability
+        // table. Hard NotSupported types (none today on Vulkan —
+        // F64/F16 are RequiresFeature, which the validator passes
+        // through soft) get rejected here. RequiresFeature types
+        // are deferred to the runtime device-caps check
+        // (Gpu::supports_*).
+        let report = quanta_ir::validate::validate_for(&quanta_ir::caps::VULKAN, &kernel);
+        if !report.is_ok() {
+            return Err(QuantaError::not_supported(
+                "kernel uses unsupported scalar type for Vulkan",
+            )
+            .with_context(&format!("{}", report)));
+        }
+
         let spirv = quanta_ir::emit_spirv::emit(&kernel)
             .map_err(|e| QuantaError::compilation_failed(format!("JIT SPIR-V emit: {}", e)))?;
         self.wave_impl(&spirv)

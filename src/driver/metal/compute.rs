@@ -47,6 +47,21 @@ impl MetalDevice {
 
         let kernel = quanta_ir::deserialize_kernel(kernel_def_bytes)
             .map_err(|e| QuantaError::compilation_failed(format!("JIT deserialize: {}", e)))?;
+
+        // Step 082 Layer 4: validate the kernel against Metal's
+        // capability table before invoking the MSL emitter. F64
+        // and any other unsupported scalar type get a clean
+        // NotSupported error instead of being passed to xcrun
+        // (which would fail opaquely with "double is not
+        // supported in Metal" or similar).
+        let report = quanta_ir::validate::validate_for(&quanta_ir::caps::METAL, &kernel);
+        if !report.is_ok() {
+            return Err(QuantaError::not_supported(
+                "kernel uses unsupported scalar type for Metal",
+            )
+            .with_context(&format!("{}", report)));
+        }
+
         let msl = quanta_ir::emit_msl::emit(&kernel)
             .map_err(|e| QuantaError::compilation_failed(format!("JIT MSL emit: {}", e)))?;
 
