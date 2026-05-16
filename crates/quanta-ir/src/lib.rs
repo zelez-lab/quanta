@@ -4,10 +4,12 @@
 //! (`quanta-compiler`). Defines the platform-agnostic IR that represents
 //! GPU kernels between parsing and code generation.
 
+pub mod caps;
 pub mod output;
 pub mod serial;
 pub mod shader;
 pub mod types;
+pub mod validate;
 pub mod wire;
 
 /// SPIR-V emitter for JIT compilation. Enabled by the `jit` feature.
