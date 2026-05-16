@@ -76,6 +76,11 @@ jobs:
         # this driver".
         run: cargo test --test differential --features software,metal,jit
 
+      - name: Op-matrix tests (software + metal lanes)
+        # Step 082 Layer 1: same lane set, exhaustive per-op matrix.
+        # F64 cases auto-skip on Metal (no `double` type in MSL).
+        run: cargo test --test op_matrix --features software,metal,jit
+
   # Step 063 follow-up — promoted to per-PR alongside diff-metal.
   # lavapipe gives free Vulkan coverage for the foundation slices
   # (proc-addr loading, extension detection, sparse-binding enable,
@@ -127,6 +132,10 @@ jobs:
 
       - name: Differential tests (vulkan lane via lavapipe)
         run: cargo test --test differential --no-default-features --features vulkan
+
+      - name: Op-matrix tests (vulkan lane via lavapipe)
+        # Step 082 Layer 1 on the SPIR-V emitter path.
+        run: cargo test --test op_matrix --no-default-features --features vulkan
 
   # ─── AMDGPU lane (real-hardware Vulkan via Mesa radv) ────────────────
   #
@@ -191,6 +200,11 @@ jobs:
           # lavapipe if the runner has both ICDs registered.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
         run: cargo test --test differential --no-default-features --features vulkan
+
+      - name: Op-matrix tests (vulkan lane on real AMDGPU)
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
+        run: cargo test --test op_matrix --no-default-features --features vulkan
 
   # ─── NVIDIA lane (real-hardware Vulkan via NVIDIA proprietary driver) ───
   #
@@ -268,3 +282,8 @@ jobs:
           # to lavapipe if the runner has both ICDs registered.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/nvidia_icd.json
         run: cargo test --test differential --no-default-features --features vulkan
+
+      - name: Op-matrix tests (vulkan lane on real NVIDIA)
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/nvidia_icd.json
+        run: cargo test --test op_matrix --no-default-features --features vulkan

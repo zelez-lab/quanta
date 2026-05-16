@@ -58,6 +58,14 @@ jobs:
       - name: Differential tests (software lane)
         run: cargo test --test differential --features software --no-default-features
 
+      # Step 082 Layer 1: per-op differential matrix. Same software
+      # lane as above — every (BinOp, UnaryOp, CmpOp, Cast) × scalar
+      # type × edge-input triple must agree bit-exact (or ≤ max_ulps
+      # for float Div) with the CPU reference. Metal/Vulkan lanes
+      # extend in diff-full.yml.
+      - name: Op-matrix tests (software lane)
+        run: cargo test --test op_matrix --features software --no-default-features
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   # Gated on the `run-metal` PR label until a self-hosted Metal runner
   # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
