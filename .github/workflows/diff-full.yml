@@ -41,13 +41,15 @@ jobs:
   # cache reuse. The `run-full-diff` label is no longer required —
   # ordinary PRs get Metal coverage automatically.
   diff-metal:
-    # Gated on the `run-metal` PR label until a self-hosted Metal runner
-    # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
+    # Gated on the `run-metal` PR label until a self-hosted Metal
+    # runner is registered. GitHub-hosted macos-14 VMs don't expose
+    # the GPU — running this job there panics every Metal test
+    # with `NoDevice` after a long build. The cron / dispatch
+    # paths used to fire too and burn ~15 min per run for no
+    # signal; both removed until a real runner exists.
     if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'run-metal'))
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'run-metal')
     runs-on: macos-14
     timeout-minutes: 25
     steps:
@@ -131,11 +133,16 @@ jobs:
           VK_ICD_FILENAMES="$ICD" vulkaninfo --summary
 
       - name: Differential tests (vulkan lane via lavapipe)
-        run: cargo test --test differential --no-default-features --features vulkan
+        # `jit` is required: differential tests + op_matrix build
+        # KernelDef IR at runtime and feed it through wave_jit. The
+        # `vulkan` feature alone leaves wave_jit returning the
+        # default trait error "JIT compilation not supported by
+        # this driver" (same constraint as the metal lane above).
+        run: cargo test --test differential --no-default-features --features vulkan,jit
 
       - name: Op-matrix tests (vulkan lane via lavapipe)
         # Step 082 Layer 1 on the SPIR-V emitter path.
-        run: cargo test --test op_matrix --no-default-features --features vulkan
+        run: cargo test --test op_matrix --no-default-features --features vulkan,jit
 
   # ─── AMDGPU lane (real-hardware Vulkan via Mesa radv) ────────────────
   #
@@ -199,12 +206,12 @@ jobs:
           # Pin to RADV so we don't accidentally fall back to
           # lavapipe if the runner has both ICDs registered.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
-        run: cargo test --test differential --no-default-features --features vulkan
+        run: cargo test --test differential --no-default-features --features vulkan,jit
 
       - name: Op-matrix tests (vulkan lane on real AMDGPU)
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
-        run: cargo test --test op_matrix --no-default-features --features vulkan
+        run: cargo test --test op_matrix --no-default-features --features vulkan,jit
 
   # ─── NVIDIA lane (real-hardware Vulkan via NVIDIA proprietary driver) ───
   #
@@ -281,9 +288,9 @@ jobs:
           # Pin to NVIDIA's ICD so we don't accidentally fall back
           # to lavapipe if the runner has both ICDs registered.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/nvidia_icd.json
-        run: cargo test --test differential --no-default-features --features vulkan
+        run: cargo test --test differential --no-default-features --features vulkan,jit
 
       - name: Op-matrix tests (vulkan lane on real NVIDIA)
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/nvidia_icd.json
-        run: cargo test --test op_matrix --no-default-features --features vulkan
+        run: cargo test --test op_matrix --no-default-features --features vulkan,jit
