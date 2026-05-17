@@ -32,11 +32,17 @@ Every primitive ships:
 - **The wasm32 target**: `rustup target add wasm32-unknown-unknown`
 - **git** on `PATH`.
 
-That's it for the software backend (works on any laptop). For
-real-GPU dispatch you also need Metal Toolchain (macOS), Vulkan
-SDK (Linux/Windows), or a Chromium-based browser (WebGPU). The
-software backend runs the exact same kernels via a CPU JIT —
-perfect for getting started.
+For real-GPU dispatch you also need Metal Toolchain (macOS),
+Vulkan SDK (Linux/Windows), or a Chromium-based browser (WebGPU).
+
+**Block-cooperative primitives need a real GPU.** Unlike Quanta's
+trivially-parallel kernels (RNG fills, element-wise compute),
+the primitives in this crate require multiple threads per
+workgroup. The software CPU JIT backend (`quanta::init_cpu()`)
+is single-threaded — subgroup intrinsics degrade to identity
+functions there, so cooperative reduce/scan/sort produce
+degenerate results. Use `quanta::init()?` and skip if no GPU is
+present (the examples in this crate show the pattern).
 
 ## Step 1 — Create a new project
 
@@ -69,13 +75,14 @@ when you want the reference impl as an oracle.
 
 Replace `src/main.rs` with:
 
-```rust
+```rust,ignore
 use quanta_prims::block_reduce_add_u32_buffer;
 
 fn main() -> Result<(), quanta::QuantaError> {
-    // For real-GPU dispatch use quanta::init()?; here we use
-    // init_cpu() so this works on any machine.
-    let gpu = quanta::init_cpu();
+    // Block-cooperative primitives need a real GPU. Single-thread
+    // init_cpu() returns degenerate results — see the
+    // troubleshooting section.
+    let gpu = quanta::init()?;
 
     // 256 inputs, ramp 1..=256.
     let n = 256usize;
@@ -232,8 +239,19 @@ You forgot `features = ["gpu"]` in your `Cargo.toml`. Without
 it the `*_buffer` top-level kernels aren't compiled in.
 
 **`QuantaError { kind: NoDevice }` from `quanta::init()`**
-No supported GPU found. Use `quanta::init_cpu()` — same kernels,
-same output, slower throughput.
+No supported GPU found on this machine. The block-cooperative
+primitives in this crate can't fall back to `init_cpu()` —
+they need multiple threads per workgroup. The pure-Rust
+`quanta_prims::reference` module always works (single-thread,
+no GPU dependency) and is the right tool for unit-test oracles
+or when you only need the CPU result.
+
+**My output looks like the input was just copied through.**
+You're probably running on `quanta::init_cpu()`. The software
+backend is single-threaded — every subgroup intrinsic returns
+its own value, so cooperative reduce/scan/sort produce
+trivial results. Switch to `quanta::init()?` on a machine
+with a real GPU.
 
 **My results don't match across runs (only the reduce sums)**
 Floating-point reductions on the GPU use a tree pattern with a

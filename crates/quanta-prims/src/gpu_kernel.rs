@@ -343,7 +343,7 @@ fn block_reduce_max_f32_kernel(value: f32) -> f32 {
 
 /// Convenience kernel: u32 sum reduce, one output per block.
 /// Workgroup size 256 → up to 8 warps (Apple/NVIDIA).
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_add_u32_buffer(data: &[u32], out: &mut [u32]) {
     #[quanta::shared]
     let scratch: [u32; 32];
@@ -366,7 +366,7 @@ pub fn block_reduce_add_u32_buffer(data: &[u32], out: &mut [u32]) {
 }
 
 /// Convenience kernel: i32 sum reduce, one output per block.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_add_i32_buffer(data: &[i32], out: &mut [i32]) {
     #[quanta::shared]
     let scratch: [i32; 32];
@@ -389,7 +389,7 @@ pub fn block_reduce_add_i32_buffer(data: &[i32], out: &mut [i32]) {
 }
 
 /// Convenience kernel: f32 sum reduce, one output per block.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_add_f32_buffer(data: &[f32], out: &mut [f32]) {
     #[quanta::shared]
     let scratch: [f32; 32];
@@ -413,7 +413,7 @@ pub fn block_reduce_add_f32_buffer(data: &[f32], out: &mut [f32]) {
 
 /// Convenience kernel: u32 min reduce, one output per block.
 /// Scratch identity = u32::MAX.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_min_u32_buffer(data: &[u32], out: &mut [u32]) {
     #[quanta::shared]
     let scratch: [u32; 32];
@@ -437,7 +437,7 @@ pub fn block_reduce_min_u32_buffer(data: &[u32], out: &mut [u32]) {
 
 /// Convenience kernel: i32 min reduce, one output per block.
 /// Scratch identity = i32::MAX.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_min_i32_buffer(data: &[i32], out: &mut [i32]) {
     #[quanta::shared]
     let scratch: [i32; 32];
@@ -461,7 +461,7 @@ pub fn block_reduce_min_i32_buffer(data: &[i32], out: &mut [i32]) {
 
 /// Convenience kernel: f32 min reduce, one output per block.
 /// Scratch identity = f32::INFINITY.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_min_f32_buffer(data: &[f32], out: &mut [f32]) {
     #[quanta::shared]
     let scratch: [f32; 32];
@@ -492,7 +492,7 @@ pub fn block_reduce_min_f32_buffer(data: &[f32], out: &mut [f32]) {
 
 /// Convenience kernel: u32 max reduce, one output per block.
 /// Scratch identity = 0.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_max_u32_buffer(data: &[u32], out: &mut [u32]) {
     #[quanta::shared]
     let scratch: [u32; 32];
@@ -516,7 +516,7 @@ pub fn block_reduce_max_u32_buffer(data: &[u32], out: &mut [u32]) {
 
 /// Convenience kernel: i32 max reduce, one output per block.
 /// Scratch identity = i32::MIN.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_max_i32_buffer(data: &[i32], out: &mut [i32]) {
     #[quanta::shared]
     let scratch: [i32; 32];
@@ -540,7 +540,7 @@ pub fn block_reduce_max_i32_buffer(data: &[i32], out: &mut [i32]) {
 
 /// Convenience kernel: f32 max reduce, one output per block.
 /// Scratch identity = f32::NEG_INFINITY.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_reduce_max_f32_buffer(data: &[f32], out: &mut [f32]) {
     #[quanta::shared]
     let scratch: [f32; 32];
@@ -679,7 +679,7 @@ fn block_scan_add_f32_kernel(value: f32) -> f32 {
 /// Convenience kernel: u32 inclusive prefix-sum scan.
 /// `out[i]` = sum of `data[block_start..=i]` where `block_start`
 /// is the first lane of the block containing lane `i`.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_scan_add_u32_buffer(data: &[u32], out: &mut [u32]) {
     #[quanta::shared]
     let scratch: [u32; 32];
@@ -698,7 +698,7 @@ pub fn block_scan_add_u32_buffer(data: &[u32], out: &mut [u32]) {
 }
 
 /// Convenience kernel: i32 inclusive prefix-sum scan.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_scan_add_i32_buffer(data: &[i32], out: &mut [i32]) {
     #[quanta::shared]
     let scratch: [i32; 32];
@@ -717,7 +717,7 @@ pub fn block_scan_add_i32_buffer(data: &[i32], out: &mut [i32]) {
 }
 
 /// Convenience kernel: f32 inclusive prefix-sum scan.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
     #[quanta::shared]
     let scratch: [f32; 32];
@@ -767,7 +767,7 @@ pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
 /// independently of the others. Producing a globally-sorted
 /// output requires chaining a multi-block merge or device-wide
 /// sort — out of scope for v0.1.
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256])]
 pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
     #[quanta::shared]
     let buf: [u32; 256];

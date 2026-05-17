@@ -29,6 +29,11 @@ across the portable `{u32, i32, f32}` type set.
   XOR-partner compare-exchange. Named `radix_sort` for forward
   API compatibility; the algorithm choice will become an
   internal detail in a later release.
+  **Known broken on real Metal** — the WASM-route lowering
+  aliases registers in the kernel body, corrupting the final
+  write index. The kernel ships so the API is stable, but the
+  differential tests are flagged `#[ignore]`. Fix tracked
+  against the substrate's register allocator.
 - **Top-level convenience kernels** for every primitive:
   `*_buffer` reads N inputs and writes one (reduce) or N
   (scan/sort) outputs per block.
@@ -75,19 +80,22 @@ across the portable `{u32, i32, f32}` type set.
 
 ### Tests
 
-34 GPU-differential tests against the reference implementations:
+27 GPU-differential tests passing on real Metal (Apple M1 Pro):
 - 9 reduce-family cases (add / min / max × u32 / i32 / f32).
 - 6 scan cases (ramp, uniform, alternating sign, f32
   tolerance, first-output, last-output).
-- 7 sort cases (descending, sorted, uniform, pseudo-random,
-  ties, extreme values, multi-block independence).
 - 5 cross-warp reduce stress cases.
 - 3 reference-module unit tests.
 - 4 doctests across `reference` and `lib.rs`.
 
-All tests pass on Metal. CPU-software-backend coverage falls
-out for free since every kernel routes through the same
-WASM-route IR.
+Plus 7 sort-family `#[ignore]` tests pending the substrate
+register-allocator fix described above.
+
+Discovery note: earlier session commit messages claimed "all
+34 pass on Metal" — those runs actually skipped the GPU path
+because the prims dep only enabled `quanta/software`. Adding
+the `gpu-metal` convenience feature surfaced the real backend,
+which is how the bitonic-sort bug came to light.
 
 ### Status
 

@@ -16,17 +16,27 @@ the same Rust source.
 
 **v0.1.0-alpha.2** — Tier 1 shipped:
 
-| Primitive                                  | Status |
-| ------------------------------------------ | ------ |
-| `block_reduce_add` × {u32, i32, f32}       | ✅     |
-| `block_reduce_min` × {u32, i32, f32}       | ✅     |
-| `block_reduce_max` × {u32, i32, f32}       | ✅     |
-| `block_scan_add`   × {u32, i32, f32}       | ✅     |
-| `block_radix_sort_u32` (bitonic, 256 keys) | ✅     |
-| Block histogram                            | Tier 2 |
-| Block top-k                                | Tier 2 |
-| Block compact / partition                  | Tier 2 |
-| Segmented reduce / scan                    | Tier 2 |
+| Primitive                                  | Status         |
+| ------------------------------------------ | -------------- |
+| `block_reduce_add` × {u32, i32, f32}       | ✅ verified    |
+| `block_reduce_min` × {u32, i32, f32}       | ✅ verified    |
+| `block_reduce_max` × {u32, i32, f32}       | ✅ verified    |
+| `block_scan_add`   × {u32, i32, f32}       | ✅ verified    |
+| `block_radix_sort_u32` (bitonic, 256 keys) | ⚠️ broken (1)  |
+| Block histogram                            | Tier 2         |
+| Block top-k                                | Tier 2         |
+| Block compact / partition                  | Tier 2         |
+| Segmented reduce / scan                    | Tier 2         |
+
+(1) The bitonic-sort kernel produces wrong output on real Metal:
+the WASM-route lowering aliases registers between `quark_id`
+and intermediate loop variables, corrupting the final write.
+The kernel still **ships** so the API surface is stable;
+differential tests are flagged `#[ignore]`. Tracking — needs
+substrate-side register-allocation fix in
+`crates/quanta-wasm-lowering`. Reduce and scan don't hit this
+because their loops are shorter and don't reuse the quark_id
+register inside the loop body.
 
 13 GPU kernels. 34 differential tests on Metal. 8 Lean
 correctness theorems + 12 Verus operational invariants. See
