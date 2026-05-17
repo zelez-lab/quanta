@@ -778,14 +778,31 @@ pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
     buf[lane] = data[i as usize];
     barrier();
 
-    // Bitonic sort outer step `k` doubles each iteration: k = 2,
-    // 4, 8, …, 256. For each `k` the inner step `j` halves from
-    // `k/2` down to 1; each lane swaps with `lane ^ j` if the
-    // direction-determined comparator says so.
+    // Bitonic sort outer step `k` doubles each iteration:
+    // k = 2, 4, 8, …, 256. For each `k` the inner step `j`
+    // halves from `k/2` down to 1; each lane swaps with
+    // `lane ^ j` if the direction-determined comparator says so.
     //
-    // Direction: ascending if (lane & k) == 0, descending else.
-    // Comparator: if direction is ascending and partner_key < my_key
-    // (or both reversed for descending), swap.
+    // The lanes in a XOR-pair share the same `(lane & k)` bit
+    // (since they differ only in bit `j < k`), so both lanes
+    // agree on the pair's *direction*. They differ in `(lane &
+    // j)`, which tells each lane whether it is the lower-indexed
+    // partner. Combining: a lane should take the partner's value
+    // exactly when its role (min-keeper vs max-keeper) AND the
+    // partner's value disagree with what should be at this slot.
+    //
+    //   ascending = (lane & k) == 0      // direction
+    //   i_am_lower = (lane & j) == 0     // role within pair
+    //
+    // For ascending direction:
+    //   lower lane keeps min  -> takes partner if partner < me
+    //   upper lane keeps max  -> takes partner if partner > me
+    //
+    // The "take partner" condition is therefore controlled by
+    // `ascending == i_am_lower`: when both are true (ascending +
+    // I'm the lower lane) or both are false (descending + I'm
+    // the upper lane), the smaller-keeping rule applies. The
+    // opposite case uses the larger-keeping rule.
     let mut k: u32 = 2u32;
     while k <= 256u32 {
         let mut j: u32 = k / 2u32;
@@ -794,16 +811,25 @@ pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
             let my_key = buf[lane];
             let partner_key = buf[partner];
 
-            // Ascending direction: keep smaller at lower index.
-            let want_ascending = (lane & k) == 0u32;
-            // Pairs cooperate: only the lower-index lane decides
-            // and writes both slots — but that needs a barrier
-            // between read and write. Simpler: both lanes do the
-            // same read, decide whether to take their partner's
-            // value, write back. The XOR partnering guarantees
-            // each pair sees consistent comparisons because both
-            // lanes use the same `(lane & k)` direction.
-            let take_partner = if want_ascending {
+            // Compute `want_smaller` as a u32 bit expression
+            // rather than a `bool == bool` to dodge an LLVM
+            // constant-folding edge case observed on this path
+            // (the bool-equality compiled to `r35 = true` which
+            // killed the inner body).
+            //
+            // ascending_bit = ((lane >> log2(k)) & 1) == 0
+            // lower_bit     = ((lane & j) == 0)
+            // want_smaller  = ascending_bit == lower_bit
+            //               = (lane & k) == 0   iff   (lane & j) == 0
+            //               = ((lane & k) XOR (lane & j)) is "both same"
+            //               = !( ((lane & k) != 0) XOR ((lane & j) != 0) )
+            //
+            // Equivalently, packing the bits: bit_k = (lane & k) != 0,
+            // bit_j = (lane & j) != 0, want_smaller = (bit_k == bit_j).
+            // Encode as integer compare to keep LLVM honest.
+            let bit_k = if (lane & k) == 0u32 { 0u32 } else { 1u32 };
+            let bit_j = if (lane & j) == 0u32 { 0u32 } else { 1u32 };
+            let take_partner = if bit_k == bit_j {
                 partner_key < my_key
             } else {
                 partner_key > my_key
@@ -818,5 +844,12 @@ pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
         k = k * 2u32;
     }
 
-    out[i as usize] = buf[lane];
+    // Re-fetch quark_id rather than reusing the `i` from the top.
+    // rustc's wasm codegen reuses the wasm-local that held `i`
+    // for intermediate loop values; the WASM-route lowerer sees
+    // a single register being overwritten and the final write
+    // then uses a corrupted index. Calling `quark_id()` again
+    // forces a fresh wasm-local allocation.
+    let out_i = quark_id();
+    out[out_i as usize] = buf[lane];
 }

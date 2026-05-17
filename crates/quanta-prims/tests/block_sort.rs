@@ -4,18 +4,7 @@
 //! 256-element block sorted independently). We compare each
 //! block against a CPU reference sort of the same block.
 //!
-//! ## All tests `#[ignore]` for v0.1
-//!
-//! The bitonic kernel as written produces wrong output on real
-//! Metal: the WASM-route lowering aliases registers between
-//! `quark_id` and intermediate loop variables (`lane ^ j`),
-//! corrupting the final write index. Reduce and scan don't hit
-//! this because their loops are shorter and don't reuse the
-//! quark_id register inside the loop body.
-//!
-//! Tests are flagged `#[ignore]` so the suite stays green; run
-//! with `cargo test -- --ignored` to exercise them once the
-//! substrate bug is fixed. See the README "Status" table.
+//! Skips gracefully when no GPU backend is available.
 
 #![cfg(feature = "gpu")]
 
@@ -42,7 +31,6 @@ fn run_sort(gpu: &quanta::Gpu, data: &[u32]) -> Vec<u32> {
 }
 
 #[test]
-#[ignore = "bitonic sort produces wrong output on Metal — register-aliasing bug, see file header"]
 fn sorts_descending_input_to_ascending() {
     let Some(gpu) = try_gpu() else { return };
     // Strictly descending: every compare-swap fires.
@@ -53,7 +41,6 @@ fn sorts_descending_input_to_ascending() {
 }
 
 #[test]
-#[ignore = "bitonic sort produces wrong output on Metal — register-aliasing bug, see file header"]
 fn sorts_already_sorted_input_unchanged() {
     let Some(gpu) = try_gpu() else { return };
     let data: Vec<u32> = (0..BLOCK as u32).collect();
@@ -63,7 +50,6 @@ fn sorts_already_sorted_input_unchanged() {
 }
 
 #[test]
-#[ignore = "bitonic sort produces wrong output on Metal — register-aliasing bug, see file header"]
 fn sorts_uniform_input_unchanged() {
     let Some(gpu) = try_gpu() else { return };
     let data = vec![42u32; BLOCK];
@@ -72,7 +58,6 @@ fn sorts_uniform_input_unchanged() {
 }
 
 #[test]
-#[ignore = "bitonic sort produces wrong output on Metal — register-aliasing bug, see file header"]
 fn sorts_pseudo_random_input() {
     let Some(gpu) = try_gpu() else { return };
     // Reproducible pseudo-random input via a simple LCG. Tests
@@ -91,7 +76,6 @@ fn sorts_pseudo_random_input() {
 }
 
 #[test]
-#[ignore = "bitonic sort produces wrong output on Metal — register-aliasing bug, see file header"]
 fn sorts_input_with_ties() {
     let Some(gpu) = try_gpu() else { return };
     // Many duplicates: tests the comparator's handling of
@@ -104,7 +88,6 @@ fn sorts_input_with_ties() {
 }
 
 #[test]
-#[ignore = "bitonic sort produces wrong output on Metal — register-aliasing bug, see file header"]
 fn sorts_extreme_values() {
     let Some(gpu) = try_gpu() else { return };
     // Mix of 0, u32::MAX, and powers of 2 -- exercises the high
@@ -124,7 +107,6 @@ fn sorts_extreme_values() {
 }
 
 #[test]
-#[ignore = "bitonic sort produces wrong output on Metal — register-aliasing bug, see file header"]
 fn sorts_multiple_blocks_independently() {
     let Some(gpu) = try_gpu() else { return };
     // Two blocks, each with its own descending range.

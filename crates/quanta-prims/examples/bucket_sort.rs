@@ -10,15 +10,6 @@
 //! the v0.1 algorithm is bitonic underneath. The API name keeps
 //! the radix terminology for forward compatibility.
 //!
-//! ## Known issue (v0.1)
-//!
-//! The bitonic kernel produces wrong output on real Metal — the
-//! WASM-route lowering aliases registers between `quark_id` and
-//! intermediate loop variables, corrupting the final write
-//! index. This example will report MISMATCH for now. The
-//! corresponding tests are flagged `#[ignore]`. Reduce and scan
-//! work correctly.
-//!
 //! Backend: real GPU. See `block_sum.rs` for why this example
 //! needs a real GPU rather than `init_cpu()`.
 //!

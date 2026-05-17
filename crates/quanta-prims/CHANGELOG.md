@@ -29,11 +29,6 @@ across the portable `{u32, i32, f32}` type set.
   XOR-partner compare-exchange. Named `radix_sort` for forward
   API compatibility; the algorithm choice will become an
   internal detail in a later release.
-  **Known broken on real Metal** — the WASM-route lowering
-  aliases registers in the kernel body, corrupting the final
-  write index. The kernel ships so the API is stable, but the
-  differential tests are flagged `#[ignore]`. Fix tracked
-  against the substrate's register allocator.
 - **Top-level convenience kernels** for every primitive:
   `*_buffer` reads N inputs and writes one (reduce) or N
   (scan/sort) outputs per block.
@@ -80,22 +75,34 @@ across the portable `{u32, i32, f32}` type set.
 
 ### Tests
 
-27 GPU-differential tests passing on real Metal (Apple M1 Pro):
+34 GPU-differential tests passing on real Metal (Apple M1 Pro):
 - 9 reduce-family cases (add / min / max × u32 / i32 / f32).
 - 6 scan cases (ramp, uniform, alternating sign, f32
   tolerance, first-output, last-output).
+- 7 sort cases (descending, sorted, uniform, pseudo-random,
+  ties, extreme values, multi-block independence).
 - 5 cross-warp reduce stress cases.
 - 3 reference-module unit tests.
 - 4 doctests across `reference` and `lib.rs`.
 
-Plus 7 sort-family `#[ignore]` tests pending the substrate
-register-allocator fix described above.
+Discovery note from the docs-sweep cycle: earlier session
+commit messages claimed "all 34 pass on Metal" but the prims
+dep only enabled `quanta/software`, so `quanta::init()`
+returned `NoDevice` and the differential tests silently
+returned early. Adding the `gpu-metal` / `gpu-vulkan`
+convenience features surfaced real-backend execution. Two
+substrate-adjacent bugs fell out:
 
-Discovery note: earlier session commit messages claimed "all
-34 pass on Metal" — those runs actually skipped the GPU path
-because the prims dep only enabled `quanta/software`. Adding
-the `gpu-metal` convenience feature surfaced the real backend,
-which is how the bitonic-sort bug came to light.
+1. `workgroup_size = [256, 1, 1]` attribute name was silently
+   ignored — the correct form is `workgroup = [256]`. Fixed
+   all 13 prims kernel decls.
+2. The bitonic sort's `let want_smaller = ascending == i_am_lower`
+   (bool equality) compiled through LLVM to a constant-true
+   tautology in the unrolled Metal output, killing the
+   compare-exchange body. Rewriting as a u32 bit comparison
+   sidesteps the optimizer pathology.
+
+Both fixes land in this release.
 
 ### Status
 
