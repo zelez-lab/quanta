@@ -27,6 +27,56 @@ pub fn reduce_add_u32(xs: &[u32]) -> u32 {
     xs.iter().copied().fold(0u32, u32::wrapping_add)
 }
 
+/// Reduce a slice by addition, returning the sum. i32 variant.
+/// Wrapping semantics match GPU i32 overflow.
+pub fn reduce_add_i32(xs: &[i32]) -> i32 {
+    xs.iter().copied().fold(0i32, i32::wrapping_add)
+}
+
+/// Reduce a slice by addition, returning the sum. f32 variant.
+///
+/// Uses a sequential left-fold, matching the most common GPU
+/// reduce algorithm's evaluation order. Note: GPUs may use a
+/// tree reduce that produces a slightly different bit pattern
+/// for the same input due to non-associative IEEE-754 addition;
+/// callers should compare with a tolerance, not bit-exact.
+pub fn reduce_add_f32(xs: &[f32]) -> f32 {
+    xs.iter().copied().sum()
+}
+
+/// Reduce a slice by min. Returns `u32::MAX` for an empty input.
+pub fn reduce_min_u32(xs: &[u32]) -> u32 {
+    xs.iter().copied().min().unwrap_or(u32::MAX)
+}
+
+/// Reduce a slice by min. Returns `i32::MAX` for an empty input.
+pub fn reduce_min_i32(xs: &[i32]) -> i32 {
+    xs.iter().copied().min().unwrap_or(i32::MAX)
+}
+
+/// Reduce a slice by min. Returns `f32::INFINITY` for an empty
+/// input. Uses `f32::min` (IEEE-754 propagating NaN per
+/// `core::f32::min` semantics).
+pub fn reduce_min_f32(xs: &[f32]) -> f32 {
+    xs.iter().copied().fold(f32::INFINITY, f32::min)
+}
+
+/// Reduce a slice by max. Returns `0` for an empty input.
+pub fn reduce_max_u32(xs: &[u32]) -> u32 {
+    xs.iter().copied().max().unwrap_or(0)
+}
+
+/// Reduce a slice by max. Returns `i32::MIN` for an empty input.
+pub fn reduce_max_i32(xs: &[i32]) -> i32 {
+    xs.iter().copied().max().unwrap_or(i32::MIN)
+}
+
+/// Reduce a slice by max. Returns `f32::NEG_INFINITY` for an
+/// empty input.
+pub fn reduce_max_f32(xs: &[f32]) -> f32 {
+    xs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+}
+
 /// Inclusive prefix-sum scan: `out[i] = sum(xs[0..=i])`.
 ///
 /// Reference impl for `block_scan_add_u32_kernel`. Uses wrapping
