@@ -10,6 +10,7 @@
 - [Shader Stages](concepts/shader-stages.md)
 - [Execution Model](concepts/execution-model.md)
 - [Memory Model](concepts/memory-model.md)
+- [Tensor Layout](concepts/tensor-layout.md)
 
 # Guide
 

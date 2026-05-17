@@ -1,0 +1,19 @@
+[package]
+name = "quanta-tensor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tensor layout algebra — substrate for Quanta math crates (sort, blas, fft, rand)"
+readme = "README.md"
+
+[lib]
+name = "quanta_tensor"
+path = "src/lib.rs"
+
+# Phase 1: types + helper functions only. No GPU runtime dependency,
+# no proc-macro, no kernels. Downstream math crates (quanta-sort,
+# quanta-blas, ...) take a dependency on this and inherit the
+# shape-correctness proofs from the Lean / Verus artifacts that land
+# in a follow-up commit.
+
+[dependencies]
