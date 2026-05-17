@@ -173,6 +173,15 @@ struct Frame {
     redirect: Vec<usize>,
 }
 
+/// Reduction operator for the `subgroup_reduce` helper. Mirrors
+/// the three `SubgroupReduce*` IR ops.
+#[derive(Copy, Clone)]
+enum SubgroupOp {
+    Add,
+    Min,
+    Max,
+}
+
 enum FrameKind {
     /// The outermost frame — the function itself.
     Function,
@@ -1084,20 +1093,7 @@ impl<'a> LowerCtx<'a> {
                         self.emit(KernelOp::ProtonId { dst });
                         self.stack.push(SymVal::Reg(dst, ScalarType::U32));
                     }
-                    Some("shuffle_u32") => {
-                        let src_lane = self.pop()?;
-                        let value = self.pop()?;
-                        let (vr, _) = self.commit(value)?;
-                        let (lr, _) = self.commit(src_lane)?;
-                        let dst = self.alloc_reg();
-                        self.emit(KernelOp::WaveShuffle {
-                            dst,
-                            src: vr,
-                            lane_delta: lr,
-                            ty: ScalarType::U32,
-                        });
-                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
-                    }
+                    Some("shuffle_u32") => self.wave_shuffle(ScalarType::U32)?,
                     Some("ballot_u32") => {
                         let predicate = self.pop()?;
                         let (pr, _) = self.commit(predicate)?;
@@ -1119,28 +1115,43 @@ impl<'a> LowerCtx<'a> {
                         self.emit(KernelOp::WaveAll { dst, predicate: pr });
                         self.stack.push(SymVal::Reg(dst, ScalarType::U32));
                     }
+                    // Reduce / scan / shuffle across the portable
+                    // Tier-1 type set {u32, i32, f32}. Each variant
+                    // emits the same IR op with a different
+                    // ScalarType — the per-backend emitter picks
+                    // the right native subgroup instruction.
                     Some("reduce_add_u32") => {
-                        let value = self.pop()?;
-                        let (vr, _) = self.commit(value)?;
-                        let dst = self.alloc_reg();
-                        self.emit(KernelOp::SubgroupReduceAdd {
-                            dst,
-                            src: vr,
-                            ty: ScalarType::U32,
-                        });
-                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                        self.subgroup_reduce(SubgroupOp::Add, ScalarType::U32)?
                     }
-                    Some("scan_add_u32") => {
-                        let value = self.pop()?;
-                        let (vr, _) = self.commit(value)?;
-                        let dst = self.alloc_reg();
-                        self.emit(KernelOp::SubgroupInclusiveAdd {
-                            dst,
-                            src: vr,
-                            ty: ScalarType::U32,
-                        });
-                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    Some("reduce_add_i32") => {
+                        self.subgroup_reduce(SubgroupOp::Add, ScalarType::I32)?
                     }
+                    Some("reduce_add_f32") => {
+                        self.subgroup_reduce(SubgroupOp::Add, ScalarType::F32)?
+                    }
+                    Some("reduce_min_u32") => {
+                        self.subgroup_reduce(SubgroupOp::Min, ScalarType::U32)?
+                    }
+                    Some("reduce_min_i32") => {
+                        self.subgroup_reduce(SubgroupOp::Min, ScalarType::I32)?
+                    }
+                    Some("reduce_min_f32") => {
+                        self.subgroup_reduce(SubgroupOp::Min, ScalarType::F32)?
+                    }
+                    Some("reduce_max_u32") => {
+                        self.subgroup_reduce(SubgroupOp::Max, ScalarType::U32)?
+                    }
+                    Some("reduce_max_i32") => {
+                        self.subgroup_reduce(SubgroupOp::Max, ScalarType::I32)?
+                    }
+                    Some("reduce_max_f32") => {
+                        self.subgroup_reduce(SubgroupOp::Max, ScalarType::F32)?
+                    }
+                    Some("scan_add_u32") => self.subgroup_scan_inclusive(ScalarType::U32)?,
+                    Some("scan_add_i32") => self.subgroup_scan_inclusive(ScalarType::I32)?,
+                    Some("scan_add_f32") => self.subgroup_scan_inclusive(ScalarType::F32)?,
+                    Some("shuffle_i32") => self.wave_shuffle(ScalarType::I32)?,
+                    Some("shuffle_f32") => self.wave_shuffle(ScalarType::F32)?,
 
                     // Unary f32 math — these match the F32Ext polyfill in
                     // wasm_compile's wrapper plus direct extern calls.
@@ -2513,6 +2524,51 @@ impl<'a> LowerCtx<'a> {
         let order_sv = self.pop()?;
         let order = order_const_to_enum(order_sv)?;
         self.emit(KernelOp::Fence { order });
+        Ok(())
+    }
+
+    /// Lower a `reduce_<op>_<ty>(value)` extern call into the
+    /// matching `KernelOp::SubgroupReduce*` op.
+    fn subgroup_reduce(&mut self, op: SubgroupOp, ty: ScalarType) -> Result<(), LoweringError> {
+        let value = self.pop()?;
+        let (vr, _) = self.commit(value)?;
+        let dst = self.alloc_reg();
+        let kop = match op {
+            SubgroupOp::Add => KernelOp::SubgroupReduceAdd { dst, src: vr, ty },
+            SubgroupOp::Min => KernelOp::SubgroupReduceMin { dst, src: vr, ty },
+            SubgroupOp::Max => KernelOp::SubgroupReduceMax { dst, src: vr, ty },
+        };
+        self.emit(kop);
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower a `scan_add_<ty>(value)` extern call into a
+    /// `KernelOp::SubgroupInclusiveAdd`.
+    fn subgroup_scan_inclusive(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let value = self.pop()?;
+        let (vr, _) = self.commit(value)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::SubgroupInclusiveAdd { dst, src: vr, ty });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower a `shuffle_<ty>(value, src_lane)` extern call into a
+    /// `KernelOp::WaveShuffle`.
+    fn wave_shuffle(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let src_lane = self.pop()?;
+        let value = self.pop()?;
+        let (vr, _) = self.commit(value)?;
+        let (lr, _) = self.commit(src_lane)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::WaveShuffle {
+            dst,
+            src: vr,
+            lane_delta: lr,
+            ty,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
         Ok(())
     }
 

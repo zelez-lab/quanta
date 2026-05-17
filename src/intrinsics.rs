@@ -139,17 +139,56 @@ unsafe extern "C" {
 }
 
 // ── Subgroup / wave ────────────────────────────────────────────────────
+//
+// Type coverage today: u32, i32, f32 (the "portable Tier-1" set
+// — every Quanta backend supports subgroup operations on these
+// natively). u64 / i64 subgroup ops are intentionally absent
+// because Metal's simdgroup instructions don't include 64-bit
+// arithmetic and WGSL's `subgroupAdd` family is defined only for
+// 32-bit and 16-bit element types. Downstream code that needs
+// 64-bit reductions can fall back to a shared-memory-only tree
+// reduce (slower but works everywhere) — see
+// `quanta-prims::block_reduce_u64` (planned) for a worked
+// example.
 
 #[link(wasm_import_module = "quanta")]
 unsafe extern "C" {
     pub fn subgroup_size() -> u32;
     pub fn subgroup_id() -> u32;
-    pub fn shuffle_u32(value: u32, src_lane: u32) -> u32;
+
+    // Ballot / any / all take a predicate (any non-zero u32 == true);
+    // a single u32 variant suffices regardless of the value type
+    // being voted on.
     pub fn ballot_u32(predicate: u32) -> u32;
-    pub fn reduce_add_u32(value: u32) -> u32;
-    pub fn scan_add_u32(value: u32) -> u32;
     pub fn any_u32(predicate: u32) -> u32;
     pub fn all_u32(predicate: u32) -> u32;
+
+    // Shuffle: read `value` from lane `self_lane ^ lane_delta`.
+    // The second argument is an XOR mask, not a source-lane
+    // index — `lane_delta = 1` swaps adjacent pairs, `2` swaps
+    // pairs of pairs, etc. (the standard butterfly pattern used
+    // by tree reductions). Mirrors Metal's `simd_shuffle_xor`
+    // and WGSL's `subgroupShuffleXor`.
+    pub fn shuffle_u32(value: u32, lane_delta: u32) -> u32;
+    pub fn shuffle_i32(value: i32, lane_delta: u32) -> i32;
+    pub fn shuffle_f32(value: f32, lane_delta: u32) -> f32;
+
+    // Reduce: every lane gets the warp-wide reduction.
+    pub fn reduce_add_u32(value: u32) -> u32;
+    pub fn reduce_add_i32(value: i32) -> i32;
+    pub fn reduce_add_f32(value: f32) -> f32;
+    pub fn reduce_min_u32(value: u32) -> u32;
+    pub fn reduce_min_i32(value: i32) -> i32;
+    pub fn reduce_min_f32(value: f32) -> f32;
+    pub fn reduce_max_u32(value: u32) -> u32;
+    pub fn reduce_max_i32(value: i32) -> i32;
+    pub fn reduce_max_f32(value: f32) -> f32;
+
+    // Inclusive prefix scan: every lane gets the running sum of
+    // lanes 0..=self.
+    pub fn scan_add_u32(value: u32) -> u32;
+    pub fn scan_add_i32(value: i32) -> i32;
+    pub fn scan_add_f32(value: f32) -> f32;
 }
 
 // ── Workgroup-shared memory ────────────────────────────────────────────
