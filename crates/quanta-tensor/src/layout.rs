@@ -22,6 +22,7 @@ use core::fmt;
 
 use crate::shape::{Shape, ShapeError};
 
+pub mod algebra;
 pub mod ops;
 mod strides;
 
@@ -86,6 +87,34 @@ pub enum LayoutError {
         /// Extent of that axis in the target shape.
         target_extent: usize,
     },
+    /// `complement` / `compose` was called on a higher-rank layout
+    /// that the dynamic-stride port doesn't yet handle. CuTe's
+    /// complement supports rank > 1 via stride sorting, which
+    /// requires per-call dynamic checks we haven't ported.
+    UnsupportedRank {
+        /// Op the caller invoked.
+        op: &'static str,
+        /// Rank that was supplied.
+        rank: usize,
+    },
+    /// A divisibility check inside `compose` failed: the layout
+    /// algebra requires either `rest_stride % curr_shape == 0` or
+    /// `rest_stride < curr_shape`. Neither held.
+    DivisibilityFailed {
+        /// "stride" or "shape" — which divisibility law was violated.
+        kind: &'static str,
+        /// LHS extent / stride at the failure point.
+        lhs: usize,
+        /// RHS extent / stride at the failure point.
+        rhs: usize,
+    },
+    /// `complement` cannot produce a layout for the given inputs
+    /// (zero stride combined with a non-trivial layout, or
+    /// non-injective layout fed in).
+    ComplementInfeasible {
+        /// Short reason string.
+        reason: &'static str,
+    },
 }
 
 impl From<ShapeError> for LayoutError {
@@ -136,6 +165,20 @@ impl fmt::Display for LayoutError {
                 "broadcast incompatible at aligned axis {}: self extent {} vs target extent {}",
                 axis, self_extent, target_extent
             ),
+            LayoutError::UnsupportedRank { op, rank } => write!(
+                f,
+                "{} is not yet supported for layouts of rank {} \
+                 (dynamic-stride port handles rank 1 only)",
+                op, rank
+            ),
+            LayoutError::DivisibilityFailed { kind, lhs, rhs } => write!(
+                f,
+                "layout composition violated the {} divisibility law: lhs={} rhs={}",
+                kind, lhs, rhs
+            ),
+            LayoutError::ComplementInfeasible { reason } => {
+                write!(f, "complement is undefined: {}", reason)
+            }
         }
     }
 }

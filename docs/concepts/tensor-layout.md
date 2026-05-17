@@ -120,8 +120,8 @@ assert_eq!(b.shape().dims(), &[4, 3]);
 
 ## Composition
 
-The ops compose freely. Each is a pure function of the input
-layout, so:
+The local ops compose freely. Each is a pure function of the input
+layout:
 
 ```rust
 # use quanta_tensor::Layout;
@@ -138,6 +138,62 @@ offset as a hand-rolled stride dot product against the original
 `src`. The integration test
 [`composition_round_trip.rs`](../../crates/quanta-tensor/tests/composition_round_trip.rs)
 asserts this for the full 72-coordinate sweep.
+
+## The algebra (tiling — the load-bearing case)
+
+The local ops above are per-axis transformations. They don't
+compose into GEMM-style tile patterns on their own. For tiling,
+reach for the algebra:
+
+- **`compose(A, B)`** — apply `A` to the output of `B`. Imagine
+  using `B` as an indexer that selects elements from `A`. Includes
+  divisibility checks; returns `LayoutError::DivisibilityFailed`
+  on violation.
+- **`complement(A, cosize)`** — the layout that fills the
+  remaining space after `A` within `cosize`. Used to build the
+  residual modes of a tile.
+- **`logical_divide(A, tiler)`** — partition `A` by `tiler` into a
+  layout whose first modes are the tile and whose later modes are
+  the residual. The workhorse for GEMM block/warp tiling, sort
+  block radix, FFT bit-reversal.
+- **`tiled_divide(A, tiler)`** — a convenience alias of
+  `logical_divide` for our flat representation. Distinct method so
+  call sites read clearly.
+
+```rust
+# use quanta_tensor::Layout;
+// 72-element buffer divided by a 36-element block tile.
+let buffer = Layout::row_major(&[72]).unwrap();
+let block_tile = Layout::row_major(&[36]).unwrap();
+let blocked = buffer.logical_divide(&block_tile).unwrap();
+assert_eq!(blocked.shape().dims(), &[36, 2]);
+
+// `blocked.at([elem, block])` is the offset of element `elem` in
+// block `block` against the original buffer.
+assert_eq!(blocked.at(&[0, 0]).unwrap(), 0);
+assert_eq!(blocked.at(&[35, 1]).unwrap(), 71);
+```
+
+The algebra is ported from CUTLASS CuTe (see
+`include/cute/layout.hpp` in the cutlass repo). CuTe encodes
+layouts as compile-time integer tuples for kernel-time
+specialisation; quanta-tensor uses runtime `Vec<usize>` so its
+divisibility checks become runtime `Result`s. The trade-off is
+covered under "Design notes" below.
+
+## Design notes
+
+- **Dynamic rank only.** Shapes and strides live in `Vec<usize>`
+  / `Vec<isize>` at runtime, not in the type system. CuTe's
+  compile-time-tuple form is more powerful but doesn't interop
+  with the dynamic-shape paths every downstream math crate
+  eventually needs. The mature companions (`quanta-sort`,
+  `quanta-blas`, `quanta-fft`) will accept this trade-off in
+  exchange for one runtime type that all four backends agree on.
+- **Downstream proc-macros should consume accessors.** Use
+  `Layout::shape()` and `Layout::strides()` (and `Shape::dims()`)
+  rather than the private struct fields. The internal
+  representation may shift without breaking accessor callers.
 
 ## What this enables downstream
 
