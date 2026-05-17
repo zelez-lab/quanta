@@ -57,16 +57,19 @@ public surface for the alpha cycle.
 
 ### Verification
 
-- **Lean** (`specs/verify/lean/Quanta/Tensor/Layout.lean`) — 53
-  theorems on the layout algebra. Includes:
-  - Structural facts (linear size = product of dims, strides
-    length = rank, indexer well-formedness, `dot` cons law).
-  - `tile_offset_bound`: every coordinate produced by
-    `logical_divide` lands inside the original linear size.
-  - `permutation_bijective` via `List.Perm.map` (mathlib).
-  - `compose_assoc` for the rank-1 LHS × rank-1 middle ×
-    rank-N RHS case, proven at the layout-record level
-    (T8048-T8052). Covers the practical GEMM tiling case.
+- **Lean** — 68 theorems across three layers:
+  - **Symbolic** (`Layout.lean`, 54 theorems): structural facts,
+    `tile_offset_bound`, `permutation_bijective`, rank-1
+    `compose_assoc`.
+  - **Denotational** (`Denotational.lean`, 5 theorems): a layout
+    is its index function `Coord → Int`; associativity is
+    `composeD_assoc` by `rfl`. Built on `Fin n`-indexed shapes
+    with no list machinery — foundational primitives only.
+  - **Bridge** (`Bridge.lean`, 9 theorems): agreement between
+    symbolic and denotational. Covers rank-1×rank-N and
+    rank-M×rank-1 compose, with denotational associativity
+    (`t8218`) instantiated so symbolic towers inherit
+    associativity for free.
 - **Verus** (`specs/verify/verus/quanta/tensor_invariants.rs`) —
   42 proof obligations, covering:
   - The same structural facts as the Lean side.

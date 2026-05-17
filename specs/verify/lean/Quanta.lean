@@ -84,7 +84,9 @@ import Quanta.AsyncCopy
 import Quanta.Printf
 
 -- Tensor layout algebra (companion crate quanta-tensor)
+import Quanta.Tensor.Denotational
 import Quanta.Tensor.Layout
+import Quanta.Tensor.Bridge
 
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu

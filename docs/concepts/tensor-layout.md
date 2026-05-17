@@ -199,24 +199,39 @@ covered under "Design notes" below.
 
 Two layers of formal artifacts ship with the substrate:
 
-**Lean** (`specs/verify/lean/Quanta/Tensor/Layout.lean`, 53
-theorems) — structural facts (linear size = product of dims,
-strides length = rank, indexer well-formedness, dot's cons
-distribution law) plus the algebraic theorems each downstream
-math crate inherits:
+**Lean** — 68 theorems across three layers:
 
-- `tile_offset_bound`: every coordinate produced by a
-  `logical_divide` lands inside the original linear size.
-- `permutation_bijective`: every `permute` is a bijection on
-  `0..rank` (proven via `List.Perm.map` from mathlib).
-- `compose_assoc` (rank-1 LHS × rank-1 middle × rank-N RHS):
-  `compose(compose(A, B), C) == compose(A, compose(B, C))`
-  proven at the layout-record level (T8048-T8052). Covers the
-  practical GEMM tiling case where outer loops are rank-1 and
-  inner tiles are rank-N. The fully general rank-M × rank-N ×
-  rank-K case requires the divisibility-checking fold from
-  CuTe lifted into Lean — modelled on the Verus side as
-  `complement_general`, deferred in Lean.
+- **Symbolic layer** (`specs/verify/lean/Quanta/Tensor/Layout.lean`,
+  54 theorems): structural facts (linear size = product of dims,
+  strides length = rank, indexer well-formedness, dot's cons
+  distribution law) plus the algebraic theorems each downstream
+  math crate inherits. Includes `tile_offset_bound`,
+  `permutation_bijective` (via `List.Perm.map`), and
+  `compose_assoc` for the rank-1 LHS × rank-1 middle × rank-N
+  RHS case (T8048-T8052) proven at the layout-record level.
+
+- **Denotational layer**
+  (`specs/verify/lean/Quanta/Tensor/Denotational.lean`, 5
+  theorems): canonical mathematical content — a layout is *defined*
+  as its index function `Coord → Int`. Associativity
+  (`composeD_assoc`) closes by `rfl` because composition of index
+  functions *is* function composition. Built on `Fin n`-indexed
+  shapes, no list machinery, foundational primitives only.
+
+- **Bridge layer**
+  (`specs/verify/lean/Quanta/Tensor/Bridge.lean`, 9 theorems):
+  agreement between symbolic and denotational. Covers
+  rank-1×rank-N and rank-M×rank-1 directions of compose, with
+  full denotational-level associativity (`t8218`) instantiated
+  at the bridge so any tower of symbolic compositions inherits
+  associativity for free.
+
+The fully general rank-M × rank-N × rank-K **symbolic** compose
+still requires lifting CuTe's divisibility-checking fold into
+Lean — modelled on the Verus side as `complement_general`,
+deferred in Lean. The denotational layer covers it; closing the
+remaining gap means proving more agreement theorems on top of
+the bridge.
 
 **Verus** (`specs/verify/verus/quanta/tensor_invariants.rs`, 42
 verified) — the same structural facts as the Lean side plus a
