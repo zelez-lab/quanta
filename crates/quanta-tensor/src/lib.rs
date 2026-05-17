@@ -72,8 +72,8 @@
 pub mod layout;
 pub mod shape;
 
-pub use layout::Layout;
-pub use shape::Shape;
+pub use layout::{Layout, LayoutError};
+pub use shape::{Shape, ShapeError};
 
 #[cfg(test)]
 mod layout_test;

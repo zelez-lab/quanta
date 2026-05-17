@@ -62,7 +62,7 @@ Replace `src/main.rs` with:
 ```rust
 use quanta_tensor::Layout;
 
-fn main() -> Result<(), quanta_tensor::layout::LayoutError> {
+fn main() -> Result<(), quanta_tensor::LayoutError> {
     // A 2x3 row-major tensor — six elements laid out as:
     //   (0,0) (0,1) (0,2) (1,0) (1,1) (1,2)
     // at flat offsets 0, 1, 2, 3, 4, 5.
@@ -213,8 +213,7 @@ Every fallible op returns `Result<Layout, LayoutError>`. The error
 variants are explicit, not strings:
 
 ```rust
-use quanta_tensor::Layout;
-use quanta_tensor::layout::LayoutError;
+use quanta_tensor::{Layout, LayoutError};
 
 // Axis 5 doesn't exist in a rank-2 layout:
 let err = Layout::row_major(&[2, 3])?.transpose(0, 5);
@@ -245,6 +244,12 @@ The full list:
 - **[README.md](README.md)** — full crate overview + status.
 - **[COOKBOOK.md](COOKBOOK.md)** — recipe catalogue: GEMM tiling,
   FFT butterflies, sort permutations, …
+- **[CHANGELOG.md](CHANGELOG.md)** — release history.
+- **`examples/`** — runnable demos:
+  - `cargo run -p quanta-tensor --example block_tile`
+  - `cargo run -p quanta-tensor --example transpose_view`
+  - `cargo run -p quanta-tensor --example broadcast_bias`
+  - `cargo run -p quanta-tensor --example nhwc_to_nchw`
 - **`tests/tile_pattern.rs`** — end-to-end iterated tiling against
   manual row-major offsets, the load-bearing integration test.
 - **`tests/composition_round_trip.rs`** — composing with the
@@ -252,9 +257,10 @@ The full list:
 
 ## Troubleshooting
 
-**`error[E0432]: unresolved import quanta_tensor::layout`**
-The `layout` module is public but error types live inside it.
-Either `use quanta_tensor::layout::LayoutError;` or fully qualify.
+**`error[E0432]: unresolved import quanta_tensor::Layout`**
+Make sure your dependency is `quanta-tensor`, not `quanta_tensor`,
+in `Cargo.toml`. Cargo accepts either, but the crate name uses a
+hyphen.
 
 **`UnsupportedRank { op: "compose", rank: N }`**
 `compose` currently requires at least one of the two layouts to be

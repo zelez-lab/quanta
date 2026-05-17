@@ -22,8 +22,8 @@ use core::fmt;
 
 use crate::shape::{Shape, ShapeError};
 
-pub mod algebra;
-pub mod ops;
+mod algebra;
+mod ops;
 mod strides;
 
 use strides::{compute_column_major_strides, compute_row_major_strides};

@@ -23,7 +23,7 @@
 //! identical offsets.
 
 use quanta_tensor::Layout;
-use quanta_tensor::layout::LayoutError;
+use quanta_tensor::LayoutError;
 
 #[test]
 fn iterated_logical_divide_matches_manual_offsets() -> Result<(), LayoutError> {
