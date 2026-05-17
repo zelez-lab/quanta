@@ -189,6 +189,13 @@ unsafe extern "C" {
     pub fn scan_add_u32(value: u32) -> u32;
     pub fn scan_add_i32(value: i32) -> i32;
     pub fn scan_add_f32(value: f32) -> f32;
+
+    // Exclusive prefix scan: every lane gets the running sum of
+    // lanes 0..self (lane 0 receives 0). Pairs with the
+    // inclusive form: `inclusive[k] = exclusive[k] + value[k]`.
+    pub fn scan_add_exclusive_u32(value: u32) -> u32;
+    pub fn scan_add_exclusive_i32(value: i32) -> i32;
+    pub fn scan_add_exclusive_f32(value: f32) -> f32;
 }
 
 // ── Workgroup-shared memory ────────────────────────────────────────────

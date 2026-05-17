@@ -1150,6 +1150,15 @@ impl<'a> LowerCtx<'a> {
                     Some("scan_add_u32") => self.subgroup_scan_inclusive(ScalarType::U32)?,
                     Some("scan_add_i32") => self.subgroup_scan_inclusive(ScalarType::I32)?,
                     Some("scan_add_f32") => self.subgroup_scan_inclusive(ScalarType::F32)?,
+                    Some("scan_add_exclusive_u32") => {
+                        self.subgroup_scan_exclusive(ScalarType::U32)?
+                    }
+                    Some("scan_add_exclusive_i32") => {
+                        self.subgroup_scan_exclusive(ScalarType::I32)?
+                    }
+                    Some("scan_add_exclusive_f32") => {
+                        self.subgroup_scan_exclusive(ScalarType::F32)?
+                    }
                     Some("shuffle_i32") => self.wave_shuffle(ScalarType::I32)?,
                     Some("shuffle_f32") => self.wave_shuffle(ScalarType::F32)?,
 
@@ -2550,6 +2559,17 @@ impl<'a> LowerCtx<'a> {
         let (vr, _) = self.commit(value)?;
         let dst = self.alloc_reg();
         self.emit(KernelOp::SubgroupInclusiveAdd { dst, src: vr, ty });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower a `scan_add_exclusive_<ty>(value)` extern call into a
+    /// `KernelOp::SubgroupExclusiveAdd`.
+    fn subgroup_scan_exclusive(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let value = self.pop()?;
+        let (vr, _) = self.commit(value)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::SubgroupExclusiveAdd { dst, src: vr, ty });
         self.stack.push(SymVal::Reg(dst, ty));
         Ok(())
     }

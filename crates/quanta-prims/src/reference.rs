@@ -102,6 +102,31 @@ pub fn scan_add_u32(xs: &[u32]) -> Vec<u32> {
         .collect()
 }
 
+/// Inclusive prefix-sum scan, i32 variant. Wrapping semantics.
+pub fn scan_add_i32(xs: &[i32]) -> Vec<i32> {
+    let mut acc = 0i32;
+    xs.iter()
+        .map(|&x| {
+            acc = acc.wrapping_add(x);
+            acc
+        })
+        .collect()
+}
+
+/// Inclusive prefix-sum scan, f32 variant. Sequential left-fold.
+/// Tests against this should use a tolerance — the GPU may use a
+/// different evaluation order with slightly different IEEE-754
+/// rounding.
+pub fn scan_add_f32(xs: &[f32]) -> Vec<f32> {
+    let mut acc = 0f32;
+    xs.iter()
+        .map(|&x| {
+            acc += x;
+            acc
+        })
+        .collect()
+}
+
 /// Sort a `u32` slice into ascending order, returning a new
 /// vector. Reference impl for `block_radix_sort_u32_kernel`.
 ///

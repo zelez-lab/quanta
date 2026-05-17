@@ -48,6 +48,12 @@ unsafe extern "C" {
     fn reduce_max_u32(value: u32) -> u32;
     fn reduce_max_i32(value: i32) -> i32;
     fn reduce_max_f32(value: f32) -> f32;
+    fn scan_add_u32(value: u32) -> u32;
+    fn scan_add_i32(value: i32) -> i32;
+    fn scan_add_f32(value: f32) -> f32;
+    fn scan_add_exclusive_u32(value: u32) -> u32;
+    fn scan_add_exclusive_i32(value: i32) -> i32;
+    fn scan_add_exclusive_f32(value: f32) -> f32;
     fn subgroup_size() -> u32;
     fn proton_id() -> u32;
     fn barrier();
@@ -90,6 +96,24 @@ mod host_stubs {
     }
     pub fn reduce_max_f32(v: f32) -> f32 {
         v
+    }
+    pub fn scan_add_u32(v: u32) -> u32 {
+        v
+    }
+    pub fn scan_add_i32(v: i32) -> i32 {
+        v
+    }
+    pub fn scan_add_f32(v: f32) -> f32 {
+        v
+    }
+    pub fn scan_add_exclusive_u32(_: u32) -> u32 {
+        0
+    }
+    pub fn scan_add_exclusive_i32(_: i32) -> i32 {
+        0
+    }
+    pub fn scan_add_exclusive_f32(_: f32) -> f32 {
+        0.0
     }
     pub fn subgroup_size() -> u32 {
         1
@@ -538,4 +562,175 @@ pub fn block_reduce_max_f32_buffer(data: &[f32], out: &mut [f32]) {
     if lane == 0u32 {
         out[block as usize] = block_max;
     }
+}
+
+// ── Device functions: block scan family ──────────────────────────
+//
+// Block-wide **inclusive** prefix-sum scan. For each lane k in the
+// workgroup, returns `sum(value over lanes 0..=k)`. Three-stage
+// algorithm:
+//
+//   1. Warp scan: scan_add_X gives each lane the inclusive sum
+//      across its subgroup. Lane (sub_size - 1) of each warp now
+//      holds the warp's total.
+//   2. Warp totals: lane (sub_size - 1) writes its total to
+//      scratch[warp_id]. Barrier. Warp 0 then runs an exclusive
+//      scan across the first num_warps scratch slots to get
+//      per-warp prefix offsets, writing them back.
+//   3. Apply prefix: each lane reads scratch[warp_id] (its warp's
+//      prefix offset) and adds it to its warp-local scan result.
+//
+// Caller contract: the kernel must declare
+// `[<ty>; 32]` at slot BLOCK_REDUCE_SCRATCH_SLOT and **zero-init**
+// it before calling. Slots beyond num_warps stay 0; the exclusive
+// scan in stage 2 ignores them correctly because 0 is the additive
+// identity.
+
+/// Block-wide u32 inclusive prefix-sum scan. Returns this lane's
+/// running sum (lanes 0..=self inclusive).
+#[allow(dead_code, unused_unsafe)]
+#[quanta::device]
+fn block_scan_add_u32_kernel(value: u32) -> u32 {
+    let warp_inc = unsafe { scan_add_u32(value) };
+    let sub_size = unsafe { subgroup_size() };
+    let lane_in_block = unsafe { proton_id() };
+    let lane_in_warp = lane_in_block % sub_size;
+    let warp_id = lane_in_block / sub_size;
+
+    // Stage 2a: lane (sub_size - 1) of each warp publishes its
+    // warp total (= the last value of the warp-local scan).
+    if lane_in_warp == sub_size - 1u32 {
+        unsafe { shared_store_u32(0, warp_id, warp_inc) };
+    }
+    unsafe { barrier() };
+
+    // Stage 2b: warp 0 scans the warp-totals array. All lanes
+    // participate in lockstep; lanes beyond num_warps contribute
+    // 0 (the additive identity) since the caller zero-inits.
+    if warp_id == 0u32 {
+        let total = unsafe { shared_load_u32(0, lane_in_warp) };
+        let prefix = unsafe { scan_add_exclusive_u32(total) };
+        unsafe { shared_store_u32(0, lane_in_warp, prefix) };
+    }
+    unsafe { barrier() };
+
+    // Stage 3: every lane reads its warp's prefix offset.
+    let warp_offset = unsafe { shared_load_u32(0, warp_id) };
+    warp_inc + warp_offset
+}
+
+/// Block-wide i32 inclusive prefix-sum scan.
+#[allow(dead_code, unused_unsafe)]
+#[quanta::device]
+fn block_scan_add_i32_kernel(value: i32) -> i32 {
+    let warp_inc = unsafe { scan_add_i32(value) };
+    let sub_size = unsafe { subgroup_size() };
+    let lane_in_block = unsafe { proton_id() };
+    let lane_in_warp = lane_in_block % sub_size;
+    let warp_id = lane_in_block / sub_size;
+
+    if lane_in_warp == sub_size - 1u32 {
+        unsafe { shared_store_i32(0, warp_id, warp_inc) };
+    }
+    unsafe { barrier() };
+
+    if warp_id == 0u32 {
+        let total = unsafe { shared_load_i32(0, lane_in_warp) };
+        let prefix = unsafe { scan_add_exclusive_i32(total) };
+        unsafe { shared_store_i32(0, lane_in_warp, prefix) };
+    }
+    unsafe { barrier() };
+
+    let warp_offset = unsafe { shared_load_i32(0, warp_id) };
+    warp_inc + warp_offset
+}
+
+/// Block-wide f32 inclusive prefix-sum scan.
+#[allow(dead_code, unused_unsafe)]
+#[quanta::device]
+fn block_scan_add_f32_kernel(value: f32) -> f32 {
+    let warp_inc = unsafe { scan_add_f32(value) };
+    let sub_size = unsafe { subgroup_size() };
+    let lane_in_block = unsafe { proton_id() };
+    let lane_in_warp = lane_in_block % sub_size;
+    let warp_id = lane_in_block / sub_size;
+
+    if lane_in_warp == sub_size - 1u32 {
+        unsafe { shared_store_f32(0, warp_id, warp_inc) };
+    }
+    unsafe { barrier() };
+
+    if warp_id == 0u32 {
+        let total = unsafe { shared_load_f32(0, lane_in_warp) };
+        let prefix = unsafe { scan_add_exclusive_f32(total) };
+        unsafe { shared_store_f32(0, lane_in_warp, prefix) };
+    }
+    unsafe { barrier() };
+
+    let warp_offset = unsafe { shared_load_f32(0, warp_id) };
+    warp_inc + warp_offset
+}
+
+// ── Top-level kernels: block scan (per-lane output) ──────────────
+//
+// Output shape mirrors input: one prefix-sum value per input
+// element. Caller dispatches with quark_count = num_blocks * 256.
+
+/// Convenience kernel: u32 inclusive prefix-sum scan.
+/// `out[i]` = sum of `data[block_start..=i]` where `block_start`
+/// is the first lane of the block containing lane `i`.
+#[quanta::kernel(workgroup_size = [256, 1, 1])]
+pub fn block_scan_add_u32_buffer(data: &[u32], out: &mut [u32]) {
+    #[quanta::shared]
+    let scratch: [u32; 32];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    if lane < 32u32 {
+        scratch[lane] = 0u32;
+    }
+    barrier();
+
+    let value = data[i as usize];
+    let scan_result = block_scan_add_u32_kernel(value);
+    out[i as usize] = scan_result;
+}
+
+/// Convenience kernel: i32 inclusive prefix-sum scan.
+#[quanta::kernel(workgroup_size = [256, 1, 1])]
+pub fn block_scan_add_i32_buffer(data: &[i32], out: &mut [i32]) {
+    #[quanta::shared]
+    let scratch: [i32; 32];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    if lane < 32u32 {
+        scratch[lane] = 0i32;
+    }
+    barrier();
+
+    let value = data[i as usize];
+    let scan_result = block_scan_add_i32_kernel(value);
+    out[i as usize] = scan_result;
+}
+
+/// Convenience kernel: f32 inclusive prefix-sum scan.
+#[quanta::kernel(workgroup_size = [256, 1, 1])]
+pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
+    #[quanta::shared]
+    let scratch: [f32; 32];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    if lane < 32u32 {
+        scratch[lane] = 0.0f32;
+    }
+    barrier();
+
+    let value = data[i as usize];
+    let scan_result = block_scan_add_f32_kernel(value);
+    out[i as usize] = scan_result;
 }
