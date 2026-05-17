@@ -56,24 +56,23 @@ let offset = view.at(&[0, 0, 0]).unwrap();
 println!("first element at offset {}", offset);
 ```
 
-## What's coming
+## Related crates
 
-| Phase | Crate            | Status                                |
-| ----- | ---------------- | ------------------------------------- |
-| 1     | `quanta-tensor`  | **this crate — runtime substrate**    |
-| 1.b   | proof artifacts  | Lean theorems + Verus invariants      |
-| 2     | `quanta-sort`    | radix sort + scan + reduce            |
-| 3     | `quanta-blas`    | GEMM, GEMV, axpy                      |
-| 4     | `quanta-fft`     | Stockham FFT                          |
-| —     | `quanta-rand`    | already shipped (`v0.1.0-alpha.2`)    |
+Downstream math crates depend on this substrate:
 
-See `roadmap/081_companion_crates/README.md` for the full plan.
+| Crate            | Status                                |
+| ---------------- | ------------------------------------- |
+| `quanta-tensor`  | **this crate — runtime substrate**    |
+| `quanta-sort`    | planned — radix sort + scan + reduce  |
+| `quanta-blas`    | planned — GEMM, GEMV, axpy            |
+| `quanta-fft`     | planned — Stockham FFT                |
+| `quanta-rand`    | shipped (`v0.1.0-alpha.2`)            |
 
 ## Status
 
-`v0.1.0-alpha.2` — Phase 1 scaffold + composable ops. API will
-change before the first stable release. 31 unit + integration
-tests passing.
+`v0.1.0-alpha.2` — initial scaffold + composable ops + structural
+Lean / Verus invariants. API will change before the first stable
+release. 31 unit + integration tests passing.
 
 ## License
 

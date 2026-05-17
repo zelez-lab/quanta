@@ -141,8 +141,10 @@ asserts this for the full 72-coordinate sweep.
 
 ## What this enables downstream
 
-A future commit will add the Lean theorems and Verus invariants
-that mechanise these properties:
+Structural Lean theorems and Verus invariants ship alongside the
+runtime substrate (linear size = product of dims, strides length =
+rank, indexer well-formedness, dot's cons distribution law). The
+deeper algebraic theorems land in follow-up commits:
 
 - `compose_assoc`: `compose(compose(A, B), C) = compose(A, compose(B, C))`
 - `permutation_bijective`: every `permute` is a bijection on `0..rank`
@@ -154,6 +156,3 @@ The IR also gains a `range_narrow` rewrite that consumes layout
 invariants to elide bounds checks in inner loops — a real
 performance win that benefits every kernel using a `Layout`-typed
 parameter, not just the math ones.
-
-See `roadmap/081_companion_crates/README.md` for the full
-companion-crate roadmap.

@@ -26,15 +26,16 @@
 //!
 //! ## What's coming
 //!
-//! Phase 1 (this commit) ships the runtime substrate. A second
-//! commit lands the Lean + Verus proof artifacts. Downstream
-//! companion crates land afterwards in their own roadmap entries:
+//! Downstream math crates depend on this substrate:
 //!
 //! - `quanta-sort` — block radix sort + scan + reduce.
 //! - `quanta-blas` — GEMM, GEMV, axpy.
 //! - `quanta-fft` — Stockham FFT.
 //!
-//! See `roadmap/081_companion_crates/README.md` for the full plan.
+//! Algebraic theorems beyond the structural ones already shipped
+//! (composition associativity, permutation bijectivity, tile-offset
+//! bounds, op-by-op preservation lemmas) land in follow-up
+//! commits.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

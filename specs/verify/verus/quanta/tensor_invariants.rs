@@ -22,9 +22,9 @@
 //! operational ghost model where the Lean arm exercises the
 //! mathematical theorem.
 //!
-//! Phase 1 surface: the substrate types + indexer. Layout ops
+//! Initial surface: the substrate types + indexer. Layout ops
 //! (transpose, permute, slice, broadcast) get their own Verus
-//! invariants in a follow-up commit alongside the matching Lean
+//! invariants in a follow-up alongside the matching Lean
 //! algebraic theorems.
 
 use vstd::prelude::*;
