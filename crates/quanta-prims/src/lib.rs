@@ -1,15 +1,16 @@
 //! Block-cooperative GPU primitives for Quanta kernels.
 //!
-//! v0.1 ships three load-bearing primitives plus the warp-shuffle
-//! utilities they share:
+//! v0.1 ships the load-bearing Tier-1 trio plus the warp
+//! intrinsics they share:
 //!
-//! - **Block reduce** (`block_reduce_add_u32`): cooperative sum
-//!   reduction across the threads of a workgroup, producing one
-//!   value per workgroup.
-//! - **Block scan** (`block_scan_add_u32`, planned): inclusive
-//!   prefix sum across the workgroup.
-//! - **Block radix sort** (`block_radix_sort_u32`, planned):
-//!   cooperative key-only sort of a workgroup-sized tile.
+//! - **Block reduce**: cooperative add / min / max reduction
+//!   across the threads of a workgroup, producing one value per
+//!   workgroup. `block_reduce_add_X` / `min_X` / `max_X` for
+//!   `X ∈ {u32, i32, f32}`.
+//! - **Block scan**: inclusive prefix sum across the workgroup.
+//!   `block_scan_add_X` for the same three types.
+//! - **Block sort**: cooperative ascending sort of a 256-key
+//!   tile. `block_radix_sort_u32_buffer` (bitonic algorithm).
 //!
 //! These primitives are the building blocks every downstream GPU
 //! algorithm reduces to. They mirror CUB / rocPRIM / moderngpu's
@@ -51,15 +52,20 @@
 //!
 //! #[quanta::kernel(workgroup_size = [256, 1, 1])]
 //! fn my_reduce(data: &[u32], out: &mut [u32]) {
+//!     // Required: [u32; 32] scratch at slot 0 for the
+//!     // cross-warp aggregation stage.
+//!     #[quanta::shared] let scratch: [u32; 32];
+//!
 //!     let i = quark_id();
 //!     let block = nucleus_id();
+//!     let lane = proton_id();
 //!
-//!     // Each quark loads its element and contributes to a
-//!     // block-wide sum. Only the first thread in the block
-//!     // writes the result.
+//!     if lane < 32u32 { scratch[lane] = 0u32; }
+//!     barrier();
+//!
 //!     let value = data[i as usize];
 //!     let block_sum = block_reduce_add_u32_kernel(value);
-//!     if proton_id() == 0 {
+//!     if lane == 0u32 {
 //!         out[block as usize] = block_sum;
 //!     }
 //! }
@@ -69,25 +75,38 @@
 //!
 //! **Block reduce** uses a two-stage pattern:
 //!
-//! 1. **Warp-level reduction** via the `reduce_add_u32` subgroup
-//!    intrinsic — each lane contributes, warp leaders end up
-//!    holding the warp sum.
-//! 2. **Cross-warp reduction** via workgroup-shared memory — warp
-//!    leaders write their partial sum to shared, then the first
-//!    warp re-reduces over those partials.
+//! 1. **Warp-level reduction** via the matching `reduce_*_X`
+//!    subgroup intrinsic — every lane in a subgroup gets the
+//!    warp-wide result.
+//! 2. **Cross-warp reduction** via workgroup-shared memory.
+//!    Lane 0 of each warp publishes its partial; warp 0
+//!    re-reduces over the partials. After the second
+//!    warp-reduce, lane 0 of the workgroup holds the
+//!    block-wide total.
 //!
-//! The result is the workgroup-wide sum, replicated in every
-//! lane that participated.
+//! Constraint: `workgroup_size ≤ subgroup_size²`.
+//!
+//! **Block scan** uses a three-stage variant: warp-local scan,
+//! cross-warp totals via shared memory + an exclusive scan over
+//! those totals, then apply the per-warp prefix offset.
+//!
+//! **Block sort** is bitonic (not LSD radix) for v0.1 — see
+//! `gpu_kernel.rs`'s comment block for the rationale.
 //!
 //! ## v0.1 scope
 //!
-//! Tier 1 (load-bearing core):
-//! - [`block_reduce_add_u32_kernel`]   — block sum reduce
-//! - `block_scan_add_u32_kernel`       — block prefix sum (planned)
-//! - `block_radix_sort_u32_kernel`     — block key-only sort (planned)
+//! Tier 1 (load-bearing core, all shipped):
+//! - `block_reduce_add` / `min` / `max` × `{u32, i32, f32}`
+//! - `block_scan_add` × `{u32, i32, f32}`
+//! - `block_radix_sort_u32` (bitonic, 256 keys per workgroup)
 //!
-//! Tier 2 (extensions, point releases): histogram, top-k,
-//! compact, segmented variants.
+//! Each ships as a `#[quanta::device]` callable function (e.g.
+//! `block_reduce_add_u32_kernel`) plus a top-level
+//! `*_buffer` convenience kernel. See `gpu_kernel.rs` for the
+//! full list.
+//!
+//! Tier 2 (point releases): histogram, top-k, compact /
+//! partition, segmented reduce / scan, multi-bit LSD radix.
 
 // Subgroup intrinsics are FFI imports — the `unsafe` is unavoidable
 // at the call site. The reference module is pure safe Rust; only
