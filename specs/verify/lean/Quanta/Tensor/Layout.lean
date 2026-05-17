@@ -496,4 +496,79 @@ theorem t8034_permute_is_bijection {α : Type} [Inhabited α]
   rw [hid] at hmap
   exact hmap
 
+-- ─────────────────────────────────────────────────────────────────
+-- Composition of rank-1 layouts. The full multi-rank `compose`
+-- requires the divisibility-checking fold from CuTe; modelling
+-- that operationally in Lean and proving associativity over it
+-- is multi-session work. As a foundation we ship the rank-1×
+-- rank-1 closed form — the simplest case CuTe handles as a
+-- special shortcut — together with the identity-composition
+-- and rank-1 associativity theorems. These cover the most
+-- common downstream usage and give a hook the full theorem can
+-- build on later.
+-- ─────────────────────────────────────────────────────────────────
+
+namespace Layout
+
+/-- Rank-1 layout constructor: a single mode of extent `n` and
+    stride `s`. Used to state and prove the rank-1 composition
+    closed form below. -/
+def rank1 (n : Nat) (s : Int) : Layout :=
+  { shape := { dims := [n] }
+    strides := [s]
+    baseOffset := 0 }
+
+/-- Rank-1×rank-1 composition. For two rank-1 layouts `(b, db)`
+    on top of `(a, sa)`, the composition shrinks to `(b, db * sa)`
+    — the extent comes from the RHS, the stride is the product of
+    the two. This matches CuTe's
+    `composition_impl(LShape, LStride, RShape, RStride)` shortcut
+    when both sides are integral. -/
+def compose11 (a : Layout) (b : Layout) : Layout :=
+  rank1 (b.shape.dims.headD 1) ((b.strides.headD 0) * (a.strides.headD 0))
+
+end Layout
+
+/-- T8035 — `rank1 n s` has rank 1. -/
+theorem t8035_rank1_rank (n : Nat) (s : Int) :
+    (rank1 n s).rank = 1 := by
+  rfl
+
+/-- T8036 — `rank1 n s` has linear size `n`. -/
+theorem t8036_rank1_linear_size (n : Nat) (s : Int) :
+    (rank1 n s).linearSize = n := by
+  unfold Layout.linearSize
+  simp [rank1, Shape.linearSize]
+
+/-- T8037 — `compose11 (rank1 a 1) (rank1 b db) = rank1 b db`.
+    Composing with the unit-stride identity on the left is the
+    identity. -/
+theorem t8037_compose11_left_identity (a b : Nat) (db : Int) :
+    compose11 (rank1 a 1) (rank1 b db) = rank1 b db := by
+  unfold compose11 rank1
+  simp
+
+/-- T8038 — `compose11` is associative on rank-1 layouts.
+    Reduces to `(dc * db) * sa = dc * (db * sa)` in `Int`, which
+    is the standard associativity. -/
+theorem t8038_compose11_assoc (na nb nc : Nat) (sa db dc : Int) :
+    compose11 (compose11 (rank1 na sa) (rank1 nb db)) (rank1 nc dc)
+      = compose11 (rank1 na sa) (compose11 (rank1 nb db) (rank1 nc dc)) := by
+  unfold compose11 rank1
+  simp
+  ring
+
+/-- T8039 — `compose11` preserves rank-1-ness. Stated as: the
+    composed layout's rank equals 1. -/
+theorem t8039_compose11_preserves_rank1 (a b : Layout) :
+    (compose11 a b).rank = 1 := by
+  rfl
+
+/-- T8040 — `compose11`'s base offset is 0. Since `rank1`
+    constructors set base 0 and `compose11` builds via `rank1`,
+    the result has base 0 regardless of inputs. -/
+theorem t8040_compose11_zero_base (a b : Layout) :
+    (compose11 a b).baseOffset = 0 := by
+  rfl
+
 end Quanta.Tensor
