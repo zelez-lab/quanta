@@ -114,9 +114,14 @@ Downstream math crates depend on this substrate:
 ## Status
 
 `v0.1.0-alpha.2` — initial scaffold, local ops, layout algebra
-(compose / complement / divide), and structural Lean / Verus
-invariants. API will change before the first stable release. 43
-unit + integration tests passing.
+(compose / complement / divide), and 48 Lean theorems + 34 Verus
+invariants covering the structural and rank-1 algebraic facts.
+API will change before the first stable release. 65 unit +
+integration + doctest cases passing.
+
+See [GETTING_STARTED.md](GETTING_STARTED.md) for a 10-minute
+walkthrough and [COOKBOOK.md](COOKBOOK.md) for the recipe
+catalogue.
 
 ## License
 

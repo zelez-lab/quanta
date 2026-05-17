@@ -57,6 +57,19 @@ impl Layout {
     ///   (stride-0 with a non-trivial shape, negative strides,
     ///   cosize smaller than the layout's footprint, or a
     ///   non-injective layout detected mid-algorithm).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use quanta_tensor::Layout;
+    ///
+    /// // (4, 1) — a contiguous 4-element layout. Cosize 12: there
+    /// // are 3 "periods" of length 4. d == 1 drops the first mode.
+    /// let l = Layout::row_major(&[4]).unwrap();
+    /// let c = l.complement(12).unwrap();
+    /// assert_eq!(c.shape().dims(), &[3]);
+    /// assert_eq!(c.strides(), &[4]);
+    /// ```
     pub fn complement(&self, cosize: usize) -> Result<Layout, LayoutError> {
         let rank = self.rank();
         if rank == 0 {
@@ -257,6 +270,20 @@ impl Layout {
     ///   conditions don't hold on a given fold step.
     /// - `UnsupportedRank` for cases the port doesn't yet handle
     ///   (we cover the common cases — see tests).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use quanta_tensor::Layout;
+    ///
+    /// // Composition with a flat read of the linear size is the
+    /// // identity — the shape and strides come back unchanged.
+    /// let m    = Layout::row_major(&[2, 3]).unwrap();
+    /// let flat = Layout::row_major(&[m.linear_size()]).unwrap();
+    /// let v    = m.compose(&flat).unwrap();
+    /// assert_eq!(v.shape().dims(), &[2, 3]);
+    /// assert_eq!(v.strides(), &[3, 1]);
+    /// ```
     pub fn compose(&self, rhs: &Layout) -> Result<Layout, LayoutError> {
         let rhs_rank = rhs.rank();
         if rhs_rank == 0 {
@@ -290,6 +317,22 @@ impl Layout {
     ///
     /// Equivalent to `self.compose(make_layout(tiler, complement(tiler, self.linear_size())))`
     /// — the tiler walks one tile, the complement walks the tiles.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use quanta_tensor::Layout;
+    ///
+    /// // 72-element buffer split into blocks of 36 (= 2 blocks).
+    /// let buffer = Layout::row_major(&[72]).unwrap();
+    /// let block  = Layout::row_major(&[36]).unwrap();
+    /// let tiled  = buffer.logical_divide(&block).unwrap();
+    ///
+    /// assert_eq!(tiled.shape().dims(), &[36, 2]);
+    /// // tiled.at(elem, block) = block * 36 + elem.
+    /// assert_eq!(tiled.at(&[0, 0]).unwrap(), 0);
+    /// assert_eq!(tiled.at(&[35, 1]).unwrap(), 71);
+    /// ```
     pub fn logical_divide(&self, tiler: &Layout) -> Result<Layout, LayoutError> {
         let tiler_complement = tiler.complement(self.linear_size())?;
         // Build a combined layout whose first modes are the tiler

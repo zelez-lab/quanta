@@ -38,7 +38,8 @@
 //!   specialisation. Quanta deliberately doesn't follow: we'd lose
 //!   interop with the dynamic-shape paths every downstream math
 //!   crate eventually needs. Divisibility checks happen at runtime
-//!   and return [`LayoutError::DivisibilityFailed`] on violation.
+//!   and return [`layout::LayoutError::DivisibilityFailed`] on
+//!   violation.
 //! - **Downstream proc-macros should consume accessors, not
 //!   fields.** Use [`Layout::shape`] and [`Layout::strides`] (and
 //!   [`Shape::dims`]) rather than the private struct fields. The
@@ -66,6 +67,7 @@
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod layout;
 pub mod shape;

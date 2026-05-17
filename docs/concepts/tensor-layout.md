@@ -197,18 +197,34 @@ covered under "Design notes" below.
 
 ## What this enables downstream
 
-Structural Lean theorems and Verus invariants ship alongside the
-runtime substrate (linear size = product of dims, strides length =
-rank, indexer well-formedness, dot's cons distribution law). The
-deeper algebraic theorems land in follow-up commits:
+Two layers of formal artifacts ship with the substrate:
 
-- `compose_assoc`: `compose(compose(A, B), C) = compose(A, compose(B, C))`
-- `permutation_bijective`: every `permute` is a bijection on `0..rank`
-- `tile_offset_bound`: a tile offset stays within the linear size
+**Lean** (`specs/verify/lean/Quanta/Tensor/Layout.lean`, 48
+theorems) — structural facts (linear size = product of dims,
+strides length = rank, indexer well-formedness, dot's cons
+distribution law) plus the algebraic theorems each downstream
+math crate inherits:
 
-Once those proofs land, each downstream math crate can lean on
-them for its own shape obligations without re-proving the algebra.
-The IR also gains a `range_narrow` rewrite that consumes layout
-invariants to elide bounds checks in inner loops — a real
-performance win that benefits every kernel using a `Layout`-typed
-parameter, not just the math ones.
+- `tile_offset_bound`: every coordinate produced by a
+  `logical_divide` lands inside the original linear size.
+- `permutation_bijective`: every `permute` is a bijection on
+  `0..rank` (proven via `List.Perm.map` from mathlib).
+- `compose_assoc` (rank-1 case): `compose(compose(A, B), C) ==
+  compose(A, compose(B, C))` for rank-1 inputs. The full-rank
+  case requires a denotational evaluation of multi-rank fold
+  and is reserved for a follow-up.
+
+**Verus** (`specs/verify/verus/quanta/tensor_invariants.rs`, 34
+verified) — the same structural facts as the Lean side plus a
+closed-form spec for `complement_rank1` and six rank-1 theorems
+covering all four branches (full coverage, single period, unit
+gap, two-mode). The rank-N stride-sort fold is intentionally
+deferred to its own session (needs a recursive spec fn over
+`Seq<(nat, nat)>` plus several supporting lemmas).
+
+Each downstream math crate can lean on the proven half for its
+own shape obligations without re-proving the algebra. As more
+theorems land, the IR will eventually gain a `range_narrow`
+rewrite that consumes layout invariants to elide bounds checks
+in inner loops — a real performance win that benefits every
+kernel using a `Layout`-typed parameter, not just the math ones.
