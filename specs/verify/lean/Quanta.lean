@@ -88,6 +88,9 @@ import Quanta.Tensor.Denotational
 import Quanta.Tensor.Layout
 import Quanta.Tensor.Bridge
 
+-- Block-cooperative primitives (companion crate quanta-prims)
+import Quanta.Prims.Reference
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
