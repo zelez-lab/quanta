@@ -430,4 +430,70 @@ theorem t8032_tile_offset_bound (dims coord : List Nat)
   simp
   exact t8031_dot_row_major_lt_linear_size coord dims h
 
+-- ─────────────────────────────────────────────────────────────────
+-- Permutation bijectivity. The Rust `permute(perm)` op takes a
+-- list `perm` of axis indices and rearranges the layout's dims +
+-- strides so that new axis `i` is old axis `perm[i]`. The Lean
+-- side mirrors this with `permuteList`, and the theorem below
+-- states that when `perm` is a valid permutation of
+-- `0..xs.length`, `permuteList xs perm` is a permutation of `xs`
+-- in the `List.Perm` sense — i.e. the rearranged list has the
+-- same multiset of elements.
+-- ─────────────────────────────────────────────────────────────────
+
+/-- Apply a permutation to a list: `perm[i] = j` selects old
+    element `j` into new position `i`. Mirrors the production
+    `permute` (in `crates/quanta-tensor/src/layout/ops.rs`). -/
+def permuteList {α : Type} [Inhabited α] (xs : List α) (perm : List Nat) : List α :=
+  perm.map (fun j => xs.getD j default)
+
+/-- `IsPermOf n perm` says that `perm` is a permutation of
+    `List.range n` — equivalently, every index in `0..n` appears
+    in `perm` exactly once. -/
+def IsPermOf (n : Nat) (perm : List Nat) : Prop :=
+  List.Perm perm (List.range n)
+
+/-- T8033 — Identity permutation. `permuteList xs (List.range
+    xs.length)` returns `xs` itself. The map of `List.range n`
+    through `xs.getD · default` reconstructs `xs` exactly when
+    every index is in range. -/
+theorem t8033_permute_identity {α : Type} [Inhabited α] (xs : List α) :
+    permuteList xs (List.range xs.length) = xs := by
+  unfold permuteList
+  induction xs with
+  | nil => simp
+  | cons x rest ih =>
+    rw [List.length_cons, List.range_succ_eq_map]
+    simp only [List.map_cons, List.getD_cons_zero]
+    have hmap : List.map (fun j => (x :: rest).getD j default)
+                 (List.map Nat.succ (List.range rest.length))
+             = List.map (fun j => rest.getD j default) (List.range rest.length) := by
+      simp [List.map_map, Function.comp_def]
+    rw [hmap, ih]
+
+/-- T8034 — Permutation bijectivity. If `perm` is a permutation
+    of `List.range xs.length`, then `permuteList xs perm` is a
+    permutation of `xs` in the `List.Perm` (multiset-equal)
+    sense.
+
+    This is the load-bearing lemma for downstream sort proofs:
+    every reordering of a tensor's axes preserves the multiset of
+    elements, so sort/permute can chain without losing data. -/
+theorem t8034_permute_is_bijection {α : Type} [Inhabited α]
+    (xs : List α) (perm : List Nat) (h : IsPermOf xs.length perm) :
+    List.Perm (permuteList xs perm) xs := by
+  -- Step 1: perm ~ List.range xs.length (by h), so mapping
+  -- through `xs.getD · default` preserves the multiset.
+  have hmap : List.Perm
+      (List.map (fun j => xs.getD j default) perm)
+      (List.map (fun j => xs.getD j default) (List.range xs.length)) :=
+    List.Perm.map _ h
+  -- Step 2: map of identity range = xs (by T8033 unfolded).
+  have hid : List.map (fun j => xs.getD j default) (List.range xs.length) = xs := by
+    have := t8033_permute_identity xs
+    unfold permuteList at this
+    exact this
+  rw [hid] at hmap
+  exact hmap
+
 end Quanta.Tensor
