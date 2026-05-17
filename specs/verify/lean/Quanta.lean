@@ -83,6 +83,9 @@ import Quanta.AsyncCopy
 -- GPU printf (step 049)
 import Quanta.Printf
 
+-- Tensor layout algebra (companion crate quanta-tensor)
+import Quanta.Tensor.Layout
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance

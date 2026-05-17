@@ -44,3 +44,6 @@ pub mod shape;
 
 pub use layout::Layout;
 pub use shape::Shape;
+
+#[cfg(test)]
+mod layout_test;
