@@ -432,4 +432,187 @@ proof fn t8121_transpose_preserves_well_formed(l: LayoutModel, i: int, j: int)
     }
 }
 
+// ── complement_rank1 ─────────────────────────────────────────────
+//
+// Spec-level model of `Layout::complement` on a rank-1 input.
+// Mirrors the closed-form result from
+// `crates/quanta-tensor/src/layout/algebra.rs::complement_rank1`.
+//
+// Given a rank-1 layout `(s, d)` with `d > 0` and a cosize ≥ s*d,
+// the result is one of three shapes depending on whether the
+// leading "gap" mode and the trailing "periods" mode each
+// contribute:
+//
+// - `d == 1 && periods == 1`: empty (rank-0) result.
+// - `d > 1  && periods == 1`: rank-1 `(d, 1)`.
+// - `d == 1 && periods > 1`:  rank-1 `(periods, s*d)`.
+// - `d > 1  && periods > 1`:  rank-2 `((d, 1), (periods, s*d))`.
+//
+// where `periods = ceil_div(cosize, s*d)`.
+
+/// Ghost helper: ceil_div for `nat`. Matches the production
+/// `usize::div_ceil`. Verus's nat subtraction produces `int`, so
+/// we work in `int` internally and coerce back via `as nat`.
+pub open spec fn ceil_div(a: nat, b: nat) -> nat
+    recommends b > 0,
+{
+    if b == 0 {
+        0nat
+    } else if a == 0 {
+        0nat
+    } else {
+        let ai: int = a as int;
+        let bi: int = b as int;
+        ((ai - 1) / bi + 1) as nat
+    }
+}
+
+/// Spec-level model of `Layout::complement_rank1`. Given a rank-1
+/// layout's `(s, d)` and a cosize, produces the corresponding
+/// layout model. Precondition: `d > 0` and `cosize >= s * d`.
+pub open spec fn complement_rank1(s: nat, d: nat, cosize: nat) -> LayoutModel
+    recommends d > 0, cosize >= s * d,
+{
+    let period: nat = s * d;
+    let periods: nat = ceil_div(cosize, period);
+    if d == 1 && periods <= 1 {
+        // Layout already covers cosize. Empty complement.
+        LayoutModel {
+            shape: ShapeModel { dims: Seq::<nat>::empty() },
+            strides: Seq::<int>::empty(),
+            base_offset: 0,
+        }
+    } else if d > 1 && periods <= 1 {
+        LayoutModel {
+            shape: ShapeModel { dims: seq![d] },
+            strides: seq![1int],
+            base_offset: 0,
+        }
+    } else if d == 1 && periods > 1 {
+        LayoutModel {
+            shape: ShapeModel { dims: seq![periods] },
+            strides: seq![period as int],
+            base_offset: 0,
+        }
+    } else {
+        // d > 1 && periods > 1
+        LayoutModel {
+            shape: ShapeModel { dims: seq![d, periods] },
+            strides: seq![1int, period as int],
+            base_offset: 0,
+        }
+    }
+}
+
+/// T8122 — `complement_rank1` produces a layout with base offset 0.
+proof fn t8122_complement_rank1_zero_base(s: nat, d: nat, cosize: nat)
+    requires d > 0, cosize >= s * d,
+    ensures complement_rank1(s, d, cosize).base_offset == 0,
+{
+}
+
+/// T8123 — Strides match the rank in every branch. The case split
+/// on `d` and `periods` produces dims and strides of equal length
+/// across all four branches, so `strides.len() == shape.dims.len()`.
+proof fn t8123_complement_rank1_strides_match_rank(s: nat, d: nat, cosize: nat)
+    requires d > 0, cosize >= s * d,
+    ensures
+        complement_rank1(s, d, cosize).strides.len()
+            == complement_rank1(s, d, cosize).shape.dims.len(),
+{
+}
+
+/// Helper: `ceil_div(a, a) == 1` whenever `a >= 1`. Used by T8124
+/// and T8125 to drive the `periods <= 1` branch of
+/// `complement_rank1`. Verus can establish the underlying
+/// `(a-1)/a + 1 == 1` once we expose the integer-division bound
+/// `0 <= (a-1) < a`.
+proof fn ceil_div_self_eq_one(a: nat)
+    requires a >= 1,
+    ensures ceil_div(a, a) == 1nat,
+{
+    let ai: int = a as int;
+    assert(ai >= 1);
+    assert((ai - 1) / ai == 0int) by (nonlinear_arith)
+        requires ai >= 1;
+}
+
+/// T8124 — When `d == 1` and `cosize == s * d`, the complement is
+/// the empty (rank-0) layout. This is the degenerate "already
+/// covers" case the production code handles separately.
+proof fn t8124_complement_rank1_full_coverage(s: nat)
+    requires s >= 1,
+    ensures complement_rank1(s, 1nat, s) == (LayoutModel {
+        shape: ShapeModel { dims: Seq::<nat>::empty() },
+        strides: Seq::<int>::empty(),
+        base_offset: 0,
+    }),
+{
+    ceil_div_self_eq_one(s);
+}
+
+/// T8125 — When `d > 1` and `cosize == s * d`, the periods count
+/// is 1 and the complement reduces to a rank-1 `(d, 1)` layout.
+proof fn t8125_complement_rank1_single_period(s: nat, d: nat)
+    requires d > 1, s >= 1,
+    ensures complement_rank1(s, d, s * d) == (LayoutModel {
+        shape: ShapeModel { dims: seq![d] },
+        strides: seq![1int],
+        base_offset: 0,
+    }),
+{
+    let period: nat = s * d;
+    assert(period >= 1) by (nonlinear_arith)
+        requires s >= 1, d > 1, period == s * d;
+    ceil_div_self_eq_one(period);
+}
+
+/// T8126 — When `d == 1` and `cosize > s`, the result is a rank-1
+/// periods layout `(periods, s)`.
+proof fn t8126_complement_rank1_unit_gap(s: nat, cosize: nat)
+    requires s >= 1, cosize > s,
+    ensures ({
+        let periods = ceil_div(cosize, s);
+        periods > 1 ==> complement_rank1(s, 1nat, cosize) == (LayoutModel {
+            shape: ShapeModel { dims: seq![periods] },
+            strides: seq![s as int],
+            base_offset: 0,
+        })
+    }),
+{
+}
+
+/// T8127 — The general d > 1, periods > 1 case produces a rank-2
+/// layout. Stated as an existence claim (rank == 2) rather than a
+/// specific element-by-element comparison so the dependent-typed
+/// match doesn't dominate the proof obligation.
+proof fn t8127_complement_rank1_two_mode_rank(s: nat, d: nat, cosize: nat)
+    requires
+        s >= 1,
+        d > 1,
+        cosize >= s * d,
+        ceil_div(cosize, s * d) > 1,
+    ensures complement_rank1(s, d, cosize).rank() == 2,
+{
+}
+
+// ── Rank-N complement: deferred ─────────────────────────────────
+//
+// The production `Layout::complement_general` (in
+// `crates/quanta-tensor/src/layout/algebra.rs`) iteratively picks
+// the smallest remaining stride and emits one result mode per
+// pair. Modelling that fold cleanly in Verus spec language
+// requires a recursive `complement_general` spec fn over a
+// working `Seq<(nat, nat)>` plus termination via `decreases
+// work.len()`. The proof obligations (correctness of swap_remove,
+// preservation of well_formedness, the divisibility check chain)
+// are a several-theorem chunk that warrants its own session.
+//
+// For the substrate's downstream consumers, the rank-1 + rank-0
+// invariants verified above plus the Rust-side runtime test
+// suite (45 quanta-tensor tests, including the rank-2 cases) are
+// the load-bearing surface today. The Lean side carries the
+// algebraic guarantees (T8030–T8034, T8038, T8047) that downstream
+// proofs depend on.
+
 } // verus!
