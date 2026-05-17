@@ -734,3 +734,89 @@ pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
     let scan_result = block_scan_add_f32_kernel(value);
     out[i as usize] = scan_result;
 }
+
+// ── Block sort (bitonic) ────────────────────────────────────────
+//
+// Sorts a 256-element block of u32 keys per workgroup using
+// **bitonic sort**, not radix. Bitonic was chosen for v0.1 over
+// the more theoretically efficient radix LSD sort because:
+//
+//   - Bitonic's access pattern is data-independent: at each
+//     stage every lane swaps with lane `self ^ k` for some `k`.
+//     No prefix-sum dependency, no ping-pong device fn calls.
+//   - Single shared-memory buffer + arithmetic, no auxiliary
+//     scratch beyond `barrier` + `shared_load/store`. The kernel
+//     macro's WASM-route lowerer handles this cleanly.
+//   - For BLOCK = 256, bitonic runs 36 compare-exchange stages
+//     (8 outer steps × up to 8 inner steps each); LSD radix runs
+//     32 passes × 1 block_scan_add each. Comparable wall-clock
+//     work; bitonic wins on simplicity.
+//
+// Radix-sort variants (multi-bit, segmented, key-value) will
+// land in Tier 2 once the device-fn inliner handles nested
+// control flow in the kernel lowerer. The function is named
+// `block_radix_sort_*` for API forward-compatibility — callers
+// don't see the algorithm choice.
+
+/// Convenience kernel: sort each 256-element block of u32 keys
+/// in ascending order. Workgroup size 256, one workgroup per
+/// block. Caller dispatches with `quark_count = 256 * num_blocks`
+/// and the same-sized output buffer.
+///
+/// **Block-local sort.** Each 256-element block is sorted
+/// independently of the others. Producing a globally-sorted
+/// output requires chaining a multi-block merge or device-wide
+/// sort — out of scope for v0.1.
+#[quanta::kernel(workgroup_size = [256, 1, 1])]
+pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
+    #[quanta::shared]
+    let buf: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    buf[lane] = data[i as usize];
+    barrier();
+
+    // Bitonic sort outer step `k` doubles each iteration: k = 2,
+    // 4, 8, …, 256. For each `k` the inner step `j` halves from
+    // `k/2` down to 1; each lane swaps with `lane ^ j` if the
+    // direction-determined comparator says so.
+    //
+    // Direction: ascending if (lane & k) == 0, descending else.
+    // Comparator: if direction is ascending and partner_key < my_key
+    // (or both reversed for descending), swap.
+    let mut k: u32 = 2u32;
+    while k <= 256u32 {
+        let mut j: u32 = k / 2u32;
+        while j > 0u32 {
+            let partner = lane ^ j;
+            let my_key = buf[lane];
+            let partner_key = buf[partner];
+
+            // Ascending direction: keep smaller at lower index.
+            let want_ascending = (lane & k) == 0u32;
+            // Pairs cooperate: only the lower-index lane decides
+            // and writes both slots — but that needs a barrier
+            // between read and write. Simpler: both lanes do the
+            // same read, decide whether to take their partner's
+            // value, write back. The XOR partnering guarantees
+            // each pair sees consistent comparisons because both
+            // lanes use the same `(lane & k)` direction.
+            let take_partner = if want_ascending {
+                partner_key < my_key
+            } else {
+                partner_key > my_key
+            };
+            let new_key = if take_partner { partner_key } else { my_key };
+            barrier();
+            buf[lane] = new_key;
+            barrier();
+
+            j = j / 2u32;
+        }
+        k = k * 2u32;
+    }
+
+    out[i as usize] = buf[lane];
+}
