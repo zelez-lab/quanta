@@ -325,8 +325,12 @@ pub(crate) fn emit_op(
             ));
         }
         KernelOp::WaveBallot { dst, predicate } => {
+            // Metal's `simd_ballot` returns `metal::simd_vote`, an
+            // opaque struct convertible to `uint64_t` via cast.
+            // We take the low 32 bits — Quanta's subgroups never
+            // exceed 64 lanes, and the wire format is u32.
             out.push_str(&format!(
-                "{}uint r{} = simd_ballot(r{} != 0).x;\n",
+                "{}uint r{} = (uint)((uint64_t)simd_ballot(r{} != 0));\n",
                 pad, dst.0, predicate.0
             ));
         }

@@ -1065,6 +1065,83 @@ impl<'a> LowerCtx<'a> {
                         self.stack.push(SymVal::Reg(dst, ScalarType::U32));
                     }
 
+                    // Subgroup / wave intrinsics. Each one consumes
+                    // its arg(s) from the WASM stack and emits the
+                    // matching IR op. Type lives on the op itself so
+                    // per-backend emitters dispatch correctly.
+                    Some("subgroup_size") => {
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::SubgroupSize { dst });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+                    Some("subgroup_id") => {
+                        // No dedicated SubgroupId op yet; the lane
+                        // index is `proton_id % subgroup_size` per
+                        // the cross-backend convention. Emit ProtonId
+                        // as the closest analog — refine to a
+                        // dedicated op once a backend needs it.
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::ProtonId { dst });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+                    Some("shuffle_u32") => {
+                        let src_lane = self.pop()?;
+                        let value = self.pop()?;
+                        let (vr, _) = self.commit(value)?;
+                        let (lr, _) = self.commit(src_lane)?;
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::WaveShuffle {
+                            dst,
+                            src: vr,
+                            lane_delta: lr,
+                            ty: ScalarType::U32,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+                    Some("ballot_u32") => {
+                        let predicate = self.pop()?;
+                        let (pr, _) = self.commit(predicate)?;
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::WaveBallot { dst, predicate: pr });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+                    Some("any_u32") => {
+                        let predicate = self.pop()?;
+                        let (pr, _) = self.commit(predicate)?;
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::WaveAny { dst, predicate: pr });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+                    Some("all_u32") => {
+                        let predicate = self.pop()?;
+                        let (pr, _) = self.commit(predicate)?;
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::WaveAll { dst, predicate: pr });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+                    Some("reduce_add_u32") => {
+                        let value = self.pop()?;
+                        let (vr, _) = self.commit(value)?;
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::SubgroupReduceAdd {
+                            dst,
+                            src: vr,
+                            ty: ScalarType::U32,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+                    Some("scan_add_u32") => {
+                        let value = self.pop()?;
+                        let (vr, _) = self.commit(value)?;
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::SubgroupInclusiveAdd {
+                            dst,
+                            src: vr,
+                            ty: ScalarType::U32,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::U32));
+                    }
+
                     // Unary f32 math — these match the F32Ext polyfill in
                     // wasm_compile's wrapper plus direct extern calls.
                     Some("sqrt_f32") => self.math_call_unary(MathFn::Sqrt)?,
