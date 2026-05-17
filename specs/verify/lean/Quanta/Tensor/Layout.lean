@@ -331,4 +331,42 @@ theorem t8028_slice_empty_range_zero_extent
     (slice l axis startIdx startIdx).shape.dims.length = l.shape.dims.length := by
   exact t8024_slice_preserves_dims_length l axis startIdx startIdx
 
+-- ─────────────────────────────────────────────────────────────────
+-- The tile-offset bound. For a row-major layout and any in-range
+-- coordinate, the offset is a non-negative integer strictly less
+-- than `linearSize`. This is the bijection precondition that
+-- downstream sort / FFT correctness theorems lean on.
+-- ─────────────────────────────────────────────────────────────────
+
+/-- `dot coord (rowMajorStrides dims)` is non-negative for any
+    coordinate. Every term in the sum is a product of two
+    non-negative naturals embedded in `Int`. -/
+theorem t8029_dot_row_major_nonneg (coord dims : List Nat) :
+    0 ≤ dot coord (rowMajorStrides dims) := by
+  induction coord generalizing dims with
+  | nil => simp [dot]
+  | cons c cs ih =>
+    cases dims with
+    | nil => simp [rowMajorStrides, dot]
+    | cons d ds =>
+      simp [rowMajorStrides, dot]
+      have h1 : (0 : Int) ≤ (c : Int) * ((ds.foldr (· * ·) 1 : Nat) : Int) := by
+        have hc : (0 : Int) ≤ (c : Int) := Int.ofNat_nonneg c
+        have hs : (0 : Int) ≤ ((ds.foldr (· * ·) 1 : Nat) : Int) :=
+          Int.ofNat_nonneg _
+        exact Int.mul_nonneg hc hs
+      have h2 : (0 : Int) ≤ dot cs (rowMajorStrides ds) := ih ds
+      exact Int.add_nonneg h1 h2
+
+/-- T8030 — Non-negativity half of `tile_offset_bound`. For any
+    row-major layout and any coordinate, the resulting offset is
+    a non-negative `Int`. Combines T8029 (the dot-product
+    non-negativity) with the `baseOffset = 0` rewrite that
+    `rowMajor` guarantees. -/
+theorem t8030_row_major_offset_nonneg (dims coord : List Nat) :
+    0 ≤ (rowMajor dims).offset coord := by
+  unfold rowMajor Layout.offset
+  simp
+  exact t8029_dot_row_major_nonneg coord dims
+
 end Quanta.Tensor
