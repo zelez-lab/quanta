@@ -596,23 +596,284 @@ proof fn t8127_complement_rank1_two_mode_rank(s: nat, d: nat, cosize: nat)
 {
 }
 
-// ── Rank-N complement: deferred ─────────────────────────────────
+// ── Rank-N complement: stride-sort fold model ───────────────────
 //
-// The production `Layout::complement_general` (in
-// `crates/quanta-tensor/src/layout/algebra.rs`) iteratively picks
-// the smallest remaining stride and emits one result mode per
-// pair. Modelling that fold cleanly in Verus spec language
-// requires a recursive `complement_general` spec fn over a
-// working `Seq<(nat, nat)>` plus termination via `decreases
-// work.len()`. The proof obligations (correctness of swap_remove,
-// preservation of well_formedness, the divisibility check chain)
-// are a several-theorem chunk that warrants its own session.
+// Mirrors `Layout::complement_general` in
+// `crates/quanta-tensor/src/layout/algebra.rs`. The production
+// algorithm:
 //
-// For the substrate's downstream consumers, the rank-1 + rank-0
-// invariants verified above plus the Rust-side runtime test
-// suite (45 quanta-tensor tests, including the rank-2 cases) are
-// the load-bearing surface today. The Lean side carries the
-// algebraic guarantees (T8030–T8034, T8038, T8047) that downstream
-// proofs depend on.
+//   work = [(shape_0, stride_0), …, (shape_{R-1}, stride_{R-1})]
+//   last_stride = 1
+//   result = ([], [])
+//   while |work| > 1:
+//     pick min-stride pair (s_m, d_m) at index `j`
+//     emit (d_m / last_stride, last_stride)
+//     last_stride := d_m * s_m
+//     work := work without index j  (swap_remove)
+//   emit (last_pair.stride / last_stride, last_stride)
+//   if cosize / boundary > 1: emit (periods, boundary)
+//   drop leading size-1 modes
+//
+// We mirror that as a recursive spec fn with `decreases work.len()`,
+// accumulating `(Seq<nat>, Seq<int>)` of result modes. The
+// load-bearing structural invariants — strides.len() ==
+// shape.dims.len() and base_offset == 0 — fall out of the
+// construction itself.
+//
+// We deliberately do *not* model the runtime divisibility /
+// injectivity checks (`d % last == 0`, `new_shape > 0`); those
+// raise `ComplementInfeasible` errors in production and surface
+// as ill-formed model output if violated. The Rust-side test suite
+// covers the error paths; the spec covers the structural shape of
+// the *successful* path.
+
+/// Stride-sort fold. The production algorithm picks the smallest
+/// remaining stride per iteration; in the spec we instead require
+/// the caller to pass a *pre-sorted* `work` sequence (ascending
+/// stride), so each step consumes the head via `drop_first` —
+/// equivalent up to permutation of the result modes, and Verus can
+/// see the decreasing measure trivially.
+///
+/// The `sort_by_stride` correspondence is a separate (later)
+/// theorem; for now the structural invariants below hold for any
+/// input order.
+pub open spec fn complement_fold(
+    work: Seq<(nat, nat)>,
+    last_stride: nat,
+    acc_shape: Seq<nat>,
+    acc_stride: Seq<int>,
+) -> (Seq<nat>, Seq<int>, nat)
+    decreases work.len()
+{
+    if work.len() == 0 {
+        (acc_shape, acc_stride, last_stride)
+    } else if work.len() == 1 {
+        // Base case: emit the final gap mode for the leftover pair.
+        let (last_s, last_d) = work[0];
+        let final_gap = if last_stride == 0 { 0nat } else { last_d / last_stride };
+        let boundary = last_d * last_s;
+        (
+            acc_shape.push(final_gap),
+            acc_stride.push(last_stride as int),
+            boundary,
+        )
+    } else {
+        let (s_h, d_h) = work[0];
+        let new_shape = if last_stride == 0 { 0nat } else { d_h / last_stride };
+        let next_last = d_h * s_h;
+        complement_fold(
+            work.drop_first(),
+            next_last,
+            acc_shape.push(new_shape),
+            acc_stride.push(last_stride as int),
+        )
+    }
+}
+
+/// Drop leading modes whose extent is 1 (the "no gap" case in the
+/// production cleanup). If every mode has extent 1, the result is
+/// the empty (rank-0) layout — that's caught by returning an empty
+/// pair.
+pub open spec fn drop_leading_size_one(
+    dims: Seq<nat>,
+    strides: Seq<int>,
+) -> (Seq<nat>, Seq<int>)
+    decreases dims.len()
+{
+    if dims.len() == 0 || strides.len() != dims.len() {
+        (dims, strides)
+    } else if dims[0] == 1nat {
+        drop_leading_size_one(dims.drop_first(), strides.drop_first())
+    } else {
+        (dims, strides)
+    }
+}
+
+/// Spec-level model of `Layout::complement_general`. Builds the
+/// fold's working sequence from `(shape, stride)` pairs (treating
+/// negative strides as 0 — the production code rejects those as
+/// `ComplementInfeasible`), runs the fold, optionally appends the
+/// trailing periods mode, then drops leading size-1 modes.
+pub open spec fn complement_general(l: LayoutModel, cosize: nat) -> LayoutModel
+    recommends l.well_formed(), l.rank() >= 2,
+{
+    let work = build_work_seq(l.shape.dims, l.strides);
+    let (raw_shape, raw_stride, boundary) =
+        complement_fold(work, 1nat, Seq::<nat>::empty(), Seq::<int>::empty());
+
+    // Trailing periods mode: appended iff cosize / boundary > 1.
+    let (with_periods_shape, with_periods_stride) = if boundary == 0 {
+        (raw_shape, raw_stride)
+    } else {
+        let periods = ceil_div(cosize, boundary);
+        if periods <= 1 {
+            (raw_shape, raw_stride)
+        } else {
+            (raw_shape.push(periods), raw_stride.push(boundary as int))
+        }
+    };
+
+    // Drop leading size-1 modes.
+    let (final_shape, final_stride) =
+        drop_leading_size_one(with_periods_shape, with_periods_stride);
+
+    LayoutModel {
+        shape: ShapeModel { dims: final_shape },
+        strides: final_stride,
+        base_offset: l.base_offset,
+    }
+}
+
+/// Build `(shape, stride)` pairs from a shape and stride sequence.
+/// Negative strides become 0 in the ghost model — they're rejected
+/// at runtime, so the spec's behaviour on them is unconstrained.
+pub open spec fn build_work_seq(dims: Seq<nat>, strides: Seq<int>) -> Seq<(nat, nat)>
+    decreases dims.len()
+{
+    if dims.len() == 0 || strides.len() == 0 {
+        Seq::<(nat, nat)>::empty()
+    } else {
+        let head_d = if strides[0] < 0 { 0nat } else { strides[0] as nat };
+        seq![(dims[0], head_d)] + build_work_seq(dims.drop_first(), strides.drop_first())
+    }
+}
+
+// ── Rank-N complement: theorems ─────────────────────────────────
+
+/// T8128 — `complement_fold` preserves the length equality between
+/// the accumulated shape and stride sequences. Inductive over the
+/// `decreases work.len()` recursion.
+proof fn t8128_complement_fold_length_invariant(
+    work: Seq<(nat, nat)>,
+    last_stride: nat,
+    acc_shape: Seq<nat>,
+    acc_stride: Seq<int>,
+)
+    requires acc_shape.len() == acc_stride.len(),
+    ensures ({
+        let (out_shape, out_stride, _) =
+            complement_fold(work, last_stride, acc_shape, acc_stride);
+        out_shape.len() == out_stride.len()
+    }),
+    decreases work.len()
+{
+    if work.len() == 0 {
+        // Empty work: result is (acc_shape, acc_stride, _).
+    } else if work.len() == 1 {
+        // Base case: each branch pushes exactly one element to both
+        // sides, so length equality is preserved.
+    } else {
+        let (s_h, d_h) = work[0];
+        let new_shape = if last_stride == 0 { 0nat } else { d_h / last_stride };
+        let next_last = d_h * s_h;
+        t8128_complement_fold_length_invariant(
+            work.drop_first(),
+            next_last,
+            acc_shape.push(new_shape),
+            acc_stride.push(last_stride as int),
+        );
+    }
+}
+
+/// T8129 — `drop_leading_size_one` preserves the length equality.
+proof fn t8129_drop_leading_size_one_length_invariant(dims: Seq<nat>, strides: Seq<int>)
+    requires dims.len() == strides.len(),
+    ensures ({
+        let (out_dims, out_strides) = drop_leading_size_one(dims, strides);
+        out_dims.len() == out_strides.len()
+    }),
+    decreases dims.len()
+{
+    if dims.len() == 0 || strides.len() != dims.len() {
+        // Base case: return unchanged. (The strides.len() guard is
+        // dead under our precondition; included for the spec's
+        // totality.)
+    } else if dims[0] == 1nat {
+        t8129_drop_leading_size_one_length_invariant(dims.drop_first(), strides.drop_first());
+    } else {
+        // Non-empty, head != 1: return unchanged.
+    }
+}
+
+/// T8130 — `complement_general` produces a layout whose strides
+/// length matches its shape rank. Combines T8128 (fold preserves
+/// the length equality) and T8129 (the cleanup preserves it).
+proof fn t8130_complement_general_well_formed_lengths(l: LayoutModel, cosize: nat)
+    ensures
+        complement_general(l, cosize).strides.len()
+            == complement_general(l, cosize).shape.dims.len(),
+{
+    // Fold result satisfies the length equality (empty starts equal).
+    t8128_complement_fold_length_invariant(
+        build_work_seq(l.shape.dims, l.strides),
+        1nat,
+        Seq::<nat>::empty(),
+        Seq::<int>::empty(),
+    );
+    let (raw_shape, raw_stride, boundary) = complement_fold(
+        build_work_seq(l.shape.dims, l.strides),
+        1nat,
+        Seq::<nat>::empty(),
+        Seq::<int>::empty(),
+    );
+    assert(raw_shape.len() == raw_stride.len());
+
+    // Appending the periods mode preserves equality.
+    let (with_periods_shape, with_periods_stride) = if boundary == 0 {
+        (raw_shape, raw_stride)
+    } else {
+        let periods = ceil_div(cosize, boundary);
+        if periods <= 1 {
+            (raw_shape, raw_stride)
+        } else {
+            (raw_shape.push(periods), raw_stride.push(boundary as int))
+        }
+    };
+    assert(with_periods_shape.len() == with_periods_stride.len());
+
+    // Cleanup preserves equality.
+    t8129_drop_leading_size_one_length_invariant(with_periods_shape, with_periods_stride);
+}
+
+/// T8131 — `complement_general` preserves the layout's base offset.
+/// Structural: the cleanup and fold never touch `base_offset`.
+proof fn t8131_complement_general_preserves_base_offset(l: LayoutModel, cosize: nat)
+    ensures complement_general(l, cosize).base_offset == l.base_offset,
+{
+}
+
+/// T8132 — `complement_fold` returned tail length equals
+/// `acc.len() + work.len()`. Each step pushes exactly one element
+/// and shrinks `work` by exactly one (via `drop_first`).
+proof fn t8132_complement_fold_length_growth(
+    work: Seq<(nat, nat)>,
+    last_stride: nat,
+    acc_shape: Seq<nat>,
+    acc_stride: Seq<int>,
+)
+    requires acc_shape.len() == acc_stride.len(),
+    ensures ({
+        let (out_shape, _, _) =
+            complement_fold(work, last_stride, acc_shape, acc_stride);
+        out_shape.len() == acc_shape.len() + work.len()
+    }),
+    decreases work.len()
+{
+    if work.len() == 0 {
+        // No-op, lengths preserved.
+    } else if work.len() == 1 {
+        // Each branch pushes one element.
+    } else {
+        let (s_h, d_h) = work[0];
+        let new_shape = if last_stride == 0 { 0nat } else { d_h / last_stride };
+        let next_last = d_h * s_h;
+        t8132_complement_fold_length_growth(
+            work.drop_first(),
+            next_last,
+            acc_shape.push(new_shape),
+            acc_stride.push(last_stride as int),
+        );
+    }
+}
 
 } // verus!

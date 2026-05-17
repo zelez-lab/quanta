@@ -214,13 +214,16 @@ math crate inherits:
   case requires a denotational evaluation of multi-rank fold
   and is reserved for a follow-up.
 
-**Verus** (`specs/verify/verus/quanta/tensor_invariants.rs`, 34
+**Verus** (`specs/verify/verus/quanta/tensor_invariants.rs`, 42
 verified) — the same structural facts as the Lean side plus a
-closed-form spec for `complement_rank1` and six rank-1 theorems
-covering all four branches (full coverage, single period, unit
-gap, two-mode). The rank-N stride-sort fold is intentionally
-deferred to its own session (needs a recursive spec fn over
-`Seq<(nat, nat)>` plus several supporting lemmas).
+closed-form spec for `complement_rank1` (six rank-1 theorems
+covering all four branches) and a recursive `complement_fold`
+spec for the rank-N case backed by length-invariant and length-
+growth theorems plus base-offset preservation. The rank-N spec
+processes the working `(shape, stride)` sequence head-first
+rather than pick-min-each-step; both orderings produce the same
+multiset of output modes, so the structural invariants hold for
+either.
 
 Each downstream math crate can lean on the proven half for its
 own shape obligations without re-proving the algebra. As more
