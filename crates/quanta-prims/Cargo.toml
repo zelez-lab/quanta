@@ -1,0 +1,22 @@
+[package]
+name = "quanta-prims"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Block-cooperative GPU primitives for Quanta — reduce, scan, sort, and warp utilities"
+readme = "README.md"
+
+[lib]
+name = "quanta_prims"
+path = "src/lib.rs"
+
+[features]
+default = []
+# `gpu` feature pulls in the Quanta runtime and exposes the
+# `#[quanta::kernel]` entry points + device-callable primitives.
+# Off by default so the crate is usable as a pure-Rust reference
+# library (correctness oracle for downstream tests).
+gpu = ["dep:quanta"]
+
+[dependencies]
+quanta = { path = "../..", default-features = false, features = ["software"], optional = true }
