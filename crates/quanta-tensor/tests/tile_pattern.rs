@@ -122,3 +122,33 @@ fn logical_divide_with_uneven_residual() -> Result<(), LayoutError> {
     assert_eq!(out.at(&[0, 3])?, 12);
     Ok(())
 }
+
+#[test]
+fn logical_divide_with_rank2_tiler() -> Result<(), LayoutError> {
+    // Now that complement supports rank ≥ 2, logical_divide
+    // accepts rank-N tilers. Set up a 24-element buffer divided
+    // by a 2×3 row-major tile (footprint 6, so 4 tiles total).
+    //
+    // Tiler:   row-major [2,3] → strides [3, 1], covers 0..5.
+    // Complement(24): the algorithm produces a single periods
+    //   mode (4, 6) — 4 tiles of length 6.
+    // logical_divide concatenates tiler + complement:
+    //   shape=[2, 3, 4], strides=[3, 1, 6].
+    //
+    // For coord (i, j, k):
+    //   offset = i*3 + j + k*6
+    //         = (k tile selector) * 6 + (i, j within-tile)
+    let buffer = Layout::row_major(&[24])?;
+    let tile = Layout::row_major(&[2, 3])?;
+    let out = buffer.logical_divide(&tile)?;
+    assert_eq!(out.shape().dims(), &[2, 3, 4]);
+    assert_eq!(out.strides(), &[3, 1, 6]);
+
+    // Spot-check the corners.
+    assert_eq!(out.at(&[0, 0, 0])?, 0);
+    assert_eq!(out.at(&[1, 2, 0])?, 5); // last within-tile of tile 0
+    assert_eq!(out.at(&[0, 0, 3])?, 18); // first within-tile of tile 3
+    assert_eq!(out.at(&[1, 2, 3])?, 23); // last element overall
+
+    Ok(())
+}

@@ -30,15 +30,35 @@ fn complement_rank1_with_gap() {
 }
 
 #[test]
-fn complement_higher_rank_unsupported() {
+fn complement_rank2_row_major_against_36() {
+    // (shape=[2,3], strides=[3,1]) covers offsets 0..5 in row-
+    // major. footprint = 6, cosize = 36. After the stride-sort
+    // fold + periods step, both leading size-1 modes are dropped
+    // and the complement reduces to (6, 6) — six periods of
+    // length 6, covering {0, 6, 12, 18, 24, 30}. Together with
+    // the input as a cross-product tile, this tiles 0..35 exactly.
     let l = Layout::row_major(&[2, 3]).unwrap();
-    assert!(matches!(
-        l.complement(36),
-        Err(LayoutError::UnsupportedRank {
-            op: "complement",
-            rank: 2
-        })
-    ));
+    let c = l.complement(36).unwrap();
+    assert_eq!(c.shape().dims(), &[6]);
+    assert_eq!(c.strides(), &[6]);
+}
+
+#[test]
+fn complement_rank2_strided_against_32() {
+    // (shape=[2,2], strides=[4,1]) covers {0, 1, 4, 5} —
+    // footprint of 8 in the cosize sense, but only 4 actual
+    // elements. cosize = 32. The fold:
+    //   pick min stride 1 at idx 1, new_shape = 1/1 = 1,
+    //     emit (1, 1), last = 1 * 2 = 2.
+    //   final pair (2, 4): gap = 4/2 = 2, push (2, 2).
+    //   boundary = 4*2 = 8. periods = 32/8 = 4. push (4, 8).
+    //   drop leading size-1 → result = (dims=[2,4], strides=[2,8]).
+    // The first mode walks the in-period gaps (positions 2, 3
+    // relative to base); the second walks the periods.
+    let l = Layout::from_parts(Shape::from_dims_unchecked(vec![2, 2]), vec![4, 1], 0);
+    let c = l.complement(32).unwrap();
+    assert_eq!(c.shape().dims(), &[2, 4]);
+    assert_eq!(c.strides(), &[2, 8]);
 }
 
 #[test]

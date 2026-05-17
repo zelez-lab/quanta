@@ -29,42 +29,56 @@ use crate::shape::Shape;
 use super::{Layout, LayoutError};
 
 impl Layout {
-    /// Build the complement of a rank-1 layout within a `cosize`.
+    /// Build the complement of a layout within a `cosize`.
     ///
-    /// Given a rank-1 layout `(s, d)` and a target `cosize ≥ s*d`,
-    /// returns the rank-2 layout `((d, ceil_div(cosize, s*d)), (1, s*d))`
-    /// that, together with the input, covers `0..cosize` without
-    /// overlap. The first mode walks the "gaps" inside one period
-    /// of `(s, d)`, the second mode walks the periods themselves.
+    /// Returns a layout that, together with `self`, covers
+    /// `0..cosize` without overlap. The result's modes walk the
+    /// "gaps" in `self`'s footprint, followed by any "periods"
+    /// needed to reach `cosize`.
     ///
-    /// Higher-rank complements require a stride-sort step that the
-    /// dynamic-stride port doesn't ship yet — return
-    /// `UnsupportedRank` for rank ≥ 2.
+    /// **Rank handling**:
+    /// - **Rank 0**: trivial. The complement is `(cosize, 1)` —
+    ///   a contiguous rank-1 layout walking every position.
+    /// - **Rank 1** (`(s, d)`): closed form
+    ///   `((d, 1), (ceil_div(cosize, s*d), s*d))`, with the
+    ///   leading `d` mode dropped when `d == 1` and the trailing
+    ///   periods mode dropped when there's only one period.
+    /// - **Rank ≥ 2**: port of CuTe's stride-sort algorithm
+    ///   (`cute/layout.hpp` ~L1180). Iteratively picks the
+    ///   smallest remaining stride, emits a complement mode
+    ///   `(min_stride / last_result_stride, last_result_stride)`,
+    ///   and advances `last_result_stride` to `min_stride *
+    ///   shape[min_idx]`. After `R-1` iterations the final
+    ///   mode is appended, plus a periods mode for the leftover
+    ///   `cosize / last_result_stride`.
     ///
     /// # Errors
-    /// - `UnsupportedRank { op: "complement", rank }` if `self.rank() >= 2`.
     /// - `ComplementInfeasible { reason }` for degenerate inputs
-    ///   (stride-0 with a non-trivial shape, or cosize smaller than
-    ///   the layout's own footprint).
+    ///   (stride-0 with a non-trivial shape, negative strides,
+    ///   cosize smaller than the layout's footprint, or a
+    ///   non-injective layout detected mid-algorithm).
     pub fn complement(&self, cosize: usize) -> Result<Layout, LayoutError> {
         let rank = self.rank();
         if rank == 0 {
-            // The complement of a rank-0 layout (which indexes a
-            // single element at 0) is just the cosize as a rank-1
-            // contiguous layout.
+            // Complement of a rank-0 layout: the cosize as a
+            // contiguous rank-1 layout.
             return Ok(Layout::from_parts(
                 Shape::from_dims_unchecked(vec![cosize]),
                 vec![1],
                 self.base_offset(),
             ));
         }
-        if rank > 1 {
-            return Err(LayoutError::UnsupportedRank {
-                op: "complement",
-                rank,
-            });
+        if rank == 1 {
+            return self.complement_rank1(cosize);
         }
-        // Rank-1 case.
+        // Rank ≥ 2: full CuTe-style stride-sort.
+        self.complement_general(cosize)
+    }
+
+    /// Rank-1 closed-form complement. Kept as a fast path so the
+    /// most common downstream pattern doesn't pay the
+    /// sort-and-fold cost.
+    fn complement_rank1(&self, cosize: usize) -> Result<Layout, LayoutError> {
         let s = self.shape().dims()[0];
         let d = self.strides()[0];
         if d == 0 {
@@ -84,22 +98,15 @@ impl Layout {
                 reason: "cosize is smaller than the layout's footprint",
             });
         }
-        // First mode: d gaps between elements, contiguous (stride 1).
-        // Second mode: ceil_div(cosize, s*d) periods of length s*d.
         let period = footprint;
         let periods = cosize.div_ceil(period);
         if periods <= 1 && d == 1 {
-            // Degenerate: the layout already covers cosize. The
-            // complement is the trivial rank-0 layout.
             return Ok(Layout::from_parts(
                 Shape::from_dims_unchecked(vec![]),
                 vec![],
                 self.base_offset(),
             ));
         }
-        // Build a rank-2 result. If d == 1, drop the first mode
-        // (it would be size-1, contributing nothing). If periods
-        // == 1, drop the second mode.
         let mut dims: Vec<usize> = Vec::new();
         let mut strides: Vec<isize> = Vec::new();
         if d > 1 {
@@ -113,6 +120,127 @@ impl Layout {
         Ok(Layout::from_parts(
             Shape::from_dims_unchecked(dims),
             strides,
+            self.base_offset(),
+        ))
+    }
+
+    /// Multi-rank complement. Ports CuTe's stride-sort fold.
+    ///
+    /// Working set: a list of `(shape_i, stride_i)` pairs. Each
+    /// iteration removes the smallest-stride pair and emits one
+    /// result mode. After all `R` pairs are consumed, one
+    /// trailing "periods" mode is appended for the
+    /// `cosize / last_result_stride` factor.
+    fn complement_general(&self, cosize: usize) -> Result<Layout, LayoutError> {
+        // Snapshot working (shape, stride) pairs as unsigned.
+        // Rejects zero or negative strides up-front — they can't
+        // sort or feed the divide step.
+        let mut work: Vec<(usize, usize)> = Vec::with_capacity(self.rank());
+        for (&s, &d) in self.shape().dims().iter().zip(self.strides().iter()) {
+            if d <= 0 {
+                return Err(LayoutError::ComplementInfeasible {
+                    reason: "complement requires every stride to be positive",
+                });
+            }
+            work.push((s, d as usize));
+        }
+
+        let mut result_shape: Vec<usize> = Vec::with_capacity(self.rank() + 1);
+        let mut result_stride: Vec<isize> = Vec::with_capacity(self.rank() + 1);
+        // The accumulator that CuTe carries as `result_stride`'s
+        // last element. Starts at 1.
+        let mut last_stride: usize = 1;
+
+        // Run the fold over R-1 pairs; the final pair is handled
+        // below to produce the closing "gap" mode separately.
+        while work.len() > 1 {
+            // Find the index of the smallest stride.
+            let min_idx = work
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (_, d))| *d)
+                .map(|(i, _)| i)
+                .expect("work non-empty in loop guard");
+            let (min_shape, min_stride) = work[min_idx];
+
+            // new_shape = min_stride / last_stride. Must be > 0
+            // (CuTe asserts; we return an error).
+            if last_stride == 0
+                || min_stride < last_stride
+                || !min_stride.is_multiple_of(last_stride)
+            {
+                return Err(LayoutError::ComplementInfeasible {
+                    reason: "non-injective layout: stride not divisible by previous step",
+                });
+            }
+            let new_shape = min_stride / last_stride;
+            if new_shape == 0 {
+                return Err(LayoutError::ComplementInfeasible {
+                    reason: "non-injective layout detected in complement",
+                });
+            }
+            result_shape.push(new_shape);
+            result_stride.push(last_stride as isize);
+            last_stride = min_stride.saturating_mul(min_shape);
+
+            // Remove the consumed mode from the working set.
+            work.swap_remove(min_idx);
+            // `swap_remove` reorders the tail; that's fine because
+            // the algorithm only cares about the multiset of
+            // remaining (shape, stride) pairs, not their order.
+        }
+
+        // Final mode: handle the last remaining (shape, stride)
+        // pair. CuTe appends `new_shape = min_stride / last_stride`
+        // and uses `min_stride * min_shape` as the boundary
+        // between the gap modes and the trailing periods.
+        let (last_shape_in, last_stride_in) = *work.last().expect("rank >= 2 guarantees one left");
+        if last_stride == 0
+            || last_stride_in < last_stride
+            || !last_stride_in.is_multiple_of(last_stride)
+        {
+            return Err(LayoutError::ComplementInfeasible {
+                reason: "non-injective layout: final stride not divisible by previous step",
+            });
+        }
+        let final_gap = last_stride_in / last_stride;
+        if final_gap == 0 {
+            return Err(LayoutError::ComplementInfeasible {
+                reason: "non-injective layout detected at final mode",
+            });
+        }
+        result_shape.push(final_gap);
+        result_stride.push(last_stride as isize);
+        let boundary = last_stride_in.saturating_mul(last_shape_in);
+
+        // Trailing periods: ceil_div(cosize, boundary) periods of
+        // length `boundary`. Dropped if there's only one period.
+        if cosize < boundary {
+            return Err(LayoutError::ComplementInfeasible {
+                reason: "cosize is smaller than the layout's footprint",
+            });
+        }
+        let periods = cosize.div_ceil(boundary);
+        if periods > 1 {
+            result_shape.push(periods);
+            result_stride.push(boundary as isize);
+        }
+
+        // Drop any leading size-1 mode (the "no gap" case).
+        if let Some((idx, _)) = result_shape.iter().enumerate().find(|&(_, &s)| s != 1) {
+            if idx > 0 {
+                result_shape.drain(0..idx);
+                result_stride.drain(0..idx);
+            }
+        } else {
+            // All modes have size 1 — collapse to rank-0.
+            result_shape.clear();
+            result_stride.clear();
+        }
+
+        Ok(Layout::from_parts(
+            Shape::from_dims_unchecked(result_shape),
+            result_stride,
             self.base_offset(),
         ))
     }
