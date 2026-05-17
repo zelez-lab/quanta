@@ -199,7 +199,7 @@ covered under "Design notes" below.
 
 Two layers of formal artifacts ship with the substrate:
 
-**Lean** (`specs/verify/lean/Quanta/Tensor/Layout.lean`, 48
+**Lean** (`specs/verify/lean/Quanta/Tensor/Layout.lean`, 53
 theorems) — structural facts (linear size = product of dims,
 strides length = rank, indexer well-formedness, dot's cons
 distribution law) plus the algebraic theorems each downstream
@@ -209,10 +209,14 @@ math crate inherits:
   `logical_divide` lands inside the original linear size.
 - `permutation_bijective`: every `permute` is a bijection on
   `0..rank` (proven via `List.Perm.map` from mathlib).
-- `compose_assoc` (rank-1 case): `compose(compose(A, B), C) ==
-  compose(A, compose(B, C))` for rank-1 inputs. The full-rank
-  case requires a denotational evaluation of multi-rank fold
-  and is reserved for a follow-up.
+- `compose_assoc` (rank-1 LHS × rank-1 middle × rank-N RHS):
+  `compose(compose(A, B), C) == compose(A, compose(B, C))`
+  proven at the layout-record level (T8048-T8052). Covers the
+  practical GEMM tiling case where outer loops are rank-1 and
+  inner tiles are rank-N. The fully general rank-M × rank-N ×
+  rank-K case requires the divisibility-checking fold from
+  CuTe lifted into Lean — modelled on the Verus side as
+  `complement_general`, deferred in Lean.
 
 **Verus** (`specs/verify/verus/quanta/tensor_invariants.rs`, 42
 verified) — the same structural facts as the Lean side plus a

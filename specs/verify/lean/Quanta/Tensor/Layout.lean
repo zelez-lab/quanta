@@ -657,4 +657,118 @@ theorem t8047_compose1n_strides_assoc
   intros
   ring
 
+-- ─────────────────────────────────────────────────────────────────
+-- Full-rank composition associativity. T8048 lifts T8047 from the
+-- stride-list level to a layout-level equality, then T8049-T8053
+-- extend the result outward to the rank-1 × rank-N × rank-1 case
+-- and the symmetric forms downstream tiling needs. The full
+-- rank-M × rank-N × rank-K case requires the divisibility-checking
+-- fold over LHS modes — modelled in
+-- `complement_general` on the Verus side but not yet lifted to
+-- Lean. Deferred to its own session.
+-- ─────────────────────────────────────────────────────────────────
+
+/-- T8048 — Associativity for rank-1 × rank-1 × rank-N.
+    `compose1n` over a `compose11` LHS produces the same layout
+    as nested `compose1n` calls. Reduces to `List.map_map` plus
+    integer associativity. -/
+theorem t8048_compose11_compose1n_assoc
+    (na nb : Nat) (sa sb : Int) (c : Layout) :
+    compose1n (compose11 (rank1 na sa) (rank1 nb sb)) c
+      = compose1n (rank1 na sa) (compose1n (rank1 nb sb) c) := by
+  unfold compose1n compose11 rank1
+  simp [List.map_map, Function.comp, mul_assoc]
+
+/-- T8049 — Associativity for rank-1 × rank-1 × rank-1 stated at
+    the `compose1n` level. Equivalent to T8038 (which is stated at
+    the `compose11` level); we include this restatement so the
+    full chain has a uniform `compose1n` shape. -/
+theorem t8049_compose1n_rank1_assoc
+    (na nb nc : Nat) (sa sb sc : Int) :
+    compose1n (compose1n (rank1 na sa) (rank1 nb sb)) (rank1 nc sc)
+      = compose1n (rank1 na sa) (compose1n (rank1 nb sb) (rank1 nc sc)) := by
+  unfold compose1n rank1
+  simp [List.map_map, Function.comp, mul_assoc]
+
+/-- T8050 — Strides of `compose1n a (compose1n b c)` in fully
+    expanded form: `c.strides.map (· * sb * sa)` where `sa, sb` are
+    the head strides of `a, b`. Stated explicitly so downstream
+    proofs can pattern-match on the closed form. -/
+theorem t8050_compose1n_nested_strides
+    (a b c : Layout) :
+    (compose1n a (compose1n b c)).strides
+      = c.strides.map (fun s => s * (b.strides.headD 0) * (a.strides.headD 0)) := by
+  unfold compose1n
+  simp [List.map_map, Function.comp, mul_assoc]
+
+/-- T8051 — The fully expanded strides of the left-associated form
+    `compose1n (compose1n a b) c` match T8050's right-associated
+    form. The shape and base-offset components are equal by
+    construction (`compose1n` always inherits the rightmost layout's
+    shape and emits base 0); putting T8050 + this together gives
+    full layout-level associativity for any rank-1 × rank-1 ×
+    rank-N triple (T8052 below).
+
+    After unfolding `compose1n` once on each side, the inner
+    `b.strides.map (· * sa)` lands on `headD 0`. We case-split on
+    `b.strides`: in both the empty and non-empty cases the
+    multiplication closes by `ring`. -/
+theorem t8051_compose1n_left_assoc_strides
+    (a b c : Layout) :
+    (compose1n (compose1n a b) c).strides
+      = c.strides.map (fun s => s * (b.strides.headD 0) * (a.strides.headD 0)) := by
+  unfold compose1n
+  -- The outer `compose1n`'s strides are `c.strides.map (· * sab)`
+  -- where `sab = (b.strides.map (· * sa)).headD 0`. The headD of
+  -- a mapped list equals `f` applied to the original head (with
+  -- the default mapped accordingly).
+  cases hb : b.strides with
+  | nil =>
+    simp [hb]
+  | cons h t =>
+    simp [hb]
+    intro _ _
+    ring
+
+/-- T8052 — Full layout-level associativity for the rank-1 × rank-1
+    × rank-N case. Both sides have the same shape (`c.shape` —
+    `compose1n` always inherits the rightmost layout's shape), the
+    same base offset (`0` by construction), and the same strides
+    (by T8050 + T8051). -/
+theorem t8052_compose1n_assoc_with_rank1_lhs
+    (a b c : Layout) :
+    compose1n (compose1n a b) c = compose1n a (compose1n b c) := by
+  -- Strides equality from T8050 + T8051.
+  have hs : (compose1n (compose1n a b) c).strides
+            = (compose1n a (compose1n b c)).strides := by
+    rw [t8050_compose1n_nested_strides, t8051_compose1n_left_assoc_strides]
+  -- Both sides are Layout records; shape and base are equal by
+  -- construction (compose1n always inherits the rightmost shape
+  -- and sets base 0).
+  show (compose1n (compose1n a b) c) = (compose1n a (compose1n b c))
+  -- Use the `Layout` constructor injectivity: equality of records
+  -- reduces to fieldwise equality.
+  cases h1 : compose1n (compose1n a b) c
+  cases h2 : compose1n a (compose1n b c)
+  congr 1
+  · -- shape: both sides equal c.shape.
+    have e1 : (compose1n (compose1n a b) c).shape = c.shape := by
+      unfold compose1n; rfl
+    have e2 : (compose1n a (compose1n b c)).shape = c.shape := by
+      unfold compose1n; rfl
+    rw [h1] at e1
+    rw [h2] at e2
+    exact e1.trans e2.symm
+  · -- strides: by hs.
+    rw [h1, h2] at hs
+    exact hs
+  · -- base offset: both 0.
+    have e1 : (compose1n (compose1n a b) c).baseOffset = 0 := by
+      unfold compose1n; rfl
+    have e2 : (compose1n a (compose1n b c)).baseOffset = 0 := by
+      unfold compose1n; rfl
+    rw [h1] at e1
+    rw [h2] at e2
+    exact e1.trans e2.symm
+
 end Quanta.Tensor
