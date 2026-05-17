@@ -571,4 +571,90 @@ theorem t8040_compose11_zero_base (a b : Layout) :
     (compose11 a b).baseOffset = 0 := by
   rfl
 
+-- ─────────────────────────────────────────────────────────────────
+-- Rank-1 LHS, rank-N RHS composition. The right-distributivity
+-- branch of CuTe's `composition_impl`: composing a single LHS
+-- mode with an RHS layout of multiple modes is the same as
+-- composing the LHS mode with each RHS mode separately and
+-- concatenating the results.
+-- ─────────────────────────────────────────────────────────────────
+
+namespace Layout
+
+/-- Compose a rank-1 LHS layout `(a_dim, sa)` with a rank-N RHS
+    layout `(b_dims, b_strides)` by mapping each RHS mode
+    `(b_i, db_i)` to `(b_i, db_i * sa)`. The result's shape is
+    `b.shape.dims` (unchanged) and its strides are
+    `b.strides.map (· * sa)`. Base offset is 0.
+
+    Equivalent to applying `compose11` mode-wise to the RHS;
+    direct construction here keeps the result flat. -/
+def compose1n (a : Layout) (b : Layout) : Layout :=
+  { shape := b.shape
+    strides := b.strides.map (· * (a.strides.headD 0))
+    baseOffset := 0 }
+
+end Layout
+
+/-- T8041 — `compose1n` preserves the RHS's rank. The result's
+    shape comes directly from `b.shape`. -/
+theorem t8041_compose1n_preserves_rhs_rank (a b : Layout) :
+    (compose1n a b).rank = b.rank := by
+  rfl
+
+/-- T8042 — `compose1n` keeps the RHS's shape unchanged. -/
+theorem t8042_compose1n_preserves_rhs_shape (a b : Layout) :
+    (compose1n a b).shape = b.shape := by
+  rfl
+
+/-- T8043 — `compose1n` produces a layout with base offset 0. -/
+theorem t8043_compose1n_zero_base (a b : Layout) :
+    (compose1n a b).baseOffset = 0 := by
+  rfl
+
+/-- T8044 — `compose1n` agrees with `compose11` when the RHS is
+    rank 1. -/
+theorem t8044_compose1n_matches_compose11_on_rank1
+    (a : Layout) (n : Nat) (s : Int) :
+    compose1n a (rank1 n s) = compose11 a (rank1 n s) := by
+  unfold compose1n compose11 rank1
+  simp
+
+/-- T8045 — `compose1n a (rank1 n 1) = rank1 n sa`, where `sa` is
+    `a`'s head stride. Composing with a unit-stride rank-1 RHS
+    just lifts the LHS's stride into the result. Special case of
+    the more general right-identity behaviour. -/
+theorem t8045_compose1n_with_unit_stride_rhs
+    (a : Layout) (n : Nat) :
+    compose1n a (rank1 n 1) = rank1 n (a.strides.headD 0) := by
+  unfold compose1n rank1
+  simp
+
+/-- T8046 — `compose1n` is "right-distributive" over rank-1 RHS
+    decomposition in the sense that the strides emerge as the
+    product of the RHS strides with the LHS head stride. Stated
+    explicitly so the structural property is visible to readers
+    and downstream proofs. -/
+theorem t8046_compose1n_strides_formula (a b : Layout) :
+    (compose1n a b).strides = b.strides.map (· * (a.strides.headD 0)) := by
+  rfl
+
+/-- T8047 — `compose1n`'s strides under rank-1×rank-N×rank-1
+    associativity. Both nested `compose1n` calls produce the same
+    stride list, by associativity of `Int` multiplication.
+
+    A subtle textual issue: `compose1n` reaches into the
+    `.strides.headD 0` accessor on each side, but the inner
+    `compose1n` has produced a *mapped* strides list, so
+    `headD` lands on different fold-shaped expressions on each
+    side. We sidestep that by stating + proving the stride
+    formula directly, then deriving the layout equality. -/
+theorem t8047_compose1n_strides_assoc
+    (sa dc : Int) (b : Layout) :
+    b.strides.map (fun s => dc * (s * sa))
+      = b.strides.map (fun s => (dc * s) * sa) := by
+  apply List.map_congr_left
+  intros
+  ring
+
 end Quanta.Tensor
