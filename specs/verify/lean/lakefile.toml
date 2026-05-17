@@ -1,5 +1,15 @@
 name = "quanta-specs"
 defaultTargets = ["Quanta"]
 
+# Mathlib is used only by Lean proof artifacts under
+# `specs/verify/lean/`. It is **not** a transitive dependency of
+# the published Quanta crates — Cargo never sees this file, and
+# the Lean proofs are correctness artifacts, not runtime code.
+# Pinned to `v4.16.0` to match the lean-toolchain in this dir.
+[[require]]
+name = "mathlib"
+git  = "https://github.com/leanprover-community/mathlib4.git"
+rev  = "v4.16.0"
+
 [[lean_lib]]
 name = "Quanta"

@@ -15,6 +15,9 @@ permutation bijectivity, tile-offset bounds) land in a follow-up
 when their proof obligations are stable.
 -/
 
+import Mathlib.Tactic.Linarith
+import Mathlib.Tactic.Ring
+
 namespace Quanta.Tensor
 
 /-- A multi-dimensional shape: an ordered list of axis extents. -/
@@ -368,5 +371,63 @@ theorem t8030_row_major_offset_nonneg (dims coord : List Nat) :
   unfold rowMajor Layout.offset
   simp
   exact t8029_dot_row_major_nonneg coord dims
+
+/-- A coordinate is **bounded** for the given dims when their
+    lengths match and every component is strictly less than the
+    corresponding extent. This is the precondition row-major
+    indexing needs to land in `[0, linearSize)`. -/
+def CoordBounded : List Nat → List Nat → Prop
+  | [], []          => True
+  | c :: cs, d :: ds => c < d ∧ CoordBounded cs ds
+  | _, _            => False
+
+/-- T8031 — Upper-bound half. For any bounded coord, the
+    row-major dot product is strictly less than the linear size,
+    as an `Int` comparison. -/
+theorem t8031_dot_row_major_lt_linear_size
+    (coord dims : List Nat) (h : CoordBounded coord dims) :
+    dot coord (rowMajorStrides dims)
+      < ((dims.foldr (· * ·) 1 : Nat) : Int) := by
+  induction coord generalizing dims with
+  | nil =>
+    cases dims with
+    | nil => simp [dot, rowMajorStrides]
+    | cons _ _ => simp [CoordBounded] at h
+  | cons c cs ih =>
+    cases dims with
+    | nil => simp [CoordBounded] at h
+    | cons d ds =>
+      obtain ⟨hc, hbtail⟩ := h
+      have ih' := ih ds hbtail
+      simp [rowMajorStrides, dot, List.foldr]
+      -- The head stride is S := ds.foldr (·*·) 1, a Nat.
+      set S : Nat := ds.foldr (· * ·) 1 with hS
+      -- Goal: c * S + dot cs ... < d * S (as Int).
+      -- We have: dot cs (rowMajorStrides ds) < (S : Int).
+      -- And c + 1 ≤ d, so c * S + S ≤ d * S, so c * S + dot < d * S.
+      have hSnn : (0 : Int) ≤ (S : Int) := Int.ofNat_nonneg _
+      have hcS : (c : Int) * S ≥ 0 := by
+        apply Int.mul_nonneg
+        · exact Int.ofNat_nonneg _
+        · exact hSnn
+      have hcsucc : (c : Int) + 1 ≤ (d : Int) := by exact_mod_cast hc
+      -- (c + 1) * S ≤ d * S
+      have hub : ((c : Int) + 1) * (S : Int) ≤ (d : Int) * (S : Int) := by
+        exact mul_le_mul_of_nonneg_right hcsucc hSnn
+      -- Algebra: c * S + dot < c * S + S = (c + 1) * S ≤ d * S
+      linarith
+
+/-- T8032 — `tile_offset_bound`. For a row-major layout and any
+    bounded coordinate, the offset is in `[0, linearSize)` as an
+    `Int`. This is the bijection precondition downstream sort /
+    FFT correctness theorems rely on. -/
+theorem t8032_tile_offset_bound (dims coord : List Nat)
+    (h : CoordBounded coord dims) :
+    0 ≤ (rowMajor dims).offset coord ∧
+      (rowMajor dims).offset coord < ((rowMajor dims).linearSize : Int) := by
+  refine ⟨t8030_row_major_offset_nonneg dims coord, ?_⟩
+  unfold rowMajor Layout.offset Layout.linearSize Shape.linearSize
+  simp
+  exact t8031_dot_row_major_lt_linear_size coord dims h
 
 end Quanta.Tensor
