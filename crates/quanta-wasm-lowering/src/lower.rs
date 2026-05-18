@@ -2281,6 +2281,30 @@ impl<'a> LowerCtx<'a> {
         reg
     }
 
+    /// Coerce a register holding `src_ty` to `dst_ty`. If the types
+    /// already match the register is returned unchanged; otherwise a
+    /// `KernelOp::Cast` is emitted and the new register is returned.
+    ///
+    /// Mainly used to widen `Bool` operands going into subgroup
+    /// reduce/scan ops — rustc's optimiser can elide a `bool as u32`
+    /// cast when it's a no-op at the WASM bytecode level, but the
+    /// downstream MSL / WGSL / SPIR-V emitters need the explicit
+    /// type because `simd_prefix_inclusive_sum(bool)` and the
+    /// equivalents on other backends aren't valid overloads.
+    fn coerce_to(&mut self, src: Reg, src_ty: ScalarType, dst_ty: ScalarType) -> Reg {
+        if src_ty == dst_ty {
+            return src;
+        }
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::Cast {
+            dst,
+            src,
+            from: src_ty,
+            to: dst_ty,
+        });
+        dst
+    }
+
     /// Drop the args of an elided panic helper from the symbolic
     /// stack and emit nothing. Caller has already verified the
     /// callee name belongs to the panic family.
@@ -2979,7 +3003,8 @@ impl<'a> LowerCtx<'a> {
     /// matching `KernelOp::SubgroupReduce*` op.
     fn subgroup_reduce(&mut self, op: SubgroupOp, ty: ScalarType) -> Result<(), LoweringError> {
         let value = self.pop()?;
-        let (vr, _) = self.commit(value)?;
+        let (vr, src_ty) = self.commit(value)?;
+        let vr = self.coerce_to(vr, src_ty, ty);
         let dst = self.alloc_reg();
         let kop = match op {
             SubgroupOp::Add => KernelOp::SubgroupReduceAdd { dst, src: vr, ty },
@@ -2995,7 +3020,8 @@ impl<'a> LowerCtx<'a> {
     /// `KernelOp::SubgroupInclusiveAdd`.
     fn subgroup_scan_inclusive(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
         let value = self.pop()?;
-        let (vr, _) = self.commit(value)?;
+        let (vr, src_ty) = self.commit(value)?;
+        let vr = self.coerce_to(vr, src_ty, ty);
         let dst = self.alloc_reg();
         self.emit(KernelOp::SubgroupInclusiveAdd { dst, src: vr, ty });
         self.stack.push(SymVal::Reg(dst, ty));
@@ -3006,7 +3032,8 @@ impl<'a> LowerCtx<'a> {
     /// `KernelOp::SubgroupExclusiveAdd`.
     fn subgroup_scan_exclusive(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
         let value = self.pop()?;
-        let (vr, _) = self.commit(value)?;
+        let (vr, src_ty) = self.commit(value)?;
+        let vr = self.coerce_to(vr, src_ty, ty);
         let dst = self.alloc_reg();
         self.emit(KernelOp::SubgroupExclusiveAdd { dst, src: vr, ty });
         self.stack.push(SymVal::Reg(dst, ty));
