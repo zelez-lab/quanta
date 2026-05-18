@@ -52,3 +52,11 @@ required-features = ["gpu"]
 
 [[example]]
 name = "cpu_oracle"
+
+[[example]]
+name = "bench_throughput"
+required-features = ["gpu"]
+
+[[example]]
+name = "bench_vs_cpu"
+required-features = ["gpu"]

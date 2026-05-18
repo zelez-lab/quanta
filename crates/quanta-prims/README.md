@@ -140,6 +140,8 @@ handles nested control flow.
   primitive.
 - **[COOKBOOK.md](COOKBOOK.md)** — recipe catalogue: per-block
   histograms, threshold filtering, GEMV reductions, …
+- **[PERFORMANCE.md](PERFORMANCE.md)** — honest perf numbers
+  on Apple M1 Pro, with reproducible bench commands.
 - **[CHANGELOG.md](CHANGELOG.md)** — release history.
 
 ## Related crates

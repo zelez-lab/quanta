@@ -57,6 +57,21 @@ across the portable `{u32, i32, f32}` type set.
 - `COOKBOOK.md` — recipe catalogue covering dot product,
   max-magnitude, histogram, compaction, block-local sort.
 
+### Examples
+
+Six runnable examples in `examples/`:
+
+- `block_sum`, `prefix_scan`, `bucket_sort` — per-primitive
+  demos with println output and a CPU-reference correctness
+  check.
+- `cpu_oracle` — pure-Rust tour of every reference function
+  (no GPU required).
+- `bench_throughput` — sweep reduce/scan/sort over varying N;
+  print median latency and M-elem/sec.
+- `bench_vs_cpu` — head-to-head vs the single-thread CPU
+  reference at a fixed N; honest framing including the
+  "N-core CPU" parallel upper bound.
+
 ### Verification
 
 - **Lean** (`specs/verify/lean/Quanta/Prims/Reference.lean`) —
