@@ -900,14 +900,14 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
-            RawInstr::F32Load { .. } => {
+            RawInstr::F32Load { offset, .. } => {
                 let addr = self.pop()?;
                 match addr {
                     SymVal::BufferAccess {
                         slot,
                         base,
                         scale: 4,
-                    } => {
+                    } if *offset == 0 => {
                         let dst = self.alloc_reg();
                         self.emit(KernelOp::Load {
                             dst,
@@ -917,9 +917,25 @@ impl<'a> LowerCtx<'a> {
                         });
                         self.stack.push(SymVal::Reg(dst, ScalarType::F32));
                     }
+                    // Bare BufferPtr — `buf[N]` for compile-time-
+                    // constant N. rustc folds N into the memarg
+                    // offset (`offset = N * 4` for f32).
+                    SymVal::BufferPtr(slot) if (*offset % 4) == 0 => {
+                        let index = self.const_index_for_offset(*offset, 4);
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::Load {
+                            dst,
+                            field: slot,
+                            index,
+                            ty: ScalarType::F32,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::F32));
+                    }
                     other => {
                         return Err(LoweringError::UnsupportedOp {
-                            op: format!("f32.load on non-buffer address {other:?}"),
+                            op: format!(
+                                "f32.load on non-buffer address {other:?} (offset={offset})"
+                            ),
                             at: self.body.body_offset,
                         });
                     }
@@ -991,6 +1007,18 @@ impl<'a> LowerCtx<'a> {
                             ty: ScalarType::F32,
                         });
                     }
+                    // Bare BufferPtr — `buf[N] = …` for compile-time-
+                    // constant N. rustc folds N into the memarg
+                    // offset (`offset = N * 4`).
+                    SymVal::BufferPtr(slot) if (*offset % 4) == 0 => {
+                        let index = self.const_index_for_offset(*offset, 4);
+                        self.emit(KernelOp::Store {
+                            field: slot,
+                            index,
+                            src: val_reg,
+                            ty: ScalarType::F32,
+                        });
+                    }
                     other => {
                         return Err(LoweringError::UnsupportedOp {
                             op: format!(
@@ -1002,7 +1030,7 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
-            RawInstr::F64Load { .. } => {
+            RawInstr::F64Load { offset, .. } => {
                 let addr = self.pop()?;
                 match addr {
                     SymVal::BufferAccess {
@@ -1015,6 +1043,19 @@ impl<'a> LowerCtx<'a> {
                             dst,
                             field: slot,
                             index: base,
+                            ty: ScalarType::F64,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ScalarType::F64));
+                    }
+                    // Bare BufferPtr — `buf[N]` for compile-time-
+                    // constant N (f64 ⇒ offset = N * 8).
+                    SymVal::BufferPtr(slot) if (*offset % 8) == 0 => {
+                        let index = self.const_index_for_offset(*offset, 8);
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::Load {
+                            dst,
+                            field: slot,
+                            index,
                             ty: ScalarType::F64,
                         });
                         self.stack.push(SymVal::Reg(dst, ScalarType::F64));
@@ -1041,6 +1082,18 @@ impl<'a> LowerCtx<'a> {
                         self.emit(KernelOp::Store {
                             field: slot,
                             index: base,
+                            src: val_reg,
+                            ty: ScalarType::F64,
+                        });
+                    }
+                    // Bare BufferPtr — `buf[N] = …` for compile-time-
+                    // constant N. rustc folds N into the memarg
+                    // offset (`offset = N * 8` for f64).
+                    SymVal::BufferPtr(slot) if (*offset % 8) == 0 => {
+                        let index = self.const_index_for_offset(*offset, 8);
+                        self.emit(KernelOp::Store {
+                            field: slot,
+                            index,
                             src: val_reg,
                             ty: ScalarType::F64,
                         });
@@ -1104,14 +1157,14 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
-            RawInstr::I32Load { .. } => {
+            RawInstr::I32Load { offset, .. } => {
                 let addr = self.pop()?;
                 match addr {
                     SymVal::BufferAccess {
                         slot,
                         base,
                         scale: 4,
-                    } => {
+                    } if *offset == 0 => {
                         let ty = self.scalar_type_for_slot(slot);
                         let dst = self.alloc_reg();
                         self.emit(KernelOp::Load {
@@ -1122,16 +1175,34 @@ impl<'a> LowerCtx<'a> {
                         });
                         self.stack.push(SymVal::Reg(dst, ty));
                     }
+                    // Bare BufferPtr — `buf[N]` for compile-time-
+                    // constant N. rustc folds the index into the
+                    // memarg offset (`offset = N * 4`), so the stack
+                    // arg is just the buffer base pointer.
+                    SymVal::BufferPtr(slot) if (*offset % 4) == 0 => {
+                        let ty = self.scalar_type_for_slot(slot);
+                        let index = self.const_index_for_offset(*offset, 4);
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::Load {
+                            dst,
+                            field: slot,
+                            index,
+                            ty,
+                        });
+                        self.stack.push(SymVal::Reg(dst, ty));
+                    }
                     other => {
                         return Err(LoweringError::UnsupportedOp {
-                            op: format!("i32.load on non-buffer address {other:?}"),
+                            op: format!(
+                                "i32.load on non-buffer address {other:?} (offset={offset})"
+                            ),
                             at: self.body.body_offset,
                         });
                     }
                 }
             }
 
-            RawInstr::I32Store { .. } => {
+            RawInstr::I32Store { offset, .. } => {
                 let val = self.pop()?;
                 let addr = self.pop()?;
                 match addr {
@@ -1139,7 +1210,7 @@ impl<'a> LowerCtx<'a> {
                         slot,
                         base,
                         scale: 4,
-                    } => {
+                    } if *offset == 0 => {
                         let ty = self.scalar_type_for_slot(slot);
                         let val_reg = self.materialize_for_typed_store(val, ty)?;
                         self.emit(KernelOp::Store {
@@ -1149,9 +1220,25 @@ impl<'a> LowerCtx<'a> {
                             ty,
                         });
                     }
+                    // Bare BufferPtr — `buf[N] = …` for compile-time-
+                    // constant N. rustc folds the index into the
+                    // memarg offset (`offset = N * 4`).
+                    SymVal::BufferPtr(slot) if (*offset % 4) == 0 => {
+                        let ty = self.scalar_type_for_slot(slot);
+                        let val_reg = self.materialize_for_typed_store(val, ty)?;
+                        let index = self.const_index_for_offset(*offset, 4);
+                        self.emit(KernelOp::Store {
+                            field: slot,
+                            index,
+                            src: val_reg,
+                            ty,
+                        });
+                    }
                     other => {
                         return Err(LoweringError::UnsupportedOp {
-                            op: format!("i32.store on non-buffer address {other:?}"),
+                            op: format!(
+                                "i32.store on non-buffer address {other:?} (offset={offset})"
+                            ),
                             at: self.body.body_offset,
                         });
                     }
@@ -2174,6 +2261,24 @@ impl<'a> LowerCtx<'a> {
             .find(|p| p.slot == slot)
             .map(|p| p.scalar)
             .unwrap_or(ScalarType::U32)
+    }
+
+    /// Emit a Const-index register for a buffer Load/Store where the
+    /// element address is `BufferPtr + memarg-offset`. Used when
+    /// rustc collapses `out[N] = …` (compile-time-constant N) to a
+    /// bare BufferPtr plus an immediate memarg offset.
+    ///
+    /// `byte_offset` is the memarg offset in bytes (which must be a
+    /// multiple of `elem_size`); returns a register holding
+    /// `byte_offset / elem_size` as `u32`.
+    fn const_index_for_offset(&mut self, byte_offset: u64, elem_size: u32) -> Reg {
+        let idx = (byte_offset as u32) / elem_size;
+        let reg = self.alloc_reg();
+        self.emit(KernelOp::Const {
+            dst: reg,
+            value: ConstValue::U32(idx),
+        });
+        reg
     }
 
     /// Drop the args of an elided panic helper from the symbolic
