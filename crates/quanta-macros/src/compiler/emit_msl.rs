@@ -441,6 +441,42 @@ fn emit_msl_op(
                 val.0
             ));
         }
+        // Threadgroup-storage atomic. Same emit shape as AtomicOp
+        // above but pointed at `shared_<slot>[idx]` and using the
+        // `threadgroup` address space. See emit_msl/ops.rs in
+        // quanta-ir for the mirroring JIT emit.
+        SharedAtomicOp {
+            dst,
+            slot,
+            index,
+            val,
+            op,
+            ty,
+            order: _,
+        } => {
+            let fn_name = match op {
+                quanta_ir::AtomicOp::Add => "atomic_fetch_add_explicit",
+                quanta_ir::AtomicOp::Sub => "atomic_fetch_sub_explicit",
+                quanta_ir::AtomicOp::Min => "atomic_fetch_min_explicit",
+                quanta_ir::AtomicOp::Max => "atomic_fetch_max_explicit",
+                quanta_ir::AtomicOp::And => "atomic_fetch_and_explicit",
+                quanta_ir::AtomicOp::Or => "atomic_fetch_or_explicit",
+                quanta_ir::AtomicOp::Xor => "atomic_fetch_xor_explicit",
+                quanta_ir::AtomicOp::Exchange => "atomic_exchange_explicit",
+                quanta_ir::AtomicOp::CompareExchange => "atomic_compare_exchange_weak_explicit",
+            };
+            out.push_str(&format!(
+                "{}{} r{} = {}((threadgroup atomic_{}*)&shared_{}[r{}], r{}, memory_order_relaxed);\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                fn_name,
+                ty.msl_name(),
+                slot,
+                index.0,
+                val.0
+            ));
+        }
         WaveShuffle {
             dst,
             src,

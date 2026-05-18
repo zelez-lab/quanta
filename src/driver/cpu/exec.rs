@@ -236,6 +236,33 @@ pub(super) fn execute_ops(
                 }
                 ctx.regs.insert(dst.0, old);
             }
+            // Shared-memory atomic. Same semantics as AtomicOp but
+            // targets the shared-mem HashMap rather than a bound
+            // buffer field. Single-thread interpreter has no real
+            // concurrency, so the "atomic" here is just sequential
+            // read-modify-write — same as SharedStore + SharedLoad
+            // but in one step and returning the prior value.
+            KernelOp::SharedAtomicOp {
+                dst,
+                slot,
+                index,
+                val,
+                op,
+                ty,
+                order: _,
+            } => {
+                let idx = reg(ctx, index)?.as_u32();
+                let operand = reg(ctx, val)?;
+                let buf = ctx
+                    .shared
+                    .get(slot)
+                    .ok_or_else(|| format!("SharedAtomicOp: shared id {slot} not declared"))?;
+                let old = read_scalar(buf, idx, ty);
+                let (new_val, old_val) = eval_atomic(old, operand, op, ty);
+                let buf = ctx.shared.get_mut(slot).unwrap();
+                write_scalar(buf, idx, new_val, ty);
+                ctx.regs.insert(dst.0, old_val);
+            }
             // Wave/subgroup intrinsics: return identity values in sequential mode
             KernelOp::WaveShuffle { dst, src, .. } => {
                 // Single-thread: shuffle returns own value

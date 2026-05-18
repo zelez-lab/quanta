@@ -324,6 +324,20 @@ impl SpvEmitter {
                 )?;
             }
 
+            // Shared-memory atomic on Vulkan: requires the shared-mem
+            // variable declared with the `Workgroup` storage class
+            // and an `OpAtomicIAdd`-shape instruction with the right
+            // scope operand. Not yet wired; users that need
+            // shared-mem atomics on Vulkan should fall back to
+            // buffer-backed counters.
+            KernelOp::SharedAtomicOp { .. } => {
+                return Err(
+                    "shared-memory atomics not yet supported by the SPIR-V emitter; \
+                            use a buffer-backed atomic counter as a fallback"
+                        .into(),
+                );
+            }
+
             KernelOp::WaveShuffle {
                 dst,
                 src,

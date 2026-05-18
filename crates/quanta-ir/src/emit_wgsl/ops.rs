@@ -216,6 +216,22 @@ pub(super) fn emit_op(
                 val.0
             ));
         }
+        // Shared-memory atomic. WGSL spec requires the workgroup-
+        // address-space declaration to be `atomic<T>`, not bare `T`;
+        // emitting `atomicAdd(&shared_N[idx], val)` against a
+        // `var<workgroup> shared_N: array<u32, ...>` slot is a
+        // type error. Until the WGSL emitter learns to tag shared
+        // slots referenced by SharedAtomicOp with `atomic<T>` (a
+        // two-pass IR walk), this lane emits an `/* unsupported */`
+        // marker — the downstream WGSL compile will fail, which is
+        // the correct signal that this kernel can't run on WebGPU.
+        // Buffer atomics (AtomicOp / AtomicCas) are unaffected.
+        KernelOp::SharedAtomicOp { .. } => {
+            out.push_str(&format!(
+                "{}/* unsupported: SharedAtomicOp — WGSL requires atomic<T> decoration */\n",
+                pad
+            ));
+        }
         // WGSL atomicCompareExchangeWeak is SeqCst by spec; both
         // `success_order` and `failure_order` are ignored here, same
         // as AtomicOp above.

@@ -191,6 +191,7 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
         | MathCall { ty, .. }
         | AtomicOp { ty, .. }
         | AtomicCas { ty, .. }
+        | SharedAtomicOp { ty, .. }
         | WaveShuffle { ty, .. }
         | VecConstruct { ty, .. }
         | VecExtract { ty, .. }
@@ -284,6 +285,7 @@ fn op_name(op: &KernelOp) -> &'static str {
         Fence { .. } => "Fence",
         AtomicOp { .. } => "AtomicOp",
         AtomicCas { .. } => "AtomicCas",
+        SharedAtomicOp { .. } => "SharedAtomicOp",
         WaveShuffle { .. } => "WaveShuffle",
         WaveBallot { .. } => "WaveBallot",
         WaveAny { .. } => "WaveAny",

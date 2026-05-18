@@ -990,6 +990,22 @@ impl SpvEmitter {
                 self.set_reg(*dst, result_id, result_ty);
             }
 
+            // SPIR-V atomics on `Workgroup` storage class need the
+            // shared-mem variable declared with the right pointer
+            // class (StorageClass=Workgroup) and the right Scope
+            // operand on `OpAtomicIAdd`. We don't yet declare shared-
+            // mem variables with the SPIR-V emitter's atomic-aware
+            // path, so this lane refuses for now. Lavapipe / Vulkan
+            // tracks pick up the buffer-atomics path
+            // (AtomicOp / AtomicCas above) unchanged.
+            KernelOp::SharedAtomicOp { .. } => {
+                return Err(
+                    "shared-memory atomics not yet supported by the SPIR-V emitter; \
+                            use a buffer-backed atomic counter as a fallback"
+                        .into(),
+                );
+            }
+
             KernelOp::WaveShuffle { dst, .. } => {
                 // Wave/subgroup ops require SubgroupBallotKHR capability.
                 // Emit zero placeholder for now.

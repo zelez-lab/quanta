@@ -1455,6 +1455,41 @@ impl<'a> LowerCtx<'a> {
                     Some("atomic_add_i32") => self.atomic_rmw(AtomicOp::Add, ScalarType::I32)?,
                     Some("atomic_sub_i32") => self.atomic_rmw(AtomicOp::Sub, ScalarType::I32)?,
 
+                    // Shared-memory atomic family. Same arg shape as the
+                    // shared_*_u32 load/store family (slot, index, val,
+                    // order) but with an RMW operator. Lowers to
+                    // `KernelOp::SharedAtomicOp`.
+                    Some("atomic_add_shared_u32") => {
+                        self.shared_atomic_rmw(AtomicOp::Add, ScalarType::U32)?
+                    }
+                    Some("atomic_sub_shared_u32") => {
+                        self.shared_atomic_rmw(AtomicOp::Sub, ScalarType::U32)?
+                    }
+                    Some("atomic_min_shared_u32") => {
+                        self.shared_atomic_rmw(AtomicOp::Min, ScalarType::U32)?
+                    }
+                    Some("atomic_max_shared_u32") => {
+                        self.shared_atomic_rmw(AtomicOp::Max, ScalarType::U32)?
+                    }
+                    Some("atomic_and_shared_u32") => {
+                        self.shared_atomic_rmw(AtomicOp::And, ScalarType::U32)?
+                    }
+                    Some("atomic_or_shared_u32") => {
+                        self.shared_atomic_rmw(AtomicOp::Or, ScalarType::U32)?
+                    }
+                    Some("atomic_xor_shared_u32") => {
+                        self.shared_atomic_rmw(AtomicOp::Xor, ScalarType::U32)?
+                    }
+                    Some("atomic_exchange_shared_u32") => {
+                        self.shared_atomic_rmw(AtomicOp::Exchange, ScalarType::U32)?
+                    }
+                    Some("atomic_add_shared_i32") => {
+                        self.shared_atomic_rmw(AtomicOp::Add, ScalarType::I32)?
+                    }
+                    Some("atomic_sub_shared_i32") => {
+                        self.shared_atomic_rmw(AtomicOp::Sub, ScalarType::I32)?
+                    }
+
                     Some("memory_fence") => self.fence_call()?,
 
                     // Texture access. The slot (first arg) is a
@@ -2692,6 +2727,44 @@ impl<'a> LowerCtx<'a> {
         self.emit(KernelOp::AtomicOp {
             dst,
             field,
+            index,
+            val: val_reg,
+            op,
+            ty,
+            order,
+        });
+        self.stack.push(SymVal::Reg(dst, ty));
+        Ok(())
+    }
+
+    /// Lower an `atomic_<op>_shared_<ty>(slot, index, val, order)`
+    /// extern call into a `KernelOp::SharedAtomicOp`. Args on the
+    /// symbolic stack (top→bottom): order, val, index, slot. The slot
+    /// and order are compile-time consts; index and val are runtime
+    /// registers.
+    fn shared_atomic_rmw(&mut self, op: AtomicOp, ty: ScalarType) -> Result<(), LoweringError> {
+        let order_sv = self.pop()?;
+        let val_sv = self.pop()?;
+        let index_sv = self.pop()?;
+        let slot_sv = self.pop()?;
+        let order = order_const_to_enum(order_sv)?;
+        let slot = match slot_sv {
+            SymVal::I32Const(c) => c as u32,
+            other => {
+                return Err(LoweringError::UnsupportedOp {
+                    op: format!(
+                        "shared-atomic slot must be a compile-time constant, got {other:?}"
+                    ),
+                    at: self.body.body_offset,
+                });
+            }
+        };
+        let (index, _) = self.commit(index_sv)?;
+        let (val_reg, _) = self.commit(val_sv)?;
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::SharedAtomicOp {
+            dst,
+            slot,
             index,
             val: val_reg,
             op,

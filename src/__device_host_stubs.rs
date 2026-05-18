@@ -469,6 +469,40 @@ pub fn shared_store_f32(_slot: u32, _index: u32, _val: f32) {}
 pub fn shared_store_u32(_slot: u32, _index: u32, _val: u32) {}
 pub fn shared_store_i32(_slot: u32, _index: u32, _val: i32) {}
 
+// Shared-memory atomic stubs. Single-thread fallbacks: always
+// return zero (no real concurrent state to read), no-op on the
+// store side.
+pub fn atomic_add_shared_u32(_slot: u32, _index: u32, _val: u32, _order: u32) -> u32 {
+    0
+}
+pub fn atomic_sub_shared_u32(_slot: u32, _index: u32, _val: u32, _order: u32) -> u32 {
+    0
+}
+pub fn atomic_min_shared_u32(_slot: u32, _index: u32, _val: u32, _order: u32) -> u32 {
+    0
+}
+pub fn atomic_max_shared_u32(_slot: u32, _index: u32, _val: u32, _order: u32) -> u32 {
+    0
+}
+pub fn atomic_and_shared_u32(_slot: u32, _index: u32, _val: u32, _order: u32) -> u32 {
+    0
+}
+pub fn atomic_or_shared_u32(_slot: u32, _index: u32, _val: u32, _order: u32) -> u32 {
+    0
+}
+pub fn atomic_xor_shared_u32(_slot: u32, _index: u32, _val: u32, _order: u32) -> u32 {
+    0
+}
+pub fn atomic_exchange_shared_u32(_slot: u32, _index: u32, _val: u32, _order: u32) -> u32 {
+    0
+}
+pub fn atomic_add_shared_i32(_slot: u32, _index: u32, _val: i32, _order: u32) -> i32 {
+    0
+}
+pub fn atomic_sub_shared_i32(_slot: u32, _index: u32, _val: i32, _order: u32) -> i32 {
+    0
+}
+
 // ── Textures (no-op) ──────────────────────────────────────────────────
 
 pub fn texture_sample_2d_f32(_slot: u32, _x: u32, _y: u32) -> f32 {

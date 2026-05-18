@@ -352,6 +352,14 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
                 pad, dst.0, f, field, index.0, val.0
             ));
         }
+        // Shared-memory atomic on WebGPU: blocked on shared-decl
+        // `atomic<T>` decoration. See emit_wgsl/ops.rs in quanta-ir.
+        SharedAtomicOp { .. } => {
+            out.push_str(&format!(
+                "{}/* unsupported: SharedAtomicOp — WGSL requires atomic<T> decoration */\n",
+                pad
+            ));
+        }
         AtomicCas {
             dst,
             field,

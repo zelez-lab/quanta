@@ -304,6 +304,38 @@ pub(super) fn emit_op(
                 val.0
             ));
         }
+        // Threadgroup-storage atomic. MSL spec permits per-op
+        // `memory_order` on `threadgroup` atomics (unlike `device`
+        // atomics which Metal pins to relaxed), but for simplicity we
+        // emit relaxed here too — any stronger ordering the user
+        // requires is expressed via a surrounding `KernelOp::Fence`.
+        // The `(threadgroup atomic_T*)` cast reinterprets the bare
+        // `threadgroup T*` element pointer; Apple's MSL accepts this
+        // reinterpretation as long as the underlying storage is
+        // appropriately aligned (true for the 4-byte u32/i32 element
+        // types we expose).
+        KernelOp::SharedAtomicOp {
+            dst,
+            slot,
+            index,
+            val,
+            op,
+            ty,
+            order: _,
+        } => {
+            let f = atomic_fn_str(op);
+            out.push_str(&format!(
+                "{}{} r{} = {}((threadgroup atomic_{}*)&shared_{}[r{}], r{}, memory_order_relaxed);\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                f,
+                ty.msl_name(),
+                slot,
+                index.0,
+                val.0
+            ));
+        }
         KernelOp::WaveShuffle {
             dst,
             src,

@@ -570,6 +570,26 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
             Ok(KernelOp::Fence { order })
         }
 
+        // 52 — SharedAtomicOp
+        52 => {
+            let dst = read_reg(r)?;
+            let slot = r.u32()?;
+            let index = read_reg(r)?;
+            let val = read_reg(r)?;
+            let op = read_atomicop(r)?;
+            let ty = read_scalar_type(r)?;
+            let order = read_memory_order(r)?;
+            Ok(KernelOp::SharedAtomicOp {
+                dst,
+                slot,
+                index,
+                val,
+                op,
+                ty,
+                order,
+            })
+        }
+
         _ => Err("invalid KernelOp tag"),
     }
 }

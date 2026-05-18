@@ -309,6 +309,35 @@ pub(crate) fn emit_op(
                 mo
             ));
         }
+        // Threadgroup-storage atomic. MSL permits per-op
+        // `memory_order` on `threadgroup` atomics (unlike `device`
+        // atomics which Metal pins to relaxed), but we emit relaxed
+        // here too for consistency — stronger orderings expressed
+        // via surrounding `Fence`. Underlying storage is the same
+        // `threadgroup T shared_<slot>[N]` declaration emitted by
+        // SharedDecl; the cast is what Apple's MSL accepts.
+        KernelOp::SharedAtomicOp {
+            dst,
+            slot,
+            index,
+            val,
+            op,
+            ty,
+            order: _,
+        } => {
+            let f = atomic_fn_str(op);
+            out.push_str(&format!(
+                "{}{} r{} = {}((threadgroup atomic_{}*)&shared_{}[r{}], r{}, memory_order_relaxed);\n",
+                pad,
+                ty.msl_name(),
+                dst.0,
+                f,
+                ty.msl_name(),
+                slot,
+                index.0,
+                val.0
+            ));
+        }
         KernelOp::WaveShuffle {
             dst,
             src,

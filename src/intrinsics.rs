@@ -211,6 +211,26 @@ unsafe extern "C" {
     pub fn shared_store_f32(slot: u32, index: u32, val: f32);
     pub fn shared_store_u32(slot: u32, index: u32, val: u32);
     pub fn shared_store_i32(slot: u32, index: u32, val: i32);
+
+    /// Atomic read-modify-write on workgroup-shared memory at
+    /// `(slot, index)`. Returns the value at the slot **before** the
+    /// operation, mirroring `atomic_add_u32` for buffers. `order`
+    /// matches `quanta::MemoryOrder` discriminants — see the
+    /// `ORDER_*` constants below.
+    ///
+    /// Use these for per-bucket histogram increments, in-block
+    /// counters, etc., that would otherwise need a buffer-backed
+    /// counter + a global-memory round-trip.
+    pub fn atomic_add_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    pub fn atomic_sub_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    pub fn atomic_min_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    pub fn atomic_max_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    pub fn atomic_and_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    pub fn atomic_or_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    pub fn atomic_xor_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    pub fn atomic_exchange_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    pub fn atomic_add_shared_i32(slot: u32, index: u32, val: i32, order: u32) -> i32;
+    pub fn atomic_sub_shared_i32(slot: u32, index: u32, val: i32, order: u32) -> i32;
 }
 
 // ── Textures ───────────────────────────────────────────────────────────

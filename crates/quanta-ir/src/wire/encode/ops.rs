@@ -616,6 +616,26 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             w.u8(51);
             write_memory_order(w, order);
         }
+
+        // 52 — SharedAtomicOp { dst, slot, index, val, op, ty, order }
+        KernelOp::SharedAtomicOp {
+            dst,
+            slot,
+            index,
+            val,
+            op,
+            ty,
+            order,
+        } => {
+            w.u8(52);
+            write_reg(w, dst);
+            w.u32(*slot);
+            write_reg(w, index);
+            write_reg(w, val);
+            write_atomicop(w, op);
+            write_scalar_type(w, ty);
+            write_memory_order(w, order);
+        }
     }
 }
 

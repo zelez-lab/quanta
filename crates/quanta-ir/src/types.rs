@@ -290,6 +290,28 @@ pub enum KernelOp {
         ty: ScalarType,
         order: MemoryOrder,
     },
+    /// Atomic read-modify-write on **workgroup-shared memory** at
+    /// `(slot, index)`. Parallels `AtomicOp` for buffer addresses but
+    /// targets the shared-memory storage class that backs
+    /// `SharedLoad` / `SharedStore`. The `slot` field is a
+    /// `SharedDecl` id, NOT a buffer slot.
+    ///
+    /// Lets kernels build per-bucket histograms in shared memory
+    /// without round-tripping through global memory. Each backend
+    /// emits its native shared-atomic intrinsic:
+    ///   - Metal: `atomic_fetch_add_explicit(&shared[idx], val, …)`
+    ///   - SPIR-V: `OpAtomicIAdd` with the `Workgroup` storage class.
+    ///   - WGSL: `atomicAdd(&shared[idx], val)`.
+    ///   - LLVM: `atomicrmw add ptr addrspace(3)`.
+    SharedAtomicOp {
+        dst: Reg,
+        slot: u32,
+        index: Reg,
+        val: Reg,
+        op: AtomicOp,
+        ty: ScalarType,
+        order: MemoryOrder,
+    },
     /// Compare-and-swap. `success_order` and `failure_order` were
     /// split from a single `order` field as a sustainment item
     /// after D-ext.3b.4. LLVM `cmpxchg` accepts two distinct

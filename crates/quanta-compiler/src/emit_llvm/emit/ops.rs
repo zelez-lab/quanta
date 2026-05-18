@@ -737,6 +737,19 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
                 }
             }
         }
+        // CPU-JIT (LLVM) lane: shared memory is currently emulated as
+        // a per-thread scratch buffer with no cross-lane atomicity
+        // guarantees (single-thread JIT runs are not multi-lane).
+        // Shared-memory atomics therefore have no meaningful LLVM
+        // lowering today; refuse with a clear error rather than
+        // silently emit a non-atomic store-load pair.
+        KernelOp::SharedAtomicOp { .. } => {
+            return Err(
+                "shared-memory atomics not yet supported by the CPU-JIT (LLVM) backend; \
+                 use a buffer-backed atomic counter as a fallback"
+                    .to_string(),
+            );
+        }
         KernelOp::WaveShuffle {
             dst,
             src,
