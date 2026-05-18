@@ -33,6 +33,37 @@ use syn::{ItemFn, parse_macro_input};
 /// #[quanta::kernel(subgroup = 32)]                       // require subgroup size 32
 /// #[quanta::kernel(jit)]                                 // JIT: compile at runtime
 /// ```
+///
+/// Unknown attribute names produce a compile error pointing at
+/// the correct form. The recognised names are: `opt`,
+/// `workgroup`, `subgroup`, `jit`.
+///
+/// # Kernel-body gotchas
+///
+/// The macro lowers the kernel body to wasm32, runs the
+/// WASM-route translator, and emits per-backend shader source.
+/// rustc + LLVM optimise the wasm output aggressively; a few
+/// patterns produce surprising results downstream:
+///
+/// - **`bool == bool` can constant-fold to `true`.** When the
+///   body unrolls a loop containing `let cond = a_bool ==
+///   b_bool; if cond { ... } else { ... }`, LLVM has been seen
+///   to fold the equality into a tautology and discard the
+///   then-branch. Encode boolean equality as `u32` 0/1
+///   comparison when the result feeds a branch:
+///   `let a = if pred_a { 1u32 } else { 0u32 }; ... if a == b
+///   { ... }`. The bug surfaced in quanta-prims's bitonic sort;
+///   the u32 encoding is now the defensive pattern there.
+///
+/// - **rustc reuses wasm locals across SSA-disjoint values.**
+///   A variable that's "dead" between two uses may share a
+///   wasm-local with an intermediate value, and the WASM-route
+///   lowerer maps each local to one stable register. The
+///   workaround when this matters: re-derive the value from a
+///   primitive intrinsic (e.g. call `quark_id()` again at the
+///   point of use rather than holding it in a Rust binding
+///   across a long loop body). Architectural fix is queued as
+///   a substrate-level register-renaming pass.
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);

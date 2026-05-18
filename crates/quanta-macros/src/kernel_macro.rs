@@ -91,7 +91,10 @@ pub(crate) fn expand_kernel(attr: TokenStream, mut func: ItemFn) -> TokenStream 
 pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream {
     let attr_str = attr.to_string();
     let is_jit = attr_str.contains("jit");
-    let kernel_attrs = parse_kernel_attrs(attr.clone());
+    let kernel_attrs = match parse_kernel_attrs(attr.clone()) {
+        Ok(a) => a,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     if let Err(err) = validate::validate_kernel(&func) {
         return err.to_compile_error().into();
@@ -392,11 +395,17 @@ impl Default for KernelAttrs {
 /// - `#[quanta::kernel(workgroup = [16, 16])]`     -> [16, 16, 1]
 /// - `#[quanta::kernel(workgroup = [16, 16, 1])]`  -> explicit 3D
 /// - `#[quanta::kernel(workgroup = [256], opt = "O2")]` -> both
-fn parse_kernel_attrs(attr: TokenStream) -> KernelAttrs {
+// Recognised kernel-attribute names. Anything outside this set
+// is a compile error. Typos like `workgroup_size` used to
+// silently fall back to the default and produce kernels with
+// the wrong thread count.
+const KNOWN_KERNEL_ATTRS: &[&str] = &["opt", "workgroup", "subgroup", "jit"];
+
+fn parse_kernel_attrs(attr: TokenStream) -> Result<KernelAttrs, syn::Error> {
     let mut attrs = KernelAttrs::default();
 
     if attr.is_empty() {
-        return attrs;
+        return Ok(attrs);
     }
 
     // Try parsing as a punctuated list of name = value pairs.
@@ -414,11 +423,25 @@ fn parse_kernel_attrs(attr: TokenStream) -> KernelAttrs {
             {
                 attrs.opt_level = parse_opt_str(&s.value());
             }
-            return attrs;
+            return Ok(attrs);
         }
     };
 
     for meta in &parsed {
+        let path = meta.path();
+        let ident = path.get_ident().map(|i| i.to_string()).unwrap_or_default();
+
+        if !KNOWN_KERNEL_ATTRS.contains(&ident.as_str()) {
+            let known = KNOWN_KERNEL_ATTRS.join(", ");
+            return Err(syn::Error::new_spanned(
+                path,
+                format!(
+                    "unknown kernel attribute `{ident}` — recognised attributes are: {known}.\n\
+                     hint: workgroup size is `workgroup = [256]`, not `workgroup_size = [...]`."
+                ),
+            ));
+        }
+
         match meta {
             syn::Meta::NameValue(nv) if nv.path.is_ident("opt") => {
                 if let Expr::Lit(expr_lit) = &nv.value
@@ -440,11 +463,15 @@ fn parse_kernel_attrs(attr: TokenStream) -> KernelAttrs {
                     attrs.subgroup_size = Some(v);
                 }
             }
-            _ => {} // ignore `jit` and unknown attrs
+            // `Meta::Path` for bare flags like `jit`. Already
+            // accepted by the KNOWN_KERNEL_ATTRS gate above; the
+            // value side is consumed by the `attr_str.contains`
+            // check in `expand_kernel_core`.
+            _ => {}
         }
     }
 
-    attrs
+    Ok(attrs)
 }
 
 fn parse_opt_str(s: &str) -> u8 {
