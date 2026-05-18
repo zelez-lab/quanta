@@ -437,7 +437,10 @@ pub enum RawInstr {
     /// Anything we haven't enumerated yet — captured so the lowering
     /// pass can produce a precise "this op isn't supported" error
     /// pointing at the original Rust source via WASM debug info.
-    Unsupported(&'static str),
+    /// String form is the wasmparser `Operator` Debug variant name
+    /// (truncated to the head of `format!("{:?}", op)`) — enough to
+    /// tell `Br` apart from `F32x4Add` at a glance.
+    Unsupported(String),
 }
 
 impl RawInstr {
@@ -665,10 +668,20 @@ impl RawInstr {
     }
 }
 
-fn operator_name(_op: &Operator<'_>) -> &'static str {
-    // Best-effort: just say "unknown" for now. We can add a richer
-    // mapping when an op-class actually surfaces in real kernels.
-    "unsupported"
+fn operator_name(op: &Operator<'_>) -> String {
+    // wasmparser's `Operator` doesn't implement `Display`; the Debug
+    // form is `Variant { field: ... }` for ops with operands and
+    // `Variant` otherwise. Truncate to the first non-alphanumeric to
+    // grab just the variant name — that's the diagnostic signal we
+    // need ("F32x4RelaxedMadd" tells us we hit a relaxed-SIMD op,
+    // "TryTable" tells us we hit exception handling, etc.). The
+    // string is then surfaced verbatim by `LoweringError::UnsupportedOp`.
+    let dbg = format!("{op:?}");
+    let head: String = dbg
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if head.is_empty() { dbg } else { head }
 }
 
 // ── Parser entry point ─────────────────────────────────────────────────
