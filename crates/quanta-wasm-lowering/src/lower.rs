@@ -546,10 +546,11 @@ impl<'a> LowerCtx<'a> {
     fn force_locals_to_stable(&mut self) {
         for info in self.locals.iter_mut() {
             if let Some(stable_reg) = info.stable_reg {
-                // Only rebind if there's already a value (we're
-                // not overwriting buffer-pointer / opaque
-                // bindings).
-                if info.val.is_some() {
+                // Only rebind value-typed locals. Buffer-access
+                // and other non-value SymVals are consumed by
+                // load/store pattern recognition; replacing them
+                // with a Reg would corrupt their semantics.
+                if matches!(info.val, Some(ref v) if is_value_symval(v)) {
                     info.val = Some(SymVal::Reg(stable_reg, info.stable_ty));
                 }
             }
@@ -584,13 +585,17 @@ impl<'a> LowerCtx<'a> {
             if info.val == *snap_val {
                 continue;
             }
+            // Only rebind value-typed bindings. Non-value
+            // SymVals (BufferAccess, BufferPtr, ScaledIdx) are
+            // consumed by load/store recognizers; replacing
+            // them with a Reg corrupts the pattern match.
+            let is_value_now = matches!(info.val, Some(ref v) if is_value_symval(v));
+            if !is_value_now {
+                continue;
+            }
             // Reset val to stable_reg. The stable_reg was kept
             // in sync by `write_local_via_copy` on every set
-            // inside the frame; the Copy ops landed inside the
-            // frame's ops Vec, so when the frame is wrapped into
-            // `Branch.{then,else}_ops` or `Loop.body`, they run
-            // before any post-frame `local.get` and stable_reg
-            // holds the up-to-date value.
+            // inside the frame.
             info.val = Some(SymVal::Reg(stable_reg, info.stable_ty));
         }
     }

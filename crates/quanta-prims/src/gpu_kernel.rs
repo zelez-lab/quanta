@@ -171,7 +171,7 @@ pub const BLOCK_REDUCE_SCRATCH_SLOT: u32 = 0;
 /// workgroup. See module-level docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_add_u32_kernel(value: u32) -> u32 {
+pub fn block_reduce_add_u32_kernel(value: u32) -> u32 {
     let warp_sum = unsafe { reduce_add_u32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -189,7 +189,7 @@ fn block_reduce_add_u32_kernel(value: u32) -> u32 {
 /// workgroup. See module-level docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_add_i32_kernel(value: i32) -> i32 {
+pub fn block_reduce_add_i32_kernel(value: i32) -> i32 {
     let warp_sum = unsafe { reduce_add_i32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -207,7 +207,7 @@ fn block_reduce_add_i32_kernel(value: i32) -> i32 {
 /// workgroup. See module-level docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_add_f32_kernel(value: f32) -> f32 {
+pub fn block_reduce_add_f32_kernel(value: f32) -> f32 {
     let warp_sum = unsafe { reduce_add_f32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -226,7 +226,7 @@ fn block_reduce_add_f32_kernel(value: f32) -> f32 {
 /// for caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_min_u32_kernel(value: u32) -> u32 {
+pub fn block_reduce_min_u32_kernel(value: u32) -> u32 {
     let warp_min = unsafe { reduce_min_u32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -245,7 +245,7 @@ fn block_reduce_min_u32_kernel(value: u32) -> u32 {
 /// for caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_min_i32_kernel(value: i32) -> i32 {
+pub fn block_reduce_min_i32_kernel(value: i32) -> i32 {
     let warp_min = unsafe { reduce_min_i32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -264,7 +264,7 @@ fn block_reduce_min_i32_kernel(value: i32) -> i32 {
 /// docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_min_f32_kernel(value: f32) -> f32 {
+pub fn block_reduce_min_f32_kernel(value: f32) -> f32 {
     let warp_min = unsafe { reduce_min_f32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -283,7 +283,7 @@ fn block_reduce_min_f32_kernel(value: f32) -> f32 {
 /// caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_max_u32_kernel(value: u32) -> u32 {
+pub fn block_reduce_max_u32_kernel(value: u32) -> u32 {
     let warp_max = unsafe { reduce_max_u32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -302,7 +302,7 @@ fn block_reduce_max_u32_kernel(value: u32) -> u32 {
 /// for caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_max_i32_kernel(value: i32) -> i32 {
+pub fn block_reduce_max_i32_kernel(value: i32) -> i32 {
     let warp_max = unsafe { reduce_max_i32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -321,7 +321,7 @@ fn block_reduce_max_i32_kernel(value: i32) -> i32 {
 /// module-level docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_reduce_max_f32_kernel(value: f32) -> f32 {
+pub fn block_reduce_max_f32_kernel(value: f32) -> f32 {
     let warp_max = unsafe { reduce_max_f32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -590,7 +590,7 @@ pub fn block_reduce_max_f32_buffer(data: &[f32], out: &mut [f32]) {
 /// running sum (lanes 0..=self inclusive).
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_scan_add_u32_kernel(value: u32) -> u32 {
+pub fn block_scan_add_u32_kernel(value: u32) -> u32 {
     let warp_inc = unsafe { scan_add_u32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -622,7 +622,7 @@ fn block_scan_add_u32_kernel(value: u32) -> u32 {
 /// Block-wide i32 inclusive prefix-sum scan.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_scan_add_i32_kernel(value: i32) -> i32 {
+pub fn block_scan_add_i32_kernel(value: i32) -> i32 {
     let warp_inc = unsafe { scan_add_i32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
@@ -648,7 +648,7 @@ fn block_scan_add_i32_kernel(value: i32) -> i32 {
 /// Block-wide f32 inclusive prefix-sum scan.
 #[allow(dead_code, unused_unsafe)]
 #[quanta::device]
-fn block_scan_add_f32_kernel(value: f32) -> f32 {
+pub fn block_scan_add_f32_kernel(value: f32) -> f32 {
     let warp_inc = unsafe { scan_add_f32(value) };
     let sub_size = unsafe { subgroup_size() };
     let lane_in_block = unsafe { proton_id() };
