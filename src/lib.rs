@@ -58,6 +58,15 @@ pub mod scan;
 /// host side resolves them. See roadmap step 058.
 pub mod intrinsics;
 
+/// Host-side stubs for every GPU intrinsic, used by `_src!()` macros
+/// emitted by `#[quanta::device]`. Hidden from the public API — the
+/// `_src!` macro injects `use ::quanta::__device_host_stubs::*` inside
+/// its `const _: () = { ... }` block so spliced device-fn bodies
+/// name-resolve in any downstream crate without the user importing
+/// anything.
+#[doc(hidden)]
+pub mod __device_host_stubs;
+
 /// Spec enum tables for the WebGPU IDL (B′ track of FFI TCB shrink).
 /// Generated from `web/webgpu.idl` by `quanta codegen webgpu`; the
 /// `tests` block inside checks that every enum string Quanta hands

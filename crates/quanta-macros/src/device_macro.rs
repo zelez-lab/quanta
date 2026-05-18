@@ -109,6 +109,18 @@ pub(crate) fn expand_device(attr: TokenStream, func: ItemFn) -> TokenStream {
     // — registers in the downstream registry but does NOT re-emit
     // a `_src!` macro (which would collide if more than one
     // downstream site invokes the same `_src!`).
+    //
+    // The `use ::quanta::__device_host_stubs::*` brings host-side
+    // stubs for every GPU intrinsic (`reduce_add_u32`,
+    // `subgroup_size`, `shared_store_u32`, `barrier`, ...) into the
+    // const block's scope so the spliced fn body name-resolves on
+    // the host build of the downstream crate. Without this line,
+    // any device fn whose body calls a Quanta intrinsic by bare
+    // name fails to compile cross-crate with `E0425: cannot find
+    // function`. The stubs are degenerate (reduce returns input,
+    // shared memory is no-op) — they exist for name resolution,
+    // not for execution; the GPU path emits real ops via the
+    // wasm-shell `extern "C"` import block.
     let expanded = quote! {
         #fn_tokens
 
@@ -128,6 +140,8 @@ pub(crate) fn expand_device(attr: TokenStream, func: ItemFn) -> TokenStream {
         macro_rules! #src_macro_ident {
             () => {
                 const _: () = {
+                    #[allow(unused_imports)]
+                    use ::quanta::__device_host_stubs::*;
                     #[allow(dead_code, non_snake_case)]
                     #[::quanta::device(register_only)]
                     #fn_tokens

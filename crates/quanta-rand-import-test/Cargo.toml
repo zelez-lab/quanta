@@ -9,3 +9,4 @@ publish = false
 [dependencies]
 quanta = { path = "../..", default-features = false, features = ["software"] }
 quanta-rand = { path = "../quanta-rand", features = ["gpu"] }
+quanta-prims = { path = "../quanta-prims", features = ["gpu"] }

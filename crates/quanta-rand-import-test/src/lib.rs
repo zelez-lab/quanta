@@ -37,6 +37,23 @@ pub fn auto_discover_test_kernel(d: &ImportTestData) {
     d.out[id as usize] = r;
 }
 
+// ── Cross-crate device-fn body resolution probe ───────────────────
+//
+// `block_reduce_add_u32_kernel` is a `#[quanta::device]` from
+// `quanta-prims`. Its body uses several GPU intrinsics
+// (`reduce_add_u32`, `subgroup_size`, `proton_id`, `shared_store_u32`,
+// `barrier`, `shared_load_u32`). When `_src!()` expands the device-fn
+// body at this downstream crate's compile site, those bare-name calls
+// must resolve to *something* the Rust toolchain can typecheck —
+// otherwise `cargo check` fails with `E0425: cannot find function`.
+// The `__device_host_stubs` glob injected by the `_src!` macro covers
+// every intrinsic so any device-fn body parses and resolves on host.
+//
+// A single `import_devices!` at file scope is enough to exercise the
+// macro expansion; we don't need to dispatch the device fn to verify
+// host-side resolution.
+quanta::import_devices!(quanta_prims::block_reduce_add_u32_kernel);
+
 #[cfg(test)]
 mod tests {
     use super::*;
