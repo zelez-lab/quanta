@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// Symbolic stack value during lowering.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SymVal {
     /// A virtual register. `ty` is the IR scalar type.
     Reg(Reg, ScalarType),
@@ -171,6 +171,19 @@ struct Frame {
     /// false. Nests: a second br_if to the same frame chains another
     /// Branch inside the first's `else_ops`.
     redirect: Vec<usize>,
+    /// Snapshot of `(local_idx → val)` taken at frame entry.
+    /// Used at frame close: any local whose current `val` differs
+    /// from the snapshot was modified inside this frame, and its
+    /// `val` needs to be reset to `stable_reg` so post-frame reads
+    /// don't reference a register that was defined inside a
+    /// now-closed scope (e.g. inside `Branch.else_ops` or
+    /// `Loop.body`).
+    ///
+    /// Only populated for frames that introduce a scope boundary
+    /// (If, Else, Loop). Block frames splice into the parent so
+    /// no merge is needed. See workspace design doc at
+    /// `roadmap/_design/wasm_local_renaming.md`.
+    local_snapshot: Vec<(u32, Option<SymVal>)>,
 }
 
 /// Reduction operator for the `subgroup_reduce` helper. Mirrors
@@ -284,6 +297,7 @@ impl<'a> LowerCtx<'a> {
                 kind: FrameKind::Function,
                 ops: Vec::new(),
                 redirect: Vec::new(),
+                local_snapshot: Vec::new(),
             }],
             next_reg: 0,
             intrinsic_names,
@@ -502,10 +516,107 @@ impl<'a> LowerCtx<'a> {
         self.locals[idx].stable_ty = ty;
     }
 
-    /// Materialize a `local.set` / `local.tee` against the stable
-    /// per-local register: emits `KernelOp::Copy { dst: stable_reg,
-    /// src }` and updates `locals[idx].val` to point at the stable
-    /// reg. Returns the stable reg + scalar type.
+    /// Snapshot every local's current `val` for use at frame
+    /// close to detect which locals were modified inside the
+    /// frame. Cheap — just clones the (idx, val) pairs for
+    /// locals that have a binding.
+    fn snapshot_locals(&self) -> Vec<(u32, Option<SymVal>)> {
+        self.locals
+            .iter()
+            .enumerate()
+            .map(|(idx, info)| (idx as u32, info.val))
+            .collect()
+    }
+
+    /// Reset locals to the values captured by `snapshot_locals`.
+    /// Used at `Else` entry so the else-branch starts from the
+    /// same pre-If state the then-branch did.
+    fn restore_locals_from_snapshot(&mut self, snapshot: &[(u32, Option<SymVal>)]) {
+        for (idx, val) in snapshot {
+            if let Some(info) = self.locals.get_mut(*idx as usize) {
+                info.val = *val;
+            }
+        }
+    }
+
+    /// Force every local with a stable_reg to read from
+    /// stable_reg instead of any fresh-reg binding. Called at
+    /// Loop entry so accumulators work across iterations — see
+    /// the Loop case in `lower_instr` for the full rationale.
+    fn force_locals_to_stable(&mut self) {
+        for info in self.locals.iter_mut() {
+            if let Some(stable_reg) = info.stable_reg {
+                // Only rebind if there's already a value (we're
+                // not overwriting buffer-pointer / opaque
+                // bindings).
+                if info.val.is_some() {
+                    info.val = Some(SymVal::Reg(stable_reg, info.stable_ty));
+                }
+            }
+        }
+    }
+
+    /// After a scope-introducing frame (If, Else, Loop) closes,
+    /// reset the `val` of every local that was modified inside
+    /// the frame so post-frame reads use the stable_reg (which
+    /// was kept in sync via `write_local_via_copy`'s parallel
+    /// Copy). Without this, post-frame `local.get` references a
+    /// register that was allocated inside the now-closed scope
+    /// (e.g. inside `Branch.else_ops`) and the downstream
+    /// emitters produce "register used before definition" errors
+    /// or, worse, silently read garbage.
+    fn merge_locals_post_frame(&mut self, snapshot: &[(u32, Option<SymVal>)]) {
+        for (idx, snap_val) in snapshot {
+            let info = match self.locals.get_mut(*idx as usize) {
+                Some(i) => i,
+                None => continue,
+            };
+            // Only locals with a stable_reg participate in the
+            // merge — buffer-pointer params have no value-reg and
+            // their symbolic bindings aren't subject to this
+            // aliasing.
+            let stable_reg = match info.stable_reg {
+                Some(r) => r,
+                None => continue,
+            };
+            // If the current val matches the snapshot, nothing
+            // changed inside the frame; skip.
+            if info.val == *snap_val {
+                continue;
+            }
+            // Reset val to stable_reg. The stable_reg was kept
+            // in sync by `write_local_via_copy` on every set
+            // inside the frame; the Copy ops landed inside the
+            // frame's ops Vec, so when the frame is wrapped into
+            // `Branch.{then,else}_ops` or `Loop.body`, they run
+            // before any post-frame `local.get` and stable_reg
+            // holds the up-to-date value.
+            info.val = Some(SymVal::Reg(stable_reg, info.stable_ty));
+        }
+    }
+
+    /// Materialize a `local.set` / `local.tee`. Allocates a
+    /// **fresh** register per call so successive sets of the same
+    /// local don't alias.
+    ///
+    /// Why fresh-per-set: rustc's wasm codegen sometimes recycles
+    /// a wasm-local across SSA-disjoint Rust values (live-range
+    /// coalescing in the LLVM backend). If we map every set of
+    /// the same local to one stable_reg, the second set clobbers
+    /// the first's reads. Fresh-per-set produces SSA-shaped
+    /// register output: every set introduces a new dst, every
+    /// get reads the latest binding.
+    ///
+    /// The stable_reg is still allocated at function entry and
+    /// kept in sync via a parallel Copy. This is the merge anchor
+    /// — code that crosses a control-flow join (e.g. reads after
+    /// an `if` branch that updated the local) falls back to
+    /// stable_reg via the frame-close logic in `lower_instr`'s
+    /// End handler. For straight-line code, the stable_reg copy
+    /// is a small redundant cost.
+    ///
+    /// See `quanta_project/roadmap/_design/wasm_local_renaming.md`
+    /// for the full design.
     fn write_local_via_copy(
         &mut self,
         idx: usize,
@@ -518,50 +629,54 @@ impl<'a> LowerCtx<'a> {
             ))
         })?;
         let stable_ty = self.locals[idx].stable_ty;
-        // Copy-on-write for stack-held aliases. A `BufferAccess` or
-        // `ScaledIdx` on the operand stack carries a `base` register
-        // that was captured when the index was formed. If that base
-        // is *this local's* stable register, the upcoming Copy below
-        // would clobber the index out from under any pending
-        // load/store. Snapshot to a fresh register first, then
-        // rewrite the stack entries to point at the snapshot.
-        let aliased = self.stack.iter().any(|sv| match sv {
-            SymVal::ScaledIdx { base, .. } => *base == stable_reg,
-            SymVal::BufferAccess { base, .. } => *base == stable_reg,
-            // Plain Reg/Opaque on the stack can also alias, but the
-            // wasm operand stack treats them as ephemerals — by the
-            // time we set the local they've usually been consumed
-            // or assigned to another stable reg. Restrict the
-            // snapshot to the index-bearing forms where the bug
-            // actually shows up.
-            _ => false,
-        });
-        if aliased {
-            let snapshot = self.alloc_reg();
-            self.emit(KernelOp::Copy {
-                dst: snapshot,
-                src: stable_reg,
-                ty: stable_ty,
-            });
-            for sv in self.stack.iter_mut() {
-                match sv {
-                    SymVal::ScaledIdx { base, .. } if *base == stable_reg => {
-                        *base = snapshot;
-                    }
-                    SymVal::BufferAccess { base, .. } if *base == stable_reg => {
-                        *base = snapshot;
-                    }
-                    _ => {}
-                }
-            }
-        }
+
+        // Allocate a fresh per-set register. This becomes the
+        // post-set binding for the local. The old behaviour
+        // (always writing into stable_reg) caused successive sets
+        // to alias — see method docstring.
+        let fresh = self.alloc_reg();
+        // Pre-declare the fresh reg at the function frame so the
+        // downstream Metal/WGSL emitters generate the `uint rN =
+        // 0u;` declaration that the later `KernelOp::Copy` (which
+        // emits `rN = rM;`, assignment-only) depends on. Mirrors
+        // the `ensure_stable_reg_for` pattern for stable regs.
+        let init = match stable_ty {
+            ScalarType::F16 | ScalarType::F32 => ConstValue::F32(0.0),
+            ScalarType::F64 => ConstValue::F64(0.0),
+            ScalarType::Bool => ConstValue::Bool(false),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+            ScalarType::I64 => ConstValue::I64(0),
+            ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
+            ScalarType::U64 => ConstValue::U64(0),
+        };
+        let function_frame = &mut self.frames[0];
+        function_frame.ops.insert(
+            0,
+            KernelOp::Const {
+                dst: fresh,
+                value: init,
+            },
+        );
         self.emit(KernelOp::Copy {
-            dst: stable_reg,
+            dst: fresh,
             src,
             ty: stable_ty,
         });
-        self.locals[idx].val = Some(SymVal::Reg(stable_reg, stable_ty));
-        Ok((stable_reg, stable_ty))
+        // Also keep stable_reg in sync — it remains the merge
+        // anchor used by post-frame-close reads. The two copies
+        // are emitted back-to-back so the IR is still flat.
+        self.emit(KernelOp::Copy {
+            dst: stable_reg,
+            src: fresh,
+            ty: stable_ty,
+        });
+
+        // Reads of this local now see the fresh register.
+        // post-merge code (after a branch closes) will see
+        // stable_reg via the frame-close fixup; that fixup
+        // re-points locals[idx].val to stable_reg.
+        self.locals[idx].val = Some(SymVal::Reg(fresh, stable_ty));
+        Ok((fresh, stable_ty))
     }
 
     fn lower_instr(&mut self, instr: &RawInstr) -> Result<(), LoweringError> {
@@ -1301,6 +1416,9 @@ impl<'a> LowerCtx<'a> {
                     kind: FrameKind::Block,
                     ops: Vec::new(),
                     redirect: Vec::new(),
+                    // Block frames splice straight into the parent;
+                    // no scope boundary, no snapshot needed.
+                    local_snapshot: Vec::new(),
                 });
             }
 
@@ -1316,6 +1434,26 @@ impl<'a> LowerCtx<'a> {
                     value: ConstValue::U32(10_000),
                 });
                 let iter_reg = self.alloc_reg();
+                let snapshot = self.snapshot_locals();
+                // Force every local's current binding to its
+                // stable_reg before entering the loop body.
+                // Why: the body lowers ONCE but runs many times.
+                // A mutable accumulator (e.g. `sum = sum + x`)
+                // needs reads at the start of iter N+1 to see
+                // the writes at the end of iter N. Fresh
+                // per-set allocates a NEW reg each iteration,
+                // but the lowered body can only reference one
+                // specific reg name — so each iteration's
+                // BinOp reads the WRONG register (the fresh
+                // from a phantom "previous lowering"). The
+                // stable_reg side-channel gets updated each
+                // iteration via the parallel Copy in
+                // `write_local_via_copy`, so making reads pull
+                // from stable_reg makes accumulators work.
+                //
+                // Straight-line code with no loop is unaffected
+                // (no frame entry → no force).
+                self.force_locals_to_stable();
                 self.frames.push(Frame {
                     kind: FrameKind::Loop {
                         count_reg,
@@ -1323,16 +1461,19 @@ impl<'a> LowerCtx<'a> {
                     },
                     ops: Vec::new(),
                     redirect: Vec::new(),
+                    local_snapshot: snapshot,
                 });
             }
 
             RawInstr::If { .. } => {
                 let cond_sv = self.pop()?;
                 let (cond, _) = self.commit(cond_sv)?;
+                let snapshot = self.snapshot_locals();
                 self.frames.push(Frame {
                     kind: FrameKind::If { cond },
                     ops: Vec::new(),
                     redirect: Vec::new(),
+                    local_snapshot: snapshot,
                 });
             }
 
@@ -1348,6 +1489,15 @@ impl<'a> LowerCtx<'a> {
                         ));
                     }
                 };
+                // Restore bindings to the If-entry snapshot so
+                // the else-branch starts from the same baseline.
+                // The then-branch's local rebindings are
+                // captured in `then_ops`; whatever they updated
+                // stays in stable_reg via the parallel Copy in
+                // `write_local_via_copy`. The merge at the
+                // matching End uses the snapshot to detect which
+                // locals to reset post-frame.
+                self.restore_locals_from_snapshot(&frame.local_snapshot);
                 self.frames.push(Frame {
                     kind: FrameKind::Else {
                         cond,
@@ -1355,6 +1505,7 @@ impl<'a> LowerCtx<'a> {
                     },
                     ops: Vec::new(),
                     redirect: Vec::new(),
+                    local_snapshot: frame.local_snapshot,
                 });
             }
 
@@ -1370,6 +1521,7 @@ impl<'a> LowerCtx<'a> {
                             kind: FrameKind::Function,
                             ops: frame.ops,
                             redirect: Vec::new(),
+                            local_snapshot: Vec::new(),
                         });
                     }
                     FrameKind::Block => {
@@ -1388,6 +1540,9 @@ impl<'a> LowerCtx<'a> {
                             iter_reg,
                             body: frame.ops,
                         });
+                        // Post-loop: any local set inside the
+                        // body now lives only via stable_reg.
+                        self.merge_locals_post_frame(&frame.local_snapshot);
                     }
                     FrameKind::If { cond } => {
                         self.emit(KernelOp::Branch {
@@ -1395,6 +1550,7 @@ impl<'a> LowerCtx<'a> {
                             then_ops: frame.ops,
                             else_ops: Vec::new(),
                         });
+                        self.merge_locals_post_frame(&frame.local_snapshot);
                     }
                     FrameKind::Else { cond, then_ops } => {
                         self.emit(KernelOp::Branch {
@@ -1402,6 +1558,7 @@ impl<'a> LowerCtx<'a> {
                             then_ops,
                             else_ops: frame.ops,
                         });
+                        self.merge_locals_post_frame(&frame.local_snapshot);
                     }
                 }
             }

@@ -844,12 +844,5 @@ pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
         k = k * 2u32;
     }
 
-    // Re-fetch quark_id rather than reusing the `i` from the top.
-    // rustc's wasm codegen reuses the wasm-local that held `i`
-    // for intermediate loop values; the WASM-route lowerer sees
-    // a single register being overwritten and the final write
-    // then uses a corrupted index. Calling `quark_id()` again
-    // forces a fresh wasm-local allocation.
-    let out_i = quark_id();
-    out[out_i as usize] = buf[lane];
+    out[i as usize] = buf[lane];
 }
