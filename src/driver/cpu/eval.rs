@@ -39,13 +39,7 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::Add => va.wrapping_add(vb),
                 BinOp::Sub => va.wrapping_sub(vb),
                 BinOp::Mul => va.wrapping_mul(vb),
-                BinOp::Div => {
-                    if vb == 0 {
-                        0
-                    } else {
-                        va / vb
-                    }
-                }
+                BinOp::Div => va.checked_div(vb).unwrap_or(0),
                 BinOp::Rem => {
                     if vb == 0 {
                         0
@@ -103,13 +97,7 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::Add => va.wrapping_add(vb),
                 BinOp::Sub => va.wrapping_sub(vb),
                 BinOp::Mul => va.wrapping_mul(vb),
-                BinOp::Div => {
-                    if vb == 0 {
-                        0
-                    } else {
-                        va / vb
-                    }
-                }
+                BinOp::Div => va.checked_div(vb).unwrap_or(0),
                 BinOp::Rem => {
                     if vb == 0 {
                         0

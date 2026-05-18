@@ -20,15 +20,11 @@ impl SpvEmitter {
                 | KernelOp::SubgroupInclusiveAdd { .. } => return true,
                 KernelOp::Branch {
                     then_ops, else_ops, ..
-                } => {
-                    if Self::uses_subgroup_ops(then_ops) || Self::uses_subgroup_ops(else_ops) {
-                        return true;
-                    }
+                } if Self::uses_subgroup_ops(then_ops) || Self::uses_subgroup_ops(else_ops) => {
+                    return true;
                 }
-                KernelOp::Loop { body, .. } => {
-                    if Self::uses_subgroup_ops(body) {
-                        return true;
-                    }
+                KernelOp::Loop { body, .. } if Self::uses_subgroup_ops(body) => {
+                    return true;
                 }
                 _ => {}
             }
