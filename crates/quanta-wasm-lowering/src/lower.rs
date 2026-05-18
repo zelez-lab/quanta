@@ -3192,15 +3192,24 @@ fn scalar_type_for_wasm_ty(ty: WasmTy) -> ScalarType {
     }
 }
 
-/// Recognize rustc's panic helpers by mangled-name prefix. The
-/// `_ZN4core9panicking` Itanium prefix covers the whole panic family
-/// (panic_const_*, panic_fmt, panic_bounds_check, …). On `%`/`/` by
-/// zero rustc emits `panic_const_rem_by_zero` / `panic_const_div_by_zero`,
-/// guarded by an `i32.eqz; if/br_if` shape — the GPU contract is UB on
-/// zero-divide so this region is dead at runtime, and the lowering pass
-/// elides the call + the trailing `unreachable`.
+/// Recognize rustc's panic helpers by mangled-name prefix. Covers
+/// the whole panic family (panic_const_*, panic_fmt,
+/// panic_bounds_check, …) under both mangling schemes:
+///   - Itanium / legacy: `_ZN4core9panicking…`
+///   - v0 (rustc 1.59+, default on stable since 1.95): `_RNv…` with
+///     `4core9panicking` somewhere in the body. rustc 1.95 ships
+///     v0 mangling on by default for wasm32, so missing this prefix
+///     causes panic helpers to fall through to the inliner — which
+///     then trips on `global.get $__stack_pointer` inside `panic_fmt`.
+///
+/// On `%`/`/` by zero rustc emits `panic_const_rem_by_zero` /
+/// `panic_const_div_by_zero`, guarded by an `i32.eqz; if/br_if`
+/// shape — the GPU contract is UB on zero-divide so this region is
+/// dead at runtime, and the lowering pass elides the call + the
+/// trailing `unreachable`.
 fn is_panic_helper(name: &str) -> bool {
     name.starts_with("_ZN4core9panicking")
+        || (name.starts_with("_RNv") && name.contains("4core9panicking"))
 }
 
 /// Rewrite a `RawInstr`'s local indices by `base_offset` so a callee
