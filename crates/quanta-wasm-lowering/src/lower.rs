@@ -784,6 +784,105 @@ impl<'a> LowerCtx<'a> {
                         // synthetic SymVal for this:
                         self.stack.push(SymVal::BufferAccess { slot, base, scale });
                     }
+                    // Chained address arithmetic: rustc may emit
+                    // `out + block_offset + pos_offset` as nested
+                    // `BufferAccess + ScaledIdx` adds when it has
+                    // precomputed part of the byte-offset and the
+                    // rest is runtime. Compose the indices.
+                    //
+                    // Same scale → indices add directly.
+                    // Larger BufferAccess scale → rescale its
+                    // index to match the smaller ScaledIdx
+                    // scale: new_base = ba_base * (ba_scale /
+                    // si_scale) + si_base, scale = si_scale.
+                    (
+                        SymVal::BufferAccess { slot, base, scale },
+                        SymVal::ScaledIdx {
+                            base: b2,
+                            scale: s2,
+                        },
+                    )
+                    | (
+                        SymVal::ScaledIdx {
+                            base: b2,
+                            scale: s2,
+                        },
+                        SymVal::BufferAccess { slot, base, scale },
+                    ) if scale == s2
+                        || (scale > s2 && scale % s2 == 0 && (scale / s2).is_power_of_two()) =>
+                    {
+                        let (final_scale, final_base) = if scale == s2 {
+                            // Same-scale add: combine indices.
+                            let dst = self.alloc_reg();
+                            self.emit(KernelOp::BinOp {
+                                dst,
+                                a: base,
+                                b: b2,
+                                op: BinOp::Add,
+                                ty: ScalarType::U32,
+                            });
+                            (scale, dst)
+                        } else {
+                            // Rescale BufferAccess's base to match
+                            // the smaller scale: shift base left
+                            // by log2(scale / s2), then add.
+                            let shift_amt = (scale / s2).trailing_zeros();
+                            let shift_reg = self.alloc_reg();
+                            self.emit(KernelOp::Const {
+                                dst: shift_reg,
+                                value: ConstValue::U32(shift_amt),
+                            });
+                            let scaled_base = self.alloc_reg();
+                            self.emit(KernelOp::BinOp {
+                                dst: scaled_base,
+                                a: base,
+                                b: shift_reg,
+                                op: BinOp::Shl,
+                                ty: ScalarType::U32,
+                            });
+                            let dst = self.alloc_reg();
+                            self.emit(KernelOp::BinOp {
+                                dst,
+                                a: scaled_base,
+                                b: b2,
+                                op: BinOp::Add,
+                                ty: ScalarType::U32,
+                            });
+                            (s2, dst)
+                        };
+                        self.stack.push(SymVal::BufferAccess {
+                            slot,
+                            base: final_base,
+                            scale: final_scale,
+                        });
+                    }
+                    // BufferAccess + Const offset (negative for
+                    // `arr[N] = ...; arr[N-1] = ...` patterns where
+                    // rustc folds the -1 into a constant add).
+                    (SymVal::BufferAccess { slot, base, scale }, SymVal::I32Const(c))
+                    | (SymVal::I32Const(c), SymVal::BufferAccess { slot, base, scale })
+                        if (c as i64) % (scale as i64) == 0 =>
+                    {
+                        let off = c / (scale as i32);
+                        let off_reg = self.alloc_reg();
+                        self.emit(KernelOp::Const {
+                            dst: off_reg,
+                            value: ConstValue::I32(off),
+                        });
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::BinOp {
+                            dst,
+                            a: base,
+                            b: off_reg,
+                            op: BinOp::Add,
+                            ty: ScalarType::U32,
+                        });
+                        self.stack.push(SymVal::BufferAccess {
+                            slot,
+                            base: dst,
+                            scale,
+                        });
+                    }
                     (a, b) => {
                         let (ar, ty_a) = self.commit(a)?;
                         let (br, ty_b) = self.commit(b)?;
@@ -2877,14 +2976,36 @@ impl<'a> LowerCtx<'a> {
                 });
                 Ok((dst, ScalarType::U32))
             }
-            SymVal::BufferPtr(_) | SymVal::BufferAccess { .. } => {
-                Err(LoweringError::UnsupportedOp {
-                    op: "cannot commit pointer/address SymVal to a register — \
-                     buffer pointer arithmetic not yet supported"
-                        .into(),
-                    at: self.body.body_offset,
-                })
+            // BufferAccess flowing into a register-typed context
+            // (intrinsic call, BinOp, branch condition, etc.) is
+            // a buffer Load through implicit materialization.
+            // rustc emits this pattern when a let-binding stores
+            // a buffer element and a later use crosses control
+            // flow:
+            //   let x = buf[i];  // BufferAccess
+            //   if cond { foo(x) }  // commit fires here
+            //
+            // Auto-emit `KernelOp::Load { dst, field: slot,
+            // index: base, ty: slot_ty }` and return the fresh
+            // register. The buffer's scalar type comes from the
+            // side table.
+            SymVal::BufferAccess { slot, base, .. } => {
+                let ty = self.scalar_type_for_slot(slot);
+                let dst = self.alloc_reg();
+                self.emit(KernelOp::Load {
+                    dst,
+                    field: slot,
+                    index: base,
+                    ty,
+                });
+                Ok((dst, ty))
             }
+            SymVal::BufferPtr(_) => Err(LoweringError::UnsupportedOp {
+                op: "cannot commit pointer/address SymVal to a register — \
+                     buffer pointer arithmetic not yet supported"
+                    .into(),
+                at: self.body.body_offset,
+            }),
         }
     }
 
