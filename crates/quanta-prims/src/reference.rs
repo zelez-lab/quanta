@@ -127,6 +127,62 @@ pub fn scan_add_f32(xs: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+/// Per-block stream compaction over a u32 buffer with an explicit
+/// predicate array.
+///
+/// Reference impl for `block_compact_u32_buffer`. Predicates use
+/// the convention `1 = keep, 0 = drop`; any non-zero value is
+/// treated as keep, matching the GPU kernel which threads a
+/// non-zero check through the predicate.
+///
+/// Block-local semantics: each `block_size`-sized chunk of `data`
+/// is compacted independently. Within block `b`, the kept entries
+/// are written contiguously starting at offset `b * block_size`
+/// of the output buffer. The number of kept entries is recorded
+/// in `counts[b]`. Output slots past the kept count of each
+/// block are left untouched (callers should pre-zero `out` or
+/// only read up to `counts[b]` per block).
+///
+/// # Example
+///
+/// ```
+/// use quanta_prims::reference::compact_u32_blocks;
+///
+/// let preds = [1u32, 0, 1, 1, 0, 0, 1, 0]; // block_size = 4
+/// let data  = [10u32, 20, 30, 40, 50, 60, 70, 80];
+/// let mut out = [0u32; 8];
+/// let mut counts = [0u32; 2];
+/// compact_u32_blocks(&preds, &data, &mut out, &mut counts, 4);
+/// // Block 0: kept = {10, 30, 40}; written to out[0..3].
+/// // Block 1: kept = {70};         written to out[4..5].
+/// assert_eq!(&out[0..3], &[10, 30, 40]);
+/// assert_eq!(out[4], 70);
+/// assert_eq!(counts, [3, 1]);
+/// ```
+pub fn compact_u32_blocks(
+    predicates: &[u32],
+    data: &[u32],
+    out: &mut [u32],
+    counts: &mut [u32],
+    block_size: usize,
+) {
+    assert_eq!(predicates.len(), data.len());
+    assert_eq!(out.len(), data.len());
+    let num_blocks = data.len() / block_size;
+    assert_eq!(counts.len(), num_blocks);
+    for (b, count) in counts.iter_mut().enumerate().take(num_blocks) {
+        let start = b * block_size;
+        let mut kept = 0u32;
+        for i in 0..block_size {
+            if predicates[start + i] != 0 {
+                out[start + kept as usize] = data[start + i];
+                kept += 1;
+            }
+        }
+        *count = kept;
+    }
+}
+
 /// Sort a `u32` slice into ascending order, returning a new
 /// vector. Reference impl for `block_radix_sort_u32_kernel`.
 ///

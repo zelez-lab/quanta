@@ -174,6 +174,7 @@ pub const BLOCK_REDUCE_SCRATCH_SLOT: u32 = 0;
 pub fn block_reduce_add_u32_kernel(value: u32) -> u32 {
     let warp_sum = unsafe { reduce_add_u32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -192,6 +193,7 @@ pub fn block_reduce_add_u32_kernel(value: u32) -> u32 {
 pub fn block_reduce_add_i32_kernel(value: i32) -> i32 {
     let warp_sum = unsafe { reduce_add_i32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -210,6 +212,7 @@ pub fn block_reduce_add_i32_kernel(value: i32) -> i32 {
 pub fn block_reduce_add_f32_kernel(value: f32) -> f32 {
     let warp_sum = unsafe { reduce_add_f32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -229,6 +232,7 @@ pub fn block_reduce_add_f32_kernel(value: f32) -> f32 {
 pub fn block_reduce_min_u32_kernel(value: u32) -> u32 {
     let warp_min = unsafe { reduce_min_u32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -248,6 +252,7 @@ pub fn block_reduce_min_u32_kernel(value: u32) -> u32 {
 pub fn block_reduce_min_i32_kernel(value: i32) -> i32 {
     let warp_min = unsafe { reduce_min_i32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -267,6 +272,7 @@ pub fn block_reduce_min_i32_kernel(value: i32) -> i32 {
 pub fn block_reduce_min_f32_kernel(value: f32) -> f32 {
     let warp_min = unsafe { reduce_min_f32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -286,6 +292,7 @@ pub fn block_reduce_min_f32_kernel(value: f32) -> f32 {
 pub fn block_reduce_max_u32_kernel(value: u32) -> u32 {
     let warp_max = unsafe { reduce_max_u32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -305,6 +312,7 @@ pub fn block_reduce_max_u32_kernel(value: u32) -> u32 {
 pub fn block_reduce_max_i32_kernel(value: i32) -> i32 {
     let warp_max = unsafe { reduce_max_i32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -324,6 +332,7 @@ pub fn block_reduce_max_i32_kernel(value: i32) -> i32 {
 pub fn block_reduce_max_f32_kernel(value: f32) -> f32 {
     let warp_max = unsafe { reduce_max_f32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -593,6 +602,13 @@ pub fn block_reduce_max_f32_buffer(data: &[f32], out: &mut [f32]) {
 pub fn block_scan_add_u32_kernel(value: u32) -> u32 {
     let warp_inc = unsafe { scan_add_u32(value) };
     let sub_size = unsafe { subgroup_size() };
+    // GPU subgroup size is hardware-defined and always > 0 on every
+    // backend (32 on Apple/NVIDIA, 64 on AMD). Telling rustc lets it
+    // skip the div-by-zero panic guards, whose lowering shape (block
+    // + br_if + br) currently breaks the structured-control-flow
+    // splicing in the wasm-route lowerer. Once that's fixed this
+    // hint becomes redundant; keeping it cheap insurance.
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -625,6 +641,7 @@ pub fn block_scan_add_u32_kernel(value: u32) -> u32 {
 pub fn block_scan_add_i32_kernel(value: i32) -> i32 {
     let warp_inc = unsafe { scan_add_i32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -651,6 +668,7 @@ pub fn block_scan_add_i32_kernel(value: i32) -> i32 {
 pub fn block_scan_add_f32_kernel(value: f32) -> f32 {
     let warp_inc = unsafe { scan_add_f32(value) };
     let sub_size = unsafe { subgroup_size() };
+    unsafe { core::hint::assert_unchecked(sub_size > 0) };
     let lane_in_block = unsafe { proton_id() };
     let lane_in_warp = lane_in_block % sub_size;
     let warp_id = lane_in_block / sub_size;
@@ -845,4 +863,59 @@ pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
     }
 
     out[i as usize] = buf[lane];
+}
+
+// ── Tier 2 — Block compact ───────────────────────────────────────
+//
+// Per-block stream compaction: each 256-element block selects the
+// lanes whose predicate is non-zero and writes their data values
+// contiguously to the start of the block's output region. The
+// per-block kept count goes to `counts[block]`.
+//
+// Algorithm:
+//   1. exclusive scan of predicates → per-lane output offset
+//   2. if predicate set, write data[i] to out[block_start + offset]
+//   3. lane (BLOCK-1) writes the inclusive prefix sum (= kept
+//      count for the block) to counts[block]
+//
+// Exclusive-scan = inclusive_scan - own_value. We reuse
+// `block_scan_add_u32_kernel` (inclusive) and subtract the lane's
+// own predicate.
+
+/// Convenience kernel: per-block stream compaction with explicit
+/// `predicates` array (non-zero = keep). Output buffer must be at
+/// least `data.len()`; `counts.len()` must equal `data.len() / 256`.
+/// Within each 256-element block, kept entries are written
+/// contiguously starting at `block * 256`.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_compact_u32_buffer(
+    predicates: &[u32],
+    data: &[u32],
+    out: &mut [u32],
+    counts: &mut [u32],
+) {
+    #[quanta::shared]
+    let scratch: [u32; 32];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    if lane < 32u32 {
+        scratch[lane] = 0u32;
+    }
+    barrier();
+
+    let pred = predicates[i as usize];
+    let inclusive = block_scan_add_u32_kernel(pred);
+    let exclusive = inclusive - pred;
+    let block_start = block * 256u32;
+
+    if pred != 0u32 {
+        out[(block_start + exclusive) as usize] = data[i as usize];
+    }
+
+    if lane == 255u32 {
+        counts[block as usize] = inclusive;
+    }
 }
