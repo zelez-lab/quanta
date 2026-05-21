@@ -2698,11 +2698,25 @@ impl<'a> LowerCtx<'a> {
     /// structured control flow, etc.) — caller should fall back to
     /// the unsupported-call error.
     ///
-    /// V1 restrictions:
-    ///   - The callee body must be straight-line: no `Return`, no
-    ///     `Block`/`Loop`/`If`/`BrIf`/`Br`/`Else`/`End` except the
-    ///     terminating `End`. Real helper-style functions
-    ///     (splitmix32, hash mixers, byte rotates) all fit.
+    /// Accepts structured control flow inside the callee body
+    /// (`Block`/`Loop`/`If`/`Else`/`Br`/`BrIf`/`Return`) by wrapping
+    /// the inlined body in a synthetic outer `Block` frame.
+    ///
+    /// The wrap serves two purposes:
+    ///   1. It isolates the callee's branch targets from the caller's
+    ///      frame stack. A callee `Br(N)` targeting its own function
+    ///      level lands on the wrap, not on whatever frame the caller
+    ///      happened to be in at the call site.
+    ///   2. It absorbs the callee's terminal `End`. The function-end
+    ///      `End` rustc always emits closes the wrap and splices the
+    ///      collected ops into the caller's current frame.
+    ///
+    /// `Return` already lowers to "emit nothing if inside a block,
+    /// not crossing a loop" (see the `Return` arm in `lower_instr`).
+    /// With the wrap in place, that fall-through reaches the wrap's
+    /// `End` cleanly. Trailing `unreachable` / panic helpers after a
+    /// `return` are already silenced by the existing `Unreachable`
+    /// no-op + `is_panic_helper` elision.
     fn try_inline_defined_call(&mut self, callee_idx: u32) -> Result<bool, LoweringError> {
         // Look up callee body + signature.
         let callee = match self.module.functions.get(callee_idx as usize) {
@@ -2717,25 +2731,6 @@ impl<'a> LowerCtx<'a> {
             Some(s) => s.clone(),
             None => return Ok(false),
         };
-
-        // V1: reject anything beyond straight-line ops + the terminating End.
-        // We accept the very last instruction being End (function epilogue
-        // rustc always emits) and reject all other control-flow constructs.
-        for (i, instr) in callee_body.instructions.iter().enumerate() {
-            let is_terminal_end =
-                i + 1 == callee_body.instructions.len() && matches!(instr, RawInstr::End);
-            match instr {
-                RawInstr::Block { .. }
-                | RawInstr::Loop { .. }
-                | RawInstr::If { .. }
-                | RawInstr::Else
-                | RawInstr::Br(_)
-                | RawInstr::BrIf(_)
-                | RawInstr::Return => return Ok(false),
-                RawInstr::End if !is_terminal_end => return Ok(false),
-                _ => {}
-            }
-        }
 
         // Reserve callee-local slot space, append to self.locals.
         let base_offset = self.locals.len();
@@ -2799,15 +2794,20 @@ impl<'a> LowerCtx<'a> {
             self.locals[i].val = Some(SymVal::Reg(dst, ty));
         }
 
+        // Push the synthetic wrapping Block. The callee's terminal End
+        // closes this frame and splices ops into the caller's sink.
+        self.frames.push(Frame {
+            kind: FrameKind::Block,
+            ops: Vec::new(),
+            redirect: Vec::new(),
+            local_snapshot: Vec::new(),
+        });
+
         // Walk the callee body, rewriting local indices by base_offset.
+        // The terminating End is not skipped — it closes the wrap.
         let base = base_offset as u32;
         for instr in &callee_body.instructions {
             let rewritten = remap_locals(instr, base);
-            // Skip the terminating End (the callee's function epilogue
-            // — we're inlining the body, not finishing a function).
-            if matches!(rewritten, RawInstr::End) {
-                continue;
-            }
             self.lower_instr(&rewritten)?;
         }
 

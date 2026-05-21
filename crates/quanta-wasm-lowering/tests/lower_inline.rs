@@ -168,11 +168,13 @@ fn inlines_i64_helper() {
 }
 
 // ───────────────────────────────────────────────────────────────
-// Refusal: helper containing control flow (a Loop) is rejected.
+// V2 inliner: helper containing structured control flow (a Loop).
+// The wrap absorbs the helper's frames so the Loop body composes
+// cleanly inside the caller.
 // ───────────────────────────────────────────────────────────────
 
 #[test]
-fn refuses_helper_with_control_flow() {
+fn inlines_helper_with_loop() {
     let wat = r#"
         (module
           (import "quanta" "quark_id" (func $qid (result i32)))
@@ -194,10 +196,125 @@ fn refuses_helper_with_control_flow() {
     "#;
     let wasm = wat::parse_str(wat).expect("wat parse");
     let side_table = side_table_one_write("k", ScalarType::U32);
-    let err = lower(&wasm, &side_table).expect_err("expected refusal");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("inlining not yet supported"),
-        "unexpected error: {msg}"
-    );
+    let kdef = lower(&wasm, &side_table).expect("v2 inliner should accept loop");
+    let loops = count_ops(&kdef.body, |op| matches!(op, KernelOp::Loop { .. }));
+    assert_eq!(loops, 1, "expected exactly one Loop from inlined helper");
+}
+
+// ───────────────────────────────────────────────────────────────
+// V2 inliner: helper with an `if` block. Mirrors the rustc-emitted
+// shape of a divisor-check or panic-guard branch.
+// ───────────────────────────────────────────────────────────────
+
+#[test]
+fn inlines_helper_with_if() {
+    // helper(x) = if x != 0 { x + 1 } else { 0 }
+    let wat = r#"
+        (module
+          (import "quanta" "quark_id" (func $qid (result i32)))
+          (func $branchy (param i32) (result i32)
+            local.get 0
+            i32.const 0
+            i32.ne
+            if (result i32)
+              local.get 0
+              i32.const 1
+              i32.add
+            else
+              i32.const 0
+            end
+          )
+          (memory 1)
+          (func $k (export "k") (param i32)
+            call $qid
+            call $branchy
+            drop
+          )
+        )
+    "#;
+    let wasm = wat::parse_str(wat).expect("wat parse");
+    let side_table = side_table_one_write("k", ScalarType::U32);
+    let kdef = lower(&wasm, &side_table).expect("v2 inliner should accept if/else");
+    let branches = count_ops(&kdef.body, |op| matches!(op, KernelOp::Branch { .. }));
+    assert_eq!(branches, 1, "expected exactly one Branch from inlined if");
+}
+
+// ───────────────────────────────────────────────────────────────
+// V2 inliner: helper with a mid-body `return`. Tail-return falls
+// through to the wrap's End; the wrap absorbs it.
+// ───────────────────────────────────────────────────────────────
+
+#[test]
+fn inlines_helper_with_return() {
+    // helper(x):
+    //   block @1
+    //     local.get 0
+    //     return            ;; inside_block + no loop crossing → no-op
+    //   end
+    //   unreachable         ;; already a no-op
+    let wat = r#"
+        (module
+          (import "quanta" "quark_id" (func $qid (result i32)))
+          (func $earlyret (param i32) (result i32)
+            block (result i32)
+              local.get 0
+              return
+            end
+          )
+          (memory 1)
+          (func $k (export "k") (param i32)
+            call $qid
+            call $earlyret
+            drop
+          )
+        )
+    "#;
+    let wasm = wat::parse_str(wat).expect("wat parse");
+    let side_table = side_table_one_write("k", ScalarType::U32);
+    lower(&wasm, &side_table).expect("v2 inliner should accept early return");
+}
+
+// ───────────────────────────────────────────────────────────────
+// V2 inliner: helper that ends in a div-by-zero-style panic guard.
+// Real-world rustc shape:
+//   block @1                  ; "real-work" wrapper
+//     <work, leaving result on stack>
+//     local.get arg
+//     i32.eqz                 ; rustc emits this before the panic call
+//     br_if @1                ; skip to real-work end if non-zero arg
+//   end
+//   call $panic               ; panic helper, elided by name
+//   unreachable               ; no-op
+// The wrap's End absorbs the leftover frame. Panic call is elided.
+// ───────────────────────────────────────────────────────────────
+
+#[test]
+fn inlines_helper_with_panic_guard() {
+    let wat = r#"
+        (module
+          (import "quanta" "quark_id" (func $qid (result i32)))
+          (func $_ZN4core9panicking5panic17h0000000000000000E)
+          (func $div_checked (param i32) (param i32) (result i32)
+            block (result i32)
+              local.get 0
+              local.get 1
+              i32.div_u
+              local.get 1
+              br_if 0
+              call $_ZN4core9panicking5panic17h0000000000000000E
+              unreachable
+            end
+          )
+          (memory 1)
+          (func $k (export "k") (param i32)
+            call $qid
+            i32.const 7
+            call $div_checked
+            drop
+          )
+        )
+    "#;
+    let wasm = wat::parse_str(wat).expect("wat parse");
+    let side_table = side_table_one_write("k", ScalarType::U32);
+    lower(&wasm, &side_table).expect("v2 inliner should elide panic helper");
 }
