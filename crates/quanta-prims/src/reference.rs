@@ -183,6 +183,48 @@ pub fn compact_u32_blocks(
     }
 }
 
+/// Per-block bucket histogram with a fixed bucket count.
+///
+/// Reference impl for `block_histogram_u32_buffer`. The caller
+/// supplies pre-computed bucket indices (each value must be in
+/// `0..num_buckets`). Output is block-major:
+/// `counts_out[block * num_buckets + bucket]` holds the count of
+/// inputs in that block falling into that bucket.
+///
+/// # Example
+///
+/// ```
+/// use quanta_prims::reference::histogram_u32_blocks;
+///
+/// let buckets = [0u32, 0, 1, 2, 1, 1, 3, 3]; // block_size = 4
+/// let mut counts = [0u32; 8]; // num_buckets = 4, 2 blocks
+/// histogram_u32_blocks(&buckets, &mut counts, 4, 4);
+/// // Block 0: bucket 0 → 2, bucket 1 → 1, bucket 2 → 1, bucket 3 → 0.
+/// // Block 1: bucket 0 → 0, bucket 1 → 2, bucket 2 → 0, bucket 3 → 2.
+/// assert_eq!(counts, [2, 1, 1, 0, 0, 2, 0, 2]);
+/// ```
+pub fn histogram_u32_blocks(
+    buckets_in: &[u32],
+    counts_out: &mut [u32],
+    block_size: usize,
+    num_buckets: usize,
+) {
+    let num_blocks = buckets_in.len() / block_size;
+    assert_eq!(counts_out.len(), num_blocks * num_buckets);
+    counts_out.fill(0);
+    for b in 0..num_blocks {
+        let start = b * block_size;
+        for i in 0..block_size {
+            let bucket = buckets_in[start + i] as usize;
+            assert!(
+                bucket < num_buckets,
+                "bucket index {bucket} out of range (num_buckets={num_buckets})"
+            );
+            counts_out[b * num_buckets + bucket] += 1;
+        }
+    }
+}
+
 /// Sort a `u32` slice into ascending order, returning a new
 /// vector. Reference impl for `block_radix_sort_u32_kernel`.
 ///

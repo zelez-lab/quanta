@@ -63,6 +63,7 @@ unsafe extern "C" {
     fn shared_store_u32(slot: u32, index: u32, val: u32);
     fn shared_store_i32(slot: u32, index: u32, val: i32);
     fn shared_store_f32(slot: u32, index: u32, val: f32);
+    fn atomic_add_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
 }
 
 // Host stubs. Single-lane semantics: reduce/scan/min/max return
@@ -134,6 +135,9 @@ mod host_stubs {
     pub fn shared_store_u32(_: u32, _: u32, _: u32) {}
     pub fn shared_store_i32(_: u32, _: u32, _: i32) {}
     pub fn shared_store_f32(_: u32, _: u32, _: f32) {}
+    pub fn atomic_add_shared_u32(_: u32, _: u32, _: u32, _: u32) -> u32 {
+        0
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
 use host_stubs::*;
@@ -918,4 +922,47 @@ pub fn block_compact_u32_buffer(
     if lane == 255u32 {
         counts[block as usize] = inclusive;
     }
+}
+
+// ── Tier 2 — Block histogram ─────────────────────────────────────
+//
+// Per-block bucket histogram via shared-memory atomic increment.
+// Fixed at 256 buckets (= workgroup_size). The caller pre-computes
+// bucket indices (each value in `buckets_in` is the lane's bucket
+// in 0..256). The output has one count per (block, bucket) and is
+// stored block-major: out[block * 256 + bucket].
+//
+// Algorithm:
+//   1. Every lane zero-inits its own slot of `local_counts`.
+//   2. Read `buckets_in[i]`, atomically increment
+//      `local_counts[bucket]` via shared-mem atomic_add.
+//   3. Every lane copies one bucket count to global output.
+//
+// Shared-memory atomics emit on Metal today (substrate gap 3 fix
+// from 2026-05-18). WGSL / SPIR-V / LLVM paths return NotSupported.
+
+/// Convenience kernel: per-block histogram with 256 buckets. The
+/// caller pre-computes bucket indices (each value in `buckets_in`
+/// must be in 0..256). Output: one count per (block, bucket),
+/// block-major. `counts_out.len()` must equal
+/// `(buckets_in.len() / 256) * 256` = `buckets_in.len()`.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_histogram_u32_buffer(buckets_in: &[u32], counts_out: &mut [u32]) {
+    #[quanta::shared]
+    let local_counts: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    local_counts[lane] = 0u32;
+    barrier();
+
+    let bucket = buckets_in[i as usize];
+    unsafe {
+        atomic_add_shared_u32(0u32, bucket, 1u32, 0u32);
+    }
+    barrier();
+
+    counts_out[(block * 256u32 + lane) as usize] = local_counts[lane];
 }
