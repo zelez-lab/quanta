@@ -225,6 +225,38 @@ pub fn histogram_u32_blocks(
     }
 }
 
+/// Per-block top-K selection. For each `block_size`-sized chunk
+/// of `data`, emits the K largest values in descending order to
+/// the corresponding region of `top_k_out`. `top_k_out.len()`
+/// must equal `(data.len() / block_size) * k`.
+///
+/// Reference impl for `block_top_k_u32_buffer`. Sort-based: each
+/// block is sorted descending then the first K are taken.
+///
+/// # Example
+///
+/// ```
+/// use quanta_prims::reference::top_k_u32_blocks;
+///
+/// let data = [5u32, 1, 9, 3, 7, 2, 8, 6];
+/// let mut out = [0u32; 4]; // k = 2, block_size = 4, 2 blocks
+/// top_k_u32_blocks(&data, &mut out, 4, 2);
+/// // Block 0: [5, 1, 9, 3] → top-2 = [9, 5].
+/// // Block 1: [7, 2, 8, 6] → top-2 = [8, 7].
+/// assert_eq!(out, [9, 5, 8, 7]);
+/// ```
+pub fn top_k_u32_blocks(data: &[u32], top_k_out: &mut [u32], block_size: usize, k: usize) {
+    let num_blocks = data.len() / block_size;
+    assert_eq!(top_k_out.len(), num_blocks * k);
+    assert!(k <= block_size);
+    for b in 0..num_blocks {
+        let start = b * block_size;
+        let mut sorted: Vec<u32> = data[start..start + block_size].to_vec();
+        sorted.sort_unstable_by(|a, b| b.cmp(a)); // descending
+        top_k_out[b * k..(b + 1) * k].copy_from_slice(&sorted[..k]);
+    }
+}
+
 /// Sort a `u32` slice into ascending order, returning a new
 /// vector. Reference impl for `block_radix_sort_u32_kernel`.
 ///

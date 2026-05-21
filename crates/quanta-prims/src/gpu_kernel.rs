@@ -966,3 +966,74 @@ pub fn block_histogram_u32_buffer(buckets_in: &[u32], counts_out: &mut [u32]) {
 
     counts_out[(block * 256u32 + lane) as usize] = local_counts[lane];
 }
+
+// ── Tier 2 — Block top-k ─────────────────────────────────────────
+//
+// Per-block selection of the K largest u32 values. Built on the
+// bitonic sort body inlined here — sorting the block ascending
+// gives the K largest at indices BLOCK-K..BLOCK-1. Lanes 0..K
+// emit them in descending order to the per-block output region.
+//
+// Workgroup size is fixed at 256 (same as the underlying sort).
+// K is a runtime push-constant; the caller must ensure `K <= 256`.
+// Output layout: top_k_out[block * K + i] = i-th-largest value
+// from block, with i=0 the largest.
+
+/// Convenience kernel: per-block top-K selection. Sorts each
+/// 256-element block of u32 keys ascending (bitonic) and emits
+/// the K largest in descending order to the per-block output
+/// region (`top_k_out[block*k + i]`). `k <= 256`.
+///
+/// Each workgroup processes one block. Caller dispatches with
+/// `quark_count = 256 * num_blocks` and `top_k_out.len() >=
+/// num_blocks * k`. When `k = 256` this is just a per-block
+/// descending sort (same work as `block_radix_sort_u32_buffer`
+/// with the order inverted).
+#[quanta::kernel(workgroup = [256])]
+pub fn block_top_k_u32_buffer(data: &[u32], top_k_out: &mut [u32], k: u32) {
+    #[quanta::shared]
+    let buf: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    buf[lane] = data[i as usize];
+    barrier();
+
+    // Bitonic sort body — identical to block_radix_sort_u32_buffer.
+    // See its comments for the want_smaller derivation. Inlined
+    // because factoring it into a device fn would force the inliner
+    // to re-thread the nested-while-loop body and that path isn't
+    // exercised by anything else today.
+    let mut outer: u32 = 2u32;
+    while outer <= 256u32 {
+        let mut inner: u32 = outer / 2u32;
+        while inner > 0u32 {
+            let partner = lane ^ inner;
+            let my_key = buf[lane];
+            let partner_key = buf[partner];
+
+            let bit_k = if (lane & outer) == 0u32 { 0u32 } else { 1u32 };
+            let bit_j = if (lane & inner) == 0u32 { 0u32 } else { 1u32 };
+            let take_partner = if bit_k == bit_j {
+                partner_key < my_key
+            } else {
+                partner_key > my_key
+            };
+            let new_key = if take_partner { partner_key } else { my_key };
+            barrier();
+            buf[lane] = new_key;
+            barrier();
+
+            inner = inner / 2u32;
+        }
+        outer = outer * 2u32;
+    }
+
+    // Sorted ascending: buf[0] is smallest, buf[255] is largest.
+    // Lane `i` writes the (i+1)-th largest, which lives at buf[255-i].
+    if lane < k {
+        top_k_out[(block * k + lane) as usize] = buf[(255u32 - lane) as usize];
+    }
+}
