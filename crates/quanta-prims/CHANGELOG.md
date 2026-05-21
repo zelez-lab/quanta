@@ -6,6 +6,34 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Tier 2 — `block_compact_u32_buffer`** — per-block stream
+  compaction with explicit predicate array. 5 differential
+  tests on Metal.
+- **Tier 2 — `block_histogram_u32_buffer`** — per-block
+  256-bucket histogram via shared-memory atomic increment.
+  Metal-only today (WGSL/SPIR-V/software return NotSupported
+  for shared atomics; tests skip on those). 4 differential
+  tests.
+- **Tier 2 — `block_top_k_u32_buffer`** — per-block top-K
+  selection via inlined bitonic sort + conditional write.
+  K is a runtime push-constant up to 256. 5 differential
+  tests.
+- **`reference::{compact_u32_blocks, histogram_u32_blocks,
+  top_k_u32_blocks}`** — CPU oracle for each Tier-2 kernel,
+  used by the differential tests.
+
+### Changed
+
+- **All block-reduce and block-scan device fns** gain a
+  `core::hint::assert_unchecked(sub_size > 0)` after the
+  `subgroup_size()` call. Lets LLVM elide the div-by-zero
+  panic guard whose lowering shape currently misroutes the
+  kernel epilogue in the wasm-route lowerer. The hint becomes
+  redundant once the underlying redirect-chain handling for
+  multi-frame `br_if N; br M` patterns is fixed.
+
 ## [0.1.0-alpha.2] — 2026-05-18
 
 Initial Tier-1 cut: block-cooperative reduce / scan / sort

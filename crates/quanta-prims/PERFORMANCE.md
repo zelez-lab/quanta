@@ -23,7 +23,7 @@ cargo run -p quanta-prims --features gpu-metal --release \
 
 ## Apple M1 Pro
 
-### Throughput by N (median over 10 iter, 2 warmup)
+### Throughput by N (median over 10 iter, 2 warmup) — Tier 1
 
 | N       | reduce  | scan    | sort    |
 | ------- | ------- | ------- | ------- |
@@ -33,14 +33,35 @@ cargo run -p quanta-prims --features gpu-metal --release \
 | 65 536  | ~8.0 ms | ~8.0 ms | ~8.0 ms |
 | 262 144 | ~8.0 ms | ~8.0 ms | ~8.0 ms |
 
+### Throughput by N — Tier 2
+
+| N       | compact | histogram | top-k (k=16) |
+| ------- | ------- | --------- | ------------ |
+| 256     | ~8.0 ms | ~8.0 ms   | ~8.0 ms      |
+| 2 048   | ~8.0 ms | ~8.0 ms   | ~8.0 ms      |
+| 16 384  | ~8.0 ms | ~8.0 ms   | ~8.0 ms      |
+| 65 536  | ~8.0 ms | ~8.0 ms   | ~8.0 ms      |
+| 262 144 | ~8.0 ms | ~8.0 ms   | ~8.0 ms      |
+
 The ~8 ms wall is **fixed dispatch + sync overhead on M1 Pro**,
 not the primitive's compute time. Until that overhead drops
 below the per-element work, throughput is bandwidth-bound by
 the host↔device round trip, not by the kernel.
 
 At N = 262 144 the effective throughput is ~33 M elements/sec
-across all three primitives. The kernels themselves take
-microseconds; the wall is the dispatch + wait + readback path.
+across all primitives — Tier 1 and Tier 2 alike. The kernels
+themselves take microseconds; the wall is the dispatch + wait
++ readback path.
+
+Tier 2 caveats:
+
+- **compact** uploads a per-element predicate buffer once per
+  call; build + upload is included in the wall time.
+- **histogram** likewise uploads a per-element bucket index
+  buffer.
+- **top-k** does the same bitonic-sort work as `radix_sort` plus
+  a conditional write — so the wall is essentially identical to
+  the sort line.
 
 ### GPU vs CPU head-to-head at N = 16 384
 
@@ -73,10 +94,10 @@ crush the GPU on small N.
   dispatch profiles; on hardware with low launch overhead the
   crossover N is much smaller.
 
-## Optimisation pipeline (Tier 2)
+## Optimisation pipeline
 
-For v0.1 we ship correctness; perf optimisation is queued for
-Tier 2 alongside the histogram / top-k / compact primitives:
+For v0.1 we ship correctness across Tier 1 + Tier 2; perf
+optimisation is queued:
 
 - **Reduce dispatch overhead via wave reuse.** Quanta's Wave
   object already supports repeated dispatch without rebuild;

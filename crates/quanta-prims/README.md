@@ -14,21 +14,22 @@ the same Rust source.
 
 ## Status
 
-**v0.1.0-alpha.2** — Tier 1 shipped:
+**v0.1.0-alpha.2** — Tier 1 + Tier 2 shipped:
 
-| Primitive                                  | Status      |
-| ------------------------------------------ | ----------- |
-| `block_reduce_add` × {u32, i32, f32}       | ✅ verified |
-| `block_reduce_min` × {u32, i32, f32}       | ✅ verified |
-| `block_reduce_max` × {u32, i32, f32}       | ✅ verified |
-| `block_scan_add`   × {u32, i32, f32}       | ✅ verified |
-| `block_radix_sort_u32` (bitonic, 256 keys) | ✅ verified |
-| Block histogram                            | Tier 2      |
-| Block top-k                                | Tier 2      |
-| Block compact / partition                  | Tier 2      |
-| Segmented reduce / scan                    | Tier 2      |
+| Primitive                                  | Status                     |
+| ------------------------------------------ | -------------------------- |
+| `block_reduce_add` × {u32, i32, f32}       | ✅ verified                |
+| `block_reduce_min` × {u32, i32, f32}       | ✅ verified                |
+| `block_reduce_max` × {u32, i32, f32}       | ✅ verified                |
+| `block_scan_add`   × {u32, i32, f32}       | ✅ verified                |
+| `block_radix_sort_u32` (bitonic, 256 keys) | ✅ verified                |
+| `block_compact_u32_buffer`                 | ✅ verified (Tier 2)       |
+| `block_histogram_u32_buffer`               | ✅ verified Metal (Tier 2) |
+| `block_top_k_u32_buffer`                   | ✅ verified (Tier 2)       |
+| Segmented reduce / scan                    | queued                     |
+| Multi-bit LSD radix                        | queued                     |
 
-13 GPU kernels. 34 differential tests on Metal. 8 Lean
+16 GPU kernels. 56 differential tests on Metal. 8 Lean
 correctness theorems + 12 Verus operational invariants. See
 [CHANGELOG.md](CHANGELOG.md) for the release history.
 

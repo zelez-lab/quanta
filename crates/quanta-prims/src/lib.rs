@@ -100,13 +100,21 @@
 //! - `block_scan_add` × `{u32, i32, f32}`
 //! - `block_radix_sort_u32` (bitonic, 256 keys per workgroup)
 //!
+//! Tier 2 (all shipped):
+//! - `block_compact_u32_buffer` — per-block stream compaction
+//!   with explicit predicate array
+//! - `block_histogram_u32_buffer` — per-block 256-bucket
+//!   histogram via shared-memory atomics (Metal only today)
+//! - `block_top_k_u32_buffer` — per-block top-K selection
+//!   (sort-based, K up to 256)
+//!
 //! Each ships as a `#[quanta::device]` callable function (e.g.
 //! `block_reduce_add_u32_kernel`) plus a top-level
 //! `*_buffer` convenience kernel. See `gpu_kernel.rs` for the
 //! full list.
 //!
-//! Tier 2 (point releases): histogram, top-k, compact /
-//! partition, segmented reduce / scan, multi-bit LSD radix.
+//! Still queued: segmented reduce / scan, multi-bit LSD radix,
+//! key-value variants.
 
 // Subgroup intrinsics are FFI imports — the `unsafe` is unavoidable
 // at the call site. The reference module is pure safe Rust; only

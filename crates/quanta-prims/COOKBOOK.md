@@ -228,6 +228,63 @@ output, chain a multi-block merge — out of scope for v0.1
 
 ---
 
+## Tier-2 convenience kernels
+
+The "compute output positions" and "per-block histogram"
+recipes above show the patterns from scratch — useful when you
+want to fuse the primitive into a larger kernel. If you just
+need the standalone operation on a buffer, three Tier-2
+convenience kernels do the work directly.
+
+### `block_compact_u32_buffer`
+
+```rust,ignore
+use quanta_prims::block_compact_u32_buffer;
+
+let mut wave = block_compact_u32_buffer(&gpu)?;
+wave.bind(0, &predicates); // [u32; n], non-zero = keep
+wave.bind(1, &data);       // [u32; n]
+wave.bind(2, &out);        // [u32; n]
+wave.bind(3, &counts);     // [u32; n / 256], per-block kept count
+gpu.dispatch(&wave, n as u32)?.wait()?;
+```
+
+Kept entries from block `b` end up at `out[b*256..b*256+counts[b]]`.
+
+### `block_histogram_u32_buffer`
+
+```rust,ignore
+use quanta_prims::block_histogram_u32_buffer;
+
+// Caller pre-computes bucket indices (values in 0..256).
+let mut wave = block_histogram_u32_buffer(&gpu)?;
+wave.bind(0, &buckets);  // [u32; n], each value in 0..256
+wave.bind(1, &counts);   // [u32; n], block-major: counts[b*256 + bucket]
+gpu.dispatch(&wave, n as u32)?.wait()?;
+```
+
+Shared-memory atomics today emit only on Metal; other backends
+return `NotSupported`. The kernel hard-codes 256 buckets per
+block (= workgroup size).
+
+### `block_top_k_u32_buffer`
+
+```rust,ignore
+use quanta_prims::block_top_k_u32_buffer;
+
+let k: u32 = 16;
+let mut wave = block_top_k_u32_buffer(&gpu)?;
+wave.bind(0, &data);        // [u32; n]
+wave.bind(1, &top_k_out);   // [u32; n / 256 * k]
+wave.set_value(2, k);
+gpu.dispatch(&wave, n as u32)?.wait()?;
+```
+
+`top_k_out[b * k + i]` is the i-th-largest value of block `b`,
+with i=0 the maximum. `k <= 256`.
+
+---
+
 ## Get a CPU oracle for any primitive
 
 **Use case:** write a test that compares GPU output against a
@@ -266,3 +323,6 @@ your differential tests.
   ramp / uniform / first-output / last-output checks.
 - **`tests/block_sort.rs`** — sort across pseudo-random,
   ties, extreme values, multi-block independence.
+- **`tests/block_compact.rs`**, **`tests/block_histogram.rs`**,
+  **`tests/block_top_k.rs`** — Tier-2 convenience-kernel
+  differential tests.
