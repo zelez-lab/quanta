@@ -3993,4 +3993,58 @@ theorem preservation_evalInstrs_chain_buffer_store_7step
                                       · rw [← h_ops_eq]; exact h_eval_c
                                       · rw [← h_s_eq]; exact R_rest
 
+-- ════════════════════════════════════════════════════════════════════
+-- L3.1 foundation — list-level bufferSlots-preservation invariant
+--
+-- Lifts the per-step `lowerInstr_preserves_bufferSlots` to a
+-- list-level statement: every successful `lowerInstrs` over a
+-- non-structured-control instruction list preserves
+-- `s.bufferSlots`.
+--
+-- The hypothesis `h_no_struct : ∀ i ∈ instrs, isStructuredLower i =
+-- false` rules out `block`/`wloop`/`wif` (whose recursion through
+-- inner bodies would need separate bookkeeping). The `br`/`brIf`
+-- arms are also excluded — they don't go through the default arm
+-- and have their own bufferSlots-preservation but proving it
+-- requires unfolding the structured-recursion case-split. For the
+-- closedInstr-recognized subset the precondition is automatic.
+--
+-- This invariant is the architectural prerequisite for state-aware
+-- recognizer extensions: any predicate on `LowerState` that only
+-- reads `bufferSlots` lifts uniformly across an `lowerInstrs`
+-- execution on a closed-shape list. Used by `closedInstrAt` /
+-- `closedInstrsAt` in `PreservationInduction`.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerInstrs_preserves_bufferSlots_default
+    {fuel : Nat} {frames : List FrameKind}
+    {s s' : LowerState} {ops : List KernelOp} {instrs : List WasmInstr}
+    (h_no_struct : ∀ i ∈ instrs, isStructuredLower i = false)
+    (h : lowerInstrs fuel frames s instrs = some (s', ops)) :
+    s'.bufferSlots = s.bufferSlots := by
+  induction instrs generalizing s s' ops with
+  | nil =>
+      -- lowerInstrs ... s [] = some (s, [])
+      simp [lowerInstrs] at h
+      rw [← h.1]
+  | cons i rest ih =>
+      have h_ns_head : isStructuredLower i = false := h_no_struct i (by simp)
+      have h_ns_rest : ∀ j ∈ rest, isStructuredLower j = false := by
+        intro j hj; exact h_no_struct j (List.mem_cons_of_mem _ hj)
+      rw [lowerInstrs_cons_default fuel frames s i rest h_ns_head] at h
+      cases h_head : lowerInstr s i with
+      | none => simp [h_head] at h
+      | some pair =>
+          rcases pair with ⟨s_mid, ops_head⟩
+          simp [h_head] at h
+          cases h_tail : lowerInstrs fuel frames s_mid rest with
+          | none => simp [h_tail] at h
+          | some tail_pair =>
+              rcases tail_pair with ⟨s_post, ops_tail⟩
+              simp [h_tail] at h
+              rcases h with ⟨h_s_eq, _⟩
+              have h_bufs_head := lowerInstr_preserves_bufferSlots h_head
+              have h_bufs_tail := ih h_ns_rest h_tail
+              rw [← h_s_eq, h_bufs_tail, h_bufs_head]
+
 end Quanta.Wasm

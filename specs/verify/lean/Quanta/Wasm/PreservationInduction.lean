@@ -277,4 +277,163 @@ theorem preservation_evalInstrs_main
       | unreachable  => simp [closedInstr] at h_head_closed
       | unsupported _ => simp [closedInstr] at h_head_closed
 
+-- ════════════════════════════════════════════════════════════════════
+-- L3.1: state-aware recognizer (closedInstrAt)
+--
+-- The state-free `closedInstr` recognizer rules out `localGet i`
+-- entirely because the buffer-slot vs non-buffer-slot arm choice
+-- depends on `s.lookupBufferSlot i`. The state-aware variant
+-- `closedInstrAt s i` consults the LowerState to admit `localGet i`
+-- when the local is non-buffer (`lookupBufferSlot = none`).
+--
+-- The recognizer's only state-dependent fact is `lookupBufferSlot`,
+-- which reads `s.bufferSlots` only. The list-level invariant
+-- `lowerInstrs_preserves_bufferSlots_default` (in `PreservationList`)
+-- shows `bufferSlots` is preserved across every successful lowering
+-- of a non-structured-control list. Combined, `closedInstrAt`'s
+-- result is preserved across every closed-shape step — the lift
+-- needed to thread the recognizer through a recursive proof.
+--
+-- This module ships the recognizer + lift lemmas + the bridge from
+-- the existing state-free recognizer. The recursive proof that
+-- *uses* the state-aware recognizer (extending the skeleton to
+-- dispatch `localGet`, `i32Add`, `i32Shl` arms) is L3.2 / L3.3 —
+-- requires either refactoring the cons theorems' `preservation_rest`
+-- Pi-binder to expose mid-state `bufferSlots`-equality, or
+-- reconstructing the chain at the skeleton level via the per-op
+-- preservation theorems directly.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- State-aware extension of `closedInstr`. Admits `localGet i` to
+    the closed set when `s.lookupBufferSlot i = none` (the non-buffer
+    arm of `lowerInstr`). All other arms delegate to `closedInstr`. -/
+def closedInstrAt (s : LowerState) : WasmInstr → Bool
+  | .localGet i =>
+      match s.lookupBufferSlot i with
+      | none   => true
+      | some _ => false
+  | other => closedInstr other
+
+/-- State-aware closed-list. -/
+def closedInstrsAt (s : LowerState) : List WasmInstr → Bool
+  | []        => true
+  | i :: rest => closedInstrAt s i && closedInstrsAt s rest
+
+theorem closedInstrsAt_cons {s : LowerState} {i : WasmInstr} {rest : List WasmInstr} :
+    closedInstrsAt s (i :: rest) = (closedInstrAt s i && closedInstrsAt s rest) := rfl
+
+theorem closedInstrsAt_head {s : LowerState} {i : WasmInstr} {rest : List WasmInstr}
+    (h : closedInstrsAt s (i :: rest) = true) : closedInstrAt s i = true :=
+  (Bool.and_eq_true _ _).mp h |>.left
+
+theorem closedInstrsAt_tail {s : LowerState} {i : WasmInstr} {rest : List WasmInstr}
+    (h : closedInstrsAt s (i :: rest) = true) : closedInstrsAt s rest = true :=
+  (Bool.and_eq_true _ _).mp h |>.right
+
+/-- `closedInstrAt` is invariant along any `bufferSlots`-preserving
+    step. Used to lift the recognizer's witness from the entry state
+    to a mid-state after some closed-shape execution. -/
+theorem closedInstrAt_of_bufferSlots_eq
+    {s s' : LowerState} (h : s'.bufferSlots = s.bufferSlots) :
+    ∀ i, closedInstrAt s' i = closedInstrAt s i := by
+  intro i
+  cases i with
+  | localGet j =>
+      show (match s'.lookupBufferSlot j with
+            | none => true | some _ => false)
+            = (match s.lookupBufferSlot j with
+            | none => true | some _ => false)
+      rw [LowerState.lookupBufferSlot_of_bufferSlots_eq j h]
+  | _ => rfl
+
+/-- List-level lift of `closedInstrAt_of_bufferSlots_eq`. -/
+theorem closedInstrsAt_of_bufferSlots_eq
+    {s s' : LowerState} (h : s'.bufferSlots = s.bufferSlots) :
+    ∀ instrs, closedInstrsAt s' instrs = closedInstrsAt s instrs := by
+  intro instrs
+  induction instrs with
+  | nil => rfl
+  | cons i rest ih =>
+      show (closedInstrAt s' i && closedInstrsAt s' rest)
+            = (closedInstrAt s i && closedInstrsAt s rest)
+      rw [closedInstrAt_of_bufferSlots_eq h, ih]
+
+/-- Bridge: every `closedInstr`-recognized instruction is also
+    `closedInstrAt`-recognized, for any state. Used to transport an
+    existing `closedInstrs instrs = true` witness into the state-
+    aware predicate, opening the recognizer up to extensions without
+    breaking existing call sites. -/
+theorem closedInstrAt_of_closedInstr
+    {s : LowerState} {i : WasmInstr} (h : closedInstr i = true) :
+    closedInstrAt s i = true := by
+  cases i with
+  | localGet _ => simp [closedInstr] at h
+  | nop          => exact h
+  | i32Const _   => exact h
+  | drop         => exact h
+  | localSet _   => exact h
+  | localTee _   => exact h
+  | i32Sub       => exact h
+  | i32Mul       => exact h
+  | i32And       => exact h
+  | i32Or        => exact h
+  | i32Xor       => exact h
+  | i32ShrU      => exact h
+  | i32DivU      => exact h
+  | i32RemU      => exact h
+  | i32Eq        => exact h
+  | i32Ne        => exact h
+  | i32LtU       => exact h
+  | i32LeU       => exact h
+  | i32GtU       => exact h
+  | i32GeU       => exact h
+  -- The remaining arms aren't in the closed set; `simp` on closedInstr
+  -- yields False from `h`.
+  | i64Const _   => simp [closedInstr] at h
+  | f32Const _   => simp [closedInstr] at h
+  | f64Const _   => simp [closedInstr] at h
+  | i32Add       => simp [closedInstr] at h
+  | i32DivS      => simp [closedInstr] at h
+  | i32RemS      => simp [closedInstr] at h
+  | i32Shl       => simp [closedInstr] at h
+  | i32ShrS      => simp [closedInstr] at h
+  | i32LtS       => simp [closedInstr] at h
+  | i32GtS       => simp [closedInstr] at h
+  | i32LeS       => simp [closedInstr] at h
+  | i32GeS       => simp [closedInstr] at h
+  | i32Eqz       => simp [closedInstr] at h
+  | f32Add | f32Sub | f32Mul | f32Div =>
+      all_goals simp [closedInstr] at h
+  | f32Eq | f32Ne | f32Lt | f32Gt | f32Le | f32Ge =>
+      all_goals simp [closedInstr] at h
+  | f32Neg | f32Abs | f32Sqrt | f32Min | f32Max =>
+      all_goals simp [closedInstr] at h
+  | i32WrapI64 | f32ConvertI32S | f32ConvertI32U
+  | i32TruncF32S | i32TruncF32U
+  | f32ReinterpretI32 | i32ReinterpretF32 =>
+      all_goals simp [closedInstr] at h
+  | i32Load _ _ | i32Store _ _ | f32Load _ _ | f32Store _ _
+  | i32Load8U _ _ | i32Load8S _ _ | i32Store8 _ _ =>
+      all_goals simp [closedInstr] at h
+  | block _ | wloop _ | wif _ | welse | wend =>
+      all_goals simp [closedInstr] at h
+  | br _ | brIf _ | wreturn =>
+      all_goals simp [closedInstr] at h
+  | call _ | wselect | unreachable | unsupported _ =>
+      all_goals simp [closedInstr] at h
+
+/-- List-level bridge. -/
+theorem closedInstrsAt_of_closedInstrs
+    {s : LowerState} {instrs : List WasmInstr}
+    (h : closedInstrs instrs = true) :
+    closedInstrsAt s instrs = true := by
+  induction instrs with
+  | nil => rfl
+  | cons i rest ih =>
+      have h_head : closedInstr i = true := closedInstrs_head h
+      have h_rest : closedInstrs rest = true := closedInstrs_tail h
+      show (closedInstrAt s i && closedInstrsAt s rest) = true
+      rw [closedInstrAt_of_closedInstr h_head, ih h_rest]
+      rfl
+
 end Quanta.Wasm
