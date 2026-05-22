@@ -436,4 +436,184 @@ theorem closedInstrsAt_of_closedInstrs
       rw [closedInstrAt_of_closedInstr h_head, ih h_rest]
       rfl
 
+-- ════════════════════════════════════════════════════════════════════
+-- L3.2: eval-side branch/halt preservation for closed-shape instrs
+--
+-- Every closed-shape `evalInstr` step (the 19 base ops + `localGet`)
+-- leaves `ws.branchTarget` and `ws.halted` untouched. We extract a
+-- common helper for the binI32 / cmpI32 family so the main case-
+-- split stays manageable.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `binI32` only touches the operand stack; the rest of the state
+    (locals, mem, branchTarget, halted) passes through. Proved via
+    `binI32_some_shape`'s state-equation. -/
+theorem binI32_preserves_branchTarget
+    {s s' : WasmState} {op : UInt32 → UInt32 → UInt32}
+    (h : binI32 op s = some s') :
+    s'.branchTarget = s.branchTarget ∧ s'.halted = s.halted := by
+  obtain ⟨_, _, _, _, h_s_eq⟩ := binI32_some_shape h
+  refine ⟨?_, ?_⟩ <;> rw [h_s_eq]
+
+/-- `cmpI32` mirrors `binI32_preserves_branchTarget`. -/
+theorem cmpI32_preserves_branchTarget
+    {s s' : WasmState} {p : UInt32 → UInt32 → Bool}
+    (h : cmpI32 p s = some s') :
+    s'.branchTarget = s.branchTarget ∧ s'.halted = s.halted := by
+  obtain ⟨_, _, _, _, h_s_eq⟩ := cmpI32_some_shape h
+  refine ⟨?_, ?_⟩ <;> rw [h_s_eq]
+
+theorem evalInstr_closed_preserves_branchTarget
+    {s s' : WasmState} {i : WasmInstr} {ls : LowerState}
+    (h_closed : closedInstrAt ls i = true)
+    (h : evalInstr s i = some s') :
+    s'.branchTarget = s.branchTarget ∧ s'.halted = s.halted := by
+  cases i with
+  | nop =>
+      simp [evalInstr] at h
+      refine ⟨?_, ?_⟩ <;> rw [← h]
+  | i32Const n =>
+      simp [evalInstr, WasmState.push] at h
+      refine ⟨?_, ?_⟩ <;> rw [← h]
+  | localGet idx =>
+      simp [evalInstr] at h
+      rcases h_loc : s.getLocal idx with _ | v
+      · simp [h_loc] at h
+      · simp [h_loc, WasmState.push] at h
+        refine ⟨?_, ?_⟩ <;> rw [← h]
+  | localSet idx =>
+      -- evalInstr ws .localSet idx unfolds to (pop ≫= setLocal).
+      -- Both pop and setLocal preserve branchTarget/halted: pop only
+      -- shortens stack, setLocal only updates locals.
+      unfold evalInstr at h
+      rcases h_pop : s.pop with _ | ⟨v, s1⟩
+      · simp [h_pop] at h
+      simp [h_pop] at h
+      unfold WasmState.setLocal at h
+      by_cases h_lt : idx < s1.locals.length
+      · simp [h_lt] at h
+        have h_s1_fields : s1.branchTarget = s.branchTarget ∧ s1.halted = s.halted := by
+          unfold WasmState.pop at h_pop
+          rcases hs : s.stack with _ | ⟨v', rs⟩
+          · rw [hs] at h_pop; simp at h_pop
+          rw [hs] at h_pop; simp at h_pop
+          refine ⟨?_, ?_⟩ <;> (rw [← h_pop.2])
+        refine ⟨?_, ?_⟩
+        · rw [← h]; exact h_s1_fields.1
+        · rw [← h]; exact h_s1_fields.2
+      · simp [h_lt] at h
+  | localTee idx =>
+      -- evalInstr ws .localTee idx: peek top, set, push back. The
+      -- final state is `srest.setLocal idx v |> .push v` which only
+      -- mutates locals + stack.
+      unfold evalInstr at h
+      rcases h_peek : s.pop with _ | ⟨v, srest⟩
+      · simp [h_peek] at h
+      simp [h_peek] at h
+      rcases h_set : srest.setLocal idx v with _ | s2
+      · simp [h_set] at h
+      simp [h_set, WasmState.push] at h
+      have h_srest_fields : srest.branchTarget = s.branchTarget ∧ srest.halted = s.halted := by
+        unfold WasmState.pop at h_peek
+        rcases hs : s.stack with _ | ⟨v', rs⟩
+        · rw [hs] at h_peek; simp at h_peek
+        rw [hs] at h_peek; simp at h_peek
+        refine ⟨?_, ?_⟩ <;> (rw [← h_peek.2])
+      have h_s2_fields : s2.branchTarget = srest.branchTarget ∧ s2.halted = srest.halted := by
+        unfold WasmState.setLocal at h_set
+        by_cases h_lt : idx < srest.locals.length
+        · simp [h_lt] at h_set
+          refine ⟨?_, ?_⟩ <;> (rw [← h_set])
+        · simp [h_lt] at h_set
+      refine ⟨?_, ?_⟩
+      · rw [← h]; show s2.branchTarget = s.branchTarget
+        rw [h_s2_fields.1]; exact h_srest_fields.1
+      · rw [← h]; show s2.halted = s.halted
+        rw [h_s2_fields.2]; exact h_srest_fields.2
+  | drop =>
+      unfold evalInstr at h
+      rcases h_pop : s.pop with _ | ⟨v, s1⟩
+      · simp [h_pop] at h
+      simp [h_pop] at h
+      have h_s1_fields : s1.branchTarget = s.branchTarget ∧ s1.halted = s.halted := by
+        unfold WasmState.pop at h_pop
+        rcases hs : s.stack with _ | ⟨v', rs⟩
+        · rw [hs] at h_pop; simp at h_pop
+        rw [hs] at h_pop; simp at h_pop
+        refine ⟨?_, ?_⟩ <;> (rw [← h_pop.2])
+      refine ⟨?_, ?_⟩
+      · rw [← h]; exact h_s1_fields.1
+      · rw [← h]; exact h_s1_fields.2
+  -- 8 buffer-pattern-free i32 binops.
+  | i32Sub  => exact binI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32Mul  => exact binI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32And  => exact binI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32Or   => exact binI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32Xor  => exact binI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32ShrU => exact binI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32DivU => exact binI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32RemU => exact binI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  -- 6 unsigned i32 cmps.
+  | i32Eq   => exact cmpI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32Ne   => exact cmpI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32LtU  => exact cmpI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32LeU  => exact cmpI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32GtU  => exact cmpI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  | i32GeU  => exact cmpI32_preserves_branchTarget (by simp [evalInstr] at h; exact h)
+  -- Remaining: closedInstrAt = false contradicts h_closed.
+  | i64Const _ => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Const _ => simp [closedInstrAt, closedInstr] at h_closed
+  | f64Const _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Add => simp [closedInstrAt, closedInstr] at h_closed
+  | i32DivS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32RemS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Shl => simp [closedInstrAt, closedInstr] at h_closed
+  | i32ShrS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32LtS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32GtS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32LeS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32GeS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Eqz => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Add => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Sub => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Mul => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Div => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Eq => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Ne => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Lt => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Gt => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Le => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Ge => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Neg => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Abs => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Sqrt => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Min => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Max => simp [closedInstrAt, closedInstr] at h_closed
+  | i32WrapI64 => simp [closedInstrAt, closedInstr] at h_closed
+  | f32ConvertI32S => simp [closedInstrAt, closedInstr] at h_closed
+  | f32ConvertI32U => simp [closedInstrAt, closedInstr] at h_closed
+  | i32TruncF32S => simp [closedInstrAt, closedInstr] at h_closed
+  | i32TruncF32U => simp [closedInstrAt, closedInstr] at h_closed
+  | f32ReinterpretI32 => simp [closedInstrAt, closedInstr] at h_closed
+  | i32ReinterpretF32 => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Load _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Store _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Load _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Store _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Load8U _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Load8S _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Store8 _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | block _ => simp [closedInstrAt, closedInstr] at h_closed
+  | wloop _ => simp [closedInstrAt, closedInstr] at h_closed
+  | wif _ => simp [closedInstrAt, closedInstr] at h_closed
+  | welse => simp [closedInstrAt, closedInstr] at h_closed
+  | wend => simp [closedInstrAt, closedInstr] at h_closed
+  | br _ => simp [closedInstrAt, closedInstr] at h_closed
+  | brIf _ => simp [closedInstrAt, closedInstr] at h_closed
+  | wreturn => simp [closedInstrAt, closedInstr] at h_closed
+  | call _ => simp [closedInstrAt, closedInstr] at h_closed
+  | wselect => simp [closedInstrAt, closedInstr] at h_closed
+  | unreachable => simp [closedInstrAt, closedInstr] at h_closed
+  | unsupported _ => simp [closedInstrAt, closedInstr] at h_closed
+
 end Quanta.Wasm
