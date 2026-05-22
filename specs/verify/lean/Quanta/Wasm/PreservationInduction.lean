@@ -747,4 +747,243 @@ theorem lowerInstr_closed_emits_loopFreeNoBreak
   | unreachable => simp [closedInstrAt, closedInstr] at h_closed
   | unsupported _ => simp [closedInstrAt, closedInstr] at h_closed
 
+-- ════════════════════════════════════════════════════════════════════
+-- L3.2b.3: preservation_evalInstrs_main_v2 — state-aware skeleton
+--
+-- Per-op-based reconstruction: walks the instruction list via
+-- lowerInstrs_cons_default + evalInstrs_cons_default decomp-
+-- ositions, dispatches each cons step via the per-op preservation
+-- theorem in Preservation.lean, threads the bufferSlots invariant
+-- (recognizer stability) and branch/halt preservation through.
+--
+-- Unlike v1 (preservation_evalInstrs_main), the state-aware
+-- recognizer admits localGet i when the local is non-buffer. All
+-- 20 closed-shape arms are dispatched directly via per-op
+-- theorems; chain composition via preservation_evalInstrs_cons_
+-- compose_shallow.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem preservation_evalInstrs_main_v2
+    (fuel : Nat) (frames : List FrameKind)
+    (instrs : List WasmInstr)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_closed : closedInstrsAt s instrs = true)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws instrs = some ws')
+    (hl : lowerInstrs fuel frames s instrs = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  induction instrs generalizing ws s kst ws' s' ops with
+  | nil =>
+      obtain ⟨kst', h_eval, R'⟩ :=
+        preservation_evalInstrs_nil fuel frames ws s kst layout R
+          ws' s' ops hw hl
+      exact ⟨kst', 0, h_eval, R'⟩
+  | cons i rest ih =>
+      have h_rest_closed_at_s : closedInstrsAt s rest = true :=
+        closedInstrsAt_tail h_closed
+      have h_head_closed : closedInstrAt s i = true := closedInstrsAt_head h_closed
+      -- Closed-shape instructions are non-structured at both layers.
+      have h_ns_lower : isStructuredLower i = false := by
+        cases i with
+        | block _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | wloop _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | wif _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | br _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | brIf _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | _ => rfl
+      have h_ns_eval : isStructuredEval i = false := by
+        cases i with
+        | block _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | wloop _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | wif _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | _ => rfl
+      -- Decompose lowering: lowerInstr s i, then recurse on rest.
+      rw [lowerInstrs_cons_default fuel frames s i rest h_ns_lower] at hl
+      cases h_head_l : lowerInstr s i with
+      | none => simp [h_head_l] at hl
+      | some pair =>
+          rcases pair with ⟨s_mid_l, ops_head_l⟩
+          simp [h_head_l] at hl
+          cases h_tail_l : lowerInstrs fuel frames s_mid_l rest with
+          | none => simp [h_tail_l] at hl
+          | some tail_pair =>
+              rcases tail_pair with ⟨s_post_l, ops_tail_l⟩
+              simp [h_tail_l] at hl
+              rcases hl with ⟨h_s_eq, h_ops_eq⟩
+              -- Decompose eval: evalInstr ws i, then recurse on rest.
+              rw [evalInstrs_cons_default fuel ws i rest h_no_branch h_no_halt h_ns_eval] at hw
+              cases h_head_w : evalInstr ws i with
+              | none => simp [h_head_w] at hw
+              | some ws_mid =>
+                  simp [h_head_w] at hw
+                  -- Mid-state branch/halt via the closed-shape helper.
+                  obtain ⟨h_mid_no_branch_eq, h_mid_no_halt_eq⟩ :=
+                    evalInstr_closed_preserves_branchTarget h_head_closed h_head_w
+                  have h_mid_no_branch : ws_mid.branchTarget = none := by
+                    rw [h_mid_no_branch_eq]; exact h_no_branch
+                  have h_mid_no_halt : ws_mid.halted = false := by
+                    rw [h_mid_no_halt_eq]; exact h_no_halt
+                  -- Lift bufferSlots invariant → recognizer stable.
+                  have h_bufs_mid := lowerInstr_preserves_bufferSlots h_head_l
+                  have h_rest_closed_at_mid : closedInstrsAt s_mid_l rest = true := by
+                    rw [closedInstrsAt_of_bufferSlots_eq h_bufs_mid]
+                    exact h_rest_closed_at_s
+                  -- Per-op dispatch: produces kst_mid + R_mid.
+                  have h_step :
+                      ∃ kst_mid, evalOps 0 kst ops_head_l = some kst_mid ∧
+                                 Refines ws_mid s_mid_l kst_mid layout := by
+                    cases i with
+                    | nop =>
+                        exact preservation_nop ws s kst layout R
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32Const n =>
+                        exact preservation_i32Const ws s kst layout R n
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | localGet idx =>
+                        have h_no_buf : s.lookupBufferSlot idx = none := by
+                          have h : closedInstrAt s (WasmInstr.localGet idx) = true := h_head_closed
+                          simp only [closedInstrAt] at h
+                          cases hb : s.lookupBufferSlot idx with
+                          | none => rfl
+                          | some _ =>
+                              rw [hb] at h
+                              simp at h
+                        exact preservation_localGet ws s kst layout R idx h_no_buf
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | localSet idx =>
+                        exact preservation_localSet ws s kst layout R h_kst_no_broke idx
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | localTee idx =>
+                        exact preservation_localTee ws s kst layout R h_kst_no_broke idx
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | drop =>
+                        exact preservation_drop ws s kst layout R
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32Sub =>
+                        exact preservation_i32Sub ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32Mul =>
+                        exact preservation_i32Mul ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32And =>
+                        exact preservation_i32And ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32Or =>
+                        exact preservation_i32Or ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32Xor =>
+                        exact preservation_i32Xor ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32ShrU =>
+                        exact preservation_i32ShrU ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32DivU =>
+                        exact preservation_i32DivU ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32RemU =>
+                        exact preservation_i32RemU ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32Eq =>
+                        exact preservation_i32Eq ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32Ne =>
+                        exact preservation_i32Ne ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32LtU =>
+                        exact preservation_i32LtU ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32LeU =>
+                        exact preservation_i32LeU ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32GtU =>
+                        exact preservation_i32GtU ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i32GeU =>
+                        exact preservation_i32GeU ws s kst layout R h_kst_no_broke
+                          ws_mid s_mid_l ops_head_l h_head_w h_head_l
+                    | i64Const _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Const _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f64Const _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32Add => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32DivS => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32RemS => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32Shl => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32ShrS => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32LtS => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32GtS => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32LeS => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32GeS => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32Eqz => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Add => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Sub => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Mul => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Div => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Eq => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Ne => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Lt => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Gt => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Le => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Ge => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Neg => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Abs => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Sqrt => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Min => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Max => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32WrapI64 => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32ConvertI32S => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32ConvertI32U => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32TruncF32S => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32TruncF32U => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32ReinterpretI32 => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32ReinterpretF32 => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32Load _ _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32Store _ _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Load _ _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | f32Store _ _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32Load8U _ _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32Load8S _ _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | i32Store8 _ _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | block _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | wloop _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | wif _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | welse => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | wend => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | br _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | brIf _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | wreturn => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | call _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | wselect => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | unreachable => simp [closedInstrAt, closedInstr] at h_head_closed
+                    | unsupported _ => simp [closedInstrAt, closedInstr] at h_head_closed
+                  obtain ⟨kst_mid, h_kst_head, R_mid⟩ := h_step
+                  -- Broke flag preserved through loopFreeNoBreak head ops.
+                  have h_lf_head : loopFreeNoBreak ops_head_l = true :=
+                    lowerInstr_closed_emits_loopFreeNoBreak h_head_closed h_head_l
+                  have h_mid_broke : kst_mid.broke = false :=
+                    evalOps_loopFreeNoBreak_preserves_broke
+                      h_lf_head h_kst_no_broke h_kst_head
+                  -- Recurse on rest. IH arg order: ws, s, kst, R,
+                  -- h_closed (depends on s), then branch/halt/broke,
+                  -- ws', s', ops, hw, hl.
+                  obtain ⟨kst', F_rest, h_eval_rest, R_rest⟩ :=
+                    ih ws_mid s_mid_l kst_mid R_mid h_rest_closed_at_mid
+                      h_mid_no_branch h_mid_no_halt h_mid_broke
+                      ws' s_post_l ops_tail_l hw h_tail_l
+                  -- Compose head + tail via the shallow cons composer.
+                  have h_lf_head_shallow : loopFree ops_head_l = true :=
+                    loopFreeNoBreak_implies_loopFree h_lf_head
+                  obtain ⟨kst'', h_eval'', R''⟩ :=
+                    preservation_evalInstrs_cons_compose_shallow
+                      h_lf_head_shallow h_kst_head h_mid_broke
+                      ⟨kst', h_eval_rest, R_rest⟩
+                  refine ⟨kst'', F_rest, ?_, ?_⟩
+                  · rw [← h_ops_eq]; exact h_eval''
+                  · rw [← h_s_eq]; exact R''
+
 end Quanta.Wasm
