@@ -4047,4 +4047,108 @@ theorem lowerInstrs_preserves_bufferSlots_default
               have h_bufs_tail := ih h_ns_rest h_tail
               rw [← h_s_eq, h_bufs_tail, h_bufs_head]
 
+-- ════════════════════════════════════════════════════════════════════
+-- Per-op loopFreeNoBreak emit lemmas
+--
+-- One per closed-shape instruction whose `lowerInstr` lands in a
+-- non-trivial op list (constants / nop / drop emit []; binops emit
+-- opsCommit ++ opsCommit ++ [.binOp]; cmps emit opsCommit ++
+-- opsCommit ++ [.cmp, .cast]). Each result is loopFreeNoBreak.
+--
+-- localSet / localTee already have private helpers above; we re-
+-- expose them for the L3.2 skeleton consumer.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Re-exposed: `lowerInstr s (.localSet i) = some (s', ops)` emits a
+    loopFreeNoBreak op list. Public wrapper around the private
+    helper higher up. -/
+theorem lowerInstr_localSet_emits_loopFreeNoBreak_pub
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (h : lowerInstr s (.localSet i) = some (s', ops)) :
+    loopFreeNoBreak ops = true :=
+  lowerInstr_localSet_emits_loopFreeNoBreak h
+
+/-- Re-exposed `localTee` variant. -/
+theorem lowerInstr_localTee_emits_loopFreeNoBreak_pub
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (h : lowerInstr s (.localTee i) = some (s', ops)) :
+    loopFreeNoBreak ops = true :=
+  lowerInstr_localTee_emits_loopFreeNoBreak h
+
+/-- `lowerI32Bin` emits `opsA ++ opsB ++ [.binOp ...]` where each
+    `opsA` / `opsB` comes from `commit` (so loopFreeNoBreak). The
+    trailing `.binOp` is loop-free and not break. Whole list is
+    loopFreeNoBreak. -/
+theorem lowerI32Bin_emits_loopFreeNoBreak
+    {s s' : LowerState} {op : Quanta.KOps.BinOp} {ops : List KernelOp}
+    (h : lowerI32Bin s op = some (s', ops)) :
+    loopFreeNoBreak ops = true := by
+  unfold lowerI32Bin at h
+  rcases hb : s.popSym with _ | ⟨svb, s1⟩
+  · simp [hb] at h
+  simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+  rcases ha : s1.popSym with _ | ⟨sva, s2⟩
+  · simp [ha] at h
+  simp only [ha, Option.some_bind] at h
+  rcases hca : s2.commit sva with _ | ⟨ra, s3, opsA⟩
+  · simp [hca] at h
+  simp only [hca, Option.some_bind] at h
+  rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+  · simp [hcb] at h
+  simp only [hcb, Option.some_bind] at h
+  simp [LowerState.alloc, LowerState.push] at h
+  rcases h with ⟨_, hops⟩
+  rw [← hops]
+  have h_lf_a : loopFreeNoBreak opsA = true := commit_emits_loopFreeNoBreak hca
+  have h_lf_b : loopFreeNoBreak opsB = true := commit_emits_loopFreeNoBreak hcb
+  simp only [loopFreeNoBreak_append, h_lf_a, h_lf_b, Bool.true_and]
+  rfl
+
+/-- `lowerI32Cmp` emits `opsA ++ opsB ++ [.cmp, .cast]` — same shape
+    as binop but with one more trailing op. -/
+theorem lowerI32Cmp_emits_loopFreeNoBreak
+    {s s' : LowerState} {op : Quanta.KOps.CmpOp} {ops : List KernelOp}
+    (h : lowerI32Cmp s op = some (s', ops)) :
+    loopFreeNoBreak ops = true := by
+  unfold lowerI32Cmp at h
+  rcases hb : s.popSym with _ | ⟨svb, s1⟩
+  · simp [hb] at h
+  simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+  rcases ha : s1.popSym with _ | ⟨sva, s2⟩
+  · simp [ha] at h
+  simp only [ha, Option.some_bind] at h
+  rcases hca : s2.commit sva with _ | ⟨ra, s3, opsA⟩
+  · simp [hca] at h
+  simp only [hca, Option.some_bind] at h
+  rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+  · simp [hcb] at h
+  simp only [hcb, Option.some_bind] at h
+  simp [LowerState.alloc, LowerState.push] at h
+  rcases h with ⟨_, hops⟩
+  rw [← hops]
+  have h_lf_a : loopFreeNoBreak opsA = true := commit_emits_loopFreeNoBreak hca
+  have h_lf_b : loopFreeNoBreak opsB = true := commit_emits_loopFreeNoBreak hcb
+  simp only [loopFreeNoBreak_append, h_lf_a, h_lf_b, Bool.true_and]
+  rfl
+
+/-- `lowerInstr` on a non-buffer `localGet` emits `[.copy fresh stable]`,
+    which is loopFreeNoBreak. The buffer arm emits `[]`. -/
+theorem lowerInstr_localGet_emits_loopFreeNoBreak
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (h : lowerInstr s (.localGet i) = some (s', ops)) :
+    loopFreeNoBreak ops = true := by
+  unfold lowerInstr at h
+  cases hb : s.lookupBufferSlot i with
+  | some slot =>
+      simp [hb, LowerState.pushSym] at h
+      rcases h with ⟨_, hops⟩
+      rw [hops]; rfl
+  | none =>
+      simp [hb] at h
+      rcases hlk : s.lookupLocal i with _ | stable
+      · simp [hlk] at h
+      simp [hlk, LowerState.alloc, LowerState.push] at h
+      rcases h with ⟨_, hops⟩
+      rw [← hops]; rfl
+
 end Quanta.Wasm

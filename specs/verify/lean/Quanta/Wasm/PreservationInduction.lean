@@ -616,4 +616,135 @@ theorem evalInstr_closed_preserves_branchTarget
   | unreachable => simp [closedInstrAt, closedInstr] at h_closed
   | unsupported _ => simp [closedInstrAt, closedInstr] at h_closed
 
+-- ════════════════════════════════════════════════════════════════════
+-- L3.2b.2: lowerInstr_closed_emits_loopFreeNoBreak umbrella
+--
+-- For any closedInstrAt-recognized instruction `i`, every successful
+-- `lowerInstr s i = some (s', ops)` yields a loopFreeNoBreak op
+-- list. Dispatches over the 20 closed arms, each delegating to its
+-- per-op emit lemma in PreservationList.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerInstr_closed_emits_loopFreeNoBreak
+    {s s' : LowerState} {i : WasmInstr} {ops : List KernelOp} {ls : LowerState}
+    (h_closed : closedInstrAt ls i = true)
+    (h : lowerInstr s i = some (s', ops)) :
+    loopFreeNoBreak ops = true := by
+  cases i with
+  | nop =>
+      simp [lowerInstr] at h
+      rcases h with ⟨_, hops⟩
+      rw [hops]; rfl
+  | i32Const n =>
+      simp [lowerInstr] at h
+      rcases h with ⟨_, hops⟩
+      rw [hops]; rfl
+  | drop =>
+      simp [lowerInstr, LowerState.popSym] at h
+      rcases hs : s.stack with _ | ⟨sva, lrest⟩
+      · rw [hs] at h; simp at h
+      rw [hs] at h
+      simp at h
+      rcases h with ⟨_, hops⟩
+      rw [hops]; rfl
+  | localGet idx => exact lowerInstr_localGet_emits_loopFreeNoBreak h
+  | localSet idx => exact lowerInstr_localSet_emits_loopFreeNoBreak_pub h
+  | localTee idx => exact lowerInstr_localTee_emits_loopFreeNoBreak_pub h
+  | i32Sub  =>
+      have hl : lowerI32Bin s .sub = some (s', ops) := h
+      exact lowerI32Bin_emits_loopFreeNoBreak hl
+  | i32Mul  =>
+      have hl : lowerI32Bin s .mul = some (s', ops) := h
+      exact lowerI32Bin_emits_loopFreeNoBreak hl
+  | i32And  =>
+      have hl : lowerI32Bin s .bAnd = some (s', ops) := h
+      exact lowerI32Bin_emits_loopFreeNoBreak hl
+  | i32Or   =>
+      have hl : lowerI32Bin s .bOr = some (s', ops) := h
+      exact lowerI32Bin_emits_loopFreeNoBreak hl
+  | i32Xor  =>
+      have hl : lowerI32Bin s .bXor = some (s', ops) := h
+      exact lowerI32Bin_emits_loopFreeNoBreak hl
+  | i32ShrU =>
+      have hl : lowerI32Bin s .shr = some (s', ops) := h
+      exact lowerI32Bin_emits_loopFreeNoBreak hl
+  | i32DivU =>
+      have hl : lowerI32Bin s .div = some (s', ops) := h
+      exact lowerI32Bin_emits_loopFreeNoBreak hl
+  | i32RemU =>
+      have hl : lowerI32Bin s .rem = some (s', ops) := h
+      exact lowerI32Bin_emits_loopFreeNoBreak hl
+  | i32Eq  =>
+      have hl : lowerI32Cmp s .eq = some (s', ops) := h
+      exact lowerI32Cmp_emits_loopFreeNoBreak hl
+  | i32Ne  =>
+      have hl : lowerI32Cmp s .ne = some (s', ops) := h
+      exact lowerI32Cmp_emits_loopFreeNoBreak hl
+  | i32LtU =>
+      have hl : lowerI32Cmp s .lt = some (s', ops) := h
+      exact lowerI32Cmp_emits_loopFreeNoBreak hl
+  | i32LeU =>
+      have hl : lowerI32Cmp s .le = some (s', ops) := h
+      exact lowerI32Cmp_emits_loopFreeNoBreak hl
+  | i32GtU =>
+      have hl : lowerI32Cmp s .gt = some (s', ops) := h
+      exact lowerI32Cmp_emits_loopFreeNoBreak hl
+  | i32GeU =>
+      have hl : lowerI32Cmp s .ge = some (s', ops) := h
+      exact lowerI32Cmp_emits_loopFreeNoBreak hl
+  | i64Const _ => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Const _ => simp [closedInstrAt, closedInstr] at h_closed
+  | f64Const _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Add => simp [closedInstrAt, closedInstr] at h_closed
+  | i32DivS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32RemS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Shl => simp [closedInstrAt, closedInstr] at h_closed
+  | i32ShrS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32LtS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32GtS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32LeS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32GeS => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Eqz => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Add => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Sub => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Mul => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Div => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Eq => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Ne => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Lt => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Gt => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Le => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Ge => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Neg => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Abs => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Sqrt => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Min => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Max => simp [closedInstrAt, closedInstr] at h_closed
+  | i32WrapI64 => simp [closedInstrAt, closedInstr] at h_closed
+  | f32ConvertI32S => simp [closedInstrAt, closedInstr] at h_closed
+  | f32ConvertI32U => simp [closedInstrAt, closedInstr] at h_closed
+  | i32TruncF32S => simp [closedInstrAt, closedInstr] at h_closed
+  | i32TruncF32U => simp [closedInstrAt, closedInstr] at h_closed
+  | f32ReinterpretI32 => simp [closedInstrAt, closedInstr] at h_closed
+  | i32ReinterpretF32 => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Load _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Store _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Load _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | f32Store _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Load8U _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Load8S _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | i32Store8 _ _ => simp [closedInstrAt, closedInstr] at h_closed
+  | block _ => simp [closedInstrAt, closedInstr] at h_closed
+  | wloop _ => simp [closedInstrAt, closedInstr] at h_closed
+  | wif _ => simp [closedInstrAt, closedInstr] at h_closed
+  | welse => simp [closedInstrAt, closedInstr] at h_closed
+  | wend => simp [closedInstrAt, closedInstr] at h_closed
+  | br _ => simp [closedInstrAt, closedInstr] at h_closed
+  | brIf _ => simp [closedInstrAt, closedInstr] at h_closed
+  | wreturn => simp [closedInstrAt, closedInstr] at h_closed
+  | call _ => simp [closedInstrAt, closedInstr] at h_closed
+  | wselect => simp [closedInstrAt, closedInstr] at h_closed
+  | unreachable => simp [closedInstrAt, closedInstr] at h_closed
+  | unsupported _ => simp [closedInstrAt, closedInstr] at h_closed
+
 end Quanta.Wasm

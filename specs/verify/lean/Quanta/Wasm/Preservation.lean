@@ -744,6 +744,59 @@ theorem preservation_return (ws : WasmState) (s : LowerState) (kst : Quanta.KOps
       have : ws'.mem = ws.mem := by rw [← hw]
       rw [this]; exact R.heapRefines
 
+/-- `drop` preservation. Both sides pop one value; lowering emits no
+    IR. KOps state untouched. -/
+theorem preservation_drop (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .drop = some ws')
+    (hl : lowerInstr s .drop = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Both sides require a non-empty stack.
+  rcases hws_stack : ws.stack with _ | ⟨v_w, rest_ws⟩
+  · -- WASM pop fails → hw says some.
+    simp [evalInstr, WasmState.pop, hws_stack] at hw
+  rcases hls_stack : s.stack with _ | ⟨sva, lrest⟩
+  · -- Symbolic pop fails → hl says some.
+    simp [lowerInstr, LowerState.popSym, hls_stack] at hl
+  -- Both succeed: extract the mid-states.
+  have h_ws_eq : ws' = { ws with stack := rest_ws } := by
+    simp [evalInstr, WasmState.pop, hws_stack] at hw
+    exact hw.symm
+  have h_s_eq : s' = { nextReg := s.nextReg, stack := lrest,
+                       localReg := s.localReg, localTy := s.localTy,
+                       bufferSlots := s.bufferSlots } ∧ ops = [] := by
+    simp [lowerInstr, LowerState.popSym, hls_stack] at hl
+    exact ⟨hl.1.symm, hl.2⟩
+  refine ⟨kst, ?_, ?_⟩
+  · rw [h_s_eq.2]; simp [evalOps]
+  · -- Refines after the pop. R.stk lifts via index shift; R.locs +
+    -- R.heapRefines untouched; R.fresh + R.aliasFree restrict to a
+    -- suffix of the original stack.
+    rw [h_ws_eq, h_s_eq.1]
+    have h_rest_lrest_len : rest_ws.length = lrest.length := by
+      have hl_orig := R.stk.left
+      rw [hws_stack, hls_stack] at hl_orig
+      simpa using hl_orig
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    · intro k v hv
+      have hrest_get : ws.stack.get? (k + 1) = some v := by
+        rw [hws_stack]; simpa using hv
+      obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right (k + 1) v hrest_get
+      have hlrest_get : lrest.get? k = some svk := by
+        have h2 : s.stack.get? (k + 1) = some svk := hsvk_get
+        rw [hls_stack] at h2; simpa using h2
+      exact ⟨svk, by simpa using hlrest_get, henc⟩
+    · refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r hr
+      have hsv_in : sv ∈ s.stack := by
+        rw [hls_stack]; exact List.mem_cons_of_mem _ hsv
+      exact R.fresh.left sv hsv_in r hr
+    · intro ir hir sv hsv
+      have hsv_in : sv ∈ s.stack := by
+        rw [hls_stack]; exact List.mem_cons_of_mem _ hsv
+      exact R.aliasFree ir hir sv hsv_in
+
 -- ════════════════════════════════════════════════════════════════════
 -- Slice 2: i32 constants + local reads
 -- ════════════════════════════════════════════════════════════════════
