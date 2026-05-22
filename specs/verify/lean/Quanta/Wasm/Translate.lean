@@ -532,29 +532,40 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
           | some .loopK =>
               if depth = 0 then do
                 -- br_if 0 to Loop: continue if cond, break if !cond.
-                let (s2, postOps) ← lowerInstrs fuel frames s1 rest
+                -- Cast cond from u32 to bool before .branch reads it
+                -- (the WASM-route cmp pipeline emits u32 results;
+                -- `.branch`'s evalOp expects vBool).
+                let (cond_bool, s_cast) := s1.alloc
+                let (s2, postOps) ← lowerInstrs fuel frames s_cast rest
                 pure (s2,
                   opsCommit
-                  ++ [.branch cond [] [.breakOp]]
+                  ++ [.cast cond_bool cond .u32 .bool,
+                      .branch cond_bool [] [.breakOp]]
                   ++ postOps)
               else if hasLoopAbove frames depth then do
                 -- br_if to outer Loop with another Loop between:
                 -- break the inner loop on cond.
-                let (s2, postOps) ← lowerInstrs fuel frames s1 rest
+                let (cond_bool, s_cast) := s1.alloc
+                let (s2, postOps) ← lowerInstrs fuel frames s_cast rest
                 pure (s2,
                   opsCommit
-                  ++ [.branch cond [.breakOp] []]
+                  ++ [.cast cond_bool cond .u32 .bool,
+                      .branch cond_bool [.breakOp] []]
                   ++ postOps)
               else do
-                -- Continue an outer loop directly: no IR.
+                -- Continue an outer loop directly: no IR (cond
+                -- is unused on the KOps side; the loop's natural
+                -- wrap-around handles iteration).
                 let (s2, postOps) ← lowerInstrs fuel frames s1 rest
                 pure (s2, opsCommit ++ postOps)
           | some _ =>
               if hasLoopAbove frames depth then do
-                let (s2, postOps) ← lowerInstrs fuel frames s1 rest
+                let (cond_bool, s_cast) := s1.alloc
+                let (s2, postOps) ← lowerInstrs fuel frames s_cast rest
                 pure (s2,
                   opsCommit
-                  ++ [.branch cond [.breakOp] []]
+                  ++ [.cast cond_bool cond .u32 .bool,
+                      .branch cond_bool [.breakOp] []]
                   ++ postOps)
               else none
       | _ => do

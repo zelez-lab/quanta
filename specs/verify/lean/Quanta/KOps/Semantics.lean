@@ -298,6 +298,11 @@ def evalCast (v : Value) : Scalar → Option Value
       | _        => none
   | .bool => match v with
       | .vBool b => some (vBool b)
+      -- U32→Bool: WASM `br_if` reads i32 cond as bool (any non-zero
+      -- value is true). The WASM-route brIf lowering inserts a
+      -- `.cast cond_bool cond .u32 .bool` between the comparison's
+      -- u32 result and the `.branch`'s bool input. Total on vU32.
+      | .vU32 n  => some (vBool (n ≠ 0))
       | _        => none
   | _ => none
 
