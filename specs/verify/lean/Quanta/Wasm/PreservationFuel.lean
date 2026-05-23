@@ -745,4 +745,134 @@ theorem opLoop_iter_mono
         have h_ih_le : f₀ ≤ f₀ + k := Nat.le_add_right _ _
         exact ih h_ih_le h
 
+-- ════════════════════════════════════════════════════════════════════
+-- L7.2 — fuel monotonicity for evalOp / evalOps
+--
+-- Strategy: avoid a three-way mutual termination dance by taking the
+-- per-iteration body-lift hypothesis as a hypothesis. The mutual
+-- block has just two members (evalOp_fuel_mono, evalOps_fuel_mono),
+-- both decreasing on `sizeOf`. The `.loopOp` arm calls a *parametric*
+-- helper `opLoop_body_fuel_mono_param` that takes the body lift
+-- (provided by the mutual `evalOps_fuel_mono` IH on body, which is
+-- structurally smaller than `.loopOp body`).
+--
+-- Combined with `opLoop_iter_mono` (L7.1), this gives the full
+-- fuel-monotonicity surface needed by downstream wloop preservation.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Parametric body-fuel lift for `opLoop`: given that `body`'s
+    evalOps is monotone in fuel (passed as a hypothesis), lifting the
+    body fuel of `opLoop fuel body f st` to a larger value preserves
+    successful runs. Proof by induction on `f` (iteration counter).
+
+    The body-lift hypothesis is parametric so this lemma is standalone
+    (no mutual dependency). The caller (`evalOp_fuel_mono .loopOp`)
+    fills it via the mutual `evalOps_fuel_mono` IH on body. -/
+theorem opLoop_body_fuel_mono_param
+    {fuel fuel' : Nat} {body : List KernelOp} {f : Nat} {st st' : State}
+    (h_body_lift : ∀ {st_in st_out : State},
+      Quanta.KOps.evalOps fuel st_in body = some st_out →
+      Quanta.KOps.evalOps fuel' st_in body = some st_out)
+    (h : Quanta.KOps.opLoop fuel body f st = some st') :
+    Quanta.KOps.opLoop fuel' body f st = some st' := by
+  induction f generalizing st with
+  | zero => simp [Quanta.KOps.opLoop] at h
+  | succ f₀ ih =>
+    rw [Quanta.KOps.opLoop] at h ⊢
+    by_cases h_broke : st.broke = true
+    · simp [h_broke] at h ⊢
+      exact h
+    · have h_broke' : st.broke = false := by
+        cases hb : st.broke
+        · rfl
+        · exact (h_broke hb).elim
+      simp [h_broke'] at h ⊢
+      cases h_body : Quanta.KOps.evalOps fuel st body with
+      | none => rw [h_body] at h; simp at h
+      | some st_next =>
+        rw [h_body] at h
+        simp at h
+        have h_body' : Quanta.KOps.evalOps fuel' st body = some st_next :=
+          h_body_lift h_body
+        rw [h_body']
+        simp
+        exact ih h
+
+mutual
+/-- `evalOp` is monotone in fuel. -/
+theorem evalOp_fuel_mono
+    {fuel fuel' : Nat} {s s' : State} {op : KernelOp}
+    (h_le : fuel ≤ fuel')
+    (h : evalOp fuel s op = some s') :
+    evalOp fuel' s op = some s' := by
+  cases op with
+  | branch cond thenOps elseOps =>
+    rw [Quanta.KOps.evalOp.eq_def] at h ⊢
+    cases hr : Quanta.KOps.regLookup s.rf cond with
+    | none => simp [hr] at h
+    | some v =>
+      cases v with
+      | vBool b =>
+        cases b
+        · simp [hr] at h ⊢
+          exact evalOps_fuel_mono h_le h
+        · simp [hr] at h ⊢
+          exact evalOps_fuel_mono h_le h
+      | _ => simp [hr] at h
+  | loopOp body =>
+    -- evalOp fuel s (.loopOp body) = opLoop fuel body fuel s.
+    -- Lift in two steps:
+    --   (1) iteration-counter lift: opLoop fuel body fuel s →
+    --       opLoop fuel body fuel' s (via opLoop_iter_mono, L7.1).
+    --   (2) body-fuel lift: opLoop fuel body fuel' s →
+    --       opLoop fuel' body fuel' s (via opLoop_body_fuel_mono_param
+    --       with the per-iteration evalOps lift provided by the
+    --       mutual evalOps_fuel_mono on body, which is smaller than
+    --       .loopOp body).
+    rw [Quanta.KOps.evalOp.eq_def] at h ⊢
+    simp only [] at h ⊢
+    -- h : opLoop fuel body fuel s = some s'
+    have h_iter_lift :
+        Quanta.KOps.opLoop fuel body fuel' s = some s' :=
+      opLoop_iter_mono h_le h
+    exact opLoop_body_fuel_mono_param
+      (fun {_ _} => evalOps_fuel_mono h_le) h_iter_lift
+  | _ =>
+    all_goals (rw [Quanta.KOps.evalOp.eq_def] at h ⊢; exact h)
+termination_by sizeOf op
+
+/-- `evalOps` is monotone in fuel. -/
+theorem evalOps_fuel_mono
+    {fuel fuel' : Nat} {s s' : State} {ops : List KernelOp}
+    (h_le : fuel ≤ fuel')
+    (h : evalOps fuel s ops = some s') :
+    evalOps fuel' s ops = some s' := by
+  cases ops with
+  | nil =>
+    rw [Quanta.KOps.evalOps.eq_def] at h ⊢
+    exact h
+  | cons op rest =>
+    rw [Quanta.KOps.evalOps.eq_def] at h ⊢
+    simp only [] at h ⊢
+    cases h_eo : evalOp fuel s op with
+    | none => rw [h_eo] at h; simp at h
+    | some s_mid =>
+      rw [h_eo] at h
+      simp at h
+      have h_head' : evalOp fuel' s op = some s_mid :=
+        evalOp_fuel_mono h_le h_eo
+      rw [h_head']
+      simp
+      by_cases hbr : s_mid.broke = true
+      · simp [hbr] at h ⊢
+        exact h
+      · have hbr' : s_mid.broke = false := by
+          cases hb : s_mid.broke
+          · rfl
+          · exact (hbr hb).elim
+        simp [hbr'] at h ⊢
+        exact evalOps_fuel_mono h_le h
+termination_by sizeOf ops
+end
+
 end Quanta.Wasm
