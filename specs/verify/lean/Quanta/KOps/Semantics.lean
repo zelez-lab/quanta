@@ -368,17 +368,7 @@ def evalOp (fuel : Nat) (s : State) : KernelOp → Option State
       | .vBool true  => evalOps fuel s thenOps
       | .vBool false => evalOps fuel s elseOps
       | _ => none
-  | .loopOp body =>
-      let rec opLoop (f : Nat) (st : State) : Option State :=
-        match f with
-        | 0 => none
-        | f+1 =>
-            if st.broke then some st.reset_broke
-            else
-              match evalOps fuel st body with
-              | none => none
-              | some st' => opLoop f st'
-      opLoop fuel s
+  | .loopOp body => opLoop fuel body fuel s
   | .breakOp =>
       pure { s with broke := true }
   | .quarkId   dst => pure { s with rf := regWrite s.rf dst (vU32 s.dispatch.quarkId) }
@@ -400,6 +390,30 @@ def evalOps (fuel : Nat) (s : State) : List KernelOp → Option State
       let s1 ← evalOp fuel s op
       if s1.broke then some s1
       else evalOps fuel s1 rest
+
+/-- Body-iteration loop for `.loopOp`. Iterates `evalOps fuel st
+    body` until either `st.broke = true` (clear flag, return cleaned
+    state) or the iteration counter `f` runs out (return `none`).
+
+    Lifted from a nested `let rec` inside `evalOp .loopOp`'s arm so
+    that fuel-monotonicity lemmas about loop iteration can be stated
+    and proven externally. The `evalOp .loopOp body` arm just
+    delegates: `opLoop fuel body fuel s`.
+
+    Two fuel dimensions:
+    * `fuel` (outer): passed to each `evalOps fuel st body` call,
+      bounding the depth of structured control inside the body.
+    * `f` (iteration counter): bounds the total number of loop
+      iterations. Decremented per iteration. -/
+def opLoop (fuel : Nat) (body : List KernelOp) :
+    Nat → State → Option State
+  | 0,     _  => none
+  | f + 1, st =>
+      if st.broke then some st.reset_broke
+      else
+        match evalOps fuel st body with
+        | none => none
+        | some st' => opLoop fuel body f st'
 end
 
 end Quanta.KOps
