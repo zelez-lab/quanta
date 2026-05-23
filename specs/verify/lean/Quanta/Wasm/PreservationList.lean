@@ -4926,4 +4926,86 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner
           refine ⟨R_brk.stk, R_brk.locs, R_brk.fresh, R_brk.aliasFree,
                   R_brk.injLocals, R_brk.heapRefines⟩
 
+-- ════════════════════════════════════════════════════════════════════
+-- L6.4 — wreturn preservation
+--
+-- `wreturn` halts the surrounding function. Lowering emits no IR
+-- (`lowerInstr s .wreturn = some (s, [])`); the WASM-side `evalInstr`
+-- sets `halted := true`, and the surrounding `evalInstrs` short-
+-- circuits on `s.halted` before touching `rest`.
+--
+-- Structurally simpler than brIf: no cond pop, no commit/cast/branch.
+-- The IR side runs nothing; the KOps state is untouched. `Refines`
+-- lifts because none of its fields look at `halted`.
+--
+-- Same shape as `preservation_br_loop_zero` (the depth=0 br arm)
+-- with `halted` instead of `branchTarget` as the propagation flag.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `evalInstrs` returns the state untouched on a halted pre-state.
+    Symmetric to `evalInstrs_branchTarget_some`. Used by the wreturn
+    preservation theorem to discharge the recursive `evalInstrs` call
+    on `rest` after `wreturn` sets `halted`. -/
+theorem evalInstrs_halted_true
+    (fuel : Nat) (ws : WasmState) (instrs : List WasmInstr)
+    (h : ws.halted = true) :
+    evalInstrs fuel ws instrs = some ws := by
+  cases instrs with
+  | nil => simp [evalInstrs]
+  | cons i rest =>
+    unfold evalInstrs
+    simp [h]
+
+/-- `wreturn :: []` preservation. Lowering emits no IR; eval-side
+    sets `halted := true` and the recursive eval on `[]` returns the
+    post-halt state. `Refines` carries over from the input by reflexivity
+    on every field (none of them inspects `halted`).
+
+    The `rest = []` precondition matches the brIf arms' choice (L6.3):
+    a more general statement would need to handle the lowering's
+    recursion through `rest` after a WASM-side short-circuit, and the
+    existing `preservation_rest` IH-on-rest infrastructure requires
+    `halted = false` on the mid-state. The canonical rustc-emitted
+    `return` pattern places the instruction at the end of a body
+    anyway, so this restriction matches production. -/
+theorem preservation_evalInstrs_cons_wreturn
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.wreturn :: []) = some ws')
+    (hl : lowerInstrs fuel frames s (.wreturn :: []) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Lowering side: wreturn goes through the default arm (not structured).
+  -- `lowerInstr s .wreturn = some (s, [])`, then the recursive
+  -- `lowerInstrs fuel frames s []` returns `(s, [])`. Net: `(s, [])`.
+  rw [lowerInstrs_cons_default fuel frames s .wreturn []
+      (by simp [isStructuredLower])] at hl
+  simp only [lowerInstr, Option.bind_eq_bind, Option.some_bind,
+             List.nil_append, lowerInstrs, pure, Option.some.injEq,
+             Prod.mk.injEq] at hl
+  obtain ⟨h_s_eq, h_ops_eq⟩ := hl
+  -- Eval side: brIf-style — `evalInstrs_cons_default` reduces to the
+  -- recursive call on `[]`, but the head state has halted := true so
+  -- `evalInstrs fuel ws_post []` returns ws_post.
+  let ws_post : WasmState := { ws with halted := true }
+  have h_post_halted : ws_post.halted = true := rfl
+  have h_evalInstr : evalInstr ws .wreturn = some ws_post := rfl
+  rw [evalInstrs_cons_default fuel ws .wreturn [] h_no_branch h_no_halt
+      (by simp [isStructuredEval])] at hw
+  rw [h_evalInstr] at hw
+  simp only at hw
+  rw [evalInstrs_halted_true fuel ws_post [] h_post_halted] at hw
+  have hws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+  -- Final assembly: kst' = kst (lowering emits no IR), Refines lifts.
+  refine ⟨kst, ?_, ?_⟩
+  · rw [← h_ops_eq]; simp [evalOps]
+  · rw [← h_s_eq, hws'_eq]
+    -- Refines { ws with halted := true } s kst layout — none of the
+    -- Refines fields look at halted.
+    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
+
 end Quanta.Wasm
