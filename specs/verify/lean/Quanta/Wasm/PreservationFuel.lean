@@ -875,4 +875,60 @@ theorem evalOps_fuel_mono
 termination_by sizeOf ops
 end
 
+-- ════════════════════════════════════════════════════════════════════
+-- L7.3 — cons-composer fuel-mono variant
+--
+-- Mirrors the existing `evalOps_append_loopFreeDeep_head` and
+-- `preservation_evalInstrs_cons_compose` but bridges the fuel gap via
+-- `evalOps_fuel_mono` (L7.2) instead of `evalOps_loopFreeDeep_fuel_irrel`.
+-- This drops the `loopFreeDeep ops_head = true` precondition — `ops_head`
+-- can now contain `.loopOp` (the exact shape `wloop` lowers to).
+--
+-- The signature also lets the caller supply a non-zero head fuel
+-- `F_head` (with `F_head ≤ F`) rather than requiring the head to be
+-- evaluable at fuel 0. wloop preservation will need this: the
+-- `.loopOp body` head needs `≥ iteration_count` fuel, supplied by the
+-- caller's surrounding `evalInstrs` fuel.
+--
+-- The existing `loopFreeDeep` / `loopFree` variants stay in place —
+-- they keep being the cheap choice for non-loop cons-cases (the 35
+-- closed cons-case theorems don't need to change).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Fuel-mono variant of `evalOps_append_loopFreeDeep_head`: bridges
+    the fuel gap via `evalOps_fuel_mono` instead of fuel-irrel, so
+    `ops_head` may contain `.loopOp`. -/
+theorem evalOps_append_fuel_mono_head
+    {F_head F : Nat} {kst kst_mid kst' : State}
+    {ops_head ops_rest : List KernelOp}
+    (h_le : F_head ≤ F)
+    (h_head : evalOps F_head kst ops_head = some kst_mid)
+    (h_no_broke : kst_mid.broke = false)
+    (h_rest : evalOps F kst_mid ops_rest = some kst') :
+    evalOps F kst (ops_head ++ ops_rest) = some kst' := by
+  have h_head_F : evalOps F kst ops_head = some kst_mid :=
+    evalOps_fuel_mono h_le h_head
+  rw [evalOps_append h_head_F h_no_broke]
+  exact h_rest
+
+/-- Fuel-mono variant of `preservation_evalInstrs_cons_compose`:
+    packages head + tail Refines existentials into a bundled
+    `evalOps F` on `ops_head ++ ops_rest` and a final `Refines`,
+    via `evalOps_fuel_mono`. Used by wloop preservation. -/
+theorem preservation_evalInstrs_cons_compose_with_loop
+    {F_head F : Nat} {kst kst_mid : Quanta.KOps.State}
+    {ops_head ops_rest : List KernelOp}
+    {ws' : WasmState} {s' : LowerState}
+    {layout : BufferLayout}
+    (h_le : F_head ≤ F)
+    (h_head : evalOps F_head kst ops_head = some kst_mid)
+    (h_no_broke : kst_mid.broke = false)
+    (h_rest : ∃ kst', evalOps F kst_mid ops_rest = some kst'
+                       ∧ Refines ws' s' kst' layout) :
+    ∃ kst', evalOps F kst (ops_head ++ ops_rest) = some kst'
+              ∧ Refines ws' s' kst' layout := by
+  obtain ⟨kst', h_eval', R'⟩ := h_rest
+  refine ⟨kst', ?_, R'⟩
+  exact evalOps_append_fuel_mono_head h_le h_head h_no_broke h_eval'
+
 end Quanta.Wasm
