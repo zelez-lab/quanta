@@ -678,4 +678,71 @@ theorem commit_emits_loopFreeNoBreak
     obtain ⟨_, _, hops⟩ := h
     cases hops <;> rfl
 
+-- ════════════════════════════════════════════════════════════════════
+-- L7.1 — opLoop iteration-counter monotonicity
+--
+-- `Quanta.KOps.opLoop fuel body f st` takes two fuel-like parameters:
+-- the body fuel `fuel` (passed to `evalOps fuel st body` per
+-- iteration) and the iteration counter `f` (bounds total iterations).
+-- This module proves monotonicity in `f` alone, holding `fuel` fixed.
+--
+-- Body-fuel monotonicity (lifting `fuel`) is genuinely mutual with
+-- `evalOp_fuel_mono` / `evalOps_fuel_mono` — that lives in L7.2.
+-- Iteration-counter monotonicity, by contrast, is provable
+-- standalone by induction on `f`:
+--
+-- * `f = 0` → opLoop returns none → contradicts the `some st'`
+--   hypothesis. Vacuous.
+-- * `f = f₀ + 1` → either `st.broke` (returns immediately, fuel
+--   irrelevant) or recurses with `f₀`. Lift `f₀ ≤ f₀'` via the IH;
+--   the body call (`evalOps fuel st body`) is unchanged.
+--
+-- Sufficient on its own for the wloop preservation theorem's
+-- iteration-count lift (the surrounding evalOps's fuel is at least
+-- as large as the one we used for the head).
+-- ════════════════════════════════════════════════════════════════════
+
+open Quanta.KOps (opLoop) in
+/-- `opLoop` is monotone in the iteration counter `f`: any successful
+    run at `f` succeeds at every `f' ≥ f` with the same result. -/
+theorem opLoop_iter_mono
+    {fuel : Nat} {body : List KernelOp} {f f' : Nat} {st st' : State}
+    (h_le : f ≤ f')
+    (h : opLoop fuel body f st = some st') :
+    opLoop fuel body f' st = some st' := by
+  induction f generalizing f' st with
+  | zero =>
+    -- opLoop fuel body 0 st = none, contradicting `h`.
+    simp [Quanta.KOps.opLoop] at h
+  | succ f₀ ih =>
+    -- f' ≥ f₀ + 1 forces f' = f₀' + 1 for some f₀' ≥ f₀.
+    rcases Nat.exists_eq_add_of_le h_le with ⟨k, hk⟩
+    -- hk : f' = f₀ + 1 + k. Rewrite f' as (f₀ + k) + 1.
+    have h_f'_eq : f' = (f₀ + k) + 1 := by omega
+    rw [h_f'_eq]
+    -- Unfold both sides' opLoop one step.
+    rw [Quanta.KOps.opLoop] at h ⊢
+    -- Split on st.broke.
+    by_cases h_broke : st.broke = true
+    · -- broke = true: returns some st.reset_broke regardless of fuel.
+      simp [h_broke] at h ⊢
+      exact h
+    · have h_broke' : st.broke = false := by
+        cases hb : st.broke
+        · rfl
+        · exact (h_broke hb).elim
+      simp [h_broke'] at h ⊢
+      -- Both reduce to `match evalOps fuel st body with ...`.
+      cases h_body : Quanta.KOps.evalOps fuel st body with
+      | none =>
+        rw [h_body] at h; simp at h
+      | some st_next =>
+        rw [h_body] at h
+        simp at h
+        -- h : opLoop fuel body f₀ st_next = some st'
+        -- Goal: opLoop fuel body (f₀ + k) st_next = some st'
+        -- Apply IH with f₀ ≤ f₀ + k.
+        have h_ih_le : f₀ ≤ f₀ + k := Nat.le_add_right _ _
+        exact ih h_ih_le h
+
 end Quanta.Wasm
