@@ -1303,6 +1303,322 @@ theorem preservation_evalInstrs_cons_i32GeU_bridge
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
+/-- `localGet i :: rest` bridge (buffer-slot path). Head emits no
+    IR — `lowerInstr` returns `(s.pushSym (.bufferPtr slot), [])`.
+    kst_mid = kst because evalOps on the empty list is identity. -/
+theorem preservation_evalInstrs_cons_localGet_bufferSlot_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (i : Nat) (slot : Nat)
+    (h_buf : s.lookupBufferSlot i = some slot)
+    (h_loc_buf : ∀ v, ws.locals.get? i = some v →
+      ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr slot)
+    (rest : List WasmInstr)
+    (preservation_rest_bridge : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout ∧
+        BridgeClauses ws'_mid kst'_mid)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.localGet i :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.localGet i :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  rw [lowerInstrs_cons_default fuel frames s (.localGet i) rest rfl] at hl
+  have h_head : lowerInstr s (.localGet i)
+                  = some (s.pushSym (.bufferPtr slot), []) := by
+    show (match s.lookupBufferSlot i with
+          | some slot => some (s.pushSym (.bufferPtr slot), [])
+          | none =>
+              (s.lookupLocal i).bind (fun stable =>
+                let (fresh, s1) := s.alloc
+                let s2 := s1.push fresh
+                some (s2, [KernelOp.copy fresh stable])))
+              = some (s.pushSym (.bufferPtr slot), [])
+    rw [h_buf]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames (s.pushSym (.bufferPtr slot)) rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws (.localGet i) rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws (.localGet i) with
+      | none => rw [h_eval_head] at hw; simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_localGet_bufferSlot ws s kst layout R i slot h_buf h_loc_buf
+              ws_after (s.pushSym (.bufferPtr slot)) []
+              h_eval_head h_head
+          have h_kst_mid_eq : kst_mid = kst := by
+            simp [evalOps] at h_kst_eval
+            exact h_kst_eval.symm
+          have h_ws_after_shape : ∃ v, ws_after = ws.push v := by
+            cases hloc : ws.getLocal i with
+            | none =>
+                have h_ev : evalInstr ws (.localGet i) = none := by
+                  show (do let v ← ws.getLocal i; pure (ws.push v)) = none
+                  rw [hloc]; rfl
+                rw [h_ev] at h_eval_head; exact (Option.noConfusion h_eval_head)
+            | some v =>
+                refine ⟨v, ?_⟩
+                have h_ev : evalInstr ws (.localGet i) = some (ws.push v) := by
+                  show (do let v ← ws.getLocal i; pure (ws.push v)) = some (ws.push v)
+                  rw [hloc]; rfl
+                rw [h_ev] at h_eval_head
+                exact ((Option.some.injEq _ _).mp h_eval_head).symm
+          obtain ⟨v_pushed, h_ws_after_eq⟩ := h_ws_after_shape
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            rw [h_ws_after_eq]; simp [WasmState.push, h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by
+            rw [h_ws_after_eq]; simp [WasmState.push, h_no_halt]
+          have h_mid_broke : kst_mid.broke = false := by
+            rw [h_kst_mid_eq]; exact h_kst_no_broke
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest, h_bridge_rest⟩ :=
+            preservation_rest_bridge R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
+          refine ⟨kst'_mid, F_rest, ?_, ?_, ?_⟩
+          · rw [← h_ops_eq]
+            rw [h_kst_mid_eq] at h_eval_rest
+            exact h_eval_rest
+          · rw [← h_s_eq]; exact R_rest
+          · exact h_bridge_rest
+
+/-- `i32Shl :: rest` bridge (buffer-pattern fold path). Head emits
+    no IR — symbolic stack rewritten to `.scaledIdx base (1<<<k)`. -/
+theorem preservation_evalInstrs_cons_i32Shl_bufferPattern_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (k : Int) (base : Quanta.KOps.Reg) (ty : Quanta.KOps.Scalar)
+    (lstk_rest : List SymVal)
+    (h_stack : s.stack = .i32ConstSym k :: .reg base ty :: lstk_rest)
+    (h_shift_eq : ∀ a : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 a) →
+       (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
+    (rest : List WasmInstr)
+    (preservation_rest_bridge : I32BinIHBridge fuel frames layout rest)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Shl :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Shl :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  rw [lowerInstrs_cons_default fuel frames s .i32Shl rest rfl] at hl
+  have h_head : lowerInstr s .i32Shl =
+      some ({ s with stack := .scaledIdx base (1 <<< k.toNat) :: lstk_rest }, []) := by
+    show lowerI32Shl s = _
+    unfold lowerI32Shl
+    rw [h_stack]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ s with stack := .scaledIdx base (1 <<< k.toNat) :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Shl rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Shl with
+      | none => rw [h_eval_head] at hw; simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Shl_bufferPattern ws s kst layout R k base ty lstk_rest
+              h_stack h_shift_eq
+              ws_after _ [] h_eval_head h_head
+          have h_kst_mid_eq : kst_mid = kst := by
+            simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          have h_mid_broke : kst_mid.broke = false := by
+            rw [h_kst_mid_eq]; exact h_kst_no_broke
+          have h_w : evalInstr ws .i32Shl = binI32 (· <<< ·) ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by
+            rw [h_ws_eq]; simp [h_no_halt]
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest, h_bridge_rest⟩ :=
+            preservation_rest_bridge R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
+          refine ⟨kst'_mid, F_rest, ?_, ?_, ?_⟩
+          · rw [← h_ops_eq]
+            rw [h_kst_mid_eq] at h_eval_rest
+            exact h_eval_rest
+          · rw [← h_s_eq]; exact R_rest
+          · exact h_bridge_rest
+
+/-- `i32Add :: rest` bridge (buffer-pattern fold, scaledIdx-first
+    arm). Head emits no IR — symbolic stack rewritten to
+    `.bufferAccess slot base scale`. -/
+theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
+    (h_stack : s.stack = .scaledIdx base scale :: .bufferPtr slot :: lstk_rest)
+    (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       a.toNat = b.toNat * scale →
+       b_ptr.toNat = layout.startAddr slot →
+       (b_ptr + a).toNat = layout.startAddr slot + b.toNat * scale)
+    (rest : List WasmInstr)
+    (preservation_rest_bridge : I32BinIHBridge fuel frames layout rest)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  rw [lowerInstrs_cons_default fuel frames s .i32Add rest rfl] at hl
+  have h_head : lowerInstr s .i32Add =
+      some ({ s with stack := .bufferAccess slot base scale :: lstk_rest }, []) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ s with stack := .bufferAccess slot base scale :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Add rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Add with
+      | none => rw [h_eval_head] at hw; simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Add_bufferPattern_scaledFirst ws s kst layout R
+              slot base scale lstk_rest h_stack h_addr_eq
+              ws_after _ [] h_eval_head h_head
+          have h_kst_mid_eq : kst_mid = kst := by
+            simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          have h_mid_broke : kst_mid.broke = false := by
+            rw [h_kst_mid_eq]; exact h_kst_no_broke
+          have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by
+            rw [h_ws_eq]; simp [h_no_halt]
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest, h_bridge_rest⟩ :=
+            preservation_rest_bridge R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
+          refine ⟨kst'_mid, F_rest, ?_, ?_, ?_⟩
+          · rw [← h_ops_eq]
+            rw [h_kst_mid_eq] at h_eval_rest
+            exact h_eval_rest
+          · rw [← h_s_eq]; exact R_rest
+          · exact h_bridge_rest
+
+/-- `i32Add :: rest` bridge (buffer-pattern fold, bufferPtr-first
+    arm). Same shape as the scaledFirst variant; addr-eq hypothesis
+    accommodates the reversed addend order. -/
+theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
+    (h_stack : s.stack = .bufferPtr slot :: .scaledIdx base scale :: lstk_rest)
+    (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       a.toNat = b.toNat * scale →
+       b_ptr.toNat = layout.startAddr slot →
+       (a + b_ptr).toNat = layout.startAddr slot + b.toNat * scale)
+    (rest : List WasmInstr)
+    (preservation_rest_bridge : I32BinIHBridge fuel frames layout rest)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  rw [lowerInstrs_cons_default fuel frames s .i32Add rest rfl] at hl
+  have h_head : lowerInstr s .i32Add =
+      some ({ s with stack := .bufferAccess slot base scale :: lstk_rest }, []) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ s with stack := .bufferAccess slot base scale :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Add rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Add with
+      | none => rw [h_eval_head] at hw; simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Add_bufferPattern_ptrFirst ws s kst layout R
+              slot base scale lstk_rest h_stack h_addr_eq
+              ws_after _ [] h_eval_head h_head
+          have h_kst_mid_eq : kst_mid = kst := by
+            simp [evalOps] at h_kst_eval; exact h_kst_eval.symm
+          have h_mid_broke : kst_mid.broke = false := by
+            rw [h_kst_mid_eq]; exact h_kst_no_broke
+          have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by
+            rw [h_ws_eq]; simp [h_no_halt]
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest, h_bridge_rest⟩ :=
+            preservation_rest_bridge R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
+          refine ⟨kst'_mid, F_rest, ?_, ?_, ?_⟩
+          · rw [← h_ops_eq]
+            rw [h_kst_mid_eq] at h_eval_rest
+            exact h_eval_rest
+          · rw [← h_s_eq]; exact R_rest
+          · exact h_bridge_rest
+
 /-- `i32Shl :: rest` bridge (non-buffer path). Same fallthrough as
     the non-bridge wrapper: `h_no_buf` excludes the
     `<i32ConstSym k> :: <reg base ty> :: rest` fold so lowerInstr
@@ -1337,5 +1653,274 @@ theorem preservation_evalInstrs_cons_i32Shl_bridge
     (fun _ => rfl) (by intro av bv; rfl)
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke h_l_eq rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
+
+/-- `i32Load offset align :: rest` bridge (buffer-access path).
+    Head emits a single `.load` op; mid-state preserved via the
+    standard loadI32 stack-only mutation. -/
+theorem preservation_evalInstrs_cons_i32Load_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (slot : Nat) (base : Quanta.KOps.Reg) (lstk_rest : List SymVal)
+    (offset align : Nat)
+    (h_stack : s.stack = .bufferAccess slot base 4 :: lstk_rest)
+    (h_offset : offset = 0)
+    (h_in_bounds : ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       b.toNat < layout.length slot)
+    (rest : List WasmInstr)
+    (preservation_rest_bridge : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout ∧
+        BridgeClauses ws'_mid kst'_mid)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Load offset align :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Load offset align :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  rw [lowerInstrs_cons_default fuel frames s (.i32Load offset align) rest rfl] at hl
+  have h_head : lowerInstr s (.i32Load offset align) =
+      some ({ s with nextReg := s.nextReg + 1,
+                     stack := .reg s.nextReg .u32 :: lstk_rest },
+             [.load s.nextReg slot base .u32]) := by
+    show lowerI32Load s = _
+    unfold lowerI32Load
+    rw [h_stack]
+    rfl
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ s with nextReg := s.nextReg + 1,
+                            stack := .reg s.nextReg .u32 :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws (.i32Load offset align) rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws (.i32Load offset align) with
+      | none => rw [h_eval_head] at hw; simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Load ws s kst layout R slot base lstk_rest offset align
+              h_stack h_offset h_in_bounds
+              ws_after _ _ h_eval_head h_head
+          have h_lf_head : loopFreeNoBreak [KernelOp.load s.nextReg slot base .u32] = true :=
+            rfl
+          have h_lf_head_shallow : loopFree [KernelOp.load s.nextReg slot base .u32] = true :=
+            loopFreeNoBreak_implies_loopFree h_lf_head
+          have h_mid_broke : kst_mid.broke = false :=
+            evalOps_loopFreeNoBreak_preserves_broke
+              h_lf_head h_kst_no_broke h_kst_eval
+          have h_w : evalInstr ws (.i32Load offset align) = loadI32 ws offset := rfl
+          rw [h_w] at h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by
+            unfold loadI32 at h_eval_head
+            rcases hws : ws.stack with _ | ⟨vaddr, ws_rest⟩
+            · simp [hws, WasmState.pop] at h_eval_head
+            · simp [hws, WasmState.pop] at h_eval_head
+              cases vaddr with
+              | wI32 addr_w =>
+                  simp at h_eval_head
+                  rcases hmem : ws.mem.load_u32 (addr_w.toNat + offset) with _ | n
+                  · simp [hmem] at h_eval_head
+                  · simp [hmem, WasmState.push] at h_eval_head
+                    rw [← h_eval_head]; simp [h_no_branch]
+              | wI64 _ => simp at h_eval_head
+              | wF32 _ => simp at h_eval_head
+              | wF64 _ => simp at h_eval_head
+          have h_mid_no_halt : ws_after.halted = false := by
+            unfold loadI32 at h_eval_head
+            rcases hws : ws.stack with _ | ⟨vaddr, ws_rest⟩
+            · simp [hws, WasmState.pop] at h_eval_head
+            · simp [hws, WasmState.pop] at h_eval_head
+              cases vaddr with
+              | wI32 addr_w =>
+                  simp at h_eval_head
+                  rcases hmem : ws.mem.load_u32 (addr_w.toNat + offset) with _ | n
+                  · simp [hmem] at h_eval_head
+                  · simp [hmem, WasmState.push] at h_eval_head
+                    rw [← h_eval_head]; simp [h_no_halt]
+              | wI64 _ => simp at h_eval_head
+              | wF32 _ => simp at h_eval_head
+              | wF64 _ => simp at h_eval_head
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest, h_bridge_rest⟩ :=
+            preservation_rest_bridge R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
+          obtain ⟨kst'', h_eval'', R'', h_bridge''⟩ :=
+            preservation_evalInstrs_cons_compose_shallow_bridge
+              (F := F_rest) h_lf_head_shallow h_kst_eval h_mid_broke
+              ⟨kst'_mid, h_eval_rest, R_rest, h_bridge_rest⟩
+          refine ⟨kst'', F_rest, ?_, ?_, ?_⟩
+          · rw [← h_ops_eq]; exact h_eval''
+          · rw [← h_s_eq]; exact R''
+          · exact h_bridge''
+
+/-- `i32Store offset align :: rest` bridge (buffer-access path).
+    Head emits `opsCommit ++ [.store ...]`. -/
+theorem preservation_evalInstrs_cons_i32Store_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (sv_val : SymVal) (slot : Nat) (base : Quanta.KOps.Reg) (lstk_rest : List SymVal)
+    (offset align : Nat)
+    (h_stack : s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest)
+    (h_offset : offset = 0)
+    (h_in_bounds : ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       b.toNat < layout.length slot)
+    (h_layout_no_overlap : ∀ b : UInt32,
+       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       ∀ slot' idx',
+         idx' < layout.length slot' →
+         (slot', idx') ≠ (slot, b.toNat) →
+         layout.startAddr slot + b.toNat * 4 + 4 ≤ layout.startAddr slot' + idx' * 4 ∨
+         layout.startAddr slot' + idx' * 4 + 4 ≤ layout.startAddr slot + b.toNat * 4)
+    (rest : List WasmInstr)
+    (preservation_rest_bridge : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout ∧
+        BridgeClauses ws'_mid kst'_mid)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Store offset align :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Store offset align :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  rw [lowerInstrs_cons_default fuel frames s (.i32Store offset align) rest rfl] at hl
+  let s_pop : LowerState :=
+    { nextReg := s.nextReg, stack := lstk_rest,
+      localReg := s.localReg, localTy := s.localTy,
+      bufferSlots := s.bufferSlots }
+  cases hca : s_pop.commit sv_val with
+  | none =>
+      have h_lw : lowerInstr s (.i32Store offset align) = none := by
+        show lowerI32Store s = none
+        unfold lowerI32Store
+        simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind]
+        rw [show ({ nextReg := s.nextReg, stack := lstk_rest,
+                    localReg := s.localReg, localTy := s.localTy,
+                    bufferSlots := s.bufferSlots } : LowerState).commit sv_val
+                = s_pop.commit sv_val from rfl]
+        rw [hca]
+        rfl
+      rw [h_lw] at hl
+      simp at hl
+  | some commit_pair =>
+      rcases commit_pair with ⟨src, s3, opsCommit⟩
+      let s_after : LowerState := s3
+      let ops_head : List KernelOp := opsCommit ++ [.store slot base src .u32]
+      have h_head : lowerInstr s (.i32Store offset align) = some (s_after, ops_head) := by
+        show lowerI32Store s = some (s_after, ops_head)
+        unfold lowerI32Store
+        simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind]
+        rw [show ({ nextReg := s.nextReg, stack := lstk_rest,
+                    localReg := s.localReg, localTy := s.localTy,
+                    bufferSlots := s.bufferSlots } : LowerState).commit sv_val
+                = s_pop.commit sv_val from rfl]
+        rw [hca]
+        rfl
+      rw [h_head] at hl
+      simp only [Option.bind_eq_bind, Option.some_bind] at hl
+      cases h_post : lowerInstrs fuel frames s_after rest with
+      | none => simp [h_post] at hl
+      | some post_pair =>
+          rcases post_pair with ⟨s_post, postOps⟩
+          simp [h_post] at hl
+          rcases hl with ⟨h_s_eq, h_ops_eq⟩
+          rw [evalInstrs_cons_default fuel ws (.i32Store offset align) rest h_no_branch h_no_halt rfl] at hw
+          cases h_eval_head : evalInstr ws (.i32Store offset align) with
+          | none => rw [h_eval_head] at hw; simp at hw
+          | some ws_after =>
+              rw [h_eval_head] at hw
+              simp only at hw
+              obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+                preservation_i32Store ws s kst layout R h_kst_no_broke
+                  sv_val slot base lstk_rest offset align
+                  h_stack h_offset h_in_bounds h_layout_no_overlap
+                  ws_after s_after ops_head h_eval_head h_head
+              have h_lf_commit : loopFreeNoBreak opsCommit = true :=
+                commit_emits_loopFreeNoBreak hca
+              have h_lf_store :
+                  loopFreeNoBreak [KernelOp.store slot base src .u32] = true := rfl
+              have h_lf_head : loopFreeNoBreak ops_head = true := by
+                show loopFreeNoBreak (opsCommit ++ [KernelOp.store slot base src .u32]) = true
+                simp [loopFreeNoBreak_append, h_lf_commit, h_lf_store]
+              have h_lf_head_shallow : loopFree ops_head = true :=
+                loopFreeNoBreak_implies_loopFree h_lf_head
+              have h_mid_broke : kst_mid.broke = false :=
+                evalOps_loopFreeNoBreak_preserves_broke
+                  h_lf_head h_kst_no_broke h_kst_eval
+              have h_w : evalInstr ws (.i32Store offset align) = storeI32 ws offset := rfl
+              rw [h_w] at h_eval_head
+              have h_ws_after_shape : ∃ ws_rest m',
+                  ws_after = { ws with stack := ws_rest, mem := m' } := by
+                unfold storeI32 at h_eval_head
+                rcases hws : ws.stack with _ | ⟨vval, _ | ⟨vaddr, ws_rest⟩⟩
+                · simp [hws, WasmState.pop] at h_eval_head
+                · simp [hws, WasmState.pop] at h_eval_head
+                · simp [hws, WasmState.pop] at h_eval_head
+                  cases vaddr with
+                  | wI32 addr_w =>
+                      cases vval with
+                      | wI32 v_w =>
+                          simp at h_eval_head
+                          rcases hmem : ws.mem.store_u32 (addr_w.toNat + offset) v_w with _ | m'
+                          · simp [hmem] at h_eval_head
+                          · simp [hmem] at h_eval_head
+                            refine ⟨ws_rest, m', ?_⟩
+                            rw [← h_eval_head]
+                      | wI64 _ => simp at h_eval_head
+                      | wF32 _ => simp at h_eval_head
+                      | wF64 _ => simp at h_eval_head
+                  | wI64 _ => simp at h_eval_head
+                  | wF32 _ => simp at h_eval_head
+                  | wF64 _ => simp at h_eval_head
+              obtain ⟨_, _, h_ws_after_eq⟩ := h_ws_after_shape
+              have h_mid_no_branch : ws_after.branchTarget = none := by
+                rw [h_ws_after_eq]; simp [h_no_branch]
+              have h_mid_no_halt : ws_after.halted = false := by
+                rw [h_ws_after_eq]; simp [h_no_halt]
+              obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest, h_bridge_rest⟩ :=
+                preservation_rest_bridge R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
+              obtain ⟨kst'', h_eval'', R'', h_bridge''⟩ :=
+                preservation_evalInstrs_cons_compose_shallow_bridge
+                  (F := F_rest) h_lf_head_shallow h_kst_eval h_mid_broke
+                  ⟨kst'_mid, h_eval_rest, R_rest, h_bridge_rest⟩
+              refine ⟨kst'', F_rest, ?_, ?_, ?_⟩
+              · rw [← h_ops_eq]; exact h_eval''
+              · rw [← h_s_eq]; exact R''
+              · exact h_bridge''
 
 end Quanta.Wasm
