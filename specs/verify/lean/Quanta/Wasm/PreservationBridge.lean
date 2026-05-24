@@ -2461,22 +2461,26 @@ theorem preservation_evalInstrs_cons_block_fallthrough
         · rw [← h_s_eq]; exact R_post
 
 -- ════════════════════════════════════════════════════════════════════
--- L8.2 — cons_wif preservation (fall-through bodies, Path A)
+-- L8.2 — cons_wif preservation (DEFERRED — lowering bug discovered)
 --
--- Same scope as cons_block: thenBody / elseBody must complete with
--- no branchTarget / halted / broke. Lowering emits
---   opsCommit ++ [.branch cond thenOps elseOps] ++ postOps
--- IR-side: opsCommit runs (commits the cond SymVal); .branch picks
--- thenOps or elseOps based on cond value; with fall-through bodies,
--- the picked body ends with broke=false, so post runs.
+-- The wif lowering in `Quanta.Wasm.Translate.lowerInstrs` emits
+-- `.branch cond thenOps elseOps` where `cond : Reg` carries a vU32
+-- (committed from a SymVal that originated as a wI32). But KOps'
+-- `evalOp` for `.branch` expects a vBool — it fails on vU32. The
+-- brIf lowering had the same bug, which was fixed in L6 by inserting
+-- a `.cast cond_bool cond .u32 .bool` before the branch. The same
+-- fix has not yet been applied to the wif lowering.
 --
--- DEFERRED: the cons_wif proof is more intricate than cons_block
--- because of the explicit cond pop + commit + branch sequencing.
--- The full proof is committed-out below pending a careful re-derivation.
+-- Consequence: any kernel that exercises wif preservation will fail
+-- at runtime. The cons_wif bridge cannot be proven until lowering
+-- is patched.
+--
+-- The proof scaffold below is correct in shape (mirrors cons_block
+-- + brIf's commit-correct path) but blocked by the lowering bug.
+-- Re-enable once `lowerInstrs` for `.wif` inserts a `.cast` before
+-- `.branch`, matching the brIf L6 fix.
 -- ════════════════════════════════════════════════════════════════════
 
--- (proof in progress; commented out until issues with fuel-mono
--- application and singleton/append normalization are resolved)
 /-
 
 /-- `wif _ :: rest` preservation under fall-through bodies. Both
@@ -2710,43 +2714,31 @@ theorem preservation_evalInstrs_cons_wif_fallthrough
                       have h1 : evalOps (max (max F_b F_p) 1) kst opsCommit = some kst1 := by
                         have := evalOps_fuel_mono (Nat.zero_le _) h_evalCommit
                         exact this
-                      -- Branch op: regLookup kst1.rf cond = vU32 c, c = 0 → picks elseOps.
-                      have h_branch_eval :
+                      have h_else_max : evalOps (max (max F_b F_p) 1) kst1 elseOps
+                                          = some kst_ab := by
+                        have := evalOps_fuel_mono
+                          (Nat.le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)) h_ev_b
+                        exact this
+                      have h_post_max : evalOps (max (max F_b F_p) 1) kst_ab postOps
+                                          = some kst' := by
+                        have := evalOps_fuel_mono
+                          (Nat.le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)) h_ev_p
+                        exact this
+                      -- evalOps on .branch op + postOps from kst1:
+                      -- evalOp .branch picks elseOps (c=0) → evalOps over elseOps = some kst_ab
+                      -- (broke = false) → evalOps postOps = some kst'.
+                      have h_branch_evals_to :
                           Quanta.KOps.evalOp (max (max F_b F_p) 1) kst1
-                            (KernelOp.branch cond thenOps elseOps)
-                            = Quanta.KOps.evalOps (max (max F_b F_p) 1) kst1 elseOps := by
-                        simp [Quanta.KOps.evalOp, h_lookup, hc]
-                      -- evalOps on [.branch ...] ++ postOps from kst1.
+                            (KernelOp.branch cond thenOps elseOps) = some kst_ab := by
+                        simp [Quanta.KOps.evalOp, h_lookup, hc, h_else_max]
                       have h_then_postOps :
                           Quanta.KOps.evalOps (max (max F_b F_p) 1) kst1
-                            ([KernelOp.branch cond thenOps elseOps] ++ postOps)
+                            (KernelOp.branch cond thenOps elseOps :: postOps)
                             = some kst' := by
-                        rw [List.singleton_append]
-                        rw [Quanta.KOps.evalOps.eq_def]
-                        simp only []
-                        rw [h_branch_eval]
-                        -- Then evalOps elseOps from kst1.
-                        have h_else_max : evalOps (max (max F_b F_p) 1) kst1 elseOps
-                                            = some kst_ab := by
-                          have := evalOps_fuel_mono
-                            (le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)) h_ev_b
-                          exact this
-                        rw [h_else_max]
-                        simp [h_ab_broke]
-                        have h_post_max : evalOps (max (max F_b F_p) 1) kst_ab postOps
-                                            = some kst' := by
-                          have := evalOps_fuel_mono
-                            (le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)) h_ev_p
-                          exact this
-                        exact h_post_max
-                      have h_full :
-                          Quanta.KOps.evalOps (max (max F_b F_p) 1) kst
-                            (opsCommit ++ ([KernelOp.branch cond thenOps elseOps] ++ postOps))
-                            = some kst' :=
-                        (evalOps_append h1 h_kst1_ok).trans h_then_postOps
-                      -- Goal: evalOps ... (opsCommit ++ [.branch cond thenOps elseOps] ++ postOps) = some kst'.
-                      simp only [← List.append_assoc] at h_full
-                      exact h_full
+                        rw [Quanta.KOps.evalOps]
+                        rw [h_branch_evals_to]
+                        simp [h_ab_broke, h_post_max]
+                      exact (evalOps_append h1 h_kst1_ok).trans h_then_postOps
                     · rw [← h_s_eq]; exact R_p
                 · -- then branch (c ≠ 0).
                   simp only [hc, ↓reduceIte] at hw
@@ -2808,43 +2800,33 @@ theorem preservation_evalInstrs_cons_wif_fallthrough
                       have h1 : evalOps (max (max F_b F_p) 1) kst opsCommit = some kst1 := by
                         have := evalOps_fuel_mono (Nat.zero_le _) h_evalCommit
                         exact this
-                      have h_branch_eval :
+                      have h_then_max : evalOps (max (max F_b F_p) 1) kst1 thenOps
+                                          = some kst_ab := by
+                        have := evalOps_fuel_mono
+                          (Nat.le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)) h_ev_b
+                        exact this
+                      have h_post_max : evalOps (max (max F_b F_p) 1) kst_ab postOps
+                                          = some kst' := by
+                        have := evalOps_fuel_mono
+                          (Nat.le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)) h_ev_p
+                        exact this
+                      have h_branch_evals_to :
                           Quanta.KOps.evalOp (max (max F_b F_p) 1) kst1
-                            (KernelOp.branch cond thenOps elseOps)
-                            = Quanta.KOps.evalOps (max (max F_b F_p) 1) kst1 thenOps := by
-                        simp [Quanta.KOps.evalOp, h_lookup, hc]
+                            (KernelOp.branch cond thenOps elseOps) = some kst_ab := by
+                        simp [Quanta.KOps.evalOp, h_lookup, hc, h_then_max]
                       have h_then_postOps :
                           Quanta.KOps.evalOps (max (max F_b F_p) 1) kst1
-                            ([KernelOp.branch cond thenOps elseOps] ++ postOps)
+                            (KernelOp.branch cond thenOps elseOps :: postOps)
                             = some kst' := by
-                        rw [List.singleton_append]
-                        rw [Quanta.KOps.evalOps.eq_def]
-                        simp only []
-                        rw [h_branch_eval]
-                        have h_then_max : evalOps (max (max F_b F_p) 1) kst1 thenOps
-                                            = some kst_ab := by
-                          have := evalOps_fuel_mono
-                            (le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)) h_ev_b
-                          exact this
-                        rw [h_then_max]
-                        simp [h_ab_broke]
-                        have h_post_max : evalOps (max (max F_b F_p) 1) kst_ab postOps
-                                            = some kst' := by
-                          have := evalOps_fuel_mono
-                            (le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)) h_ev_p
-                          exact this
-                        exact h_post_max
-                      have h_full :
-                          Quanta.KOps.evalOps (max (max F_b F_p) 1) kst
-                            (opsCommit ++ ([KernelOp.branch cond thenOps elseOps] ++ postOps))
-                            = some kst' :=
-                        (evalOps_append h1 h_kst1_ok).trans h_then_postOps
-                      simp only [← List.append_assoc] at h_full
-                      exact h_full
+                        rw [Quanta.KOps.evalOps]
+                        rw [h_branch_evals_to]
+                        simp [h_ab_broke, h_post_max]
+                      exact (evalOps_append h1 h_kst1_ok).trans h_then_postOps
                     · rw [← h_s_eq]; exact R_p
               | wI64 _ => simp at hw
               | wF32 _ => simp at hw
               | wF64 _ => simp at hw
+
 -/
 
 end Quanta.Wasm
