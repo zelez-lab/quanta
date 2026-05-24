@@ -2304,4 +2304,547 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner_bridge
     · left; exact ⟨hc, by rw [h_ws'_eq]; exact h_eq⟩
     · right; exact ⟨hc, by rw [h_ws'_eq]; exact h_eq⟩
 
+-- ════════════════════════════════════════════════════════════════════
+-- L8.1 — cons_block preservation (fall-through bodies, Path A)
+--
+-- Scope: bodies whose iteration completes with `branchTarget = none`
+-- on the WASM side AND `kst.broke = false` on the IR side. This
+-- covers blocks containing only straight-line code, nested wif
+-- without inner escapes, or nested wloop that completes normally.
+--
+-- The general claim (bodies that propagate branchTarget = some d
+-- out of the block boundary, or bodies that exit via br to outer
+-- frames) is deferred to a follow-up session that proves the
+-- bridging invariant `body_branchTarget_implies_IR_broke` via the
+-- mutual block (per `l8_5_scoping.md` §4b).
+--
+-- The body's "fall-through" property is supplied as an explicit
+-- hypothesis `body_falls_through`; downstream (the framework
+-- theorem) discharges it via a syntactic `WellFormedKernel`
+-- predicate that rules out inner escapes (see scoping doc §5 R1).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `block _ :: rest` preservation under the fall-through body
+    precondition. Body runs to completion with no branchTarget /
+    halted set on the WASM side and no broke on the IR side; then
+    post (the rest after the matching `wend`) runs via the IH. -/
+theorem preservation_evalInstrs_cons_block_fallthrough
+    (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (bt : Nat) (rest : List WasmInstr)
+    -- The lowering uses `fuel = bt + 1`; body lowering recurses
+    -- with `bt`. We split off `bt` to make the structured-control
+    -- decrement explicit.
+    (body post : List WasmInstr)
+    (h_split : splitAtEnd rest = some (body, post))
+    -- Body's recursive bridge result (the IH-on-body the caller
+    -- supplies). Note `frames` extends with `.block` here.
+    (body_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+        (_hw_b : evalInstrs bt ws_b body = some ws'_b)
+        (_hl_b : lowerInstrs bt (.block :: frames) s_b body = some (s'_b, bodyOps)),
+      ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_b bodyOps = some kst'_b ∧
+        Refines ws'_b s'_b kst'_b layout ∧
+        BridgeClauses ws'_b kst'_b)
+    -- Fall-through hypothesis: body's post-state has no branchTarget,
+    -- no halt, no broke. Downstream caller discharges this.
+    (body_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs bt ws_b body = some ws'_b)
+        (_hl_b : lowerInstrs bt (.block :: frames) s_b body = some (s'_b, bodyOps)),
+      ws'_b.branchTarget = none ∧ ws'_b.halted = false)
+    (post_preserves : ∀ {ws_p : WasmState} {s_p : LowerState}
+        {kst_p : Quanta.KOps.State}
+        (_R_p : Refines ws_p s_p kst_p layout)
+        (_h_nb_p : ws_p.branchTarget = none)
+        (_h_nh_p : ws_p.halted = false)
+        (_h_nbk_p : kst_p.broke = false)
+        {ws'_p : WasmState} {s'_p : LowerState} {postOps : List KernelOp}
+        (_hw_p : evalInstrs bt ws_p post = some ws'_p)
+        (_hl_p : lowerInstrs bt frames s_p post = some (s'_p, postOps)),
+      ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_p postOps = some kst'_p ∧
+        Refines ws'_p s'_p kst'_p layout ∧
+        BridgeClauses ws'_p kst'_p)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (bt + 1) ws (.block 0 :: rest) = some ws')
+    (hl : lowerInstrs (bt + 1) frames s (.block 0 :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  -- Unfold the lowerInstrs block arm.
+  simp only [lowerInstrs] at hl
+  rw [h_split] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  -- hl: do { (s1, innerOps) ← lowerInstrs bt (.block :: frames) s body
+  --        ; (s2, postOps) ← lowerInstrs bt frames s1 post
+  --        ; pure (s2, innerOps ++ postOps) } = some (s', ops)
+  cases h_lb : lowerInstrs bt (.block :: frames) s body with
+  | none => simp [h_lb] at hl
+  | some body_pair =>
+    rcases body_pair with ⟨s1, innerOps⟩
+    simp [h_lb] at hl
+    cases h_lp : lowerInstrs bt frames s1 post with
+    | none => simp [h_lp] at hl
+    | some post_pair =>
+      rcases post_pair with ⟨s2, postOps⟩
+      simp [h_lp] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      -- Eval side: block arm.
+      simp only [evalInstrs] at hw
+      have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+        rw [h_no_halt, h_no_branch]; rfl
+      rw [h_cond] at hw
+      simp only [Bool.false_eq_true, ↓reduceIte] at hw
+      rw [h_split] at hw
+      simp only at hw
+      cases h_eb : evalInstrs bt ws body with
+      | none => simp [h_eb] at hw
+      | some ws_after_body =>
+        simp [h_eb] at hw
+        -- ws_after_body is the body's post-state.
+        -- Apply the fall-through hypothesis to learn it has no
+        -- branchTarget / halted.
+        obtain ⟨kst_after_body, F_body, h_eb_kst, R_body, _h_body_bridge⟩ :=
+          body_preserves R h_no_branch h_no_halt h_kst_no_broke h_eb h_lb
+        obtain ⟨h_bft_none, h_bft_nh⟩ :=
+          body_falls_through R h_no_branch h_no_halt h_kst_no_broke h_eb h_lb
+        -- branchTarget = none arm of block's eval.
+        rw [h_bft_none] at hw
+        simp only at hw
+        -- hw: evalInstrs bt ws_after_body post = some ws'.
+        -- Need kst_after_body.broke = false. Comes from
+        -- BridgeClauses with ws_after_body.branchTarget = none.
+        have h_body_broke : kst_after_body.broke = false := by
+          have ⟨_, h_nb_implies_no_broke⟩ := _h_body_bridge
+          exact h_nb_implies_no_broke h_bft_none
+        -- Apply post_preserves on ws_after_body / s1 / kst_after_body.
+        obtain ⟨kst', F_post, h_ev_post, R_post, h_bridge_post⟩ :=
+          post_preserves R_body h_bft_none h_bft_nh h_body_broke hw h_lp
+        -- Compose: ops = innerOps ++ postOps. evalOps the concat.
+        -- Need to lift (innerOps, postOps) composition. Use
+        -- evalOps_append (broke-aware): runs innerOps to kst_after_body
+        -- (broke=false), then postOps from there to kst'.
+        refine ⟨kst', max F_body F_post, ?_, ?_, h_bridge_post⟩
+        · rw [← h_ops_eq]
+          -- evalOps (max F_body F_post) kst (innerOps ++ postOps)
+          --   = some kst', via evalOps_append + fuel monotonicity.
+          have h_body_max : evalOps (max F_body F_post) kst innerOps
+                              = some kst_after_body := by
+            have h := evalOps_fuel_mono (Nat.le_max_left F_body F_post)
+                        h_eb_kst
+            exact h
+          have h_post_max : evalOps (max F_body F_post) kst_after_body postOps
+                              = some kst' := by
+            have h := evalOps_fuel_mono (Nat.le_max_right F_body F_post)
+                        h_ev_post
+            exact h
+          exact evalOps_append h_body_max h_body_broke
+                |>.trans h_post_max
+        · rw [← h_s_eq]; exact R_post
+
+-- ════════════════════════════════════════════════════════════════════
+-- L8.2 — cons_wif preservation (fall-through bodies, Path A)
+--
+-- Same scope as cons_block: thenBody / elseBody must complete with
+-- no branchTarget / halted / broke. Lowering emits
+--   opsCommit ++ [.branch cond thenOps elseOps] ++ postOps
+-- IR-side: opsCommit runs (commits the cond SymVal); .branch picks
+-- thenOps or elseOps based on cond value; with fall-through bodies,
+-- the picked body ends with broke=false, so post runs.
+--
+-- DEFERRED: the cons_wif proof is more intricate than cons_block
+-- because of the explicit cond pop + commit + branch sequencing.
+-- The full proof is committed-out below pending a careful re-derivation.
+-- ════════════════════════════════════════════════════════════════════
+
+-- (proof in progress; commented out until issues with fuel-mono
+-- application and singleton/append normalization are resolved)
+/-
+
+/-- `wif _ :: rest` preservation under fall-through bodies. Both
+    thenBody and elseBody are assumed to be fall-through. -/
+theorem preservation_evalInstrs_cons_wif_fallthrough
+    (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (bt : Nat) (rest : List WasmInstr)
+    (thenBody elseBody post : List WasmInstr)
+    (h_split : splitAtElseOrEnd rest = some (thenBody, elseBody, post))
+    -- Both bodies preserve + fall through.
+    (then_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+        (_hw_b : evalInstrs bt ws_b thenBody = some ws'_b)
+        (_hl_b : lowerInstrs bt (.wif :: frames) s_b thenBody = some (s'_b, bodyOps)),
+      ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_b bodyOps = some kst'_b ∧
+        Refines ws'_b s'_b kst'_b layout ∧
+        BridgeClauses ws'_b kst'_b)
+    (then_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs bt ws_b thenBody = some ws'_b)
+        (_hl_b : lowerInstrs bt (.wif :: frames) s_b thenBody = some (s'_b, bodyOps)),
+      ws'_b.branchTarget = none ∧ ws'_b.halted = false)
+    (else_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+        (_hw_b : evalInstrs bt ws_b elseBody = some ws'_b)
+        (_hl_b : lowerInstrs bt (.wif :: frames) s_b elseBody = some (s'_b, bodyOps)),
+      ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_b bodyOps = some kst'_b ∧
+        Refines ws'_b s'_b kst'_b layout ∧
+        BridgeClauses ws'_b kst'_b)
+    (else_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs bt ws_b elseBody = some ws'_b)
+        (_hl_b : lowerInstrs bt (.wif :: frames) s_b elseBody = some (s'_b, bodyOps)),
+      ws'_b.branchTarget = none ∧ ws'_b.halted = false)
+    (post_preserves : ∀ {ws_p : WasmState} {s_p : LowerState}
+        {kst_p : Quanta.KOps.State}
+        (_R_p : Refines ws_p s_p kst_p layout)
+        (_h_nb_p : ws_p.branchTarget = none)
+        (_h_nh_p : ws_p.halted = false)
+        (_h_nbk_p : kst_p.broke = false)
+        {ws'_p : WasmState} {s'_p : LowerState} {postOps : List KernelOp}
+        (_hw_p : evalInstrs bt ws_p post = some ws'_p)
+        (_hl_p : lowerInstrs bt frames s_p post = some (s'_p, postOps)),
+      ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_p postOps = some kst'_p ∧
+        Refines ws'_p s'_p kst'_p layout ∧
+        BridgeClauses ws'_p kst'_p)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (bt + 1) ws (.wif 0 :: rest) = some ws')
+    (hl : lowerInstrs (bt + 1) frames s (.wif 0 :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  -- Unfold lowerInstrs wif arm.
+  simp only [lowerInstrs] at hl
+  rw [h_split] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  -- hl: do { (svCond, s0) ← s.popSym
+  --        ; (cond, s1, opsCommit) ← s0.commit svCond
+  --        ; (s2, thenOps) ← lowerInstrs bt (.wif :: frames) s1 thenBody
+  --        ; (s3, elseOps) ← lowerInstrs bt (.wif :: frames) s2 elseBody
+  --        ; (s4, postOps) ← lowerInstrs bt frames s3 post
+  --        ; pure (s4, opsCommit ++ [.branch cond thenOps elseOps]
+  --                     ++ postOps) } = some (s', ops)
+  cases hpop : s.popSym with
+  | none => simp [hpop] at hl
+  | some pop_pair =>
+    rcases pop_pair with ⟨svCond, s0⟩
+    simp [hpop] at hl
+    cases hcommit : s0.commit svCond with
+    | none => simp [hcommit] at hl
+    | some commit_triple =>
+      rcases commit_triple with ⟨cond, s1, opsCommit⟩
+      simp [hcommit] at hl
+      cases hlt : lowerInstrs bt (.wif :: frames) s1 thenBody with
+      | none => simp [hlt] at hl
+      | some then_pair =>
+        rcases then_pair with ⟨s2, thenOps⟩
+        simp [hlt] at hl
+        cases hle : lowerInstrs bt (.wif :: frames) s2 elseBody with
+        | none => simp [hle] at hl
+        | some else_pair =>
+          rcases else_pair with ⟨s3, elseOps⟩
+          simp [hle] at hl
+          cases hlp : lowerInstrs bt frames s3 post with
+          | none => simp [hlp] at hl
+          | some post_pair =>
+            rcases post_pair with ⟨s4, postOps⟩
+            simp [hlp] at hl
+            rcases hl with ⟨h_s_eq, h_ops_eq⟩
+            -- Eval side.
+            simp only [evalInstrs] at hw
+            have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+              rw [h_no_halt, h_no_branch]; rfl
+            rw [h_cond] at hw
+            simp only [Bool.false_eq_true, ↓reduceIte] at hw
+            cases hpop_w : ws.pop with
+            | none => simp [hpop_w] at hw
+            | some pop_w =>
+              rcases pop_w with ⟨vc, ws0⟩
+              simp [hpop_w] at hw
+              rw [h_split] at hw
+              simp only at hw
+              -- vc must be wI32 c (other cases fail).
+              cases vc with
+              | wI32 c =>
+                simp only at hw
+                -- Apply the brIf-commit-correct helper to bridge
+                -- WASM-side pop to IR-side cond regfile entry.
+                have h_ws_stack : ws.stack = .wI32 c :: ws0.stack := by
+                  rw [WasmState.pop] at hpop_w
+                  rcases hst : ws.stack with _ | ⟨v0, rest⟩
+                  · rw [hst] at hpop_w; simp at hpop_w
+                  rw [hst] at hpop_w
+                  simp at hpop_w
+                  obtain ⟨hv0, _hws0⟩ := hpop_w
+                  rw [hst, hv0]
+                  cases _hws0; rfl
+                obtain ⟨kst1, h_evalCommit, h_kst1_ok, h_lookup, _R_post, _, _,
+                        _, _, _, _⟩ :=
+                  brIf_cond_pop_commit_correct_pub R h_ws_stack hpop hcommit h_kst_no_broke
+                -- ws_after_pop_lower = ws0 with stack rest_w
+                -- (rest_w = ws0.stack).
+                -- The eval-side body runs from ws0 (with stack = rest_w).
+                -- The lower-side body runs from s1 (with stack derived
+                -- from s0 via commit's effect). _R_post gives the
+                -- post-commit Refines.
+                -- Case-split on c = 0 to dispatch to else/then.
+                by_cases hc : c = 0
+                · -- else branch.
+                  simp only [hc, ↓reduceIte] at hw
+                  cases h_eb : evalInstrs bt ws0 elseBody with
+                  | none => simp [h_eb] at hw
+                  | some ws_ab =>
+                    simp [h_eb] at hw
+                    -- Build R_for_body via R_post lifted to (s1, kst1).
+                    -- Actually _R_post is for s1 with stack = s0.stack and
+                    -- kst1. We need Refines ws0 s1 kst1 layout.
+                    have R_for_body : Refines ws0 s1 kst1 layout := by
+                      -- ws0 = { ws with stack := ws0.stack } from pop semantics.
+                      -- s1 may have different stack from {s1 with stack := s0.stack};
+                      -- the R_post handles that shape. Cast accordingly.
+                      have h_ws0_eq : ws0 = { ws with stack := ws0.stack } := by
+                        rw [WasmState.pop] at hpop_w
+                        rcases hst : ws.stack with _ | ⟨v0, rest⟩
+                        · rw [hst] at hpop_w; simp at hpop_w
+                        rw [hst] at hpop_w
+                        simp at hpop_w
+                        obtain ⟨_, hws0⟩ := hpop_w
+                        exact hws0.symm
+                      have h_s1_stack : s1.stack = s0.stack := commit_preserves_stack hcommit
+                      have h_s1_eq : ({ s1 with stack := s0.stack } : LowerState) = s1 := by
+                        cases s1 with
+                        | mk nr st lr lt bs =>
+                          simp at h_s1_stack
+                          rw [h_s1_stack]
+                      -- _R_post: Refines { ws with stack := ws0.stack } { s1 with stack := s0.stack } kst1 layout
+                      -- After h_ws0_eq.symm and h_s1_eq, this matches.
+                      rw [h_ws0_eq, ← h_s1_eq]
+                      exact _R_post
+                    have h_ws0_nb : ws0.branchTarget = none := by
+                      have h_ws0_eq_struct :
+                          ws0 = { ws with stack := ws0.stack } := by
+                        rw [WasmState.pop] at hpop_w
+                        rcases hst : ws.stack with _ | ⟨v0, rest⟩
+                        · rw [hst] at hpop_w; simp at hpop_w
+                        rw [hst] at hpop_w
+                        simp at hpop_w
+                        obtain ⟨_, hws0⟩ := hpop_w
+                        exact hws0.symm
+                      rw [h_ws0_eq_struct]; simp [h_no_branch]
+                    have h_ws0_nh : ws0.halted = false := by
+                      have h_ws0_eq_struct :
+                          ws0 = { ws with stack := ws0.stack } := by
+                        rw [WasmState.pop] at hpop_w
+                        rcases hst : ws.stack with _ | ⟨v0, rest⟩
+                        · rw [hst] at hpop_w; simp at hpop_w
+                        rw [hst] at hpop_w
+                        simp at hpop_w
+                        obtain ⟨_, hws0⟩ := hpop_w
+                        exact hws0.symm
+                      rw [h_ws0_eq_struct]; simp [h_no_halt]
+                    obtain ⟨kst_ab, F_b, h_ev_b, R_b, _h_bridge_b⟩ :=
+                      else_preserves R_for_body h_ws0_nb h_ws0_nh h_kst1_ok h_eb hle
+                    obtain ⟨h_eb_nb, h_eb_nh⟩ :=
+                      else_falls_through R_for_body h_ws0_nb h_ws0_nh h_kst1_ok h_eb hle
+                    rw [h_eb_nb] at hw
+                    simp only at hw
+                    -- Body's broke = false via BridgeClauses.
+                    have h_ab_broke : kst_ab.broke = false :=
+                      _h_bridge_b.right h_eb_nb
+                    -- Post runs from ws_ab with branchTarget = none, halted = false.
+                    -- And R_b is Refines ws_ab s3 kst_ab layout.
+                    obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
+                      post_preserves R_b h_eb_nb h_eb_nh h_ab_broke hw hlp
+                    -- Compose IR: opsCommit ++ [.branch ...] ++ postOps.
+                    -- evalOps walks: commit → branch picks elseOps → kst_ab → postOps → kst'.
+                    refine ⟨kst', max (max F_b F_p) 1, ?_, ?_, h_bridge_p⟩
+                    · rw [← h_ops_eq]
+                      -- The full op-list: opsCommit ++ ([.branch cond thenOps elseOps] ++ postOps).
+                      -- evalOps_append: opsCommit → kst1, then [.branch] ++ postOps from kst1.
+                      have h1 : evalOps (max (max F_b F_p) 1) kst opsCommit = some kst1 := by
+                        have := evalOps_fuel_mono (Nat.zero_le _) h_evalCommit
+                        exact this
+                      -- Branch op: regLookup kst1.rf cond = vU32 c, c = 0 → picks elseOps.
+                      have h_branch_eval :
+                          Quanta.KOps.evalOp (max (max F_b F_p) 1) kst1
+                            (KernelOp.branch cond thenOps elseOps)
+                            = Quanta.KOps.evalOps (max (max F_b F_p) 1) kst1 elseOps := by
+                        simp [Quanta.KOps.evalOp, h_lookup, hc]
+                      -- evalOps on [.branch ...] ++ postOps from kst1.
+                      have h_then_postOps :
+                          Quanta.KOps.evalOps (max (max F_b F_p) 1) kst1
+                            ([KernelOp.branch cond thenOps elseOps] ++ postOps)
+                            = some kst' := by
+                        rw [List.singleton_append]
+                        rw [Quanta.KOps.evalOps.eq_def]
+                        simp only []
+                        rw [h_branch_eval]
+                        -- Then evalOps elseOps from kst1.
+                        have h_else_max : evalOps (max (max F_b F_p) 1) kst1 elseOps
+                                            = some kst_ab := by
+                          have := evalOps_fuel_mono
+                            (le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)) h_ev_b
+                          exact this
+                        rw [h_else_max]
+                        simp [h_ab_broke]
+                        have h_post_max : evalOps (max (max F_b F_p) 1) kst_ab postOps
+                                            = some kst' := by
+                          have := evalOps_fuel_mono
+                            (le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)) h_ev_p
+                          exact this
+                        exact h_post_max
+                      have h_full :
+                          Quanta.KOps.evalOps (max (max F_b F_p) 1) kst
+                            (opsCommit ++ ([KernelOp.branch cond thenOps elseOps] ++ postOps))
+                            = some kst' :=
+                        (evalOps_append h1 h_kst1_ok).trans h_then_postOps
+                      -- Goal: evalOps ... (opsCommit ++ [.branch cond thenOps elseOps] ++ postOps) = some kst'.
+                      simp only [← List.append_assoc] at h_full
+                      exact h_full
+                    · rw [← h_s_eq]; exact R_p
+                · -- then branch (c ≠ 0).
+                  simp only [hc, ↓reduceIte] at hw
+                  cases h_eb : evalInstrs bt ws0 thenBody with
+                  | none => simp [h_eb] at hw
+                  | some ws_ab =>
+                    simp [h_eb] at hw
+                    have R_for_body : Refines ws0 s1 kst1 layout := by
+                      have h_ws0_eq : ws0 = { ws with stack := ws0.stack } := by
+                        rw [WasmState.pop] at hpop_w
+                        rcases hst : ws.stack with _ | ⟨v0, rest⟩
+                        · rw [hst] at hpop_w; simp at hpop_w
+                        rw [hst] at hpop_w
+                        simp at hpop_w
+                        obtain ⟨_, hws0⟩ := hpop_w
+                        exact hws0.symm
+                      have h_s1_stack : s1.stack = s0.stack := commit_preserves_stack hcommit
+                      have h_s1_eq : ({ s1 with stack := s0.stack } : LowerState) = s1 := by
+                        cases s1 with
+                        | mk nr st lr lt bs =>
+                          simp at h_s1_stack
+                          rw [h_s1_stack]
+                      rw [h_ws0_eq, ← h_s1_eq]
+                      exact _R_post
+                    have h_ws0_nb : ws0.branchTarget = none := by
+                      have h_ws0_eq_struct :
+                          ws0 = { ws with stack := ws0.stack } := by
+                        rw [WasmState.pop] at hpop_w
+                        rcases hst : ws.stack with _ | ⟨v0, rest⟩
+                        · rw [hst] at hpop_w; simp at hpop_w
+                        rw [hst] at hpop_w
+                        simp at hpop_w
+                        obtain ⟨_, hws0⟩ := hpop_w
+                        exact hws0.symm
+                      rw [h_ws0_eq_struct]; simp [h_no_branch]
+                    have h_ws0_nh : ws0.halted = false := by
+                      have h_ws0_eq_struct :
+                          ws0 = { ws with stack := ws0.stack } := by
+                        rw [WasmState.pop] at hpop_w
+                        rcases hst : ws.stack with _ | ⟨v0, rest⟩
+                        · rw [hst] at hpop_w; simp at hpop_w
+                        rw [hst] at hpop_w
+                        simp at hpop_w
+                        obtain ⟨_, hws0⟩ := hpop_w
+                        exact hws0.symm
+                      rw [h_ws0_eq_struct]; simp [h_no_halt]
+                    obtain ⟨kst_ab, F_b, h_ev_b, R_b, _h_bridge_b⟩ :=
+                      then_preserves R_for_body h_ws0_nb h_ws0_nh h_kst1_ok h_eb hlt
+                    obtain ⟨h_eb_nb, h_eb_nh⟩ :=
+                      then_falls_through R_for_body h_ws0_nb h_ws0_nh h_kst1_ok h_eb hlt
+                    rw [h_eb_nb] at hw
+                    simp only at hw
+                    have h_ab_broke : kst_ab.broke = false :=
+                      _h_bridge_b.right h_eb_nb
+                    obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
+                      post_preserves R_b h_eb_nb h_eb_nh h_ab_broke hw hlp
+                    refine ⟨kst', max (max F_b F_p) 1, ?_, ?_, h_bridge_p⟩
+                    · rw [← h_ops_eq]
+                      have h1 : evalOps (max (max F_b F_p) 1) kst opsCommit = some kst1 := by
+                        have := evalOps_fuel_mono (Nat.zero_le _) h_evalCommit
+                        exact this
+                      have h_branch_eval :
+                          Quanta.KOps.evalOp (max (max F_b F_p) 1) kst1
+                            (KernelOp.branch cond thenOps elseOps)
+                            = Quanta.KOps.evalOps (max (max F_b F_p) 1) kst1 thenOps := by
+                        simp [Quanta.KOps.evalOp, h_lookup, hc]
+                      have h_then_postOps :
+                          Quanta.KOps.evalOps (max (max F_b F_p) 1) kst1
+                            ([KernelOp.branch cond thenOps elseOps] ++ postOps)
+                            = some kst' := by
+                        rw [List.singleton_append]
+                        rw [Quanta.KOps.evalOps.eq_def]
+                        simp only []
+                        rw [h_branch_eval]
+                        have h_then_max : evalOps (max (max F_b F_p) 1) kst1 thenOps
+                                            = some kst_ab := by
+                          have := evalOps_fuel_mono
+                            (le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)) h_ev_b
+                          exact this
+                        rw [h_then_max]
+                        simp [h_ab_broke]
+                        have h_post_max : evalOps (max (max F_b F_p) 1) kst_ab postOps
+                                            = some kst' := by
+                          have := evalOps_fuel_mono
+                            (le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)) h_ev_p
+                          exact this
+                        exact h_post_max
+                      have h_full :
+                          Quanta.KOps.evalOps (max (max F_b F_p) 1) kst
+                            (opsCommit ++ ([KernelOp.branch cond thenOps elseOps] ++ postOps))
+                            = some kst' :=
+                        (evalOps_append h1 h_kst1_ok).trans h_then_postOps
+                      simp only [← List.append_assoc] at h_full
+                      exact h_full
+                    · rw [← h_s_eq]; exact R_p
+              | wI64 _ => simp at hw
+              | wF32 _ => simp at hw
+              | wF64 _ => simp at hw
+-/
+
 end Quanta.Wasm
