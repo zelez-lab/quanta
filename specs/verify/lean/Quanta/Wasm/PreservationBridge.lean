@@ -1303,4 +1303,39 @@ theorem preservation_evalInstrs_cons_i32GeU_bridge
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
+/-- `i32Shl :: rest` bridge (non-buffer path). Same fallthrough as
+    the non-bridge wrapper: `h_no_buf` excludes the
+    `<i32ConstSym k> :: <reg base ty> :: rest` fold so lowerInstr
+    reduces to `lowerI32Bin s .shl`. -/
+theorem preservation_evalInstrs_cons_i32Shl_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_no_buf : ∀ k base ty rest,
+      s.stack ≠ .i32ConstSym k :: .reg base ty :: rest)
+    (rest : List WasmInstr)
+    (preservation_rest_bridge : I32BinIHBridge fuel frames layout rest)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Shl :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Shl :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  have h_l_eq : lowerInstr s .i32Shl = lowerI32Bin s .shl := by
+    show lowerI32Shl s = lowerI32Bin s .shl
+    unfold lowerI32Shl
+    split
+    next k base ty rest hs => exact absurd hs (h_no_buf k base ty rest)
+    next => rfl
+  exact preservation_evalInstrs_cons_i32Bin_generic_bridge
+    .i32Shl (fun a b => a <<< b) .shl
+    (fun _ => rfl) (by intro av bv; rfl)
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke h_l_eq rfl rfl rest
+    preservation_rest_bridge ws' s' ops hw hl
+
 end Quanta.Wasm
