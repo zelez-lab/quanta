@@ -4075,6 +4075,7 @@ theorem lowerInstr_localTee_emits_loopFreeNoBreak_pub
     loopFreeNoBreak ops = true :=
   lowerInstr_localTee_emits_loopFreeNoBreak h
 
+
 /-- `lowerI32Bin` emits `opsA ++ opsB ++ [.binOp ...]` where each
     `opsA` / `opsB` comes from `commit` (so loopFreeNoBreak). The
     trailing `.binOp` is loop-free and not break. Whole list is
@@ -5007,5 +5008,43 @@ theorem preservation_evalInstrs_cons_wreturn
     -- Refines { ws with halted := true } s kst layout — none of the
     -- Refines fields look at halted.
     refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
+
+/-- Re-exposed `evalInstr_brIf_shape` for use from external modules
+    (the private form is hidden here for namespace hygiene; the
+    bridge module needs the shape lemma to derive the cond-cases
+    on `ws_post`). -/
+theorem evalInstr_brIf_shape_pub
+    {ws ws' : WasmState} {depth : Nat}
+    (h : evalInstr ws (.brIf depth) = some ws') :
+    ∃ (c : UInt32) (rest : List WasmValue),
+      ws.stack = .wI32 c :: rest ∧
+      ((c = 0 ∧ ws' = { ws with stack := rest }) ∨
+       (c ≠ 0 ∧ ws' = { ws with stack := rest, branchTarget := some depth })) :=
+  evalInstr_brIf_shape h
+
+/-- Re-exposed `brIf_cond_pop_commit_correct` for use from external
+    modules. -/
+theorem brIf_cond_pop_commit_correct_pub
+    {ws : WasmState} {s : LowerState} {kst : Quanta.KOps.State}
+    {layout : BufferLayout} (R : Refines ws s kst layout)
+    {c : UInt32} {rest_w : List WasmValue}
+    (h_ws_stack : ws.stack = .wI32 c :: rest_w)
+    {sv_cond : SymVal} {s0 : LowerState}
+    (h_pop : s.popSym = some (sv_cond, s0))
+    {cond : Quanta.KOps.Reg} {s1 : LowerState} {opsCommit : List KernelOp}
+    (h_commit : s0.commit sv_cond = some (cond, s1, opsCommit))
+    (h_kst_ok : kst.broke = false) :
+    ∃ kst1, evalOps 0 kst opsCommit = some kst1 ∧
+            kst1.broke = false ∧
+            regLookup kst1.rf cond = some (Quanta.KOps.Value.vU32 c) ∧
+            Refines { ws with stack := rest_w }
+                    { s1 with stack := s0.stack } kst1 layout ∧
+            s.nextReg ≤ s1.nextReg ∧
+            cond < s1.nextReg ∧
+            s1.localReg = s.localReg ∧
+            s1.localTy = s.localTy ∧
+            s1.bufferSlots = s.bufferSlots ∧
+            s0.stack = s.stack.tail :=
+  brIf_cond_pop_commit_correct R h_ws_stack h_pop h_commit h_kst_ok
 
 end Quanta.Wasm

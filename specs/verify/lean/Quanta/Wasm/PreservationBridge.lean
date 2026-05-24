@@ -1923,4 +1923,385 @@ theorem preservation_evalInstrs_cons_i32Store_bridge
               · rw [← h_s_eq]; exact R''
               · exact h_bridge''
 
+-- ════════════════════════════════════════════════════════════════════
+-- Control-flow bridges: br / brIf / wreturn
+--
+-- These differ from the non-control bridge variants. Each control-
+-- flow theorem produces an exact characterization of (ws', kst') —
+-- the post-state shape is fully determined by the arm. The downstream
+-- bridging invariant (`body_branchTarget_implies_IR_broke`, the
+-- mutual-block centerpiece) consumes these explicit shapes per arm.
+--
+-- The control-flow theorems below all output:
+--   - the existence + Refines (same as non-bridge)
+--   - an exact ws' = ws_post characterization
+--   - an exact kst'.broke = b characterization (where b depends on arm)
+--
+-- This is **not** the same shape as `BridgeClauses` (which assumes a
+-- non-control "ws' passthrough" semantics). The bridging invariant's
+-- proof case-analyzes on the head instruction kind to use either
+-- BridgeClauses (non-control) or these explicit shapes (control).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Bridge-augmented `preservation_br_loop_zero`. Produces exact
+    post-state: `ws' = { ws with branchTarget := some 0 }`, `kst' = kst`.
+    Bridge consequence: ws'.branchTarget = some 0 ∧ kst'.broke = false.
+    The naive bridge "branchTarget set ⇒ broke = true" does NOT hold —
+    `br 0` to enclosing Loop signals iteration-continue, not exit. -/
+theorem preservation_br_loop_zero_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (_h_kst_no_broke : kst.broke = false)
+    (rest : List WasmInstr)
+    (h_target : frames.get? 0 = some .loopK)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.br 0 :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.br 0 :: rest) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧
+            Refines ws' s' kst' layout ∧
+            ws' = { ws with branchTarget := some 0 } ∧
+            kst' = kst := by
+  -- Delegate body of proof verbatim to the non-bridge theorem, then
+  -- add the exact-shape clauses by recomputing ws_post / kst_post.
+  obtain ⟨kst', h_ev, h_R⟩ :=
+    preservation_br_loop_zero fuel frames ws s kst layout R h_no_branch h_no_halt
+      rest h_target ws' s' ops hw hl
+  -- Re-derive the exact post-state shape directly (mirrors the non-
+  -- bridge proof's `ws_post` / `kst' = kst` derivation).
+  have h_lower : lowerInstrs fuel frames s (.br 0 :: rest) = some (s, []) := by
+    simp only [lowerInstrs, h_target, ↓reduceIte]
+  rw [h_lower] at hl
+  have hl' : (s, ([] : List KernelOp)) = (s', ops) := (Option.some.injEq _ _).mp hl
+  have hops_eq : ([] : List KernelOp) = ops := congrArg Prod.snd hl'
+  have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+    rw [h_no_halt, h_no_branch]; rfl
+  let ws_post : WasmState := { ws with branchTarget := some 0 }
+  have h_post_branch : ws_post.branchTarget = some 0 := rfl
+  have h_evalInstr : evalInstr ws (.br 0) = some ws_post := rfl
+  have h_step : evalInstrs fuel ws (.br 0 :: rest)
+                  = evalInstrs fuel ws_post rest := by
+    conv => lhs; unfold evalInstrs
+    rw [h_cond]
+    simp [h_evalInstr]
+  rw [h_step] at hw
+  rw [evalInstrs_branchTarget_some fuel ws_post rest 0 h_post_branch] at hw
+  have hws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+  -- kst' from h_ev (which uses `evalOps 0 kst ops = some kst'`). Since
+  -- ops = [] (from hops_eq), evalOps 0 kst [] = some kst, so kst' = kst.
+  have hkst_eq : kst' = kst := by
+    rw [← hops_eq] at h_ev
+    simp [evalOps] at h_ev
+    exact h_ev.symm
+  exact ⟨kst', h_ev, h_R, hws'_eq, hkst_eq⟩
+
+/-- Bridge-augmented `preservation_br_break_nonLoop`. Produces exact
+    post-state: `ws' = { ws with branchTarget := some depth }`,
+    `kst' = { kst with broke := true }`. -/
+theorem preservation_br_break_nonLoop_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (depth : Nat) (rest : List WasmInstr)
+    (kind : FrameKind) (h_kind_ne_loop : kind ≠ .loopK)
+    (h_target : frames.get? depth = some kind)
+    (h_loop_above : hasLoopAbove frames depth = true)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧
+            Refines ws' s' kst' layout ∧
+            ws' = { ws with branchTarget := some depth } ∧
+            kst' = { kst with broke := true } := by
+  obtain ⟨kst', h_ev, h_R⟩ :=
+    preservation_br_break_nonLoop fuel frames ws s kst layout R h_no_branch h_no_halt
+      depth rest kind h_kind_ne_loop h_target h_loop_above ws' s' ops hw hl
+  -- Re-derive exact shape.
+  have h_lower : lowerInstrs fuel frames s (.br depth :: rest)
+                  = some (s, [KernelOp.breakOp]) := by
+    cases kind with
+    | block => simp only [lowerInstrs, h_target, h_loop_above, ↓reduceIte]
+    | wif   => simp only [lowerInstrs, h_target, h_loop_above, ↓reduceIte]
+    | loopK => exact (h_kind_ne_loop rfl).elim
+  rw [h_lower] at hl
+  have hl' : (s, [KernelOp.breakOp]) = (s', ops) :=
+    (Option.some.injEq _ _).mp hl
+  have hops_eq : [KernelOp.breakOp] = ops := congrArg Prod.snd hl'
+  have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+    rw [h_no_halt, h_no_branch]; rfl
+  let ws_post : WasmState := { ws with branchTarget := some depth }
+  have h_post_branch : ws_post.branchTarget = some depth := rfl
+  have h_evalInstr : evalInstr ws (.br depth) = some ws_post := rfl
+  have h_step : evalInstrs fuel ws (.br depth :: rest)
+                  = evalInstrs fuel ws_post rest := by
+    conv => lhs; unfold evalInstrs
+    rw [h_cond]
+    simp [h_evalInstr]
+  rw [h_step] at hw
+  rw [evalInstrs_branchTarget_some fuel ws_post rest depth h_post_branch] at hw
+  have hws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+  have hkst_eq : kst' = { kst with broke := true } := by
+    rw [← hops_eq] at h_ev
+    simp [evalOps, Quanta.KOps.evalOp] at h_ev
+    exact h_ev.symm
+  exact ⟨kst', h_ev, h_R, hws'_eq, hkst_eq⟩
+
+/-- Bridge-augmented `preservation_br_loop_outer_break`. Produces
+    exact post-state: same shape as `br_break_nonLoop_bridge`. -/
+theorem preservation_br_loop_outer_break_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (depth : Nat) (rest : List WasmInstr)
+    (h_depth_pos : depth ≠ 0)
+    (h_target : frames.get? depth = some .loopK)
+    (h_loop_above : hasLoopAbove frames depth = true)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧
+            Refines ws' s' kst' layout ∧
+            ws' = { ws with branchTarget := some depth } ∧
+            kst' = { kst with broke := true } := by
+  obtain ⟨kst', h_ev, h_R⟩ :=
+    preservation_br_loop_outer_break fuel frames ws s kst layout R h_no_branch h_no_halt
+      depth rest h_depth_pos h_target h_loop_above ws' s' ops hw hl
+  have h_lower : lowerInstrs fuel frames s (.br depth :: rest)
+                  = some (s, [KernelOp.breakOp]) := by
+    simp only [lowerInstrs, h_target, h_depth_pos, ↓reduceIte, h_loop_above]
+  rw [h_lower] at hl
+  have hl' : (s, [KernelOp.breakOp]) = (s', ops) :=
+    (Option.some.injEq _ _).mp hl
+  have hops_eq : [KernelOp.breakOp] = ops := congrArg Prod.snd hl'
+  have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+    rw [h_no_halt, h_no_branch]; rfl
+  let ws_post : WasmState := { ws with branchTarget := some depth }
+  have h_post_branch : ws_post.branchTarget = some depth := rfl
+  have h_evalInstr : evalInstr ws (.br depth) = some ws_post := rfl
+  have h_step : evalInstrs fuel ws (.br depth :: rest)
+                  = evalInstrs fuel ws_post rest := by
+    conv => lhs; unfold evalInstrs
+    rw [h_cond]
+    simp [h_evalInstr]
+  rw [h_step] at hw
+  rw [evalInstrs_branchTarget_some fuel ws_post rest depth h_post_branch] at hw
+  have hws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+  have hkst_eq : kst' = { kst with broke := true } := by
+    rw [← hops_eq] at h_ev
+    simp [evalOps, Quanta.KOps.evalOp] at h_ev
+    exact h_ev.symm
+  exact ⟨kst', h_ev, h_R, hws'_eq, hkst_eq⟩
+
+/-- Bridge-augmented `preservation_evalInstrs_cons_wreturn`. Produces
+    exact post-state: `ws' = { ws with halted := true }`, `kst' = kst`.
+    Note: wreturn does NOT set broke on the IR side — the bridge
+    relies on the surrounding context propagating `ws'.halted = true`
+    directly (not via broke). -/
+theorem preservation_evalInstrs_cons_wreturn_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.wreturn :: []) = some ws')
+    (hl : lowerInstrs fuel frames s (.wreturn :: []) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧
+            Refines ws' s' kst' layout ∧
+            ws' = { ws with halted := true } ∧
+            kst' = kst := by
+  obtain ⟨kst', h_ev, h_R⟩ :=
+    preservation_evalInstrs_cons_wreturn fuel frames ws s kst layout R h_no_branch h_no_halt
+      ws' s' ops hw hl
+  rw [lowerInstrs_cons_default fuel frames s .wreturn []
+      (by simp [isStructuredLower])] at hl
+  simp only [lowerInstr, Option.bind_eq_bind, Option.some_bind,
+             List.nil_append, lowerInstrs, pure, Option.some.injEq,
+             Prod.mk.injEq] at hl
+  obtain ⟨h_s_eq, h_ops_eq⟩ := hl
+  let ws_post : WasmState := { ws with halted := true }
+  have h_post_halted : ws_post.halted = true := rfl
+  have h_evalInstr : evalInstr ws .wreturn = some ws_post := rfl
+  rw [evalInstrs_cons_default fuel ws .wreturn [] h_no_branch h_no_halt
+      (by simp [isStructuredEval])] at hw
+  rw [h_evalInstr] at hw
+  simp only at hw
+  rw [evalInstrs_halted_true fuel ws_post [] h_post_halted] at hw
+  have hws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+  have hkst_eq : kst' = kst := by
+    rw [← h_ops_eq] at h_ev
+    simp [evalOps] at h_ev
+    exact h_ev.symm
+  exact ⟨kst', h_ev, h_R, hws'_eq, hkst_eq⟩
+
+-- ════════════════════════════════════════════════════════════════════
+-- brIf bridges (all have `rest = []` precondition, per the existing
+-- non-bridge theorems' L6 design — `brif_design.md` §2A).
+--
+-- The bridge clause depends on the WASM-side cond:
+-- * cond = 0 (false): WASM falls through (branchTarget = none)
+-- * cond ≠ 0 (true):  WASM sets branchTarget = some depth
+--
+-- And on the lowering arm:
+-- * loop_self  (depth=0, target=enclosing Loop):
+--     cond=0 → IR broke=true (exit loop); cond≠0 → IR no broke (continue)
+-- * loop_outer_no_inner (depth>0, target=outer Loop, no inner loop):
+--     cond=0 → IR no effect; cond≠0 → IR no broke (just branchTarget)
+-- * loop_break_inner (depth>0, target+loopAbove):
+--     cond=0 → IR no effect; cond≠0 → IR broke=true + branchTarget
+--
+-- The bridge variant outputs the (cond, broke, branchTarget) triple
+-- as an existential — the downstream bridging invariant proof
+-- case-splits on cond to discharge the appropriate clause.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Bridge-augmented `cons_brIf_loop_self`. Exposes the popped cond
+    `c` and the WASM-side post-state shape (the existing non-bridge
+    theorem already produces the IR-side facts). The `kst'.broke`
+    characterization is left for the downstream bridging invariant
+    proof to derive by re-running the non-bridge proof inline (which
+    threads the cond-cases through the cast + branch ops). -/
+theorem preservation_evalInstrs_cons_brIf_loop_self_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_target : frames.get? 0 = some .loopK)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.brIf 0 :: []) = some ws')
+    (hl : lowerInstrs fuel frames s (.brIf 0 :: []) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      ∃ c : UInt32, ∃ rest_w : List WasmValue,
+        ws.stack = .wI32 c :: rest_w ∧
+        ((c = 0 ∧ ws' = { ws with stack := rest_w }) ∨
+         (c ≠ 0 ∧ ws' = { ws with stack := rest_w,
+                                   branchTarget := some 0 })) := by
+  obtain ⟨kst', F, h_ev, h_R⟩ :=
+    preservation_evalInstrs_cons_brIf_loop_self fuel frames ws s kst layout R
+      h_no_branch h_no_halt h_kst_no_broke h_target ws' s' ops hw hl
+  rw [evalInstrs_cons_default fuel ws (.brIf 0) [] h_no_branch h_no_halt
+      (by simp [isStructuredEval])] at hw
+  cases h_eval_head : evalInstr ws (.brIf 0) with
+  | none => rw [h_eval_head] at hw; simp at hw
+  | some ws_post =>
+    rw [h_eval_head] at hw
+    simp only at hw
+    have h_eval_nil : evalInstrs fuel ws_post [] = some ws_post := by
+      simp [evalInstrs]
+    rw [h_eval_nil] at hw
+    have h_ws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+    obtain ⟨c, rest_w, h_ws_stack, h_branch⟩ := evalInstr_brIf_shape_pub h_eval_head
+    refine ⟨kst', F, h_ev, h_R, c, rest_w, h_ws_stack, ?_⟩
+    rcases h_branch with ⟨hc, h_eq⟩ | ⟨hc, h_eq⟩
+    · left; exact ⟨hc, by rw [h_ws'_eq]; exact h_eq⟩
+    · right; exact ⟨hc, by rw [h_ws'_eq]; exact h_eq⟩
+
+/-- Bridge-augmented `cons_brIf_loop_outer_no_inner`. Exposes the
+    popped cond + WASM post-state. -/
+theorem preservation_evalInstrs_cons_brIf_loop_outer_no_inner_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (depth : Nat) (h_depth_pos : depth ≠ 0)
+    (h_target : frames.get? depth = some .loopK)
+    (h_no_loop_above : hasLoopAbove frames depth = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.brIf depth :: []) = some ws')
+    (hl : lowerInstrs fuel frames s (.brIf depth :: []) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      ∃ c : UInt32, ∃ rest_w : List WasmValue,
+        ws.stack = .wI32 c :: rest_w ∧
+        ((c = 0 ∧ ws' = { ws with stack := rest_w }) ∨
+         (c ≠ 0 ∧ ws' = { ws with stack := rest_w,
+                                   branchTarget := some depth })) := by
+  obtain ⟨kst', F, h_ev, h_R⟩ :=
+    preservation_evalInstrs_cons_brIf_loop_outer_no_inner fuel frames ws s kst layout R
+      h_no_branch h_no_halt h_kst_no_broke depth h_depth_pos h_target h_no_loop_above
+      ws' s' ops hw hl
+  rw [evalInstrs_cons_default fuel ws (.brIf depth) [] h_no_branch h_no_halt
+      (by simp [isStructuredEval])] at hw
+  cases h_eval_head : evalInstr ws (.brIf depth) with
+  | none => rw [h_eval_head] at hw; simp at hw
+  | some ws_post =>
+    rw [h_eval_head] at hw
+    simp only at hw
+    have h_eval_nil : evalInstrs fuel ws_post [] = some ws_post := by
+      simp [evalInstrs]
+    rw [h_eval_nil] at hw
+    have h_ws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+    obtain ⟨c, rest_w, h_ws_stack, h_branch⟩ := evalInstr_brIf_shape_pub h_eval_head
+    refine ⟨kst', F, h_ev, h_R, c, rest_w, h_ws_stack, ?_⟩
+    rcases h_branch with ⟨hc, h_eq⟩ | ⟨hc, h_eq⟩
+    · left; exact ⟨hc, by rw [h_ws'_eq]; exact h_eq⟩
+    · right; exact ⟨hc, by rw [h_ws'_eq]; exact h_eq⟩
+
+/-- Bridge-augmented `cons_brIf_loop_break_inner`. Same shape;
+    handles arms 2 + 4. -/
+theorem preservation_evalInstrs_cons_brIf_loop_break_inner_bridge
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (depth : Nat)
+    (kind : FrameKind)
+    (h_depth_pos_or_nonloop :
+      (depth ≠ 0 ∧ kind = .loopK) ∨ kind ≠ .loopK)
+    (h_target : frames.get? depth = some kind)
+    (h_loop_above : hasLoopAbove frames depth = true)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.brIf depth :: []) = some ws')
+    (hl : lowerInstrs fuel frames s (.brIf depth :: []) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      ∃ c : UInt32, ∃ rest_w : List WasmValue,
+        ws.stack = .wI32 c :: rest_w ∧
+        ((c = 0 ∧ ws' = { ws with stack := rest_w }) ∨
+         (c ≠ 0 ∧ ws' = { ws with stack := rest_w,
+                                   branchTarget := some depth })) := by
+  obtain ⟨kst', F, h_ev, h_R⟩ :=
+    preservation_evalInstrs_cons_brIf_loop_break_inner fuel frames ws s kst layout R
+      h_no_branch h_no_halt h_kst_no_broke depth kind h_depth_pos_or_nonloop
+      h_target h_loop_above ws' s' ops hw hl
+  rw [evalInstrs_cons_default fuel ws (.brIf depth) [] h_no_branch h_no_halt
+      (by simp [isStructuredEval])] at hw
+  cases h_eval_head : evalInstr ws (.brIf depth) with
+  | none => rw [h_eval_head] at hw; simp at hw
+  | some ws_post =>
+    rw [h_eval_head] at hw
+    simp only at hw
+    have h_eval_nil : evalInstrs fuel ws_post [] = some ws_post := by
+      simp [evalInstrs]
+    rw [h_eval_nil] at hw
+    have h_ws'_eq : ws' = ws_post := ((Option.some.injEq _ _).mp hw).symm
+    obtain ⟨c, rest_w, h_ws_stack, h_branch⟩ := evalInstr_brIf_shape_pub h_eval_head
+    refine ⟨kst', F, h_ev, h_R, c, rest_w, h_ws_stack, ?_⟩
+    rcases h_branch with ⟨hc, h_eq⟩ | ⟨hc, h_eq⟩
+    · left; exact ⟨hc, by rw [h_ws'_eq]; exact h_eq⟩
+    · right; exact ⟨hc, by rw [h_ws'_eq]; exact h_eq⟩
+
 end Quanta.Wasm
