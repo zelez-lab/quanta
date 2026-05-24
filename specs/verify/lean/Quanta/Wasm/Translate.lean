@@ -505,10 +505,16 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
               | some (thenBody, elseBody, post) => do
                   let (svCond, s0) ← s.popSym
                   let (cond, s1, opsCommit) ← s0.commit svCond
-                  let (s2, thenOps) ← lowerInstrs f (.wif :: frames) s1 thenBody
+                  -- Cast u32 cond to bool (`.branch` requires vBool;
+                  -- mirrors the brIf L6 fix).
+                  let (cond_bool, s_cast) := s1.alloc
+                  let (s2, thenOps) ← lowerInstrs f (.wif :: frames) s_cast thenBody
                   let (s3, elseOps) ← lowerInstrs f (.wif :: frames) s2 elseBody
                   let (s4, postOps) ← lowerInstrs f frames s3 post
-                  pure (s4, opsCommit ++ [.branch cond thenOps elseOps] ++ postOps)
+                  pure (s4, opsCommit
+                            ++ [.cast cond_bool cond .u32 .bool,
+                                .branch cond_bool thenOps elseOps]
+                            ++ postOps)
       | .br depth =>
           -- Code after `br` is dead (WASM validator-rejected if
           -- reached); we simply don't recurse on `rest`.

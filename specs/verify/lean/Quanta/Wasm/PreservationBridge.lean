@@ -2461,24 +2461,20 @@ theorem preservation_evalInstrs_cons_block_fallthrough
         · rw [← h_s_eq]; exact R_post
 
 -- ════════════════════════════════════════════════════════════════════
--- L8.2 — cons_wif preservation (DEFERRED — lowering bug discovered)
+-- L8.2 — cons_wif preservation (DEFERRED)
 --
--- The wif lowering in `Quanta.Wasm.Translate.lowerInstrs` emits
--- `.branch cond thenOps elseOps` where `cond : Reg` carries a vU32
--- (committed from a SymVal that originated as a wI32). But KOps'
--- `evalOp` for `.branch` expects a vBool — it fails on vU32. The
--- brIf lowering had the same bug, which was fixed in L6 by inserting
--- a `.cast cond_bool cond .u32 .bool` before the branch. The same
--- fix has not yet been applied to the wif lowering.
+-- The wif lowering was updated this session to insert a `.cast
+-- cond_bool cond .u32 .bool` before `.branch cond_bool ...`
+-- (mirroring the brIf L6 fix). The proof of cons_wif against the
+-- new lowering follows the same shape as cons_block + brIf_loop_self
+-- combined: pop+commit cond, cast to bool, dispatch on branch, run
+-- then/else body, then post.
 --
--- Consequence: any kernel that exercises wif preservation will fail
--- at runtime. The cons_wif bridge cannot be proven until lowering
--- is patched.
---
--- The proof scaffold below is correct in shape (mirrors cons_block
--- + brIf's commit-correct path) but blocked by the lowering bug.
--- Re-enable once `lowerInstrs` for `.wif` inserts a `.cast` before
--- `.branch`, matching the brIf L6 fix.
+-- The proof is sketched below (commented out) — the structure mirrors
+-- the brIf_loop_self_bridge plumbing combined with cons_block's
+-- body+post composition. Activation requires careful re-derivation
+-- of the new bind-chain unfold + the evalOp branch reduction; this
+-- exceeded the time budget for this session.
 -- ════════════════════════════════════════════════════════════════════
 
 /-
