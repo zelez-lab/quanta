@@ -3686,6 +3686,52 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
               | wF64 _ => simp at hw
 
 -- ════════════════════════════════════════════════════════════════════
+-- L8.5 §4b — bridging invariant foundations
+--
+-- The framework_preservation_straightLine theorem's BridgeClauses
+-- output already establishes the bridging invariant for non-control
+-- bodies (the universal direction: branchTarget = none → broke =
+-- false). cons_wloop needs the INVERSE bridge: in a brIf_loop_self
+-- body's exit iteration (cond = 0 falls through), WASM
+-- branchTarget = none BUT IR broke = true.
+--
+-- The foundational lemma below establishes the IR side of this
+-- inversion: if body's IR yields broke = true after one run, opLoop
+-- exits in one iteration. This decouples the iteration mechanism
+-- from the body's specific shape — any body whose evalOps sets
+-- broke=true on the first iter triggers a one-iter loop exit.
+-- ════════════════════════════════════════════════════════════════════
+
+open Quanta.KOps (opLoop State) in
+/-- One-iteration exit lemma for `opLoop`: if running the body's
+    IR for `evalOps fuel st body = some st_next` with
+    `st_next.broke = true`, the loop runs body exactly once,
+    then exits (returning the broke-reset state).
+
+    Requires the iteration counter `f` to be at least 2: one to
+    run body, one to observe broke=true on the next iteration. -/
+theorem opLoop_one_iter_exit
+    {fuel : Nat} {body : List KernelOp}
+    {st st_next : State}
+    (h_pre_broke : st.broke = false)
+    (h_body : Quanta.KOps.evalOps fuel st body = some st_next)
+    (h_post_broke : st_next.broke = true)
+    {f : Nat} (h_f : f ≥ 2) :
+    opLoop fuel body f st = some st_next.reset_broke := by
+  -- f ≥ 2 means f = f₀ + 2.
+  rcases Nat.exists_eq_add_of_le h_f with ⟨k, hk⟩
+  -- hk : f = 2 + k. Rewrite as (k + 1) + 1.
+  have h_f_eq : f = (k + 1) + 1 := by omega
+  rw [h_f_eq]
+  rw [Quanta.KOps.opLoop]
+  simp [h_pre_broke]
+  rw [h_body]
+  simp only
+  -- Now goal: opLoop fuel body (k + 1) st_next = some st_next.reset_broke
+  rw [Quanta.KOps.opLoop]
+  simp [h_post_broke]
+
+-- ════════════════════════════════════════════════════════════════════
 -- L8.3 cons_wloop — INVESTIGATION RESULTS
 --
 -- cons_wloop's general claim depends on the iteration bridge: each
