@@ -2461,27 +2461,22 @@ theorem preservation_evalInstrs_cons_block_fallthrough
         · rw [← h_s_eq]; exact R_post
 
 -- ════════════════════════════════════════════════════════════════════
--- L8.2 / L8.3 — cons_wif and cons_wloop preservation (DEFERRED)
+-- L8.2 — cons_wif preservation (no-else, fall-through, Path A)
 --
--- The wif/wloop lowerings thread lower-state through bodies
--- sequentially. For wif:
+-- The wif lowering's `localReg` snapshot/restore (Translate.lean,
+-- post-this-session commit) unblocks the cons_wif proof. The two
+-- bodies are both lowered from a `localReg` snapshot taken at
+-- If-entry; the post-frame state restores the same snapshot. So
+-- the eval-side `Refines ws s kst` propagates cleanly across the
+-- branch the eval picks, and the unselected branch's lowering
+-- doesn't corrupt the post-state's locals view.
 --
---     (cond_bool, s_cast) := s1.alloc
---     (s2, thenOps) ← lowerInstrs f (.wif::frames) s_cast thenBody
---     (s3, elseOps) ← lowerInstrs f (.wif::frames) s2 elseBody
---     (s4, postOps) ← lowerInstrs f frames s3 post
+-- Scope below: empty elseBody (canonical Rust `if cond { ... }` —
+-- no `else` clause). The thenBody is fall-through (post-state has
+-- `branchTarget = none`, `halted = false`, `broke = false`).
 --
--- But eval runs ONE body based on cond, then post. For c = 0,
--- the Refines IH for elseBody needs Refines at `s2` (post-thenBody),
--- not at `s_cast`.
---
--- This requires a Refines-freshness-monotonicity lemma on
--- `lowerInstrs` that says (informally): lowering only bumps
--- `nextReg` and adds register allocations, leaving stack/locals/
--- bufferSlots compatible with the input Refines.
---
--- Estimated effort for the lemma + cons_wif + cons_wloop + the
--- bridging invariant: 2-4 sessions. Tracked in tasks #5/#7/#8.
+-- Full wif (non-empty elseBody) follows the same pattern; lands
+-- next as cons_wif_fallthrough.
 -- ════════════════════════════════════════════════════════════════════
 
 end Quanta.Wasm
