@@ -4359,6 +4359,43 @@ def StraightLineInstrs : List WasmInstr → Prop
   | []        => True
   | i :: rest => StraightLineInstr i ∧ StraightLineInstrs rest
 
+/-- Syntactic predicate: an instruction whose lowering is IR-empty
+    and stack-pure (no state change beyond a no-op on the
+    LowerState). Admitting an op here requires proving the four
+    peel-step lemmas (defined later in the file). -/
+def IsIrEmptyOp : WasmInstr → Prop
+  | .nop => True
+  | _    => False
+
+/-- List of IR-empty / stack-pure instructions. Admitted as a
+    wloop-body prefix. -/
+def IsIrEmptyPrefix : List WasmInstr → Prop
+  | [] => True
+  | i :: rest => IsIrEmptyOp i ∧ IsIrEmptyPrefix rest
+
+/-- Body shape admitted by the L10v7 framework's wloop arm:
+    a list of IR-empty prefix instructions followed by the
+    single-iter-exit suffix `[.i32Const 0, .brIf 0]`. -/
+def WloopBodyShape (body : List WasmInstr) : Prop :=
+  ∃ pref : List WasmInstr,
+    IsIrEmptyPrefix pref ∧ body = pref ++ [.i32Const 0, .brIf 0]
+
+/-- Kernel-body well-formedness for the L10v7 framework.
+    Admits a flat sequence of `StraightLineInstr` ops interleaved
+    with `wloop 0 :: <body> ++ [.wend]` segments where the body
+    matches `WloopBodyShape`. -/
+inductive KernelInstrs : List WasmInstr → Prop
+  | empty : KernelInstrs []
+  | sl_cons {i : WasmInstr} {rest : List WasmInstr} :
+      StraightLineInstr i →
+      KernelInstrs rest →
+      KernelInstrs (i :: rest)
+  | wloop_cons {rest body post : List WasmInstr} :
+      splitAtEnd rest = some (body, post) →
+      WloopBodyShape body →
+      KernelInstrs post →
+      KernelInstrs (.wloop 0 :: rest)
+
 /-- L10 — framework_preservation for straight-line kernels.
 
     Composes the per-op bridge variants for every constructor in
@@ -5113,27 +5150,15 @@ theorem framework_preservation_nop_const0_brIf0_wloop_then_straightLine
 --
 -- Generalizes the peel-delegate pattern: for any list `prefix` of
 -- "IR-empty stack-pure" instructions, the four body IHs for
--- `prefix ++ core` reduce to the four body IHs for `core`. The
--- predicate `IsIrEmptyOp` captures the allowed prefix instructions.
--- Currently admits `.nop`; extensible by adding constructors here
--- and proving the corresponding peel-step lemmas. The wloop kernel
--- builder then admits `prefix ++ [.i32Const 0, .brIf 0]` for any
--- well-formed prefix in one shot.
+-- `prefix ++ core` reduce to the four body IHs for `core`.
+-- IsIrEmptyOp / IsIrEmptyPrefix are defined earlier (next to the
+-- straight-line predicates) so KernelInstrs / WloopBodyShape can
+-- reference them. Currently admits `.nop`; extensible by adding
+-- constructors here and proving the corresponding peel-step
+-- lemmas. The wloop kernel builder admits
+-- `prefix ++ [.i32Const 0, .brIf 0]` for any well-formed prefix
+-- in one shot.
 -- ════════════════════════════════════════════════════════════════════
-
-/-- Syntactic predicate: an instruction whose lowering is IR-empty
-    and stack-pure (no state change beyond a no-op on the
-    LowerState). Admitting an op here requires proving the four
-    peel-step lemmas below for it. -/
-def IsIrEmptyOp : WasmInstr → Prop
-  | .nop => True
-  | _    => False
-
-/-- List of IR-empty / stack-pure instructions. Admitted as a
-    wloop-body prefix. -/
-def IsIrEmptyPrefix : List WasmInstr → Prop
-  | [] => True
-  | i :: rest => IsIrEmptyOp i ∧ IsIrEmptyPrefix rest
 
 /-- Parametric peel for IR-empty prefix on the lowering side. -/
 theorem peel_irEmptyPrefix_lowering
@@ -5525,5 +5550,336 @@ theorem framework_preservation_irEmptyPrefix_const0_brIf0_wloop_then_straightLin
 -- opLoop sees broke after one iter and exits to the post-loop
 -- straight-line code.
 -- ════════════════════════════════════════════════════════════════════
+
+-- ════════════════════════════════════════════════════════════════════
+-- L10v7 — framework_preservation_kernel
+--
+-- Top-level composition theorem admitting `KernelInstrs`: a kernel
+-- body composed of `StraightLineInstr` ops and `wloop 0` segments
+-- (with bodies matching `WloopBodyShape`).
+--
+-- Inducts on `KernelInstrs instrs` (not on the list directly), so
+-- the wloop arm gets the splitAtEnd witness and the post IH from
+-- the same constructor. Dispatches:
+--  * `empty`: nil case (input states pass through).
+--  * `sl_cons`: applies the straight-line framework on `[i]` then
+--    composes with the recursive IH on rest. Simpler: just route
+--    through framework_preservation_straightLine which already
+--    handles the per-op dispatch for any straight-line head.
+--  * `wloop_cons`: applies cons_wloop_singleIterExit with body IHs
+--    from WloopBodyShape + the framework's own IH on post.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- L10v7 — framework_preservation_kernel.
+    Admits any `KernelInstrs` kernel body. -/
+theorem framework_preservation_kernel
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    (h_fuel_ge_2 : fuel ≥ 2)
+    (instrs : List WasmInstr)
+    (h_wf : KernelInstrs instrs)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (fuel + 1) ws instrs = some ws')
+    (hl : lowerInstrs (fuel + 1) frames s instrs = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  induction h_wf generalizing ws s kst ws' s' ops with
+  | empty =>
+      -- evalInstrs and lowerInstrs both return input on [].
+      simp only [evalInstrs] at hw
+      simp only [lowerInstrs] at hl
+      have h_ws_eq : ws' = ws := ((Option.some.injEq _ _).mp hw).symm
+      have h_pair : (s, ([] : List KernelOp)) = (s', ops) :=
+        (Option.some.injEq _ _).mp hl
+      have h_s_eq : s = s' := congrArg Prod.fst h_pair
+      have h_ops_eq : ([] : List KernelOp) = ops := congrArg Prod.snd h_pair
+      refine ⟨kst, 0, ?_, ?_, ?_⟩
+      · rw [← h_ops_eq]; simp [evalOps]
+      · rw [h_ws_eq, ← h_s_eq]; exact R
+      · refine ⟨?_, ?_⟩
+        · intro d hd
+          rw [h_ws_eq] at hd
+          rw [h_no_branch] at hd
+          exact (Option.noConfusion hd)
+        · intro _
+          exact h_kst_no_broke
+  | @sl_cons i rest h_sl _h_rest_wf IH =>
+      -- Build the rest IH in the bridge shape that per-op cons bridges
+      -- expect, then dispatch on the head constructor via the same
+      -- pattern as framework_preservation_straightLine's cons case.
+      have preservation_rest_bridge :
+          ∀ {ws_mid : WasmState} {s_mid : LowerState}
+            {kst_mid : Quanta.KOps.State}
+            (_R_mid : Refines ws_mid s_mid kst_mid layout)
+            (_h_nb_mid : ws_mid.branchTarget = none)
+            (_h_nh_mid : ws_mid.halted = false)
+            (_h_nbk_mid : kst_mid.broke = false)
+            {ws'_mid : WasmState} {s'_mid : LowerState}
+            {postOps : List KernelOp}
+            (_hw_mid : evalInstrs (fuel + 1) ws_mid rest = some ws'_mid)
+            (_hl_mid : lowerInstrs (fuel + 1) frames s_mid rest
+                          = some (s'_mid, postOps)),
+          ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+            evalOps F kst_mid postOps = some kst'_mid ∧
+            Refines ws'_mid s'_mid kst'_mid layout ∧
+            BridgeClauses ws'_mid kst'_mid := by
+        intro ws_mid s_mid kst_mid R_mid h_nb_m h_nh_m h_nbk_m
+              ws'_mid s'_mid postOps hw_mid hl_mid
+        exact IH (ws := ws_mid) (s := s_mid) (kst := kst_mid)
+          R_mid h_nb_m h_nh_m h_nbk_m ws'_mid s'_mid postOps hw_mid hl_mid
+      -- Dispatch on head constructor.
+      cases i with
+      | nop =>
+          exact preservation_evalInstrs_cons_nop_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | drop =>
+          exact preservation_evalInstrs_cons_drop_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Const n =>
+          exact preservation_evalInstrs_cons_i32Const_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            n rest preservation_rest_bridge ws' s' ops hw hl
+      | localGet idx =>
+          cases h_lookup : s.lookupBufferSlot idx with
+          | none =>
+              exact preservation_evalInstrs_cons_localGet_bridge
+                (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+                idx h_lookup rest preservation_rest_bridge ws' s' ops hw hl
+          | some slot =>
+              have h_loc_buf := h_buf_locals ws s idx slot h_lookup
+              exact preservation_evalInstrs_cons_localGet_bufferSlot_bridge
+                (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+                idx slot h_lookup h_loc_buf
+                rest preservation_rest_bridge ws' s' ops hw hl
+      | localSet idx =>
+          exact preservation_evalInstrs_cons_localSet_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            idx rest preservation_rest_bridge ws' s' ops hw hl
+      | localTee idx =>
+          exact preservation_evalInstrs_cons_localTee_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            idx rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Add =>
+          exact preservation_evalInstrs_cons_i32Add_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            (h_no_buf_stack s).left
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Shl =>
+          exact preservation_evalInstrs_cons_i32Shl_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            (h_no_buf_stack s).right
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Sub =>
+          exact preservation_evalInstrs_cons_i32Sub_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Mul =>
+          exact preservation_evalInstrs_cons_i32Mul_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32And =>
+          exact preservation_evalInstrs_cons_i32And_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Or =>
+          exact preservation_evalInstrs_cons_i32Or_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Xor =>
+          exact preservation_evalInstrs_cons_i32Xor_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32ShrU =>
+          exact preservation_evalInstrs_cons_i32ShrU_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32DivU =>
+          exact preservation_evalInstrs_cons_i32DivU_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32RemU =>
+          exact preservation_evalInstrs_cons_i32RemU_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Eq =>
+          exact preservation_evalInstrs_cons_i32Eq_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Ne =>
+          exact preservation_evalInstrs_cons_i32Ne_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32LtU =>
+          exact preservation_evalInstrs_cons_i32LtU_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32LeU =>
+          exact preservation_evalInstrs_cons_i32LeU_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32GtU =>
+          exact preservation_evalInstrs_cons_i32GtU_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32GeU =>
+          exact preservation_evalInstrs_cons_i32GeU_bridge
+            (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+            rest preservation_rest_bridge ws' s' ops hw hl
+      | i32Load offset align =>
+          have h_offset : offset = 0 := h_sl
+          rcases h_stk : s.stack with _ | ⟨sv, lstk⟩
+          · simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+          cases sv with
+          | reg _ _ =>
+              simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+          | i32ConstSym _ =>
+              simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+          | bufferPtr _ =>
+              simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+          | scaledIdx _ _ =>
+              simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+          | bufferAccess slot base scale =>
+              match scale with
+              | 4 =>
+                  have h_load_bnd :
+                      ∀ b : UInt32,
+                        regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+                        b.toNat < layout.length slot :=
+                    h_load_bounds s kst slot base lstk h_stk
+                  exact preservation_evalInstrs_cons_i32Load_bridge
+                    (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+                    slot base lstk offset align h_stk h_offset h_load_bnd
+                    rest preservation_rest_bridge ws' s' ops hw hl
+              | 0 => simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+              | 1 => simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+              | 2 => simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+              | 3 => simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+              | n + 5 => simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+      | i32Store offset align =>
+          have h_offset : offset = 0 := h_sl
+          rcases h_stk : s.stack with _ | ⟨sv_val, lstk1⟩
+          · simp [lowerInstrs, lowerInstr, lowerI32Store, LowerState.popSym, h_stk] at hl
+          rcases h_stk2 : lstk1 with _ | ⟨sv2, lstk_rest⟩
+          · simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                  LowerState.popSym, h_stk2] at hl
+          cases sv2 with
+          | reg _ _ =>
+              simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                    LowerState.popSym, h_stk2] at hl
+          | i32ConstSym _ =>
+              simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                    LowerState.popSym, h_stk2] at hl
+          | bufferPtr _ =>
+              simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                    LowerState.popSym, h_stk2] at hl
+          | scaledIdx _ _ =>
+              simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                    LowerState.popSym, h_stk2] at hl
+          | bufferAccess slot base scale =>
+              match scale with
+              | 4 =>
+                  have h_full_stk :
+                      s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest := by
+                    rw [h_stk, h_stk2]
+                  have h_in_bounds := h_store_bounds s kst sv_val slot base lstk_rest
+                    h_full_stk
+                  have h_no_overlap := h_store_layout s kst sv_val slot base lstk_rest
+                    h_full_stk
+                  exact preservation_evalInstrs_cons_i32Store_bridge
+                    (fuel + 1) frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+                    sv_val slot base lstk_rest offset align
+                    h_full_stk h_offset h_in_bounds h_no_overlap
+                    rest preservation_rest_bridge ws' s' ops hw hl
+              | 0 => simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                          LowerState.popSym, h_stk2] at hl
+              | 1 => simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                          LowerState.popSym, h_stk2] at hl
+              | 2 => simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                          LowerState.popSym, h_stk2] at hl
+              | 3 => simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                          LowerState.popSym, h_stk2] at hl
+              | n + 5 => simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                              LowerState.popSym, h_stk2] at hl
+      -- Excluded constructors (StraightLineInstr is False for them).
+      | i64Const _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Const _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | f64Const _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32DivS => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32RemS => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32ShrS => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32LtS => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32GtS => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32LeS => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32GeS => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32Eqz => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Add => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Sub => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Mul => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Div => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Eq => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Ne => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Lt => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Gt => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Le => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Ge => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Neg => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Abs => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Sqrt => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Min => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Max => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32WrapI64 => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32ConvertI32S => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32ConvertI32U => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32TruncF32S => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32TruncF32U => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32ReinterpretI32 => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32ReinterpretF32 => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Load _ _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | f32Store _ _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32Load8U _ _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32Load8S _ _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | i32Store8 _ _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | block _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | wloop _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | wif _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | welse => exact absurd h_sl (by simp [StraightLineInstr])
+      | wend => exact absurd h_sl (by simp [StraightLineInstr])
+      | br _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | brIf _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | wreturn => exact absurd h_sl (by simp [StraightLineInstr])
+      | call _ => exact absurd h_sl (by simp [StraightLineInstr])
+      | wselect => exact absurd h_sl (by simp [StraightLineInstr])
+      | unreachable => exact absurd h_sl (by simp [StraightLineInstr])
+      | unsupported _ => exact absurd h_sl (by simp [StraightLineInstr])
+  | @wloop_cons rest body post h_split h_body _h_post_wf _IH =>
+      -- TODO: wloop_cons requires fuel monotonicity for evalInstrs /
+      -- lowerInstrs. Our IH on `post` is at outer fuel `fuel + 1`,
+      -- but cons_wloop_singleIterExit's post_preserves expects fuel
+      -- `bt = fuel` (one less, because the wloop arm decrements the
+      -- fuel for the inner body+post). Bridge requires:
+      --   evalInstrs n s instrs = some s' → n ≤ m →
+      --     evalInstrs m s instrs = some s'
+      -- (and the analogue for lowerInstrs). Deferred to a follow-up
+      -- session — fuel monotonicity for the WASM-side evaluators
+      -- is a multi-case induction.
+      sorry
 
 end Quanta.Wasm
