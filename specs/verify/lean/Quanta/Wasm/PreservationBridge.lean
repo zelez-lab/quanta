@@ -3997,6 +3997,56 @@ theorem const0_brIf0_lowering_preserves
   · show s_b.nextReg ≤ s_b.nextReg + 1 + 1
     omega
 
+/-- `body_falls_through` discharge for body = `[.i32Const 0, .brIf 0]`.
+    WASM eval pushes wI32 0 then pops it (brIf 0 with cond=0 falls
+    through) — net stack effect zero, no branch, no halt, locals/mem
+    unchanged. Combines with the lowering-only invariants from
+    `const0_brIf0_lowering_preserves`. -/
+theorem const0_brIf0_falls_through
+    {bt : Nat} (frames : List FrameKind)
+    {ws_b : WasmState} {s_b : LowerState}
+    {ws'_b : WasmState} {s'_b : LowerState}
+    {bodyOps : List KernelOp}
+    (h_no_branch : ws_b.branchTarget = none)
+    (h_no_halt : ws_b.halted = false)
+    (hw_b : evalInstrs bt ws_b [.i32Const 0, .brIf 0] = some ws'_b)
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              [.i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
+    ws'_b.branchTarget = none ∧ ws'_b.halted = false ∧
+    ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
+    ws'_b.mem = ws_b.mem ∧
+    s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+    s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots := by
+  -- Lowering side: pull from const0_brIf0_lowering_preserves.
+  obtain ⟨h_lr, h_lt, h_st, h_bs, _h_nr⟩ :=
+    const0_brIf0_lowering_preserves frames h_lb
+  -- Eval side: unfold the cons evaluation step by step.
+  rw [evalInstrs_cons_default bt ws_b (.i32Const 0) [.brIf 0]
+      h_no_branch h_no_halt (by simp [isStructuredEval])] at hw_b
+  simp only [evalInstr, WasmState.push, Int.toNat] at hw_b
+  -- The push state inherits ws_b.branchTarget = none and ws_b.halted = false.
+  have h_push_nb :
+      ({ ws_b with stack := .wI32 (UInt32.ofNat 0) :: ws_b.stack }
+        : WasmState).branchTarget = none := h_no_branch
+  have h_push_nh :
+      ({ ws_b with stack := .wI32 (UInt32.ofNat 0) :: ws_b.stack }
+        : WasmState).halted = false := h_no_halt
+  rw [evalInstrs_cons_default bt _ (.brIf 0) [] h_push_nb h_push_nh
+      (by simp [isStructuredEval])] at hw_b
+  simp only [evalInstr, WasmState.pop, Option.bind_eq_bind,
+             Option.some_bind, evalInstrs] at hw_b
+  -- hw_b should now read: `some <restored ws_b copy> = some ws'_b` (modulo decide).
+  simp at hw_b
+  -- ws'_b is the restored copy: same locals/stack/mem/halted/branchTarget as ws_b.
+  -- Use the WasmState extensionality from hw_b.
+  refine ⟨?_, ?_, ?_, ?_, ?_, h_lr, h_lt, h_st, h_bs⟩
+  all_goals (
+    first
+    | (rw [← hw_b]; exact h_no_branch)
+    | (rw [← hw_b]; exact h_no_halt)
+    | (rw [← hw_b])
+  )
+
 -- ════════════════════════════════════════════════════════════════════
 -- L8.3 cons_wloop — INVESTIGATION RESULTS
 --
