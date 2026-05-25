@@ -3725,11 +3725,13 @@ def StraightLineInstr : WasmInstr → Prop
   | .localGet _   => True
   | .localSet _   => True
   | .localTee _   => True
+  | .i32Add       => True
   | .i32Sub       => True
   | .i32Mul       => True
   | .i32And       => True
   | .i32Or        => True
   | .i32Xor       => True
+  | .i32Shl       => True
   | .i32ShrU      => True
   | .i32DivU      => True
   | .i32RemU      => True
@@ -3759,6 +3761,29 @@ def BufferLocalsWellFormed
   ∀ i slot, s.lookupBufferSlot i = some slot →
     ∀ v, ws.locals.get? i = some v →
       ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr slot
+
+/-- Kernel-wide assumption that the lowering state's symbolic
+    stack never matches a buffer-fold pattern at the moment an
+    i32Add or i32Shl is about to lower. Concretely:
+
+    For i32Add: `s.stack` doesn't have shape
+      `.scaledIdx _ _ :: .bufferPtr _ :: _` or
+      `.bufferPtr _ :: .scaledIdx _ _ :: _` at the top.
+    For i32Shl: `s.stack` doesn't have shape
+      `.i32ConstSym _ :: .reg _ _ :: _` at the top.
+
+    Discharged downstream by kernels that don't use buffer
+    pointers as arithmetic operands (the common case — buffer
+    pointers are read by localGet then consumed by i32Load/Store
+    immediately via the buffer-pattern fast-paths). Kernels that
+    exercise the buffer-fold paths are out of the
+    `framework_preservation_straightLine` scope. -/
+def NoBufferPatternStack (s : LowerState) : Prop :=
+  (∀ slot base scale rest,
+      s.stack ≠ .scaledIdx base scale :: .bufferPtr slot :: rest ∧
+      s.stack ≠ .bufferPtr slot :: .scaledIdx base scale :: rest) ∧
+  (∀ k base ty rest,
+      s.stack ≠ .i32ConstSym k :: .reg base ty :: rest)
 
 /-- `instrs : List WasmInstr` is straight-line if every element is. -/
 def StraightLineInstrs : List WasmInstr → Prop
@@ -3793,6 +3818,10 @@ theorem framework_preservation_straightLine
     -- without proving bufferSlot preservation per-op.
     (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
         BufferLocalsWellFormed layout ws_x s_x)
+    -- Kernel-wide hypothesis: the symbolic stack never matches
+    -- the buffer-fold patterns at any reachable state. Universal
+    -- over s_x for the same reason as h_buf_locals.
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
     (instrs : List WasmInstr)
     (h_wf : StraightLineInstrs instrs)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
@@ -3880,6 +3909,16 @@ theorem framework_preservation_straightLine
         exact preservation_evalInstrs_cons_localTee_bridge
           fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
           idx rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Add =>
+        exact preservation_evalInstrs_cons_i32Add_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          (h_no_buf_stack s).left
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Shl =>
+        exact preservation_evalInstrs_cons_i32Shl_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          (h_no_buf_stack s).right
+          rest preservation_rest_bridge ws' s' ops hw hl
     | i32Sub =>
         exact preservation_evalInstrs_cons_i32Sub_bridge
           fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
@@ -3942,10 +3981,8 @@ theorem framework_preservation_straightLine
     | i64Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f32Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f64Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
-    | i32Add => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32DivS => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32RemS => exact absurd h_wf_head (by simp [StraightLineInstr])
-    | i32Shl => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32ShrS => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32LtS => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32GtS => exact absurd h_wf_head (by simp [StraightLineInstr])

@@ -276,7 +276,7 @@ theorem preservation_br_refused_no_loop_above
     (fuel : Nat) (frames : List FrameKind)
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout)
-    (R : Refines ws s kst layout)
+    (_R : Refines ws s kst layout)
     (_h_no_branch : ws.branchTarget = none)
     (_h_no_halt : ws.halted = false)
     (depth : Nat) (rest : List WasmInstr)
