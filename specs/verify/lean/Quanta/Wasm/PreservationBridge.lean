@@ -5276,21 +5276,228 @@ theorem irEmptyPrefix_const0_brIf0_body_preserves
     (peel_irEmptyPrefix_eval h_prefix h_nb_b h_nh_b hw_b)
     (peel_irEmptyPrefix_lowering (.loopK :: frames) h_prefix hl_b)
 
--- Note: the parametric end-to-end framework theorem for
--- `framework_preservation_irEmptyPrefix_const0_brIf0_*` requires a
--- generalized `splitAtEnd` lemma over IR-empty prefixes — proving
--- that the splitter correctly walks through a prefix of `.nop`s
--- without bumping its depth counter and lands on the `.wend` marker
--- in the inner [.i32Const 0, .brIf 0, .wend] suffix. The lemma's
--- proof needs a generalized walkUntilCloser-acc shift invariant
--- (walkUntilCloser tail 0 acc = walkUntilCloser tail 0 [] but with
--- acc.reverse prepended to the taken list). Deferred until the
--- generalization pattern lands.
---
--- For now, the parametric four IHs above are reusable infrastructure:
--- any concrete `pref` instance discharges via these IHs once the
--- caller computes `splitAtEnd` for the specific shape (see the
--- const0_brIf0 and nop_const0_brIf0 catalog entries for the pattern).
+/-- Generalized `walkUntilCloser` acc-shift invariant: appending
+    `extra` to the right of the initial acc PREPENDS `extra.reverse`
+    to the taken-list output. The walker traverses input identically
+    — extras only join the acc-passes-through-reverse path:
+    `(eventually-built-acc ++ extra).reverse = extra.reverse ++ taken`.
+    The cons-into-acc step preserves the `acc ++ extra` form:
+    `(i :: acc) ++ extra = i :: (acc ++ extra)`. -/
+private theorem walkUntilCloser_acc_shift
+    (l : List WasmInstr) :
+    ∀ (n : Nat) (acc extra : List WasmInstr)
+      {taken : List WasmInstr} {marker : WasmInstr} {rest : List WasmInstr},
+      walkUntilCloser l n acc = some (taken, marker, rest) →
+      walkUntilCloser l n (acc ++ extra)
+        = some (extra.reverse ++ taken, marker, rest) := by
+  induction l with
+  | nil =>
+      intro n acc extra taken marker rest h_walk
+      simp [walkUntilCloser] at h_walk
+  | cons i tail IH =>
+      intro n acc extra taken marker rest h_walk
+      -- Handle the two depth-0 terminating cases first
+      -- (.wend at depth 0; .welse at depth 0) before the catch-all.
+      cases h_i_eq : i with
+      | wend =>
+          subst h_i_eq
+          match n with
+          | 0 =>
+              -- walkUntilCloser (.wend :: tail) 0 acc = some (acc.reverse, .wend, tail).
+              simp only [walkUntilCloser, Option.some.injEq, Prod.mk.injEq] at h_walk
+              obtain ⟨h_t, h_m, h_r⟩ := h_walk
+              subst h_t; subst h_m; subst h_r
+              -- Goal: walkUntilCloser (.wend :: tail) 0 (acc ++ extra)
+              --   = some (extra.reverse ++ acc.reverse, .wend, tail).
+              -- (acc ++ extra).reverse = extra.reverse ++ acc.reverse.
+              simp [walkUntilCloser, List.reverse_append]
+          | k + 1 =>
+              -- Catch-all: recurse on tail with n' = (k+1) - 1 = k and
+              -- acc' = .wend :: acc.
+              simp only [walkUntilCloser] at h_walk
+              simp only [walkUntilCloser]
+              -- Goal: walkUntilCloser tail k ((.wend :: acc) ++ extra) =
+              --       some (extra.reverse ++ taken, marker, rest).
+              -- Apply IH at acc' = .wend :: acc.
+              show walkUntilCloser tail k (.wend :: (acc ++ extra))
+                = some (extra.reverse ++ taken, marker, rest)
+              have h_app : (.wend :: acc : List WasmInstr) ++ extra
+                              = .wend :: (acc ++ extra) := by simp
+              rw [← h_app]
+              exact IH k _ extra h_walk
+      | welse =>
+          subst h_i_eq
+          match n with
+          | 0 =>
+              simp only [walkUntilCloser, Option.some.injEq, Prod.mk.injEq] at h_walk
+              obtain ⟨h_t, h_m, h_r⟩ := h_walk
+              subst h_t; subst h_m; subst h_r
+              simp [walkUntilCloser, List.reverse_append]
+          | k + 1 =>
+              simp only [walkUntilCloser] at h_walk
+              simp only [walkUntilCloser]
+              show walkUntilCloser tail (k + 1) (.welse :: (acc ++ extra))
+                = some (extra.reverse ++ taken, marker, rest)
+              have h_app : (.welse :: acc : List WasmInstr) ++ extra
+                              = .welse :: (acc ++ extra) := by simp
+              rw [← h_app]
+              exact IH (k + 1) _ extra h_walk
+      | block bn =>
+          subst h_i_eq
+          simp only [walkUntilCloser] at h_walk
+          simp only [walkUntilCloser]
+          show walkUntilCloser tail (n + 1) (.block bn :: (acc ++ extra))
+            = some (extra.reverse ++ taken, marker, rest)
+          have h_app : (.block bn :: acc : List WasmInstr) ++ extra
+                          = .block bn :: (acc ++ extra) := by simp
+          rw [← h_app]
+          exact IH (n + 1) _ extra h_walk
+      | wloop ln =>
+          subst h_i_eq
+          simp only [walkUntilCloser] at h_walk
+          simp only [walkUntilCloser]
+          show walkUntilCloser tail (n + 1) (.wloop ln :: (acc ++ extra))
+            = some (extra.reverse ++ taken, marker, rest)
+          have h_app : (.wloop ln :: acc : List WasmInstr) ++ extra
+                          = .wloop ln :: (acc ++ extra) := by simp
+          rw [← h_app]
+          exact IH (n + 1) _ extra h_walk
+      | wif fn =>
+          subst h_i_eq
+          simp only [walkUntilCloser] at h_walk
+          simp only [walkUntilCloser]
+          show walkUntilCloser tail (n + 1) (.wif fn :: (acc ++ extra))
+            = some (extra.reverse ++ taken, marker, rest)
+          have h_app : (.wif fn :: acc : List WasmInstr) ++ extra
+                          = .wif fn :: (acc ++ extra) := by simp
+          rw [← h_app]
+          exact IH (n + 1) _ extra h_walk
+      | _ =>
+          all_goals (
+            subst h_i_eq
+            simp only [walkUntilCloser] at h_walk
+            simp only [walkUntilCloser]
+            (first
+              | rfl
+              | (have h_app : ∀ (j : WasmInstr),
+                    (j :: acc : List WasmInstr) ++ extra
+                      = j :: (acc ++ extra) := by intro _; simp
+                 rw [← h_app]
+                 exact IH _ _ extra h_walk)))
+
+/-- Walking through an IR-empty prefix (e.g., a list of nops) at any
+    depth `n` extends acc by `pref.reverse` and leaves both depth and
+    walker behavior unchanged: the walk reduces to a walk on the tail
+    with the prefix-extended accumulator. -/
+private theorem walkUntilCloser_irEmptyPrefix
+    {pref : List WasmInstr} (h_prefix : IsIrEmptyPrefix pref) :
+    ∀ (tail : List WasmInstr) (n : Nat) (acc : List WasmInstr),
+      walkUntilCloser (pref ++ tail) n acc
+        = walkUntilCloser tail n (pref.reverse ++ acc) := by
+  induction pref with
+  | nil =>
+      intro tail n acc
+      simp [walkUntilCloser]
+  | cons i pre_rest IH =>
+      intro tail n acc
+      obtain ⟨h_i, h_pre⟩ := h_prefix
+      cases i with
+      | nop =>
+          simp only [List.cons_append, walkUntilCloser]
+          rw [IH h_pre]
+          simp
+      | _ =>
+          all_goals (exfalso; exact h_i)
+
+/-- splitAtEnd on `pref ++ [.i32Const 0, .brIf 0, .wend] ++ post`
+    correctly extracts `(pref ++ [.i32Const 0, .brIf 0], post)` for
+    any `IsIrEmptyPrefix pref`. Combines walkUntilCloser_irEmptyPrefix
+    (peel the prefix) with the literal walk through
+    [.i32Const 0, .brIf 0, .wend]. -/
+theorem splitAtEnd_irEmptyPrefix_const0_brIf0
+    {pref : List WasmInstr} (h_prefix : IsIrEmptyPrefix pref)
+    (post : List WasmInstr) :
+    splitAtEnd (pref ++ [.i32Const 0, .brIf 0, .wend] ++ post)
+      = some (pref ++ [.i32Const 0, .brIf 0], post) := by
+  unfold splitAtEnd
+  have h_eq : pref ++ [WasmInstr.i32Const 0, WasmInstr.brIf 0, WasmInstr.wend]
+                ++ post
+            = pref ++ ([WasmInstr.i32Const 0, WasmInstr.brIf 0, WasmInstr.wend]
+                ++ post) := by
+    simp [List.append_assoc]
+  rw [h_eq]
+  rw [walkUntilCloser_irEmptyPrefix h_prefix]
+  -- walkUntilCloser ([i32Const 0, brIf 0, wend] ++ post) 0 (pref.reverse ++ []).
+  simp only [List.append_nil, List.cons_append, List.nil_append, walkUntilCloser]
+  -- After three steps: returns some (final_acc.reverse, .wend, post)
+  -- where final_acc = .brIf 0 :: .i32Const 0 :: pref.reverse.
+  -- final_acc.reverse = pref ++ [.i32Const 0, .brIf 0].
+  simp [List.reverse_cons, List.reverse_append, List.reverse_reverse]
+
+/-- Parametric end-to-end wloop kernel preservation for body =
+    `pref ++ [.i32Const 0, .brIf 0]` with `IsIrEmptyPrefix pref`.
+    Subsumes both concrete catalog entries (`pref = []` gives the
+    const0_brIf0 case; `pref = [.nop]` gives the nop_const0_brIf0
+    case). Discharges all four wloop-body IHs via the parametric
+    irEmptyPrefix_* IHs and the splitAtEnd_irEmptyPrefix_const0_brIf0
+    splitter lemma. -/
+theorem framework_preservation_irEmptyPrefix_const0_brIf0_wloop_then_straightLine
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    (pref : List WasmInstr) (h_prefix : IsIrEmptyPrefix pref)
+    (post : List WasmInstr)
+    (h_post_wf : StraightLineInstrs post)
+    (h_fuel_ge_2 : fuel ≥ 2)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (fuel + 1) ws
+            (.wloop 0 :: ((pref ++ [.i32Const 0, .brIf 0]) ++ [.wend] ++ post))
+            = some ws')
+    (hl : lowerInstrs (fuel + 1) frames s
+            (.wloop 0 :: ((pref ++ [.i32Const 0, .brIf 0]) ++ [.wend] ++ post))
+            = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  have h_split : splitAtEnd ((pref ++ [.i32Const 0, .brIf 0])
+                              ++ [.wend] ++ post)
+      = some (pref ++ [.i32Const 0, .brIf 0], post) := by
+    have h_eq : (pref ++ [.i32Const 0, .brIf 0]) ++ [.wend] ++ post
+              = pref ++ [.i32Const 0, .brIf 0, .wend] ++ post := by
+      simp [List.append_assoc]
+    rw [h_eq]
+    exact splitAtEnd_irEmptyPrefix_const0_brIf0 h_prefix post
+  exact framework_preservation_wloopThenStraightLine
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+    h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds h_store_layout
+    ((pref ++ [.i32Const 0, .brIf 0]) ++ [.wend] ++ post)
+    (pref ++ [.i32Const 0, .brIf 0]) post h_split h_post_wf
+    (fun {ws_b s_b kst_b} R_b h_nb h_nh h_nbk {ws'_b s'_b bodyOps} hw_b hl_b =>
+      irEmptyPrefix_const0_brIf0_body_preserves frames h_prefix layout R_b
+        h_nb h_nh h_nbk hw_b hl_b)
+    (fun {ws_b s_b kst_b ws'_b s'_b bodyOps} _R_b h_nb h_nh _h_nbk hw_b hl_b =>
+      irEmptyPrefix_const0_brIf0_falls_through frames h_prefix h_nb h_nh
+        hw_b hl_b)
+    (fun {ws_b s_b kst_b ws'_b s'_b bodyOps kst'_b F_b} _R_b _h_nb _h_nh h_nbk _hw_b hl_b h_ev_b =>
+      irEmptyPrefix_const0_brIf0_exits_with_broke frames h_prefix h_nbk
+        hl_b h_ev_b)
+    (fun {s_b s'_b bodyOps} hl_b =>
+      irEmptyPrefix_const0_brIf0_lowering_preserves frames h_prefix hl_b)
+    h_fuel_ge_2 ws' s' ops hw hl
 
 -- ════════════════════════════════════════════════════════════════════
 -- Concrete wloop kernel theorem catalog
@@ -5303,10 +5510,15 @@ theorem irEmptyPrefix_const0_brIf0_body_preserves
 --     body = [.i32Const 0, .brIf 0]
 -- - framework_preservation_nop_const0_brIf0_wloop_then_straightLine:
 --     body = [.nop, .i32Const 0, .brIf 0]
+-- - framework_preservation_irEmptyPrefix_const0_brIf0_wloop_then_straightLine:
+--     body = pref ++ [.i32Const 0, .brIf 0] for any
+--     IsIrEmptyPrefix pref (list of nops). Subsumes the two
+--     concrete entries above.
 --
--- Both produce the same lowered IR (`[.const r0, .cast r1 r0,
--- .branch r1 [] [.breakOp]]`) — the nop variant exercises the
--- peel-delegate pattern for prefix instructions.
+-- All variants produce the same lowered IR (`[.const r0, .cast r1 r0,
+-- .branch r1 [] [.breakOp]]`) since IR-empty prefix ops emit no
+-- KernelOps. The parametric variant validates the peel-delegate
+-- pattern at full generality over IR-empty prefixes.
 --
 -- All bodies covered have exit semantics: WASM falls through after
 -- the brIf 0 (cond=0); IR sets broke=true via the .breakOp arm.
