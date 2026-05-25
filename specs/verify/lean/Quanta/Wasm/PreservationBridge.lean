@@ -4383,8 +4383,11 @@ def WloopBodyShape (body : List WasmInstr) : Prop :=
 /-- Kernel-body well-formedness for the L10v7 framework.
     Admits a flat sequence of `StraightLineInstr` ops interleaved
     with `wloop 0 :: <body> ++ [.wend]` segments where the body
-    matches `WloopBodyShape`. -/
-inductive KernelInstrs : List WasmInstr → Prop
+    matches `WloopBodyShape`.
+
+    Defined as `Type`-valued (not Prop) so a `depth` measure can be
+    extracted for the framework theorem's fuel bound. -/
+inductive KernelInstrs : List WasmInstr → Type
   | empty : KernelInstrs []
   | sl_cons {i : WasmInstr} {rest : List WasmInstr} :
       StraightLineInstr i →
@@ -4395,6 +4398,16 @@ inductive KernelInstrs : List WasmInstr → Prop
       WloopBodyShape body →
       KernelInstrs post →
       KernelInstrs (.wloop 0 :: rest)
+
+/-- Maximum wloop nesting depth in a KernelInstrs proof.
+    Used as a fuel bound for the L10v7 framework theorem: outer fuel
+    must be ≥ 2 + depth so the IH recursion through nested wloops
+    has enough fuel at every level. -/
+def KernelInstrs.depth : ∀ {instrs : List WasmInstr},
+    KernelInstrs instrs → Nat
+  | _, .empty => 0
+  | _, .sl_cons _ rest_wf => rest_wf.depth
+  | _, .wloop_cons _ _ post_wf => 1 + post_wf.depth
 
 /-- L10 — framework_preservation for straight-line kernels.
 
@@ -5554,22 +5567,11 @@ theorem framework_preservation_irEmptyPrefix_const0_brIf0_wloop_then_straightLin
 -- ════════════════════════════════════════════════════════════════════
 -- L10v7 — framework_preservation_kernel
 --
--- Inducts on KernelInstrs (sl_cons / wloop_cons / empty), with two
--- recursive shape choices: a straight-line head or a wloop segment
--- (whose body matches WloopBodyShape and whose post is KernelInstrs).
---
--- Status: sl_cons + empty closed; wloop_cons deferred behind one
--- `sorry` until evalInstrs / lowerInstrs fuel monotonicity lands
--- (the inductive IH's fuel level doesn't match cons_wloop_singleIterExit's
--- inner-fuel expectation — bridging requires monotonicity).
--- ════════════════════════════════════════════════════════════════════
-
--- ════════════════════════════════════════════════════════════════════
--- L10v7 — framework_preservation_kernel
---
 -- Top-level composition theorem admitting `KernelInstrs`: a kernel
 -- body composed of `StraightLineInstr` ops and `wloop 0` segments
--- (with bodies matching `WloopBodyShape`).
+-- (with bodies matching `WloopBodyShape`). Fuel constraint is
+-- depth-aware: `fuel ≥ 2 + KernelInstrs.depth h_wf`, so nested
+-- wloops get enough fuel at every recursion level.
 --
 -- Inducts on `KernelInstrs instrs` (not on the list directly), so
 -- the wloop arm gets the splitAtEnd witness and the post IH from
@@ -5602,9 +5604,9 @@ theorem framework_preservation_kernel
         StoreAddressInBounds layout s_x kst_x)
     (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
         StoreLayoutNoOverlap layout s_x kst_x)
-    (h_fuel_ge_2 : fuel ≥ 2)
     (instrs : List WasmInstr)
     (h_wf : KernelInstrs instrs)
+    (h_fuel : fuel ≥ 2 + h_wf.depth)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstrs (fuel + 1) ws instrs = some ws')
     (hl : lowerInstrs (fuel + 1) frames s instrs = some (s', ops)) :
@@ -5612,7 +5614,7 @@ theorem framework_preservation_kernel
       evalOps F kst ops = some kst' ∧
       Refines ws' s' kst' layout ∧
       BridgeClauses ws' kst' := by
-  induction h_wf generalizing ws s kst ws' s' ops with
+  induction h_wf generalizing fuel ws s kst ws' s' ops with
   | empty =>
       -- evalInstrs and lowerInstrs both return input on [].
       simp only [evalInstrs] at hw
@@ -5654,8 +5656,10 @@ theorem framework_preservation_kernel
             BridgeClauses ws'_mid kst'_mid := by
         intro ws_mid s_mid kst_mid R_mid h_nb_m h_nh_m h_nbk_m
               ws'_mid s'_mid postOps hw_mid hl_mid
-        exact IH (ws := ws_mid) (s := s_mid) (kst := kst_mid)
-          R_mid h_nb_m h_nh_m h_nbk_m ws'_mid s'_mid postOps hw_mid hl_mid
+        -- sl_cons preserves depth (depth h_wf_rest = depth h_wf for
+        -- sl_cons), so h_fuel passes through to IH unchanged.
+        exact IH (fuel := fuel) (ws := ws_mid) (s := s_mid) (kst := kst_mid)
+          R_mid h_nb_m h_nh_m h_nbk_m h_fuel ws'_mid s'_mid postOps hw_mid hl_mid
       -- Dispatch on head constructor.
       cases i with
       | nop =>
@@ -5882,24 +5886,82 @@ theorem framework_preservation_kernel
       | wselect => exact absurd h_sl (by simp [StraightLineInstr])
       | unreachable => exact absurd h_sl (by simp [StraightLineInstr])
       | unsupported _ => exact absurd h_sl (by simp [StraightLineInstr])
-  | @wloop_cons rest body post h_split h_body _h_post_wf _IH =>
-      -- TODO: wloop_cons requires either (a) fuel monotonicity for
-      -- evalInstrs / lowerInstrs OR (b) a depth-aware fuel bound
-      -- that grows with kernel nesting. cons_wloop_singleIterExit's
-      -- post_preserves expects fuel `bt = fuel - 1` (one less than
-      -- outer), and recursing on post via IH at that fuel needs
-      -- `bt ≥ 2` i.e. `fuel ≥ 3`, but the caller only provides
-      -- `fuel ≥ 2`. Bounded kernels (one wloop, no nesting) work at
-      -- `fuel ≥ 2`; nested kernels need progressively more.
-      --
-      -- Resolution paths:
-      --   1. Strengthen h_fuel_ge_2 to a depth-aware bound (e.g.,
-      --      `fuel ≥ 2 + KernelInstrs.maxDepth instrs`).
-      --   2. Prove evalInstrs / lowerInstrs fuel monotonicity, then
-      --      bump the IH's fuel.
-      --
-      -- Option 1 is local to this theorem; option 2 unlocks broader
-      -- compositional patterns. Deferred to a follow-up.
-      sorry
+  | @wloop_cons rest body post h_split h_body h_post_wf IH =>
+      -- Head is .wloop 0; body matches WloopBodyShape (pref ++
+      -- [.i32Const 0, .brIf 0]), post is KernelInstrs.
+      -- Depth-aware fuel: depth (wloop_cons) = 1 + depth post,
+      -- so h_fuel : fuel ≥ 2 + (1 + depth post) = 3 + depth post.
+      -- For cons_wloop_singleIterExit: bt = fuel, need bt ≥ 2. ✓
+      -- For IH on post at inner fuel `fuel`: need
+      --   fuel ≥ 2 + depth post. We have fuel ≥ 3 + depth post. ✓
+      -- Pre-compute the depth equality before destructuring h_body
+      -- (the rfl proof needs h_body in scope).
+      have h_depth : (KernelInstrs.wloop_cons h_split h_body h_post_wf).depth
+                        = 1 + h_post_wf.depth := rfl
+      rw [h_depth] at h_fuel
+      have h_fuel_inner : fuel ≥ 2 + h_post_wf.depth := by omega
+      obtain ⟨pref, h_prefix, h_body_eq⟩ := h_body
+      have h_fuel_ge_2 : fuel ≥ 2 := by
+        have : 2 + h_post_wf.depth ≥ 2 := by omega
+        omega
+      have post_preserves :
+          ∀ {ws_p : WasmState} {s_p : LowerState}
+            {kst_p : Quanta.KOps.State}
+            (_R_p : Refines ws_p s_p kst_p layout)
+            (_h_nb_p : ws_p.branchTarget = none)
+            (_h_nh_p : ws_p.halted = false)
+            (_h_nbk_p : kst_p.broke = false)
+            {ws'_p : WasmState} {s'_p : LowerState}
+            {postOps : List KernelOp}
+            (_hw_p : evalInstrs fuel ws_p post = some ws'_p)
+            (_hl_p : lowerInstrs fuel frames s_p post = some (s'_p, postOps)),
+          ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+            evalOps F kst_p postOps = some kst'_p ∧
+            Refines ws'_p s'_p kst'_p layout ∧
+            BridgeClauses ws'_p kst'_p := by
+        intro ws_p s_p kst_p R_p h_nb_p h_nh_p h_nbk_p
+              ws'_p s'_p postOps hw_p hl_p
+        -- IH on post needs evalInstrs (fuel' + 1) form. Use
+        -- fuel' = fuel - 1; h_fuel_inner gives fuel - 1 ≥ 1 + depth.
+        -- IH needs h_fuel : (fuel - 1) ≥ 2 + h_post_wf.depth.
+        -- We have fuel ≥ 2 + h_post_wf.depth, so fuel - 1 ≥ 1 + depth.
+        -- That's NOT ≥ 2 + depth.
+        --
+        -- The right framing: IH's fuel is the parameter `fuel'`, and
+        -- the eval is at `fuel' + 1`. We have hw_p at fuel `fuel`.
+        -- Set fuel' = fuel - 1, so fuel' + 1 = fuel. IH needs
+        -- fuel' ≥ 2 + depth post, i.e., fuel - 1 ≥ 2 + depth post.
+        -- h_fuel_inner gives fuel ≥ 2 + depth post, so fuel - 1 ≥
+        -- 1 + depth post. Still off by 1.
+        --
+        -- Need h_fuel ≥ 3 + depth post (stronger). Use h_fuel_inner
+        -- + 1 (we already have h_fuel : fuel ≥ 3 + depth post from
+        -- the original wloop_cons constraint).
+        -- h_fuel was rewritten earlier to fuel ≥ 2 + (1 + h_post_wf.depth).
+        have h_fuel_for_ih : fuel - 1 ≥ 2 + h_post_wf.depth := by omega
+        have h_fuel_eq : fuel = (fuel - 1) + 1 := by
+          have : fuel ≥ 1 := by omega
+          omega
+        rw [h_fuel_eq] at hw_p hl_p
+        exact IH (fuel := fuel - 1) (ws := ws_p) (s := s_p) (kst := kst_p)
+          R_p h_nb_p h_nh_p h_nbk_p h_fuel_for_ih
+          ws'_p s'_p postOps hw_p hl_p
+      subst h_body_eq
+      exact preservation_evalInstrs_cons_wloop_singleIterExit
+        frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+        fuel rest (pref ++ [.i32Const 0, .brIf 0]) post h_split
+        (fun {ws_b s_b kst_b} R_b h_nb h_nh h_nbk {ws'_b s'_b bodyOps} hw_b hl_b =>
+          irEmptyPrefix_const0_brIf0_body_preserves frames h_prefix layout R_b
+            h_nb h_nh h_nbk hw_b hl_b)
+        (fun {ws_b s_b kst_b ws'_b s'_b bodyOps} _R_b h_nb h_nh _h_nbk hw_b hl_b =>
+          irEmptyPrefix_const0_brIf0_falls_through frames h_prefix h_nb h_nh
+            hw_b hl_b)
+        (fun {ws_b s_b kst_b ws'_b s'_b bodyOps kst'_b F_b} _R_b _h_nb _h_nh h_nbk _hw_b hl_b h_ev_b =>
+          irEmptyPrefix_const0_brIf0_exits_with_broke frames h_prefix h_nbk
+            hl_b h_ev_b)
+        (fun {s_b s'_b bodyOps} hl_b =>
+          irEmptyPrefix_const0_brIf0_lowering_preserves frames h_prefix hl_b)
+        post_preserves h_fuel_ge_2
+        ws' s' ops hw hl
 
 end Quanta.Wasm
