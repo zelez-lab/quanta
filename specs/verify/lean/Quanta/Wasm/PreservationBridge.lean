@@ -5108,4 +5108,26 @@ theorem framework_preservation_nop_const0_brIf0_wloop_then_straightLine
       nop_const0_brIf0_lowering_preserves frames hl_b)
     h_fuel_ge_2 ws' s' ops hw hl
 
+-- ════════════════════════════════════════════════════════════════════
+-- Concrete wloop kernel theorem catalog
+--
+-- The following end-to-end kernel preservation theorems are shipped
+-- (each with no caller body hypotheses, only the 5 standard
+-- kernel-wide well-formedness predicates):
+--
+-- - framework_preservation_const0_brIf0_wloop_then_straightLine:
+--     body = [.i32Const 0, .brIf 0]
+-- - framework_preservation_nop_const0_brIf0_wloop_then_straightLine:
+--     body = [.nop, .i32Const 0, .brIf 0]
+--
+-- Both produce the same lowered IR (`[.const r0, .cast r1 r0,
+-- .branch r1 [] [.breakOp]]`) — the nop variant exercises the
+-- peel-delegate pattern for prefix instructions.
+--
+-- All bodies covered have exit semantics: WASM falls through after
+-- the brIf 0 (cond=0); IR sets broke=true via the .breakOp arm.
+-- opLoop sees broke after one iter and exits to the post-loop
+-- straight-line code.
+-- ════════════════════════════════════════════════════════════════════
+
 end Quanta.Wasm
