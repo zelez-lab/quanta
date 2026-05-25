@@ -3790,6 +3790,7 @@ def StraightLineInstr : WasmInstr → Prop
   | .i32GtU               => True
   | .i32GeU               => True
   | .i32Load offset _     => offset = 0
+  | .i32Store offset _    => offset = 0
   | _                     => False
 
 /-- Kernel-input well-formedness for buffer-typed locals.
@@ -3848,6 +3849,37 @@ def LoadAddressesInBounds
       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
       b.toNat < layout.length slot
 
+/-- Kernel-wide assumption: when an i32Store is about to lower,
+    the base register's value is in-bounds for the slot. Same
+    shape as `LoadAddressesInBounds` but keyed on the i32Store
+    stack pattern (sv_val :: bufferAccess :: lstk_rest). -/
+def StoreAddressInBounds
+    (layout : BufferLayout)
+    (s : LowerState) (kst : Quanta.KOps.State) : Prop :=
+  ∀ sv_val slot base lstk_rest,
+    s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest →
+    ∀ b : UInt32,
+      regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+      b.toNat < layout.length slot
+
+/-- Kernel-wide assumption: the buffer layout has no slot overlap.
+    Required by `i32Store` to ensure that writing to one slot
+    doesn't corrupt another. Universal over reachable states at
+    the i32Store site (the predicate is per-(s_x, kst_x) because
+    the relevant base address comes from kst_x.rf). -/
+def StoreLayoutNoOverlap
+    (layout : BufferLayout)
+    (s : LowerState) (kst : Quanta.KOps.State) : Prop :=
+  ∀ sv_val slot base lstk_rest,
+    s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest →
+    ∀ b : UInt32,
+      regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+      ∀ slot' idx',
+        idx' < layout.length slot' →
+        (slot', idx') ≠ (slot, b.toNat) →
+        layout.startAddr slot + b.toNat * 4 + 4 ≤ layout.startAddr slot' + idx' * 4 ∨
+        layout.startAddr slot' + idx' * 4 + 4 ≤ layout.startAddr slot + b.toNat * 4
+
 /-- `instrs : List WasmInstr` is straight-line if every element is. -/
 def StraightLineInstrs : List WasmInstr → Prop
   | []        => True
@@ -3891,6 +3923,15 @@ theorem framework_preservation_straightLine
     -- Universal over reachable states.
     (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
         LoadAddressesInBounds layout s_x kst_x)
+    -- Kernel-wide hypothesis: at any reachable (s_x, kst_x), the
+    -- store-pattern stack has its base reg in-bounds.
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    -- Kernel-wide hypothesis: the buffer layout has no overlapping
+    -- slots. Needed for i32Store to ensure stores don't corrupt
+    -- other slots.
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
     (instrs : List WasmInstr)
     (h_wf : StraightLineInstrs instrs)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
@@ -4084,6 +4125,57 @@ theorem framework_preservation_straightLine
                 simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
             | n + 5 =>
                 simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+    | i32Store offset align =>
+        have h_offset : offset = 0 := h_wf_head
+        -- s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest.
+        rcases h_stk : s.stack with _ | ⟨sv_val, lstk1⟩
+        · simp [lowerInstrs, lowerInstr, lowerI32Store, LowerState.popSym, h_stk] at hl
+        rcases h_stk2 : lstk1 with _ | ⟨sv2, lstk_rest⟩
+        · simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                LowerState.popSym, h_stk2] at hl
+        cases sv2 with
+        | reg _ _ =>
+            simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                  LowerState.popSym, h_stk2] at hl
+        | i32ConstSym _ =>
+            simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                  LowerState.popSym, h_stk2] at hl
+        | bufferPtr _ =>
+            simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                  LowerState.popSym, h_stk2] at hl
+        | scaledIdx _ _ =>
+            simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                  LowerState.popSym, h_stk2] at hl
+        | bufferAccess slot base scale =>
+            match scale with
+            | 4 =>
+                have h_full_stk :
+                    s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest := by
+                  rw [h_stk, h_stk2]
+                have h_in_bounds := h_store_bounds s kst sv_val slot base lstk_rest
+                  h_full_stk
+                have h_no_overlap := h_store_layout s kst sv_val slot base lstk_rest
+                  h_full_stk
+                exact preservation_evalInstrs_cons_i32Store_bridge
+                  fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+                  sv_val slot base lstk_rest offset align
+                  h_full_stk h_offset h_in_bounds h_no_overlap
+                  rest preservation_rest_bridge ws' s' ops hw hl
+            | 0 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                      LowerState.popSym, h_stk2] at hl
+            | 1 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                      LowerState.popSym, h_stk2] at hl
+            | 2 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                      LowerState.popSym, h_stk2] at hl
+            | 3 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                      LowerState.popSym, h_stk2] at hl
+            | n + 5 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Store, h_stk,
+                      LowerState.popSym, h_stk2] at hl
     -- All other constructors are excluded by StraightLineInstr.
     -- The `h_wf_head : StraightLineInstr i = True` is `False` for
     -- these, contradicting the hypothesis.
@@ -4120,7 +4212,6 @@ theorem framework_preservation_straightLine
     | i32TruncF32U => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f32ReinterpretI32 => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32ReinterpretF32 => exact absurd h_wf_head (by simp [StraightLineInstr])
-    | i32Store _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f32Load _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f32Store _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32Load8U _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
