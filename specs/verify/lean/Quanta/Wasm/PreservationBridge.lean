@@ -4502,4 +4502,127 @@ theorem framework_preservation_straightLine
     | unreachable => exact absurd h_wf_head (by simp [StraightLineInstr])
     | unsupported _ => exact absurd h_wf_head (by simp [StraightLineInstr])
 
+-- ════════════════════════════════════════════════════════════════════
+-- L10v6 — kernel framework admitting a wloop head
+--
+-- Composes `cons_wloop_singleIterExit` (head) with
+-- `framework_preservation_straightLine` (post). Caller supplies the
+-- four body IHs (the same shape cons_wloop_singleIterExit requires)
+-- and the five kernel-wide well-formedness predicates the
+-- straight-line framework needs.
+--
+-- Kernel shape: `.wloop 0 :: rest` where `splitAtEnd rest = some
+-- (body, post)` and `post` is `StraightLineInstrs`.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Framework variant admitting a single wloop head whose body exits
+    on its first iteration via `broke = true` (the case covered by
+    `cons_wloop_singleIterExit`). Post is straight-line; its IH is
+    discharged via `framework_preservation_straightLine`. -/
+theorem framework_preservation_wloopThenStraightLine
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    -- Kernel-wide hypotheses for the straight-line post.
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    -- Wloop body + post split.
+    (rest : List WasmInstr)
+    (body post : List WasmInstr)
+    (h_split : splitAtEnd rest = some (body, post))
+    (h_post_wf : StraightLineInstrs post)
+    -- Body IHs (same shape as cons_wloop_singleIterExit).
+    (body_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+        (_hw_b : evalInstrs fuel ws_b body = some ws'_b)
+        (_hl_b : lowerInstrs fuel (.loopK :: frames) s_b body = some (s'_b, bodyOps)),
+      ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_b bodyOps = some kst'_b ∧
+        Refines ws'_b s'_b kst'_b layout ∧
+        BridgeClauses ws'_b kst'_b)
+    (body_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs fuel ws_b body = some ws'_b)
+        (_hl_b : lowerInstrs fuel (.loopK :: frames) s_b body = some (s'_b, bodyOps)),
+      ws'_b.branchTarget = none ∧ ws'_b.halted = false ∧
+      ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
+      ws'_b.mem = ws_b.mem ∧
+      s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots)
+    (body_exits_with_broke : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp} {kst'_b : Quanta.KOps.State} {F_b : Nat}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs fuel ws_b body = some ws'_b)
+        (_hl_b : lowerInstrs fuel (.loopK :: frames) s_b body = some (s'_b, bodyOps))
+        (_h_ev_b : evalOps F_b kst_b bodyOps = some kst'_b),
+      kst'_b.broke = true)
+    (body_lowering_preserves : ∀ {s_b s'_b : LowerState} {bodyOps : List KernelOp},
+        lowerInstrs fuel (.loopK :: frames) s_b body = some (s'_b, bodyOps) →
+        s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+        s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+        s_b.nextReg ≤ s'_b.nextReg)
+    (h_fuel_ge_2 : fuel ≥ 2)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (fuel + 1) ws (.wloop 0 :: rest) = some ws')
+    (hl : lowerInstrs (fuel + 1) frames s (.wloop 0 :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  -- Build the post_preserves IH for cons_wloop_singleIterExit by
+  -- delegating to framework_preservation_straightLine.
+  have post_preserves :
+      ∀ {ws_p : WasmState} {s_p : LowerState}
+        {kst_p : Quanta.KOps.State}
+        (_R_p : Refines ws_p s_p kst_p layout)
+        (_h_nb_p : ws_p.branchTarget = none)
+        (_h_nh_p : ws_p.halted = false)
+        (_h_nbk_p : kst_p.broke = false)
+        {ws'_p : WasmState} {s'_p : LowerState} {postOps : List KernelOp}
+        (_hw_p : evalInstrs fuel ws_p post = some ws'_p)
+        (_hl_p : lowerInstrs fuel frames s_p post = some (s'_p, postOps)),
+      ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_p postOps = some kst'_p ∧
+        Refines ws'_p s'_p kst'_p layout ∧
+        BridgeClauses ws'_p kst'_p := by
+    intro ws_p s_p kst_p R_p h_nb_p h_nh_p h_nbk_p
+          ws'_p s'_p postOps hw_p hl_p
+    exact framework_preservation_straightLine
+      fuel frames ws_p s_p kst_p layout R_p h_nb_p h_nh_p h_nbk_p
+      h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds h_store_layout
+      post h_post_wf ws'_p s'_p postOps hw_p hl_p
+  -- Apply cons_wloop_singleIterExit with the discharged post IH.
+  exact preservation_evalInstrs_cons_wloop_singleIterExit
+    frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+    fuel rest body post h_split
+    body_preserves body_falls_through body_exits_with_broke
+    body_lowering_preserves
+    post_preserves h_fuel_ge_2
+    ws' s' ops hw hl
+
 end Quanta.Wasm
