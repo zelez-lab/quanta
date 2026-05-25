@@ -2771,4 +2771,20 @@ theorem preservation_evalInstrs_cons_wif_trivialBodies
           | wF32 _ => simp at hw
           | wF64 _ => simp at hw
 
+-- ════════════════════════════════════════════════════════════════════
+-- Discovered while attempting the next variant (non-trivial fall-
+-- through thenBody): even with the localReg/localTy snapshot/restore
+-- in place, the post-state passed to `post` has thenBody's modified
+-- stack (s2.stack) but the restored localReg. Refines for this
+-- hybrid state doesn't follow directly from Refines at s_cast
+-- without an additional `s'_b.stack = s_b.stack` invariant on
+-- thenBody (production's "body has stack-effect zero" assumption,
+-- which holds structurally for any WASM-validated wif body of type
+-- `[] → []` — the canonical Rust pattern).
+--
+-- Next session: add stack-effect-zero to the `then_falls_through`
+-- IH and complete the proof. The trivialBodies theorem above is
+-- enough to verify the end-to-end wif machinery for now.
+-- ════════════════════════════════════════════════════════════════════
+
 end Quanta.Wasm
