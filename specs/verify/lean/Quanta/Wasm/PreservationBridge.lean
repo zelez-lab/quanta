@@ -4907,4 +4907,205 @@ theorem framework_preservation_const0_brIf0_wloop_then_straightLine
       const0_brIf0_lowering_preserves frames hl_b)
     h_fuel_ge_2 ws' s' ops hw hl
 
+-- ════════════════════════════════════════════════════════════════════
+-- Second concrete wloop body — `[.nop, .i32Const 0, .brIf 0]`
+--
+-- Adds a leading no-op. Validates that the framework + the iteration-
+-- bridge mechanism compose with arbitrary stack-pure / IR-empty
+-- prefix instructions in the body. Same lowering output as
+-- [.i32Const 0, .brIf 0] (nop emits no IR).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `body_lowering_preserves` discharge for body = `[.nop, .i32Const 0,
+    .brIf 0]`. nop is stack-pure / IR-empty, so the lowering result
+    matches [.i32Const 0, .brIf 0]. -/
+theorem nop_const0_brIf0_lowering_preserves
+    {bt : Nat} (frames : List FrameKind)
+    {s_b s'_b : LowerState} {bodyOps : List KernelOp}
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              [.nop, .i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
+    s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+    s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+    s_b.nextReg ≤ s'_b.nextReg := by
+  -- Peel the nop step — it lowers to (s_b, []) so the rest reduces
+  -- directly to lowerInstrs on [.i32Const 0, .brIf 0] from s_b.
+  have h_lb' : lowerInstrs bt (.loopK :: frames) s_b
+                 [.i32Const 0, .brIf 0] = some (s'_b, bodyOps) := by
+    rw [lowerInstrs_cons_default bt (.loopK :: frames) s_b .nop
+        [.i32Const 0, .brIf 0] rfl] at h_lb
+    -- After the rw, h_lb has shape `(lowerInstr s_b .nop).bind ...`
+    -- which reduces via `lowerInstr` unfolding + `Option.bind` on
+    -- `some (s_b, [])`. Drop the inner bind: the only remaining outer
+    -- bind comes from the `pure (s2, ops1 ++ ops2)` wrapper.
+    simp only [lowerInstr, Option.bind_eq_bind, Option.some_bind,
+               pure, List.nil_append] at h_lb
+    -- h_lb now reads `(lowerInstrs bt (.loopK :: frames) s_b
+    --   [.i32Const 0, .brIf 0]).bind (fun discr => some (discr.fst, discr.snd))
+    -- = some (s'_b, bodyOps)`. Case on the inner result.
+    cases h_inner : lowerInstrs bt (.loopK :: frames) s_b
+                       [.i32Const 0, .brIf 0] with
+    | none =>
+        rw [h_inner] at h_lb
+        simp at h_lb
+    | some pair =>
+        rcases pair with ⟨s'', bops⟩
+        rw [h_inner] at h_lb
+        simp at h_lb
+        obtain ⟨h_s, h_ops⟩ := h_lb
+        rw [h_s, h_ops]
+  exact const0_brIf0_lowering_preserves frames h_lb'
+
+/-- Helper: peel a leading nop from a body's lowering output, exposing
+    the underlying `[.i32Const 0, .brIf 0]` lowering. -/
+private theorem peel_nop_lowering
+    {bt : Nat} (frames : List FrameKind)
+    {s_b s'_b : LowerState} {bodyOps : List KernelOp}
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              [.nop, .i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
+    lowerInstrs bt (.loopK :: frames) s_b
+      [.i32Const 0, .brIf 0] = some (s'_b, bodyOps) := by
+  rw [lowerInstrs_cons_default bt (.loopK :: frames) s_b .nop
+      [.i32Const 0, .brIf 0] rfl] at h_lb
+  simp only [lowerInstr, Option.bind_eq_bind, Option.some_bind,
+             pure, List.nil_append] at h_lb
+  cases h_inner : lowerInstrs bt (.loopK :: frames) s_b
+                     [.i32Const 0, .brIf 0] with
+  | none => rw [h_inner] at h_lb; simp at h_lb
+  | some pair =>
+      rcases pair with ⟨s'', bops⟩
+      rw [h_inner] at h_lb
+      simp at h_lb
+      obtain ⟨h_s, h_ops⟩ := h_lb
+      rw [← h_s, ← h_ops]
+
+/-- Helper: peel a leading nop from a body's eval output, exposing
+    the underlying `[.i32Const 0, .brIf 0]` eval. -/
+private theorem peel_nop_eval
+    {bt : Nat}
+    {ws_b ws'_b : WasmState}
+    (h_no_branch : ws_b.branchTarget = none)
+    (h_no_halt : ws_b.halted = false)
+    (hw_b : evalInstrs bt ws_b [.nop, .i32Const 0, .brIf 0] = some ws'_b) :
+    evalInstrs bt ws_b [.i32Const 0, .brIf 0] = some ws'_b := by
+  rw [evalInstrs_cons_default bt ws_b .nop [.i32Const 0, .brIf 0]
+      h_no_branch h_no_halt (by simp [isStructuredEval])] at hw_b
+  simp only [evalInstr] at hw_b
+  exact hw_b
+
+/-- `body_falls_through` for body = `[.nop, .i32Const 0, .brIf 0]`. -/
+theorem nop_const0_brIf0_falls_through
+    {bt : Nat} (frames : List FrameKind)
+    {ws_b : WasmState} {s_b : LowerState}
+    {ws'_b : WasmState} {s'_b : LowerState}
+    {bodyOps : List KernelOp}
+    (h_no_branch : ws_b.branchTarget = none)
+    (h_no_halt : ws_b.halted = false)
+    (hw_b : evalInstrs bt ws_b [.nop, .i32Const 0, .brIf 0] = some ws'_b)
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              [.nop, .i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
+    ws'_b.branchTarget = none ∧ ws'_b.halted = false ∧
+    ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
+    ws'_b.mem = ws_b.mem ∧
+    s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+    s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots := by
+  exact const0_brIf0_falls_through frames h_no_branch h_no_halt
+    (peel_nop_eval h_no_branch h_no_halt hw_b)
+    (peel_nop_lowering frames h_lb)
+
+/-- `body_exits_with_broke` for body = `[.nop, .i32Const 0, .brIf 0]`. -/
+theorem nop_const0_brIf0_exits_with_broke
+    {bt : Nat} (frames : List FrameKind)
+    {s_b : LowerState}
+    {kst_b : Quanta.KOps.State} {s'_b : LowerState}
+    {bodyOps : List KernelOp} {kst'_b : Quanta.KOps.State} {F_b : Nat}
+    (h_kst_no_broke : kst_b.broke = false)
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              [.nop, .i32Const 0, .brIf 0] = some (s'_b, bodyOps))
+    (h_ev_b : evalOps F_b kst_b bodyOps = some kst'_b) :
+    kst'_b.broke = true := by
+  exact const0_brIf0_exits_with_broke frames h_kst_no_broke
+    (peel_nop_lowering frames h_lb) h_ev_b
+
+/-- `body_preserves` for body = `[.nop, .i32Const 0, .brIf 0]`. -/
+theorem nop_const0_brIf0_body_preserves
+    {bt : Nat} (frames : List FrameKind)
+    {ws_b : WasmState} {s_b : LowerState}
+    {kst_b : Quanta.KOps.State}
+    (layout : BufferLayout)
+    (R_b : Refines ws_b s_b kst_b layout)
+    (h_nb_b : ws_b.branchTarget = none)
+    (h_nh_b : ws_b.halted = false)
+    (h_nbk_b : kst_b.broke = false)
+    {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+    (hw_b : evalInstrs bt ws_b [.nop, .i32Const 0, .brIf 0] = some ws'_b)
+    (hl_b : lowerInstrs bt (.loopK :: frames) s_b
+              [.nop, .i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
+    ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+      evalOps F kst_b bodyOps = some kst'_b ∧
+      Refines ws'_b s'_b kst'_b layout := by
+  exact const0_brIf0_body_preserves frames layout R_b h_nb_b h_nh_b h_nbk_b
+    (peel_nop_eval h_nb_b h_nh_b hw_b)
+    (peel_nop_lowering frames hl_b)
+
+/-- End-to-end concrete wloop kernel preservation for the
+    nop-prefixed body `[.nop, .i32Const 0, .brIf 0]`. Wraps
+    `framework_preservation_wloopThenStraightLine` with the four
+    nop-prefixed-body discharges, validating that wloop bodies
+    composed with leading stack-pure/IR-empty prefix instructions
+    proceed identically. -/
+theorem framework_preservation_nop_const0_brIf0_wloop_then_straightLine
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    (post : List WasmInstr)
+    (h_post_wf : StraightLineInstrs post)
+    (h_fuel_ge_2 : fuel ≥ 2)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (fuel + 1) ws
+            (.wloop 0 :: ([.nop, .i32Const 0, .brIf 0] ++ [.wend] ++ post))
+            = some ws')
+    (hl : lowerInstrs (fuel + 1) frames s
+            (.wloop 0 :: ([.nop, .i32Const 0, .brIf 0] ++ [.wend] ++ post))
+            = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  have h_split : splitAtEnd ([.nop, .i32Const 0, .brIf 0] ++ [.wend] ++ post)
+      = some ([.nop, .i32Const 0, .brIf 0], post) := by
+    show splitAtEnd ([WasmInstr.nop, WasmInstr.i32Const 0, WasmInstr.brIf 0,
+                      WasmInstr.wend] ++ post)
+      = some ([WasmInstr.nop, WasmInstr.i32Const 0, WasmInstr.brIf 0], post)
+    simp only [List.append_assoc, List.cons_append, List.nil_append]
+    unfold splitAtEnd
+    simp only [walkUntilCloser]
+    simp
+  exact framework_preservation_wloopThenStraightLine
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+    h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds h_store_layout
+    ([.nop, .i32Const 0, .brIf 0] ++ [.wend] ++ post)
+    [.nop, .i32Const 0, .brIf 0] post h_split h_post_wf
+    (fun {ws_b s_b kst_b} R_b h_nb h_nh h_nbk {ws'_b s'_b bodyOps} hw_b hl_b =>
+      nop_const0_brIf0_body_preserves frames layout R_b h_nb h_nh h_nbk hw_b hl_b)
+    (fun {ws_b s_b kst_b ws'_b s'_b bodyOps} _R_b h_nb h_nh _h_nbk hw_b hl_b =>
+      nop_const0_brIf0_falls_through frames h_nb h_nh hw_b hl_b)
+    (fun {ws_b s_b kst_b ws'_b s'_b bodyOps kst'_b F_b} _R_b _h_nb _h_nh h_nbk _hw_b hl_b h_ev_b =>
+      nop_const0_brIf0_exits_with_broke frames h_nbk hl_b h_ev_b)
+    (fun {s_b s'_b bodyOps} hl_b =>
+      nop_const0_brIf0_lowering_preserves frames hl_b)
+    h_fuel_ge_2 ws' s' ops hw hl
+
 end Quanta.Wasm
