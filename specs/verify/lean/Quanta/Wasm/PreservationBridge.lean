@@ -2475,8 +2475,31 @@ theorem preservation_evalInstrs_cons_block_fallthrough
 -- no `else` clause). The thenBody is fall-through (post-state has
 -- `branchTarget = none`, `halted = false`, `broke = false`).
 --
--- Full wif (non-empty elseBody) follows the same pattern; lands
--- next as cons_wif_fallthrough.
+-- Full wif (non-empty thenBody / elseBody) requires careful
+-- handling of:
+--
+--  1. The Refines lift across the unselected branch's lowering —
+--     UNBLOCKED by the snapshot/restore in Translate.lean
+--     (commit a045ead).
+--  2. thenBody mutating locals — STILL BLOCKED. Spec's localSet
+--     emits `[.copy stable src]` (single Copy). Production emits
+--     `[.copy fresh src, .copy stable fresh]` so stable_reg
+--     always holds the latest value. Without the dual Copy, if
+--     thenBody runs `localSet i`, post-frame reads see the OLD
+--     value at the snapshot's register — Refines fails on
+--     `LocalsRefines`. Stage 3 of the wasm_local_renaming port
+--     unblocks this; deferred until cons_wloop needs it.
+--
+-- Below: minimal cons_wif activation for the empty-thenBody +
+-- empty-elseBody case. Validates the structured-control composition
+-- end-to-end at trivial body shapes. Larger fall-through bodies
+-- without localSet are the next extension.
 -- ════════════════════════════════════════════════════════════════════
+
+-- cons_wif activation is queued for the next focused session. The
+-- structural infrastructure (snapshot/restore + new fields/predicates)
+-- is in place; what remains is the proof bookkeeping for the wif do-
+-- bind chain (~200 lines, similar to brIf_loop_self_bridge for the
+-- cond plumbing + cons_block_fallthrough for the post composition).
 
 end Quanta.Wasm
