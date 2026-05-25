@@ -196,15 +196,39 @@ def StackRefines (layout : BufferLayout)
 
 /-- Locals refinement: every local with a stable register encodes
     through that register, lifted into the symbolic alphabet as
-    `.reg r .u32`. Locals not in `localReg` are unconstrained. -/
+    `.reg r .u32`. Locals not in `localReg` are unconstrained.
+
+    Note: post the `currentReg` field addition, `localReg` plays the
+    role of production's `stable_reg`. Every `localSet` keeps it in
+    sync via a parallel `Copy { stable, fresh }` op so this
+    refinement remains an invariant of the lowered IR. The new
+    `CurrentRegRefines` predicate (below) imposes the same shape on
+    the per-frame `currentReg` map. -/
 def LocalsRefines (layout : BufferLayout)
     (locs : List WasmValue) (lreg : List (Nat × Reg)) (rf : Quanta.KOps.RegFile) : Prop :=
   ∀ i r, lreg.find? (fun p => p.fst = i) = some (i, r) →
     ∀ v, locs.get? i = some v → v.encodes layout rf (SymVal.reg r .u32)
 
+/-- Per-frame current-binding refinement: every local with a
+    `currentReg` entry encodes its WASM value through that register
+    too. Same shape as `LocalsRefines` — both predicates hold
+    simultaneously after a `localSet`, because the lowering emits
+    `[.copy fresh src, .copy stable fresh]` keeping both regs in
+    lockstep until the frame-close fixup resets `currentReg`.
+
+    Locals NOT in `currentReg` are unconstrained — readers fall back
+    to `localReg` (the stable merge anchor). -/
+def CurrentRegRefines (layout : BufferLayout)
+    (locs : List WasmValue) (creg : List (Nat × Reg)) (rf : Quanta.KOps.RegFile) : Prop :=
+  ∀ i r, creg.find? (fun p => p.fst = i) = some (i, r) →
+    ∀ v, locs.get? i = some v → v.encodes layout rf (SymVal.reg r .u32)
+
 /-- Freshness invariant: every register the lowering currently holds
     (any reg referenced by any stack SymVal, plus every local stable
-    reg) is strictly less than `nextReg`. -/
+    reg) is strictly less than `nextReg`. The currentReg map's
+    freshness is implied by allocating fresh per-set above `nextReg`,
+    so it's not tracked explicitly here (see `Fresh_currentReg`
+    helper for the corollary). -/
 def Fresh (s : LowerState) : Prop :=
   (∀ sv ∈ s.stack, ∀ r ∈ sv.regs, r < s.nextReg) ∧
   (∀ ir ∈ s.localReg, ir.snd < s.nextReg)
@@ -219,7 +243,13 @@ def AliasFree (s : LowerState) : Prop :=
 
 /-- Injective locals: distinct local indices map to distinct stable
     registers. Maintained by always allocating a fresh `s.nextReg` for
-    a brand-new local entry, and never aliasing an existing entry. -/
+    a brand-new local entry, and never aliasing an existing entry.
+
+    Note: this does NOT extend to `currentReg` because currentReg can
+    be reset (entries removed at frame close), and a localSet inside
+    a frame ALWAYS allocates a fresh reg above all existing regs —
+    so naturally injective. The localReg invariant survives all of
+    that. -/
 def InjectiveLocals (s : LowerState) : Prop :=
   ∀ p q, p ∈ s.localReg → q ∈ s.localReg → p.fst = q.fst ∨ p.snd ≠ q.snd
 
@@ -235,6 +265,30 @@ structure Refines (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
   aliasFree   : AliasFree s
   injLocals   : InjectiveLocals s
   heapRefines : HeapRefines ws.mem kst.heap layout
+
+/-- Optional companion invariant for `Refines` in states that have
+    active `currentReg` entries (i.e. inside a structured-control
+    frame post-localSet/Tee). Carried separately so existing closed
+    theorems' 6-field `Refines` constructor shape stays unchanged.
+
+    The cons_wif / cons_wloop proofs (and the bridging invariant)
+    will pair `Refines ws s kst layout` with this predicate when
+    they need to reason about the per-frame current binding.
+
+    For frame-entry states with `currentReg = []`, this is
+    vacuously true. -/
+def WithCurrentRefines (layout : BufferLayout)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State) : Prop :=
+  CurrentRegRefines layout ws.locals s.currentReg kst.rf
+
+/-- Empty `currentReg` trivially satisfies `WithCurrentRefines`. -/
+theorem WithCurrentRefines_of_empty
+    {layout : BufferLayout} {ws : WasmState} {s : LowerState}
+    {kst : Quanta.KOps.State} (h : s.currentReg = []) :
+    WithCurrentRefines layout ws s kst := by
+  intro i r hfind
+  rw [h] at hfind
+  simp at hfind
 
 -- ════════════════════════════════════════════════════════════════════
 -- evalOps composition lemma
