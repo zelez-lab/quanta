@@ -3685,4 +3685,273 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
               | wF32 _ => simp at hw
               | wF64 _ => simp at hw
 
+-- ════════════════════════════════════════════════════════════════════
+-- L10 — framework_preservation (straight-line kernels)
+--
+-- Top-level composition theorem. Scope: kernels with no structured
+-- control (block / wloop / wif / br / brIf / wreturn). Pure
+-- straight-line code over the per-op bridged alphabet.
+--
+-- `StraightLineInstr` admits the constructor set that the per-op
+-- cons bridge variants in this module cover, with side conditions
+-- normalised so the framework theorem can dispatch cleanly:
+--
+--  * Stack-pure / locals-pure: nop, drop, localGet (both arms),
+--    localSet, localTee
+--  * Numeric: i32Const, the 10 i32 binops (Add / Sub / Mul / And /
+--    Or / Xor / ShrU / DivU / RemU / Shl-nonbuffer), the 6 unsigned
+--    cmps (Eq / Ne / LtU / LeU / GtU / GeU)
+--  * Memory: i32Load, i32Store (buffer-access path)
+--
+-- Excluded: every form of control transfer (the body's framework
+-- claim depends on the bridging invariant, not yet landed). For
+-- kernels that use loops, the next-tier framework theorem will
+-- compose cons_wloop + the bridging invariant.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- The kernel-body alphabet admitted by the L10 v0.1 framework
+    theorem. Restricted to per-op bridge variants whose signatures
+    have no side conditions beyond the standard
+    (R, h_no_branch, h_no_halt, h_kst_no_broke, rest, IH) tuple.
+    Excluded: every form of structured control, buffer-pattern
+    folds (i32Add, i32Shl), buffer-typed localGet, and the heavy
+    memory ops (i32Load, i32Store — they take h_stack / h_offset /
+    h_in_bounds packages). Those ship as separate non-framework
+    theorems pending a richer well-formedness predicate. -/
+def StraightLineInstr : WasmInstr → Prop
+  | .nop          => True
+  | .drop         => True
+  | .i32Const _   => True
+  | .localSet _   => True
+  | .localTee _   => True
+  | .i32Sub       => True
+  | .i32Mul       => True
+  | .i32And       => True
+  | .i32Or        => True
+  | .i32Xor       => True
+  | .i32ShrU      => True
+  | .i32DivU      => True
+  | .i32RemU      => True
+  | .i32Eq        => True
+  | .i32Ne        => True
+  | .i32LtU       => True
+  | .i32LeU       => True
+  | .i32GtU       => True
+  | .i32GeU       => True
+  | _             => False
+
+/-- `instrs : List WasmInstr` is straight-line if every element is. -/
+def StraightLineInstrs : List WasmInstr → Prop
+  | []        => True
+  | i :: rest => StraightLineInstr i ∧ StraightLineInstrs rest
+
+/-- L10 — framework_preservation for straight-line kernels.
+
+    Composes the per-op bridge variants for every constructor in
+    `StraightLineInstr`. Inducts on `instrs`; the cons case
+    dispatches on the head constructor and applies the matching
+    `cons_<op>_bridge` theorem, threading the recursive IH.
+
+    Conclusion: existence of a `kst'` matching `ws'` under the
+    refinement, plus the bridge clauses (which for straight-line
+    kernels are vacuously true since branchTarget never gets set
+    and broke never gets toggled). -/
+theorem framework_preservation_straightLine
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (instrs : List WasmInstr)
+    (h_wf : StraightLineInstrs instrs)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws instrs = some ws')
+    (hl : lowerInstrs fuel frames s instrs = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  induction instrs generalizing ws s kst ws' s' ops with
+  | nil =>
+    -- Empty body: evalInstrs and lowerInstrs both return the input.
+    simp only [evalInstrs] at hw
+    simp only [lowerInstrs] at hl
+    have h_ws_eq : ws' = ws := ((Option.some.injEq _ _).mp hw).symm
+    have h_pair : (s, ([] : List KernelOp)) = (s', ops) :=
+      (Option.some.injEq _ _).mp hl
+    have h_s_eq : s = s' := congrArg Prod.fst h_pair
+    have h_ops_eq : ([] : List KernelOp) = ops := congrArg Prod.snd h_pair
+    refine ⟨kst, 0, ?_, ?_, ?_⟩
+    · rw [← h_ops_eq]; simp [evalOps]
+    · rw [h_ws_eq, ← h_s_eq]; exact R
+    · refine ⟨?_, ?_⟩
+      · intro d hd
+        rw [h_ws_eq] at hd
+        rw [h_no_branch] at hd
+        exact (Option.noConfusion hd)
+      · intro _
+        exact h_kst_no_broke
+  | cons i rest IH =>
+    -- Recursive case: dispatch on i. Build the rest-IH from the
+    -- list-level IH (paramerterised over the mid-state).
+    obtain ⟨h_wf_head, h_wf_rest⟩ := h_wf
+    have preservation_rest_bridge :
+        ∀ {ws_mid : WasmState} {s_mid : LowerState}
+          {kst_mid : Quanta.KOps.State}
+          (_R_mid : Refines ws_mid s_mid kst_mid layout)
+          (_h_nb_mid : ws_mid.branchTarget = none)
+          (_h_nh_mid : ws_mid.halted = false)
+          (_h_nbk_mid : kst_mid.broke = false)
+          {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+          (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+          (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+        ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+          evalOps F kst_mid postOps = some kst'_mid ∧
+          Refines ws'_mid s'_mid kst'_mid layout ∧
+          BridgeClauses ws'_mid kst'_mid := by
+      intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_nbk_mid
+            ws'_mid s'_mid postOps hw_mid hl_mid
+      exact IH (ws := ws_mid) (s := s_mid) (kst := kst_mid)
+        R_mid h_nb_mid h_nh_mid h_nbk_mid h_wf_rest
+        (ws' := ws'_mid) (s' := s'_mid) (ops := postOps)
+        hw_mid hl_mid
+    -- Dispatch on head constructor.
+    cases i with
+    | nop =>
+        exact preservation_evalInstrs_cons_nop_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | drop =>
+        exact preservation_evalInstrs_cons_drop_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Const n =>
+        exact preservation_evalInstrs_cons_i32Const_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          n rest preservation_rest_bridge ws' s' ops hw hl
+    | localSet idx =>
+        exact preservation_evalInstrs_cons_localSet_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          idx rest preservation_rest_bridge ws' s' ops hw hl
+    | localTee idx =>
+        exact preservation_evalInstrs_cons_localTee_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          idx rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Sub =>
+        exact preservation_evalInstrs_cons_i32Sub_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Mul =>
+        exact preservation_evalInstrs_cons_i32Mul_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32And =>
+        exact preservation_evalInstrs_cons_i32And_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Or =>
+        exact preservation_evalInstrs_cons_i32Or_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Xor =>
+        exact preservation_evalInstrs_cons_i32Xor_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32ShrU =>
+        exact preservation_evalInstrs_cons_i32ShrU_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32DivU =>
+        exact preservation_evalInstrs_cons_i32DivU_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32RemU =>
+        exact preservation_evalInstrs_cons_i32RemU_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Eq =>
+        exact preservation_evalInstrs_cons_i32Eq_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Ne =>
+        exact preservation_evalInstrs_cons_i32Ne_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32LtU =>
+        exact preservation_evalInstrs_cons_i32LtU_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32LeU =>
+        exact preservation_evalInstrs_cons_i32LeU_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32GtU =>
+        exact preservation_evalInstrs_cons_i32GtU_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    | i32GeU =>
+        exact preservation_evalInstrs_cons_i32GeU_bridge
+          fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+          rest preservation_rest_bridge ws' s' ops hw hl
+    -- All other constructors are excluded by StraightLineInstr.
+    -- The `h_wf_head : StraightLineInstr i = True` is `False` for
+    -- these, contradicting the hypothesis.
+    | localGet _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i64Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f64Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32Add => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32DivS => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32RemS => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32Shl => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32ShrS => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32LtS => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32GtS => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32LeS => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32GeS => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32Eqz => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Add => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Sub => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Mul => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Div => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Eq => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Ne => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Lt => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Gt => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Le => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Ge => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Neg => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Abs => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Sqrt => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Min => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Max => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32WrapI64 => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32ConvertI32S => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32ConvertI32U => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32TruncF32S => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32TruncF32U => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32ReinterpretI32 => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32ReinterpretF32 => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32Load _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32Store _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Load _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | f32Store _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32Load8U _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32Load8S _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | i32Store8 _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | block _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | wloop _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | wif _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | welse => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | wend => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | br _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | brIf _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | wreturn => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | call _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | wselect => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | unreachable => exact absurd h_wf_head (by simp [StraightLineInstr])
+    | unsupported _ => exact absurd h_wf_head (by simp [StraightLineInstr])
+
 end Quanta.Wasm

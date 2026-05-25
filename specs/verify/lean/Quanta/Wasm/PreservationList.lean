@@ -278,13 +278,13 @@ theorem preservation_br_refused_no_loop_above
     (layout : BufferLayout)
     (R : Refines ws s kst layout)
     (h_no_branch : ws.branchTarget = none)
-    (h_no_halt : ws.halted = false)
+    (_h_no_halt : ws.halted = false)
     (depth : Nat) (rest : List WasmInstr)
     (kind : FrameKind) (h_kind_ne_loop : kind ≠ .loopK)
     (h_target : frames.get? depth = some kind)
     (h_no_loop_above : hasLoopAbove frames depth = false)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
-    (hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
+    (_hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
     (hl : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   -- The lowering returns none for this sub-case.
