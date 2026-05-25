@@ -3731,6 +3731,232 @@ theorem opLoop_one_iter_exit
   rw [Quanta.KOps.opLoop]
   simp [h_post_broke]
 
+/-- `wloop _ :: rest` preservation, single-iteration-exit case.
+    The body runs exactly once on both sides:
+    - WASM: body's eval ends with branchTarget = none (fall-
+      through after the exit-cond brIf), halted = false. iterLoop
+      then runs post.
+    - IR: body's IR ends with broke = true (the exit arm of the
+      brIf_loop_self emits .breakOp). opLoop sees broke=true on
+      the next iter and returns reset_broke state. post runs.
+
+    Caller supplies `body_preserves` (the standard recursive
+    bridge IH) AND a stronger
+    `body_exits_with_broke_true` IH that asserts the body's IR
+    leaves kst'.broke = true (which is what the brIf_loop_self_bridge
+    discharges for `[.i32Const 0; .brIf 0]`-style bodies).
+
+    Restrictions: body doesn't mutate locals (no localSet), body's
+    lowering preserves structural invariants. Inherits the same
+    well-formedness package as cons_wif. -/
+theorem preservation_evalInstrs_cons_wloop_singleIterExit
+    (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (bt : Nat) (rest : List WasmInstr)
+    (body post : List WasmInstr)
+    (h_split : splitAtEnd rest = some (body, post))
+    -- Body's recursive bridge IH (under .loopK frame).
+    (body_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+        (_hw_b : evalInstrs bt ws_b body = some ws'_b)
+        (_hl_b : lowerInstrs bt (.loopK :: frames) s_b body = some (s'_b, bodyOps)),
+      ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_b bodyOps = some kst'_b ∧
+        Refines ws'_b s'_b kst'_b layout ∧
+        BridgeClauses ws'_b kst'_b)
+    -- Eval-side exit hypothesis: body ends with branchTarget=none,
+    -- halted=false on the eval side. Stack/locals also fall-through.
+    (body_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs bt ws_b body = some ws'_b)
+        (_hl_b : lowerInstrs bt (.loopK :: frames) s_b body = some (s'_b, bodyOps)),
+      ws'_b.branchTarget = none ∧ ws'_b.halted = false ∧
+      ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
+      ws'_b.mem = ws_b.mem ∧
+      s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots)
+    -- IR-side exit hypothesis: body's IR sets broke=true.
+    -- Inverted bridge — what brIf_loop_self_bridge produces for
+    -- the exit arm.
+    (body_exits_with_broke : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp} {kst'_b : Quanta.KOps.State} {F_b : Nat}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs bt ws_b body = some ws'_b)
+        (_hl_b : lowerInstrs bt (.loopK :: frames) s_b body = some (s'_b, bodyOps))
+        (_h_ev_b : evalOps F_b kst_b bodyOps = some kst'_b),
+      kst'_b.broke = true)
+    -- Lowering-only structural invariants.
+    (body_lowering_preserves : ∀ {s_b s'_b : LowerState} {bodyOps : List KernelOp},
+        lowerInstrs bt (.loopK :: frames) s_b body = some (s'_b, bodyOps) →
+        s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+        s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+        s_b.nextReg ≤ s'_b.nextReg)
+    -- Post-IH.
+    (post_preserves : ∀ {ws_p : WasmState} {s_p : LowerState}
+        {kst_p : Quanta.KOps.State}
+        (_R_p : Refines ws_p s_p kst_p layout)
+        (_h_nb_p : ws_p.branchTarget = none)
+        (_h_nh_p : ws_p.halted = false)
+        (_h_nbk_p : kst_p.broke = false)
+        {ws'_p : WasmState} {s'_p : LowerState} {postOps : List KernelOp}
+        (_hw_p : evalInstrs bt ws_p post = some ws'_p)
+        (_hl_p : lowerInstrs bt frames s_p post = some (s'_p, postOps)),
+      ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_p postOps = some kst'_p ∧
+        Refines ws'_p s'_p kst'_p layout ∧
+        BridgeClauses ws'_p kst'_p)
+    -- Fuel ≥ 2 so opLoop_one_iter_exit applies.
+    (h_fuel_ge_2 : bt ≥ 2)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (bt + 1) ws (.wloop 0 :: rest) = some ws')
+    (hl : lowerInstrs (bt + 1) frames s (.wloop 0 :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  -- Unfold the lowering's wloop arm.
+  simp only [lowerInstrs] at hl
+  rw [h_split] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_lb : lowerInstrs bt (.loopK :: frames) s body with
+  | none => simp [h_lb] at hl
+  | some body_pair =>
+    rcases body_pair with ⟨s1, bodyOps⟩
+    simp [h_lb] at hl
+    -- s1_restored = { s1 with localReg := s.localReg, localTy := s.localTy }.
+    -- body_lowering_preserves on h_lb says s1.localReg = s.localReg
+    -- and s1.localTy = s.localTy, so s1_restored = s1.
+    obtain ⟨h_s1_lr, h_s1_lt, h_s1_stack, h_s1_bs, h_s1_nr⟩ :=
+      body_lowering_preserves h_lb
+    have h_s1_restored_eq :
+        ({ s1 with localReg := s.localReg, localTy := s.localTy } : LowerState) = s1 := by
+      have h_lr_eq : s.localReg = s1.localReg := h_s1_lr.symm
+      have h_lt_eq : s.localTy = s1.localTy := h_s1_lt.symm
+      rw [h_lr_eq, h_lt_eq]
+    rw [h_s1_restored_eq] at hl
+    cases h_lp : lowerInstrs bt frames s1 post with
+    | none => simp [h_lp] at hl
+    | some post_pair =>
+      rcases post_pair with ⟨s2, postOps⟩
+      simp [h_lp] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      -- Eval side: wloop arm.
+      simp only [evalInstrs] at hw
+      have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+        rw [h_no_halt, h_no_branch]; rfl
+      rw [h_cond] at hw
+      simp only [Bool.false_eq_true, ↓reduceIte] at hw
+      rw [h_split] at hw
+      simp only at hw
+      -- iterLoop bt ws → first iteration: evalInstrs bt ws body.
+      -- We extract this from hw by unfolding iterLoop one step.
+      -- hw : iterLoop bt ws = some ws'.
+      -- Since bt = bt' + 1 (we'd need bt ≥ 1 to unfold), reduce.
+      -- Note: bt ≥ 2 (from h_fuel_ge_2). Express bt = bt' + 1 to
+      -- unfold iterLoop, but keep bt in all IH-facing positions.
+      match h_bt_match : bt, h_fuel_ge_2 with
+      | 0, h_le => exact absurd h_le (by decide)
+      | bt' + 1, _ =>
+        -- Unfold iterLoop one step in hw.
+        unfold evalInstrs.iterLoop at hw
+        cases h_eb : evalInstrs (bt' + 1) ws body with
+        | none =>
+          rw [h_eb] at hw
+          simp at hw
+        | some ws_after_body =>
+          rw [h_eb] at hw
+          -- ws_after_body.branchTarget = none from body_falls_through.
+          obtain ⟨kst_after_body, F_b, h_ev_b, R_b, _h_bridge_b⟩ :=
+            body_preserves R h_no_branch h_no_halt h_kst_no_broke h_eb h_lb
+          obtain ⟨h_ab_nb, h_ab_nh, _h_ab_locs, _h_ab_stk, _h_ab_mem,
+                  _h_s1_lr', _h_s1_lt', _h_s1_stk', _h_s1_bs'⟩ :=
+            body_falls_through R h_no_branch h_no_halt h_kst_no_broke h_eb h_lb
+          have h_ab_broke : kst_after_body.broke = true :=
+            body_exits_with_broke R h_no_branch h_no_halt h_kst_no_broke h_eb h_lb h_ev_b
+          -- Reduce the outer `match some ws_after_body` and then
+          -- match on ws_after_body.branchTarget = none.
+          simp only at hw
+          rw [h_ab_nb] at hw
+          simp only at hw
+          -- hw : evalInstrs (bt'+1) ws_after_body post = some ws'.
+          -- IR side: opLoop runs body once via opLoop_one_iter_exit
+          --   → returns kst_after_body.reset_broke.
+          -- For opLoop's F ≥ 2 requirement, use F_b's body fuel for the inner
+          -- evalOps and a separate iteration counter ≥ 2.
+          -- The actual `.loopOp bodyOps` evaluator uses `fuel` for both knobs
+          -- (opLoop fuel body fuel s). Pick a sufficiently large F.
+          --
+          -- Apply post_preserves to get post's output.
+          -- We need Refines ws_after_body s1 kst_after_body.reset_broke layout.
+          -- R_b gives Refines ws_after_body s1 kst_after_body layout.
+          -- reset_broke only changes the broke flag (which Refines doesn't see).
+          have R_ab_reset :
+              Refines ws_after_body s1 kst_after_body.reset_broke layout := by
+            refine ⟨R_b.stk, R_b.locs, R_b.fresh, R_b.aliasFree,
+                    R_b.injLocals, R_b.heapRefines⟩
+          have h_reset_broke : kst_after_body.reset_broke.broke = false := by
+            simp [Quanta.KOps.State.reset_broke]
+          obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
+            post_preserves R_ab_reset h_ab_nb h_ab_nh h_reset_broke hw h_lp
+          -- Compose: ops = [.loopOp bodyOps] ++ postOps.
+          -- evalOps for this: evalOp .loopOp = opLoop fuel bodyOps fuel kst →
+          --   = some kst_after_body.reset_broke (via opLoop_one_iter_exit).
+          --   Then postOps from there → some kst'.
+          let F : Nat := max (max F_b F_p) 2
+          have h_F_ge_2 : F ≥ 2 := by
+            simp [F]
+            omega
+          have h_F_ge_Fb : F_b ≤ F := by
+            simp [F]; omega
+          have h_F_ge_Fp : F_p ≤ F := by
+            simp [F]; omega
+          refine ⟨kst', F, ?_, ?_, h_bridge_p⟩
+          · rw [← h_ops_eq]
+            -- evalOps F kst ([.loopOp bodyOps] ++ postOps).
+            -- First step: evalOp F kst (.loopOp bodyOps) = opLoop F bodyOps F kst.
+            -- Apply opLoop_one_iter_exit with F as the iteration counter.
+            have h_ev_b_F : evalOps F kst bodyOps = some kst_after_body :=
+              evalOps_fuel_mono h_F_ge_Fb h_ev_b
+            have h_op_loop :
+                Quanta.KOps.opLoop F bodyOps F kst = some kst_after_body.reset_broke :=
+              opLoop_one_iter_exit h_kst_no_broke h_ev_b_F h_ab_broke h_F_ge_2
+            have h_ev_p_F : evalOps F kst_after_body.reset_broke postOps = some kst' :=
+              evalOps_fuel_mono h_F_ge_Fp h_ev_p
+            -- Compose via evalOps_append.
+            have h_loop_op :
+                Quanta.KOps.evalOp F kst (.loopOp bodyOps)
+                  = some kst_after_body.reset_broke := by
+              simp [Quanta.KOps.evalOp]
+              exact h_op_loop
+            have h_full :
+                Quanta.KOps.evalOps F kst
+                  (KernelOp.loopOp bodyOps :: postOps)
+                  = some kst' := by
+              rw [Quanta.KOps.evalOps]
+              rw [h_loop_op]
+              simp [h_reset_broke, h_ev_p_F]
+            exact h_full
+          · rw [← h_s_eq]; exact R_p
+
 -- ════════════════════════════════════════════════════════════════════
 -- L8.3 cons_wloop — INVESTIGATION RESULTS
 --
