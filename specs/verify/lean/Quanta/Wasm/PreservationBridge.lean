@@ -5109,6 +5109,33 @@ theorem framework_preservation_nop_const0_brIf0_wloop_then_straightLine
     h_fuel_ge_2 ws' s' ops hw hl
 
 -- ════════════════════════════════════════════════════════════════════
+-- Parametric IR-empty prefix lifting
+--
+-- Generalizes the peel-delegate pattern: for any list `prefix` of
+-- "IR-empty stack-pure" instructions, the four body IHs for
+-- `prefix ++ core` reduce to the four body IHs for `core`. The
+-- predicate `IsIrEmptyOp` captures the allowed prefix instructions.
+-- Currently admits `.nop`; extensible by adding constructors here
+-- and proving the corresponding peel-step lemmas. The wloop kernel
+-- builder then admits `prefix ++ [.i32Const 0, .brIf 0]` for any
+-- well-formed prefix in one shot.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Syntactic predicate: an instruction whose lowering is IR-empty
+    and stack-pure (no state change beyond a no-op on the
+    LowerState). Admitting an op here requires proving the four
+    peel-step lemmas below for it. -/
+def IsIrEmptyOp : WasmInstr → Prop
+  | .nop => True
+  | _    => False
+
+/-- List of IR-empty / stack-pure instructions. Admitted as a
+    wloop-body prefix. -/
+def IsIrEmptyPrefix : List WasmInstr → Prop
+  | [] => True
+  | i :: rest => IsIrEmptyOp i ∧ IsIrEmptyPrefix rest
+
+-- ════════════════════════════════════════════════════════════════════
 -- Concrete wloop kernel theorem catalog
 --
 -- The following end-to-end kernel preservation theorems are shipped
