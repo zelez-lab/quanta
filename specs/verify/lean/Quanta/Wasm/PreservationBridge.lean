@@ -3702,6 +3702,54 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
 -- broke=true on the first iter triggers a one-iter loop exit.
 -- ════════════════════════════════════════════════════════════════════
 
+/-- N-iteration exit lemma for `opLoop`: if running the body's IR
+    produces `n` consecutive states `st = st₀, st₁, …, st_n` where
+    each `evalOps fuel st_i body = some st_{i+1}`, `st_i.broke =
+    false` for `i < n`, and `st_n.broke = true`, then opLoop runs
+    body exactly `n` times then exits (returning `st_n.reset_broke`).
+
+    Requires the iteration counter `f` to be at least `n + 1`:
+    `n` to run body each time, plus 1 to observe broke=true on
+    the (n+1)-th iteration. -/
+theorem opLoop_n_iter_exit
+    {fuel : Nat} {body : List KernelOp}
+    {n : Nat} (states : Fin (n + 1) → Quanta.KOps.State)
+    (h_step : ∀ i : Fin n,
+        evalOps fuel (states i.castSucc) body
+          = some (states i.succ))
+    (h_no_broke : ∀ i : Fin n, (states i.castSucc).broke = false)
+    (h_final_broke : (states (Fin.last n)).broke = true)
+    {f : Nat} (h_f : f ≥ n + 1) :
+    Quanta.KOps.opLoop fuel body f (states 0) = some (states (Fin.last n)).reset_broke := by
+  induction n generalizing f with
+  | zero =>
+      have h_broke_0 : (states 0).broke = true := h_final_broke
+      have h_f_pos : f ≥ 1 := by omega
+      obtain ⟨k, hk⟩ : ∃ k, f = k + 1 := ⟨f - 1, by omega⟩
+      rw [hk]
+      rw [Quanta.KOps.opLoop]
+      simp [h_broke_0]
+  | succ n IH =>
+      have h_broke_0 : (states 0).broke = false := h_no_broke 0
+      have h_step_0 : Quanta.KOps.evalOps fuel (states 0) body
+                        = some (states ⟨1, by omega⟩) := h_step 0
+      have h_f_ge_1 : f ≥ 1 := by omega
+      obtain ⟨k, hk⟩ : ∃ k, f = k + 1 := ⟨f - 1, by omega⟩
+      rw [hk]
+      rw [Quanta.KOps.opLoop]
+      simp [h_broke_0]
+      rw [h_step_0]
+      simp only
+      have h_k_bound : k ≥ n + 1 := by omega
+      -- Apply IH on shifted states.
+      have h_ih := IH (fun i => states ⟨i.val + 1, by omega⟩)
+        (fun i => h_step ⟨i.val + 1, by omega⟩)
+        (fun i => h_no_broke ⟨i.val + 1, by omega⟩)
+        h_final_broke h_k_bound
+      -- h_ih has shape opLoop fuel body k (states ⟨1, _⟩)
+      --   = some (states ⟨n+1, _⟩).reset_broke. Match the goal.
+      exact h_ih
+
 open Quanta.KOps (opLoop State) in
 /-- One-iteration exit lemma for `opLoop`: if running the body's
     IR for `evalOps fuel st body = some st_next` with
