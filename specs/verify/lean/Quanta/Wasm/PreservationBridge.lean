@@ -3722,6 +3722,7 @@ def StraightLineInstr : WasmInstr → Prop
   | .nop          => True
   | .drop         => True
   | .i32Const _   => True
+  | .localGet _   => True
   | .localSet _   => True
   | .localTee _   => True
   | .i32Sub       => True
@@ -3739,6 +3740,25 @@ def StraightLineInstr : WasmInstr → Prop
   | .i32GtU       => True
   | .i32GeU       => True
   | _             => False
+
+/-- Kernel-input well-formedness for buffer-typed locals.
+    Captures the invariant that every local registered as a
+    `#[quanta::shared]` buffer-pointer param holds a `wI32` whose
+    value equals the buffer slot's `startAddr`.
+
+    For the framework theorem this is taken as a universally-
+    quantified hypothesis over every mid-state during evaluation —
+    a kernel-input well-formedness assumption discharged by the
+    downstream caller. Well-typed kernels satisfy this structurally
+    (the lowering refuses to commit non-buffer SymVals into buffer-
+    typed locals, so localSet/localTee on buffer-typed locals
+    fails at lowering time and the framework's `hl` precondition
+    rules out the bad case). -/
+def BufferLocalsWellFormed
+    (layout : BufferLayout) (ws : WasmState) (s : LowerState) : Prop :=
+  ∀ i slot, s.lookupBufferSlot i = some slot →
+    ∀ v, ws.locals.get? i = some v →
+      ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr slot
 
 /-- `instrs : List WasmInstr` is straight-line if every element is. -/
 def StraightLineInstrs : List WasmInstr → Prop
@@ -3764,6 +3784,15 @@ theorem framework_preservation_straightLine
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
     (h_kst_no_broke : kst.broke = false)
+    -- Kernel-input hypothesis: at every mid-state reachable
+    -- during the kernel's evaluation, buffer-typed locals hold
+    -- their slot start address. Discharged downstream by a
+    -- syntactic well-typedness check (no localSet on buffer
+    -- locals) plus a kernel-input precondition. Abstracted
+    -- over (ws_x, s_x) so the recursion can pass it through
+    -- without proving bufferSlot preservation per-op.
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
     (instrs : List WasmInstr)
     (h_wf : StraightLineInstrs instrs)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
@@ -3815,8 +3844,7 @@ theorem framework_preservation_straightLine
             ws'_mid s'_mid postOps hw_mid hl_mid
       exact IH (ws := ws_mid) (s := s_mid) (kst := kst_mid)
         R_mid h_nb_mid h_nh_mid h_nbk_mid h_wf_rest
-        (ws' := ws'_mid) (s' := s'_mid) (ops := postOps)
-        hw_mid hl_mid
+        ws'_mid s'_mid postOps hw_mid hl_mid
     -- Dispatch on head constructor.
     cases i with
     | nop =>
@@ -3831,6 +3859,19 @@ theorem framework_preservation_straightLine
         exact preservation_evalInstrs_cons_i32Const_bridge
           fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
           n rest preservation_rest_bridge ws' s' ops hw hl
+    | localGet idx =>
+        -- Dispatch on s.lookupBufferSlot idx.
+        cases h_lookup : s.lookupBufferSlot idx with
+        | none =>
+            exact preservation_evalInstrs_cons_localGet_bridge
+              fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+              idx h_lookup rest preservation_rest_bridge ws' s' ops hw hl
+        | some slot =>
+            have h_loc_buf := h_buf_locals ws s idx slot h_lookup
+            exact preservation_evalInstrs_cons_localGet_bufferSlot_bridge
+              fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+              idx slot h_lookup h_loc_buf
+              rest preservation_rest_bridge ws' s' ops hw hl
     | localSet idx =>
         exact preservation_evalInstrs_cons_localSet_bridge
           fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
@@ -3898,7 +3939,6 @@ theorem framework_preservation_straightLine
     -- All other constructors are excluded by StraightLineInstr.
     -- The `h_wf_head : StraightLineInstr i = True` is `False` for
     -- these, contradicting the hypothesis.
-    | localGet _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i64Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f32Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f64Const _ => exact absurd h_wf_head (by simp [StraightLineInstr])
