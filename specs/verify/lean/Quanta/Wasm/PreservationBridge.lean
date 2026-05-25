@@ -3958,6 +3958,46 @@ theorem preservation_evalInstrs_cons_wloop_singleIterExit
           · rw [← h_s_eq]; exact R_p
 
 -- ════════════════════════════════════════════════════════════════════
+-- Concrete body lowering preservation for [.i32Const 0, .brIf 0]
+--
+-- The simplest concrete wloop body — pushes 0, then exits via brIf 0
+-- (cond=0 falls through and IR-side .branch picks the [.breakOp] arm).
+-- Closes the `body_lowering_preserves` IH of L10v6 for this body.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `body_lowering_preserves` discharge for body = `[.i32Const 0, .brIf 0]`
+    under a `.loopK :: frames` frame stack with `bt ≥ 1` fuel.
+    Stack effect is zero (push from i32Const, pop from brIf cancel);
+    locals + bufferSlots unchanged; nextReg grows by 2 (one for the
+    const's fresh reg, one for cond_bool). -/
+theorem const0_brIf0_lowering_preserves
+    {bt : Nat} (frames : List FrameKind)
+    {s_b s'_b : LowerState} {bodyOps : List KernelOp}
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              [.i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
+    s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+    s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+    s_b.nextReg ≤ s'_b.nextReg := by
+  -- Simp the lowering all the way down. The dispatch for i32Const goes
+  -- through the default `_` arm; brIf 0 at .loopK :: frames takes the
+  -- depth=0 path. popSym + commit + alloc + recurse-on-[] all reduce.
+  -- frames.get? 0 reduces explicitly.
+  have h_get0 : (FrameKind.loopK :: frames).get? 0 = some .loopK := rfl
+  simp only [lowerInstrs, lowerInstr, LowerState.popSym, LowerState.commit,
+             LowerState.alloc, Option.bind_eq_bind, Option.some_bind, pure,
+             Option.some.injEq, Prod.mk.injEq, List.append_nil,
+             h_get0, ↓reduceIte, if_true] at h_lb
+  obtain ⟨h_s_eq, _⟩ := h_lb
+  subst h_s_eq
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  · rfl
+  · rfl
+  · rfl
+  · rfl
+  · show s_b.nextReg ≤ s_b.nextReg + 1 + 1
+    omega
+
+-- ════════════════════════════════════════════════════════════════════
 -- L8.3 cons_wloop — INVESTIGATION RESULTS
 --
 -- cons_wloop's general claim depends on the iteration bridge: each
