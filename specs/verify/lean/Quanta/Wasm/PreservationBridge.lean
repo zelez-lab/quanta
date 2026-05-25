@@ -162,12 +162,12 @@ theorem preservation_evalInstrs_cons_i32Const_bridge
     have h_form : (s.pushSym (.i32ConstSym n) : LowerState) =
         { nextReg := s.nextReg, stack := SymVal.i32ConstSym n :: s.stack,
           localReg := s.localReg, localTy := s.localTy,
-          bufferSlots := s.bufferSlots } := rfl
+          bufferSlots := s.bufferSlots, currentReg := s.currentReg } := rfl
     rw [h_form]
     cases h_eq : lowerInstrs fuel frames
         { nextReg := s.nextReg, stack := SymVal.i32ConstSym n :: s.stack,
           localReg := s.localReg, localTy := s.localTy,
-          bufferSlots := s.bufferSlots } rest with
+          bufferSlots := s.bufferSlots, currentReg := s.currentReg } rest with
     | none => rw [h_eq] at hl; simp only [Option.none_bind] at hl; exact hl
     | some pair =>
         rw [h_eq] at hl
@@ -622,7 +622,7 @@ theorem preservation_evalInstrs_cons_drop_bridge
   let s_mid : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
       localReg := s.localReg, localTy := s.localTy,
-      bufferSlots := s.bufferSlots }
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   have hl' : lowerInstrs fuel frames s_mid rest = some (s', ops) := by
     rw [lowerInstrs_cons_default fuel frames s .drop rest rfl] at hl
     have h_lw : lowerInstr s .drop = some (s_mid, []) := by
@@ -1822,7 +1822,7 @@ theorem preservation_evalInstrs_cons_i32Store_bridge
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lstk_rest,
       localReg := s.localReg, localTy := s.localTy,
-      bufferSlots := s.bufferSlots }
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   cases hca : s_pop.commit sv_val with
   | none =>
       have h_lw : lowerInstr s (.i32Store offset align) = none := by
@@ -1831,7 +1831,7 @@ theorem preservation_evalInstrs_cons_i32Store_bridge
         simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind]
         rw [show ({ nextReg := s.nextReg, stack := lstk_rest,
                     localReg := s.localReg, localTy := s.localTy,
-                    bufferSlots := s.bufferSlots } : LowerState).commit sv_val
+                    bufferSlots := s.bufferSlots, currentReg := s.currentReg } : LowerState).commit sv_val
                 = s_pop.commit sv_val from rfl]
         rw [hca]
         rfl
@@ -1847,7 +1847,7 @@ theorem preservation_evalInstrs_cons_i32Store_bridge
         simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind]
         rw [show ({ nextReg := s.nextReg, stack := lstk_rest,
                     localReg := s.localReg, localTy := s.localTy,
-                    bufferSlots := s.bufferSlots } : LowerState).commit sv_val
+                    bufferSlots := s.bufferSlots, currentReg := s.currentReg } : LowerState).commit sv_val
                 = s_pop.commit sv_val from rfl]
         rw [hca]
         rfl

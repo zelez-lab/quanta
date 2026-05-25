@@ -1381,7 +1381,7 @@ theorem preservation_evalInstrs_cons_drop
   let s_mid : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
       localReg := s.localReg, localTy := s.localTy,
-      bufferSlots := s.bufferSlots }
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   -- Lowering side: lowerInstrs fuel frames s_mid rest = some (s', ops).
   have hl' : lowerInstrs fuel frames s_mid rest = some (s', ops) := by
     rw [lowerInstrs_cons_default fuel frames s .drop rest rfl] at hl
@@ -2340,7 +2340,7 @@ theorem preservation_evalInstrs_cons_i32Store
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lstk_rest,
       localReg := s.localReg, localTy := s.localTy,
-      bufferSlots := s.bufferSlots }
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   cases hca : s_pop.commit sv_val with
   | none =>
       have h_lw : lowerInstr s (.i32Store offset align) = none := by
@@ -2349,7 +2349,7 @@ theorem preservation_evalInstrs_cons_i32Store
         simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind]
         rw [show ({ nextReg := s.nextReg, stack := lstk_rest,
                     localReg := s.localReg, localTy := s.localTy,
-                    bufferSlots := s.bufferSlots } : LowerState).commit sv_val
+                    bufferSlots := s.bufferSlots, currentReg := s.currentReg } : LowerState).commit sv_val
                 = s_pop.commit sv_val from rfl]
         rw [hca]
         rfl
@@ -2365,7 +2365,7 @@ theorem preservation_evalInstrs_cons_i32Store
         simp only [LowerState.popSym, h_stack, Option.bind_eq_bind, Option.some_bind]
         rw [show ({ nextReg := s.nextReg, stack := lstk_rest,
                     localReg := s.localReg, localTy := s.localTy,
-                    bufferSlots := s.bufferSlots } : LowerState).commit sv_val
+                    bufferSlots := s.bufferSlots, currentReg := s.currentReg } : LowerState).commit sv_val
                 = s_pop.commit sv_val from rfl]
         rw [hca]
         rfl
@@ -4267,7 +4267,7 @@ private theorem brIf_cond_pop_commit_correct
   -- h_s0_eq gives s0 explicitly.
   have h_s0_shape : s0 =
       { nextReg := s.nextReg, stack := lrest, localReg := s.localReg,
-        localTy := s.localTy, bufferSlots := s.bufferSlots } := h_s0_eq.symm
+        localTy := s.localTy, bufferSlots := s.bufferSlots, currentReg := s.currentReg } := h_s0_eq.symm
   -- Encoding of wI32 c via sv_cond in kst.rf.
   have h_enc_cond_pre : (WasmValue.wI32 c).encodes layout kst.rf sv_cond := by
     have hget : ws.stack.get? 0 = some (.wI32 c) := by

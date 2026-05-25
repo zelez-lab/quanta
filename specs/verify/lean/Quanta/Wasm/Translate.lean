@@ -106,10 +106,32 @@ structure LowerState where
       i32.add | i32.load` chain can fold into a typed
       `KernelOp.Load`. -/
   bufferSlots : List (Nat × Nat)
+  /-- `localIdx → Reg` for the **current** (post-set) binding inside
+      a structured-control frame. Updated by every `localSet`/
+      `localTee`: a fresh register is allocated, and `currentReg[i]`
+      becomes that fresh reg. `localGet` reads `currentReg` first,
+      `localReg` (the stable merge-anchor) as fallback for locals
+      never written in the current frame.
+
+      At frame close (wif / wloop), a `merge_locals_post_frame`
+      helper diffs `currentReg` against the snapshot taken at frame
+      entry and emits `Copy { dst := localReg[i], src := currentReg[i] }`
+      for every modified local; then `currentReg` is reset by
+      removing those entries so post-frame reads see the merged
+      value via `localReg`.
+
+      Mirrors production's `LocalInfo.val = Some(SymVal::Reg(fresh, ty))`
+      after each set (`write_local_via_copy` in
+      `crates/quanta-wasm-lowering/src/lower.rs`, lines 625-685).
+      Production overloads `val` for this purpose; the Lean spec
+      keeps a separate map so the existing `localReg`-as-stable
+      proofs survive. -/
+  currentReg : List (Nat × Reg)
   deriving Repr
 
 def LowerState.empty : LowerState :=
-  { nextReg := 0, stack := [], localReg := [], localTy := [], bufferSlots := [] }
+  { nextReg := 0, stack := [], localReg := [], localTy := [],
+    bufferSlots := [], currentReg := [] }
 
 namespace LowerState
 

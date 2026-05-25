@@ -630,6 +630,16 @@ theorem commit_preserves_bufferSlots {s : LowerState} {sv : SymVal}
     s'.bufferSlots = s.bufferSlots := by
   rw [commit_only_bumps_nextReg h]
 
+/-- `commit` preserves the `currentReg` map (added when the
+    structure grew the per-frame current-binding field). Same
+    rationale as the bufferSlots variant — commit only bumps
+    nextReg. -/
+theorem commit_preserves_currentReg {s : LowerState} {sv : SymVal}
+    {r : Reg} {s' : LowerState} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) :
+    s'.currentReg = s.currentReg := by
+  rw [commit_only_bumps_nextReg h]
+
 /-- The KOps `evalOps` of a commit's emitted op list preserves the
     `broke` flag — `.reg` emits no ops, `.i32ConstSym` emits a single
     `.const` write that doesn't touch `broke`. The address SymVals
@@ -765,7 +775,7 @@ theorem preservation_drop (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.S
     exact hw.symm
   have h_s_eq : s' = { nextReg := s.nextReg, stack := lrest,
                        localReg := s.localReg, localTy := s.localTy,
-                       bufferSlots := s.bufferSlots } ∧ ops = [] := by
+                       bufferSlots := s.bufferSlots, currentReg := s.currentReg } ∧ ops = [] := by
     simp [lowerInstr, LowerState.popSym, hls_stack] at hl
     exact ⟨hl.1.symm, hl.2⟩
   refine ⟨kst, ?_, ?_⟩
@@ -1122,7 +1132,7 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
              stack := SymVal.reg s4.nextReg .u32 :: lrest,
              localReg := s.localReg,
              localTy := s.localTy,
-             bufferSlots := s.bufferSlots } ∧
+             bufferSlots := s.bufferSlots, currentReg := s.currentReg } ∧
       ops = opsA ++ opsB ++ [.binOp s4.nextReg ra rb bop .u32] := by
   unfold lowerI32Bin at h
   rcases hs : s.stack with _ | ⟨svb, _ | ⟨sva, lrest⟩⟩
@@ -1154,6 +1164,8 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
         have h_s4_lt   : s4.localTy  = s.localTy  := by rw [h_locB.2, h_locA.2]
         have h_s4_bs   : s4.bufferSlots = s.bufferSlots := by
           rw [commit_preserves_bufferSlots hcb, commit_preserves_bufferSlots hca]
+        have h_s4_cr   : s4.currentReg = s.currentReg := by
+          rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
         have h_s3_nr   : s.nextReg ≤ s3.nextReg := by
           -- commit returns either s (no bump) or s.alloc.snd (bump by 1).
           match sva, hca with
@@ -1175,10 +1187,7 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
                 rfl, hca, hcb, h_s4_stack, h_s4_lr, h_s4_lt,
                 Nat.le_trans h_s3_nr h_s4_nr, ?_, hops_eq.symm⟩
         rw [← hs_eq]
-        -- Goal: { s4 with nextReg := s4.nextReg + 1, stack := SymVal.reg s4.nextReg .u32 :: s4.stack }
-        --     = { nextReg := s4.nextReg + 1, stack := SymVal.reg s4.nextReg .u32 :: lrest,
-        --         localReg := s.localReg, localTy := s.localTy, bufferSlots := s.bufferSlots }
-        rw [h_s4_stack, h_s4_lr, h_s4_lt, h_s4_bs]
+        rw [h_s4_stack, h_s4_lr, h_s4_lt, h_s4_bs, h_s4_cr]
 
 /-- Shape for `lowerI32Cmp`. Same `popSym + commit` chain as
     `lowerI32Bin_some_shape`, but the final emission is the two-op
@@ -1198,7 +1207,7 @@ theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
              stack := SymVal.reg (s4.nextReg + 1) .u32 :: lrest,
              localReg := s.localReg,
              localTy := s.localTy,
-             bufferSlots := s.bufferSlots } ∧
+             bufferSlots := s.bufferSlots, currentReg := s.currentReg } ∧
       ops = opsA ++ opsB ++ [.cmp s4.nextReg ra rb cop .bool,
                               .cast (s4.nextReg + 1) s4.nextReg .bool .u32] := by
   unfold lowerI32Cmp at h
@@ -1226,6 +1235,8 @@ theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
         have h_s4_lt   : s4.localTy  = s.localTy  := by rw [h_locB.2, h_locA.2]
         have h_s4_bs   : s4.bufferSlots = s.bufferSlots := by
           rw [commit_preserves_bufferSlots hcb, commit_preserves_bufferSlots hca]
+        have h_s4_cr   : s4.currentReg = s.currentReg := by
+          rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
         have h_s3_nr   : s.nextReg ≤ s3.nextReg := by
           match sva, hca with
           | .reg _ _, hca =>
@@ -1246,7 +1257,7 @@ theorem lowerI32Cmp_some_shape {cop : Quanta.KOps.CmpOp} {s s' : LowerState}
                 rfl, hca, hcb, h_s4_stack, h_s4_lr, h_s4_lt,
                 Nat.le_trans h_s3_nr h_s4_nr, ?_, hops_eq.symm⟩
         rw [← hs_eq]
-        rw [h_s4_stack, h_s4_lr, h_s4_lt, h_s4_bs]
+        rw [h_s4_stack, h_s4_lr, h_s4_lt, h_s4_bs, h_s4_cr]
 
 -- ════════════════════════════════════════════════════════════════════
 -- Generic i32 binop preservation (instantiates for the 10-op family)
@@ -1325,7 +1336,7 @@ theorem preservation_i32Bin_generic
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
       localReg := s.localReg, localTy := s.localTy,
-      bufferSlots := s.bufferSlots }
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   let ws_pop : WasmState :=
     { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
@@ -2410,7 +2421,7 @@ theorem preservation_i32Cmp_generic
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
       localReg := s.localReg, localTy := s.localTy,
-      bufferSlots := s.bufferSlots }
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   let ws_pop : WasmState :=
     { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
@@ -2669,7 +2680,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
       localReg := s.localReg, localTy := s.localTy,
-      bufferSlots := s.bufferSlots }
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   let ws_pop : WasmState := { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
     refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
@@ -3016,7 +3027,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   let s_pop : LowerState :=
     { nextReg := s.nextReg, stack := lrest,
       localReg := s.localReg, localTy := s.localTy,
-      bufferSlots := s.bufferSlots }
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   let ws_pop : WasmState := { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
     refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
