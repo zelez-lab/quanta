@@ -3779,6 +3779,80 @@ theorem opLoop_one_iter_exit
   rw [Quanta.KOps.opLoop]
   simp [h_post_broke]
 
+/-- WASM-side `iterLoop` N-iteration exit lemma. Given a sequence
+    of body-output states where the first N-1 set `branchTarget =
+    some 0` (continue) and the last sets `branchTarget = none`
+    (exit), and `post` evaluates from the exit state to ws_final,
+    iterLoop returns `some ws_final`.
+
+    `entries i` is the entry state to iteration i (so entries 0 is
+    iterLoop's starting state, entries (i+1) is the previous
+    iteration's body output with branchTarget cleared).
+
+    Requires the iteration counter `f` to be at least `n + 1`:
+    `n - 1` continues + the exit iteration + the post-eval. The
+    `+ 1` slack is because the last iteration is the exit and
+    consumes one fuel unit. -/
+theorem iterLoop_n_iter_exit
+    {fuel : Nat}
+    {body post : List WasmInstr}
+    {n : Nat}
+    (entries : Fin (n + 1) → WasmState)
+    (bodyOuts : Fin (n + 1) → WasmState)
+    (h_step : ∀ i : Fin (n + 1),
+        evalInstrs fuel (entries i) body = some (bodyOuts i))
+    (h_continue : ∀ i : Fin n,
+        (bodyOuts i.castSucc).branchTarget = some 0 ∧
+        entries i.succ = { bodyOuts i.castSucc with branchTarget := none })
+    (h_exit : (bodyOuts (Fin.last n)).branchTarget = none)
+    {ws_final : WasmState}
+    (h_post : evalInstrs fuel (bodyOuts (Fin.last n)) post = some ws_final)
+    {f : Nat} (h_f : f ≥ n + 1) :
+    evalInstrs.iterLoop fuel body post f (entries 0) = some ws_final := by
+  induction n generalizing f with
+  | zero =>
+      -- 0 continues, just the exit iteration: bodyOuts (Fin.last 0)
+      -- has branchTarget = none, post runs from it.
+      have h_f_ge_1 : f ≥ 1 := by omega
+      obtain ⟨k, hk⟩ : ∃ k, f = k + 1 := ⟨f - 1, by omega⟩
+      rw [hk]
+      unfold evalInstrs.iterLoop
+      rw [h_step 0]
+      simp only
+      -- Reduce Fin.last 0 to 0 in h_exit / h_post.
+      have h_bt : (bodyOuts 0).branchTarget = none := h_exit
+      have h_post' : evalInstrs fuel (bodyOuts 0) post = some ws_final := h_post
+      rw [h_bt]
+      exact h_post'
+  | succ n IH =>
+      -- iter 0 continues; then iter 1..n + exit.
+      have h_f_ge_1 : f ≥ 1 := by omega
+      obtain ⟨k, hk⟩ : ∃ k, f = k + 1 := ⟨f - 1, by omega⟩
+      rw [hk]
+      unfold evalInstrs.iterLoop
+      rw [h_step 0]
+      simp only
+      have h_cont_0 := h_continue 0
+      -- h_cont_0.left : (bodyOuts (Fin.castSucc 0)).branchTarget = some 0
+      -- Reduce Fin.castSucc 0 to 0 first.
+      have h_bt_0 : (bodyOuts 0).branchTarget = some 0 := h_cont_0.left
+      rw [h_bt_0]
+      simp only
+      -- Now: iterLoop fuel body post k {bodyOuts 0 with branchTarget := none}.
+      have h_entries_1 : ({ bodyOuts (0 : Fin (n + 1 + 1))
+                                with branchTarget := none } : WasmState)
+                            = entries ⟨1, by omega⟩ := h_cont_0.right.symm
+      rw [h_entries_1]
+      have h_k_bound : k ≥ n + 1 := by omega
+      exact IH
+        (fun i => entries ⟨i.val + 1, by omega⟩)
+        (fun i => bodyOuts ⟨i.val + 1, by omega⟩)
+        (fun i => h_step ⟨i.val + 1, by omega⟩)
+        (fun i => h_continue ⟨i.val + 1, by omega⟩)
+        h_exit
+        h_post
+        h_k_bound
+
 /-- `wloop _ :: rest` preservation, single-iteration-exit case.
     The body runs exactly once on both sides:
     - WASM: body's eval ends with branchTarget = none (fall-
