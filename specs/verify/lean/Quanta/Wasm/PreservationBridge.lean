@@ -5552,6 +5552,10 @@ theorem framework_preservation_irEmptyPrefix_const0_brIf0_wloop_then_straightLin
 --     body = pref ++ [.i32Const 0, .brIf 0] for any
 --     IsIrEmptyPrefix pref (list of nops). Subsumes the two
 --     concrete entries above.
+-- - framework_preservation_kernel (L10v7): admits any KernelInstrs
+--     body (straight-line ops interleaved with arbitrarily nested
+--     wloop segments matching WloopBodyShape). Subsumes all of the
+--     above. Fuel constraint is depth-aware.
 --
 -- All variants produce the same lowered IR (`[.const r0, .cast r1 r0,
 -- .branch r1 [] [.breakOp]]`) since IR-empty prefix ops emit no
