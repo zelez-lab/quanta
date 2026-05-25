@@ -3686,6 +3686,54 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
               | wF64 _ => simp at hw
 
 -- ════════════════════════════════════════════════════════════════════
+-- L8.3 cons_wloop — INVESTIGATION RESULTS
+--
+-- cons_wloop's general claim depends on the iteration bridge: each
+-- body iteration must have a known correspondence between WASM
+-- branchTarget and IR broke. The investigation surfaced several
+-- structural obstacles to a "fall-through" Path A approach analogous
+-- to cons_block/cons_wif:
+--
+-- 1. Empty body: WASM iterLoop exits immediately (body's
+--    branchTarget = none triggers the post-arm); IR's opLoop sees
+--    body's broke=false and re-iterates forever. Cannot prove
+--    preservation — the two semantics diverge.
+--
+-- 2. Fall-through body (no br/wreturn): same problem. WASM exits
+--    after one iter; IR loops forever.
+--
+-- 3. Body ends with wreturn: WASM halts (st'.halted=true), iterLoop
+--    matches branchTarget=none → runs post → post is short-circuited
+--    by halted. Final: ws' = body_state with halted=true. IR: wreturn
+--    emits no IR, body's broke=false → IR loops forever. Mismatch.
+--
+-- 4. Body ends with `br_if 0 c=0_unconditional` (e.g., `[i32Const 0,
+--    brIf 0]`): WASM falls through after the brIf (cond=0), iterLoop
+--    exits, runs post. IR: brIf_loop_self emits a `.branch cond_bool
+--    [] [.breakOp]` — cond_bool=false → picks elseOps=[.breakOp] →
+--    broke=true. opLoop sees broke after one iter → exits, runs post.
+--    THIS CASE WORKS. But it's a degenerate (single-iter-only) wloop
+--    and exercises the iteration bridge in its simplest form.
+--
+-- 5. Body ends with `br_if 0 c=runtime_value`: WASM iterates while
+--    c≠0, exits when c=0. IR: brIf_loop_self emits the cast+branch;
+--    on c≠0 sets branchTarget=some 0, WASM clears it and iterates;
+--    on c=0 falls through, IR sets broke=true → exits. Each
+--    iteration's bridge is given by brIf_loop_self_bridge. The
+--    general claim composes iteration counts.
+--
+-- The general claim (case 5) requires the iteration bridge invariant
+-- — genuinely novel content from §4b of the L8.5 endgame doc. Estimated
+-- 2-3 sessions of focused work.
+--
+-- Case 4 (degenerate single-iter) is achievable in one session if a
+-- caller-supplied "exits-on-first-iter" hypothesis is acceptable.
+-- This commit ships the investigation note as the cons_wloop
+-- placeholder; the actual proof lands when the bridging invariant
+-- arrives.
+-- ════════════════════════════════════════════════════════════════════
+
+-- ════════════════════════════════════════════════════════════════════
 -- L10 — framework_preservation (straight-line kernels)
 --
 -- Top-level composition theorem. Scope: kernels with no structured
