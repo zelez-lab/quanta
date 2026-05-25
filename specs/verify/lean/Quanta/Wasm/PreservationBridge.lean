@@ -3853,6 +3853,62 @@ theorem iterLoop_n_iter_exit
         h_post
         h_k_bound
 
+/-- Inverse of `iterLoop_n_iter_exit`: given the trace AND a fact
+    that iterLoop returns some ws', derives that post-eval from the
+    exit body-out state yields ws'. Used by cons_wloop_nIterExit to
+    extract the post-eval hypothesis from hw. -/
+theorem iterLoop_n_iter_exit_post_eval
+    {fuel : Nat}
+    {body post : List WasmInstr}
+    {n : Nat}
+    (entries : Fin (n + 1) → WasmState)
+    (bodyOuts : Fin (n + 1) → WasmState)
+    (h_step : ∀ i : Fin (n + 1),
+        evalInstrs fuel (entries i) body = some (bodyOuts i))
+    (h_continue : ∀ i : Fin n,
+        (bodyOuts i.castSucc).branchTarget = some 0 ∧
+        entries i.succ = { bodyOuts i.castSucc with branchTarget := none })
+    (h_exit : (bodyOuts (Fin.last n)).branchTarget = none)
+    {f : Nat} (h_f : f ≥ n + 1)
+    {ws_final : WasmState}
+    (h_iter : evalInstrs.iterLoop fuel body post f (entries 0) = some ws_final) :
+    evalInstrs fuel (bodyOuts (Fin.last n)) post = some ws_final := by
+  induction n generalizing f with
+  | zero =>
+      have h_f_ge_1 : f ≥ 1 := by omega
+      obtain ⟨k, hk⟩ : ∃ k, f = k + 1 := ⟨f - 1, by omega⟩
+      rw [hk] at h_iter
+      unfold evalInstrs.iterLoop at h_iter
+      rw [h_step 0] at h_iter
+      simp only at h_iter
+      have h_bt : (bodyOuts 0).branchTarget = none := h_exit
+      rw [h_bt] at h_iter
+      exact h_iter
+  | succ n IH =>
+      have h_f_ge_1 : f ≥ 1 := by omega
+      obtain ⟨k, hk⟩ : ∃ k, f = k + 1 := ⟨f - 1, by omega⟩
+      rw [hk] at h_iter
+      unfold evalInstrs.iterLoop at h_iter
+      rw [h_step 0] at h_iter
+      simp only at h_iter
+      have h_cont_0 := h_continue 0
+      have h_bt_0 : (bodyOuts 0).branchTarget = some 0 := h_cont_0.left
+      rw [h_bt_0] at h_iter
+      simp only at h_iter
+      have h_entries_1 : ({ bodyOuts (0 : Fin (n + 1 + 1))
+                                with branchTarget := none } : WasmState)
+                            = entries ⟨1, by omega⟩ := h_cont_0.right.symm
+      rw [h_entries_1] at h_iter
+      have h_k_bound : k ≥ n + 1 := by omega
+      exact IH
+        (fun i => entries ⟨i.val + 1, by omega⟩)
+        (fun i => bodyOuts ⟨i.val + 1, by omega⟩)
+        (fun i => h_step ⟨i.val + 1, by omega⟩)
+        (fun i => h_continue ⟨i.val + 1, by omega⟩)
+        h_exit
+        h_k_bound
+        h_iter
+
 /-- `wloop _ :: rest` preservation, single-iteration-exit case.
     The body runs exactly once on both sides:
     - WASM: body's eval ends with branchTarget = none (fall-
@@ -4085,6 +4141,213 @@ theorem preservation_evalInstrs_cons_wloop_singleIterExit
               simp [h_reset_broke, h_ev_p_F]
             exact h_full
           · rw [← h_s_eq]; exact R_p
+
+-- ════════════════════════════════════════════════════════════════════
+-- L8.3 general — cons_wloop_nIterExit
+--
+-- Generalization of cons_wloop_singleIterExit to N iterations.
+-- The wloop runs body exactly N+1 times: N continues (each setting
+-- WASM branchTarget = some 0 and keeping IR broke = false) followed
+-- by one exit (WASM branchTarget = none and IR broke = true).
+-- Composes opLoop_n_iter_exit (IR side) with iterLoop_n_iter_exit
+-- (WASM side) via per-iteration Refines preservation.
+--
+-- Caller supplies:
+--   - WASM-side entry / body-out state sequences
+--   - IR-side state sequence
+--   - Per-iteration body preservation IHs proving each iter's
+--     transition matches across WASM/IR
+--   - Standard post and lowering IHs
+--
+-- The cons_wloop_singleIterExit case corresponds to n = 0 here
+-- (0 continue iterations, just the exit body run).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `wloop _ :: rest` preservation, n-iteration exit case.
+    The wloop runs body exactly (n + 1) times: n continues + 1 exit.
+
+    Caller supplies the iteration trace as state sequences and
+    per-iteration preservation evidence. This generalizes the
+    `cons_wloop_singleIterExit` (which handles n = 0). -/
+theorem preservation_evalInstrs_cons_wloop_nIterExit
+    (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (_R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (bt : Nat) (rest : List WasmInstr)
+    (body post : List WasmInstr)
+    (h_split : splitAtEnd rest = some (body, post))
+    (n : Nat)
+    -- WASM-side iteration trace: entry states + body-output states.
+    -- entries 0 = ws (loop entry); entries (i+1) = bodyOuts i with
+    -- branchTarget cleared (continue semantics).
+    (wasmEntries wasmBodyOuts : Fin (n + 1) → WasmState)
+    (h_wasm_start : wasmEntries 0 = ws)
+    (h_wasm_step : ∀ i : Fin (n + 1),
+        evalInstrs bt (wasmEntries i) body = some (wasmBodyOuts i))
+    (h_wasm_continue : ∀ i : Fin n,
+        (wasmBodyOuts i.castSucc).branchTarget = some 0 ∧
+        wasmEntries i.succ
+          = { wasmBodyOuts i.castSucc with branchTarget := none })
+    (h_wasm_exit : (wasmBodyOuts (Fin.last n)).branchTarget = none ∧
+                   (wasmBodyOuts (Fin.last n)).halted = false)
+    -- IR-side iteration trace: lowering state s1 (after body lowering)
+    -- + IR body-output state sequence kstStates.
+    (s1 : LowerState) (bodyOps : List KernelOp)
+    (h_lb : lowerInstrs bt (.loopK :: frames) s body = some (s1, bodyOps))
+    (kstStates : Fin (n + 2) → Quanta.KOps.State)
+    (h_kst_start : kstStates 0 = kst)
+    (F_b : Nat)
+    (h_ir_step : ∀ i : Fin (n + 1),
+        evalOps F_b (kstStates i.castSucc) bodyOps
+          = some (kstStates i.succ))
+    (h_ir_continue : ∀ i : Fin n,
+        (kstStates i.castSucc.succ).broke = false)
+    (h_ir_exit : (kstStates (Fin.last (n + 1))).broke = true)
+    -- Per-iteration Refines preservation across body iterations.
+    (h_per_iter_refines : ∀ i : Fin (n + 1),
+        Refines (wasmBodyOuts i) s1 (kstStates i.succ) layout)
+    -- Post-loop bridge.
+    (s2 : LowerState) (postOps : List KernelOp)
+    (h_lp : lowerInstrs bt frames s1 post = some (s2, postOps))
+    (post_preserves : ∀ {ws_p : WasmState} {s_p : LowerState}
+        {kst_p : Quanta.KOps.State}
+        (_R_p : Refines ws_p s_p kst_p layout)
+        (_h_nb_p : ws_p.branchTarget = none)
+        (_h_nh_p : ws_p.halted = false)
+        (_h_nbk_p : kst_p.broke = false)
+        {ws'_p : WasmState} {s'_p : LowerState} {postOps' : List KernelOp}
+        (_hw_p : evalInstrs bt ws_p post = some ws'_p)
+        (_hl_p : lowerInstrs bt frames s_p post = some (s'_p, postOps')),
+      ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_p postOps' = some kst'_p ∧
+        Refines ws'_p s'_p kst'_p layout ∧
+        BridgeClauses ws'_p kst'_p)
+    -- Lowering-only structural invariants for body.
+    (h_body_lowering : s1.localReg = s.localReg ∧ s1.localTy = s.localTy ∧
+                       s1.stack = s.stack ∧ s1.bufferSlots = s.bufferSlots ∧
+                       s.nextReg ≤ s1.nextReg)
+    -- Fuel constraints: bt ≥ n + 2 (iterLoop needs n+1 continues +
+    -- exit; opLoop needs n + 2 iter check + body runs).
+    (h_fuel_bound : bt ≥ n + 2)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (bt + 1) ws (.wloop 0 :: rest) = some ws')
+    (hl : lowerInstrs (bt + 1) frames s (.wloop 0 :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  -- Unfold lowering's wloop arm: matches up s1, bodyOps, s2, postOps via h_lb, h_lp.
+  simp only [lowerInstrs] at hl
+  rw [h_split] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  rw [h_lb] at hl
+  simp only [Option.some_bind] at hl
+  obtain ⟨h_lr, h_lt, h_stk_eq, h_bs, h_nr⟩ := h_body_lowering
+  have h_s1_restored_eq :
+      ({ s1 with localReg := s.localReg, localTy := s.localTy } : LowerState) = s1 := by
+    have h_lr_eq : s.localReg = s1.localReg := h_lr.symm
+    have h_lt_eq : s.localTy = s1.localTy := h_lt.symm
+    rw [h_lr_eq, h_lt_eq]
+  rw [h_s1_restored_eq] at hl
+  rw [h_lp] at hl
+  simp only [Option.some_bind, Option.some.injEq, Prod.mk.injEq, pure] at hl
+  -- hl should now be: s' = s2 ∧ ops = [.loopOp bodyOps] ++ postOps
+  obtain ⟨h_s_eq, h_ops_eq⟩ := hl
+  -- Eval side: wloop arm. Decompose into iterLoop on ws.
+  simp only [evalInstrs] at hw
+  have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+    rw [h_no_halt, h_no_branch]; rfl
+  rw [h_cond] at hw
+  simp only [Bool.false_eq_true, ↓reduceIte] at hw
+  rw [h_split] at hw
+  simp only at hw
+  -- hw : iterLoop bt body post bt ws = some ws'.
+  -- Apply iterLoop_n_iter_exit. We need:
+  --   evalInstrs (bt+1) (wasmBodyOuts (Fin.last n)) post = some ws'
+  -- which comes from post_preserves applied to the exit state.
+  -- First derive post-eval via post_preserves.
+  have h_exit_nb : (wasmBodyOuts (Fin.last n)).branchTarget = none := h_wasm_exit.left
+  have h_exit_nh : (wasmBodyOuts (Fin.last n)).halted = false := h_wasm_exit.right
+  -- Build Refines on the exit state.
+  have R_exit : Refines (wasmBodyOuts (Fin.last n)) s1
+                          (kstStates (Fin.last (n + 1))) layout := by
+    have h_succ_eq : (Fin.last n).succ = Fin.last (n + 1) := rfl
+    have := h_per_iter_refines (Fin.last n)
+    rw [h_succ_eq] at this
+    exact this
+  -- The IR exit state has broke = true; reset_broke clears it.
+  have h_kst_exit_broke : (kstStates (Fin.last (n + 1))).broke = true := h_ir_exit
+  -- Use post_preserves on the broke-reset state.
+  have R_reset : Refines (wasmBodyOuts (Fin.last n)) s1
+                          (kstStates (Fin.last (n + 1))).reset_broke layout := by
+    refine ⟨R_exit.stk, R_exit.locs, R_exit.fresh, R_exit.aliasFree,
+            R_exit.injLocals, R_exit.heapRefines⟩
+  have h_reset_nbk : ((kstStates (Fin.last (n + 1))).reset_broke).broke = false := by
+    simp [Quanta.KOps.State.reset_broke]
+  -- Establish hw_post = evalInstrs bt (wasmBodyOuts last) post = some ws'.
+  -- iterLoop_n_iter_exit reduces hw to evalInstrs bt (wasmBodyOuts last) post = some ws'.
+  have h_iter_match : evalInstrs.iterLoop bt body post bt ws
+                        = some ws' := hw
+  -- Substitute ws = wasmEntries 0 in h_iter_match.
+  rw [← h_wasm_start] at h_iter_match
+  have h_post_eval : evalInstrs bt (wasmBodyOuts (Fin.last n)) post = some ws' := by
+    have h_bt_bound : bt ≥ n + 1 := by omega
+    exact iterLoop_n_iter_exit_post_eval wasmEntries wasmBodyOuts
+      h_wasm_step h_wasm_continue h_exit_nb h_bt_bound h_iter_match
+  -- Now apply post_preserves.
+  obtain ⟨kst'_p, F_p, h_ev_p, R_p, h_bridge_p⟩ :=
+    post_preserves R_reset h_exit_nb h_exit_nh h_reset_nbk h_post_eval h_lp
+  -- Build the IR-side composition.
+  let F : Nat := max (max F_b F_p) (n + 2)
+  have h_F_ge_Fb : F_b ≤ F := by simp [F]; omega
+  have h_F_ge_Fp : F_p ≤ F := by simp [F]; omega
+  have h_F_ge_n_plus_2 : F ≥ n + 2 := by simp [F]; omega
+  refine ⟨kst'_p, F, ?_, ?_, h_bridge_p⟩
+  · rw [← h_ops_eq]
+    -- evalOps F kst ([.loopOp bodyOps] ++ postOps).
+    -- First: evalOp F kst (.loopOp bodyOps) = opLoop F bodyOps F kst.
+    -- Use opLoop_n_iter_exit on the bumped-fuel state sequence.
+    have h_ir_step_F : ∀ i : Fin (n + 1),
+        evalOps F (kstStates i.castSucc) bodyOps = some (kstStates i.succ) := by
+      intro i
+      exact evalOps_fuel_mono h_F_ge_Fb (h_ir_step i)
+    -- opLoop_n_iter_exit: need kstStates 0 = kst, but kstStates 0 = kst (from h_kst_start).
+    have h_no_broke_seq : ∀ i : Fin (n + 1), (kstStates i.castSucc).broke = false := by
+      intro i
+      match i, i.isLt with
+      | ⟨0, _⟩, _ =>
+          show (kstStates 0).broke = false
+          rw [h_kst_start]; exact h_kst_no_broke
+      | ⟨k + 1, h_lt⟩, _ =>
+          show (kstStates ⟨k + 1, by omega⟩).broke = false
+          have h := h_ir_continue ⟨k, by omega⟩
+          -- ⟨k, _⟩.castSucc.succ = ⟨k + 1, _⟩ (definitional).
+          exact h
+    have h_op_loop :
+        Quanta.KOps.opLoop F bodyOps F (kstStates 0)
+          = some (kstStates (Fin.last (n + 1))).reset_broke := by
+      apply opLoop_n_iter_exit kstStates h_ir_step_F h_no_broke_seq h_ir_exit
+      omega
+    rw [h_kst_start] at h_op_loop
+    have h_ev_p_F : evalOps F (kstStates (Fin.last (n + 1))).reset_broke postOps
+                      = some kst'_p := evalOps_fuel_mono h_F_ge_Fp h_ev_p
+    have h_loop_op :
+        Quanta.KOps.evalOp F kst (.loopOp bodyOps)
+          = some (kstStates (Fin.last (n + 1))).reset_broke := by
+      simp [Quanta.KOps.evalOp]
+      exact h_op_loop
+    have h_full :
+        Quanta.KOps.evalOps F kst
+          (KernelOp.loopOp bodyOps :: postOps) = some kst'_p := by
+      rw [Quanta.KOps.evalOps]
+      rw [h_loop_op]
+      simp [h_reset_nbk, h_ev_p_F]
+    exact h_full
+  · rw [← h_s_eq]; exact R_p
 
 -- ════════════════════════════════════════════════════════════════════
 -- Concrete body lowering preservation for [.i32Const 0, .brIf 0]
