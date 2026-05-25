@@ -515,8 +515,25 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
               match splitAtEnd rest with
               | none => none
               | some (body, post) => do
+                  -- Snapshot localReg / localTy at loop entry (mirrors
+                  -- production's `force_locals_to_stable` semantics
+                  -- on lower.rs line 546). Inside the body, any
+                  -- `localSet` may rebind locals, but post-loop
+                  -- reads see the entry baseline — the per-iteration
+                  -- IR runs against fresh bindings each time.
+                  let entry_localReg := s.localReg
+                  let entry_localTy  := s.localTy
                   let (s1, bodyOps) ← lowerInstrs f (.loopK :: frames) s body
-                  let (s2, postOps) ← lowerInstrs f frames s1 post
+                  -- Restore localReg / localTy after the loop body
+                  -- (matches `merge_locals_post_frame` for the Loop
+                  -- arm — post-loop reads see the pre-loop bindings
+                  -- via the unchanged register layer). Production's
+                  -- richer merge emits Copy ops; the Lean spec port
+                  -- defers that propagation.
+                  let s1_restored : LowerState :=
+                    { s1 with localReg := entry_localReg,
+                              localTy  := entry_localTy }
+                  let (s2, postOps) ← lowerInstrs f frames s1_restored post
                   pure (s2, [.loopOp bodyOps] ++ postOps)
       | .wif _ =>
           match fuel with
@@ -530,9 +547,35 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
                   -- Cast u32 cond to bool (`.branch` requires vBool;
                   -- mirrors the brIf L6 fix).
                   let (cond_bool, s_cast) := s1.alloc
+                  -- Snapshot localReg + localTy at If-entry. Mirrors
+                  -- production's `snapshot_locals` / `restore_locals_from_snapshot`
+                  -- (lower.rs lines 523/534): both branches must lower
+                  -- from the same baseline local-binding state so eval's
+                  -- "pick one body based on cond" is in sync with the
+                  -- lowering's "splice in both bodies" shape.
+                  let entry_localReg := s_cast.localReg
+                  let entry_localTy  := s_cast.localTy
                   let (s2, thenOps) ← lowerInstrs f (.wif :: frames) s_cast thenBody
-                  let (s3, elseOps) ← lowerInstrs f (.wif :: frames) s2 elseBody
-                  let (s4, postOps) ← lowerInstrs f frames s3 post
+                  -- Restore localReg / localTy from the snapshot before
+                  -- lowering elseBody (matches `restore_locals_from_snapshot`).
+                  -- The freshly-bumped nextReg from thenBody is kept so
+                  -- elseBody allocates non-colliding regs.
+                  let s2_restored : LowerState :=
+                    { s2 with localReg := entry_localReg,
+                              localTy  := entry_localTy }
+                  let (s3, elseOps) ← lowerInstrs f (.wif :: frames) s2_restored elseBody
+                  -- Restore again after elseBody (post-If merge: both
+                  -- branches' local rebindings are discarded; reads after
+                  -- the wif see the pre-If state via the unchanged
+                  -- stable-register layer).
+                  -- Note: this is a simplification of production's
+                  -- `merge_locals_post_frame` which emits Copy ops to
+                  -- propagate the modified value. The Lean spec port
+                  -- defers that propagation until cons_wloop needs it.
+                  let s3_restored : LowerState :=
+                    { s3 with localReg := entry_localReg,
+                              localTy  := entry_localTy }
+                  let (s4, postOps) ← lowerInstrs f frames s3_restored post
                   pure (s4, opsCommit
                             ++ [.cast cond_bool cond .u32 .bool,
                                 .branch cond_bool thenOps elseOps]
