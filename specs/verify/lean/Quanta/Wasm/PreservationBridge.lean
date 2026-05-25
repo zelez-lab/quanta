@@ -3760,7 +3760,15 @@ theorem preservation_evalInstrs_cons_wloop_singleIterExit
     (bt : Nat) (rest : List WasmInstr)
     (body post : List WasmInstr)
     (h_split : splitAtEnd rest = some (body, post))
-    -- Body's recursive bridge IH (under .loopK frame).
+    -- Body's recursive preservation IH (under .loopK frame).
+    -- Note: this loop variant intentionally DROPS the BridgeClauses
+    -- requirement from the standard cons-bridge shape — for the
+    -- single-iter-exit case, the body's WASM falls through
+    -- (branchTarget = none) while the IR exits via broke=true, which
+    -- violates the standard BridgeClauses.right clause. The bridge
+    -- mechanism here lives at the wloop-frame boundary instead: the
+    -- post-loop bridge clauses come from `post_preserves` against the
+    -- broke-reset state.
     (body_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
         {kst_b : Quanta.KOps.State}
         (_R_b : Refines ws_b s_b kst_b layout)
@@ -3772,8 +3780,7 @@ theorem preservation_evalInstrs_cons_wloop_singleIterExit
         (_hl_b : lowerInstrs bt (.loopK :: frames) s_b body = some (s'_b, bodyOps)),
       ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
         evalOps F kst_b bodyOps = some kst'_b ∧
-        Refines ws'_b s'_b kst'_b layout ∧
-        BridgeClauses ws'_b kst'_b)
+        Refines ws'_b s'_b kst'_b layout)
     -- Eval-side exit hypothesis: body ends with branchTarget=none,
     -- halted=false on the eval side. Stack/locals also fall-through.
     (body_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
@@ -3885,7 +3892,7 @@ theorem preservation_evalInstrs_cons_wloop_singleIterExit
         | some ws_after_body =>
           rw [h_eb] at hw
           -- ws_after_body.branchTarget = none from body_falls_through.
-          obtain ⟨kst_after_body, F_b, h_ev_b, R_b, _h_bridge_b⟩ :=
+          obtain ⟨kst_after_body, F_b, h_ev_b, R_b⟩ :=
             body_preserves R h_no_branch h_no_halt h_kst_no_broke h_eb h_lb
           obtain ⟨h_ab_nb, h_ab_nh, _h_ab_locs, _h_ab_stk, _h_ab_mem,
                   _h_s1_lr', _h_s1_lt', _h_s1_stk', _h_s1_bs'⟩ :=
@@ -4095,6 +4102,65 @@ theorem const0_brIf0_exits_with_broke
   simp only [Quanta.KOps.vU32, Quanta.KOps.vBool] at h_ev_b
   simp at h_ev_b
   rw [← h_ev_b]
+
+/-- `body_preserves` discharge for body = `[.i32Const 0, .brIf 0]`.
+    Composes: (1) the i32Const step which pushes `.wI32 0` /
+    `.i32ConstSym 0` on both sides with no IR emitted; (2) the brIf 0
+    step via `cons_brIf_loop_self_bridge`. The cons-bridge produces
+    the existential + Refines; this discharger uses the bridge variant
+    (which exposes the popped cond) to thread through, but does NOT
+    need to maintain BridgeClauses on the body's output — the
+    cons_wloop_singleIterExit IH skips that requirement because the
+    body's IR-broke=true conflicts with the standard bridge clauses. -/
+theorem const0_brIf0_body_preserves
+    {bt : Nat} (frames : List FrameKind)
+    {ws_b : WasmState} {s_b : LowerState}
+    {kst_b : Quanta.KOps.State}
+    (layout : BufferLayout)
+    (R_b : Refines ws_b s_b kst_b layout)
+    (h_nb_b : ws_b.branchTarget = none)
+    (h_nh_b : ws_b.halted = false)
+    (h_nbk_b : kst_b.broke = false)
+    {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+    (hw_b : evalInstrs bt ws_b [.i32Const 0, .brIf 0] = some ws'_b)
+    (hl_b : lowerInstrs bt (.loopK :: frames) s_b
+              [.i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
+    ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+      evalOps F kst_b bodyOps = some kst'_b ∧
+      Refines ws'_b s'_b kst'_b layout := by
+  -- Use preservation_evalInstrs_cons_i32Const (non-bridge variant —
+  -- it doesn't require BridgeClauses on the rest's output). Its
+  -- preservation_rest IH gets discharged by cons_brIf_loop_self
+  -- against rest = [.brIf 0] starting from the i32Const-pushed
+  -- mid-state.
+  have rest_preserves :
+      ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs bt ws_mid [.brIf 0] = some ws'_mid)
+        (_hl_mid : lowerInstrs bt (.loopK :: frames) s_mid [.brIf 0]
+                     = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout := by
+    intro ws_mid s_mid kst_mid R_mid h_nb_m h_nh_m h_nbk_m
+          ws'_mid s'_mid postOps hw_mid hl_mid
+    exact preservation_evalInstrs_cons_brIf_loop_self
+      bt (.loopK :: frames) ws_mid s_mid kst_mid layout R_mid
+      h_nb_m h_nh_m h_nbk_m rfl
+      ws'_mid s'_mid postOps hw_mid hl_mid
+  exact preservation_evalInstrs_cons_i32Const
+    bt (.loopK :: frames) ws_b s_b kst_b layout R_b
+    h_nb_b h_nh_b h_nbk_b
+    0 [.brIf 0] rest_preserves
+    ws'_b s'_b bodyOps hw_b hl_b
+
+-- ════════════════════════════════════════════════════════════════════
+-- L8.3 cons_wloop — INVESTIGATION RESULTS
 --
 -- cons_wloop's general claim depends on the iteration bridge: each
 -- body iteration must have a known correspondence between WASM
@@ -4690,8 +4756,7 @@ theorem framework_preservation_wloopThenStraightLine
         (_hl_b : lowerInstrs fuel (.loopK :: frames) s_b body = some (s'_b, bodyOps)),
       ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
         evalOps F kst_b bodyOps = some kst'_b ∧
-        Refines ws'_b s'_b kst'_b layout ∧
-        BridgeClauses ws'_b kst'_b)
+        Refines ws'_b s'_b kst'_b layout)
     (body_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
         {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
         {bodyOps : List KernelOp}
