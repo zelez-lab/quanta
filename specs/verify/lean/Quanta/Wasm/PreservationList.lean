@@ -253,6 +253,52 @@ theorem preservation_br_loop_outer_break
     refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
 
 -- ════════════════════════════════════════════════════════════════════
+-- L9 — `br depth` refusal completion
+--
+-- The `br` arm of `lowerInstrs` returns `none` for `br depth` whose
+-- target is a non-Loop frame with no Loop frame between top and
+-- target — the redirect-chain pattern not supported in this slice.
+-- The other three sub-cases are covered by:
+--   - `preservation_br_loop_zero` (depth = 0 to Loop)
+--   - `preservation_br_break_nonLoop` (depth ≥ 0 to non-Loop with Loop above)
+--   - `preservation_br_loop_outer_break` (depth > 0 to Loop with Loop above)
+--
+-- This last sub-case closes by deriving `False` from `hl : lowerInstrs
+-- ... = some (s', ops)` since the lowering returns `none`. The
+-- theorem is vacuously true: the hypothesis is impossible.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `br depth` with target a non-Loop frame AND no Loop between top
+    and target: lowering refuses (returns `none`), so this branch
+    of the preservation theorem closes by contradiction. Completes
+    the four-way case split of `br` preservation. -/
+theorem preservation_br_refused_no_loop_above
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (depth : Nat) (rest : List WasmInstr)
+    (kind : FrameKind) (h_kind_ne_loop : kind ≠ .loopK)
+    (h_target : frames.get? depth = some kind)
+    (h_no_loop_above : hasLoopAbove frames depth = false)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- The lowering returns none for this sub-case.
+  have h_lower : lowerInstrs fuel frames s (.br depth :: rest) = none := by
+    cases kind with
+    | block => simp only [lowerInstrs, h_target, h_no_loop_above,
+                          Bool.false_eq_true, ↓reduceIte]
+    | wif   => simp only [lowerInstrs, h_target, h_no_loop_above,
+                          Bool.false_eq_true, ↓reduceIte]
+    | loopK => exact (h_kind_ne_loop rfl).elim
+  rw [h_lower] at hl
+  exact (Option.noConfusion hl)
+
+-- ════════════════════════════════════════════════════════════════════
 -- Helper: collapse the cons-default bind chain when the head's
 -- per-op lowering returned `some (s, [])`.
 --
