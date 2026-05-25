@@ -5554,6 +5554,19 @@ theorem framework_preservation_irEmptyPrefix_const0_brIf0_wloop_then_straightLin
 -- ════════════════════════════════════════════════════════════════════
 -- L10v7 — framework_preservation_kernel
 --
+-- Inducts on KernelInstrs (sl_cons / wloop_cons / empty), with two
+-- recursive shape choices: a straight-line head or a wloop segment
+-- (whose body matches WloopBodyShape and whose post is KernelInstrs).
+--
+-- Status: sl_cons + empty closed; wloop_cons deferred behind one
+-- `sorry` until evalInstrs / lowerInstrs fuel monotonicity lands
+-- (the inductive IH's fuel level doesn't match cons_wloop_singleIterExit's
+-- inner-fuel expectation — bridging requires monotonicity).
+-- ════════════════════════════════════════════════════════════════════
+
+-- ════════════════════════════════════════════════════════════════════
+-- L10v7 — framework_preservation_kernel
+--
 -- Top-level composition theorem admitting `KernelInstrs`: a kernel
 -- body composed of `StraightLineInstr` ops and `wloop 0` segments
 -- (with bodies matching `WloopBodyShape`).
@@ -5870,16 +5883,23 @@ theorem framework_preservation_kernel
       | unreachable => exact absurd h_sl (by simp [StraightLineInstr])
       | unsupported _ => exact absurd h_sl (by simp [StraightLineInstr])
   | @wloop_cons rest body post h_split h_body _h_post_wf _IH =>
-      -- TODO: wloop_cons requires fuel monotonicity for evalInstrs /
-      -- lowerInstrs. Our IH on `post` is at outer fuel `fuel + 1`,
-      -- but cons_wloop_singleIterExit's post_preserves expects fuel
-      -- `bt = fuel` (one less, because the wloop arm decrements the
-      -- fuel for the inner body+post). Bridge requires:
-      --   evalInstrs n s instrs = some s' → n ≤ m →
-      --     evalInstrs m s instrs = some s'
-      -- (and the analogue for lowerInstrs). Deferred to a follow-up
-      -- session — fuel monotonicity for the WASM-side evaluators
-      -- is a multi-case induction.
+      -- TODO: wloop_cons requires either (a) fuel monotonicity for
+      -- evalInstrs / lowerInstrs OR (b) a depth-aware fuel bound
+      -- that grows with kernel nesting. cons_wloop_singleIterExit's
+      -- post_preserves expects fuel `bt = fuel - 1` (one less than
+      -- outer), and recursing on post via IH at that fuel needs
+      -- `bt ≥ 2` i.e. `fuel ≥ 3`, but the caller only provides
+      -- `fuel ≥ 2`. Bounded kernels (one wloop, no nesting) work at
+      -- `fuel ≥ 2`; nested kernels need progressively more.
+      --
+      -- Resolution paths:
+      --   1. Strengthen h_fuel_ge_2 to a depth-aware bound (e.g.,
+      --      `fuel ≥ 2 + KernelInstrs.maxDepth instrs`).
+      --   2. Prove evalInstrs / lowerInstrs fuel monotonicity, then
+      --      bump the IH's fuel.
+      --
+      -- Option 1 is local to this theorem; option 2 unlocks broader
+      -- compositional patterns. Deferred to a follow-up.
       sorry
 
 end Quanta.Wasm
