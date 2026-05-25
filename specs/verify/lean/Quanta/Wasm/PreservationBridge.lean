@@ -3767,29 +3767,30 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
     h_in_bounds packages). Those ship as separate non-framework
     theorems pending a richer well-formedness predicate. -/
 def StraightLineInstr : WasmInstr → Prop
-  | .nop          => True
-  | .drop         => True
-  | .i32Const _   => True
-  | .localGet _   => True
-  | .localSet _   => True
-  | .localTee _   => True
-  | .i32Add       => True
-  | .i32Sub       => True
-  | .i32Mul       => True
-  | .i32And       => True
-  | .i32Or        => True
-  | .i32Xor       => True
-  | .i32Shl       => True
-  | .i32ShrU      => True
-  | .i32DivU      => True
-  | .i32RemU      => True
-  | .i32Eq        => True
-  | .i32Ne        => True
-  | .i32LtU       => True
-  | .i32LeU       => True
-  | .i32GtU       => True
-  | .i32GeU       => True
-  | _             => False
+  | .nop                  => True
+  | .drop                 => True
+  | .i32Const _           => True
+  | .localGet _           => True
+  | .localSet _           => True
+  | .localTee _           => True
+  | .i32Add               => True
+  | .i32Sub               => True
+  | .i32Mul               => True
+  | .i32And               => True
+  | .i32Or                => True
+  | .i32Xor               => True
+  | .i32Shl               => True
+  | .i32ShrU              => True
+  | .i32DivU              => True
+  | .i32RemU              => True
+  | .i32Eq                => True
+  | .i32Ne                => True
+  | .i32LtU               => True
+  | .i32LeU               => True
+  | .i32GtU               => True
+  | .i32GeU               => True
+  | .i32Load offset _     => offset = 0
+  | _                     => False
 
 /-- Kernel-input well-formedness for buffer-typed locals.
     Captures the invariant that every local registered as a
@@ -3833,6 +3834,20 @@ def NoBufferPatternStack (s : LowerState) : Prop :=
   (∀ k base ty rest,
       s.stack ≠ .i32ConstSym k :: .reg base ty :: rest)
 
+/-- Kernel-wide assumption: whenever `s.stack` has a `bufferAccess`
+    at the top, the base register's runtime value is in-bounds for
+    the slot. Discharged downstream from per-kernel knowledge of
+    how addresses are constructed (the buffer-pattern fast-path
+    folds typically guarantee this by construction). -/
+def LoadAddressesInBounds
+    (layout : BufferLayout)
+    (s : LowerState) (kst : Quanta.KOps.State) : Prop :=
+  ∀ slot base lstk_rest,
+    s.stack = .bufferAccess slot base 4 :: lstk_rest →
+    ∀ b : UInt32,
+      regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+      b.toNat < layout.length slot
+
 /-- `instrs : List WasmInstr` is straight-line if every element is. -/
 def StraightLineInstrs : List WasmInstr → Prop
   | []        => True
@@ -3870,6 +3885,12 @@ theorem framework_preservation_straightLine
     -- the buffer-fold patterns at any reachable state. Universal
     -- over s_x for the same reason as h_buf_locals.
     (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    -- Kernel-wide hypothesis: at any reachable (s_x, kst_x), if the
+    -- symbolic stack has bufferAccess at the top, the base register
+    -- in kst_x's regfile holds an in-bounds index for the slot.
+    -- Universal over reachable states.
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
     (instrs : List WasmInstr)
     (h_wf : StraightLineInstrs instrs)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
@@ -4023,6 +4044,46 @@ theorem framework_preservation_straightLine
         exact preservation_evalInstrs_cons_i32GeU_bridge
           fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
           rest preservation_rest_bridge ws' s' ops hw hl
+    | i32Load offset align =>
+        -- StraightLineInstr enforces offset = 0.
+        have h_offset : offset = 0 := h_wf_head
+        -- Extract the bufferAccess shape via lowerI32Load. The
+        -- lowering succeeded (hl), so s.stack must have form
+        -- `.bufferAccess slot base 4 :: lstk_rest`. Case on s.stack.
+        rcases h_stk : s.stack with _ | ⟨sv, lstk⟩
+        · -- Empty stack: lowerI32Load returns none → contradicts hl.
+          simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+        cases sv with
+        | reg _ _           =>
+            simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+        | i32ConstSym _     =>
+            simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+        | bufferPtr _       =>
+            simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+        | scaledIdx _ _     =>
+            simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+        | bufferAccess slot base scale =>
+            match scale with
+            | 4 =>
+                have h_load_bnd :
+                    ∀ b : UInt32,
+                      regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+                      b.toNat < layout.length slot :=
+                  h_load_bounds s kst slot base lstk h_stk
+                exact preservation_evalInstrs_cons_i32Load_bridge
+                  fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+                  slot base lstk offset align h_stk h_offset h_load_bnd
+                  rest preservation_rest_bridge ws' s' ops hw hl
+            | 0 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+            | 1 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+            | 2 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+            | 3 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
+            | n + 5 =>
+                simp [lowerInstrs, lowerInstr, lowerI32Load, h_stk] at hl
     -- All other constructors are excluded by StraightLineInstr.
     -- The `h_wf_head : StraightLineInstr i = True` is `False` for
     -- these, contradicting the hypothesis.
@@ -4059,7 +4120,6 @@ theorem framework_preservation_straightLine
     | i32TruncF32U => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f32ReinterpretI32 => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32ReinterpretF32 => exact absurd h_wf_head (by simp [StraightLineInstr])
-    | i32Load _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | i32Store _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f32Load _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
     | f32Store _ _ => exact absurd h_wf_head (by simp [StraightLineInstr])
