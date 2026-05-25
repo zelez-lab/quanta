@@ -4047,8 +4047,54 @@ theorem const0_brIf0_falls_through
     | (rw [← hw_b])
   )
 
--- ════════════════════════════════════════════════════════════════════
--- L8.3 cons_wloop — INVESTIGATION RESULTS
+/-- The concrete `bodyOps` shape that `[.i32Const 0, .brIf 0]` lowers
+    to under `.loopK :: frames` and `bt ≥ 1`. Used to discharge
+    `body_exits_with_broke` by unfolding the IR-side evalOps. -/
+theorem const0_brIf0_lowering_shape
+    {bt : Nat} (frames : List FrameKind)
+    {s_b s'_b : LowerState} {bodyOps : List KernelOp}
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              [.i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
+    bodyOps =
+      [KernelOp.const s_b.nextReg (.u32 (UInt32.ofNat 0)),
+       KernelOp.cast (s_b.nextReg + 1) s_b.nextReg .u32 .bool,
+       KernelOp.branch (s_b.nextReg + 1) [] [KernelOp.breakOp]] := by
+  have h_get0 : (FrameKind.loopK :: frames).get? 0 = some .loopK := rfl
+  simp only [lowerInstrs, lowerInstr, LowerState.popSym, LowerState.commit,
+             LowerState.alloc, Option.bind_eq_bind, Option.some_bind, pure,
+             Option.some.injEq, Prod.mk.injEq, List.append_nil,
+             h_get0, ↓reduceIte, if_true] at h_lb
+  obtain ⟨_, h_ops_eq⟩ := h_lb
+  rw [← h_ops_eq]
+  simp [Int.toNat]
+
+/-- `body_exits_with_broke` discharge for body = `[.i32Const 0, .brIf 0]`.
+    The IR pipeline: const writes vU32 0 → cast → vBool false → branch
+    picks elseOps [.breakOp] → broke := true. Final kst'_b.broke = true
+    regardless of fuel (as long as evalOps succeeds, the .breakOp ran). -/
+theorem const0_brIf0_exits_with_broke
+    {bt : Nat} (frames : List FrameKind)
+    {s_b : LowerState}
+    {kst_b : Quanta.KOps.State} {s'_b : LowerState}
+    {bodyOps : List KernelOp} {kst'_b : Quanta.KOps.State} {F_b : Nat}
+    (h_kst_no_broke : kst_b.broke = false)
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              [.i32Const 0, .brIf 0] = some (s'_b, bodyOps))
+    (h_ev_b : evalOps F_b kst_b bodyOps = some kst'_b) :
+    kst'_b.broke = true := by
+  -- Extract the concrete bodyOps shape.
+  have h_shape := const0_brIf0_lowering_shape frames h_lb
+  subst h_shape
+  -- Step through evalOps on [const, cast, branch].
+  simp only [Quanta.KOps.evalOps, Quanta.KOps.evalOp,
+             Quanta.KOps.evalConst, Quanta.KOps.evalCast,
+             Option.bind_eq_bind, Option.some_bind, pure,
+             regLookup_regWrite_self,
+             h_kst_no_broke, Bool.false_eq_true, if_false] at h_ev_b
+  -- Reduce vU32 / vBool aliases so the match arms fire.
+  simp only [Quanta.KOps.vU32, Quanta.KOps.vBool] at h_ev_b
+  simp at h_ev_b
+  rw [← h_ev_b]
 --
 -- cons_wloop's general claim depends on the iteration bridge: each
 -- body iteration must have a known correspondence between WASM
