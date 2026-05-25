@@ -3206,4 +3206,483 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
             | wF32 _ => simp at hw
             | wF64 _ => simp at hw
 
+/-- `wif _ :: rest` preservation, both bodies non-empty + fall-
+    through + no-localSet. Full symmetric variant — closes the
+    canonical Rust `if cond { ... } else { ... }` shape under
+    the no-mutation restriction.
+
+    Five caller-supplied IHs:
+    - `then_preserves` / `else_preserves`: standard recursive
+      bridge IHs for thenBody / elseBody
+    - `then_falls_through` / `else_falls_through`: eval-side
+      fall-through (branchTarget = none, halted = false,
+      stack-effect zero, no localSet)
+    - `then_lowering_preserves` / `else_lowering_preserves`:
+      lowering-only structural invariants — needed for the cond
+      arm where eval doesn't run the corresponding body but the
+      lowering output state's shape still matters for the
+      post-state Refines lift. -/
+theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
+    (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (bt : Nat) (rest : List WasmInstr)
+    (thenBody elseBody post : List WasmInstr)
+    (h_split : splitAtElseOrEnd rest = some (thenBody, elseBody, post))
+    (then_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+        (_hw_b : evalInstrs bt ws_b thenBody = some ws'_b)
+        (_hl_b : lowerInstrs bt (.wif :: frames) s_b thenBody = some (s'_b, bodyOps)),
+      ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_b bodyOps = some kst'_b ∧
+        Refines ws'_b s'_b kst'_b layout ∧
+        BridgeClauses ws'_b kst'_b)
+    (then_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs bt ws_b thenBody = some ws'_b)
+        (_hl_b : lowerInstrs bt (.wif :: frames) s_b thenBody = some (s'_b, bodyOps)),
+      ws'_b.branchTarget = none ∧ ws'_b.halted = false ∧
+      ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
+      ws'_b.mem = ws_b.mem ∧
+      s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots)
+    (then_lowering_preserves : ∀ {s_b s'_b : LowerState} {bodyOps : List KernelOp},
+        lowerInstrs bt (.wif :: frames) s_b thenBody = some (s'_b, bodyOps) →
+        s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+        s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+        s_b.nextReg ≤ s'_b.nextReg)
+    (else_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+        (_hw_b : evalInstrs bt ws_b elseBody = some ws'_b)
+        (_hl_b : lowerInstrs bt (.wif :: frames) s_b elseBody = some (s'_b, bodyOps)),
+      ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_b bodyOps = some kst'_b ∧
+        Refines ws'_b s'_b kst'_b layout ∧
+        BridgeClauses ws'_b kst'_b)
+    (else_falls_through : ∀ {ws_b : WasmState} {s_b : LowerState}
+        {kst_b : Quanta.KOps.State} {ws'_b : WasmState} {s'_b : LowerState}
+        {bodyOps : List KernelOp}
+        (_R_b : Refines ws_b s_b kst_b layout)
+        (_h_nb_b : ws_b.branchTarget = none)
+        (_h_nh_b : ws_b.halted = false)
+        (_h_nbk_b : kst_b.broke = false)
+        (_hw_b : evalInstrs bt ws_b elseBody = some ws'_b)
+        (_hl_b : lowerInstrs bt (.wif :: frames) s_b elseBody = some (s'_b, bodyOps)),
+      ws'_b.branchTarget = none ∧ ws'_b.halted = false ∧
+      ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
+      ws'_b.mem = ws_b.mem ∧
+      s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots)
+    (else_lowering_preserves : ∀ {s_b s'_b : LowerState} {bodyOps : List KernelOp},
+        lowerInstrs bt (.wif :: frames) s_b elseBody = some (s'_b, bodyOps) →
+        s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+        s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+        s_b.nextReg ≤ s'_b.nextReg)
+    (post_preserves : ∀ {ws_p : WasmState} {s_p : LowerState}
+        {kst_p : Quanta.KOps.State}
+        (_R_p : Refines ws_p s_p kst_p layout)
+        (_h_nb_p : ws_p.branchTarget = none)
+        (_h_nh_p : ws_p.halted = false)
+        (_h_nbk_p : kst_p.broke = false)
+        {ws'_p : WasmState} {s'_p : LowerState} {postOps : List KernelOp}
+        (_hw_p : evalInstrs bt ws_p post = some ws'_p)
+        (_hl_p : lowerInstrs bt frames s_p post = some (s'_p, postOps)),
+      ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_p postOps = some kst'_p ∧
+        Refines ws'_p s'_p kst'_p layout ∧
+        BridgeClauses ws'_p kst'_p)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (bt + 1) ws (.wif 0 :: rest) = some ws')
+    (hl : lowerInstrs (bt + 1) frames s (.wif 0 :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  -- Unfold lowerInstrs wif arm.
+  simp only [lowerInstrs] at hl
+  rw [h_split] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases hpop : s.popSym with
+  | none => simp [hpop] at hl
+  | some pop_pair =>
+    rcases pop_pair with ⟨svCond, s0⟩
+    simp [hpop] at hl
+    cases hcommit : s0.commit svCond with
+    | none => simp [hcommit] at hl
+    | some commit_triple =>
+      rcases commit_triple with ⟨cond, s1, opsCommit⟩
+      simp [hcommit] at hl
+      simp only [LowerState.alloc] at hl
+      cases hlt : lowerInstrs bt (.wif :: frames)
+          ({ s1 with nextReg := s1.nextReg + 1 } : LowerState) thenBody with
+      | none => simp [hlt] at hl
+      | some then_pair =>
+        rcases then_pair with ⟨s2, thenOps⟩
+        simp [hlt] at hl
+        -- After thenBody, restore localReg/localTy. By then_lowering_preserves
+        -- on s2, the restore is idempotent on those fields (s2.localReg already
+        -- equals s_cast.localReg). The restored state thus equals s2.
+        -- Case on elseBody's lowering.
+        obtain ⟨h_s2_lr, h_s2_lt, h_s2_stack, h_s2_bs, h_s2_nr⟩ :=
+          then_lowering_preserves hlt
+        have h_s2_restored_eq :
+            ({ s2 with localReg := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg,
+                       localTy  := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy } : LowerState)
+            = s2 := by
+          have h_lr_eq : ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg = s2.localReg :=
+            h_s2_lr.symm
+          have h_lt_eq : ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy = s2.localTy :=
+            h_s2_lt.symm
+          rw [h_lr_eq, h_lt_eq]
+        rw [h_s2_restored_eq] at hl
+        cases hle : lowerInstrs bt (.wif :: frames) s2 elseBody with
+        | none => simp [hle] at hl
+        | some else_pair =>
+          rcases else_pair with ⟨s3, elseOps⟩
+          simp [hle] at hl
+          -- After elseBody, restore again to s_cast snapshot.
+          obtain ⟨h_s3_lr, h_s3_lt, h_s3_stack, h_s3_bs, h_s3_nr⟩ :=
+            else_lowering_preserves hle
+          -- s3.localReg = s2.localReg = s_cast.localReg, so the restore is idempotent.
+          have h_s3_restored_eq :
+              ({ s3 with localReg := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg,
+                         localTy  := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy } : LowerState)
+              = s3 := by
+            have h_s3_lr_s1 : s3.localReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := by
+              rw [h_s3_lr, h_s2_lr]
+            have h_s3_lt_s1 : s3.localTy = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy := by
+              rw [h_s3_lt, h_s2_lt]
+            rw [← h_s3_lr_s1, ← h_s3_lt_s1]
+          rw [h_s3_restored_eq] at hl
+          cases hlp : lowerInstrs bt frames s3 post with
+          | none => simp [hlp] at hl
+          | some post_pair =>
+            rcases post_pair with ⟨s4, postOps⟩
+            simp [hlp] at hl
+            rcases hl with ⟨h_s_eq, h_ops_eq⟩
+            -- Eval side: same plumbing through pop.
+            simp only [evalInstrs] at hw
+            have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
+              rw [h_no_halt, h_no_branch]; rfl
+            rw [h_cond] at hw
+            simp only [Bool.false_eq_true, ↓reduceIte] at hw
+            cases hpop_w : ws.pop with
+            | none => simp [hpop_w] at hw
+            | some pop_w =>
+              rcases pop_w with ⟨vc, ws0⟩
+              simp [hpop_w] at hw
+              rw [h_split] at hw
+              simp only at hw
+              cases vc with
+              | wI32 c =>
+                simp only at hw
+                have h_pop_facts : ws.stack = .wI32 c :: ws0.stack ∧
+                                  ws0 = { ws with stack := ws0.stack } := by
+                  rw [WasmState.pop] at hpop_w
+                  rcases hst : ws.stack with _ | ⟨v0, rest⟩
+                  · rw [hst] at hpop_w; simp at hpop_w
+                  · rw [hst] at hpop_w
+                    simp at hpop_w
+                    obtain ⟨hv0, hws0⟩ := hpop_w
+                    subst hv0
+                    have h_ws0_stack : ws0.stack = rest := by rw [← hws0]
+                    refine ⟨?_, ?_⟩
+                    · rw [h_ws0_stack]
+                    · rw [h_ws0_stack]; exact hws0.symm
+                obtain ⟨h_ws_stack, h_ws0_eq⟩ := h_pop_facts
+                have h_ws0_nb : ws0.branchTarget = none := by
+                  rw [h_ws0_eq]; simp [h_no_branch]
+                have h_ws0_nh : ws0.halted = false := by
+                  rw [h_ws0_eq]; simp [h_no_halt]
+                obtain ⟨kst1, h_evalCommit, h_kst1_ok, h_lookup, _R_post,
+                        _, _, _, _, _, _⟩ :=
+                  brIf_cond_pop_commit_correct_pub R h_ws_stack hpop hcommit h_kst_no_broke
+                let cond_bool : Quanta.KOps.Reg := s1.nextReg
+                let kst_cast : Quanta.KOps.State :=
+                  { kst1 with rf := Quanta.KOps.regWrite kst1.rf cond_bool
+                                      (Quanta.KOps.vBool (!decide (c = 0))) }
+                have h_kst_cast_broke : kst_cast.broke = false := h_kst1_ok
+                have h_s1_stack : s1.stack = s0.stack := commit_preserves_stack hcommit
+                have h_s1_eq : ({ s1 with stack := s0.stack } : LowerState) = s1 := by
+                  cases s1 with
+                  | mk nr st lr lt bs cr =>
+                    simp at h_s1_stack
+                    rw [h_s1_stack]
+                have R_at_s1 : Refines ws0 s1 kst1 layout := by
+                  rw [h_ws0_eq, ← h_s1_eq]
+                  exact _R_post
+                have R_at_cast : Refines ws0
+                    { s1 with nextReg := s1.nextReg + 1 } kst_cast layout := by
+                  refine ⟨?_, ?_, ?_, ?_, R_at_s1.injLocals, R_at_s1.heapRefines⟩
+                  · refine ⟨?_, ?_⟩
+                    · show ws0.stack.length = s1.stack.length
+                      exact R_at_s1.stk.left
+                    · intro i v hv
+                      obtain ⟨svi, hsv_get, henc⟩ := R_at_s1.stk.right i v hv
+                      have hsv_in : svi ∈ s1.stack := List.mem_of_get? hsv_get
+                      refine ⟨svi, hsv_get, ?_⟩
+                      apply WasmValue.encodes_preserved_of_fresh _ henc
+                      intro r hr
+                      exact R_at_s1.fresh.left svi hsv_in r hr
+                  · intro i r hfind v hv
+                    have henc := R_at_s1.locs i r hfind v hv
+                    have hr_lt : r < s1.nextReg := by
+                      have hpair : (i, r) ∈ s1.localReg := List.mem_of_find?_eq_some hfind
+                      exact R_at_s1.fresh.right (i, r) hpair
+                    apply WasmValue.encodes_preserved_of_fresh _ henc
+                    intro r' hr'
+                    simp [SymVal.regs] at hr'
+                    subst hr'; exact hr_lt
+                  · refine ⟨?_, ?_⟩
+                    · intro sv hsv r hr
+                      show r < s1.nextReg + 1
+                      exact Nat.lt_succ_of_lt (R_at_s1.fresh.left sv hsv r hr)
+                    · intro ir hir
+                      show ir.snd < s1.nextReg + 1
+                      exact Nat.lt_succ_of_lt (R_at_s1.fresh.right ir hir)
+                  · intro ir hir sv hsv
+                    exact R_at_s1.aliasFree ir hir sv hsv
+                -- Lifting helper: given Refines ws_target s_x kst_cast,
+                -- with s_x's stack = s_cast.stack, localReg = s_cast.localReg,
+                -- localTy = s_cast.localTy, bufferSlots = s_cast.bufferSlots,
+                -- and s_cast.nextReg ≤ s_x.nextReg, lift R_at_cast to s_x.
+                -- Used for both c=0 (target s3) and c≠0 (target s3 from s2).
+                have R_lift : ∀ (s_x : LowerState),
+                    s_x.stack = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).stack →
+                    s_x.localReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg →
+                    ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).nextReg ≤ s_x.nextReg →
+                    Refines ws0 s_x kst_cast layout := by
+                  intro s_x h_stk h_lr h_nr
+                  refine ⟨?_, ?_, ?_, ?_, ?_, R_at_cast.heapRefines⟩
+                  · refine ⟨?_, ?_⟩
+                    · show ws0.stack.length = s_x.stack.length
+                      rw [h_stk]; exact R_at_cast.stk.left
+                    · intro i v hv
+                      obtain ⟨svi, hsv_get, henc⟩ := R_at_cast.stk.right i v hv
+                      have hsv_get_x : s_x.stack.get? i = some svi := by
+                        rw [h_stk]; exact hsv_get
+                      exact ⟨svi, hsv_get_x, henc⟩
+                  · intro i r hfind v hv
+                    have hfind_cast :
+                        ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg.find?
+                          (fun p => p.fst = i) = some (i, r) := by
+                      rw [← h_lr]; exact hfind
+                    exact R_at_cast.locs i r hfind_cast v hv
+                  · refine ⟨?_, ?_⟩
+                    · intro sv hsv r hr
+                      have hsv_cast : sv ∈
+                          ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).stack := by
+                        rw [← h_stk]; exact hsv
+                      exact Nat.lt_of_lt_of_le (R_at_cast.fresh.left sv hsv_cast r hr) h_nr
+                    · intro ir hir
+                      have hir_cast : ir ∈
+                          ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := by
+                        rw [← h_lr]; exact hir
+                      exact Nat.lt_of_lt_of_le (R_at_cast.fresh.right ir hir_cast) h_nr
+                  · intro ir hir sv hsv
+                    have hir_cast : ir ∈
+                        ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := by
+                      rw [← h_lr]; exact hir
+                    have hsv_cast : sv ∈
+                        ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).stack := by
+                      rw [← h_stk]; exact hsv
+                    exact R_at_cast.aliasFree ir hir_cast sv hsv_cast
+                  · intro p q hp hq
+                    have hp_cast : p ∈
+                        ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := by
+                      rw [← h_lr]; exact hp
+                    have hq_cast : q ∈
+                        ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := by
+                      rw [← h_lr]; exact hq
+                    exact R_at_cast.injLocals p q hp_cast hq_cast
+                -- Combined preservation facts for s3 (relative to s_cast).
+                have h_s3_stack_cast :
+                    s3.stack = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).stack := by
+                  rw [h_s3_stack, h_s2_stack]
+                have h_s3_lr_cast :
+                    s3.localReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := by
+                  rw [h_s3_lr, h_s2_lr]
+                have h_s3_nr_cast :
+                    ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).nextReg ≤ s3.nextReg :=
+                  Nat.le_trans h_s2_nr h_s3_nr
+                by_cases hc : c = 0
+                · -- c = 0: WASM picks elseBody, eval runs it.
+                  simp only [hc, ↓reduceIte] at hw
+                  cases h_eb : evalInstrs bt ws0 elseBody with
+                  | none => simp [h_eb] at hw
+                  | some ws_ab =>
+                    simp [h_eb] at hw
+                    -- Need Refines ws0 s2 kst_cast layout for else_preserves.
+                    -- s2 has localReg = s_cast.localReg (from then_lowering),
+                    -- stack = s_cast.stack, nextReg ≥ s_cast.nextReg. Lift R_at_cast.
+                    have R_at_s2 : Refines ws0 s2 kst_cast layout := by
+                      apply R_lift s2 h_s2_stack h_s2_lr h_s2_nr
+                    obtain ⟨kst_ab, F_b, h_ev_b, R_b, h_bridge_b⟩ :=
+                      else_preserves R_at_s2 h_ws0_nb h_ws0_nh h_kst_cast_broke
+                        h_eb hle
+                    obtain ⟨h_ab_nb, h_ab_nh, _, _, _, _, _, _, _⟩ :=
+                      else_falls_through R_at_s2 h_ws0_nb h_ws0_nh h_kst_cast_broke
+                        h_eb hle
+                    rw [h_ab_nb] at hw
+                    simp only at hw
+                    -- hw: evalInstrs bt ws_ab post = some ws'.
+                    have h_ab_broke : kst_ab.broke = false := h_bridge_b.right h_ab_nb
+                    obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
+                      post_preserves R_b h_ab_nb h_ab_nh h_ab_broke hw hlp
+                    -- IR composition.
+                    let F : Nat := max (max F_b F_p) 1
+                    refine ⟨kst', F, ?_, ?_, h_bridge_p⟩
+                    · rw [← h_ops_eq]
+                      have h1 : evalOps F kst opsCommit = some kst1 :=
+                        evalOps_fuel_mono (Nat.zero_le _) h_evalCommit
+                      have h_else_max : evalOps F kst_cast elseOps = some kst_ab :=
+                        evalOps_fuel_mono
+                          (Nat.le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)) h_ev_b
+                      have h_post_max : evalOps F kst_ab postOps = some kst' :=
+                        evalOps_fuel_mono
+                          (Nat.le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)) h_ev_p
+                      have h_cast_max : Quanta.KOps.evalOp F kst1
+                          (KernelOp.cast cond_bool cond Quanta.KOps.Scalar.u32 Quanta.KOps.Scalar.bool)
+                          = some kst_cast := by
+                        simp [Quanta.KOps.evalOp, h_lookup, Quanta.KOps.evalCast, kst_cast]
+                      have h_lookup_cast :
+                          Quanta.KOps.regLookup kst_cast.rf cond_bool
+                            = some (Quanta.KOps.Value.vBool (!decide (c = 0))) := by
+                        show Quanta.KOps.regLookup
+                               (Quanta.KOps.regWrite kst1.rf cond_bool
+                                 (Quanta.KOps.vBool (!decide (c = 0)))) cond_bool
+                             = _
+                        exact regLookup_regWrite_self _ _ _
+                      -- c=0 → cond_bool = vBool false → branch picks elseOps.
+                      have h_branch_evals_to :
+                          Quanta.KOps.evalOp F kst_cast
+                            (KernelOp.branch cond_bool thenOps elseOps) = some kst_ab := by
+                        simp [Quanta.KOps.evalOp, h_lookup_cast, hc, h_else_max]
+                      have h_cast_branch_post :
+                          Quanta.KOps.evalOps F kst1
+                            (KernelOp.cast cond_bool cond .u32 .bool
+                              :: KernelOp.branch cond_bool thenOps elseOps :: postOps)
+                            = some kst' := by
+                        rw [Quanta.KOps.evalOps]
+                        rw [h_cast_max]
+                        simp [h_kst_cast_broke]
+                        rw [Quanta.KOps.evalOps]
+                        rw [h_branch_evals_to]
+                        simp [h_ab_broke, h_post_max]
+                      exact (evalOps_append h1 h_kst1_ok).trans h_cast_branch_post
+                    · rw [← h_s_eq]; exact R_p
+                · -- c ≠ 0: WASM picks thenBody, eval runs it.
+                  simp only [hc, ↓reduceIte] at hw
+                  cases h_eb : evalInstrs bt ws0 thenBody with
+                  | none => simp [h_eb] at hw
+                  | some ws_ab =>
+                    simp [h_eb] at hw
+                    obtain ⟨kst_ab, F_b, h_ev_b, R_b, h_bridge_b⟩ :=
+                      then_preserves R_at_cast h_ws0_nb h_ws0_nh h_kst_cast_broke
+                        h_eb hlt
+                    obtain ⟨h_ab_nb, h_ab_nh, _, _, _, _, _, _, _⟩ :=
+                      then_falls_through R_at_cast h_ws0_nb h_ws0_nh h_kst_cast_broke
+                        h_eb hlt
+                    rw [h_ab_nb] at hw
+                    simp only at hw
+                    have h_ab_broke : kst_ab.broke = false := h_bridge_b.right h_ab_nb
+                    -- R_b is at s2. Lift to s3 via else_lowering_preserves
+                    -- (same reg-frame except bumped nextReg, same stack/locals).
+                    have R_b_at_s3 : Refines ws_ab s3 kst_ab layout := by
+                      refine ⟨?_, ?_, ?_, ?_, ?_, R_b.heapRefines⟩
+                      · refine ⟨?_, ?_⟩
+                        · show ws_ab.stack.length = s3.stack.length
+                          rw [h_s3_stack]
+                          exact R_b.stk.left
+                        · intro i v hv
+                          obtain ⟨svi, hsv_get, henc⟩ := R_b.stk.right i v hv
+                          have hsv_get_s3 : s3.stack.get? i = some svi := by
+                            rw [h_s3_stack]; exact hsv_get
+                          exact ⟨svi, hsv_get_s3, henc⟩
+                      · intro i r hfind v hv
+                        have hfind_s2 :
+                            s2.localReg.find? (fun p => p.fst = i) = some (i, r) := by
+                          rw [← h_s3_lr]; exact hfind
+                        exact R_b.locs i r hfind_s2 v hv
+                      · refine ⟨?_, ?_⟩
+                        · intro sv hsv r hr
+                          have hsv_s2 : sv ∈ s2.stack := by rw [← h_s3_stack]; exact hsv
+                          exact Nat.lt_of_lt_of_le (R_b.fresh.left sv hsv_s2 r hr) h_s3_nr
+                        · intro ir hir
+                          have hir_s2 : ir ∈ s2.localReg := by rw [← h_s3_lr]; exact hir
+                          exact Nat.lt_of_lt_of_le (R_b.fresh.right ir hir_s2) h_s3_nr
+                      · intro ir hir sv hsv
+                        have hir_s2 : ir ∈ s2.localReg := by rw [← h_s3_lr]; exact hir
+                        have hsv_s2 : sv ∈ s2.stack := by rw [← h_s3_stack]; exact hsv
+                        exact R_b.aliasFree ir hir_s2 sv hsv_s2
+                      · intro p q hp hq
+                        have hp_s2 : p ∈ s2.localReg := by rw [← h_s3_lr]; exact hp
+                        have hq_s2 : q ∈ s2.localReg := by rw [← h_s3_lr]; exact hq
+                        exact R_b.injLocals p q hp_s2 hq_s2
+                    obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
+                      post_preserves R_b_at_s3 h_ab_nb h_ab_nh h_ab_broke hw hlp
+                    -- IR composition.
+                    let F : Nat := max (max F_b F_p) 1
+                    refine ⟨kst', F, ?_, ?_, h_bridge_p⟩
+                    · rw [← h_ops_eq]
+                      have h1 : evalOps F kst opsCommit = some kst1 :=
+                        evalOps_fuel_mono (Nat.zero_le _) h_evalCommit
+                      have h_then_max : evalOps F kst_cast thenOps = some kst_ab :=
+                        evalOps_fuel_mono
+                          (Nat.le_trans (Nat.le_max_left _ _) (Nat.le_max_left _ _)) h_ev_b
+                      have h_post_max : evalOps F kst_ab postOps = some kst' :=
+                        evalOps_fuel_mono
+                          (Nat.le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)) h_ev_p
+                      have h_cast_max : Quanta.KOps.evalOp F kst1
+                          (KernelOp.cast cond_bool cond Quanta.KOps.Scalar.u32 Quanta.KOps.Scalar.bool)
+                          = some kst_cast := by
+                        simp [Quanta.KOps.evalOp, h_lookup, Quanta.KOps.evalCast, kst_cast]
+                      have h_lookup_cast :
+                          Quanta.KOps.regLookup kst_cast.rf cond_bool
+                            = some (Quanta.KOps.Value.vBool (!decide (c = 0))) := by
+                        show Quanta.KOps.regLookup
+                               (Quanta.KOps.regWrite kst1.rf cond_bool
+                                 (Quanta.KOps.vBool (!decide (c = 0)))) cond_bool
+                             = _
+                        exact regLookup_regWrite_self _ _ _
+                      have h_branch_evals_to :
+                          Quanta.KOps.evalOp F kst_cast
+                            (KernelOp.branch cond_bool thenOps elseOps) = some kst_ab := by
+                        simp [Quanta.KOps.evalOp, h_lookup_cast, hc, h_then_max]
+                      have h_cast_branch_post :
+                          Quanta.KOps.evalOps F kst1
+                            (KernelOp.cast cond_bool cond .u32 .bool
+                              :: KernelOp.branch cond_bool thenOps elseOps :: postOps)
+                            = some kst' := by
+                        rw [Quanta.KOps.evalOps]
+                        rw [h_cast_max]
+                        simp [h_kst_cast_broke]
+                        rw [Quanta.KOps.evalOps]
+                        rw [h_branch_evals_to]
+                        simp [h_ab_broke, h_post_max]
+                      exact (evalOps_append h1 h_kst1_ok).trans h_cast_branch_post
+                    · rw [← h_s_eq]; exact R_p
+              | wI64 _ => simp at hw
+              | wF32 _ => simp at hw
+              | wF64 _ => simp at hw
+
 end Quanta.Wasm
