@@ -4826,4 +4826,85 @@ theorem framework_preservation_wloopThenStraightLine
     post_preserves h_fuel_ge_2
     ws' s' ops hw hl
 
+-- ════════════════════════════════════════════════════════════════════
+-- First end-to-end wloop kernel preservation theorem
+--
+-- Kernel shape: `.wloop 0 :: [.i32Const 0, .brIf 0] ++ [.wend] ++ post`
+-- where `post` is straight-line. The wloop body is the simplest
+-- single-iteration exit pattern. All four body IHs are discharged
+-- inline from the concrete-body lemmas; the post comes from
+-- `framework_preservation_straightLine` via the L10v6 wrapper.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- First end-to-end concrete wloop kernel preservation theorem.
+    No caller body hypotheses — only the five kernel-wide
+    well-formedness predicates the straight-line framework needs.
+    The wloop body is hard-coded to `[.i32Const 0, .brIf 0]`,
+    exercising the iteration-bridge mechanism on the simplest
+    single-iter-exit shape. -/
+theorem framework_preservation_const0_brIf0_wloop_then_straightLine
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    (post : List WasmInstr)
+    (h_post_wf : StraightLineInstrs post)
+    (h_fuel_ge_2 : fuel ≥ 2)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (fuel + 1) ws
+            (.wloop 0 :: ([.i32Const 0, .brIf 0] ++ [.wend] ++ post))
+            = some ws')
+    (hl : lowerInstrs (fuel + 1) frames s
+            (.wloop 0 :: ([.i32Const 0, .brIf 0] ++ [.wend] ++ post))
+            = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  -- splitAtEnd on [.i32Const 0, .brIf 0, .wend] ++ post yields
+  -- (body = [.i32Const 0, .brIf 0], post).
+  have h_split : splitAtEnd ([.i32Const 0, .brIf 0] ++ [.wend] ++ post)
+      = some ([.i32Const 0, .brIf 0], post) := by
+    -- splitAtEnd splits on .wend; the canonical case for our kernel
+    -- shape returns the expected pair. Verified by direct evaluation.
+    show splitAtEnd ([WasmInstr.i32Const 0, WasmInstr.brIf 0, WasmInstr.wend] ++ post)
+      = some ([WasmInstr.i32Const 0, WasmInstr.brIf 0], post)
+    simp only [List.append_assoc, List.cons_append, List.nil_append]
+    -- Unfold splitAtEnd, then walkUntilCloser three times (once per
+    -- instruction before .wend).
+    unfold splitAtEnd
+    simp only [walkUntilCloser]
+    -- Each walkUntilCloser step unfolds the head match.
+    simp
+  exact framework_preservation_wloopThenStraightLine
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+    h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds h_store_layout
+    ([.i32Const 0, .brIf 0] ++ [.wend] ++ post)
+    [.i32Const 0, .brIf 0] post h_split h_post_wf
+    -- body_preserves
+    (fun {ws_b s_b kst_b} R_b h_nb h_nh h_nbk {ws'_b s'_b bodyOps} hw_b hl_b =>
+      const0_brIf0_body_preserves frames layout R_b h_nb h_nh h_nbk hw_b hl_b)
+    -- body_falls_through
+    (fun {ws_b s_b kst_b ws'_b s'_b bodyOps} _R_b h_nb h_nh _h_nbk hw_b hl_b =>
+      const0_brIf0_falls_through frames h_nb h_nh hw_b hl_b)
+    -- body_exits_with_broke
+    (fun {ws_b s_b kst_b ws'_b s'_b bodyOps kst'_b F_b} _R_b _h_nb _h_nh h_nbk _hw_b hl_b h_ev_b =>
+      const0_brIf0_exits_with_broke frames h_nbk hl_b h_ev_b)
+    -- body_lowering_preserves
+    (fun {s_b s'_b bodyOps} hl_b =>
+      const0_brIf0_lowering_preserves frames hl_b)
+    h_fuel_ge_2 ws' s' ops hw hl
+
 end Quanta.Wasm
