@@ -5135,6 +5135,163 @@ def IsIrEmptyPrefix : List WasmInstr → Prop
   | [] => True
   | i :: rest => IsIrEmptyOp i ∧ IsIrEmptyPrefix rest
 
+/-- Parametric peel for IR-empty prefix on the lowering side. -/
+theorem peel_irEmptyPrefix_lowering
+    {bt : Nat} (frames : List FrameKind)
+    {pref rest : List WasmInstr}
+    (h_prefix : IsIrEmptyPrefix pref)
+    {s_b s'_b : LowerState} {bodyOps : List KernelOp}
+    (h_lb : lowerInstrs bt frames s_b (pref ++ rest) = some (s'_b, bodyOps)) :
+    lowerInstrs bt frames s_b rest = some (s'_b, bodyOps) := by
+  induction pref with
+  | nil =>
+      simp only [List.nil_append] at h_lb
+      exact h_lb
+  | cons i pre_rest IH =>
+      obtain ⟨h_i, h_pre⟩ := h_prefix
+      -- Pattern match on i — only .nop is admitted.
+      cases i with
+      | nop =>
+          rw [List.cons_append] at h_lb
+          rw [lowerInstrs_cons_default bt frames s_b .nop (pre_rest ++ rest) rfl] at h_lb
+          simp only [lowerInstr, Option.bind_eq_bind, Option.some_bind,
+                     pure, List.nil_append] at h_lb
+          -- h_lb is `(lowerInstrs bt frames s_b (pre_rest ++ rest)).bind ...`.
+          cases h_inner : lowerInstrs bt frames s_b (pre_rest ++ rest) with
+          | none => rw [h_inner] at h_lb; simp at h_lb
+          | some pair =>
+              rcases pair with ⟨s'', bops⟩
+              rw [h_inner] at h_lb
+              simp at h_lb
+              obtain ⟨h_s, h_ops⟩ := h_lb
+              subst h_s
+              subst h_ops
+              exact IH h_pre h_inner
+      | _ =>
+          -- All other constructors fail IsIrEmptyOp.
+          all_goals (exfalso; exact h_i)
+
+/-- Parametric peel for IR-empty prefix on the eval side. -/
+theorem peel_irEmptyPrefix_eval
+    {bt : Nat}
+    {pref rest : List WasmInstr}
+    (h_prefix : IsIrEmptyPrefix pref)
+    {ws_b ws'_b : WasmState}
+    (h_no_branch : ws_b.branchTarget = none)
+    (h_no_halt : ws_b.halted = false)
+    (hw_b : evalInstrs bt ws_b (pref ++ rest) = some ws'_b) :
+    evalInstrs bt ws_b rest = some ws'_b := by
+  induction pref generalizing ws_b with
+  | nil =>
+      simp only [List.nil_append] at hw_b
+      exact hw_b
+  | cons i pre_rest IH =>
+      obtain ⟨h_i, h_pre⟩ := h_prefix
+      cases i with
+      | nop =>
+          rw [List.cons_append] at hw_b
+          rw [evalInstrs_cons_default bt ws_b .nop (pre_rest ++ rest)
+              h_no_branch h_no_halt (by simp [isStructuredEval])] at hw_b
+          simp only [evalInstr] at hw_b
+          -- After nop: state unchanged. Apply IH on pre_rest.
+          exact IH h_pre h_no_branch h_no_halt hw_b
+      | _ =>
+          all_goals (exfalso; exact h_i)
+
+/-- Parametric `body_lowering_preserves` for body =
+    `pref ++ [.i32Const 0, .brIf 0]` with `IsIrEmptyPrefix pref`. -/
+theorem irEmptyPrefix_const0_brIf0_lowering_preserves
+    {bt : Nat} (frames : List FrameKind)
+    {pref : List WasmInstr} (h_prefix : IsIrEmptyPrefix pref)
+    {s_b s'_b : LowerState} {bodyOps : List KernelOp}
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              (pref ++ [.i32Const 0, .brIf 0]) = some (s'_b, bodyOps)) :
+    s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+    s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+    s_b.nextReg ≤ s'_b.nextReg :=
+  const0_brIf0_lowering_preserves frames
+    (peel_irEmptyPrefix_lowering (.loopK :: frames) h_prefix h_lb)
+
+/-- Parametric `body_falls_through` for body =
+    `pref ++ [.i32Const 0, .brIf 0]` with `IsIrEmptyPrefix pref`. -/
+theorem irEmptyPrefix_const0_brIf0_falls_through
+    {bt : Nat} (frames : List FrameKind)
+    {pref : List WasmInstr} (h_prefix : IsIrEmptyPrefix pref)
+    {ws_b : WasmState} {s_b : LowerState}
+    {ws'_b : WasmState} {s'_b : LowerState}
+    {bodyOps : List KernelOp}
+    (h_no_branch : ws_b.branchTarget = none)
+    (h_no_halt : ws_b.halted = false)
+    (hw_b : evalInstrs bt ws_b (pref ++ [.i32Const 0, .brIf 0])
+              = some ws'_b)
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              (pref ++ [.i32Const 0, .brIf 0]) = some (s'_b, bodyOps)) :
+    ws'_b.branchTarget = none ∧ ws'_b.halted = false ∧
+    ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
+    ws'_b.mem = ws_b.mem ∧
+    s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
+    s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots :=
+  const0_brIf0_falls_through frames h_no_branch h_no_halt
+    (peel_irEmptyPrefix_eval h_prefix h_no_branch h_no_halt hw_b)
+    (peel_irEmptyPrefix_lowering (.loopK :: frames) h_prefix h_lb)
+
+/-- Parametric `body_exits_with_broke` for body =
+    `pref ++ [.i32Const 0, .brIf 0]` with `IsIrEmptyPrefix pref`. -/
+theorem irEmptyPrefix_const0_brIf0_exits_with_broke
+    {bt : Nat} (frames : List FrameKind)
+    {pref : List WasmInstr} (h_prefix : IsIrEmptyPrefix pref)
+    {s_b : LowerState}
+    {kst_b : Quanta.KOps.State} {s'_b : LowerState}
+    {bodyOps : List KernelOp} {kst'_b : Quanta.KOps.State} {F_b : Nat}
+    (h_kst_no_broke : kst_b.broke = false)
+    (h_lb : lowerInstrs bt (.loopK :: frames) s_b
+              (pref ++ [.i32Const 0, .brIf 0]) = some (s'_b, bodyOps))
+    (h_ev_b : evalOps F_b kst_b bodyOps = some kst'_b) :
+    kst'_b.broke = true :=
+  const0_brIf0_exits_with_broke frames h_kst_no_broke
+    (peel_irEmptyPrefix_lowering (.loopK :: frames) h_prefix h_lb)
+    h_ev_b
+
+/-- Parametric `body_preserves` for body =
+    `pref ++ [.i32Const 0, .brIf 0]` with `IsIrEmptyPrefix pref`. -/
+theorem irEmptyPrefix_const0_brIf0_body_preserves
+    {bt : Nat} (frames : List FrameKind)
+    {pref : List WasmInstr} (h_prefix : IsIrEmptyPrefix pref)
+    {ws_b : WasmState} {s_b : LowerState}
+    {kst_b : Quanta.KOps.State}
+    (layout : BufferLayout)
+    (R_b : Refines ws_b s_b kst_b layout)
+    (h_nb_b : ws_b.branchTarget = none)
+    (h_nh_b : ws_b.halted = false)
+    (h_nbk_b : kst_b.broke = false)
+    {ws'_b : WasmState} {s'_b : LowerState} {bodyOps : List KernelOp}
+    (hw_b : evalInstrs bt ws_b (pref ++ [.i32Const 0, .brIf 0])
+              = some ws'_b)
+    (hl_b : lowerInstrs bt (.loopK :: frames) s_b
+              (pref ++ [.i32Const 0, .brIf 0]) = some (s'_b, bodyOps)) :
+    ∃ (kst'_b : Quanta.KOps.State) (F : Nat),
+      evalOps F kst_b bodyOps = some kst'_b ∧
+      Refines ws'_b s'_b kst'_b layout :=
+  const0_brIf0_body_preserves frames layout R_b h_nb_b h_nh_b h_nbk_b
+    (peel_irEmptyPrefix_eval h_prefix h_nb_b h_nh_b hw_b)
+    (peel_irEmptyPrefix_lowering (.loopK :: frames) h_prefix hl_b)
+
+-- Note: the parametric end-to-end framework theorem for
+-- `framework_preservation_irEmptyPrefix_const0_brIf0_*` requires a
+-- generalized `splitAtEnd` lemma over IR-empty prefixes — proving
+-- that the splitter correctly walks through a prefix of `.nop`s
+-- without bumping its depth counter and lands on the `.wend` marker
+-- in the inner [.i32Const 0, .brIf 0, .wend] suffix. The lemma's
+-- proof needs a generalized walkUntilCloser-acc shift invariant
+-- (walkUntilCloser tail 0 acc = walkUntilCloser tail 0 [] but with
+-- acc.reverse prepended to the taken list). Deferred until the
+-- generalization pattern lands.
+--
+-- For now, the parametric four IHs above are reusable infrastructure:
+-- any concrete `pref` instance discharges via these IHs once the
+-- caller computes `splitAtEnd` for the specific shape (see the
+-- const0_brIf0 and nop_const0_brIf0 catalog entries for the pattern).
+
 -- ════════════════════════════════════════════════════════════════════
 -- Concrete wloop kernel theorem catalog
 --
