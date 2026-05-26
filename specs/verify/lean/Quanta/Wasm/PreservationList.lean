@@ -3003,7 +3003,8 @@ theorem preservation_evalInstrs_cons_brIf_loop_outer_no_inner
             rw [h_s1_stack]
         rw [← h_s1_eq]
         refine ⟨R_post.stk, R_post.locs, R_post.fresh, R_post.aliasFree,
-                R_post.injLocals, R_post.heapRefines⟩
+                R_post.injLocals, R_post.heapRefines,
+                R_post.currentReg, R_post.freshCurrent⟩
 
 -- ════════════════════════════════════════════════════════════════════
 -- Arm 1 — brIf 0 to enclosing Loop, rest = []
@@ -3122,7 +3123,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_self
       rw [← h_s1_eq_struct]; exact R_post
     -- Lift across cast's fresh write at cond_bool = s1.nextReg.
     have R_cast : Refines { ws with stack := rest_w } s_cast kst2 layout := by
-      refine ⟨?_, ?_, ?_, ?_, R_post'.injLocals, R_post'.heapRefines⟩
+      refine ⟨?_, ?_, ?_, ?_, R_post'.injLocals, R_post'.heapRefines, ?_, ?_⟩
       · -- StackRefines.
         refine ⟨?_, ?_⟩
         · show rest_w.length = s_cast.stack.length
@@ -3158,6 +3159,17 @@ theorem preservation_evalInstrs_cons_brIf_loop_self
       · -- AliasFree.
         intro ir hir sv hsv
         exact R_post'.aliasFree ir hir sv hsv
+      · -- CurrentRegRefines: s_cast.currentReg = s1.currentReg; lift past fresh write at cond_bool.
+        show CurrentRegRefines layout _ s_cast.currentReg _
+        have h_cur_eq : s_cast.currentReg = s1.currentReg := rfl
+        rw [h_cur_eq]
+        -- All s1.currentReg entries have reg < s1.nextReg (via R_post'.freshCurrent).
+        -- The cast writes at s1.nextReg (= cond_bool), which is above all currentReg regs.
+        exact CurrentRegRefines_preserved_fresh R_post'.currentReg R_post'.freshCurrent _
+      · -- FreshCurrent: s_cast.nextReg = s1.nextReg + 1; currentReg = s1.currentReg.
+        intro ir hir
+        show ir.snd < s1.nextReg + 1
+        exact Nat.lt_succ_of_lt (R_post'.freshCurrent ir hir)
     -- After the .branch, broke may flip to true. Build the
     -- broke-augmented refines: lift R_cast to (kst_brk).
     --
@@ -3172,7 +3184,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_self
     have R_brk : Refines { ws with stack := rest_w }
                           s_cast kst_brk layout := by
       refine ⟨R_cast.stk, R_cast.locs, R_cast.fresh, R_cast.aliasFree,
-              R_cast.injLocals, R_cast.heapRefines⟩
+              R_cast.injLocals, R_cast.heapRefines, R_cast.currentReg, R_cast.freshCurrent⟩
     -- Now provide kst' via case-split on c = 0.
     by_cases hc : c = 0
     · -- cond = 0: branch picks elseOps [.breakOp] → kst_brk;
@@ -3244,7 +3256,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_self
         · rw [← h_s_eq, h_ws'_eq, h_ws_post_eq]
           -- Refines ignores branchTarget; R_cast suffices.
           refine ⟨R_cast.stk, R_cast.locs, R_cast.fresh, R_cast.aliasFree,
-                  R_cast.injLocals, R_cast.heapRefines⟩
+                  R_cast.injLocals, R_cast.heapRefines, R_cast.currentReg, R_cast.freshCurrent⟩
 
 -- ════════════════════════════════════════════════════════════════════
 -- Arms 2 + 4 — brIf with Loop above (any target kind), rest = []
@@ -3368,7 +3380,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner
       exact h_kst1_ok
     -- Build R_cast.
     have R_cast : Refines { ws with stack := rest_w } s_cast kst2 layout := by
-      refine ⟨?_, ?_, ?_, ?_, R_post'.injLocals, R_post'.heapRefines⟩
+      refine ⟨?_, ?_, ?_, ?_, R_post'.injLocals, R_post'.heapRefines, ?_, ?_⟩
       · refine ⟨R_post'.stk.left, ?_⟩
         intro i v hv
         have hv_pop : ({ ws with stack := rest_w } : WasmState).stack.get? i
@@ -3397,6 +3409,15 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner
           exact Nat.lt_succ_of_lt (R_post'.fresh.right ir hir)
       · intro ir hir sv hsv
         exact R_post'.aliasFree ir hir sv hsv
+      · -- CurrentRegRefines: lift past cast's fresh write at cond_bool.
+        show CurrentRegRefines layout _ s_cast.currentReg _
+        have h_cur_eq : s_cast.currentReg = s1.currentReg := rfl
+        rw [h_cur_eq]
+        exact CurrentRegRefines_preserved_fresh R_post'.currentReg R_post'.freshCurrent _
+      · -- FreshCurrent: nextReg bumps by 1.
+        intro ir hir
+        show ir.snd < s1.nextReg + 1
+        exact Nat.lt_succ_of_lt (R_post'.freshCurrent ir hir)
     -- Eval-side: rest = [] means recursive eval returns ws_mid immediately.
     have h_eval_nil : evalInstrs fuel ws_mid [] = some ws_mid := by
       simp [evalInstrs]
@@ -3406,7 +3427,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner
     let kst_brk : Quanta.KOps.State := { kst2 with broke := true }
     have R_brk : Refines { ws with stack := rest_w } s_cast kst_brk layout := by
       refine ⟨R_cast.stk, R_cast.locs, R_cast.fresh, R_cast.aliasFree,
-              R_cast.injLocals, R_cast.heapRefines⟩
+              R_cast.injLocals, R_cast.heapRefines, R_cast.currentReg, R_cast.freshCurrent⟩
     -- Two cases on c = 0.
     by_cases hc : c = 0
     · -- cond = 0: WASM falls through (ws_mid stack popped, no branchTarget).
@@ -3470,7 +3491,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner
           rfl
         · rw [← h_s_eq, h_ws'_eq, h_ws_mid_eq]
           refine ⟨R_brk.stk, R_brk.locs, R_brk.fresh, R_brk.aliasFree,
-                  R_brk.injLocals, R_brk.heapRefines⟩
+                  R_brk.injLocals, R_brk.heapRefines, R_brk.currentReg, R_brk.freshCurrent⟩
 
 -- ════════════════════════════════════════════════════════════════════
 -- L6.4 — wreturn preservation
