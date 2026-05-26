@@ -2413,7 +2413,7 @@ theorem preservation_evalInstrs_cons_wif_trivialBodies
             -- fresh write at cond_bool = s1.nextReg).
             have R_at_cast : Refines ws0
                 { s1 with nextReg := s1.nextReg + 1 } kst_cast layout := by
-              refine ⟨?_, ?_, ?_, ?_, R_at_s1.injLocals, R_at_s1.heapRefines⟩
+              refine ⟨?_, ?_, ?_, ?_, R_at_s1.injLocals, R_at_s1.heapRefines, ?_, ?_⟩
               · -- StackRefines.
                 refine ⟨?_, ?_⟩
                 · show ws0.stack.length = s1.stack.length
@@ -2446,6 +2446,13 @@ theorem preservation_evalInstrs_cons_wif_trivialBodies
               · -- AliasFree.
                 intro ir hir sv hsv
                 exact R_at_s1.aliasFree ir hir sv hsv
+              · -- CurrentRegRefines: s_cast.currentReg = s1.currentReg; lift past fresh write.
+                show CurrentRegRefines layout _ s1.currentReg _
+                exact CurrentRegRefines_preserved_fresh R_at_s1.currentReg R_at_s1.freshCurrent _
+              · -- FreshCurrent: nextReg bumps by 1.
+                intro ir hir
+                show ir.snd < s1.nextReg + 1
+                exact Nat.lt_succ_of_lt (R_at_s1.freshCurrent ir hir)
             -- s3_restored simplifies to s_cast (both restores idempotent on
             -- already-snapshot-matching state since bodies are empty).
             -- The state passed to post is structurally s_cast.
