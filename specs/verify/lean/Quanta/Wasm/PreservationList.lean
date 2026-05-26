@@ -138,7 +138,7 @@ theorem preservation_br_loop_zero
   · rw [← hs_eq, hws'_eq]
     -- Goal: Refines ws_post s kst layout. ws_post differs from ws only
     -- in branchTarget, which Refines doesn't see.
-    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
+    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
 
 -- ════════════════════════════════════════════════════════════════════
 -- `br depth` with cross-Loop break (emits [.breakOp])
@@ -202,7 +202,7 @@ theorem preservation_br_break_nonLoop
   · rw [← hs_eq, hws'_eq]
     -- Refines lifts: Refines doesn't see branchTarget or broke. The
     -- regfile / heap / stack / locals all carry over from R.
-    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
+    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
 
 /-- `br depth` targeting an outer Loop frame (`depth ≠ 0`) with a
     Loop frame between top and target: lowering emits
@@ -250,7 +250,7 @@ theorem preservation_br_loop_outer_break
   refine ⟨kst_post, ?_, ?_⟩
   · rw [← hops_eq]; simp [evalOps, Quanta.KOps.evalOp, kst_post]
   · rw [← hs_eq, hws'_eq]
-    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
+    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
 
 -- ════════════════════════════════════════════════════════════════════
 -- L9 — `br depth` refusal completion
@@ -455,7 +455,7 @@ theorem preservation_evalInstrs_cons_i32Const
   -- Build `Refines ws_mid s_mid kst layout` directly (regfile unchanged,
   -- new stack-top SymVal has empty regs so freshness / aliasFree lift).
   have R_mid : Refines ws_mid s_mid kst layout := by
-    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_⟩
     · -- StackRefines: pushed entry is i32ConstSym n encoding wI32 n.
       refine ⟨by simp [ws_mid, s_mid, WasmState.push, LowerState.pushSym, R.stk.left], ?_⟩
       intro i v hv
@@ -489,6 +489,14 @@ theorem preservation_evalInstrs_cons_i32Const
       · exact R.aliasFree ir (by simpa [s_mid, LowerState.pushSym] using hir) sv h_in
     · -- InjectiveLocals: localReg unchanged.
       simpa [s_mid, LowerState.pushSym] using R.injLocals
+    · -- CurrentRegRefines: ws.locals + s.currentReg unchanged.
+      show CurrentRegRefines layout ws_mid.locals s_mid.currentReg kst.rf
+      simp [ws_mid, WasmState.push, s_mid, LowerState.pushSym]
+      exact R.currentReg
+    · -- FreshCurrent: nextReg unchanged; currentReg unchanged.
+      show FreshCurrent s_mid
+      simp [s_mid, LowerState.pushSym, FreshCurrent]
+      exact R.freshCurrent
   have h_no_branch_mid : ws_mid.branchTarget = none := by
     simp [ws_mid, WasmState.push, h_no_branch]
   have h_no_halt_mid : ws_mid.halted = false := by
@@ -1457,7 +1465,7 @@ theorem preservation_evalInstrs_cons_drop
     rw [hws_stack, hls_stack] at hl_orig
     simpa using hl_orig
   have R_mid : Refines ws_mid s_mid kst layout := by
-    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
     · -- StackRefines on suffixes (indices shift by 1).
       intro k v hv
       have hrest_get : ws.stack.get? (k + 1) = some v := by
@@ -5053,7 +5061,7 @@ theorem preservation_evalInstrs_cons_wreturn
   · rw [← h_s_eq, hws'_eq]
     -- Refines { ws with halted := true } s kst layout — none of the
     -- Refines fields look at halted.
-    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines⟩
+    refine ⟨R.stk, R.locs, R.fresh, R.aliasFree, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
 
 /-- Re-exposed `evalInstr_brIf_shape` for use from external modules
     (the private form is hidden here for namespace hygiene; the
