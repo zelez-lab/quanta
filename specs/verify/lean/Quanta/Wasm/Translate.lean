@@ -183,6 +183,23 @@ def setLocalReg (s : LowerState) (i : Nat) (r : Reg) (ty : Scalar) : LowerState 
   let tys'  := (i, ty) :: s.localTy.filter (fun p => p.fst ≠ i)
   { s with localReg := regs', localTy := tys' }
 
+/-- Lookup the per-frame current-binding register for local `i`.
+    `none` means the local hasn't been written in the current frame;
+    `localGet` then falls back to `localReg[i]` (the stable merge
+    anchor). Mirrors production's `locals[idx].val = SymVal::Reg(fresh, _)`
+    after every `write_local_via_copy`. -/
+def lookupCurrentReg (s : LowerState) (i : Nat) : Option Reg :=
+  s.currentReg.find? (fun p => p.fst = i) |>.map Prod.snd
+
+/-- Update the per-frame current-binding register for local `i` to
+    `r`. Overwrites any prior entry for `i`. Frame-close fixups
+    (wif/wloop merge) emit `Copy { dst := localReg[i], src := r }`
+    for each `(i, r) ∈ currentReg` then reset currentReg by
+    removing those entries. -/
+def setCurrentReg (s : LowerState) (i : Nat) (r : Reg) : LowerState :=
+  let regs' := (i, r) :: s.currentReg.filter (fun p => p.fst ≠ i)
+  { s with currentReg := regs' }
+
 /-- Materialize a `SymVal` into a real `Reg` + the ops needed to
     produce that reg's value. Mirrors production's `commit()`:
     * `.reg r _` is already a register — no ops, no alloc.
@@ -355,10 +372,17 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       | some slot =>
           some (s.pushSym (.bufferPtr slot), [])
       | none => do
-          let stable ← s.lookupLocal i
+          -- Read from currentReg first (the post-write binding
+          -- inside the current frame). Fall back to localReg (the
+          -- stable merge anchor) for locals never written in this
+          -- frame. Allocates a fresh reg and emits Copy { dst :=
+          -- fresh, src := source } to break aliasing — necessary
+          -- so a subsequent localSet writing to the source-reg
+          -- doesn't clobber stack-aliased copies of an older value.
+          let source ← (s.lookupCurrentReg i).orElse (fun _ => s.lookupLocal i)
           let (fresh, s1) := s.alloc
           let s2 := s1.push fresh
-          pure (s2, [.copy fresh stable])
+          pure (s2, [.copy fresh source])
   | .localSet i => do
       -- popSym + commit (matches binop/cmp/localTee): a popped
       -- `.i32ConstSym` materializes via a const-op prefix, while
@@ -372,14 +396,24 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       -- result a plain `Scalar` instead of an `Option Scalar`, which
       -- avoids an extra monadic bind in the proof.
       let ty : Scalar := (s2.lookupLocalTy i).getD .u32
-      match s2.lookupLocal i with
-      | some dst =>
-          -- Local already has a stable register → emit a copy into it.
-          pure (s2.setLocalReg i dst ty, opsCommit ++ [.copy dst src])
+      -- Dual-Copy pattern (mirrors production's `write_local_via_copy`):
+      --   1. allocate `fresh` reg — the new per-set binding
+      --   2. emit Copy { dst := fresh, src }
+      --   3. emit Copy { dst := stable_reg, src := fresh }
+      --   4. setCurrentReg[i] := fresh so subsequent localGet in this
+      --      frame sees the new binding
+      --   5. stable_reg stays the merge anchor (set on first write)
+      let (fresh, s3) := s2.alloc
+      match s3.lookupLocal i with
+      | some stable =>
+          -- Local already has a stable reg from a prior set; keep it.
+          let s4 := (s3.setLocalReg i stable ty).setCurrentReg i fresh
+          pure (s4, opsCommit ++ [.copy fresh src, .copy stable fresh])
       | none =>
-          -- First write: allocate the local's stable reg, copy in.
-          let (dst, s3) := s2.alloc
-          pure (s3.setLocalReg i dst ty, opsCommit ++ [.copy dst src])
+          -- First write: allocate the local's stable reg too.
+          let (stable, s4) := s3.alloc
+          let s5 := (s4.setLocalReg i stable ty).setCurrentReg i fresh
+          pure (s5, opsCommit ++ [.copy fresh src, .copy stable fresh])
   | .localTee i => do
       -- `local.tee` = `local.set i` followed by `local.get i`. The
       -- `localGet` half breaks aliasing by emitting a Copy into a
@@ -393,18 +427,28 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       let (sv, s1) ← s.popSym
       let (src, s2, opsCommit) ← s1.commit sv
       let ty : Scalar := (s2.lookupLocalTy i).getD .u32
-      match s2.lookupLocal i with
-      | some dst =>
-          let s3 := s2.setLocalReg i dst ty
-          let (post_fresh, s4) := s3.alloc
-          pure (s4.push post_fresh,
-                opsCommit ++ [.copy dst src, .copy post_fresh dst])
-      | none =>
-          let (dst, s3) := s2.alloc
-          let s4 := s3.setLocalReg i dst ty
+      -- Dual-Copy + tee re-read pattern:
+      --   1. allocate `fresh` reg — new per-set binding
+      --   2. emit Copy { dst := fresh, src }
+      --   3. emit Copy { dst := stable, src := fresh } — keep stable in sync
+      --   4. setCurrentReg[i] := fresh
+      --   5. The tee re-read: emit Copy { dst := post_fresh, src := fresh }
+      --      and push post_fresh on the stack (alias-free)
+      let (fresh, s3) := s2.alloc
+      match s3.lookupLocal i with
+      | some stable =>
+          let s4 := (s3.setLocalReg i stable ty).setCurrentReg i fresh
           let (post_fresh, s5) := s4.alloc
           pure (s5.push post_fresh,
-                opsCommit ++ [.copy dst src, .copy post_fresh dst])
+                opsCommit ++ [.copy fresh src, .copy stable fresh,
+                              .copy post_fresh fresh])
+      | none =>
+          let (stable, s4) := s3.alloc
+          let s5 := (s4.setLocalReg i stable ty).setCurrentReg i fresh
+          let (post_fresh, s6) := s5.alloc
+          pure (s6.push post_fresh,
+                opsCommit ++ [.copy fresh src, .copy stable fresh,
+                              .copy post_fresh fresh])
   -- i32 arithmetic. `i32.shl` and `i32.add` carry the buffer-pattern
   -- recognition fast-paths; the others dispatch directly to the
   -- generic binop lowering.
@@ -515,24 +559,28 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
               match splitAtEnd rest with
               | none => none
               | some (body, post) => do
-                  -- Snapshot localReg / localTy at loop entry (mirrors
-                  -- production's `force_locals_to_stable` semantics
-                  -- on lower.rs line 546). Inside the body, any
-                  -- `localSet` may rebind locals, but post-loop
-                  -- reads see the entry baseline — the per-iteration
-                  -- IR runs against fresh bindings each time.
+                  -- Snapshot localReg / localTy / currentReg at loop
+                  -- entry (mirrors production's `force_locals_to_stable`
+                  -- semantics on lower.rs line 546). Inside the body,
+                  -- any `localSet` updates currentReg + emits a
+                  -- stable-sync Copy; post-loop reads see the entry
+                  -- baseline because currentReg is reset to its
+                  -- pre-loop value at frame close.
                   let entry_localReg := s.localReg
                   let entry_localTy  := s.localTy
+                  let entry_currentReg := s.currentReg
                   let (s1, bodyOps) ← lowerInstrs f (.loopK :: frames) s body
-                  -- Restore localReg / localTy after the loop body
-                  -- (matches `merge_locals_post_frame` for the Loop
-                  -- arm — post-loop reads see the pre-loop bindings
-                  -- via the unchanged register layer). Production's
-                  -- richer merge emits Copy ops; the Lean spec port
-                  -- defers that propagation.
+                  -- Restore localReg / localTy / currentReg after the
+                  -- loop body. localReg + localTy snapshot/restore
+                  -- mirrors production's `merge_locals_post_frame`
+                  -- for the Loop arm. currentReg restore clears the
+                  -- per-frame post-write bindings so post-loop reads
+                  -- fall back to the stable-reg layer (which was kept
+                  -- in sync by localSet's dual-Copy).
                   let s1_restored : LowerState :=
                     { s1 with localReg := entry_localReg,
-                              localTy  := entry_localTy }
+                              localTy  := entry_localTy,
+                              currentReg := entry_currentReg }
                   let (s2, postOps) ← lowerInstrs f frames s1_restored post
                   pure (s2, [.loopOp bodyOps] ++ postOps)
       | .wif _ =>
@@ -555,26 +603,26 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
                   -- lowering's "splice in both bodies" shape.
                   let entry_localReg := s_cast.localReg
                   let entry_localTy  := s_cast.localTy
+                  let entry_currentReg := s_cast.currentReg
                   let (s2, thenOps) ← lowerInstrs f (.wif :: frames) s_cast thenBody
-                  -- Restore localReg / localTy from the snapshot before
-                  -- lowering elseBody (matches `restore_locals_from_snapshot`).
-                  -- The freshly-bumped nextReg from thenBody is kept so
-                  -- elseBody allocates non-colliding regs.
+                  -- Restore localReg / localTy / currentReg from the
+                  -- snapshot before lowering elseBody (matches
+                  -- `restore_locals_from_snapshot`). The freshly-bumped
+                  -- nextReg from thenBody is kept so elseBody allocates
+                  -- non-colliding regs.
                   let s2_restored : LowerState :=
                     { s2 with localReg := entry_localReg,
-                              localTy  := entry_localTy }
+                              localTy  := entry_localTy,
+                              currentReg := entry_currentReg }
                   let (s3, elseOps) ← lowerInstrs f (.wif :: frames) s2_restored elseBody
                   -- Restore again after elseBody (post-If merge: both
-                  -- branches' local rebindings are discarded; reads after
-                  -- the wif see the pre-If state via the unchanged
-                  -- stable-register layer).
-                  -- Note: this is a simplification of production's
-                  -- `merge_locals_post_frame` which emits Copy ops to
-                  -- propagate the modified value. The Lean spec port
-                  -- defers that propagation until cons_wloop needs it.
+                  -- branches' local rebindings are discarded; post-wif
+                  -- reads fall back to the stable-reg layer which was
+                  -- kept in sync by localSet's dual-Copy per-write).
                   let s3_restored : LowerState :=
                     { s3 with localReg := entry_localReg,
-                              localTy  := entry_localTy }
+                              localTy  := entry_localTy,
+                              currentReg := entry_currentReg }
                   let (s4, postOps) ← lowerInstrs f frames s3_restored post
                   pure (s4, opsCommit
                             ++ [.cast cond_bool cond .u32 .bool,

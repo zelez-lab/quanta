@@ -276,9 +276,16 @@ theorem lowerInstr_preserves_bufferSlots
       rcases hbuf : s.lookupBufferSlot i with _ | slot
       · rw [hbuf] at h
         simp [Option.bind_eq_bind] at h
-        rcases hloc : s.lookupLocal i with _ | stable
-        · simp [hloc] at h
-        · simp [hloc, LowerState.alloc, LowerState.push] at h
+        -- Stage 3: localGet consults currentReg first, then localReg.
+        -- Either way, the lookup result (a Reg) doesn't change bufferSlots.
+        rcases hcur : s.lookupCurrentReg i with _ | curReg
+        · simp [hcur, Option.orElse] at h
+          rcases hloc : s.lookupLocal i with _ | stable
+          · simp [hloc] at h
+          · simp [hloc, LowerState.alloc, LowerState.push] at h
+            rcases h with ⟨h_s_eq, _⟩
+            rw [← h_s_eq]
+        · simp [hcur, Option.orElse, LowerState.alloc, LowerState.push] at h
           rcases h with ⟨h_s_eq, _⟩
           rw [← h_s_eq]
       · rw [hbuf] at h
@@ -295,13 +302,22 @@ theorem lowerInstr_preserves_bufferSlots
       simp only [hc, Option.some_bind] at h
       have hpop_inv := LowerState.popSym_preserves_bufferSlots hpop
       have hc_inv := LowerState.commit_preserves_bufferSlots hc
-      rcases hlk : s2.lookupLocal i with _ | dst
-      · simp [hlk, LowerState.alloc, LowerState.setLocalReg] at h
+      -- Stage 3 dual-Copy: alloc fresh, then match lookupLocal on
+      -- the bumped state. The alloc only bumps nextReg; lookupLocal
+      -- only depends on localReg, so the result equals s2.lookupLocal.
+      simp only [LowerState.alloc] at h
+      -- After simp, h's match is on `{s2 with nextReg := s2.nextReg + 1}.lookupLocal`.
+      -- That equals s2.lookupLocal since lookupLocal only reads localReg.
+      rcases hlk : ({ nextReg := s2.nextReg + 1, stack := s2.stack,
+                       localReg := s2.localReg, localTy := s2.localTy,
+                       bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
+                       : LowerState).lookupLocal i with _ | stable
+      · simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
         rcases h with ⟨h_s_eq, _⟩
         rw [← h_s_eq]
         show s2.bufferSlots = _
         rw [hc_inv, hpop_inv]
-      · simp [hlk, LowerState.setLocalReg] at h
+      · simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
         rcases h with ⟨h_s_eq, _⟩
         rw [← h_s_eq]
         show s2.bufferSlots = _
@@ -316,13 +332,19 @@ theorem lowerInstr_preserves_bufferSlots
       simp only [hc, Option.some_bind] at h
       have hpop_inv := LowerState.popSym_preserves_bufferSlots hpop
       have hc_inv := LowerState.commit_preserves_bufferSlots hc
-      rcases hlk : s2.lookupLocal i with _ | dst
-      · simp [hlk, LowerState.alloc, LowerState.setLocalReg, LowerState.push] at h
+      simp only [LowerState.alloc] at h
+      rcases hlk : ({ nextReg := s2.nextReg + 1, stack := s2.stack,
+                       localReg := s2.localReg, localTy := s2.localTy,
+                       bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
+                       : LowerState).lookupLocal i with _ | stable
+      · simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg,
+              LowerState.push] at h
         rcases h with ⟨h_s_eq, _⟩
         rw [← h_s_eq]
         show s2.bufferSlots = _
         rw [hc_inv, hpop_inv]
-      · simp [hlk, LowerState.setLocalReg, LowerState.alloc, LowerState.push] at h
+      · simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg,
+              LowerState.push] at h
         rcases h with ⟨h_s_eq, _⟩
         rw [← h_s_eq]
         show s2.bufferSlots = _
