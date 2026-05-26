@@ -1915,7 +1915,8 @@ theorem preservation_i32Shl_bufferPattern
   refine ⟨kst, ?_, ?_⟩
   · rw [← hops_eq]; simp [evalOps]
   · rw [← hs_eq]; subst h_ws_eq
-    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
+            R.currentReg, R.freshCurrent⟩
     · -- StackRefines: top encodes via .scaledIdx; tail unchanged.
       refine ⟨?_, ?_⟩
       · -- Length: ws_rest.length = rest.length, derived from R.stk.left.
@@ -2033,7 +2034,8 @@ theorem preservation_i32Add_bufferPattern_scaledFirst
   refine ⟨kst, ?_, ?_⟩
   · rw [← hops_eq]; simp [evalOps]
   · rw [← hs_eq]; subst h_ws_eq
-    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
+            R.currentReg, R.freshCurrent⟩
     · -- StackRefines: top encodes via .bufferAccess; tail unchanged.
       refine ⟨?_, ?_⟩
       · have hlen := R.stk.left
@@ -2139,7 +2141,7 @@ theorem preservation_i32Add_bufferPattern_ptrFirst
   refine ⟨kst, ?_, ?_⟩
   · rw [← hops_eq]; simp [evalOps]
   · rw [← hs_eq]; subst h_ws_eq
-    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
     · refine ⟨?_, ?_⟩
       · have hlen := R.stk.left
         rw [h_stack, h_ws_stack] at hlen
@@ -2291,7 +2293,7 @@ theorem preservation_i32Load
   · rw [← hops_eq]
     simp [evalOps, Quanta.KOps.evalOp, h_lookup_b, h_heap_lookup]
   · rw [← hs_eq]; rw [← hw']
-    refine ⟨?_, ?_, ?_, ?_, R.injLocals, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_, R.injLocals, ?_, ?_, ?_⟩
     · -- StackRefines: top wI32 n ↔ .reg s.nextReg .u32; tail past fresh write.
       refine ⟨?_, ?_⟩
       · have hlen := R.stk.left
@@ -2354,6 +2356,11 @@ theorem preservation_i32Load
         exact R.aliasFree ir hir sv hsv_in
     · -- HeapRefines: heap unchanged; mem unchanged.
       exact R.heapRefines
+    · -- CurrentRegRefines: currentReg unchanged; lift past fresh write.
+      exact CurrentRegRefines_preserved_fresh R.currentReg R.freshCurrent _
+    · -- FreshCurrent: nextReg bumps by 1; currentReg unchanged.
+      intro ir hir
+      exact Nat.lt_succ_of_lt (R.freshCurrent ir hir)
 
 open Quanta.KOps (vU32) in
 /-- `i32.store` preservation against a recognized `bufferAccess`
@@ -2452,7 +2459,7 @@ theorem preservation_i32Store
     let s_pop : LowerState := { s with stack := rest }
     let ws_pop : WasmState := { ws with stack := ws_rest }
     have R_pop : Refines ws_pop s_pop kst layout := by
-      refine ⟨⟨h_ws_rest_rest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+      refine ⟨⟨h_ws_rest_rest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
       · intro i v hv
         have hrest_get : ws.stack.get? (i + 2) = some v := by
           rw [hws]; simpa using hv
@@ -2522,7 +2529,8 @@ theorem preservation_i32Store
         | bufferPtr _ => simp [LowerState.commit] at hca'
         | scaledIdx _ _ => simp [LowerState.commit] at hca'
         | bufferAccess _ _ _ => simp [LowerState.commit] at hca'
-      refine ⟨?_, ?_, ?_, ?_, R_commit.injLocals, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_, R_commit.injLocals, ?_,
+              R_commit.currentReg, R_commit.freshCurrent⟩
       · -- StackRefines: ws_rest matches rest under kst1.rf.
         refine ⟨?_, ?_⟩
         · rw [h_s3_stack]; exact h_ws_rest_rest_len
@@ -2651,7 +2659,7 @@ theorem preservation_i32Cmp_generic
   let ws_pop : WasmState :=
     { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
-    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
     · intro i v hv
       have hrest_get : ws.stack.get? (i + 2) = some v := by
         rw [hwstack]; simpa using hv
@@ -2909,7 +2917,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   let ws_pop : WasmState := { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
-    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
     · intro k v hv
       have hrest_get : ws.stack.get? (k + 1) = some v := by
         rw [hws_stack]; simpa using hv
@@ -3256,7 +3264,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       bufferSlots := s.bufferSlots, currentReg := s.currentReg }
   let ws_pop : WasmState := { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
-    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
     · intro k v hv
       have hrest_get : ws.stack.get? (k + 1) = some v := by
         rw [hws_stack]; simpa using hv
