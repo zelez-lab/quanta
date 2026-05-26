@@ -820,7 +820,7 @@ theorem preservation_return (ws : WasmState) (s : LowerState) (kst : Quanta.KOps
   · subst hops_eq
     simp [evalOps]
   · subst hs_eq
-    refine ⟨?_, ?_, R.fresh, R.aliasFree, R.injLocals, ?_⟩
+    refine ⟨?_, ?_, R.fresh, R.aliasFree, R.injLocals, ?_, ?_, R.freshCurrent⟩
     · have : ws'.stack = ws.stack := by rw [← hw]
       rw [this]; exact R.stk
     · have : ws'.locals = ws.locals := by rw [← hw]
@@ -828,6 +828,9 @@ theorem preservation_return (ws : WasmState) (s : LowerState) (kst : Quanta.KOps
     · -- HeapRefines: ws'.mem = ws.mem (return doesn't touch memory).
       have : ws'.mem = ws.mem := by rw [← hw]
       rw [this]; exact R.heapRefines
+    · -- CurrentRegRefines: ws'.locals = ws.locals, s.currentReg unchanged.
+      have : ws'.locals = ws.locals := by rw [← hw]
+      rw [this]; exact R.currentReg
 
 /-- `drop` preservation. Both sides pop one value; lowering emits no
     IR. KOps state untouched. -/
@@ -863,7 +866,8 @@ theorem preservation_drop (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.S
       have hl_orig := R.stk.left
       rw [hws_stack, hls_stack] at hl_orig
       simpa using hl_orig
-    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
+            R.currentReg, R.freshCurrent⟩
     · intro k v hv
       have hrest_get : ws.stack.get? (k + 1) = some v := by
         rw [hws_stack]; simpa using hv
@@ -907,7 +911,7 @@ theorem preservation_i32Const (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   refine ⟨kst, ?_, ?_⟩
   · subst hops_eq; simp [evalOps]
   · subst hw hs_eq
-    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, R.currentReg, R.freshCurrent⟩
     · -- StackRefines: top is .i32ConstSym n encoding wI32 (UInt32.ofNat n.toNat);
       -- below entries are unchanged from the old stack with kst.rf unchanged.
       refine ⟨by simp [R.stk.left], ?_⟩
@@ -941,12 +945,155 @@ theorem preservation_i32Const (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       exact R.injLocals
 
 open Quanta.KOps (vU32) in
-/-- `local.get i` preservation. Lowering allocates a fresh register
-    `s.nextReg`, emits `Copy { dst := s.nextReg, src := stable_reg }`,
-    pushes the fresh reg. WASM pushes `locals[i]`. The local's stable
-    register encodes its value via `R.locs`, the Copy propagates that
-    encoding to the fresh reg, and freshness keeps every prior reg
-    readable. -/
+/-- Refines bundle for the post-localGet state, given the source
+    register is in localReg (currentReg miss). Used by both the
+    currentReg-miss arm of `preservation_localGet` and (after a
+    register-equality bridge) the currentReg-hit arm. -/
+theorem localGet_post_refines_via_localReg
+    {ws : WasmState} {s : LowerState} {kst : Quanta.KOps.State}
+    {layout : BufferLayout} (R : Refines ws s kst layout)
+    {i : Nat} {v : WasmValue} {nv : UInt32} {entry_snd : Reg}
+    (hloc : ws.locals.get? i = some v)
+    (hfind' : s.localReg.find? (fun p => p.fst = i) = some (i, entry_snd))
+    (h_lookup : regLookup kst.rf entry_snd = some (Quanta.KOps.Value.vU32 nv))
+    (h_v_eq : v = .wI32 nv := by trivial) :
+    Refines { ws with stack := v :: ws.stack }
+            { nextReg := s.nextReg + 1,
+              stack := SymVal.reg s.nextReg .u32 :: s.stack,
+              localReg := s.localReg, localTy := s.localTy,
+              bufferSlots := s.bufferSlots, currentReg := s.currentReg }
+            { kst with rf := regWrite kst.rf s.nextReg
+                                (Quanta.KOps.Value.vU32 nv) }
+            layout := by
+  subst h_v_eq
+  refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_⟩
+  · -- StackRefines
+    refine ⟨by simp [R.stk.left], ?_⟩
+    intro j vj hvj
+    cases j with
+    | zero =>
+      simp at hvj
+      refine ⟨SymVal.reg s.nextReg .u32, by simp, ?_⟩
+      subst hvj
+      simp [WasmValue.encodes]
+    | succ k =>
+      have hwsk : ws.stack.get? k = some vj := by simpa using hvj
+      obtain ⟨svk, hsvk, henc⟩ := R.stk.right k vj hwsk
+      refine ⟨svk, by simpa using hsvk, ?_⟩
+      have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk
+      apply WasmValue.encodes_preserved_of_fresh _ henc
+      intro r' hr'_in
+      exact R.fresh.left svk hsvk_in r' hr'_in
+  · -- LocalsRefines
+    intro k r hk_find vk hvk
+    have hpair : (k, r) ∈ s.localReg := List.mem_of_find?_eq_some hk_find
+    have hr_lt : r < s.nextReg := R.fresh.right (k, r) hpair
+    have henc' := R.locs k r hk_find vk hvk
+    apply WasmValue.encodes_preserved_of_fresh _ henc'
+    intro r' hr'_in
+    simp [SymVal.regs] at hr'_in
+    subst hr'_in; exact hr_lt
+  · -- Fresh
+    refine ⟨?_, ?_⟩
+    · intro sv hsv r' hr'
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        simp [SymVal.regs] at hr'
+        subst hr'; exact Nat.lt_succ_self _
+      · exact Nat.lt_succ_of_lt (R.fresh.left sv h_in r' hr')
+    · intro ir hir
+      exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
+  · -- AliasFree
+    intro ir hir sv hsv
+    have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+    simp at hsv
+    rcases hsv with h_eq | h_in
+    · subst h_eq
+      simp [SymVal.regs]
+      exact Nat.ne_of_lt hir_lt
+    · exact R.aliasFree ir hir sv h_in
+  · -- InjectiveLocals
+    exact R.injLocals
+  · -- CurrentRegRefines: currentReg unchanged; lift past fresh write.
+    exact CurrentRegRefines_preserved_fresh R.currentReg R.freshCurrent _
+  · -- FreshCurrent: nextReg bumps by 1; currentReg unchanged.
+    intro ir hir
+    exact Nat.lt_succ_of_lt (R.freshCurrent ir hir)
+
+open Quanta.KOps (vU32) in
+/-- Companion to `localGet_post_refines_via_localReg` for the
+    currentReg-hit arm. Structurally identical except the source-reg
+    encoding witness comes from `R.currentReg` instead of `R.locs`. -/
+theorem localGet_post_refines_via_currentReg
+    {ws : WasmState} {s : LowerState} {kst : Quanta.KOps.State}
+    {layout : BufferLayout} (R : Refines ws s kst layout)
+    {i : Nat} {v : WasmValue} {nv : UInt32} {cur_snd : Reg}
+    (hloc : ws.locals.get? i = some v)
+    (hfind' : s.currentReg.find? (fun p => p.fst = i) = some (i, cur_snd))
+    (h_lookup : regLookup kst.rf cur_snd = some (Quanta.KOps.Value.vU32 nv))
+    (h_v_eq : v = .wI32 nv := by trivial) :
+    Refines { ws with stack := v :: ws.stack }
+            { nextReg := s.nextReg + 1,
+              stack := SymVal.reg s.nextReg .u32 :: s.stack,
+              localReg := s.localReg, localTy := s.localTy,
+              bufferSlots := s.bufferSlots, currentReg := s.currentReg }
+            { kst with rf := regWrite kst.rf s.nextReg
+                                (Quanta.KOps.Value.vU32 nv) }
+            layout := by
+  subst h_v_eq
+  refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_⟩
+  · refine ⟨by simp [R.stk.left], ?_⟩
+    intro j vj hvj
+    cases j with
+    | zero =>
+      simp at hvj
+      refine ⟨SymVal.reg s.nextReg .u32, by simp, ?_⟩
+      subst hvj
+      simp [WasmValue.encodes]
+    | succ k =>
+      have hwsk : ws.stack.get? k = some vj := by simpa using hvj
+      obtain ⟨svk, hsvk, henc⟩ := R.stk.right k vj hwsk
+      refine ⟨svk, by simpa using hsvk, ?_⟩
+      have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk
+      apply WasmValue.encodes_preserved_of_fresh _ henc
+      intro r' hr'_in
+      exact R.fresh.left svk hsvk_in r' hr'_in
+  · intro k r hk_find vk hvk
+    have hpair : (k, r) ∈ s.localReg := List.mem_of_find?_eq_some hk_find
+    have hr_lt : r < s.nextReg := R.fresh.right (k, r) hpair
+    have henc' := R.locs k r hk_find vk hvk
+    apply WasmValue.encodes_preserved_of_fresh _ henc'
+    intro r' hr'_in
+    simp [SymVal.regs] at hr'_in
+    subst hr'_in; exact hr_lt
+  · refine ⟨?_, ?_⟩
+    · intro sv hsv r' hr'
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq
+        simp [SymVal.regs] at hr'
+        subst hr'; exact Nat.lt_succ_self _
+      · exact Nat.lt_succ_of_lt (R.fresh.left sv h_in r' hr')
+    · intro ir hir
+      exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
+  · intro ir hir sv hsv
+    have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+    simp at hsv
+    rcases hsv with h_eq | h_in
+    · subst h_eq
+      simp [SymVal.regs]
+      exact Nat.ne_of_lt hir_lt
+    · exact R.aliasFree ir hir sv h_in
+  · exact R.injLocals
+  · exact CurrentRegRefines_preserved_fresh R.currentReg R.freshCurrent _
+  · intro ir hir
+    exact Nat.lt_succ_of_lt (R.freshCurrent ir hir)
+
+open Quanta.KOps (vU32) in
+/-- `local.get i` preservation. Stage 3: source = currentReg-then-localReg.
+    Lowering allocates a fresh register, emits Copy from the source,
+    pushes the fresh reg. WASM pushes `locals[i]`. -/
 theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout) (R : Refines ws s kst layout)
     (i : Nat)
@@ -959,84 +1106,66 @@ theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
              Option.bind_eq_bind, Option.bind, pure] at hw
   match hloc : ws.locals.get? i, hw with
   | some v, hw =>
-    simp only [lowerInstr, LowerState.lookupLocal, LowerState.alloc,
-               LowerState.push, Option.bind_eq_bind, Option.bind, pure,
-               h_no_buf] at hl
-    rcases hregfind : s.localReg.find? (fun p => p.fst = i) with _ | entry
-    · simp [hregfind] at hl
-    · simp [hregfind] at hl
+    -- Stage 3 lowering: source = (s.lookupCurrentReg i).orElse (s.lookupLocal i)
+    -- Then alloc fresh, push fresh, emit [.copy fresh source].
+    simp only [lowerInstr, LowerState.lookupLocal, LowerState.lookupCurrentReg,
+               LowerState.alloc, LowerState.push, Option.bind_eq_bind,
+               Option.bind, pure, h_no_buf] at hl
+    -- Resolve source via the orElse: either currentReg has (i, r_cur) or
+    -- localReg has (i, r_stable). If neither, hl reduces to none.
+    rcases hcurfind : s.currentReg.find? (fun p => p.fst = i) with _ | cur_entry
+    · -- currentReg miss → fall back to localReg.
+      simp [hcurfind, Option.orElse] at hl
+      rcases hregfind : s.localReg.find? (fun p => p.fst = i) with _ | entry
+      · simp [hregfind] at hl
+      · simp [hregfind] at hl
+        obtain ⟨hs_eq, hops_eq⟩ := hl
+        simp at hw
+        have hki : entry.fst = i := by
+          have := List.find?_some hregfind
+          simpa using this
+        have hfind' : s.localReg.find? (fun p => p.fst = i) = some (i, entry.snd) := by
+          rcases entry with ⟨ek, er⟩
+          simp at hki; subst hki
+          exact hregfind
+        have henc_local := R.locs i entry.snd hfind' v hloc
+        cases v with
+        | wI32 nv =>
+          simp only [WasmValue.encodes] at henc_local
+          refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
+                                  (Quanta.KOps.Value.vU32 nv) }, ?_, ?_⟩
+          · subst hops_eq
+            simp [evalOps, Quanta.KOps.evalOp, henc_local]
+          · subst hs_eq; subst hw
+            exact localGet_post_refines_via_localReg R hloc hfind' henc_local
+        | _ =>
+          unfold WasmValue.encodes at henc_local
+          exact henc_local.elim
+    · -- currentReg hit → source is cur_entry.snd.
+      simp [hcurfind, Option.orElse] at hl
       obtain ⟨hs_eq, hops_eq⟩ := hl
       simp at hw
-      have hki : entry.fst = i := by
-        have := List.find?_some hregfind
+      have hki : cur_entry.fst = i := by
+        have := List.find?_some hcurfind
         simpa using this
-      have hfind' : s.localReg.find? (fun p => p.fst = i) = some (i, entry.snd) := by
-        rcases entry with ⟨ek, er⟩
+      have hfind' : s.currentReg.find? (fun p => p.fst = i)
+                      = some (i, cur_entry.snd) := by
+        rcases cur_entry with ⟨ek, er⟩
         simp at hki; subst hki
-        exact hregfind
-      -- Local i must be `wI32 nv` (slice-1 encoding).
-      have henc_local := R.locs i entry.snd hfind' v hloc
+        exact hcurfind
+      have henc_cur := R.currentReg i cur_entry.snd hfind' v hloc
       cases v with
       | wI32 nv =>
-        simp only [WasmValue.encodes] at henc_local
-        -- henc_local : regLookup kst.rf entry.snd = some (Value.vU32 nv)
-        refine ⟨{ kst with rf := regWrite kst.rf s.nextReg (Quanta.KOps.Value.vU32 nv) }, ?_, ?_⟩
+        simp only [WasmValue.encodes] at henc_cur
+        refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
+                                (Quanta.KOps.Value.vU32 nv) }, ?_, ?_⟩
         · subst hops_eq
-          simp [evalOps, Quanta.KOps.evalOp, henc_local]
+          simp [evalOps, Quanta.KOps.evalOp, henc_cur]
         · subst hs_eq; subst hw
-          refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines⟩
-          · -- Stack refinement.
-            refine ⟨by simp [R.stk.left], ?_⟩
-            intro j vj hvj
-            cases j with
-            | zero =>
-              simp at hvj
-              refine ⟨SymVal.reg s.nextReg .u32, by simp, ?_⟩
-              subst hvj
-              simp [WasmValue.encodes]
-            | succ k =>
-              have hwsk : ws.stack.get? k = some vj := by simpa using hvj
-              obtain ⟨svk, hsvk, henc⟩ := R.stk.right k vj hwsk
-              refine ⟨svk, by simpa using hsvk, ?_⟩
-              have hsvk_in : svk ∈ s.stack := List.mem_of_get? hsvk
-              apply WasmValue.encodes_preserved_of_fresh _ henc
-              intro r' hr'_in
-              exact R.fresh.left svk hsvk_in r' hr'_in
-          · -- Locals refinement: regfile changed only at fresh reg.
-            intro k r hk_find vk hvk
-            have hpair : (k, r) ∈ s.localReg := List.mem_of_find?_eq_some hk_find
-            have hr_lt : r < s.nextReg := R.fresh.right (k, r) hpair
-            have henc' := R.locs k r hk_find vk hvk
-            apply WasmValue.encodes_preserved_of_fresh _ henc'
-            intro r' hr'_in
-            simp [SymVal.regs] at hr'_in
-            subst hr'_in; exact hr_lt
-          · -- Freshness: new top is .reg s.nextReg .u32; old refs ≤ s.nextReg.
-            refine ⟨?_, ?_⟩
-            · intro sv hsv r' hr'
-              simp at hsv
-              rcases hsv with h_eq | h_in
-              · subst h_eq
-                simp [SymVal.regs] at hr'
-                subst hr'; exact Nat.lt_succ_self _
-              · exact Nat.lt_succ_of_lt (R.fresh.left sv h_in r' hr')
-            · intro ir hir
-              exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
-          · -- AliasFree: localReg unchanged, new stack adds .reg s.nextReg .u32
-            -- whose regs = [s.nextReg], fresh ≠ any stable_reg.
-            intro ir hir sv hsv
-            have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
-            simp at hsv
-            rcases hsv with h_eq | h_in
-            · subst h_eq
-              simp [SymVal.regs]
-              exact Nat.ne_of_lt hir_lt
-            · exact R.aliasFree ir hir sv h_in
-          · -- InjectiveLocals: localReg unchanged.
-            exact R.injLocals
+          exact localGet_post_refines_via_currentReg R hloc hfind' henc_cur
       | _ =>
-        unfold WasmValue.encodes at henc_local
-        exact henc_local.elim
+        unfold WasmValue.encodes at henc_cur
+        exact henc_cur.elim
   | none, hw => simp [hloc] at hw
 
 /-- `local.get i` preservation for a buffer-typed local. The
