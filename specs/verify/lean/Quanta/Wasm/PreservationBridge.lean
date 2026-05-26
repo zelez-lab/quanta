@@ -3225,7 +3225,7 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                   exact _R_post
                 have R_at_cast : Refines ws0
                     { s1 with nextReg := s1.nextReg + 1 } kst_cast layout := by
-                  refine ⟨?_, ?_, ?_, ?_, R_at_s1.injLocals, R_at_s1.heapRefines⟩
+                  refine ⟨?_, ?_, ?_, ?_, R_at_s1.injLocals, R_at_s1.heapRefines, ?_, ?_⟩
                   · refine ⟨?_, ?_⟩
                     · show ws0.stack.length = s1.stack.length
                       exact R_at_s1.stk.left
@@ -3254,6 +3254,12 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                       exact Nat.lt_succ_of_lt (R_at_s1.fresh.right ir hir)
                   · intro ir hir sv hsv
                     exact R_at_s1.aliasFree ir hir sv hsv
+                  · -- CurrentRegRefines: s_cast.currentReg = s1.currentReg; lift past cast write.
+                    show CurrentRegRefines layout _ s1.currentReg _
+                    exact CurrentRegRefines_preserved_fresh R_at_s1.currentReg R_at_s1.freshCurrent _
+                  · -- FreshCurrent: s_cast.nextReg = s1.nextReg + 1; currentReg unchanged.
+                    intro ir hir
+                    exact Nat.lt_succ_of_lt (R_at_s1.freshCurrent ir hir)
                 -- Lifting helper: given Refines ws_target s_x kst_cast,
                 -- with s_x's stack = s_cast.stack, localReg = s_cast.localReg,
                 -- localTy = s_cast.localTy, bufferSlots = s_cast.bufferSlots,
@@ -3262,10 +3268,11 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                 have R_lift : ∀ (s_x : LowerState),
                     s_x.stack = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).stack →
                     s_x.localReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg →
+                    s_x.currentReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg →
                     ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).nextReg ≤ s_x.nextReg →
                     Refines ws0 s_x kst_cast layout := by
-                  intro s_x h_stk h_lr h_nr
-                  refine ⟨?_, ?_, ?_, ?_, ?_, R_at_cast.heapRefines, R_at_cast.currentReg, R_at_cast.freshCurrent⟩
+                  intro s_x h_stk h_lr h_cr h_nr
+                  refine ⟨?_, ?_, ?_, ?_, ?_, R_at_cast.heapRefines, ?_, ?_⟩
                   · refine ⟨?_, ?_⟩
                     · show ws0.stack.length = s_x.stack.length
                       rw [h_stk]; exact R_at_cast.stk.left
@@ -3307,6 +3314,16 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                         ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := by
                       rw [← h_lr]; exact hq
                     exact R_at_cast.injLocals p q hp_cast hq_cast
+                  · -- currentReg: s_x.currentReg = s_cast.currentReg (h_cr).
+                    show CurrentRegRefines layout ws0.locals s_x.currentReg kst_cast.rf
+                    rw [h_cr]
+                    exact R_at_cast.currentReg
+                  · -- freshCurrent: ir.snd < s_cast.nextReg ≤ s_x.nextReg.
+                    intro ir hir
+                    have hir_cast : ir ∈
+                        ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg := by
+                      rw [← h_cr]; exact hir
+                    exact Nat.lt_of_lt_of_le (R_at_cast.freshCurrent ir hir_cast) h_nr
                 -- Combined preservation facts for s3 (relative to s_cast).
                 have h_s3_stack_cast :
                     s3.stack = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).stack := by
@@ -3328,7 +3345,7 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                     -- s2 has localReg = s_cast.localReg (from then_lowering),
                     -- stack = s_cast.stack, nextReg ≥ s_cast.nextReg. Lift R_at_cast.
                     have R_at_s2 : Refines ws0 s2 kst_cast layout := by
-                      apply R_lift s2 h_s2_stack h_s2_lr h_s2_nr
+                      apply R_lift s2 h_s2_stack h_s2_lr h_s2_cr h_s2_nr
                     obtain ⟨kst_ab, F_b, h_ev_b, R_b, h_bridge_b⟩ :=
                       else_preserves R_at_s2 h_ws0_nb h_ws0_nh h_kst_cast_broke
                         h_eb hle
@@ -3401,7 +3418,7 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                     -- R_b is at s2. Lift to s3 via else_lowering_preserves
                     -- (same reg-frame except bumped nextReg, same stack/locals).
                     have R_b_at_s3 : Refines ws_ab s3 kst_ab layout := by
-                      refine ⟨?_, ?_, ?_, ?_, ?_, R_b.heapRefines⟩
+                      refine ⟨?_, ?_, ?_, ?_, ?_, R_b.heapRefines, ?_, ?_⟩
                       · refine ⟨?_, ?_⟩
                         · show ws_ab.stack.length = s3.stack.length
                           rw [h_s3_stack]
@@ -3431,6 +3448,13 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                         have hp_s2 : p ∈ s2.localReg := by rw [← h_s3_lr]; exact hp
                         have hq_s2 : q ∈ s2.localReg := by rw [← h_s3_lr]; exact hq
                         exact R_b.injLocals p q hp_s2 hq_s2
+                      · -- currentReg: s3.currentReg = s2.currentReg (h_s3_cr)
+                        show CurrentRegRefines layout ws_ab.locals s3.currentReg kst_ab.rf
+                        rw [h_s3_cr]
+                        exact R_b.currentReg
+                      · intro r hr
+                        rw [h_s3_cr] at hr
+                        exact Nat.lt_of_lt_of_le (R_b.freshCurrent r hr) h_s3_nr
                     obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
                       post_preserves R_b_at_s3 h_ab_nb h_ab_nh h_ab_broke hw hlp
                     -- IR composition.
@@ -3897,7 +3921,7 @@ theorem preservation_evalInstrs_cons_wloop_singleIterExit
           have R_ab_reset :
               Refines ws_after_body s1 kst_after_body.reset_broke layout := by
             refine ⟨R_b.stk, R_b.locs, R_b.fresh, R_b.aliasFree,
-                    R_b.injLocals, R_b.heapRefines⟩
+                    R_b.injLocals, R_b.heapRefines, R_b.currentReg, R_b.freshCurrent⟩
           have h_reset_broke : kst_after_body.reset_broke.broke = false := by
             simp [Quanta.KOps.State.reset_broke]
           obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
@@ -4029,6 +4053,7 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit
     -- Lowering-only structural invariants for body.
     (h_body_lowering : s1.localReg = s.localReg ∧ s1.localTy = s.localTy ∧
                        s1.stack = s.stack ∧ s1.bufferSlots = s.bufferSlots ∧
+                       s1.currentReg = s.currentReg ∧
                        s.nextReg ≤ s1.nextReg)
     -- Fuel constraints: bt ≥ n + 2 (iterLoop needs n+1 continues +
     -- exit; opLoop needs n + 2 iter check + body runs).
@@ -4046,12 +4071,14 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit
   simp only [Option.bind_eq_bind, Option.some_bind] at hl
   rw [h_lb] at hl
   simp only [Option.some_bind] at hl
-  obtain ⟨h_lr, h_lt, h_stk_eq, h_bs, h_nr⟩ := h_body_lowering
+  obtain ⟨h_lr, h_lt, h_stk_eq, h_bs, h_cr, h_nr⟩ := h_body_lowering
   have h_s1_restored_eq :
-      ({ s1 with localReg := s.localReg, localTy := s.localTy } : LowerState) = s1 := by
+      ({ s1 with localReg := s.localReg, localTy := s.localTy,
+                 currentReg := s.currentReg } : LowerState) = s1 := by
     have h_lr_eq : s.localReg = s1.localReg := h_lr.symm
     have h_lt_eq : s.localTy = s1.localTy := h_lt.symm
-    rw [h_lr_eq, h_lt_eq]
+    have h_cr_eq : s.currentReg = s1.currentReg := h_cr.symm
+    rw [h_lr_eq, h_lt_eq, h_cr_eq]
   rw [h_s1_restored_eq] at hl
   rw [h_lp] at hl
   simp only [Option.some_bind, Option.some.injEq, Prod.mk.injEq, pure] at hl
@@ -4085,7 +4112,7 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit
   have R_reset : Refines (wasmBodyOuts (Fin.last n)) s1
                           (kstStates (Fin.last (n + 1))).reset_broke layout := by
     refine ⟨R_exit.stk, R_exit.locs, R_exit.fresh, R_exit.aliasFree,
-            R_exit.injLocals, R_exit.heapRefines⟩
+            R_exit.injLocals, R_exit.heapRefines, R_exit.currentReg, R_exit.freshCurrent⟩
   have h_reset_nbk : ((kstStates (Fin.last (n + 1))).reset_broke).broke = false := by
     simp [Quanta.KOps.State.reset_broke]
   -- Establish hw_post = evalInstrs bt (wasmBodyOuts last) post = some ws'.
