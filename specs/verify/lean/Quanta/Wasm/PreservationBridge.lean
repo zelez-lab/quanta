@@ -4144,11 +4144,13 @@ theorem const0_brIf0_lowering_preserves
               [.i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
     s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
     s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+    s'_b.currentReg = s_b.currentReg ∧
     s_b.nextReg ≤ s'_b.nextReg := by
   -- Simp the lowering all the way down. The dispatch for i32Const goes
   -- through the default `_` arm; brIf 0 at .loopK :: frames takes the
   -- depth=0 path. popSym + commit + alloc + recurse-on-[] all reduce.
-  -- frames.get? 0 reduces explicitly.
+  -- frames.get? 0 reduces explicitly. Stage 3: brIf doesn't touch
+  -- currentReg, so the new clause is rfl.
   have h_get0 : (FrameKind.loopK :: frames).get? 0 = some .loopK := rfl
   simp only [lowerInstrs, lowerInstr, LowerState.popSym, LowerState.commit,
              LowerState.alloc, Option.bind_eq_bind, Option.some_bind, pure,
@@ -4156,7 +4158,8 @@ theorem const0_brIf0_lowering_preserves
              h_get0, ↓reduceIte, if_true] at h_lb
   obtain ⟨h_s_eq, _⟩ := h_lb
   subst h_s_eq
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
+  · rfl
   · rfl
   · rfl
   · rfl
@@ -5137,6 +5140,7 @@ theorem nop_const0_brIf0_lowering_preserves
               [.nop, .i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
     s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
     s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+    s'_b.currentReg = s_b.currentReg ∧
     s_b.nextReg ≤ s'_b.nextReg := by
   -- Peel the nop step — it lowers to (s_b, []) so the rest reduces
   -- directly to lowerInstrs on [.i32Const 0, .brIf 0] from s_b.
@@ -5407,6 +5411,7 @@ theorem irEmptyPrefix_const0_brIf0_lowering_preserves
               (pref ++ [.i32Const 0, .brIf 0]) = some (s'_b, bodyOps)) :
     s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
     s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+    s'_b.currentReg = s_b.currentReg ∧
     s_b.nextReg ≤ s'_b.nextReg :=
   const0_brIf0_lowering_preserves frames
     (peel_irEmptyPrefix_lowering (.loopK :: frames) h_prefix h_lb)
