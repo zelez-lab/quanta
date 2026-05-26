@@ -2785,9 +2785,9 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                   -- Same kst_cast as R_at_cast — no regfile change.
                   -- s2 differs from s_cast only in (possibly) nextReg
                   -- and bufferSlots, but bufferSlots is preserved by
-                  -- then_lowering_preserves; stack/localReg/localTy
-                  -- also preserved. Constructor-by-constructor lift.
-                  refine ⟨?_, ?_, ?_, ?_, ?_, R_at_cast.heapRefines, R_at_cast.currentReg, R_at_cast.freshCurrent⟩
+                  -- then_lowering_preserves; stack/localReg/localTy/
+                  -- currentReg also preserved. Constructor-by-constructor lift.
+                  refine ⟨?_, ?_, ?_, ?_, ?_, R_at_cast.heapRefines, ?_, ?_⟩
                   · refine ⟨?_, ?_⟩
                     · show ws0.stack.length = s2.stack.length
                       rw [h_s2_stack_eq_s1]
@@ -2851,6 +2851,16 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                           from h_s2_lr.symm]
                       exact hq
                     exact R_at_cast.injLocals p q hp_cast hq_cast
+                  · -- CurrentRegRefines: s2.currentReg = s_cast.currentReg (from h_s2_cr).
+                    show CurrentRegRefines layout ws0.locals s2.currentReg kst_cast.rf
+                    rw [h_s2_cr]
+                    exact R_at_cast.currentReg
+                  · -- FreshCurrent: s2.currentReg = s_cast.currentReg, s_cast.nextReg ≤ s2.nextReg.
+                    intro ir hir
+                    rw [h_s2_cr] at hir
+                    have := R_at_cast.freshCurrent ir hir
+                    show ir.snd < s2.nextReg
+                    exact Nat.lt_of_lt_of_le this h_s2_nr
                 obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
                   post_preserves R_at_s2 h_ws0_nb h_ws0_nh h_kst_cast_broke hw hlp
                 -- IR composition: opsCommit (→ kst1) + cast (→ kst_cast) +
