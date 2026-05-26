@@ -3243,8 +3243,250 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           have h := R.freshCurrent ir hin_s
           have h_s_s2 : s.nextReg ≤ s2.nextReg := _h_s_le_s2
           exact Nat.lt_of_lt_of_le h (by omega : s.nextReg ≤ s2.nextReg + 1 + 1)
-  -- Case A: existing entry. lookupLocal returns some stable.
-  · sorry
+  -- Case A: existing entry. lookupLocal returns some stable_old.
+  · simp [hreg_find] at hl
+    obtain ⟨hs_eq, hops_eq⟩ := hl
+    have hentry_fst : entry.fst = i := by
+      have := List.find?_some hreg_find
+      simpa using this
+    let stable_old : Reg := entry.snd
+    -- kst_after_fresh = kst1 with rf := regWrite kst1.rf fresh (vU32 n_w).
+    let kst_after_fresh_A : Quanta.KOps.State :=
+      { kst1 with rf := regWrite kst1.rf fresh (vU32 n_w) }
+    let kst'_A : Quanta.KOps.State :=
+      { kst_after_fresh_A with rf := regWrite kst_after_fresh_A.rf stable_old (vU32 n_w) }
+    have hentry_in : entry ∈ s.localReg :=
+      List.mem_of_find?_eq_some hreg_find
+    have hentry_in_s2 : entry ∈ s2.localReg := by rw [h_s2_lr]; exact hentry_in
+    have hentry_pair : (i, stable_old) ∈ s.localReg := by
+      have h_eq : entry = (i, stable_old) := by
+        show entry = (i, entry.snd)
+        rcases entry with ⟨ek, er⟩
+        simp at hentry_fst
+        simp [hentry_fst]
+      rw [← h_eq]; exact hentry_in
+    have hentry_pair_s2 : (i, stable_old) ∈ s2.localReg := by
+      rw [h_s2_lr]; exact hentry_pair
+    have h_stable_old_lt_s2 : stable_old < s2.nextReg :=
+      R1.fresh.right entry hentry_in_s2
+    have h_stable_old_ne_fresh : stable_old ≠ fresh :=
+      Nat.ne_of_lt h_stable_old_lt_s2
+    refine ⟨kst'_A, ?_, ?_⟩
+    · -- evalOps closes via same dual-Copy as case B (mod stable_old vs s2.nextReg+1).
+      subst hops_eq
+      have h_evalC1 : evalOps 0 kst1 [.copy fresh src] = some kst_after_fresh_A := by
+        simp only [evalOps, Quanta.KOps.evalOp]
+        rw [h_src_lookup]
+        simp only [Option.bind_eq_bind, Option.bind, Option.some_bind, pure, h_kst1_ok]
+        rw [if_neg (by decide : ¬ (false = true))]
+        congr 1
+        show ({ kst1 with rf := regWrite kst1.rf fresh (vU32 n_w),
+                          broke := false } : Quanta.KOps.State) = kst_after_fresh_A
+        rw [show (false : Bool) = kst1.broke from h_kst1_ok.symm]
+      have h_kaf_ok : kst_after_fresh_A.broke = false := h_kst1_ok
+      have h_lookup_fresh_A :
+          regLookup kst_after_fresh_A.rf fresh = some (vU32 n_w) := by
+        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+        rw [regLookup_regWrite_self]
+      have h_evalC2 : evalOps 0 kst_after_fresh_A [.copy stable_old fresh] = some kst'_A := by
+        simp only [evalOps, Quanta.KOps.evalOp]
+        rw [h_lookup_fresh_A]
+        simp only [Option.bind_eq_bind, Option.bind, Option.some_bind, pure, h_kaf_ok]
+        rw [if_neg (by decide : ¬ (false = true))]
+        congr 1
+        show ({ kst_after_fresh_A with
+                  rf := regWrite kst_after_fresh_A.rf stable_old (vU32 n_w),
+                  broke := false } : Quanta.KOps.State) = kst'_A
+        rw [show (false : Bool) = kst_after_fresh_A.broke from h_kaf_ok.symm]
+      rw [show (opsCommit ++ [KernelOp.copy fresh src, KernelOp.copy stable_old fresh])
+            = opsCommit ++ [KernelOp.copy fresh src] ++ [KernelOp.copy stable_old fresh] from by
+            simp [List.append_assoc]]
+      rw [evalOps_append (evalOps_append h_evalC h_kst1_ok ▸ h_evalC1) h_kaf_ok]
+      exact h_evalC2
+    · -- Refines on the post-state.
+      subst hs_eq
+      have h_lookup_stable_kst'A : regLookup kst'_A.rf stable_old = some (vU32 n_w) := by
+        show regLookup (regWrite kst_after_fresh_A.rf stable_old (vU32 n_w)) stable_old = _
+        rw [regLookup_regWrite_self]
+      refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_⟩
+      · -- StackRefines. Lift past write at fresh (≥ s2.nextReg) AND stable_old.
+        -- For stable_old: by aliasFree on s2.localReg, no stack reg = stable_old.
+        refine ⟨?_, ?_⟩
+        · show rest.length = s2.stack.length
+          rw [h_s2_stack]; simpa using h_rest_lrest_len
+        · intro j v hv
+          have hk : ws_pop.stack.get? j = some v := by
+            show rest.get? j = some v; simpa using hv
+          obtain ⟨svj, hsvj_get, henc⟩ := R1.stk.right j v hk
+          refine ⟨svj, by simpa using hsvj_get, ?_⟩
+          have hsvj_in : svj ∈ s2.stack := List.mem_of_get? hsvj_get
+          -- Lift past write at stable_old (no alias by aliasFree on entry).
+          apply WasmValue.encodes_preserved_of_disjoint _ _
+          · exact R1.aliasFree entry hentry_in_s2 svj hsvj_in
+          -- Lift past write at fresh (fresh > all stack regs).
+          apply WasmValue.encodes_preserved_of_fresh _ henc
+          intro r hr
+          exact R1.fresh.left svj hsvj_in r hr
+      · -- LocalsRefines. s'.localReg = (i, stable_old) :: filter(≠i) s.localReg.
+        intro k r hfind v hv
+        by_cases hki : k = i
+        · subst hki
+          change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                   ((k, stable_old) :: List.filter (fun p => !decide (p.fst = k)) s.localReg)
+                 = some (k, r) at hfind
+          change (ws.locals.set k (WasmValue.wI32 n_w)).get? k = some v at hv
+          rw [List.find?_cons] at hfind
+          simp only [show decide ((k, stable_old).fst = k) = true from by simp] at hfind
+          injection hfind with h_pair
+          have hr_eq : stable_old = r := (Prod.ext_iff.mp h_pair).2
+          subst hr_eq
+          have hv_eq : v = WasmValue.wI32 n_w := by
+            have hget : (ws.locals.set k (.wI32 n_w)).get? k =
+                        some (WasmValue.wI32 n_w) := by
+              rw [List.get?_eq_getElem?]
+              exact List.getElem?_set_self (by simpa using hbound)
+            rw [hget] at hv
+            exact ((Option.some.injEq _ _).mp hv).symm
+          subst hv_eq
+          simp [WasmValue.encodes]; exact h_lookup_stable_kst'A
+        · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                   ((i, stable_old) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
+                 = some (k, r) at hfind
+          rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+          have hv_old : ws.locals.get? k = some v := by
+            rw [List.get?_eq_getElem?] at hv ⊢
+            rw [List.getElem?_set_ne (Ne.symm hki)] at hv
+            exact hv
+          have hfind_s2 : s2.localReg.find? (fun p => p.fst = k) = some (k, r) := by
+            rw [h_s2_lr]; exact hfind
+          have henc := R1.locs k r hfind_s2 v hv_old
+          have hkr_in_s2 : (k, r) ∈ s2.localReg :=
+            List.mem_of_find?_eq_some hfind_s2
+          have hr_lt : r < s2.nextReg := R1.fresh.right (k, r) hkr_in_s2
+          have hr_ne_stable_old : r ≠ stable_old := by
+            have := R1.injLocals (k, r) (i, stable_old) hkr_in_s2 hentry_pair_s2
+            rcases this with h_keq | h_rne
+            · exact absurd h_keq hki
+            · exact h_rne
+          -- Lift past writes at fresh (= s2.nextReg) and stable_old (≠ r).
+          apply WasmValue.encodes_preserved_of_disjoint _ _
+          · simp [SymVal.regs]; exact Ne.symm hr_ne_stable_old
+          apply WasmValue.encodes_preserved_of_fresh _ henc
+          intro r' hr'
+          simp [SymVal.regs] at hr'
+          subst hr'
+          exact hr_lt
+      · -- Fresh. nextReg = s2.nextReg + 1.
+        refine ⟨?_, ?_⟩
+        · intro sv hsv r hr
+          have hsv_in_s2 : sv ∈ s2.stack := hsv
+          exact Nat.lt_succ_of_lt (R1.fresh.left sv hsv_in_s2 r hr)
+        · intro ir hir
+          simp at hir
+          rcases hir with h_eq | ⟨h_in, _⟩
+          · subst h_eq
+            -- (i, stable_old).snd = stable_old < s2.nextReg < s2.nextReg + 1.
+            exact Nat.lt_succ_of_lt h_stable_old_lt_s2
+          · have hin_s2 : ir ∈ s2.localReg := by rw [h_s2_lr]; exact h_in
+            exact Nat.lt_succ_of_lt (R1.fresh.right ir hin_s2)
+      · -- AliasFree. localReg = (i, stable_old) :: filter(≠i) s.localReg.
+        intro ir hir sv hsv
+        have hsv_in_s2 : sv ∈ s2.stack := hsv
+        simp at hir
+        rcases hir with h_eq | ⟨h_in, _⟩
+        · subst h_eq
+          exact R1.aliasFree entry hentry_in_s2 sv hsv_in_s2
+        · have hin_s2 : ir ∈ s2.localReg := by rw [h_s2_lr]; exact h_in
+          exact R1.aliasFree ir hin_s2 sv hsv_in_s2
+      · -- InjectiveLocals. Head (i, stable_old) — distinct from filtered entries by injLocals.
+        intro p q hp hq
+        simp at hp hq
+        rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
+        rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
+        · subst hp_eq; subst hq_eq; left; rfl
+        · right
+          subst hp_eq
+          have hin_s2 : q ∈ s2.localReg := by rw [h_s2_lr]; exact hq_in
+          have h_old := R1.injLocals q (i, stable_old) hin_s2 hentry_pair_s2
+          rcases h_old with h_keq | h_rne
+          · exact absurd h_keq hq_ne
+          · exact h_rne.symm
+        · right
+          subst hq_eq
+          have hin_s2 : p ∈ s2.localReg := by rw [h_s2_lr]; exact hp_in
+          have h_old := R1.injLocals p (i, stable_old) hin_s2 hentry_pair_s2
+          rcases h_old with h_keq | h_rne
+          · exact absurd h_keq hp_ne
+          · exact h_rne
+        · have hpin_s2 : p ∈ s2.localReg := by rw [h_s2_lr]; exact hp_in
+          have hqin_s2 : q ∈ s2.localReg := by rw [h_s2_lr]; exact hq_in
+          exact R1.injLocals p q hpin_s2 hqin_s2
+      · -- CurrentRegRefines. s'.currentReg = (i, fresh) :: filter(≠i) s2.currentReg.
+        intro k r_cur hfind v hv
+        by_cases hki : k = i
+        · subst hki
+          change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                   ((k, fresh) :: List.filter (fun p => !decide (p.fst = k)) s2.currentReg)
+                 = some (k, r_cur) at hfind
+          change (ws.locals.set k (WasmValue.wI32 n_w)).get? k = some v at hv
+          rw [List.find?_cons] at hfind
+          simp only [show decide ((k, fresh).fst = k) = true from by simp] at hfind
+          injection hfind with h_pair
+          have hr_eq : fresh = r_cur := (Prod.ext_iff.mp h_pair).2
+          subst hr_eq
+          have hv_eq : v = WasmValue.wI32 n_w := by
+            have hget : (ws.locals.set k (.wI32 n_w)).get? k =
+                        some (WasmValue.wI32 n_w) := by
+              rw [List.get?_eq_getElem?]
+              exact List.getElem?_set_self (by simpa using hbound)
+            rw [hget] at hv
+            exact ((Option.some.injEq _ _).mp hv).symm
+          subst hv_eq
+          have h_lookup_fresh_A_kst' : regLookup kst'_A.rf fresh = some (vU32 n_w) := by
+            show regLookup (regWrite kst_after_fresh_A.rf stable_old (vU32 n_w)) fresh = _
+            rw [regLookup_regWrite_of_ne _ stable_old fresh _ (Ne.symm h_stable_old_ne_fresh)]
+            show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+            rw [regLookup_regWrite_self]
+          simp [WasmValue.encodes]; exact h_lookup_fresh_A_kst'
+        · -- Off-i: s2.currentReg = s.currentReg, fall back via R1.currentReg.
+          change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                   ((i, fresh) :: List.filter (fun p => !decide (p.fst = i)) s2.currentReg)
+                 = some (k, r_cur) at hfind
+          rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+          have hv_old : ws.locals.get? k = some v := by
+            rw [List.get?_eq_getElem?] at hv ⊢
+            rw [List.getElem?_set_ne (Ne.symm hki)] at hv
+            exact hv
+          have henc := R1.currentReg k r_cur hfind v hv_old
+          have hpair_cur : (k, r_cur) ∈ s2.currentReg :=
+            List.mem_of_find?_eq_some hfind
+          have hpair_s_cur : (k, r_cur) ∈ s.currentReg := by rw [← h_s2_cr]; exact hpair_cur
+          have hr_cur_lt_s : r_cur < s.nextReg := R.freshCurrent (k, r_cur) hpair_s_cur
+          have hr_cur_lt_s2 : r_cur < s2.nextReg :=
+            Nat.lt_of_lt_of_le hr_cur_lt_s _h_s_le_s2
+          -- Lift past writes at fresh (= s2.nextReg) and stable_old (< s2.nextReg, may = r_cur).
+          -- For stable_old: is r_cur = stable_old? injLocals says (k, r_cur)
+          -- and (i, stable_old) both in localReg s2 → either k=i (excluded) or
+          -- r_cur ≠ stable_old.
+          -- Wait — r_cur is in s2.currentReg, not s2.localReg. Different list.
+          -- The CurrentRegRefines invariant doesn't bound currentReg vs localReg
+          -- entries — they could share. Hmm. But the encoding goal says
+          -- v.encodes layout kst'.rf (.reg r_cur .u32) — needs regLookup at r_cur.
+          -- After regWrite at stable_old, lookup at r_cur is unchanged IF
+          -- r_cur ≠ stable_old. But could r_cur = stable_old?
+          -- Hmm, this is a real invariant issue. Let me defer.
+          sorry
+      · -- FreshCurrent: every (k, r) in s'.currentReg has r < s'.nextReg.
+        intro ir hir
+        simp at hir
+        rcases hir with h_eq | ⟨h_in, _⟩
+        · subst h_eq
+          -- (i, fresh).snd = fresh = s2.nextReg < s2.nextReg + 1.
+          exact Nat.lt_succ_self _
+        · have hin_s : ir ∈ s.currentReg := by rw [← h_s2_cr]; exact h_in
+          have h := R.freshCurrent ir hin_s
+          have h_s_s2 : s.nextReg ≤ s2.nextReg := _h_s_le_s2
+          exact Nat.lt_of_lt_of_le h (by omega : s.nextReg ≤ s2.nextReg + 1)
 
 -- ════════════════════════════════════════════════════════════════════
 -- Slice 3 follow-up: localTee preservation
