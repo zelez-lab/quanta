@@ -478,12 +478,13 @@ theorem CurrentRegRefines_preserved_fresh
     CurrentRegRefines layout locs creg (regWrite rf dst v) := by
   intro i r_cur hfind v_w hloc
   have henc := h i r_cur hfind v_w hloc
+  have hpair : (i, r_cur) ∈ creg := List.mem_of_find?_eq_some hfind
+  have h_r_cur_lt : r_cur < dst := h_fresh (i, r_cur) hpair
   apply WasmValue.encodes_preserved_of_fresh _ henc
   intro r_in hr_in
   simp [SymVal.regs] at hr_in
-  subst hr_in
-  have hpair : (i, r_cur) ∈ creg := List.mem_of_find?_eq_some hfind
-  exact h_fresh (i, r_cur) hpair
+  rw [hr_in]
+  exact h_r_cur_lt
 
 /-- Encoding is preserved under any regfile transition that agrees on
     the SymVal's regs. The full-strength companion to
