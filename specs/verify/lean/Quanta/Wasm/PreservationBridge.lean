@@ -2570,7 +2570,8 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
       ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
       ws'_b.mem = ws_b.mem ∧
       s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
-      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots)
+      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+      s'_b.currentReg = s_b.currentReg)
     -- Lowering-only structural invariants (no eval dependency).
     -- Needed for the c=0 case where eval doesn't run thenBody, but
     -- the lowering output s2's shape still matters for the post-state
@@ -2915,7 +2916,7 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                     then_preserves R_at_cast h_ws0_nb h_ws0_nh h_kst_cast_broke
                       h_eb hlt
                   obtain ⟨h_ab_nb, h_ab_nh, h_ab_locals, h_ab_stack, h_ab_mem,
-                          h_s2_lr, h_s2_lt, h_s2_stack, h_s2_bs⟩ :=
+                          h_s2_lr, h_s2_lt, h_s2_stack, h_s2_bs, h_s2_cr⟩ :=
                     then_falls_through R_at_cast h_ws0_nb h_ws0_nh h_kst_cast_broke
                       h_eb hlt
                   rw [h_ab_nb] at hw
@@ -2923,17 +2924,21 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                   -- hw: evalInstrs bt ws_ab post = some ws'.
                   have h_ab_broke : kst_ab.broke = false := h_bridge_b.right h_ab_nb
                   -- Build Refines ws_ab { s2 with localReg := s1.localReg,
-                  --   localTy := s1.localTy } kst_ab layout. From R_b and
-                  -- then_falls_through, s2.localReg = s_cast.localReg = s1.localReg,
-                  -- so the restored state equals s2. Refines lifts directly.
+                  --   localTy := s1.localTy, currentReg := s1.currentReg } kst_ab
+                  -- layout. From R_b and then_falls_through, s2.localReg/localTy/
+                  -- currentReg = s_cast.* = s1.*, so the restored state equals s2.
+                  -- Refines lifts directly.
                   have h_s2_restored_eq :
                       ({ s2 with localReg := s1.localReg,
-                                  localTy := s1.localTy } : LowerState) = s2 := by
+                                  localTy := s1.localTy,
+                                  currentReg := s1.currentReg } : LowerState) = s2 := by
                     have h_lr_eq : s1.localReg =
                         ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := rfl
                     have h_lt_eq : s1.localTy =
                         ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy := rfl
-                    rw [h_lr_eq, h_lt_eq, ← h_s2_lr, ← h_s2_lt]
+                    have h_cr_eq : s1.currentReg =
+                        ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg := rfl
+                    rw [h_lr_eq, h_lt_eq, h_cr_eq, ← h_s2_lr, ← h_s2_lt, ← h_s2_cr]
                   rw [h_s2_restored_eq] at hlp
                   obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
                     post_preserves R_b h_ab_nb h_ab_nh h_ab_broke hw hlp
@@ -3037,11 +3042,13 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
       ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
       ws'_b.mem = ws_b.mem ∧
       s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
-      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots)
+      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+      s'_b.currentReg = s_b.currentReg)
     (then_lowering_preserves : ∀ {s_b s'_b : LowerState} {bodyOps : List KernelOp},
         lowerInstrs bt (.wif :: frames) s_b thenBody = some (s'_b, bodyOps) →
         s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
         s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+        s'_b.currentReg = s_b.currentReg ∧
         s_b.nextReg ≤ s'_b.nextReg)
     (else_preserves : ∀ {ws_b : WasmState} {s_b : LowerState}
         {kst_b : Quanta.KOps.State}
@@ -3069,11 +3076,13 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
       ws'_b.locals = ws_b.locals ∧ ws'_b.stack = ws_b.stack ∧
       ws'_b.mem = ws_b.mem ∧
       s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
-      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots)
+      s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+      s'_b.currentReg = s_b.currentReg)
     (else_lowering_preserves : ∀ {s_b s'_b : LowerState} {bodyOps : List KernelOp},
         lowerInstrs bt (.wif :: frames) s_b elseBody = some (s'_b, bodyOps) →
         s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
         s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
+        s'_b.currentReg = s_b.currentReg ∧
         s_b.nextReg ≤ s'_b.nextReg)
     (post_preserves : ∀ {ws_p : WasmState} {s_p : LowerState}
         {kst_p : Quanta.KOps.State}
@@ -3120,17 +3129,20 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
         -- on s2, the restore is idempotent on those fields (s2.localReg already
         -- equals s_cast.localReg). The restored state thus equals s2.
         -- Case on elseBody's lowering.
-        obtain ⟨h_s2_lr, h_s2_lt, h_s2_stack, h_s2_bs, h_s2_nr⟩ :=
+        obtain ⟨h_s2_lr, h_s2_lt, h_s2_stack, h_s2_bs, h_s2_cr, h_s2_nr⟩ :=
           then_lowering_preserves hlt
         have h_s2_restored_eq :
             ({ s2 with localReg := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg,
-                       localTy  := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy } : LowerState)
+                       localTy  := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy,
+                       currentReg := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg } : LowerState)
             = s2 := by
           have h_lr_eq : ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg = s2.localReg :=
             h_s2_lr.symm
           have h_lt_eq : ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy = s2.localTy :=
             h_s2_lt.symm
-          rw [h_lr_eq, h_lt_eq]
+          have h_cr_eq : ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg = s2.currentReg :=
+            h_s2_cr.symm
+          rw [h_lr_eq, h_lt_eq, h_cr_eq]
         rw [h_s2_restored_eq] at hl
         cases hle : lowerInstrs bt (.wif :: frames) s2 elseBody with
         | none => simp [hle] at hl
@@ -3138,18 +3150,21 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
           rcases else_pair with ⟨s3, elseOps⟩
           simp [hle] at hl
           -- After elseBody, restore again to s_cast snapshot.
-          obtain ⟨h_s3_lr, h_s3_lt, h_s3_stack, h_s3_bs, h_s3_nr⟩ :=
+          obtain ⟨h_s3_lr, h_s3_lt, h_s3_stack, h_s3_bs, h_s3_cr, h_s3_nr⟩ :=
             else_lowering_preserves hle
           -- s3.localReg = s2.localReg = s_cast.localReg, so the restore is idempotent.
           have h_s3_restored_eq :
               ({ s3 with localReg := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg,
-                         localTy  := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy } : LowerState)
+                         localTy  := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy,
+                         currentReg := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg } : LowerState)
               = s3 := by
             have h_s3_lr_s1 : s3.localReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg := by
               rw [h_s3_lr, h_s2_lr]
             have h_s3_lt_s1 : s3.localTy = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy := by
               rw [h_s3_lt, h_s2_lt]
-            rw [← h_s3_lr_s1, ← h_s3_lt_s1]
+            have h_s3_cr_s1 : s3.currentReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg := by
+              rw [h_s3_cr, h_s2_cr]
+            rw [← h_s3_lr_s1, ← h_s3_lt_s1, ← h_s3_cr_s1]
           rw [h_s3_restored_eq] at hl
           cases hlp : lowerInstrs bt frames s3 post with
           | none => simp [hlp] at hl
