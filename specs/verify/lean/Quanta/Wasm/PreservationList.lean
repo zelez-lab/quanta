@@ -494,9 +494,15 @@ theorem preservation_evalInstrs_cons_i32Const
       simp [ws_mid, WasmState.push, s_mid, LowerState.pushSym]
       exact R.currentReg
     · -- FreshCurrent: nextReg unchanged; currentReg unchanged.
+      -- s_mid = s.pushSym ... preserves both nextReg and currentReg,
+      -- so FreshCurrent s_mid ↔ FreshCurrent s.
       show FreshCurrent s_mid
-      simp [s_mid, LowerState.pushSym, FreshCurrent]
-      exact R.freshCurrent
+      have h_nr : s_mid.nextReg = s.nextReg := by simp [s_mid, LowerState.pushSym]
+      have h_cr : s_mid.currentReg = s.currentReg := by simp [s_mid, LowerState.pushSym]
+      intro ir hir
+      rw [h_cr] at hir
+      rw [h_nr]
+      exact R.freshCurrent ir hir
   have h_no_branch_mid : ws_mid.branchTarget = none := by
     simp [ws_mid, WasmState.push, h_no_branch]
   have h_no_halt_mid : ws_mid.halted = false := by
