@@ -226,12 +226,20 @@ def CurrentRegRefines (layout : BufferLayout)
 /-- Freshness invariant: every register the lowering currently holds
     (any reg referenced by any stack SymVal, plus every local stable
     reg) is strictly less than `nextReg`. The currentReg map's
-    freshness is implied by allocating fresh per-set above `nextReg`,
-    so it's not tracked explicitly here (see `Fresh_currentReg`
-    helper for the corollary). -/
+    freshness is captured separately by `FreshCurrent` (Stage 3)
+    so the existing `.left / .right` projections on Fresh remain
+    stable across the refactor. -/
 def Fresh (s : LowerState) : Prop :=
   (∀ sv ∈ s.stack, ∀ r ∈ sv.regs, r < s.nextReg) ∧
   (∀ ir ∈ s.localReg, ir.snd < s.nextReg)
+
+/-- Stage 3 freshness clause for `currentReg`: every per-frame
+    current-binding register is strictly less than `nextReg`.
+    Stored as a separate field of `Refines` (the 8th field, after
+    currentReg) so the existing `Fresh` projections remain
+    backward-compatible. -/
+def FreshCurrent (s : LowerState) : Prop :=
+  ∀ ir ∈ s.currentReg, ir.snd < s.nextReg
 
 /-- Alias-free invariant: no local's stable register appears anywhere
     in the symbolic stack's reg projection. The Lean translator's
@@ -256,39 +264,25 @@ def InjectiveLocals (s : LowerState) : Prop :=
 /-- Bundle. The `layout : BufferLayout` parameter is the shared side-
     channel that relates WASM linear memory to the KOps heap; each
     theorem fixes `layout` across input and output (the layout is
-    static in the lowered program). -/
+    static in the lowered program).
+
+    Stage 3 integration: `currentReg` is the 7th field. Stage 1+2
+    added the field to `LowerState` and the `CurrentRegRefines`
+    predicate; Stage 3 binds them into the main `Refines` bundle
+    because `localGet` now consults `currentReg` first (so its
+    correctness depends on the per-frame current binding's encoding).
+    Frame-entry states have `currentReg = []`, satisfying the
+    invariant trivially. -/
 structure Refines (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
                   (layout : BufferLayout) : Prop where
-  stk         : StackRefines layout ws.stack s.stack kst.rf
-  locs        : LocalsRefines layout ws.locals s.localReg kst.rf
-  fresh       : Fresh s
-  aliasFree   : AliasFree s
-  injLocals   : InjectiveLocals s
-  heapRefines : HeapRefines ws.mem kst.heap layout
-
-/-- Optional companion invariant for `Refines` in states that have
-    active `currentReg` entries (i.e. inside a structured-control
-    frame post-localSet/Tee). Carried separately so existing closed
-    theorems' 6-field `Refines` constructor shape stays unchanged.
-
-    The cons_wif / cons_wloop proofs (and the bridging invariant)
-    will pair `Refines ws s kst layout` with this predicate when
-    they need to reason about the per-frame current binding.
-
-    For frame-entry states with `currentReg = []`, this is
-    vacuously true. -/
-def WithCurrentRefines (layout : BufferLayout)
-    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State) : Prop :=
-  CurrentRegRefines layout ws.locals s.currentReg kst.rf
-
-/-- Empty `currentReg` trivially satisfies `WithCurrentRefines`. -/
-theorem WithCurrentRefines_of_empty
-    {layout : BufferLayout} {ws : WasmState} {s : LowerState}
-    {kst : Quanta.KOps.State} (h : s.currentReg = []) :
-    WithCurrentRefines layout ws s kst := by
-  intro i r hfind
-  rw [h] at hfind
-  simp at hfind
+  stk          : StackRefines layout ws.stack s.stack kst.rf
+  locs         : LocalsRefines layout ws.locals s.localReg kst.rf
+  fresh        : Fresh s
+  aliasFree    : AliasFree s
+  injLocals    : InjectiveLocals s
+  heapRefines  : HeapRefines ws.mem kst.heap layout
+  currentReg   : CurrentRegRefines layout ws.locals s.currentReg kst.rf
+  freshCurrent : FreshCurrent s
 
 -- ════════════════════════════════════════════════════════════════════
 -- evalOps composition lemma
@@ -470,6 +464,27 @@ theorem WasmValue.encodes_preserved_of_disjoint
     rw [regLookup_regWrite_of_ne rf dst base newval hb_ne]
     exact h_lookup
 
+/-- Lift `CurrentRegRefines` past a fresh regWrite at `r` when
+    `r` is above every register currently bound in `currentReg`.
+    Mirrors `LocalsRefines_preserved_fresh`'s pattern for the
+    stable-reg map. Used after `alloc` + `regWrite` in proofs where
+    the new state's `kst.rf` differs from the old by a single
+    write at a fresh register. -/
+theorem CurrentRegRefines_preserved_fresh
+    {layout : BufferLayout} {locs : List WasmValue}
+    {creg : List (Nat × Reg)} {rf : Quanta.KOps.RegFile}
+    (h : CurrentRegRefines layout locs creg rf)
+    {r : Reg} (h_fresh : ∀ ir ∈ creg, ir.snd < r) (v : Quanta.KOps.Value) :
+    CurrentRegRefines layout locs creg (regWrite rf r v) := by
+  intro i r' hfind v' hloc
+  have henc := h i r' hfind v' hloc
+  apply WasmValue.encodes_preserved_of_fresh _ henc
+  intro r'' hr''_in
+  simp [SymVal.regs] at hr''_in
+  subst hr''_in
+  have hpair : (i, r') ∈ creg := List.mem_of_find?_eq_some hfind
+  exact h_fresh _ hpair
+
 /-- Encoding is preserved under any regfile transition that agrees on
     the SymVal's regs. The full-strength companion to
     `encodes_preserved_of_fresh` / `encodes_preserved_of_disjoint`,
@@ -599,7 +614,7 @@ theorem commit_correct
     · subst hops
       simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst]
     · subst hs'
-      refine ⟨?_, ?_, ?_, R.aliasFree, R.injLocals, R.heapRefines⟩
+      refine ⟨?_, ?_, ?_, R.aliasFree, R.injLocals, R.heapRefines, ?_, ?_⟩
       · -- StackRefines: stack unchanged; lift each entry past the fresh write.
         refine ⟨R.stk.left, ?_⟩
         intro i v hv
@@ -624,6 +639,11 @@ theorem commit_correct
           exact Nat.lt_succ_of_lt (R.fresh.left sv' hsv' r'' hr'')
         · intro ir hir
           exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
+      · -- CurrentRegRefines: currentReg unchanged; lift past fresh write.
+        exact CurrentRegRefines_preserved_fresh R.currentReg R.freshCurrent _
+      · -- FreshCurrent: nextReg bumps by 1; currentReg unchanged.
+        intro ir hir
+        exact Nat.lt_succ_of_lt (R.freshCurrent ir hir)
     · -- v_w encodes via .reg s.nextReg .u32 in the new regfile.
       subst hr
       have hv_eq := WasmValue.encodes_i32ConstSym_inv h_enc
