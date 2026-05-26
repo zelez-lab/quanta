@@ -474,16 +474,16 @@ theorem CurrentRegRefines_preserved_fresh
     {layout : BufferLayout} {locs : List WasmValue}
     {creg : List (Nat × Reg)} {rf : Quanta.KOps.RegFile}
     (h : CurrentRegRefines layout locs creg rf)
-    {r : Reg} (h_fresh : ∀ ir ∈ creg, ir.snd < r) (v : Quanta.KOps.Value) :
-    CurrentRegRefines layout locs creg (regWrite rf r v) := by
-  intro i r' hfind v' hloc
-  have henc := h i r' hfind v' hloc
+    {dst : Reg} (h_fresh : ∀ ir ∈ creg, ir.snd < dst) (v : Quanta.KOps.Value) :
+    CurrentRegRefines layout locs creg (regWrite rf dst v) := by
+  intro i r_cur hfind v_w hloc
+  have henc := h i r_cur hfind v_w hloc
   apply WasmValue.encodes_preserved_of_fresh _ henc
-  intro r'' hr''_in
-  simp [SymVal.regs] at hr''_in
-  subst hr''_in
-  have hpair : (i, r') ∈ creg := List.mem_of_find?_eq_some hfind
-  exact h_fresh _ hpair
+  intro r_in hr_in
+  simp [SymVal.regs] at hr_in
+  subst hr_in
+  have hpair : (i, r_cur) ∈ creg := List.mem_of_find?_eq_some hfind
+  exact h_fresh (i, r_cur) hpair
 
 /-- Encoding is preserved under any regfile transition that agrees on
     the SymVal's regs. The full-strength companion to
