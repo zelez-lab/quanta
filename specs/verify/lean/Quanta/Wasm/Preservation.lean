@@ -2873,15 +2873,15 @@ def preservation_i32GeU :=
 
 open Quanta.KOps (vU32) in
 /-- `local.set i` preservation. Stage 3 dual-Copy emission:
-    `opsCommit ++ [.copy fresh src, .copy stable fresh]`.
+    `opsCommit ++ [.copy fresh src, .copy stable fresh]` plus
+    `setCurrentReg i fresh`.
 
-    Note (Stage 3 placeholder): this proof was structured around the
-    OLD single-Copy lowering. The Translate.lean refactor changed
-    localSet to emit dual-Copy + setCurrentReg, which invalidates
-    the proof body's kst' construction (single regWrite) and the
-    associated Refines fields. Closing this properly requires a
-    full rewrite (~300 LoC) — tracked as Stage 3 phase 2.5,
-    deferred behind sorry to unblock downstream cascade. -/
+    Proof structure: commit (via commit_correct) materializes the
+    popped SymVal into `src`. The two Copy ops compose into two
+    regWrites: at `fresh` (= s2.nextReg) and at `stable` (the
+    local's merge anchor — either reused or freshly allocated).
+    The post-state Refines tracks both writes via repeated
+    encodes_preserved_of_fresh / _of_disjoint lifts. -/
 theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
     (i : Nat)
@@ -2889,7 +2889,159 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     (hw : evalInstr ws (.localSet i) = some ws')
     (hl : lowerInstr s (.localSet i) = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  sorry
+  -- WASM side: pop v_w from ws.stack, then setLocal i v_w.
+  simp only [evalInstr, WasmState.pop,
+             Option.bind_eq_bind, Option.bind, pure] at hw
+  rcases hws_stack : ws.stack with _ | ⟨v_w, rest⟩
+  · simp [hws_stack] at hw
+  simp only [hws_stack, WasmState.setLocal] at hw
+  by_cases hbound : i < List.length ws.locals
+  case neg => simp [if_neg hbound] at hw
+  simp only [if_pos hbound] at hw
+  have hws'_eq : ws' = { locals := ws.locals.set i v_w, stack := rest,
+                          mem := ws.mem, halted := ws.halted,
+                          branchTarget := ws.branchTarget } :=
+    ((Option.some.injEq _ _).mp hw).symm
+  subst hws'_eq
+  -- Lean side: popSym first (always succeeds for non-empty stack), then commit.
+  unfold lowerInstr at hl
+  rcases hls_stack : s.stack with _ | ⟨sva, lrest⟩
+  · simp [hls_stack, LowerState.popSym] at hl
+  simp only [hls_stack, LowerState.popSym, Option.bind_eq_bind, Option.some_bind] at hl
+  rcases hca : ({s with stack := lrest} : LowerState).commit sva
+      with _ | ⟨src, s2, opsCommit⟩
+  · simp [hca] at hl
+  simp only [hca, Option.some_bind] at hl
+  -- v_w must be wI32 (encoded on stack).
+  have hv_enc : v_w.encodes layout kst.rf sva := by
+    have hb := R.stk.right 0 v_w (by rw [hws_stack]; simp)
+    obtain ⟨sv0, hsv0_get, henc⟩ := hb
+    have hs0 : s.stack.get? 0 = some sva := by rw [hls_stack]; simp
+    rw [hs0] at hsv0_get
+    have h_eq : sva = sv0 := (Option.some.injEq _ _).mp hsv0_get
+    rw [h_eq]; exact henc
+  obtain ⟨n_w, hv_w_eq⟩ : ∃ n_w, v_w = WasmValue.wI32 n_w := by
+    cases v_w with
+    | wI32 n_w => exact ⟨n_w, rfl⟩
+    | wI64 _ => cases sva <;> simp [WasmValue.encodes] at hv_enc
+    | wF32 _ => cases sva <;> simp [WasmValue.encodes] at hv_enc
+    | wF64 _ => cases sva <;> simp [WasmValue.encodes] at hv_enc
+  subst hv_w_eq
+  -- sva is on s.stack, its regs are < s.nextReg.
+  have h_sva_in : sva ∈ s.stack := by rw [hls_stack]; simp
+  have h_sva_lt : ∀ r ∈ sva.regs, r < s.nextReg :=
+    fun r hr => R.fresh.left sva h_sva_in r hr
+  -- Build R_pop : Refines for the popped state.
+  have h_rest_lrest_len : rest.length = lrest.length := by
+    have hl_orig := R.stk.left
+    rw [hws_stack, hls_stack] at hl_orig
+    simpa using hl_orig
+  let s_pop : LowerState :=
+    { nextReg := s.nextReg, stack := lrest,
+      localReg := s.localReg, localTy := s.localTy,
+      bufferSlots := s.bufferSlots, currentReg := s.currentReg }
+  let ws_pop : WasmState := { ws with stack := rest }
+  have R_pop : Refines ws_pop s_pop kst layout := by
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals,
+            R.heapRefines, R.currentReg, R.freshCurrent⟩
+    · intro k v hv
+      have hrest_get : ws.stack.get? (k + 1) = some v := by
+        rw [hws_stack]; simpa using hv
+      obtain ⟨svk, hsvk_get, henc⟩ := R.stk.right (k + 1) v hrest_get
+      have hlrest_get : lrest.get? k = some svk := by
+        have h2 : s.stack.get? (k + 1) = some svk := hsvk_get
+        rw [hls_stack] at h2; simpa using h2
+      exact ⟨svk, by simpa using hlrest_get, henc⟩
+    · refine ⟨?_, R.fresh.right⟩
+      intro sv hsv r hr
+      have hsv_in : sv ∈ s.stack := by
+        rw [hls_stack]; exact List.mem_cons_of_mem _ hsv
+      exact R.fresh.left sv hsv_in r hr
+    · intro ir hir sv hsv
+      have hsv_in : sv ∈ s.stack := by
+        rw [hls_stack]; exact List.mem_cons_of_mem _ hsv
+      exact R.aliasFree ir hir sv hsv_in
+  -- commit gives us src + Refines on s2.
+  obtain ⟨kst1, h_evalC, R1, h_enc_src1, h_lookupC, _h_s_le_s2, h_src_lt_s2⟩ :=
+    commit_correct R_pop h_sva_lt hca hv_enc
+  have h_kst1_ok : kst1.broke = false := by
+    rw [commit_preserves_broke hca h_evalC]; exact h_kst_ok
+  have h_src_lookup : regLookup kst1.rf src = some (Quanta.KOps.Value.vU32 n_w) :=
+    h_enc_src1
+  have h_s2_lr : s2.localReg = s.localReg := (commit_preserves_locals hca).1
+  have h_s2_lt : s2.localTy  = s.localTy  := (commit_preserves_locals hca).2
+  have h_s2_stack : s2.stack = lrest := commit_preserves_stack hca
+  have h_s2_cr : s2.currentReg = s.currentReg := by
+    have h := commit_preserves_currentReg hca
+    -- h : s2.currentReg = ({s with stack := lrest}).currentReg = s.currentReg
+    exact h
+  -- Now branch on lookupLocal of s3 := { s2 with nextReg := s2.nextReg + 1 } (post-alloc fresh).
+  -- alloc returns (s2.nextReg, { s2 with nextReg := s2.nextReg + 1 }).
+  -- lookupLocal s3 i looks at s3.localReg = s2.localReg = s.localReg.
+  simp only [LowerState.lookupLocal, LowerState.lookupLocalTy, LowerState.alloc,
+             LowerState.setLocalReg, LowerState.setCurrentReg,
+             Option.bind_eq_bind, Option.bind, pure] at hl
+  rw [h_s2_lt, h_s2_lr] at hl
+  -- The fresh reg is `s2.nextReg`. The dual-Copy ops are
+  --   [.copy s2.nextReg src, .copy stable s2.nextReg]
+  -- evaluated against kst1 → kst_after_fresh → kst'.
+  let fresh : Reg := s2.nextReg
+  -- Encoding of source value at kst1's regWrite-progressed regfile.
+  -- After .copy fresh src, the regfile has fresh ↦ vU32 n_w. After
+  -- .copy stable fresh, also stable ↦ vU32 n_w.
+  rcases hreg_find : s.localReg.find? (fun p => p.fst = i) with _ | entry
+  -- Case B: first write, allocate new stable too. lookupLocal returns none.
+  · simp [hreg_find] at hl
+    obtain ⟨hs_eq, hops_eq⟩ := hl
+    -- stable = s2.nextReg + 1 (allocated after fresh).
+    let stable : Reg := s2.nextReg + 1
+    -- kst_after_fresh = kst1 with rf := regWrite kst1.rf fresh (vU32 n_w).
+    let kst_after_fresh : Quanta.KOps.State :=
+      { kst1 with rf := regWrite kst1.rf fresh (vU32 n_w) }
+    -- kst' = kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (vU32 n_w).
+    let kst' : Quanta.KOps.State :=
+      { kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (vU32 n_w) }
+    refine ⟨kst', ?_, ?_⟩
+    · -- evalOps 0 kst (opsCommit ++ [.copy fresh src, .copy stable fresh]) = some kst'.
+      subst hops_eq
+      -- Step 1: evalOps over opsCommit gives kst1 (h_evalC).
+      -- Step 2: evalOps over [.copy fresh src] from kst1 gives kst_after_fresh.
+      have h_evalC1 : evalOps 0 kst1 [.copy fresh src] = some kst_after_fresh := by
+        simp only [evalOps, Quanta.KOps.evalOp]
+        rw [h_src_lookup]
+        simp only [Option.bind_eq_bind, Option.bind, Option.some_bind, pure, h_kst1_ok]
+        rw [if_neg (by decide : ¬ (false = true))]
+        congr 1
+        show ({ kst1 with rf := regWrite kst1.rf fresh (vU32 n_w),
+                          broke := false } : Quanta.KOps.State) = kst_after_fresh
+        rw [show (false : Bool) = kst1.broke from h_kst1_ok.symm]
+      have h_kaf_ok : kst_after_fresh.broke = false := h_kst1_ok
+      -- Step 3: evalOps over [.copy stable fresh] from kst_after_fresh gives kst'.
+      have h_lookup_fresh :
+          regLookup kst_after_fresh.rf fresh = some (vU32 n_w) := by
+        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+        rw [regLookup_regWrite_self]
+      have h_evalC2 : evalOps 0 kst_after_fresh [.copy stable fresh] = some kst' := by
+        simp only [evalOps, Quanta.KOps.evalOp]
+        rw [h_lookup_fresh]
+        simp only [Option.bind_eq_bind, Option.bind, Option.some_bind, pure, h_kaf_ok]
+        rw [if_neg (by decide : ¬ (false = true))]
+        congr 1
+        show ({ kst_after_fresh with
+                  rf := regWrite kst_after_fresh.rf stable (vU32 n_w),
+                  broke := false } : Quanta.KOps.State) = kst'
+        rw [show (false : Bool) = kst_after_fresh.broke from h_kaf_ok.symm]
+      -- Compose: evalOps 0 kst (opsCommit ++ [copy fresh src, copy stable fresh]) = kst'.
+      rw [show (opsCommit ++ [KernelOp.copy fresh src, KernelOp.copy stable fresh])
+            = opsCommit ++ [KernelOp.copy fresh src] ++ [KernelOp.copy stable fresh] from by
+            simp [List.append_assoc]]
+      rw [evalOps_append (evalOps_append h_evalC h_kst1_ok ▸ h_evalC1) h_kaf_ok]
+      exact h_evalC2
+    · -- Refines ws' s' kst' layout.
+      subst hs_eq
+      sorry
+  -- Case A: existing entry. lookupLocal returns some stable.
+  · sorry
 
 -- ════════════════════════════════════════════════════════════════════
 -- Slice 3 follow-up: localTee preservation
