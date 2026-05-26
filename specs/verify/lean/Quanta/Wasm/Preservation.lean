@@ -2736,7 +2736,7 @@ theorem preservation_i32Cmp_generic
         WasmValue.encodes_preserved_of_fresh
           (fun r hr => Nat.lt_succ_of_lt (h_lt r hr))
           (WasmValue.encodes_preserved_of_fresh h_lt henc)
-    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines, ?_, ?_⟩
     · -- StackRefines on (wI32 (if p_w av bv then 1 else 0) :: rest, .reg (s4.nextReg+1) .u32 :: lrest).
       refine ⟨?_, ?_⟩
       · simp; exact h_rest_lrest_len
@@ -2803,6 +2803,26 @@ theorem preservation_i32Cmp_generic
       intro p q hp hq
       rw [← h_s4_lr] at hp hq
       exact R2.injLocals p q hp hq
+    · -- CurrentRegRefines: s4.currentReg = s.currentReg (commits
+      -- preserve), then lift past TWO fresh writes (at s4.nextReg
+      -- and s4.nextReg + 1).
+      have h_s4_cur : s4.currentReg = s.currentReg := by
+        rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
+      have h_lift1 := CurrentRegRefines_preserved_fresh R2.currentReg
+        R2.freshCurrent (Quanta.KOps.Value.vBool (p_w av bv))
+      have h_freshCurrent_bump1 : ∀ ir ∈ s4.currentReg, ir.snd < s4.nextReg + 1 :=
+        fun ir hir => Nat.lt_succ_of_lt (R2.freshCurrent ir hir)
+      have h_lift2 := CurrentRegRefines_preserved_fresh h_lift1
+        h_freshCurrent_bump1 (Quanta.KOps.Value.vU32 (if p_w av bv then 1 else 0))
+      show CurrentRegRefines layout ws.locals s.currentReg _
+      rw [← h_s4_cur]
+      exact h_lift2
+    · -- FreshCurrent: nextReg bumps by 2; currentReg = s.currentReg.
+      intro ir hir
+      have h_s4_cur : s4.currentReg = s.currentReg := by
+        rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
+      rw [← h_s4_cur] at hir
+      exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R2.freshCurrent ir hir))
 
 -- ── Per-op specializations (6 cmps) ────────────────────────────────────
 
