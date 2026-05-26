@@ -3199,26 +3199,38 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           subst hv_eq
           simp [WasmValue.encodes]; exact h_lookup_fresh_kst'
         · -- Other indices fall back to filter — but s2.currentReg = s.currentReg.
-          rw [List.find?_cons] at hfind
-          simp only [show decide (((i, fresh) : Nat × Reg).fst = k) = false from by
-            simp [Ne.symm hki]] at hfind
-          rw [List.find?_filter] at hfind
-          have hfilter : k ≠ i := hki
-          -- Now hfind is in the filtered list. The original entry must exist in s2.currentReg.
-          have hfind_orig : s2.currentReg.find? (fun p => p.fst = k) = some (k, r_cur) := by
-            -- find?_filter ↦ find? l ∘ filter cond = find? (cond ∧ p) — but easier:
-            -- the filtered find returns the same when filter accepts k-entries.
-            -- An entry (k, r_cur) passes both `fst = k` and `¬fst = i` (since k ≠ i).
-            have := hfind
-            -- simp into a regular find?
-            simp [List.find?_filter] at this
-            -- this : s2.currentReg.find? (fun p => decide (p.fst = k) ∧ ...) = some
-            rcases hf : s2.currentReg.find? (fun p => p.fst = k) with _ | ⟨k', r'⟩
-            · -- No entry at all: find?_filter is also none, contradiction.
-              sorry
-            · -- Entry exists.
-              sorry
-          sorry
+          change List.find? (fun p : Nat × Reg => decide (p.fst = k))
+                   ((i, fresh) :: List.filter (fun p => !decide (p.fst = i)) s2.currentReg)
+                 = some (k, r_cur) at hfind
+          rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+          -- hfind : s2.currentReg.find? ... = some (k, r_cur)
+          have hv_old : ws.locals.get? k = some v := by
+            rw [List.get?_eq_getElem?] at hv ⊢
+            rw [List.getElem?_set_ne (Ne.symm hki)] at hv
+            exact hv
+          have henc := R1.currentReg k r_cur hfind v hv_old
+          -- R1.currentReg gives encodes against kst1.rf.
+          -- Need encodes against kst'.rf = regWrite (regWrite kst1.rf fresh _) stable _.
+          -- The reg `r_cur` was in s2.currentReg = s.currentReg, so its value is < s.nextReg.
+          have hpair : (k, r_cur) ∈ s2.currentReg :=
+            List.mem_of_find?_eq_some hfind
+          have hpair_s : (k, r_cur) ∈ s.currentReg := by rw [← h_s2_cr]; exact hpair
+          have hr_cur_lt_s : r_cur < s.nextReg := R.freshCurrent (k, r_cur) hpair_s
+          have hr_cur_lt_s2 : r_cur < s2.nextReg :=
+            Nat.lt_of_lt_of_le hr_cur_lt_s _h_s_le_s2
+          -- Lift past two fresh regWrites at fresh = s2.nextReg, stable = s2.nextReg + 1.
+          apply WasmValue.encodes_preserved_of_fresh _ _
+          · intro r' hr'
+            simp [SymVal.regs] at hr'
+            subst hr'
+            -- Goal: r_cur < stable = s2.nextReg + 1.
+            exact Nat.lt_of_lt_of_le hr_cur_lt_s2 h_stable_ge_s2
+          · apply WasmValue.encodes_preserved_of_fresh _ henc
+            intro r' hr'
+            simp [SymVal.regs] at hr'
+            subst hr'
+            -- Goal: r_cur < fresh = s2.nextReg.
+            exact hr_cur_lt_s2
       · -- FreshCurrent: every (i', r') in s'.currentReg has r' < s'.nextReg.
         intro ir hir
         simp at hir
