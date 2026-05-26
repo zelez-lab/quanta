@@ -1207,7 +1207,8 @@ theorem preservation_localGet_bufferSlot
     refine ⟨kst, ?_, ?_⟩
     · rw [← hops_eq]; simp [evalOps]
     · rw [← hs_eq]; subst hw
-      refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+      refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
+              R.currentReg, R.freshCurrent⟩
       · -- StackRefines: top = wI32 n encodes via .bufferPtr slot, tail by R.stk.
         refine ⟨by simp [R.stk.left], ?_⟩
         intro j vj hvj
@@ -1544,7 +1545,8 @@ theorem preservation_i32Bin_generic
   let ws_pop : WasmState :=
     { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
-    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines⟩
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
+            R.currentReg, R.freshCurrent⟩
     · -- StackRefines on the (rest, lrest) suffix — shift indices by 2 and reuse R.stk.
       intro i v hv
       have hrest_get : ws.stack.get? (i + 2) = some v := by
@@ -1610,7 +1612,7 @@ theorem preservation_i32Bin_generic
     simp [evalOps, Quanta.KOps.evalOp, h_lookup_ra, h_lookup_rb, h_agree, h_kst2_ok]
   · -- Refines ws' s' kst3 layout.
     subst hs_eq; subst hws_eq
-    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines, ?_, ?_⟩
     · -- StackRefines on (wI32 (op_w av bv) :: rest, .reg s4.nextReg .u32 :: lrest).
       refine ⟨?_, ?_⟩
       · -- Length.
@@ -1676,6 +1678,26 @@ theorem preservation_i32Bin_generic
       intro p q hp hq
       rw [← h_s4_lr] at hp hq
       exact R2.injLocals p q hp hq
+    · -- CurrentRegRefines: ws.locals unchanged (binop doesn't touch
+      -- locals); s'.currentReg = s.currentReg (commit preserves
+      -- currentReg, both commits). Lift R2.currentReg past the
+      -- fresh write at s4.nextReg.
+      have h_s4_cur : s4.currentReg = s.currentReg := by
+        rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
+      have h_lift := CurrentRegRefines_preserved_fresh R2.currentReg
+        R2.freshCurrent (vU32 (op_w av bv))
+      show CurrentRegRefines layout ws.locals s.currentReg
+            (regWrite kst2.rf s4.nextReg (vU32 (op_w av bv)))
+      rw [← h_s4_cur]
+      have h_locs_eq : ws.locals = ws_pop.locals := rfl
+      rw [h_locs_eq]
+      exact h_lift
+    · -- FreshCurrent: s'.nextReg = s4.nextReg + 1, s'.currentReg = s.currentReg.
+      intro ir hir
+      have h_s4_cur : s4.currentReg = s.currentReg := by
+        rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
+      rw [← h_s4_cur] at hir
+      exact Nat.lt_succ_of_lt (R2.freshCurrent ir hir)
 
 -- ── Per-op specializations (10 binops) ─────────────────────────────────
 --
