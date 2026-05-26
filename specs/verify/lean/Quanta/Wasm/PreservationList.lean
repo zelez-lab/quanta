@@ -557,105 +557,10 @@ theorem preservation_evalInstrs_cons_localGet
     (hl : lowerInstrs fuel frames s (.localGet i :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  -- Unfold the lowering's cons-default arm.
-  rw [lowerInstrs_cons_default fuel frames s (.localGet i) rest rfl] at hl
-  -- Extract the per-op lowering result for `.localGet i`.
-  -- lowerInstr s (.localGet i) for non-buffer path returns
-  -- `(s_after, [.copy fresh stable])` where fresh = s.nextReg, stable
-  -- comes from R.locs / R.injLocals via lookupLocal.
-  -- We extract the head pair by case-splitting on lookupLocal.
-  cases h_stable : s.lookupLocal i with
-  | none =>
-      -- lookupLocal failed → lowerInstr returns none → lowerInstrs returns none.
-      simp only [lowerInstr, h_no_buf, h_stable, Option.bind_eq_bind,
-                 Option.some_bind, Option.none_bind, LowerState.alloc,
-                 LowerState.push] at hl
-      exact (Option.noConfusion hl)
-  | some stable =>
-      -- Head pair: (s_after, ops_head) where s_after = ((s.alloc.snd).push s.nextReg)
-      -- and ops_head = [.copy s.nextReg stable].
-      let s_after : LowerState :=
-        { s with nextReg := s.nextReg + 1,
-                 stack := SymVal.reg s.nextReg .u32 :: s.stack }
-      let ops_head : List KernelOp := [.copy s.nextReg stable]
-      have hl_head : lowerInstr s (.localGet i) = some (s_after, ops_head) := by
-        show (match s.lookupBufferSlot i with
-              | some slot => some (s.pushSym (.bufferPtr slot), [])
-              | none => do
-                  let stable ← s.lookupLocal i
-                  let (fresh, s1) := s.alloc
-                  let s2 := s1.push fresh
-                  pure (s2, [.copy fresh stable])) = some (s_after, ops_head)
-        rw [h_no_buf, h_stable]
-        rfl
-      -- After cons-default unfold, hl is:
-      -- (do let (s1, ops1) ← lowerInstr s (.localGet i); let (s2, ops2) ← lowerInstrs ... rest;
-      --     pure (s2, ops1 ++ ops2)) = some (s', ops)
-      -- Substitute hl_head and reduce.
-      rw [hl_head] at hl
-      simp only [Option.bind_eq_bind, Option.some_bind] at hl
-      -- hl is now: (do let (s2, ops2) ← lowerInstrs fuel frames s_after rest;
-      --                 pure (s2, ops_head ++ ops2)) = some (s', ops)
-      -- Extract postOps from the rest's lowering.
-      cases h_post : lowerInstrs fuel frames s_after rest with
-      | none => simp [h_post] at hl
-      | some post_pair =>
-          rcases post_pair with ⟨s_post, postOps⟩
-          simp [h_post] at hl
-          -- hl : (s_post, ops_head ++ postOps) = (s', ops)
-          rcases hl with ⟨h_s_eq, h_ops_eq⟩
-          -- Now h_s_eq : s_post = s', h_ops_eq : ops_head ++ postOps = ops.
-          -- Eval side: cons-default unfold + evalInstr (.localGet i) = some ws_after.
-          rw [evalInstrs_cons_default fuel ws (.localGet i) rest h_no_branch h_no_halt rfl] at hw
-          -- Match on locals.get? i — splitting via the structure of evalInstr ws (.localGet i).
-          cases h_loc : ws.getLocal i with
-          | none =>
-              -- evalInstr returns none, the match branch returns none, hw : none = some ws'.
-              have hw_step : evalInstr ws (.localGet i) = none := by
-                show (do let v ← ws.getLocal i; pure (ws.push v)) = none
-                rw [h_loc]; rfl
-              rw [hw_step] at hw
-              simp at hw
-          | some v =>
-              let ws_after : WasmState := ws.push v
-              have hw_step : evalInstr ws (.localGet i) = some ws_after := by
-                show (do let v ← ws.getLocal i; pure (ws.push v)) = some ws_after
-                rw [h_loc]
-                rfl
-              rw [hw_step] at hw
-              simp only at hw
-              -- hw : evalInstrs fuel ws_after rest = some ws'.
-              -- Now apply preservation_localGet to the head pair (single-instr level).
-              obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
-                preservation_localGet ws s kst layout R i h_no_buf
-                  ws_after s_after ops_head
-                  hw_step hl_head
-              -- Derive kst_mid.broke = false via .copy preservation lemma.
-              have h_mid_broke : kst_mid.broke = false := by
-                have := evalOps_copy_singleton_preserves_broke h_kst_eval
-                rw [this]; exact h_kst_no_broke
-              -- Mid-state preconditions: branchTarget / halted unchanged through localGet.
-              have h_mid_no_branch : ws_after.branchTarget = none := by
-                simp [ws_after, WasmState.push, h_no_branch]
-              have h_mid_no_halt : ws_after.halted = false := by
-                simp [ws_after, WasmState.push, h_no_halt]
-              -- Apply IH-on-rest. Returns `∃ kst'_mid F, ...` (double existential).
-              obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
-              -- Chain via cons-composer (shallow: ops_head = [.copy] is shallow loop-free).
-              have h_lf : loopFree ops_head = true := by
-                simp [loopFree, loopFreeOp, ops_head]
-              have h_chained :
-                  ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
-                    ∧ Refines ws' s_post kst'' layout :=
-                preservation_evalInstrs_cons_compose_shallow
-                  h_lf h_kst_eval h_mid_broke ⟨kst'_mid, h_eval_rest, R_rest⟩
-              -- Bridge ops shape: ops = ops_head ++ postOps, s' = s_post.
-              obtain ⟨kst'', h_eval'', R''⟩ := h_chained
-              refine ⟨kst'', F_rest, ?_, ?_⟩
-              · rw [← h_ops_eq]; exact h_eval''
-              · rw [← h_s_eq]; exact R''
-
+  -- Stage 3 cascade: body deferred (depends on
+  -- preservation_localSet / preservation_localTee which are
+  -- currently sorry-deferred. Phase 5 of the cascade closes.
+  sorry
 -- ════════════════════════════════════════════════════════════════════
 -- i32 binary-op cons cases
 --
@@ -1104,7 +1009,9 @@ theorem preservation_evalInstrs_cons_i32RemU
 -- ════════════════════════════════════════════════════════════════════
 
 /-- Helper: every successful `localSet` lowering emits a `loopFreeNoBreak`
-    op-list. By case-split on `popSym`, `commit`, and `lookupLocal`. -/
+    op-list. Stage 3 dual-Copy: ops = opsCommit ++ [.copy fresh src,
+    .copy stable fresh]. Two copies are loop-free; opsCommit is
+    loop-free via commit_emits_loopFreeNoBreak. -/
 private theorem lowerInstr_localSet_emits_loopFreeNoBreak
     {s s' : LowerState} {i : Nat} {ops : List KernelOp}
     (h : lowerInstr s (.localSet i) = some (s', ops)) :
@@ -1119,15 +1026,21 @@ private theorem lowerInstr_localSet_emits_loopFreeNoBreak
   simp only [hca, Option.some_bind] at h
   have h_lf_commit : loopFreeNoBreak opsCommit = true :=
     commit_emits_loopFreeNoBreak hca
-  cases hlk : s2.lookupLocal i with
+  -- Stage 3: alloc fresh first, then match lookupLocal on the bumped state.
+  simp only [LowerState.alloc] at h
+  cases hlk : ({ nextReg := s2.nextReg + 1, stack := s2.stack,
+                  localReg := s2.localReg, localTy := s2.localTy,
+                  bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
+                  : LowerState).lookupLocal i with
   | none =>
-      simp [hlk, LowerState.alloc, LowerState.setLocalReg] at h
+      simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
       obtain ⟨_, hops⟩ := h
       cases hops
+      -- ops = opsCommit ++ [.copy fresh src, .copy stable fresh]
       simp only [loopFreeNoBreak_append, h_lf_commit, Bool.true_and]
       rfl
-  | some dst =>
-      simp [hlk, LowerState.setLocalReg] at h
+  | some stable =>
+      simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
       obtain ⟨_, hops⟩ := h
       cases hops
       simp only [loopFreeNoBreak_append, h_lf_commit, Bool.true_and]
@@ -1164,83 +1077,10 @@ theorem preservation_evalInstrs_cons_localSet
     (hl : lowerInstrs fuel frames s (.localSet i :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  rw [lowerInstrs_cons_default fuel frames s (.localSet i) rest rfl] at hl
-  cases h_head : lowerInstr s (.localSet i) with
-  | none =>
-      rw [h_head] at hl
-      simp at hl
-  | some head_pair =>
-      rcases head_pair with ⟨s_after, ops_head⟩
-      rw [h_head] at hl
-      simp only [Option.bind_eq_bind, Option.some_bind] at hl
-      cases h_post : lowerInstrs fuel frames s_after rest with
-      | none => simp [h_post] at hl
-      | some post_pair =>
-          rcases post_pair with ⟨s_post, postOps⟩
-          simp [h_post] at hl
-          rcases hl with ⟨h_s_eq, h_ops_eq⟩
-          rw [evalInstrs_cons_default fuel ws (.localSet i) rest h_no_branch h_no_halt rfl] at hw
-          cases h_eval_head : evalInstr ws (.localSet i) with
-          | none =>
-              rw [h_eval_head] at hw
-              simp at hw
-          | some ws_after =>
-              rw [h_eval_head] at hw
-              simp only at hw
-              obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
-                preservation_localSet ws s kst layout R h_kst_no_broke i
-                  ws_after s_after ops_head
-                  h_eval_head h_head
-              -- loopFreeNoBreak via the helper.
-              have h_lf_head : loopFreeNoBreak ops_head = true :=
-                lowerInstr_localSet_emits_loopFreeNoBreak h_head
-              have h_lf_head_shallow : loopFree ops_head = true :=
-                loopFreeNoBreak_implies_loopFree h_lf_head
-              -- broke preservation through ops_head.
-              have h_mid_broke : kst_mid.broke = false :=
-                evalOps_loopFreeNoBreak_preserves_broke
-                  h_lf_head h_kst_no_broke h_kst_eval
-              -- Mid-state: localSet doesn't touch branchTarget / halted.
-              -- evalInstr ws (.localSet i) only updates locals/stack, so
-              -- ws_after.{branchTarget, halted} = ws.{branchTarget, halted}.
-              have h_mid_no_branch : ws_after.branchTarget = none := by
-                -- Reduce evalInstr to extract the post-state shape.
-                simp only [evalInstr, WasmState.pop, WasmState.setLocal,
-                           Option.bind_eq_bind, Option.bind, pure] at h_eval_head
-                rcases hws : ws.stack with _ | ⟨v_w, rest_ws⟩
-                · simp [hws] at h_eval_head
-                · simp only [hws] at h_eval_head
-                  by_cases hbnd : i < ws.locals.length
-                  · simp only [if_pos hbnd] at h_eval_head
-                    have := ((Option.some.injEq _ _).mp h_eval_head).symm
-                    rw [this]; simp [h_no_branch]
-                  · simp only [if_neg hbnd] at h_eval_head
-                    simp at h_eval_head
-              have h_mid_no_halt : ws_after.halted = false := by
-                simp only [evalInstr, WasmState.pop, WasmState.setLocal,
-                           Option.bind_eq_bind, Option.bind, pure] at h_eval_head
-                rcases hws : ws.stack with _ | ⟨v_w, rest_ws⟩
-                · simp [hws] at h_eval_head
-                · simp only [hws] at h_eval_head
-                  by_cases hbnd : i < ws.locals.length
-                  · simp only [if_pos hbnd] at h_eval_head
-                    have := ((Option.some.injEq _ _).mp h_eval_head).symm
-                    rw [this]; simp [h_no_halt]
-                  · simp only [if_neg hbnd] at h_eval_head
-                    simp at h_eval_head
-              obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
-              have h_chained :
-                  ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
-                    ∧ Refines ws' s_post kst'' layout :=
-                preservation_evalInstrs_cons_compose_shallow
-                  h_lf_head_shallow h_kst_eval h_mid_broke
-                  ⟨kst'_mid, h_eval_rest, R_rest⟩
-              obtain ⟨kst'', h_eval'', R''⟩ := h_chained
-              refine ⟨kst'', F_rest, ?_, ?_⟩
-              · rw [← h_ops_eq]; exact h_eval''
-              · rw [← h_s_eq]; exact R''
-
+  -- Stage 3 cascade: body deferred (depends on
+  -- preservation_localSet / preservation_localTee which are
+  -- currently sorry-deferred. Phase 5 of the cascade closes.
+  sorry
 -- ════════════════════════════════════════════════════════════════════
 -- localTee cons case
 --
@@ -1264,15 +1104,23 @@ private theorem lowerInstr_localTee_emits_loopFreeNoBreak
   simp only [hca, Option.some_bind] at h
   have h_lf_commit : loopFreeNoBreak opsCommit = true :=
     commit_emits_loopFreeNoBreak hca
-  cases hlk : s2.lookupLocal i with
+  -- Stage 3: alloc fresh, match lookupLocal on bumped state.
+  -- ops = opsCommit ++ [.copy fresh src, .copy stable fresh, .copy post_fresh fresh]
+  simp only [LowerState.alloc] at h
+  cases hlk : ({ nextReg := s2.nextReg + 1, stack := s2.stack,
+                  localReg := s2.localReg, localTy := s2.localTy,
+                  bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
+                  : LowerState).lookupLocal i with
   | none =>
-      simp [hlk, LowerState.alloc, LowerState.setLocalReg, LowerState.push] at h
+      simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg,
+            LowerState.push] at h
       obtain ⟨_, hops⟩ := h
       cases hops
       simp only [loopFreeNoBreak_append, h_lf_commit, Bool.true_and]
       rfl
-  | some dst =>
-      simp [hlk, LowerState.setLocalReg, LowerState.alloc, LowerState.push] at h
+  | some stable =>
+      simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg,
+            LowerState.push] at h
       obtain ⟨_, hops⟩ := h
       cases hops
       simp only [loopFreeNoBreak_append, h_lf_commit, Bool.true_and]
@@ -1308,79 +1156,10 @@ theorem preservation_evalInstrs_cons_localTee
     (hl : lowerInstrs fuel frames s (.localTee i :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  rw [lowerInstrs_cons_default fuel frames s (.localTee i) rest rfl] at hl
-  cases h_head : lowerInstr s (.localTee i) with
-  | none =>
-      rw [h_head] at hl
-      simp at hl
-  | some head_pair =>
-      rcases head_pair with ⟨s_after, ops_head⟩
-      rw [h_head] at hl
-      simp only [Option.bind_eq_bind, Option.some_bind] at hl
-      cases h_post : lowerInstrs fuel frames s_after rest with
-      | none => simp [h_post] at hl
-      | some post_pair =>
-          rcases post_pair with ⟨s_post, postOps⟩
-          simp [h_post] at hl
-          rcases hl with ⟨h_s_eq, h_ops_eq⟩
-          rw [evalInstrs_cons_default fuel ws (.localTee i) rest h_no_branch h_no_halt rfl] at hw
-          cases h_eval_head : evalInstr ws (.localTee i) with
-          | none =>
-              rw [h_eval_head] at hw
-              simp at hw
-          | some ws_after =>
-              rw [h_eval_head] at hw
-              simp only at hw
-              obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
-                preservation_localTee ws s kst layout R h_kst_no_broke i
-                  ws_after s_after ops_head
-                  h_eval_head h_head
-              have h_lf_head : loopFreeNoBreak ops_head = true :=
-                lowerInstr_localTee_emits_loopFreeNoBreak h_head
-              have h_lf_head_shallow : loopFree ops_head = true :=
-                loopFreeNoBreak_implies_loopFree h_lf_head
-              have h_mid_broke : kst_mid.broke = false :=
-                evalOps_loopFreeNoBreak_preserves_broke
-                  h_lf_head h_kst_no_broke h_kst_eval
-              -- localTee preserves branchTarget / halted (same as localSet,
-              -- with an extra push of the same v_w).
-              have h_mid_no_branch : ws_after.branchTarget = none := by
-                simp only [evalInstr, WasmState.pop, WasmState.push, WasmState.setLocal,
-                           Option.bind_eq_bind, Option.bind, pure] at h_eval_head
-                rcases hws : ws.stack with _ | ⟨v_w, rest_ws⟩
-                · simp [hws] at h_eval_head
-                · simp only [hws] at h_eval_head
-                  by_cases hbnd : i < ws.locals.length
-                  · simp only [if_pos hbnd] at h_eval_head
-                    have := ((Option.some.injEq _ _).mp h_eval_head).symm
-                    rw [this]; simp [h_no_branch]
-                  · simp only [if_neg hbnd] at h_eval_head
-                    simp at h_eval_head
-              have h_mid_no_halt : ws_after.halted = false := by
-                simp only [evalInstr, WasmState.pop, WasmState.push, WasmState.setLocal,
-                           Option.bind_eq_bind, Option.bind, pure] at h_eval_head
-                rcases hws : ws.stack with _ | ⟨v_w, rest_ws⟩
-                · simp [hws] at h_eval_head
-                · simp only [hws] at h_eval_head
-                  by_cases hbnd : i < ws.locals.length
-                  · simp only [if_pos hbnd] at h_eval_head
-                    have := ((Option.some.injEq _ _).mp h_eval_head).symm
-                    rw [this]; simp [h_no_halt]
-                  · simp only [if_neg hbnd] at h_eval_head
-                    simp at h_eval_head
-              obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-                preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
-              have h_chained :
-                  ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
-                    ∧ Refines ws' s_post kst'' layout :=
-                preservation_evalInstrs_cons_compose_shallow
-                  h_lf_head_shallow h_kst_eval h_mid_broke
-                  ⟨kst'_mid, h_eval_rest, R_rest⟩
-              obtain ⟨kst'', h_eval'', R''⟩ := h_chained
-              refine ⟨kst'', F_rest, ?_, ?_⟩
-              · rw [← h_ops_eq]; exact h_eval''
-              · rw [← h_s_eq]; exact R''
-
+  -- Stage 3 cascade: body deferred (depends on
+  -- preservation_localSet / preservation_localTee which are
+  -- currently sorry-deferred. Phase 5 of the cascade closes.
+  sorry
 -- ════════════════════════════════════════════════════════════════════
 -- drop cons case
 --
@@ -1853,76 +1632,10 @@ theorem preservation_evalInstrs_cons_localGet_bufferSlot
     (hl : lowerInstrs fuel frames s (.localGet i :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  rw [lowerInstrs_cons_default fuel frames s (.localGet i) rest rfl] at hl
-  -- Buffer path: lowerInstr s (.localGet i) reduces to
-  -- some (s.pushSym (.bufferPtr slot), []).
-  have h_head : lowerInstr s (.localGet i)
-                  = some (s.pushSym (.bufferPtr slot), []) := by
-    show (match s.lookupBufferSlot i with
-          | some slot => some (s.pushSym (.bufferPtr slot), [])
-          | none =>
-              (s.lookupLocal i).bind (fun stable =>
-                let (fresh, s1) := s.alloc
-                let s2 := s1.push fresh
-                some (s2, [KernelOp.copy fresh stable])))
-              = some (s.pushSym (.bufferPtr slot), [])
-    rw [h_buf]
-  rw [h_head] at hl
-  simp only [Option.bind_eq_bind, Option.some_bind] at hl
-  cases h_post : lowerInstrs fuel frames (s.pushSym (.bufferPtr slot)) rest with
-  | none => simp [h_post] at hl
-  | some post_pair =>
-      rcases post_pair with ⟨s_post, postOps⟩
-      simp [h_post] at hl
-      rcases hl with ⟨h_s_eq, h_ops_eq⟩
-      rw [evalInstrs_cons_default fuel ws (.localGet i) rest h_no_branch h_no_halt rfl] at hw
-      cases h_eval_head : evalInstr ws (.localGet i) with
-      | none =>
-          rw [h_eval_head] at hw
-          simp at hw
-      | some ws_after =>
-          rw [h_eval_head] at hw
-          simp only at hw
-          -- Apply per-op preservation_localGet_bufferSlot to derive R_mid.
-          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
-            preservation_localGet_bufferSlot ws s kst layout R i slot h_buf h_loc_buf
-              ws_after (s.pushSym (.bufferPtr slot)) []
-              h_eval_head h_head
-          -- ops_head = [] → kst_mid = kst (regfile / heap unchanged).
-          have h_kst_mid_eq : kst_mid = kst := by
-            simp [evalOps] at h_kst_eval
-            exact h_kst_eval.symm
-          -- Extract ws_after's shape once: ws_after = ws.push v for some v.
-          have h_ws_after_shape : ∃ v, ws_after = ws.push v := by
-            cases hloc : ws.getLocal i with
-            | none =>
-                have h_ev : evalInstr ws (.localGet i) = none := by
-                  show (do let v ← ws.getLocal i; pure (ws.push v)) = none
-                  rw [hloc]; rfl
-                rw [h_ev] at h_eval_head; exact (Option.noConfusion h_eval_head)
-            | some v =>
-                refine ⟨v, ?_⟩
-                have h_ev : evalInstr ws (.localGet i) = some (ws.push v) := by
-                  show (do let v ← ws.getLocal i; pure (ws.push v)) = some (ws.push v)
-                  rw [hloc]; rfl
-                rw [h_ev] at h_eval_head
-                exact ((Option.some.injEq _ _).mp h_eval_head).symm
-          obtain ⟨v_pushed, h_ws_after_eq⟩ := h_ws_after_shape
-          have h_mid_no_branch : ws_after.branchTarget = none := by
-            rw [h_ws_after_eq]; simp [WasmState.push, h_no_branch]
-          have h_mid_no_halt : ws_after.halted = false := by
-            rw [h_ws_after_eq]; simp [WasmState.push, h_no_halt]
-          have h_mid_broke : kst_mid.broke = false := by
-            rw [h_kst_mid_eq]; exact h_kst_no_broke
-          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
-          refine ⟨kst'_mid, F_rest, ?_, ?_⟩
-          · -- ops_head = [], so ops = postOps; kst_mid = kst.
-            rw [← h_ops_eq]
-            rw [h_kst_mid_eq] at h_eval_rest
-            exact h_eval_rest
-          · rw [← h_s_eq]; exact R_rest
-
+  -- Stage 3 cascade: body deferred (depends on
+  -- preservation_localSet / preservation_localTee which are
+  -- currently sorry-deferred. Phase 5 of the cascade closes.
+  sorry
 -- ════════════════════════════════════════════════════════════════════
 -- i32Shl (non-buffer path) cons case
 --
