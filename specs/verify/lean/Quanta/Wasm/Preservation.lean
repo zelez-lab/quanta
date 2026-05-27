@@ -261,6 +261,25 @@ def AliasFree (s : LowerState) : Prop :=
 def InjectiveLocals (s : LowerState) : Prop :=
   ∀ p q, p ∈ s.localReg → q ∈ s.localReg → p.fst = q.fst ∨ p.snd ≠ q.snd
 
+/-- Stage 3 disjointness invariant: every register in `currentReg`
+    is distinct from every register in `localReg` for non-matching
+    indices. Concretely: a `currentReg` entry `(k, r_cur)` and a
+    `localReg` entry `(j, q)` with `k ≠ j` satisfy `r_cur ≠ q`.
+
+    Structural truth: the translator only ever adds to `currentReg`
+    via `setCurrentReg i fresh` immediately after `s.alloc`, so the
+    fresh register is strictly greater than every other live register
+    (including all stable_regs). Stable regs for OTHER locals were
+    allocated earlier with smaller indices.
+
+    For matching indices (k = j), the currentReg and localReg
+    registers MAY differ — currentReg holds the per-frame current
+    binding (fresh per localSet) while localReg holds the merge
+    anchor (allocated on first set, reused thereafter). -/
+def CurrentLocalDisjoint (s : LowerState) : Prop :=
+  ∀ (p : Nat × Reg) (q : Nat × Reg),
+    p ∈ s.currentReg → q ∈ s.localReg → p.fst ≠ q.fst → p.snd ≠ q.snd
+
 /-- Bundle. The `layout : BufferLayout` parameter is the shared side-
     channel that relates WASM linear memory to the KOps heap; each
     theorem fixes `layout` across input and output (the layout is
@@ -283,6 +302,7 @@ structure Refines (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
   heapRefines  : HeapRefines ws.mem kst.heap layout
   currentReg   : CurrentRegRefines layout ws.locals s.currentReg kst.rf
   freshCurrent : FreshCurrent s
+  curLocDisj   : CurrentLocalDisjoint s
 
 -- ════════════════════════════════════════════════════════════════════
 -- evalOps composition lemma
@@ -615,7 +635,7 @@ theorem commit_correct
     · subst hops
       simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst]
     · subst hs'
-      refine ⟨?_, ?_, ?_, R.aliasFree, R.injLocals, R.heapRefines, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, R.aliasFree, R.injLocals, R.heapRefines, ?_, ?_, R.curLocDisj⟩
       · -- StackRefines: stack unchanged; lift each entry past the fresh write.
         refine ⟨R.stk.left, ?_⟩
         intro i v hv
@@ -820,7 +840,7 @@ theorem preservation_return (ws : WasmState) (s : LowerState) (kst : Quanta.KOps
   · subst hops_eq
     simp [evalOps]
   · subst hs_eq
-    refine ⟨?_, ?_, R.fresh, R.aliasFree, R.injLocals, ?_, ?_, R.freshCurrent⟩
+    refine ⟨?_, ?_, R.fresh, R.aliasFree, R.injLocals, ?_, ?_, R.freshCurrent, R.curLocDisj⟩
     · have : ws'.stack = ws.stack := by rw [← hw]
       rw [this]; exact R.stk
     · have : ws'.locals = ws.locals := by rw [← hw]
@@ -867,7 +887,7 @@ theorem preservation_drop (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.S
       rw [hws_stack, hls_stack] at hl_orig
       simpa using hl_orig
     refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
-            R.currentReg, R.freshCurrent⟩
+            R.currentReg, R.freshCurrent, R.curLocDisj⟩
     · intro k v hv
       have hrest_get : ws.stack.get? (k + 1) = some v := by
         rw [hws_stack]; simpa using hv
@@ -911,7 +931,7 @@ theorem preservation_i32Const (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   refine ⟨kst, ?_, ?_⟩
   · subst hops_eq; simp [evalOps]
   · subst hw hs_eq
-    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, R.currentReg, R.freshCurrent⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, R.currentReg, R.freshCurrent, R.curLocDisj⟩
     · -- StackRefines: top is .i32ConstSym n encoding wI32 (UInt32.ofNat n.toNat);
       -- below entries are unchanged from the old stack with kst.rf unchanged.
       refine ⟨by simp [R.stk.left], ?_⟩
@@ -966,7 +986,7 @@ theorem localGet_post_refines_via_localReg
                                 (Quanta.KOps.Value.vU32 nv) }
             layout := by
   subst h_v_eq
-  refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_, R.curLocDisj⟩
   · -- StackRefines
     refine ⟨by simp [R.stk.left], ?_⟩
     intro j vj hvj
@@ -1042,7 +1062,7 @@ theorem localGet_post_refines_via_currentReg
                                 (Quanta.KOps.Value.vU32 nv) }
             layout := by
   subst h_v_eq
-  refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_, R.curLocDisj⟩
   · refine ⟨by simp [R.stk.left], ?_⟩
     intro j vj hvj
     cases j with
@@ -1208,7 +1228,7 @@ theorem preservation_localGet_bufferSlot
     · rw [← hops_eq]; simp [evalOps]
     · rw [← hs_eq]; subst hw
       refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
-              R.currentReg, R.freshCurrent⟩
+              R.currentReg, R.freshCurrent, R.curLocDisj⟩
       · -- StackRefines: top = wI32 n encodes via .bufferPtr slot, tail by R.stk.
         refine ⟨by simp [R.stk.left], ?_⟩
         intro j vj hvj
@@ -1546,7 +1566,7 @@ theorem preservation_i32Bin_generic
     { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
     refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
-            R.currentReg, R.freshCurrent⟩
+            R.currentReg, R.freshCurrent, R.curLocDisj⟩
     · -- StackRefines on the (rest, lrest) suffix — shift indices by 2 and reuse R.stk.
       intro i v hv
       have hrest_get : ws.stack.get? (i + 2) = some v := by
@@ -1612,7 +1632,7 @@ theorem preservation_i32Bin_generic
     simp [evalOps, Quanta.KOps.evalOp, h_lookup_ra, h_lookup_rb, h_agree, h_kst2_ok]
   · -- Refines ws' s' kst3 layout.
     subst hs_eq; subst hws_eq
-    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines, ?_, ?_, ?_⟩
     · -- StackRefines on (wI32 (op_w av bv) :: rest, .reg s4.nextReg .u32 :: lrest).
       refine ⟨?_, ?_⟩
       · -- Length.
@@ -1698,6 +1718,13 @@ theorem preservation_i32Bin_generic
         rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
       rw [← h_s4_cur] at hir
       exact Nat.lt_succ_of_lt (R2.freshCurrent ir hir)
+    · -- CurrentLocalDisjoint: s'.currentReg / s'.localReg same as s4's; lift R2.curLocDisj.
+      intro p q hp hq hpq
+      have h_s4_cur : s4.currentReg = s.currentReg := by
+        rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
+      rw [← h_s4_cur] at hp
+      rw [← h_s4_lr] at hq
+      exact R2.curLocDisj p q hp hq hpq
 
 -- ── Per-op specializations (10 binops) ─────────────────────────────────
 --
@@ -1916,7 +1943,7 @@ theorem preservation_i32Shl_bufferPattern
   · rw [← hops_eq]; simp [evalOps]
   · rw [← hs_eq]; subst h_ws_eq
     refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
-            R.currentReg, R.freshCurrent⟩
+            R.currentReg, R.freshCurrent, R.curLocDisj⟩
     · -- StackRefines: top encodes via .scaledIdx; tail unchanged.
       refine ⟨?_, ?_⟩
       · -- Length: ws_rest.length = rest.length, derived from R.stk.left.
@@ -2035,7 +2062,7 @@ theorem preservation_i32Add_bufferPattern_scaledFirst
   · rw [← hops_eq]; simp [evalOps]
   · rw [← hs_eq]; subst h_ws_eq
     refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines,
-            R.currentReg, R.freshCurrent⟩
+            R.currentReg, R.freshCurrent, R.curLocDisj⟩
     · -- StackRefines: top encodes via .bufferAccess; tail unchanged.
       refine ⟨?_, ?_⟩
       · have hlen := R.stk.left
@@ -2141,7 +2168,7 @@ theorem preservation_i32Add_bufferPattern_ptrFirst
   refine ⟨kst, ?_, ?_⟩
   · rw [← hops_eq]; simp [evalOps]
   · rw [← hs_eq]; subst h_ws_eq
-    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
+    refine ⟨?_, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent, R.curLocDisj⟩
     · refine ⟨?_, ?_⟩
       · have hlen := R.stk.left
         rw [h_stack, h_ws_stack] at hlen
@@ -2293,7 +2320,7 @@ theorem preservation_i32Load
   · rw [← hops_eq]
     simp [evalOps, Quanta.KOps.evalOp, h_lookup_b, h_heap_lookup]
   · rw [← hs_eq]; rw [← hw']
-    refine ⟨?_, ?_, ?_, ?_, R.injLocals, ?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_, R.injLocals, ?_, ?_, ?_, ?_⟩
     · -- StackRefines: top wI32 n ↔ .reg s.nextReg .u32; tail past fresh write.
       refine ⟨?_, ?_⟩
       · have hlen := R.stk.left
@@ -2361,6 +2388,8 @@ theorem preservation_i32Load
     · -- FreshCurrent: nextReg bumps by 1; currentReg unchanged.
       intro ir hir
       exact Nat.lt_succ_of_lt (R.freshCurrent ir hir)
+    · -- CurrentLocalDisjoint: currentReg / localReg unchanged.
+      exact R.curLocDisj
 
 open Quanta.KOps (vU32) in
 /-- `i32.store` preservation against a recognized `bufferAccess`
@@ -2459,7 +2488,7 @@ theorem preservation_i32Store
     let s_pop : LowerState := { s with stack := rest }
     let ws_pop : WasmState := { ws with stack := ws_rest }
     have R_pop : Refines ws_pop s_pop kst layout := by
-      refine ⟨⟨h_ws_rest_rest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
+      refine ⟨⟨h_ws_rest_rest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent, R.curLocDisj⟩
       · intro i v hv
         have hrest_get : ws.stack.get? (i + 2) = some v := by
           rw [hws]; simpa using hv
@@ -2530,7 +2559,7 @@ theorem preservation_i32Store
         | scaledIdx _ _ => simp [LowerState.commit] at hca'
         | bufferAccess _ _ _ => simp [LowerState.commit] at hca'
       refine ⟨?_, ?_, ?_, ?_, R_commit.injLocals, ?_,
-              R_commit.currentReg, R_commit.freshCurrent⟩
+              R_commit.currentReg, R_commit.freshCurrent, R_commit.curLocDisj⟩
       · -- StackRefines: ws_rest matches rest under kst1.rf.
         refine ⟨?_, ?_⟩
         · rw [h_s3_stack]; exact h_ws_rest_rest_len
@@ -2659,7 +2688,7 @@ theorem preservation_i32Cmp_generic
   let ws_pop : WasmState :=
     { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
-    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent⟩
+    refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals, R.heapRefines, R.currentReg, R.freshCurrent, R.curLocDisj⟩
     · intro i v hv
       have hrest_get : ws.stack.get? (i + 2) = some v := by
         rw [hwstack]; simpa using hv
@@ -2736,7 +2765,7 @@ theorem preservation_i32Cmp_generic
         WasmValue.encodes_preserved_of_fresh
           (fun r hr => Nat.lt_succ_of_lt (h_lt r hr))
           (WasmValue.encodes_preserved_of_fresh h_lt henc)
-    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines, ?_, ?_, ?_⟩
     · -- StackRefines on (wI32 (if p_w av bv then 1 else 0) :: rest, .reg (s4.nextReg+1) .u32 :: lrest).
       refine ⟨?_, ?_⟩
       · simp; exact h_rest_lrest_len
@@ -2823,6 +2852,13 @@ theorem preservation_i32Cmp_generic
         rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
       rw [← h_s4_cur] at hir
       exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R2.freshCurrent ir hir))
+    · -- CurrentLocalDisjoint: currentReg/localReg unchanged through commits and twin writes.
+      intro p q hp hq hpq
+      have h_s4_cur : s4.currentReg = s.currentReg := by
+        rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
+      rw [← h_s4_cur] at hp
+      rw [← h_s4_lr] at hq
+      exact R2.curLocDisj p q hp hq hpq
 
 -- ── Per-op specializations (6 cmps) ────────────────────────────────────
 
@@ -2943,7 +2979,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   let ws_pop : WasmState := { ws with stack := rest }
   have R_pop : Refines ws_pop s_pop kst layout := by
     refine ⟨⟨h_rest_lrest_len, ?_⟩, R.locs, ?_, ?_, R.injLocals,
-            R.heapRefines, R.currentReg, R.freshCurrent⟩
+            R.heapRefines, R.currentReg, R.freshCurrent, R.curLocDisj⟩
     · intro k v hv
       have hrest_get : ws.stack.get? (k + 1) = some v := by
         rw [hws_stack]; simpa using hv
@@ -3058,7 +3094,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         show regLookup (regWrite kst_after_fresh.rf stable (vU32 n_w)) fresh = _
         rw [regLookup_regWrite_of_ne _ stable fresh _ (Nat.ne_of_lt h_stable_gt_fresh)]
         exact h_lookup_fresh_kaf
-      refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_, ?_⟩
       · -- StackRefines on ws'.stack = rest, s'.stack = s2.stack = lrest.
         refine ⟨?_, ?_⟩
         · show rest.length = s2.stack.length
@@ -3243,6 +3279,34 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           have h := R.freshCurrent ir hin_s
           have h_s_s2 : s.nextReg ≤ s2.nextReg := _h_s_le_s2
           exact Nat.lt_of_lt_of_le h (by omega : s.nextReg ≤ s2.nextReg + 1 + 1)
+      · -- CurrentLocalDisjoint on s'.currentReg = (i, fresh) :: ..., s'.localReg = (i, stable) :: ...
+        intro p q hp hq hpq
+        simp at hp hq
+        -- p ∈ currentReg ⇒ p = (i, fresh) ∨ (p ∈ filter ... s2.currentReg ∧ p.fst ≠ i).
+        -- q ∈ localReg   ⇒ q = (i, stable) ∨ (q ∈ filter ... s.localReg ∧ q.fst ≠ i).
+        rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
+        rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
+        · -- p = (i, fresh), q = (i, stable): both fst = i, contradiction with hpq.
+          subst hp_eq; subst hq_eq; exact absurd rfl hpq
+        · -- p = (i, fresh), q ∈ s.localReg with q.fst ≠ i.
+          subst hp_eq
+          -- Need fresh ≠ q.snd. q.snd < s.nextReg ≤ s2.nextReg = fresh.
+          have hq_lt : q.snd < s.nextReg := R.fresh.right q hq_in
+          have hq_lt_s2 : q.snd < s2.nextReg :=
+            Nat.lt_of_lt_of_le hq_lt _h_s_le_s2
+          exact Ne.symm (Nat.ne_of_lt hq_lt_s2)
+        · -- p ∈ s2.currentReg with p.fst ≠ i, q = (i, stable).
+          subst hq_eq
+          -- stable = s2.nextReg + 1; p.snd < s.nextReg (via R.freshCurrent) < stable.
+          have hp_in_s : p ∈ s.currentReg := by rw [← h_s2_cr]; exact hp_in
+          have hp_lt : p.snd < s.nextReg := R.freshCurrent p hp_in_s
+          have hp_lt_s2 : p.snd < s2.nextReg := Nat.lt_of_lt_of_le hp_lt _h_s_le_s2
+          have hp_lt_stable : p.snd < stable :=
+            Nat.lt_of_lt_of_le hp_lt_s2 h_stable_ge_s2
+          exact Nat.ne_of_lt hp_lt_stable
+        · -- p ∈ filter s2.currentReg, q ∈ filter s.localReg, both with fst ≠ i.
+          have hp_in_s : p ∈ s.currentReg := by rw [← h_s2_cr]; exact hp_in
+          exact R.curLocDisj p q hp_in_s hq_in hpq
   -- Case A: existing entry. lookupLocal returns some stable_old.
   · simp [hreg_find] at hl
     obtain ⟨hs_eq, hops_eq⟩ := hl
@@ -3308,7 +3372,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       have h_lookup_stable_kst'A : regLookup kst'_A.rf stable_old = some (vU32 n_w) := by
         show regLookup (regWrite kst_after_fresh_A.rf stable_old (vU32 n_w)) stable_old = _
         rw [regLookup_regWrite_self]
-      refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_, ?_⟩
       · -- StackRefines. Lift past write at fresh (≥ s2.nextReg) AND stable_old.
         -- For stable_old: by aliasFree on s2.localReg, no stack reg = stable_old.
         refine ⟨?_, ?_⟩
@@ -3468,14 +3532,28 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           -- For stable_old: is r_cur = stable_old? injLocals says (k, r_cur)
           -- and (i, stable_old) both in localReg s2 → either k=i (excluded) or
           -- r_cur ≠ stable_old.
-          -- Wait — r_cur is in s2.currentReg, not s2.localReg. Different list.
-          -- The CurrentRegRefines invariant doesn't bound currentReg vs localReg
-          -- entries — they could share. Hmm. But the encoding goal says
-          -- v.encodes layout kst'.rf (.reg r_cur .u32) — needs regLookup at r_cur.
-          -- After regWrite at stable_old, lookup at r_cur is unchanged IF
-          -- r_cur ≠ stable_old. But could r_cur = stable_old?
-          -- Hmm, this is a real invariant issue. Let me defer.
-          sorry
+          -- r_cur ≠ stable_old via CurrentLocalDisjoint applied to s
+          -- (lifted to s2 via h_s2_cr / h_s2_lr).
+          have hpair_cur : (k, r_cur) ∈ s2.currentReg :=
+            List.mem_of_find?_eq_some hfind
+          have hpair_cur_s : (k, r_cur) ∈ s.currentReg := by
+            rw [← h_s2_cr]; exact hpair_cur
+          have hentry_pair_s : (i, stable_old) ∈ s.localReg := hentry_pair
+          have hr_cur_ne_stable : r_cur ≠ stable_old :=
+            R.curLocDisj (k, r_cur) (i, stable_old) hpair_cur_s hentry_pair_s hki
+          -- r_cur < s.nextReg ≤ s2.nextReg = fresh, so r_cur ≠ fresh.
+          have hpair_s_cur : (k, r_cur) ∈ s.currentReg := hpair_cur_s
+          have hr_cur_lt_s : r_cur < s.nextReg := R.freshCurrent (k, r_cur) hpair_s_cur
+          have hr_cur_lt_s2 : r_cur < s2.nextReg :=
+            Nat.lt_of_lt_of_le hr_cur_lt_s _h_s_le_s2
+          have hr_cur_ne_fresh : r_cur ≠ fresh := Nat.ne_of_lt hr_cur_lt_s2
+          -- Goal: encodes layout kst'_A.rf .reg r_cur .u32.
+          -- kst'_A.rf = regWrite (regWrite kst1.rf fresh _) stable_old _.
+          -- Lift via two disjoint regWrites.
+          apply WasmValue.encodes_preserved_of_disjoint _ _
+          · simp [SymVal.regs]; exact Ne.symm hr_cur_ne_stable
+          apply WasmValue.encodes_preserved_of_disjoint _ henc
+          simp [SymVal.regs]; exact Ne.symm hr_cur_ne_fresh
       · -- FreshCurrent: every (k, r) in s'.currentReg has r < s'.nextReg.
         intro ir hir
         simp at hir
@@ -3487,6 +3565,25 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           have h := R.freshCurrent ir hin_s
           have h_s_s2 : s.nextReg ≤ s2.nextReg := _h_s_le_s2
           exact Nat.lt_of_lt_of_le h (by omega : s.nextReg ≤ s2.nextReg + 1)
+      · -- CurrentLocalDisjoint on s'.currentReg = (i, fresh) :: ..., s'.localReg = (i, stable_old) :: ...
+        intro p q hp hq hpq
+        simp at hp hq
+        rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
+        rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
+        · subst hp_eq; subst hq_eq; exact absurd rfl hpq
+        · -- p = (i, fresh), q ∈ filter s.localReg with q.fst ≠ i.
+          subst hp_eq
+          have hq_lt : q.snd < s.nextReg := R.fresh.right q hq_in
+          have hq_lt_s2 : q.snd < s2.nextReg :=
+            Nat.lt_of_lt_of_le hq_lt _h_s_le_s2
+          exact Ne.symm (Nat.ne_of_lt hq_lt_s2)
+        · -- p ∈ filter s2.currentReg with p.fst ≠ i, q = (i, stable_old).
+          subst hq_eq
+          have hp_in_s : p ∈ s.currentReg := by rw [← h_s2_cr]; exact hp_in
+          exact R.curLocDisj p (i, stable_old) hp_in_s hentry_pair hp_ne
+        · -- p ∈ filter s2.currentReg, q ∈ filter s.localReg, both fst ≠ i.
+          have hp_in_s : p ∈ s.currentReg := by rw [← h_s2_cr]; exact hp_in
+          exact R.curLocDisj p q hp_in_s hq_in hpq
 
 -- ════════════════════════════════════════════════════════════════════
 -- Slice 3 follow-up: localTee preservation
