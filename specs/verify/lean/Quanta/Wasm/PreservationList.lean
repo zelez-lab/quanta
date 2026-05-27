@@ -2499,8 +2499,10 @@ theorem preservation_evalInstrs_chain_buffer_prelude_2step
             (.localGet bufSlotIdx :: .localGet idxIdx :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  -- Stage 3 cascade: body deferred (chains build on
-  -- cons_local* which are currently sorry-deferred).
+  -- Stage 3 cascade: chain composer needs lowerInstr bufferSlots-preservation
+  -- threaded through the existential s_mid of the outer cons composer.
+  -- Deferred — requires a stronger composer that exposes s_mid's
+  -- structural relation to the input s.
   sorry
 
 -- ════════════════════════════════════════════════════════════════════
