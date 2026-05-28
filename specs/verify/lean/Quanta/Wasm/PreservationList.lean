@@ -2152,12 +2152,15 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
        b_ptr.toNat = layout.startAddr slot →
        (b_ptr + a).toNat = layout.startAddr slot + b.toNat * scale)
     (rest : List WasmInstr)
+    -- preservation_rest receives h_stack_eq exposing the buffer-pattern
+    -- fold's output stack: .bufferAccess slot base scale :: lstk_rest.
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
         (_h_kst_no_broke_mid : kst_mid.broke = false)
+        (_h_stack_eq : s_mid.stack = .bufferAccess slot base scale :: lstk_rest)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2208,8 +2211,14 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
             rw [h_ws_eq]; simp [h_no_branch]
           have h_mid_no_halt : ws_after.halted = false := by
             rw [h_ws_eq]; simp [h_no_halt]
+          -- s_mid (post lowerInstr) = {s with stack := .bufferAccess slot base scale :: lstk_rest}.
+          have h_stack_after :
+              ({s with stack := SymVal.bufferAccess slot base scale :: lstk_rest}
+                : LowerState).stack
+              = .bufferAccess slot base scale :: lstk_rest := rfl
           obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
-            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke hw h_post
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke
+              h_stack_after hw h_post
           refine ⟨kst'_mid, F_rest, ?_, ?_⟩
           · rw [← h_ops_eq]
             rw [h_kst_mid_eq] at h_eval_rest
@@ -2722,12 +2731,16 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
     (h_shift_eq : ∀ a : UInt32,
        (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
     (rest : List WasmInstr)
+    -- preservation_rest receives h_stack_eq exposing the post-4step
+    -- symbolic stack shape: .scaledIdx :: .bufferPtr :: original.
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
         (_h_kst_no_broke_mid : kst_mid.broke = false)
+        (_h_stack_eq : s_mid.stack =
+          .scaledIdx s.nextReg (1 <<< k.toNat) :: .bufferPtr bSlot :: s.stack)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2774,10 +2787,10 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
         (by
           intro a _; exact h_shift_eq a)
         rest
-      · -- Inner closure: absorb h_stack_eq from cons_i32Shl_bufferPattern.
-        intro ws3 s3 kst3 R3 h_nb3 h_nh3 h_kb3 _h_stack_shl
+      · -- Inner closure: forward h_stack_shl as the 4step's h_stack_eq.
+        intro ws3 s3 kst3 R3 h_nb3 h_nh3 h_kb3 h_stack_shl
               ws'3 s'3 postOps3 hw3 hl3
-        exact preservation_rest R3 h_nb3 h_nh3 h_kb3 hw3 hl3
+        exact preservation_rest R3 h_nb3 h_nh3 h_kb3 h_stack_shl hw3 hl3
       · exact hw2
       · exact hl2
     · exact hw_mid
@@ -2858,9 +2871,47 @@ theorem preservation_evalInstrs_chain_buffer_load_6step
              .i32Load offset align :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  -- Stage 3 cascade: body deferred (chains build on
-  -- cons_local* which are currently sorry-deferred).
-  sorry
+  -- Chain via 4step (produces .scaledIdx :: .bufferPtr :: original on stack),
+  -- then cons_i32Add_bufferPattern_scaledFirst (folds to .bufferAccess),
+  -- then cons_i32Load (matches scale=4 ⇒ k=2 ⇒ 1<<<k.toNat = 4).
+  apply preservation_evalInstrs_chain_buffer_prelude_4step
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+    bufSlotIdx bSlot h_buf h_loc_buf idxIdx h_no_buf_idx k h_shift_eq
+    (.i32Add :: .i32Load offset align :: rest)
+  · -- 4step IH: at mid-state s_mid with stack
+    --   .scaledIdx s.nextReg (1 <<< k.toNat) :: .bufferPtr bSlot :: s.stack
+    intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_stack_4step
+          ws'_mid s'_mid postOps_mid hw_mid hl_mid
+    apply preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
+      fuel frames ws_mid s_mid kst_mid layout R_mid h_nb_mid h_nh_mid h_kb_mid
+      bSlot (s.nextReg) (1 <<< k.toNat) s.stack
+      h_stack_4step
+      (by
+        intro a b_ptr b _ h_a h_bp; exact h_addr_eq a b_ptr b h_a h_bp)
+      (.i32Load offset align :: rest)
+    · -- Inner IH: at post-i32Add state with stack
+      --   .bufferAccess bSlot s.nextReg (1 <<< k.toNat) :: s.stack
+      intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_stack_add
+            ws'2 s'2 postOps2 hw2 hl2
+      -- For i32Load to fire (scale = 4), need 1 <<< k.toNat = 4, i.e. k = 2.
+      have h_scale_4 : (1 <<< k.toNat) = 4 := by
+        rw [h_k_eq_2]; rfl
+      have h_chain_stack_load : s2.stack =
+          .bufferAccess bSlot s.nextReg 4 :: s.stack := by
+        rw [h_stack_add, h_scale_4]
+      apply preservation_evalInstrs_cons_i32Load
+        fuel frames ws2 s2 kst2 layout R2 h_nb2 h_nh2 h_kb2
+        bSlot (s.nextReg) s.stack offset align
+        h_chain_stack_load h_offset
+        (by intro b _; exact h_in_bounds b)
+        rest
+      · exact preservation_rest
+      · exact hw2
+      · exact hl2
+    · exact hw_mid
+    · exact hl_mid
+  · exact hw
+  · exact hl
 
 -- ════════════════════════════════════════════════════════════════════
 -- L2: full 7-step buffer-access STORE chain
