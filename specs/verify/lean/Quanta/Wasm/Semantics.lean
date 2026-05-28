@@ -172,21 +172,76 @@ def WasmMem.store_u32 (m : WasmMem) (addr : Nat) (v : UInt32) : Option WasmMem :
   else
     none
 
-/-- WASM byte-load/store roundtrip — TCB axiom. The 4 successive
-    `List.set`s in `store_u32` reconstruct exactly to the original
-    `UInt32` when read back via `load_u32`. Constructively provable
-    via `Nat.shiftRight_shiftLeft`-style bit-arithmetic plus
-    `List.getElem?_set` machinery, but the proof is mechanical and
-    deep. Accepted as TCB capturing WASM spec compliance for byte-
-    addressable memory.
+/-- Narrow bit-recomposition axiom: 4 little-endian byte projections
+    OR-combined reconstruct the original `UInt32`. Constructively
+    provable via `BitVec 32` bit-arithmetic; we deferred the proof
+    behind this narrow axiom (the only remaining Wasm-memory TCB).
+    Used only by `WasmMem.store_load_same`. -/
+axiom UInt32.little_endian_recompose (v : UInt32) :
+    ((UInt8.ofNat (v.toNat &&& 0xFF)).toUInt32) |||
+    ((UInt8.ofNat ((v.toNat >>> 8) &&& 0xFF)).toUInt32 <<< 8) |||
+    ((UInt8.ofNat ((v.toNat >>> 16) &&& 0xFF)).toUInt32 <<< 16) |||
+    ((UInt8.ofNat ((v.toNat >>> 24) &&& 0xFF)).toUInt32 <<< 24) = v
+
+/-- WASM byte-load/store roundtrip. The 4 successive `List.set`s in
+    `store_u32` reconstruct exactly to the original `UInt32` when
+    read back via `load_u32`. The byte-addressing half is proven
+    constructively via `List.getElem?_set`; the bit-recomposition is
+    delegated to `UInt32.little_endian_recompose`.
 
     Used by `Quanta.Wasm.Preservation.preservation_i32Store` to
     discharge the new-state `HeapRefines` clause at the
     `(slot, b.toNat)` entry the store wrote. -/
-axiom WasmMem.store_load_same
+theorem WasmMem.store_load_same
     (m : WasmMem) (addr : Nat) (v : UInt32) (m' : WasmMem)
     (h_store : m.store_u32 addr v = some m') :
-    m'.load_u32 addr = some v
+    m'.load_u32 addr = some v := by
+  -- Unfold store_u32 to extract m' = m.set... .set... .set... .set.
+  simp only [WasmMem.store_u32, pure] at h_store
+  by_cases hbnd : addr + 3 < m.length
+  case neg => simp [hbnd] at h_store
+  simp only [hbnd, if_true, Option.some.injEq] at h_store
+  rw [← h_store]
+  simp only [WasmMem.load_u32, List.get?_eq_getElem?]
+  -- The four bytes m'[addr+j]? for j = 0..3 read back as the bytes we wrote.
+  -- Most recent set is at addr+3, peel it last; earliest at addr peels first.
+  have b0 : ((((m.set addr (UInt8.ofNat (v.toNat &&& 255))).set
+              (addr + 1) (UInt8.ofNat (v.toNat >>> 8 &&& 255))).set
+              (addr + 2) (UInt8.ofNat (v.toNat >>> 16 &&& 255))).set
+              (addr + 3) (UInt8.ofNat (v.toNat >>> 24 &&& 255)))[addr]?
+              = some (UInt8.ofNat (v.toNat &&& 255)) := by
+    rw [List.getElem?_set_ne (by omega : addr + 3 ≠ addr)]
+    rw [List.getElem?_set_ne (by omega : addr + 2 ≠ addr)]
+    rw [List.getElem?_set_ne (by omega : addr + 1 ≠ addr)]
+    rw [List.getElem?_set_self (by simpa [List.length_set] using (by omega : addr < m.length))]
+  have b1 : ((((m.set addr (UInt8.ofNat (v.toNat &&& 255))).set
+              (addr + 1) (UInt8.ofNat (v.toNat >>> 8 &&& 255))).set
+              (addr + 2) (UInt8.ofNat (v.toNat >>> 16 &&& 255))).set
+              (addr + 3) (UInt8.ofNat (v.toNat >>> 24 &&& 255)))[addr + 1]?
+              = some (UInt8.ofNat (v.toNat >>> 8 &&& 255)) := by
+    rw [List.getElem?_set_ne (by omega : addr + 3 ≠ addr + 1)]
+    rw [List.getElem?_set_ne (by omega : addr + 2 ≠ addr + 1)]
+    rw [List.getElem?_set_self
+          (by simpa [List.length_set] using (by omega : addr + 1 < m.length))]
+  have b2 : ((((m.set addr (UInt8.ofNat (v.toNat &&& 255))).set
+              (addr + 1) (UInt8.ofNat (v.toNat >>> 8 &&& 255))).set
+              (addr + 2) (UInt8.ofNat (v.toNat >>> 16 &&& 255))).set
+              (addr + 3) (UInt8.ofNat (v.toNat >>> 24 &&& 255)))[addr + 2]?
+              = some (UInt8.ofNat (v.toNat >>> 16 &&& 255)) := by
+    rw [List.getElem?_set_ne (by omega : addr + 3 ≠ addr + 2)]
+    rw [List.getElem?_set_self
+          (by simpa [List.length_set] using (by omega : addr + 2 < m.length))]
+  have b3 : ((((m.set addr (UInt8.ofNat (v.toNat &&& 255))).set
+              (addr + 1) (UInt8.ofNat (v.toNat >>> 8 &&& 255))).set
+              (addr + 2) (UInt8.ofNat (v.toNat >>> 16 &&& 255))).set
+              (addr + 3) (UInt8.ofNat (v.toNat >>> 24 &&& 255)))[addr + 3]?
+              = some (UInt8.ofNat (v.toNat >>> 24 &&& 255)) := by
+    rw [List.getElem?_set_self
+          (by simpa [List.length_set] using (by omega : addr + 3 < m.length))]
+  rw [b0, b1, b2, b3]
+  simp only [Option.bind_eq_bind, Option.some_bind, pure]
+  congr 1
+  exact UInt32.little_endian_recompose v
 
 /-- WASM byte-store + byte-load disjoint preservation. A 4-byte store
     at `addr_s` doesn't perturb the load at `addr_l` when their byte
