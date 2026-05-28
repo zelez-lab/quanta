@@ -416,12 +416,15 @@ theorem preservation_evalInstrs_cons_i32Const
     (h_no_halt : ws.halted = false)
     (h_kst_no_broke : kst.broke = false)
     (n : Int) (rest : List WasmInstr)
+    -- preservation_rest receives h_stack_eq : s_mid.stack = .i32ConstSym n :: s.stack
+    -- proven from i32Const's pushSym arm.
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
         (_h_kst_no_broke_mid : kst_mid.broke = false)
+        (_h_stack_eq : s_mid.stack = .i32ConstSym n :: s.stack)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -507,8 +510,12 @@ theorem preservation_evalInstrs_cons_i32Const
     simp [ws_mid, WasmState.push, h_no_branch]
   have h_no_halt_mid : ws_mid.halted = false := by
     simp [ws_mid, WasmState.push, h_no_halt]
+  -- s_mid.stack = .i32ConstSym n :: s.stack from pushSym definition.
+  have h_stack_mid : s_mid.stack = .i32ConstSym n :: s.stack := by
+    simp [s_mid, LowerState.pushSym]
   -- Apply IH on `rest` with the mid-state.
-  exact preservation_rest R_mid h_no_branch_mid h_no_halt_mid h_kst_no_broke hw' hl'
+  exact preservation_rest R_mid h_no_branch_mid h_no_halt_mid h_kst_no_broke
+          h_stack_mid hw' hl'
 
 /-- Forward-declared helper used by cons_localGet. The full lemma is
     repeated below near the brIf section for symmetry with the other
@@ -2722,14 +2729,45 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
              .i32Const k :: .i32Shl :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  -- Buffer-pattern chain. Closing this requires a stack-shape-exposing
-  -- variant of chain_buffer_prelude_2step (or full inline expansion ~400 LoC).
-  -- The cons composer hides s_mid existentially, blocking
-  -- i32Shl_bufferPattern's stack-shape requirement.
-  --
-  -- Deferred — see [[stage3-refactor-pickup]]. Not cited by any
-  -- framework theorem; pure user-facing buffer-pattern coverage.
-  sorry
+  apply preservation_evalInstrs_chain_buffer_prelude_2step
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+    bufSlotIdx bSlot h_buf h_loc_buf idxIdx h_no_buf_idx
+    (.i32Const k :: .i32Shl :: rest)
+  · -- 2step IH gives us mid-state with stack
+    --   .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
+    -- Now process i32Const k, then i32Shl (buffer-pattern), then rest.
+    intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_stack_mid
+          ws'_mid s'_mid postOps_mid hw_mid hl_mid
+    -- After cons_i32Const, the symbolic stack has
+    --   .i32ConstSym k :: .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
+    -- which matches i32Shl_bufferPattern's required shape.
+    apply preservation_evalInstrs_cons_i32Const
+      fuel frames ws_mid s_mid kst_mid layout R_mid h_nb_mid h_nh_mid h_kb_mid
+      k (.i32Shl :: rest)
+    · -- Deep IH: i32Shl with buffer-pattern at the post-i32Const state.
+      -- h_stack_const : s2.stack = .i32ConstSym k :: s_mid.stack
+      --              = .i32ConstSym k :: .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
+      -- which matches i32Shl_bufferPattern's required shape exactly.
+      intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_stack_const
+            ws'2 s'2 postOps2 hw2 hl2
+      have h_chain_stack : s2.stack =
+          .i32ConstSym k :: .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack := by
+        rw [h_stack_const, h_stack_mid]
+      apply preservation_evalInstrs_cons_i32Shl_bufferPattern
+        fuel frames ws2 s2 kst2 layout R2 h_nb2 h_nh2 h_kb2
+        k (s.nextReg) .u32 (.bufferPtr bSlot :: s.stack)
+        h_chain_stack
+        (by
+          intro a _; exact h_shift_eq a)
+        rest
+      · -- Innermost IH: post-i32Shl, the chain caller's preservation_rest.
+        exact preservation_rest
+      · exact hw2
+      · exact hl2
+    · exact hw_mid
+    · exact hl_mid
+  · exact hw
+  · exact hl
 
 -- ════════════════════════════════════════════════════════════════════
 -- L1c: full 6-step buffer-access LOAD chain (closes L1)
