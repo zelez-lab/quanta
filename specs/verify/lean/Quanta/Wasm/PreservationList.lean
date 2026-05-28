@@ -416,8 +416,10 @@ theorem preservation_evalInstrs_cons_i32Const
     (h_no_halt : ws.halted = false)
     (h_kst_no_broke : kst.broke = false)
     (n : Int) (rest : List WasmInstr)
-    -- preservation_rest receives h_stack_eq : s_mid.stack = .i32ConstSym n :: s.stack
-    -- proven from i32Const's pushSym arm.
+    -- preservation_rest receives:
+    --   h_stack_eq : s_mid.stack = .i32ConstSym n :: s.stack
+    --   h_bs_eq    : s_mid.bufferSlots = s.bufferSlots
+    -- Both trivially proven from i32Const's pushSym arm (only mutates .stack).
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
@@ -425,6 +427,7 @@ theorem preservation_evalInstrs_cons_i32Const
         (_h_no_halt_mid : ws_mid.halted = false)
         (_h_kst_no_broke_mid : kst_mid.broke = false)
         (_h_stack_eq : s_mid.stack = .i32ConstSym n :: s.stack)
+        (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -513,9 +516,11 @@ theorem preservation_evalInstrs_cons_i32Const
   -- s_mid.stack = .i32ConstSym n :: s.stack from pushSym definition.
   have h_stack_mid : s_mid.stack = .i32ConstSym n :: s.stack := by
     simp [s_mid, LowerState.pushSym]
+  have h_bs_mid : s_mid.bufferSlots = s.bufferSlots := by
+    simp [s_mid, LowerState.pushSym]
   -- Apply IH on `rest` with the mid-state.
   exact preservation_rest R_mid h_no_branch_mid h_no_halt_mid h_kst_no_broke
-          h_stack_mid hw' hl'
+          h_stack_mid h_bs_mid hw' hl'
 
 /-- Forward-declared helper used by cons_localGet. The full lemma is
     repeated below near the brIf section for symmetry with the other
@@ -2060,8 +2065,9 @@ theorem preservation_evalInstrs_cons_i32Shl_bufferPattern
        regLookup kst.rf base = some (Quanta.KOps.Value.vU32 a) →
        (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
     (rest : List WasmInstr)
-    -- preservation_rest receives h_stack_eq exposing the post-buffer-pattern
-    -- stack shape: .scaledIdx base (1 <<< k.toNat) :: lstk_rest.
+    -- preservation_rest receives:
+    --   h_stack_eq : s_mid.stack = .scaledIdx base (1 <<< k.toNat) :: lstk_rest
+    --   h_bs_eq    : s_mid.bufferSlots = s.bufferSlots
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
@@ -2070,6 +2076,7 @@ theorem preservation_evalInstrs_cons_i32Shl_bufferPattern
         (_h_kst_no_broke_mid : kst_mid.broke = false)
         (_h_stack_eq : s_mid.stack =
           .scaledIdx base (1 <<< k.toNat) :: lstk_rest)
+        (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2127,9 +2134,12 @@ theorem preservation_evalInstrs_cons_i32Shl_bufferPattern
               ({s with stack := SymVal.scaledIdx base (1 <<< k.toNat) :: lstk_rest}
                 : LowerState).stack
               = .scaledIdx base (1 <<< k.toNat) :: lstk_rest := rfl
+          have h_bs_after :
+              ({s with stack := SymVal.scaledIdx base (1 <<< k.toNat) :: lstk_rest}
+                : LowerState).bufferSlots = s.bufferSlots := rfl
           obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
             preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke
-              h_stack_after hw h_post
+              h_stack_after h_bs_after hw h_post
           refine ⟨kst'_mid, F_rest, ?_, ?_⟩
           · rw [← h_ops_eq]
             rw [h_kst_mid_eq] at h_eval_rest
@@ -2152,8 +2162,9 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
        b_ptr.toNat = layout.startAddr slot →
        (b_ptr + a).toNat = layout.startAddr slot + b.toNat * scale)
     (rest : List WasmInstr)
-    -- preservation_rest receives h_stack_eq exposing the buffer-pattern
-    -- fold's output stack: .bufferAccess slot base scale :: lstk_rest.
+    -- preservation_rest receives:
+    --   h_stack_eq : s_mid.stack = .bufferAccess slot base scale :: lstk_rest
+    --   h_bs_eq    : s_mid.bufferSlots = s.bufferSlots
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
@@ -2161,6 +2172,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
         (_h_no_halt_mid : ws_mid.halted = false)
         (_h_kst_no_broke_mid : kst_mid.broke = false)
         (_h_stack_eq : s_mid.stack = .bufferAccess slot base scale :: lstk_rest)
+        (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2216,9 +2228,12 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
               ({s with stack := SymVal.bufferAccess slot base scale :: lstk_rest}
                 : LowerState).stack
               = .bufferAccess slot base scale :: lstk_rest := rfl
+          have h_bs_after :
+              ({s with stack := SymVal.bufferAccess slot base scale :: lstk_rest}
+                : LowerState).bufferSlots = s.bufferSlots := rfl
           obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
             preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke
-              h_stack_after hw h_post
+              h_stack_after h_bs_after hw h_post
           refine ⟨kst'_mid, F_rest, ?_, ?_⟩
           · rw [← h_ops_eq]
             rw [h_kst_mid_eq] at h_eval_rest
@@ -2638,9 +2653,9 @@ theorem preservation_evalInstrs_chain_buffer_prelude_2step
       ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr bSlot)
     (idxIdx : Nat) (h_no_buf_idx : s.lookupBufferSlot idxIdx = none)
     (rest : List WasmInstr)
-    -- preservation_rest receives h_stack_eq : s_mid.stack =
-    -- .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
-    -- (the chain's structural mid-state shape after both localGets).
+    -- preservation_rest receives the chain's structural mid-state shape:
+    --   h_stack_eq : s_mid.stack = .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
+    --   h_bs_eq    : s_mid.bufferSlots = s.bufferSlots
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
@@ -2649,6 +2664,7 @@ theorem preservation_evalInstrs_chain_buffer_prelude_2step
         (_h_kst_no_broke_mid : kst_mid.broke = false)
         (_h_stack_eq : s_mid.stack =
           .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack)
+        (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2675,7 +2691,7 @@ theorem preservation_evalInstrs_chain_buffer_prelude_2step
     apply preservation_evalInstrs_cons_localGet
       fuel frames ws_mid s_mid kst_mid layout R_mid h_nb_mid h_nh_mid h_kb_mid
       idxIdx h_no_buf_idx_mid rest
-    · intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 _h_bs2 h_stack_idx _h_nr_idx
+    · intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_bs_idx h_stack_idx _h_nr_idx
             ws'2 s'2 postOps2 hw2 hl2
       -- Compose: s2.stack = .reg s_mid.nextReg .u32 :: s_mid.stack
       --                   = .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
@@ -2683,7 +2699,10 @@ theorem preservation_evalInstrs_chain_buffer_prelude_2step
       have h_chain_stack : s2.stack =
           .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack := by
         rw [h_stack_idx, h_nr_buf, h_stack_buf]
-      exact preservation_rest R2 h_nb2 h_nh2 h_kb2 h_chain_stack hw2 hl2
+      -- bufferSlots compose: s2.bs = s_mid.bs = s.bs.
+      have h_chain_bs : s2.bufferSlots = s.bufferSlots := by
+        rw [h_bs_idx, h_bs_mid]
+      exact preservation_rest R2 h_nb2 h_nh2 h_kb2 h_chain_stack h_chain_bs hw2 hl2
     · exact hw_mid
     · exact hl_mid
   · exact hw
@@ -2731,8 +2750,8 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
     (h_shift_eq : ∀ a : UInt32,
        (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
     (rest : List WasmInstr)
-    -- preservation_rest receives h_stack_eq exposing the post-4step
-    -- symbolic stack shape: .scaledIdx :: .bufferPtr :: original.
+    -- preservation_rest receives h_stack_eq + h_bs_eq exposing the
+    -- post-4step symbolic stack shape and bufferSlots-equality.
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
@@ -2741,6 +2760,7 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
         (_h_kst_no_broke_mid : kst_mid.broke = false)
         (_h_stack_eq : s_mid.stack =
           .scaledIdx s.nextReg (1 <<< k.toNat) :: .bufferPtr bSlot :: s.stack)
+        (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2762,8 +2782,8 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
     (.i32Const k :: .i32Shl :: rest)
   · -- 2step IH gives us mid-state with stack
     --   .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
-    -- Now process i32Const k, then i32Shl (buffer-pattern), then rest.
-    intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_stack_mid
+    -- and bufferSlots = s.bufferSlots. Now process i32Const k + i32Shl + rest.
+    intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_stack_mid h_bs_mid
           ws'_mid s'_mid postOps_mid hw_mid hl_mid
     -- After cons_i32Const, the symbolic stack has
     --   .i32ConstSym k :: .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
@@ -2772,10 +2792,7 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
       fuel frames ws_mid s_mid kst_mid layout R_mid h_nb_mid h_nh_mid h_kb_mid
       k (.i32Shl :: rest)
     · -- Deep IH: i32Shl with buffer-pattern at the post-i32Const state.
-      -- h_stack_const : s2.stack = .i32ConstSym k :: s_mid.stack
-      --              = .i32ConstSym k :: .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
-      -- which matches i32Shl_bufferPattern's required shape exactly.
-      intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_stack_const
+      intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_stack_const h_bs_const
             ws'2 s'2 postOps2 hw2 hl2
       have h_chain_stack : s2.stack =
           .i32ConstSym k :: .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack := by
@@ -2787,10 +2804,14 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
         (by
           intro a _; exact h_shift_eq a)
         rest
-      · -- Inner closure: forward h_stack_shl as the 4step's h_stack_eq.
-        intro ws3 s3 kst3 R3 h_nb3 h_nh3 h_kb3 h_stack_shl
+      · -- Inner closure: forward h_stack_shl + h_bs_shl as 4step's outputs.
+        intro ws3 s3 kst3 R3 h_nb3 h_nh3 h_kb3 h_stack_shl h_bs_shl
               ws'3 s'3 postOps3 hw3 hl3
-        exact preservation_rest R3 h_nb3 h_nh3 h_kb3 h_stack_shl hw3 hl3
+        -- Compose h_bs_shl (s3.bs = s2.bs) with h_bs_const (s2.bs = s_mid.bs)
+        -- with h_bs_mid (s_mid.bs = s.bs).
+        have h_bs_chain : s3.bufferSlots = s.bufferSlots := by
+          rw [h_bs_shl, h_bs_const, h_bs_mid]
+        exact preservation_rest R3 h_nb3 h_nh3 h_kb3 h_stack_shl h_bs_chain hw3 hl3
       · exact hw2
       · exact hl2
     · exact hw_mid
@@ -2880,7 +2901,7 @@ theorem preservation_evalInstrs_chain_buffer_load_6step
     (.i32Add :: .i32Load offset align :: rest)
   · -- 4step IH: at mid-state s_mid with stack
     --   .scaledIdx s.nextReg (1 <<< k.toNat) :: .bufferPtr bSlot :: s.stack
-    intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_stack_4step
+    intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_stack_4step _h_bs_4step
           ws'_mid s'_mid postOps_mid hw_mid hl_mid
     apply preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
       fuel frames ws_mid s_mid kst_mid layout R_mid h_nb_mid h_nh_mid h_kb_mid
@@ -2891,9 +2912,8 @@ theorem preservation_evalInstrs_chain_buffer_load_6step
       (.i32Load offset align :: rest)
     · -- Inner IH: at post-i32Add state with stack
       --   .bufferAccess bSlot s.nextReg (1 <<< k.toNat) :: s.stack
-      intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_stack_add
+      intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_stack_add _h_bs_add
             ws'2 s'2 postOps2 hw2 hl2
-      -- For i32Load to fire (scale = 4), need 1 <<< k.toNat = 4, i.e. k = 2.
       have h_scale_4 : (1 <<< k.toNat) = 4 := by
         rw [h_k_eq_2]; rfl
       have h_chain_stack_load : s2.stack =
@@ -3002,9 +3022,62 @@ theorem preservation_evalInstrs_chain_buffer_store_7step
              .i32Store offset align :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  -- Stage 3 cascade: body deferred (chains build on
-  -- cons_local* which are currently sorry-deferred).
-  sorry
+  -- Chain via 4step (.scaledIdx :: .bufferPtr :: original), then
+  -- cons_i32Add_bufferPattern_scaledFirst (.bufferAccess :: original),
+  -- then cons_localGet on valIdx (pushes .reg fresh .u32),
+  -- then cons_i32Store (matches scale=4 ⇒ k=2).
+  apply preservation_evalInstrs_chain_buffer_prelude_4step
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+    bufSlotIdx bSlot h_buf h_loc_buf idxIdx h_no_buf_idx k h_shift_eq
+    (.i32Add :: .localGet valIdx :: .i32Store offset align :: rest)
+  · intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_stack_4step h_bs_4step
+          ws'_mid s'_mid postOps_mid hw_mid hl_mid
+    apply preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst
+      fuel frames ws_mid s_mid kst_mid layout R_mid h_nb_mid h_nh_mid h_kb_mid
+      bSlot (s.nextReg) (1 <<< k.toNat) s.stack
+      h_stack_4step
+      (by
+        intro a b_ptr b _ h_a h_bp; exact h_addr_eq a b_ptr b h_a h_bp)
+      (.localGet valIdx :: .i32Store offset align :: rest)
+    · intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_stack_add h_bs_add
+            ws'2 s'2 postOps2 hw2 hl2
+      have h_scale_4 : (1 <<< k.toNat) = 4 := by
+        rw [h_k_eq_2]; rfl
+      have h_chain_stack_after_add : s2.stack =
+          .bufferAccess bSlot s.nextReg 4 :: s.stack := by
+        rw [h_stack_add, h_scale_4]
+      -- Promote h_no_buf_val from s to s2 via bufferSlots-equality.
+      have h_bs_s2 : s2.bufferSlots = s.bufferSlots := by
+        rw [h_bs_add, h_bs_4step]
+      have h_no_buf_val_s2 : s2.lookupBufferSlot valIdx = none := by
+        unfold LowerState.lookupBufferSlot at h_no_buf_val ⊢
+        rw [h_bs_s2]; exact h_no_buf_val
+      apply preservation_evalInstrs_cons_localGet
+        fuel frames ws2 s2 kst2 layout R2 h_nb2 h_nh2 h_kb2
+        valIdx h_no_buf_val_s2
+        (.i32Store offset align :: rest)
+      · -- After localGet valIdx (non-buf): s3.stack = .reg s2.nextReg .u32 :: s2.stack.
+        intro ws3 s3 kst3 R3 h_nb3 h_nh3 h_kb3 _h_bs3 h_stack_lg _h_nr3
+              ws'3 s'3 postOps3 hw3 hl3
+        have h_chain_stack_store : s3.stack =
+            .reg s2.nextReg .u32 :: .bufferAccess bSlot s.nextReg 4 :: s.stack := by
+          rw [h_stack_lg, h_chain_stack_after_add]
+        apply preservation_evalInstrs_cons_i32Store
+          fuel frames ws3 s3 kst3 layout R3 h_nb3 h_nh3 h_kb3
+          (.reg s2.nextReg .u32) bSlot (s.nextReg) s.stack offset align
+          h_chain_stack_store h_offset
+          (by intro b _; exact h_in_bounds b)
+          (by intro b _; exact h_layout_no_overlap b)
+          rest
+        · exact preservation_rest
+        · exact hw3
+        · exact hl3
+      · exact hw2
+      · exact hl2
+    · exact hw_mid
+    · exact hl_mid
+  · exact hw
+  · exact hl
 
 -- ════════════════════════════════════════════════════════════════════
 -- L3.1 foundation — list-level bufferSlots-preservation invariant

@@ -4630,6 +4630,7 @@ theorem const0_brIf0_body_preserves
         (_h_no_halt_mid : ws_mid.halted = false)
         (_h_kst_no_broke_mid : kst_mid.broke = false)
         (_h_stack_eq : s_mid.stack = .i32ConstSym 0 :: s_b.stack)
+        (_h_bs_eq : s_mid.bufferSlots = s_b.bufferSlots)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs bt ws_mid [.brIf 0] = some ws'_mid)
         (_hl_mid : lowerInstrs bt (.loopK :: frames) s_mid [.brIf 0]
@@ -4637,7 +4638,7 @@ theorem const0_brIf0_body_preserves
       ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
         evalOps F kst_mid postOps = some kst'_mid ∧
         Refines ws'_mid s'_mid kst'_mid layout := by
-    intro ws_mid s_mid kst_mid R_mid h_nb_m h_nh_m h_nbk_m _h_stack_m
+    intro ws_mid s_mid kst_mid R_mid h_nb_m h_nh_m h_nbk_m _h_stack_m _h_bs_m
           ws'_mid s'_mid postOps hw_mid hl_mid
     exact preservation_evalInstrs_cons_brIf_loop_self
       bt (.loopK :: frames) ws_mid s_mid kst_mid layout R_mid
