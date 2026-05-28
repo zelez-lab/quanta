@@ -566,10 +566,10 @@ theorem preservation_evalInstrs_cons_localGet
     (h_kst_no_broke : kst.broke = false)
     (i : Nat) (h_no_buf : s.lookupBufferSlot i = none)
     (rest : List WasmInstr)
-    -- preservation_rest receives `h_bs_eq : s_mid.bufferSlots = s.bufferSlots`
-    -- and `h_stack_eq : s_mid.stack = .reg s.nextReg .u32 :: s.stack` to thread
-    -- bufferSlot- and stack-dependent hypotheses across the mid-state
-    -- existential.
+    -- preservation_rest receives:
+    --   h_bs_eq    : s_mid.bufferSlots = s.bufferSlots
+    --   h_stack_eq : s_mid.stack = .reg s.nextReg .u32 :: s.stack
+    --   h_nr_eq    : s_mid.nextReg = s.nextReg + 1
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
@@ -578,6 +578,7 @@ theorem preservation_evalInstrs_cons_localGet
         (_h_kst_no_broke_mid : kst_mid.broke = false)
         (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
         (_h_stack_eq : s_mid.stack = .reg s.nextReg .u32 :: s.stack)
+        (_h_nr_eq : s_mid.nextReg = s.nextReg + 1)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -645,7 +646,10 @@ theorem preservation_evalInstrs_cons_localGet
                 lowerInstr_preserves_bufferSlots h_head
               -- s_after.stack = .reg s.nextReg .u32 :: s.stack from the
               -- non-buffer localGet arm (alloc fresh = s.nextReg, then push).
-              have h_stack_after : s_after.stack = .reg s.nextReg .u32 :: s.stack := by
+              -- Also s_after.nextReg = s.nextReg + 1.
+              have h_s_after_struct :
+                  s_after.stack = .reg s.nextReg .u32 :: s.stack ∧
+                  s_after.nextReg = s.nextReg + 1 := by
                 unfold lowerInstr at h_head
                 simp only [h_no_buf, Option.bind_eq_bind] at h_head
                 rcases hsource : (s.lookupCurrentReg i).orElse
@@ -653,10 +657,14 @@ theorem preservation_evalInstrs_cons_localGet
                 · simp [hsource] at h_head
                 · simp [hsource, LowerState.alloc, LowerState.push] at h_head
                   obtain ⟨h_s_after_eq, _⟩ := h_head
-                  rw [← h_s_after_eq]
+                  refine ⟨?_, ?_⟩
+                  · rw [← h_s_after_eq]
+                  · rw [← h_s_after_eq]
+              have h_stack_after := h_s_after_struct.1
+              have h_nr_after := h_s_after_struct.2
               obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
                 preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke
-                  h_bs_after h_stack_after hw h_post
+                  h_bs_after h_stack_after h_nr_after hw h_post
               have h_chained :
                   ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
                     ∧ Refines ws' s_post kst'' layout :=
@@ -1873,11 +1881,13 @@ theorem preservation_evalInstrs_cons_localGet_bufferSlot
     (h_loc_buf : ∀ v, ws.locals.get? i = some v →
       ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr slot)
     (rest : List WasmInstr)
-    -- The preservation_rest IH receives `h_bs_eq` (bufferSlots equality)
-    -- and `h_stack_eq` (mid-stack = .bufferPtr slot :: s.stack) attestations
-    -- proven from the lowerInstr buffer-slot arm's structural output.
-    -- Lets chain composers thread bufferSlot- and stack-dependent
-    -- hypotheses across the mid-state existential.
+    -- The preservation_rest IH receives:
+    --   h_bs_eq    : s_mid.bufferSlots = s.bufferSlots
+    --   h_stack_eq : s_mid.stack = .bufferPtr slot :: s.stack
+    --   h_nr_eq    : s_mid.nextReg = s.nextReg
+    -- All three proven from the buffer-slot arm's structural output.
+    -- Lets chain composers thread bufferSlot / stack / nextReg
+    -- dependent hypotheses across the mid-state existential.
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
@@ -1886,6 +1896,7 @@ theorem preservation_evalInstrs_cons_localGet_bufferSlot
         (_h_kst_no_broke_mid : kst_mid.broke = false)
         (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
         (_h_stack_eq : s_mid.stack = .bufferPtr slot :: s.stack)
+        (_h_nr_eq : s_mid.nextReg = s.nextReg)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -1947,17 +1958,18 @@ theorem preservation_evalInstrs_cons_localGet_bufferSlot
               have h_bs_after : s_after.bufferSlots = s.bufferSlots :=
                 lowerInstr_preserves_bufferSlots h_head
               -- s_after = s.pushSym (.bufferPtr slot) from the buffer-slot arm.
-              have h_stack_after : s_after.stack = .bufferPtr slot :: s.stack := by
+              have h_s_after_eq : s_after = s.pushSym (.bufferPtr slot) := by
                 unfold lowerInstr at h_head
                 simp only [h_buf, Option.bind_eq_bind] at h_head
-                have h_eq : s_after = s.pushSym (.bufferPtr slot) :=
-                  (Prod.mk.injEq _ _ _ _ |>.mp
+                exact (Prod.mk.injEq _ _ _ _ |>.mp
                           ((Option.some.injEq _ _).mp h_head)).1.symm
-                rw [h_eq]
-                rfl
+              have h_stack_after : s_after.stack = .bufferPtr slot :: s.stack := by
+                rw [h_s_after_eq]; rfl
+              have h_nr_after : s_after.nextReg = s.nextReg := by
+                rw [h_s_after_eq]; rfl
               obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
                 preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke
-                  h_bs_after h_stack_after hw h_post
+                  h_bs_after h_stack_after h_nr_after hw h_post
               have h_chained :
                   ∃ kst'', evalOps F_rest kst (ops_head ++ postOps) = some kst''
                     ∧ Refines ws' s_post kst'' layout :=
@@ -2600,12 +2612,17 @@ theorem preservation_evalInstrs_chain_buffer_prelude_2step
       ∃ n : UInt32, v = .wI32 n ∧ n.toNat = layout.startAddr bSlot)
     (idxIdx : Nat) (h_no_buf_idx : s.lookupBufferSlot idxIdx = none)
     (rest : List WasmInstr)
+    -- preservation_rest receives h_stack_eq : s_mid.stack =
+    -- .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
+    -- (the chain's structural mid-state shape after both localGets).
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
         (_R_mid : Refines ws_mid s_mid kst_mid layout)
         (_h_no_branch_mid : ws_mid.branchTarget = none)
         (_h_no_halt_mid : ws_mid.halted = false)
         (_h_kst_no_broke_mid : kst_mid.broke = false)
+        (_h_stack_eq : s_mid.stack =
+          .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack)
         {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
         (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
         (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
@@ -2623,20 +2640,24 @@ theorem preservation_evalInstrs_chain_buffer_prelude_2step
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
     bufSlotIdx bSlot h_buf h_loc_buf
     (.localGet idxIdx :: rest)
-  · -- Inner IH at the mid-state: cons_localGet on idxIdx, then preservation_rest.
-    intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_bs_mid _h_stack_mid
+  · -- Inner IH at mid-state: cons_localGet on idxIdx, then preservation_rest.
+    intro ws_mid s_mid kst_mid R_mid h_nb_mid h_nh_mid h_kb_mid h_bs_mid h_stack_buf h_nr_buf
           ws'_mid s'_mid postOps hw_mid hl_mid
-    -- h_bs_mid : s_mid.bufferSlots = s.bufferSlots — lets us promote h_no_buf_idx.
     have h_no_buf_idx_mid : s_mid.lookupBufferSlot idxIdx = none := by
       unfold LowerState.lookupBufferSlot at h_no_buf_idx ⊢
       rw [h_bs_mid]; exact h_no_buf_idx
     apply preservation_evalInstrs_cons_localGet
       fuel frames ws_mid s_mid kst_mid layout R_mid h_nb_mid h_nh_mid h_kb_mid
       idxIdx h_no_buf_idx_mid rest
-    · -- Outer preservation_rest (the chain caller's, no h_bs_eq / h_stack_eq):
-      -- absorb the inner cons_localGet's h_bs_eq + h_stack_eq clauses.
-      intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 _h_bs2 _h_stack2 ws'2 s'2 postOps2 hw2 hl2
-      exact preservation_rest R2 h_nb2 h_nh2 h_kb2 hw2 hl2
+    · intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 _h_bs2 h_stack_idx _h_nr_idx
+            ws'2 s'2 postOps2 hw2 hl2
+      -- Compose: s2.stack = .reg s_mid.nextReg .u32 :: s_mid.stack
+      --                   = .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack
+      -- using h_nr_buf (s_mid.nextReg = s.nextReg) and h_stack_buf.
+      have h_chain_stack : s2.stack =
+          .reg s.nextReg .u32 :: .bufferPtr bSlot :: s.stack := by
+        rw [h_stack_idx, h_nr_buf, h_stack_buf]
+      exact preservation_rest R2 h_nb2 h_nh2 h_kb2 h_chain_stack hw2 hl2
     · exact hw_mid
     · exact hl_mid
   · exact hw
