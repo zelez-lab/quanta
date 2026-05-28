@@ -222,8 +222,12 @@ theorem preservation_evalInstrs_main
                preservation_rest R_mid h_nb h_nh h_kb hw_mid hl_mid)
             ws' s' ops hw hl
       | localTee idx =>
+          -- Wrap preservation_rest to absorb cons_localTee composer's h_bs_eq clause.
           exact preservation_evalInstrs_cons_localTee fuel frames ws s kst layout R
-            h_no_branch h_no_halt h_kst_no_broke idx rest preservation_rest
+            h_no_branch h_no_halt h_kst_no_broke idx rest
+            (fun {ws_mid s_mid kst_mid} R_mid h_nb h_nh h_kb _h_bs
+                 {ws'_mid s'_mid postOps} hw_mid hl_mid =>
+               preservation_rest R_mid h_nb h_nh h_kb hw_mid hl_mid)
             ws' s' ops hw hl
       -- All non-closed-shape instructions: closedInstr returns false,
       -- so h_head_closed contradicts via `simp [closedInstr] at h_head_closed`.
