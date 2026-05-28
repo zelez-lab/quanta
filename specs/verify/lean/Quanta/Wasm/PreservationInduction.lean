@@ -212,8 +212,14 @@ theorem preservation_evalInstrs_main
             h_no_branch h_no_halt h_kst_no_broke rest preservation_rest
             ws' s' ops hw hl
       | localSet idx =>
+          -- Wrap preservation_rest to absorb the cons_localSet composer's
+          -- extra h_bs_eq clause (s_mid.bufferSlots = s.bufferSlots, unused
+          -- in the IH-only path but threaded for chain_buffer_* callers).
           exact preservation_evalInstrs_cons_localSet fuel frames ws s kst layout R
-            h_no_branch h_no_halt h_kst_no_broke idx rest preservation_rest
+            h_no_branch h_no_halt h_kst_no_broke idx rest
+            (fun {ws_mid s_mid kst_mid} R_mid h_nb h_nh h_kb _h_bs
+                 {ws'_mid s'_mid postOps} hw_mid hl_mid =>
+               preservation_rest R_mid h_nb h_nh h_kb hw_mid hl_mid)
             ws' s' ops hw hl
       | localTee idx =>
           exact preservation_evalInstrs_cons_localTee fuel frames ws s kst layout R
