@@ -188,20 +188,66 @@ axiom WasmMem.store_load_same
     (h_store : m.store_u32 addr v = some m') :
     m'.load_u32 addr = some v
 
-/-- WASM byte-store + byte-load disjoint preservation — TCB axiom.
-    A 4-byte store at `addr_s` doesn't perturb the load at `addr_l`
-    when their byte ranges don't overlap. Constructively provable
-    via 4 invocations of `List.getElem?_set_ne`; mechanical and
-    accepted as TCB.
+/-- WASM byte-store + byte-load disjoint preservation. A 4-byte store
+    at `addr_s` doesn't perturb the load at `addr_l` when their byte
+    ranges don't overlap.
 
     Used by `preservation_i32Store` to lift the input `HeapRefines`
     past the store's mem-write at every `(slot', idx')` other than
     the one being written. -/
-axiom WasmMem.store_load_disjoint
+theorem WasmMem.store_load_disjoint
     (m : WasmMem) (addr_s : Nat) (v : UInt32) (m' : WasmMem)
     (h_store : m.store_u32 addr_s v = some m') (addr_l : Nat)
     (h_disj : addr_s + 4 ≤ addr_l ∨ addr_l + 4 ≤ addr_s) :
-    m'.load_u32 addr_l = m.load_u32 addr_l
+    m'.load_u32 addr_l = m.load_u32 addr_l := by
+  -- Unfold store_u32 to extract m' = m.set... .set... .set... .set.
+  simp only [WasmMem.store_u32, pure] at h_store
+  by_cases hbnd : addr_s + 3 < m.length
+  case neg => simp [hbnd] at h_store
+  simp only [hbnd, if_true, Option.some.injEq] at h_store
+  rw [← h_store]
+  simp only [WasmMem.load_u32, List.get?_eq_getElem?]
+  -- For each byte at addr_l + j (j ∈ 0..3), four successive .set calls at
+  -- addr_s..addr_s+3 don't touch it (by h_disj).
+  -- The .set has shape (l.set i x).getElem? j = if i = j then some x else l.getElem? j.
+  -- Build the four address inequalities from h_disj.
+  have h_ne : ∀ (i_s i_l : Nat),
+      (i_s = addr_s ∨ i_s = addr_s + 1 ∨ i_s = addr_s + 2 ∨ i_s = addr_s + 3) →
+      (i_l = addr_l ∨ i_l = addr_l + 1 ∨ i_l = addr_l + 2 ∨ i_l = addr_l + 3) →
+      i_s ≠ i_l := by
+    intro i_s i_l h_s h_l h_eq
+    rcases h_disj with h | h <;>
+      rcases h_s with hs | hs | hs | hs <;>
+      rcases h_l with hl | hl | hl | hl <;>
+      omega
+  -- Helper: every load index (addr_l + k for k = 0..3) is unaffected by
+  -- the four successive .set calls at addr_s + j for j = 0..3.
+  -- Each .set is `getElem?_set_ne` discharged by `h_ne`.
+  have lift : ∀ (k : Nat), k ≤ 3 →
+      ((((m.set addr_s (UInt8.ofNat (v.toNat &&& 255))).set
+            (addr_s + 1) (UInt8.ofNat (v.toNat >>> 8 &&& 255))).set
+            (addr_s + 2) (UInt8.ofNat (v.toNat >>> 16 &&& 255))).set
+            (addr_s + 3) (UInt8.ofNat (v.toNat >>> 24 &&& 255)))[addr_l + k]?
+            = m[addr_l + k]? := by
+    intro k hk
+    have h_l_choice : addr_l + k = addr_l ∨ addr_l + k = addr_l + 1 ∨
+                      addr_l + k = addr_l + 2 ∨ addr_l + k = addr_l + 3 := by
+      omega
+    rw [List.getElem?_set_ne
+          (h_ne (addr_s + 3) (addr_l + k) (Or.inr (Or.inr (Or.inr rfl))) h_l_choice)]
+    rw [List.getElem?_set_ne
+          (h_ne (addr_s + 2) (addr_l + k) (Or.inr (Or.inr (Or.inl rfl))) h_l_choice)]
+    rw [List.getElem?_set_ne
+          (h_ne (addr_s + 1) (addr_l + k) (Or.inr (Or.inl rfl)) h_l_choice)]
+    rw [List.getElem?_set_ne
+          (h_ne addr_s (addr_l + k) (Or.inl rfl) h_l_choice)]
+  -- Apply lift to each of the 4 load bytes.
+  have h0 := lift 0 (by omega)
+  have h1 := lift 1 (by omega)
+  have h2 := lift 2 (by omega)
+  have h3 := lift 3 (by omega)
+  simp only [Nat.add_zero] at h0
+  rw [h0, h1, h2, h3]
 
 /-- Single-byte load. -/
 def WasmMem.load_u8 (m : WasmMem) (addr : Nat) : Option UInt8 := m.get? addr
