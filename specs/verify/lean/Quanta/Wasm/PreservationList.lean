@@ -2677,8 +2677,22 @@ theorem preservation_evalInstrs_chain_buffer_prelude_4step
              .i32Const k :: .i32Shl :: rest) = some (s', ops)) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  -- Stage 3 cascade: body deferred (chains build on
-  -- cons_local* which are currently sorry-deferred).
+  -- Buffer-pattern chain extending the 2-step prelude with
+  -- `i32Const k :: i32Shl :: rest`. The 4-step chain is closed by
+  -- composition: cons_localGet_bufferSlot wraps the bufferSlot path
+  -- of bufSlotIdx, the inner IH applies a chain-extension closing
+  -- localGet idxIdx + i32Const k + i32Shl_bufferPattern manually
+  -- against the caller-supplied preservation_rest.
+  --
+  -- For this chain to close, we'd need to expose the mid-state's
+  -- symbolic stack shape (s_mid.stack = .reg idxFresh .u32 :: ...)
+  -- so that i32Shl_bufferPattern's stack-shape precondition matches.
+  -- The cons composer hides s_mid existentially, so the standard
+  -- composition doesn't apply. The full inline expansion is
+  -- ~400 LoC of state-shape derivation across all 4 steps.
+  --
+  -- Deferred — see [[stage3-refactor-pickup]]. Not cited by any
+  -- framework theorem; pure user-facing buffer-pattern coverage.
   sorry
 
 -- ════════════════════════════════════════════════════════════════════
