@@ -129,6 +129,19 @@ def KernelOp.extendEnvOps (env : List Reg) : List KernelOp → List Reg
   | []         => env
   | op :: rest => KernelOp.extendEnvOps (KernelOp.extendEnv env op) rest
 
+/-- The env after walking ops always contains the starting env. -/
+theorem KernelOp.extendEnvOps_super (env : List Reg) (ops : List KernelOp) :
+    env ⊆ KernelOp.extendEnvOps env ops := by
+  induction ops generalizing env with
+  | nil => intro x hx; exact hx
+  | cons op rest ih =>
+    intro x hx
+    apply ih
+    unfold KernelOp.extendEnv
+    cases op.definedReg with
+    | none => exact hx
+    | some r => simp [List.mem_cons]; right; exact hx
+
 theorem KernelOp.scopeValidOps_append (env : List Reg) (ops1 ops2 : List KernelOp) :
     KernelOp.scopeValidOps env ops1 →
     KernelOp.scopeValidOps (KernelOp.extendEnvOps env ops1) ops2 →
