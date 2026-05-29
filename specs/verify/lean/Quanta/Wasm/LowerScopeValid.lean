@@ -1683,4 +1683,104 @@ theorem lowerInstr_scopeValid
   | unreachable     => simp [lowerInstr] at h
   | unsupported _   => simp [lowerInstr] at h
 
+-- ════════════════════════════════════════════════════════════════════
+-- wellScoped preservation for the rest of the closed arms
+--
+-- popSym + commit + alloc + push are each wellScoped-preserving
+-- under the right precondition. Each per-arm theorem threads them
+-- through the do-block.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Bin_preserves_wellScoped
+    {s s' : LowerState} {op : Quanta.KOps.BinOp} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Bin s op = some (s', ops)) : s'.wellScoped := by
+  unfold lowerI32Bin at h
+  rcases hb : s.popSym with _ | ⟨svb, s1⟩
+  · simp [hb] at h
+  simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+  rcases ha : s1.popSym with _ | ⟨sva, s2⟩
+  · simp [ha] at h
+  simp only [ha, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hca : s2.commit sva with _ | ⟨ra, s3, opsA⟩
+  · simp [hca] at h
+  simp only [hca, Option.some_bind] at h
+  rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+  · simp [hcb] at h
+  simp only [hcb, Option.some_bind] at h
+  simp [LowerState.alloc, LowerState.push] at h
+  obtain ⟨h_s_eq, _⟩ := h
+  -- Thread wellScoped.
+  have hws1 : s1.wellScoped := LowerState.popSym_preserves_wellScoped hws hb
+  have hws2 : s2.wellScoped := LowerState.popSym_preserves_wellScoped hws1 ha
+  have hws3 : s3.wellScoped := LowerState.commit_preserves_wellScoped hws2 hca
+  have hws4 : s4.wellScoped := LowerState.commit_preserves_wellScoped hws3 hcb
+  subst h_s_eq
+  -- Goal: { s4 with nextReg := s4.nextReg + 1,
+  --                  stack := .reg s4.nextReg .u32 :: s4.stack }.wellScoped
+  -- This is `(s4.alloc.snd).push s4.nextReg`.
+  obtain ⟨hstk, hloc, hcur⟩ := hws4
+  refine ⟨?_, ?_, ?_⟩
+  · intro sv hsv r hr
+    show r < s4.nextReg + 1
+    simp at hsv
+    rcases hsv with rfl | hsv
+    · simp [SymVal.regs] at hr
+      subst hr; exact Nat.lt_succ_self _
+    · exact Nat.lt_succ_of_lt (hstk sv hsv r hr)
+  · intro p hp
+    show p.snd < s4.nextReg + 1
+    exact Nat.lt_succ_of_lt (hloc p hp)
+  · intro p hp
+    show p.snd < s4.nextReg + 1
+    exact Nat.lt_succ_of_lt (hcur p hp)
+
+theorem lowerInstr_i32Sub_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Sub = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32Mul_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Mul = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32And_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32And = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32Or_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Or = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32Xor_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Xor = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32ShrU_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32ShrU = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32DivU_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32DivU = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32RemU_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32RemU = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Bin_preserves_wellScoped hws h
+
 end Quanta.Wasm
