@@ -1139,6 +1139,95 @@ theorem lowerInstr_i32Load_scopeValid
     scopeValidOps s'.scopeEnv ops :=
   lowerI32Load_scopeValid hws h
 
+-- ════════════════════════════════════════════════════════════════════
+-- Per-arm: lowerI32Store
+--
+-- pops val (top) then addr; commits val into src; emits
+--   opsCommit ++ [.store slot base src .u32]
+-- against `addr = .bufferAccess slot base 4`. opsCommit is
+-- scope-valid against any env (commit_ops_scopeValid); the trailing
+-- .store needs base + src in env. base came from a SymVal on
+-- s1.stack ⊆ s.stack; src came out of commit at s3.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Store_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Store s = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  unfold lowerI32Store at h
+  rcases h1 : s.popSym with _ | ⟨sv_val, s1⟩
+  · simp [h1] at h
+  simp only [h1, Option.bind_eq_bind, Option.some_bind] at h
+  rcases h2 : s1.popSym with _ | ⟨sv_addr, s2⟩
+  · simp [h2] at h
+  simp only [h2, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hc : s2.commit sv_val with _ | ⟨src, s3, opsCommit⟩
+  · simp [hc] at h
+  simp only [hc, Option.bind_eq_bind, Option.some_bind] at h
+  -- Thread wellScoped + nextReg chain.
+  have hws1 : s1.wellScoped := LowerState.popSym_preserves_wellScoped hws h1
+  have hws2 : s2.wellScoped := LowerState.popSym_preserves_wellScoped hws1 h2
+  have hnr1 : s1.nextReg = s.nextReg := LowerState.popSym_nextReg h1
+  have hnr2 : s2.nextReg = s1.nextReg := LowerState.popSym_nextReg h2
+  have hnr_c : s2.nextReg ≤ s3.nextReg := LowerState.commit_nextReg_mono hc
+  -- sv_val came from s.stack; lift to s2.
+  have hsv_val_s : ∀ r ∈ sv_val.regs, r < s.nextReg :=
+    LowerState.popSym_sv_regs_lt hws h1
+  have hsv_val_s2 : ∀ r ∈ sv_val.regs, r < s2.nextReg := by
+    intro r hr; rw [hnr2, hnr1]; exact hsv_val_s r hr
+  have hsrc_s3 : src ∈ s3.scopeEnv :=
+    LowerState.commit_r_mem_scopeEnv hsv_val_s2 hc
+  -- sv_addr came from s1.stack; lift to s3 via the chain.
+  have hsv_addr_s1 : ∀ r ∈ sv_addr.regs, r < s1.nextReg :=
+    LowerState.popSym_sv_regs_lt hws1 h2
+  cases sv_addr with
+  | bufferAccess slot base scale =>
+      by_cases hscale : scale = 4
+      · subst hscale
+        simp at h
+        obtain ⟨h_s_eq, h_ops⟩ := h
+        subst h_s_eq
+        subst h_ops
+        -- base ∈ sv_addr.regs = [base], so base < s1.nextReg = s.nextReg
+        have hbase_s1 : base < s1.nextReg :=
+          hsv_addr_s1 base (by simp [SymVal.regs])
+        have hbase_s3 : base < s3.nextReg := by
+          have : base < s2.nextReg := by rw [hnr2]; exact hbase_s1
+          exact Nat.lt_of_lt_of_le this hnr_c
+        -- Goal: scopeValidOps s3.scopeEnv (opsCommit ++ [.store slot base src .u32])
+        apply Quanta.KOps.KernelOp.scopeValidOps_append
+        · exact LowerState.commit_ops_scopeValid s3.scopeEnv hc
+        · refine ⟨?_, trivial⟩
+          intro r hr
+          simp [KernelOp.usedRegs] at hr
+          -- hr : r = base ∨ r = src
+          have hsuper : s3.scopeEnv ⊆ extendEnvOps s3.scopeEnv opsCommit :=
+            Quanta.KOps.KernelOp.extendEnvOps_super _ _
+          rcases hr with rfl | rfl
+          · apply hsuper
+            rw [LowerState.mem_scopeEnv]; exact hbase_s3
+          · exact hsuper hsrc_s3
+      · -- scale ≠ 4: match fails; lowerI32Store returns none.
+        exfalso
+        simp only [pure, Pure.pure] at h
+        split at h
+        · rename_i _ _ _ hp
+          cases hp
+          exact hscale rfl
+        · exact Option.noConfusion h
+  | reg _ _ => simp at h
+  | i32ConstSym _ => simp at h
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+
+theorem lowerInstr_i32Store_scopeValid
+    {s s' : LowerState} {offset align : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s (.i32Store offset align) = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  unfold lowerInstr at h
+  exact lowerI32Store_scopeValid hws h
+
 -- Per-arm wrappers for the cmp family.
 theorem lowerInstr_i32Eq_scopeValid
     {s s' : LowerState} {ops : List KernelOp}
