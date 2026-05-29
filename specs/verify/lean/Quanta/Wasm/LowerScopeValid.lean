@@ -2004,4 +2004,100 @@ theorem lowerInstr_i32Add_preserves_wellScoped
     s'.wellScoped :=
   lowerI32Add_preserves_wellScoped hws h
 
+-- ════════════════════════════════════════════════════════════════════
+-- i32Load + i32Store preservation
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Load_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Load s = some (s', ops)) : s'.wellScoped := by
+  unfold lowerI32Load at h
+  rcases hs : s.stack with _ | ⟨sv, rs⟩
+  · rw [hs] at h; simp at h
+  · rw [hs] at h
+    cases sv with
+    | bufferAccess slot base scale =>
+        by_cases hscale : scale = 4
+        · subst hscale
+          simp [LowerState.alloc] at h
+          obtain ⟨h_s_eq, _⟩ := h
+          subst h_s_eq
+          -- Goal state: { s with nextReg := s.nextReg + 1,
+          --                        stack := .reg s.nextReg .u32 :: rs }.
+          obtain ⟨hstk, hloc, hcur⟩ := hws
+          refine ⟨?_, ?_, ?_⟩
+          · intro sv' hsv' r hr
+            show r < s.nextReg + 1
+            simp at hsv'
+            rcases hsv' with rfl | hsv'
+            · simp [SymVal.regs] at hr
+              subst hr; exact Nat.lt_succ_self _
+            · have hmem : sv' ∈ s.stack := by
+                rw [hs]; exact List.mem_cons_of_mem _ hsv'
+              exact Nat.lt_succ_of_lt (hstk sv' hmem r hr)
+          · intro p hp
+            show p.snd < s.nextReg + 1
+            exact Nat.lt_succ_of_lt (hloc p hp)
+          · intro p hp
+            show p.snd < s.nextReg + 1
+            exact Nat.lt_succ_of_lt (hcur p hp)
+        · exfalso
+          split at h
+          · rename_i _ _ _ _ hp
+            cases hp; exact hscale rfl
+          · exact Option.noConfusion h
+    | reg _ _ => simp at h
+    | i32ConstSym _ => simp at h
+    | bufferPtr _ => simp at h
+    | scaledIdx _ _ => simp at h
+
+theorem lowerInstr_i32Load_preserves_wellScoped
+    {s s' : LowerState} {offset align : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s (.i32Load offset align) = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Load_preserves_wellScoped hws h
+
+theorem lowerI32Store_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Store s = some (s', ops)) : s'.wellScoped := by
+  unfold lowerI32Store at h
+  rcases h1 : s.popSym with _ | ⟨sv_val, s1⟩
+  · simp [h1] at h
+  simp only [h1, Option.bind_eq_bind, Option.some_bind] at h
+  rcases h2 : s1.popSym with _ | ⟨sv_addr, s2⟩
+  · simp [h2] at h
+  simp only [h2, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hc : s2.commit sv_val with _ | ⟨src, s3, opsCommit⟩
+  · simp [hc] at h
+  simp only [hc, Option.bind_eq_bind, Option.some_bind] at h
+  have hws1 : s1.wellScoped := LowerState.popSym_preserves_wellScoped hws h1
+  have hws2 : s2.wellScoped := LowerState.popSym_preserves_wellScoped hws1 h2
+  have hws3 : s3.wellScoped := LowerState.commit_preserves_wellScoped hws2 hc
+  cases sv_addr with
+  | bufferAccess slot base scale =>
+      by_cases hscale : scale = 4
+      · subst hscale
+        simp at h
+        obtain ⟨h_s_eq, _⟩ := h
+        subst h_s_eq
+        exact hws3
+      · exfalso
+        simp only [pure, Pure.pure] at h
+        split at h
+        · rename_i _ _ _ hp; cases hp; exact hscale rfl
+        · exact Option.noConfusion h
+  | reg _ _ => simp at h
+  | i32ConstSym _ => simp at h
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+
+theorem lowerInstr_i32Store_preserves_wellScoped
+    {s s' : LowerState} {offset align : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s (.i32Store offset align) = some (s', ops)) :
+    s'.wellScoped := by
+  unfold lowerInstr at h
+  exact lowerI32Store_preserves_wellScoped hws h
+
 end Quanta.Wasm
