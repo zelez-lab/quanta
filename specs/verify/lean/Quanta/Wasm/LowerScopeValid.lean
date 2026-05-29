@@ -249,4 +249,29 @@ theorem lowerInstr_localGet_nonbuffer_scopeValid
     subst hr
     exact hmem_alloc
 
+/-- `localGet i` buffer-typed path: when `lookupBufferSlot i = some slot`,
+    the arm emits no IR — it just pushes `SymVal.bufferPtr slot` onto
+    the stack symbolically. Trivially scope-valid against any env. -/
+theorem lowerInstr_localGet_buffer_scopeValid
+    {s s' : LowerState} {i slot : Nat} {ops : List KernelOp}
+    (hbuf : s.lookupBufferSlot i = some slot)
+    (h : lowerInstr s (.localGet i) = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  simp [lowerInstr, hbuf] at h
+  obtain ⟨_, h_ops⟩ := h
+  subst h_ops
+  exact trivial
+
+/-- Unified `localGet i` theorem: regardless of whether the local is a
+    buffer parameter or a plain scalar, the emitted ops are scope-valid
+    against the post-state's scopeEnv, given `wellScoped s`. -/
+theorem lowerInstr_localGet_scopeValid
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s (.localGet i) = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  rcases hbuf : s.lookupBufferSlot i with _ | slot
+  · exact lowerInstr_localGet_nonbuffer_scopeValid hws hbuf h
+  · exact lowerInstr_localGet_buffer_scopeValid hbuf h
+
 end Quanta.Wasm
