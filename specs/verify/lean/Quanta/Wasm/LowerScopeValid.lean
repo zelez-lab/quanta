@@ -85,6 +85,13 @@ theorem LowerState.fresh_mem_scopeEnv_alloc (s : LowerState) :
   rw [LowerState.mem_scopeEnv, LowerState.alloc_snd_nextReg]
   exact Nat.lt_succ_self _
 
+/-- Monotonicity of `scopeEnv` in `nextReg`. -/
+theorem LowerState.scopeEnv_subset_of_nextReg_le {s s' : LowerState}
+    (h : s.nextReg ≤ s'.nextReg) : s.scopeEnv ⊆ s'.scopeEnv := by
+  intro r hr
+  rw [LowerState.mem_scopeEnv] at hr ⊢
+  exact Nat.lt_of_lt_of_le hr h
+
 -- ════════════════════════════════════════════════════════════════════
 -- well-scoped invariant
 -- ════════════════════════════════════════════════════════════════════
@@ -705,5 +712,264 @@ theorem lowerInstr_localGet_scopeValid
   rcases hbuf : s.lookupBufferSlot i with _ | slot
   · exact lowerInstr_localGet_nonbuffer_scopeValid hws hbuf h
   · exact lowerInstr_localGet_buffer_scopeValid hbuf h
+
+-- ════════════════════════════════════════════════════════════════════
+-- Per-arm: lowerI32Bin (binop family)
+--
+-- Emits opsA ++ opsB ++ [.binOp dst ra rb op .u32] where:
+--   opsA, opsB come from the two `commit` calls (each either [] or a
+--     single .const with no operand reads).
+--   ra, rb are committed registers — both lie in s'.scopeEnv via
+--     commit_r_mem_scopeEnv + monotonicity.
+--   dst is the freshly-allocated result reg.
+--
+-- This unlocks i32Sub/Mul/And/Or/Xor/ShrU/DivU/RemU (8 arms that
+-- dispatch directly to lowerI32Bin) and the non-buffer fallthroughs
+-- of lowerI32Add and lowerI32Shl.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Bin_scopeValid
+    {s s' : LowerState} {op : Quanta.KOps.BinOp} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Bin s op = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  unfold lowerI32Bin at h
+  -- Decompose the do-block step by step.
+  rcases hb : s.popSym with _ | ⟨svb, s1⟩
+  · simp [hb] at h
+  simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+  rcases ha : s1.popSym with _ | ⟨sva, s2⟩
+  · simp [ha] at h
+  simp only [ha, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hca : s2.commit sva with _ | ⟨ra, s3, opsA⟩
+  · simp [hca] at h
+  simp only [hca, Option.some_bind] at h
+  rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+  · simp [hcb] at h
+  simp only [hcb, Option.some_bind] at h
+  -- h : some (let (dst, s5) := s4.alloc; ({s5 with stack := .reg dst .u32 :: s5.stack},
+  --                                       opsA ++ opsB ++ [.binOp dst ra rb op .u32]))
+  --       = some (s', ops)
+  simp [LowerState.alloc, LowerState.push] at h
+  obtain ⟨h_s_eq, h_ops⟩ := h
+  -- Threading wellScoped through the four primitive steps.
+  have hws1 : s1.wellScoped := LowerState.popSym_preserves_wellScoped hws hb
+  have hws2 : s2.wellScoped := LowerState.popSym_preserves_wellScoped hws1 ha
+  -- nextReg chain.
+  have hnr_pop1 : s1.nextReg = s.nextReg := LowerState.popSym_nextReg hb
+  have hnr_pop2 : s2.nextReg = s1.nextReg := LowerState.popSym_nextReg ha
+  have hnr_ca : s2.nextReg ≤ s3.nextReg := LowerState.commit_nextReg_mono hca
+  have hnr_cb : s3.nextReg ≤ s4.nextReg := LowerState.commit_nextReg_mono hcb
+  -- sva came from s1.stack; sva.regs < s1.nextReg.
+  have hsva_lt_s1 : ∀ r ∈ sva.regs, r < s1.nextReg :=
+    LowerState.popSym_sv_regs_lt hws1 ha
+  -- Lift to s2.nextReg via hnr_pop2.
+  have hsva_lt_s2 : ∀ r ∈ sva.regs, r < s2.nextReg := by
+    intro r hr; rw [hnr_pop2]; exact hsva_lt_s1 r hr
+  -- svb came from s.stack; svb.regs < s.nextReg.
+  have hsvb_lt_s : ∀ r ∈ svb.regs, r < s.nextReg :=
+    LowerState.popSym_sv_regs_lt hws hb
+  -- ra ∈ s3.scopeEnv via commit_r_mem_scopeEnv at the s2 → s3 step.
+  have hra_s3 : ra ∈ s3.scopeEnv :=
+    LowerState.commit_r_mem_scopeEnv hsva_lt_s2 hca
+  -- svb.regs < s3.nextReg via s.nextReg = s1.nextReg = s2.nextReg ≤ s3.nextReg.
+  have hsvb_lt_s3 : ∀ r ∈ svb.regs, r < s3.nextReg := by
+    intro r hr
+    have h0 := hsvb_lt_s r hr
+    have h1 : r < s1.nextReg := by rw [hnr_pop1]; exact h0
+    have h2 : r < s2.nextReg := by rw [hnr_pop2]; exact h1
+    exact Nat.lt_of_lt_of_le h2 hnr_ca
+  -- rb ∈ s4.scopeEnv from commit_r_mem_scopeEnv at s3 → s4.
+  have hrb_s4 : rb ∈ s4.scopeEnv :=
+    LowerState.commit_r_mem_scopeEnv hsvb_lt_s3 hcb
+  -- ra lifts to s4.scopeEnv via the scope monotonicity through hnr_cb.
+  have hra_s4 : ra ∈ s4.scopeEnv :=
+    LowerState.scopeEnv_subset_of_nextReg_le hnr_cb hra_s3
+  -- Now finalize the goal.
+  subst h_ops
+  subst h_s_eq
+  -- Goal:
+  --   scopeValidOps {…, nextReg := s4.nextReg + 1, …}.scopeEnv
+  --     (opsA ++ (opsB ++ [.binOp s4.nextReg ra rb op .u32]))
+  -- Abbreviate the env once to keep the proof readable.
+  let envS' : List Reg := List.range (s4.nextReg + 1)
+  have hra_envS' : ra ∈ envS' := by
+    rw [LowerState.mem_scopeEnv] at hra_s4
+    show ra ∈ List.range (s4.nextReg + 1)
+    rw [List.mem_range]
+    exact Nat.lt_succ_of_lt hra_s4
+  have hrb_envS' : rb ∈ envS' := by
+    rw [LowerState.mem_scopeEnv] at hrb_s4
+    show rb ∈ List.range (s4.nextReg + 1)
+    rw [List.mem_range]
+    exact Nat.lt_succ_of_lt hrb_s4
+  -- The goal's scopeEnv unfolds to envS' (both are List.range (s4.nextReg + 1)).
+  show scopeValidOps envS' (opsA ++ (opsB ++ [KernelOp.binOp s4.nextReg ra rb op .u32]))
+  apply Quanta.KOps.KernelOp.scopeValidOps_append
+  · exact LowerState.commit_ops_scopeValid envS' hca
+  · apply Quanta.KOps.KernelOp.scopeValidOps_append
+    · exact LowerState.commit_ops_scopeValid (extendEnvOps envS' opsA) hcb
+    · refine ⟨?_, trivial⟩
+      intro r hr
+      simp [KernelOp.usedRegs] at hr
+      have hsuper_a : envS' ⊆ extendEnvOps envS' opsA :=
+        Quanta.KOps.KernelOp.extendEnvOps_super envS' opsA
+      have hsuper_b :
+          extendEnvOps envS' opsA ⊆ extendEnvOps (extendEnvOps envS' opsA) opsB :=
+        Quanta.KOps.KernelOp.extendEnvOps_super (extendEnvOps envS' opsA) opsB
+      rcases hr with rfl | rfl
+      · exact hsuper_b (hsuper_a hra_envS')
+      · exact hsuper_b (hsuper_a hrb_envS')
+
+-- ════════════════════════════════════════════════════════════════════
+-- Per-arm wrappers for the binop family
+--
+-- These dispatch directly to lowerI32Bin in lowerInstr. Each is a
+-- one-line `exact lowerI32Bin_scopeValid hws h`.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerInstr_i32Sub_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Sub = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32Mul_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Mul = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32And_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32And = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32Or_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Or = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32Xor_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Xor = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32ShrU_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32ShrU = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32DivU_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32DivU = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32RemU_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32RemU = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Bin_scopeValid hws h
+
+-- ════════════════════════════════════════════════════════════════════
+-- Per-arm: i32Shl (buffer-pattern arm + lowerI32Bin fallback)
+--
+-- lowerI32Shl pattern-matches on stack shape:
+--   .i32ConstSym k :: .reg base _ :: rest  →  emit [], push scaledIdx
+--   otherwise                              →  lowerI32Bin .shl
+-- The buffer-pattern arm emits no ops (trivially scope-valid); the
+-- fallback inherits from lowerI32Bin_scopeValid.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Shl_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Shl s = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  unfold lowerI32Shl at h
+  rcases hs : s.stack with _ | ⟨sv1, rs⟩
+  · rw [hs] at h
+    exact lowerI32Bin_scopeValid hws h
+  · rw [hs] at h
+    cases sv1 with
+    | i32ConstSym k =>
+        cases rs with
+        | nil => exact lowerI32Bin_scopeValid hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | reg base ty =>
+                -- Buffer-pattern arm: emit [], push scaledIdx.
+                simp at h
+                obtain ⟨_, h_ops⟩ := h
+                subst h_ops; exact trivial
+            | i32ConstSym _ => exact lowerI32Bin_scopeValid hws h
+            | bufferPtr _ => exact lowerI32Bin_scopeValid hws h
+            | scaledIdx _ _ => exact lowerI32Bin_scopeValid hws h
+            | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
+    | reg _ _ => exact lowerI32Bin_scopeValid hws h
+    | bufferPtr _ => exact lowerI32Bin_scopeValid hws h
+    | scaledIdx _ _ => exact lowerI32Bin_scopeValid hws h
+    | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32Shl_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Shl = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Shl_scopeValid hws h
+
+-- ════════════════════════════════════════════════════════════════════
+-- Per-arm: i32Add (two buffer-pattern arms + lowerI32Bin fallback)
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Add_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Add s = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  unfold lowerI32Add at h
+  rcases hs : s.stack with _ | ⟨sv1, rs⟩
+  · rw [hs] at h; exact lowerI32Bin_scopeValid hws h
+  · rw [hs] at h
+    cases sv1 with
+    | scaledIdx base scale =>
+        cases rs with
+        | nil => exact lowerI32Bin_scopeValid hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | bufferPtr slot =>
+                simp at h
+                obtain ⟨_, h_ops⟩ := h
+                subst h_ops; exact trivial
+            | reg _ _ => exact lowerI32Bin_scopeValid hws h
+            | i32ConstSym _ => exact lowerI32Bin_scopeValid hws h
+            | scaledIdx _ _ => exact lowerI32Bin_scopeValid hws h
+            | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
+    | bufferPtr slot =>
+        cases rs with
+        | nil => exact lowerI32Bin_scopeValid hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | scaledIdx base scale =>
+                simp at h
+                obtain ⟨_, h_ops⟩ := h
+                subst h_ops; exact trivial
+            | reg _ _ => exact lowerI32Bin_scopeValid hws h
+            | i32ConstSym _ => exact lowerI32Bin_scopeValid hws h
+            | bufferPtr _ => exact lowerI32Bin_scopeValid hws h
+            | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
+    | reg _ _ => exact lowerI32Bin_scopeValid hws h
+    | i32ConstSym _ => exact lowerI32Bin_scopeValid hws h
+    | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
+
+theorem lowerInstr_i32Add_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Add = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Add_scopeValid hws h
 
 end Quanta.Wasm
