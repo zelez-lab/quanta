@@ -1514,4 +1514,85 @@ theorem lowerInstr_i32GeU_scopeValid
     scopeValidOps s'.scopeEnv ops :=
   lowerI32Cmp_scopeValid hws h
 
+-- ════════════════════════════════════════════════════════════════════
+-- Master theorem
+--
+-- Every successful `lowerInstr s instr = some (s', ops)` against a
+-- wellScoped `s` produces `ops` that are scope-valid against
+-- `s'.scopeEnv`. Each supported arm delegates to its per-arm theorem;
+-- the unsupported arms refuse with `none` and the precondition
+-- contradicts the hypothesis.
+--
+-- This is the per-instruction step lemma the eventual list-level
+-- theorem will induct over (chained with the wellScoped-preservation
+-- counterpart that lives below).
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerInstr_scopeValid
+    {s s' : LowerState} {instr : WasmInstr} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s instr = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  cases instr with
+  | i32Const n      => exact lowerInstr_i32Const_scopeValid s n h
+  | nop             => exact lowerInstr_nop_scopeValid s h
+  | wreturn         => exact lowerInstr_wreturn_scopeValid s h
+  | drop            => exact lowerInstr_drop_scopeValid s h
+  | localGet _      => exact lowerInstr_localGet_scopeValid hws h
+  | localSet _      => exact lowerInstr_localSet_scopeValid hws h
+  | localTee _      => exact lowerInstr_localTee_scopeValid hws h
+  | i32Add          => exact lowerInstr_i32Add_scopeValid hws h
+  | i32Sub          => exact lowerInstr_i32Sub_scopeValid hws h
+  | i32Mul          => exact lowerInstr_i32Mul_scopeValid hws h
+  | i32And          => exact lowerInstr_i32And_scopeValid hws h
+  | i32Or           => exact lowerInstr_i32Or_scopeValid hws h
+  | i32Xor          => exact lowerInstr_i32Xor_scopeValid hws h
+  | i32Shl          => exact lowerInstr_i32Shl_scopeValid hws h
+  | i32ShrU         => exact lowerInstr_i32ShrU_scopeValid hws h
+  | i32DivU         => exact lowerInstr_i32DivU_scopeValid hws h
+  | i32RemU         => exact lowerInstr_i32RemU_scopeValid hws h
+  | i32Eq           => exact lowerInstr_i32Eq_scopeValid hws h
+  | i32Ne           => exact lowerInstr_i32Ne_scopeValid hws h
+  | i32LtU          => exact lowerInstr_i32LtU_scopeValid hws h
+  | i32LeU          => exact lowerInstr_i32LeU_scopeValid hws h
+  | i32GtU          => exact lowerInstr_i32GtU_scopeValid hws h
+  | i32GeU          => exact lowerInstr_i32GeU_scopeValid hws h
+  | i32Load _ _     => exact lowerInstr_i32Load_scopeValid hws h
+  | i32Store _ _    => exact lowerInstr_i32Store_scopeValid hws h
+  -- Unsupported arms: lowerInstr returns none, contradicting h.
+  | i64Const _      => simp [lowerInstr] at h
+  | f32Const _      => simp [lowerInstr] at h
+  | f64Const _      => simp [lowerInstr] at h
+  | i32DivS         => simp [lowerInstr] at h
+  | i32RemS         => simp [lowerInstr] at h
+  | i32ShrS         => simp [lowerInstr] at h
+  | i32LtS          => simp [lowerInstr] at h
+  | i32GtS          => simp [lowerInstr] at h
+  | i32LeS          => simp [lowerInstr] at h
+  | i32GeS          => simp [lowerInstr] at h
+  | i32Eqz          => simp [lowerInstr] at h
+  | f32Add | f32Sub | f32Mul | f32Div => all_goals simp [lowerInstr] at h
+  | f32Eq | f32Ne | f32Lt | f32Gt | f32Le | f32Ge =>
+      all_goals simp [lowerInstr] at h
+  | f32Neg | f32Abs | f32Sqrt | f32Min | f32Max =>
+      all_goals simp [lowerInstr] at h
+  | i32WrapI64 | f32ConvertI32S | f32ConvertI32U =>
+      all_goals simp [lowerInstr] at h
+  | i32TruncF32S | i32TruncF32U =>
+      all_goals simp [lowerInstr] at h
+  | f32ReinterpretI32 | i32ReinterpretF32 =>
+      all_goals simp [lowerInstr] at h
+  | f32Load _ _ | f32Store _ _ =>
+      all_goals simp [lowerInstr] at h
+  | i32Load8U _ _ | i32Load8S _ _ | i32Store8 _ _ =>
+      all_goals simp [lowerInstr] at h
+  | block _ | wloop _ | wif _ =>
+      all_goals simp [lowerInstr] at h
+  | welse | wend    => all_goals simp [lowerInstr] at h
+  | br _ | brIf _   => all_goals simp [lowerInstr] at h
+  | call _          => simp [lowerInstr] at h
+  | wselect         => simp [lowerInstr] at h
+  | unreachable     => simp [lowerInstr] at h
+  | unsupported _   => simp [lowerInstr] at h
+
 end Quanta.Wasm
