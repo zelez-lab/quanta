@@ -2719,4 +2719,161 @@ theorem lowerInstr_nextReg_mono
   | unreachable     => simp [lowerInstr] at h
   | unsupported _   => simp [lowerInstr] at h
 
+-- ════════════════════════════════════════════════════════════════════
+-- List-level theorem: straight-line subset
+--
+-- For instruction lists containing ONLY straight-line ops (no
+-- block/wloop/wif/br/brIf), lowerInstrs dispatches uniformly through
+-- the catch-all arm: lowerInstr s i, then recursive call on rest.
+-- The list-level scope-validity follows by induction.
+--
+-- Structured-control arms are queued for follow-up.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- The catch-all arm subset: every WASM instruction that
+    `lowerInstrs`'s outer `match` routes to the generic chain
+    (instead of a structured-control arm). -/
+def WasmInstr.straightLine : WasmInstr → Prop
+  | .block _ => False
+  | .wloop _ => False
+  | .wif _   => False
+  | .br _    => False
+  | .brIf _  => False
+  | _        => True
+
+/-- A list of WasmInstr is straight-line when every instruction is. -/
+def WasmInstrs.straightLine (instrs : List WasmInstr) : Prop :=
+  ∀ i ∈ instrs, WasmInstr.straightLine i
+
+/-- Helper: when `i` is a straight-line instruction, `lowerInstrs` on
+    `i :: rest` reduces to the catch-all `do (s1, ops1) ← lowerInstr s i;
+    (s2, ops2) ← lowerInstrs fuel frames s1 rest; pure (s2, ops1 ++ ops2)`. -/
+private theorem lowerInstrs_cons_straightLine_eq
+    (fuel : Nat) (frames : List FrameKind) (s : LowerState)
+    (i : WasmInstr) (rest : List WasmInstr)
+    (hi : WasmInstr.straightLine i) :
+    lowerInstrs fuel frames s (i :: rest) =
+      (do let (s1, ops1) ← lowerInstr s i
+          let (s2, ops2) ← lowerInstrs fuel frames s1 rest
+          pure (s2, ops1 ++ ops2)) := by
+  cases i <;> first
+    | exact absurd hi id  -- structured arms (block/wloop/wif/br/brIf)
+    | (simp only [lowerInstrs])  -- catch-all arms reduce by simp/unfold
+
+/-- For straight-line instr lists, lowerInstrs preserves wellScoped. -/
+theorem lowerInstrs_preserves_wellScoped_straightLine :
+    ∀ (fuel : Nat) (frames : List FrameKind) (instrs : List WasmInstr)
+      (s s' : LowerState) (ops : List KernelOp),
+    WasmInstrs.straightLine instrs →
+    s.wellScoped →
+    lowerInstrs fuel frames s instrs = some (s', ops) →
+    s'.wellScoped := by
+  intro fuel frames instrs
+  induction instrs generalizing fuel frames with
+  | nil =>
+    intro s s' ops _ hws h
+    simp [lowerInstrs] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq; exact hws
+  | cons i rest ih =>
+    intro s s' ops hsl hws h
+    have hi : WasmInstr.straightLine i := hsl i (List.mem_cons_self _ _)
+    have hrest : WasmInstrs.straightLine rest := fun j hj =>
+      hsl j (List.mem_cons_of_mem _ hj)
+    rw [lowerInstrs_cons_straightLine_eq fuel frames s i rest hi] at h
+    rcases hi1 : lowerInstr s i with _ | ⟨s1, ops1⟩
+    · simp [hi1] at h
+    simp only [hi1, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+    · simp [hi2] at h
+    simp only [hi2, Option.some_bind, pure, Pure.pure] at h
+    -- h : some (s2, ops1 ++ ops2) = some (s', ops)
+    have h_eq : (s2, ops1 ++ ops2) = (s', ops) := Option.some.inj h
+    have h_s_eq : s2 = s' := (Prod.mk.inj h_eq).1
+    subst h_s_eq
+    have hws1 : s1.wellScoped := lowerInstr_preserves_wellScoped hws hi1
+    exact ih fuel frames _ _ _ hrest hws1 hi2
+
+/-- For straight-line instr lists, lowerInstrs has nextReg monotonicity. -/
+theorem lowerInstrs_nextReg_mono_straightLine :
+    ∀ (fuel : Nat) (frames : List FrameKind) (instrs : List WasmInstr)
+      (s s' : LowerState) (ops : List KernelOp),
+    WasmInstrs.straightLine instrs →
+    lowerInstrs fuel frames s instrs = some (s', ops) →
+    s.nextReg ≤ s'.nextReg := by
+  intro fuel frames instrs
+  induction instrs generalizing fuel frames with
+  | nil =>
+    intro s s' ops _ h
+    simp [lowerInstrs] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq; exact Nat.le_refl _
+  | cons i rest ih =>
+    intro s s' ops hsl h
+    have hi : WasmInstr.straightLine i := hsl i (List.mem_cons_self _ _)
+    have hrest : WasmInstrs.straightLine rest := fun j hj =>
+      hsl j (List.mem_cons_of_mem _ hj)
+    rw [lowerInstrs_cons_straightLine_eq fuel frames s i rest hi] at h
+    rcases hi1 : lowerInstr s i with _ | ⟨s1, ops1⟩
+    · simp [hi1] at h
+    simp only [hi1, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+    · simp [hi2] at h
+    simp only [hi2, Option.some_bind, pure, Pure.pure] at h
+    have h_eq : (s2, ops1 ++ ops2) = (s', ops) := Option.some.inj h
+    have h_s_eq : s2 = s' := (Prod.mk.inj h_eq).1
+    subst h_s_eq
+    have h1 : s.nextReg ≤ s1.nextReg := lowerInstr_nextReg_mono hi1
+    have h2 : s1.nextReg ≤ s2.nextReg := ih fuel frames _ _ _ hrest hi2
+    exact Nat.le_trans h1 h2
+
+/-- For straight-line instr lists, lowerInstrs produces scope-valid
+    output against the post-state's scopeEnv. -/
+theorem lowerInstrs_scopeValid_ops_straightLine :
+    ∀ (fuel : Nat) (frames : List FrameKind) (instrs : List WasmInstr)
+      (s s' : LowerState) (ops : List KernelOp),
+    WasmInstrs.straightLine instrs →
+    s.wellScoped →
+    lowerInstrs fuel frames s instrs = some (s', ops) →
+    scopeValidOps s'.scopeEnv ops := by
+  intro fuel frames instrs
+  induction instrs generalizing fuel frames with
+  | nil =>
+    intro s s' ops _ _ h
+    simp [lowerInstrs] at h
+    obtain ⟨_, h_ops⟩ := h
+    subst h_ops; exact trivial
+  | cons i rest ih =>
+    intro s s' ops hsl hws h
+    have hi : WasmInstr.straightLine i := hsl i (List.mem_cons_self _ _)
+    have hrest : WasmInstrs.straightLine rest := fun j hj =>
+      hsl j (List.mem_cons_of_mem _ hj)
+    rw [lowerInstrs_cons_straightLine_eq fuel frames s i rest hi] at h
+    rcases hi1 : lowerInstr s i with _ | ⟨s1, ops1⟩
+    · simp [hi1] at h
+    simp only [hi1, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+    · simp [hi2] at h
+    simp only [hi2, Option.some_bind, pure, Pure.pure] at h
+    have h_eq : (s2, ops1 ++ ops2) = (s', ops) := Option.some.inj h
+    have h_s_eq : s2 = s' := (Prod.mk.inj h_eq).1
+    have h_ops : ops1 ++ ops2 = ops := (Prod.mk.inj h_eq).2
+    subst h_s_eq; subst h_ops
+    have hops1_s1 : scopeValidOps s1.scopeEnv ops1 :=
+      lowerInstr_scopeValid hws hi1
+    have hws1 : s1.wellScoped := lowerInstr_preserves_wellScoped hws hi1
+    have hops2 : scopeValidOps s2.scopeEnv ops2 :=
+      ih fuel frames _ _ _ hrest hws1 hi2
+    have hmono : s1.nextReg ≤ s2.nextReg :=
+      lowerInstrs_nextReg_mono_straightLine fuel frames _ _ _ _ hrest hi2
+    have hsub : s1.scopeEnv ⊆ s2.scopeEnv :=
+      LowerState.scopeEnv_subset_of_nextReg_le hmono
+    have hops1_s' : scopeValidOps s2.scopeEnv ops1 :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono ops1 hsub hops1_s1
+    have hsuper : s2.scopeEnv ⊆ extendEnvOps s2.scopeEnv ops1 :=
+      Quanta.KOps.KernelOp.extendEnvOps_super _ _
+    have hops2_ext : scopeValidOps (extendEnvOps s2.scopeEnv ops1) ops2 :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono ops2 hsuper hops2
+    exact Quanta.KOps.KernelOp.scopeValidOps_append _ _ _ hops1_s' hops2_ext
+
 end Quanta.Wasm
