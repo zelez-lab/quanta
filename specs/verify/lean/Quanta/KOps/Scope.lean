@@ -204,6 +204,30 @@ theorem KernelOp.scopeValidOps_append (env : List Reg) (ops1 ops2 : List KernelO
             (KernelOp.extendEnvOps (KernelOp.extendEnv env op) rest) ops2
       exact h2
 
+/-- Converse of `scopeValidOps_append`: a valid concatenated chain
+    splits back into a valid prefix plus a valid suffix against the
+    env extended through the prefix. Needed whenever a proof inducts
+    over the *output* of a translator that emits sub-lowerings
+    concatenated together (we recover the per-sub-lowering
+    obligations from the overall validity hypothesis). -/
+theorem KernelOp.scopeValidOps_append_inv :
+    ∀ (env : List Reg) (ops1 ops2 : List KernelOp),
+    KernelOp.scopeValidOps env (ops1 ++ ops2) →
+    KernelOp.scopeValidOps env ops1 ∧
+    KernelOp.scopeValidOps (KernelOp.extendEnvOps env ops1) ops2
+  | _,   [],         _,    h => ⟨trivial, h⟩
+  | env, op :: rest, ops2, h => by
+    -- h : scopeValidOps env (op :: (rest ++ ops2))
+    --   = scopeValid env op ∧ scopeValidOps (extendEnv env op) (rest ++ ops2)
+    obtain ⟨hop, htail⟩ := h
+    -- IH peels rest ++ ops2 at env' := extendEnv env op.
+    obtain ⟨hrest, htail2⟩ :=
+      KernelOp.scopeValidOps_append_inv (KernelOp.extendEnv env op) rest ops2 htail
+    refine ⟨⟨hop, hrest⟩, ?_⟩
+    -- htail2 : scopeValidOps (extendEnvOps (extendEnv env op) rest) ops2,
+    -- which is definitionally extendEnvOps env (op :: rest).
+    exact htail2
+
 -- ════════════════════════════════════════════════════════════════════
 -- Monotonicity in env
 --
@@ -391,5 +415,32 @@ example :
     simp [KernelOp.usedRegs] at hr
     rcases hr with rfl | rfl <;>
       simp [KernelOp.extendEnvOps, KernelOp.extendEnv, KernelOp.definedReg]
+
+/-- Round-trip: `scopeValidOps_append_inv` then `scopeValidOps_append`
+    recovers the original chain. Demonstrates the destructor splits
+    cleanly and the halves recompose. -/
+example :
+    KernelOp.scopeValidOps []
+      ([.const 0 (.i32 1), .const 1 (.i32 2)] ++
+       [.binOp 2 0 1 .add .u32]) := by
+  -- Start from the concatenated witness (built by hand to mirror the
+  -- earlier append smoke), split it, then put it back together via
+  -- `_append`.
+  have hcat : KernelOp.scopeValidOps []
+      ([.const 0 (.i32 1), .const 1 (.i32 2)] ++
+       [.binOp 2 0 1 .add .u32]) := by
+    apply KernelOp.scopeValidOps_append
+    · refine ⟨?_, ?_, trivial⟩
+      · intro r hr; simp [KernelOp.usedRegs] at hr
+      · intro r hr; simp [KernelOp.usedRegs] at hr
+    · show KernelOp.scopeValidOps _ _
+      refine ⟨?_, trivial⟩
+      intro r hr
+      simp [KernelOp.usedRegs] at hr
+      rcases hr with rfl | rfl <;>
+        simp [KernelOp.extendEnvOps, KernelOp.extendEnv, KernelOp.definedReg]
+  obtain ⟨h1, h2⟩ :=
+    KernelOp.scopeValidOps_append_inv [] _ _ hcat
+  exact KernelOp.scopeValidOps_append [] _ _ h1 h2
 
 end Quanta.KOps
