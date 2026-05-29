@@ -2876,4 +2876,69 @@ theorem lowerInstrs_scopeValid_ops_straightLine :
       Quanta.KOps.KernelOp.scopeValidOps_mono ops2 hsuper hops2
     exact Quanta.KOps.KernelOp.scopeValidOps_append _ _ _ hops1_s' hops2_ext
 
+-- ════════════════════════════════════════════════════════════════════
+-- Structured-control arms: br
+--
+-- `.br depth` is an unconditional jump; code after is dead, so the
+-- arm doesn't recurse on `rest`. Emits either [] or [.breakOp]
+-- against the unmodified state.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Key shape lemma: every successful `.br` arm leaves `s` unchanged
+    and emits ops with no operand reads (either `[]` or `[.breakOp]`).
+    Extracting this once dispatches all three (nextReg / wellScoped /
+    scopeValid) consequences. -/
+private theorem lowerInstrs_br_shape
+    {fuel : Nat} {frames : List FrameKind} {depth : Nat} {rest : List WasmInstr}
+    {s s' : LowerState} {ops : List KernelOp}
+    (h : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    s' = s ∧ (ops = [] ∨ ops = [.breakOp]) := by
+  simp only [lowerInstrs] at h
+  -- Outer split: none vs some loopK vs some block vs some wif (4 cases).
+  split at h
+  · -- none case
+    exact absurd h Option.noConfusion
+  · -- some .loopK: nested if depth = 0 / hasLoopAbove
+    split at h
+    · obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+      exact ⟨hs.symm, Or.inl hops.symm⟩
+    · split at h
+      · obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+        exact ⟨hs.symm, Or.inr hops.symm⟩
+      · obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+        exact ⟨hs.symm, Or.inl hops.symm⟩
+  · -- some _ (block or wif): single if hasLoopAbove then [.breakOp] else none
+    split at h
+    · obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+      exact ⟨hs.symm, Or.inr hops.symm⟩
+    · exact absurd h Option.noConfusion
+
+theorem lowerInstrs_br_nextReg_mono
+    {fuel : Nat} {frames : List FrameKind} {depth : Nat} {rest : List WasmInstr}
+    {s s' : LowerState} {ops : List KernelOp}
+    (h : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    s.nextReg ≤ s'.nextReg := by
+  obtain ⟨hs_eq, _⟩ := lowerInstrs_br_shape h
+  rw [hs_eq]; exact Nat.le_refl _
+
+theorem lowerInstrs_br_preserves_wellScoped
+    {fuel : Nat} {frames : List FrameKind} {depth : Nat} {rest : List WasmInstr}
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    s'.wellScoped := by
+  obtain ⟨hs_eq, _⟩ := lowerInstrs_br_shape h
+  rw [hs_eq]; exact hws
+
+theorem lowerInstrs_br_scopeValid
+    {fuel : Nat} {frames : List FrameKind} {depth : Nat} {rest : List WasmInstr}
+    {s s' : LowerState} {ops : List KernelOp}
+    (h : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  obtain ⟨_, hops⟩ := lowerInstrs_br_shape h
+  rcases hops with rfl | rfl
+  · exact trivial
+  · refine ⟨?_, trivial⟩
+    intro r hr; simp [KernelOp.usedRegs] at hr
+
 end Quanta.Wasm
