@@ -2382,4 +2382,341 @@ theorem lowerInstr_preserves_wellScoped
   | unreachable     => simp [lowerInstr] at h
   | unsupported _   => simp [lowerInstr] at h
 
+-- ════════════════════════════════════════════════════════════════════
+-- lowerInstr nextReg monotonicity
+--
+-- A side effect of wellScoped-preservation we extract as its own
+-- lemma: lowerInstr only ever grows nextReg. Used by the list-level
+-- theorems to lift scope-validity across the recursive boundary.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Bin_nextReg_mono
+    {s s' : LowerState} {op : Quanta.KOps.BinOp} {ops : List KernelOp}
+    (h : lowerI32Bin s op = some (s', ops)) : s.nextReg ≤ s'.nextReg := by
+  unfold lowerI32Bin at h
+  rcases hb : s.popSym with _ | ⟨svb, s1⟩
+  · simp [hb] at h
+  simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+  rcases ha : s1.popSym with _ | ⟨sva, s2⟩
+  · simp [ha] at h
+  simp only [ha, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hca : s2.commit sva with _ | ⟨ra, s3, opsA⟩
+  · simp [hca] at h
+  simp only [hca, Option.some_bind] at h
+  rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+  · simp [hcb] at h
+  simp only [hcb, Option.some_bind] at h
+  simp [LowerState.alloc, LowerState.push] at h
+  obtain ⟨h_s_eq, _⟩ := h
+  subst h_s_eq
+  -- chain: s = s1 (pop), s1 = s2 (pop), s2 ≤ s3 (commit), s3 ≤ s4 (commit), s4 + 1.
+  have h1 := LowerState.popSym_nextReg hb
+  have h2 := LowerState.popSym_nextReg ha
+  have h3 := LowerState.commit_nextReg_mono hca
+  have h4 := LowerState.commit_nextReg_mono hcb
+  show s.nextReg ≤ s4.nextReg + 1
+  omega
+
+theorem lowerI32Cmp_nextReg_mono
+    {s s' : LowerState} {op : Quanta.KOps.CmpOp} {ops : List KernelOp}
+    (h : lowerI32Cmp s op = some (s', ops)) : s.nextReg ≤ s'.nextReg := by
+  unfold lowerI32Cmp at h
+  rcases hb : s.popSym with _ | ⟨svb, s1⟩
+  · simp [hb] at h
+  simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+  rcases ha : s1.popSym with _ | ⟨sva, s2⟩
+  · simp [ha] at h
+  simp only [ha, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hca : s2.commit sva with _ | ⟨ra, s3, opsA⟩
+  · simp [hca] at h
+  simp only [hca, Option.some_bind] at h
+  rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+  · simp [hcb] at h
+  simp only [hcb, Option.some_bind] at h
+  simp [LowerState.alloc, LowerState.push] at h
+  obtain ⟨h_s_eq, _⟩ := h
+  subst h_s_eq
+  have h1 := LowerState.popSym_nextReg hb
+  have h2 := LowerState.popSym_nextReg ha
+  have h3 := LowerState.commit_nextReg_mono hca
+  have h4 := LowerState.commit_nextReg_mono hcb
+  show s.nextReg ≤ s4.nextReg + 1 + 1
+  omega
+
+theorem lowerInstr_nextReg_mono
+    {s s' : LowerState} {instr : WasmInstr} {ops : List KernelOp}
+    (h : lowerInstr s instr = some (s', ops)) : s.nextReg ≤ s'.nextReg := by
+  -- Most arms either don't change nextReg or bump it by a known amount.
+  -- We delegate via the wellScoped chain when straightforward.
+  cases instr with
+  | i32Const _ =>
+      simp [lowerInstr] at h
+      obtain ⟨h_s_eq, _⟩ := h
+      subst h_s_eq
+      exact Nat.le_refl _
+  | nop =>
+      simp [lowerInstr] at h
+      obtain ⟨h_s_eq, _⟩ := h
+      subst h_s_eq
+      exact Nat.le_refl _
+  | wreturn =>
+      simp [lowerInstr] at h
+      obtain ⟨h_s_eq, _⟩ := h
+      subst h_s_eq
+      exact Nat.le_refl _
+  | drop =>
+      simp [lowerInstr] at h
+      rcases hpop : s.popSym with _ | ⟨sv, s1⟩
+      · simp [hpop] at h
+      simp [hpop] at h
+      obtain ⟨h_s_eq, _⟩ := h
+      subst h_s_eq
+      rw [LowerState.popSym_nextReg hpop]
+      exact Nat.le_refl _
+  | localGet i =>
+      simp [lowerInstr] at h
+      rcases hbuf : s.lookupBufferSlot i with _ | slot
+      · rw [hbuf] at h
+        simp [Option.bind_eq_bind] at h
+        rcases hcur : s.lookupCurrentReg i with _ | curReg
+        · simp [hcur, Option.orElse] at h
+          rcases hloc : s.lookupLocal i with _ | stable
+          · simp [hloc] at h
+          · simp [hloc, LowerState.alloc, LowerState.push] at h
+            obtain ⟨h_s_eq, _⟩ := h
+            subst h_s_eq
+            exact Nat.le_succ _
+        · simp [hcur, Option.orElse, LowerState.alloc, LowerState.push] at h
+          obtain ⟨h_s_eq, _⟩ := h
+          subst h_s_eq
+          exact Nat.le_succ _
+      · rw [hbuf] at h
+        simp [LowerState.pushSym] at h
+        obtain ⟨h_s_eq, _⟩ := h
+        subst h_s_eq
+        exact Nat.le_refl _
+  | localSet i =>
+      simp [lowerInstr] at h
+      rcases hpop : s.popSym with _ | ⟨sv, s1⟩
+      · simp [hpop] at h
+      simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+      rcases hc : s1.commit sv with _ | ⟨src, s2, opsCommit⟩
+      · simp [hc] at h
+      simp only [hc, Option.some_bind] at h
+      simp only [LowerState.alloc] at h
+      rcases hlk : ({ nextReg := s2.nextReg + 1, stack := s2.stack,
+                       localReg := s2.localReg, localTy := s2.localTy,
+                       bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
+                       : LowerState).lookupLocal i with _ | stable
+      · simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+        obtain ⟨h_s_eq, _⟩ := h
+        subst h_s_eq
+        have h1 := LowerState.popSym_nextReg hpop
+        have h2 := LowerState.commit_nextReg_mono hc
+        show s.nextReg ≤ s2.nextReg + 1 + 1
+        omega
+      · simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+        obtain ⟨h_s_eq, _⟩ := h
+        subst h_s_eq
+        have h1 := LowerState.popSym_nextReg hpop
+        have h2 := LowerState.commit_nextReg_mono hc
+        show s.nextReg ≤ s2.nextReg + 1
+        omega
+  | localTee i =>
+      simp [lowerInstr] at h
+      rcases hpop : s.popSym with _ | ⟨sv, s1⟩
+      · simp [hpop] at h
+      simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+      rcases hc : s1.commit sv with _ | ⟨src, s2, opsCommit⟩
+      · simp [hc] at h
+      simp only [hc, Option.some_bind] at h
+      simp only [LowerState.alloc, LowerState.push] at h
+      rcases hlk : ({ nextReg := s2.nextReg + 1, stack := s2.stack,
+                       localReg := s2.localReg, localTy := s2.localTy,
+                       bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
+                       : LowerState).lookupLocal i with _ | stable
+      · simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+        obtain ⟨h_s_eq, _⟩ := h
+        subst h_s_eq
+        have h1 := LowerState.popSym_nextReg hpop
+        have h2 := LowerState.commit_nextReg_mono hc
+        show s.nextReg ≤ s2.nextReg + 1 + 1 + 1
+        omega
+      · simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+        obtain ⟨h_s_eq, _⟩ := h
+        subst h_s_eq
+        have h1 := LowerState.popSym_nextReg hpop
+        have h2 := LowerState.commit_nextReg_mono hc
+        show s.nextReg ≤ s2.nextReg + 1 + 1
+        omega
+  | i32Add =>
+      unfold lowerInstr at h
+      unfold lowerI32Add at h
+      rcases hs : s.stack with _ | ⟨sv1, rs⟩
+      · rw [hs] at h; exact lowerI32Bin_nextReg_mono h
+      · rw [hs] at h
+        cases sv1 with
+        | scaledIdx base scale =>
+            cases rs with
+            | nil => exact lowerI32Bin_nextReg_mono h
+            | cons sv2 rs2 =>
+                cases sv2 with
+                | bufferPtr slot =>
+                    simp at h
+                    obtain ⟨h_s_eq, _⟩ := h
+                    subst h_s_eq; exact Nat.le_refl _
+                | reg _ _ => exact lowerI32Bin_nextReg_mono h
+                | i32ConstSym _ => exact lowerI32Bin_nextReg_mono h
+                | scaledIdx _ _ => exact lowerI32Bin_nextReg_mono h
+                | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
+        | bufferPtr slot =>
+            cases rs with
+            | nil => exact lowerI32Bin_nextReg_mono h
+            | cons sv2 rs2 =>
+                cases sv2 with
+                | scaledIdx base scale =>
+                    simp at h
+                    obtain ⟨h_s_eq, _⟩ := h
+                    subst h_s_eq; exact Nat.le_refl _
+                | reg _ _ => exact lowerI32Bin_nextReg_mono h
+                | i32ConstSym _ => exact lowerI32Bin_nextReg_mono h
+                | bufferPtr _ => exact lowerI32Bin_nextReg_mono h
+                | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
+        | reg _ _ => exact lowerI32Bin_nextReg_mono h
+        | i32ConstSym _ => exact lowerI32Bin_nextReg_mono h
+        | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
+  | i32Sub => exact lowerI32Bin_nextReg_mono h
+  | i32Mul => exact lowerI32Bin_nextReg_mono h
+  | i32And => exact lowerI32Bin_nextReg_mono h
+  | i32Or  => exact lowerI32Bin_nextReg_mono h
+  | i32Xor => exact lowerI32Bin_nextReg_mono h
+  | i32Shl =>
+      unfold lowerInstr at h
+      unfold lowerI32Shl at h
+      rcases hs : s.stack with _ | ⟨sv1, rs⟩
+      · rw [hs] at h; exact lowerI32Bin_nextReg_mono h
+      · rw [hs] at h
+        cases sv1 with
+        | i32ConstSym k =>
+            cases rs with
+            | nil => exact lowerI32Bin_nextReg_mono h
+            | cons sv2 rs2 =>
+                cases sv2 with
+                | reg base ty =>
+                    simp at h
+                    obtain ⟨h_s_eq, _⟩ := h
+                    subst h_s_eq; exact Nat.le_refl _
+                | i32ConstSym _ => exact lowerI32Bin_nextReg_mono h
+                | bufferPtr _ => exact lowerI32Bin_nextReg_mono h
+                | scaledIdx _ _ => exact lowerI32Bin_nextReg_mono h
+                | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
+        | reg _ _ => exact lowerI32Bin_nextReg_mono h
+        | bufferPtr _ => exact lowerI32Bin_nextReg_mono h
+        | scaledIdx _ _ => exact lowerI32Bin_nextReg_mono h
+        | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
+  | i32ShrU => exact lowerI32Bin_nextReg_mono h
+  | i32DivU => exact lowerI32Bin_nextReg_mono h
+  | i32RemU => exact lowerI32Bin_nextReg_mono h
+  | i32Eq  => exact lowerI32Cmp_nextReg_mono h
+  | i32Ne  => exact lowerI32Cmp_nextReg_mono h
+  | i32LtU => exact lowerI32Cmp_nextReg_mono h
+  | i32LeU => exact lowerI32Cmp_nextReg_mono h
+  | i32GtU => exact lowerI32Cmp_nextReg_mono h
+  | i32GeU => exact lowerI32Cmp_nextReg_mono h
+  | i32Load _ _ =>
+      -- Reuse existing wellScoped-preservation proof's load-arm structure.
+      -- The success case bumps nextReg by 1 via alloc; failure cases
+      -- contradict h. We delegate via unfold and direct unfolding.
+      unfold lowerInstr at h
+      unfold lowerI32Load at h
+      rcases hs : s.stack with _ | ⟨sv, rs⟩
+      · rw [hs] at h; simp at h
+      · rw [hs] at h
+        cases sv with
+        | bufferAccess slot base scale =>
+            by_cases hscale : scale = 4
+            · subst hscale
+              simp [LowerState.alloc] at h
+              obtain ⟨h_s_eq, _⟩ := h
+              subst h_s_eq
+              exact Nat.le_succ _
+            · exfalso
+              simp only at h
+              split at h
+              · rename_i _ _ _ _ hp
+                cases hp
+                exact hscale rfl
+              · exact Option.noConfusion h
+        | reg _ _ => simp at h
+        | i32ConstSym _ => simp at h
+        | bufferPtr _ => simp at h
+        | scaledIdx _ _ => simp at h
+  | i32Store _ _ =>
+      unfold lowerInstr at h
+      unfold lowerI32Store at h
+      rcases h1 : s.popSym with _ | ⟨sv_val, s1⟩
+      · simp [h1] at h
+      simp only [h1, Option.bind_eq_bind, Option.some_bind] at h
+      rcases h2 : s1.popSym with _ | ⟨sv_addr, s2⟩
+      · simp [h2] at h
+      simp only [h2, Option.bind_eq_bind, Option.some_bind] at h
+      rcases hc : s2.commit sv_val with _ | ⟨src, s3, opsCommit⟩
+      · simp [hc] at h
+      simp only [hc, Option.bind_eq_bind, Option.some_bind] at h
+      cases sv_addr with
+      | bufferAccess slot base scale =>
+          by_cases hscale : scale = 4
+          · subst hscale
+            simp at h
+            obtain ⟨h_s_eq, _⟩ := h
+            subst h_s_eq
+            have hh1 := LowerState.popSym_nextReg h1
+            have hh2 := LowerState.popSym_nextReg h2
+            have hh3 := LowerState.commit_nextReg_mono hc
+            omega
+          · exfalso
+            simp only [pure, Pure.pure] at h
+            split at h
+            · rename_i _ _ _ hp; cases hp; exact hscale rfl
+            · exact Option.noConfusion h
+      | reg _ _ => simp at h
+      | i32ConstSym _ => simp at h
+      | bufferPtr _ => simp at h
+      | scaledIdx _ _ => simp at h
+  -- Unsupported arms: contradiction.
+  | i64Const _ => simp [lowerInstr] at h
+  | f32Const _ => simp [lowerInstr] at h
+  | f64Const _ => simp [lowerInstr] at h
+  | i32DivS    => simp [lowerInstr] at h
+  | i32RemS    => simp [lowerInstr] at h
+  | i32ShrS    => simp [lowerInstr] at h
+  | i32LtS     => simp [lowerInstr] at h
+  | i32GtS     => simp [lowerInstr] at h
+  | i32LeS     => simp [lowerInstr] at h
+  | i32GeS     => simp [lowerInstr] at h
+  | i32Eqz     => simp [lowerInstr] at h
+  | f32Add | f32Sub | f32Mul | f32Div => all_goals simp [lowerInstr] at h
+  | f32Eq | f32Ne | f32Lt | f32Gt | f32Le | f32Ge =>
+      all_goals simp [lowerInstr] at h
+  | f32Neg | f32Abs | f32Sqrt | f32Min | f32Max =>
+      all_goals simp [lowerInstr] at h
+  | i32WrapI64 | f32ConvertI32S | f32ConvertI32U =>
+      all_goals simp [lowerInstr] at h
+  | i32TruncF32S | i32TruncF32U =>
+      all_goals simp [lowerInstr] at h
+  | f32ReinterpretI32 | i32ReinterpretF32 =>
+      all_goals simp [lowerInstr] at h
+  | f32Load _ _ | f32Store _ _ =>
+      all_goals simp [lowerInstr] at h
+  | i32Load8U _ _ | i32Load8S _ _ | i32Store8 _ _ =>
+      all_goals simp [lowerInstr] at h
+  | block _ | wloop _ | wif _ =>
+      all_goals simp [lowerInstr] at h
+  | welse | wend    => all_goals simp [lowerInstr] at h
+  | br _ | brIf _   => all_goals simp [lowerInstr] at h
+  | call _          => simp [lowerInstr] at h
+  | wselect         => simp [lowerInstr] at h
+  | unreachable     => simp [lowerInstr] at h
+  | unsupported _   => simp [lowerInstr] at h
+
 end Quanta.Wasm
