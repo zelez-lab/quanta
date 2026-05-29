@@ -974,8 +974,8 @@ theorem localGet_post_refines_via_localReg
     {layout : BufferLayout} (R : Refines ws s kst layout)
     {i : Nat} {v : WasmValue} {nv : UInt32} {entry_snd : Reg}
     (hloc : ws.locals.get? i = some v)
-    (hfind' : s.localReg.find? (fun p => p.fst = i) = some (i, entry_snd))
-    (h_lookup : regLookup kst.rf entry_snd = some (Quanta.KOps.Value.vU32 nv))
+    (_hfind' : s.localReg.find? (fun p => p.fst = i) = some (i, entry_snd))
+    (_h_lookup : regLookup kst.rf entry_snd = some (Quanta.KOps.Value.vU32 nv))
     (h_v_eq : v = .wI32 nv := by trivial) :
     Refines { ws with stack := v :: ws.stack }
             { nextReg := s.nextReg + 1,
@@ -1050,8 +1050,8 @@ theorem localGet_post_refines_via_currentReg
     {layout : BufferLayout} (R : Refines ws s kst layout)
     {i : Nat} {v : WasmValue} {nv : UInt32} {cur_snd : Reg}
     (hloc : ws.locals.get? i = some v)
-    (hfind' : s.currentReg.find? (fun p => p.fst = i) = some (i, cur_snd))
-    (h_lookup : regLookup kst.rf cur_snd = some (Quanta.KOps.Value.vU32 nv))
+    (_hfind' : s.currentReg.find? (fun p => p.fst = i) = some (i, cur_snd))
+    (_h_lookup : regLookup kst.rf cur_snd = some (Quanta.KOps.Value.vU32 nv))
     (h_v_eq : v = .wI32 nv := by trivial) :
     Refines { ws with stack := v :: ws.stack }
             { nextReg := s.nextReg + 1,
