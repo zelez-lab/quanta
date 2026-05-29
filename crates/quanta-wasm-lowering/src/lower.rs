@@ -1866,6 +1866,28 @@ impl<'a> LowerCtx<'a> {
                     });
                     return Ok(());
                 }
+                // KNOWN BUG (2026-05-29): when depth > 0 and any
+                // intermediate non-Loop frame exists, `cond` was
+                // committed into the CURRENT frame's sink, but the
+                // redirect Branch we install at `depth` ends up
+                // referencing `cond` from the TARGET frame's scope.
+                // After all inner frames close into the Branch's
+                // else_ops, the emitted MSL/SPIR-V has
+                //   if (cond) { ... } else { ...; bool cond = ...; }
+                // — use-before-def. Symptom in tests/host_emitter.rs
+                // ::emit_loop (`error: use of undeclared identifier
+                // 'r44'`).
+                //
+                // Fix requires either:
+                //   (a) emitting cond's defining ops at target sink
+                //       too (hard — deps may be in inner scope), or
+                //   (b) hoisting cond as a stable_reg defined at
+                //       function-frame ops[0], then writing to it
+                //       from inner scope (also requires the OuterBranch
+                //       to come AFTER inner ops in target scope, not
+                //       wrap them — a separate restructuring).
+                //
+                // See memory/emitter_codegen_bugs_2026-05-29.md.
                 self.install_redirect_at(*depth, cond);
             }
 
