@@ -108,6 +108,270 @@ theorem LowerState.empty_wellScoped : LowerState.empty.wellScoped := by
   refine ⟨?_, ?_, ?_⟩ <;> intro _ h <;> exact absurd h (by simp [LowerState.empty])
 
 -- ════════════════════════════════════════════════════════════════════
+-- popSym / commit helpers
+--
+-- The slice-1 binop and cmp arms pop two SymVals, commit each into a
+-- real register, then alloc a destination. Several scope-validity
+-- properties of `popSym` and `commit` are reused across both arms;
+-- they live here as named lemmas.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `popSym` is structural: nextReg, localReg, currentReg untouched,
+    stack reduced by one. -/
+theorem LowerState.popSym_nextReg {s s' : LowerState} {sv : SymVal}
+    (h : s.popSym = some (sv, s')) : s'.nextReg = s.nextReg := by
+  unfold LowerState.popSym at h
+  rcases hs : s.stack with _ | ⟨sv', rs⟩
+  · rw [hs] at h; simp at h
+  · rw [hs] at h; simp at h
+    obtain ⟨_, hs_eq⟩ := h
+    rw [← hs_eq]
+
+theorem LowerState.popSym_localReg {s s' : LowerState} {sv : SymVal}
+    (h : s.popSym = some (sv, s')) : s'.localReg = s.localReg := by
+  unfold LowerState.popSym at h
+  rcases hs : s.stack with _ | ⟨sv', rs⟩
+  · rw [hs] at h; simp at h
+  · rw [hs] at h; simp at h
+    obtain ⟨_, hs_eq⟩ := h
+    rw [← hs_eq]
+
+theorem LowerState.popSym_currentReg {s s' : LowerState} {sv : SymVal}
+    (h : s.popSym = some (sv, s')) : s'.currentReg = s.currentReg := by
+  unfold LowerState.popSym at h
+  rcases hs : s.stack with _ | ⟨sv', rs⟩
+  · rw [hs] at h; simp at h
+  · rw [hs] at h; simp at h
+    obtain ⟨_, hs_eq⟩ := h
+    rw [← hs_eq]
+
+/-- The popped SymVal was on `s.stack` before the pop. -/
+theorem LowerState.popSym_sv_mem {s s' : LowerState} {sv : SymVal}
+    (h : s.popSym = some (sv, s')) : sv ∈ s.stack := by
+  unfold LowerState.popSym at h
+  rcases hs : s.stack with _ | ⟨sv', rs⟩
+  · rw [hs] at h; simp at h
+  · rw [hs] at h; simp at h
+    obtain ⟨hsv_eq, _⟩ := h
+    -- After `rcases hs : s.stack`, the rcases substituted s.stack → sv'::rs
+    -- in the GOAL. So the goal is now `sv ∈ sv' :: rs`. After subst hsv_eq:
+    subst hsv_eq
+    exact List.mem_cons_self _ _
+
+/-- Post-pop stack is a tail of pre-pop stack. -/
+theorem LowerState.popSym_stack_subset {s s' : LowerState} {sv : SymVal}
+    (h : s.popSym = some (sv, s')) : ∀ x ∈ s'.stack, x ∈ s.stack := by
+  unfold LowerState.popSym at h
+  rcases hs : s.stack with _ | ⟨sv', rs⟩
+  · rw [hs] at h; simp at h
+  · rw [hs] at h; simp at h
+    obtain ⟨_, hs_eq⟩ := h
+    intro x hx
+    rw [← hs_eq] at hx
+    -- Same as above: rcases substituted the GOAL; goal is `x ∈ sv' :: rs`.
+    exact List.mem_cons_of_mem _ hx
+
+/-- `popSym` preserves wellScoped. -/
+theorem LowerState.popSym_preserves_wellScoped {s s' : LowerState} {sv : SymVal}
+    (hws : s.wellScoped) (h : s.popSym = some (sv, s')) : s'.wellScoped := by
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  have hnr := LowerState.popSym_nextReg h
+  have hlr := LowerState.popSym_localReg h
+  have hcr := LowerState.popSym_currentReg h
+  refine ⟨?_, ?_, ?_⟩
+  · intro sv' hsv' r hr
+    rw [hnr]
+    exact hstk sv' (LowerState.popSym_stack_subset h sv' hsv') r hr
+  · intro p hp
+    rw [hlr] at hp
+    rw [hnr]
+    exact hloc p hp
+  · intro p hp
+    rw [hcr] at hp
+    rw [hnr]
+    exact hcur p hp
+
+/-- The popped SymVal's registers all lie below `s.nextReg`. -/
+theorem LowerState.popSym_sv_regs_lt {s s' : LowerState} {sv : SymVal}
+    (hws : s.wellScoped) (h : s.popSym = some (sv, s')) :
+    ∀ r ∈ sv.regs, r < s.nextReg := by
+  obtain ⟨hstk, _, _⟩ := hws
+  exact hstk sv (LowerState.popSym_sv_mem h)
+
+/-- `commit` either leaves nextReg alone (.reg case) or bumps it by 1
+    (.i32ConstSym case). Either way, post-state's nextReg ≥ pre-state's. -/
+theorem LowerState.commit_nextReg_mono {s s' : LowerState} {sv : SymVal}
+    {r : Reg} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) : s.nextReg ≤ s'.nextReg := by
+  unfold LowerState.commit at h
+  cases sv with
+  | reg r' _ =>
+      simp at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      subst h_s_eq
+      exact Nat.le_refl _
+  | i32ConstSym n =>
+      simp [LowerState.alloc] at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      rw [← h_s_eq]
+      exact Nat.le_succ _
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+  | bufferAccess _ _ _ => simp at h
+
+/-- `commit` preserves `localReg`. -/
+theorem LowerState.commit_localReg {s s' : LowerState} {sv : SymVal}
+    {r : Reg} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) : s'.localReg = s.localReg := by
+  unfold LowerState.commit at h
+  cases sv with
+  | reg r' _ =>
+      simp at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      rw [← h_s_eq]
+  | i32ConstSym n =>
+      simp [LowerState.alloc] at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      rw [← h_s_eq]
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+  | bufferAccess _ _ _ => simp at h
+
+/-- `commit` preserves `currentReg`. -/
+theorem LowerState.commit_currentReg {s s' : LowerState} {sv : SymVal}
+    {r : Reg} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) : s'.currentReg = s.currentReg := by
+  unfold LowerState.commit at h
+  cases sv with
+  | reg r' _ =>
+      simp at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      rw [← h_s_eq]
+  | i32ConstSym n =>
+      simp [LowerState.alloc] at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      rw [← h_s_eq]
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+  | bufferAccess _ _ _ => simp at h
+
+/-- `commit` preserves `stack`. -/
+theorem LowerState.commit_stack {s s' : LowerState} {sv : SymVal}
+    {r : Reg} {ops : List KernelOp}
+    (h : s.commit sv = some (r, s', ops)) : s'.stack = s.stack := by
+  unfold LowerState.commit at h
+  cases sv with
+  | reg r' _ =>
+      simp at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      rw [← h_s_eq]
+  | i32ConstSym n =>
+      simp [LowerState.alloc] at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      rw [← h_s_eq]
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+  | bufferAccess _ _ _ => simp at h
+
+/-- `commit` preserves wellScoped. Every field either stays the same
+    (stack, localReg, currentReg) or grows (nextReg). -/
+theorem LowerState.commit_preserves_wellScoped {s s' : LowerState} {sv : SymVal}
+    {r : Reg} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : s.commit sv = some (r, s', ops)) :
+    s'.wellScoped := by
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  have hnr := LowerState.commit_nextReg_mono h
+  have hlr := LowerState.commit_localReg h
+  have hcr := LowerState.commit_currentReg h
+  have hst := LowerState.commit_stack h
+  refine ⟨?_, ?_, ?_⟩
+  · intro sv' hsv' r' hr'
+    rw [hst] at hsv'
+    exact Nat.lt_of_lt_of_le (hstk sv' hsv' r' hr') hnr
+  · intro p hp
+    rw [hlr] at hp
+    exact Nat.lt_of_lt_of_le (hloc p hp) hnr
+  · intro p hp
+    rw [hcr] at hp
+    exact Nat.lt_of_lt_of_le (hcur p hp) hnr
+
+/-- Ops emitted by `commit` have no operand reads — `.const`'s
+    `usedRegs = []` — so they're scope-valid against any env. -/
+theorem LowerState.commit_ops_scopeValid {s s' : LowerState} {sv : SymVal}
+    {r : Reg} {ops : List KernelOp}
+    (env : List Reg) (h : s.commit sv = some (r, s', ops)) :
+    scopeValidOps env ops := by
+  unfold LowerState.commit at h
+  cases sv with
+  | reg r' _ =>
+      simp at h
+      obtain ⟨_, _, h_ops⟩ := h
+      subst h_ops; exact trivial
+  | i32ConstSym n =>
+      simp [LowerState.alloc] at h
+      obtain ⟨_, _, h_ops⟩ := h
+      subst h_ops
+      refine ⟨?_, trivial⟩
+      intro r hr
+      simp [KernelOp.usedRegs] at hr
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+  | bufferAccess _ _ _ => simp at h
+
+/-- The committed register `r` lies in the post-commit `scopeEnv`,
+    assuming the input SymVal came from a wellScoped stack. -/
+theorem LowerState.commit_r_mem_scopeEnv {s s' : LowerState} {sv : SymVal}
+    {r : Reg} {ops : List KernelOp}
+    (hsv : ∀ r' ∈ sv.regs, r' < s.nextReg)
+    (h : s.commit sv = some (r, s', ops)) : r ∈ s'.scopeEnv := by
+  unfold LowerState.commit at h
+  cases sv with
+  | reg r' _ =>
+      simp at h
+      obtain ⟨hreq, hs_eq, _⟩ := h
+      subst hreq; rw [← hs_eq]
+      rw [LowerState.mem_scopeEnv]
+      exact hsv r' (by simp [SymVal.regs])
+  | i32ConstSym n =>
+      simp [LowerState.alloc] at h
+      obtain ⟨hreq, hs_eq, _⟩ := h
+      -- r = s.nextReg; s'.nextReg = s.nextReg + 1.
+      subst hreq; rw [← hs_eq]
+      rw [LowerState.mem_scopeEnv]
+      exact Nat.lt_succ_self _
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+  | bufferAccess _ _ _ => simp at h
+
+/-- The ops emitted by `commit` extend the env by at most one register,
+    namely `r` (the committed register itself). For `.reg`, no extension;
+    for `.i32ConstSym`, extends by `r`. In both cases `r ∈ extendEnvOps env ops`. -/
+theorem LowerState.commit_r_in_extendEnvOps {s s' : LowerState} {sv : SymVal}
+    {r : Reg} {ops : List KernelOp} (env : List Reg)
+    (hsv : ∀ r' ∈ sv.regs, r' ∈ env)
+    (h : s.commit sv = some (r, s', ops)) :
+    r ∈ extendEnvOps env ops := by
+  unfold LowerState.commit at h
+  cases sv with
+  | reg r' _ =>
+      simp at h
+      obtain ⟨hreq, _, h_ops⟩ := h
+      subst hreq; subst h_ops
+      -- extendEnvOps env [] = env. Need r' ∈ env from hsv.
+      exact hsv r' (by simp [SymVal.regs])
+  | i32ConstSym n =>
+      simp [LowerState.alloc] at h
+      obtain ⟨hreq, _, h_ops⟩ := h
+      subst hreq; subst h_ops
+      -- extendEnvOps env [.const s.nextReg _] = [s.nextReg].extendEnv env (.const …)
+      -- = s.nextReg :: env. Membership trivial.
+      show s.nextReg ∈ extendEnvOps env [.const s.nextReg (.u32 (UInt32.ofNat n.toNat))]
+      simp [extendEnvOps, extendEnv, KernelOp.definedReg]
+  | bufferPtr _ => simp at h
+  | scaledIdx _ _ => simp at h
+  | bufferAccess _ _ _ => simp at h
+
+-- ════════════════════════════════════════════════════════════════════
 -- Per-arm: empty-emit arms
 -- ════════════════════════════════════════════════════════════════════
 
