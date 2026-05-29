@@ -2100,4 +2100,211 @@ theorem lowerInstr_i32Store_preserves_wellScoped
   unfold lowerInstr at h
   exact lowerI32Store_preserves_wellScoped hws h
 
+-- ════════════════════════════════════════════════════════════════════
+-- localSet + localTee preservation (dual-Copy pattern)
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerInstr_localSet_preserves_wellScoped
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s (.localSet i) = some (s', ops)) : s'.wellScoped := by
+  simp [lowerInstr] at h
+  rcases hpop : s.popSym with _ | ⟨sv, s1⟩
+  · simp [hpop] at h
+  simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hc : s1.commit sv with _ | ⟨src, s2, opsCommit⟩
+  · simp [hc] at h
+  simp only [hc, Option.some_bind] at h
+  have hws1 : s1.wellScoped := LowerState.popSym_preserves_wellScoped hws hpop
+  have hws2 : s2.wellScoped := LowerState.commit_preserves_wellScoped hws1 hc
+  -- s3 = s2.alloc.snd; wellScoped via alloc_preserves.
+  have hws3 : s2.alloc.snd.wellScoped :=
+    LowerState.alloc_preserves_wellScoped hws2
+  -- The match on the bumped state's lookupLocal == s2.lookupLocal (alloc
+  -- doesn't touch localReg). The bumped state IS s2.alloc.snd ≡ s3.
+  simp only [LowerState.alloc] at h
+  -- Notation: s3.nextReg = s2.nextReg + 1 (post-alloc).
+  rcases hlk : ({ nextReg := s2.nextReg + 1, stack := s2.stack,
+                   localReg := s2.localReg, localTy := s2.localTy,
+                   bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
+                   : LowerState).lookupLocal i with _ | stable
+  · -- New stable case: extra alloc inside. Final s'.nextReg = s2.nextReg + 2.
+    simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq
+    -- stable = s2.nextReg + 1, fresh = s2.nextReg.
+    obtain ⟨hstk, hloc, hcur⟩ := hws2
+    refine ⟨?_, ?_, ?_⟩
+    · intro sv' hsv' r hr
+      show r < s2.nextReg + 1 + 1
+      exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (hstk sv' hsv' r hr))
+    · intro p hp
+      show p.snd < s2.nextReg + 1 + 1
+      have hp' : p = (i, s2.nextReg + 1) ∨
+                  p ∈ s2.localReg.filter (fun q => !decide (q.fst = i)) := by
+        have : p ∈ (i, s2.nextReg + 1) ::
+                    s2.localReg.filter (fun q => !decide (q.fst = i)) := hp
+        exact List.mem_cons.mp this
+      rcases hp' with rfl | hp'
+      · exact Nat.lt_succ_self _
+      · have hpsnd_s2 : p.snd < s2.nextReg :=
+          hloc p (List.mem_filter.mp hp').1
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hpsnd_s2)
+    · intro p hp
+      show p.snd < s2.nextReg + 1 + 1
+      have hp' : p = (i, s2.nextReg) ∨
+                  p ∈ s2.currentReg.filter (fun q => !decide (q.fst = i)) := by
+        have : p ∈ (i, s2.nextReg) ::
+                    s2.currentReg.filter (fun q => !decide (q.fst = i)) := hp
+        exact List.mem_cons.mp this
+      rcases hp' with rfl | hp'
+      · exact Nat.lt_succ_of_lt (Nat.lt_succ_self _)
+      · have hpsnd_s2 : p.snd < s2.nextReg :=
+          hcur p (List.mem_filter.mp hp').1
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hpsnd_s2)
+  · -- Existing stable case. Final s'.nextReg = s2.nextReg + 1.
+    simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    have hstable_lt_s2 : stable < s2.nextReg := by
+      obtain ⟨_, hlocws, _⟩ := hws2
+      unfold LowerState.lookupLocal at hlk
+      simp at hlk
+      obtain ⟨a, hfind⟩ := hlk
+      have hmem : (a, stable) ∈ s2.localReg := List.mem_of_find?_eq_some hfind
+      exact hlocws _ hmem
+    subst h_s_eq
+    obtain ⟨hstk, hloc, hcur⟩ := hws2
+    refine ⟨?_, ?_, ?_⟩
+    · intro sv' hsv' r hr
+      show r < s2.nextReg + 1
+      exact Nat.lt_succ_of_lt (hstk sv' hsv' r hr)
+    · intro p hp
+      show p.snd < s2.nextReg + 1
+      have hp' : p = (i, stable) ∨
+                  p ∈ s2.localReg.filter (fun q => !decide (q.fst = i)) := by
+        have : p ∈ (i, stable) ::
+                    s2.localReg.filter (fun q => !decide (q.fst = i)) := hp
+        exact List.mem_cons.mp this
+      rcases hp' with rfl | hp'
+      · exact Nat.lt_succ_of_lt hstable_lt_s2
+      · exact Nat.lt_succ_of_lt (hloc p (List.mem_filter.mp hp').1)
+    · intro p hp
+      show p.snd < s2.nextReg + 1
+      have hp' : p = (i, s2.nextReg) ∨
+                  p ∈ s2.currentReg.filter (fun q => !decide (q.fst = i)) := by
+        have : p ∈ (i, s2.nextReg) ::
+                    s2.currentReg.filter (fun q => !decide (q.fst = i)) := hp
+        exact List.mem_cons.mp this
+      rcases hp' with rfl | hp'
+      · exact Nat.lt_succ_self _
+      · exact Nat.lt_succ_of_lt (hcur p (List.mem_filter.mp hp').1)
+
+theorem lowerInstr_localTee_preserves_wellScoped
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s (.localTee i) = some (s', ops)) : s'.wellScoped := by
+  simp [lowerInstr] at h
+  rcases hpop : s.popSym with _ | ⟨sv, s1⟩
+  · simp [hpop] at h
+  simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hc : s1.commit sv with _ | ⟨src, s2, opsCommit⟩
+  · simp [hc] at h
+  simp only [hc, Option.some_bind] at h
+  have hws1 : s1.wellScoped := LowerState.popSym_preserves_wellScoped hws hpop
+  have hws2 : s2.wellScoped := LowerState.commit_preserves_wellScoped hws1 hc
+  have hws3 : s2.alloc.snd.wellScoped :=
+    LowerState.alloc_preserves_wellScoped hws2
+  simp only [LowerState.alloc, LowerState.push] at h
+  rcases hlk : ({ nextReg := s2.nextReg + 1, stack := s2.stack,
+                   localReg := s2.localReg, localTy := s2.localTy,
+                   bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
+                   : LowerState).lookupLocal i with _ | stable
+  · -- New stable + post_fresh alloc. Final s'.nextReg = s2.nextReg + 3.
+    simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq
+    -- Direct destructuring against the simp-flattened record.
+    -- stable = s2.nextReg + 1, fresh = s2.nextReg, post_fresh = s2.nextReg + 2.
+    obtain ⟨hstk, hloc, hcur⟩ := hws2
+    refine ⟨?_, ?_, ?_⟩
+    · intro sv' hsv' r hr
+      show r < s2.nextReg + 1 + 1 + 1
+      simp at hsv'
+      rcases hsv' with rfl | hsv'
+      · simp [SymVal.regs] at hr
+        subst hr; exact Nat.lt_succ_self _
+      · have hr_s2 : r < s2.nextReg := hstk sv' hsv' r hr
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hr_s2))
+    · intro p hp
+      show p.snd < s2.nextReg + 1 + 1 + 1
+      have hp' : p = (i, s2.nextReg + 1) ∨
+                  p ∈ s2.localReg.filter (fun q => !decide (q.fst = i)) := by
+        have : p ∈ (i, s2.nextReg + 1) ::
+                    s2.localReg.filter (fun q => !decide (q.fst = i)) := hp
+        exact List.mem_cons.mp this
+      rcases hp' with rfl | hp'
+      · show s2.nextReg + 1 < s2.nextReg + 1 + 1 + 1
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_self _)
+      · have hpsnd_s2 : p.snd < s2.nextReg :=
+          hloc p (List.mem_filter.mp hp').1
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hpsnd_s2))
+    · intro p hp
+      show p.snd < s2.nextReg + 1 + 1 + 1
+      have hp' : p = (i, s2.nextReg) ∨
+                  p ∈ s2.currentReg.filter (fun q => !decide (q.fst = i)) := by
+        have : p ∈ (i, s2.nextReg) ::
+                    s2.currentReg.filter (fun q => !decide (q.fst = i)) := hp
+        exact List.mem_cons.mp this
+      rcases hp' with rfl | hp'
+      · show s2.nextReg < s2.nextReg + 1 + 1 + 1
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_self _))
+      · have hpsnd_s2 : p.snd < s2.nextReg :=
+          hcur p (List.mem_filter.mp hp').1
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hpsnd_s2))
+  · -- Existing stable + post_fresh alloc.
+    simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    have hstable_lt_s2 : stable < s2.nextReg := by
+      obtain ⟨_, hlocws, _⟩ := hws2
+      unfold LowerState.lookupLocal at hlk
+      simp at hlk
+      obtain ⟨a, hfind⟩ := hlk
+      have hmem : (a, stable) ∈ s2.localReg := List.mem_of_find?_eq_some hfind
+      exact hlocws _ hmem
+    subst h_s_eq
+    -- Goal: the constructed record (nextReg = s2.nextReg + 2, etc.) is wellScoped.
+    -- Prove by direct destructuring + lift through the +2 widening.
+    obtain ⟨hstk, hloc, hcur⟩ := hws2
+    refine ⟨?_, ?_, ?_⟩
+    · intro sv' hsv' r hr
+      show r < s2.nextReg + 1 + 1
+      simp at hsv'
+      rcases hsv' with rfl | hsv'
+      · simp [SymVal.regs] at hr
+        subst hr; exact Nat.lt_succ_self _
+      · exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (hstk sv' hsv' r hr))
+    · intro p hp
+      show p.snd < s2.nextReg + 1 + 1
+      -- p ∈ (i, stable) :: filter ... s2.localReg
+      have hp' : p = (i, stable) ∨
+                  p ∈ s2.localReg.filter (fun q => !decide (q.fst = i)) := by
+        have : p ∈ (i, stable) ::
+                    s2.localReg.filter (fun q => !decide (q.fst = i)) := hp
+        exact List.mem_cons.mp this
+      rcases hp' with rfl | hp'
+      · exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hstable_lt_s2)
+      · exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt
+          (hloc p (List.mem_filter.mp hp').1))
+    · intro p hp
+      show p.snd < s2.nextReg + 1 + 1
+      have hp' : p = (i, s2.nextReg) ∨
+                  p ∈ s2.currentReg.filter (fun q => !decide (q.fst = i)) := by
+        have : p ∈ (i, s2.nextReg) ::
+                    s2.currentReg.filter (fun q => !decide (q.fst = i)) := hp
+        exact List.mem_cons.mp this
+      rcases hp' with rfl | hp'
+      · exact Nat.lt_succ_of_lt (Nat.lt_succ_self _)
+      · exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt
+          (hcur p (List.mem_filter.mp hp').1))
+
 end Quanta.Wasm
