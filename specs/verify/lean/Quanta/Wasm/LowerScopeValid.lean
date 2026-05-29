@@ -972,4 +972,148 @@ theorem lowerInstr_i32Add_scopeValid
     scopeValidOps s'.scopeEnv ops :=
   lowerI32Add_scopeValid hws h
 
+-- ════════════════════════════════════════════════════════════════════
+-- Per-arm: lowerI32Cmp (compare family)
+--
+-- Same structure as lowerI32Bin but emits TWO trailing ops:
+--   [.cmp boolReg ra rb op .bool, .cast dst boolReg .bool .u32]
+-- The cast's `boolReg` operand is the immediately-preceding cmp's
+-- defined reg, so scopeValid through extendEnv on the cmp op.
+-- Unlocks all six i32 compare arms.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Cmp_scopeValid
+    {s s' : LowerState} {op : Quanta.KOps.CmpOp} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Cmp s op = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  unfold lowerI32Cmp at h
+  rcases hb : s.popSym with _ | ⟨svb, s1⟩
+  · simp [hb] at h
+  simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+  rcases ha : s1.popSym with _ | ⟨sva, s2⟩
+  · simp [ha] at h
+  simp only [ha, Option.bind_eq_bind, Option.some_bind] at h
+  rcases hca : s2.commit sva with _ | ⟨ra, s3, opsA⟩
+  · simp [hca] at h
+  simp only [hca, Option.some_bind] at h
+  rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
+  · simp [hcb] at h
+  simp only [hcb, Option.some_bind] at h
+  simp [LowerState.alloc, LowerState.push] at h
+  obtain ⟨h_s_eq, h_ops⟩ := h
+  -- Thread wellScoped.
+  have hws1 : s1.wellScoped := LowerState.popSym_preserves_wellScoped hws hb
+  have hws2 : s2.wellScoped := LowerState.popSym_preserves_wellScoped hws1 ha
+  -- nextReg chain.
+  have hnr_pop1 : s1.nextReg = s.nextReg := LowerState.popSym_nextReg hb
+  have hnr_pop2 : s2.nextReg = s1.nextReg := LowerState.popSym_nextReg ha
+  have hnr_ca : s2.nextReg ≤ s3.nextReg := LowerState.commit_nextReg_mono hca
+  have hnr_cb : s3.nextReg ≤ s4.nextReg := LowerState.commit_nextReg_mono hcb
+  -- ra ∈ s3.scopeEnv → s4.scopeEnv.
+  have hsva_lt_s1 : ∀ r ∈ sva.regs, r < s1.nextReg :=
+    LowerState.popSym_sv_regs_lt hws1 ha
+  have hsva_lt_s2 : ∀ r ∈ sva.regs, r < s2.nextReg := by
+    intro r hr; rw [hnr_pop2]; exact hsva_lt_s1 r hr
+  have hsvb_lt_s : ∀ r ∈ svb.regs, r < s.nextReg :=
+    LowerState.popSym_sv_regs_lt hws hb
+  have hra_s3 : ra ∈ s3.scopeEnv :=
+    LowerState.commit_r_mem_scopeEnv hsva_lt_s2 hca
+  have hsvb_lt_s3 : ∀ r ∈ svb.regs, r < s3.nextReg := by
+    intro r hr
+    have h0 := hsvb_lt_s r hr
+    have h1 : r < s1.nextReg := by rw [hnr_pop1]; exact h0
+    have h2 : r < s2.nextReg := by rw [hnr_pop2]; exact h1
+    exact Nat.lt_of_lt_of_le h2 hnr_ca
+  have hrb_s4 : rb ∈ s4.scopeEnv :=
+    LowerState.commit_r_mem_scopeEnv hsvb_lt_s3 hcb
+  have hra_s4 : ra ∈ s4.scopeEnv :=
+    LowerState.scopeEnv_subset_of_nextReg_le hnr_cb hra_s3
+  subst h_ops
+  subst h_s_eq
+  -- s'.nextReg = s4.nextReg + 1 + 1 = s4.nextReg + 2 (two allocs).
+  -- boolReg = s4.nextReg; dst = s4.nextReg + 1; both < s4.nextReg + 2.
+  let envS' : List Reg := List.range (s4.nextReg + 1 + 1)
+  have hra_envS' : ra ∈ envS' := by
+    rw [LowerState.mem_scopeEnv] at hra_s4
+    show ra ∈ List.range _
+    rw [List.mem_range]
+    exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hra_s4)
+  have hrb_envS' : rb ∈ envS' := by
+    rw [LowerState.mem_scopeEnv] at hrb_s4
+    show rb ∈ List.range _
+    rw [List.mem_range]
+    exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hrb_s4)
+  show scopeValidOps envS'
+    (opsA ++ (opsB ++
+      [KernelOp.cmp s4.nextReg ra rb op .bool,
+       KernelOp.cast (s4.nextReg + 1) s4.nextReg .bool .u32]))
+  apply Quanta.KOps.KernelOp.scopeValidOps_append
+  · exact LowerState.commit_ops_scopeValid envS' hca
+  · apply Quanta.KOps.KernelOp.scopeValidOps_append
+    · exact LowerState.commit_ops_scopeValid (extendEnvOps envS' opsA) hcb
+    · -- Two trailing ops. First .cmp: uses ra, rb (both in env).
+      -- Second .cast: uses s4.nextReg, which was just defined by the cmp.
+      have hsuper_a : envS' ⊆ extendEnvOps envS' opsA :=
+        Quanta.KOps.KernelOp.extendEnvOps_super envS' opsA
+      have hsuper_b :
+          extendEnvOps envS' opsA ⊆ extendEnvOps (extendEnvOps envS' opsA) opsB :=
+        Quanta.KOps.KernelOp.extendEnvOps_super (extendEnvOps envS' opsA) opsB
+      let envCmp : List Reg := extendEnvOps (extendEnvOps envS' opsA) opsB
+      have hra_cmp : ra ∈ envCmp := hsuper_b (hsuper_a hra_envS')
+      have hrb_cmp : rb ∈ envCmp := hsuper_b (hsuper_a hrb_envS')
+      refine ⟨?_, ?_, trivial⟩
+      · -- .cmp s4.nextReg ra rb op .bool: usedRegs = [ra, rb].
+        intro r hr
+        simp [KernelOp.usedRegs] at hr
+        rcases hr with rfl | rfl
+        · exact hra_cmp
+        · exact hrb_cmp
+      · -- .cast (s4.nextReg + 1) s4.nextReg .bool .u32 against env extended
+        -- by the cmp. cmp's definedReg = some s4.nextReg, so the env
+        -- becomes s4.nextReg :: envCmp. cast uses [s4.nextReg].
+        intro r hr
+        simp [KernelOp.usedRegs] at hr
+        subst hr
+        -- Goal: s4.nextReg ∈ extendEnv envCmp (.cmp s4.nextReg …).
+        show s4.nextReg ∈ extendEnv envCmp (.cmp s4.nextReg ra rb op .bool)
+        simp [extendEnv, KernelOp.definedReg]
+
+-- Per-arm wrappers for the cmp family.
+theorem lowerInstr_i32Eq_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Eq = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Cmp_scopeValid hws h
+
+theorem lowerInstr_i32Ne_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Ne = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Cmp_scopeValid hws h
+
+theorem lowerInstr_i32LtU_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32LtU = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Cmp_scopeValid hws h
+
+theorem lowerInstr_i32LeU_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32LeU = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Cmp_scopeValid hws h
+
+theorem lowerInstr_i32GtU_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32GtU = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Cmp_scopeValid hws h
+
+theorem lowerInstr_i32GeU_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32GeU = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Cmp_scopeValid hws h
+
 end Quanta.Wasm
