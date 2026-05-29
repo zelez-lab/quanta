@@ -42,6 +42,7 @@ import Quanta.Axioms.Wgsl
 -- theorem on top of the WASM operator subset (`Quanta.Wasm.*`).
 import Quanta.KOps.Syntax
 import Quanta.KOps.Semantics
+import Quanta.KOps.Scope
 
 -- WASM source-language view + semantics + translator (step 059).
 import Quanta.Wasm.Syntax
