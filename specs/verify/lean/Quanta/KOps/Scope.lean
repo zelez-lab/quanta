@@ -153,6 +153,61 @@ theorem KernelOp.scopeValidOps_append (env : List Reg) (ops1 ops2 : List KernelO
       exact h2
 
 -- ════════════════════════════════════════════════════════════════════
+-- Monotonicity in env
+--
+-- If a list is scope-valid against env, it remains scope-valid
+-- against any larger env. Compositional refinement proofs use
+-- this to widen the environment as they compose sub-lowerings.
+-- ════════════════════════════════════════════════════════════════════
+
+mutual
+theorem KernelOp.scopeValid_mono : ∀ (op : KernelOp) {env env' : List Reg},
+    env ⊆ env' → KernelOp.scopeValid env op → KernelOp.scopeValid env' op
+  | .branch cond thenOps elseOps, env, env', h, hv => by
+    obtain ⟨hcond, hthen, helse⟩ := hv
+    refine ⟨h hcond, ?_, ?_⟩
+    · exact KernelOp.scopeValidOps_mono thenOps h hthen
+    · exact KernelOp.scopeValidOps_mono elseOps h helse
+  | .loopOp body, env, env', h, hv =>
+    KernelOp.scopeValidOps_mono body h hv
+  | .const _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .binOp _ _ _ _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .unaryOp _ _ _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .cmp _ _ _ _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .cast _ _ _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .bitcast _ _ _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .copy _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .load _ _ _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .store _ _ _ _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .breakOp, _, _, h, hv => fun r hr => h (hv r hr)
+  | .quarkId _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .protonId _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .nucleusId _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .protonSize _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .quarkCount _, _, _, h, hv => fun r hr => h (hv r hr)
+  | .barrier, _, _, h, hv => fun r hr => h (hv r hr)
+
+theorem KernelOp.scopeValidOps_mono : ∀ (ops : List KernelOp) {env env' : List Reg},
+    env ⊆ env' →
+    KernelOp.scopeValidOps env ops → KernelOp.scopeValidOps env' ops
+  | [], _, _, _, _ => trivial
+  | op :: rest, env, env', h, ⟨hop, hrest⟩ => by
+    refine ⟨KernelOp.scopeValid_mono op h hop, ?_⟩
+    -- After extending by op on both sides, the ⊆ relation is preserved.
+    have hext : KernelOp.extendEnv env op ⊆ KernelOp.extendEnv env' op := by
+      unfold KernelOp.extendEnv
+      cases op.definedReg with
+      | none => exact h
+      | some r =>
+        intro x hx
+        simp at hx
+        rcases hx with rfl | hx
+        · simp
+        · exact List.mem_cons_of_mem _ (h hx)
+    exact KernelOp.scopeValidOps_mono rest hext hrest
+end
+
+-- ════════════════════════════════════════════════════════════════════
 -- Sanity smoke tests (decide-able at definition time)
 -- ════════════════════════════════════════════════════════════════════
 
