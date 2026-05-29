@@ -129,6 +129,29 @@ def KernelOp.extendEnvOps (env : List Reg) : List KernelOp → List Reg
   | []         => env
   | op :: rest => KernelOp.extendEnvOps (KernelOp.extendEnv env op) rest
 
+/-- `extendEnv` preserves ⊆: if env ⊆ env', then
+    `extendEnv env op ⊆ extendEnv env' op`. -/
+theorem KernelOp.extendEnv_mono {env env' : List Reg} (h : env ⊆ env')
+    (op : KernelOp) : KernelOp.extendEnv env op ⊆ KernelOp.extendEnv env' op := by
+  unfold KernelOp.extendEnv
+  cases op.definedReg with
+  | none => exact h
+  | some r =>
+    intro x hx
+    simp at hx
+    rcases hx with rfl | hx
+    · simp
+    · exact List.mem_cons_of_mem _ (h hx)
+
+/-- `extendEnvOps` preserves ⊆. -/
+theorem KernelOp.extendEnvOps_mono : ∀ (ops : List KernelOp) {env env' : List Reg},
+    env ⊆ env' →
+    KernelOp.extendEnvOps env ops ⊆ KernelOp.extendEnvOps env' ops
+  | [], _, _, h => h
+  | op :: rest, env, env', h => by
+    show KernelOp.extendEnvOps (KernelOp.extendEnv env op) rest ⊆ _
+    exact KernelOp.extendEnvOps_mono rest (KernelOp.extendEnv_mono h op)
+
 /-- The env after walking ops always contains the starting env. -/
 theorem KernelOp.extendEnvOps_super (env : List Reg) (ops : List KernelOp) :
     env ⊆ KernelOp.extendEnvOps env ops := by
