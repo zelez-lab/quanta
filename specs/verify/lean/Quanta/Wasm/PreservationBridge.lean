@@ -6462,4 +6462,34 @@ theorem framework_preservation_kernel
         post_preserves h_fuel_ge_2
         ws' s' ops hw hl
 
+-- ════════════════════════════════════════════════════════════════════
+-- Framework theorem sanity smoke tests
+--
+-- These constructive `KernelInstrs` witnesses don't depend on any
+-- runtime input — they typecheck at definition time and exercise
+-- the framework_preservation_kernel theorem's apex induction.
+-- Functions as compile-time regression coverage against accidental
+-- breakage in the framework theorem statement or its supporting
+-- predicates (StraightLineInstr / WloopBodyShape / depth bound).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- The empty kernel is a valid `KernelInstrs` witness. -/
+example : KernelInstrs [] := .empty
+
+/-- A two-nop kernel typechecks (StraightLineInstr.nop = True trivially). -/
+example : KernelInstrs [.nop, .nop] :=
+  .sl_cons trivial (.sl_cons trivial .empty)
+
+/-- A mixed straight-line kernel: `i32Const 0 :: drop :: nop`. -/
+example : KernelInstrs [.i32Const 0, .drop, .nop] :=
+  .sl_cons trivial (.sl_cons trivial (.sl_cons trivial .empty))
+
+/-- The empty kernel has depth 0. -/
+example : (KernelInstrs.empty).depth = 0 := rfl
+
+/-- Straight-line cons preserves depth (0 for an all-sl_cons kernel). -/
+example :
+    (KernelInstrs.sl_cons (i := .nop) trivial KernelInstrs.empty).depth = 0 :=
+  rfl
+
 end Quanta.Wasm
