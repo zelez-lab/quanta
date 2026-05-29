@@ -2307,4 +2307,79 @@ theorem lowerInstr_localTee_preserves_wellScoped
       · exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt
           (hcur p (List.mem_filter.mp hp').1))
 
+-- ════════════════════════════════════════════════════════════════════
+-- Master wellScoped-preservation theorem
+--
+-- Every successful `lowerInstr s instr = some (s', ops)` against a
+-- wellScoped `s` produces a wellScoped post-state `s'`. Pair this
+-- with `lowerInstr_scopeValid` to chain step-level theorems into a
+-- list-level `lowerInstrs_scopeValid_ops`.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerInstr_preserves_wellScoped
+    {s s' : LowerState} {instr : WasmInstr} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s instr = some (s', ops)) : s'.wellScoped := by
+  cases instr with
+  | i32Const _      => exact lowerInstr_i32Const_preserves_wellScoped hws h
+  | nop             => exact lowerInstr_nop_preserves_wellScoped hws h
+  | wreturn         => exact lowerInstr_wreturn_preserves_wellScoped hws h
+  | drop            => exact lowerInstr_drop_preserves_wellScoped hws h
+  | localGet _      => exact lowerInstr_localGet_preserves_wellScoped hws h
+  | localSet _      => exact lowerInstr_localSet_preserves_wellScoped hws h
+  | localTee _      => exact lowerInstr_localTee_preserves_wellScoped hws h
+  | i32Add          => exact lowerInstr_i32Add_preserves_wellScoped hws h
+  | i32Sub          => exact lowerInstr_i32Sub_preserves_wellScoped hws h
+  | i32Mul          => exact lowerInstr_i32Mul_preserves_wellScoped hws h
+  | i32And          => exact lowerInstr_i32And_preserves_wellScoped hws h
+  | i32Or           => exact lowerInstr_i32Or_preserves_wellScoped hws h
+  | i32Xor          => exact lowerInstr_i32Xor_preserves_wellScoped hws h
+  | i32Shl          => exact lowerInstr_i32Shl_preserves_wellScoped hws h
+  | i32ShrU         => exact lowerInstr_i32ShrU_preserves_wellScoped hws h
+  | i32DivU         => exact lowerInstr_i32DivU_preserves_wellScoped hws h
+  | i32RemU         => exact lowerInstr_i32RemU_preserves_wellScoped hws h
+  | i32Eq           => exact lowerInstr_i32Eq_preserves_wellScoped hws h
+  | i32Ne           => exact lowerInstr_i32Ne_preserves_wellScoped hws h
+  | i32LtU          => exact lowerInstr_i32LtU_preserves_wellScoped hws h
+  | i32LeU          => exact lowerInstr_i32LeU_preserves_wellScoped hws h
+  | i32GtU          => exact lowerInstr_i32GtU_preserves_wellScoped hws h
+  | i32GeU          => exact lowerInstr_i32GeU_preserves_wellScoped hws h
+  | i32Load _ _     => exact lowerInstr_i32Load_preserves_wellScoped hws h
+  | i32Store _ _    => exact lowerInstr_i32Store_preserves_wellScoped hws h
+  -- Unsupported arms: lowerInstr returns none, contradicting h.
+  | i64Const _      => simp [lowerInstr] at h
+  | f32Const _      => simp [lowerInstr] at h
+  | f64Const _      => simp [lowerInstr] at h
+  | i32DivS         => simp [lowerInstr] at h
+  | i32RemS         => simp [lowerInstr] at h
+  | i32ShrS         => simp [lowerInstr] at h
+  | i32LtS          => simp [lowerInstr] at h
+  | i32GtS          => simp [lowerInstr] at h
+  | i32LeS          => simp [lowerInstr] at h
+  | i32GeS          => simp [lowerInstr] at h
+  | i32Eqz          => simp [lowerInstr] at h
+  | f32Add | f32Sub | f32Mul | f32Div => all_goals simp [lowerInstr] at h
+  | f32Eq | f32Ne | f32Lt | f32Gt | f32Le | f32Ge =>
+      all_goals simp [lowerInstr] at h
+  | f32Neg | f32Abs | f32Sqrt | f32Min | f32Max =>
+      all_goals simp [lowerInstr] at h
+  | i32WrapI64 | f32ConvertI32S | f32ConvertI32U =>
+      all_goals simp [lowerInstr] at h
+  | i32TruncF32S | i32TruncF32U =>
+      all_goals simp [lowerInstr] at h
+  | f32ReinterpretI32 | i32ReinterpretF32 =>
+      all_goals simp [lowerInstr] at h
+  | f32Load _ _ | f32Store _ _ =>
+      all_goals simp [lowerInstr] at h
+  | i32Load8U _ _ | i32Load8S _ _ | i32Store8 _ _ =>
+      all_goals simp [lowerInstr] at h
+  | block _ | wloop _ | wif _ =>
+      all_goals simp [lowerInstr] at h
+  | welse | wend    => all_goals simp [lowerInstr] at h
+  | br _ | brIf _   => all_goals simp [lowerInstr] at h
+  | call _          => simp [lowerInstr] at h
+  | wselect         => simp [lowerInstr] at h
+  | unreachable     => simp [lowerInstr] at h
+  | unsupported _   => simp [lowerInstr] at h
+
 end Quanta.Wasm
