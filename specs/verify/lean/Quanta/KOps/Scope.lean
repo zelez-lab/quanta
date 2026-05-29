@@ -115,6 +115,44 @@ def KernelOp.scopeValidOps (env : List Reg) : List KernelOp → Prop
 end
 
 -- ════════════════════════════════════════════════════════════════════
+-- Composition: scope-valid lists append into a scope-valid list
+--
+-- If `ops1` is scope-valid against env, and `ops2` is scope-valid
+-- against the env extended by all of ops1's defined regs, then
+-- `ops1 ++ ops2` is scope-valid against env. This is the structural
+-- statement that scope validity is preserved by sequential
+-- composition of sub-lowerings.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Helper: fold extendEnv over a list of ops. -/
+def KernelOp.extendEnvOps (env : List Reg) : List KernelOp → List Reg
+  | []         => env
+  | op :: rest => KernelOp.extendEnvOps (KernelOp.extendEnv env op) rest
+
+theorem KernelOp.scopeValidOps_append (env : List Reg) (ops1 ops2 : List KernelOp) :
+    KernelOp.scopeValidOps env ops1 →
+    KernelOp.scopeValidOps (KernelOp.extendEnvOps env ops1) ops2 →
+    KernelOp.scopeValidOps env (ops1 ++ ops2) := by
+  induction ops1 generalizing env with
+  | nil =>
+    intro _ h2
+    show KernelOp.scopeValidOps env ops2
+    exact h2
+  | cons op rest ih =>
+    intro ⟨hop, hrest⟩ h2
+    refine ⟨hop, ?_⟩
+    -- Apply IH at env := extendEnv env op.
+    show KernelOp.scopeValidOps (KernelOp.extendEnv env op) (rest ++ ops2)
+    apply ih
+    · exact hrest
+    · -- h2 has env = extendEnvOps env (op :: rest) which unfolds to
+      -- extendEnvOps (extendEnv env op) rest. That's exactly the env
+      -- we need.
+      show KernelOp.scopeValidOps
+            (KernelOp.extendEnvOps (KernelOp.extendEnv env op) rest) ops2
+      exact h2
+
+-- ════════════════════════════════════════════════════════════════════
 -- Sanity smoke tests (decide-able at definition time)
 -- ════════════════════════════════════════════════════════════════════
 
