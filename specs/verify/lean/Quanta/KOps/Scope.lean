@@ -151,4 +151,38 @@ example : ¬ KernelOp.scopeValidOps []
   -- hbr.1 : 44 ∈ []
   exact absurd hbr.1 (by simp)
 
+/-- The correctly-structured pattern (cond defined BEFORE branch):
+    `const r5 0; branch r5 [...] [...]` IS scope-valid. -/
+example : KernelOp.scopeValidOps []
+    [.const 5 (.i32 0),
+     .branch 5 [.const 6 (.i32 1)] [.const 7 (.i32 2)]] := by
+  refine ⟨?_, ?_, trivial⟩
+  · -- const 5 0 uses no regs
+    intro r hr; simp [KernelOp.usedRegs] at hr
+  · -- branch 5: cond ∈ [5] (after extending by const 5), branches valid
+    refine ⟨?_, ?_, ?_⟩
+    · -- cond = 5 is in env [5]
+      simp [KernelOp.extendEnv, KernelOp.definedReg]
+    · -- thenOps = [const 6 1] is scope-valid
+      refine ⟨?_, trivial⟩
+      intro r hr; simp [KernelOp.usedRegs] at hr
+    · -- elseOps = [const 7 2] is scope-valid
+      refine ⟨?_, trivial⟩
+      intro r hr; simp [KernelOp.usedRegs] at hr
+
+/-- Cmp-then-branch is scope-valid when cmp's dst is the branch
+    cond. This is the WELL-STRUCTURED pattern the WASM-route SHOULD
+    emit instead of the buggy redirect-chain output:
+    `cmp r10 r3 r4 eq u32; branch r10 [] []`. -/
+example : KernelOp.scopeValidOps [3, 4]
+    [.cmp 10 3 4 .eq .u32, .branch 10 [] []] := by
+  refine ⟨?_, ?_, trivial⟩
+  · -- cmp uses r3, r4 — both in env
+    intro r hr
+    simp [KernelOp.usedRegs] at hr
+    rcases hr with rfl | rfl <;> simp
+  · -- branch's cond=r10 is in env [10, 3, 4] (after cmp extended env)
+    refine ⟨?_, trivial, trivial⟩
+    simp [KernelOp.extendEnv, KernelOp.definedReg]
+
 end Quanta.KOps
