@@ -1079,6 +1079,66 @@ theorem lowerI32Cmp_scopeValid
         show s4.nextReg ∈ extendEnv envCmp (.cmp s4.nextReg ra rb op .bool)
         simp [extendEnv, KernelOp.definedReg]
 
+-- ════════════════════════════════════════════════════════════════════
+-- Per-arm: lowerI32Load (single buffer-pattern arm)
+--
+-- Only succeeds when top of stack is `bufferAccess slot base 4`.
+-- Emits [.load dst slot base .u32] where dst = s.nextReg (just
+-- allocated). usedRegs = [base]; base was a SymVal reg on s.stack,
+-- so wellScoped s ⇒ base < s.nextReg ⇒ base < s'.nextReg.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Load_scopeValid
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Load s = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  unfold lowerI32Load at h
+  rcases hs : s.stack with _ | ⟨sv, rs⟩
+  · rw [hs] at h; simp at h
+  · rw [hs] at h
+    cases sv with
+    | bufferAccess slot base scale =>
+        by_cases hscale : scale = 4
+        · subst hscale
+          simp [LowerState.alloc] at h
+          obtain ⟨h_s_eq, h_ops⟩ := h
+          -- base ∈ s.scopeEnv from wellScoped + sv on stack.
+          obtain ⟨hstk, _, _⟩ := hws
+          have hbase_in : base < s.nextReg := by
+            have hsv_mem : SymVal.bufferAccess slot base 4 ∈ s.stack := by
+              rw [hs]; exact List.mem_cons_self _ _
+            exact hstk _ hsv_mem base (by simp [SymVal.regs])
+          subst h_ops; subst h_s_eq
+          -- Goal: scopeValidOps s'.scopeEnv [.load s.nextReg slot base .u32]
+          -- where s'.nextReg = s.nextReg + 1.
+          have hbase_s' : base < s.nextReg + 1 := Nat.lt_succ_of_lt hbase_in
+          refine ⟨?_, trivial⟩
+          intro r hr
+          simp [KernelOp.usedRegs] at hr
+          -- hr : r = base (or base = r). Use it both ways.
+          show r ∈ List.range (s.nextReg + 1)
+          rw [List.mem_range]
+          rcases hr with rfl
+          exact hbase_s'
+        · -- scale ≠ 4: the match arm doesn't fire; lowerI32Load returns none.
+          exfalso
+          split at h
+          · rename_i _ _ _ _ hp
+            cases hp
+            exact hscale rfl
+          · exact Option.noConfusion h
+    | reg _ _ => simp at h
+    | i32ConstSym _ => simp at h
+    | bufferPtr _ => simp at h
+    | scaledIdx _ _ => simp at h
+
+theorem lowerInstr_i32Load_scopeValid
+    {s s' : LowerState} {offset align : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s (.i32Load offset align) = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops :=
+  lowerI32Load_scopeValid hws h
+
 -- Per-arm wrappers for the cmp family.
 theorem lowerInstr_i32Eq_scopeValid
     {s s' : LowerState} {ops : List KernelOp}
