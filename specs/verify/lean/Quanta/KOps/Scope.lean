@@ -278,4 +278,41 @@ example : KernelOp.scopeValidOps [3, 4]
     refine ⟨?_, trivial, trivial⟩
     simp [KernelOp.extendEnv, KernelOp.definedReg]
 
+/-- More-realistic bug pattern (mirrors `tests/host_emitter::emit_loop`):
+    an outer Branch whose cond is defined INSIDE its else-branch.
+    Expected NOT scope-valid. -/
+example : ¬ KernelOp.scopeValidOps []
+    [.const 0 (.i32 8),
+     -- Outer branch using r44 as cond, but r44 is only set inside the else.
+     .branch 44 []
+       [.const 43 (.i32 0),
+        .cmp 44 0 43 .eq .u32]] := by
+  intro h
+  obtain ⟨_, hbr, _⟩ := h
+  obtain ⟨hcond, _, _⟩ := hbr
+  -- hcond : 44 ∈ extendEnv [] (const 0 (.i32 8)) = [0]
+  simp [KernelOp.extendEnv, KernelOp.definedReg] at hcond
+
+/-- Use of scopeValidOps_append: split a longer chain. The chain
+    `[const 0 1; const 1 2]` is scope-valid against env=[], so by
+    append with the rest `[binOp 2 0 1 add u32]` scope-valid against
+    [1; 0] (the extended env), the concatenation is scope-valid. -/
+example :
+    KernelOp.scopeValidOps []
+      ([.const 0 (.i32 1), .const 1 (.i32 2)] ++
+       [.binOp 2 0 1 .add .u32]) := by
+  apply KernelOp.scopeValidOps_append
+  · -- First half: two consts, no uses
+    refine ⟨?_, ?_, trivial⟩
+    · intro r hr; simp [KernelOp.usedRegs] at hr
+    · intro r hr; simp [KernelOp.usedRegs] at hr
+  · -- Second half: binOp at env extended by both consts.
+    show KernelOp.scopeValidOps _ _
+    refine ⟨?_, trivial⟩
+    -- env is extendEnvOps [] [const 0 _, const 1 _] = [1; 0]
+    intro r hr
+    simp [KernelOp.usedRegs] at hr
+    rcases hr with rfl | rfl <;>
+      simp [KernelOp.extendEnvOps, KernelOp.extendEnv, KernelOp.definedReg]
+
 end Quanta.KOps
