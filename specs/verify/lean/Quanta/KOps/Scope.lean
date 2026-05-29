@@ -129,6 +129,22 @@ def KernelOp.extendEnvOps (env : List Reg) : List KernelOp → List Reg
   | []         => env
   | op :: rest => KernelOp.extendEnvOps (KernelOp.extendEnv env op) rest
 
+/-- `extendEnvOps` distributes over list append:
+    folding the extend function over `ops1 ++ ops2` equals folding
+    over `ops1` and then `ops2`. Pure structural lemma; lives at the
+    same level as `List.foldl_append` and gets used by every
+    composition proof that needs to talk about the env after a
+    concatenated sub-lowering. -/
+theorem KernelOp.extendEnvOps_append : ∀ (env : List Reg) (ops1 ops2 : List KernelOp),
+    KernelOp.extendEnvOps env (ops1 ++ ops2) =
+      KernelOp.extendEnvOps (KernelOp.extendEnvOps env ops1) ops2
+  | _, [],         _    => rfl
+  | env, op :: rest, ops2 => by
+    show KernelOp.extendEnvOps (KernelOp.extendEnv env op) (rest ++ ops2) =
+         KernelOp.extendEnvOps
+           (KernelOp.extendEnvOps (KernelOp.extendEnv env op) rest) ops2
+    exact KernelOp.extendEnvOps_append (KernelOp.extendEnv env op) rest ops2
+
 /-- `extendEnv` preserves ⊆: if env ⊆ env', then
     `extendEnv env op ⊆ extendEnv env' op`. -/
 theorem KernelOp.extendEnv_mono {env env' : List Reg} (h : env ⊆ env')
