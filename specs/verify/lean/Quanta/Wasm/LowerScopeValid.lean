@@ -379,6 +379,94 @@ theorem LowerState.commit_r_in_extendEnvOps {s s' : LowerState} {sv : SymVal}
   | bufferAccess _ _ _ => simp at h
 
 -- ════════════════════════════════════════════════════════════════════
+-- Primitive state-mutator wellScoped preservation
+--
+-- `push`, `pushSym`, `alloc`, `setLocalReg`, `setCurrentReg` —
+-- each shown to preserve `wellScoped` under the appropriate
+-- precondition (reg or sv.regs in scope). Used to chain wellScoped
+-- through the multi-step lowering arms (binop/cmp/load/store/
+-- localSet/Tee).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `alloc` only bumps nextReg; all prior regs stay in scope under the
+    widened bound. -/
+theorem LowerState.alloc_preserves_wellScoped {s : LowerState}
+    (hws : s.wellScoped) : s.alloc.snd.wellScoped := by
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  refine ⟨?_, ?_, ?_⟩
+  · intro sv hsv r hr
+    show r < s.nextReg + 1
+    exact Nat.lt_succ_of_lt (hstk sv hsv r hr)
+  · intro p hp
+    show p.snd < s.nextReg + 1
+    exact Nat.lt_succ_of_lt (hloc p hp)
+  · intro p hp
+    show p.snd < s.nextReg + 1
+    exact Nat.lt_succ_of_lt (hcur p hp)
+
+/-- `push r` preserves wellScoped iff `r < nextReg`. -/
+theorem LowerState.push_preserves_wellScoped {s : LowerState} {r : Reg}
+    (hws : s.wellScoped) (hr : r < s.nextReg) : (s.push r).wellScoped := by
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  refine ⟨?_, hloc, hcur⟩
+  intro sv hsv r' hr'
+  -- s.push r := { s with stack := SymVal.reg r .u32 :: s.stack }
+  show r' < s.nextReg
+  simp [LowerState.push] at hsv
+  rcases hsv with rfl | hsv
+  · -- sv = .reg r .u32; sv.regs = [r]; hr' : r' ∈ [r] ⇒ r' = r
+    simp [SymVal.regs] at hr'
+    subst hr'; exact hr
+  · exact hstk sv hsv r' hr'
+
+/-- `pushSym sv` preserves wellScoped iff every reg in `sv.regs` is in scope. -/
+theorem LowerState.pushSym_preserves_wellScoped {s : LowerState} {sv : SymVal}
+    (hws : s.wellScoped) (hsv : ∀ r ∈ sv.regs, r < s.nextReg) :
+    (s.pushSym sv).wellScoped := by
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  refine ⟨?_, hloc, hcur⟩
+  intro sv' hsv' r' hr'
+  show r' < s.nextReg
+  simp [LowerState.pushSym] at hsv'
+  rcases hsv' with rfl | hsv'
+  · exact hsv r' hr'
+  · exact hstk sv' hsv' r' hr'
+
+/-- `setLocalReg i r ty` preserves wellScoped iff `r < nextReg`. -/
+theorem LowerState.setLocalReg_preserves_wellScoped {s : LowerState}
+    {i : Nat} {r : Reg} {ty : Scalar}
+    (hws : s.wellScoped) (hr : r < s.nextReg) :
+    (s.setLocalReg i r ty).wellScoped := by
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  refine ⟨hstk, ?_, hcur⟩
+  intro p hp
+  show p.snd < s.nextReg
+  -- (s.setLocalReg i r ty).localReg = (i, r) :: s.localReg.filter (·.fst ≠ i)
+  -- so p is either (i, r) or comes from the filtered tail (membership in original).
+  have hp' : p = (i, r) ∨ p ∈ s.localReg.filter (fun q => q.fst ≠ i) := by
+    have : p ∈ (i, r) :: s.localReg.filter (fun q => q.fst ≠ i) := hp
+    exact List.mem_cons.mp this
+  rcases hp' with rfl | hp'
+  · exact hr
+  · exact hloc p (List.mem_filter.mp hp').1
+
+/-- `setCurrentReg i r` preserves wellScoped iff `r < nextReg`. -/
+theorem LowerState.setCurrentReg_preserves_wellScoped {s : LowerState}
+    {i : Nat} {r : Reg}
+    (hws : s.wellScoped) (hr : r < s.nextReg) :
+    (s.setCurrentReg i r).wellScoped := by
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  refine ⟨hstk, hloc, ?_⟩
+  intro p hp
+  show p.snd < s.nextReg
+  have hp' : p = (i, r) ∨ p ∈ s.currentReg.filter (fun q => q.fst ≠ i) := by
+    have : p ∈ (i, r) :: s.currentReg.filter (fun q => q.fst ≠ i) := hp
+    exact List.mem_cons.mp this
+  rcases hp' with rfl | hp'
+  · exact hr
+  · exact hcur p (List.mem_filter.mp hp').1
+
+-- ════════════════════════════════════════════════════════════════════
 -- Per-arm: empty-emit arms
 -- ════════════════════════════════════════════════════════════════════
 
