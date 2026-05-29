@@ -260,6 +260,31 @@ theorem KernelOp.scopeValidOps_mono : ∀ (ops : List KernelOp) {env env' : List
 end
 
 -- ════════════════════════════════════════════════════════════════════
+-- Destructors / bridges
+--
+-- Small structural lemmas used to move between the single-op
+-- predicate (`scopeValid`) and the list predicate (`scopeValidOps`),
+-- and to peel a cons. Current proofs do this inline via pattern
+-- match; surfacing them as named lemmas keeps downstream proofs
+-- shallow.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Bridge: a singleton list is scope-valid iff the op is. -/
+theorem KernelOp.scopeValid_singleton (env : List Reg) (op : KernelOp) :
+    KernelOp.scopeValidOps env [op] ↔ KernelOp.scopeValid env op := by
+  constructor
+  · intro ⟨h, _⟩; exact h
+  · intro h; exact ⟨h, trivial⟩
+
+/-- Destructor: a valid cons gives both the head's validity and the
+    tail's validity against the env extended by the head. -/
+theorem KernelOp.scopeValidOps_cons_inv {env : List Reg}
+    {op : KernelOp} {rest : List KernelOp}
+    (h : KernelOp.scopeValidOps env (op :: rest)) :
+    KernelOp.scopeValid env op ∧
+    KernelOp.scopeValidOps (KernelOp.extendEnv env op) rest := h
+
+-- ════════════════════════════════════════════════════════════════════
 -- Sanity smoke tests (decide-able at definition time)
 -- ════════════════════════════════════════════════════════════════════
 
