@@ -243,15 +243,17 @@ pub(crate) fn emit_op(
             pad
         )),
         KernelOp::Fence { order: _ } => out.push_str(&format!(
-            // Metal Shading Language only supports
-            // `memory_order_relaxed` on device atomics — every
-            // other ordering is rejected by `xcrun metal` with
-            // "use of undeclared identifier" errors. Clamp here
-            // so kernels written with stronger orderings still
-            // compile to MSL; the actual fencing comes from the
-            // explicit thread-group / device barriers around the
-            // atomic, not from the C++-style memory order.
-            "{}atomic_thread_fence(mem_flags::mem_device, memory_order_relaxed);\n",
+            // MSL doesn't expose `atomic_thread_fence` at the
+            // `kernel` scope under -std=metal3.1 (even with
+            // `#include <metal_atomic>`). The correct device-wide
+            // ordering primitive is `threadgroup_barrier` with
+            // `mem_flags::mem_device`, which both flushes pending
+            // writes and acts as a memory-order barrier.
+            //
+            // Memory orderings other than relaxed are subsumed
+            // by the barrier's release+acquire semantics; the
+            // IR's `order` field is informational here.
+            "{}threadgroup_barrier(mem_flags::mem_device);\n",
             pad,
         )),
         KernelOp::SharedDecl { id, ty, count } => {
