@@ -1867,4 +1867,141 @@ theorem lowerInstr_i32GeU_preserves_wellScoped
     s'.wellScoped :=
   lowerI32Cmp_preserves_wellScoped hws h
 
+-- ════════════════════════════════════════════════════════════════════
+-- i32Shl + i32Add (buffer-pattern arms + lowerI32Bin fallback)
+--
+-- Buffer-pattern arms rewrite `stack` to a new SymVal whose regs
+-- come from a SymVal already on s.stack; nextReg unchanged.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerI32Shl_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Shl s = some (s', ops)) : s'.wellScoped := by
+  unfold lowerI32Shl at h
+  rcases hs : s.stack with _ | ⟨sv1, rs⟩
+  · rw [hs] at h
+    exact lowerI32Bin_preserves_wellScoped hws h
+  · rw [hs] at h
+    cases sv1 with
+    | i32ConstSym k =>
+        cases rs with
+        | nil => exact lowerI32Bin_preserves_wellScoped hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | reg base ty =>
+                -- Buffer-pattern arm: s' = {s with stack := scaledIdx base (1<<<k) :: rs2}.
+                simp at h
+                obtain ⟨h_s_eq, _⟩ := h
+                subst h_s_eq
+                obtain ⟨hstk, hloc, hcur⟩ := hws
+                -- Need base < s.nextReg (from .reg base ty ∈ s.stack).
+                have hbase : base < s.nextReg := by
+                  have hmem : SymVal.reg base ty ∈ s.stack := by
+                    rw [hs]
+                    exact List.mem_cons_of_mem _ (List.mem_cons_self _ _)
+                  exact hstk _ hmem base (by simp [SymVal.regs])
+                refine ⟨?_, hloc, hcur⟩
+                intro sv hsv r hr
+                simp at hsv
+                rcases hsv with rfl | hsv
+                · -- sv = .scaledIdx base (1 <<< k.toNat); regs = [base]
+                  simp [SymVal.regs] at hr
+                  subst hr; exact hbase
+                · -- sv ∈ rs2 ⊆ s.stack
+                  have hmem : sv ∈ s.stack := by
+                    rw [hs]
+                    exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+                  exact hstk sv hmem r hr
+            | i32ConstSym _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferPtr _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | scaledIdx _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | reg _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | bufferPtr _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | scaledIdx _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32Shl_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Shl = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Shl_preserves_wellScoped hws h
+
+theorem lowerI32Add_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerI32Add s = some (s', ops)) : s'.wellScoped := by
+  unfold lowerI32Add at h
+  rcases hs : s.stack with _ | ⟨sv1, rs⟩
+  · rw [hs] at h; exact lowerI32Bin_preserves_wellScoped hws h
+  · rw [hs] at h
+    cases sv1 with
+    | scaledIdx base scale =>
+        cases rs with
+        | nil => exact lowerI32Bin_preserves_wellScoped hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | bufferPtr slot =>
+                -- s' = {s with stack := bufferAccess slot base scale :: rs2}.
+                simp at h
+                obtain ⟨h_s_eq, _⟩ := h
+                subst h_s_eq
+                obtain ⟨hstk, hloc, hcur⟩ := hws
+                have hbase : base < s.nextReg := by
+                  have hmem : SymVal.scaledIdx base scale ∈ s.stack := by
+                    rw [hs]; exact List.mem_cons_self _ _
+                  exact hstk _ hmem base (by simp [SymVal.regs])
+                refine ⟨?_, hloc, hcur⟩
+                intro sv hsv r hr
+                simp at hsv
+                rcases hsv with rfl | hsv
+                · simp [SymVal.regs] at hr
+                  subst hr; exact hbase
+                · have hmem : sv ∈ s.stack := by
+                    rw [hs]
+                    exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+                  exact hstk sv hmem r hr
+            | reg _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | i32ConstSym _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | scaledIdx _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | bufferPtr slot =>
+        cases rs with
+        | nil => exact lowerI32Bin_preserves_wellScoped hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | scaledIdx base scale =>
+                simp at h
+                obtain ⟨h_s_eq, _⟩ := h
+                subst h_s_eq
+                obtain ⟨hstk, hloc, hcur⟩ := hws
+                have hbase : base < s.nextReg := by
+                  have hmem : SymVal.scaledIdx base scale ∈ s.stack := by
+                    rw [hs]; exact List.mem_cons_of_mem _ (List.mem_cons_self _ _)
+                  exact hstk _ hmem base (by simp [SymVal.regs])
+                refine ⟨?_, hloc, hcur⟩
+                intro sv hsv r hr
+                simp at hsv
+                rcases hsv with rfl | hsv
+                · simp [SymVal.regs] at hr
+                  subst hr; exact hbase
+                · have hmem : sv ∈ s.stack := by
+                    rw [hs]
+                    exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)
+                  exact hstk sv hmem r hr
+            | reg _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | i32ConstSym _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferPtr _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | reg _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | i32ConstSym _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+
+theorem lowerInstr_i32Add_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped) (h : lowerInstr s .i32Add = some (s', ops)) :
+    s'.wellScoped :=
+  lowerI32Add_preserves_wellScoped hws h
+
 end Quanta.Wasm
