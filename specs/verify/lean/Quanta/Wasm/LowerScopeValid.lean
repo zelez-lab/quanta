@@ -249,6 +249,174 @@ theorem lowerInstr_localGet_nonbuffer_scopeValid
     subst hr
     exact hmem_alloc
 
+-- ════════════════════════════════════════════════════════════════════
+-- wellScoped preservation for closed arms
+--
+-- The eventual list-level scope-validity theorem inducts over an
+-- instruction stream. To chain step N+1's `wellScoped` precondition
+-- from step N's post-state, every closed arm must show wellScoped is
+-- preserved. The five lemmas below cover the same five arms whose
+-- scope-validity of *emitted ops* was proved above.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `i32Const n` only mutates `stack` (pushes `.i32ConstSym n`, regs = []),
+    leaving `nextReg`, `localReg`, `currentReg` unchanged. -/
+theorem lowerInstr_i32Const_preserves_wellScoped
+    {s s' : LowerState} {n : Int} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s (.i32Const n) = some (s', ops)) :
+    s'.wellScoped := by
+  simp [lowerInstr] at h
+  obtain ⟨h_s_eq, _⟩ := h
+  subst h_s_eq
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  refine ⟨?_, hloc, hcur⟩
+  intro sv hsv r hr
+  simp at hsv
+  rcases hsv with rfl | hsv
+  · exact absurd hr (by simp [SymVal.regs])
+  · exact hstk sv hsv r hr
+
+/-- `nop` doesn't mutate state. -/
+theorem lowerInstr_nop_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s .nop = some (s', ops)) :
+    s'.wellScoped := by
+  simp [lowerInstr] at h
+  obtain ⟨h_s_eq, _⟩ := h
+  subst h_s_eq
+  exact hws
+
+/-- `wreturn` doesn't mutate state. -/
+theorem lowerInstr_wreturn_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s .wreturn = some (s', ops)) :
+    s'.wellScoped := by
+  simp [lowerInstr] at h
+  obtain ⟨h_s_eq, _⟩ := h
+  subst h_s_eq
+  exact hws
+
+/-- `drop` strictly shrinks `stack` (pops the head) and leaves all
+    other fields untouched. Regs in the smaller stack are still bounded. -/
+theorem lowerInstr_drop_preserves_wellScoped
+    {s s' : LowerState} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s .drop = some (s', ops)) :
+    s'.wellScoped := by
+  simp [lowerInstr] at h
+  rcases hpop : s.popSym with _ | ⟨sv, s1⟩
+  · simp [hpop] at h
+  · simp [hpop] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq
+    -- s1 := {s with stack := tail of s.stack}. wellScoped on a smaller
+    -- stack follows from wellScoped on the full one.
+    unfold LowerState.popSym at hpop
+    rcases hs : s.stack with _ | ⟨svh, rs⟩
+    · rw [hs] at hpop; simp at hpop
+    · rw [hs] at hpop
+      simp at hpop
+      obtain ⟨_, hs1_eq⟩ := hpop
+      obtain ⟨hstk, hloc, hcur⟩ := hws
+      refine ⟨?_, ?_, ?_⟩
+      · intro sv' hsv' r hr
+        -- s1.stack ⊆ s.stack as a list (tail of it).
+        rw [← hs1_eq] at hsv'
+        -- hsv' : sv' ∈ rs
+        have : sv' ∈ s.stack := by rw [hs]; exact List.mem_cons_of_mem _ hsv'
+        -- s1.nextReg = s.nextReg
+        rw [← hs1_eq]
+        exact hstk sv' this r hr
+      · intro p hp
+        rw [← hs1_eq] at hp
+        rw [← hs1_eq]
+        exact hloc p hp
+      · intro p hp
+        rw [← hs1_eq] at hp
+        rw [← hs1_eq]
+        exact hcur p hp
+
+/-- `localGet i` (buffer arm): pushes `.bufferPtr slot` (regs = [])
+    onto `stack`, no other mutation. -/
+theorem lowerInstr_localGet_buffer_preserves_wellScoped
+    {s s' : LowerState} {i slot : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (hbuf : s.lookupBufferSlot i = some slot)
+    (h : lowerInstr s (.localGet i) = some (s', ops)) :
+    s'.wellScoped := by
+  simp [lowerInstr, hbuf, LowerState.pushSym] at h
+  obtain ⟨h_s_eq, _⟩ := h
+  subst h_s_eq
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  refine ⟨?_, hloc, hcur⟩
+  intro sv hsv r hr
+  simp at hsv
+  rcases hsv with rfl | hsv
+  · exact absurd hr (by simp [SymVal.regs])
+  · exact hstk sv hsv r hr
+
+/-- `localGet i` (non-buffer arm): allocates a fresh reg and pushes
+    `.reg fresh .u32`. `nextReg` bumps by 1; fresh = old nextReg fits
+    the new bound; pre-existing regs lift through the +1 widening. -/
+theorem lowerInstr_localGet_nonbuffer_preserves_wellScoped
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (hbuf : s.lookupBufferSlot i = none)
+    (h : lowerInstr s (.localGet i) = some (s', ops)) :
+    s'.wellScoped := by
+  simp [lowerInstr, hbuf, Option.bind_eq_bind] at h
+  rcases hcur : s.lookupCurrentReg i with _ | curReg
+  · simp [hcur, Option.orElse] at h
+    rcases hloc : s.lookupLocal i with _ | stable
+    · simp [hloc] at h
+    · simp [hloc, LowerState.alloc, LowerState.push] at h
+      obtain ⟨h_s_eq, _⟩ := h
+      subst h_s_eq
+      obtain ⟨hstk, hlocws, hcurws⟩ := hws
+      refine ⟨?_, ?_, ?_⟩
+      · intro sv hsv r hr
+        simp at hsv
+        rcases hsv with rfl | hsv
+        · -- head is `.reg s.nextReg .u32`; regs = [s.nextReg]
+          simp [SymVal.regs] at hr
+          subst hr
+          exact Nat.lt_succ_self _
+        · -- tail: from `hstk`, regs < s.nextReg < s.nextReg + 1
+          exact Nat.lt_succ_of_lt (hstk sv hsv r hr)
+      · intro p hp
+        exact Nat.lt_succ_of_lt (hlocws p hp)
+      · intro p hp
+        exact Nat.lt_succ_of_lt (hcurws p hp)
+  · simp [hcur, Option.orElse, LowerState.alloc, LowerState.push] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq
+    obtain ⟨hstk, hlocws, hcurws⟩ := hws
+    refine ⟨?_, ?_, ?_⟩
+    · intro sv hsv r hr
+      simp at hsv
+      rcases hsv with rfl | hsv
+      · simp [SymVal.regs] at hr
+        subst hr
+        exact Nat.lt_succ_self _
+      · exact Nat.lt_succ_of_lt (hstk sv hsv r hr)
+    · intro p hp
+      exact Nat.lt_succ_of_lt (hlocws p hp)
+    · intro p hp
+      exact Nat.lt_succ_of_lt (hcurws p hp)
+
+/-- Unified `localGet` wellScoped-preservation: combines the two arms. -/
+theorem lowerInstr_localGet_preserves_wellScoped
+    {s s' : LowerState} {i : Nat} {ops : List KernelOp}
+    (hws : s.wellScoped)
+    (h : lowerInstr s (.localGet i) = some (s', ops)) :
+    s'.wellScoped := by
+  rcases hbuf : s.lookupBufferSlot i with _ | slot
+  · exact lowerInstr_localGet_nonbuffer_preserves_wellScoped hws hbuf h
+  · exact lowerInstr_localGet_buffer_preserves_wellScoped hws hbuf h
+
 /-- `localGet i` buffer-typed path: when `lookupBufferSlot i = some slot`,
     the arm emits no IR — it just pushes `SymVal.bufferPtr slot` onto
     the stack symbolically. Trivially scope-valid against any env. -/
