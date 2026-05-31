@@ -3563,4 +3563,66 @@ theorem lowerInstrs_preserves_wellScoped :
            have hws1 : s1.wellScoped := lowerInstr_preserves_wellScoped hws hi1
            exact ih1 _ hws1 hi2)
 
+-- ════════════════════════════════════════════════════════════════════
+-- Helper lemmas for structural-op scope-validity
+--
+-- These factor the env-chain reasoning needed by the eventual
+-- lowerInstrs_scopeValid_ops master theorem (the third and last,
+-- alongside lowerInstrs_nextReg_mono and lowerInstrs_preserves_wellScoped).
+-- Each closes a self-contained shape (`.loopOp body`, the
+-- `[.cast dst cond _ _, .branch dst then else]` trailing pattern)
+-- so the master proof's structured-arm cases can compose them inline
+-- instead of unrolling the env-chain by hand.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `.loopOp body` is scope-valid against env iff body is.
+    The Loop arm of `scopeValid` recurses into the body with the
+    parent env (Loop doesn't define a reg). -/
+theorem loopOp_scopeValid (env : List Reg) (body : List KernelOp)
+    (hbody : scopeValidOps env body) :
+    scopeValid env (.loopOp body) := hbody
+
+/-- The trailing `[.cast dst cond .u32 .bool, .branch dst thenOps elseOps]`
+    pattern: scope-valid against env when `cond ∈ env` and each of
+    `thenOps` / `elseOps` is scope-valid against env. -/
+theorem castBranch_scopeValid
+    (env : List Reg) (dst cond : Reg) (thenOps elseOps : List KernelOp)
+    (hcond : cond ∈ env)
+    (hthen : scopeValidOps env thenOps)
+    (helse : scopeValidOps env elseOps) :
+    scopeValidOps env
+      [.cast dst cond .u32 .bool, .branch dst thenOps elseOps] := by
+  refine ⟨?_, ?_, trivial⟩
+  · intro r hr
+    simp [KernelOp.usedRegs] at hr
+    rcases hr with rfl; exact hcond
+  · refine ⟨?_, ?_, ?_⟩
+    · show dst ∈ extendEnv env (.cast dst cond .u32 .bool)
+      simp [extendEnv, KernelOp.definedReg]
+    · apply Quanta.KOps.KernelOp.scopeValidOps_mono thenOps _ hthen
+      intro x hx
+      simp [extendEnv, KernelOp.definedReg]; right; exact hx
+    · apply Quanta.KOps.KernelOp.scopeValidOps_mono elseOps _ helse
+      intro x hx
+      simp [extendEnv, KernelOp.definedReg]; right; exact hx
+
+/-- For `postOps` to remain scope-valid after a `[.cast _ _ _ _,
+    .branch _ _ _]` prefix: the cast adds one reg (dst) to env; the
+    branch adds nothing (definedReg = none). Lift postOps through
+    both via mono. -/
+theorem postOps_after_castBranch_scopeValid
+    (env : List Reg) (dst cond : Reg) (thenOps elseOps postOps : List KernelOp)
+    (hpost : scopeValidOps env postOps) :
+    scopeValidOps
+      (extendEnv (extendEnv env (.cast dst cond .u32 .bool))
+        (.branch dst thenOps elseOps))
+      postOps := by
+  apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
+  intro x hx
+  show x ∈ extendEnv (extendEnv env (.cast dst cond .u32 .bool))
+    (.branch dst thenOps elseOps)
+  simp only [extendEnv, KernelOp.definedReg]
+  simp [extendEnv, KernelOp.definedReg]
+  right; exact hx
+
 end Quanta.Wasm
