@@ -149,6 +149,13 @@ pub(super) fn emit_op(
             iter_reg,
             body,
         } => {
+            // T1405 parity note: WGSL has no standard unroll annotation
+            // (Naga/Tint compile WGSL to SPIR-V/MSL and apply their own
+            // unrolling there). The SPIR-V emitter still sets
+            // LOOP_CONTROL_UNROLL on the lowered representation when the
+            // count is a small const — so kernels that go WGSL → SPIR-V
+            // → Vulkan still benefit. See `emit_spirv/ops.rs` and
+            // `emit_msl/ops.rs` for the explicit hint sites.
             out.push_str(&format!(
                 "{}for (var r{}: u32 = 0u; r{} < r{}; r{} = r{} + 1u) {{\n",
                 pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0, iter_reg.0

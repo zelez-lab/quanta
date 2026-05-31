@@ -116,8 +116,12 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     out.push_str(&param_lines.join(",\n"));
     out.push_str("\n) {\n");
 
+    // Pre-scan for integer-typed Const ops so the Loop emitter can
+    // apply `#pragma clang loop unroll(full)` when count ∈ 1..=8.
+    let int_consts = quanta_ir::const_analysis::collect_int_consts(&kernel.body);
+
     for op in &kernel.body {
-        emit_op(&mut out, op, 1, &slot_names);
+        emit_op(&mut out, op, 1, &slot_names, &int_consts);
     }
 
     out.push_str("}\n");

@@ -10,6 +10,7 @@ pub(super) fn emit_op(
     op: &KernelOp,
     indent: usize,
     names: &HashMap<u32, String>,
+    int_consts: &HashMap<u32, i64>,
 ) {
     let pad = "    ".repeat(indent);
     match op {
@@ -203,12 +204,12 @@ pub(super) fn emit_op(
         } => {
             out.push_str(&format!("{}if (r{}) {{\n", pad, cond.0));
             for op in then_ops {
-                emit_op(out, op, indent + 1, names);
+                emit_op(out, op, indent + 1, names, int_consts);
             }
             if !else_ops.is_empty() {
                 out.push_str(&format!("{}}} else {{\n", pad));
                 for op in else_ops {
-                    emit_op(out, op, indent + 1, names);
+                    emit_op(out, op, indent + 1, names, int_consts);
                 }
             }
             out.push_str(&format!("{}}}\n", pad));
@@ -218,12 +219,21 @@ pub(super) fn emit_op(
             iter_reg,
             body,
         } => {
+            // T1405: when `count` was defined by a Const op with a
+            // small positive value, emit `#pragma clang loop unroll(full)`
+            // so the Metal compiler (Clang-based) fully unrolls. Mirrors
+            // the SPIR-V emitter's LOOP_CONTROL_UNROLL hint. Threshold
+            // shared via `crate::const_analysis::should_unroll_loop_count`.
+            let count_val = int_consts.get(&count.0).copied();
+            if crate::const_analysis::should_unroll_loop_count(count_val) {
+                out.push_str(&format!("{}#pragma clang loop unroll(full)\n", pad));
+            }
             out.push_str(&format!(
                 "{}for (uint r{} = 0; r{} < r{}; r{}++) {{\n",
                 pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0
             ));
             for op in body {
-                emit_op(out, op, indent + 1, names);
+                emit_op(out, op, indent + 1, names, int_consts);
             }
             out.push_str(&format!("{}}}\n", pad));
         }

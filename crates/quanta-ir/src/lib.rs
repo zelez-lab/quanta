@@ -5,6 +5,7 @@
 //! GPU kernels between parsing and code generation.
 
 pub mod caps;
+pub mod const_analysis;
 pub mod output;
 pub mod scope_check;
 pub mod serial;
