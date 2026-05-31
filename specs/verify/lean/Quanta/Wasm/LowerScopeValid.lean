@@ -3219,4 +3219,348 @@ theorem lowerInstrs_nextReg_mono :
            subst hs
            exact Nat.le_trans (lowerInstr_nextReg_mono hi1) (ih1 _ hi2))
 
+-- ════════════════════════════════════════════════════════════════════
+-- Master wellScoped preservation for lowerInstrs (ALL arms)
+--
+-- Built via lowerInstrs.induct. For each recursive case, threads
+-- wellScoped through the recursive call(s) via IH(s), the local
+-- popSym/commit/alloc primitives, and (for wloop/wif) the snapshot-
+-- restore steps which preserve wellScoped when the snapshotted
+-- fields all sit below the post-recursion nextReg.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerInstrs_preserves_wellScoped :
+    ∀ (fuel : Nat) (frames : List FrameKind) (s : LowerState) (instrs : List WasmInstr)
+      {s' : LowerState} {ops : List KernelOp},
+      s.wellScoped →
+      lowerInstrs fuel frames s instrs = some (s', ops) →
+      s'.wellScoped := by
+  intro fuel frames s instrs
+  induction fuel, frames, s, instrs using lowerInstrs.induct with
+  | case1 _ _ _ =>
+    intro s' ops hws h
+    simp [lowerInstrs] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq; exact hws
+  | case2 _ _ _ _ =>
+    intro s' ops _ h; simp [lowerInstrs] at h
+  | case3 _ _ _ _ _ hsplit =>
+    intro s' ops _ h
+    simp [lowerInstrs, hsplit] at h
+  | case4 frames s rest arity f body post hsplit ih2 ih1 =>
+    intro s' ops hws h
+    simp [lowerInstrs, hsplit] at h
+    rcases hb : lowerInstrs f (.block :: frames) s body with _ | ⟨s1, innerOps⟩
+    · simp [hb] at h
+    simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hp : lowerInstrs f frames s1 post with _ | ⟨s2, postOps⟩
+    · simp [hp] at h
+    simp only [hp, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s2 = s' := (Prod.mk.inj hpair).1
+    subst hs
+    have hws1 : s1.wellScoped := ih2 hws hb
+    exact ih1 _ hws1 hp
+  | case5 _ _ _ _ =>
+    intro s' ops _ h; simp [lowerInstrs] at h
+  | case6 _ _ _ _ _ hsplit =>
+    intro s' ops _ h
+    simp [lowerInstrs, hsplit] at h
+  | case7 frames s rest arity f body post hsplit =>
+    rename_i ih2 ih1
+    intro s' ops hws h
+    simp [lowerInstrs, hsplit] at h
+    rcases hb : lowerInstrs f (.loopK :: frames) s body with _ | ⟨s1, bodyOps⟩
+    · simp [hb] at h
+    simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+    -- s1_restored = s1 with localReg/Ty/currentReg from s.
+    rcases hp : lowerInstrs f frames
+      { nextReg := s1.nextReg, stack := s1.stack,
+        localReg := s.localReg, localTy := s.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := s.currentReg }
+      post with _ | ⟨s2, postOps⟩
+    · simp [hp] at h
+    simp only [hp, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s2 = s' := (Prod.mk.inj hpair).1
+    subst hs
+    have hws1 : s1.wellScoped := ih2 hws hb
+    have hnr_mono : s.nextReg ≤ s1.nextReg :=
+      lowerInstrs_nextReg_mono _ _ _ _ hb
+    apply ih1 _ ?_ hp
+    -- Goal: { nextReg := s1.nextReg, stack := s1.stack, ... }.wellScoped
+    obtain ⟨hstk1, _, _⟩ := hws1
+    obtain ⟨_, hloc0, hcur0⟩ := hws
+    refine ⟨?_, ?_, ?_⟩
+    · intro sv hsv r hr
+      show r < s1.nextReg
+      exact hstk1 sv hsv r hr
+    · intro p hp'
+      show p.snd < s1.nextReg
+      exact Nat.lt_of_lt_of_le (hloc0 p hp') hnr_mono
+    · intro p hp'
+      show p.snd < s1.nextReg
+      exact Nat.lt_of_lt_of_le (hcur0 p hp') hnr_mono
+  | case8 _ _ _ _ =>
+    intro s' ops _ h; simp [lowerInstrs] at h
+  | case9 _ _ _ _ _ hsplit =>
+    intro s' ops _ h
+    simp [lowerInstrs, hsplit] at h
+  | case10 frames s rest arity f thenBody elseBody post hsplit =>
+    rename_i ih3 ih2 ih1
+    intro s' ops hws h
+    simp only [lowerInstrs, hsplit] at h
+    rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
+    · simp [hpop] at h
+    simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hc : s0.commit svCond with _ | ⟨cond, s1, opsCommit⟩
+    · simp [hc] at h
+    simp only [hc, Option.some_bind] at h
+    simp only [LowerState.alloc] at h
+    rcases hth : lowerInstrs f (.wif :: frames)
+        { nextReg := s1.nextReg + 1, stack := s1.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+        thenBody with _ | ⟨s2, thenOps⟩
+    · simp [hth] at h
+    simp only [hth, Option.some_bind] at h
+    rcases hel : lowerInstrs f (.wif :: frames)
+        { nextReg := s2.nextReg, stack := s2.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s2.bufferSlots, currentReg := s1.currentReg }
+        elseBody with _ | ⟨s3, elseOps⟩
+    · simp [hel] at h
+    simp only [hel, Option.some_bind] at h
+    rcases hpo : lowerInstrs f frames
+        { nextReg := s3.nextReg, stack := s3.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }
+        post with _ | ⟨s4, postOps⟩
+    · simp [hpo] at h
+    simp only [hpo, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s4 = s' := (Prod.mk.inj hpair).1
+    subst hs
+    -- Thread wellScoped through.
+    have hws0 : s0.wellScoped := LowerState.popSym_preserves_wellScoped hws hpop
+    have hws1 : s1.wellScoped := LowerState.commit_preserves_wellScoped hws0 hc
+    -- s_cast = { s1 with nextReg := s1.nextReg + 1 } = s1.alloc.snd.
+    have hws_cast :
+        LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+      ⟨fun sv hsv r hr => Nat.lt_succ_of_lt (hws1.1 sv hsv r hr),
+       fun p hp' => Nat.lt_succ_of_lt (hws1.2.1 p hp'),
+       fun p hp' => Nat.lt_succ_of_lt (hws1.2.2 p hp')⟩
+    have hws2 : s2.wellScoped := ih3 _ hws_cast hth
+    obtain ⟨hstk2, _, _⟩ := hws2
+    obtain ⟨_, hloc1, hcur1⟩ := hws1
+    have hmono_then : s1.nextReg + 1 ≤ s2.nextReg :=
+      lowerInstrs_nextReg_mono _ _ _ _ hth
+    have hws_2r :
+        LowerState.wellScoped
+          { nextReg := s2.nextReg, stack := s2.stack,
+            localReg := s1.localReg, localTy := s1.localTy,
+            bufferSlots := s2.bufferSlots, currentReg := s1.currentReg } := by
+      refine ⟨?_, ?_, ?_⟩
+      · intro sv hsv r hr
+        show r < s2.nextReg
+        exact hstk2 sv hsv r hr
+      · intro p hp
+        show p.snd < s2.nextReg
+        have hp1 : p.snd < s1.nextReg := hloc1 p hp
+        exact Nat.lt_of_lt_of_le hp1 (Nat.le_of_lt hmono_then)
+      · intro p hp
+        show p.snd < s2.nextReg
+        have hp1 : p.snd < s1.nextReg := hcur1 p hp
+        exact Nat.lt_of_lt_of_le hp1 (Nat.le_of_lt hmono_then)
+    let s_cast : LowerState :=
+      { nextReg := s1.nextReg + 1, stack := s1.stack,
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+    have hws3 : s3.wellScoped := ih2 s_cast _ hws_2r hel
+    obtain ⟨hstk3, _, _⟩ := hws3
+    have hws_3r :
+        LowerState.wellScoped
+          { nextReg := s3.nextReg, stack := s3.stack,
+            localReg := s1.localReg, localTy := s1.localTy,
+            bufferSlots := s3.bufferSlots, currentReg := s1.currentReg } := by
+      refine ⟨?_, ?_, ?_⟩
+      · intro sv hsv r hr
+        show r < s3.nextReg
+        exact hstk3 sv hsv r hr
+      · intro p hp
+        show p.snd < s3.nextReg
+        have hp1 : p.snd < s1.nextReg := hloc1 p hp
+        have h12 : s1.nextReg + 1 ≤ s2.nextReg :=
+          lowerInstrs_nextReg_mono _ _ _ _ hth
+        have h23 : s2.nextReg ≤ s3.nextReg := by
+          have := lowerInstrs_nextReg_mono _ _ _ _ hel
+          exact this
+        exact Nat.lt_of_lt_of_le hp1
+          (Nat.le_trans (Nat.le_of_lt h12) h23)
+      · intro p hp
+        show p.snd < s3.nextReg
+        have hp1 : p.snd < s1.nextReg := hcur1 p hp
+        have h12 : s1.nextReg + 1 ≤ s2.nextReg :=
+          lowerInstrs_nextReg_mono _ _ _ _ hth
+        have h23 : s2.nextReg ≤ s3.nextReg := by
+          have := lowerInstrs_nextReg_mono _ _ _ _ hel
+          exact this
+        exact Nat.lt_of_lt_of_le hp1
+          (Nat.le_trans (Nat.le_of_lt h12) h23)
+    exact ih1 s_cast _ hws_3r hpo
+  | case11 _ _ _ _ _ hg =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h; simp at h
+  | case12 _ _ _ _ hg =>
+    intro s' ops hws h
+    simp only [lowerInstrs] at h
+    rw [hg] at h; simp at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq; exact hws
+  | case13 _ _ _ _ _ hg hnz hla =>
+    intro s' ops hws h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    simp [hnz, hla] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq; exact hws
+  | case14 _ _ _ _ _ hg hnz hnla =>
+    intro s' ops hws h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    simp [hnz, hnla] at h
+    obtain ⟨h_s_eq, _⟩ := h
+    subst h_s_eq; exact hws
+  | case15 _ _ _ _ _ val hne hg hla =>
+    intro s' ops hws h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    cases val with
+    | loopK => exact absurd rfl hne
+    | block | wif =>
+      all_goals (
+        simp [hla] at h
+        obtain ⟨h_s_eq, _⟩ := h
+        subst h_s_eq; exact hws)
+  | case16 _ _ _ _ _ val hne hg hnla =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    cases val with
+    | loopK => exact absurd rfl hne
+    | block | wif => all_goals (simp [hnla] at h)
+  | case17 fuel frames s rest depth ih1 =>
+    intro s' ops hws h
+    simp only [lowerInstrs] at h
+    rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
+    · simp [hpop] at h
+    simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hc : s0.commit svCond with _ | ⟨cond, s1, opsCommit⟩
+    · simp [hc] at h
+    simp only [hc, Option.some_bind] at h
+    have hws0 : s0.wellScoped := LowerState.popSym_preserves_wellScoped hws hpop
+    have hws1 : s1.wellScoped := LowerState.commit_preserves_wellScoped hws0 hc
+    rcases hg : frames.get? depth with _ | fk
+    · rw [hg] at h; simp at h
+    rw [hg] at h
+    cases fk with
+    | loopK =>
+      simp at h
+      by_cases h0 : depth = 0
+      · simp [h0, LowerState.alloc] at h
+        have hws_cast :
+            LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+          LowerState.alloc_preserves_wellScoped hws1
+        rcases hr : lowerInstrs fuel frames
+            { s1 with nextReg := s1.nextReg + 1 } rest with _ | ⟨s2, postOps⟩
+        · rw [hr] at h; simp at h
+        rw [hr] at h
+        simp only [Option.some_bind, pure, Pure.pure] at h
+        have hpair := Option.some.inj h
+        have hs : s2 = s' := (Prod.mk.inj hpair).1
+        subst hs
+        exact ih1 _ hws_cast hr
+      · simp [h0] at h
+        by_cases hla : hasLoopAbove frames depth
+        · simp [hla, LowerState.alloc] at h
+          have hws_cast :
+              LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+            LowerState.alloc_preserves_wellScoped hws1
+          rcases hr : lowerInstrs fuel frames
+              { s1 with nextReg := s1.nextReg + 1 } rest with _ | ⟨s2, postOps⟩
+          · rw [hr] at h; simp at h
+          rw [hr] at h
+          simp only [Option.some_bind, pure, Pure.pure] at h
+          have hpair := Option.some.inj h
+          have hs : s2 = s' := (Prod.mk.inj hpair).1
+          subst hs
+          exact ih1 _ hws_cast hr
+        · simp [hla] at h
+          rcases hr : lowerInstrs fuel frames s1 rest with _ | ⟨s2, postOps⟩
+          · rw [hr] at h; simp at h
+          rw [hr] at h
+          simp only [Option.some_bind, pure, Pure.pure] at h
+          have hpair := Option.some.inj h
+          have hs : s2 = s' := (Prod.mk.inj hpair).1
+          subst hs
+          exact ih1 _ hws1 hr
+    | block | wif =>
+      all_goals (
+        simp at h
+        by_cases hla : hasLoopAbove frames depth
+        · simp [hla, LowerState.alloc] at h
+          have hws_cast :
+              LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+            LowerState.alloc_preserves_wellScoped hws1
+          rcases hr : lowerInstrs fuel frames
+              { s1 with nextReg := s1.nextReg + 1 } rest with _ | ⟨s2, postOps⟩
+          · rw [hr] at h; simp at h
+          rw [hr] at h
+          simp only [Option.some_bind, pure, Pure.pure] at h
+          have hpair := Option.some.inj h
+          have hs : s2 = s' := (Prod.mk.inj hpair).1
+          subst hs
+          exact ih1 _ hws_cast hr
+        · simp [hla] at h)
+  | case18 fuel frames s i rest hnb hnl hnw hnbr hnbi ih1 =>
+    intro s' ops hws h
+    cases i <;>
+      first
+        | (first
+            | (exact absurd rfl (hnb _))
+            | (exact absurd rfl (hnl _))
+            | (exact absurd rfl (hnw _))
+            | (exact absurd rfl (hnbr _))
+            | (exact absurd rfl (hnbi _)))
+        | (rename_i x
+           simp only [lowerInstrs] at h
+           rcases hi1 : lowerInstr s x with _ | ⟨s1, ops1⟩
+           · rw [hi1] at h; simp at h
+           rw [hi1] at h
+           simp only [Option.bind_eq_bind, Option.some_bind] at h
+           rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+           · rw [hi2] at h; simp at h
+           rw [hi2] at h
+           simp only [Option.some_bind, pure, Pure.pure] at h
+           have hpair := Option.some.inj h
+           have hs : s2 = s' := (Prod.mk.inj hpair).1
+           subst hs
+           have hws1 : s1.wellScoped := lowerInstr_preserves_wellScoped hws hi1
+           exact ih1 _ hws1 hi2)
+        | (simp only [lowerInstrs] at h
+           rcases hi1 : lowerInstr s _ with _ | ⟨s1, ops1⟩
+           · rw [hi1] at h; simp at h
+           rw [hi1] at h
+           simp only [Option.bind_eq_bind, Option.some_bind] at h
+           rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+           · rw [hi2] at h; simp at h
+           rw [hi2] at h
+           simp only [Option.some_bind, pure, Pure.pure] at h
+           have hpair := Option.some.inj h
+           have hs : s2 = s' := (Prod.mk.inj hpair).1
+           subst hs
+           have hws1 : s1.wellScoped := lowerInstr_preserves_wellScoped hws hi1
+           exact ih1 _ hws1 hi2)
+
 end Quanta.Wasm
