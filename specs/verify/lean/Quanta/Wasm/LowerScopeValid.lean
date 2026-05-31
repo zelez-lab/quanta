@@ -3625,4 +3625,660 @@ theorem postOps_after_castBranch_scopeValid
   simp [extendEnv, KernelOp.definedReg]
   right; exact hx
 
+-- ════════════════════════════════════════════════════════════════════
+-- Master scope-validity for lowerInstrs (ALL arms)
+--
+-- Final master theorem. Uses lowerInstrs.induct + helpers above.
+-- ════════════════════════════════════════════════════════════════════
+
+theorem lowerInstrs_scopeValid_ops :
+    ∀ (fuel : Nat) (frames : List FrameKind) (s : LowerState) (instrs : List WasmInstr)
+      {s' : LowerState} {ops : List KernelOp},
+      s.wellScoped →
+      lowerInstrs fuel frames s instrs = some (s', ops) →
+      scopeValidOps s'.scopeEnv ops := by
+  intro fuel frames s instrs
+  induction fuel, frames, s, instrs using lowerInstrs.induct with
+  | case1 _ _ _ =>
+    intro s' ops _ h
+    simp [lowerInstrs] at h
+    obtain ⟨_, h_ops⟩ := h
+    subst h_ops; exact trivial
+  | case2 _ _ _ _ =>
+    intro s' ops _ h; simp [lowerInstrs] at h
+  | case3 _ _ _ _ _ hsplit =>
+    intro s' ops _ h
+    simp [lowerInstrs, hsplit] at h
+  | case4 frames s rest arity f body post hsplit ih2 ih1 =>
+    intro s' ops hws h
+    simp [lowerInstrs, hsplit] at h
+    rcases hb : lowerInstrs f (.block :: frames) s body with _ | ⟨s1, innerOps⟩
+    · simp [hb] at h
+    simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hp : lowerInstrs f frames s1 post with _ | ⟨s2, postOps⟩
+    · simp [hp] at h
+    simp only [hp, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s2 = s' := (Prod.mk.inj hpair).1
+    have hopsEq : innerOps ++ postOps = ops := (Prod.mk.inj hpair).2
+    subst hs; subst hopsEq
+    have hws1 : s1.wellScoped :=
+      lowerInstrs_preserves_wellScoped _ _ _ _ hws hb
+    have hinner : scopeValidOps s1.scopeEnv innerOps := ih2 hws hb
+    have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws1 hp
+    have hmono : s1.nextReg ≤ s2.nextReg :=
+      lowerInstrs_nextReg_mono _ _ _ _ hp
+    have hsub : s1.scopeEnv ⊆ s2.scopeEnv :=
+      LowerState.scopeEnv_subset_of_nextReg_le hmono
+    have hinner_s2 : scopeValidOps s2.scopeEnv innerOps :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono innerOps hsub hinner
+    have hsuper : s2.scopeEnv ⊆ extendEnvOps s2.scopeEnv innerOps :=
+      Quanta.KOps.KernelOp.extendEnvOps_super _ _
+    have hpost_ext : scopeValidOps (extendEnvOps s2.scopeEnv innerOps) postOps :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono postOps hsuper hpost
+    exact Quanta.KOps.KernelOp.scopeValidOps_append _ _ _ hinner_s2 hpost_ext
+  | case5 _ _ _ _ =>
+    intro s' ops _ h; simp [lowerInstrs] at h
+  | case6 _ _ _ _ _ hsplit =>
+    intro s' ops _ h
+    simp [lowerInstrs, hsplit] at h
+  | case7 frames s rest arity f body post hsplit =>
+    rename_i ih2 ih1
+    intro s' ops hws h
+    simp [lowerInstrs, hsplit] at h
+    rcases hb : lowerInstrs f (.loopK :: frames) s body with _ | ⟨s1, bodyOps⟩
+    · simp [hb] at h
+    simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hp : lowerInstrs f frames
+      { nextReg := s1.nextReg, stack := s1.stack,
+        localReg := s.localReg, localTy := s.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := s.currentReg }
+      post with _ | ⟨s2, postOps⟩
+    · simp [hp] at h
+    simp only [hp, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s2 = s' := (Prod.mk.inj hpair).1
+    have hopsEq : KernelOp.loopOp bodyOps :: postOps = ops :=
+      (Prod.mk.inj hpair).2
+    subst hs; subst hopsEq
+    have hws1 : s1.wellScoped :=
+      lowerInstrs_preserves_wellScoped _ _ _ _ hws hb
+    have hbody : scopeValidOps s1.scopeEnv bodyOps := ih2 hws hb
+    have hmono_p : s1.nextReg ≤ s2.nextReg := by
+      have := lowerInstrs_nextReg_mono _ _ _ _ hp
+      exact this
+    have hsub_12 : s1.scopeEnv ⊆ s2.scopeEnv :=
+      LowerState.scopeEnv_subset_of_nextReg_le hmono_p
+    have hbody_s2 : scopeValidOps s2.scopeEnv bodyOps :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono bodyOps hsub_12 hbody
+    obtain ⟨hstk1, _, _⟩ := hws1
+    obtain ⟨_, hloc0, hcur0⟩ := hws
+    have hnr_mono_b : s.nextReg ≤ s1.nextReg :=
+      lowerInstrs_nextReg_mono _ _ _ _ hb
+    have hws_restored :
+        LowerState.wellScoped
+          { nextReg := s1.nextReg, stack := s1.stack,
+            localReg := s.localReg, localTy := s.localTy,
+            bufferSlots := s1.bufferSlots, currentReg := s.currentReg } := by
+      refine ⟨?_, ?_, ?_⟩
+      · intro sv hsv r hr
+        show r < s1.nextReg
+        exact hstk1 sv hsv r hr
+      · intro p hp'
+        show p.snd < s1.nextReg
+        exact Nat.lt_of_lt_of_le (hloc0 p hp') hnr_mono_b
+      · intro p hp'
+        show p.snd < s1.nextReg
+        exact Nat.lt_of_lt_of_le (hcur0 p hp') hnr_mono_b
+    have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws_restored hp
+    refine ⟨?_, ?_⟩
+    · exact loopOp_scopeValid s2.scopeEnv bodyOps hbody_s2
+    · show scopeValidOps (extendEnv s2.scopeEnv (.loopOp bodyOps)) postOps
+      simp only [extendEnv, KernelOp.definedReg]
+      exact hpost
+  | case8 _ _ _ _ =>
+    intro s' ops _ h; simp [lowerInstrs] at h
+  | case9 _ _ _ _ _ hsplit =>
+    intro s' ops _ h
+    simp [lowerInstrs, hsplit] at h
+  | case10 frames s rest arity f thenBody elseBody post hsplit =>
+    rename_i ih3 ih2 ih1
+    intro s' ops hws h
+    simp only [lowerInstrs, hsplit] at h
+    rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
+    · simp [hpop] at h
+    simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hc : s0.commit svCond with _ | ⟨cond, s1, opsCommit⟩
+    · simp [hc] at h
+    simp only [hc, Option.some_bind] at h
+    simp only [LowerState.alloc] at h
+    rcases hth : lowerInstrs f (.wif :: frames)
+        { nextReg := s1.nextReg + 1, stack := s1.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+        thenBody with _ | ⟨s2, thenOps⟩
+    · simp [hth] at h
+    simp only [hth, Option.some_bind] at h
+    rcases hel : lowerInstrs f (.wif :: frames)
+        { nextReg := s2.nextReg, stack := s2.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s2.bufferSlots, currentReg := s1.currentReg }
+        elseBody with _ | ⟨s3, elseOps⟩
+    · simp [hel] at h
+    simp only [hel, Option.some_bind] at h
+    rcases hpo : lowerInstrs f frames
+        { nextReg := s3.nextReg, stack := s3.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }
+        post with _ | ⟨s4, postOps⟩
+    · simp [hpo] at h
+    simp only [hpo, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s4 = s' := (Prod.mk.inj hpair).1
+    have hopsEq :
+        opsCommit ++ [KernelOp.cast s1.nextReg cond .u32 .bool,
+                      KernelOp.branch s1.nextReg thenOps elseOps] ++ postOps = ops :=
+      (Prod.mk.inj hpair).2
+    subst hs; subst hopsEq
+    -- Common prelude.
+    have hws0 : s0.wellScoped := LowerState.popSym_preserves_wellScoped hws hpop
+    have hws1 : s1.wellScoped := LowerState.commit_preserves_wellScoped hws0 hc
+    have hsv_s : ∀ r ∈ svCond.regs, r < s.nextReg :=
+      LowerState.popSym_sv_regs_lt hws hpop
+    have hsv_s0 : ∀ r ∈ svCond.regs, r < s0.nextReg := by
+      intro r hr
+      have := LowerState.popSym_nextReg hpop
+      rw [this]; exact hsv_s r hr
+    have hcond_s1 : cond ∈ s1.scopeEnv :=
+      LowerState.commit_r_mem_scopeEnv hsv_s0 hc
+    have hws_cast :
+        LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+      LowerState.alloc_preserves_wellScoped hws1
+    -- Then-body recursion.
+    have hthenOps_s2 : scopeValidOps s2.scopeEnv thenOps := ih3 _ hws_cast hth
+    have hmono_th : s1.nextReg + 1 ≤ s2.nextReg := by
+      have := lowerInstrs_nextReg_mono _ _ _ _ hth
+      exact this
+    -- s2.wellScoped via the master.
+    have hws2 : s2.wellScoped :=
+      lowerInstrs_preserves_wellScoped _ _ _ _ hws_cast hth
+    -- s2_restored.wellScoped.
+    obtain ⟨hstk2, _, _⟩ := hws2
+    obtain ⟨_, hloc1, hcur1⟩ := hws1
+    have hws_2r :
+        LowerState.wellScoped
+          { nextReg := s2.nextReg, stack := s2.stack,
+            localReg := s1.localReg, localTy := s1.localTy,
+            bufferSlots := s2.bufferSlots, currentReg := s1.currentReg } := by
+      refine ⟨?_, ?_, ?_⟩
+      · intro sv hsv r hr
+        show r < s2.nextReg
+        exact hstk2 sv hsv r hr
+      · intro p hp'
+        show p.snd < s2.nextReg
+        have hp1 : p.snd < s1.nextReg := hloc1 p hp'
+        exact Nat.lt_of_lt_of_le hp1
+          (Nat.le_trans (Nat.le_succ _) hmono_th)
+      · intro p hp'
+        show p.snd < s2.nextReg
+        have hp1 : p.snd < s1.nextReg := hcur1 p hp'
+        exact Nat.lt_of_lt_of_le hp1
+          (Nat.le_trans (Nat.le_succ _) hmono_th)
+    let s_cast : LowerState :=
+      { nextReg := s1.nextReg + 1, stack := s1.stack,
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+    -- Else-body recursion.
+    have helseOps_s3 : scopeValidOps s3.scopeEnv elseOps := ih2 s_cast _ hws_2r hel
+    have hmono_el : s2.nextReg ≤ s3.nextReg := by
+      have := lowerInstrs_nextReg_mono _ _ _ _ hel
+      exact this
+    have hws3 : s3.wellScoped :=
+      lowerInstrs_preserves_wellScoped _ _ _ _ hws_2r hel
+    obtain ⟨hstk3, _, _⟩ := hws3
+    have hws_3r :
+        LowerState.wellScoped
+          { nextReg := s3.nextReg, stack := s3.stack,
+            localReg := s1.localReg, localTy := s1.localTy,
+            bufferSlots := s3.bufferSlots, currentReg := s1.currentReg } := by
+      refine ⟨?_, ?_, ?_⟩
+      · intro sv hsv r hr
+        show r < s3.nextReg
+        exact hstk3 sv hsv r hr
+      · intro p hp'
+        show p.snd < s3.nextReg
+        have hp1 : p.snd < s1.nextReg := hloc1 p hp'
+        exact Nat.lt_of_lt_of_le hp1
+          (Nat.le_trans (Nat.le_trans (Nat.le_succ _) hmono_th) hmono_el)
+      · intro p hp'
+        show p.snd < s3.nextReg
+        have hp1 : p.snd < s1.nextReg := hcur1 p hp'
+        exact Nat.lt_of_lt_of_le hp1
+          (Nat.le_trans (Nat.le_trans (Nat.le_succ _) hmono_th) hmono_el)
+    -- Post recursion.
+    have hpost : scopeValidOps s4.scopeEnv postOps := ih1 s_cast _ hws_3r hpo
+    have hmono_po : s3.nextReg ≤ s4.nextReg := by
+      have := lowerInstrs_nextReg_mono _ _ _ _ hpo
+      exact this
+    -- Lift all to s4.scopeEnv.
+    have hcond_s4 : cond ∈ s4.scopeEnv := by
+      rw [LowerState.mem_scopeEnv] at hcond_s1 ⊢
+      exact Nat.lt_of_lt_of_le hcond_s1
+        (Nat.le_trans (Nat.le_trans (Nat.le_trans (Nat.le_succ _) hmono_th)
+          hmono_el) hmono_po)
+    have hsub_2_4 : s2.scopeEnv ⊆ s4.scopeEnv :=
+      LowerState.scopeEnv_subset_of_nextReg_le (Nat.le_trans hmono_el hmono_po)
+    have hsub_3_4 : s3.scopeEnv ⊆ s4.scopeEnv :=
+      LowerState.scopeEnv_subset_of_nextReg_le hmono_po
+    have hthenOps_s4 : scopeValidOps s4.scopeEnv thenOps :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono thenOps hsub_2_4 hthenOps_s2
+    have helseOps_s4 : scopeValidOps s4.scopeEnv elseOps :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono elseOps hsub_3_4 helseOps_s3
+    -- env after opsCommit:
+    have hcond_ext : cond ∈ extendEnvOps s4.scopeEnv opsCommit :=
+      Quanta.KOps.KernelOp.extendEnvOps_super _ _ hcond_s4
+    have hthen_ext : scopeValidOps (extendEnvOps s4.scopeEnv opsCommit) thenOps :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono thenOps
+        (Quanta.KOps.KernelOp.extendEnvOps_super _ _) hthenOps_s4
+    have helse_ext : scopeValidOps (extendEnvOps s4.scopeEnv opsCommit) elseOps :=
+      Quanta.KOps.KernelOp.scopeValidOps_mono elseOps
+        (Quanta.KOps.KernelOp.extendEnvOps_super _ _) helseOps_s4
+    -- Trailing [cast, branch] at extendEnvOps s4 opsCommit.
+    have htrail : scopeValidOps (extendEnvOps s4.scopeEnv opsCommit)
+        [KernelOp.cast s1.nextReg cond .u32 .bool,
+         KernelOp.branch s1.nextReg thenOps elseOps] := by
+      apply castBranch_scopeValid
+      · exact hcond_ext
+      · exact hthen_ext
+      · exact helse_ext
+    -- postOps lift through cast+branch env extensions.
+    have hpost_lift : scopeValidOps
+        (extendEnv (extendEnv (extendEnvOps s4.scopeEnv opsCommit)
+          (.cast s1.nextReg cond .u32 .bool))
+          (.branch s1.nextReg thenOps elseOps))
+        postOps := by
+      apply postOps_after_castBranch_scopeValid
+        (extendEnvOps s4.scopeEnv opsCommit)
+      apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
+      exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
+    have hopsCommit_any : scopeValidOps s4.scopeEnv opsCommit :=
+      LowerState.commit_ops_scopeValid s4.scopeEnv hc
+    -- Goal: scopeValidOps s4.scopeEnv (opsCommit ++ [cast, branch] ++ postOps)
+    -- Reassociate to opsCommit ++ ([cast, branch] ++ postOps).
+    rw [List.append_assoc]
+    apply Quanta.KOps.KernelOp.scopeValidOps_append
+    · exact hopsCommit_any
+    · apply Quanta.KOps.KernelOp.scopeValidOps_append
+      · exact htrail
+      · show scopeValidOps
+          (extendEnvOps (extendEnvOps s4.scopeEnv opsCommit)
+            [KernelOp.cast s1.nextReg cond .u32 .bool,
+             KernelOp.branch s1.nextReg thenOps elseOps])
+          postOps
+        simp only [extendEnvOps]
+        exact hpost_lift
+  | case11 _ _ _ _ _ hg =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h; simp at h
+  | case12 _ _ _ _ hg =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h; simp at h
+    obtain ⟨_, h_ops⟩ := h
+    subst h_ops; exact trivial
+  | case13 _ _ _ _ _ hg hnz hla =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    simp [hnz, hla] at h
+    obtain ⟨_, h_ops⟩ := h
+    subst h_ops
+    refine ⟨?_, trivial⟩
+    intro r hr; simp [KernelOp.usedRegs] at hr
+  | case14 _ _ _ _ _ hg hnz hnla =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    simp [hnz, hnla] at h
+    obtain ⟨_, h_ops⟩ := h
+    subst h_ops; exact trivial
+  | case15 _ _ _ _ _ val hne hg hla =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    cases val with
+    | loopK => exact absurd rfl hne
+    | block | wif =>
+      all_goals (
+        simp [hla] at h
+        obtain ⟨_, h_ops⟩ := h
+        subst h_ops
+        refine ⟨?_, trivial⟩
+        intro r hr; simp [KernelOp.usedRegs] at hr)
+  | case16 _ _ _ _ _ val hne hg hnla =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    cases val with
+    | loopK => exact absurd rfl hne
+    | block | wif => all_goals (simp [hnla] at h)
+  | case17 fuel frames s rest depth ih1 =>
+    intro s' ops hws h
+    simp only [lowerInstrs] at h
+    rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
+    · simp [hpop] at h
+    simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hc : s0.commit svCond with _ | ⟨cond, s1, opsCommit⟩
+    · simp [hc] at h
+    simp only [hc, Option.some_bind] at h
+    -- Common pre-arm derivations.
+    have hws0 : s0.wellScoped := LowerState.popSym_preserves_wellScoped hws hpop
+    have hws1 : s1.wellScoped := LowerState.commit_preserves_wellScoped hws0 hc
+    have hsv_s : ∀ r ∈ svCond.regs, r < s.nextReg :=
+      LowerState.popSym_sv_regs_lt hws hpop
+    have hsv_s0 : ∀ r ∈ svCond.regs, r < s0.nextReg := by
+      intro r hr
+      have := LowerState.popSym_nextReg hpop
+      rw [this]; exact hsv_s r hr
+    have hcond_s1 : cond ∈ s1.scopeEnv :=
+      LowerState.commit_r_mem_scopeEnv hsv_s0 hc
+    -- Dispatch.
+    rcases hg : frames.get? depth with _ | fk
+    · rw [hg] at h; simp at h
+    rw [hg] at h
+    -- The "cast/branch + postOps" subscript-handler.
+    -- For each branch with castBranch emit: thenOps and elseOps are
+    -- both literal short lists ([] or [.breakOp]).
+    cases fk with
+    | loopK =>
+      simp at h
+      by_cases h0 : depth = 0
+      · -- emit opsCommit ++ [.cast s1.nr cond .u32 .bool, .branch s1.nr [] [.breakOp]] ++ postOps
+        simp [h0, LowerState.alloc] at h
+        have hws_cast :
+            LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+          LowerState.alloc_preserves_wellScoped hws1
+        rcases hr : lowerInstrs fuel frames
+            { s1 with nextReg := s1.nextReg + 1 } rest with _ | ⟨s2, postOps⟩
+        · rw [hr] at h; simp at h
+        rw [hr] at h
+        simp only [Option.some_bind, pure, Pure.pure] at h
+        have hpair := Option.some.inj h
+        have hs : s2 = s' := (Prod.mk.inj hpair).1
+        have hopsEq :
+            opsCommit ++
+              (KernelOp.cast s1.nextReg cond .u32 .bool ::
+                KernelOp.branch s1.nextReg [] [KernelOp.breakOp] :: postOps) = ops :=
+          (Prod.mk.inj hpair).2
+        subst hs; subst hopsEq
+        have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws_cast hr
+        have hmono_r : s1.nextReg + 1 ≤ s2.nextReg := by
+          have := lowerInstrs_nextReg_mono _ _ _ _ hr
+          exact this
+        have hcond_s2 : cond ∈ s2.scopeEnv := by
+          rw [LowerState.mem_scopeEnv] at hcond_s1 ⊢
+          exact Nat.lt_of_lt_of_le hcond_s1
+            (Nat.le_trans (Nat.le_succ _) hmono_r)
+        -- env after opsCommit:
+        have hcond_ext : cond ∈ extendEnvOps s2.scopeEnv opsCommit := by
+          have hsuper : s2.scopeEnv ⊆ extendEnvOps s2.scopeEnv opsCommit :=
+            Quanta.KOps.KernelOp.extendEnvOps_super _ _
+          exact hsuper hcond_s2
+        -- Trailing [cast, branch] at env after opsCommit.
+        have htrail : scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+            [KernelOp.cast s1.nextReg cond .u32 .bool,
+             KernelOp.branch s1.nextReg [] [KernelOp.breakOp]] := by
+          apply castBranch_scopeValid
+          · exact hcond_ext
+          · exact trivial
+          · refine ⟨?_, trivial⟩
+            intro r hr'; simp [KernelOp.usedRegs] at hr'
+        -- postOps at env after [opsCommit ++ cast + branch].
+        have hpost_lift : scopeValidOps
+            (extendEnv (extendEnv (extendEnvOps s2.scopeEnv opsCommit)
+              (.cast s1.nextReg cond .u32 .bool))
+              (.branch s1.nextReg [] [KernelOp.breakOp]))
+            postOps := by
+          apply postOps_after_castBranch_scopeValid
+            (extendEnvOps s2.scopeEnv opsCommit)
+          apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
+          exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
+        -- Now combine: opsCommit ++ [cast, branch] ++ postOps
+        have hopsCommit_any : scopeValidOps s2.scopeEnv opsCommit :=
+          LowerState.commit_ops_scopeValid s2.scopeEnv hc
+        -- Use scopeValidOps_append twice. The shape is
+        -- (opsCommit ++ [cast, branch]) ++ postOps.
+        -- But h_ops gave us opsCommit ++ [cast, branch] ++ postOps which
+        -- is right-associative; reassociate via List.append_assoc.
+        -- Goal: scopeValidOps s2.scopeEnv
+        --   (opsCommit ++ (cast :: branch :: postOps)).
+        apply Quanta.KOps.KernelOp.scopeValidOps_append
+        · exact hopsCommit_any
+        · -- (cast :: branch :: postOps) = [cast, branch] ++ postOps.
+          show scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+            ([KernelOp.cast s1.nextReg cond .u32 .bool,
+              KernelOp.branch s1.nextReg [] [KernelOp.breakOp]] ++ postOps)
+          apply Quanta.KOps.KernelOp.scopeValidOps_append
+          · exact htrail
+          · show scopeValidOps
+              (extendEnvOps (extendEnvOps s2.scopeEnv opsCommit)
+                [KernelOp.cast s1.nextReg cond .u32 .bool,
+                 KernelOp.branch s1.nextReg [] [KernelOp.breakOp]])
+              postOps
+            simp only [extendEnvOps]
+            exact hpost_lift
+      · -- depth > 0
+        simp [h0] at h
+        by_cases hla : hasLoopAbove frames depth
+        · simp [hla, LowerState.alloc] at h
+          have hws_cast :
+              LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+            LowerState.alloc_preserves_wellScoped hws1
+          rcases hr : lowerInstrs fuel frames
+              { s1 with nextReg := s1.nextReg + 1 } rest with _ | ⟨s2, postOps⟩
+          · rw [hr] at h; simp at h
+          rw [hr] at h
+          simp only [Option.some_bind, pure, Pure.pure] at h
+          have hpair := Option.some.inj h
+          have hs : s2 = s' := (Prod.mk.inj hpair).1
+          have hopsEq :
+              opsCommit ++
+                (KernelOp.cast s1.nextReg cond .u32 .bool ::
+                  KernelOp.branch s1.nextReg [KernelOp.breakOp] [] :: postOps) = ops :=
+            (Prod.mk.inj hpair).2
+          subst hs; subst hopsEq
+          have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws_cast hr
+          have hmono_r : s1.nextReg + 1 ≤ s2.nextReg := by
+            have := lowerInstrs_nextReg_mono _ _ _ _ hr
+            exact this
+          have hcond_s2 : cond ∈ s2.scopeEnv := by
+            rw [LowerState.mem_scopeEnv] at hcond_s1 ⊢
+            exact Nat.lt_of_lt_of_le hcond_s1
+              (Nat.le_trans (Nat.le_succ _) hmono_r)
+          have hcond_ext : cond ∈ extendEnvOps s2.scopeEnv opsCommit :=
+            Quanta.KOps.KernelOp.extendEnvOps_super _ _ hcond_s2
+          have htrail : scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+              [KernelOp.cast s1.nextReg cond .u32 .bool,
+               KernelOp.branch s1.nextReg [KernelOp.breakOp] []] := by
+            apply castBranch_scopeValid
+            · exact hcond_ext
+            · refine ⟨?_, trivial⟩
+              intro r hr'; simp [KernelOp.usedRegs] at hr'
+            · exact trivial
+          have hpost_lift : scopeValidOps
+              (extendEnv (extendEnv (extendEnvOps s2.scopeEnv opsCommit)
+                (.cast s1.nextReg cond .u32 .bool))
+                (.branch s1.nextReg [KernelOp.breakOp] []))
+              postOps := by
+            apply postOps_after_castBranch_scopeValid
+              (extendEnvOps s2.scopeEnv opsCommit)
+            apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
+            exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
+          have hopsCommit_any : scopeValidOps s2.scopeEnv opsCommit :=
+            LowerState.commit_ops_scopeValid s2.scopeEnv hc
+          apply Quanta.KOps.KernelOp.scopeValidOps_append
+          · exact hopsCommit_any
+          · show scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+              ([KernelOp.cast s1.nextReg cond .u32 .bool,
+                KernelOp.branch s1.nextReg [KernelOp.breakOp] []] ++ postOps)
+            apply Quanta.KOps.KernelOp.scopeValidOps_append
+            · exact htrail
+            · show scopeValidOps
+                (extendEnvOps (extendEnvOps s2.scopeEnv opsCommit)
+                  [KernelOp.cast s1.nextReg cond .u32 .bool,
+                   KernelOp.branch s1.nextReg [KernelOp.breakOp] []])
+                postOps
+              simp only [extendEnvOps]
+              exact hpost_lift
+        · -- !hasLoopAbove: emit opsCommit ++ postOps directly.
+          simp [hla] at h
+          rcases hr : lowerInstrs fuel frames s1 rest with _ | ⟨s2, postOps⟩
+          · rw [hr] at h; simp at h
+          rw [hr] at h
+          simp only [Option.some_bind, pure, Pure.pure] at h
+          have hpair := Option.some.inj h
+          have hs : s2 = s' := (Prod.mk.inj hpair).1
+          have hopsEq : opsCommit ++ postOps = ops := (Prod.mk.inj hpair).2
+          subst hs; subst hopsEq
+          have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws1 hr
+          apply Quanta.KOps.KernelOp.scopeValidOps_append
+          · exact LowerState.commit_ops_scopeValid s2.scopeEnv hc
+          · apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
+            exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
+    | block | wif =>
+      all_goals (
+        simp at h
+        by_cases hla : hasLoopAbove frames depth
+        · simp [hla, LowerState.alloc] at h
+          have hws_cast :
+              LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+            LowerState.alloc_preserves_wellScoped hws1
+          rcases hr : lowerInstrs fuel frames
+              { s1 with nextReg := s1.nextReg + 1 } rest with _ | ⟨s2, postOps⟩
+          · rw [hr] at h; simp at h
+          rw [hr] at h
+          simp only [Option.some_bind, pure, Pure.pure] at h
+          have hpair := Option.some.inj h
+          have hs : s2 = s' := (Prod.mk.inj hpair).1
+          have hopsEq :
+              opsCommit ++
+                (KernelOp.cast s1.nextReg cond .u32 .bool ::
+                  KernelOp.branch s1.nextReg [KernelOp.breakOp] [] :: postOps) = ops :=
+            (Prod.mk.inj hpair).2
+          subst hs; subst hopsEq
+          have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws_cast hr
+          have hmono_r : s1.nextReg + 1 ≤ s2.nextReg := by
+            have := lowerInstrs_nextReg_mono _ _ _ _ hr
+            exact this
+          have hcond_s2 : cond ∈ s2.scopeEnv := by
+            rw [LowerState.mem_scopeEnv] at hcond_s1 ⊢
+            exact Nat.lt_of_lt_of_le hcond_s1
+              (Nat.le_trans (Nat.le_succ _) hmono_r)
+          have hcond_ext : cond ∈ extendEnvOps s2.scopeEnv opsCommit :=
+            Quanta.KOps.KernelOp.extendEnvOps_super _ _ hcond_s2
+          have htrail : scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+              [KernelOp.cast s1.nextReg cond .u32 .bool,
+               KernelOp.branch s1.nextReg [KernelOp.breakOp] []] := by
+            apply castBranch_scopeValid
+            · exact hcond_ext
+            · refine ⟨?_, trivial⟩
+              intro r hr'; simp [KernelOp.usedRegs] at hr'
+            · exact trivial
+          have hpost_lift : scopeValidOps
+              (extendEnv (extendEnv (extendEnvOps s2.scopeEnv opsCommit)
+                (.cast s1.nextReg cond .u32 .bool))
+                (.branch s1.nextReg [KernelOp.breakOp] []))
+              postOps := by
+            apply postOps_after_castBranch_scopeValid
+              (extendEnvOps s2.scopeEnv opsCommit)
+            apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
+            exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
+          have hopsCommit_any : scopeValidOps s2.scopeEnv opsCommit :=
+            LowerState.commit_ops_scopeValid s2.scopeEnv hc
+          apply Quanta.KOps.KernelOp.scopeValidOps_append
+          · exact hopsCommit_any
+          · show scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+              ([KernelOp.cast s1.nextReg cond .u32 .bool,
+                KernelOp.branch s1.nextReg [KernelOp.breakOp] []] ++ postOps)
+            apply Quanta.KOps.KernelOp.scopeValidOps_append
+            · exact htrail
+            · show scopeValidOps
+                (extendEnvOps (extendEnvOps s2.scopeEnv opsCommit)
+                  [KernelOp.cast s1.nextReg cond .u32 .bool,
+                   KernelOp.branch s1.nextReg [KernelOp.breakOp] []])
+                postOps
+              simp only [extendEnvOps]
+              exact hpost_lift
+        · simp [hla] at h)
+  | case18 fuel frames s i rest hnb hnl hnw hnbr hnbi ih1 =>
+    intro s' ops hws h
+    cases i <;>
+      first
+        | (first
+            | (exact absurd rfl (hnb _))
+            | (exact absurd rfl (hnl _))
+            | (exact absurd rfl (hnw _))
+            | (exact absurd rfl (hnbr _))
+            | (exact absurd rfl (hnbi _)))
+        | (rename_i x
+           simp only [lowerInstrs] at h
+           rcases hi1 : lowerInstr s x with _ | ⟨s1, ops1⟩
+           · rw [hi1] at h; simp at h
+           rw [hi1] at h
+           simp only [Option.bind_eq_bind, Option.some_bind] at h
+           rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+           · rw [hi2] at h; simp at h
+           rw [hi2] at h
+           simp only [Option.some_bind, pure, Pure.pure] at h
+           have hpair := Option.some.inj h
+           have hs : s2 = s' := (Prod.mk.inj hpair).1
+           have hopsEq : ops1 ++ ops2 = ops := (Prod.mk.inj hpair).2
+           subst hs; subst hopsEq
+           have hops1_s1 : scopeValidOps s1.scopeEnv ops1 :=
+             lowerInstr_scopeValid hws hi1
+           have hws1 : s1.wellScoped :=
+             lowerInstr_preserves_wellScoped hws hi1
+           have hops2 : scopeValidOps s2.scopeEnv ops2 := ih1 _ hws1 hi2
+           have hmono : s1.nextReg ≤ s2.nextReg :=
+             lowerInstrs_nextReg_mono _ _ _ _ hi2
+           have hsub : s1.scopeEnv ⊆ s2.scopeEnv :=
+             LowerState.scopeEnv_subset_of_nextReg_le hmono
+           have hops1_s2 : scopeValidOps s2.scopeEnv ops1 :=
+             Quanta.KOps.KernelOp.scopeValidOps_mono ops1 hsub hops1_s1
+           have hsuper : s2.scopeEnv ⊆ extendEnvOps s2.scopeEnv ops1 :=
+             Quanta.KOps.KernelOp.extendEnvOps_super _ _
+           have hops2_ext : scopeValidOps (extendEnvOps s2.scopeEnv ops1) ops2 :=
+             Quanta.KOps.KernelOp.scopeValidOps_mono ops2 hsuper hops2
+           exact Quanta.KOps.KernelOp.scopeValidOps_append _ _ _ hops1_s2 hops2_ext)
+        | (simp only [lowerInstrs] at h
+           rcases hi1 : lowerInstr s _ with _ | ⟨s1, ops1⟩
+           · rw [hi1] at h; simp at h
+           rw [hi1] at h
+           simp only [Option.bind_eq_bind, Option.some_bind] at h
+           rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+           · rw [hi2] at h; simp at h
+           rw [hi2] at h
+           simp only [Option.some_bind, pure, Pure.pure] at h
+           have hpair := Option.some.inj h
+           have hs : s2 = s' := (Prod.mk.inj hpair).1
+           have hopsEq : ops1 ++ ops2 = ops := (Prod.mk.inj hpair).2
+           subst hs; subst hopsEq
+           have hops1_s1 : scopeValidOps s1.scopeEnv ops1 :=
+             lowerInstr_scopeValid hws hi1
+           have hws1 : s1.wellScoped :=
+             lowerInstr_preserves_wellScoped hws hi1
+           have hops2 : scopeValidOps s2.scopeEnv ops2 := ih1 _ hws1 hi2
+           have hmono : s1.nextReg ≤ s2.nextReg :=
+             lowerInstrs_nextReg_mono _ _ _ _ hi2
+           have hsub : s1.scopeEnv ⊆ s2.scopeEnv :=
+             LowerState.scopeEnv_subset_of_nextReg_le hmono
+           have hops1_s2 : scopeValidOps s2.scopeEnv ops1 :=
+             Quanta.KOps.KernelOp.scopeValidOps_mono ops1 hsub hops1_s1
+           have hsuper : s2.scopeEnv ⊆ extendEnvOps s2.scopeEnv ops1 :=
+             Quanta.KOps.KernelOp.extendEnvOps_super _ _
+           have hops2_ext : scopeValidOps (extendEnvOps s2.scopeEnv ops1) ops2 :=
+             Quanta.KOps.KernelOp.scopeValidOps_mono ops2 hsuper hops2
+           exact Quanta.KOps.KernelOp.scopeValidOps_append _ _ _ hops1_s2 hops2_ext)
+
 end Quanta.Wasm
