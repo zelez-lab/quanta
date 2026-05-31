@@ -286,6 +286,17 @@ fn invoke_rustc(src_path: &Path, wasm_out: &Path) -> Result<(), String> {
         .arg("panic=abort")
         .arg("-C")
         .arg("strip=debuginfo")
+        // Disable the nontrapping-fptoint proposal so `as` casts
+        // between f32/f64 and integer types emit the baseline
+        // WASM 1.0 `i32.trunc_f32_*` instructions instead of the
+        // `i32.trunc_sat_f32_*` post-1.0 saturating variants. The
+        // WASM-route lowering pass only recognizes the baseline
+        // opcodes; the saturating ones would refuse with
+        // `unsupported WASM op I32TruncSatF32U`. Kernels are
+        // responsible for guarding against NaN / out-of-range
+        // inputs before the cast.
+        .arg("-C")
+        .arg("target-feature=-nontrapping-fptoint")
         .arg("-o")
         .arg(wasm_out)
         .arg(src_path)

@@ -692,6 +692,155 @@ pub fn fill_poisson_u32_gpu(
 #[allow(dead_code)]
 const POISSON_MAX_K_HOST: u32 = POISSON_MAX_K_U32;
 
+// ── Poisson (PTRD — Hörmann transformed-rejection, large lambda) ─────
+//
+// Knuth's algorithm above has expected-iteration cost O(λ), which
+// degrades past λ ≈ 30 (with a 64-iter cap the tail under-samples).
+// PTRD (Hörmann 1993, "The transformed rejection method for
+// generating Poisson random variables", Insurance: Mathematics and
+// Economics 12 39-45) is an O(1) expected-cost rejection algorithm
+// using a quadratic envelope around the mode.
+//
+// The algorithm needs `log(k!)` (equivalently `lgamma(k+1)`) in its
+// acceptance test. We implement a Stirling-with-corrections form
+// accurate to ~1e-3 across k ∈ [0, ~1000] — adequate because PTRD's
+// acceptance bound is one-sided, so small lgamma error nudges the
+// rejection threshold without breaking the underlying distribution.
+//
+// Threshold for switching from Knuth: λ ≥ 10. Below that, Knuth's
+// expected iteration count is small and the iteration cap is safe.
+
+/// Stirling-series log gamma for f32. Computes log(Γ(z)) for z ≥ 1.
+/// Uses (z - 0.5)*log(z) - z + 0.5*log(2π) plus the first two Bernoulli
+/// corrections (1/12z and -1/360z³). Max relative error ~5e-4 at z=1
+/// and falls off rapidly. Inputs z < 1 are clamped to 1 (the PTRD
+/// acceptance test only queries z = k+1 with k ≥ 0).
+#[allow(dead_code)]
+#[quanta::device]
+fn log_gamma_f32(z_in: f32) -> f32 {
+    // Clamp to avoid log(z) blowing up. Callers should already
+    // ensure z ≥ 1 via the `k >= 0` early reject in PTRD.
+    let z: f32 = if z_in < 1.0f32 { 1.0f32 } else { z_in };
+    let half_log_2pi: f32 = 0.918938533f32;
+    // Use method-call form `.ln()` so device-fn name resolution
+    // works on the host build (intrinsics aren't `use`d at module
+    // scope in this file for device fns, only inside kernel bodies).
+    let log_z: f32 = z.ln();
+    let inv_z: f32 = 1.0f32 / z;
+    let inv_z3: f32 = inv_z * inv_z * inv_z;
+    (z - 0.5f32) * log_z - z + half_log_2pi
+        + inv_z * (1.0f32 / 12.0f32)
+        - inv_z3 * (1.0f32 / 360.0f32)
+}
+
+/// Poisson distribution data for large-lambda kernel.
+#[derive(quanta::Fields)]
+pub struct FillPoissonLargeU32Data {
+    pub out: Vec<u32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    /// Mean of the Poisson distribution. PTRD is preferred for
+    /// lambda ≥ 10; smaller values should use `fill_poisson_u32`
+    /// (Knuth).
+    pub lambda: f32,
+}
+
+/// Per-quark Poisson(lambda) draw via Hörmann's PTRD algorithm.
+/// O(1) expected work regardless of lambda. The inner loop is
+/// capped at 32 iterations as a safety net — PTRD's expected
+/// acceptance rate is ~83% so this is generous (Pr(>32 rejections)
+/// is ~3e-26).
+///
+/// The control-flow shape is deliberately flat (a single `while`
+/// with one `break` in the accept path) to keep the WASM-route
+/// lowering's structured-control reshaping happy — nested if/else
+/// chains with multiple early-break flags trigger latent
+/// use-before-def patterns in the redirect mechanism (the bug-#1
+/// area). Once the substrate fix lands we can re-flatten.
+#[quanta::kernel]
+pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
+    let id = quark_id();
+    let lam: f32 = d.lambda;
+    let smu: f32 = sqrt(lam);
+    let b: f32 = 0.931f32 + 2.53f32 * smu;
+    let a: f32 = -0.059f32 + 0.02483f32 * b;
+    let inv_alpha: f32 = 1.1239f32 + 1.1328f32 / (b - 3.4f32);
+    let v_r: f32 = 0.9277f32 - 3.6224f32 / (b - 2.0f32);
+    let log_lam: f32 = ln(lam);
+    let log_inv_alpha: f32 = ln(inv_alpha);
+    let mut iter: u32 = 0u32;
+    let mut result: u32 = 0u32;
+    while iter < 32u32 {
+        let r1: u32 =
+            philox4x32_10_first_u32_kernel(id, iter, 0u32, 0u32, d.seed_lo, d.seed_hi);
+        let r2: u32 =
+            philox4x32_10_first_u32_kernel(id, iter, 1u32, 0u32, d.seed_lo, d.seed_hi);
+        let u_bits: u32 = r1 >> 8u32;
+        let v_bits: u32 = r2 >> 8u32;
+        let scale: f32 = 1.0f32 / 16_777_216.0f32;
+        let u: f32 = (u_bits as f32) * scale - 0.5f32;
+        let v: f32 = (v_bits as f32) * scale;
+        let us: f32 = 0.5f32 - fabs(u);
+        let k_f: f32 = floor((2.0f32 * a / us + b) * u + lam + 0.43f32);
+        // Compute the acceptance condition as a single boolean. Lay
+        // the sub-tests out flatly so rustc's optimizer doesn't fold
+        // them into nested if-else with separate cond regs (which
+        // would re-trigger the redirect/scope bug). We use a single
+        // u32 accept flag and a single `if accept { break }`.
+        let fast_accept: bool = us >= 0.07f32 && v <= v_r;
+        let early_reject: bool = k_f < 0.0f32 || (us < 0.013f32 && v > us);
+        let lhs: f32 = ln(v) + log_inv_alpha - ln(a / (us * us) + b);
+        let rhs: f32 = (0.0f32 - lam) + (k_f * log_lam) - log_gamma_f32(k_f + 1.0f32);
+        let slow_accept: bool = lhs <= rhs;
+        let accept: bool = !early_reject && (fast_accept || slow_accept);
+        if accept {
+            result = k_f as u32;
+            iter = 99u32; // force loop exit on next condition check
+        } else {
+            iter = iter + 1u32;
+        }
+    }
+    d.out[id as usize] = result;
+}
+
+/// Host-side dispatch for `fill_poisson_u32_large`. Use this for
+/// lambda ≥ 10; smaller means should call `fill_poisson_u32_gpu`
+/// (Knuth) which has lower per-quark overhead for tiny λ.
+///
+/// `fill_poisson_u32_auto_gpu` below picks automatically.
+pub fn fill_poisson_u32_large_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f32,
+) -> Result<Vec<u32>, QuantaError> {
+    let mut data = FillPoissonLargeU32Data {
+        out: vec![0u32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        lambda,
+    };
+    fill_poisson_u32_large(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+/// Auto-dispatch Poisson sampler. Picks Knuth for λ < 10 (the
+/// regime where Knuth's expected ~λ+1 iterations is cheap) and
+/// PTRD for λ ≥ 10 (where Knuth's iteration cap would under-sample
+/// the tail). Mean / variance accuracy holds across the full range.
+pub fn fill_poisson_u32_auto_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f32,
+) -> Result<Vec<u32>, QuantaError> {
+    if lambda < 10.0f32 {
+        fill_poisson_u32_gpu(gpu, len, seed, lambda)
+    } else {
+        fill_poisson_u32_large_gpu(gpu, len, seed, lambda)
+    }
+}
+
 // ── Backwards-compat aliases ─────────────────────────────────────────
 //
 // The original v0 API was `fill_buffer` / `fill_buffer_gpu` (always
