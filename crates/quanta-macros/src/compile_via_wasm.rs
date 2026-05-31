@@ -80,6 +80,18 @@ pub(crate) fn compile_struct_ref_kernel_via_wasm(
     let mut def =
         lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))?;
     prepend_shared_decls(&mut def, &shared_decls);
+    // Dynamic oracle: structural use-before-def check. Catches bug #1
+    // (r44 forward-branch in while-loop kernels via the
+    // install_redirect_at path) at macro time. Mirrors the Lean
+    // `scopeValid` predicate (see specs/verify/lean/Quanta/KOps/Scope.lean).
+    if let Err(v) = quanta_ir::scope_check::scope_check(&def) {
+        return Err(format!(
+            "scope violation: register r{} used before definition at {} \
+             (likely a structured-control lowering bug; see \
+             emitter_codegen_bugs_2026-05-29.md)",
+            v.reg.0, v.location
+        ));
+    }
     Ok(def)
 }
 
@@ -549,6 +561,18 @@ pub(crate) fn compile_flat_param_kernel_via_wasm(
     let mut def =
         lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))?;
     prepend_shared_decls(&mut def, &shared_decls);
+    // Dynamic oracle: structural use-before-def check. Catches bug #1
+    // (r44 forward-branch in while-loop kernels via the
+    // install_redirect_at path) at macro time. Mirrors the Lean
+    // `scopeValid` predicate (see specs/verify/lean/Quanta/KOps/Scope.lean).
+    if let Err(v) = quanta_ir::scope_check::scope_check(&def) {
+        return Err(format!(
+            "scope violation: register r{} used before definition at {} \
+             (likely a structured-control lowering bug; see \
+             emitter_codegen_bugs_2026-05-29.md)",
+            v.reg.0, v.location
+        ));
+    }
     Ok(def)
 }
 

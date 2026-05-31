@@ -6,6 +6,7 @@
 
 pub mod caps;
 pub mod output;
+pub mod scope_check;
 pub mod serial;
 pub mod shader;
 pub mod types;
