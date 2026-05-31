@@ -67,6 +67,12 @@ pub(crate) struct SpvEmitter {
     // Device functions
     pub(crate) device_fn_ids: HashMap<String, (u32, u32, Vec<u32>)>,
     pub(crate) sec_device_fns: Vec<u32>,
+
+    // Register → known integer constant value (when defined by
+    // `KernelOp::Const { value: U32/U64/I32/I64 }`). Used by the Loop
+    // emitter (T1405) to apply LOOP_CONTROL_UNROLL for short known
+    // iteration counts.
+    pub(crate) reg_const_int: HashMap<u32, i64>,
 }
 
 impl SpvEmitter {
@@ -107,7 +113,15 @@ impl SpvEmitter {
             decorated_block: std::collections::HashSet::new(),
             device_fn_ids: HashMap::new(),
             sec_device_fns: Vec::new(),
+            reg_const_int: HashMap::new(),
         }
+    }
+
+    /// Look up a register's known integer constant value, if any.
+    /// Used by the Loop emitter to apply LOOP_CONTROL_UNROLL for short
+    /// known iteration counts (T1405).
+    pub(crate) fn lookup_reg_const_int(&self, reg: quanta_ir::Reg) -> Option<i64> {
+        self.reg_const_int.get(&reg.0).copied()
     }
 
     // ── ID allocator ────────────────────────────────────────────────────────

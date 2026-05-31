@@ -140,15 +140,22 @@ impl SpvEmitter {
             carried_phis.push((reg_num, header_phi, continue_copy, ty_id));
         }
 
-        // OpLoopMerge
-        // TODO(T1405): When count is a compile-time constant <= 8, use
-        // LOOP_CONTROL_UNROLL (0x1) instead of LOOP_CONTROL_NONE. This
-        // requires checking reg_value_id(count) against the constant table
-        // at emit time, which is not yet wired up.
+        // OpLoopMerge.
+        //
+        // Closes T1405: when `count` was defined by a Const op with a
+        // small positive value (1..=8), emit LOOP_CONTROL_UNROLL so
+        // the SPIR-V consumer can fully unroll. Larger/unknown counts
+        // fall back to LOOP_CONTROL_NONE. Const tracking happens at
+        // the Const op emit site via `reg_const_int` (U32/U64/I32/I64
+        // only).
+        let loop_control = match self.lookup_reg_const_int(count) {
+            Some(v) if (1..=8).contains(&v) => LOOP_CONTROL_UNROLL,
+            _ => LOOP_CONTROL_NONE,
+        };
         Self::emit_op(
             &mut self.sec_function,
             OP_LOOP_MERGE,
-            &[merge_label, continue_label, LOOP_CONTROL_NONE],
+            &[merge_label, continue_label, loop_control],
         );
 
         // OpBranch to condition block

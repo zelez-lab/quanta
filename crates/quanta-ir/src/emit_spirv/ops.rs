@@ -94,6 +94,29 @@ impl SpvEmitter {
                     }
                 };
                 self.set_reg(*dst, id, ty);
+                // Track integer constants so the Loop emitter can pick
+                // LOOP_CONTROL_UNROLL for short iteration counts (TODO T1405).
+                // Floats and booleans aren't tracked — they don't feed
+                // Loop.count.
+                match value {
+                    ConstValue::U32(v) => {
+                        self.reg_const_int.insert(dst.0, *v as i64);
+                    }
+                    ConstValue::U64(v) => {
+                        // U64 truncates to u32 in the emit above; track
+                        // the truncated value to match what the SPIR-V
+                        // type system sees.
+                        self.reg_const_int.insert(dst.0, (*v as u32) as i64);
+                    }
+                    ConstValue::I32(v) => {
+                        self.reg_const_int.insert(dst.0, *v as i64);
+                    }
+                    ConstValue::I64(v) => {
+                        // I64 truncates to i32 above; same logic.
+                        self.reg_const_int.insert(dst.0, (*v as i32) as i64);
+                    }
+                    _ => {}
+                }
             }
 
             KernelOp::Load {
@@ -553,15 +576,23 @@ impl SpvEmitter {
                     carried_phis.push((reg_num, header_phi, continue_copy, ty_id));
                 }
 
-                // OpLoopMerge (must be penultimate)
-                // TODO(T1405): When count is a compile-time constant <= 8, use
-                // LOOP_CONTROL_UNROLL (0x1) instead of LOOP_CONTROL_NONE. This
-                // requires checking reg_value_id(count) against the constant table
-                // at emit time, which is not yet wired up.
+                // OpLoopMerge (must be penultimate).
+                //
+                // Closes T1405: when `count` was defined by a Const op
+                // with a small positive value (1..=8), emit
+                // LOOP_CONTROL_UNROLL so the SPIR-V consumer can fully
+                // unroll the loop. For larger or unknown counts, fall
+                // back to LOOP_CONTROL_NONE (consumer decides). Const
+                // tracking happens at the Const op emit site above via
+                // `reg_const_int` — only U32/U64/I32/I64 are tracked.
+                let loop_control = match self.lookup_reg_const_int(*count) {
+                    Some(v) if (1..=8).contains(&v) => LOOP_CONTROL_UNROLL,
+                    _ => LOOP_CONTROL_NONE,
+                };
                 Self::emit_op(
                     &mut self.sec_function,
                     OP_LOOP_MERGE,
-                    &[merge_label, continue_label, LOOP_CONTROL_NONE],
+                    &[merge_label, continue_label, loop_control],
                 );
 
                 // OpBranch to condition block (must be last)

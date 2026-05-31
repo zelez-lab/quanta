@@ -68,6 +68,14 @@ pub(crate) struct SpvEmitter {
     pub(crate) device_fn_ids: HashMap<String, (u32, u32, Vec<u32>)>,
     // Buffer for device function bodies (emitted after the main function)
     pub(crate) sec_device_fns: Vec<u32>,
+
+    // Register → known constant value (when the register was defined
+    // by `KernelOp::Const { value: U32/U64/I32/I64 }`). Used by the
+    // Loop emitter to decide whether to apply LOOP_CONTROL_UNROLL for
+    // small known iteration counts. Keyed by `Reg.0`, value is the
+    // const sign-extended to i64. Float / bool consts are deliberately
+    // NOT tracked here — only integers feed Loop.count.
+    pub(crate) reg_const_int: HashMap<u32, i64>,
 }
 
 impl SpvEmitter {
@@ -107,6 +115,7 @@ impl SpvEmitter {
             decorated_block: std::collections::HashSet::new(),
             device_fn_ids: HashMap::new(),
             sec_device_fns: Vec::new(),
+            reg_const_int: HashMap::new(),
         }
     }
 
@@ -152,6 +161,14 @@ impl SpvEmitter {
             .get(&reg.0)
             .copied()
             .ok_or_else(|| format!("register r{} used before definition", reg.0))
+    }
+
+    /// Look up a register's known integer constant value, if any. Returns
+    /// `Some(v)` only when the register was defined by `KernelOp::Const`
+    /// carrying a U32/U64/I32/I64 payload. Used by the Loop emitter to
+    /// pick LOOP_CONTROL_UNROLL for short known iteration counts.
+    pub(crate) fn lookup_reg_const_int(&self, reg: crate::Reg) -> Option<i64> {
+        self.reg_const_int.get(&reg.0).copied()
     }
 
     pub(crate) fn set_reg(&mut self, reg: crate::Reg, id: u32, type_id: u32) {

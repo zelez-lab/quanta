@@ -93,6 +93,24 @@ impl SpvEmitter {
                     }
                 };
                 self.set_reg(*dst, id, ty);
+                // Track integer constants for T1405 (Loop unroll on
+                // small known counts). Match the truncation the SPIR-V
+                // type system actually sees.
+                match value {
+                    ConstValue::U32(v) => {
+                        self.reg_const_int.insert(dst.0, *v as i64);
+                    }
+                    ConstValue::U64(v) => {
+                        self.reg_const_int.insert(dst.0, (*v as u32) as i64);
+                    }
+                    ConstValue::I32(v) => {
+                        self.reg_const_int.insert(dst.0, *v as i64);
+                    }
+                    ConstValue::I64(v) => {
+                        self.reg_const_int.insert(dst.0, (*v as i32) as i64);
+                    }
+                    _ => {}
+                }
             }
 
             KernelOp::Load {
