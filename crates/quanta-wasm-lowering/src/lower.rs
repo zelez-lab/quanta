@@ -22,6 +22,7 @@ use quanta_ir::{
     AtomicOp, BinOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, MemoryOrder, Reg,
     ScalarType,
 };
+use std::collections::HashSet;
 
 use crate::{
     FunctionBodyInfo, FunctionKind, LoweringError, Module, ParamKind, RawInstr, SideTable, WasmTy,
@@ -409,6 +410,109 @@ impl<'a> LowerCtx<'a> {
             else_ops: Vec::new(),
         });
         target.redirect.push(new_idx);
+    }
+
+    /// Bug #1 fix (2026-05-31): hoist the backward slice defining
+    /// `cond` from the CURRENT frame's active sink to the TARGET
+    /// frame's active sink. Called by `BrIf` just before
+    /// `install_redirect_at` so the Branch we install at target
+    /// references a register defined in target's own scope rather
+    /// than reaching down into the redirect's `else_ops` (which
+    /// triggers MSL/SPIR-V use-of-undeclared-identifier on the
+    /// def'ing register).
+    ///
+    /// Walks the current sink backward, collecting ops that
+    /// transitively define `cond`. Stops at the first op whose dst
+    /// is not (yet) in the "need" set — non-contributing ops stay
+    /// put. Moved ops preserve their original order.
+    ///
+    /// Returns `true` if hoisting succeeded (all needed dependencies
+    /// were locally defined and moved). Returns `false` if any
+    /// needed reg's defining op could not be found in the current
+    /// sink — in that case nothing is moved and the caller falls
+    /// back to the pre-fix path (which still emits the buggy
+    /// pattern, caught by the macro-time scope_check oracle).
+    ///
+    /// See memory `bug_1_ir_analysis_2026-05-31.md` for the IR shape
+    /// this targets.
+    fn hoist_cond_defining_ops(&mut self, depth: u32, cond: Reg) -> bool {
+        // Compute the slice: walk the current sink backward,
+        // gathering ops whose dst is in the running "need" set.
+        let current_idx = self.frames.len() - 1;
+        let mut need: HashSet<Reg> = HashSet::new();
+        need.insert(cond);
+        let mut to_move_indices: Vec<usize> = Vec::new();
+
+        // Take an immutable snapshot of the current sink length and
+        // the relevant op refs. We walk in reverse.
+        let current_sink_len = Self::sink_at_mut(&mut self.frames[current_idx]).len();
+        for i in (0..current_sink_len).rev() {
+            // Re-borrow per iteration (sink_at_mut walks the
+            // redirect chain — fine to call repeatedly since the
+            // chain is stable during this scan).
+            let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
+            let op = &sink[i];
+            let dst = quanta_ir::scope_check::defined_reg(op);
+            let contributes = dst.map(|d| need.contains(&d)).unwrap_or(false);
+            if !contributes {
+                // Stop at the first non-contributing op. Don't
+                // re-order across unrelated ops — that would change
+                // observable behaviour even if scope-valid (e.g.
+                // a Store/Load adjacent to a Cmp).
+                break;
+            }
+            // This op contributes. Remove its dst from need, add
+            // its operands.
+            need.remove(&dst.unwrap());
+            for r in quanta_ir::scope_check::used_regs(op) {
+                need.insert(r);
+            }
+            to_move_indices.push(i);
+        }
+        // Reverse so we have original order (we collected back-to-front).
+        to_move_indices.reverse();
+        // Any remaining "need" regs must already be in scope at the
+        // target frame. We can't verify that cheaply here, so we
+        // trust the lowering invariant: if the cmp's operands trace
+        // back to ops we've stopped at (or earlier), those earlier
+        // ops are in scope by virtue of being emitted into a parent
+        // frame's sink prior to the current frame opening. If any
+        // remaining reg is NOT in scope at target, the post-hoist
+        // IR will still fail scope_check at macro time — informative
+        // failure, no silent wrong codegen.
+
+        // Refuse to hoist nothing (cond was not defined in this sink).
+        // The fall-through path still hits install_redirect_at, which
+        // emits the buggy pattern caught by scope_check.
+        if to_move_indices.is_empty() {
+            return false;
+        }
+
+        // Cut the contiguous range [first..last+1] out of the
+        // current sink. Since to_move_indices.last() is the
+        // most-recent (end-of-sink) and they're contiguous, the
+        // hoist range is `first..current_sink_len`.
+        let first = *to_move_indices.first().unwrap();
+        // Verify contiguity (they should be — we walked backward
+        // and stopped at the first gap, but it's worth asserting).
+        debug_assert!(
+            to_move_indices.windows(2).all(|w| w[1] == w[0] + 1),
+            "hoist slice not contiguous: {to_move_indices:?}",
+        );
+
+        let hoisted: Vec<KernelOp> = {
+            let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
+            sink.drain(first..).collect()
+        };
+
+        // Append to target frame's active sink.
+        let target = self
+            .frame_at_depth_mut(depth)
+            .expect("caller must verify target depth before hoist_cond_defining_ops");
+        let target_sink = Self::sink_at_mut(target);
+        target_sink.extend(hoisted);
+
+        true
     }
 
     fn lower(mut self) -> Result<KernelDef, LoweringError> {
@@ -1866,28 +1970,19 @@ impl<'a> LowerCtx<'a> {
                     });
                     return Ok(());
                 }
-                // KNOWN BUG (2026-05-29): when depth > 0 and any
-                // intermediate non-Loop frame exists, `cond` was
-                // committed into the CURRENT frame's sink, but the
-                // redirect Branch we install at `depth` ends up
-                // referencing `cond` from the TARGET frame's scope.
-                // After all inner frames close into the Branch's
-                // else_ops, the emitted MSL/SPIR-V has
-                //   if (cond) { ... } else { ...; bool cond = ...; }
-                // — use-before-def. Symptom in tests/host_emitter.rs
-                // ::emit_loop (`error: use of undeclared identifier
-                // 'r44'`).
-                //
-                // Fix requires either:
-                //   (a) emitting cond's defining ops at target sink
-                //       too (hard — deps may be in inner scope), or
-                //   (b) hoisting cond as a stable_reg defined at
-                //       function-frame ops[0], then writing to it
-                //       from inner scope (also requires the OuterBranch
-                //       to come AFTER inner ops in target scope, not
-                //       wrap them — a separate restructuring).
-                //
-                // See memory/emitter_codegen_bugs_2026-05-29.md.
+                // Bug #1 fix (2026-05-31): hoist the backward slice
+                // defining `cond` from the CURRENT frame's active
+                // sink to the TARGET frame's active sink before
+                // installing the redirect Branch. See
+                // `hoist_cond_defining_ops` and the memory note
+                // `bug_1_ir_analysis_2026-05-31.md` for the IR shape
+                // this targets. If hoisting can't be performed
+                // (cond's defining op isn't locally in the current
+                // sink, e.g. it's a function-scope param reg), the
+                // fall-through still calls install_redirect_at;
+                // the macro-time scope_check oracle catches any
+                // residual use-before-def.
+                self.hoist_cond_defining_ops(*depth, cond);
                 self.install_redirect_at(*depth, cond);
             }
 

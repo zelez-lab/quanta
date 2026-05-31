@@ -274,7 +274,11 @@ fn check_uses(op: &KernelOp, env: &HashSet<Reg>) -> Result<(), ScopeViolation> {
 /// `KernelOp.definedReg` definition. Structured ops (`Branch`,
 /// `Loop`) define no parent-scope reg — their sub-bodies' defs are
 /// confined to the sub-scope.
-fn defined_reg(op: &KernelOp) -> Option<Reg> {
+///
+/// Public so the WASM-route lowering pass can use it for the
+/// backward-slice hoist that fixes bug #1 (see
+/// `crates/quanta-wasm-lowering/src/lower.rs` BrIf arm).
+pub fn defined_reg(op: &KernelOp) -> Option<Reg> {
     match op {
         KernelOp::Load { dst, .. }
         | KernelOp::SharedLoad { dst, .. }
@@ -333,6 +337,100 @@ fn defined_reg(op: &KernelOp) -> Option<Reg> {
         | KernelOp::Break
         | KernelOp::Dispatch { .. }
         | KernelOp::DebugPrint { .. } => None,
+    }
+}
+
+/// Every register `op` reads as an operand (top-level only — does
+/// NOT recurse into `Branch`/`Loop` sub-bodies). Mirrors
+/// `KernelOp.usedRegs` from the Lean spec but exposed as an owned
+/// `Vec<Reg>` rather than a Result-based walker.
+///
+/// Public so the WASM-route lowering pass can compute the backward
+/// slice of cond-defining ops at the BrIf site (bug #1 fix).
+///
+/// The `Load.index` push-constant sentinel (`Reg(u32::MAX)`) is NOT
+/// filtered here — callers may want to handle it explicitly.
+pub fn used_regs(op: &KernelOp) -> Vec<Reg> {
+    match op {
+        // Memory.
+        KernelOp::Load { index, .. } => vec![*index],
+        KernelOp::Store { index, src, .. } => vec![*index, *src],
+        KernelOp::SharedDecl { .. } | KernelOp::SharedDeclDyn { .. } => vec![],
+        KernelOp::SharedLoad { index, .. } => vec![*index],
+        KernelOp::SharedStore { index, src, .. } => vec![*index, *src],
+        // Arithmetic.
+        KernelOp::BinOp { a, b, .. } => vec![*a, *b],
+        KernelOp::UnaryOp { a, .. } => vec![*a],
+        KernelOp::Cmp { a, b, .. } => vec![*a, *b],
+        // Control flow — top-level only reads cond/count; sub-body
+        // ops are not the caller's concern at this slicing layer.
+        KernelOp::Branch { cond, .. } => vec![*cond],
+        KernelOp::Loop { count, .. } => vec![*count],
+        // Math.
+        KernelOp::MathCall { args, .. } => args.clone(),
+        // Thread indexing — no operand reads.
+        KernelOp::QuarkId { .. }
+        | KernelOp::QuarkCount { .. }
+        | KernelOp::ProtonId { .. }
+        | KernelOp::NucleusId { .. }
+        | KernelOp::ProtonSize { .. } => vec![],
+        // Synchronization.
+        KernelOp::Barrier | KernelOp::Fence { .. } => vec![],
+        // Atomics.
+        KernelOp::AtomicOp { index, val, .. } => vec![*index, *val],
+        KernelOp::SharedAtomicOp { index, val, .. } => vec![*index, *val],
+        KernelOp::AtomicCas {
+            index,
+            expected,
+            desired,
+            ..
+        } => vec![*index, *expected, *desired],
+        // Warp/wave.
+        KernelOp::WaveShuffle {
+            src, lane_delta, ..
+        } => vec![*src, *lane_delta],
+        KernelOp::WaveBallot { predicate, .. }
+        | KernelOp::WaveAny { predicate, .. }
+        | KernelOp::WaveAll { predicate, .. } => vec![*predicate],
+        // Type conversion.
+        KernelOp::Cast { src, .. } => vec![*src],
+        KernelOp::Const { .. } => vec![],
+        // Vector.
+        KernelOp::VecConstruct { components, .. } => components.clone(),
+        KernelOp::VecExtract { vec, .. } => vec![*vec],
+        KernelOp::MatMul { a, b, .. } => vec![*a, *b],
+        KernelOp::CooperativeMMA { a, b, c, .. } => vec![*a, *b, *c],
+        // Texture.
+        KernelOp::TextureSample2D { x, y, .. } | KernelOp::TextureLoad2D { x, y, .. } => {
+            vec![*x, *y]
+        }
+        KernelOp::TextureSample3D { x, y, z, .. } => vec![*x, *y, *z],
+        KernelOp::TextureWrite2D { x, y, value, .. } => vec![*x, *y, *value],
+        KernelOp::TextureSize { .. } => vec![],
+        // Register copy.
+        KernelOp::Copy { src, .. } => vec![*src],
+        // Break.
+        KernelOp::Break => vec![],
+        // Dynamic parallelism.
+        KernelOp::Dispatch { wave, groups } => vec![*wave, groups[0], groups[1], groups[2]],
+        // Device call.
+        KernelOp::DeviceCall { args, .. } => args.clone(),
+        // Bit manipulation.
+        KernelOp::Bitcast { src, .. }
+        | KernelOp::CountTrailingZeros { src, .. }
+        | KernelOp::CountLeadingZeros { src, .. }
+        | KernelOp::PopCount { src, .. } => vec![*src],
+        // Dot.
+        KernelOp::Dot { a, b, .. } => vec![*a, *b],
+        // Subgroup.
+        KernelOp::SubgroupSize { .. } => vec![],
+        KernelOp::SubgroupReduceAdd { src, .. }
+        | KernelOp::SubgroupReduceMin { src, .. }
+        | KernelOp::SubgroupReduceMax { src, .. }
+        | KernelOp::SubgroupExclusiveAdd { src, .. }
+        | KernelOp::SubgroupInclusiveAdd { src, .. } => vec![*src],
+        // Debug.
+        KernelOp::DebugPrint { src, .. } => vec![*src],
     }
 }
 
