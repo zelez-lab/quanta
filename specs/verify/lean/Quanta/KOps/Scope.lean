@@ -394,6 +394,82 @@ example : ¬ KernelOp.scopeValidOps []
   -- hcond : 44 ∈ extendEnv [] (const 0 (.i32 8)) = [0]
   simp [KernelOp.extendEnv, KernelOp.definedReg] at hcond
 
+-- ════════════════════════════════════════════════════════════════════
+-- Bug #1 witness: r44 forward-branch pattern from `tests/host_emitter::emit_loop`
+--
+-- The production WASM-route lowering emits, for unrolled `while`-loop
+-- kernels with cross-frame `br_if depth=N>0`, the following structure
+-- (see `emitter_codegen_bugs_2026-05-29.md` for the full root-cause analysis):
+--
+--   outer: [..., OuterBranch { cond=r44, then=[], else=[
+--     InnerBranch { cond=_, then=[..., cmp r44 = ..., ...], else=[] }
+--   ]}]
+--
+-- r44 is used as OuterBranch's cond but defined inside InnerBranch's
+-- then. MSL and SPIR-V both reject this with use-before-def. The
+-- correctness invariant the lowering should preserve is `scopeValid`.
+-- Below: the bug rejected (first example), and the proposed function-
+-- scope-cond fix accepted (second example).
+-- ════════════════════════════════════════════════════════════════════
+
+/-- The full production bug structure: const r3; OuterBranch with cond=r44,
+    empty then, else containing a nested InnerBranch whose then defines
+    r44 via cmp. Expected NOT scope-valid because r44 ∉ [r3] at the
+    point OuterBranch is reached. -/
+example : ¬ KernelOp.scopeValidOps []
+    [.const 3 (.i32 8),
+     -- OuterBranch using r44 as cond; r44 isn't in env yet.
+     .branch 44 []
+       [-- Nested InnerBranch (depth>0 br_if target). Its `then`
+        -- contains the cmp that defines r44, but this fires AFTER
+        -- OuterBranch's cond check.
+        .branch 10
+          [.const 43 (.i32 0),
+           .cmp 44 3 43 .eq .u32]
+          []]] := by
+  intro h
+  obtain ⟨_, hbr_outer, _⟩ := h
+  obtain ⟨hcond, _, _⟩ := hbr_outer
+  -- hcond : 44 ∈ extendEnv [] (.const 3 (.i32 8)) = [3]
+  simp [KernelOp.extendEnv, KernelOp.definedReg] at hcond
+
+/-- Counterfactual: the "function-scope cond reg" fix sketch.
+    Pre-allocate r44 (and r10, the InnerBranch cond) at the outer
+    scope BEFORE OuterBranch. Inside InnerBranch's then, r44 gets
+    set via copy — no use-before-def at the IR level. -/
+example : KernelOp.scopeValidOps []
+    [.const 3 (.i32 8),
+     -- Pre-allocate r44 = false and r10 at outer scope.
+     .const 44 (.i32 0),
+     .const 10 (.i32 1),
+     .branch 44 []
+       [.branch 10
+          [-- InnerBranch's then writes r44 := 1, no use-before-def.
+           .const 43 (.i32 1),
+           .copy 44 43]
+          []]] := by
+  refine ⟨?_, ?_, ?_, ?_, trivial⟩
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · -- OuterBranch: cond=44, env=[10, 44, 3] after three consts.
+    refine ⟨?_, trivial, ?_, trivial⟩
+    · -- 44 ∈ [10, 44, 3]
+      simp [KernelOp.extendEnv, KernelOp.definedReg]
+    · -- InnerBranch: cond=10, thenOps=[const 43; copy 44 43], elseOps=[].
+      refine ⟨?_, ?_, trivial⟩
+      · -- 10 ∈ [10, 44, 3] (env extended through 3 consts)
+        simp [KernelOp.extendEnv, KernelOp.definedReg]
+      · -- thenOps scope-valid against env=[10, 44, 3].
+        refine ⟨?_, ?_, trivial⟩
+        · -- const 43 1: uses []
+          intro r hr; simp [KernelOp.usedRegs] at hr
+        · -- copy 44 43: uses [43]. env after const 43 = [43, 10, 44, 3].
+          intro r hr
+          simp [KernelOp.usedRegs] at hr
+          subst hr
+          simp [KernelOp.extendEnv, KernelOp.definedReg]
+
 /-- Use of scopeValidOps_append: split a longer chain. The chain
     `[const 0 1; const 1 2]` is scope-valid against env=[], so by
     append with the rest `[binOp 2 0 1 add u32]` scope-valid against
