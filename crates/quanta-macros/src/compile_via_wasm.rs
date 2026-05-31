@@ -85,10 +85,21 @@ pub(crate) fn compile_struct_ref_kernel_via_wasm(
     // install_redirect_at path) at macro time. Mirrors the Lean
     // `scopeValid` predicate (see specs/verify/lean/Quanta/KOps/Scope.lean).
     if let Err(v) = quanta_ir::scope_check::scope_check(&def) {
+        // When QUANTA_SCOPE_DUMP=1 in the environment, also dump the
+        // full KernelDef body to stderr so the offending IR shape is
+        // visible during lowering-fix work. Off by default to keep
+        // the macro-time error message terse for end users.
+        if std::env::var_os("QUANTA_SCOPE_DUMP").is_some() {
+            eprintln!("[quanta] scope-violation IR dump for `{}`:", def.name);
+            for (i, op) in def.body.iter().enumerate() {
+                eprintln!("  [{i}] {op:?}");
+            }
+        }
         return Err(format!(
             "scope violation: register r{} used before definition at {} \
              (likely a structured-control lowering bug; see \
-             emitter_codegen_bugs_2026-05-29.md)",
+             emitter_codegen_bugs_2026-05-29.md; set QUANTA_SCOPE_DUMP=1 \
+             to dump the offending KernelDef body)",
             v.reg.0, v.location
         ));
     }
@@ -566,10 +577,21 @@ pub(crate) fn compile_flat_param_kernel_via_wasm(
     // install_redirect_at path) at macro time. Mirrors the Lean
     // `scopeValid` predicate (see specs/verify/lean/Quanta/KOps/Scope.lean).
     if let Err(v) = quanta_ir::scope_check::scope_check(&def) {
+        // When QUANTA_SCOPE_DUMP=1 in the environment, also dump the
+        // full KernelDef body to stderr so the offending IR shape is
+        // visible during lowering-fix work. Off by default to keep
+        // the macro-time error message terse for end users.
+        if std::env::var_os("QUANTA_SCOPE_DUMP").is_some() {
+            eprintln!("[quanta] scope-violation IR dump for `{}`:", def.name);
+            for (i, op) in def.body.iter().enumerate() {
+                eprintln!("  [{i}] {op:?}");
+            }
+        }
         return Err(format!(
             "scope violation: register r{} used before definition at {} \
              (likely a structured-control lowering bug; see \
-             emitter_codegen_bugs_2026-05-29.md)",
+             emitter_codegen_bugs_2026-05-29.md; set QUANTA_SCOPE_DUMP=1 \
+             to dump the offending KernelDef body)",
             v.reg.0, v.location
         ));
     }
