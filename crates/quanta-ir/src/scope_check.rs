@@ -493,6 +493,58 @@ mod tests {
         assert_eq!(err.location, "Branch.cond");
     }
 
+    /// **The actual bug #1 fix** (`3bd1c55`): the
+    /// `hoist_cond_defining_ops` pass in
+    /// `crates/quanta-wasm-lowering/src/lower.rs` walks the current
+    /// frame's sink backward from the BrIf site, collecting the
+    /// contiguous slice of ops that transitively define `cond`, and
+    /// moves them to the target frame's sink BEFORE
+    /// `install_redirect_at` adds the redirect Branch. This pins the
+    /// expected post-fix IR shape: Const r43 and Cmp r44 are hoisted
+    /// out of the OuterBranch's else_ops and placed at the outer
+    /// scope, in original order, just before OuterBranch. The
+    /// validator should accept — r44 is in scope when OuterBranch
+    /// reads it as cond.
+    #[test]
+    fn accepts_hoisted_cmp_pre_branch_pattern() {
+        let def = make_def(vec![
+            KernelOp::Const {
+                dst: Reg(3),
+                value: ConstValue::U32(8),
+            },
+            // Hoisted: Const r43 and Cmp r44 = r3 == r43 moved out
+            // from OuterBranch's else_ops to the outer scope.
+            KernelOp::Const {
+                dst: Reg(43),
+                value: ConstValue::U32(0),
+            },
+            KernelOp::Cmp {
+                dst: Reg(44),
+                a: Reg(3),
+                b: Reg(43),
+                op: CmpOp::Eq,
+                ty: ScalarType::U32,
+            },
+            // r10 pre-allocated as in the function-scope-cond fix —
+            // separate concern from bug #1 but still needs to be in
+            // scope for the InnerBranch cond.
+            KernelOp::Const {
+                dst: Reg(10),
+                value: ConstValue::U32(1),
+            },
+            KernelOp::Branch {
+                cond: Reg(44),
+                then_ops: vec![],
+                else_ops: vec![KernelOp::Branch {
+                    cond: Reg(10),
+                    then_ops: vec![],
+                    else_ops: vec![],
+                }],
+            },
+        ]);
+        scope_check(&def).expect("hoisted cond-def pattern should be scope-valid");
+    }
+
     /// Counterfactual: the function-scope-cond fix sketch. Pre-allocate
     /// r44 (and r10, the InnerBranch cond) at the outer scope before
     /// OuterBranch, then write r44 via copy inside InnerBranch's then.

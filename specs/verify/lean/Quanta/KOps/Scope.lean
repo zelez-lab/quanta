@@ -470,6 +470,47 @@ example : KernelOp.scopeValidOps []
           subst hr
           simp [KernelOp.extendEnv, KernelOp.definedReg]
 
+/-- **The actual bug #1 fix** (commit `3bd1c55`).
+    `hoist_cond_defining_ops` in
+    `crates/quanta-wasm-lowering/src/lower.rs` walks the current
+    frame's sink backward at the BrIf site, collects the contiguous
+    slice of ops that transitively define `cond`, and moves them to
+    the target frame's sink BEFORE `install_redirect_at` adds the
+    redirect Branch. This pins the expected post-fix IR shape:
+    `Const 43` and `Cmp 44` are hoisted out of OuterBranch's
+    `else_ops` and placed at the outer scope, in original order,
+    just before OuterBranch. r44 is in env when OuterBranch reads
+    it as cond — scope-valid. Mirrors the Rust test
+    `accepts_hoisted_cmp_pre_branch_pattern` in
+    `crates/quanta-ir/src/scope_check.rs`. -/
+example : KernelOp.scopeValidOps []
+    [.const 3 (.i32 8),
+     -- Hoisted: Const r43 and Cmp r44 = r3 == r43 moved out from
+     -- OuterBranch's else_ops by the lowering's hoist pass.
+     .const 43 (.i32 0),
+     .cmp 44 3 43 .eq .u32,
+     -- r10 still pre-allocated as in the function-scope-cond fix —
+     -- separate concern, but the InnerBranch cond still needs it.
+     .const 10 (.i32 1),
+     .branch 44 []
+       [.branch 10 [] []]] := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, trivial⟩
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · -- cmp 44 = 3 == 43 : uses [3, 43]; env after two consts = [43, 3].
+    intro r hr
+    simp [KernelOp.usedRegs] at hr
+    rcases hr with rfl | rfl <;>
+      simp [KernelOp.extendEnv, KernelOp.definedReg]
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · -- OuterBranch: cond=44, env=[10, 44, 43, 3] after four ops above.
+    refine ⟨?_, trivial, ?_, trivial⟩
+    · -- 44 ∈ [10, 44, 43, 3]
+      simp [KernelOp.extendEnv, KernelOp.definedReg]
+    · -- InnerBranch: cond=10, then=[], else=[]; trivially valid.
+      refine ⟨?_, trivial, trivial⟩
+      simp [KernelOp.extendEnv, KernelOp.definedReg]
+
 /-- Use of scopeValidOps_append: split a longer chain. The chain
     `[const 0 1; const 1 2]` is scope-valid against env=[], so by
     append with the rest `[binOp 2 0 1 add u32]` scope-valid against
