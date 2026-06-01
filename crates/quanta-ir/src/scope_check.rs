@@ -642,6 +642,59 @@ mod tests {
     }
 
     /// Smoke: branch sub-scope defs don't leak. After the branch, r6 and
+    /// Production-shape witness for the nested-if/else lowering bug
+    /// discovered during PTRD work (see memory note
+    /// `lowering_bug_nested_if_2026-06-01.md`). When rustc emits
+    /// nested `if/else if` over shared mutable variables, the
+    /// WASM-route lowering's redirect-chain mechanism splices the
+    /// resulting Branch ops in a way that uses a register defined
+    /// inside one branch's else_ops from a sibling branch's
+    /// then_ops. Concretely: an inner BinOp defined `r2` inside
+    /// outer-branch's else, then a sibling branch's then references
+    /// `r2`. scope_check rejects with `BinOp.a`. This is the
+    /// regression test target for the eventual lowering fix.
+    #[test]
+    fn rejects_nested_branch_sibling_sub_scope_def() {
+        // Outer Branch: cond r0
+        //   then_ops: [
+        //     BinOp r3 = r2 + r1   ← uses r2 (defined in else_ops!)
+        //   ]
+        //   else_ops: [
+        //     BinOp r2 = r1 + r1   ← defines r2
+        //   ]
+        let def = make_def(vec![
+            KernelOp::Const {
+                dst: Reg(0),
+                value: ConstValue::Bool(true),
+            },
+            KernelOp::Const {
+                dst: Reg(1),
+                value: ConstValue::F32(1.0),
+            },
+            KernelOp::Branch {
+                cond: Reg(0),
+                then_ops: vec![KernelOp::BinOp {
+                    dst: Reg(3),
+                    a: Reg(2), // ← use-before-def: r2 was defined in else
+                    b: Reg(1),
+                    op: BinOpKind::Add,
+                    ty: ScalarType::F32,
+                }],
+                else_ops: vec![KernelOp::BinOp {
+                    dst: Reg(2),
+                    a: Reg(1),
+                    b: Reg(1),
+                    op: BinOpKind::Add,
+                    ty: ScalarType::F32,
+                }],
+            },
+        ]);
+        let err = scope_check(&def)
+            .expect_err("sibling-branch use of sub-scope reg should fail");
+        assert_eq!(err.reg, Reg(2));
+        assert_eq!(err.location, "BinOp.a");
+    }
+
     /// r7 (defined inside the arms) are NOT in scope.
     #[test]
     fn rejects_use_of_branch_sub_scope_def() {
