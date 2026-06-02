@@ -414,8 +414,12 @@ impl GpuDevice for CpuDevice {
         let threads_per_group = wg[0] as u64 * wg[1] as u64 * wg[2] as u64;
         let total_threads = total_groups * threads_per_group;
 
-        // Snapshot bound buffer data into fixed-size array (max 16 bindings)
-        let mut field_data: [Option<Vec<u8>>; 16] = Default::default();
+        // Snapshot bound buffer data into per-slot Mutex<Vec<u8>>. The
+        // Mutex gives each `Load`/`Store`/`AtomicOp` a per-field
+        // critical section; the parallel-group dispatch below shares
+        // `&field_data` across worker threads so concurrent groups
+        // serialise only at field touches (compute parallelises freely).
+        let mut field_data: [Option<Mutex<Vec<u8>>>; 16] = Default::default();
         {
             let bufs = self.buffers.lock().unwrap();
             for (i, slot) in field_data
@@ -427,7 +431,7 @@ impl GpuDevice for CpuDevice {
                 if handle != 0
                     && let Some(buf) = bufs.get(&handle)
                 {
-                    *slot = Some(buf.data.clone());
+                    *slot = Some(Mutex::new(buf.data.clone()));
                 }
             }
         }
@@ -436,46 +440,97 @@ impl GpuDevice for CpuDevice {
 
         // Use pre-computed barrier segment ranges (zero-copy slices)
         let segments = &kernel.segments;
+        let body = &kernel.def.body;
+        let push_data = &wave.push_data;
 
-        // Allocate workgroup state once, reuse via clear()
-        let mut shared: HashMap<u32, Vec<u8>> = HashMap::new();
-        let mut thread_regs: Vec<HashMap<u32, Value>> =
-            (0..threads_per_group).map(|_| HashMap::new()).collect();
+        // Parallel-group dispatch. Split `0..total_groups` across
+        // `available_parallelism()` worker threads via `thread::scope`
+        // so that compute-heavy kernels (PTRD-style) scale with cores.
+        // Each worker owns its own per-group `shared` HashMap and
+        // per-quark `thread_regs`; field reads/writes serialise
+        // through the per-slot `Mutex` in `field_data`. Atomics get
+        // cross-group atomicity for free (the lock spans the
+        // read-modify-write).
+        //
+        // For tiny dispatches (< THREAD_THRESHOLD groups) the
+        // thread-spawn cost outweighs the parallelism gain, so we
+        // fall back to a single worker.
+        const THREAD_THRESHOLD: u64 = 4;
+        let worker_count = if total_groups < THREAD_THRESHOLD {
+            1
+        } else {
+            std::thread::available_parallelism()
+                .map(|n| n.get() as u64)
+                .unwrap_or(1)
+                .min(total_groups)
+                .max(1)
+        };
 
-        for gid in 0..total_groups {
-            shared.clear();
-            for reg_map in thread_regs.iter_mut() {
-                reg_map.clear();
+        let first_err: Mutex<Option<String>> = Mutex::new(None);
+
+        std::thread::scope(|scope| {
+            for worker_idx in 0..worker_count {
+                // Chunked: worker `w` handles groups
+                // `[w*total/N .. (w+1)*total/N)` (last worker mops up
+                // the remainder).
+                let start = worker_idx * total_groups / worker_count;
+                let end = if worker_idx + 1 == worker_count {
+                    total_groups
+                } else {
+                    (worker_idx + 1) * total_groups / worker_count
+                };
+                let field_data = &field_data;
+                let first_err = &first_err;
+                scope.spawn(move || {
+                    let mut shared: HashMap<u32, Vec<u8>> = HashMap::new();
+                    let mut thread_regs: Vec<HashMap<u32, Value>> = (0..threads_per_group)
+                        .map(|_| HashMap::new())
+                        .collect();
+                    for gid in start..end {
+                        // Early-out if another worker already failed.
+                        if first_err.lock().unwrap().is_some() {
+                            return;
+                        }
+                        shared.clear();
+                        for reg_map in thread_regs.iter_mut() {
+                            reg_map.clear();
+                        }
+                        for &(seg_start, seg_end) in segments {
+                            let segment = &body[seg_start..seg_end];
+                            for lid in 0..threads_per_group {
+                                let quark_id = (gid * threads_per_group + lid) as u32;
+                                let local_id = lid as u32;
+                                let group_id = gid as u32;
+                                let mut ctx = ExecCtx {
+                                    quark_id,
+                                    local_id,
+                                    group_id,
+                                    group_size: group_size_x,
+                                    quark_count: total_threads as u32,
+                                    regs: core::mem::take(&mut thread_regs[lid as usize]),
+                                    fields: field_data,
+                                    shared: &mut shared,
+                                    push_data,
+                                };
+                                if let Err(e) = execute_ops(&mut ctx, segment) {
+                                    let mut slot = first_err.lock().unwrap();
+                                    if slot.is_none() {
+                                        *slot = Some(format!(
+                                            "CPU execution error (quark {quark_id}): {e}"
+                                        ));
+                                    }
+                                    return;
+                                }
+                                thread_regs[lid as usize] = ctx.regs;
+                            }
+                        }
+                    }
+                });
             }
+        });
 
-            for &(seg_start, seg_end) in segments {
-                let segment = &kernel.def.body[seg_start..seg_end];
-                for lid in 0..threads_per_group {
-                    let quark_id = (gid * threads_per_group + lid) as u32;
-                    let local_id = lid as u32;
-                    let group_id = gid as u32;
-
-                    let mut ctx = ExecCtx {
-                        quark_id,
-                        local_id,
-                        group_id,
-                        group_size: group_size_x,
-                        quark_count: total_threads as u32,
-                        regs: core::mem::take(&mut thread_regs[lid as usize]),
-                        fields: &mut field_data,
-                        shared: &mut shared,
-                        push_data: &wave.push_data,
-                    };
-
-                    execute_ops(&mut ctx, segment).map_err(|e| {
-                        QuantaError::compilation_failed(format!(
-                            "CPU execution error (quark {quark_id}): {e}"
-                        ))
-                    })?;
-
-                    thread_regs[lid as usize] = ctx.regs;
-                }
-            }
+        if let Some(msg) = first_err.into_inner().unwrap() {
+            return Err(QuantaError::compilation_failed(msg));
         }
 
         // Write back modified buffer data
@@ -491,7 +546,7 @@ impl GpuDevice for CpuDevice {
                     && let Some(modified) = slot.take()
                     && let Some(buf) = bufs.get_mut(&handle)
                 {
-                    buf.data = modified;
+                    buf.data = modified.into_inner().unwrap();
                 }
             }
         }

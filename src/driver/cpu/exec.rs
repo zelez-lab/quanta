@@ -5,6 +5,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use quanta_ir::{BinOp, KernelOp, Reg, ScalarType};
 
@@ -19,6 +20,16 @@ use super::value::{
 pub(super) struct BreakSignal;
 
 /// Per-thread execution state.
+///
+/// `fields` is shared by reference across all quark workers so that
+/// parallel-group dispatch (`wave_dispatch`) can splice work across
+/// `available_parallelism()` threads without serialising on a single
+/// `&mut`. Each slot's `Mutex<Vec<u8>>` serialises read/write to that
+/// field, which gives `AtomicOp` / `AtomicCas` cross-group atomicity
+/// for free (lock spans the read-modify-write) and a simple compute-
+/// disjoint races-OK model for non-atomic `Load`/`Store`. Most kernel
+/// ops are compute (no lock), so the per-op overhead is bounded by
+/// field-op density rather than total op count.
 pub(super) struct ExecCtx<'a> {
     pub(super) quark_id: u32,
     pub(super) local_id: u32,
@@ -26,7 +37,7 @@ pub(super) struct ExecCtx<'a> {
     pub(super) group_size: u32,
     pub(super) quark_count: u32,
     pub(super) regs: HashMap<u32, Value>,
-    pub(super) fields: &'a mut [Option<Vec<u8>>; 16],
+    pub(super) fields: &'a [Option<Mutex<Vec<u8>>>; 16],
     /// Shared memory per workgroup, keyed by declaration id.
     pub(super) shared: &'a mut HashMap<u32, Vec<u8>>,
     /// Push-constant payload, packed as the SPIR-V / MSL emitters
@@ -79,10 +90,11 @@ pub(super) fn execute_ops(
                 } else {
                     let idx = reg(ctx, index)?;
                     let slot = *field as usize;
-                    let buf = ctx.fields[slot]
+                    let lock = ctx.fields[slot]
                         .as_ref()
                         .ok_or_else(|| format!("Load: field slot {slot} not bound"))?;
-                    let val = read_scalar(buf, idx.as_u32(), ty);
+                    let buf = lock.lock().unwrap();
+                    let val = read_scalar(&buf, idx.as_u32(), ty);
                     ctx.regs.insert(dst.0, val);
                 }
             }
@@ -95,10 +107,11 @@ pub(super) fn execute_ops(
                 let idx = reg(ctx, index)?;
                 let val = reg(ctx, src)?;
                 let slot = *field as usize;
-                let buf = ctx.fields[slot]
-                    .as_mut()
+                let lock = ctx.fields[slot]
+                    .as_ref()
                     .ok_or_else(|| format!("Store: field slot {slot} not bound"))?;
-                write_scalar(buf, idx.as_u32(), val, ty);
+                let mut buf = lock.lock().unwrap();
+                write_scalar(&mut buf, idx.as_u32(), val, ty);
             }
             KernelOp::BinOp { dst, a, b, op, ty } => {
                 let va = reg(ctx, a)?;
@@ -201,13 +214,15 @@ pub(super) fn execute_ops(
                 let idx = reg(ctx, index)?.as_u32();
                 let operand = reg(ctx, val)?;
                 let slot = *field as usize;
-                let buf = ctx.fields[slot]
+                let lock = ctx.fields[slot]
                     .as_ref()
                     .ok_or_else(|| format!("AtomicOp: field slot {slot} not bound"))?;
-                let old = read_scalar(buf, idx, ty);
+                // Hold the lock across read-modify-write so concurrent
+                // groups see atomic semantics.
+                let mut buf = lock.lock().unwrap();
+                let old = read_scalar(&buf, idx, ty);
                 let (new_val, old_val) = eval_atomic(old, operand, op, ty);
-                let buf = ctx.fields[slot].as_mut().unwrap();
-                write_scalar(buf, idx, new_val, ty);
+                write_scalar(&mut buf, idx, new_val, ty);
                 ctx.regs.insert(dst.0, old_val);
             }
             KernelOp::AtomicCas {
@@ -224,15 +239,16 @@ pub(super) fn execute_ops(
                 let exp = reg(ctx, expected)?;
                 let des = reg(ctx, desired)?;
                 let slot = *field as usize;
-                let buf = ctx.fields[slot]
+                let lock = ctx.fields[slot]
                     .as_ref()
                     .ok_or_else(|| format!("AtomicCas: field slot {slot} not bound"))?;
-                let old = read_scalar(buf, idx, ty);
+                // Hold the lock across read-compare-write for CAS atomicity.
+                let mut buf = lock.lock().unwrap();
+                let old = read_scalar(&buf, idx, ty);
                 let old_u64 = old.as_u64();
                 let exp_u64 = exp.as_u64();
                 if old_u64 == exp_u64 {
-                    let buf = ctx.fields[slot].as_mut().unwrap();
-                    write_scalar(buf, idx, des, ty);
+                    write_scalar(&mut buf, idx, des, ty);
                 }
                 ctx.regs.insert(dst.0, old);
             }
