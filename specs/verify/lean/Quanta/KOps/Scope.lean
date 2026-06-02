@@ -511,6 +511,106 @@ example : KernelOp.scopeValidOps []
       refine ⟨?_, trivial, trivial⟩
       simp [KernelOp.extendEnv, KernelOp.definedReg]
 
+-- ════════════════════════════════════════════════════════════════════
+-- Bug #2 witness: nested-if/else lowering bug (2026-06-01)
+--
+-- Surfaced by PTRD's Poisson kernel. When rustc compiles nested
+-- `if/else if` with shared mutable variable writes, the WASM-route
+-- lowering's `BrIf` arm previously called `hoist_cond_defining_ops`
+-- which walks the current sink backward and stops at the first non-
+-- contributing op. The saturation-cast pattern from `x as u32`
+-- interleaves `Copy r_local_stable = ...` writes (from `local.tee`'s
+-- `write_local_via_copy`) between the cond-defining cmps, so the
+-- contiguous-suffix walker bails and the redirect Branch references
+-- regs that aren't in scope at the target frame. The Rust unit test
+-- `rejects_nested_branch_sibling_sub_scope_def` in
+-- `crates/quanta-ir/src/scope_check.rs` pins the bug shape:
+--
+--   branch r0  -- outer cond
+--     then=[binOp r3 = r2 + r1]      ← uses r2!
+--     else=[binOp r2 = r1 + r1]      ← defines r2 (sub-scope, sibling)
+--
+-- The fix is `materialize_cond_at_function_frame` in
+-- `crates/quanta-wasm-lowering/src/lower.rs`: allocate a fresh
+-- function-scope reg, insert `const r_stable = false` at the head of
+-- the body, emit `copy r_stable = cond` at the current sink, then
+-- install the redirect with cond=r_stable. Because r_stable is at
+-- function scope, it's in scope at every nested depth.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Bug #2 witness: outer Branch references r2, but r2 is only defined
+    inside the else-branch's body. The dual of the Rust unit test
+    `rejects_nested_branch_sibling_sub_scope_def`. The Rust test uses
+    `f32`; here we use `i32` because Lean's `ConstValue.f32` carries
+    a UInt32 bit pattern, not a float literal — the scope-validity
+    predicate doesn't depend on the const's type, only on the
+    use/def graph. Expected NOT scope-valid. -/
+example : ¬ KernelOp.scopeValidOps []
+    [.const 0 (.i32 1),  -- r0 = some bool cond
+     .const 1 (.i32 1),  -- r1
+     .branch 0
+       [.binOp 3 2 1 .add .u32]   -- ← uses r2: not in scope yet
+       [.binOp 2 1 1 .add .u32]] := by
+  intro h
+  obtain ⟨_, _, hbr, _⟩ := h
+  -- hbr : scopeValid env (.branch 0 [.binOp 3 2 1 ...] [...])
+  -- = ⟨0 ∈ env, scopeValidOps env [.binOp 3 2 1 ...], ...⟩
+  obtain ⟨_, hthen, _⟩ := hbr
+  obtain ⟨hop, _⟩ := hthen
+  -- hop : binOp uses [2, 1] ⊆ env, but r2 ∉ env (only r0, r1, sub-scope r2)
+  have : (2 : Reg) ∈ [(1 : Reg), 0] := hop 2 (by simp [KernelOp.usedRegs])
+  simp at this
+
+/-- **Bug #2 fix shape**: the `materialize_cond_at_function_frame`
+    pass in the WASM-route lowering allocates a fresh function-scope
+    reg `r_stable` for every BrIf cond and emits `copy r_stable =
+    cond` at the current sink before installing the redirect. The
+    `const r_stable = init` is inserted at the head of the body (via
+    `function_frame.ops.insert(0, ...)`). This pins the expected
+    post-fix IR shape: r2 is pre-declared at function scope as
+    `const 2 0`, then later written via `copy 2 = 4` inside the
+    else-branch — but the OUTER Branch's `then` body references r2,
+    which is now in scope at function level. Mirrors the Rust unit
+    test `accepts_function_scope_cond_for_nested_branch` in
+    `crates/quanta-ir/src/scope_check.rs`. -/
+example : KernelOp.scopeValidOps []
+    [-- Pre-declared at function scope (the
+     -- `function_frame.ops.insert(0, ...)` head insert).
+     .const 2 (.i32 0),
+     .const 0 (.i32 1),
+     .const 1 (.i32 1),
+     .branch 0
+       [.binOp 3 2 1 .add .u32]    -- now uses function-scope r2
+       [-- Inner computation populates r2 via Copy from a local
+        -- fresh reg — analogous to the WASM-route emitting
+        -- `copy r_stable = cond` before redirect installation.
+        .binOp 4 1 1 .add .u32,
+        .copy 2 4]] := by
+  refine ⟨?_, ?_, ?_, ?_, trivial⟩
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · intro r hr; simp [KernelOp.usedRegs] at hr
+  · -- Branch r0: env = [1, 0, 2] (after three consts above).
+    refine ⟨?_, ?_, ?_⟩
+    · -- 0 ∈ [1, 0, 2]
+      simp [KernelOp.extendEnv, KernelOp.definedReg]
+    · -- thenOps = [binOp 3 = 2 + 1]: uses [2, 1] ⊆ env.
+      refine ⟨?_, trivial⟩
+      intro r hr
+      simp [KernelOp.usedRegs] at hr
+      rcases hr with rfl | rfl <;>
+        simp [KernelOp.extendEnv, KernelOp.definedReg]
+    · -- elseOps = [binOp 4 = 1 + 1; copy 2 = 4]: both scope-valid.
+      refine ⟨?_, ?_, trivial⟩
+      · intro r hr
+        simp [KernelOp.usedRegs] at hr
+        subst hr
+        simp [KernelOp.extendEnv, KernelOp.definedReg]
+      · intro r hr
+        simp [KernelOp.usedRegs] at hr
+        subst hr
+        simp [KernelOp.extendEnv, KernelOp.definedReg]
+
 /-- Use of scopeValidOps_append: split a longer chain. The chain
     `[const 0 1; const 1 2]` is scope-valid against env=[], so by
     append with the rest `[binOp 2 0 1 add u32]` scope-valid against

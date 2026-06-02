@@ -22,8 +22,6 @@ use quanta_ir::{
     AtomicOp, BinOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, MemoryOrder, Reg,
     ScalarType,
 };
-use std::collections::HashSet;
-
 use crate::{
     FunctionBodyInfo, FunctionKind, LoweringError, Module, ParamKind, RawInstr, SideTable, WasmTy,
     find_kernel,
@@ -412,107 +410,62 @@ impl<'a> LowerCtx<'a> {
         target.redirect.push(new_idx);
     }
 
-    /// Bug #1 fix (2026-05-31): hoist the backward slice defining
-    /// `cond` from the CURRENT frame's active sink to the TARGET
-    /// frame's active sink. Called by `BrIf` just before
-    /// `install_redirect_at` so the Branch we install at target
-    /// references a register defined in target's own scope rather
-    /// than reaching down into the redirect's `else_ops` (which
-    /// triggers MSL/SPIR-V use-of-undeclared-identifier on the
-    /// def'ing register).
+    /// Materialise a BrIf cond into a function-scope register so the
+    /// `Branch { cond, ... }` installed at the target frame references
+    /// a reg that is unconditionally in scope. Returns the
+    /// function-scope replacement reg.
     ///
-    /// Walks the current sink backward, collecting ops that
-    /// transitively define `cond`. Stops at the first op whose dst
-    /// is not (yet) in the "need" set — non-contributing ops stay
-    /// put. Moved ops preserve their original order.
+    /// Pattern:
+    ///   1. Allocate a fresh reg `r_cs`.
+    ///   2. Insert `Const r_cs = false` at the head of the function
+    ///      frame's ops (same `function_frame.ops.insert(0, ...)`
+    ///      pattern as `write_local_via_copy`). Function-scope ⇒ the
+    ///      reg is in scope at every nested target depth.
+    ///   3. Emit `Copy r_cs = cond` into the CURRENT sink, where the
+    ///      original `cond` is still in scope and not yet redirected.
     ///
-    /// Returns `true` if hoisting succeeded (all needed dependencies
-    /// were locally defined and moved). Returns `false` if any
-    /// needed reg's defining op could not be found in the current
-    /// sink — in that case nothing is moved and the caller falls
-    /// back to the pre-fix path (which still emits the buggy
-    /// pattern, caught by the macro-time scope_check oracle).
+    /// Why this replaces the earlier `hoist_cond_defining_ops` (bug #1
+    /// fix `3bd1c55`): the hoist algorithm walked the current sink
+    /// backward and stopped at the first non-contributing op. That
+    /// works when the cond-defining chain is a contiguous suffix, but
+    /// the nested-if/else lowering bug surfaced by PTRD's Poisson
+    /// kernel (see memory `lowering_bug_nested_if_2026-06-01.md`)
+    /// interleaves `Copy r_local_stable = ...` writes (from
+    /// `local.tee`'s `write_local_via_copy`) between cond-defining
+    /// cmps. The contiguous-suffix walker bails after the first such
+    /// Copy and the redirect still references undefined regs at the
+    /// target frame. The function-scope materialisation sidesteps the
+    /// problem structurally: only one new reg is referenced at the
+    /// target, and it lives at function scope.
     ///
-    /// See memory `bug_1_ir_analysis_2026-05-31.md` for the IR shape
-    /// this targets.
-    fn hoist_cond_defining_ops(&mut self, depth: u32, cond: Reg) -> bool {
-        // Compute the slice: walk the current sink backward,
-        // gathering ops whose dst is in the running "need" set.
-        let current_idx = self.frames.len() - 1;
-        let mut need: HashSet<Reg> = HashSet::new();
-        need.insert(cond);
-        let mut to_move_indices: Vec<usize> = Vec::new();
-
-        // Take an immutable snapshot of the current sink length and
-        // the relevant op refs. We walk in reverse.
-        let current_sink_len = Self::sink_at_mut(&mut self.frames[current_idx]).len();
-        for i in (0..current_sink_len).rev() {
-            // Re-borrow per iteration (sink_at_mut walks the
-            // redirect chain — fine to call repeatedly since the
-            // chain is stable during this scan).
-            let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
-            let op = &sink[i];
-            let dst = quanta_ir::scope_check::defined_reg(op);
-            let contributes = dst.map(|d| need.contains(&d)).unwrap_or(false);
-            if !contributes {
-                // Stop at the first non-contributing op. Don't
-                // re-order across unrelated ops — that would change
-                // observable behaviour even if scope-valid (e.g.
-                // a Store/Load adjacent to a Cmp).
-                break;
-            }
-            // This op contributes. Remove its dst from need, add
-            // its operands.
-            need.remove(&dst.unwrap());
-            for r in quanta_ir::scope_check::used_regs(op) {
-                need.insert(r);
-            }
-            to_move_indices.push(i);
-        }
-        // Reverse so we have original order (we collected back-to-front).
-        to_move_indices.reverse();
-        // Any remaining "need" regs must already be in scope at the
-        // target frame. We can't verify that cheaply here, so we
-        // trust the lowering invariant: if the cmp's operands trace
-        // back to ops we've stopped at (or earlier), those earlier
-        // ops are in scope by virtue of being emitted into a parent
-        // frame's sink prior to the current frame opening. If any
-        // remaining reg is NOT in scope at target, the post-hoist
-        // IR will still fail scope_check at macro time — informative
-        // failure, no silent wrong codegen.
-
-        // Refuse to hoist nothing (cond was not defined in this sink).
-        // The fall-through path still hits install_redirect_at, which
-        // emits the buggy pattern caught by scope_check.
-        if to_move_indices.is_empty() {
-            return false;
-        }
-
-        // Cut the contiguous range [first..last+1] out of the
-        // current sink. Since to_move_indices.last() is the
-        // most-recent (end-of-sink) and they're contiguous, the
-        // hoist range is `first..current_sink_len`.
-        let first = *to_move_indices.first().unwrap();
-        // Verify contiguity (they should be — we walked backward
-        // and stopped at the first gap, but it's worth asserting).
-        debug_assert!(
-            to_move_indices.windows(2).all(|w| w[1] == w[0] + 1),
-            "hoist slice not contiguous: {to_move_indices:?}",
-        );
-
-        let hoisted: Vec<KernelOp> = {
-            let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
-            sink.drain(first..).collect()
+    /// Cost: one extra `Const r_cs = false` (init, ignored by
+    /// codegen as a no-op) and one extra `Copy r_cs = cond` per
+    /// redirect-installing BrIf. Negligible.
+    fn materialize_cond_at_function_frame(&mut self, cond: Reg, ty: ScalarType) -> Reg {
+        let fresh = self.alloc_reg();
+        let init = match ty {
+            ScalarType::Bool => ConstValue::Bool(false),
+            ScalarType::F16 | ScalarType::F32 => ConstValue::F32(0.0),
+            ScalarType::F64 => ConstValue::F64(0.0),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+            ScalarType::I64 => ConstValue::I64(0),
+            ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
+            ScalarType::U64 => ConstValue::U64(0),
         };
-
-        // Append to target frame's active sink.
-        let target = self
-            .frame_at_depth_mut(depth)
-            .expect("caller must verify target depth before hoist_cond_defining_ops");
-        let target_sink = Self::sink_at_mut(target);
-        target_sink.extend(hoisted);
-
-        true
+        let function_frame = &mut self.frames[0];
+        function_frame.ops.insert(
+            0,
+            KernelOp::Const {
+                dst: fresh,
+                value: init,
+            },
+        );
+        self.emit(KernelOp::Copy {
+            dst: fresh,
+            src: cond,
+            ty,
+        });
+        fresh
     }
 
     fn lower(mut self) -> Result<KernelDef, LoweringError> {
@@ -1929,7 +1882,7 @@ impl<'a> LowerCtx<'a> {
 
             RawInstr::BrIf(depth) => {
                 let cond_sv = self.pop()?;
-                let (cond, _) = self.commit(cond_sv)?;
+                let (cond, cond_ty) = self.commit(cond_sv)?;
                 let target_kind = self
                     .frame_at_depth(*depth)
                     .ok_or_else(|| {
@@ -1970,20 +1923,18 @@ impl<'a> LowerCtx<'a> {
                     });
                     return Ok(());
                 }
-                // Bug #1 fix (2026-05-31): hoist the backward slice
-                // defining `cond` from the CURRENT frame's active
-                // sink to the TARGET frame's active sink before
-                // installing the redirect Branch. See
-                // `hoist_cond_defining_ops` and the memory note
-                // `bug_1_ir_analysis_2026-05-31.md` for the IR shape
-                // this targets. If hoisting can't be performed
-                // (cond's defining op isn't locally in the current
-                // sink, e.g. it's a function-scope param reg), the
-                // fall-through still calls install_redirect_at;
-                // the macro-time scope_check oracle catches any
-                // residual use-before-def.
-                self.hoist_cond_defining_ops(*depth, cond);
-                self.install_redirect_at(*depth, cond);
+                // Materialise `cond` into a function-scope reg before
+                // installing the redirect Branch at target. Without
+                // this, the Branch references `cond` which lives in
+                // the current (inner) frame's sink and may not be in
+                // scope at the target frame after subsequent splices.
+                // The function-scope reg is unconditionally visible at
+                // every nesting depth. Covers both bug #1 (BrIf hoist
+                // in `emit_loop` — `emitter_codegen_bugs_2026-05-29.md`)
+                // and the nested-if/else lowering bug surfaced by
+                // PTRD (`lowering_bug_nested_if_2026-06-01.md`).
+                let stable_cond = self.materialize_cond_at_function_frame(cond, cond_ty);
+                self.install_redirect_at(*depth, stable_cond);
             }
 
             RawInstr::I32Eqz => {

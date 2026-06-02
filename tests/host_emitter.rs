@@ -182,3 +182,55 @@ fn emit_fence(flag: &mut [u32], data: &mut [u32]) {
 fn fence_kernel_compiles() {
     let _binary = &EMIT_FENCE_BINARY;
 }
+
+// ===========================================================================
+// Nested-if / shared-mutable lowering bug witness (2026-06-01)
+// ===========================================================================
+//
+// PTRD's Poisson kernel surfaced a second redirect-chain lowering bug:
+// nested `if/else if` over a shared mutable variable inside a `while`
+// produces use-before-def in the IR. Distinct from bug #1 (BrIf hoist)
+// because no `br_if depth>0` is involved — it's plain `Br` redirects
+// threading through nested ifs. The current workaround at the kernel
+// layer is to flatten control flow; this test pins the smallest
+// reproducer that triggers the failure.
+//
+// Gated under `cfg(skip_known_bug_2)` exactly like `emit_loop` was
+// while bug #1 was live; flip the gate off when the lowering fix
+// lands. See memory `lowering_bug_nested_if_2026-06-01.md`.
+
+#[quanta::kernel]
+fn emit_nested_if(data: &mut [u32], scale: f32) {
+    let i = quark_id();
+    let mut result: u32 = 0u32;
+    let mut done: u32 = 0u32;
+    let mut iter: u32 = 0u32;
+    while iter < 32u32 {
+        let v: f32 = (iter as f32) * scale;
+        let us: f32 = 0.5f32 - v;
+        let k_f: f32 = floor(v + scale);
+        if k_f >= 0.0f32 && done == 0u32 {
+            if us >= 0.07f32 && v <= 0.9f32 {
+                result = k_f as u32;
+                done = 1u32;
+            } else if !(us < 0.013f32 && v > us) {
+                let lhs: f32 = ln(v) + scale;
+                let rhs: f32 = (0.0f32 - scale) + (k_f * 2.0f32);
+                if lhs <= rhs {
+                    result = k_f as u32;
+                    done = 1u32;
+                }
+            }
+        }
+        if done == 1u32 {
+            break;
+        }
+        iter = iter + 1u32;
+    }
+    data[i] = result;
+}
+
+#[test]
+fn nested_if_kernel_compiles() {
+    let _binary = &EMIT_NESTED_IF_BINARY;
+}
