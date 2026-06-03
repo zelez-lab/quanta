@@ -324,6 +324,22 @@ pub enum RawInstr {
     I32TruncF64U,
     I64TruncF64S,
     I64TruncF64U,
+    // Saturating float→int trunc (WASM 2.0 `nontrapping-fptoint`
+    // proposal). Rustc emits these for `as` casts between f32/f64
+    // and integer types when the proposal is enabled (the default
+    // since 2020). Lowered identically to the baseline `TruncF*`
+    // variants — `KernelOp::Cast` carries saturating semantics in
+    // every backend (CPU eval uses Rust's saturating `as`, MSL
+    // uses `int(min(max(x,…),…))`, SPIR-V uses
+    // `OpConvertFToU/S`+clamp).
+    I32TruncSatF32S,
+    I32TruncSatF32U,
+    I32TruncSatF64S,
+    I32TruncSatF64U,
+    I64TruncSatF32S,
+    I64TruncSatF32U,
+    I64TruncSatF64S,
+    I64TruncSatF64U,
     F64ReinterpretI64,
     I64ReinterpretF64,
     // Memory
@@ -561,6 +577,14 @@ impl RawInstr {
             Operator::I32TruncF64U => Self::I32TruncF64U,
             Operator::I64TruncF64S => Self::I64TruncF64S,
             Operator::I64TruncF64U => Self::I64TruncF64U,
+            Operator::I32TruncSatF32S => Self::I32TruncSatF32S,
+            Operator::I32TruncSatF32U => Self::I32TruncSatF32U,
+            Operator::I32TruncSatF64S => Self::I32TruncSatF64S,
+            Operator::I32TruncSatF64U => Self::I32TruncSatF64U,
+            Operator::I64TruncSatF32S => Self::I64TruncSatF32S,
+            Operator::I64TruncSatF32U => Self::I64TruncSatF32U,
+            Operator::I64TruncSatF64S => Self::I64TruncSatF64S,
+            Operator::I64TruncSatF64U => Self::I64TruncSatF64U,
             Operator::F64ReinterpretI64 => Self::F64ReinterpretI64,
             Operator::I64ReinterpretF64 => Self::I64ReinterpretF64,
 

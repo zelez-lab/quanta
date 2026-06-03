@@ -286,17 +286,17 @@ fn invoke_rustc(src_path: &Path, wasm_out: &Path) -> Result<(), String> {
         .arg("panic=abort")
         .arg("-C")
         .arg("strip=debuginfo")
-        // Disable the nontrapping-fptoint proposal so `as` casts
-        // between f32/f64 and integer types emit the baseline
-        // WASM 1.0 `i32.trunc_f32_*` instructions instead of the
-        // `i32.trunc_sat_f32_*` post-1.0 saturating variants. The
-        // WASM-route lowering pass only recognizes the baseline
-        // opcodes; the saturating ones would refuse with
-        // `unsupported WASM op I32TruncSatF32U`. Kernels are
-        // responsible for guarding against NaN / out-of-range
-        // inputs before the cast.
-        .arg("-C")
-        .arg("target-feature=-nontrapping-fptoint")
+        // Leave `nontrapping-fptoint` ON. Rustc compiles `as` casts
+        // between float and int types using `i32.trunc_sat_*_*`
+        // (single saturating opcode); disabling the feature forces
+        // rustc to emit a multi-instruction manual saturation block
+        // (`block / block / cmp / br_if / trunc / br / end / const 0 /
+        // end / select`) that the WASM-route's structured-control
+        // lowering can't reliably translate. The lowering pass
+        // recognises both baseline and saturating trunc opcodes and
+        // maps each to the same `KernelOp::Cast`; the CPU executor's
+        // `eval_cast` and every emitter implements saturating
+        // semantics regardless, so behaviour matches WASM 2.0 spec.
         .arg("-o")
         .arg(wasm_out)
         .arg(src_path)

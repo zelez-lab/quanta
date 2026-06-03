@@ -1742,13 +1742,24 @@ impl<'a> LowerCtx<'a> {
             }
 
             RawInstr::Block { .. } => {
+                // Block IS a scope boundary even though it splices into
+                // the parent: a `br_if N` from inside the block can
+                // skip past `end @N`, so any `local.set` inside is
+                // potentially skipped. Capture the pre-block snapshot
+                // so `end` can call `merge_locals_post_frame` to reset
+                // locals[].val to their stable_reg — `local.get` after
+                // the block then reads the merge anchor instead of an
+                // inner fresh reg whose write may not have executed.
+                // (Originally this was elided as "no scope boundary";
+                // PTRD-shape kernels with `result = …` inside an
+                // unrolled `while … break` produce exactly the broken
+                // pattern.)
+                let snapshot = self.snapshot_locals();
                 self.frames.push(Frame {
                     kind: FrameKind::Block,
                     ops: Vec::new(),
                     redirect: Vec::new(),
-                    // Block frames splice straight into the parent;
-                    // no scope boundary, no snapshot needed.
-                    local_snapshot: Vec::new(),
+                    local_snapshot: snapshot,
                 });
             }
 
@@ -1860,6 +1871,12 @@ impl<'a> LowerCtx<'a> {
                         // the parent set by a prior br/br_if).
                         let parent_idx = self.frames.len() - 1;
                         Self::splice_into_frame(&mut self.frames[parent_idx], frame.ops);
+                        // Then merge locals modified inside the block
+                        // back to their stable_reg, so reads after the
+                        // block (`local.get`) see the merge anchor
+                        // rather than an inner fresh reg whose write
+                        // may have been skipped by `br_if N`.
+                        self.merge_locals_post_frame(&frame.local_snapshot);
                     }
                     FrameKind::Loop {
                         count_reg,
@@ -2138,6 +2155,20 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32TruncF64S => self.cast_op(ScalarType::F64, ScalarType::I32)?,
             RawInstr::I64TruncF64U => self.cast_op(ScalarType::F64, ScalarType::U64)?,
             RawInstr::I64TruncF64S => self.cast_op(ScalarType::F64, ScalarType::I64)?,
+            // Saturating trunc variants — same `Cast` lowering. The
+            // single-opcode form rustc emits when
+            // `nontrapping-fptoint` is enabled (the default since
+            // 2020); avoids the multi-instruction manual saturation
+            // block whose structured-control lowering exposed
+            // bug #1, bug #2, and the substrate redirect bug.
+            RawInstr::I32TruncSatF32U => self.cast_op(ScalarType::F32, ScalarType::U32)?,
+            RawInstr::I32TruncSatF32S => self.cast_op(ScalarType::F32, ScalarType::I32)?,
+            RawInstr::I32TruncSatF64U => self.cast_op(ScalarType::F64, ScalarType::U32)?,
+            RawInstr::I32TruncSatF64S => self.cast_op(ScalarType::F64, ScalarType::I32)?,
+            RawInstr::I64TruncSatF32U => self.cast_op(ScalarType::F32, ScalarType::U64)?,
+            RawInstr::I64TruncSatF32S => self.cast_op(ScalarType::F32, ScalarType::I64)?,
+            RawInstr::I64TruncSatF64U => self.cast_op(ScalarType::F64, ScalarType::U64)?,
+            RawInstr::I64TruncSatF64S => self.cast_op(ScalarType::F64, ScalarType::I64)?,
             RawInstr::F64ReinterpretI64 => self.cast_op(ScalarType::U64, ScalarType::F64)?,
             RawInstr::I64ReinterpretF64 => self.cast_op(ScalarType::F64, ScalarType::U64)?,
 
