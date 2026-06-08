@@ -2,9 +2,11 @@
 //! for each target backend.
 //!
 //! These tests spawn the pre-built quanta-compiler binary and check
-//! the output for structural correctness. No LLVM linkage at test time.
+//! the output for structural correctness. No LLVM linkage at test
+//! time. Tests self-skip with a warning if the compiler binary
+//! isn't present; `cargo test --workspace` builds it automatically.
 //!
-//! Run: cargo test --test validate_compiler_output -- --ignored
+//! Run: cargo test --test validate_compiler_output
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -40,7 +42,6 @@ fn run_compiler(flag: &str) -> (bool, String, String) {
 // --- PTX ---
 
 #[test]
-#[ignore]
 fn compiler_produces_valid_ptx() {
     if compiler_path().is_none() {
         eprintln!("skipping: quanta-compiler not built");
@@ -77,7 +78,6 @@ fn compiler_produces_valid_ptx() {
 // --- SPIR-V ---
 
 #[test]
-#[ignore]
 fn compiler_produces_valid_spirv() {
     if compiler_path().is_none() {
         eprintln!("skipping: quanta-compiler not built");
@@ -108,7 +108,6 @@ fn compiler_produces_valid_spirv() {
 // --- AMD ELF ---
 
 #[test]
-#[ignore]
 fn compiler_produces_valid_amd_elf() {
     if compiler_path().is_none() {
         eprintln!("skipping: quanta-compiler not built");
@@ -138,7 +137,6 @@ fn compiler_produces_valid_amd_elf() {
 // --- LLVM IR (all three targets) ---
 
 #[test]
-#[ignore]
 fn compiler_produces_valid_ir() {
     if compiler_path().is_none() {
         eprintln!("skipping: quanta-compiler not built");
@@ -186,7 +184,6 @@ fn compiler_produces_valid_ir() {
 // --- Complex kernel (neuron_activate) ---
 
 #[test]
-#[ignore]
 fn compiler_produces_valid_complex_ptx() {
     if compiler_path().is_none() {
         eprintln!("skipping: quanta-compiler not built");
@@ -221,7 +218,6 @@ fn compiler_produces_valid_complex_ptx() {
 // --- Stdin/stdout wire protocol ---
 
 #[test]
-#[ignore]
 fn compiler_wire_protocol_spirv() {
     if compiler_path().is_none() {
         eprintln!("skipping: quanta-compiler not built");

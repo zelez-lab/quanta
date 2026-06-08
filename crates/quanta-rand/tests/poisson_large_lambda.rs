@@ -48,12 +48,19 @@ fn var_tol(lambda: f64, n: usize) -> f64 {
     8.0 * (2.0 * lambda * lambda / n as f64).sqrt()
 }
 
-// PTRD is heavy GPU math per quark — on the CPU backend the
-// 8-32k-quark workloads take many minutes to single-thread. These
-// tests are correctness-meaningful but slow; `#[ignore]` keeps CI
-// fast. Run with `cargo test --features gpu --test
-// poisson_large_lambda -- --ignored` on the real GPU backend
-// (each test completes in milliseconds on Metal).
+// PTRD is heavy GPU math per quark. With the parallel CPU dispatch
+// (`b3175f1`) running ~8 cores, an N=32k λ-sweep is ~11 min release /
+// ~hour debug — still too slow for default `cargo test`. The
+// `ptrd_cpu_smoke.rs` test covers regression at N=32 in ~8 s; these
+// `#[ignore]`d full-statistics sweeps stay opt-in. Run on real GPU
+// (where each completes in milliseconds on Metal) with:
+//
+//   cargo test --features gpu --test poisson_large_lambda -- --ignored
+//
+// or on CPU release if you can spare an hour:
+//
+//   cargo test --release -p quanta-rand --features gpu \
+//       --test poisson_large_lambda -- --ignored
 #[ignore]
 #[test]
 fn fill_poisson_u32_large_mean_variance_lambda_10() {
@@ -158,11 +165,13 @@ fn fill_poisson_u32_auto_uses_knuth_below_threshold() {
     );
 }
 
+// Bit-exact auto-vs-PTRD comparison at N=1024 — verifies the
+// auto-dispatch picks the right kernel above the λ ≥ 10 threshold.
+// `#[ignore]`d because even N=1024 runs at ~11 min debug / ~21 s
+// release on CPU; on real GPU it's milliseconds.
 #[ignore]
 #[test]
 fn fill_poisson_u32_auto_uses_ptrd_above_threshold() {
-    // λ = 20 should dispatch to PTRD and match the explicit
-    // large-lambda call.
     let gpu = quanta::init_cpu();
     let lambda: f32 = 20.0;
     let n = 1024;

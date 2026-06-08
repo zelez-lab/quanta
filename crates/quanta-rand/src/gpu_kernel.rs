@@ -753,10 +753,15 @@ pub struct FillPoissonLargeU32Data {
 ///
 /// The control-flow shape is deliberately flat (a single `while`
 /// with one `break` in the accept path) to keep the WASM-route
-/// lowering's structured-control reshaping happy — nested if/else
-/// chains with multiple early-break flags trigger latent
-/// use-before-def patterns in the redirect mechanism (the bug-#1
-/// area). Once the substrate fix lands we can re-flatten.
+/// lowering's structured-control reshaping happy. The natural
+/// nested `if accept_fast { … } else if !early_reject { … if
+/// accept_slow { … } }` shape triggers a redirect-chain bug
+/// (`r508 used before definition at BinOp.a`) that the
+/// 2026-06-03 sat-trunc + Block-merge fix did NOT resolve.
+/// Re-attempted unflattening on 2026-06-08; same bug fired.
+/// Keep this flat until the redirect-chain mechanism gets a
+/// real position-aware fix. See `lowering_bug_nested_if_2026-06-01`
+/// in memory.
 #[quanta::kernel]
 pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
     let id = quark_id();

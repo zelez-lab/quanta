@@ -3,7 +3,13 @@
 //! Compiles test kernels through the quanta-compiler binary, pipes
 //! the SPIR-V output through `spirv-val`, and verifies zero errors.
 //!
-//! Run: cargo test --test validate_spirv -- --ignored
+//! Requires `/opt/homebrew/bin/spirv-val` from SPIRV-Tools. Tests
+//! self-skip with a warning if it's missing. Tests that pipe through
+//! the LLVM-based quanta-compiler also need the binary built in
+//! `target/`; `cargo test --workspace` does that automatically since
+//! quanta-compiler is a workspace member.
+//!
+//! Run: cargo test --test validate_spirv
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -32,9 +38,17 @@ fn has_spirv_val() -> bool {
 
 /// Build a KernelDef, serialize it, pipe to compiler with --targets spirv,
 /// extract the SPIR-V binary from CompilerOutput, write to temp, run spirv-val.
+/// Returns silently (test passes) if the compiler binary isn't present —
+/// the LLVM build may be opt-out, so a missing binary shouldn't fail the
+/// default sweep. The caller is expected to print a skip notice.
 fn compile_and_validate(kernel: &quanta_ir::KernelDef, label: &str) {
-    let compiler = compiler_path()
-        .expect("quanta-compiler not built — run `cargo build -p quanta-compiler` first");
+    let compiler = match compiler_path() {
+        Some(p) => p,
+        None => {
+            eprintln!("skipping [{label}]: quanta-compiler not built");
+            return;
+        }
+    };
 
     let input_bytes = quanta_ir::serialize_kernel(kernel);
 
@@ -364,7 +378,6 @@ fn val_passthrough_frag(color: Vec4) -> Vec4 {
 }
 
 #[test]
-#[ignore]
 fn spirv_val_vertex_simple() {
     if !has_spirv_val() {
         eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
@@ -378,7 +391,6 @@ fn spirv_val_vertex_simple() {
 }
 
 #[test]
-#[ignore]
 fn spirv_val_vertex_vec3() {
     if !has_spirv_val() {
         eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
@@ -392,7 +404,6 @@ fn spirv_val_vertex_vec3() {
 }
 
 #[test]
-#[ignore]
 fn spirv_val_vertex_vec2() {
     if !has_spirv_val() {
         eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
@@ -406,7 +417,6 @@ fn spirv_val_vertex_vec2() {
 }
 
 #[test]
-#[ignore]
 fn spirv_val_fragment_solid() {
     if !has_spirv_val() {
         eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
@@ -420,7 +430,6 @@ fn spirv_val_fragment_solid() {
 }
 
 #[test]
-#[ignore]
 fn spirv_val_fragment_passthrough() {
     if !has_spirv_val() {
         eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
@@ -436,7 +445,6 @@ fn spirv_val_fragment_passthrough() {
 // --- Compute kernel tests ---
 
 #[test]
-#[ignore]
 fn spirv_val_vector_add() {
     if !has_spirv_val() {
         eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
@@ -450,7 +458,6 @@ fn spirv_val_vector_add() {
 }
 
 #[test]
-#[ignore]
 fn spirv_val_scalar_mul() {
     if !has_spirv_val() {
         eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
@@ -464,7 +471,6 @@ fn spirv_val_scalar_mul() {
 }
 
 #[test]
-#[ignore]
 fn spirv_val_identity() {
     if !has_spirv_val() {
         eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);

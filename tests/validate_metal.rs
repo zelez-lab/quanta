@@ -1,7 +1,8 @@
 //! Metal validation layer — re-runs GPU tests with MTL_DEBUG_LAYER=1
 //! and MTL_SHADER_VALIDATION=1, then checks for validation errors.
+//! Tests self-skip on non-macOS platforms.
 //!
-//! Run: cargo test --test validate_metal -- --ignored
+//! Run: cargo test --test validate_metal
 
 use std::process::Command;
 
@@ -54,7 +55,6 @@ fn run_with_metal_validation(test_target: &str) -> (bool, Vec<String>) {
 }
 
 #[test]
-#[ignore]
 fn metal_validation_all_gpu_tests() {
     // Quick check: are we on macOS?
     if !cfg!(target_os = "macos") {
@@ -95,7 +95,6 @@ fn metal_validation_all_gpu_tests() {
 
 /// Run each GPU test target individually so failures are isolated.
 #[test]
-#[ignore]
 fn metal_validation_gpu_compute() {
     if !cfg!(target_os = "macos") {
         eprintln!("skipping: not macOS");
@@ -110,7 +109,6 @@ fn metal_validation_gpu_compute() {
 }
 
 #[test]
-#[ignore]
 fn metal_validation_gpu_atomics() {
     if !cfg!(target_os = "macos") {
         eprintln!("skipping: not macOS");
@@ -125,7 +123,6 @@ fn metal_validation_gpu_atomics() {
 }
 
 #[test]
-#[ignore]
 fn metal_validation_gpu_shared() {
     if !cfg!(target_os = "macos") {
         eprintln!("skipping: not macOS");
@@ -140,7 +137,6 @@ fn metal_validation_gpu_shared() {
 }
 
 #[test]
-#[ignore]
 fn metal_validation_gpu_render() {
     if !cfg!(target_os = "macos") {
         eprintln!("skipping: not macOS");
@@ -155,7 +151,6 @@ fn metal_validation_gpu_render() {
 }
 
 #[test]
-#[ignore]
 fn metal_validation_gpu_pipeline() {
     if !cfg!(target_os = "macos") {
         eprintln!("skipping: not macOS");
