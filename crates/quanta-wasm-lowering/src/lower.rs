@@ -151,6 +151,48 @@ struct LowerCtx<'a> {
     /// Known imported function indices keyed by their import name —
     /// used to recognize `call $quark_id` etc.
     intrinsic_names: Vec<String>,
+    /// Option C — position-aware redirect mechanism. When `true`,
+    /// br/br_if to non-Loop targets `record_br_at` the target frame
+    /// instead of installing an empty Branch + extending the redirect
+    /// chain. The Block-close handler then reconstructs nested
+    /// `Branch{cond, then, else}` from the recorded positions.
+    ///
+    /// Enabled by `QUANTA_LOWERING_V2=1` at lowerer entry. See memory
+    /// `redirect-chain-substrate-redesign` for the full plan.
+    ///
+    /// SESSION 1 SCOPE: Block frames + br_if + simple shapes only.
+    /// Loop crossings, Br, If/Else, and device-fn body splices still
+    /// route through the old mechanism. Anything not handled by v2
+    /// falls back transparently to the v1 path.
+    use_v2: bool,
+}
+
+/// Option C — one br/br_if's intent recorded on its target frame.
+///
+/// Replaces the v1 mechanism where each br_if installed an empty
+/// `Branch{cond, then=[], else=[]}` to the target's sink and steered
+/// subsequent emits into the Branch's `else_ops`. Under v2, no
+/// Branch is materialised eagerly; instead we mark the target frame
+/// with WHERE the br_if happened (`sink_position`) and WHAT its
+/// cond was. At end-of-frame, the records are walked in reverse and
+/// the `frame.ops[sink_position..]` are wrapped in real
+/// `Branch{cond, then, else}` ops reflecting the actual taken /
+/// fall-through paths.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+struct BrIfRecord {
+    /// Index into the target frame's `ops` where the br/br_if fired.
+    /// Ops at this position or later are on the br_if's
+    /// fall-through path (cond=false for br_if; never reached for
+    /// unconditional Br) until the next record's position.
+    sink_position: usize,
+    /// The condition register for br_if. For unconditional Br
+    /// (`is_unconditional = true`), this is unused; we still allocate
+    /// a register so the field can stay non-optional.
+    cond: Reg,
+    /// Distinguishes `Br N` (unconditional) from `BrIf N`. Reserved
+    /// for the next session — session 1 only handles BrIf.
+    is_unconditional: bool,
 }
 
 /// One control-flow frame on the lowering stack.
@@ -185,6 +227,10 @@ struct Frame {
     /// no merge is needed. See workspace design doc at
     /// `roadmap/_design/wasm_local_renaming.md`.
     local_snapshot: Vec<(u32, Option<SymVal>)>,
+    /// Option C — br/br_if records targeting this frame. Populated
+    /// only when `LowerCtx::use_v2` is true. Empty under v1. See
+    /// `BrIfRecord` for the wrap-at-end-of-frame semantics.
+    brifs: Vec<BrIfRecord>,
 }
 
 /// Reduction operator for the `subgroup_reduce` helper. Mirrors
@@ -287,6 +333,12 @@ impl<'a> LowerCtx<'a> {
             }
         }
 
+        // Option C — read env var once at lowerer entry. The new
+        // position-aware redirect path is OFF by default.
+        let use_v2 = std::env::var("QUANTA_LOWERING_V2")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
         Self {
             side_table,
             param_types,
@@ -299,9 +351,11 @@ impl<'a> LowerCtx<'a> {
                 ops: Vec::new(),
                 redirect: Vec::new(),
                 local_snapshot: Vec::new(),
+                brifs: Vec::new(),
             }],
             next_reg: 0,
             intrinsic_names,
+            use_v2,
         }
     }
 
@@ -1760,6 +1814,7 @@ impl<'a> LowerCtx<'a> {
                     ops: Vec::new(),
                     redirect: Vec::new(),
                     local_snapshot: snapshot,
+                    brifs: Vec::new(),
                 });
             }
 
@@ -1803,6 +1858,7 @@ impl<'a> LowerCtx<'a> {
                     ops: Vec::new(),
                     redirect: Vec::new(),
                     local_snapshot: snapshot,
+                    brifs: Vec::new(),
                 });
             }
 
@@ -1815,6 +1871,7 @@ impl<'a> LowerCtx<'a> {
                     ops: Vec::new(),
                     redirect: Vec::new(),
                     local_snapshot: snapshot,
+                    brifs: Vec::new(),
                 });
             }
 
@@ -1847,6 +1904,7 @@ impl<'a> LowerCtx<'a> {
                     ops: Vec::new(),
                     redirect: Vec::new(),
                     local_snapshot: frame.local_snapshot,
+                    brifs: Vec::new(),
                 });
             }
 
@@ -1863,6 +1921,7 @@ impl<'a> LowerCtx<'a> {
                             ops: frame.ops,
                             redirect: Vec::new(),
                             local_snapshot: Vec::new(),
+                            brifs: Vec::new(),
                         });
                     }
                     FrameKind::Block => {
@@ -2949,6 +3008,7 @@ impl<'a> LowerCtx<'a> {
             ops: Vec::new(),
             redirect: Vec::new(),
             local_snapshot: Vec::new(),
+            brifs: Vec::new(),
         });
 
         // Walk the callee body, rewriting local indices by base_offset.
