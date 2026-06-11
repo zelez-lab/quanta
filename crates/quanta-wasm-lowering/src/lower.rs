@@ -511,11 +511,12 @@ impl<'a> LowerCtx<'a> {
     /// Br). Asserts otherwise so we notice if a code path slips
     /// through. is_unconditional is wired but not yet handled.
     fn reconstruct_block_brifs(&self, mut ops: Vec<KernelOp>, brifs: &[BrIfRecord]) -> Vec<KernelOp> {
+        // Both BrIf (variable cond) and Br (const true cond) wrap
+        // the same way: post-record ops go in else_ops. For
+        // unconditional Br the wrap is semantically dead (cond=true
+        // → else_ops never runs), which matches WASM dead-code
+        // semantics for `br`-skipped ops.
         for record in brifs.iter().rev() {
-            assert!(
-                !record.is_unconditional,
-                "session 1 only handles BrIf; unconditional Br routes through v1"
-            );
             let tail = ops.split_off(record.sink_position);
             ops.push(KernelOp::Branch {
                 cond: record.cond,
@@ -603,29 +604,34 @@ impl<'a> LowerCtx<'a> {
         }
         *Self::sink_at_mut(&mut self.frames[current_idx]) = kept;
 
-        // Append hoisted ops to the target frame's active sink. NOTE
-        // (session 3 finding): this is only correct when target has
-        // no existing brif records yet. If earlier br_ifs already
-        // recorded positions on target, the hoisted ops land at
-        // positions >= those records' sink_positions, ending up
-        // INSIDE the wrap an outer Branch eventually constructs
-        // around `ops[sink_position..]`. That puts the def at a
-        // depth where a sibling Branch's cond can't see it.
+        // Splice the hoisted ops into target BEFORE any existing
+        // brif records. Each existing brif's sink_position bumps by
+        // len(hoisted).
         //
-        // Splicing the hoisted ops in BEFORE the earliest brif
-        // position (and bumping later positions) addresses this, but
-        // requires v2 to be the SOLE mechanism on the target frame —
-        // intermixing with v1's `redirect` chain breaks because the
-        // splice shifts indices the redirect chain points at.
-        //
-        // Session 4 work: fully-v2 frames + position-aware splice.
-        // Until then this is the simpler append, which works for
-        // the simple BrIf cases but not the PTRD shape.
+        // Safety: under v2 with Block targets, target.redirect is
+        // always empty (Br and BrIf both route through brifs for
+        // Block targets; install_redirect_at is never called on a
+        // Block under v2). So shifting target.ops positions doesn't
+        // break any redirect-chain index. The invariant is asserted.
         let target = self
             .frame_at_depth_mut(depth)
             .expect("caller must verify target depth before hoist_cond_transitive_v2");
-        let target_sink = Self::sink_at_mut(target);
-        target_sink.extend(hoisted);
+        debug_assert!(
+            target.redirect.is_empty(),
+            "v2 hoist requires target frame to have empty redirect chain; got {:?}",
+            target.redirect
+        );
+        let insert_pos = target
+            .brifs
+            .iter()
+            .map(|r| r.sink_position)
+            .min()
+            .unwrap_or(target.ops.len());
+        let n = hoisted.len();
+        target.ops.splice(insert_pos..insert_pos, hoisted);
+        for r in &mut target.brifs {
+            r.sink_position += n;
+        }
         true
     }
 
@@ -2209,6 +2215,19 @@ impl<'a> LowerCtx<'a> {
                     self.emit(KernelOp::Break);
                     return Ok(());
                 }
+                // Option C v2 — for Block targets, allocate the
+                // const-true on the target frame's sink (so the cond
+                // reg is in scope at the wrap) and record. Subsequent
+                // ops go into the wrap's else_ops which never run
+                // (cond=true → only then_ops would execute, and they
+                // are empty). Matches WASM dead-code semantics for
+                // ops after an unconditional Br.
+                if self.use_v2 && matches!(target_kind, FrameKindTag::Block) {
+                    let dst = self.alloc_reg();
+                    self.emit_const_bool_to_target(*depth, dst, true);
+                    self.record_br_at(*depth, dst, /*is_unconditional=*/ true);
+                    return Ok(());
+                }
                 let dst = self.alloc_reg();
                 self.emit_const_bool_to_target(*depth, dst, true);
                 self.install_redirect_at(*depth, dst);
@@ -2269,32 +2288,24 @@ impl<'a> LowerCtx<'a> {
                 // Session 1 only routes Block targets through v2.
                 // Anything else falls back to v1.
                 if self.use_v2 && matches!(target_kind, FrameKindTag::Block) {
-                    // Same scope-hygiene concern as v1: cond may have
-                    // been defined in the current frame's sink, so
-                    // when we later wrap target.ops[pos..] in
-                    // `Branch{cond, then=[], else=ops_after}`, the
-                    // cond reg would be referenced from a position
-                    // outside the scope where it's defined. v2 uses
-                    // the transitive backward-slice hoist which
-                    // walks the full sink (not just the contiguous
-                    // trailing slice v1 uses), pulling every
-                    // dependency out — necessary when device-fn
-                    // body inlines emit Const ops at the start of
-                    // the body that the cond chain later uses, with
-                    // non-contributing ops (Copy of locals, control
-                    // structures) in between.
+                    // Try the transitive hoist. It will move every
+                    // pure-value op in cond's dep chain out to
+                    // target. If it refuses (cond's chain hits a
+                    // side-effecting op or cond isn't locally
+                    // defined), record anyway — the cond reg is
+                    // either a function-scope local (stable_reg)
+                    // already in scope at target, or it'll fail
+                    // scope_check and the kernel author will see a
+                    // clear error.
                     //
-                    // If the transitive hoist refuses (side-effects
-                    // in the slice, or cond not defined in this
-                    // sink), fall back to v1's contiguous hoist +
-                    // install_redirect_at so we still get the
-                    // bug-#1 fix and the scope_check oracle catches
-                    // any residual use-before-def.
-                    if self.hoist_cond_transitive_v2(*depth, cond) {
-                        self.record_br_at(*depth, cond, /*is_unconditional=*/ false);
-                        return Ok(());
-                    }
-                    // Fall through to v1.
+                    // Critically, we DO NOT fall back to v1 here:
+                    // mixing v2 brifs with v1 install_redirect_at on
+                    // the SAME target frame breaks the v2 hoist's
+                    // position-shift splice (which assumes empty
+                    // target.redirect). Either-or per target.
+                    let _ = self.hoist_cond_transitive_v2(*depth, cond);
+                    self.record_br_at(*depth, cond, /*is_unconditional=*/ false);
+                    return Ok(());
                 }
                 // Bug #1 fix (2026-05-31): hoist the backward slice
                 // defining `cond` from the CURRENT frame's active
