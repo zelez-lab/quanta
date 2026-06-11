@@ -466,6 +466,66 @@ impl<'a> LowerCtx<'a> {
         target.redirect.push(new_idx);
     }
 
+    /// Option C — record a br/br_if's intent on the target frame
+    /// without eagerly installing a Branch op or extending a
+    /// redirect chain. Subsequent emits at the target frame's
+    /// natural sink position. End-of-frame walks the records in
+    /// reverse and wraps `frame.ops[record.sink_position..]` in a
+    /// real `Branch{cond, then=[], else=that-range}`.
+    ///
+    /// SESSION 1: BrIf to Block targets only. Br (unconditional)
+    /// and other frame kinds reserved for later sessions.
+    fn record_br_at(&mut self, depth: u32, cond: Reg, is_unconditional: bool) {
+        let target = self
+            .frame_at_depth_mut(depth)
+            .expect("caller must verify target depth before record_br_at");
+        // Position = current end of target's natural ops. Under v2,
+        // the target frame's `redirect` is empty so sink_at_mut == ops.
+        // Ops emitted AFTER this record live at positions >=
+        // sink_position; they execute on the br_if's fall-through path
+        // (or, for unconditional Br, are dead code under the source
+        // semantics, which the wrap captures by giving them an
+        // unreachable enclosing Branch).
+        let sink_position = target.ops.len();
+        target.brifs.push(BrIfRecord {
+            sink_position,
+            cond,
+            is_unconditional,
+        });
+    }
+
+    /// Option C — at end-of-Block, wrap the recorded br_ifs into
+    /// real `Branch{cond, then=[], else=ops[pos..]}` nests. Walks
+    /// records in reverse-position order so each wrap nests inside
+    /// the previous one's else_ops.
+    ///
+    /// Two br_ifs at positions p1 < p2 mean:
+    /// - ops[p1..p2-1] execute on !cond1.
+    /// - ops[p2..] execute on !cond1 AND !cond2.
+    /// Processing in reverse: first wrap ops[p2..] inside
+    /// `Branch{cond2, then=[], else=…}`, replacing target.ops[p2..]
+    /// with that single new op. Then wrap ops[p1..] (which now
+    /// includes the new inner Branch op as its last element).
+    ///
+    /// SESSION 1 invariant: all records are BrIf (not unconditional
+    /// Br). Asserts otherwise so we notice if a code path slips
+    /// through. is_unconditional is wired but not yet handled.
+    fn reconstruct_block_brifs(&self, mut ops: Vec<KernelOp>, brifs: &[BrIfRecord]) -> Vec<KernelOp> {
+        for record in brifs.iter().rev() {
+            assert!(
+                !record.is_unconditional,
+                "session 1 only handles BrIf; unconditional Br routes through v1"
+            );
+            let tail = ops.split_off(record.sink_position);
+            ops.push(KernelOp::Branch {
+                cond: record.cond,
+                then_ops: Vec::new(),
+                else_ops: tail,
+            });
+        }
+        ops
+    }
+
     /// Bug #1 fix (2026-05-31): hoist the backward slice defining
     /// `cond` from the CURRENT frame's active sink to the TARGET
     /// frame's active sink. Called by `BrIf` just before
@@ -1925,11 +1985,22 @@ impl<'a> LowerCtx<'a> {
                         });
                     }
                     FrameKind::Block => {
+                        // Option C v2 — if any br/br_if was recorded
+                        // on this Block frame, reconstruct nested
+                        // Branches around the post-record op ranges
+                        // before splicing into the parent.
+                        let ops = if !frame.brifs.is_empty() {
+                            self.reconstruct_block_brifs(frame.ops, &frame.brifs)
+                        } else {
+                            frame.ops
+                        };
                         // Block was a label scope — splice ops into the
                         // parent's *active sink* (honors any redirect on
-                        // the parent set by a prior br/br_if).
+                        // the parent set by a prior br/br_if under v1;
+                        // for v2 the parent's redirect is empty so this
+                        // is a plain append).
                         let parent_idx = self.frames.len() - 1;
-                        Self::splice_into_frame(&mut self.frames[parent_idx], frame.ops);
+                        Self::splice_into_frame(&mut self.frames[parent_idx], ops);
                         // Then merge locals modified inside the block
                         // back to their stable_reg, so reads after the
                         // block (`local.get`) see the merge anchor
@@ -2044,6 +2115,33 @@ impl<'a> LowerCtx<'a> {
                         then_ops: vec![KernelOp::Break],
                         else_ops: Vec::new(),
                     });
+                    return Ok(());
+                }
+                // Option C v2 — when enabled and the target is a
+                // plain Block at depth 0 (the current frame's
+                // immediate parent path; need to verify it's
+                // reachable without crossing other frames that v2
+                // doesn't yet model), record the br_if on the target
+                // and skip both the hoist and the install_redirect_at.
+                // The Block's End handler reconstructs the
+                // Branch{cond, then=[], else=ops_after} wrap.
+                //
+                // Session 1 only routes Block targets through v2.
+                // Anything else falls back to v1.
+                if self.use_v2 && matches!(target_kind, FrameKindTag::Block) {
+                    // Same scope-hygiene concern as v1: cond may have
+                    // been defined in the current frame's sink, so
+                    // when we later wrap target.ops[pos..] in
+                    // `Branch{cond, then=[], else=ops_after}`, the
+                    // cond reg would be referenced from a position
+                    // outside the scope where it's defined. Hoist
+                    // its backward slice into target FIRST. This
+                    // also moves cond's def to BEFORE the record's
+                    // sink_position, so reconstruct_block_brifs
+                    // wraps an ops range that no longer contains
+                    // cond's def.
+                    self.hoist_cond_defining_ops(*depth, cond);
+                    self.record_br_at(*depth, cond, /*is_unconditional=*/ false);
                     return Ok(());
                 }
                 // Bug #1 fix (2026-05-31): hoist the backward slice
