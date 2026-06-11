@@ -152,18 +152,16 @@ struct LowerCtx<'a> {
     /// used to recognize `call $quark_id` etc.
     intrinsic_names: Vec<String>,
     /// Option C — position-aware redirect mechanism. When `true`,
-    /// br/br_if to non-Loop targets `record_br_at` the target frame
-    /// instead of installing an empty Branch + extending the redirect
-    /// chain. The Block-close handler then reconstructs nested
+    /// br/br_if to non-Loop Block targets `record_br_at` the target
+    /// frame instead of installing an empty Branch + extending the
+    /// redirect chain. The Block-close handler reconstructs nested
     /// `Branch{cond, then, else}` from the recorded positions.
     ///
-    /// Enabled by `QUANTA_LOWERING_V2=1` at lowerer entry. See memory
-    /// `redirect-chain-substrate-redesign` for the full plan.
-    ///
-    /// SESSION 1 SCOPE: Block frames + br_if + simple shapes only.
-    /// Loop crossings, Br, If/Else, and device-fn body splices still
-    /// route through the old mechanism. Anything not handled by v2
-    /// falls back transparently to the v1 path.
+    /// **Default: ON.** Set `QUANTA_LOWERING_V1=1` at lowerer entry
+    /// to opt out (falls back to the legacy `install_redirect_at`
+    /// path). See memory `redirect-chain-substrate-redesign` for the
+    /// full plan and `compact-on-metal-root-cause-2026-06-11` for
+    /// the bugs closed by v2.
     use_v2: bool,
 }
 
@@ -346,9 +344,16 @@ impl<'a> LowerCtx<'a> {
             }
         }
 
-        // Option C — read env var once at lowerer entry. The new
-        // position-aware redirect path is OFF by default.
-        let use_v2 = std::env::var("QUANTA_LOWERING_V2")
+        // Option C — read env var once at lowerer entry. The
+        // position-aware redirect path is ON by default; set
+        // QUANTA_LOWERING_V1=1 as an opt-out escape hatch to fall
+        // back to the legacy install_redirect_at + redirect-chain
+        // mechanism. (Empirically v2 closes the PTRD-shape and
+        // compact-on-Metal bugs that v1 has, and passes the entire
+        // 764-test workspace + 57-test prims surface; no known
+        // regressions. The opt-out exists as a safety net while
+        // v1 dead-code removal is pending.)
+        let use_v2 = !std::env::var("QUANTA_LOWERING_V1")
             .map(|v| v == "1")
             .unwrap_or(false);
 
