@@ -1,25 +1,15 @@
-//! Lowering surgical-sanity tests for the redirect-chain redesign.
+//! Lowering regression tests for the Option C v2 redirect mechanism.
 //!
-//! Diagnostic, not aspirational: these tests pin down exactly which
-//! shapes the OLD lowering handles and which it breaks on, so the
-//! position-aware redirect redesign (Option C, see memory
-//! `redirect-chain-substrate-redesign`) can be built with a clear
-//! regression target.
+//! Originally written as diagnostic witnesses for bugs in v1; under
+//! default v2 they all pass and serve as regression coverage.
 //!
-//! Expected status on current `main` (`8ace628`):
+//! | # | shape                                          | runs in CI |
+//! |---|------------------------------------------------|------------|
+//! | 1 | while + early `break` over shared mutable      | yes        |
+//! | 2 | nested if/else over shared mutable, device fn  | yes        |
+//! | 3 | block_compact cross-warp scan                  | `crates/quanta-prims/tests/block_compact.rs` (Metal) |
 //!
-//! | # | shape                                          | result    | where |
-//! |---|------------------------------------------------|-----------|-------|
-//! | 1 | while + early `break` over shared mutable      | PASS      | here  |
-//! | 2 | nested if/else over shared mutable, device fn  | FAIL@build| `lowering_sanity_bug.rs` (cfg-gated) |
-//! | 3 | block_compact cross-warp scan                  | FAIL @ run| `crates/quanta-prims/tests/block_compact.rs` (Metal) |
-//!
-//! Run:
-//!   cargo test -p quanta --features software --test lowering_sanity   (test 1)
-//!   cd crates/quanta-prims && cargo test --features gpu-metal --test block_compact   (test 3)
-//!
-//! Test 2 is build-gated because it errors at proc-macro expansion;
-//! see the top of `lowering_sanity_bug.rs` for the env-var to enable.
+//! Sanity 3 lives in the prims crate because it needs a Metal device.
 
 #![cfg(feature = "software")]
 
@@ -29,8 +19,7 @@
 //
 // The bug-#1 shape: a `while` with a shared mutable written on the
 // `break` arm. Closed by `hoist_cond_defining_ops` + the 2026-06-03
-// Block-merge fix. PASSES on current main — regression net for those
-// two fixes.
+// Block-merge fix. Regression net for both.
 
 #[quanta::kernel(workgroup = [1])]
 fn sanity1_loop_early_break(out: &mut [u32]) {
@@ -62,4 +51,88 @@ fn sanity1_loop_early_break_runs() {
         vec![42u32],
         "early-break write of 42 must reach the post-loop read"
     );
+}
+
+// ===========================================================================
+// Sanity 2 — PTRD-shape nested if/else with device-fn call
+// ===========================================================================
+//
+// Under v1 this errored at proc-macro time with `r? used before def
+// at BinOp.a`: the redirect-chain splice from the device-fn inline
+// landed ops in a sibling Branch arm of the outer scope. v2's
+// position-aware mechanism (Option C, sessions 1-4) encodes the
+// control-flow graph correctly; the IR is now scope-valid and the
+// kernel runs.
+//
+// Trigger: nested `if/else` over **shared mutables** inside a
+// `while`, **with a `#[quanta::device]` call** in the deepest arm.
+// Shorter shapes (no device fn, single-level if) compile fine under
+// either path.
+
+#[quanta::device]
+fn sanity2_envelope(z_in: f32) -> f32 {
+    let z: f32 = if z_in < 1.0f32 { 1.0f32 } else { z_in };
+    let log_z: f32 = z.ln();
+    let inv_z: f32 = 1.0f32 / z;
+    (z - 0.5f32) * log_z - z + 0.9189385f32 + inv_z * 0.0833333f32
+}
+
+#[quanta::kernel(workgroup = [1])]
+fn sanity2_ptrd_shape_nested_if(input: &[f32], out: &mut [u32]) {
+    fn sanity2_envelope(z_in: f32) -> f32 {
+        let z: f32 = if z_in < 1.0f32 { 1.0f32 } else { z_in };
+        let log_z: f32 = z.ln();
+        let inv_z: f32 = 1.0f32 / z;
+        (z - 0.5f32) * log_z - z + 0.9189385f32 + inv_z * 0.0833333f32
+    }
+    let id = quark_id();
+    let lam: f32 = input[0];
+    let a: f32 = input[1];
+    let b: f32 = input[2];
+    let inv_alpha: f32 = input[3];
+    let v_r: f32 = input[4];
+    let log_lam: f32 = ln(lam);
+    let log_inv_alpha: f32 = ln(inv_alpha);
+    let mut iter: u32 = 0u32;
+    let mut result: u32 = 0u32;
+    let mut done: u32 = 0u32;
+    while iter < 32u32 {
+        let u: f32 = (iter as f32) * 0.03125f32 - 0.5f32;
+        let v: f32 = (iter as f32) * 0.03125f32;
+        let us: f32 = 0.5f32 - fabs(u);
+        let k_f: f32 = floor((2.0f32 * a / us + b) * u + lam + 0.43f32);
+        if k_f >= 0.0f32 && done == 0u32 {
+            if us >= 0.07f32 && v <= v_r {
+                result = k_f as u32;
+                done = 1u32;
+            } else if !(us < 0.013f32 && v > us) {
+                let lhs: f32 = ln(v) + log_inv_alpha - ln(a / (us * us) + b);
+                let rhs: f32 = (0.0f32 - lam) + (k_f * log_lam) - sanity2_envelope(k_f + 1.0f32);
+                if lhs <= rhs {
+                    result = k_f as u32;
+                    done = 1u32;
+                }
+            }
+        }
+        iter = iter + 1u32;
+    }
+    out[id as usize] = result;
+}
+
+#[test]
+fn sanity2_ptrd_shape_nested_if_runs() {
+    let gpu = quanta::init_cpu();
+    let input = gpu.field::<f32>(5).unwrap();
+    let out = gpu.field::<u32>(1).unwrap();
+    input
+        .write(&[10.0f32, 0.119f32, 8.929f32, 1.328f32, 0.286f32])
+        .unwrap();
+    out.write(&[0u32]).unwrap();
+
+    let mut wave = sanity2_ptrd_shape_nested_if(&gpu).unwrap();
+    wave.bind(0, &input);
+    wave.bind(1, &out);
+    gpu.dispatch(&wave, 1).unwrap().wait().unwrap();
+
+    let _ = out.read().unwrap();
 }
