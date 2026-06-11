@@ -526,6 +526,146 @@ impl<'a> LowerCtx<'a> {
         ops
     }
 
+    /// Option C v2 — transitive backward-slice hoist. Unlike v1's
+    /// `hoist_cond_defining_ops`, this walks the FULL current sink
+    /// (not just a contiguous trailing prefix) and collects every op
+    /// whose dst is in the transitive `need` set rooted at `cond`.
+    ///
+    /// Why v2 needs this: the v2 wrap relocates `ops[record.pos..]`
+    /// into a `Branch{cond, then=[], else=tail}` whose cond is at
+    /// the OUTER scope. If only the contiguous trailing slice is
+    /// hoisted, transitive dependencies on earlier ops in the sink
+    /// (e.g. a `Const` emitted at the start of a device-fn inline
+    /// that's later used by the cond chain) get left behind in the
+    /// wrap's `else_ops` — defining the reg AFTER its use in the
+    /// outer wrap. The result is the same `r? used before def at
+    /// BinOp.a` scope violation v1 hits.
+    ///
+    /// This routine pulls every transitively-needed op out, even if
+    /// non-contiguous. It refuses (returns `false`) when any op in
+    /// the slice has observable side effects (Store, AtomicOp,
+    /// SharedStore, MathCall, Load, …) — reordering those is
+    /// observable and can change kernel semantics. In that case
+    /// the caller must fall back to v1.
+    ///
+    /// Order in the target frame's sink: the hoisted ops keep their
+    /// relative order from the current sink (they're appended in
+    /// the same order they appeared).
+    fn hoist_cond_transitive_v2(&mut self, depth: u32, cond: Reg) -> bool {
+        use std::collections::HashSet;
+        let current_idx = self.frames.len() - 1;
+
+        // Compute the transitive backward slice. Walk the current
+        // sink BACKWARD once, propagating need.
+        let current_sink_len = Self::sink_at_mut(&mut self.frames[current_idx]).len();
+        let mut need: HashSet<Reg> = HashSet::new();
+        need.insert(cond);
+        // Booleans per position; true means this op contributes.
+        let mut contributes = vec![false; current_sink_len];
+        for i in (0..current_sink_len).rev() {
+            let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
+            let op = &sink[i];
+            let dst = quanta_ir::scope_check::defined_reg(op);
+            let is_contributing = dst.map(|d| need.contains(&d)).unwrap_or(false);
+            if is_contributing {
+                contributes[i] = true;
+                need.remove(&dst.unwrap());
+                for r in quanta_ir::scope_check::used_regs(op) {
+                    need.insert(r);
+                }
+            }
+        }
+
+        // No-op if the cond's def isn't in this sink at all (could
+        // be a function-scope reg). Caller falls back.
+        if !contributes.iter().any(|&b| b) {
+            return false;
+        }
+
+        // Side-effect check on each contributing op.
+        let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
+        for (i, &c) in contributes.iter().enumerate() {
+            if c && Self::op_has_side_effects(&sink[i]) {
+                return false;
+            }
+        }
+
+        // Extract contributing ops. Walk forward, preserving order.
+        let mut hoisted = Vec::new();
+        let mut kept = Vec::new();
+        let sink_owned = std::mem::take(Self::sink_at_mut(&mut self.frames[current_idx]));
+        for (i, op) in sink_owned.into_iter().enumerate() {
+            if contributes[i] {
+                hoisted.push(op);
+            } else {
+                kept.push(op);
+            }
+        }
+        *Self::sink_at_mut(&mut self.frames[current_idx]) = kept;
+
+        // Append hoisted ops to the target frame's active sink. NOTE
+        // (session 3 finding): this is only correct when target has
+        // no existing brif records yet. If earlier br_ifs already
+        // recorded positions on target, the hoisted ops land at
+        // positions >= those records' sink_positions, ending up
+        // INSIDE the wrap an outer Branch eventually constructs
+        // around `ops[sink_position..]`. That puts the def at a
+        // depth where a sibling Branch's cond can't see it.
+        //
+        // Splicing the hoisted ops in BEFORE the earliest brif
+        // position (and bumping later positions) addresses this, but
+        // requires v2 to be the SOLE mechanism on the target frame —
+        // intermixing with v1's `redirect` chain breaks because the
+        // splice shifts indices the redirect chain points at.
+        //
+        // Session 4 work: fully-v2 frames + position-aware splice.
+        // Until then this is the simpler append, which works for
+        // the simple BrIf cases but not the PTRD shape.
+        let target = self
+            .frame_at_depth_mut(depth)
+            .expect("caller must verify target depth before hoist_cond_transitive_v2");
+        let target_sink = Self::sink_at_mut(target);
+        target_sink.extend(hoisted);
+        true
+    }
+
+    /// True for ops whose reordering across the v2 wrap boundary
+    /// is observable. Used by `hoist_cond_transitive_v2` as a
+    /// safety gate.
+    ///
+    /// Pure-value ops are allowed to hoist (Const, BinOp, UnaryOp,
+    /// Cmp, Cast, Bitcast, Copy, Vec*, intrinsic ID queries,
+    /// CountTrailing/Leading/PopCount, Dot, MatMul, Const-like
+    /// math). Everything else (memory access, atomics, fences,
+    /// subgroup ops, device calls, structured control) is treated
+    /// as observable and refuses the hoist.
+    fn op_has_side_effects(op: &KernelOp) -> bool {
+        !matches!(
+            op,
+            KernelOp::Const { .. }
+                | KernelOp::BinOp { .. }
+                | KernelOp::UnaryOp { .. }
+                | KernelOp::Cmp { .. }
+                | KernelOp::Cast { .. }
+                | KernelOp::Bitcast { .. }
+                | KernelOp::Copy { .. }
+                | KernelOp::VecConstruct { .. }
+                | KernelOp::VecExtract { .. }
+                | KernelOp::QuarkId { .. }
+                | KernelOp::QuarkCount { .. }
+                | KernelOp::ProtonId { .. }
+                | KernelOp::NucleusId { .. }
+                | KernelOp::ProtonSize { .. }
+                | KernelOp::SubgroupSize { .. }
+                | KernelOp::CountTrailingZeros { .. }
+                | KernelOp::CountLeadingZeros { .. }
+                | KernelOp::PopCount { .. }
+                | KernelOp::MathCall { .. }
+                | KernelOp::Dot { .. }
+                | KernelOp::MatMul { .. }
+        )
+    }
+
     /// Bug #1 fix (2026-05-31): hoist the backward slice defining
     /// `cond` from the CURRENT frame's active sink to the TARGET
     /// frame's active sink. Called by `BrIf` just before
@@ -2134,15 +2274,27 @@ impl<'a> LowerCtx<'a> {
                     // when we later wrap target.ops[pos..] in
                     // `Branch{cond, then=[], else=ops_after}`, the
                     // cond reg would be referenced from a position
-                    // outside the scope where it's defined. Hoist
-                    // its backward slice into target FIRST. This
-                    // also moves cond's def to BEFORE the record's
-                    // sink_position, so reconstruct_block_brifs
-                    // wraps an ops range that no longer contains
-                    // cond's def.
-                    self.hoist_cond_defining_ops(*depth, cond);
-                    self.record_br_at(*depth, cond, /*is_unconditional=*/ false);
-                    return Ok(());
+                    // outside the scope where it's defined. v2 uses
+                    // the transitive backward-slice hoist which
+                    // walks the full sink (not just the contiguous
+                    // trailing slice v1 uses), pulling every
+                    // dependency out — necessary when device-fn
+                    // body inlines emit Const ops at the start of
+                    // the body that the cond chain later uses, with
+                    // non-contributing ops (Copy of locals, control
+                    // structures) in between.
+                    //
+                    // If the transitive hoist refuses (side-effects
+                    // in the slice, or cond not defined in this
+                    // sink), fall back to v1's contiguous hoist +
+                    // install_redirect_at so we still get the
+                    // bug-#1 fix and the scope_check oracle catches
+                    // any residual use-before-def.
+                    if self.hoist_cond_transitive_v2(*depth, cond) {
+                        self.record_br_at(*depth, cond, /*is_unconditional=*/ false);
+                        return Ok(());
+                    }
+                    // Fall through to v1.
                 }
                 // Bug #1 fix (2026-05-31): hoist the backward slice
                 // defining `cond` from the CURRENT frame's active
