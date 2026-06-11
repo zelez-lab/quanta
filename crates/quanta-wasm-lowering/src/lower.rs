@@ -231,6 +231,19 @@ struct Frame {
     /// only when `LowerCtx::use_v2` is true. Empty under v1. See
     /// `BrIfRecord` for the wrap-at-end-of-frame semantics.
     brifs: Vec<BrIfRecord>,
+    /// Option C — snapshot of parent.brifs.len() at the moment THIS
+    /// frame opened. Used at this frame's close to bump every parent
+    /// brif appended during this frame's lifetime by `self.ops.len()`.
+    ///
+    /// Why: a br/br_if recorded on parent DURING this frame's
+    /// lifetime is, semantically, a branch that fires AFTER all of
+    /// this frame's content executes. The record's `sink_position`
+    /// at record time = parent.ops.len() at that moment, which is
+    /// BEFORE this frame's splice contributes. Without bumping, the
+    /// resulting wrap engulfs this frame's content, making it
+    /// conditional on the brif's cond — wrong semantics for ops
+    /// that already ran in this frame before the brif fired.
+    parent_brifs_at_open: usize,
 }
 
 /// Reduction operator for the `subgroup_reduce` helper. Mirrors
@@ -352,6 +365,7 @@ impl<'a> LowerCtx<'a> {
                 redirect: Vec::new(),
                 local_snapshot: Vec::new(),
                 brifs: Vec::new(),
+                parent_brifs_at_open: 0,
             }],
             next_reg: 0,
             intrinsic_names,
@@ -511,18 +525,37 @@ impl<'a> LowerCtx<'a> {
     /// Br). Asserts otherwise so we notice if a code path slips
     /// through. is_unconditional is wired but not yet handled.
     fn reconstruct_block_brifs(&self, mut ops: Vec<KernelOp>, brifs: &[BrIfRecord]) -> Vec<KernelOp> {
-        // Both BrIf (variable cond) and Br (const true cond) wrap
-        // the same way: post-record ops go in else_ops. For
-        // unconditional Br the wrap is semantically dead (cond=true
-        // → else_ops never runs), which matches WASM dead-code
-        // semantics for `br`-skipped ops.
+        // BrIf wraps as `Branch{cond, then=[], else=tail}` — tail
+        // runs only when cond=false (fall-through path).
+        //
+        // Br (unconditional) wraps as `Branch{cond=prior_brif_cond,
+        // then=[tail], else=[]}` — tail runs only when the most
+        // recent inner br_if fired (= we reached target's
+        // continuation via that path). See Br's record_br_at site
+        // for how the record's cond is the inner br_if's cond
+        // (recorded as a pointer; we swap arms here to invert the
+        // sense, avoiding the need to emit a separate !cond op).
+        //
+        // When no prior br_if existed at record time, the record
+        // cond was set to a const_true: with swapped arms,
+        // `then=[tail]` runs unconditionally, which matches strict
+        // WASM semantics for an unconditional br that has no
+        // earlier br_if to "rescue" the tail.
         for record in brifs.iter().rev() {
             let tail = ops.split_off(record.sink_position);
-            ops.push(KernelOp::Branch {
-                cond: record.cond,
-                then_ops: Vec::new(),
-                else_ops: tail,
-            });
+            if record.is_unconditional {
+                ops.push(KernelOp::Branch {
+                    cond: record.cond,
+                    then_ops: tail,
+                    else_ops: Vec::new(),
+                });
+            } else {
+                ops.push(KernelOp::Branch {
+                    cond: record.cond,
+                    then_ops: Vec::new(),
+                    else_ops: tail,
+                });
+            }
         }
         ops
     }
@@ -554,6 +587,17 @@ impl<'a> LowerCtx<'a> {
     /// the same order they appeared).
     fn hoist_cond_transitive_v2(&mut self, depth: u32, cond: Reg) -> bool {
         use std::collections::HashSet;
+        // depth=0: target IS current frame. Cond's def is already in
+        // scope at the eventual wrap; hoisting it within the same
+        // frame just appends to the end, scrambling the order of any
+        // non-contributing ops that were emitted between dependent
+        // ops (e.g. the `Copy stable_reg = fresh_reg` parallel-copy
+        // that `write_local_via_copy` emits right after each
+        // `local.set`). Skip the hoist — the record alone is
+        // sufficient at depth=0.
+        if depth == 0 {
+            return true;
+        }
         let current_idx = self.frames.len() - 1;
 
         // Compute the transitive backward slice. Walk the current
@@ -2015,12 +2059,14 @@ impl<'a> LowerCtx<'a> {
                 // unrolled `while … break` produce exactly the broken
                 // pattern.)
                 let snapshot = self.snapshot_locals();
+                let parent_brifs = self.frames.last().map(|f| f.brifs.len()).unwrap_or(0);
                 self.frames.push(Frame {
                     kind: FrameKind::Block,
                     ops: Vec::new(),
                     redirect: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
+                    parent_brifs_at_open: parent_brifs,
                 });
             }
 
@@ -2056,6 +2102,7 @@ impl<'a> LowerCtx<'a> {
                 // Straight-line code with no loop is unaffected
                 // (no frame entry → no force).
                 self.force_locals_to_stable();
+                let parent_brifs = self.frames.last().map(|f| f.brifs.len()).unwrap_or(0);
                 self.frames.push(Frame {
                     kind: FrameKind::Loop {
                         count_reg,
@@ -2065,6 +2112,7 @@ impl<'a> LowerCtx<'a> {
                     redirect: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
+                    parent_brifs_at_open: parent_brifs,
                 });
             }
 
@@ -2072,12 +2120,14 @@ impl<'a> LowerCtx<'a> {
                 let cond_sv = self.pop()?;
                 let (cond, _) = self.commit(cond_sv)?;
                 let snapshot = self.snapshot_locals();
+                let parent_brifs = self.frames.last().map(|f| f.brifs.len()).unwrap_or(0);
                 self.frames.push(Frame {
                     kind: FrameKind::If { cond },
                     ops: Vec::new(),
                     redirect: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
+                    parent_brifs_at_open: parent_brifs,
                 });
             }
 
@@ -2111,6 +2161,8 @@ impl<'a> LowerCtx<'a> {
                     redirect: Vec::new(),
                     local_snapshot: frame.local_snapshot,
                     brifs: Vec::new(),
+                    // Else inherits the If's parent snapshot.
+                    parent_brifs_at_open: frame.parent_brifs_at_open,
                 });
             }
 
@@ -2128,6 +2180,7 @@ impl<'a> LowerCtx<'a> {
                             redirect: Vec::new(),
                             local_snapshot: Vec::new(),
                             brifs: Vec::new(),
+                            parent_brifs_at_open: 0,
                         });
                     }
                     FrameKind::Block => {
@@ -2146,7 +2199,21 @@ impl<'a> LowerCtx<'a> {
                         // for v2 the parent's redirect is empty so this
                         // is a plain append).
                         let parent_idx = self.frames.len() - 1;
+                        let splice_len = ops.len();
                         Self::splice_into_frame(&mut self.frames[parent_idx], ops);
+                        // Option C v2 — any brifs recorded on parent
+                        // DURING this Block's lifetime semantically
+                        // fire AFTER this Block's ops execute. Bump
+                        // their sink_position by splice_len so the
+                        // wrap doesn't engulf this Block's content
+                        // (= treat that content as having already
+                        // run unconditionally before the brif).
+                        if self.use_v2 {
+                            let parent = &mut self.frames[parent_idx];
+                            for r in &mut parent.brifs[frame.parent_brifs_at_open..] {
+                                r.sink_position += splice_len;
+                            }
+                        }
                         // Then merge locals modified inside the block
                         // back to their stable_reg, so reads after the
                         // block (`local.get`) see the merge anchor
@@ -2215,17 +2282,52 @@ impl<'a> LowerCtx<'a> {
                     self.emit(KernelOp::Break);
                     return Ok(());
                 }
-                // Option C v2 — for Block targets, allocate the
-                // const-true on the target frame's sink (so the cond
-                // reg is in scope at the wrap) and record. Subsequent
-                // ops go into the wrap's else_ops which never run
-                // (cond=true → only then_ops would execute, and they
-                // are empty). Matches WASM dead-code semantics for
-                // ops after an unconditional Br.
+                // Option C v2 — for Block targets, recognize the
+                // canonical wasm `if/else` pattern: `br_if cond M;
+                // br N` where M < N. The br_if exits to M's
+                // continuation when cond is true; the br exits to
+                // N's continuation otherwise. So N's continuation
+                // runs when cond was TRUE, M's continuation runs
+                // when cond was FALSE.
+                //
+                // To encode this, look at the most recent brif on a
+                // frame strictly INNER than the br's target (depths
+                // 0..N-1 from current). If found, use its cond to
+                // build a `!cond` reg as the br's wrap cond: the
+                // wrap's `else=[N-tail]` then runs when !cond is
+                // false = cond is true. ✓
+                //
+                // If no such brif exists, fall back to const_true
+                // (the wrap is dead, matching strict WASM dead-code
+                // semantics).
                 if self.use_v2 && matches!(target_kind, FrameKindTag::Block) {
-                    let dst = self.alloc_reg();
-                    self.emit_const_bool_to_target(*depth, dst, true);
-                    self.record_br_at(*depth, dst, /*is_unconditional=*/ true);
+                    // Find the most recent br_if record on any frame
+                    // strictly inner than target's depth. If found,
+                    // use ITS cond as the unconditional br's record
+                    // cond; reconstruct will then swap then/else so
+                    // tail runs when prior_cond=true (= the inner
+                    // br_if fired and we reached target's continuation
+                    // via that path).
+                    //
+                    // If no prior br_if: emit a const_true at target
+                    // and use it as cond. The wrap will be dead per
+                    // strict WASM semantics.
+                    let mut prior_cond: Option<Reg> = None;
+                    for d in 0..*depth {
+                        if let Some(f) = self.frame_at_depth(d) {
+                            if let Some(record) = f.brifs.last() {
+                                prior_cond = Some(record.cond);
+                            }
+                        }
+                    }
+                    let cond_reg = if let Some(prior) = prior_cond {
+                        prior
+                    } else {
+                        let dst = self.alloc_reg();
+                        self.emit_const_bool_to_target(*depth, dst, true);
+                        dst
+                    };
+                    self.record_br_at(*depth, cond_reg, /*is_unconditional=*/ true);
                     return Ok(());
                 }
                 let dst = self.alloc_reg();
@@ -3264,12 +3366,14 @@ impl<'a> LowerCtx<'a> {
 
         // Push the synthetic wrapping Block. The callee's terminal End
         // closes this frame and splices ops into the caller's sink.
+        let parent_brifs = self.frames.last().map(|f| f.brifs.len()).unwrap_or(0);
         self.frames.push(Frame {
             kind: FrameKind::Block,
             ops: Vec::new(),
             redirect: Vec::new(),
             local_snapshot: Vec::new(),
             brifs: Vec::new(),
+            parent_brifs_at_open: parent_brifs,
         });
 
         // Walk the callee body, rewriting local indices by base_offset.
