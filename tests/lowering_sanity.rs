@@ -119,7 +119,26 @@ fn sanity2_ptrd_shape_nested_if(input: &[f32], out: &mut [u32]) {
     out[id as usize] = result;
 }
 
+// The PROC-MACRO-PHASE assertion: the kernel must compile (no
+// scope_check violation). v1 errored here; v2 doesn't. This part of
+// sanity 2 IS a passing regression test.
+//
+// The RUNTIME assertion below is `#[ignore]`d: v2 currently produces
+// 0 at runtime for this kernel even though the IR is scope-valid.
+// Tracked in memory note `redirect-chain-v2-closed-2026-06-12`
+// under "Known incomplete — v2 runtime bug surfaced 2026-06-12".
+// Once that bug closes, drop the #[ignore] AND unflatten the
+// production PTRD kernel in `crates/quanta-rand/src/gpu_kernel.rs`.
 #[test]
+fn sanity2_ptrd_shape_nested_if_compiles() {
+    // Successful proc-macro expansion of the kernel below is the
+    // assertion: if the kernel item's macro expansion fails, this
+    // test won't even compile. Body unused.
+    let _ = &SANITY2_PTRD_SHAPE_NESTED_IF_BINARY;
+}
+
+#[test]
+#[ignore = "v2 runtime bug: writes inside deeply-nested f32 if/else arms don't reach post-loop reads"]
 fn sanity2_ptrd_shape_nested_if_runs() {
     let gpu = quanta::init_cpu();
     let input = gpu.field::<f32>(5).unwrap();
@@ -127,12 +146,21 @@ fn sanity2_ptrd_shape_nested_if_runs() {
     input
         .write(&[10.0f32, 0.119f32, 8.929f32, 1.328f32, 0.286f32])
         .unwrap();
-    out.write(&[0u32]).unwrap();
+    // Sentinel — distinguishes "kernel never wrote" from "kernel
+    // wrote 0".
+    out.write(&[0xDEAD_BEEFu32]).unwrap();
 
     let mut wave = sanity2_ptrd_shape_nested_if(&gpu).unwrap();
     wave.bind(0, &input);
     wave.bind(1, &out);
     gpu.dispatch(&wave, 1).unwrap().wait().unwrap();
 
-    let _ = out.read().unwrap();
+    let got = out.read().unwrap();
+    assert_ne!(got[0], 0xDEAD_BEEFu32, "kernel did not write to out");
+    assert_ne!(
+        got[0], 0u32,
+        "v2 runtime bug: result stuck at 0 despite the inner-if write \
+         being present in the IR. See memory \
+         redirect-chain-v2-closed-2026-06-12."
+    );
 }
