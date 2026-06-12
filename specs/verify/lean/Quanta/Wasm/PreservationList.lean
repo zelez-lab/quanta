@@ -164,17 +164,27 @@ theorem preservation_br_break_nonLoop
     (kind : FrameKind) (h_kind_ne_loop : kind ≠ .loopK)
     (h_target : frames.get? depth = some kind)
     (h_loop_above : hasLoopAbove frames depth = true)
+    (h_not_flag : ¬(loopsAbove frames depth = 1 ∧ kind = .block))
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
     (hl : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
   -- Lowering side: br arm with `frames.get? depth = some kind` (kind ≠ loopK)
-  -- and `hasLoopAbove = true` selects the `[.breakOp]` arm.
+  -- and `hasLoopAbove = true` selects the `[.breakOp]` arm. The
+  -- single-loop-crossing-to-Block shape is refused by the model
+  -- (production uses the exit-flag record there) — excluded by
+  -- `h_not_flag`.
   have h_lower : lowerInstrs fuel frames s (.br depth :: rest)
                   = some (s, [KernelOp.breakOp]) := by
     cases kind with
-    | block => simp only [lowerInstrs, h_target, h_loop_above, ↓reduceIte]
-    | wif   => simp only [lowerInstrs, h_target, h_loop_above, ↓reduceIte]
+    | block =>
+        have hone : ¬(loopsAbove frames depth = 1) :=
+          fun h1 => h_not_flag ⟨h1, rfl⟩
+        simp only [lowerInstrs, h_target, h_loop_above, hone,
+                   eq_self_iff_true, and_true, ↓reduceIte]
+    | wif   =>
+        simp only [lowerInstrs, h_target, h_loop_above, reduceCtorEq,
+                   and_false, ↓reduceIte]
     | loopK => exact (h_kind_ne_loop rfl).elim
   rw [h_lower] at hl
   have hl' : (s, [KernelOp.breakOp]) = (s', ops) :=
@@ -3852,6 +3862,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner
       (depth ≠ 0 ∧ kind = .loopK) ∨ kind ≠ .loopK)
     (h_target : frames.get? depth = some kind)
     (h_loop_above : hasLoopAbove frames depth = true)
+    (h_not_flag : ¬(loopsAbove frames depth = 1 ∧ kind = .block))
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstrs fuel ws (.brIf depth :: []) = some ws')
     (hl : lowerInstrs fuel frames s (.brIf depth :: []) = some (s', ops)) :
@@ -3885,12 +3896,16 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner
     · cases kind with
       | loopK => exact (h_kind_ne rfl).elim
       | block =>
-        simp only [h_loop_above, ↓reduceIte, lowerInstrs, pure,
+        have hone : ¬(loopsAbove frames depth = 1) :=
+          fun h1 => h_not_flag ⟨h1, rfl⟩
+        simp only [h_loop_above, ↓reduceIte, hone, and_true,
+                   iff_false, if_neg, lowerInstrs, pure,
                    Option.bind_eq_bind, Option.some_bind, Option.some.injEq,
                    Prod.mk.injEq, List.append_nil, LowerState.alloc] at hl
         exact hl
       | wif =>
-        simp only [h_loop_above, ↓reduceIte, lowerInstrs, pure,
+        simp only [h_loop_above, ↓reduceIte, reduceCtorEq, and_false,
+                   lowerInstrs, pure,
                    Option.bind_eq_bind, Option.some_bind, Option.some.injEq,
                    Prod.mk.injEq, List.append_nil, LowerState.alloc] at hl
         exact hl
@@ -4101,14 +4116,20 @@ theorem preservation_evalInstrs_cons_wreturn
     (hw : evalInstrs fuel ws (.wreturn :: []) = some ws')
     (hl : lowerInstrs fuel frames s (.wreturn :: []) = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
-  -- Lowering side: wreturn goes through the default arm (not structured).
-  -- `lowerInstr s .wreturn = some (s, [])`, then the recursive
-  -- `lowerInstrs fuel frames s []` returns `(s, [])`. Net: `(s, [])`.
-  rw [lowerInstrs_cons_default fuel frames s .wreturn []
-      (by simp [isStructuredLower])] at hl
-  simp only [lowerInstr, Option.bind_eq_bind, Option.some_bind,
-             List.nil_append, lowerInstrs, pure, Option.some.injEq,
-             Prod.mk.injEq] at hl
+  -- Lowering side: wreturn has its own arm since the 2026-06-12
+  -- production re-sync. The Loop-open / top-level shapes refuse
+  -- (contradicting hl); the in-frame shape recurses on `[]`,
+  -- yielding `(s, [])`.
+  simp only [lowerInstrs] at hl
+  by_cases hcond : ((frames.any fun x => decide (x = FrameKind.loopK)) = true
+      ∨ frames.isEmpty = true)
+  case pos =>
+    rw [if_pos hcond] at hl
+    exact absurd hl Option.noConfusion
+  case neg =>
+  rw [if_neg hcond] at hl
+  simp only [lowerInstrs, Option.bind_eq_bind, Option.some_bind, pure,
+             Option.some.injEq, Prod.mk.injEq] at hl
   obtain ⟨h_s_eq, h_ops_eq⟩ := hl
   -- Eval side: brIf-style — `evalInstrs_cons_default` reduces to the
   -- recursive call on `[]`, but the head state has halted := true so

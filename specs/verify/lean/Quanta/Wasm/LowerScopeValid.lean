@@ -2739,6 +2739,9 @@ def WasmInstr.straightLine : WasmInstr → Prop
   | .wif _   => False
   | .br _    => False
   | .brIf _  => False
+  | .wreturn => False  -- has its own lowerInstrs arm since the
+                       -- 2026-06-12 production re-sync (Break /
+                       -- refusal depends on frame context)
   | _        => True
 
 /-- A list of WasmInstr is straight-line when every instruction is. -/
@@ -2907,10 +2910,13 @@ private theorem lowerInstrs_br_shape
         exact ⟨hs.symm, Or.inr hops.symm⟩
       · obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
         exact ⟨hs.symm, Or.inl hops.symm⟩
-  · -- some _ (block or wif): single if hasLoopAbove then [.breakOp] else none
+  · -- some k (block or wif): hasLoopAbove, then the single-loop+Block
+    -- exit-flag refusal vs the multi-loop/non-Block [.breakOp] arm.
     split at h
-    · obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
-      exact ⟨hs.symm, Or.inr hops.symm⟩
+    · split at h
+      · exact absurd h Option.noConfusion
+      · obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+        exact ⟨hs.symm, Or.inr hops.symm⟩
     · exact absurd h Option.noConfusion
 
 theorem lowerInstrs_br_nextReg_mono
@@ -3085,25 +3091,37 @@ theorem lowerInstrs_nextReg_mono :
     simp [hnz, hnla] at h
     obtain ⟨h_s_eq, _⟩ := h
     subst h_s_eq; exact Nat.le_refl _
-  | case15 _ _ _ _ _ val hne hg hla =>
+  | case15 _ _ _ _ _ val hne hg hla hsb =>
+    -- single-loop-crossing to a Block target: production uses the
+    -- exit-flag record; the model refuses (none) — contradiction.
+    intro s' ops h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    obtain ⟨hone, hblk⟩ := hsb
+    subst hblk
+    simp [hla, hone] at h
+  | case16 _ _ _ _ _ val hne hg hla hnsb =>
     intro s' ops h
     simp only [lowerInstrs] at h
     rw [hg] at h
     cases val with
     | loopK => exact absurd rfl hne
-    | block | wif =>
-      all_goals (
-        simp [hla] at h
-        obtain ⟨h_s_eq, _⟩ := h
-        subst h_s_eq; exact Nat.le_refl _)
-  | case16 _ _ _ _ _ val hne hg hnla =>
+    | block =>
+      simp [hla] at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      subst h_s_eq; exact Nat.le_refl _
+    | wif =>
+      simp [hla] at h
+      obtain ⟨h_s_eq, _⟩ := h
+      subst h_s_eq; exact Nat.le_refl _
+  | case17 _ _ _ _ _ val hne hg hnla =>
     intro s' ops h
     simp only [lowerInstrs] at h
     rw [hg] at h
     cases val with
     | loopK => exact absurd rfl hne
     | block | wif => all_goals (simp [hnla] at h)
-  | case17 fuel frames s rest depth ih1 =>
+  | case18 fuel frames s rest depth ih1 =>
     intro s' ops h
     simp only [lowerInstrs] at h
     rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
@@ -3159,11 +3177,29 @@ theorem lowerInstrs_nextReg_mono :
           subst hs
           have hp3 : s1.nextReg ≤ s2.nextReg := ih1 _ hr
           omega
-    | block | wif =>
-      all_goals (
-        simp at h
-        by_cases hla : hasLoopAbove frames depth
-        · simp [hla, LowerState.alloc] at h
+    | wif =>
+      simp at h
+      by_cases hla : hasLoopAbove frames depth
+      · simp [hla, LowerState.alloc] at h
+        rcases hr : lowerInstrs fuel frames
+          { nextReg := s1.nextReg + 1, stack := s1.stack,
+            localReg := s1.localReg, localTy := s1.localTy,
+            bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+          rest with _ | ⟨s2, postOps⟩
+        · simp [hr] at h
+        simp only [hr, Option.some_bind, pure, Pure.pure] at h
+        have hpair := Option.some.inj h
+        have hs : s2 = s' := (Prod.mk.inj hpair).1
+        subst hs
+        have hp3 : s1.nextReg + 1 ≤ s2.nextReg := ih1 _ hr
+        omega
+      · simp [hla] at h
+    | block =>
+      simp at h
+      by_cases hla : hasLoopAbove frames depth
+      · by_cases hone : loopsAbove frames depth = 1
+        · simp [hla, hone] at h
+        · simp [hla, hone, LowerState.alloc] at h
           rcases hr : lowerInstrs fuel frames
             { nextReg := s1.nextReg + 1, stack := s1.stack,
               localReg := s1.localReg, localTy := s1.localTy,
@@ -3176,12 +3212,32 @@ theorem lowerInstrs_nextReg_mono :
           subst hs
           have hp3 : s1.nextReg + 1 ≤ s2.nextReg := ih1 _ hr
           omega
-        · simp [hla] at h)
-  | case18 fuel frames s i rest hnb hnl hnw hnbr hnbi ih1 =>
+      · simp [hla] at h
+  | case19 _ _ _ _ hcond =>
+    -- wreturn with a Loop open or at function top level: production
+    -- emits Break / records a wrap; the model refuses (none).
+    intro s' ops h
+    simp only [lowerInstrs] at h
+    rw [if_pos hcond] at h
+    exact absurd h Option.noConfusion
+  | case20 fuel frames s rest hncond ih1 =>
+    -- wreturn inside a frame with no Loop open: emits nothing,
+    -- lowering continues on `rest` with the same state.
+    intro s' ops h
+    simp only [lowerInstrs] at h
+    rw [if_neg hncond] at h
+    rcases hr : lowerInstrs fuel frames s rest with _ | ⟨s2, postOps⟩
+    · simp [hr] at h
+    simp only [hr, Option.bind_eq_bind, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s2 = s' := (Prod.mk.inj hpair).1
+    subst hs
+    exact ih1 hr
+  | case21 fuel frames s i rest hnb hnl hnw hnbr hnbi hnwr ih1 =>
     -- catch-all: lowerInstr s i + lowerInstrs fuel frames s1 rest.
     intro s' ops h
-    -- Dispatch on i. The 5 structured constructors are ruled out by
-    -- the case18 hypotheses; the other ~42 fall through to the same
+    -- Dispatch on i. The 6 structured constructors are ruled out by
+    -- the case21 hypotheses; the other ~41 fall through to the same
     -- catch-all unfolding.
     cases i <;>
       first
@@ -3190,7 +3246,8 @@ theorem lowerInstrs_nextReg_mono :
             | (exact absurd rfl (hnl _))
             | (exact absurd rfl (hnw _))
             | (exact absurd rfl (hnbr _))
-            | (exact absurd rfl (hnbi _)))
+            | (exact absurd rfl (hnbi _))
+            | (exact absurd rfl hnwr))
         | (rename_i x
            simp only [lowerInstrs] at h
            rcases hi1 : lowerInstr s x with _ | ⟨s1, ops1⟩
@@ -3432,25 +3489,35 @@ theorem lowerInstrs_preserves_wellScoped :
     simp [hnz, hnla] at h
     obtain ⟨h_s_eq, _⟩ := h
     subst h_s_eq; exact hws
-  | case15 _ _ _ _ _ val hne hg hla =>
+  | case15 _ _ _ _ _ val hne hg hla hsb =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    obtain ⟨hone, hblk⟩ := hsb
+    subst hblk
+    simp [hla, hone] at h
+  | case16 _ _ _ _ _ val hne hg hla hnsb =>
     intro s' ops hws h
     simp only [lowerInstrs] at h
     rw [hg] at h
     cases val with
     | loopK => exact absurd rfl hne
-    | block | wif =>
-      all_goals (
-        simp [hla] at h
-        obtain ⟨h_s_eq, _⟩ := h
-        subst h_s_eq; exact hws)
-  | case16 _ _ _ _ _ val hne hg hnla =>
+    | block =>
+      simp [hla] at h
+      obtain ⟨_, h_s_eq, _⟩ := h
+      subst h_s_eq; exact hws
+    | wif =>
+      simp [hla] at h
+      obtain ⟨h_s_eq, _⟩ := h
+      subst h_s_eq; exact hws
+  | case17 _ _ _ _ _ val hne hg hnla =>
     intro s' ops _ h
     simp only [lowerInstrs] at h
     rw [hg] at h
     cases val with
     | loopK => exact absurd rfl hne
     | block | wif => all_goals (simp [hnla] at h)
-  | case17 fuel frames s rest depth ih1 =>
+  | case18 fuel frames s rest depth ih1 =>
     intro s' ops hws h
     simp only [lowerInstrs] at h
     rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
@@ -3505,11 +3572,29 @@ theorem lowerInstrs_preserves_wellScoped :
           have hs : s2 = s' := (Prod.mk.inj hpair).1
           subst hs
           exact ih1 _ hws1 hr
-    | block | wif =>
-      all_goals (
-        simp at h
-        by_cases hla : hasLoopAbove frames depth
-        · simp [hla, LowerState.alloc] at h
+    | wif =>
+      simp at h
+      by_cases hla : hasLoopAbove frames depth
+      · simp [hla, LowerState.alloc] at h
+        have hws_cast :
+            LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+          LowerState.alloc_preserves_wellScoped hws1
+        rcases hr : lowerInstrs fuel frames
+            { s1 with nextReg := s1.nextReg + 1 } rest with _ | ⟨s2, postOps⟩
+        · rw [hr] at h; simp at h
+        rw [hr] at h
+        simp only [Option.some_bind, pure, Pure.pure] at h
+        have hpair := Option.some.inj h
+        have hs : s2 = s' := (Prod.mk.inj hpair).1
+        subst hs
+        exact ih1 _ hws_cast hr
+      · simp [hla] at h
+    | block =>
+      simp at h
+      by_cases hla : hasLoopAbove frames depth
+      · by_cases hone : loopsAbove frames depth = 1
+        · simp [hla, hone] at h
+        · simp [hla, hone, LowerState.alloc] at h
           have hws_cast :
               LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
             LowerState.alloc_preserves_wellScoped hws1
@@ -3522,8 +3607,24 @@ theorem lowerInstrs_preserves_wellScoped :
           have hs : s2 = s' := (Prod.mk.inj hpair).1
           subst hs
           exact ih1 _ hws_cast hr
-        · simp [hla] at h)
-  | case18 fuel frames s i rest hnb hnl hnw hnbr hnbi ih1 =>
+      · simp [hla] at h
+  | case19 _ _ _ _ hcond =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [if_pos hcond] at h
+    exact absurd h Option.noConfusion
+  | case20 fuel frames s rest hncond ih1 =>
+    intro s' ops hws h
+    simp only [lowerInstrs] at h
+    rw [if_neg hncond] at h
+    rcases hr : lowerInstrs fuel frames s rest with _ | ⟨s2, postOps⟩
+    · simp [hr] at h
+    simp only [hr, Option.bind_eq_bind, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s2 = s' := (Prod.mk.inj hpair).1
+    subst hs
+    exact ih1 hws hr
+  | case21 fuel frames s i rest hnb hnl hnw hnbr hnbi hnwr ih1 =>
     intro s' ops hws h
     cases i <;>
       first
@@ -3532,7 +3633,8 @@ theorem lowerInstrs_preserves_wellScoped :
             | (exact absurd rfl (hnl _))
             | (exact absurd rfl (hnw _))
             | (exact absurd rfl (hnbr _))
-            | (exact absurd rfl (hnbi _)))
+            | (exact absurd rfl (hnbi _))
+            | (exact absurd rfl hnwr))
         | (rename_i x
            simp only [lowerInstrs] at h
            rcases hi1 : lowerInstr s x with _ | ⟨s1, ops1⟩
@@ -3943,27 +4045,39 @@ theorem lowerInstrs_scopeValid_ops :
     simp [hnz, hnla] at h
     obtain ⟨_, h_ops⟩ := h
     subst h_ops; exact trivial
-  | case15 _ _ _ _ _ val hne hg hla =>
+  | case15 _ _ _ _ _ val hne hg hla hsb =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [hg] at h
+    obtain ⟨hone, hblk⟩ := hsb
+    subst hblk
+    simp [hla, hone] at h
+  | case16 _ _ _ _ _ val hne hg hla hnsb =>
     intro s' ops _ h
     simp only [lowerInstrs] at h
     rw [hg] at h
     cases val with
     | loopK => exact absurd rfl hne
-    | block | wif =>
-      all_goals (
-        simp [hla] at h
-        obtain ⟨_, h_ops⟩ := h
-        subst h_ops
-        refine ⟨?_, trivial⟩
-        intro r hr; simp [KernelOp.usedRegs] at hr)
-  | case16 _ _ _ _ _ val hne hg hnla =>
+    | block =>
+      simp [hla] at h
+      obtain ⟨_, _, h_ops⟩ := h
+      subst h_ops
+      refine ⟨?_, trivial⟩
+      intro r hr; simp [KernelOp.usedRegs] at hr
+    | wif =>
+      simp [hla] at h
+      obtain ⟨_, h_ops⟩ := h
+      subst h_ops
+      refine ⟨?_, trivial⟩
+      intro r hr; simp [KernelOp.usedRegs] at hr
+  | case17 _ _ _ _ _ val hne hg hnla =>
     intro s' ops _ h
     simp only [lowerInstrs] at h
     rw [hg] at h
     cases val with
     | loopK => exact absurd rfl hne
     | block | wif => all_goals (simp [hnla] at h)
-  | case17 fuel frames s rest depth ih1 =>
+  | case18 fuel frames s rest depth ih1 =>
     intro s' ops hws h
     simp only [lowerInstrs] at h
     rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
@@ -4146,11 +4260,76 @@ theorem lowerInstrs_scopeValid_ops :
           · exact LowerState.commit_ops_scopeValid s2.scopeEnv hc
           · apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
             exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
-    | block | wif =>
-      all_goals (
-        simp at h
-        by_cases hla : hasLoopAbove frames depth
-        · simp [hla, LowerState.alloc] at h
+    | wif =>
+      simp at h
+      by_cases hla : hasLoopAbove frames depth
+      · simp [hla, LowerState.alloc] at h
+        have hws_cast :
+            LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
+          LowerState.alloc_preserves_wellScoped hws1
+        rcases hr : lowerInstrs fuel frames
+            { s1 with nextReg := s1.nextReg + 1 } rest with _ | ⟨s2, postOps⟩
+        · rw [hr] at h; simp at h
+        rw [hr] at h
+        simp only [Option.some_bind, pure, Pure.pure] at h
+        have hpair := Option.some.inj h
+        have hs : s2 = s' := (Prod.mk.inj hpair).1
+        have hopsEq :
+            opsCommit ++
+              (KernelOp.cast s1.nextReg cond .u32 .bool ::
+                KernelOp.branch s1.nextReg [KernelOp.breakOp] [] :: postOps) = ops :=
+          (Prod.mk.inj hpair).2
+        subst hs; subst hopsEq
+        have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws_cast hr
+        have hmono_r : s1.nextReg + 1 ≤ s2.nextReg := by
+          have := lowerInstrs_nextReg_mono _ _ _ _ hr
+          exact this
+        have hcond_s2 : cond ∈ s2.scopeEnv := by
+          rw [LowerState.mem_scopeEnv] at hcond_s1 ⊢
+          exact Nat.lt_of_lt_of_le hcond_s1
+            (Nat.le_trans (Nat.le_succ _) hmono_r)
+        have hcond_ext : cond ∈ extendEnvOps s2.scopeEnv opsCommit :=
+          Quanta.KOps.KernelOp.extendEnvOps_super _ _ hcond_s2
+        have htrail : scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+            [KernelOp.cast s1.nextReg cond .u32 .bool,
+             KernelOp.branch s1.nextReg [KernelOp.breakOp] []] := by
+          apply castBranch_scopeValid
+          · exact hcond_ext
+          · refine ⟨?_, trivial⟩
+            intro r hr'; simp [KernelOp.usedRegs] at hr'
+          · exact trivial
+        have hpost_lift : scopeValidOps
+            (extendEnv (extendEnv (extendEnvOps s2.scopeEnv opsCommit)
+              (.cast s1.nextReg cond .u32 .bool))
+              (.branch s1.nextReg [KernelOp.breakOp] []))
+            postOps := by
+          apply postOps_after_castBranch_scopeValid
+            (extendEnvOps s2.scopeEnv opsCommit)
+          apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
+          exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
+        have hopsCommit_any : scopeValidOps s2.scopeEnv opsCommit :=
+          LowerState.commit_ops_scopeValid s2.scopeEnv hc
+        apply Quanta.KOps.KernelOp.scopeValidOps_append
+        · exact hopsCommit_any
+        · show scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+            ([KernelOp.cast s1.nextReg cond .u32 .bool,
+              KernelOp.branch s1.nextReg [KernelOp.breakOp] []] ++ postOps)
+          apply Quanta.KOps.KernelOp.scopeValidOps_append
+          · exact htrail
+          · show scopeValidOps
+              (extendEnvOps (extendEnvOps s2.scopeEnv opsCommit)
+                [KernelOp.cast s1.nextReg cond .u32 .bool,
+                 KernelOp.branch s1.nextReg [KernelOp.breakOp] []])
+              postOps
+            simp only [extendEnvOps]
+            exact hpost_lift
+      · simp [hla] at h
+    | block =>
+      simp at h
+      by_cases hla : hasLoopAbove frames depth
+      · by_cases hone : loopsAbove frames depth = 1
+        · simp [hla, hone] at h
+        · simp [hla, hone, LowerState.alloc] at h
           have hws_cast :
               LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
             LowerState.alloc_preserves_wellScoped hws1
@@ -4210,8 +4389,25 @@ theorem lowerInstrs_scopeValid_ops :
                 postOps
               simp only [extendEnvOps]
               exact hpost_lift
-        · simp [hla] at h)
-  | case18 fuel frames s i rest hnb hnl hnw hnbr hnbi ih1 =>
+      · simp [hla] at h
+  | case19 _ _ _ _ hcond =>
+    intro s' ops _ h
+    simp only [lowerInstrs] at h
+    rw [if_pos hcond] at h
+    exact absurd h Option.noConfusion
+  | case20 fuel frames s rest hncond ih1 =>
+    intro s' ops hws h
+    simp only [lowerInstrs] at h
+    rw [if_neg hncond] at h
+    rcases hr : lowerInstrs fuel frames s rest with _ | ⟨s2, postOps⟩
+    · simp [hr] at h
+    simp only [hr, Option.bind_eq_bind, Option.some_bind, pure, Pure.pure] at h
+    have hpair := Option.some.inj h
+    have hs : s2 = s' := (Prod.mk.inj hpair).1
+    have hops : postOps = ops := (Prod.mk.inj hpair).2
+    subst hs; subst hops
+    exact ih1 hws hr
+  | case21 fuel frames s i rest hnb hnl hnw hnbr hnbi hnwr ih1 =>
     intro s' ops hws h
     cases i <;>
       first
@@ -4220,7 +4416,8 @@ theorem lowerInstrs_scopeValid_ops :
             | (exact absurd rfl (hnl _))
             | (exact absurd rfl (hnw _))
             | (exact absurd rfl (hnbr _))
-            | (exact absurd rfl (hnbi _)))
+            | (exact absurd rfl (hnbi _))
+            | (exact absurd rfl hnwr))
         | (rename_i x
            simp only [lowerInstrs] at h
            rcases hi1 : lowerInstr s x with _ | ⟨s1, ops1⟩

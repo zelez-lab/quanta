@@ -810,6 +810,7 @@ theorem preservation_evalInstrs_main_v2
         | wif _ => simp [closedInstrAt, closedInstr] at h_head_closed
         | br _ => simp [closedInstrAt, closedInstr] at h_head_closed
         | brIf _ => simp [closedInstrAt, closedInstr] at h_head_closed
+        | wreturn => simp [closedInstrAt, closedInstr] at h_head_closed
         | _ => rfl
       have h_ns_eval : isStructuredEval i = false := by
         cases i with

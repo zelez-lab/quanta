@@ -475,7 +475,9 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
   | .i32LeU => lowerI32Cmp s .le
   | .i32GtU => lowerI32Cmp s .gt
   | .i32GeU => lowerI32Cmp s .ge
-  -- Return / nop / drop
+  -- Return / nop / drop. (`wreturn` is intercepted by `lowerInstrs`
+  -- with frame context; this arm only serves standalone `lowerInstr`
+  -- uses and the per-op lemmas about them.)
   | .wreturn => some (s, [])
   | .nop     => some (s, [])
   | .drop    => do
@@ -496,6 +498,14 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
     rather than the (unimplemented) redirect-chain approach. -/
 def hasLoopAbove (frames : List FrameKind) (depth : Nat) : Bool :=
   (frames.take depth).any (· = .loopK)
+
+/-- Number of `loopK` frames strictly above the target depth.
+    Mirrors `LowerCtx::loops_between_top_and_depth` in `lower.rs`.
+    Production gives the single-loop-crossing-to-Block case the
+    exit-flag treatment (`emit_loop_crossing_exit`); only multi-loop
+    crossings and non-Block targets keep the label-lossy `Break`. -/
+def loopsAbove (frames : List FrameKind) (depth : Nat) : Nat :=
+  ((frames.take depth).filter (· = .loopK)).length
 
 /-- Lower a list of WASM instructions, threading state. Concatenates
     the per-instr op lists. `none` if any single op refuses or stack
@@ -640,9 +650,19 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
               if depth = 0 then some (s, [])
               else if hasLoopAbove frames depth then some (s, [.breakOp])
               else some (s, [])  -- continue an outer loop: still no IR.
-          | some _ =>
-              if hasLoopAbove frames depth then some (s, [.breakOp])
-              else none  -- redirect-chain: not supported in this slice.
+          | some k =>
+              if hasLoopAbove frames depth then
+                if loopsAbove frames depth = 1 ∧ k = .block then
+                  -- Production (2026-06-12) lowers this via the
+                  -- exit-flag record (`emit_loop_crossing_exit`):
+                  -- flag declared at the target frame, `flag := true;
+                  -- Break` at the site, wrap at the target's End. Not
+                  -- yet modeled — refuse rather than keep the
+                  -- label-lossy plain Break production no longer
+                  -- emits for this shape.
+                  none
+                else some (s, [.breakOp])
+              else none  -- record-and-wrap (`record_br_at`): not yet modeled.
       | .brIf depth => do
           let (svCond, s0) ← s.popSym
           let (cond, s1, opsCommit) ← s0.commit svCond
@@ -677,16 +697,35 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
                 -- wrap-around handles iteration).
                 let (s2, postOps) ← lowerInstrs fuel frames s1 rest
                 pure (s2, opsCommit ++ postOps)
-          | some _ =>
-              if hasLoopAbove frames depth then do
-                let (cond_bool, s_cast) := s1.alloc
-                let (s2, postOps) ← lowerInstrs fuel frames s_cast rest
-                pure (s2,
-                  opsCommit
-                  ++ [.cast cond_bool cond .u32 .bool,
-                      .branch cond_bool [.breakOp] []]
-                  ++ postOps)
-              else none
+          | some k =>
+              if hasLoopAbove frames depth then
+                if loopsAbove frames depth = 1 ∧ k = .block then
+                  -- Exit-flag record in production — not yet modeled
+                  -- (see the `br` arm above).
+                  none
+                else do
+                  let (cond_bool, s_cast) := s1.alloc
+                  let (s2, postOps) ← lowerInstrs fuel frames s_cast rest
+                  pure (s2,
+                    opsCommit
+                    ++ [.cast cond_bool cond .u32 .bool,
+                        .branch cond_bool [.breakOp] []]
+                    ++ postOps)
+              else none  -- record-and-wrap (`record_br_at`): not yet modeled.
+      | .wreturn =>
+          -- Production (`RawInstr::Return`): inside a frame with no
+          -- Loop open it emits nothing and keeps lowering — the
+          -- post-return ops are WASM dead code; production lowers
+          -- them too (they sit after the function's wrap or are
+          -- simply unreachable). With a Loop open production emits
+          -- `Break`; at function top level it records an always-true
+          -- wrap. Neither of those shapes occurs on the audited
+          -- kernel surface (2026-06-12) — refuse them rather than
+          -- model semantics nothing exercises.
+          if frames.any (· = .loopK) ∨ frames.isEmpty then none
+          else do
+            let (s2, postOps) ← lowerInstrs fuel frames s rest
+            pure (s2, postOps)
       | _ => do
           let (s1, ops1) ← lowerInstr s i
           let (s2, ops2) ← lowerInstrs fuel frames s1 rest

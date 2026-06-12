@@ -2009,6 +2009,7 @@ theorem preservation_br_break_nonLoop_bridge
     (kind : FrameKind) (h_kind_ne_loop : kind ≠ .loopK)
     (h_target : frames.get? depth = some kind)
     (h_loop_above : hasLoopAbove frames depth = true)
+    (h_not_flag : ¬(loopsAbove frames depth = 1 ∧ kind = .block))
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstrs fuel ws (.br depth :: rest) = some ws')
     (hl : lowerInstrs fuel frames s (.br depth :: rest) = some (s', ops)) :
@@ -2018,13 +2019,19 @@ theorem preservation_br_break_nonLoop_bridge
             kst' = { kst with broke := true } := by
   obtain ⟨kst', h_ev, h_R⟩ :=
     preservation_br_break_nonLoop fuel frames ws s kst layout R h_no_branch h_no_halt
-      depth rest kind h_kind_ne_loop h_target h_loop_above ws' s' ops hw hl
+      depth rest kind h_kind_ne_loop h_target h_loop_above h_not_flag ws' s' ops hw hl
   -- Re-derive exact shape.
   have h_lower : lowerInstrs fuel frames s (.br depth :: rest)
                   = some (s, [KernelOp.breakOp]) := by
     cases kind with
-    | block => simp only [lowerInstrs, h_target, h_loop_above, ↓reduceIte]
-    | wif   => simp only [lowerInstrs, h_target, h_loop_above, ↓reduceIte]
+    | block =>
+        have hone : ¬(loopsAbove frames depth = 1) :=
+          fun h1 => h_not_flag ⟨h1, rfl⟩
+        simp only [lowerInstrs, h_target, h_loop_above, hone,
+                   eq_self_iff_true, and_true, ↓reduceIte]
+    | wif   =>
+        simp only [lowerInstrs, h_target, h_loop_above, reduceCtorEq,
+                   and_false, ↓reduceIte]
     | loopK => exact (h_kind_ne_loop rfl).elim
   rw [h_lower] at hl
   have hl' : (s, [KernelOp.breakOp]) = (s', ops) :=
@@ -2120,11 +2127,16 @@ theorem preservation_evalInstrs_cons_wreturn_bridge
   obtain ⟨kst', h_ev, h_R⟩ :=
     preservation_evalInstrs_cons_wreturn fuel frames ws s kst layout R h_no_branch h_no_halt
       ws' s' ops hw hl
-  rw [lowerInstrs_cons_default fuel frames s .wreturn []
-      (by simp [isStructuredLower])] at hl
-  simp only [lowerInstr, Option.bind_eq_bind, Option.some_bind,
-             List.nil_append, lowerInstrs, pure, Option.some.injEq,
-             Prod.mk.injEq] at hl
+  simp only [lowerInstrs] at hl
+  by_cases hcond : ((frames.any fun x => decide (x = FrameKind.loopK)) = true
+      ∨ frames.isEmpty = true)
+  case pos =>
+    rw [if_pos hcond] at hl
+    exact absurd hl Option.noConfusion
+  case neg =>
+  rw [if_neg hcond] at hl
+  simp only [lowerInstrs, Option.bind_eq_bind, Option.some_bind, pure,
+             Option.some.injEq, Prod.mk.injEq] at hl
   obtain ⟨h_s_eq, h_ops_eq⟩ := hl
   let ws_post : WasmState := { ws with halted := true }
   have h_post_halted : ws_post.halted = true := rfl
@@ -2269,6 +2281,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner_bridge
       (depth ≠ 0 ∧ kind = .loopK) ∨ kind ≠ .loopK)
     (h_target : frames.get? depth = some kind)
     (h_loop_above : hasLoopAbove frames depth = true)
+    (h_not_flag : ¬(loopsAbove frames depth = 1 ∧ kind = .block))
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstrs fuel ws (.brIf depth :: []) = some ws')
     (hl : lowerInstrs fuel frames s (.brIf depth :: []) = some (s', ops)) :
@@ -2283,7 +2296,7 @@ theorem preservation_evalInstrs_cons_brIf_loop_break_inner_bridge
   obtain ⟨kst', F, h_ev, h_R⟩ :=
     preservation_evalInstrs_cons_brIf_loop_break_inner fuel frames ws s kst layout R
       h_no_branch h_no_halt h_kst_no_broke depth kind h_depth_pos_or_nonloop
-      h_target h_loop_above ws' s' ops hw hl
+      h_target h_loop_above h_not_flag ws' s' ops hw hl
   rw [evalInstrs_cons_default fuel ws (.brIf depth) [] h_no_branch h_no_halt
       (by simp [isStructuredEval])] at hw
   cases h_eval_head : evalInstr ws (.brIf depth) with

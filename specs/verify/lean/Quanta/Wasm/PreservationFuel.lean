@@ -298,6 +298,8 @@ theorem evalOps_append_loopFreeDeep_head
 /-- `WasmInstr` arms that take a structured arm in `lowerInstrs`. -/
 def isStructuredLower : WasmInstr → Bool
   | .block _ | .wloop _ | .wif _ | .br _ | .brIf _ => true
+  | .wreturn => true  -- own arm since the 2026-06-12 production
+                      -- re-sync (Break / refusal by frame context)
   | _ => false
 
 /-- `WasmInstr` arms that take a structured arm in `evalInstrs`. Note
