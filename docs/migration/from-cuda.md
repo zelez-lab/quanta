@@ -109,6 +109,20 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `cudaGetDeviceProperties` | `gpu.caps()` |
 | `cudaFree` | automatic (Field drops when it goes out of scope) |
 
+## CUB block primitives
+
+The `quanta-prims` companion crate covers the `cub::Block*` surface —
+see [Block Primitives](../guide/17-block-primitives.md):
+
+| CUB | quanta-prims |
+|-----|--------------|
+| `cub::BlockReduce<T, 256>::Sum(v)` | `block_reduce_add_u32_kernel(v)` (and `min`/`max` × `u32`/`i32`/`f32`) |
+| `cub::BlockScan<T, 256>::InclusiveSum(v)` | `block_scan_add_u32_kernel(v)` |
+| `cub::BlockRadixSort<u32, 256, 1>::Sort` | `block_radix_sort_u32_buffer` kernel |
+| `cub::DeviceReduce::Sum` | `device_reduce_add_u32(&gpu, &data)` |
+| `cub::DeviceRadixSort::SortKeys` | `device_sort_u32(&gpu, &data)` |
+| `cub::BlockHistogram` | `block_histogram_u32_buffer` (Metal today) |
+
 ## Workgroup (block) size
 
 CUDA uses `dim3` for block dimensions:

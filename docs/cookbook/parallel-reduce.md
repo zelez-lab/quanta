@@ -124,3 +124,11 @@ any algorithm that needs workgroup-wide cooperation.
 - `group_id()` is the workgroup index
 - `barrier()` synchronizes all quarks in the workgroup
 - For large arrays, dispatch multiple groups and reduce partial sums on CPU
+
+## Don't hand-roll it in production
+
+This recipe teaches the pattern. For real workloads, the `quanta-prims`
+companion crate ships tuned, differentially-tested block reduce / scan /
+sort primitives plus device-wide one-liners like
+`device_reduce_add_u32(&gpu, &data)` — see
+[Block Primitives](../guide/17-block-primitives.md).

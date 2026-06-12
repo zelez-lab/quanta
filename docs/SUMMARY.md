@@ -30,6 +30,7 @@
 - [Indirect Commands](guide/14-indirect-commands.md)
 - [Multi-Queue](guide/15-multi-queue.md)
 - [Async Copy and Printf](guide/16-async-copy-and-printf.md)
+- [Block Primitives](guide/17-block-primitives.md)
 
 # Expert
 
