@@ -637,7 +637,20 @@ impl<'a> LowerCtx<'a> {
                 }
             }
         }
-        self.record_br_at(depth, flag, /*is_unconditional=*/ false);
+        // Record on EVERY frame outside the loop up to the target,
+        // not just the target: when the exit fires, the Break resumes
+        // just after the Loop op, and any live tail in an intermediate
+        // block between the loop and the target must be skipped too.
+        // (Frames inside the loop are exited by the Break itself.)
+        let loop_depth = (0..depth)
+            .find(|&d| {
+                self.frame_at_depth(d)
+                    .is_some_and(|f| matches!(f.kind, FrameKind::Loop { .. }))
+            })
+            .expect("caller guarantees a Loop frame between top and depth");
+        for d in (loop_depth + 1)..=depth {
+            self.record_br_at(d, flag, /*is_unconditional=*/ false);
+        }
     }
 
     fn lower(mut self) -> Result<KernelDef, LoweringError> {
@@ -2252,17 +2265,47 @@ impl<'a> LowerCtx<'a> {
                         at: self.body.body_offset,
                     });
                 }
-                // Record the br_if on the target Block; its End
-                // handler reconstructs the Branch{cond, then=[],
-                // else=ops_after} wrap. The cond is materialized
-                // into a register declared at the target frame and
-                // assigned right here at the source position — the
-                // wrap then reads a value computed by exactly the
-                // control flow wasm gave it. See
-                // materialize_cond_for_v2 for why this replaced the
-                // transitive backward-slice hoist.
+                // Every frame between here and the target must also
+                // be a Block — each gets a record below, and only
+                // Block (and Function) closes reconstruct records.
+                for d in 0..*depth {
+                    let k = self
+                        .frame_at_depth(d)
+                        .expect("depth verified above")
+                        .kind_discriminant();
+                    if !matches!(k, FrameKindTag::Block) {
+                        return Err(LoweringError::UnsupportedOp {
+                            op: format!(
+                                "br_if to Block at depth {depth} crosses a \
+                                 {k:?}-labelled frame at depth {d}"
+                            ),
+                            at: self.body.body_offset,
+                        });
+                    }
+                }
+                // Record the br_if on EVERY frame from the current
+                // one up to the target. A br_if needn't be the last
+                // instruction of its block — LLVM puts live code
+                // after it (e.g. an accept path following two reject
+                // br_ifs) — so each level's tail after the br_if site
+                // must be skipped when the branch fires, not just the
+                // target's continuation. One record per level wraps
+                // exactly that level's tail in
+                // `Branch{cond, then=[], else=tail}` at its End.
+                // (Caught 2026-06-12 by the generated host-oracle
+                // differential test: the unguarded current-frame tail
+                // ran an accept unconditionally.)
+                //
+                // The cond is materialized into a register declared
+                // at the target frame and assigned right here at the
+                // source position — every wrap then reads a value
+                // computed by exactly the control flow wasm gave it.
+                // See materialize_cond_for_v2 for why this replaced
+                // the transitive backward-slice hoist.
                 let mat = self.materialize_cond_for_v2(*depth, cond, cond_ty);
-                self.record_br_at(*depth, mat, /*is_unconditional=*/ false);
+                for d in 0..=*depth {
+                    self.record_br_at(d, mat, /*is_unconditional=*/ false);
+                }
             }
 
             RawInstr::I32Eqz => {
