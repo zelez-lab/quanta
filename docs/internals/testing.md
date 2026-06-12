@@ -71,6 +71,39 @@ Long-running tests for reliability:
 - **Large fields**: 1GB+ allocations, verify correct addressing.
 - **Error recovery**: dispatch with invalid bindings, verify error without crash.
 
+## Generated host oracles (differential testing)
+
+Every `#[quanta::kernel]` in the single-quark-pure subset (no shared
+memory, atomics, barriers, subgroup/collective ops, textures, or f16)
+also emits a hidden `<name>_host_oracle` twin: the same rewritten
+kernel body compiled natively by rustc and looped over quark ids.
+Struct-ref kernels take the same `&mut Data` struct as the dispatch
+wrapper; flat kernels mirror the kernel's own signature with `&[T]` /
+`&mut [T]` slices plus scalars in declaration order.
+
+Running the kernel on the CPU backend must reproduce the oracle
+bit-exactly — both sides are IEEE f32 through the same libm, so any
+divergence is a lowering or IR-execution bug, not float noise. This
+is the systematized form of the hand-written replicas that caught the
+2026-06 redirect-chain miscompiles; its first in-tree use
+(`tests/host_oracle_parity.rs`) immediately caught a fourth one (an
+unguarded intra-block tail after an outer-targeting `br_if`).
+
+A parity test is three lines:
+
+```rust
+let got = my_kernel_gpu(&gpu, n, ...)?;            // CPU backend
+unsafe { my_kernel_host_oracle(n as u32, &mut want) };
+assert_eq!(got, want.out);
+```
+
+Kernels outside the pure subset simply get no oracle — referencing
+the missing fn is a compile error, never a wrong comparison. Existing
+parity suites: `tests/host_oracle_parity.rs` (lowering-bug shapes)
+and `crates/quanta-rand/tests/ptrd_host_oracle.rs` (PTRD + uniform
+fills, plus one hand-written replica kept as an independent
+cross-check of the twin generator itself).
+
 ## External validation suites
 
 ### dEQP (drawElements Quality Program)

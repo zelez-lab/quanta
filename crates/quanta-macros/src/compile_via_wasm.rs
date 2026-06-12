@@ -1158,3 +1158,335 @@ mod tests {
         out
     }
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Host-oracle twin emission (differential testing)
+//
+// Alongside the wasm shell, emit a `#[doc(hidden)] pub unsafe fn
+// <name>_host_oracle(n, …)` into the user crate: the SAME rewritten
+// kernel body, compiled natively by rustc for the host, looped over
+// quark ids. Running the kernel on the CPU backend and the oracle on
+// the same inputs must produce bit-identical buffers — any divergence
+// is a lowering / IR-execution bug, the class of silent miscompiles
+// the 2026-06 redirect-chain campaign surfaced (three of them passed
+// every conventional test and were caught only by hand-written
+// host replicas; this generates those replicas for free).
+//
+// The oracle is emitted only for the single-quark-pure subset: no
+// shared memory, no atomics / barriers / fences, no subgroup or
+// reduce / scan / shuffle ops, no textures, no proton / nucleus
+// queries, no f16. Cross-quark semantics can't be reproduced by a
+// sequential per-quark loop, so those kernels simply get no oracle
+// (referencing the missing fn is a compile error, not a wrong
+// result).
+// ════════════════════════════════════════════════════════════════════
+
+/// Intrinsic idents whose presence in a kernel body blocks oracle
+/// emission. Everything cross-quark, memory-model-ish, or
+/// backend-specific from `quanta::intrinsics`, plus the public-API
+/// wrapper names kernels actually write.
+const ORACLE_BLOCKERS: &[&str] = &[
+    // identity beyond quark_id
+    "local_id", "group_id", "workgroup_size", "proton_id", "nucleus_id",
+    "proton_size",
+    // synchronization + memory model
+    "barrier", "memory_fence", "fence",
+    // atomics (public wrappers + suffixed externs)
+    "atomic_add", "atomic_sub", "atomic_min", "atomic_max", "atomic_and",
+    "atomic_or", "atomic_xor", "atomic_exchange", "atomic_cas",
+    // subgroup / wave ops
+    "subgroup_size", "subgroup_id", "ballot", "shuffle",
+    // cross-lane collectives
+    "reduce_add", "reduce_min", "reduce_max", "scan_add",
+    "scan_add_exclusive",
+    // workgroup-shared accessors (rewritten shared decls)
+    "shared_load", "shared_store",
+    // textures
+    "texture_sample_2d", "texture_load_2d", "texture_load_3d",
+    "texture_write_2d",
+];
+
+/// Walk the (already-rewritten) kernel body looking for calls whose
+/// callee ident starts with a blocked prefix. Returns the offending
+/// name for diagnostics.
+fn oracle_blocker_in_block(block: &syn::Block) -> Option<String> {
+    use syn::visit::Visit;
+    struct V {
+        hit: Option<String>,
+    }
+    impl<'ast> Visit<'ast> for V {
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if self.hit.is_none() {
+                if let syn::Expr::Path(p) = call.func.as_ref() {
+                    if let Some(seg) = p.path.segments.last() {
+                        let name = seg.ident.to_string();
+                        if ORACLE_BLOCKERS
+                            .iter()
+                            .any(|b| name == *b || name.starts_with(&format!("{b}_")))
+                        {
+                            self.hit = Some(name);
+                        }
+                    }
+                }
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+    let mut v = V { hit: None };
+    v.visit_block(block);
+    v.hit
+}
+
+/// One oracle parameter: the safe surface signature plus the raw
+/// pointer/value binding that shadows it for the rewritten body.
+struct OracleParam {
+    sig: TokenStream,
+    binding: Option<TokenStream>,
+}
+
+/// Element type of a `[T]` slice type.
+fn slice_elem_ty(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Slice(s) => Some(&s.elem),
+        _ => None,
+    }
+}
+
+/// Collect the kernel's transitive `#[quanta::device]` helper
+/// sources (the same set the wasm shell injects), parsed back into
+/// items so they can nest inside the oracle fn — this is what makes
+/// cross-crate device calls resolve on the host. Returns `None`
+/// (refuse the oracle) when a helper fails to parse or uses a
+/// blocked intrinsic.
+fn oracle_helper_items(kernel_block: &syn::Block) -> Option<Vec<syn::ItemFn>> {
+    let sources = crate::device_macro::collect_device_sources_for(kernel_block);
+    let mut items = Vec::with_capacity(sources.len());
+    for source in &sources {
+        let item: syn::ItemFn = syn::parse_str(source).ok()?;
+        if oracle_blocker_in_block(&item.block).is_some() {
+            return None;
+        }
+        items.push(item);
+    }
+    Some(items)
+}
+
+/// Assemble the oracle fn item from the per-param pieces, the device
+/// helper items, and the rewritten body.
+fn assemble_oracle(
+    kernel_name: &syn::Ident,
+    params: Vec<OracleParam>,
+    helpers: &[syn::ItemFn],
+    body_block: &syn::Block,
+) -> TokenStream {
+    let oracle_name = format_ident!("{}_host_oracle", kernel_name);
+    let sigs: Vec<_> = params.iter().map(|p| &p.sig).collect();
+    let bindings: Vec<_> = params.iter().filter_map(|p| p.binding.as_ref()).collect();
+    quote! {
+        /// Host-native differential oracle for the kernel of the same
+        /// name: the identical body compiled by rustc for the host,
+        /// run sequentially for quark ids `0..n`. On the CPU backend
+        /// the kernel must reproduce this output bit-exactly.
+        ///
+        /// # Safety
+        /// Buffer indexing inside the body is unchecked, exactly like
+        /// the kernel's own buffer access: out-of-bounds indices are
+        /// undefined behavior. Size the slices as you would size the
+        /// kernel's fields.
+        #[doc(hidden)]
+        #[allow(dead_code, unused_imports, unused_unsafe, unused_mut,
+                unused_variables, unused_parens, non_snake_case,
+                clippy::all)]
+        pub unsafe fn #oracle_name(__quanta_n: u32, #(#sigs),*) {
+            use ::quanta::__device_host_stubs::*;
+            #(#helpers)*
+            #(#bindings)*
+            for __quanta_qid in 0u32..__quanta_n {
+                let quark_id = || __quanta_qid;
+                unsafe { #body_block }
+            }
+        }
+    }
+}
+
+/// Host-oracle twin for a struct-ref kernel. `None` when the kernel
+/// uses constructs the sequential host loop can't reproduce.
+pub(crate) fn emit_host_oracle_struct_ref(
+    inputs: &StructRefKernelInputs<'_>,
+) -> Result<Option<TokenStream>, String> {
+    // Shared decls → cross-quark → no oracle. (Probe on a clone; the
+    // harvest mutates.)
+    let mut probe = inputs.func.clone();
+    if !harvest_and_rewrite_shared(&mut probe)?.is_empty() {
+        return Ok(None);
+    }
+    if inputs
+        .field_accesses
+        .iter()
+        .any(|f| f.scalar_type_name == "f16")
+    {
+        return Ok(None);
+    }
+
+    let (mut buffer_fields, mut scalar_fields): (Vec<&StructFieldAccess>, Vec<&StructFieldAccess>) =
+        inputs.field_accesses.iter().partition(|f| f.is_indexed);
+    buffer_fields.sort_by_key(|f| f.slot);
+    scalar_fields.sort_by_key(|f| f.slot);
+
+    // The oracle takes the SAME `&mut Data` struct the auto-dispatch
+    // wrapper takes (slot ordering is an internal detail callers
+    // shouldn't have to know); fields bind by name.
+    let struct_ty = &inputs.struct_ref.type_tokens;
+    let data = format_ident!("__quanta_data");
+    let mut params = Vec::new();
+    let mut bindings = Vec::new();
+    // No type annotations: the struct's own field types are the truth
+    // the body was written against (the wasm shell's INFERRED scalar
+    // types may legitimately differ — e.g. a u32 field only ever read
+    // as `x as f32` infers f32 on the shell side).
+    for f in &buffer_fields {
+        let ident = format_ident!("{}", f.name);
+        if f.is_written {
+            bindings.push(quote! { let #ident = #data.#ident.as_mut_ptr(); });
+        } else {
+            bindings.push(quote! { let #ident = #data.#ident.as_ptr(); });
+        }
+    }
+    for f in &scalar_fields {
+        let ident = format_ident!("{}", f.name);
+        bindings.push(quote! { let #ident = #data.#ident; });
+    }
+    params.push(OracleParam {
+        sig: quote! { #data: &mut #struct_ty },
+        binding: Some(quote! { #(#bindings)* }),
+    });
+
+    // Same body rewrite the wasm shell gets.
+    let mut rewriter = StructRefRewriter {
+        param_name: inputs.struct_ref.param_name.clone(),
+        buffer_field_names: buffer_fields.iter().map(|f| f.name.clone()).collect(),
+        scalar_field_names: scalar_fields.iter().map(|f| f.name.clone()).collect(),
+    };
+    let mut body_block = inputs.func.block.clone();
+    rewriter.visit_block_mut(&mut body_block);
+    // Same f16-cast elimination the wasm shell applies — the kernel's
+    // IR never sees f16 either, so eliminating here keeps the oracle
+    // a faithful twin (and `f16` is unstable on host rustc).
+    F16CastEliminator.visit_block_mut(&mut body_block);
+
+    if oracle_blocker_in_block(&body_block).is_some() {
+        return Ok(None);
+    }
+    let Some(helpers) = oracle_helper_items(&inputs.func.block) else {
+        return Ok(None);
+    };
+    Ok(Some(assemble_oracle(
+        &inputs.func.sig.ident,
+        params,
+        &helpers,
+        &body_block,
+    )))
+}
+
+/// Host-oracle twin for a flat-param kernel. `None` when the kernel
+/// uses constructs the sequential host loop can't reproduce.
+pub(crate) fn emit_host_oracle_flat(
+    inputs: &FlatParamKernelInputs<'_>,
+) -> Result<Option<TokenStream>, String> {
+    let mut probe = inputs.func.clone();
+    if !harvest_and_rewrite_shared(&mut probe)?.is_empty() {
+        return Ok(None);
+    }
+
+    let mut params = Vec::new();
+    let mut slice_param_names = Vec::new();
+    let arg_count = inputs.func.sig.inputs.len();
+    for (i, arg) in inputs.func.sig.inputs.iter().enumerate() {
+        let FnArg::Typed(pat_ty) = arg else {
+            return Ok(None);
+        };
+        let name = match pat_ty.pat.as_ref() {
+            Pat::Ident(id) => id.ident.to_string(),
+            _ => return Ok(None),
+        };
+        let Some(p) = inputs.params.get(i) else {
+            return Ok(None);
+        };
+        match p {
+            KernelParam::Texture2DRead { .. }
+            | KernelParam::Texture2DWrite { .. }
+            | KernelParam::Texture3DRead { .. } => return Ok(None),
+            _ => {}
+        }
+        let ty_str = scalar_type_to_short_name(scalar_type_of(p));
+        if ty_str == "f16" {
+            return Ok(None);
+        }
+        // Use the USER'S declared types verbatim — the body was
+        // written against them (the shell's inferred scalar types can
+        // differ; see the struct-ref emitter).
+        let ident = format_ident!("{}", name);
+        match (&*pat_ty.ty, p) {
+            (Type::Reference(r), KernelParam::FieldRead { .. }) if is_slice(&r.elem) => {
+                let elem = slice_elem_ty(&r.elem).ok_or("slice elem")?;
+                params.push(OracleParam {
+                    sig: quote! { #ident: &[#elem] },
+                    binding: Some(quote! { let #ident = #ident.as_ptr(); }),
+                });
+                slice_param_names.push(name);
+            }
+            (Type::Reference(r), KernelParam::FieldWrite { .. }) if is_slice(&r.elem) => {
+                let elem = slice_elem_ty(&r.elem).ok_or("slice elem")?;
+                params.push(OracleParam {
+                    sig: quote! { #ident: &mut [#elem] },
+                    binding: Some(quote! { let #ident = #ident.as_mut_ptr(); }),
+                });
+                slice_param_names.push(name);
+            }
+            (declared, KernelParam::Constant { .. }) => {
+                params.push(OracleParam {
+                    sig: quote! { #ident: #declared },
+                    binding: None,
+                });
+            }
+            _ => return Ok(None),
+        }
+        let _ = ty_str;
+    }
+    // Const generics arrive as trailing value args (with their
+    // declared types), mirroring the wasm shell signature.
+    for generic in inputs.func.sig.generics.params.iter() {
+        let cp = match generic {
+            syn::GenericParam::Const(c) => c,
+            _ => continue,
+        };
+        let ident = &cp.ident;
+        let ty = &cp.ty;
+        params.push(OracleParam {
+            sig: quote! { #ident: #ty },
+            binding: None,
+        });
+    }
+    let _ = arg_count;
+
+    let mut rewriter = FlatSliceRewriter {
+        slice_names: slice_param_names,
+    };
+    let mut body_block = inputs.func.block.clone();
+    rewriter.visit_block_mut(&mut body_block);
+    // See the struct-ref emitter: mirror the shell's f16 elimination.
+    F16CastEliminator.visit_block_mut(&mut body_block);
+
+    if oracle_blocker_in_block(&body_block).is_some() {
+        return Ok(None);
+    }
+    let Some(helpers) = oracle_helper_items(&inputs.func.block) else {
+        return Ok(None);
+    };
+    Ok(Some(assemble_oracle(
+        &inputs.func.sig.ident,
+        params,
+        &helpers,
+        &body_block,
+    )))
+}

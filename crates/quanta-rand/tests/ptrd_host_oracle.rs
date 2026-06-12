@@ -86,3 +86,56 @@ fn ptrd_kernel_matches_host_reference_lambda_10() {
 fn ptrd_kernel_matches_host_reference_lambda_50() {
     assert_kernel_matches_host(50.0);
 }
+
+// ── Generated-oracle parity ──────────────────────────────────────────
+//
+// The `<kernel>_host_oracle` twins below are auto-emitted by
+// `#[quanta::kernel]` (the same rewritten body compiled natively and
+// looped over quark ids) — no hand-written replica to keep in sync.
+// The hand-written `host_ptrd` above stays as an independent
+// cross-check of the twin GENERATOR itself for one kernel.
+
+use quanta_rand::gpu_kernel::{
+    FillPoissonLargeU32Data, FillUniformF32Data, FillUniformU32Data, FillUniformU64Data,
+    fill_poisson_u32_large_host_oracle, fill_uniform_f32_gpu, fill_uniform_f32_host_oracle,
+    fill_uniform_u32_gpu, fill_uniform_u32_host_oracle, fill_uniform_u64_gpu,
+    fill_uniform_u64_host_oracle,
+};
+
+#[test]
+fn ptrd_kernel_matches_generated_oracle() {
+    let gpu = quanta::init_cpu();
+    let n = 256usize;
+    let lam = 10.0f32;
+    let got = fill_poisson_u32_large_gpu(&gpu, n, SEED, lam).expect("dispatch");
+    let mut want = FillPoissonLargeU32Data {
+        out: vec![0u32; n],
+        seed_lo: SEED as u32,
+        seed_hi: (SEED >> 32) as u32,
+        lambda: lam,
+    };
+    unsafe { fill_poisson_u32_large_host_oracle(n as u32, &mut want) };
+    assert_eq!(got, want.out, "PTRD kernel diverged from generated oracle");
+}
+
+#[test]
+fn uniform_fills_match_generated_oracles() {
+    let gpu = quanta::init_cpu();
+    let n = 512usize;
+    let (lo, hi) = (SEED as u32, (SEED >> 32) as u32);
+
+    let got_u32 = fill_uniform_u32_gpu(&gpu, n, SEED).expect("dispatch u32");
+    let mut want_u32 = FillUniformU32Data { out: vec![0u32; n], seed_lo: lo, seed_hi: hi };
+    unsafe { fill_uniform_u32_host_oracle(n as u32, &mut want_u32) };
+    assert_eq!(got_u32, want_u32.out, "fill_uniform_u32 diverged from oracle");
+
+    let got_u64 = fill_uniform_u64_gpu(&gpu, n, SEED).expect("dispatch u64");
+    let mut want_u64 = FillUniformU64Data { out: vec![0u64; n], seed_lo: lo, seed_hi: hi };
+    unsafe { fill_uniform_u64_host_oracle(n as u32, &mut want_u64) };
+    assert_eq!(got_u64, want_u64.out, "fill_uniform_u64 diverged from oracle");
+
+    let got_f32 = fill_uniform_f32_gpu(&gpu, n, SEED).expect("dispatch f32");
+    let mut want_f32 = FillUniformF32Data { out: vec![0.0f32; n], seed_lo: lo, seed_hi: hi };
+    unsafe { fill_uniform_f32_host_oracle(n as u32, &mut want_f32) };
+    assert_eq!(got_f32, want_f32.out, "fill_uniform_f32 diverged from oracle");
+}

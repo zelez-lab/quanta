@@ -9,7 +9,7 @@ use syn::{Expr, ItemFn, Lit, parse::Parser};
 use crate::auto_dispatch;
 use crate::compile_via_wasm::{
     FlatParamKernelInputs, StructRefKernelInputs, compile_flat_param_kernel_via_wasm,
-    compile_struct_ref_kernel_via_wasm,
+    compile_struct_ref_kernel_via_wasm, emit_host_oracle_flat, emit_host_oracle_struct_ref,
 };
 use crate::compiler;
 use crate::device_macro::QualifiedDeviceCallRewriter;
@@ -120,12 +120,16 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     // `swap_body_via_wasm_route`. The legacy parser's body translator
     // (`parse::parse_kernel`'s body walk + `parse/{stmt,expr}.rs`) is
     // now dead-output code; slice 5e deletes it.
-    if let Err(err) = swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref()) {
-        let msg = format!("WASM route failed: {err}");
-        return syn::Error::new_spanned(&func.sig.ident, msg)
-            .to_compile_error()
-            .into();
-    }
+    let host_oracle = match swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref())
+    {
+        Ok(oracle) => oracle.unwrap_or_default(),
+        Err(err) => {
+            let msg = format!("WASM route failed: {err}");
+            return syn::Error::new_spanned(&func.sig.ident, msg)
+                .to_compile_error()
+                .into();
+        }
+    };
 
     if is_jit {
         return emit_jit_kernel(&func, &kernel_def);
@@ -266,11 +270,16 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         let expanded = quote! {
             #wave_fn
             #dispatch_fn
+            #host_oracle
         };
         return expanded.into();
     }
 
-    wave_fn.into()
+    let expanded = quote! {
+        #wave_fn
+        #host_oracle
+    };
+    expanded.into()
 }
 
 /// Build the auto_dispatch::StructParamInfo from kernel_signature
@@ -518,8 +527,8 @@ fn swap_body_via_wasm_route(
     kernel_def: &mut quanta_ir::KernelDef,
     func: &ItemFn,
     sr: Option<&StructRefParam>,
-) -> Result<(), String> {
-    let wasm_def = match sr {
+) -> Result<Option<proc_macro2::TokenStream>, String> {
+    let (wasm_def, host_oracle) = match sr {
         Some(sr) => {
             let mut accesses = scan_struct_field_accesses(func, &sr.param_name);
             for access in accesses.iter_mut() {
@@ -543,7 +552,9 @@ fn swap_body_via_wasm_route(
                 field_accesses: accesses,
                 workgroup_size: kernel_def.workgroup_size,
             };
-            compile_struct_ref_kernel_via_wasm(&inputs)?
+            let def = compile_struct_ref_kernel_via_wasm(&inputs)?;
+            let oracle = emit_host_oracle_struct_ref(&inputs)?;
+            (def, oracle)
         }
         None => {
             let inputs = FlatParamKernelInputs {
@@ -551,13 +562,15 @@ fn swap_body_via_wasm_route(
                 params: kernel_def.params.clone(),
                 workgroup_size: kernel_def.workgroup_size,
             };
-            compile_flat_param_kernel_via_wasm(&inputs)?
+            let def = compile_flat_param_kernel_via_wasm(&inputs)?;
+            let oracle = emit_host_oracle_flat(&inputs)?;
+            (def, oracle)
         }
     };
 
     kernel_def.body = wasm_def.body;
     kernel_def.next_reg = wasm_def.next_reg;
-    Ok(())
+    Ok(host_oracle)
 }
 
 fn param_slot(p: &quanta_ir::KernelParam) -> u32 {
