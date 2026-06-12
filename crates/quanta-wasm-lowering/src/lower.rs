@@ -565,109 +565,70 @@ impl<'a> LowerCtx<'a> {
         ops
     }
 
-    /// Option C v2 — transitive backward-slice hoist. Unlike v1's
-    /// `hoist_cond_defining_ops`, this walks the FULL current sink
-    /// (not just a contiguous trailing prefix) and collects every op
-    /// whose dst is in the transitive `need` set rooted at `cond`.
+    /// Option C v2 — materialize the br_if cond into a fresh
+    /// register that is (a) zero-init declared in the TARGET frame's
+    /// sink before any recorded wrap position, and (b) assigned via
+    /// `Copy` at the SOURCE position (current sink, exactly where
+    /// wasm evaluated the cond). The end-of-frame wrap then
+    /// references the materialized reg, which is structurally in
+    /// scope at the wrap and carries the value computed at the
+    /// correct point of the iteration.
     ///
-    /// Why v2 needs this: the v2 wrap relocates `ops[record.pos..]`
-    /// into a `Branch{cond, then=[], else=tail}` whose cond is at
-    /// the OUTER scope. If only the contiguous trailing slice is
-    /// hoisted, transitive dependencies on earlier ops in the sink
-    /// (e.g. a `Const` emitted at the start of a device-fn inline
-    /// that's later used by the cond chain) get left behind in the
-    /// wrap's `else_ops` — defining the reg AFTER its use in the
-    /// outer wrap. The result is the same `r? used before def at
-    /// BinOp.a` scope violation v1 hits.
+    /// This replaces the transitive backward-slice hoist
+    /// (`hoist_cond_transitive_v2`, removed 2026-06-12). Hoisting
+    /// relocated the cond's whole pure-value slice to the target
+    /// frame top, which had two unsoundness modes:
     ///
-    /// This routine pulls every transitively-needed op out, even if
-    /// non-contiguous. It refuses (returns `false`) when any op in
-    /// the slice has observable side effects (Store, AtomicOp,
-    /// SharedStore, MathCall, Load, …) — reordering those is
-    /// observable and can change kernel semantics. In that case
-    /// the caller must fall back to v1.
+    /// 1. Slice inputs whose real defining ops lived in INTERMEDIATE
+    ///    frames (LLVM sinks computations into inner blocks) were
+    ///    invisible to the single-frame backward walk; the
+    ///    function-preamble zero-init `Const` declarations satisfied
+    ///    scope_check, so the hoisted chain silently read zeros /
+    ///    stale values. This was the PTRD distribution-skew bug:
+    ///    `ln(v)` ran on v=0.0 from the zero-init, lhs became -inf,
+    ///    and the slow-accept fired unconditionally on iteration 0.
+    /// 2. The hoisted chain executed unconditionally at the target,
+    ///    even on wasm paths that never evaluated the cond.
     ///
-    /// Order in the target frame's sink: the hoisted ops keep their
-    /// relative order from the current sink (they're appended in
-    /// the same order they appeared).
-    fn hoist_cond_transitive_v2(&mut self, depth: u32, cond: Reg) -> bool {
-        use std::collections::HashSet;
-        // depth=0: target IS current frame. Cond's def is already in
-        // scope at the eventual wrap; hoisting it within the same
-        // frame just appends to the end, scrambling the order of any
-        // non-contributing ops that were emitted between dependent
-        // ops (e.g. the `Copy stable_reg = fresh_reg` parallel-copy
-        // that `write_local_via_copy` emits right after each
-        // `local.set`). Skip the hoist — the record alone is
-        // sufficient at depth=0.
+    /// Materialization moves no computation, so neither mode exists:
+    /// the cond chain stays at its source position, guarded by
+    /// exactly the control flow wasm gave it, and only the RESULT
+    /// flows through the pre-declared register. If the source path
+    /// is skipped by an earlier-firing wrap, the register holds its
+    /// zero-init (false) — and the wrap whose tail would read it is
+    /// itself inside the skipped region, so the value is never
+    /// observed.
+    ///
+    /// At depth 0 the cond's def already precedes the record
+    /// position in the same sink — the wrap references it directly.
+    fn materialize_cond_for_v2(&mut self, depth: u32, cond: Reg, ty: ScalarType) -> Reg {
         if depth == 0 {
-            return true;
+            return cond;
         }
-        let current_idx = self.frames.len() - 1;
-
-        // Compute the transitive backward slice. Walk the current
-        // sink BACKWARD once, propagating need.
-        let current_sink_len = Self::sink_at_mut(&mut self.frames[current_idx]).len();
-        let mut need: HashSet<Reg> = HashSet::new();
-        need.insert(cond);
-        // Booleans per position; true means this op contributes.
-        let mut contributes = vec![false; current_sink_len];
-        for i in (0..current_sink_len).rev() {
-            let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
-            let op = &sink[i];
-            let dst = quanta_ir::scope_check::defined_reg(op);
-            let is_contributing = dst.map(|d| need.contains(&d)).unwrap_or(false);
-            if is_contributing {
-                contributes[i] = true;
-                need.remove(&dst.unwrap());
-                for r in quanta_ir::scope_check::used_regs(op) {
-                    need.insert(r);
-                }
-            }
-        }
-
-        // No-op if the cond's def isn't in this sink at all (could
-        // be a function-scope reg). Caller falls back.
-        if !contributes.iter().any(|&b| b) {
-            return false;
-        }
-
-        // Side-effect check on each contributing op.
-        let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
-        for (i, &c) in contributes.iter().enumerate() {
-            if c && Self::op_has_side_effects(&sink[i]) {
-                return false;
-            }
-        }
-
-        // Extract contributing ops. Walk forward, preserving order.
-        let mut hoisted = Vec::new();
-        let mut kept = Vec::new();
-        let sink_owned = std::mem::take(Self::sink_at_mut(&mut self.frames[current_idx]));
-        for (i, op) in sink_owned.into_iter().enumerate() {
-            if contributes[i] {
-                hoisted.push(op);
-            } else {
-                kept.push(op);
-            }
-        }
-        *Self::sink_at_mut(&mut self.frames[current_idx]) = kept;
-
-        // Splice the hoisted ops into target BEFORE any existing
-        // brif records. Each existing brif's sink_position bumps by
-        // len(hoisted).
+        let mat = self.alloc_reg();
+        let zero = match ty {
+            ScalarType::F16 => ConstValue::F16(0),
+            ScalarType::F32 => ConstValue::F32(0.0),
+            ScalarType::F64 => ConstValue::F64(0.0),
+            ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
+            ScalarType::U64 => ConstValue::U64(0),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+            ScalarType::I64 => ConstValue::I64(0),
+            ScalarType::Bool => ConstValue::Bool(false),
+        };
+        // Declare at the target frame, before the earliest recorded
+        // wrap position, so every wrap's tail nests inside a region
+        // where the declaration is visible.
         //
         // Safety: under v2 with Block targets, target.redirect is
-        // always empty (Br and BrIf both route through brifs for
-        // Block targets; install_redirect_at is never called on a
-        // Block under v2). So shifting target.ops positions doesn't
-        // break any redirect-chain index. The invariant is asserted.
+        // always empty (see record_br_at), so inserting into
+        // target.ops can't break a redirect-chain index.
         let target = self
             .frame_at_depth_mut(depth)
-            .expect("caller must verify target depth before hoist_cond_transitive_v2");
+            .expect("caller must verify target depth before materialize_cond_for_v2");
         debug_assert!(
             target.redirect.is_empty(),
-            "v2 hoist requires target frame to have empty redirect chain; got {:?}",
+            "v2 materialization requires target frame to have empty redirect chain; got {:?}",
             target.redirect
         );
         let insert_pos = target
@@ -676,49 +637,20 @@ impl<'a> LowerCtx<'a> {
             .map(|r| r.sink_position)
             .min()
             .unwrap_or(target.ops.len());
-        let n = hoisted.len();
-        target.ops.splice(insert_pos..insert_pos, hoisted);
+        target.ops.insert(insert_pos, KernelOp::Const { dst: mat, value: zero });
         for r in &mut target.brifs {
-            r.sink_position += n;
+            r.sink_position += 1;
         }
-        true
-    }
-
-    /// True for ops whose reordering across the v2 wrap boundary
-    /// is observable. Used by `hoist_cond_transitive_v2` as a
-    /// safety gate.
-    ///
-    /// Pure-value ops are allowed to hoist (Const, BinOp, UnaryOp,
-    /// Cmp, Cast, Bitcast, Copy, Vec*, intrinsic ID queries,
-    /// CountTrailing/Leading/PopCount, Dot, MatMul, Const-like
-    /// math). Everything else (memory access, atomics, fences,
-    /// subgroup ops, device calls, structured control) is treated
-    /// as observable and refuses the hoist.
-    fn op_has_side_effects(op: &KernelOp) -> bool {
-        !matches!(
-            op,
-            KernelOp::Const { .. }
-                | KernelOp::BinOp { .. }
-                | KernelOp::UnaryOp { .. }
-                | KernelOp::Cmp { .. }
-                | KernelOp::Cast { .. }
-                | KernelOp::Bitcast { .. }
-                | KernelOp::Copy { .. }
-                | KernelOp::VecConstruct { .. }
-                | KernelOp::VecExtract { .. }
-                | KernelOp::QuarkId { .. }
-                | KernelOp::QuarkCount { .. }
-                | KernelOp::ProtonId { .. }
-                | KernelOp::NucleusId { .. }
-                | KernelOp::ProtonSize { .. }
-                | KernelOp::SubgroupSize { .. }
-                | KernelOp::CountTrailingZeros { .. }
-                | KernelOp::CountLeadingZeros { .. }
-                | KernelOp::PopCount { .. }
-                | KernelOp::MathCall { .. }
-                | KernelOp::Dot { .. }
-                | KernelOp::MatMul { .. }
-        )
+        // Assign at the source position. Children closing into the
+        // target bump recorded wrap positions past their content
+        // (parent_brifs_at_open), so this Copy always executes
+        // before the wrap that reads `mat`.
+        self.emit(KernelOp::Copy {
+            dst: mat,
+            src: cond,
+            ty,
+        });
+        mat
     }
 
     /// Bug #1 fix (2026-05-31): hoist the backward slice defining
@@ -2342,7 +2274,7 @@ impl<'a> LowerCtx<'a> {
 
             RawInstr::BrIf(depth) => {
                 let cond_sv = self.pop()?;
-                let (cond, _) = self.commit(cond_sv)?;
+                let (cond, cond_ty) = self.commit(cond_sv)?;
                 let target_kind = self
                     .frame_at_depth(*depth)
                     .ok_or_else(|| {
@@ -2395,23 +2327,20 @@ impl<'a> LowerCtx<'a> {
                 // Session 1 only routes Block targets through v2.
                 // Anything else falls back to v1.
                 if self.use_v2 && matches!(target_kind, FrameKindTag::Block) {
-                    // Try the transitive hoist. It will move every
-                    // pure-value op in cond's dep chain out to
-                    // target. If it refuses (cond's chain hits a
-                    // side-effecting op or cond isn't locally
-                    // defined), record anyway — the cond reg is
-                    // either a function-scope local (stable_reg)
-                    // already in scope at target, or it'll fail
-                    // scope_check and the kernel author will see a
-                    // clear error.
+                    // Materialize the cond into a register declared
+                    // at the target frame and assigned right here at
+                    // the source position — the wrap then reads a
+                    // value computed by exactly the control flow
+                    // wasm gave it. See materialize_cond_for_v2 for
+                    // why this replaced the transitive hoist.
                     //
                     // Critically, we DO NOT fall back to v1 here:
                     // mixing v2 brifs with v1 install_redirect_at on
-                    // the SAME target frame breaks the v2 hoist's
-                    // position-shift splice (which assumes empty
+                    // the SAME target frame breaks the v2 position
+                    // bookkeeping (which assumes empty
                     // target.redirect). Either-or per target.
-                    let _ = self.hoist_cond_transitive_v2(*depth, cond);
-                    self.record_br_at(*depth, cond, /*is_unconditional=*/ false);
+                    let mat = self.materialize_cond_for_v2(*depth, cond, cond_ty);
+                    self.record_br_at(*depth, mat, /*is_unconditional=*/ false);
                     return Ok(());
                 }
                 // Bug #1 fix (2026-05-31): hoist the backward slice

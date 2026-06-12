@@ -80,6 +80,19 @@ pub(crate) fn compile_struct_ref_kernel_via_wasm(
     let mut def =
         lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))?;
     prepend_shared_decls(&mut def, &shared_decls);
+    // Debug facility: QUANTA_DUMP_KERNEL=<name> dumps the lowered
+    // KernelDef body for the matching kernel at macro time, even
+    // when scope_check passes. Complements QUANTA_SCOPE_DUMP (which
+    // only fires on violation) — needed for runtime-semantics bugs
+    // where the IR is scope-valid but wrong.
+    if let Ok(target) = std::env::var("QUANTA_DUMP_KERNEL") {
+        if target == def.name {
+            eprintln!("[quanta] IR dump for `{}`:", def.name);
+            for (i, op) in def.body.iter().enumerate() {
+                eprintln!("  [{i}] {op:?}");
+            }
+        }
+    }
     // Dynamic oracle: structural use-before-def check. Catches bug #1
     // (r44 forward-branch in while-loop kernels via the
     // install_redirect_at path) at macro time. Mirrors the Lean
@@ -572,6 +585,19 @@ pub(crate) fn compile_flat_param_kernel_via_wasm(
     let mut def =
         lower(&wasm_bytes, &side_table).map_err(|e| format!("WASM lowering failed: {e}"))?;
     prepend_shared_decls(&mut def, &shared_decls);
+    // Debug facility: QUANTA_DUMP_KERNEL=<name> dumps the lowered
+    // KernelDef body for the matching kernel at macro time, even
+    // when scope_check passes. Complements QUANTA_SCOPE_DUMP (which
+    // only fires on violation) — needed for runtime-semantics bugs
+    // where the IR is scope-valid but wrong.
+    if let Ok(target) = std::env::var("QUANTA_DUMP_KERNEL") {
+        if target == def.name {
+            eprintln!("[quanta] IR dump for `{}`:", def.name);
+            for (i, op) in def.body.iter().enumerate() {
+                eprintln!("  [{i}] {op:?}");
+            }
+        }
+    }
     // Dynamic oracle: structural use-before-def check. Catches bug #1
     // (r44 forward-branch in while-loop kernels via the
     // install_redirect_at path) at macro time. Mirrors the Lean

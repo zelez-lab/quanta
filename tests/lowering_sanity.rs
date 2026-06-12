@@ -123,12 +123,11 @@ fn sanity2_ptrd_shape_nested_if(input: &[f32], out: &mut [u32]) {
 // scope_check violation). v1 errored here; v2 doesn't. This part of
 // sanity 2 IS a passing regression test.
 //
-// The RUNTIME assertion below is `#[ignore]`d: v2 currently produces
-// 0 at runtime for this kernel even though the IR is scope-valid.
-// Tracked in memory note `redirect-chain-v2-closed-2026-06-12`
-// under "Known incomplete — v2 runtime bug surfaced 2026-06-12".
-// Once that bug closes, drop the #[ignore] AND unflatten the
-// production PTRD kernel in `crates/quanta-rand/src/gpu_kernel.rs`.
+// The RUNTIME assertion below regressed under early v2 (writes in
+// deeply-nested if/else arms didn't reach the post-loop read); fixed
+// by replacing the transitive cond-slice hoist with cond
+// materialization (`materialize_cond_for_v2` in lower.rs). See
+// tests/v2_runtime_bisect.rs for the surgical isolation of that bug.
 #[test]
 fn sanity2_ptrd_shape_nested_if_compiles() {
     // Successful proc-macro expansion of the kernel below is the
@@ -138,7 +137,6 @@ fn sanity2_ptrd_shape_nested_if_compiles() {
 }
 
 #[test]
-#[ignore = "v2 runtime bug: writes inside deeply-nested f32 if/else arms don't reach post-loop reads"]
 fn sanity2_ptrd_shape_nested_if_runs() {
     let gpu = quanta::init_cpu();
     let input = gpu.field::<f32>(5).unwrap();

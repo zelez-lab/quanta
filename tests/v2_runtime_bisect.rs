@@ -25,10 +25,23 @@
 //!
 //! ## Status of tests
 //!
-//! Failing tests are `#[ignore]`d so the workspace stays green; they
-//! represent known incomplete v2 behavior. Once the bug closes, drop
-//! the ignores AND unflatten the production PTRD kernel in
-//! `crates/quanta-rand/src/gpu_kernel.rs`.
+//! The bug is FIXED — and so is its sibling (the hoisted cond slice
+//! reading a zero-init for a reg whose real defining ops LLVM had
+//! sunk into an intermediate frame, which skewed PTRD's sample mean
+//! by +0.44σ while passing every non-exact assertion). Both fell to
+//! the same change: v2 no longer hoists the cond's backward slice
+//! at all. `materialize_cond_for_v2` declares a zero-init register
+//! at the target frame and `Copy`s the cond into it at the source
+//! position, so no computation ever moves across control flow. All
+//! levels pass; L2.2 stays as the regression witness, and
+//! `crates/quanta-rand/tests/ptrd_host_oracle.rs` pins the full
+//! production kernel to a bit-exact host reference.
+//!
+//! KNOWN REMAINING (2026-06-12): a loop CONDITION that reads a
+//! shared mutable written in deeply-nested arms (e.g.
+//! `while iter < 32 && done == 0`) still lowers to wrong output.
+//! Separate bug class in the Loop/Break path — not covered by this
+//! file's witnesses yet.
 //!
 //! Run only:
 //!   cargo test -p quanta --features software --test v2_runtime_bisect
@@ -148,8 +161,7 @@ fn bisect_l2_2_stub_philox_real_gamma(input: &[f32], out: &mut [u32]) {
 }
 
 #[test]
-#[ignore = "v2 runtime bug: device-fn with inner if/else clamp + deeply-nested else-if arm writes don't propagate"]
-fn bisect_l2_2_stub_philox_real_gamma_FAILS() {
+fn bisect_l2_2_stub_philox_real_gamma_runs() {
     let gpu = quanta::init_cpu();
     let input = gpu.field::<f32>(1).unwrap();
     let out = gpu.field::<u32>(1).unwrap();
