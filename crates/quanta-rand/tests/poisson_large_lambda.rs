@@ -48,20 +48,12 @@ fn var_tol(lambda: f64, n: usize) -> f64 {
     8.0 * (2.0 * lambda * lambda / n as f64).sqrt()
 }
 
-// PTRD is heavy GPU math per quark. With the parallel CPU dispatch
-// (`b3175f1`) running ~8 cores, an N=32k λ-sweep is ~11 min release /
-// ~hour debug — still too slow for default `cargo test`. The
-// `ptrd_cpu_smoke.rs` test covers regression at N=32 in ~8 s; these
-// `#[ignore]`d full-statistics sweeps stay opt-in. Run on real GPU
-// (where each completes in milliseconds on Metal) with:
-//
-//   cargo test --features gpu --test poisson_large_lambda -- --ignored
-//
-// or on CPU release if you can spare an hour:
-//
-//   cargo test --release -p quanta-rand --features gpu \
-//       --test poisson_large_lambda -- --ignored
-#[ignore]
+// Activated 2026-06-12: the natural nested-shape kernel only pays
+// the Stirling chain until acceptance (~1.2 iterations expected), so
+// the full N=32k λ-sweep runs in ~75 s debug / ~4 s release on the
+// parallel CPU dispatch — fast enough for the default quanta-rand
+// suite. (The flat-shape kernel needed ~11 min release, which is why
+// these were `#[ignore]`d historically.)
 #[test]
 fn fill_poisson_u32_large_mean_variance_lambda_10() {
     let gpu = quanta::init_cpu();
@@ -84,7 +76,6 @@ fn fill_poisson_u32_large_mean_variance_lambda_10() {
     );
 }
 
-#[ignore]
 #[test]
 fn fill_poisson_u32_large_mean_variance_lambda_50() {
     let gpu = quanta::init_cpu();
@@ -107,7 +98,6 @@ fn fill_poisson_u32_large_mean_variance_lambda_50() {
     );
 }
 
-#[ignore]
 #[test]
 fn fill_poisson_u32_large_mean_variance_lambda_200() {
     let gpu = quanta::init_cpu();
@@ -130,7 +120,6 @@ fn fill_poisson_u32_large_mean_variance_lambda_200() {
     );
 }
 
-#[ignore]
 #[test]
 fn fill_poisson_u32_large_no_default_zeros() {
     // PTRD's safety-cap (32 rejections per quark) defaults the
@@ -167,9 +156,6 @@ fn fill_poisson_u32_auto_uses_knuth_below_threshold() {
 
 // Bit-exact auto-vs-PTRD comparison at N=1024 — verifies the
 // auto-dispatch picks the right kernel above the λ ≥ 10 threshold.
-// `#[ignore]`d because even N=1024 runs at ~11 min debug / ~21 s
-// release on CPU; on real GPU it's milliseconds.
-#[ignore]
 #[test]
 fn fill_poisson_u32_auto_uses_ptrd_above_threshold() {
     let gpu = quanta::init_cpu();

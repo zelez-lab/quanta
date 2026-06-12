@@ -751,17 +751,23 @@ pub struct FillPoissonLargeU32Data {
 /// acceptance rate is ~83% so this is generous (Pr(>32 rejections)
 /// is ~3e-26).
 ///
-/// The control-flow shape is deliberately flat (a single `while`
-/// with one `break` in the accept path) to keep the WASM-route
-/// lowering's structured-control reshaping happy. The natural
-/// nested `if accept_fast { … } else if !early_reject { … if
-/// accept_slow { … } }` shape triggers a redirect-chain bug
-/// (`r508 used before definition at BinOp.a`) that the
-/// 2026-06-03 sat-trunc + Block-merge fix did NOT resolve.
-/// Re-attempted unflattening on 2026-06-08; same bug fired.
-/// Keep this flat until the redirect-chain mechanism gets a
-/// real position-aware fix. See `lowering_bug_nested_if_2026-06-01`
-/// in memory.
+/// The body uses PTRD's natural nested rejection shape: fast accept
+/// first, then the squeeze reject, and only on the leftover path
+/// the expensive Stirling-series comparison (`log_gamma_f32`). The
+/// `done` flag gates the body once a draw is accepted; remaining
+/// iterations only pay the philox calls. This shape used to trigger
+/// a redirect-chain scope bug (kept flat until 2026-06-12, with
+/// every iteration paying the Stirling chain); the v2 cond
+/// materialization closed it — `crates/quanta-rand/tests/`
+/// `ptrd_host_oracle.rs` asserts bit-exact host parity for the
+/// shape, and `tests/v2_runtime_bisect.rs` guards the lowering.
+///
+/// KNOWN v2 LIMIT (2026-06-12): the loop CONDITION must not depend
+/// on registers written inside deeply-nested arms.
+/// `while iter < 32 && done == 0` lowers to wrong output (samples
+/// diverge from the host reference) — a separate bug class in the
+/// Loop/Break path, NOT fixed by cond materialization. Keep `done`
+/// as a body gate only.
 #[quanta::kernel]
 pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
     let id = quark_id();
@@ -775,6 +781,7 @@ pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
     let log_inv_alpha: f32 = ln(inv_alpha);
     let mut iter: u32 = 0u32;
     let mut result: u32 = 0u32;
+    let mut done: u32 = 0u32;
     while iter < 32u32 {
         let r1: u32 =
             philox4x32_10_first_u32_kernel(id, iter, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -787,23 +794,21 @@ pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
         let v: f32 = (v_bits as f32) * scale;
         let us: f32 = 0.5f32 - fabs(u);
         let k_f: f32 = floor((2.0f32 * a / us + b) * u + lam + 0.43f32);
-        // Compute the acceptance condition as a single boolean. Lay
-        // the sub-tests out flatly so rustc's optimizer doesn't fold
-        // them into nested if-else with separate cond regs (which
-        // would re-trigger the redirect/scope bug). We use a single
-        // u32 accept flag and a single `if accept { break }`.
-        let fast_accept: bool = us >= 0.07f32 && v <= v_r;
-        let early_reject: bool = k_f < 0.0f32 || (us < 0.013f32 && v > us);
-        let lhs: f32 = ln(v) + log_inv_alpha - ln(a / (us * us) + b);
-        let rhs: f32 = (0.0f32 - lam) + (k_f * log_lam) - log_gamma_f32(k_f + 1.0f32);
-        let slow_accept: bool = lhs <= rhs;
-        let accept: bool = !early_reject && (fast_accept || slow_accept);
-        if accept {
-            result = k_f as u32;
-            iter = 99u32; // force loop exit on next condition check
-        } else {
-            iter = iter + 1u32;
+        if k_f >= 0.0f32 && done == 0u32 {
+            if us >= 0.07f32 && v <= v_r {
+                result = k_f as u32;
+                done = 1u32;
+            } else if !(us < 0.013f32 && v > us) {
+                let lhs: f32 = ln(v) + log_inv_alpha - ln(a / (us * us) + b);
+                let rhs: f32 =
+                    (0.0f32 - lam) + (k_f * log_lam) - log_gamma_f32(k_f + 1.0f32);
+                if lhs <= rhs {
+                    result = k_f as u32;
+                    done = 1u32;
+                }
+            }
         }
+        iter = iter + 1u32;
     }
     d.out[id as usize] = result;
 }
