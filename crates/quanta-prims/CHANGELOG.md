@@ -8,6 +8,21 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Tier 3 — `device_reduce_{add,min,max}_{u32,i32,f32}`** —
+  device-wide "host slice in, scalar out" reduce wrappers.
+  Arbitrary input length ≥ 1: identity padding to a block
+  multiple, then multi-pass block reduce until one value
+  remains. 12 differential tests on Metal.
+- **Tier 3 — `device_sort_u32`** — device-wide ascending sort:
+  pads to the next power of two with `u32::MAX` and runs a
+  global bitonic network, one launch per compare-exchange pass
+  (log²(n) launches); single-tile inputs short-circuit to one
+  `block_radix_sort_u32_buffer` launch. 7 differential tests
+  on Metal, up to 100k random keys.
+- **`global_bitonic_pass_u32`** — the kernel behind
+  `device_sort_u32`: one device-wide compare-exchange pass at
+  runtime stride `(k, j)`; the dispatch boundary between
+  passes is the device-wide barrier of the network.
 - **Tier 2 — `block_compact_u32_buffer`** — per-block stream
   compaction with explicit predicate array. 5 differential
   tests on Metal.

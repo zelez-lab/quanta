@@ -768,9 +768,9 @@ pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
 /// and the same-sized output buffer.
 ///
 /// **Block-local sort.** Each 256-element block is sorted
-/// independently of the others. Producing a globally-sorted
-/// output requires chaining a multi-block merge or device-wide
-/// sort — out of scope for v0.1.
+/// independently of the others. For a globally-sorted output
+/// use [`crate::device_sort_u32`], which chains
+/// [`global_bitonic_pass_u32`] launches across blocks.
 #[quanta::kernel(workgroup = [256])]
 pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
     #[quanta::shared]
@@ -1017,5 +1017,49 @@ pub fn block_top_k_u32_buffer(data: &[u32], top_k_out: &mut [u32], k: u32) {
     // Lane `i` writes the (i+1)-th largest, which lives at buf[255-i].
     if lane < k {
         top_k_out[(block * k + lane) as usize] = buf[(255u32 - lane) as usize];
+    }
+}
+
+// ── Tier 3 — Device-wide bitonic pass ────────────────────────────
+//
+// One compare-exchange pass of a *device-wide* bitonic sorting
+// network. The block sort above is tile-local (each workgroup
+// sorts its own 256 keys through shared memory); sorting a whole
+// buffer needs compare-exchange at strides that cross workgroup
+// boundaries, which means one kernel launch per (k, j) pass with
+// a device-memory barrier (the dispatch boundary) in between.
+//
+// The host driver lives in `device_wide::device_sort_u32`: it
+// pads the buffer to a power of two with u32::MAX and loops
+// k = 2, 4, …, n; j = k/2, …, 1 — log²(n) launches total.
+
+/// One global bitonic compare-exchange pass: every element pairs
+/// with `index ^ j` and the pair is ordered according to the
+/// direction bit `(index & k)`. The lower-indexed thread of each
+/// pair performs the swap; the upper-indexed thread does nothing.
+///
+/// Building block for [`crate::device_sort_u32`] — callers
+/// dispatch with `quark_count = data.len()`, which must be a
+/// power of two and a multiple of the workgroup size.
+#[quanta::kernel(workgroup = [256])]
+pub fn global_bitonic_pass_u32(data: &mut [u32], k: u32, j: u32) {
+    let i = quark_id();
+    let partner = i ^ j;
+    // Only the lower-indexed thread of each XOR-pair acts, and it
+    // writes both slots — pairs are disjoint, so no two threads
+    // ever write the same element in one pass.
+    if partner > i {
+        let a = data[i as usize];
+        let b = data[partner as usize];
+        // Direction for this pair: ascending when (i & k) == 0.
+        // Same integer-compare encoding as the block sort above
+        // (see its comment block for the bool-equality LLVM edge
+        // case this dodges).
+        let bit_k = if (i & k) == 0u32 { 0u32 } else { 1u32 };
+        let out_of_order = if bit_k == 0u32 { b < a } else { b > a };
+        if out_of_order {
+            data[i as usize] = b;
+            data[partner as usize] = a;
+        }
     }
 }

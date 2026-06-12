@@ -108,10 +108,16 @@
 //! - `block_top_k_u32_buffer` — per-block top-K selection
 //!   (sort-based, K up to 256)
 //!
-//! Each ships as a `#[quanta::device]` callable function (e.g.
-//! `block_reduce_add_u32_kernel`) plus a top-level
+//! Tier 3 (device-wide convenience wrappers, all shipped):
+//! - `device_reduce_{add,min,max}_{u32,i32,f32}` — host slice in,
+//!   scalar out; multi-pass block reduce with identity padding
+//! - `device_sort_u32` — host slice in, sorted copy out;
+//!   device-wide bitonic network (one launch per pass)
+//!
+//! Each block primitive ships as a `#[quanta::device]` callable
+//! function (e.g. `block_reduce_add_u32_kernel`) plus a top-level
 //! `*_buffer` convenience kernel. See `gpu_kernel.rs` for the
-//! full list.
+//! full list; `device_wide.rs` holds the Tier-3 host wrappers.
 //!
 //! Still queued: segmented reduce / scan, multi-bit LSD radix,
 //! key-value variants.
@@ -129,6 +135,10 @@
 pub mod reference;
 
 #[cfg(feature = "gpu")]
+mod device_wide;
+#[cfg(feature = "gpu")]
 mod gpu_kernel;
+#[cfg(feature = "gpu")]
+pub use device_wide::*;
 #[cfg(feature = "gpu")]
 pub use gpu_kernel::*;

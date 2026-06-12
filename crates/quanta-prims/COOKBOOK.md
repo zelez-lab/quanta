@@ -222,9 +222,8 @@ gpu.dispatch(&wave, (256 * num_blocks) as u32)?.wait()?;
 // Each 256-element block is now sorted ascending.
 ```
 
-Each block sorts independently. To produce a globally-sorted
-output, chain a multi-block merge — out of scope for v0.1
-(planned Tier 2).
+Each block sorts independently. For a globally-sorted output,
+use the Tier-3 `device_sort_u32` wrapper below.
 
 ---
 
@@ -282,6 +281,30 @@ gpu.dispatch(&wave, n as u32)?.wait()?;
 
 `top_k_out[b * k + i]` is the i-th-largest value of block `b`,
 with i=0 the maximum. `k <= 256`.
+
+---
+
+## Tier-3 device-wide wrappers
+
+The block kernels above leave you with *per-block* results. When
+you want the whole-buffer answer and your data starts on the
+host, the Tier-3 wrappers handle upload, padding, multi-pass
+orchestration, and readback in one call:
+
+```rust,ignore
+use quanta_prims::{device_reduce_add_u32, device_sort_u32};
+
+// Any length ≥ 1; multi-pass block reduce under the hood.
+let total: u32 = device_reduce_add_u32(&gpu, &data)?;
+
+// Any length; device-wide bitonic network under the hood.
+let sorted: Vec<u32> = device_sort_u32(&gpu, &data)?;
+```
+
+The full reduce family is `device_reduce_{add,min,max}_{u32,i32,f32}`.
+These are convenience demos: each call round-trips host ↔ GPU,
+so inside a larger pipeline prefer the `block_*` kernels and
+keep intermediates resident.
 
 ---
 

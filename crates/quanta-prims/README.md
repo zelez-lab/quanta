@@ -14,7 +14,7 @@ the same Rust source.
 
 ## Status
 
-**v0.1.0-alpha.2** — Tier 1 + Tier 2 shipped:
+**v0.1.0-alpha.2** — Tier 1 + Tier 2 + Tier 3 shipped:
 
 | Primitive                                  | Status                     |
 | ------------------------------------------ | -------------------------- |
@@ -26,12 +26,15 @@ the same Rust source.
 | `block_compact_u32_buffer`                 | ✅ verified (Tier 2)       |
 | `block_histogram_u32_buffer`               | ✅ verified Metal (Tier 2) |
 | `block_top_k_u32_buffer`                   | ✅ verified (Tier 2)       |
+| `device_reduce_{add,min,max}` × {u32, i32, f32} | ✅ verified (Tier 3)  |
+| `device_sort_u32` (device-wide bitonic)    | ✅ verified (Tier 3)       |
 | Segmented reduce / scan                    | queued                     |
 | Multi-bit LSD radix                        | queued                     |
 
-16 GPU kernels. 56 differential tests on Metal. 8 Lean
-correctness theorems + 12 Verus operational invariants. See
-[CHANGELOG.md](CHANGELOG.md) for the release history.
+17 GPU kernels + 10 device-wide host wrappers. 75 differential
+tests on Metal. 8 Lean correctness theorems + 12 Verus
+operational invariants. See [CHANGELOG.md](CHANGELOG.md) for
+the release history.
 
 ## Quick example — block reduce inside your own kernel
 
@@ -80,6 +83,24 @@ wave.bind(1, &output);
 gpu.dispatch(&wave, n as u32)?.wait()?;
 // `output` now holds the input sorted ascending.
 ```
+
+## Quick example — device-wide one-liners (Tier 3)
+
+For the "I just have a slice and want it processed" case, the
+Tier-3 wrappers handle upload, padding, multi-pass
+orchestration, and readback. Any input length:
+
+```rust,ignore
+use quanta_prims::{device_reduce_add_u32, device_sort_u32};
+
+let gpu = quanta::init()?;
+let total = device_reduce_add_u32(&gpu, &data)?;
+let sorted = device_sort_u32(&gpu, &data)?;
+```
+
+These wrap the block primitives; if your data already lives on
+the GPU inside a larger pipeline, call the `block_*` kernels
+directly and keep intermediates resident.
 
 ## Why a "block-cooperative" library
 
