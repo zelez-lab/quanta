@@ -23,6 +23,22 @@ and the project uses [Semantic Versioning](https://semver.org/).
   `device_sort_u32`: one device-wide compare-exchange pass at
   runtime stride `(k, j)`; the dispatch boundary between
   passes is the device-wide barrier of the network.
+- **Tier 2 — `block_sort_kv_u32_buffer`** — key-value block sort:
+  the bitonic network from the original keys-only sort, permuting
+  a u32 payload alongside the keys. Unstable (pair multisets
+  preserved, equal-key value order not). 5 differential tests.
+- **Tier 2 — `block_segmented_scan_add_u32_buffer` /
+  `block_segmented_reduce_add_u32_buffer`** — head-flag segmented
+  prefix sum and per-segment totals (CUB convention: non-zero
+  flag starts a segment; block boundaries restart). Hillis-Steele
+  over (value, flag) pairs in shared memory — the pair operator
+  can't ride the subgroup scan intrinsics. Reduce also counts
+  heads in-flight and scatters each segment's total contiguously
+  (compact-style output + per-block counts). 7 differential
+  tests on Metal. Shipping this kernel flushed out lowering
+  variant #5 (loop-carried `d <<= 1` swallowed by the symbolic
+  ScaledIdx rebinding) — fixed in `quanta-wasm-lowering` with
+  wat-level witnesses.
 - **Tier 2 — `block_compact_u32_buffer`** — per-block stream
   compaction with explicit predicate array. 5 differential
   tests on Metal.
@@ -40,6 +56,17 @@ and the project uses [Semantic Versioning](https://semver.org/).
   used by the differential tests.
 
 ### Changed
+
+- **`block_radix_sort_u32_buffer` is now a real LSD radix sort** —
+  16 stable passes of 2-bit digits with packed 16-bit counter
+  prefix sums — replacing the v0.1 bitonic body (the name was
+  chosen for exactly this swap; callers see the same ascending
+  contract, now stable). Unblocked by the lowering variant #5 fix:
+  the radix loops are too big for LLVM to unroll, so they reach
+  the lowering as loops, which previously dropped the strength-
+  reduced `d <<= 1` induction updates. Indicator-arithmetic digit
+  selection dodges LLVM's stack lookup tables (unsupported
+  `i32.load` addresses). 2 new digit-saturation tests.
 
 - **All block-reduce and block-scan device fns** gain a
   `core::hint::assert_unchecked(sub_size > 0)` after the

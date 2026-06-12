@@ -6,9 +6,9 @@
 //! block before/after sorting plus a correctness check against
 //! the CPU reference.
 //!
-//! "Bucket sort" in the name nods to the classic radix flavour;
-//! the v0.1 algorithm is bitonic underneath. The API name keeps
-//! the radix terminology for forward compatibility.
+//! "Bucket sort" in the name nods to the classic radix flavour —
+//! and since the LSD-radix swap the algorithm underneath really
+//! is radix: 16 stable passes of 2-bit digits.
 //!
 //! Backend: real GPU. See `block_sum.rs` for why this example
 //! needs a real GPU rather than `init_cpu()`.

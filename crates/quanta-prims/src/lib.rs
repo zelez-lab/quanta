@@ -90,15 +90,20 @@
 //! cross-warp totals via shared memory + an exclusive scan over
 //! those totals, then apply the per-warp prefix offset.
 //!
-//! **Block sort** is bitonic (not LSD radix) for v0.1 — see
-//! `gpu_kernel.rs`'s comment block for the rationale.
+//! **Block sort** (`block_radix_sort_u32_buffer`) is a stable
+//! multi-bit LSD radix sort: 16 passes of 2-bit digits, each pass
+//! ranking via a packed Hillis-Steele prefix sum and scattering
+//! stably. The key-value variant (`block_sort_kv_u32_buffer`)
+//! uses the bitonic compare-exchange network instead (unstable,
+//! but moves payloads with one shared array per stream).
 //!
 //! ## v0.1 scope
 //!
 //! Tier 1 (load-bearing core, all shipped):
 //! - `block_reduce_add` / `min` / `max` × `{u32, i32, f32}`
 //! - `block_scan_add` × `{u32, i32, f32}`
-//! - `block_radix_sort_u32` (bitonic, 256 keys per workgroup)
+//! - `block_radix_sort_u32` (stable LSD radix, 256 keys per
+//!   workgroup)
 //!
 //! Tier 2 (all shipped):
 //! - `block_compact_u32_buffer` — per-block stream compaction
@@ -107,6 +112,11 @@
 //!   histogram via shared-memory atomics (Metal only today)
 //! - `block_top_k_u32_buffer` — per-block top-K selection
 //!   (sort-based, K up to 256)
+//! - `block_segmented_scan_add_u32_buffer` /
+//!   `block_segmented_reduce_add_u32_buffer` — head-flag
+//!   segmented prefix sum and per-segment totals
+//! - `block_sort_kv_u32_buffer` — key-value sort (bitonic,
+//!   payload permuted alongside the keys)
 //!
 //! Tier 3 (device-wide convenience wrappers, all shipped):
 //! - `device_reduce_{add,min,max}_{u32,i32,f32}` — host slice in,
@@ -119,8 +129,8 @@
 //! `*_buffer` convenience kernel. See `gpu_kernel.rs` for the
 //! full list; `device_wide.rs` holds the Tier-3 host wrappers.
 //!
-//! Still queued: segmented reduce / scan, multi-bit LSD radix,
-//! key-value variants.
+//! Still queued: key-value LSD radix (stable kv sort), segmented
+//! sort.
 
 // Subgroup intrinsics are FFI imports — the `unsafe` is unavoidable
 // at the call site. The reference module is pure safe Rust; only

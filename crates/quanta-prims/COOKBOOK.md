@@ -282,6 +282,55 @@ gpu.dispatch(&wave, n as u32)?.wait()?;
 `top_k_out[b * k + i]` is the i-th-largest value of block `b`,
 with i=0 the maximum. `k <= 256`.
 
+### `block_sort_kv_u32_buffer`
+
+Sort (key, value) pairs by key within each 256-element block —
+the "sort indices along with the data" workhorse:
+
+```rust,ignore
+use quanta_prims::block_sort_kv_u32_buffer;
+
+let mut wave = block_sort_kv_u32_buffer(&gpu)?;
+wave.bind(0, &keys);      // [u32; n]
+wave.bind(1, &vals);      // [u32; n], e.g. original indices
+wave.bind(2, &keys_out);  // [u32; n]
+wave.bind(3, &vals_out);  // [u32; n]
+gpu.dispatch(&wave, n as u32)?.wait()?;
+```
+
+Bitonic, therefore **unstable**: values attached to equal keys may
+come out in any order. Keys-only callers get the stable LSD radix
+via `block_radix_sort_u32_buffer`.
+
+### `block_segmented_scan_add_u32_buffer` / `block_segmented_reduce_add_u32_buffer`
+
+Head-flag segmented prefix sums (CUB convention): a non-zero
+`flags[i]` starts a new segment at `i`; every 256-element block
+boundary also restarts.
+
+```rust,ignore
+use quanta_prims::{block_segmented_scan_add_u32_buffer,
+                   block_segmented_reduce_add_u32_buffer};
+
+// Scan: out[i] = running sum since the latest segment head.
+let mut wave = block_segmented_scan_add_u32_buffer(&gpu)?;
+wave.bind(0, &data);   // [u32; n]
+wave.bind(1, &flags);  // [u32; n], non-zero = segment head
+wave.bind(2, &out);    // [u32; n]
+gpu.dispatch(&wave, n as u32)?.wait()?;
+
+// Reduce: one total per segment, packed compact-style.
+let mut wave = block_segmented_reduce_add_u32_buffer(&gpu)?;
+wave.bind(0, &data);
+wave.bind(1, &flags);
+wave.bind(2, &totals); // [u32; n], totals[b*256..b*256+counts[b]]
+wave.bind(3, &counts); // [u32; n / 256], segments per block
+gpu.dispatch(&wave, n as u32)?.wait()?;
+```
+
+Zero-fill `totals` before dispatch if you read past each block's
+segment count.
+
 ---
 
 ## Tier-3 device-wide wrappers

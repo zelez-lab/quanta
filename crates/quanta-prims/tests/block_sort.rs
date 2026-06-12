@@ -125,3 +125,30 @@ fn sorts_multiple_blocks_independently() {
     assert_eq!(block0, expected_block0);
     assert_eq!(block1, expected_block1);
 }
+
+#[test]
+fn sorts_keys_differing_only_in_top_digit() {
+    // All 14 low digit-pairs identical across lanes → every scan
+    // pass routes all 256 keys through ONE digit partition (count
+    // 256, the 16-bit packed-counter maximum). Only the final
+    // 2-bit pass discriminates.
+    let Some(gpu) = try_gpu() else { return };
+    let data: Vec<u32> = (0..256u32)
+        .rev()
+        .map(|i| ((i & 3) << 30) | 0x15555555)
+        .collect();
+    let mut expected = data.clone();
+    expected.sort_unstable();
+    assert_eq!(run_sort(&gpu, &data), expected);
+}
+
+#[test]
+fn sorts_keys_differing_only_in_bottom_digit() {
+    // Mirror case: only pass 0 discriminates; the other 15 passes
+    // each see a single full partition.
+    let Some(gpu) = try_gpu() else { return };
+    let data: Vec<u32> = (0..256u32).map(|i| 0xAAAAAAA8 | (3 - (i & 3))).collect();
+    let mut expected = data.clone();
+    expected.sort_unstable();
+    assert_eq!(run_sort(&gpu, &data), expected);
+}

@@ -739,33 +739,39 @@ pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
     out[i as usize] = scan_result;
 }
 
-// ── Block sort (bitonic) ────────────────────────────────────────
+// ── Block sort (LSD radix) ──────────────────────────────────────
 //
-// Sorts a 256-element block of u32 keys per workgroup using
-// **bitonic sort**, not radix. Bitonic was chosen for v0.1 over
-// the more theoretically efficient radix LSD sort because:
+// Sorts a 256-element block of u32 keys per workgroup using a
+// **multi-bit LSD radix sort**: 16 passes over 2-bit digits, each
+// pass ranking the keys by a packed prefix sum and scattering them
+// stably into their digit's partition.
 //
-//   - Bitonic's access pattern is data-independent: at each
-//     stage every lane swaps with lane `self ^ k` for some `k`.
-//     No prefix-sum dependency, no ping-pong device fn calls.
-//   - Single shared-memory buffer + arithmetic, no auxiliary
-//     scratch beyond `barrier` + `shared_load/store`. The kernel
-//     macro's WASM-route lowerer handles this cleanly.
-//   - For BLOCK = 256, bitonic runs 36 compare-exchange stages
-//     (8 outer steps × up to 8 inner steps each); LSD radix runs
-//     32 passes × 1 block_scan_add each. Comparable wall-clock
-//     work; bitonic wins on simplicity.
+// v0.1 shipped this entry point as bitonic (the name was chosen
+// for forward-compatibility), because the lowerer of the day
+// couldn't carry the radix loops. Lowering variant #5's fix
+// (loop-carried ScaledIdx materialization, 2026-06-12) unblocked
+// the real algorithm. The bitonic network lives on in
+// `block_sort_kv_u32_buffer` and the inlined top-k body.
 //
-// Radix-sort variants (multi-bit, segmented, key-value) will
-// land in Tier 2 once the device-fn inliner handles nested
-// control flow in the kernel lowerer. The function is named
-// `block_radix_sort_*` for API forward-compatibility — callers
-// don't see the algorithm choice.
+// Packed ranking: per pass, each lane one-hots its digit into two
+// u32s — digits 0/1 in the low/high 16 bits of `s01`, digits 2/3
+// in `s23`. One Hillis-Steele inclusive scan over both arrays
+// yields, per lane, the count of every digit up to and including
+// itself; lane 255 holds the per-digit totals, from which the
+// partition bases follow. Counts max out at 256, comfortably
+// inside 16 bits — no overflow case, unlike the classic 4×8-bit
+// packing.
+//
+// Stability: rank within a digit is the count of same-digit lanes
+// at or below me, which is monotone in lane index — equal keys
+// keep their relative order in every pass, making the whole sort
+// stable (the property bitonic lacked).
 
 /// Convenience kernel: sort each 256-element block of u32 keys
-/// in ascending order. Workgroup size 256, one workgroup per
-/// block. Caller dispatches with `quark_count = 256 * num_blocks`
-/// and the same-sized output buffer.
+/// in ascending order — stable LSD radix, 16 passes of 2-bit
+/// digits. Workgroup size 256, one workgroup per block. Caller
+/// dispatches with `quark_count = 256 * num_blocks` and the
+/// same-sized output buffer.
 ///
 /// **Block-local sort.** Each 256-element block is sorted
 /// independently of the others. For a globally-sorted output
@@ -774,81 +780,84 @@ pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
 #[quanta::kernel(workgroup = [256])]
 pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
     #[quanta::shared]
-    let buf: [u32; 256];
+    let kbuf: [u32; 256];
+    #[quanta::shared]
+    let s01: [u32; 256];
+    #[quanta::shared]
+    let s23: [u32; 256];
 
     let i = quark_id();
     let lane = proton_id();
 
-    buf[lane] = data[i as usize];
+    kbuf[lane] = data[i as usize];
     barrier();
 
-    // Bitonic sort outer step `k` doubles each iteration:
-    // k = 2, 4, 8, …, 256. For each `k` the inner step `j`
-    // halves from `k/2` down to 1; each lane swaps with
-    // `lane ^ j` if the direction-determined comparator says so.
-    //
-    // The lanes in a XOR-pair share the same `(lane & k)` bit
-    // (since they differ only in bit `j < k`), so both lanes
-    // agree on the pair's *direction*. They differ in `(lane &
-    // j)`, which tells each lane whether it is the lower-indexed
-    // partner. Combining: a lane should take the partner's value
-    // exactly when its role (min-keeper vs max-keeper) AND the
-    // partner's value disagree with what should be at this slot.
-    //
-    //   ascending = (lane & k) == 0      // direction
-    //   i_am_lower = (lane & j) == 0     // role within pair
-    //
-    // For ascending direction:
-    //   lower lane keeps min  -> takes partner if partner < me
-    //   upper lane keeps max  -> takes partner if partner > me
-    //
-    // The "take partner" condition is therefore controlled by
-    // `ascending == i_am_lower`: when both are true (ascending +
-    // I'm the lower lane) or both are false (descending + I'm
-    // the upper lane), the smaller-keeping rule applies. The
-    // opposite case uses the larger-keeping rule.
-    let mut k: u32 = 2u32;
-    while k <= 256u32 {
-        let mut j: u32 = k / 2u32;
-        while j > 0u32 {
-            let partner = lane ^ j;
-            let my_key = buf[lane];
-            let partner_key = buf[partner];
+    let mut shift: u32 = 0u32;
+    while shift < 32u32 {
+        let my_key = kbuf[lane];
+        let digit = (my_key >> shift) & 3u32;
 
-            // Compute `want_smaller` as a u32 bit expression
-            // rather than a `bool == bool` to dodge an LLVM
-            // constant-folding edge case observed on this path
-            // (the bool-equality compiled to `r35 = true` which
-            // killed the inner body).
-            //
-            // ascending_bit = ((lane >> log2(k)) & 1) == 0
-            // lower_bit     = ((lane & j) == 0)
-            // want_smaller  = ascending_bit == lower_bit
-            //               = (lane & k) == 0   iff   (lane & j) == 0
-            //               = ((lane & k) XOR (lane & j)) is "both same"
-            //               = !( ((lane & k) != 0) XOR ((lane & j) != 0) )
-            //
-            // Equivalently, packing the bits: bit_k = (lane & k) != 0,
-            // bit_j = (lane & j) != 0, want_smaller = (bit_k == bit_j).
-            // Encode as integer compare to keep LLVM honest.
-            let bit_k = if (lane & k) == 0u32 { 0u32 } else { 1u32 };
-            let bit_j = if (lane & j) == 0u32 { 0u32 } else { 1u32 };
-            let take_partner = if bit_k == bit_j {
-                partner_key < my_key
-            } else {
-                partner_key > my_key
-            };
-            let new_key = if take_partner { partner_key } else { my_key };
-            barrier();
-            buf[lane] = new_key;
-            barrier();
+        // One-hot the digit into the packed counter pair. Indicator
+        // arithmetic instead of an if-else-if chain: LLVM compiles a
+        // 4-way chain selecting between constants into a lookup
+        // table in linear-memory stack space, which the WASM-route
+        // lowerer rejects (`i32.load on non-buffer address`).
+        let s_0 = if digit == 0u32 { 1u32 } else { 0u32 };
+        let s_1 = if digit == 1u32 { 1u32 } else { 0u32 };
+        let s_2 = if digit == 2u32 { 1u32 } else { 0u32 };
+        let s_3 = if digit == 3u32 { 1u32 } else { 0u32 };
+        s01[lane] = s_0 + s_1 * 65536u32;
+        s23[lane] = s_2 + s_3 * 65536u32;
+        barrier();
 
-            j = j / 2u32;
+        // Inclusive Hillis-Steele scan over both packed arrays.
+        let mut d: u32 = 1u32;
+        while d < 256u32 {
+            let mut v01: u32 = s01[lane];
+            let mut v23: u32 = s23[lane];
+            if lane >= d {
+                v01 = v01 + s01[lane - d];
+                v23 = v23 + s23[lane - d];
+            }
+            barrier();
+            s01[lane] = v01;
+            s23[lane] = v23;
+            barrier();
+            d = d * 2u32;
         }
-        k = k * 2u32;
+
+        // Partition bases from lane 255's totals; own rank from
+        // the inclusive count (own one-hot included → ≥ 1 for the
+        // lane's actual digit). Same indicator-arithmetic selection
+        // as the one-hot above — exactly one s_d is 1, so the sum
+        // is the selected candidate; the wrapping_sub keeps the
+        // dead candidates' 0-1 underflow harmless.
+        let t01 = s01[255u32];
+        let t23 = s23[255u32];
+        let total0 = t01 & 65535u32;
+        let total1 = t01 >> 16u32;
+        let total2 = t23 & 65535u32;
+        let base1 = total0;
+        let base2 = base1 + total1;
+        let base3 = base2 + total2;
+        let inc01 = s01[lane];
+        let inc23 = s23[lane];
+        let rank0 = (inc01 & 65535u32).wrapping_sub(1u32);
+        let rank1 = base1 + (inc01 >> 16u32).wrapping_sub(1u32);
+        let rank2 = base2 + (inc23 & 65535u32).wrapping_sub(1u32);
+        let rank3 = base3 + (inc23 >> 16u32).wrapping_sub(1u32);
+        let my_pos: u32 = s_0 * rank0 + s_1 * rank1 + s_2 * rank2 + s_3 * rank3;
+
+        // Stable scatter: my_pos is a permutation of 0..256, and
+        // every lane read its key before this barrier.
+        barrier();
+        kbuf[my_pos] = my_key;
+        barrier();
+
+        shift = shift + 2u32;
     }
 
-    out[i as usize] = buf[lane];
+    out[i as usize] = kbuf[lane];
 }
 
 // ── Tier 2 — Block compact ───────────────────────────────────────
@@ -983,11 +992,12 @@ pub fn block_top_k_u32_buffer(data: &[u32], top_k_out: &mut [u32], k: u32) {
     buf[lane] = data[i as usize];
     barrier();
 
-    // Bitonic sort body — identical to block_radix_sort_u32_buffer.
-    // See its comments for the want_smaller derivation. Inlined
-    // because factoring it into a device fn would force the inliner
-    // to re-thread the nested-while-loop body and that path isn't
-    // exercised by anything else today.
+    // Bitonic sort body — same network as block_sort_kv_u32_buffer
+    // (keys only). See that kernel's comment block for the
+    // take_partner derivation. Inlined because factoring it into a
+    // device fn would force the inliner to re-thread the
+    // nested-while-loop body and that path isn't exercised by
+    // anything else today.
     let mut outer: u32 = 2u32;
     while outer <= 256u32 {
         let mut inner: u32 = outer / 2u32;
@@ -1017,6 +1027,231 @@ pub fn block_top_k_u32_buffer(data: &[u32], top_k_out: &mut [u32], k: u32) {
     // Lane `i` writes the (i+1)-th largest, which lives at buf[255-i].
     if lane < k {
         top_k_out[(block * k + lane) as usize] = buf[(255u32 - lane) as usize];
+    }
+}
+
+// ── Tier 2 — Block sort, key-value variant (bitonic) ─────────────
+//
+// Bitonic compare-exchange network over (key, value) pairs: outer
+// step `k` doubles 2..256, inner step `j` halves k/2..1, each lane
+// pairs with `lane ^ j`. The two lanes of a XOR-pair share the
+// `(lane & k)` direction bit and differ in `(lane & j)`, so:
+//
+//   ascending = (lane & k) == 0      // pair direction
+//   i_am_lower = (lane & j) == 0     // role within pair
+//   take_partner when (ascending == i_am_lower) ? partner < me
+//                                                : partner > me
+//
+// encoded as integer compares (bit_k == bit_j) to dodge an LLVM
+// bool-equality constant-folding edge case seen on this path.
+// The payload moves with its key in every exchange.
+//
+// NOT stable: bitonic reorders equal keys arbitrarily (equal-key
+// pairs never swap, but their relative order still shifts through
+// the network). The differential tests compare (key, value) pair
+// multisets for duplicate keys, exact sequences for unique keys.
+// For a stable keys-only sort use `block_radix_sort_u32_buffer`
+// (LSD radix).
+
+/// Convenience kernel: sort each 256-element block of (key, value)
+/// pairs ascending by key. Workgroup size 256, one workgroup per
+/// block; same dispatch contract as `block_radix_sort_u32_buffer`,
+/// with the payload buffers at slots 1 (in) and 3 (out).
+///
+/// **Block-local and unstable**: each block sorts independently,
+/// and equal keys may exchange their values' relative order.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_sort_kv_u32_buffer(
+    keys: &[u32],
+    vals: &[u32],
+    keys_out: &mut [u32],
+    vals_out: &mut [u32],
+) {
+    #[quanta::shared]
+    let kbuf: [u32; 256];
+    #[quanta::shared]
+    let vbuf: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    kbuf[lane] = keys[i as usize];
+    vbuf[lane] = vals[i as usize];
+    barrier();
+
+    let mut k: u32 = 2u32;
+    while k <= 256u32 {
+        let mut j: u32 = k / 2u32;
+        while j > 0u32 {
+            let partner = lane ^ j;
+            let my_key = kbuf[lane];
+            let partner_key = kbuf[partner];
+            let my_val = vbuf[lane];
+            let partner_val = vbuf[partner];
+
+            let bit_k = if (lane & k) == 0u32 { 0u32 } else { 1u32 };
+            let bit_j = if (lane & j) == 0u32 { 0u32 } else { 1u32 };
+            let take_partner = if bit_k == bit_j {
+                partner_key < my_key
+            } else {
+                partner_key > my_key
+            };
+            let new_key = if take_partner { partner_key } else { my_key };
+            let new_val = if take_partner { partner_val } else { my_val };
+            barrier();
+            kbuf[lane] = new_key;
+            vbuf[lane] = new_val;
+            barrier();
+
+            j = j / 2u32;
+        }
+        k = k * 2u32;
+    }
+
+    keys_out[i as usize] = kbuf[lane];
+    vals_out[i as usize] = vbuf[lane];
+}
+
+// ── Tier 2 — Segmented scan / reduce ─────────────────────────────
+//
+// Head-flag formulation (CUB / rocPRIM convention): a non-zero
+// flag marks the element as the head of a new segment; the running
+// sum restarts there. Block starts implicitly begin a segment —
+// the primitive is block-local like the rest of Tier 2.
+//
+// Algorithm: Hillis-Steele over (value, flag) pairs in shared
+// memory with the segmented-scan operator
+//
+//   (v_l, f_l) ⊕ (v_r, f_r) = (if f_r { v_r } else { v_l + v_r },
+//                              f_l | f_r)
+//
+// which is associative, so the doubling-stride scan applies. The
+// accumulated flag tells a lane "a segment head lies within my
+// combined window", blocking sums from flowing across it. The
+// subgroup scan intrinsics can't express the pair operator, so
+// unlike block_scan this runs fully in shared memory: log2(256)
+// = 8 rounds, read phase and write phase split by barriers (same
+// discipline as the bitonic sort above).
+
+/// Convenience kernel: per-block segmented inclusive prefix sum.
+/// `flags[i] != 0` starts a new segment at `i` (the head's output
+/// is its own value); every 256-element block boundary also starts
+/// one. Caller dispatches with `quark_count = data.len()` (a
+/// multiple of 256) and same-sized `flags` / `out` buffers.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_segmented_scan_add_u32_buffer(data: &[u32], flags: &[u32], out: &mut [u32]) {
+    #[quanta::shared]
+    let vals: [u32; 256];
+    #[quanta::shared]
+    let segf: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    vals[lane] = data[i as usize];
+    segf[lane] = flags[i as usize];
+    barrier();
+
+    let mut d: u32 = 1u32;
+    while d < 256u32 {
+        let mut v_new: u32 = vals[lane];
+        let mut f_new: u32 = segf[lane];
+        if lane >= d {
+            let v_prev = vals[lane - d];
+            let f_prev = segf[lane - d];
+            if f_new == 0u32 {
+                v_new = v_new + v_prev;
+            }
+            f_new = f_new | f_prev;
+        }
+        barrier();
+        vals[lane] = v_new;
+        segf[lane] = f_new;
+        barrier();
+        d = d * 2u32;
+    }
+
+    out[i as usize] = vals[lane];
+}
+
+/// Convenience kernel: per-block segmented reduce. One total per
+/// segment, written contiguously to the block's output region
+/// (`totals_out[block*256 + seg]`, same block-major convention as
+/// `block_compact_u32_buffer`); `counts_out[block]` gets the
+/// block's segment count. Slots past the count are left untouched
+/// — zero-fill `totals_out` before dispatch if you read past it.
+///
+/// Runs the segmented scan above plus a parallel head count; the
+/// last lane of each segment scatters the segment total to slot
+/// `head_count - 1`.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_segmented_reduce_add_u32_buffer(
+    data: &[u32],
+    flags: &[u32],
+    totals_out: &mut [u32],
+    counts_out: &mut [u32],
+) {
+    #[quanta::shared]
+    let vals: [u32; 256];
+    #[quanta::shared]
+    let segf: [u32; 256];
+    #[quanta::shared]
+    let heads: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    vals[lane] = data[i as usize];
+    // Lane 0 is always a segment head (block-local restart). The
+    // forced flag keeps the head count aligned with the output
+    // slot: segment index = inclusive head count - 1.
+    let mut f0: u32 = flags[i as usize];
+    if lane == 0u32 {
+        f0 = 1u32;
+    }
+    segf[lane] = f0;
+    heads[lane] = f0;
+    barrier();
+
+    let mut d: u32 = 1u32;
+    while d < 256u32 {
+        let mut v_new: u32 = vals[lane];
+        let mut f_new: u32 = segf[lane];
+        let mut c_new: u32 = heads[lane];
+        if lane >= d {
+            let v_prev = vals[lane - d];
+            let f_prev = segf[lane - d];
+            if f_new == 0u32 {
+                v_new = v_new + v_prev;
+            }
+            f_new = f_new | f_prev;
+            c_new = c_new + heads[lane - d];
+        }
+        barrier();
+        vals[lane] = v_new;
+        segf[lane] = f_new;
+        heads[lane] = c_new;
+        barrier();
+        d = d * 2u32;
+    }
+
+    // heads[] now holds the inclusive head count: heads increase by
+    // exactly 0 or 1 per lane, so lane+1 starts a segment iff its
+    // count exceeds mine. The last lane of each segment scatters.
+    let my_count = heads[lane];
+    let is_last: u32 = if lane == 255u32 {
+        1u32
+    } else if heads[lane + 1u32] == my_count + 1u32 {
+        1u32
+    } else {
+        0u32
+    };
+    if is_last == 1u32 {
+        totals_out[(block * 256u32 + (my_count - 1u32)) as usize] = vals[lane];
+    }
+    if lane == 255u32 {
+        counts_out[block as usize] = my_count;
     }
 }
 
@@ -1063,3 +1298,4 @@ pub fn global_bitonic_pass_u32(data: &mut [u32], k: u32, j: u32) {
         }
     }
 }
+

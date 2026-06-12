@@ -22,16 +22,17 @@ the same Rust source.
 | `block_reduce_min` × {u32, i32, f32}       | ✅ verified                |
 | `block_reduce_max` × {u32, i32, f32}       | ✅ verified                |
 | `block_scan_add`   × {u32, i32, f32}       | ✅ verified                |
-| `block_radix_sort_u32` (bitonic, 256 keys) | ✅ verified                |
+| `block_radix_sort_u32` (stable LSD radix)  | ✅ verified                |
 | `block_compact_u32_buffer`                 | ✅ verified (Tier 2)       |
 | `block_histogram_u32_buffer`               | ✅ verified Metal (Tier 2) |
 | `block_top_k_u32_buffer`                   | ✅ verified (Tier 2)       |
 | `device_reduce_{add,min,max}` × {u32, i32, f32} | ✅ verified (Tier 3)  |
 | `device_sort_u32` (device-wide bitonic)    | ✅ verified (Tier 3)       |
-| Segmented reduce / scan                    | queued                     |
-| Multi-bit LSD radix                        | queued                     |
+| `block_segmented_{scan,reduce}_add_u32`    | ✅ verified (Tier 2)       |
+| `block_sort_kv_u32` (bitonic, key-value)   | ✅ verified (Tier 2)       |
+| Key-value LSD radix / segmented sort       | queued                     |
 
-17 GPU kernels + 10 device-wide host wrappers. 75 differential
+20 GPU kernels + 10 device-wide host wrappers. 89 differential
 tests on Metal. 8 Lean correctness theorems + 12 Verus
 operational invariants. See [CHANGELOG.md](CHANGELOG.md) for
 the release history.
@@ -149,11 +150,13 @@ typical 256.
 3. **Apply prefix** — every lane adds `scratch[warp_id]` to its
    warp-local result.
 
-**Block sort** ships as bitonic (not LSD radix) for v0.1:
-36 compare-exchange stages over 256 keys; data-independent
-access pattern (`partner = lane ^ k` for each stage). LSD radix
-variants are queued for Tier 2 once the device-fn inliner
-handles nested control flow.
+**Block sort** is a stable multi-bit LSD radix: 16 passes over
+2-bit digits, each pass one-hotting the digit into packed 16-bit
+counters, ranking via a shared-memory Hillis-Steele prefix sum,
+and scattering stably into the digit partitions. The key-value
+variant (`block_sort_kv_u32_buffer`) uses the bitonic
+compare-exchange network instead — unstable, but it moves the
+payload with one shared array per stream and no rank pass.
 
 ## Documentation
 

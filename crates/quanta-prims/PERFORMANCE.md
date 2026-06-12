@@ -59,9 +59,10 @@ Tier 2 caveats:
   call; build + upload is included in the wall time.
 - **histogram** likewise uploads a per-element bucket index
   buffer.
-- **top-k** does the same bitonic-sort work as `radix_sort` plus
-  a conditional write — so the wall is essentially identical to
-  the sort line.
+- **top-k** runs an inlined bitonic sort plus a conditional
+  write. (Note: `radix_sort` numbers below predate the LSD-radix
+  body swap — re-bench before quoting them for the new
+  algorithm; top-k still uses the bitonic network.)
 
 ### GPU vs CPU head-to-head at N = 16 384
 

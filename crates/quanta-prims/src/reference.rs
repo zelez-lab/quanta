@@ -257,6 +257,152 @@ pub fn top_k_u32_blocks(data: &[u32], top_k_out: &mut [u32], block_size: usize, 
     }
 }
 
+/// Per-block segmented inclusive prefix sum with head flags.
+///
+/// Reference impl for `block_segmented_scan_add_u32_buffer`. A
+/// non-zero `flags[i]` marks element `i` as the head of a new
+/// segment: the running sum restarts there (inclusive — the head's
+/// output is its own value). Block starts always begin a new
+/// segment, flag or not (the primitive is block-local).
+///
+/// # Example
+///
+/// ```
+/// use quanta_prims::reference::segmented_scan_add_u32_blocks;
+///
+/// let data  = [1u32, 2, 3, 4, 5, 6, 7, 8];
+/// let flags = [0u32, 0, 1, 0, 0, 1, 0, 0]; // block_size = 4
+/// let mut out = [0u32; 8];
+/// segmented_scan_add_u32_blocks(&data, &flags, &mut out, 4);
+/// // Block 0: segments [1,2] and [3,4]  → [1, 3, 3, 7].
+/// // Block 1: segments [5] and [6,7,8]  → [5, 6, 13, 21].
+/// assert_eq!(out, [1, 3, 3, 7, 5, 6, 13, 21]);
+/// ```
+pub fn segmented_scan_add_u32_blocks(
+    data: &[u32],
+    flags: &[u32],
+    out: &mut [u32],
+    block_size: usize,
+) {
+    assert_eq!(flags.len(), data.len());
+    assert_eq!(out.len(), data.len());
+    let num_blocks = data.len() / block_size;
+    for b in 0..num_blocks {
+        let start = b * block_size;
+        let mut acc = 0u32;
+        for i in 0..block_size {
+            if i == 0 || flags[start + i] != 0 {
+                acc = data[start + i];
+            } else {
+                acc = acc.wrapping_add(data[start + i]);
+            }
+            out[start + i] = acc;
+        }
+    }
+}
+
+/// Per-block segmented reduce with head flags. For each block,
+/// emits one total per segment, written contiguously to the
+/// block's region of `totals_out` (block-major, same convention
+/// as `compact_u32_blocks`); `counts_out[b]` holds the number of
+/// segments in block `b`. Slots past the segment count are zeroed.
+///
+/// Reference impl for `block_segmented_reduce_add_u32_buffer`.
+/// Segment semantics match `segmented_scan_add_u32_blocks`: a
+/// non-zero flag starts a new segment, and so does every block
+/// start.
+///
+/// # Example
+///
+/// ```
+/// use quanta_prims::reference::segmented_reduce_add_u32_blocks;
+///
+/// let data  = [1u32, 2, 3, 4, 5, 6, 7, 8];
+/// let flags = [0u32, 0, 1, 0, 0, 1, 0, 0]; // block_size = 4
+/// let mut totals = [0u32; 8];
+/// let mut counts = [0u32; 2];
+/// segmented_reduce_add_u32_blocks(&data, &flags, &mut totals, &mut counts, 4);
+/// // Block 0: segments [1,2] and [3,4]  → totals 3, 7.
+/// // Block 1: segments [5] and [6,7,8]  → totals 5, 21.
+/// assert_eq!(&totals[0..2], &[3, 7]);
+/// assert_eq!(&totals[4..6], &[5, 21]);
+/// assert_eq!(counts, [2, 2]);
+/// ```
+pub fn segmented_reduce_add_u32_blocks(
+    data: &[u32],
+    flags: &[u32],
+    totals_out: &mut [u32],
+    counts_out: &mut [u32],
+    block_size: usize,
+) {
+    assert_eq!(flags.len(), data.len());
+    assert_eq!(totals_out.len(), data.len());
+    let num_blocks = data.len() / block_size;
+    assert_eq!(counts_out.len(), num_blocks);
+    totals_out.fill(0);
+    for b in 0..num_blocks {
+        let start = b * block_size;
+        let mut seg = 0usize;
+        let mut acc = 0u32;
+        for i in 0..block_size {
+            if i == 0 || flags[start + i] != 0 {
+                if i != 0 {
+                    totals_out[start + seg] = acc;
+                    seg += 1;
+                }
+                acc = data[start + i];
+            } else {
+                acc = acc.wrapping_add(data[start + i]);
+            }
+        }
+        totals_out[start + seg] = acc;
+        counts_out[b] = (seg + 1) as u32;
+    }
+}
+
+/// Per-block key-value sort: each `block_size`-sized chunk of
+/// `(keys, vals)` is sorted ascending by key, values permuted
+/// alongside. Returns the sorted pair of vectors.
+///
+/// Reference impl for `block_sort_kv_u32_buffer`. Uses a stable
+/// sort — the GPU kernel is bitonic and therefore unstable, so
+/// differential tests with duplicate keys must compare pair
+/// multisets, not value sequences.
+///
+/// # Example
+///
+/// ```
+/// use quanta_prims::reference::sort_kv_u32_blocks;
+///
+/// let keys = [3u32, 1, 4, 1, 9, 2, 6, 5];
+/// let vals = [30u32, 10, 40, 11, 90, 20, 60, 50];
+/// let (k, v) = sort_kv_u32_blocks(&keys, &vals, 4);
+/// // Block 0: keys [1, 1, 3, 4], vals follow their keys.
+/// assert_eq!(&k[0..4], &[1, 1, 3, 4]);
+/// assert_eq!(&v[0..4], &[10, 11, 30, 40]);
+/// // Block 1: keys [2, 5, 6, 9].
+/// assert_eq!(&k[4..8], &[2, 5, 6, 9]);
+/// assert_eq!(&v[4..8], &[20, 50, 60, 90]);
+/// ```
+pub fn sort_kv_u32_blocks(keys: &[u32], vals: &[u32], block_size: usize) -> (Vec<u32>, Vec<u32>) {
+    assert_eq!(keys.len(), vals.len());
+    let mut out_k = Vec::with_capacity(keys.len());
+    let mut out_v = Vec::with_capacity(vals.len());
+    let num_blocks = keys.len() / block_size;
+    for b in 0..num_blocks {
+        let start = b * block_size;
+        let mut pairs: Vec<(u32, u32)> = keys[start..start + block_size]
+            .iter()
+            .copied()
+            .zip(vals[start..start + block_size].iter().copied())
+            .collect();
+        pairs.sort_by_key(|&(k, _)| k);
+        out_k.extend(pairs.iter().map(|&(k, _)| k));
+        out_v.extend(pairs.iter().map(|&(_, v)| v));
+    }
+    (out_k, out_v)
+}
+
 /// Sort a `u32` slice into ascending order, returning a new
 /// vector. Reference impl for `block_radix_sort_u32_kernel`.
 ///
