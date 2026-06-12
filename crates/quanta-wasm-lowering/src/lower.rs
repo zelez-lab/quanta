@@ -22,7 +22,6 @@ use quanta_ir::{
     AtomicOp, BinOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, MemoryOrder, Reg,
     ScalarType,
 };
-use std::collections::HashSet;
 
 use crate::{
     FunctionBodyInfo, FunctionKind, LoweringError, Module, ParamKind, RawInstr, SideTable, WasmTy,
@@ -151,32 +150,16 @@ struct LowerCtx<'a> {
     /// Known imported function indices keyed by their import name —
     /// used to recognize `call $quark_id` etc.
     intrinsic_names: Vec<String>,
-    /// Option C — position-aware redirect mechanism. When `true`,
-    /// br/br_if to non-Loop Block targets `record_br_at` the target
-    /// frame instead of installing an empty Branch + extending the
-    /// redirect chain. The Block-close handler reconstructs nested
-    /// `Branch{cond, then, else}` from the recorded positions.
-    ///
-    /// **Default: ON.** Set `QUANTA_LOWERING_V1=1` at lowerer entry
-    /// to opt out (falls back to the legacy `install_redirect_at`
-    /// path). See memory `redirect-chain-substrate-redesign` for the
-    /// full plan and `compact-on-metal-root-cause-2026-06-11` for
-    /// the bugs closed by v2.
-    use_v2: bool,
 }
 
-/// Option C — one br/br_if's intent recorded on its target frame.
+/// One br/br_if's intent recorded on its target frame.
 ///
-/// Replaces the v1 mechanism where each br_if installed an empty
-/// `Branch{cond, then=[], else=[]}` to the target's sink and steered
-/// subsequent emits into the Branch's `else_ops`. Under v2, no
-/// Branch is materialised eagerly; instead we mark the target frame
-/// with WHERE the br_if happened (`sink_position`) and WHAT its
-/// cond was. At end-of-frame, the records are walked in reverse and
-/// the `frame.ops[sink_position..]` are wrapped in real
+/// No Branch is materialised eagerly; we mark the target frame with
+/// WHERE the br_if happened (`sink_position`) and WHAT its cond was.
+/// At end-of-frame, the records are walked in reverse and the
+/// `frame.ops[sink_position..]` are wrapped in real
 /// `Branch{cond, then, else}` ops reflecting the actual taken /
 /// fall-through paths.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 struct BrIfRecord {
     /// Index into the target frame's `ops` where the br/br_if fired.
@@ -197,21 +180,6 @@ struct BrIfRecord {
 struct Frame {
     kind: FrameKind,
     ops: Vec<KernelOp>,
-    /// Path through nested `Branch.else_ops` where the *next* op
-    /// emitted to this frame should land. Empty = push directly to
-    /// `ops`. Each entry is the index of a `KernelOp::Branch` whose
-    /// `else_ops` is the next descent step.
-    ///
-    /// Used to model WASM `br`/`br_if` to non-Loop targets without a
-    /// labeled-break primitive in Quanta IR. When `br_if cond N`
-    /// targets a Block frame, we push `Branch { cond, then_ops: [],
-    /// else_ops: [] }` to that frame's current sink and append its
-    /// index to the redirect path. From then on, every op emitted to
-    /// that frame (and every inner frame that closes into it) flows
-    /// into the Branch's `else_ops` — i.e. runs only when cond is
-    /// false. Nests: a second br_if to the same frame chains another
-    /// Branch inside the first's `else_ops`.
-    redirect: Vec<usize>,
     /// Snapshot of `(local_idx → val)` taken at frame entry.
     /// Used at frame close: any local whose current `val` differs
     /// from the snapshot was modified inside this frame, and its
@@ -225,11 +193,10 @@ struct Frame {
     /// no merge is needed. See workspace design doc at
     /// `roadmap/_design/wasm_local_renaming.md`.
     local_snapshot: Vec<(u32, Option<SymVal>)>,
-    /// Option C — br/br_if records targeting this frame. Populated
-    /// only when `LowerCtx::use_v2` is true. Empty under v1. See
-    /// `BrIfRecord` for the wrap-at-end-of-frame semantics.
+    /// br/br_if records targeting this frame. See `BrIfRecord`
+    /// for the wrap-at-end-of-frame semantics.
     brifs: Vec<BrIfRecord>,
-    /// Option C — snapshot of parent.brifs.len() at the moment THIS
+    /// Snapshot of parent.brifs.len() at the moment THIS
     /// frame opened. Used at this frame's close to bump every parent
     /// brif appended during this frame's lifetime by `self.ops.len()`.
     ///
@@ -272,7 +239,7 @@ enum FrameKind {
 /// Lightweight discriminant tag used to peek at a frame's kind without
 /// holding a borrow — needed when we want to inspect the target of a
 /// `br`/`br_if` then mutate it.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum FrameKindTag {
     Function,
     Block,
@@ -344,19 +311,6 @@ impl<'a> LowerCtx<'a> {
             }
         }
 
-        // Option C — read env var once at lowerer entry. The
-        // position-aware redirect path is ON by default; set
-        // QUANTA_LOWERING_V1=1 as an opt-out escape hatch to fall
-        // back to the legacy install_redirect_at + redirect-chain
-        // mechanism. (Empirically v2 closes the PTRD-shape and
-        // compact-on-Metal bugs that v1 has, and passes the entire
-        // 764-test workspace + 57-test prims surface; no known
-        // regressions. The opt-out exists as a safety net while
-        // v1 dead-code removal is pending.)
-        let use_v2 = !std::env::var("QUANTA_LOWERING_V1")
-            .map(|v| v == "1")
-            .unwrap_or(false);
-
         Self {
             side_table,
             param_types,
@@ -367,14 +321,12 @@ impl<'a> LowerCtx<'a> {
             frames: vec![Frame {
                 kind: FrameKind::Function,
                 ops: Vec::new(),
-                redirect: Vec::new(),
                 local_snapshot: Vec::new(),
                 brifs: Vec::new(),
                 parent_brifs_at_open: 0,
             }],
             next_reg: 0,
             intrinsic_names,
-            use_v2,
         }
     }
 
@@ -384,39 +336,17 @@ impl<'a> LowerCtx<'a> {
         r
     }
 
-    /// Append an op to the current (topmost) frame, honoring its
-    /// redirect chain. See `Frame::redirect`.
+    /// Append an op to the current (topmost) frame.
     fn emit(&mut self, op: KernelOp) {
         let top = self.frames.len() - 1;
-        Self::sink_at_mut(&mut self.frames[top]).push(op);
+        self.frames[top].ops.push(op);
     }
 
-    /// Append a sequence of ops to a specific frame's current sink
-    /// (honoring its redirect chain). Used when an inner frame closes
-    /// and its accumulated ops splice into the parent's sink — the
-    /// parent might be in a redirect after a br_if.
+    /// Append a sequence of ops to a specific frame. Used when an
+    /// inner frame closes and its accumulated ops splice into the
+    /// parent.
     fn splice_into_frame(target: &mut Frame, ops: impl IntoIterator<Item = KernelOp>) {
-        let sink = Self::sink_at_mut(target);
-        for op in ops {
-            sink.push(op);
-        }
-    }
-
-    /// Resolve a frame's current sink: walks `redirect` indices into
-    /// nested `Branch.else_ops`. Empty redirect = `frame.ops`.
-    fn sink_at_mut(frame: &mut Frame) -> &mut Vec<KernelOp> {
-        let mut sink = &mut frame.ops;
-        for &idx in &frame.redirect {
-            match &mut sink[idx] {
-                KernelOp::Branch { else_ops, .. } => {
-                    sink = else_ops;
-                }
-                other => {
-                    panic!("redirect chain pointed at non-Branch op: {other:?} (lowering bug)")
-                }
-            }
-        }
-        sink
+        target.ops.extend(ops);
     }
 
     /// Inspect a frame N levels above the current top (0 = current).
@@ -433,10 +363,10 @@ impl<'a> LowerCtx<'a> {
 
     /// True if any frame strictly between the top and `depth` is a
     /// `KernelOp::Loop`. Used by `Br`/`BrIf` to decide whether the
-    /// branch crosses a loop boundary — if so, the redirect-chain
-    /// approach would leave a register referenced outside the loop
-    /// body it was defined in. Falls back to a `Break` (or
-    /// conditional Break) instead.
+    /// branch crosses a loop boundary — if so, a record-and-wrap on
+    /// the target would reference a register defined inside the loop
+    /// body from outside it. Falls back to a `Break` (or conditional
+    /// Break) instead.
     fn has_loop_between_top_and_depth(&self, depth: u32) -> bool {
         let top = self.frames.len();
         let target_idx = match top.checked_sub(1 + depth as usize) {
@@ -453,53 +383,32 @@ impl<'a> LowerCtx<'a> {
     }
 
     /// Materialize a boolean constant as a `KernelOp::Const` written
-    /// into the active sink of the frame at `depth`. Used by `Br` to
-    /// install a redirect with cond=true.
+    /// into the frame at `depth`. Used by `Br` when no prior br_if
+    /// cond exists to record with.
     fn emit_const_bool_to_target(&mut self, depth: u32, dst: Reg, value: bool) {
         let target = self
             .frame_at_depth_mut(depth)
             .expect("caller must verify target depth before emit_const_bool_to_target");
-        Self::sink_at_mut(target).push(KernelOp::Const {
+        target.ops.push(KernelOp::Const {
             dst,
             value: ConstValue::Bool(value),
         });
     }
 
-    /// Install a redirect on the frame at `depth`: append a
-    /// `Branch { cond, then_ops: [], else_ops: [] }` to that frame's
-    /// active sink and extend its redirect chain to point at the new
-    /// Branch's `else_ops`. Subsequent ops emitted to that frame —
-    /// and inner frames closing into it — flow into the Branch's
-    /// `else_ops`, modeling "skip to end of target frame on cond".
-    fn install_redirect_at(&mut self, depth: u32, cond: Reg) {
-        let target = self
-            .frame_at_depth_mut(depth)
-            .expect("caller must verify target depth before install_redirect_at");
-        let sink = Self::sink_at_mut(target);
-        let new_idx = sink.len();
-        sink.push(KernelOp::Branch {
-            cond,
-            then_ops: Vec::new(),
-            else_ops: Vec::new(),
-        });
-        target.redirect.push(new_idx);
-    }
-
-    /// Option C — record a br/br_if's intent on the target frame
-    /// without eagerly installing a Branch op or extending a
-    /// redirect chain. Subsequent emits at the target frame's
-    /// natural sink position. End-of-frame walks the records in
-    /// reverse and wraps `frame.ops[record.sink_position..]` in a
-    /// real `Branch{cond, then=[], else=that-range}`.
+    /// Record a br/br_if's intent on the target frame without
+    /// eagerly installing a Branch op. Subsequent emits land at the
+    /// target frame's natural sink position. End-of-frame walks the
+    /// records in reverse and wraps
+    /// `frame.ops[record.sink_position..]` in a real
+    /// `Branch{cond, then=[], else=that-range}`.
     ///
-    /// SESSION 1: BrIf to Block targets only. Br (unconditional)
-    /// and other frame kinds reserved for later sessions.
+    /// Targets: Block frames (Br / BrIf arms) and the Function frame
+    /// (top-level Return records an always-true BrIf).
     fn record_br_at(&mut self, depth: u32, cond: Reg, is_unconditional: bool) {
         let target = self
             .frame_at_depth_mut(depth)
             .expect("caller must verify target depth before record_br_at");
-        // Position = current end of target's natural ops. Under v2,
-        // the target frame's `redirect` is empty so sink_at_mut == ops.
+        // Position = current end of target's natural ops.
         // Ops emitted AFTER this record live at positions >=
         // sink_position; they execute on the br_if's fall-through path
         // (or, for unconditional Br, are dead code under the source
@@ -513,8 +422,8 @@ impl<'a> LowerCtx<'a> {
         });
     }
 
-    /// Option C — at end-of-Block, wrap the recorded br_ifs into
-    /// real `Branch{cond, then=[], else=ops[pos..]}` nests. Walks
+    /// At end-of-frame, wrap the recorded br_ifs into real
+    /// `Branch{cond, then=[], else=ops[pos..]}` nests. Walks
     /// records in reverse-position order so each wrap nests inside
     /// the previous one's else_ops.
     ///
@@ -525,11 +434,11 @@ impl<'a> LowerCtx<'a> {
     /// `Branch{cond2, then=[], else=…}`, replacing target.ops[p2..]
     /// with that single new op. Then wrap ops[p1..] (which now
     /// includes the new inner Branch op as its last element).
-    ///
-    /// SESSION 1 invariant: all records are BrIf (not unconditional
-    /// Br). Asserts otherwise so we notice if a code path slips
-    /// through. is_unconditional is wired but not yet handled.
-    fn reconstruct_block_brifs(&self, mut ops: Vec<KernelOp>, brifs: &[BrIfRecord]) -> Vec<KernelOp> {
+    fn reconstruct_block_brifs(
+        &self,
+        mut ops: Vec<KernelOp>,
+        brifs: &[BrIfRecord],
+    ) -> Vec<KernelOp> {
         // BrIf wraps as `Branch{cond, then=[], else=tail}` — tail
         // runs only when cond=false (fall-through path).
         //
@@ -565,7 +474,7 @@ impl<'a> LowerCtx<'a> {
         ops
     }
 
-    /// Option C v2 — materialize the br_if cond into a fresh
+    /// Materialize the br_if cond into a fresh
     /// register that is (a) zero-init declared in the TARGET frame's
     /// sink before any recorded wrap position, and (b) assigned via
     /// `Copy` at the SOURCE position (current sink, exactly where
@@ -619,25 +528,22 @@ impl<'a> LowerCtx<'a> {
         // Declare at the target frame, before the earliest recorded
         // wrap position, so every wrap's tail nests inside a region
         // where the declaration is visible.
-        //
-        // Safety: under v2 with Block targets, target.redirect is
-        // always empty (see record_br_at), so inserting into
-        // target.ops can't break a redirect-chain index.
         let target = self
             .frame_at_depth_mut(depth)
             .expect("caller must verify target depth before materialize_cond_for_v2");
-        debug_assert!(
-            target.redirect.is_empty(),
-            "v2 materialization requires target frame to have empty redirect chain; got {:?}",
-            target.redirect
-        );
         let insert_pos = target
             .brifs
             .iter()
             .map(|r| r.sink_position)
             .min()
             .unwrap_or(target.ops.len());
-        target.ops.insert(insert_pos, KernelOp::Const { dst: mat, value: zero });
+        target.ops.insert(
+            insert_pos,
+            KernelOp::Const {
+                dst: mat,
+                value: zero,
+            },
+        );
         for r in &mut target.brifs {
             r.sink_position += 1;
         }
@@ -651,109 +557,6 @@ impl<'a> LowerCtx<'a> {
             ty,
         });
         mat
-    }
-
-    /// Bug #1 fix (2026-05-31): hoist the backward slice defining
-    /// `cond` from the CURRENT frame's active sink to the TARGET
-    /// frame's active sink. Called by `BrIf` just before
-    /// `install_redirect_at` so the Branch we install at target
-    /// references a register defined in target's own scope rather
-    /// than reaching down into the redirect's `else_ops` (which
-    /// triggers MSL/SPIR-V use-of-undeclared-identifier on the
-    /// def'ing register).
-    ///
-    /// Walks the current sink backward, collecting ops that
-    /// transitively define `cond`. Stops at the first op whose dst
-    /// is not (yet) in the "need" set — non-contributing ops stay
-    /// put. Moved ops preserve their original order.
-    ///
-    /// Returns `true` if hoisting succeeded (all needed dependencies
-    /// were locally defined and moved). Returns `false` if any
-    /// needed reg's defining op could not be found in the current
-    /// sink — in that case nothing is moved and the caller falls
-    /// back to the pre-fix path (which still emits the buggy
-    /// pattern, caught by the macro-time scope_check oracle).
-    ///
-    /// See memory `bug_1_ir_analysis_2026-05-31.md` for the IR shape
-    /// this targets.
-    fn hoist_cond_defining_ops(&mut self, depth: u32, cond: Reg) -> bool {
-        // Compute the slice: walk the current sink backward,
-        // gathering ops whose dst is in the running "need" set.
-        let current_idx = self.frames.len() - 1;
-        let mut need: HashSet<Reg> = HashSet::new();
-        need.insert(cond);
-        let mut to_move_indices: Vec<usize> = Vec::new();
-
-        // Take an immutable snapshot of the current sink length and
-        // the relevant op refs. We walk in reverse.
-        let current_sink_len = Self::sink_at_mut(&mut self.frames[current_idx]).len();
-        for i in (0..current_sink_len).rev() {
-            // Re-borrow per iteration (sink_at_mut walks the
-            // redirect chain — fine to call repeatedly since the
-            // chain is stable during this scan).
-            let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
-            let op = &sink[i];
-            let dst = quanta_ir::scope_check::defined_reg(op);
-            let contributes = dst.map(|d| need.contains(&d)).unwrap_or(false);
-            if !contributes {
-                // Stop at the first non-contributing op. Don't
-                // re-order across unrelated ops — that would change
-                // observable behaviour even if scope-valid (e.g.
-                // a Store/Load adjacent to a Cmp).
-                break;
-            }
-            // This op contributes. Remove its dst from need, add
-            // its operands.
-            need.remove(&dst.unwrap());
-            for r in quanta_ir::scope_check::used_regs(op) {
-                need.insert(r);
-            }
-            to_move_indices.push(i);
-        }
-        // Reverse so we have original order (we collected back-to-front).
-        to_move_indices.reverse();
-        // Any remaining "need" regs must already be in scope at the
-        // target frame. We can't verify that cheaply here, so we
-        // trust the lowering invariant: if the cmp's operands trace
-        // back to ops we've stopped at (or earlier), those earlier
-        // ops are in scope by virtue of being emitted into a parent
-        // frame's sink prior to the current frame opening. If any
-        // remaining reg is NOT in scope at target, the post-hoist
-        // IR will still fail scope_check at macro time — informative
-        // failure, no silent wrong codegen.
-
-        // Refuse to hoist nothing (cond was not defined in this sink).
-        // The fall-through path still hits install_redirect_at, which
-        // emits the buggy pattern caught by scope_check.
-        if to_move_indices.is_empty() {
-            return false;
-        }
-
-        // Cut the contiguous range [first..last+1] out of the
-        // current sink. Since to_move_indices.last() is the
-        // most-recent (end-of-sink) and they're contiguous, the
-        // hoist range is `first..current_sink_len`.
-        let first = *to_move_indices.first().unwrap();
-        // Verify contiguity (they should be — we walked backward
-        // and stopped at the first gap, but it's worth asserting).
-        debug_assert!(
-            to_move_indices.windows(2).all(|w| w[1] == w[0] + 1),
-            "hoist slice not contiguous: {to_move_indices:?}",
-        );
-
-        let hoisted: Vec<KernelOp> = {
-            let sink = Self::sink_at_mut(&mut self.frames[current_idx]);
-            sink.drain(first..).collect()
-        };
-
-        // Append to target frame's active sink.
-        let target = self
-            .frame_at_depth_mut(depth)
-            .expect("caller must verify target depth before hoist_cond_defining_ops");
-        let target_sink = Self::sink_at_mut(target);
-        target_sink.extend(hoisted);
-
-        true
     }
 
     fn lower(mut self) -> Result<KernelDef, LoweringError> {
@@ -2000,7 +1803,6 @@ impl<'a> LowerCtx<'a> {
                 self.frames.push(Frame {
                     kind: FrameKind::Block,
                     ops: Vec::new(),
-                    redirect: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
                     parent_brifs_at_open: parent_brifs,
@@ -2046,7 +1848,6 @@ impl<'a> LowerCtx<'a> {
                         iter_reg,
                     },
                     ops: Vec::new(),
-                    redirect: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
                     parent_brifs_at_open: parent_brifs,
@@ -2061,7 +1862,6 @@ impl<'a> LowerCtx<'a> {
                 self.frames.push(Frame {
                     kind: FrameKind::If { cond },
                     ops: Vec::new(),
-                    redirect: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
                     parent_brifs_at_open: parent_brifs,
@@ -2095,7 +1895,6 @@ impl<'a> LowerCtx<'a> {
                         then_ops: frame.ops,
                     },
                     ops: Vec::new(),
-                    redirect: Vec::new(),
                     local_snapshot: frame.local_snapshot,
                     brifs: Vec::new(),
                     // Else inherits the If's parent snapshot.
@@ -2109,20 +1908,27 @@ impl<'a> LowerCtx<'a> {
                 })?;
                 match frame.kind {
                     FrameKind::Function => {
-                        // Function-level End — done. Push back onto
-                        // the stack so into_kernel_def can read it.
+                        // Function-level End — done. Reconstruct any
+                        // function-level br_if records (top-level
+                        // `return` records an always-true one), then
+                        // push back onto the stack so into_kernel_def
+                        // can read it.
+                        let ops = if !frame.brifs.is_empty() {
+                            self.reconstruct_block_brifs(frame.ops, &frame.brifs)
+                        } else {
+                            frame.ops
+                        };
                         self.frames.push(Frame {
                             kind: FrameKind::Function,
-                            ops: frame.ops,
-                            redirect: Vec::new(),
+                            ops,
                             local_snapshot: Vec::new(),
                             brifs: Vec::new(),
                             parent_brifs_at_open: 0,
                         });
                     }
                     FrameKind::Block => {
-                        // Option C v2 — if any br/br_if was recorded
-                        // on this Block frame, reconstruct nested
+                        // If any br/br_if was recorded on this Block
+                        // frame, reconstruct nested
                         // Branches around the post-record op ranges
                         // before splicing into the parent.
                         let ops = if !frame.brifs.is_empty() {
@@ -2130,22 +1936,19 @@ impl<'a> LowerCtx<'a> {
                         } else {
                             frame.ops
                         };
-                        // Block was a label scope — splice ops into the
-                        // parent's *active sink* (honors any redirect on
-                        // the parent set by a prior br/br_if under v1;
-                        // for v2 the parent's redirect is empty so this
-                        // is a plain append).
+                        // Block was a label scope — splice ops into
+                        // the parent.
                         let parent_idx = self.frames.len() - 1;
                         let splice_len = ops.len();
                         Self::splice_into_frame(&mut self.frames[parent_idx], ops);
-                        // Option C v2 — any brifs recorded on parent
-                        // DURING this Block's lifetime semantically
-                        // fire AFTER this Block's ops execute. Bump
-                        // their sink_position by splice_len so the
-                        // wrap doesn't engulf this Block's content
+                        // Any brifs recorded on parent DURING this
+                        // Block's lifetime semantically fire AFTER
+                        // this Block's ops execute. Bump their
+                        // sink_position by splice_len so the wrap
+                        // doesn't engulf this Block's content
                         // (= treat that content as having already
                         // run unconditionally before the brif).
-                        if self.use_v2 {
+                        {
                             let parent = &mut self.frames[parent_idx];
                             for r in &mut parent.brifs[frame.parent_brifs_at_open..] {
                                 r.sink_position += splice_len;
@@ -2219,8 +2022,8 @@ impl<'a> LowerCtx<'a> {
                     self.emit(KernelOp::Break);
                     return Ok(());
                 }
-                // Option C v2 — for Block targets, recognize the
-                // canonical wasm `if/else` pattern: `br_if cond M;
+                // For Block targets, recognize the canonical wasm
+                // `if/else` pattern: `br_if cond M;
                 // br N` where M < N. The br_if exits to M's
                 // continuation when cond is true; the br exits to
                 // N's continuation otherwise. So N's continuation
@@ -2237,39 +2040,51 @@ impl<'a> LowerCtx<'a> {
                 // If no such brif exists, fall back to const_true
                 // (the wrap is dead, matching strict WASM dead-code
                 // semantics).
-                if self.use_v2 && matches!(target_kind, FrameKindTag::Block) {
-                    // Find the most recent br_if record on any frame
-                    // strictly inner than target's depth. If found,
-                    // use ITS cond as the unconditional br's record
-                    // cond; reconstruct will then swap then/else so
-                    // tail runs when prior_cond=true (= the inner
-                    // br_if fired and we reached target's continuation
-                    // via that path).
-                    //
-                    // If no prior br_if: emit a const_true at target
-                    // and use it as cond. The wrap will be dead per
-                    // strict WASM semantics.
-                    let mut prior_cond: Option<Reg> = None;
-                    for d in 0..*depth {
-                        if let Some(f) = self.frame_at_depth(d) {
-                            if let Some(record) = f.brifs.last() {
-                                prior_cond = Some(record.cond);
-                            }
+                if !matches!(target_kind, FrameKindTag::Block) {
+                    // If/Else/Function-labelled br targets never
+                    // occur in LLVM-generated wasm on the current
+                    // kernel surface (audited 2026-06-12: zero hits
+                    // across workspace tests, prims, rand, examples,
+                    // benches). The legacy redirect-chain path that
+                    // used to "handle" them produced IR the
+                    // scope_check oracle had to catch. Fail loudly
+                    // instead; add a record-and-wrap route with a
+                    // witness if a real kernel ever hits this.
+                    return Err(LoweringError::UnsupportedOp {
+                        op: format!(
+                            "br to {target_kind:?}-labelled frame at depth {depth} \
+                             without an intervening loop"
+                        ),
+                        at: self.body.body_offset,
+                    });
+                }
+                // Find the most recent br_if record on any frame
+                // strictly inner than target's depth. If found,
+                // use ITS cond as the unconditional br's record
+                // cond; reconstruct will then swap then/else so
+                // tail runs when prior_cond=true (= the inner
+                // br_if fired and we reached target's continuation
+                // via that path).
+                //
+                // If no prior br_if: emit a const_true at target
+                // and use it as cond. The wrap will be dead per
+                // strict WASM semantics.
+                let mut prior_cond: Option<Reg> = None;
+                for d in 0..*depth {
+                    if let Some(f) = self.frame_at_depth(d) {
+                        if let Some(record) = f.brifs.last() {
+                            prior_cond = Some(record.cond);
                         }
                     }
-                    let cond_reg = if let Some(prior) = prior_cond {
-                        prior
-                    } else {
-                        let dst = self.alloc_reg();
-                        self.emit_const_bool_to_target(*depth, dst, true);
-                        dst
-                    };
-                    self.record_br_at(*depth, cond_reg, /*is_unconditional=*/ true);
-                    return Ok(());
                 }
-                let dst = self.alloc_reg();
-                self.emit_const_bool_to_target(*depth, dst, true);
-                self.install_redirect_at(*depth, dst);
+                let cond_reg = if let Some(prior) = prior_cond {
+                    prior
+                } else {
+                    let dst = self.alloc_reg();
+                    self.emit_const_bool_to_target(*depth, dst, true);
+                    dst
+                };
+                self.record_br_at(*depth, cond_reg, /*is_unconditional=*/ true);
             }
 
             RawInstr::BrIf(depth) => {
@@ -2315,48 +2130,33 @@ impl<'a> LowerCtx<'a> {
                     });
                     return Ok(());
                 }
-                // Option C v2 — when enabled and the target is a
-                // plain Block at depth 0 (the current frame's
-                // immediate parent path; need to verify it's
-                // reachable without crossing other frames that v2
-                // doesn't yet model), record the br_if on the target
-                // and skip both the hoist and the install_redirect_at.
-                // The Block's End handler reconstructs the
-                // Branch{cond, then=[], else=ops_after} wrap.
-                //
-                // Session 1 only routes Block targets through v2.
-                // Anything else falls back to v1.
-                if self.use_v2 && matches!(target_kind, FrameKindTag::Block) {
-                    // Materialize the cond into a register declared
-                    // at the target frame and assigned right here at
-                    // the source position — the wrap then reads a
-                    // value computed by exactly the control flow
-                    // wasm gave it. See materialize_cond_for_v2 for
-                    // why this replaced the transitive hoist.
-                    //
-                    // Critically, we DO NOT fall back to v1 here:
-                    // mixing v2 brifs with v1 install_redirect_at on
-                    // the SAME target frame breaks the v2 position
-                    // bookkeeping (which assumes empty
-                    // target.redirect). Either-or per target.
-                    let mat = self.materialize_cond_for_v2(*depth, cond, cond_ty);
-                    self.record_br_at(*depth, mat, /*is_unconditional=*/ false);
-                    return Ok(());
+                if !matches!(target_kind, FrameKindTag::Block) {
+                    // If/Else/Function-labelled br_if targets never
+                    // occur in LLVM-generated wasm on the current
+                    // kernel surface (audited 2026-06-12: zero hits
+                    // across workspace tests, prims, rand, examples,
+                    // benches). Fail loudly instead of guessing; add
+                    // a record-and-wrap route with a witness if a
+                    // real kernel ever hits this.
+                    return Err(LoweringError::UnsupportedOp {
+                        op: format!(
+                            "br_if to {target_kind:?}-labelled frame at depth {depth} \
+                             without an intervening loop"
+                        ),
+                        at: self.body.body_offset,
+                    });
                 }
-                // Bug #1 fix (2026-05-31): hoist the backward slice
-                // defining `cond` from the CURRENT frame's active
-                // sink to the TARGET frame's active sink before
-                // installing the redirect Branch. See
-                // `hoist_cond_defining_ops` and the memory note
-                // `bug_1_ir_analysis_2026-05-31.md` for the IR shape
-                // this targets. If hoisting can't be performed
-                // (cond's defining op isn't locally in the current
-                // sink, e.g. it's a function-scope param reg), the
-                // fall-through still calls install_redirect_at;
-                // the macro-time scope_check oracle catches any
-                // residual use-before-def.
-                self.hoist_cond_defining_ops(*depth, cond);
-                self.install_redirect_at(*depth, cond);
+                // Record the br_if on the target Block; its End
+                // handler reconstructs the Branch{cond, then=[],
+                // else=ops_after} wrap. The cond is materialized
+                // into a register declared at the target frame and
+                // assigned right here at the source position — the
+                // wrap then reads a value computed by exactly the
+                // control flow wasm gave it. See
+                // materialize_cond_for_v2 for why this replaced the
+                // transitive backward-slice hoist.
+                let mat = self.materialize_cond_for_v2(*depth, cond, cond_ty);
+                self.record_br_at(*depth, mat, /*is_unconditional=*/ false);
             }
 
             RawInstr::I32Eqz => {
@@ -2622,17 +2422,11 @@ impl<'a> LowerCtx<'a> {
             // `return` is a function-level early exit. Quanta kernels
             // are all `() -> ()` so there's nothing to push.
             //
-            // The naive "install a function-level redirect on Return"
-            // approach is wrong inside a block: the block's ops have
-            // been emitted but not yet spliced (splice happens at
-            // `End`), so when the block closes its already-emitted
-            // pre-Return ops would land *inside* the function-level
-            // redirect's `else_ops` and get skipped (the redirect's
-            // cond=true → take then_ops which is empty). Instead:
-            //
             //   - At function top-level (no enclosing block/loop):
-            //     install the redirect normally; subsequent ops are
-            //     genuinely after Return and should be skipped.
+            //     record an always-true br_if on the function frame;
+            //     `into_kernel_def` reconstructs it as
+            //     `Branch{true, then=[], else=tail}` so ops after
+            //     the Return are genuinely skipped.
             //   - Inside any frame: emit nothing. Subsequent ops in
             //     the same block run if reached (they're WASM
             //     polymorphic-stack dead code, so usually trivial),
@@ -2640,8 +2434,8 @@ impl<'a> LowerCtx<'a> {
             //     naturally on the Return path. Ops AFTER the
             //     enclosing block (typically the elided panic for
             //     the alternate path) are dead too.
-            //   - Crossing a Loop: emit `Break` (the existing 5d.3
-            //     fallback) so we exit the loop body cleanly.
+            //   - Crossing a Loop: emit `Break` so we exit the loop
+            //     body cleanly.
             RawInstr::Return => {
                 let depth = (self.frames.len() - 1) as u32;
                 let inside_block = self.frames.len() > 1;
@@ -2650,7 +2444,7 @@ impl<'a> LowerCtx<'a> {
                 } else if !inside_block {
                     let dst = self.alloc_reg();
                     self.emit_const_bool_to_target(depth, dst, true);
-                    self.install_redirect_at(depth, dst);
+                    self.record_br_at(depth, dst, /*is_unconditional=*/ false);
                 }
                 // else: inside a block but not crossing a loop —
                 // emit nothing. The block's End will close cleanly
@@ -3304,7 +3098,6 @@ impl<'a> LowerCtx<'a> {
         self.frames.push(Frame {
             kind: FrameKind::Block,
             ops: Vec::new(),
-            redirect: Vec::new(),
             local_snapshot: Vec::new(),
             brifs: Vec::new(),
             parent_brifs_at_open: parent_brifs,
