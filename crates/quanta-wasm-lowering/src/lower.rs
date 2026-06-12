@@ -368,18 +368,21 @@ impl<'a> LowerCtx<'a> {
     /// body from outside it. Falls back to a `Break` (or conditional
     /// Break) instead.
     fn has_loop_between_top_and_depth(&self, depth: u32) -> bool {
+        self.loops_between_top_and_depth(depth) > 0
+    }
+
+    /// Number of Loop frames strictly between the top and `depth`.
+    fn loops_between_top_and_depth(&self, depth: u32) -> usize {
         let top = self.frames.len();
         let target_idx = match top.checked_sub(1 + depth as usize) {
             Some(i) => i,
-            None => return false,
+            None => return 0,
         };
         // Frames strictly above target, up to and including top-1.
-        for f in &self.frames[target_idx + 1..] {
-            if matches!(f.kind, FrameKind::Loop { .. }) {
-                return true;
-            }
-        }
-        false
+        self.frames[target_idx + 1..]
+            .iter()
+            .filter(|f| matches!(f.kind, FrameKind::Loop { .. }))
+            .count()
     }
 
     /// Materialize a boolean constant as a `KernelOp::Const` written
@@ -420,6 +423,18 @@ impl<'a> LowerCtx<'a> {
             cond,
             is_unconditional,
         });
+    }
+
+    /// Bump the sink_position of every record on the CURRENT top
+    /// frame from index `from` onward by `n`. Called when a child
+    /// frame closes and contributes `n` ops to this frame: records
+    /// made during the child's lifetime semantically fire after the
+    /// child's content, so the wrap must start past it.
+    fn bump_parent_brifs(&mut self, from: usize, n: usize) {
+        let top = self.frames.len() - 1;
+        for r in &mut self.frames[top].brifs[from..] {
+            r.sink_position += n;
+        }
     }
 
     /// At end-of-frame, wrap the recorded br_ifs into real
@@ -528,25 +543,13 @@ impl<'a> LowerCtx<'a> {
         // Declare at the target frame, before the earliest recorded
         // wrap position, so every wrap's tail nests inside a region
         // where the declaration is visible.
-        let target = self
-            .frame_at_depth_mut(depth)
-            .expect("caller must verify target depth before materialize_cond_for_v2");
-        let insert_pos = target
-            .brifs
-            .iter()
-            .map(|r| r.sink_position)
-            .min()
-            .unwrap_or(target.ops.len());
-        target.ops.insert(
-            insert_pos,
+        self.insert_decl_at_target(
+            depth,
             KernelOp::Const {
                 dst: mat,
                 value: zero,
             },
         );
-        for r in &mut target.brifs {
-            r.sink_position += 1;
-        }
         // Assign at the source position. Children closing into the
         // target bump recorded wrap positions past their content
         // (parent_brifs_at_open), so this Copy always executes
@@ -557,6 +560,84 @@ impl<'a> LowerCtx<'a> {
             ty,
         });
         mat
+    }
+
+    /// Insert a declaration op into the frame at `depth`, before the
+    /// earliest recorded wrap position (so every wrap's tail nests
+    /// inside a region where the declaration is visible), bumping
+    /// existing records past it.
+    fn insert_decl_at_target(&mut self, depth: u32, op: KernelOp) {
+        let target = self
+            .frame_at_depth_mut(depth)
+            .expect("caller must verify target depth before insert_decl_at_target");
+        let insert_pos = target
+            .brifs
+            .iter()
+            .map(|r| r.sink_position)
+            .min()
+            .unwrap_or(target.ops.len());
+        target.ops.insert(insert_pos, op);
+        for r in &mut target.brifs {
+            r.sink_position += 1;
+        }
+    }
+
+    /// br/br_if from inside a loop to a Block target OUTSIDE it.
+    ///
+    /// A label-less `Break` alone exits the loop but loses WHICH
+    /// label the wasm br targeted: any continuation ops between the
+    /// `Loop` op and the target's end would run even on the br path.
+    /// That was the PTRD early-exit bug — LLVM merges `iter` and
+    /// `result` into one local and encodes the two loop exits as brs
+    /// to different labels (accept: `local = k; br $outer`, skipping
+    /// the `local = 0` exhaustion continuation at $inner's end). The
+    /// plain Break ran the zeroing on both paths and every quark
+    /// produced 0.
+    ///
+    /// Encode the label in an exit flag instead:
+    ///   - `flag = false` declared at the target frame (re-runs on
+    ///     each entry to the target block),
+    ///   - `flag = true; Break` at the br site (wrapped in
+    ///     `Branch{cond}` for br_if),
+    ///   - a recorded br_if{cond: flag} on the target wraps the
+    ///     continuation in `Branch{flag, then=[], else=[…]}` at the
+    ///     target's End, so it is skipped exactly when this exit
+    ///     fired. Frame-close position bumps (Block splice / the +1
+    ///     for Loop/If/Else single-op closes) keep the record
+    ///     pointing just past the Loop op.
+    ///
+    /// Caller guarantees: exactly ONE Loop frame between top and
+    /// `depth` (a single `Break` exits exactly one loop level), and
+    /// the target is a Block.
+    fn emit_loop_crossing_exit(&mut self, depth: u32, cond: Option<Reg>) {
+        let flag = self.alloc_reg();
+        self.insert_decl_at_target(
+            depth,
+            KernelOp::Const {
+                dst: flag,
+                value: ConstValue::Bool(false),
+            },
+        );
+        let set_and_break = vec![
+            KernelOp::Const {
+                dst: flag,
+                value: ConstValue::Bool(true),
+            },
+            KernelOp::Break,
+        ];
+        match cond {
+            Some(c) => self.emit(KernelOp::Branch {
+                cond: c,
+                then_ops: set_and_break,
+                else_ops: Vec::new(),
+            }),
+            None => {
+                for op in set_and_break {
+                    self.emit(op);
+                }
+            }
+        }
+        self.record_br_at(depth, flag, /*is_unconditional=*/ false);
     }
 
     fn lower(mut self) -> Result<KernelDef, LoweringError> {
@@ -1948,12 +2029,7 @@ impl<'a> LowerCtx<'a> {
                         // doesn't engulf this Block's content
                         // (= treat that content as having already
                         // run unconditionally before the brif).
-                        {
-                            let parent = &mut self.frames[parent_idx];
-                            for r in &mut parent.brifs[frame.parent_brifs_at_open..] {
-                                r.sink_position += splice_len;
-                            }
-                        }
+                        self.bump_parent_brifs(frame.parent_brifs_at_open, splice_len);
                         // Then merge locals modified inside the block
                         // back to their stable_reg, so reads after the
                         // block (`local.get`) see the merge anchor
@@ -1970,6 +2046,12 @@ impl<'a> LowerCtx<'a> {
                             iter_reg,
                             body: frame.ops,
                         });
+                        // Records made on the parent during this
+                        // loop's lifetime (loop-crossing exit flags)
+                        // fire after the Loop op executes — bump them
+                        // past it, mirroring the Block-close splice
+                        // bump.
+                        self.bump_parent_brifs(frame.parent_brifs_at_open, 1);
                         // Post-loop: any local set inside the
                         // body now lives only via stable_reg.
                         self.merge_locals_post_frame(&frame.local_snapshot);
@@ -1980,6 +2062,7 @@ impl<'a> LowerCtx<'a> {
                             then_ops: frame.ops,
                             else_ops: Vec::new(),
                         });
+                        self.bump_parent_brifs(frame.parent_brifs_at_open, 1);
                         self.merge_locals_post_frame(&frame.local_snapshot);
                     }
                     FrameKind::Else { cond, then_ops } => {
@@ -1988,6 +2071,7 @@ impl<'a> LowerCtx<'a> {
                             then_ops,
                             else_ops: frame.ops,
                         });
+                        self.bump_parent_brifs(frame.parent_brifs_at_open, 1);
                         self.merge_locals_post_frame(&frame.local_snapshot);
                     }
                 }
@@ -2019,6 +2103,18 @@ impl<'a> LowerCtx<'a> {
                     return Ok(());
                 }
                 if self.has_loop_between_top_and_depth(*depth) {
+                    if self.loops_between_top_and_depth(*depth) == 1
+                        && matches!(target_kind, FrameKindTag::Block)
+                    {
+                        self.emit_loop_crossing_exit(*depth, None);
+                        return Ok(());
+                    }
+                    // Multi-loop crossings and non-Block targets keep
+                    // the label-lossy plain Break (pre-existing 5d.3
+                    // semantics: correct when nothing meaningful sits
+                    // between the loop and the target's end). Audited
+                    // 2026-06-12: zero occurrences on the kernel
+                    // surface.
                     self.emit(KernelOp::Break);
                     return Ok(());
                 }
@@ -2123,6 +2219,16 @@ impl<'a> LowerCtx<'a> {
                 // outer frame, but `KernelOp::Loop.body` encapsulates
                 // the cond and prevents codegen from finding it.
                 if self.has_loop_between_top_and_depth(*depth) {
+                    if self.loops_between_top_and_depth(*depth) == 1
+                        && matches!(target_kind, FrameKindTag::Block)
+                    {
+                        self.emit_loop_crossing_exit(*depth, Some(cond));
+                        return Ok(());
+                    }
+                    // Multi-loop crossings and non-Block targets keep
+                    // the label-lossy conditional Break (pre-existing
+                    // 5d.3 semantics). Audited 2026-06-12: zero
+                    // occurrences on the kernel surface.
                     self.emit(KernelOp::Branch {
                         cond,
                         then_ops: vec![KernelOp::Break],
@@ -2440,6 +2546,14 @@ impl<'a> LowerCtx<'a> {
                 let depth = (self.frames.len() - 1) as u32;
                 let inside_block = self.frames.len() > 1;
                 if self.has_loop_between_top_and_depth(depth) {
+                    // Label-lossy: ops between the loop and function
+                    // end still run after the Break. Correct for the
+                    // shipped mid-body-Return kernels (the trailing
+                    // ops ARE the intended continuation); a
+                    // skip-the-rest Return inside a loop would need
+                    // the exit-flag treatment of
+                    // emit_loop_crossing_exit aimed at the function
+                    // frame. Audited 2026-06-12: zero occurrences.
                     self.emit(KernelOp::Break);
                 } else if !inside_block {
                     let dst = self.alloc_reg();
