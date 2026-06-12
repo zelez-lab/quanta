@@ -754,20 +754,17 @@ pub struct FillPoissonLargeU32Data {
 /// The body uses PTRD's natural nested rejection shape: fast accept
 /// first, then the squeeze reject, and only on the leftover path
 /// the expensive Stirling-series comparison (`log_gamma_f32`). The
-/// `done` flag gates the body once a draw is accepted; remaining
-/// iterations only pay the philox calls. This shape used to trigger
-/// a redirect-chain scope bug (kept flat until 2026-06-12, with
-/// every iteration paying the Stirling chain); the v2 cond
-/// materialization closed it — `crates/quanta-rand/tests/`
-/// `ptrd_host_oracle.rs` asserts bit-exact host parity for the
-/// shape, and `tests/v2_runtime_bisect.rs` guards the lowering.
+/// `done` flag in the loop condition exits as soon as a draw is
+/// accepted (~1.2 iterations expected), so neither the Stirling
+/// chain nor further philox calls are paid after acceptance.
 ///
-/// KNOWN v2 LIMIT (2026-06-12): the loop CONDITION must not depend
-/// on registers written inside deeply-nested arms.
-/// `while iter < 32 && done == 0` lowers to wrong output (samples
-/// diverge from the host reference) — a separate bug class in the
-/// Loop/Break path, NOT fixed by cond materialization. Keep `done`
-/// as a body gate only.
+/// This kernel is the historical witness for two lowering bug
+/// classes, both closed 2026-06-12: the nested-arm cond hoist
+/// (fixed by cond materialization) and the label-lossy loop exit
+/// (fixed by the exit-flag record in `emit_loop_crossing_exit`).
+/// `crates/quanta-rand/tests/ptrd_host_oracle.rs` asserts bit-exact
+/// host parity, and `tests/v2_runtime_bisect.rs` guards the
+/// lowering shapes.
 #[quanta::kernel]
 pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
     let id = quark_id();
@@ -782,7 +779,7 @@ pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
     let mut iter: u32 = 0u32;
     let mut result: u32 = 0u32;
     let mut done: u32 = 0u32;
-    while iter < 32u32 {
+    while iter < 32u32 && done == 0u32 {
         let r1: u32 =
             philox4x32_10_first_u32_kernel(id, iter, 0u32, 0u32, d.seed_lo, d.seed_hi);
         let r2: u32 =
