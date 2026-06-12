@@ -150,6 +150,12 @@ struct LowerCtx<'a> {
     /// Known imported function indices keyed by their import name —
     /// used to recognize `call $quark_id` etc.
     intrinsic_names: Vec<String>,
+    /// One entry per OPEN Loop frame (innermost last): the set of
+    /// locals read (`local.get`/`local.tee`-observed) since that
+    /// loop opened. Drives `local_is_loop_carried` — a write to a
+    /// local with a prior in-loop read is loop-carried and must be
+    /// materialized through its stable register.
+    loop_reads: Vec<std::collections::BTreeSet<u32>>,
 }
 
 /// One br/br_if's intent recorded on its target frame.
@@ -327,6 +333,7 @@ impl<'a> LowerCtx<'a> {
             }],
             next_reg: 0,
             intrinsic_names,
+            loop_reads: Vec::new(),
         }
     }
 
@@ -369,6 +376,28 @@ impl<'a> LowerCtx<'a> {
     /// Break) instead.
     fn has_loop_between_top_and_depth(&self, depth: u32) -> bool {
         self.loops_between_top_and_depth(depth) > 0
+    }
+
+    /// True if local `idx` is loop-carried at this point: it has an
+    /// upward-exposed read in some open loop — i.e. it was read
+    /// inside the loop body BEFORE this write, so on iteration N+1
+    /// that read observes iteration N's write. Such a write must go
+    /// through the stable register — a symbolic rebinding doesn't
+    /// survive the iteration boundary, so the next iteration's
+    /// reads (which pull from the stable register via
+    /// `force_locals_to_stable`) would see a stale value. See the
+    /// ScaledIdx arm in `LocalSet`/`LocalTee`.
+    ///
+    /// Iteration-local scratch (written before any in-loop read,
+    /// like bench_nbody's hoisted `off = i << 2` addressing offset)
+    /// keeps symbolic rebinding, which the buffer-addressing
+    /// recognizer needs. Note "live-in at Loop entry" would be the
+    /// wrong test: the function preamble zero-inits every declared
+    /// local, so everything is trivially live-in.
+    fn local_is_loop_carried(&self, idx: usize) -> bool {
+        self.loop_reads
+            .iter()
+            .any(|reads| reads.contains(&(idx as u32)))
     }
 
     /// Number of Loop frames strictly between the top and `depth`.
@@ -932,16 +961,47 @@ impl<'a> LowerCtx<'a> {
                 let val = self.locals[*idx as usize].val.ok_or_else(|| {
                     LoweringError::ShapeMismatch(format!("local.get {idx} on uninitialized local"))
                 })?;
+                // Record the read on every open loop — see
+                // `local_is_loop_carried`.
+                for reads in &mut self.loop_reads {
+                    reads.insert(*idx);
+                }
                 self.stack.push(val);
             }
             RawInstr::LocalSet(idx) => {
                 let v = self.pop()?;
                 // Route value-typed SymVals (Reg/Opaque/Const) through
                 // the stable register so post-merge reads see a defined
-                // value. Buffer/address SymVals (BufferPtr/ScaledIdx/
+                // value. Buffer/address SymVals (BufferPtr/
                 // BufferAccess) carry no scalar value to copy and keep
                 // their existing symbolic binding — they're consumed
                 // by load/store pattern recognition, not arithmetic.
+                //
+                // ScaledIdx is the exception: it IS a scalar value
+                // (`base << k`, usually a byte offset), kept symbolic
+                // only so the buffer-addressing recognizer can see it.
+                // A symbolic rebinding is sound for iteration-local
+                // scratch — the next local.get re-pushes it — but
+                // UNSOUND for a loop-carried local: iteration N+1
+                // reads the local through its stable register (see
+                // `force_locals_to_stable` at Loop entry), which a
+                // symbolic rebinding never writes. LLVM hits this by
+                // strength-reducing a loop induction update `d *= 2`
+                // to `d = d << 1` (lowering bug variant #5, found
+                // 2026-06-12 by the segmented-reduce kernel — the
+                // update vanished and the loop ran to its 10000-iter
+                // fuel cap). Materialize through the stable register
+                // when the local is live-in to an open loop;
+                // loop-internal scratch (e.g. bench_nbody's hoisted
+                // `off = i << 2` addressing offset) stays symbolic.
+                let v = if matches!(v, SymVal::ScaledIdx { .. })
+                    && self.local_is_loop_carried(*idx as usize)
+                {
+                    let (r, ty) = self.commit(v)?;
+                    SymVal::Reg(r, ty)
+                } else {
+                    v
+                };
                 if is_value_symval(&v) {
                     self.ensure_stable_reg_for(*idx as usize, &v);
                     self.write_local_via_copy(*idx as usize, v)?;
@@ -953,6 +1013,19 @@ impl<'a> LowerCtx<'a> {
                 let v = self.stack.last().copied().ok_or_else(|| {
                     LoweringError::ShapeMismatch("local.tee on empty stack".into())
                 })?;
+                // Same ScaledIdx loop-carried materialization as
+                // LocalSet above — tee is set + keep-on-stack.
+                let v = if matches!(v, SymVal::ScaledIdx { .. })
+                    && self.local_is_loop_carried(*idx as usize)
+                {
+                    let _ = self.pop()?;
+                    let (r, ty) = self.commit(v)?;
+                    let v = SymVal::Reg(r, ty);
+                    self.stack.push(v);
+                    v
+                } else {
+                    v
+                };
                 if is_value_symval(&v) {
                     let _ = self.pop()?;
                     self.ensure_stable_reg_for(*idx as usize, &v);
@@ -1935,6 +2008,7 @@ impl<'a> LowerCtx<'a> {
                 // Straight-line code with no loop is unaffected
                 // (no frame entry → no force).
                 self.force_locals_to_stable();
+                self.loop_reads.push(std::collections::BTreeSet::new());
                 let parent_brifs = self.frames.last().map(|f| f.brifs.len()).unwrap_or(0);
                 self.frames.push(Frame {
                     kind: FrameKind::Loop {
@@ -2054,6 +2128,11 @@ impl<'a> LowerCtx<'a> {
                         count_reg,
                         iter_reg,
                     } => {
+                        // Reads recorded inside this loop also count
+                        // for enclosing loops (the insert in LocalGet
+                        // already wrote to every open set) — just drop
+                        // this loop's own set.
+                        self.loop_reads.pop();
                         self.emit(KernelOp::Loop {
                             count: count_reg,
                             iter_reg,
