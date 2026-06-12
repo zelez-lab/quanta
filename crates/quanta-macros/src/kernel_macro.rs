@@ -111,15 +111,14 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     kernel_def.workgroup_size = kernel_attrs.workgroup_size;
     kernel_def.subgroup_size = kernel_attrs.subgroup_size;
 
-    // WASM-route cutover (slice 5d, complete). The legacy parser ran
-    // above to produce `kernel_def.params` with inferred scalar types;
-    // those bridge into the SideTable for the WASM lowerer. Then the
-    // body is *unconditionally* re-derived from `rustc → wasm32 →
-    // KernelOps`, replacing the legacy body emission. Struct-ref and
-    // flat-param kernels dispatch to their respective emitters inside
-    // `swap_body_via_wasm_route`. The legacy parser's body translator
-    // (`parse::parse_kernel`'s body walk + `parse/{stmt,expr}.rs`) is
-    // now dead-output code; slice 5e deletes it.
+    // WASM-route cutover (complete). `infer_kernel` above produced
+    // `kernel_def.params` with inferred scalar types (the focused
+    // type-inference walker in `kernel_type_inference.rs` — all that
+    // survives of the legacy parser; its body translator was deleted
+    // in 754fd19). Those params bridge into the SideTable for the
+    // WASM lowerer, and the body is derived from `rustc → wasm32 →
+    // KernelOps`. Struct-ref and flat-param kernels dispatch to
+    // their respective emitters inside `swap_body_via_wasm_route`.
     let host_oracle = match swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref())
     {
         Ok(oracle) => oracle.unwrap_or_default(),
