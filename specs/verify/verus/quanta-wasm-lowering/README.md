@@ -22,9 +22,18 @@ the project `CLAUDE.md`.)
 | `skeleton.rs` | V1 | Toolchain smoke test — crate verifies clean. |
 | `spec_types.rs` | V2 | `#[spec]` types mirroring Lean `SymVal` / `LowerState` / `WasmInstr` subset / `KernelOp` / `Reg` / `Scalar`, with structural lemmas. |
 | `lower_instr_spec.rs` | V3 | Verus `spec` `lower_instr` mirroring the Lean def (straight-line slice-1 subset: consts, i32 binop/cmp family, the shl/add buffer-pattern recognizers, drop/nop/wreturn, `commit`). Local-binding + memory arms deferred to V5. |
-| _(planned)_ per-op refinement files | V5 | The Rust per-op lowering returns the same `(s', ops)` as the spec. Local-binding/memory arms (`localGet`/`localSet`/`localTee`/`i32Load`/`i32Store`) join here with the extended `LowerState`. |
+| `lower_instr_refine.rs` | V5 (bridge + straight-line) | The imperative→functional bridge: `view` (production `Vec`-end stack ↔ spec `Seq`-head), the `reverse_push` correspondence, and per-op refinements for i32Const, the register-operand binop case, and the shl/add fast-path view-alignment. Remaining same-shape binops follow the `refine_i32_bin_regs` pattern; local-binding/memory arms join with the extended `LowerState`. |
 | _(planned)_ `commit_refine.rs` | V6 | `commit` refinement. |
 | _(planned)_ `lower_instructions_refine.rs` | V7 | Top-level composition. |
+
+### The model↔Rust correspondence (trust boundary)
+
+V5 proves the *transcribed* per-op effect (the `step_<op>` /
+view-aligned spec arms) equals the V3 spec. That the `step_<op>`
+transcription faithfully reflects the actual `&mut self` body in
+`lower.rs` is the documented manual obligation — the same status the
+other Verus crates' production mirrors carry (endgame.md §5c/§8). The
+differential test suite is the standing safety net underneath it.
 
 ## Boundary / TCB
 
