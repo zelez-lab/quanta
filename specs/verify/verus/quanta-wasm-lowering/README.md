@@ -21,8 +21,8 @@ the project `CLAUDE.md`.)
 |------|-----------|--------|
 | `skeleton.rs` | V1 | Toolchain smoke test — crate verifies clean. |
 | `spec_types.rs` | V2 | `#[spec]` types mirroring Lean `SymVal` / `LowerState` / `WasmInstr` subset / `KernelOp` / `Reg` / `Scalar`, with structural lemmas. |
-| _(planned)_ `lower_instr_spec.rs` | V3 | Verus `#[spec]` `lower_instr` mirroring the Lean def. |
-| _(planned)_ per-op refinement files | V5 | The Rust per-op lowering returns the same `(s', ops)` as the spec. |
+| `lower_instr_spec.rs` | V3 | Verus `spec` `lower_instr` mirroring the Lean def (straight-line slice-1 subset: consts, i32 binop/cmp family, the shl/add buffer-pattern recognizers, drop/nop/wreturn, `commit`). Local-binding + memory arms deferred to V5. |
+| _(planned)_ per-op refinement files | V5 | The Rust per-op lowering returns the same `(s', ops)` as the spec. Local-binding/memory arms (`localGet`/`localSet`/`localTee`/`i32Load`/`i32Store`) join here with the extended `LowerState`. |
 | _(planned)_ `commit_refine.rs` | V6 | `commit` refinement. |
 | _(planned)_ `lower_instructions_refine.rs` | V7 | Top-level composition. |
 
