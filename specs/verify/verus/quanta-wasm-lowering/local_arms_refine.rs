@@ -54,6 +54,7 @@ pub enum ConstValue { U32(int), I32(int) }
 pub enum KernelOp {
     Const(Reg, ConstValue),
     Copy(Reg, Reg),
+    LoadK(Reg, nat, Reg, Scalar),   // dst, slot, index, ty
 }
 
 pub struct LowerState {
@@ -128,6 +129,50 @@ pub open spec fn local_set(s: LowerState, i: nat) -> Option<(LowerState, Seq<Ker
             },
         },
     }
+}
+
+pub open spec fn push_val(s: LowerState, v: SymVal) -> LowerState {
+    LowerState { stack: seq![v].add(s.stack), ..s }
+}
+
+/// Spec `local_get` arm (mirror of local_arms_spec.rs).
+pub open spec fn local_get(s: LowerState, i: nat) -> Option<(LowerState, Seq<KernelOp>)> {
+    match lookup_buffer_slot(s, i) {
+        Some(slot) => Some((push_val(s, SymVal::BufferPtr(slot)), Seq::empty())),
+        None => {
+            let src_opt = match lookup_current_reg(s, i) {
+                Some(r) => Some(r),
+                None => lookup_local(s, i),
+            };
+            match src_opt {
+                None => None,
+                Some(source) => {
+                    let (fresh, s1) = alloc(s);
+                    let s2 = push_val(s1, SymVal::Reg(fresh, Scalar::U32));
+                    Some((s2, seq![KernelOp::Copy(fresh, source)]))
+                },
+            }
+        },
+    }
+}
+
+/// Spec `i32_load` arm (mirror of local_arms_spec.rs): typed Load on
+/// a 4-byte BufferAccess at the spec head.
+pub open spec fn i32_load(s: LowerState) -> Option<(LowerState, Seq<KernelOp>)> {
+    if s.stack.len() >= 1 {
+        match s.stack[0] {
+            SymVal::BufferAccess { slot, base, scale } => {
+                if scale == 4 {
+                    let rest = s.stack.subrange(1, s.stack.len() as int);
+                    let dst = s.next_reg;
+                    Some((LowerState { next_reg: s.next_reg + 1,
+                            stack: seq![SymVal::Reg(dst, Scalar::U32)].add(rest), ..s },
+                          seq![KernelOp::LoadK(dst, slot, base, Scalar::U32)]))
+                } else { None }
+            },
+            _ => None,
+        }
+    } else { None }
 }
 
 // ── Production state + view (extends lower_instr_refine.rs's) ───────
@@ -262,5 +307,77 @@ proof fn view_exposes_buffer_slot(c: ProdCtx, i: nat, slot: nat)
         c.buffer_slots[i] == slot,
     ensures lookup_buffer_slot(view(c), i) == Some(slot),
 {}
+
+// ── localGet production refinement ─────────────────────────────────
+//
+// Rust `LocalGet i`: if the local is a buffer param, push BufferPtr;
+// else read its current binding (`val`, the post-write reg), alloc a
+// fresh reg, emit Copy[fresh←source], push the fresh reg. The view's
+// current_reg exposes `val`, so the spec arm reads the same source
+// and allocs the same fresh reg (= view next_reg).
+
+/// localGet of a non-buffer local with a current binding: production
+/// allocs one reg and emits one Copy from the binding — equal to the
+/// spec `local_get` output.
+proof fn refine_local_get_current(c: ProdCtx, i: nat, cur: Reg)
+    requires
+        !c.buffer_slots.dom().contains(i),
+        c.locals.dom().contains(i),
+        c.locals[i].cur == Some(cur),
+    ensures ({
+        let (fresh, s1) = alloc(view(c));
+        local_get(view(c), i) == Some::<(LowerState, Seq<KernelOp>)>(
+            (push_val(s1, SymVal::Reg(fresh, Scalar::U32)),
+             seq![KernelOp::Copy(fresh, cur)]))
+    }),
+{
+    // view exposes: no buffer slot, current_reg[i] = cur.
+    assert(lookup_buffer_slot(view(c), i) == None::<nat>);
+    assert(lookup_current_reg(view(c), i) == Some(cur)) by {
+        assert(view(c).current_reg.dom().contains(i));
+        assert(view(c).current_reg[i] == cur);
+    }
+}
+
+/// localGet of a buffer param pushes BufferPtr, no IR — refines the
+/// spec buffer arm.
+proof fn refine_local_get_buffer(c: ProdCtx, i: nat, slot: nat)
+    requires
+        c.buffer_slots.dom().contains(i),
+        c.buffer_slots[i] == slot,
+    ensures
+        local_get(view(c), i) == Some::<(LowerState, Seq<KernelOp>)>(
+            (push_val(view(c), SymVal::BufferPtr(slot)), Seq::empty())),
+{
+    assert(lookup_buffer_slot(view(c), i) == Some(slot));
+}
+
+// ── i32.load production refinement ─────────────────────────────────
+//
+// Rust `I32Load`: pops the address SymVal; only a BufferAccess
+// (scale 4 = the recognized <ptr>+<i*4> chain) is accepted, alloc
+// dst, emit Load{dst, slot, base, u32}, push Reg dst. The view sends
+// the production stack top (last) to the spec head, so the spec
+// `i32_load` matches on the same BufferAccess.
+
+/// i32.load on a 4-byte BufferAccess at the production top refines the
+/// spec typed-Load arm (same dst = view next_reg, same Load op).
+proof fn refine_i32_load(c: ProdCtx, slot: nat, base: Reg)
+    requires
+        c.prod_stack.len() >= 1,
+        c.prod_stack[c.prod_stack.len() - 1] == (SymVal::BufferAccess { slot, base, scale: 4nat }),
+    ensures ({
+        let s = view(c);
+        let rest = s.stack.subrange(1, s.stack.len() as int);
+        i32_load(s) == Some::<(LowerState, Seq<KernelOp>)>(
+            (LowerState { next_reg: s.next_reg + 1,
+                stack: seq![SymVal::Reg(s.next_reg, Scalar::U32)].add(rest), ..s },
+             seq![KernelOp::LoadK(s.next_reg, slot, base, Scalar::U32)]))
+    }),
+{
+    reverse_top(c.prod_stack);
+    let s = view(c);
+    assert(s.stack[0] == (SymVal::BufferAccess { slot, base, scale: 4nat }));
+}
 
 } // verus!
