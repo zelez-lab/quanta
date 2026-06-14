@@ -1112,6 +1112,110 @@ pub fn block_sort_kv_u32_buffer(
     vals_out[i as usize] = vbuf[lane];
 }
 
+// ── Tier 2 — Block sort, key-value variant (stable LSD radix) ────
+//
+// The keys-only `block_radix_sort_u32_buffer` algorithm with a
+// payload array carried to the same scatter slot: 16 passes of
+// 2-bit digits, each ranking by a packed Hillis-Steele prefix sum
+// and scattering `(key, val)` to `kbuf[my_pos]` / `vbuf[my_pos]`.
+//
+// Stable: rank within a digit is the count of same-digit lanes at
+// or below this one, monotone in lane index, so equal keys keep
+// their relative order — and the value rides along with the key.
+// This is the stable counterpart to `block_sort_kv_u32_buffer`
+// (bitonic, unstable). Prefer it whenever stability matters.
+
+/// Convenience kernel: stable sort of each 256-element block of
+/// (key, value) pairs ascending by key — LSD radix, 16 passes of
+/// 2-bit digits, payload permuted alongside the keys. Workgroup
+/// size 256, one workgroup per block; payload buffers at slots 1
+/// (in) and 3 (out), same layout as `block_sort_kv_u32_buffer`.
+///
+/// **Block-local and stable**: each block sorts independently, and
+/// equal keys keep their input relative order (values included).
+#[quanta::kernel(workgroup = [256])]
+pub fn block_radix_sort_kv_u32_buffer(
+    keys: &[u32],
+    vals: &[u32],
+    keys_out: &mut [u32],
+    vals_out: &mut [u32],
+) {
+    #[quanta::shared]
+    let kbuf: [u32; 256];
+    #[quanta::shared]
+    let vbuf: [u32; 256];
+    #[quanta::shared]
+    let s01: [u32; 256];
+    #[quanta::shared]
+    let s23: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    kbuf[lane] = keys[i as usize];
+    vbuf[lane] = vals[i as usize];
+    barrier();
+
+    let mut shift: u32 = 0u32;
+    while shift < 32u32 {
+        let my_key = kbuf[lane];
+        let my_val = vbuf[lane];
+        let digit = (my_key >> shift) & 3u32;
+
+        // Indicator-arithmetic one-hot (see block_radix_sort_u32_buffer
+        // for why the if-else-if chain is avoided).
+        let s_0 = if digit == 0u32 { 1u32 } else { 0u32 };
+        let s_1 = if digit == 1u32 { 1u32 } else { 0u32 };
+        let s_2 = if digit == 2u32 { 1u32 } else { 0u32 };
+        let s_3 = if digit == 3u32 { 1u32 } else { 0u32 };
+        s01[lane] = s_0 + s_1 * 65536u32;
+        s23[lane] = s_2 + s_3 * 65536u32;
+        barrier();
+
+        let mut d: u32 = 1u32;
+        while d < 256u32 {
+            let mut v01: u32 = s01[lane];
+            let mut v23: u32 = s23[lane];
+            if lane >= d {
+                v01 = v01 + s01[lane - d];
+                v23 = v23 + s23[lane - d];
+            }
+            barrier();
+            s01[lane] = v01;
+            s23[lane] = v23;
+            barrier();
+            d = d * 2u32;
+        }
+
+        let t01 = s01[255u32];
+        let t23 = s23[255u32];
+        let total0 = t01 & 65535u32;
+        let total1 = t01 >> 16u32;
+        let total2 = t23 & 65535u32;
+        let base1 = total0;
+        let base2 = base1 + total1;
+        let base3 = base2 + total2;
+        let inc01 = s01[lane];
+        let inc23 = s23[lane];
+        let rank0 = (inc01 & 65535u32).wrapping_sub(1u32);
+        let rank1 = base1 + (inc01 >> 16u32).wrapping_sub(1u32);
+        let rank2 = base2 + (inc23 & 65535u32).wrapping_sub(1u32);
+        let rank3 = base3 + (inc23 >> 16u32).wrapping_sub(1u32);
+        let my_pos: u32 = s_0 * rank0 + s_1 * rank1 + s_2 * rank2 + s_3 * rank3;
+
+        // Stable scatter of the (key, value) pair to the same slot.
+        barrier();
+        kbuf[my_pos] = my_key;
+        vbuf[my_pos] = my_val;
+        barrier();
+
+        shift = shift + 2u32;
+    }
+
+    keys_out[i as usize] = kbuf[lane];
+    vals_out[i as usize] = vbuf[lane];
+}
+
 // ── Tier 2 — Segmented scan / reduce ─────────────────────────────
 //
 // Head-flag formulation (CUB / rocPRIM convention): a non-zero
@@ -1253,6 +1357,136 @@ pub fn block_segmented_reduce_add_u32_buffer(
     if lane == 255u32 {
         counts_out[block as usize] = my_count;
     }
+}
+
+// ── Tier 2 — Segmented sort ──────────────────────────────────────
+//
+// Stable ascending sort WITHIN each head-flag-delimited segment of
+// a 256-element block; segments stay in their original order. Same
+// head-flag convention as segmented scan/reduce (non-zero flag =
+// segment head; lane 0 is always a head).
+//
+// Reduction to the LSD-radix machinery: sort the composite key
+// `(segment_id, key)` lexicographically, segment_id dominant. A
+// stable sort on that key keeps segments contiguous and in order
+// (segment_id is monotone in lane position) and orders keys within
+// each segment. The 40-bit composite doesn't fit one u32, so the
+// segment_id and key live in separate shared arrays and each radix
+// pass reads its 2-bit digit from whichever component it covers:
+// passes 0..15 walk the 32 key bits (least significant first),
+// passes 16..19 walk the low 8 bits of segment_id — making the
+// segment_id the most-significant component, which is what
+// dominance requires. ≤256 segments ⇒ 8 segment-id bits suffice.
+//
+// segment_id per lane = (inclusive head-flag scan) - 1.
+
+/// Convenience kernel: stable per-segment sort. Within each
+/// 256-element block, elements are sorted ascending by key inside
+/// their head-flag-delimited segment; segments keep their original
+/// relative order, equal keys keep their input order. Caller
+/// dispatches with `quark_count = data.len()` (a multiple of 256)
+/// and same-sized `flags` / `out` buffers (non-zero flag = segment
+/// head; block boundaries restart).
+#[quanta::kernel(workgroup = [256])]
+pub fn block_segmented_sort_u32_buffer(data: &[u32], flags: &[u32], out: &mut [u32]) {
+    #[quanta::shared]
+    let kbuf: [u32; 256];
+    #[quanta::shared]
+    let sbuf: [u32; 256];
+    #[quanta::shared]
+    let s01: [u32; 256];
+    #[quanta::shared]
+    let s23: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    kbuf[lane] = data[i as usize];
+    // Segment-id scan: lane 0 forced head, inclusive add, minus 1.
+    let mut f0: u32 = flags[i as usize];
+    if lane == 0u32 {
+        f0 = 1u32;
+    }
+    s01[lane] = f0;
+    barrier();
+    let mut ds: u32 = 1u32;
+    while ds < 256u32 {
+        let mut c_new: u32 = s01[lane];
+        if lane >= ds {
+            c_new = c_new + s01[lane - ds];
+        }
+        barrier();
+        s01[lane] = c_new;
+        barrier();
+        ds = ds * 2u32;
+    }
+    sbuf[lane] = s01[lane] - 1u32;
+    barrier();
+
+    // 20 LSD passes: 16 over the key (shift 0..30), then 4 over the
+    // segment id (treated as shift 0..6 of sbuf). `pass` 0..15 ⇒
+    // key bits; 16..19 ⇒ segid bits.
+    let mut pass: u32 = 0u32;
+    while pass < 20u32 {
+        let my_key = kbuf[lane];
+        let my_seg = sbuf[lane];
+        // Pick the digit source: key for the first 16 passes,
+        // segment id (dominant, so applied last) for the final 4.
+        let digit = if pass < 16u32 {
+            (my_key >> (pass * 2u32)) & 3u32
+        } else {
+            (my_seg >> ((pass - 16u32) * 2u32)) & 3u32
+        };
+
+        let s_0 = if digit == 0u32 { 1u32 } else { 0u32 };
+        let s_1 = if digit == 1u32 { 1u32 } else { 0u32 };
+        let s_2 = if digit == 2u32 { 1u32 } else { 0u32 };
+        let s_3 = if digit == 3u32 { 1u32 } else { 0u32 };
+        s01[lane] = s_0 + s_1 * 65536u32;
+        s23[lane] = s_2 + s_3 * 65536u32;
+        barrier();
+
+        let mut d: u32 = 1u32;
+        while d < 256u32 {
+            let mut v01: u32 = s01[lane];
+            let mut v23: u32 = s23[lane];
+            if lane >= d {
+                v01 = v01 + s01[lane - d];
+                v23 = v23 + s23[lane - d];
+            }
+            barrier();
+            s01[lane] = v01;
+            s23[lane] = v23;
+            barrier();
+            d = d * 2u32;
+        }
+
+        let t01 = s01[255u32];
+        let t23 = s23[255u32];
+        let total0 = t01 & 65535u32;
+        let total1 = t01 >> 16u32;
+        let total2 = t23 & 65535u32;
+        let base1 = total0;
+        let base2 = base1 + total1;
+        let base3 = base2 + total2;
+        let inc01 = s01[lane];
+        let inc23 = s23[lane];
+        let rank0 = (inc01 & 65535u32).wrapping_sub(1u32);
+        let rank1 = base1 + (inc01 >> 16u32).wrapping_sub(1u32);
+        let rank2 = base2 + (inc23 & 65535u32).wrapping_sub(1u32);
+        let rank3 = base3 + (inc23 >> 16u32).wrapping_sub(1u32);
+        let my_pos: u32 = s_0 * rank0 + s_1 * rank1 + s_2 * rank2 + s_3 * rank3;
+
+        // Scatter both key and its segment id to the same slot.
+        barrier();
+        kbuf[my_pos] = my_key;
+        sbuf[my_pos] = my_seg;
+        barrier();
+
+        pass = pass + 1u32;
+    }
+
+    out[i as usize] = kbuf[lane];
 }
 
 // ── Tier 3 — Device-wide bitonic pass ────────────────────────────

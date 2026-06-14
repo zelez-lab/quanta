@@ -360,6 +360,53 @@ pub fn segmented_reduce_add_u32_blocks(
     }
 }
 
+/// Per-block **stable segmented sort**: within each `block_size`
+/// chunk, sort ascending by value inside each head-flag-delimited
+/// segment; segments stay in input order, equal values keep input
+/// order. Returns a new vector.
+///
+/// Reference impl for `block_segmented_sort_u32_buffer`. Same
+/// head-flag convention as the segmented scan/reduce oracles: a
+/// non-zero flag opens a segment, and every block start opens one
+/// regardless of its flag.
+///
+/// # Example
+///
+/// ```
+/// use quanta_prims::reference::segmented_sort_u32_blocks;
+///
+/// let data  = [3u32, 1, 2,  9, 5, 7];
+/// let flags = [0u32, 0, 0,  1, 0, 0]; // block_size = 6, head at idx 3
+/// let out = segmented_sort_u32_blocks(&data, &flags, 6);
+/// // Segment [3,1,2] → [1,2,3]; segment [9,5,7] → [5,7,9].
+/// assert_eq!(out, vec![1, 2, 3, 5, 7, 9]);
+/// ```
+pub fn segmented_sort_u32_blocks(data: &[u32], flags: &[u32], block_size: usize) -> Vec<u32> {
+    assert_eq!(flags.len(), data.len());
+    let mut out = data.to_vec();
+    let num_blocks = data.len() / block_size;
+    for b in 0..num_blocks {
+        let start = b * block_size;
+        // Walk segment boundaries: a segment runs from its head
+        // (block start, or a set flag) to just before the next head.
+        let mut seg_start = start;
+        let mut i = start + 1;
+        while i <= start + block_size {
+            let at_end = i == start + block_size;
+            let is_head = !at_end && flags[i] != 0;
+            if at_end || is_head {
+                // sort_unstable is fine: equal values are
+                // indistinguishable, so the result is identical to a
+                // stable sort element-for-element.
+                out[seg_start..i].sort_unstable();
+                seg_start = i;
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Per-block key-value sort: each `block_size`-sized chunk of
 /// `(keys, vals)` is sorted ascending by key, values permuted
 /// alongside. Returns the sorted pair of vectors.
@@ -401,6 +448,40 @@ pub fn sort_kv_u32_blocks(keys: &[u32], vals: &[u32], block_size: usize) -> (Vec
         out_v.extend(pairs.iter().map(|&(_, v)| v));
     }
     (out_k, out_v)
+}
+
+/// Per-block **stable** key-value sort: each `block_size`-sized
+/// chunk of `(keys, vals)` is sorted ascending by key, equal keys
+/// keeping their input order, values permuted alongside.
+///
+/// Reference impl for `block_radix_sort_kv_u32_buffer` (the stable
+/// LSD-radix kv kernel). Unlike [`sort_kv_u32_blocks`] — whose
+/// bitonic kernel is unstable, so its tests compare pair multisets
+/// — this oracle pins the **exact** `(key, value)` sequence, which
+/// the stable kernel must reproduce element for element.
+///
+/// The body is identical to [`sort_kv_u32_blocks`] (`sort_by_key`
+/// is already stable); the separate name documents the stronger
+/// contract its caller is allowed to assert.
+///
+/// # Example
+///
+/// ```
+/// use quanta_prims::reference::sort_kv_stable_u32_blocks;
+///
+/// // Two pairs share key 1; stability keeps val 10 before val 11.
+/// let keys = [1u32, 3, 1, 2];
+/// let vals = [10u32, 30, 11, 20];
+/// let (k, v) = sort_kv_stable_u32_blocks(&keys, &vals, 4);
+/// assert_eq!(k, vec![1, 1, 2, 3]);
+/// assert_eq!(v, vec![10, 11, 20, 30]);
+/// ```
+pub fn sort_kv_stable_u32_blocks(
+    keys: &[u32],
+    vals: &[u32],
+    block_size: usize,
+) -> (Vec<u32>, Vec<u32>) {
+    sort_kv_u32_blocks(keys, vals, block_size)
 }
 
 /// Sort a `u32` slice into ascending order, returning a new

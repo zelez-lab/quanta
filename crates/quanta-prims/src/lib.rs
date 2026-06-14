@@ -118,7 +118,11 @@
 //!   `block_segmented_reduce_add_u32_buffer` — head-flag
 //!   segmented prefix sum and per-segment totals
 //! - `block_sort_kv_u32_buffer` — key-value sort (bitonic,
-//!   payload permuted alongside the keys)
+//!   unstable, payload permuted alongside the keys)
+//! - `block_radix_sort_kv_u32_buffer` — key-value sort (stable
+//!   LSD radix, payload carried to the same scatter slot)
+//! - `block_segmented_sort_u32_buffer` — stable per-segment sort
+//!   (head-flag delimited; segments kept in input order)
 //!
 //! Tier 3 (device-wide convenience wrappers, all shipped):
 //! - `device_reduce_{add,min,max}_{u32,i32,f32}` — host slice in,
@@ -131,8 +135,8 @@
 //! `*_buffer` convenience kernel. See `gpu_kernel.rs` for the
 //! full list; `device_wide.rs` holds the Tier-3 host wrappers.
 //!
-//! Still queued: key-value LSD radix (stable kv sort), segmented
-//! sort.
+//! Tier 2 is now complete. Larger pieces (device-wide segmented
+//! primitives, multi-block merge sort) live in future tiers.
 
 // Subgroup intrinsics are FFI imports — the `unsafe` is unavoidable
 // at the call site. The reference module is pure safe Rust; only

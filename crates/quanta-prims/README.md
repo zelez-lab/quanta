@@ -29,13 +29,14 @@ the same Rust source.
 | `device_reduce_{add,min,max}` × {u32, i32, f32} | ✅ verified (Tier 3)  |
 | `device_sort_u32` (device-wide bitonic)    | ✅ verified (Tier 3)       |
 | `block_segmented_{scan,reduce}_add_u32`    | ✅ verified (Tier 2)       |
-| `block_sort_kv_u32` (bitonic, key-value)   | ✅ verified (Tier 2)       |
-| Key-value LSD radix / segmented sort       | queued                     |
+| `block_sort_kv_u32` (bitonic, unstable)    | ✅ verified (Tier 2)       |
+| `block_radix_sort_kv_u32` (stable LSD)     | ✅ verified (Tier 2)       |
+| `block_segmented_sort_u32` (stable)        | ✅ verified (Tier 2)       |
 
-20 GPU kernels + 10 device-wide host wrappers. 89 differential
+22 GPU kernels + 10 device-wide host wrappers. 95 differential
 tests on Metal. 8 Lean correctness theorems + 12 Verus
-operational invariants. See [CHANGELOG.md](CHANGELOG.md) for
-the release history.
+operational invariants. **Tier 2 is complete.** See
+[CHANGELOG.md](CHANGELOG.md) for the release history.
 
 ## Quick example — block reduce inside your own kernel
 
@@ -153,8 +154,13 @@ typical 256.
 **Block sort** is a stable multi-bit LSD radix: 16 passes over
 2-bit digits, each pass one-hotting the digit into packed 16-bit
 counters, ranking via a shared-memory Hillis-Steele prefix sum,
-and scattering stably into the digit partitions. The key-value
-variant (`block_sort_kv_u32_buffer`) uses the bitonic
+and scattering stably into the digit partitions.
+`block_radix_sort_kv_u32_buffer` carries a payload to the same
+scatter slot (stable key-value sort);
+`block_segmented_sort_u32_buffer` sorts within head-flag-delimited
+segments by sorting the composite `(segment_id, key)` — four extra
+high-order radix passes over the segment id make it dominant. The
+older `block_sort_kv_u32_buffer` uses the bitonic
 compare-exchange network instead — unstable, but it moves the
 payload with one shared array per stream and no rank pass.
 

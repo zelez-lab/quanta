@@ -299,8 +299,43 @@ gpu.dispatch(&wave, n as u32)?.wait()?;
 ```
 
 Bitonic, therefore **unstable**: values attached to equal keys may
-come out in any order. Keys-only callers get the stable LSD radix
-via `block_radix_sort_u32_buffer`.
+come out in any order. When stability matters (equal keys must keep
+their input order), use `block_radix_sort_kv_u32_buffer` instead —
+identical binding layout, stable LSD-radix body.
+
+### `block_radix_sort_kv_u32_buffer`
+
+The stable key-value sort. Same call shape as
+`block_sort_kv_u32_buffer` above, but equal keys keep their input
+order (and their values along with them):
+
+```rust,ignore
+use quanta_prims::block_radix_sort_kv_u32_buffer;
+
+let mut wave = block_radix_sort_kv_u32_buffer(&gpu)?;
+wave.bind(0, &keys);
+wave.bind(1, &vals);
+wave.bind(2, &keys_out);
+wave.bind(3, &vals_out);
+gpu.dispatch(&wave, n as u32)?.wait()?;
+```
+
+### `block_segmented_sort_u32_buffer`
+
+Sort within head-flag-delimited segments (same convention as the
+segmented scan/reduce): a non-zero flag opens a segment, block
+boundaries restart. Segments keep their input order; sorting is
+stable within each.
+
+```rust,ignore
+use quanta_prims::block_segmented_sort_u32_buffer;
+
+let mut wave = block_segmented_sort_u32_buffer(&gpu)?;
+wave.bind(0, &data);   // [u32; n]
+wave.bind(1, &flags);  // [u32; n], non-zero = segment head
+wave.bind(2, &out);    // [u32; n]
+gpu.dispatch(&wave, n as u32)?.wait()?;
+```
 
 ### `block_segmented_scan_add_u32_buffer` / `block_segmented_reduce_add_u32_buffer`
 

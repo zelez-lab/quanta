@@ -65,8 +65,10 @@ Tier 2 adds `block_compact_u32_buffer` (stream compaction),
 `block_histogram_u32_buffer` (256-bucket histogram),
 `block_top_k_u32_buffer` (runtime-`k` selection),
 `block_segmented_{scan,reduce}_add_u32_buffer` (head-flag
-segmented prefix sums), and `block_sort_kv_u32_buffer`
-(key-value sort). All results are **per-block**: each
+segmented prefix sums), `block_sort_kv_u32_buffer` (unstable
+key-value sort), `block_radix_sort_kv_u32_buffer` (stable
+key-value sort), and `block_segmented_sort_u32_buffer` (stable
+per-segment sort). All results are **per-block**: each
 256-element block is processed independently.
 
 ## Device-wide one-liners

@@ -8,6 +8,21 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Tier 2 — `block_radix_sort_kv_u32_buffer`** — stable
+  key-value block sort: the keys-only LSD-radix algorithm with a
+  payload carried to the same scatter slot each pass. Stable
+  (equal keys keep input order, value included), unlike the
+  bitonic `block_sort_kv_u32_buffer`. 7 differential tests on
+  Metal, all exact-sequence (stability lets duplicate-key cases
+  drop the multiset comparison).
+- **Tier 2 — `block_segmented_sort_u32_buffer`** — stable
+  per-segment sort within head-flag-delimited segments (same
+  convention as segmented scan/reduce). Reduces to LSD radix on
+  the composite `(segment_id, key)`: a head-flag scan gives each
+  lane its segment id, then four high-order radix passes over the
+  segment id (after the 16 key passes) make it dominant, keeping
+  segments contiguous and in input order. 8 differential tests.
+  **Completes Tier 2.**
 - **Tier 3 — `device_reduce_{add,min,max}_{u32,i32,f32}`** —
   device-wide "host slice in, scalar out" reduce wrappers.
   Arbitrary input length ≥ 1: identity padding to a block
