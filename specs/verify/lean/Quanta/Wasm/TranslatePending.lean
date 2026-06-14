@@ -61,6 +61,7 @@ and deliberately not started here.
 -/
 
 import Quanta.Wasm.Translate
+import Quanta.Wasm.LowerScopeValid
 
 namespace Quanta.Wasm
 
@@ -406,5 +407,396 @@ example :
       [.block 0, .i32Const 1, .brIf 1, .wend]).isNone = true := by native_decide
 
 end Pins
+
+-- ════════════════════════════════════════════════════════════════════
+-- Universal agreement: lowerInstrs ⟹ lowerInstrsP
+-- ════════════════════════════════════════════════════════════════════
+--
+-- On the Stage-A success domain (every input `lowerInstrs` accepts),
+-- the pending machinery is inert: `lowerInstrsP` walks the identical
+-- structure, the pending list stays `[]` throughout, and the emitted
+-- ops match. The two record-and-wrap arms where the functions
+-- diverge are exactly the arms Stage A refuses (`none`), so the
+-- hypothesis `lowerInstrs … = some …` rules them out.
+--
+-- This is the bridge lemma: anything proven about `lowerInstrs`
+-- (preservation, scopeValid, nextReg-monotonicity) transfers to
+-- `lowerInstrsP` on the shared domain by rewriting through it.
+
+@[simp] theorem applyWraps_nil (tail : List KernelOp) :
+    applyWraps [] tail = tail := rfl
+
+@[simp] theorem stepPending_nil : stepPending [] = [] := rfl
+
+/-- The inert-pending agreement theorem. When Stage A accepts, Stage
+    B with empty in-pending produces the same base state and ops and
+    empty out-pending. Proved by `lowerInstrs.induct` — same 21-case
+    dispatch as the scopeValid/preservation masters. -/
+theorem lowerInstrsP_agrees_with_lowerInstrs :
+    ∀ (fuel : Nat) (frames : List FrameKind) (s : LowerState) (instrs : List WasmInstr)
+      {s' : LowerState} {ops : List KernelOp},
+      lowerInstrs fuel frames s instrs = some (s', ops) →
+      lowerInstrsP fuel frames ⟨s, []⟩ instrs = some (⟨s', []⟩, ops) := by
+  intro fuel frames s instrs
+  induction fuel, frames, s, instrs using lowerInstrs.induct with
+  | case1 _ _ _ =>
+    intro s' ops h
+    simp only [lowerInstrs] at h
+    obtain ⟨h_s_eq, h_ops_eq⟩ := Prod.mk.inj (Option.some.inj h)
+    subst h_s_eq; subst h_ops_eq
+    simp only [lowerInstrsP]
+  | case2 _ _ _ _ =>
+    intro s' ops h; simp [lowerInstrs] at h
+  | case3 _ _ _ _ _ hsplit =>
+    intro s' ops h; simp [lowerInstrs, hsplit] at h
+  | case4 frames s rest arity f body post hsplit ih2 ih1 =>
+    intro s' ops h
+    simp only [lowerInstrs, hsplit] at h
+    rcases hb : lowerInstrs f (.block :: frames) s body with _ | ⟨s1, innerOps⟩
+    · simp [hb] at h
+    simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hp : lowerInstrs f frames s1 post with _ | ⟨s2, postOps⟩
+    · simp [hp] at h
+    simp only [hp, Option.some_bind, pure, Pure.pure] at h
+    obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+    subst hs; subst hops
+    have e1 := ih1 s1 hp
+    unfold lowerInstrsP
+    rw [hsplit]
+    simp only [ih2 hb, Option.bind_eq_bind, Option.some_bind, e1,
+               applyWraps_nil, stepPending_nil, List.append_nil, List.nil_append,
+               pure, Pure.pure]
+  | case5 _ _ _ _ =>
+    intro s' ops h; simp [lowerInstrs] at h
+  | case6 _ _ _ _ _ hsplit =>
+    intro s' ops h; simp [lowerInstrs, hsplit] at h
+  | case7 frames s rest arity f body post hsplit =>
+    rename_i ih2 ih1
+    intro s' ops h
+    simp only [lowerInstrs, hsplit] at h
+    rcases hb : lowerInstrs f (.loopK :: frames) s body with _ | ⟨s1, bodyOps⟩
+    · simp [hb] at h
+    simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hp : lowerInstrs f frames
+      { nextReg := s1.nextReg, stack := s1.stack,
+        localReg := s.localReg, localTy := s.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := s.currentReg }
+      post with _ | ⟨s2, postOps⟩
+    · simp [hp] at h
+    simp only [hp, Option.some_bind, pure, Pure.pure] at h
+    obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+    subst hs; subst hops
+    have e2 := ih2 hb
+    have e1 : lowerInstrsP f frames
+        ⟨{ nextReg := s1.nextReg, stack := s1.stack,
+           localReg := s.localReg, localTy := s.localTy,
+           bufferSlots := s1.bufferSlots, currentReg := s.currentReg }, []⟩
+        post = some (⟨s2, []⟩, postOps) := ih1 s1 hp
+    simp only [lowerInstrsP, hsplit, e2, Option.bind_eq_bind, Option.some_bind,
+               ne_eq, not_true_eq_false, if_false, e1, pure, Pure.pure]
+  | case8 _ _ _ _ =>
+    intro s' ops h; simp [lowerInstrs] at h
+  | case9 _ _ _ _ _ hsplit =>
+    intro s' ops h; simp [lowerInstrs, hsplit] at h
+  | case10 frames s rest arity f thenBody elseBody post hsplit =>
+    rename_i ih3 ih2 ih1
+    intro s' ops h
+    simp only [lowerInstrs, hsplit] at h
+    rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
+    · simp [hpop] at h
+    simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hc : s0.commit svCond with _ | ⟨cond, s1, opsCommit⟩
+    · simp [hc] at h
+    simp only [hc, Option.some_bind, LowerState.alloc] at h
+    rcases hth : lowerInstrs f (.wif :: frames)
+        { nextReg := s1.nextReg + 1, stack := s1.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+        thenBody with _ | ⟨s2, thenOps⟩
+    · simp [hth] at h
+    simp only [hth, Option.some_bind] at h
+    rcases hel : lowerInstrs f (.wif :: frames)
+        { nextReg := s2.nextReg, stack := s2.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s2.bufferSlots, currentReg := s1.currentReg }
+        elseBody with _ | ⟨s3, elseOps⟩
+    · simp [hel] at h
+    simp only [hel, Option.some_bind] at h
+    rcases hpo : lowerInstrs f frames
+        { nextReg := s3.nextReg, stack := s3.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }
+        post with _ | ⟨s4, postOps⟩
+    · simp [hpo] at h
+    simp only [hpo, Option.some_bind, pure, Pure.pure] at h
+    obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+    subst hs; subst hops
+    -- s_cast: the alloc'd then-branch entry state. ih2/ih1 take it
+    -- as the snapshot anchor, then the body's result state. Each IH
+    -- is restated with the literal post-/else-branch state so the
+    -- LHS matches the goal's unfolded form (the IH's let-bound
+    -- `*_restored` is defeq but not syntactically equal).
+    have e3 : lowerInstrsP f (.wif :: frames)
+        ⟨{ nextReg := s1.nextReg + 1, stack := s1.stack,
+           localReg := s1.localReg, localTy := s1.localTy,
+           bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }, []⟩
+        thenBody = some (⟨s2, []⟩, thenOps) :=
+      ih3 _ hth
+    have e2 : lowerInstrsP f (.wif :: frames)
+        ⟨{ nextReg := s2.nextReg, stack := s2.stack,
+           localReg := s1.localReg, localTy := s1.localTy,
+           bufferSlots := s2.bufferSlots, currentReg := s1.currentReg }, []⟩
+        elseBody = some (⟨s3, []⟩, elseOps) :=
+      ih2 { nextReg := s1.nextReg + 1, stack := s1.stack,
+            localReg := s1.localReg, localTy := s1.localTy,
+            bufferSlots := s1.bufferSlots, currentReg := s1.currentReg } s2 hel
+    have e1 : lowerInstrsP f frames
+        ⟨{ nextReg := s3.nextReg, stack := s3.stack,
+           localReg := s1.localReg, localTy := s1.localTy,
+           bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }, []⟩
+        post = some (⟨s4, []⟩, postOps) :=
+      ih1 { nextReg := s1.nextReg + 1, stack := s1.stack,
+            localReg := s1.localReg, localTy := s1.localTy,
+            bufferSlots := s1.bufferSlots, currentReg := s1.currentReg } s3 hpo
+    simp only [lowerInstrsP, hsplit, hpop, Option.bind_eq_bind, Option.some_bind,
+               hc, LowerState.alloc, e3, ne_eq, not_true_eq_false, if_false,
+               e2, e1, pure, Pure.pure]
+  | case11 _ _ _ _ _ hg =>
+    intro s' ops h; simp only [lowerInstrs] at h; rw [hg] at h; simp at h
+  | case12 _ _ _ _ hg =>
+    intro s' ops h
+    simp only [lowerInstrs] at h; rw [hg] at h; simp at h
+    obtain ⟨hs, hops⟩ := h
+    subst hs; subst hops
+    simp only [lowerInstrsP]; rw [hg]; simp
+  | case13 _ _ _ _ _ hg hnz hla =>
+    intro s' ops h
+    simp only [lowerInstrs] at h; rw [hg] at h; simp [hnz, hla] at h
+    obtain ⟨hs, hops⟩ := h
+    subst hs; subst hops
+    simp only [lowerInstrsP]; rw [hg]; simp [hnz, hla]
+  | case14 _ _ _ _ _ hg hnz hnla =>
+    intro s' ops h
+    simp only [lowerInstrs] at h; rw [hg] at h; simp [hnz, hnla] at h
+    obtain ⟨hs, hops⟩ := h
+    subst hs; subst hops
+    simp only [lowerInstrsP]; rw [hg]; simp [hnz, hnla]
+  | case15 _ _ _ _ _ val hne hg hla hsb =>
+    intro s' ops h
+    simp only [lowerInstrs] at h; rw [hg] at h
+    obtain ⟨hone, hblk⟩ := hsb; subst hblk
+    simp [hla, hone] at h
+  | case16 _ _ _ _ _ val hne hg hla hnsb =>
+    intro s' ops h
+    simp only [lowerInstrs] at h; rw [hg] at h
+    cases val with
+    | loopK => exact absurd rfl hne
+    | block =>
+      simp [hla] at h
+      obtain ⟨hbreak, hs, hops⟩ := h
+      subst hs; subst hops
+      simp only [lowerInstrsP]; rw [hg]; simp [hla, hbreak]
+    | wif =>
+      simp [hla] at h
+      obtain ⟨hs, hops⟩ := h
+      subst hs; subst hops
+      simp only [lowerInstrsP]; rw [hg]; simp [hla]
+  | case17 _ _ _ _ _ val hne hg hnla =>
+    intro s' ops h
+    simp only [lowerInstrs] at h; rw [hg] at h
+    cases val with
+    | loopK => exact absurd rfl hne
+    | block | wif => all_goals (simp [hnla] at h)
+  | case18 fuel frames s rest depth ih1 =>
+    intro s' ops h
+    simp only [lowerInstrs] at h
+    rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
+    · simp [hpop] at h
+    simp only [hpop, Option.bind_eq_bind, Option.some_bind] at h
+    rcases hc : s0.commit svCond with _ | ⟨cond, s1, opsCommit⟩
+    · simp [hc] at h
+    simp only [hc, Option.some_bind] at h
+    rcases hg : frames.get? depth with _ | fk
+    · rw [hg] at h; simp at h
+    rw [hg] at h
+    -- Every brIf arm that Stage A accepts recurses on `rest` from
+    -- one of two states: the alloc'd `s1.nextReg + 1` state (when a
+    -- cast is emitted) or `s1` itself (the continue-outer case).
+    -- A single closer handles both: unfold lowerInstrsP, replay the
+    -- pop/commit/get?/guards, rewrite the recursive call by ih1, and
+    -- let `simp` reduce the Bool-decidable `if`s and append assoc.
+    cases fk with
+    | loopK =>
+      simp at h
+      by_cases h0 : depth = 0
+      · simp [h0, LowerState.alloc] at h
+        rcases hr : lowerInstrs fuel frames
+          { nextReg := s1.nextReg + 1, stack := s1.stack,
+            localReg := s1.localReg, localTy := s1.localTy,
+            bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+          rest with _ | ⟨s2, postOps⟩
+        · simp [hr] at h
+        simp only [hr, Option.some_bind, pure, Pure.pure] at h
+        obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+        subst hs; subst hops
+        simp only [lowerInstrsP, hpop, Option.bind_eq_bind, Option.some_bind, hc]
+        rw [hg]; simp [h0, LowerState.alloc, ih1 _ hr]
+      · simp [h0] at h
+        by_cases hla : hasLoopAbove frames depth
+        · simp [hla, LowerState.alloc] at h
+          rcases hr : lowerInstrs fuel frames
+            { nextReg := s1.nextReg + 1, stack := s1.stack,
+              localReg := s1.localReg, localTy := s1.localTy,
+              bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+            rest with _ | ⟨s2, postOps⟩
+          · simp [hr] at h
+          simp only [hr, Option.some_bind, pure, Pure.pure] at h
+          obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+          subst hs; subst hops
+          simp only [lowerInstrsP, hpop, Option.bind_eq_bind, Option.some_bind, hc]
+          rw [hg]; simp [h0, hla, LowerState.alloc, ih1 _ hr]
+        · simp [hla] at h
+          rcases hr : lowerInstrs fuel frames s1 rest with _ | ⟨s2, postOps⟩
+          · simp [hr] at h
+          simp only [hr, Option.some_bind, pure, Pure.pure] at h
+          obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+          subst hs; subst hops
+          simp only [lowerInstrsP, hpop, Option.bind_eq_bind, Option.some_bind, hc]
+          rw [hg]; simp [h0, hla, ih1 _ hr]
+    | block =>
+      by_cases hla : hasLoopAbove frames depth
+      · by_cases hone : loopsAbove frames depth = 1
+        · simp [hla, hone] at h
+        · simp [hla, hone, LowerState.alloc] at h
+          rcases hr : lowerInstrs fuel frames
+            { nextReg := s1.nextReg + 1, stack := s1.stack,
+              localReg := s1.localReg, localTy := s1.localTy,
+              bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+            rest with _ | ⟨s2, postOps⟩
+          · simp [hr] at h
+          simp only [hr, Option.some_bind, pure, Pure.pure] at h
+          obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+          subst hs; subst hops
+          simp only [lowerInstrsP, hpop, Option.bind_eq_bind, Option.some_bind, hc]
+          rw [hg]; simp [hla, hone, LowerState.alloc, ih1 _ hr]
+      · simp [hla] at h
+    | wif =>
+      by_cases hla : hasLoopAbove frames depth
+      · by_cases hone : loopsAbove frames depth = 1
+        · simp [hla, hone, LowerState.alloc] at h
+          rcases hr : lowerInstrs fuel frames
+            { nextReg := s1.nextReg + 1, stack := s1.stack,
+              localReg := s1.localReg, localTy := s1.localTy,
+              bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+            rest with _ | ⟨s2, postOps⟩
+          · simp [hr] at h
+          simp only [hr, Option.some_bind, pure, Pure.pure] at h
+          obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+          subst hs; subst hops
+          simp only [lowerInstrsP, hpop, Option.bind_eq_bind, Option.some_bind, hc]
+          rw [hg]; simp [hla, hone, LowerState.alloc, ih1 _ hr]
+        · simp [hla, hone, LowerState.alloc] at h
+          rcases hr : lowerInstrs fuel frames
+            { nextReg := s1.nextReg + 1, stack := s1.stack,
+              localReg := s1.localReg, localTy := s1.localTy,
+              bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
+            rest with _ | ⟨s2, postOps⟩
+          · simp [hr] at h
+          simp only [hr, Option.some_bind, pure, Pure.pure] at h
+          obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+          subst hs; subst hops
+          simp only [lowerInstrsP, hpop, Option.bind_eq_bind, Option.some_bind, hc]
+          rw [hg]; simp [hla, hone, LowerState.alloc, ih1 _ hr]
+      · simp [hla] at h
+  | case19 _ _ _ _ hcond =>
+    intro s' ops h
+    simp only [lowerInstrs] at h
+    rw [if_pos hcond] at h
+    exact absurd h Option.noConfusion
+  | case20 fuel frames s rest hncond ih1 =>
+    intro s' ops h
+    simp only [lowerInstrs] at h
+    rw [if_neg hncond] at h
+    rcases hr : lowerInstrs fuel frames s rest with _ | ⟨s2, postOps⟩
+    · simp [hr] at h
+    simp only [hr, Option.bind_eq_bind, Option.some_bind, pure, Pure.pure] at h
+    obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+    subst hs; subst hops
+    simp only [lowerInstrsP]
+    rw [if_neg hncond]
+    simp only [ih1 hr, Option.bind_eq_bind, Option.some_bind, pure, Pure.pure]
+  | case21 fuel frames s i rest hnb hnl hnw hnbr hnbi hnwr ih1 =>
+    intro s' ops h
+    cases i <;>
+      first
+        | (first
+            | (exact absurd rfl (hnb _))
+            | (exact absurd rfl (hnl _))
+            | (exact absurd rfl (hnw _))
+            | (exact absurd rfl (hnbr _))
+            | (exact absurd rfl (hnbi _))
+            | (exact absurd rfl hnwr))
+        | (rename_i x
+           simp only [lowerInstrs] at h
+           rcases hi1 : lowerInstr s x with _ | ⟨s1, ops1⟩
+           · rw [hi1] at h; simp at h
+           rw [hi1] at h
+           simp only [Option.bind_eq_bind, Option.some_bind] at h
+           rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+           · rw [hi2] at h; simp at h
+           rw [hi2] at h
+           simp only [Option.some_bind, pure, Pure.pure] at h
+           obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+           subst hs; subst hops
+           simp only [lowerInstrsP, hi1, Option.bind_eq_bind, Option.some_bind,
+                      ih1 _ hi2, pure, Pure.pure])
+        | (simp only [lowerInstrs] at h
+           rcases hi1 : lowerInstr s _ with _ | ⟨s1, ops1⟩
+           · rw [hi1] at h; simp at h
+           rw [hi1] at h
+           simp only [Option.bind_eq_bind, Option.some_bind] at h
+           rcases hi2 : lowerInstrs fuel frames s1 rest with _ | ⟨s2, ops2⟩
+           · rw [hi2] at h; simp at h
+           rw [hi2] at h
+           simp only [Option.some_bind, pure, Pure.pure] at h
+           obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
+           subst hs; subst hops
+           simp only [lowerInstrsP, hi1, Option.bind_eq_bind, Option.some_bind,
+                      ih1 _ hi2, pure, Pure.pure])
+
+-- ════════════════════════════════════════════════════════════════════
+-- Transfer corollary — the bridge in use
+-- ════════════════════════════════════════════════════════════════════
+--
+-- A worked example of using the agreement lemma to carry a Stage-A
+-- result over to `lowerInstrsP`: nextReg-monotonicity. The pattern
+-- is mechanical — given the Stage-A theorem `P (lowerInstrs …)`,
+-- rewrite the `lowerInstrsP` success through agreement back to a
+-- `lowerInstrs` success and apply the Stage-A theorem. The full
+-- preservation/scopeValid masters transfer the same way; this
+-- corollary pins the recipe for the next session.
+
+/-- nextReg never decreases through `lowerInstrsP`, stated about a
+    `lowerInstrsP` success and an underlying Stage-A success. The
+    proof goes through the agreement bridge: agreement forces the
+    Stage-A and Stage-B base states to coincide, so the Stage-A
+    monotonicity bound applies to the Stage-B output. This is the
+    template the preservation/scopeValid masters follow to transfer
+    onto `lowerInstrsP`. -/
+theorem lowerInstrsP_nextReg_mono
+    (fuel : Nat) (frames : List FrameKind) (s : LowerState) (instrs : List WasmInstr)
+    {sa : LowerState} {opsa : List KernelOp}
+    {sp : LowerState} {opsp : List KernelOp}
+    (ha : lowerInstrs fuel frames s instrs = some (sa, opsa))
+    (hp : lowerInstrsP fuel frames ⟨s, []⟩ instrs = some (⟨sp, []⟩, opsp)) :
+    s.nextReg ≤ sp.nextReg := by
+  -- Agreement: from the same Stage-A success, Stage B yields the
+  -- identical base state. So sp = sa, and the Stage-A bound applies.
+  have hbridge := lowerInstrsP_agrees_with_lowerInstrs fuel frames s instrs ha
+  rw [hbridge] at hp
+  obtain ⟨hbase, _⟩ := Prod.mk.inj (Option.some.inj hp)
+  have hsp : sa = sp := congrArg LowerStateP.base hbase
+  rw [← hsp]
+  exact lowerInstrs_nextReg_mono fuel frames s instrs ha
 
 end Quanta.Wasm
