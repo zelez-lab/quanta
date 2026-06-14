@@ -60,20 +60,22 @@ Tier 2 caveats:
 - **histogram** likewise uploads a per-element bucket index
   buffer.
 - **top-k** runs an inlined bitonic sort plus a conditional
-  write. (Note: `radix_sort` numbers below predate the LSD-radix
-  body swap — re-bench before quoting them for the new
-  algorithm; top-k still uses the bitonic network.)
+  write — it does NOT share `radix_sort`'s LSD body, so the two
+  lines can drift apart as the algorithms evolve.
 
 ### GPU vs CPU head-to-head at N = 16 384
 
 | Primitive       | GPU (ms) | CPU 1-thr (ms) | N-core est (ms) |
 | --------------- | -------- | -------------- | --------------- |
-| reduce_add_u32  | 2.4      | 0.001          | 0.0001          |
-| scan_add_u32    | 2.6      | 0.008          | 0.0008          |
-| radix_sort_u32  | 3.4      | 0.158          | 0.016           |
+| reduce_add_u32  | 1.4      | 0.001          | 0.0001          |
+| scan_add_u32    | 1.4      | 0.006          | 0.0006          |
+| radix_sort_u32  | 2.0      | 0.137          | 0.014           |
+
+(Numbers re-measured after the LSD-radix body swap; the sort
+line is the 16-pass radix, not the original bitonic.)
 
 At 16 384 elements the single-thread CPU reference beats the
-GPU by 100×+ on reduce/scan and 22× on sort, because the
+GPU by 100×+ on reduce/scan and ~14× on sort, because the
 fixed dispatch overhead dominates. The CPU compiler turns the
 reference impls into vectorised inner loops that absolutely
 crush the GPU on small N.
