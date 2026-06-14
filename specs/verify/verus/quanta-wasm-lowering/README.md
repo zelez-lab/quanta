@@ -20,6 +20,7 @@ the project `CLAUDE.md`.)
 | File | Milestone | Covers |
 |------|-----------|--------|
 | `skeleton.rs` | V1 | Toolchain smoke test — crate verifies clean. |
+| `parse_boundary.rs` | **V4 — input edge** | The `wasmparser::Operator → RawInstr` decode boundary (`from_operator`), named explicitly. `parse_op` is the `uninterp` spec image of the production `match`; two `external_body` boundary axioms pin its production claims — **clean refusal** (unrecognized operators decode to the refusing `Other`, image of `_ => Unsupported(name)`, so the fold refuses rather than mislowers) and **determinism** (equal operators decode equally, so the decoded list is a well-defined `Seq<WasmInstr>`). `parse_ops` lifts the decode over a stream (defined, not trusted — only the per-element decode is the edge); `parse_ops_{len,cons,deterministic}` are proved list-plumbing lemmas the V7 fold lines up with. |
 | `spec_types.rs` | V2 | `#[spec]` types mirroring Lean `SymVal` / `LowerState` / `WasmInstr` subset / `KernelOp` / `Reg` / `Scalar`, with structural lemmas. |
 | `lower_instr_spec.rs` | V3 | Verus `spec` `lower_instr` mirroring the Lean def (straight-line slice-1 subset: consts, i32 binop/cmp family, the shl/add buffer-pattern recognizers, drop/nop/wreturn, `commit`). Local-binding + memory arms deferred to V5. |
 | `lower_instr_refine.rs` | V5 (bridge + straight-line, full) | The imperative→functional bridge (`view`: production `Vec`-end stack ↔ spec `Seq`-head; `reverse_push`; `pops_leave_rest`) plus **full** per-op refinements — exact state + ops equality — for i32Const, the whole register-operand binop family (op-parametric, all 9 binops in one proof), the cmp family (all 6 cmps in one proof), and the shl/add fast-path view-alignment. Local-binding/memory arms join with the extended `LowerState`; the Rust `i32Add`'s chained-address-arithmetic cases are out of the Lean slice-1 subset. |
@@ -55,8 +56,12 @@ differential test suite is the standing safety net underneath it.
 
 ## Boundary / TCB
 
-The translator consumes `wasmparser::Operator` at its input edge;
-that parse step is axiomatized at the boundary (`#[verifier::trusted]`),
-matching how the other Verus crates handle their external interfaces.
-rustc's Rust→wasm32 step is accepted as TCB (out of scope, same as the
-Lean arm).
+The translator consumes `wasmparser::Operator` at its input edge; that
+parse step is axiomatized in `parse_boundary.rs` (V4) — two
+`external_body` boundary axioms (clean refusal + determinism), matching
+how the other Verus crates handle their external interfaces (e.g.
+`quanta-api`'s `external_body` driver obligation). rustc's Rust→wasm32
+step is accepted as TCB (out of scope, same as the Lean arm). The
+`parse_op`/`step_<op>` arm-by-arm faithfulness to the real Rust `match`
+bodies is the manual transcription obligation, with the differential
+test suite as the standing net underneath.
