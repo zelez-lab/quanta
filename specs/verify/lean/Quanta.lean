@@ -49,6 +49,7 @@ import Quanta.Wasm.Syntax
 import Quanta.Wasm.Structured
 import Quanta.Wasm.Semantics
 import Quanta.Wasm.Translate
+import Quanta.Wasm.TranslatePending
 import Quanta.Wasm.Preservation
 import Quanta.Wasm.PreservationList
 import Quanta.Wasm.PreservationBridge

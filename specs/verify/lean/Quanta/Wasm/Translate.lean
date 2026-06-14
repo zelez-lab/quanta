@@ -67,7 +67,7 @@ inductive SymVal where
       Consumed by the next `i32.load` / `i32.store` op into a typed
       `KernelOp.Load` / `Store`. -/
   | bufferAccess (slot : Nat) (base : Reg) (scale : Nat)
-  deriving Repr
+  deriving Repr, DecidableEq
 
 namespace SymVal
 
@@ -127,7 +127,7 @@ structure LowerState where
       keeps a separate map so the existing `localReg`-as-stable
       proofs survive. -/
   currentReg : List (Nat × Reg)
-  deriving Repr
+  deriving Repr, DecidableEq
 
 def LowerState.empty : LowerState :=
   { nextReg := 0, stack := [], localReg := [], localTy := [],
