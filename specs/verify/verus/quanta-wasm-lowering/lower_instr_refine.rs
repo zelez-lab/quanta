@@ -62,9 +62,11 @@ pub struct LowerState { pub next_reg: nat, pub stack: Seq<SymVal> }
 
 pub enum ConstValue { U32(int), I32(int) }
 pub enum BinOp { Add, Sub, Mul, Div, Rem, BAnd, BOr, BXor, Shl, Shr }
+pub enum CmpOp { Eq, Ne, Lt, Le, Gt, Ge }
 pub enum KernelOp {
     Const(Reg, ConstValue),
     BinOpK(Reg, Reg, Reg, BinOp, Scalar),
+    CmpK(Reg, Reg, Reg, CmpOp, Scalar),
 }
 
 pub open spec fn alloc(s: LowerState) -> (Reg, LowerState) {
@@ -112,6 +114,29 @@ pub open spec fn spec_i32_bin(s: LowerState, op: BinOp) -> Option<(LowerState, S
                         let (dst, s5) = alloc(s4);
                         let s6 = push(s5, dst);
                         Some((s6, ops_a.add(ops_b).add(seq![KernelOp::BinOpK(dst, ra, rb, op, Scalar::U32)])))
+                    },
+                },
+            },
+        },
+    }
+}
+
+pub open spec fn spec_i32_cmp(s: LowerState, op: CmpOp) -> Option<(LowerState, Seq<KernelOp>)> {
+    match pop_sym(s) {
+        None => None,
+        Some((svb, s1)) => match pop_sym(s1) {
+            None => None,
+            Some((sva, s2)) => match commit(s2, sva) {
+                None => None,
+                Some((ra, s3, ops_a)) => match commit(s3, svb) {
+                    None => None,
+                    Some((rb, s4, ops_b)) => {
+                        // cmp allocs a bool reg then the dst (matches Lean
+                        // lowerI32Cmp: two allocs, push dst).
+                        let (_bool_reg, s5) = alloc(s4);
+                        let (dst, s6) = alloc(s5);
+                        let s7 = push(s6, dst);
+                        Some((s7, ops_a.add(ops_b).add(seq![KernelOp::CmpK(dst, ra, rb, op, Scalar::U32)])))
                     },
                 },
             },
@@ -245,28 +270,90 @@ proof fn reverse_push_index(s: Seq<SymVal>, x: SymVal, i: int)
 // shape rustc emits between arithmetic ops). We pin that case: two
 // register operands on top refine to the spec arm.
 
-/// When the production top two are plain registers, the binop step's
-/// view equals the spec binop arm. (Const/address operands route
-/// through `commit` identically in both; the register case is the one
-/// the per-op proof needs and the one rustc emits.)
+/// FULL refinement of the binop family on register operands: the
+/// spec binop arm produces exactly the state and ops the Rust arm
+/// does. Both operands are registers ⇒ both commits are identities
+/// (no ops, no alloc), so the result is: one fresh reg `dst =
+/// next_reg`, stack = `[Reg(dst,U32)] ++ rest`, ops = `[BinOpK dst ra
+/// rb op U32]`. Op-parametric — covers add/sub/mul/and/or/xor/shr/
+/// div/rem in one proof (the fast-path producers shl/add only differ
+/// on their non-register guard, which doesn't fire here).
 proof fn refine_i32_bin_regs(c: ProdCtx, op: BinOp, ra: Reg, rb: Reg, ta: Scalar, tb: Scalar)
     requires
         c.prod_stack.len() >= 2,
         // production top = b = Reg(rb,tb); next = a = Reg(ra,ta)
         c.prod_stack[c.prod_stack.len() - 1] == SymVal::Reg(rb, tb),
         c.prod_stack[c.prod_stack.len() - 2] == SymVal::Reg(ra, ta),
-    ensures
-        spec_i32_bin(view(c), op).is_some(),
-        spec_i32_bin(view(c), op).unwrap().0.next_reg == c.next_reg + 1,
+    ensures ({
+        let s = view(c);
+        let rest = s.stack.subrange(2, s.stack.len() as int);
+        spec_i32_bin(s, op) == Some::<(LowerState, Seq<KernelOp>)>((
+            LowerState { next_reg: c.next_reg + 1,
+                         stack: seq![SymVal::Reg(c.next_reg, Scalar::U32)].add(rest) },
+            seq![KernelOp::BinOpK(c.next_reg, ra, rb, op, Scalar::U32)]))
+    }),
 {
-    // view(c).stack[0] = production top = Reg(rb,tb);
-    // view(c).stack[1] = production next = Reg(ra,ta).
     reverse_top_two(c.prod_stack);
     let s = view(c);
     assert(s.stack[0] == SymVal::Reg(rb, tb));
     assert(s.stack[1] == SymVal::Reg(ra, ta));
-    // Both commits are identities (register operands), so the only
-    // allocation is the result `dst` → next_reg bumps by exactly 1.
+    // commit of a register is the identity (Some((r, s, []))), so
+    // ops_a = ops_b = [] and the only alloc is dst = s.next_reg =
+    // c.next_reg. Two pops leave the stack at subrange(2, len).
+    pops_leave_rest(s);
+    assert(Seq::<KernelOp>::empty().add(Seq::<KernelOp>::empty())
+        .add(seq![KernelOp::BinOpK(c.next_reg, ra, rb, op, Scalar::U32)])
+        =~= seq![KernelOp::BinOpK(c.next_reg, ra, rb, op, Scalar::U32)]);
+    assert(spec_i32_bin(s, op).unwrap().0.stack
+        =~= seq![SymVal::Reg(c.next_reg, Scalar::U32)].add(s.stack.subrange(2, s.stack.len() as int)));
+}
+
+/// FULL refinement of the cmp family on register operands. Same shape
+/// as the binop case but cmp allocates TWO regs (a bool temp then the
+/// dst), so the result reg is `next_reg + 1` and next_reg bumps by 2.
+/// Op-parametric over eq/ne/lt/le/gt/ge.
+proof fn refine_i32_cmp_regs(c: ProdCtx, op: CmpOp, ra: Reg, rb: Reg, ta: Scalar, tb: Scalar)
+    requires
+        c.prod_stack.len() >= 2,
+        c.prod_stack[c.prod_stack.len() - 1] == SymVal::Reg(rb, tb),
+        c.prod_stack[c.prod_stack.len() - 2] == SymVal::Reg(ra, ta),
+    ensures ({
+        let s = view(c);
+        let rest = s.stack.subrange(2, s.stack.len() as int);
+        spec_i32_cmp(s, op) == Some::<(LowerState, Seq<KernelOp>)>((
+            LowerState { next_reg: c.next_reg + 2,
+                         stack: seq![SymVal::Reg(c.next_reg + 1, Scalar::U32)].add(rest) },
+            seq![KernelOp::CmpK(c.next_reg + 1, ra, rb, op, Scalar::U32)]))
+    }),
+{
+    reverse_top_two(c.prod_stack);
+    let s = view(c);
+    assert(s.stack[0] == SymVal::Reg(rb, tb));
+    assert(s.stack[1] == SymVal::Reg(ra, ta));
+    // bool_reg = next_reg, dst = next_reg + 1; commits are identities.
+    pops_leave_rest(s);
+    assert(Seq::<KernelOp>::empty().add(Seq::<KernelOp>::empty())
+        .add(seq![KernelOp::CmpK(c.next_reg + 1, ra, rb, op, Scalar::U32)])
+        =~= seq![KernelOp::CmpK(c.next_reg + 1, ra, rb, op, Scalar::U32)]);
+    assert(spec_i32_cmp(s, op).unwrap().0.stack
+        =~= seq![SymVal::Reg(c.next_reg + 1, Scalar::U32)].add(s.stack.subrange(2, s.stack.len() as int)));
+}
+
+/// Two `pop_sym`s on a ≥2-length stack leave the stack at
+/// `subrange(2, len)` — the `rest` the binop/cmp arms push onto.
+proof fn pops_leave_rest(s: LowerState)
+    requires s.stack.len() >= 2,
+    ensures
+        pop_sym(s).unwrap().1.stack == s.stack.subrange(1, s.stack.len() as int),
+        pop_sym(pop_sym(s).unwrap().1).unwrap().1.stack
+            == s.stack.subrange(2, s.stack.len() as int),
+{
+    let s1 = pop_sym(s).unwrap().1;
+    assert(s1.stack == s.stack.subrange(1, s.stack.len() as int));
+    assert(s1.stack.len() == s.stack.len() - 1);
+    let s2 = pop_sym(s1).unwrap().1;
+    assert(s2.stack == s1.stack.subrange(1, s1.stack.len() as int));
+    assert(s2.stack =~= s.stack.subrange(2, s.stack.len() as int));
 }
 
 /// `reverse` sends the last two Vec elements to spec indices 0 and 1.

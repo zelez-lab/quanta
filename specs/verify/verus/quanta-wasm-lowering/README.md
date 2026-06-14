@@ -22,7 +22,7 @@ the project `CLAUDE.md`.)
 | `skeleton.rs` | V1 | Toolchain smoke test — crate verifies clean. |
 | `spec_types.rs` | V2 | `#[spec]` types mirroring Lean `SymVal` / `LowerState` / `WasmInstr` subset / `KernelOp` / `Reg` / `Scalar`, with structural lemmas. |
 | `lower_instr_spec.rs` | V3 | Verus `spec` `lower_instr` mirroring the Lean def (straight-line slice-1 subset: consts, i32 binop/cmp family, the shl/add buffer-pattern recognizers, drop/nop/wreturn, `commit`). Local-binding + memory arms deferred to V5. |
-| `lower_instr_refine.rs` | V5 (bridge + straight-line) | The imperative→functional bridge: `view` (production `Vec`-end stack ↔ spec `Seq`-head), the `reverse_push` correspondence, and per-op refinements for i32Const, the register-operand binop case, and the shl/add fast-path view-alignment. Remaining same-shape binops follow the `refine_i32_bin_regs` pattern; local-binding/memory arms join with the extended `LowerState`. |
+| `lower_instr_refine.rs` | V5 (bridge + straight-line, full) | The imperative→functional bridge (`view`: production `Vec`-end stack ↔ spec `Seq`-head; `reverse_push`; `pops_leave_rest`) plus **full** per-op refinements — exact state + ops equality — for i32Const, the whole register-operand binop family (op-parametric, all 9 binops in one proof), the cmp family (all 6 cmps in one proof), and the shl/add fast-path view-alignment. Local-binding/memory arms join with the extended `LowerState`; the Rust `i32Add`'s chained-address-arithmetic cases are out of the Lean slice-1 subset. |
 | _(planned)_ `commit_refine.rs` | V6 | `commit` refinement. |
 | _(planned)_ `lower_instructions_refine.rs` | V7 | Top-level composition. |
 
