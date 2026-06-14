@@ -62,10 +62,12 @@ and deliberately not started here.
 
 import Quanta.Wasm.Translate
 import Quanta.Wasm.LowerScopeValid
+import Quanta.Wasm.PreservationInduction
 
 namespace Quanta.Wasm
 
-open Quanta.KOps (KernelOp Reg ConstValue Scalar)
+open Quanta.KOps (KernelOp Reg ConstValue Scalar evalOps)
+open Quanta.KOps.KernelOp (scopeValid scopeValidOps)
 
 -- ════════════════════════════════════════════════════════════════════
 -- Pending-wrap state
@@ -798,5 +800,91 @@ theorem lowerInstrsP_nextReg_mono
   have hsp : sa = sp := congrArg LowerStateP.base hbase
   rw [← hsp]
   exact lowerInstrs_nextReg_mono fuel frames s instrs ha
+
+/-- wellScoped is preserved through `lowerInstrsP`. Transferred from
+    `lowerInstrs_preserves_wellScoped` via the agreement bridge: the
+    Stage-A and Stage-B base states coincide, so the Stage-A
+    preservation result lands on the Stage-B output state. -/
+theorem lowerInstrsP_preserves_wellScoped
+    (fuel : Nat) (frames : List FrameKind) (s : LowerState) (instrs : List WasmInstr)
+    {sa : LowerState} {opsa : List KernelOp}
+    {sp : LowerState} {opsp : List KernelOp}
+    (hws : s.wellScoped)
+    (ha : lowerInstrs fuel frames s instrs = some (sa, opsa))
+    (hp : lowerInstrsP fuel frames ⟨s, []⟩ instrs = some (⟨sp, []⟩, opsp)) :
+    sp.wellScoped := by
+  have hbridge := lowerInstrsP_agrees_with_lowerInstrs fuel frames s instrs ha
+  rw [hbridge] at hp
+  obtain ⟨hbase, _⟩ := Prod.mk.inj (Option.some.inj hp)
+  have hsp : sa = sp := congrArg LowerStateP.base hbase
+  rw [← hsp]
+  exact lowerInstrs_preserves_wellScoped fuel frames s instrs hws ha
+
+/-- The emitted ops are scope-valid in the output state's scope
+    environment, for `lowerInstrsP`. Transferred from
+    `lowerInstrs_scopeValid_ops`: agreement equates BOTH the base
+    state and the op list, so the Stage-A ops-validity carries to the
+    Stage-B output verbatim. -/
+theorem lowerInstrsP_scopeValid_ops
+    (fuel : Nat) (frames : List FrameKind) (s : LowerState) (instrs : List WasmInstr)
+    {sa : LowerState} {opsa : List KernelOp}
+    {sp : LowerState} {opsp : List KernelOp}
+    (hws : s.wellScoped)
+    (ha : lowerInstrs fuel frames s instrs = some (sa, opsa))
+    (hp : lowerInstrsP fuel frames ⟨s, []⟩ instrs = some (⟨sp, []⟩, opsp)) :
+    scopeValidOps sp.scopeEnv opsp := by
+  have hbridge := lowerInstrsP_agrees_with_lowerInstrs fuel frames s instrs ha
+  rw [hbridge] at hp
+  obtain ⟨hbase, hops⟩ := Prod.mk.inj (Option.some.inj hp)
+  have hsp : sa = sp := congrArg LowerStateP.base hbase
+  subst hsp
+  subst hops
+  exact lowerInstrs_scopeValid_ops fuel frames s instrs hws ha
+
+-- ════════════════════════════════════════════════════════════════════
+-- Source preservation through lowerInstrsP
+-- ════════════════════════════════════════════════════════════════════
+--
+-- The capstone transfer: the closed-shape source-preservation
+-- master (`preservation_evalInstrs_main_v2`) carries onto
+-- `lowerInstrsP` by the same bridge. Agreement equates the Stage-A
+-- and Stage-B `(state, ops)` outputs, so the ops Stage B emits are
+-- exactly the ops Stage A's preservation theorem already reasons
+-- about. With this, the full preservation chain — WASM eval ⇒ KOps
+-- eval under `Refines` — holds for the pending-wrap translator on
+-- the closed-shape domain it shares with Stage A.
+
+/-- Source preservation for `lowerInstrsP`: when the WASM program
+    evaluates and `lowerInstrsP` lowers it (on the closed-shape
+    domain), the emitted KernelOps evaluate to a refining KOps
+    state. Transferred from `preservation_evalInstrs_main_v2` via
+    the agreement bridge. -/
+theorem preservation_evalInstrsP
+    (fuel : Nat) (frames : List FrameKind)
+    (instrs : List WasmInstr)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_closed : closedInstrsAt s instrs = true)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (ws' : WasmState) (sa : LowerState) (opsa : List KernelOp)
+    (sp : LowerState) (opsp : List KernelOp)
+    (hw : evalInstrs fuel ws instrs = some ws')
+    (ha : lowerInstrs fuel frames s instrs = some (sa, opsa))
+    (hp : lowerInstrsP fuel frames ⟨s, []⟩ instrs = some (⟨sp, []⟩, opsp)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst opsp = some kst' ∧ Refines ws' sp kst' layout := by
+  -- Agreement equates the Stage-A and Stage-B outputs verbatim.
+  have hbridge := lowerInstrsP_agrees_with_lowerInstrs fuel frames s instrs ha
+  rw [hbridge] at hp
+  obtain ⟨hbase, hops⟩ := Prod.mk.inj (Option.some.inj hp)
+  have hsp : sa = sp := congrArg LowerStateP.base hbase
+  subst hsp
+  subst hops
+  -- Now opsp = opsa and sp = sa; the Stage-A master applies directly.
+  exact preservation_evalInstrs_main_v2 fuel frames instrs ws s kst layout R
+    h_closed h_no_branch h_no_halt h_kst_no_broke ws' sa opsa hw ha
 
 end Quanta.Wasm
