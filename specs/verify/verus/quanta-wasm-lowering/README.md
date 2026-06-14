@@ -32,8 +32,9 @@ the project `CLAUDE.md`.)
 
 ### Recorded production↔spec divergences (for V8)
 
-The refinement has surfaced two semantically-inert gaps where
-production does more than the Lean spec models:
+The refinement has surfaced three gaps where production does more than
+the Lean spec models. Each is recorded with a **mechanized witness**
+(the production effect is modeled and its shape pinned), not just prose:
 
 1. **Frame-0 zero-inits** (`local_arms_refine.rs`): production inserts
    `Const fresh 0` at the function-frame head before each dual-Copy
@@ -43,8 +44,17 @@ production does more than the Lean spec models:
    production tags consts `I32`/`I64` and materializes `ScaledIdx`/
    `BufferAccess`; the Lean spec uses `U32` and refuses the address
    forms. Same values; the spec's `commit` domain is narrower.
+3. **`i32.add` chained-address arithmetic** (`i32add_chained_refine.rs`):
+   beyond the Lean `BufferPtr + ScaledIdx → BufferAccess` no-IR
+   fast-path, production folds three IR-emitting chained shapes —
+   same-scale add, rescale add (larger BufferAccess scale, power-of-two
+   ratio), and const-offset add — when rustc precomputes part of a byte
+   offset. The Lean `lowerI32Add` refuses these (commits the address
+   SymVals); production composes them. Each arm's shape (reg count + ops
+   + pushed `BufferAccess`) is pinned; the const-offset arm re-exhibits
+   the gap-2 `I32` const tag.
 
-Neither affects semantics; both are candidate spec syncs.
+None affects semantics; all three are candidate spec syncs for V8.
 
 ### The model↔Rust correspondence (trust boundary)
 
