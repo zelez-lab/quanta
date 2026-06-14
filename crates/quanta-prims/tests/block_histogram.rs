@@ -4,10 +4,11 @@
 //! CPU reference does the same per-block tally. We compare block
 //! by block.
 //!
-//! Shared-memory atomics emit on Metal today; WGSL / SPIR-V /
-//! software return NotSupported. The test treats NotSupported as
-//! a skip rather than a failure so the suite stays green on
-//! backends without the substrate gap-3 wiring.
+//! Shared-memory atomics emit on Metal, SPIR-V (Vulkan), and
+//! WGSL (WebGPU); the software CPU-JIT still refuses (its shared
+//! memory is per-thread scratch, so atomics alone can't make the
+//! kernel cooperative). The test treats NotSupported as a skip
+//! rather than a failure so the suite stays green there.
 
 #![cfg(feature = "gpu")]
 

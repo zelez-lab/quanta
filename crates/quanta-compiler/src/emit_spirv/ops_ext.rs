@@ -81,6 +81,84 @@ impl SpvEmitter {
         Ok(())
     }
 
+    /// Shared-memory atomic: the buffer atomic above with a
+    /// Workgroup-storage pointer (plain array — no struct wrapper,
+    /// so no leading zero in the access chain) and Workgroup scope
+    /// (2) instead of Device (1).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn emit_op_shared_atomic(
+        &mut self,
+        dst: Reg,
+        slot: u32,
+        index: Reg,
+        val: Reg,
+        op: AtomicOp,
+        ty: ScalarType,
+        order: MemoryOrder,
+    ) -> Result<(), String> {
+        let (var_id, elem_ty) = *self
+            .shared_vars
+            .get(&slot)
+            .ok_or_else(|| format!("shared memory {} not declared", slot))?;
+        let idx = self.reg_value_id(index)?;
+        let val_id = self.reg_value_id(val)?;
+        let result_ty = self.scalar_type_id(ty);
+        let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_WORKGROUP, elem_ty);
+        let chain = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_ACCESS_CHAIN,
+            &[ptr_elem, chain, var_id, idx],
+        );
+
+        let scope = self.emit_constant_u32(2); // Workgroup
+        let order_bits: u32 = match order {
+            MemoryOrder::Relaxed => 0,
+            MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
+            MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
+            MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
+            MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
+        };
+        let semantics = self.emit_constant_u32(order_bits | MEMORY_SEMANTICS_WORKGROUP);
+
+        let is_signed = matches!(
+            ty,
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
+        );
+        let atomic_opcode = match op {
+            AtomicOp::Add => OP_ATOMIC_IADD,
+            AtomicOp::Sub => OP_ATOMIC_ISUB,
+            AtomicOp::Min if is_signed => OP_ATOMIC_SMIN,
+            AtomicOp::Min => OP_ATOMIC_UMIN,
+            AtomicOp::Max if is_signed => OP_ATOMIC_SMAX,
+            AtomicOp::Max => OP_ATOMIC_UMAX,
+            AtomicOp::And => OP_ATOMIC_AND,
+            AtomicOp::Or => OP_ATOMIC_OR,
+            AtomicOp::Xor => OP_ATOMIC_XOR,
+            AtomicOp::Exchange => OP_ATOMIC_EXCHANGE,
+            AtomicOp::CompareExchange => OP_ATOMIC_COMPARE_EXCHANGE,
+        };
+
+        let result_id = self.alloc_id();
+        if matches!(op, AtomicOp::CompareExchange) {
+            Self::emit_op(
+                &mut self.sec_function,
+                atomic_opcode,
+                &[
+                    result_ty, result_id, chain, scope, semantics, semantics, val_id, val_id,
+                ],
+            );
+        } else {
+            Self::emit_op(
+                &mut self.sec_function,
+                atomic_opcode,
+                &[result_ty, result_id, chain, scope, semantics, val_id],
+            );
+        }
+        self.set_reg(dst, result_id, result_ty);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_op_atomic_cas(
         &mut self,

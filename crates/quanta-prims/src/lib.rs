@@ -109,7 +109,9 @@
 //! - `block_compact_u32_buffer` — per-block stream compaction
 //!   with explicit predicate array
 //! - `block_histogram_u32_buffer` — per-block 256-bucket
-//!   histogram via shared-memory atomics (Metal only today)
+//!   histogram via shared-memory atomics (Metal validated
+//!   on-device; Vulkan/WebGPU emit validator-clean SPIR-V/WGSL,
+//!   device validation pending; software CPU-JIT refuses)
 //! - `block_top_k_u32_buffer` — per-block top-K selection
 //!   (sort-based, K up to 256)
 //! - `block_segmented_scan_add_u32_buffer` /

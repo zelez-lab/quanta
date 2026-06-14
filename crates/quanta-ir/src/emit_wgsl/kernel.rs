@@ -4,7 +4,7 @@
 //! semantics per the WebGPU spec.
 
 use crate::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::helpers::translate_device_fn_to_wgsl;
 use super::ops::emit_op;
@@ -40,6 +40,11 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     // Identify which fields are accessed atomically — those need to be wrapped
     // in `atomic<T>` in WGSL. The IR makes this distinction at the op level.
     let atomic_fields = collect_atomic_fields(&kernel.body);
+    // Same for shared-memory slots: a slot touched by SharedAtomicOp
+    // must be declared `array<atomic<T>>`, and its plain loads/stores
+    // must go through atomicLoad/atomicStore (WGSL forbids bare
+    // access to atomic<T> cells).
+    let atomic_shared = collect_atomic_shared(&kernel.body);
 
     let mut slot_names: HashMap<u32, String> = HashMap::new();
 
@@ -129,7 +134,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
 
     // Module-scope shared memory declarations (WGSL requires `var<workgroup>`
     // at module scope, not inside a function).
-    collect_shared_decls(&mut out, &kernel.body);
+    collect_shared_decls(&mut out, &kernel.body, &atomic_shared);
 
     // Compute entry point.
     let [wgx, wgy, wgz] = kernel.workgroup_size;
@@ -152,7 +157,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     out.push_str("    let _quark_count = ngroups.x * _proton_size;\n");
 
     for op in &kernel.body {
-        emit_op(&mut out, op, 1, &slot_names, &atomic_fields);
+        emit_op(&mut out, op, 1, &slot_names, &atomic_fields, &atomic_shared);
     }
 
     out.push_str("}\n");
@@ -244,34 +249,68 @@ fn walk_atomic_fields(ops: &[KernelOp], acc: &mut std::collections::HashSet<u32>
     }
 }
 
-fn collect_shared_decls(out: &mut String, ops: &[KernelOp]) {
+/// Collect the shared-memory slots touched by `SharedAtomicOp` —
+/// those declare as `array<atomic<T>>` and route every plain
+/// load/store through atomicLoad/atomicStore.
+fn collect_atomic_shared(ops: &[KernelOp]) -> HashSet<u32> {
+    let mut acc = HashSet::new();
+    walk_atomic_shared(ops, &mut acc);
+    acc
+}
+
+fn walk_atomic_shared(ops: &[KernelOp], acc: &mut HashSet<u32>) {
+    for op in ops {
+        match op {
+            KernelOp::SharedAtomicOp { slot, .. } => {
+                acc.insert(*slot);
+            }
+            KernelOp::Branch {
+                then_ops, else_ops, ..
+            } => {
+                walk_atomic_shared(then_ops, acc);
+                walk_atomic_shared(else_ops, acc);
+            }
+            KernelOp::Loop { body, .. } => walk_atomic_shared(body, acc),
+            _ => {}
+        }
+    }
+}
+
+fn collect_shared_decls(out: &mut String, ops: &[KernelOp], atomic_shared: &HashSet<u32>) {
     for op in ops {
         match op {
             KernelOp::SharedDecl { id, ty, count } => {
+                let elem = if atomic_shared.contains(id) {
+                    format!("atomic<{}>", ty.wgsl_name())
+                } else {
+                    ty.wgsl_name().to_string()
+                };
                 out.push_str(&format!(
                     "var<workgroup> shared_{}: array<{}, {}>;\n",
-                    id,
-                    ty.wgsl_name(),
-                    count
+                    id, elem, count
                 ));
             }
             KernelOp::SharedDeclDyn { id, ty } => {
                 // Dynamic-sized workgroup memory is not natively expressible
                 // in WGSL; emit a fixed-but-large array as a placeholder.
                 // Step 050 will tune this against actual dispatch needs.
+                let elem = if atomic_shared.contains(id) {
+                    format!("atomic<{}>", ty.wgsl_name())
+                } else {
+                    ty.wgsl_name().to_string()
+                };
                 out.push_str(&format!(
                     "var<workgroup> shared_{}: array<{}, 1024>;\n",
-                    id,
-                    ty.wgsl_name()
+                    id, elem
                 ));
             }
             KernelOp::Branch {
                 then_ops, else_ops, ..
             } => {
-                collect_shared_decls(out, then_ops);
-                collect_shared_decls(out, else_ops);
+                collect_shared_decls(out, then_ops, atomic_shared);
+                collect_shared_decls(out, else_ops, atomic_shared);
             }
-            KernelOp::Loop { body, .. } => collect_shared_decls(out, body),
+            KernelOp::Loop { body, .. } => collect_shared_decls(out, body, atomic_shared),
             _ => {}
         }
     }

@@ -90,8 +90,13 @@ call round-trips host ↔ GPU — inside a larger pipeline, prefer the
 
 | Primitive                  | Metal | Vulkan | WebGPU | CPU |
 |----------------------------|-------|--------|--------|-----|
-| reduce / scan / sort / compact / top-k / device-wide | ✅ | ✅ | ✅ | ✅ |
-| histogram (shared atomics) | ✅    | ❌ `NotSupported` | ❌ | ❌ |
+| reduce / scan / sort / compact / top-k / segmented / device-wide | ✅ | ✅ | ✅ | ✅ |
+| histogram (shared atomics) | ✅    | ✅*    | ✅*    | ❌ `NotSupported` |
+
+\* SPIR-V / WGSL emission is validator-clean (`spirv-val`, `naga`);
+on-device validation pends the lavapipe and browser lanes. The CPU
+backend refuses: its shared memory is per-thread scratch, so
+atomics alone can't make the kernel cooperative.
 
 ## Next
 

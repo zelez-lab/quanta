@@ -17,6 +17,7 @@ pub(super) fn emit_op(
     indent: usize,
     names: &HashMap<u32, String>,
     atomic_fields: &HashSet<u32>,
+    atomic_shared: &HashSet<u32>,
 ) {
     let pad = "    ".repeat(indent);
     match op {
@@ -134,12 +135,12 @@ pub(super) fn emit_op(
         } => {
             out.push_str(&format!("{}if r{} {{\n", pad, cond.0));
             for op in then_ops {
-                emit_op(out, op, indent + 1, names, atomic_fields);
+                emit_op(out, op, indent + 1, names, atomic_fields, atomic_shared);
             }
             if !else_ops.is_empty() {
                 out.push_str(&format!("{}}} else {{\n", pad));
                 for op in else_ops {
-                    emit_op(out, op, indent + 1, names, atomic_fields);
+                    emit_op(out, op, indent + 1, names, atomic_fields, atomic_shared);
                 }
             }
             out.push_str(&format!("{}}}\n", pad));
@@ -161,7 +162,7 @@ pub(super) fn emit_op(
                 pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0, iter_reg.0
             ));
             for op in body {
-                emit_op(out, op, indent + 1, names, atomic_fields);
+                emit_op(out, op, indent + 1, names, atomic_fields, atomic_shared);
             }
             out.push_str(&format!("{}}}\n", pad));
         }
@@ -182,20 +183,40 @@ pub(super) fn emit_op(
             // Already emitted at module scope by collect_shared_decls.
         }
         KernelOp::SharedLoad { dst, id, index, ty } => {
-            out.push_str(&format!(
-                "{}let r{}: {} = shared_{}[r{}];\n",
-                pad,
-                dst.0,
-                ty.wgsl_name(),
-                id,
-                index.0
-            ));
+            // Slots wrapped in atomic<T> (any SharedAtomicOp touched
+            // them) forbid bare reads — go through atomicLoad.
+            if atomic_shared.contains(id) {
+                out.push_str(&format!(
+                    "{}let r{}: {} = atomicLoad(&shared_{}[r{}]);\n",
+                    pad,
+                    dst.0,
+                    ty.wgsl_name(),
+                    id,
+                    index.0
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}let r{}: {} = shared_{}[r{}];\n",
+                    pad,
+                    dst.0,
+                    ty.wgsl_name(),
+                    id,
+                    index.0
+                ));
+            }
         }
         KernelOp::SharedStore { id, index, src, .. } => {
-            out.push_str(&format!(
-                "{}shared_{}[r{}] = r{};\n",
-                pad, id, index.0, src.0
-            ));
+            if atomic_shared.contains(id) {
+                out.push_str(&format!(
+                    "{}atomicStore(&shared_{}[r{}], r{});\n",
+                    pad, id, index.0, src.0
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}shared_{}[r{}] = r{};\n",
+                    pad, id, index.0, src.0
+                ));
+            }
         }
         // WGSL atomics are SeqCst by spec — there's no per-op `order`
         // parameter on `atomicAdd` / `atomicLoad` / etc. Stronger orderings
@@ -223,20 +244,32 @@ pub(super) fn emit_op(
                 val.0
             ));
         }
-        // Shared-memory atomic. WGSL spec requires the workgroup-
-        // address-space declaration to be `atomic<T>`, not bare `T`;
-        // emitting `atomicAdd(&shared_N[idx], val)` against a
-        // `var<workgroup> shared_N: array<u32, ...>` slot is a
-        // type error. Until the WGSL emitter learns to tag shared
-        // slots referenced by SharedAtomicOp with `atomic<T>` (a
-        // two-pass IR walk), this lane emits an `/* unsupported */`
-        // marker — the downstream WGSL compile will fail, which is
-        // the correct signal that this kernel can't run on WebGPU.
-        // Buffer atomics (AtomicOp / AtomicCas) are unaffected.
-        KernelOp::SharedAtomicOp { .. } => {
+        // Shared-memory atomic. The slot is declared
+        // `var<workgroup> shared_N: array<atomic<T>, ...>` by
+        // collect_shared_decls (driven by the same atomic_shared
+        // set), so the standard atomic builtins apply directly.
+        // WGSL atomics are SeqCst by spec — `order` is ignored,
+        // stronger-than-requested is always sound (same stance as
+        // the buffer AtomicOp arm above).
+        KernelOp::SharedAtomicOp {
+            dst,
+            slot,
+            index,
+            val,
+            op,
+            ty,
+            order: _,
+        } => {
+            let f = atomic_fn_str(op);
             out.push_str(&format!(
-                "{}/* unsupported: SharedAtomicOp — WGSL requires atomic<T> decoration */\n",
-                pad
+                "{}let r{}: {} = {}(&shared_{}[r{}], r{});\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                f,
+                slot,
+                index.0,
+                val.0
             ));
         }
         // WGSL atomicCompareExchangeWeak is SeqCst by spec; both

@@ -1021,20 +1021,87 @@ impl SpvEmitter {
                 self.set_reg(*dst, result_id, result_ty);
             }
 
-            // SPIR-V atomics on `Workgroup` storage class need the
-            // shared-mem variable declared with the right pointer
-            // class (StorageClass=Workgroup) and the right Scope
-            // operand on `OpAtomicIAdd`. We don't yet declare shared-
-            // mem variables with the SPIR-V emitter's atomic-aware
-            // path, so this lane refuses for now. Lavapipe / Vulkan
-            // tracks pick up the buffer-atomics path
-            // (AtomicOp / AtomicCas above) unchanged.
-            KernelOp::SharedAtomicOp { .. } => {
-                return Err(
-                    "shared-memory atomics not yet supported by the SPIR-V emitter; \
-                            use a buffer-backed atomic counter as a fallback"
-                        .into(),
+            // Shared-memory atomic: same opcode family as the buffer
+            // AtomicOp above, but the pointer comes from the
+            // Workgroup-storage shared variable (plain array — no
+            // struct wrapper, so no leading zero index in the access
+            // chain) and the Scope operand is Workgroup (2), not
+            // Device (1). SPIR-V atomics don't care about the
+            // storage class beyond the pointer type matching.
+            KernelOp::SharedAtomicOp {
+                dst,
+                slot,
+                index,
+                val,
+                op,
+                ty,
+                order,
+            } => {
+                let (var_id, elem_ty) = *self
+                    .shared_vars
+                    .get(slot)
+                    .ok_or_else(|| format!("shared memory {} not declared", slot))?;
+                let idx = self.reg_value_id(*index)?;
+                let val_id = self.reg_value_id(*val)?;
+                let result_ty = self.scalar_type_id(*ty);
+
+                let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_WORKGROUP, elem_ty);
+                let chain = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_ACCESS_CHAIN,
+                    &[ptr_elem, chain, var_id, idx],
                 );
+
+                // Scope: Workgroup (2) — the contenders are the
+                // lanes of this workgroup only. Semantics: order
+                // bits | WorkgroupMemory, mirroring the buffer arm.
+                let scope = self.emit_constant_u32(2);
+                let order_bits: u32 = match order {
+                    crate::MemoryOrder::Relaxed => 0,
+                    crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
+                    crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
+                    crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
+                    crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
+                };
+                let semantics = self.emit_constant_u32(order_bits | MEMORY_SEMANTICS_WORKGROUP);
+
+                let is_signed = matches!(
+                    ty,
+                    ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
+                );
+                let atomic_opcode = match op {
+                    AtomicOp::Add => OP_ATOMIC_IADD,
+                    AtomicOp::Sub => OP_ATOMIC_ISUB,
+                    AtomicOp::Min if is_signed => OP_ATOMIC_SMIN,
+                    AtomicOp::Min => OP_ATOMIC_UMIN,
+                    AtomicOp::Max if is_signed => OP_ATOMIC_SMAX,
+                    AtomicOp::Max => OP_ATOMIC_UMAX,
+                    AtomicOp::And => OP_ATOMIC_AND,
+                    AtomicOp::Or => OP_ATOMIC_OR,
+                    AtomicOp::Xor => OP_ATOMIC_XOR,
+                    AtomicOp::Exchange => OP_ATOMIC_EXCHANGE,
+                    AtomicOp::CompareExchange => OP_ATOMIC_COMPARE_EXCHANGE,
+                };
+
+                let result_id = self.alloc_id();
+                if matches!(op, AtomicOp::CompareExchange) {
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        atomic_opcode,
+                        &[
+                            result_ty, result_id, chain, scope, semantics, semantics, val_id,
+                            val_id,
+                        ],
+                    );
+                } else {
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        atomic_opcode,
+                        &[result_ty, result_id, chain, scope, semantics, val_id],
+                    );
+                }
+                self.set_reg(*dst, result_id, result_ty);
             }
 
             KernelOp::WaveShuffle { dst, .. } => {

@@ -121,7 +121,7 @@ see [Block Primitives](../guide/17-block-primitives.md):
 | `cub::BlockRadixSort<u32, 256, 1>::Sort` | `block_radix_sort_u32_buffer` kernel |
 | `cub::DeviceReduce::Sum` | `device_reduce_add_u32(&gpu, &data)` |
 | `cub::DeviceRadixSort::SortKeys` | `device_sort_u32(&gpu, &data)` |
-| `cub::BlockHistogram` | `block_histogram_u32_buffer` (Metal today) |
+| `cub::BlockHistogram` | `block_histogram_u32_buffer` |
 
 ## Workgroup (block) size
 

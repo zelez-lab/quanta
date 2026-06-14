@@ -24,7 +24,7 @@ the same Rust source.
 | `block_scan_add`   × {u32, i32, f32}       | ✅ verified                |
 | `block_radix_sort_u32` (stable LSD radix)  | ✅ verified                |
 | `block_compact_u32_buffer`                 | ✅ verified (Tier 2)       |
-| `block_histogram_u32_buffer`               | ✅ verified Metal (Tier 2) |
+| `block_histogram_u32_buffer`               | ✅ Metal; Vulkan/WebGPU validator-clean (Tier 2) |
 | `block_top_k_u32_buffer`                   | ✅ verified (Tier 2)       |
 | `device_reduce_{add,min,max}` × {u32, i32, f32} | ✅ verified (Tier 3)  |
 | `device_sort_u32` (device-wide bitonic)    | ✅ verified (Tier 3)       |
