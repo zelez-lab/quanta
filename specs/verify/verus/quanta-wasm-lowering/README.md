@@ -25,8 +25,24 @@ the project `CLAUDE.md`.)
 | `lower_instr_refine.rs` | V5 (bridge + straight-line, full) | The imperative→functional bridge (`view`: production `Vec`-end stack ↔ spec `Seq`-head; `reverse_push`; `pops_leave_rest`) plus **full** per-op refinements — exact state + ops equality — for i32Const, the whole register-operand binop family (op-parametric, all 9 binops in one proof), the cmp family (all 6 cmps in one proof), and the shl/add fast-path view-alignment. Local-binding/memory arms join with the extended `LowerState`; the Rust `i32Add`'s chained-address-arithmetic cases are out of the Lean slice-1 subset. |
 | `local_arms_spec.rs` | V5 (local/memory) | The extended `LowerState` (adds the four binding maps — `local_reg`/`local_ty`/`current_reg`/`buffer_slots` as `Map`s) and the spec arms `localGet` (buffer / current-binding / stable-fallback / uninit-refuse), `localSet` (the dual-Copy, existing-stable and fresh-local cases), and `i32Load` (typed Load on a 4-byte BufferAccess). Eight definitional lemmas pin each arm's shape, including the two-alloc `next_reg + 2` behavior of a first localSet. Production refinement of these arms (the `view`/`step` layer) composes against these. |
 | `local_arms_refine.rs` | V5 (local prod refinement) | Production `localSet` (existing-stable), `localGet` (current-binding read + buffer-ptr push), and `i32Load` (typed Load on a 4-byte BufferAccess) refined against the spec arms, via an extended `view` mapping the production `Vec<LocalInfo>` (`{cur, stable, stable_ty}`) onto the spec binding `Map`s. `view_exposes_{stable,current,buffer_slot}` pin the field correspondence. **Documents a real gap**: production inserts frame-0 `Const fresh 0` zero-inits the Lean spec abstracts (semantically inert — the Copy overwrites before any read) — recorded for V8. |
-| _(planned)_ `commit_refine.rs` | V6 | `commit` refinement. |
+| `commit_refine.rs` | V6 | `commit` refinement: Reg case full equality, BufferPtr both-refuse, const register/state agreement. **Surfaces two real divergences (pinned, not hidden)**: (1) the const scalar TAG — production emits `Const(dst, I32 n)`, the Lean spec `Const(dst, U32 n)` (same value, proven to differ); (2) production `commit` materializes `ScaledIdx`/`BufferAccess`/`I64Const` that the Lean spec refuses (rustc-optimizer pointer-arith shapes outside the slice-1 Lean subset). Both recorded for V8. |
 | _(planned)_ `lower_instructions_refine.rs` | V7 | Top-level composition. |
+
+### Recorded production↔spec divergences (for V8)
+
+The refinement has surfaced two semantically-inert gaps where
+production does more than the Lean spec models:
+
+1. **Frame-0 zero-inits** (`local_arms_refine.rs`): production inserts
+   `Const fresh 0` at the function-frame head before each dual-Copy
+   (for the Metal/WGSL `uint rN = 0u;` decls). The Copy overwrites
+   before any read — inert.
+2. **`commit` const tag + address materialization** (`commit_refine.rs`):
+   production tags consts `I32`/`I64` and materializes `ScaledIdx`/
+   `BufferAccess`; the Lean spec uses `U32` and refuses the address
+   forms. Same values; the spec's `commit` domain is narrower.
+
+Neither affects semantics; both are candidate spec syncs.
 
 ### The model↔Rust correspondence (trust boundary)
 
