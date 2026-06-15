@@ -102,9 +102,21 @@ pub open spec fn commit(s: LowerState, v: SymVal) -> Option<(Reg, LowerState, Se
     }
 }
 
-/// The spec `local_set` arm (mirror of local_arms_spec.rs; the
-/// refinement target). Returns the body ops (the dual-Copy + any
-/// commit prefix), NOT the frame-0 zero-inits.
+/// Zero literal for a scalar (mirror of Lean `LowerState.zeroConst`):
+/// signed-integer → I32(0), everything else → U32(0). Slice 1 reaches
+/// only U32 (the `local_set` `ty` defaults to U32).
+pub open spec fn zero_const(ty: Scalar) -> ConstValue {
+    match ty {
+        Scalar::I8 | Scalar::I16 | Scalar::I32 | Scalar::I64 => ConstValue::I32(0),
+        _ => ConstValue::U32(0),
+    }
+}
+
+/// The spec `local_set` arm (mirror of the post-V8 Lean `localSet`).
+/// Now emits the frame-0 zero-init INLINE: the body is the commit
+/// prefix, then `Const(fresh, zeroConst ty)`, then the dual-Copy. This
+/// matches the Lean spec after divergence #1 was folded in (the const
+/// is a dead write to `fresh`, overwritten by the next `Copy`).
 pub open spec fn local_set(s: LowerState, i: nat) -> Option<(LowerState, Seq<KernelOp>)> {
     match pop_sym(s) {
         None => None,
@@ -116,13 +128,15 @@ pub open spec fn local_set(s: LowerState, i: nat) -> Option<(LowerState, Seq<Ker
                 match lookup_local(s3, i) {
                     Some(stable) => {
                         let s4 = set_current_reg(set_local_reg(s3, i, stable, ty), i, fresh);
-                        Some((s4, ops_commit.add(seq![KernelOp::Copy(fresh, src),
+                        Some((s4, ops_commit.add(seq![KernelOp::Const(fresh, zero_const(ty)),
+                                                       KernelOp::Copy(fresh, src),
                                                        KernelOp::Copy(stable, fresh)])))
                     },
                     None => {
                         let (stable, s4) = alloc(s3);
                         let s5 = set_current_reg(set_local_reg(s4, i, stable, ty), i, fresh);
-                        Some((s5, ops_commit.add(seq![KernelOp::Copy(fresh, src),
+                        Some((s5, ops_commit.add(seq![KernelOp::Const(fresh, zero_const(ty)),
+                                                       KernelOp::Copy(fresh, src),
                                                        KernelOp::Copy(stable, fresh)])))
                     },
                 }
@@ -211,30 +225,63 @@ pub open spec fn view(c: ProdCtx) -> LowerState {
     }
 }
 
-// ── localSet production transcription ──────────────────────────────
+// ── localSet production transcription (post-V8) ────────────────────
 //
 // Rust `LocalSet i`: pop value, ensure_stable_reg_for (allocs stable
 // + inserts frame-0 Const if first set), write_local_via_copy (commit
-// value, alloc fresh, frame-0 Const insert, emit Copy[fresh←src],
-// emit Copy[stable←fresh], set val := fresh). The BODY ops appended
-// to the current frame are exactly [Copy(fresh,src), Copy(stable,fresh)]
-// for a register value (commit is identity). We transcribe that body
-// effect; frame-0 Const inserts are the documented out-of-spec artifact.
+// value, alloc fresh, frame-0 Const(fresh, zero) insert, emit
+// Copy[fresh←src], emit Copy[stable←fresh], set val := fresh).
+//
+// Production SPLITS the emission across two frames:
+//   * current-frame body : [Copy(fresh,src), Copy(stable,fresh)]
+//   * frame-0 prelude    : [Const(fresh, zero)]   (insert at head)
+//
+// After V8 divergence #1, the Lean spec emits the SAME three ops, but
+// places the const INLINE (commit-prefix ++ [Const, Copy, Copy]). So:
+//
+//   spec body                = [Const(fresh,z), Copy(fresh,src), Copy(stable,fresh)]
+//   prod (prelude ++ body)   = [Const(fresh,z)] ++ [Copy(fresh,src), Copy(stable,fresh)]
+//
+// These are EQUAL as sequences (associativity of ++). The remaining
+// divergence is PLACEMENT ONLY: production routes the const to the
+// frame-0 head (so all zero-inits cluster at the program top) while
+// the spec keeps it inline. Both write the freshly-allocated `fresh`
+// reg, immediately overwritten by `Copy(fresh,src)` before any read —
+// a dead write whose position is semantically inert. We pin the
+// multiset/sequence equality of (prelude ++ body) with the spec, and
+// record the placement difference as the residual.
 
-/// step_local_set for the EXISTING-stable register-value case: the
-/// body ops the Rust arm appends to the current frame.
+/// Production frame-0 prelude for a `local.set`: the single dead-write
+/// zero-init `Const(fresh, zero)`. (`insert(0, …)` at the function
+/// frame; modeled here as the prelude sequence.)
+pub open spec fn prod_local_set_prelude(fresh: Reg, ty: Scalar) -> Seq<KernelOp> {
+    seq![KernelOp::Const(fresh, zero_const(ty))]
+}
+
+/// Production current-frame body for the EXISTING-stable register-value
+/// case: the dual-Copy the Rust arm appends to the current frame.
 pub open spec fn step_local_set_body(c: ProdCtx, i: nat, r: Reg) -> Seq<KernelOp> {
-    // fresh = c.next_reg (existing stable ⇒ ensure_stable_reg_for is a
-    // no-op, so the only alloc before the fresh is none).
     let fresh = c.next_reg;
     let stable = c.locals[i].stable->Some_0;
     seq![KernelOp::Copy(fresh, r), KernelOp::Copy(stable, fresh)]
 }
 
-/// Refinement: for a local that already has a stable reg, the
-/// production body ops for `local.set` of a register value equal the
-/// spec `local_set` body ops. (Both commits are identities; the spec
-/// fresh reg = view(c).next_reg = c.next_reg = the production fresh.)
+/// Production's full `local.set` emission (existing-stable, reg value):
+/// frame-0 prelude FOLLOWED BY the current-frame body — the order the
+/// two frames assemble into when the function frame prepends. This is
+/// the sequence the refinement lines up against the inline spec body.
+pub open spec fn step_local_set_full(c: ProdCtx, i: nat, r: Reg, ty: Scalar) -> Seq<KernelOp> {
+    prod_local_set_prelude(c.next_reg, ty).add(step_local_set_body(c, i, r))
+}
+
+/// Refinement (post-V8): for a local that already has a stable reg, the
+/// spec `local_set` body for a register value equals production's full
+/// emission `prelude ++ body` (the const, then the dual-Copy). Both
+/// commits are identities; the spec fresh reg = view(c).next_reg =
+/// c.next_reg = the production fresh. The const tag matches `zero_const
+/// ty`. The ONLY residual is placement: production inserts the const at
+/// the frame-0 head rather than inline — a dead-write hoist, pinned in
+/// `local_set_placement_residual`.
 proof fn refine_local_set_existing_stable(c: ProdCtx, i: nat, r: Reg, ty: Scalar, stable: Reg)
     requires
         c.prod_stack.len() >= 1,
@@ -242,9 +289,11 @@ proof fn refine_local_set_existing_stable(c: ProdCtx, i: nat, r: Reg, ty: Scalar
         c.locals.dom().contains(i),
         c.locals[i].stable == Some(stable),
         view(c).local_ty.dom().contains(i),
+        // The spec's `ty` (from local_ty) is the production stable_ty.
+        view(c).local_ty[i] == ty,
     ensures
         local_set(view(c), i) is Some,
-        local_set(view(c), i).unwrap().1 == step_local_set_body(c, i, r),
+        local_set(view(c), i).unwrap().1 == step_local_set_full(c, i, r, ty),
 {
     // view(c).stack[0] = production top = Reg(r,ty).
     reverse_top(c.prod_stack);
@@ -259,10 +308,52 @@ proof fn refine_local_set_existing_stable(c: ProdCtx, i: nat, r: Reg, ty: Scalar
         assert(s.local_reg.dom().contains(i));
         assert(s.local_reg[i] == stable);
     }
-    // fresh = s1.next_reg = c.next_reg; spec body = [] ++ dual-Copy.
+    // The spec `ty` = lookup_local_ty(s2, i) = view local_ty[i] = ty.
+    assert(lookup_local_ty(s1, i) == Some(ty)) by {
+        assert(s1.local_ty == s.local_ty);
+        assert(s.local_ty.dom().contains(i));
+        assert(s.local_ty[i] == ty);
+    }
+    // fresh = s1.next_reg = c.next_reg. Spec body = [] ++ [Const, Copy, Copy];
+    // prod full = [Const] ++ [Copy, Copy]. Both = [Const, Copy, Copy].
     assert(Seq::<KernelOp>::empty().add(
-        seq![KernelOp::Copy(c.next_reg, r), KernelOp::Copy(stable, c.next_reg)])
-        =~= seq![KernelOp::Copy(c.next_reg, r), KernelOp::Copy(stable, c.next_reg)]);
+        seq![KernelOp::Const(c.next_reg, zero_const(ty)),
+             KernelOp::Copy(c.next_reg, r), KernelOp::Copy(stable, c.next_reg)])
+        =~= prod_local_set_prelude(c.next_reg, ty).add(
+              seq![KernelOp::Copy(c.next_reg, r), KernelOp::Copy(stable, c.next_reg)]));
+}
+
+/// The residual V8-#1 divergence, pinned: production routes the
+/// zero-init `Const` to the frame-0 head (a separate frame from the
+/// dual-Copy), while the spec — and `step_local_set_full` — places it
+/// at the body head. The two emit the SAME multiset of ops; they
+/// differ only in where the const lands relative to surrounding
+/// instructions. Because the const is a dead write to the freshly
+/// allocated `fresh` (overwritten by `Copy(fresh, src)` before any
+/// read), the placement is semantically inert. We state the prelude
+/// and body as disjoint, non-empty, and recombining to the spec body.
+proof fn local_set_placement_residual(c: ProdCtx, i: nat, r: Reg, ty: Scalar)
+    requires c.locals[i].stable is Some,
+    ensures
+        // Prelude is exactly the one dead-write const.
+        prod_local_set_prelude(c.next_reg, ty).len() == 1,
+        prod_local_set_prelude(c.next_reg, ty)[0]
+            == KernelOp::Const(c.next_reg, zero_const(ty)),
+        // Body is the dual-Copy; the const does NOT appear in it (the
+        // placement divergence: prod's current frame has no const).
+        step_local_set_body(c, i, r).len() == 2,
+        step_local_set_body(c, i, r)[0] matches KernelOp::Copy(_, _),
+        step_local_set_body(c, i, r)[1] matches KernelOp::Copy(_, _),
+        // Recombination: prelude ++ body = the inline spec body shape.
+        step_local_set_full(c, i, r, ty)
+            == seq![KernelOp::Const(c.next_reg, zero_const(ty)),
+                    KernelOp::Copy(c.next_reg, r),
+                    KernelOp::Copy(c.locals[i].stable->Some_0, c.next_reg)],
+{
+    assert(step_local_set_full(c, i, r, ty)
+        =~= seq![KernelOp::Const(c.next_reg, zero_const(ty)),
+                 KernelOp::Copy(c.next_reg, r),
+                 KernelOp::Copy(c.locals[i].stable->Some_0, c.next_reg)]);
 }
 
 /// The view sends the production stack top (last) to spec head (0).

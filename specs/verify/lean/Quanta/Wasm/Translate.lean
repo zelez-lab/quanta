@@ -200,6 +200,17 @@ def setCurrentReg (s : LowerState) (i : Nat) (r : Reg) : LowerState :=
   let regs' := (i, r) :: s.currentReg.filter (fun p => p.fst ≠ i)
   { s with currentReg := regs' }
 
+/-- Zero literal for a scalar type, as production's
+    `write_local_via_copy` emits it for the frame-0 pre-declaration.
+    Production switches on the local's stable type: integer-unsigned →
+    `ConstValue::U32(0)`, integer-signed → `ConstValue::I32(0)`, etc.
+    Slice 1 only reaches `.u32` (the `localSet` arm's `ty` defaults to
+    `.u32`), so the `.u32` case is the live one; the others mirror
+    production for faithfulness. -/
+def zeroConst : Scalar → ConstValue
+  | .i8 | .i16 | .i32 | .i64 => .i32 0
+  | _ => .u32 0
+
 /-- Materialize a `SymVal` into a real `Reg` + the ops needed to
     produce that reg's value. Mirrors production's `commit()`:
     * `.reg r _` is already a register — no ops, no alloc.
@@ -404,16 +415,26 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       --      frame sees the new binding
       --   5. stable_reg stays the merge anchor (set on first write)
       let (fresh, s3) := s2.alloc
+      -- Frame-0 zero-init: production's `write_local_via_copy` inserts
+      -- a `Const fresh (zeroConst ty)` at the function-frame head before
+      -- the dual-Copy, so the Metal/WGSL emitters get a `uint rN = 0u;`
+      -- declaration to assign into. The very next `Copy fresh src`
+      -- overwrites `fresh`, so the const is a dead write — semantically
+      -- inert. (Production routes it to frame 0; the flat op-list model
+      -- here places it inline. Placement differs, abstract effect does
+      -- not, because `fresh` is freshly allocated and immediately
+      -- re-bound.)
+      let zinit : KernelOp := .const fresh (LowerState.zeroConst ty)
       match s3.lookupLocal i with
       | some stable =>
           -- Local already has a stable reg from a prior set; keep it.
           let s4 := (s3.setLocalReg i stable ty).setCurrentReg i fresh
-          pure (s4, opsCommit ++ [.copy fresh src, .copy stable fresh])
+          pure (s4, opsCommit ++ [zinit, .copy fresh src, .copy stable fresh])
       | none =>
           -- First write: allocate the local's stable reg too.
           let (stable, s4) := s3.alloc
           let s5 := (s4.setLocalReg i stable ty).setCurrentReg i fresh
-          pure (s5, opsCommit ++ [.copy fresh src, .copy stable fresh])
+          pure (s5, opsCommit ++ [zinit, .copy fresh src, .copy stable fresh])
   | .localTee i => do
       -- `local.tee` = `local.set i` followed by `local.get i`. The
       -- `localGet` half breaks aliasing by emitting a Copy into a
@@ -435,19 +456,22 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       --   5. The tee re-read: emit Copy { dst := post_fresh, src := fresh }
       --      and push post_fresh on the stack (alias-free)
       let (fresh, s3) := s2.alloc
+      -- Same frame-0 zero-init as `localSet` (production routes
+      -- `local.tee` through the same `write_local_via_copy`).
+      let zinit : KernelOp := .const fresh (LowerState.zeroConst ty)
       match s3.lookupLocal i with
       | some stable =>
           let s4 := (s3.setLocalReg i stable ty).setCurrentReg i fresh
           let (post_fresh, s5) := s4.alloc
           pure (s5.push post_fresh,
-                opsCommit ++ [.copy fresh src, .copy stable fresh,
+                opsCommit ++ [zinit, .copy fresh src, .copy stable fresh,
                               .copy post_fresh fresh])
       | none =>
           let (stable, s4) := s3.alloc
           let s5 := (s4.setLocalReg i stable ty).setCurrentReg i fresh
           let (post_fresh, s6) := s5.alloc
           pure (s6.push post_fresh,
-                opsCommit ++ [.copy fresh src, .copy stable fresh,
+                opsCommit ++ [zinit, .copy fresh src, .copy stable fresh,
                               .copy post_fresh fresh])
   -- i32 arithmetic. `i32.shl` and `i32.add` carry the buffer-pattern
   -- recognition fast-paths; the others dispatch directly to the

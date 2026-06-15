@@ -1372,25 +1372,29 @@ theorem lowerInstr_localSet_scopeValid
       exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hsrc_s2)
     show scopeValidOps envS'
       (opsCommit ++
-        [KernelOp.copy s2.nextReg src,
+        [KernelOp.const s2.nextReg (LowerState.zeroConst _),
+         KernelOp.copy s2.nextReg src,
          KernelOp.copy (s2.nextReg + 1) s2.nextReg])
     apply Quanta.KOps.KernelOp.scopeValidOps_append
     · exact LowerState.commit_ops_scopeValid envS' hc
-    · -- Trailing two ops.
+    · -- Trailing: zero-init const (uses nothing) then the two copies.
       have hsuper : envS' ⊆ extendEnvOps envS' opsCommit :=
         Quanta.KOps.KernelOp.extendEnvOps_super envS' opsCommit
-      refine ⟨?_, ?_, trivial⟩
+      -- The const defines s2.nextReg, so the copies' env gains it up front.
+      have hsuper2 : envS' ⊆ s2.nextReg :: extendEnvOps envS' opsCommit :=
+        fun x hx => List.mem_cons_of_mem _ (hsuper hx)
+      refine ⟨by intro r hr; simp [KernelOp.usedRegs] at hr, ?_, ?_, trivial⟩
       · -- .copy s2.nextReg src: usedRegs = [src].
         intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        exact hsuper hsrc_envS'
-      · -- .copy (s2.nextReg + 1) s2.nextReg against env extended by previous copy.
+        exact hsuper2 hsrc_envS'
+      · -- .copy (s2.nextReg + 1) s2.nextReg against env after const + first copy.
         intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        -- Need s2.nextReg in env extended by .copy s2.nextReg src.
-        show s2.nextReg ∈ extendEnv (extendEnvOps envS' opsCommit) (.copy s2.nextReg src)
+        -- s2.nextReg is defined by both the const and the first copy, so
+        -- it sits in the threaded env regardless.
         simp [extendEnv, KernelOp.definedReg]
   · -- Existing stable: only one alloc. s'.nextReg = s2.nextReg + 1.
     simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
@@ -1421,21 +1425,23 @@ theorem lowerInstr_localSet_scopeValid
       exact Nat.lt_succ_of_lt hstable_lt_s2
     show scopeValidOps envS'
       (opsCommit ++
-        [KernelOp.copy s2.nextReg src,
+        [KernelOp.const s2.nextReg (LowerState.zeroConst _),
+         KernelOp.copy s2.nextReg src,
          KernelOp.copy stable s2.nextReg])
     apply Quanta.KOps.KernelOp.scopeValidOps_append
     · exact LowerState.commit_ops_scopeValid envS' hc
     · have hsuper : envS' ⊆ extendEnvOps envS' opsCommit :=
         Quanta.KOps.KernelOp.extendEnvOps_super envS' opsCommit
-      refine ⟨?_, ?_, trivial⟩
+      have hsuper2 : envS' ⊆ s2.nextReg :: extendEnvOps envS' opsCommit :=
+        fun x hx => List.mem_cons_of_mem _ (hsuper hx)
+      refine ⟨by intro r hr; simp [KernelOp.usedRegs] at hr, ?_, ?_, trivial⟩
       · intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        exact hsuper hsrc_envS'
+        exact hsuper2 hsrc_envS'
       · intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        show s2.nextReg ∈ extendEnv (extendEnvOps envS' opsCommit) (.copy s2.nextReg src)
         simp [extendEnv, KernelOp.definedReg]
 
 -- ════════════════════════════════════════════════════════════════════
@@ -1485,35 +1491,28 @@ theorem lowerInstr_localTee_scopeValid
       exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hsrc_s2))
     show scopeValidOps envS'
       (opsCommit ++
-        [KernelOp.copy s2.nextReg src,
+        [KernelOp.const s2.nextReg (LowerState.zeroConst _),
+         KernelOp.copy s2.nextReg src,
          KernelOp.copy (s2.nextReg + 1) s2.nextReg,
          KernelOp.copy (s2.nextReg + 1 + 1) s2.nextReg])
     apply Quanta.KOps.KernelOp.scopeValidOps_append
     · exact LowerState.commit_ops_scopeValid envS' hc
     · have hsuper : envS' ⊆ extendEnvOps envS' opsCommit :=
         Quanta.KOps.KernelOp.extendEnvOps_super envS' opsCommit
-      refine ⟨?_, ?_, ?_, trivial⟩
+      have hsuper2 : envS' ⊆ s2.nextReg :: extendEnvOps envS' opsCommit :=
+        fun x hx => List.mem_cons_of_mem _ (hsuper hx)
+      refine ⟨by intro r hr; simp [KernelOp.usedRegs] at hr, ?_, ?_, ?_, trivial⟩
       · intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        exact hsuper hsrc_envS'
+        exact hsuper2 hsrc_envS'
       · intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        show s2.nextReg ∈ extendEnv (extendEnvOps envS' opsCommit) (.copy s2.nextReg src)
         simp [extendEnv, KernelOp.definedReg]
       · intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        -- Need s2.nextReg ∈ extendEnv (extendEnv … (.copy s2.nextReg src)) (.copy (s2.nextReg+1) s2.nextReg)
-        -- The inner .copy s2.nextReg src adds s2.nextReg to env (already there
-        -- structurally via extendEnv); the outer .copy (s2.nextReg+1) s2.nextReg
-        -- adds (s2.nextReg+1) but doesn't remove s2.nextReg. So s2.nextReg
-        -- is still in env.
-        show s2.nextReg ∈
-          extendEnv
-            (extendEnv (extendEnvOps envS' opsCommit) (.copy s2.nextReg src))
-            (.copy (s2.nextReg + 1) s2.nextReg)
         simp [extendEnv, KernelOp.definedReg]
   · -- Existing stable: only the fresh + post_fresh allocs (no new stable).
     simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
@@ -1539,30 +1538,28 @@ theorem lowerInstr_localTee_scopeValid
       exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hstable_lt_s2)
     show scopeValidOps envS'
       (opsCommit ++
-        [KernelOp.copy s2.nextReg src,
+        [KernelOp.const s2.nextReg (LowerState.zeroConst _),
+         KernelOp.copy s2.nextReg src,
          KernelOp.copy stable s2.nextReg,
          KernelOp.copy (s2.nextReg + 1) s2.nextReg])
     apply Quanta.KOps.KernelOp.scopeValidOps_append
     · exact LowerState.commit_ops_scopeValid envS' hc
     · have hsuper : envS' ⊆ extendEnvOps envS' opsCommit :=
         Quanta.KOps.KernelOp.extendEnvOps_super envS' opsCommit
-      refine ⟨?_, ?_, ?_, trivial⟩
+      have hsuper2 : envS' ⊆ s2.nextReg :: extendEnvOps envS' opsCommit :=
+        fun x hx => List.mem_cons_of_mem _ (hsuper hx)
+      refine ⟨by intro r hr; simp [KernelOp.usedRegs] at hr, ?_, ?_, ?_, trivial⟩
       · intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        exact hsuper hsrc_envS'
+        exact hsuper2 hsrc_envS'
       · intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        show s2.nextReg ∈ extendEnv (extendEnvOps envS' opsCommit) (.copy s2.nextReg src)
         simp [extendEnv, KernelOp.definedReg]
       · intro r hr
         simp [KernelOp.usedRegs] at hr
         rcases hr with rfl
-        show s2.nextReg ∈
-          extendEnv
-            (extendEnv (extendEnvOps envS' opsCommit) (.copy s2.nextReg src))
-            (.copy stable s2.nextReg)
         simp [extendEnv, KernelOp.definedReg]
 
 -- Per-arm wrappers for the cmp family.

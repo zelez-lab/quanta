@@ -111,6 +111,15 @@ pub open spec fn commit(s: LowerState, v: SymVal) -> Option<(Reg, LowerState, Se
     }
 }
 
+/// Zero literal for a scalar (mirror of Lean `LowerState.zeroConst`):
+/// signed-int → I32(0), else U32(0). The frame-0 zero-init constant.
+pub open spec fn zero_const(ty: Scalar) -> ConstValue {
+    match ty {
+        Scalar::I8 | Scalar::I16 | Scalar::I32 | Scalar::I64 => ConstValue::I32(0),
+        _ => ConstValue::U32(0),
+    }
+}
+
 // ── localGet (Lean lowerInstr `.localGet` arm) ─────────────────────
 //
 // Buffer-typed local → push `BufferPtr slot`, no reg, no IR.
@@ -139,15 +148,19 @@ pub open spec fn local_get(s: LowerState, i: nat) -> Option<(LowerState, Seq<Ker
     }
 }
 
-// ── localSet (Lean lowerInstr `.localSet` arm) ─────────────────────
+// ── localSet (post-V8 Lean lowerInstr `.localSet` arm) ─────────────
 //
-// popSym + commit the value, then the dual-Copy:
+// popSym + commit the value, then the zero-init + dual-Copy:
 //   1. fresh reg (new per-set binding)
-//   2. Copy { fresh, src }
-//   3. Copy { stable, fresh }    (keep the stable anchor in sync)
-//   4. currentReg[i] := fresh
+//   2. Const { fresh, zeroConst ty }   (frame-0 zero-init, now inline)
+//   3. Copy  { fresh, src }
+//   4. Copy  { stable, fresh }    (keep the stable anchor in sync)
+//   5. currentReg[i] := fresh
 // stable reg: reused if the local already has one, else freshly
-// allocated. ty defaults to U32.
+// allocated. ty defaults to U32. The Const is a dead write to `fresh`
+// (overwritten by step 3 before any read) — V8 divergence #1, folded
+// in inline. Production routes it to the frame-0 head (placement-only
+// residual, pinned in local_arms_refine.rs).
 
 pub open spec fn local_set(s: LowerState, i: nat) -> Option<(LowerState, Seq<KernelOp>)> {
     match pop_sym(s) {
@@ -160,13 +173,15 @@ pub open spec fn local_set(s: LowerState, i: nat) -> Option<(LowerState, Seq<Ker
                 match lookup_local(s3, i) {
                     Some(stable) => {
                         let s4 = set_current_reg(set_local_reg(s3, i, stable, ty), i, fresh);
-                        Some((s4, ops_commit.add(seq![KernelOp::Copy(fresh, src),
+                        Some((s4, ops_commit.add(seq![KernelOp::Const(fresh, zero_const(ty)),
+                                                       KernelOp::Copy(fresh, src),
                                                        KernelOp::Copy(stable, fresh)])))
                     },
                     None => {
                         let (stable, s4) = alloc(s3);
                         let s5 = set_current_reg(set_local_reg(s4, i, stable, ty), i, fresh);
-                        Some((s5, ops_commit.add(seq![KernelOp::Copy(fresh, src),
+                        Some((s5, ops_commit.add(seq![KernelOp::Const(fresh, zero_const(ty)),
+                                                       KernelOp::Copy(fresh, src),
                                                        KernelOp::Copy(stable, fresh)])))
                     },
                 }
@@ -248,29 +263,36 @@ proof fn local_get_uninit_refuses(s: LowerState, i: nat)
 {}
 
 /// localSet of a register value into a local WITH a stable reg:
-/// no commit ops, dual-Copy [fresh←src, stable←fresh], next_reg+1,
-/// currentReg[i] = fresh, stable reg unchanged.
+/// no commit ops, then the zero-init `Const(fresh, zeroConst ty)`
+/// followed by the dual-Copy [fresh←src, stable←fresh]. fresh =
+/// s1.next_reg; currentReg[i] = fresh, stable reg unchanged. The
+/// local's recorded type is the `ty` used for the zero-init.
 proof fn local_set_reg_existing_stable(s: LowerState, i: nat, r: Reg, ty: Scalar, stable: Reg)
     requires
         s.stack.len() >= 1,
         s.stack[0] == SymVal::Reg(r, ty),
         lookup_local_ty(s, i) is Some,
-        // after the pop, the local still has its stable reg
+        // after the pop, the local still has its stable reg + recorded type
         ({ let s1 = pop_sym(s).unwrap().1; lookup_local(s1, i) == Some(stable) }),
+        ({ let s1 = pop_sym(s).unwrap().1; lookup_local_ty(s1, i) == Some(ty) }),
     ensures ({
         let s1 = pop_sym(s).unwrap().1;
         local_set(s, i).unwrap().1
-            == seq![KernelOp::Copy(s1.next_reg, r), KernelOp::Copy(stable, s1.next_reg)]
+            == seq![KernelOp::Const(s1.next_reg, zero_const(ty)),
+                    KernelOp::Copy(s1.next_reg, r),
+                    KernelOp::Copy(stable, s1.next_reg)]
     }),
 {
     let s1 = pop_sym(s).unwrap().1;
     // commit of a register is identity → ops_commit = [] → the result
-    // ops are exactly the dual-Copy. fresh = s1.next_reg (no commit alloc).
+    // ops are exactly [Const, dual-Copy]. fresh = s1.next_reg (no commit alloc).
     assert(commit(s1, SymVal::Reg(r, ty)) == Some::<(Reg, LowerState, Seq<KernelOp>)>(
         (r, s1, Seq::<KernelOp>::empty())));
     assert(Seq::<KernelOp>::empty().add(
-        seq![KernelOp::Copy(s1.next_reg, r), KernelOp::Copy(stable, s1.next_reg)])
-        =~= seq![KernelOp::Copy(s1.next_reg, r), KernelOp::Copy(stable, s1.next_reg)]);
+        seq![KernelOp::Const(s1.next_reg, zero_const(ty)),
+             KernelOp::Copy(s1.next_reg, r), KernelOp::Copy(stable, s1.next_reg)])
+        =~= seq![KernelOp::Const(s1.next_reg, zero_const(ty)),
+                 KernelOp::Copy(s1.next_reg, r), KernelOp::Copy(stable, s1.next_reg)]);
 }
 
 /// localSet of a register into a FRESH local (no prior stable reg)

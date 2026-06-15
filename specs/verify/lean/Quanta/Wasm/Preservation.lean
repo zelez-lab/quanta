@@ -390,6 +390,74 @@ theorem regLookup_regWrite_of_ne (rf : Quanta.KOps.RegFile) (r r' : Reg) (v : Qu
   congr 1
   exact find?_pred_eq rf r r' h
 
+/-- Overwriting the same register collapses: a write of `v1` to `r`
+    after a write of `v0` to `r` equals just writing `v1`. The inner
+    write's `(r, v0)` head is dropped by the outer write's
+    `filter (· ≠ r)`, and `filter` is idempotent on the tail. The
+    load-bearing fact behind dead-write absorption (the frame-0
+    zero-init: `Const fresh 0` immediately overwritten by
+    `Copy fresh src`). -/
+theorem regWrite_regWrite_self
+    (rf : Quanta.KOps.RegFile) (r : Reg) (v0 v1 : Quanta.KOps.Value) :
+    regWrite (regWrite rf r v0) r v1 = regWrite rf r v1 := by
+  unfold regWrite
+  -- Goal: (r,v1) :: ((r,v0) :: rf.filter(≠r)).filter(≠r)
+  --     = (r,v1) :: rf.filter(≠r)
+  congr 1
+  -- The filter of the cons: the head (r,v0) has fst = r, so the
+  -- predicate (·.fst ≠ r) is false on it ⇒ it's dropped; the tail
+  -- rf.filter(≠r) re-filtered by (≠r) is itself (idempotence).
+  rw [List.filter_cons]
+  have h_head : (decide (((r, v0) : Reg × Quanta.KOps.Value).fst ≠ r)) = false := by
+    simp
+  rw [h_head]
+  simp only [Bool.false_eq_true, if_false]
+  -- filter idempotence on rf.filter(≠r).
+  rw [List.filter_filter]
+  congr 1
+  funext p
+  simp [Bool.and_self]
+
+/-- Dead-write absorption: a `Const f z` immediately followed by a
+    `Copy f src` (writing the same register `f`, reading a *different*
+    register `src ≠ f`) evaluates the same as the `Copy f src` alone —
+    the const's write to `f` is overwritten before any read, and the
+    copy's read of `src` is undisturbed because `src ≠ f`. Stated at
+    the `evalOps` level so the localSet / localTee preservation proofs
+    absorb the frame-0 zero-init op with a single rewrite, leaving
+    their `Refines` reasoning (about the final state) untouched.
+
+    `h_ne : src ≠ f` holds in every caller: the copied source is a
+    committed operand (`src < s.nextReg`) while `f` is the freshly
+    allocated per-set register (`f = s.nextReg`), so `src < f`.
+
+    `h_ok : s.broke = false` lets the `evalOps` cons reach the copy;
+    the const step preserves `broke`. -/
+theorem evalOps_const_copy_absorb
+    {fuel : Nat} {s : Quanta.KOps.State} {f src : Reg}
+    {z : Quanta.KOps.ConstValue} {rest : List KernelOp}
+    (h_ne : src ≠ f) (h_ok : s.broke = false) :
+    evalOps fuel s (.const f z :: .copy f src :: rest)
+      = evalOps fuel s (.copy f src :: rest) := by
+  -- Reads of `src` agree between s.rf and the const-progressed regfile
+  -- (regWrite s.rf f _) because src ≠ f.
+  have h_read_eq : regLookup (regWrite s.rf f (Quanta.KOps.evalConst z)) src
+      = regLookup s.rf src := regLookup_regWrite_of_ne _ f src _ h_ne
+  -- Unfold both sides fully: the const head writes f then (broke kept)
+  -- runs the copy; the copy reads src and writes f.
+  simp only [evalOps, Quanta.KOps.evalOp, Option.pure_def,
+             Option.bind_eq_bind, Option.some_bind, h_ok,
+             if_neg (by decide : ¬ (false = true))]
+  -- Now: do (copy from sz) on LHS vs do (copy from s) on RHS, with
+  -- the const write only affecting f. Case-split on the src read.
+  rw [h_read_eq]
+  rcases hsrc : regLookup s.rf src with _ | vsrc
+  · -- Both copies fail to read ⇒ both `none`.
+    simp only [Option.none_bind]
+  · -- Both copies write f ↦ vsrc; collapse the double write to f.
+    simp only [Option.some_bind, h_ok, if_neg (by decide : ¬ (false = true))]
+    rw [regWrite_regWrite_self s.rf f (Quanta.KOps.evalConst z) vsrc]
+
 /-- For any register strictly below `nextReg` and any fresh write to
     `nextReg`, the lookup is preserved. Convenient corollary for the
     per-instr lemmas. -/
@@ -3038,8 +3106,18 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     let kst' : Quanta.KOps.State :=
       { kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (vU32 n_w) }
     refine ⟨kst', ?_, ?_⟩
-    · -- evalOps 0 kst (opsCommit ++ [.copy fresh src, .copy stable fresh]) = some kst'.
+    · -- evalOps 0 kst (opsCommit ++ [zinit, .copy fresh src, .copy stable fresh]) = some kst'.
       subst hops_eq
+      -- Frame-0 zero-init absorption: the leading `Const fresh _` is
+      -- overwritten by the next `Copy fresh src` (and src ≠ fresh since
+      -- src < s2.nextReg = fresh), so it drops out before the existing
+      -- dual-Copy reasoning. Peel `opsCommit` (→ kst1, broke = false),
+      -- absorb the const, glue back.
+      have h_src_ne_fresh : src ≠ fresh :=
+        Nat.ne_of_lt h_src_lt_s2
+      rw [evalOps_append h_evalC h_kst1_ok]
+      rw [evalOps_const_copy_absorb h_src_ne_fresh h_kst1_ok]
+      rw [← evalOps_append h_evalC h_kst1_ok]
       -- Step 1: evalOps over opsCommit gives kst1 (h_evalC).
       -- Step 2: evalOps over [.copy fresh src] from kst1 gives kst_after_fresh.
       have h_evalC1 : evalOps 0 kst1 [.copy fresh src] = some kst_after_fresh := by
@@ -3338,6 +3416,11 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     refine ⟨kst'_A, ?_, ?_⟩
     · -- evalOps closes via same dual-Copy as case B (mod stable_old vs s2.nextReg+1).
       subst hops_eq
+      -- Absorb the frame-0 zero-init (Const fresh _ overwritten by Copy fresh src).
+      have h_src_ne_fresh : src ≠ fresh := Nat.ne_of_lt h_src_lt_s2
+      rw [evalOps_append h_evalC h_kst1_ok,
+          evalOps_const_copy_absorb h_src_ne_fresh h_kst1_ok,
+          ← evalOps_append h_evalC h_kst1_ok]
       have h_evalC1 : evalOps 0 kst1 [.copy fresh src] = some kst_after_fresh_A := by
         simp only [evalOps, Quanta.KOps.evalOp]
         rw [h_src_lookup]
@@ -3721,6 +3804,11 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     refine ⟨kst', ?_, ?_⟩
     · -- evalOps closes via three Copy steps.
       subst hops_eq
+      -- Absorb the frame-0 zero-init (Const fresh _ overwritten by Copy fresh src).
+      have h_src_ne_fresh : src ≠ fresh := Nat.ne_of_lt h_src_lt_s2
+      rw [evalOps_append h_evalC h_kst1_ok,
+          evalOps_const_copy_absorb h_src_ne_fresh h_kst1_ok,
+          ← evalOps_append h_evalC h_kst1_ok]
       have h_evalC1 : evalOps 0 kst1 [.copy fresh src] = some kst_after_fresh := by
         simp only [evalOps, Quanta.KOps.evalOp]
         rw [h_src_lookup]
@@ -4095,6 +4183,11 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     · -- evalOps closes via three Copy steps, similar to case B but
       -- with stable_old instead of stable.
       subst hops_eq
+      -- Absorb the frame-0 zero-init (Const fresh _ overwritten by Copy fresh src).
+      have h_src_ne_fresh : src ≠ fresh := Nat.ne_of_lt h_src_lt_s2
+      rw [evalOps_append h_evalC h_kst1_ok,
+          evalOps_const_copy_absorb h_src_ne_fresh h_kst1_ok,
+          ← evalOps_append h_evalC h_kst1_ok]
       have h_evalC1 : evalOps 0 kst1 [.copy fresh src] = some kst_after_fresh_A := by
         simp only [evalOps, Quanta.KOps.evalOp]
         rw [h_src_lookup]
