@@ -196,6 +196,32 @@ private def liftI32 (op : Int → Int → Int) : Value → Value → Option Valu
   | .vI32 a, .vI32 b => some (vI32 (op a b))
   | _, _ => none
 
+/-- The 32-bit pattern an integer-typed value carries, as a `UInt32`:
+    `vU32 n ↦ n`, `vI32 z ↦ UInt32.ofNat z.toNat` (the `vI32`↔`vU32`
+    cast image — the `vI32` holds the non-negative bit pattern). `none`
+    for non-integer values. The reinterpret used to give MIXED-tag
+    integer binops well-defined bit-level semantics. -/
+@[inline] def asU32Bits : Value → Option UInt32
+  | .vU32 n => some n
+  | .vI32 z => some (UInt32.ofNat z.toNat)
+  | _       => none
+
+/-- Mixed-operand integer binop: when the operands carry different
+    integer tags (one `vU32`, one `vI32`), reinterpret both to the
+    common 32-bit pattern, apply the `UInt32` op, and tag the result
+    `vI32 (·.toNat)` — mirroring production's `ty = I32` choice for a
+    mixed binop. The same-`vU32` case is left to `liftU32` (returns
+    `none` here), so wiring this as an `orElse` fallback keeps the
+    existing `vU32,vU32` / `vI32,vI32` arms byte-identical. -/
+private def liftMixedI32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Option Value
+  | va, vb =>
+    match va, vb with
+    | .vU32 _, .vU32 _ => none
+    | _, _ =>
+      match asU32Bits va, asU32Bits vb with
+      | some a, some b => some (vI32 ((op a b).toNat))
+      | _, _ => none
+
 private def liftCmpU32 (p : UInt32 → UInt32 → Bool) : Value → Value → Option Value
   | .vU32 a, .vU32 b => some (vBool (p a b))
   | _, _ => none
@@ -211,26 +237,32 @@ private def liftBoolBin (op : Bool → Bool → Bool) : Value → Value → Opti
 def evalBinOp : BinOp → Value → Value → Option Value
   | .add  => fun va vb =>
       (liftU32 eval_u32_wrapping_add va vb).orElse (fun _ =>
-        liftI32 (· + ·) va vb)
+      (liftI32 (· + ·) va vb).orElse (fun _ =>
+        liftMixedI32 eval_u32_wrapping_add va vb))
   | .sub  => fun va vb =>
       (liftU32 eval_u32_wrapping_sub va vb).orElse (fun _ =>
-        liftI32 (· - ·) va vb)
+      (liftI32 (· - ·) va vb).orElse (fun _ =>
+        liftMixedI32 eval_u32_wrapping_sub va vb))
   | .mul  => fun va vb =>
       (liftU32 eval_u32_wrapping_mul va vb).orElse (fun _ =>
-        liftI32 (· * ·) va vb)
+      (liftI32 (· * ·) va vb).orElse (fun _ =>
+        liftMixedI32 eval_u32_wrapping_mul va vb))
   | .div  => liftU32 eval_u32_div
   | .rem  => liftU32 eval_u32_rem
-  | .bAnd => liftU32 eval_u32_bitand
-  | .bOr  => liftU32 eval_u32_bitor
-  | .bXor => liftU32 eval_u32_bitxor
+  | .bAnd => fun va vb =>
+      (liftU32 eval_u32_bitand va vb).orElse (fun _ => liftMixedI32 (· &&& ·) va vb)
+  | .bOr  => fun va vb =>
+      (liftU32 eval_u32_bitor va vb).orElse (fun _ => liftMixedI32 (· ||| ·) va vb)
+  | .bXor => fun va vb =>
+      (liftU32 eval_u32_bitxor va vb).orElse (fun _ => liftMixedI32 (· ^^^ ·) va vb)
   | .shl  => fun va vb =>
       match va, vb with
       | .vU32 a, .vU32 b => some (vU32 (a <<< b))
-      | _, _ => none
+      | _, _ => liftMixedI32 (· <<< ·) va vb
   | .shr  => fun va vb =>
       match va, vb with
       | .vU32 a, .vU32 b => some (vU32 (a >>> b))
-      | _, _ => none
+      | _, _ => liftMixedI32 (· >>> ·) va vb
   -- KOps-only saturating ops; not yet in KRust.
   | .satAdd => fun va vb =>
       match va, vb with
@@ -243,6 +275,48 @@ def evalBinOp : BinOp → Value → Value → Option Value
       | .vU32 a, .vU32 b =>
           if a < b then some (vU32 0) else some (vU32 (a - b))
       | _, _ => none
+
+-- ════════════════════════════════════════════════════════════════════
+-- Mixed-lane correctness (V8-#2)
+--
+-- When a binop sees a `vU32 a` and a `vI32 (b.toNat)` operand (the
+-- shape an i32-tagged const adds to a u32-tagged reg), the result
+-- carries the SAME 32-bit pattern the pure-`vU32` lane would produce —
+-- the `vI32` operand reinterprets to its bits `b`, the op runs on
+-- `(a, b)`, and the result re-enters the `vI32` lane carrying those
+-- bits. These lemmas are the bridge the binop preservation uses to
+-- show a mixed binop refines the wasm bit-pattern semantics.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `asU32Bits` recovers the bit pattern from a `vI32` carrying a
+    UInt32's `toNat` (the canonical i32-reg encoding). -/
+@[simp] theorem asU32Bits_vI32_ofBits (b : UInt32) :
+    asU32Bits (vI32 (b.toNat)) = some b := by
+  simp [asU32Bits, vI32]
+
+@[simp] theorem asU32Bits_vU32 (a : UInt32) :
+    asU32Bits (vU32 a) = some a := by
+  simp [asU32Bits, vU32]
+
+/-- The mixed `.add` lane: `vU32 a` + `vI32 (b.toNat)` evaluates to
+    `vI32 ((a + b).toNat)` — the wrapping-add bit pattern, tagged i32.
+    This is the exact result an `i32.add` of a u32-reg and an
+    i32-const produces, and the value the `.reg dst .i32` encoding of
+    `wI32 (a + b)` expects (`regHoldsU32Bits` at the bits `a + b`). -/
+theorem evalBinOp_add_mixed_u32_i32 (a b : UInt32) :
+    evalBinOp .add (vU32 a) (vI32 (b.toNat))
+      = some (vI32 ((eval_u32_wrapping_add a b).toNat)) := by
+  simp only [evalBinOp, liftU32, liftI32, vU32, vI32, Option.orElse]
+  -- u32 lane: liftU32 on (vU32, vI32) is none; i32 lane: none; mixed fires.
+  simp [liftMixedI32, asU32Bits, eval_u32_wrapping_add, vI32, vU32]
+
+/-- Symmetric: `vI32 (a.toNat)` + `vU32 b` (i32-const as the FIRST
+    operand). Same bit pattern. -/
+theorem evalBinOp_add_mixed_i32_u32 (a b : UInt32) :
+    evalBinOp .add (vI32 (a.toNat)) (vU32 b)
+      = some (vI32 ((eval_u32_wrapping_add a b).toNat)) := by
+  simp only [evalBinOp, liftU32, liftI32, vU32, vI32, Option.orElse]
+  simp [liftMixedI32, asU32Bits, eval_u32_wrapping_add, vI32, vU32]
 
 def evalUnaryOp : UnaryOp → Value → Option Value
   | .neg    => fun v => match v with
