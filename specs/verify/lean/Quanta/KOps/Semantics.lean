@@ -188,9 +188,16 @@ def evalConst : ConstValue → Value
 -- so we list those separately; everything else routes through the
 -- exact same `eval_u32_*` / `eval_i32_*` calls KRust uses.
 
-private def liftU32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Option Value
+def liftU32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Option Value
   | .vU32 a, .vU32 b => some (vU32 (op a b))
   | _, _ => none
+
+/-- `liftU32` is `none` whenever an operand is `vI32` — so an `orElse`
+    chain falls through to the mixed lane. -/
+@[simp] theorem liftU32_i32_left (op : UInt32 → UInt32 → UInt32) (a : Int) (v : Value) :
+    liftU32 op (vI32 a) v = none := by cases v <;> simp [liftU32, vI32]
+@[simp] theorem liftU32_i32_right (op : UInt32 → UInt32 → UInt32) (a : UInt32) (b : Int) :
+    liftU32 op (vU32 a) (vI32 b) = none := by simp [liftU32, vU32, vI32]
 
 /-- The 32-bit pattern an integer-typed value carries, as a `UInt32`:
     `vU32 n ↦ n`, `vI32 z ↦ UInt32.ofNat z.toNat` (the `vI32`↔`vU32`
@@ -209,7 +216,7 @@ private def liftU32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Op
     mixed binop. The same-`vU32` case is left to `liftU32` (returns
     `none` here), so wiring this as an `orElse` fallback keeps the
     existing `vU32,vU32` / `vI32,vI32` arms byte-identical. -/
-private def liftMixedI32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Option Value
+def liftMixedI32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Option Value
   | va, vb =>
     match va, vb with
     | .vU32 _, .vU32 _ => none
@@ -217,6 +224,18 @@ private def liftMixedI32 (op : UInt32 → UInt32 → UInt32) : Value → Value �
       match asU32Bits va, asU32Bits vb with
       | some a, some b => some (vI32 ((op a b).toNat))
       | _, _ => none
+
+/-- The three mixed/i32 lanes of `liftMixedI32`, as standalone facts the
+    binop preservation instantiations reuse uniformly. -/
+@[simp] theorem liftMixedI32_i32_i32 (op : UInt32 → UInt32 → UInt32) (a b : UInt32) :
+    liftMixedI32 op (vI32 (a.toNat)) (vI32 (b.toNat)) = some (vI32 ((op a b).toNat)) := by
+  simp [liftMixedI32, asU32Bits, vI32]
+@[simp] theorem liftMixedI32_u32_i32 (op : UInt32 → UInt32 → UInt32) (a b : UInt32) :
+    liftMixedI32 op (vU32 a) (vI32 (b.toNat)) = some (vI32 ((op a b).toNat)) := by
+  simp [liftMixedI32, asU32Bits, vI32, vU32]
+@[simp] theorem liftMixedI32_i32_u32 (op : UInt32 → UInt32 → UInt32) (a b : UInt32) :
+    liftMixedI32 op (vI32 (a.toNat)) (vU32 b) = some (vI32 ((op a b).toNat)) := by
+  simp [liftMixedI32, asU32Bits, vI32, vU32]
 
 private def liftCmpU32 (p : UInt32 → UInt32 → Bool) : Value → Value → Option Value
   | .vU32 a, .vU32 b => some (vBool (p a b))
