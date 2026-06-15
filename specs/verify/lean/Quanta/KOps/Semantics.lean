@@ -192,10 +192,6 @@ private def liftU32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Op
   | .vU32 a, .vU32 b => some (vU32 (op a b))
   | _, _ => none
 
-private def liftI32 (op : Int → Int → Int) : Value → Value → Option Value
-  | .vI32 a, .vI32 b => some (vI32 (op a b))
-  | _, _ => none
-
 /-- The 32-bit pattern an integer-typed value carries, as a `UInt32`:
     `vU32 n ↦ n`, `vI32 z ↦ UInt32.ofNat z.toNat` (the `vI32`↔`vU32`
     cast image — the `vI32` holds the non-negative bit pattern). `none`
@@ -235,20 +231,25 @@ private def liftBoolBin (op : Bool → Bool → Bool) : Value → Value → Opti
   | _, _ => none
 
 def evalBinOp : BinOp → Value → Value → Option Value
+  -- u32 lane first; every non-(u32,u32) integer combination (i32+i32 or
+  -- mixed) routes through `liftMixedI32`, which reinterprets to the
+  -- common 32-bit pattern and applies the WRAPPING op — matching wasm
+  -- i32 semantics. (The old `liftI32` arm did unbounded `Int`
+  -- arithmetic, which is wrong for wrapping; it was only reachable once
+  -- i32-typed values exist, i.e. post-V8-#2, and is dropped here.)
   | .add  => fun va vb =>
       (liftU32 eval_u32_wrapping_add va vb).orElse (fun _ =>
-      (liftI32 (· + ·) va vb).orElse (fun _ =>
-        liftMixedI32 eval_u32_wrapping_add va vb))
+        liftMixedI32 eval_u32_wrapping_add va vb)
   | .sub  => fun va vb =>
       (liftU32 eval_u32_wrapping_sub va vb).orElse (fun _ =>
-      (liftI32 (· - ·) va vb).orElse (fun _ =>
-        liftMixedI32 eval_u32_wrapping_sub va vb))
+        liftMixedI32 eval_u32_wrapping_sub va vb)
   | .mul  => fun va vb =>
       (liftU32 eval_u32_wrapping_mul va vb).orElse (fun _ =>
-      (liftI32 (· * ·) va vb).orElse (fun _ =>
-        liftMixedI32 eval_u32_wrapping_mul va vb))
-  | .div  => liftU32 eval_u32_div
-  | .rem  => liftU32 eval_u32_rem
+        liftMixedI32 eval_u32_wrapping_mul va vb)
+  | .div  => fun va vb =>
+      (liftU32 eval_u32_div va vb).orElse (fun _ => liftMixedI32 eval_u32_div va vb)
+  | .rem  => fun va vb =>
+      (liftU32 eval_u32_rem va vb).orElse (fun _ => liftMixedI32 eval_u32_rem va vb)
   | .bAnd => fun va vb =>
       (liftU32 eval_u32_bitand va vb).orElse (fun _ => liftMixedI32 (· &&& ·) va vb)
   | .bOr  => fun va vb =>
@@ -306,7 +307,7 @@ def evalBinOp : BinOp → Value → Value → Option Value
 theorem evalBinOp_add_mixed_u32_i32 (a b : UInt32) :
     evalBinOp .add (vU32 a) (vI32 (b.toNat))
       = some (vI32 ((eval_u32_wrapping_add a b).toNat)) := by
-  simp only [evalBinOp, liftU32, liftI32, vU32, vI32, Option.orElse]
+  simp only [evalBinOp, liftU32, vU32, vI32, Option.orElse]
   -- u32 lane: liftU32 on (vU32, vI32) is none; i32 lane: none; mixed fires.
   simp [liftMixedI32, asU32Bits, eval_u32_wrapping_add, vI32, vU32]
 
@@ -315,8 +316,15 @@ theorem evalBinOp_add_mixed_u32_i32 (a b : UInt32) :
 theorem evalBinOp_add_mixed_i32_u32 (a b : UInt32) :
     evalBinOp .add (vI32 (a.toNat)) (vU32 b)
       = some (vI32 ((eval_u32_wrapping_add a b).toNat)) := by
-  simp only [evalBinOp, liftU32, liftI32, vU32, vI32, Option.orElse]
+  simp only [evalBinOp, liftU32, vU32, vI32, Option.orElse]
   simp [liftMixedI32, asU32Bits, eval_u32_wrapping_add, vI32, vU32]
+
+/-- Both-i32 `.add` (two i32 consts): wrapping bit pattern, tagged i32. -/
+theorem evalBinOp_add_i32_i32 (a b : UInt32) :
+    evalBinOp .add (vI32 (a.toNat)) (vI32 (b.toNat))
+      = some (vI32 ((eval_u32_wrapping_add a b).toNat)) := by
+  simp [evalBinOp, liftU32, liftMixedI32, asU32Bits, eval_u32_wrapping_add, vI32, vU32,
+        Option.orElse]
 
 def evalUnaryOp : UnaryOp → Value → Option Value
   | .neg    => fun v => match v with
