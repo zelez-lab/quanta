@@ -698,6 +698,18 @@ theorem preservation_evalInstrs_cons_i32Bin_generic_bridge
        Quanta.KOps.evalBinOp op_k (Quanta.KOps.Value.vU32 av)
          (Quanta.KOps.Value.vU32 bv) =
          some (Quanta.KOps.Value.vU32 (op_w av bv)))
+    (h_agree_i : ∀ av bv,
+       Quanta.KOps.evalBinOp op_k
+         (Quanta.KOps.Value.vI32 (av.toNat)) (Quanta.KOps.Value.vI32 (bv.toNat))
+         = some (Quanta.KOps.Value.vI32 ((op_w av bv).toNat)))
+    (h_agree_ui : ∀ av bv,
+       Quanta.KOps.evalBinOp op_k (Quanta.KOps.Value.vU32 av)
+         (Quanta.KOps.Value.vI32 (bv.toNat))
+         = some (Quanta.KOps.Value.vI32 ((op_w av bv).toNat)))
+    (h_agree_iu : ∀ av bv,
+       Quanta.KOps.evalBinOp op_k (Quanta.KOps.Value.vI32 (av.toNat))
+         (Quanta.KOps.Value.vU32 bv)
+         = some (Quanta.KOps.Value.vI32 ((op_w av bv).toNat)))
     (fuel : Nat) (frames : List FrameKind)
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout)
@@ -750,6 +762,7 @@ theorem preservation_evalInstrs_cons_i32Bin_generic_bridge
               simp only at hw
               obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
                 preservation_i32Bin_generic instr op_w op_k h_w h_agree
+                  h_agree_i h_agree_ui h_agree_iu
                   ws s kst layout R h_kst_no_broke
                   ws_after s_after ops_head h_l_eq
                   h_eval_head h_head
@@ -763,7 +776,8 @@ theorem preservation_evalInstrs_cons_i32Bin_generic_bridge
               have h_lf_opsB : loopFreeNoBreak opsB = true :=
                 commit_emits_loopFreeNoBreak hcb
               have h_lf_binOp :
-                  loopFreeNoBreak [KernelOp.binOp s4.nextReg ra rb op_k .u32] = true := rfl
+                  loopFreeNoBreak [KernelOp.binOp s4.nextReg ra rb op_k
+                    (LowerState.binResultTy _sva _svb)] = true := rfl
               have h_lf_head : loopFreeNoBreak ops_head = true := by
                 rw [h_ops_head_eq]
                 simp [loopFreeNoBreak_append, h_lf_opsA, h_lf_opsB, h_lf_binOp]
@@ -805,6 +819,18 @@ theorem preservation_evalInstrs_cons_i32Cmp_generic_bridge
     (h_l : ∀ s, lowerInstr s instr = lowerI32Cmp s op_k)
     (h_agree : ∀ av bv,
        Quanta.KOps.evalCmpOp op_k (Quanta.KOps.Value.vU32 av)
+         (Quanta.KOps.Value.vU32 bv)
+         = some (Quanta.KOps.Value.vBool (p_w av bv)))
+    (h_agree_i : ∀ av bv,
+       Quanta.KOps.evalCmpOp op_k
+         (Quanta.KOps.Value.vI32 (av.toNat)) (Quanta.KOps.Value.vI32 (bv.toNat))
+         = some (Quanta.KOps.Value.vBool (p_w av bv)))
+    (h_agree_ui : ∀ av bv,
+       Quanta.KOps.evalCmpOp op_k (Quanta.KOps.Value.vU32 av)
+         (Quanta.KOps.Value.vI32 (bv.toNat))
+         = some (Quanta.KOps.Value.vBool (p_w av bv)))
+    (h_agree_iu : ∀ av bv,
+       Quanta.KOps.evalCmpOp op_k (Quanta.KOps.Value.vI32 (av.toNat))
          (Quanta.KOps.Value.vU32 bv)
          = some (Quanta.KOps.Value.vBool (p_w av bv)))
     (fuel : Nat) (frames : List FrameKind)
@@ -858,6 +884,7 @@ theorem preservation_evalInstrs_cons_i32Cmp_generic_bridge
               simp only at hw
               obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
                 preservation_i32Cmp_generic instr p_w op_k h_w h_l h_agree
+                  h_agree_i h_agree_ui h_agree_iu
                   ws s kst layout R h_kst_no_broke
                   ws_after s_after ops_head
                   h_eval_head h_head
@@ -957,6 +984,12 @@ theorem preservation_evalInstrs_cons_i32Add_bridge
   exact preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32Add eval_u32_wrapping_add .add
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_add, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_add, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_add, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke h_l_eq rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -981,6 +1014,12 @@ theorem preservation_evalInstrs_cons_i32Sub_bridge
   preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32Sub eval_u32_wrapping_sub .sub
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_sub, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_sub, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_sub, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1005,6 +1044,12 @@ theorem preservation_evalInstrs_cons_i32Mul_bridge
   preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32Mul eval_u32_wrapping_mul .mul
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_mul, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_mul, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_mul, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1029,6 +1074,12 @@ theorem preservation_evalInstrs_cons_i32And_bridge
   preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32And eval_u32_bitand .bAnd
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitand, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitand, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitand, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1053,6 +1104,12 @@ theorem preservation_evalInstrs_cons_i32Or_bridge
   preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32Or eval_u32_bitor .bOr
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1077,6 +1134,12 @@ theorem preservation_evalInstrs_cons_i32Xor_bridge
   preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32Xor eval_u32_bitxor .bXor
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitxor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitxor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitxor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1101,6 +1164,12 @@ theorem preservation_evalInstrs_cons_i32ShrU_bridge
   preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32ShrU (fun a b => a >>> b) .shr
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1125,6 +1194,12 @@ theorem preservation_evalInstrs_cons_i32DivU_bridge
   preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32DivU eval_u32_div .div
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_div, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_div, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_div, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1149,6 +1224,12 @@ theorem preservation_evalInstrs_cons_i32RemU_bridge
   preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32RemU eval_u32_rem .rem
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_rem, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_rem, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_rem, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1183,6 +1264,9 @@ theorem preservation_evalInstrs_cons_i32Eq_bridge
   preservation_evalInstrs_cons_i32Cmp_generic_bridge
     .i32Eq (· == ·) .eq
     (fun _ => rfl) (fun _ => rfl) (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1207,6 +1291,9 @@ theorem preservation_evalInstrs_cons_i32Ne_bridge
   preservation_evalInstrs_cons_i32Cmp_generic_bridge
     .i32Ne (· != ·) .ne
     (fun _ => rfl) (fun _ => rfl) (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1231,6 +1318,9 @@ theorem preservation_evalInstrs_cons_i32LtU_bridge
   preservation_evalInstrs_cons_i32Cmp_generic_bridge
     .i32LtU (· < ·) .lt
     (fun _ => rfl) (fun _ => rfl) (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1255,6 +1345,9 @@ theorem preservation_evalInstrs_cons_i32LeU_bridge
   preservation_evalInstrs_cons_i32Cmp_generic_bridge
     .i32LeU (· <= ·) .le
     (fun _ => rfl) (fun _ => rfl) (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1279,6 +1372,9 @@ theorem preservation_evalInstrs_cons_i32GtU_bridge
   preservation_evalInstrs_cons_i32Cmp_generic_bridge
     .i32GtU (· > ·) .gt
     (fun _ => rfl) (fun _ => rfl) (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1303,6 +1399,9 @@ theorem preservation_evalInstrs_cons_i32GeU_bridge
   preservation_evalInstrs_cons_i32Cmp_generic_bridge
     .i32GeU (· >= ·) .ge
     (fun _ => rfl) (fun _ => rfl) (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1413,7 +1512,7 @@ theorem preservation_evalInstrs_cons_i32Shl_bufferPattern_bridge
     (lstk_rest : List SymVal)
     (h_stack : s.stack = .i32ConstSym k :: .reg base ty :: lstk_rest)
     (h_shift_eq : ∀ a : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 a) →
+       regHoldsU32Bits kst.rf base a →
        (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
     (rest : List WasmInstr)
     (preservation_rest_bridge : I32BinIHBridge fuel frames layout rest)
@@ -1484,7 +1583,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_scaledFirst_bridge
     (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
     (h_stack : s.stack = .scaledIdx base scale :: .bufferPtr slot :: lstk_rest)
     (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        a.toNat = b.toNat * scale →
        b_ptr.toNat = layout.startAddr slot →
        (b_ptr + a).toNat = layout.startAddr slot + b.toNat * scale)
@@ -1557,7 +1656,7 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst_bridge
     (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
     (h_stack : s.stack = .bufferPtr slot :: .scaledIdx base scale :: lstk_rest)
     (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        a.toNat = b.toNat * scale →
        b_ptr.toNat = layout.startAddr slot →
        (a + b_ptr).toNat = layout.startAddr slot + b.toNat * scale)
@@ -1648,6 +1747,12 @@ theorem preservation_evalInstrs_cons_i32Shl_bridge
   exact preservation_evalInstrs_cons_i32Bin_generic_bridge
     .i32Shl (fun a b => a <<< b) .shl
     (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke h_l_eq rfl rfl rest
     preservation_rest_bridge ws' s' ops hw hl
 
@@ -1667,7 +1772,7 @@ theorem preservation_evalInstrs_cons_i32Load_bridge
     (h_stack : s.stack = .bufferAccess slot base 4 :: lstk_rest)
     (h_offset : offset = 0)
     (h_in_bounds : ∀ b : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        b.toNat < layout.length slot)
     (rest : List WasmInstr)
     (preservation_rest_bridge : ∀ {ws_mid : WasmState} {s_mid : LowerState}
@@ -1785,10 +1890,10 @@ theorem preservation_evalInstrs_cons_i32Store_bridge
     (h_stack : s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest)
     (h_offset : offset = 0)
     (h_in_bounds : ∀ b : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        b.toNat < layout.length slot)
     (h_layout_no_overlap : ∀ b : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        ∀ slot' idx',
          idx' < layout.length slot' →
          (slot', idx') ≠ (slot, b.toNat) →
@@ -2713,7 +2818,7 @@ theorem preservation_evalInstrs_cons_wif_trivialBodies
                 intro ir hir sv hsv
                 exact R_at_s1.aliasFree ir hir sv hsv
               · -- CurrentRegRefines: s_cast.currentReg = s1.currentReg; lift past fresh write.
-                show CurrentRegRefines layout _ s1.currentReg _
+                show CurrentRegRefines layout _ s1.currentReg _ _
                 exact CurrentRegRefines_preserved_fresh R_at_s1.currentReg R_at_s1.freshCurrent _
               · -- FreshCurrent: nextReg bumps by 1.
                 intro ir hir
@@ -2754,7 +2859,15 @@ theorem preservation_evalInstrs_cons_wif_trivialBodies
               have h_cast_max : Quanta.KOps.evalOp F kst1
                   (KernelOp.cast cond_bool cond Quanta.KOps.Scalar.u32 Quanta.KOps.Scalar.bool)
                   = some kst_cast := by
-                simp [Quanta.KOps.evalOp, h_lookup, Quanta.KOps.evalCast, kst_cast]
+                have h_c_toNat : decide (c.toNat = 0) = decide (c = 0) := by
+                  by_cases hc : c = 0
+                  · subst hc; rfl
+                  · have hh : c.toNat ≠ 0 := by
+                      intro h; exact hc (by simpa using congrArg UInt32.ofNat h)
+                    simp [hc, hh]
+                rcases h_lookup with h_u32 | h_i32
+                · simp [Quanta.KOps.evalOp, h_u32, Quanta.KOps.evalCast, kst_cast]
+                · simp [Quanta.KOps.evalOp, h_i32, Quanta.KOps.evalCast, kst_cast, h_c_toNat]
               -- branch reads cond_bool (= vBool _), picks one arm; both arms = [].
               -- evalOps F kst_cast [] = some kst_cast.
               have h_lookup_cast :
@@ -2993,7 +3106,7 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                 · intro ir hir sv hsv
                   exact R_at_s1.aliasFree ir hir sv hsv
                 · -- CurrentRegRefines: s_cast.currentReg = s1.currentReg; lift past cast write.
-                  show CurrentRegRefines layout _ s1.currentReg _
+                  show CurrentRegRefines layout _ s1.currentReg _ _
                   exact CurrentRegRefines_preserved_fresh R_at_s1.currentReg R_at_s1.freshCurrent _
                 · -- FreshCurrent: nextReg bumps by 1.
                   intro ir hir
@@ -3075,6 +3188,7 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                       rw [show ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg = s2.localReg
                           from h_s2_lr.symm]
                       exact hfind
+                    rw [show (localTyOf s2.localTy i) = localTyOf s1.localTy i from by rw [h_s2_lt]]
                     exact R_at_cast.locs i r hfind_cast v hv
                   · -- Fresh: regs bounded by s2.nextReg ≥ s1.nextReg + 1.
                     refine ⟨?_, ?_⟩
@@ -3123,8 +3237,8 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                       exact hq
                     exact R_at_cast.injLocals p q hp_cast hq_cast
                   · -- CurrentRegRefines: s2.currentReg = s_cast.currentReg (from h_s2_cr).
-                    show CurrentRegRefines layout ws0.locals s2.currentReg kst_cast.rf
-                    rw [h_s2_cr]
+                    show CurrentRegRefines layout ws0.locals s2.currentReg s2.localTy kst_cast.rf
+                    rw [h_s2_cr, h_s2_lt]
                     exact R_at_cast.currentReg
                   · -- FreshCurrent: s2.currentReg = s_cast.currentReg, s_cast.nextReg ≤ s2.nextReg.
                     intro ir hir
@@ -3152,7 +3266,15 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                   have h_cast_max : Quanta.KOps.evalOp F kst1
                       (KernelOp.cast cond_bool cond Quanta.KOps.Scalar.u32 Quanta.KOps.Scalar.bool)
                       = some kst_cast := by
-                    simp [Quanta.KOps.evalOp, h_lookup, Quanta.KOps.evalCast, kst_cast]
+                    have h_c_toNat : decide (c.toNat = 0) = decide (c = 0) := by
+                      by_cases hc : c = 0
+                      · subst hc; rfl
+                      · have hh : c.toNat ≠ 0 := by
+                          intro h; exact hc (by simpa using congrArg UInt32.ofNat h)
+                        simp [hc, hh]
+                    rcases h_lookup with h_u32 | h_i32
+                    · simp [Quanta.KOps.evalOp, h_u32, Quanta.KOps.evalCast, kst_cast]
+                    · simp [Quanta.KOps.evalOp, h_i32, Quanta.KOps.evalCast, kst_cast, h_c_toNat]
                   have h_lookup_cast :
                       Quanta.KOps.regLookup kst_cast.rf cond_bool
                         = some (Quanta.KOps.Value.vBool (!decide (c = 0))) := by
@@ -3234,7 +3356,15 @@ theorem preservation_evalInstrs_cons_wif_noElse_fallthrough_noLocalSet
                     have h_cast_max : Quanta.KOps.evalOp F kst1
                         (KernelOp.cast cond_bool cond Quanta.KOps.Scalar.u32 Quanta.KOps.Scalar.bool)
                         = some kst_cast := by
-                      simp [Quanta.KOps.evalOp, h_lookup, Quanta.KOps.evalCast, kst_cast]
+                      have h_c_toNat : decide (c.toNat = 0) = decide (c = 0) := by
+                        by_cases hc : c = 0
+                        · subst hc; rfl
+                        · have hh : c.toNat ≠ 0 := by
+                            intro h; exact hc (by simpa using congrArg UInt32.ofNat h)
+                          simp [hc, hh]
+                      rcases h_lookup with h_u32 | h_i32
+                      · simp [Quanta.KOps.evalOp, h_u32, Quanta.KOps.evalCast, kst_cast]
+                      · simp [Quanta.KOps.evalOp, h_i32, Quanta.KOps.evalCast, kst_cast, h_c_toNat]
                     have h_lookup_cast :
                         Quanta.KOps.regLookup kst_cast.rf cond_bool
                           = some (Quanta.KOps.Value.vBool (!decide (c = 0))) := by
@@ -3530,7 +3660,7 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                   · intro ir hir sv hsv
                     exact R_at_s1.aliasFree ir hir sv hsv
                   · -- CurrentRegRefines: s_cast.currentReg = s1.currentReg; lift past cast write.
-                    show CurrentRegRefines layout _ s1.currentReg _
+                    show CurrentRegRefines layout _ s1.currentReg _ _
                     exact CurrentRegRefines_preserved_fresh R_at_s1.currentReg R_at_s1.freshCurrent _
                   · -- FreshCurrent: s_cast.nextReg = s1.nextReg + 1; currentReg unchanged.
                     intro ir hir
@@ -3546,9 +3676,10 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                     s_x.stack = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).stack →
                     s_x.localReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg →
                     s_x.currentReg = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg →
+                    s_x.localTy = ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy →
                     ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).nextReg ≤ s_x.nextReg →
                     Refines ws0 s_x kst_cast layout := by
-                  intro s_x h_stk h_lr h_cr h_nr
+                  intro s_x h_stk h_lr h_cr h_lt h_nr
                   refine ⟨?_, ?_, ?_, ?_, ?_, R_at_cast.heapRefines, ?_, ?_, ?_⟩
                   · refine ⟨?_, ?_⟩
                     · show ws0.stack.length = s_x.stack.length
@@ -3563,6 +3694,9 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                         ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg.find?
                           (fun p => p.fst = i) = some (i, r) := by
                       rw [← h_lr]; exact hfind
+                    rw [show (localTyOf s_x.localTy i)
+                          = localTyOf ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy i
+                        from by rw [h_lt]]
                     exact R_at_cast.locs i r hfind_cast v hv
                   · refine ⟨?_, ?_⟩
                     · intro sv hsv r hr
@@ -3592,8 +3726,8 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                       rw [← h_lr]; exact hq
                     exact R_at_cast.injLocals p q hp_cast hq_cast
                   · -- currentReg: s_x.currentReg = s_cast.currentReg (h_cr).
-                    show CurrentRegRefines layout ws0.locals s_x.currentReg kst_cast.rf
-                    rw [h_cr]
+                    show CurrentRegRefines layout ws0.locals s_x.currentReg s_x.localTy kst_cast.rf
+                    rw [h_cr, h_lt]
                     exact R_at_cast.currentReg
                   · -- freshCurrent: ir.snd < s_cast.nextReg ≤ s_x.nextReg.
                     intro ir hir
@@ -3627,7 +3761,7 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                     -- s2 has localReg = s_cast.localReg (from then_lowering),
                     -- stack = s_cast.stack, nextReg ≥ s_cast.nextReg. Lift R_at_cast.
                     have R_at_s2 : Refines ws0 s2 kst_cast layout := by
-                      apply R_lift s2 h_s2_stack h_s2_lr h_s2_cr h_s2_nr
+                      apply R_lift s2 h_s2_stack h_s2_lr h_s2_cr h_s2_lt h_s2_nr
                     obtain ⟨kst_ab, F_b, h_ev_b, R_b, h_bridge_b⟩ :=
                       else_preserves R_at_s2 h_ws0_nb h_ws0_nh h_kst_cast_broke
                         h_eb hle
@@ -3655,7 +3789,15 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                       have h_cast_max : Quanta.KOps.evalOp F kst1
                           (KernelOp.cast cond_bool cond Quanta.KOps.Scalar.u32 Quanta.KOps.Scalar.bool)
                           = some kst_cast := by
-                        simp [Quanta.KOps.evalOp, h_lookup, Quanta.KOps.evalCast, kst_cast]
+                        have h_c_toNat : decide (c.toNat = 0) = decide (c = 0) := by
+                          by_cases hc : c = 0
+                          · subst hc; rfl
+                          · have hh : c.toNat ≠ 0 := by
+                              intro h; exact hc (by simpa using congrArg UInt32.ofNat h)
+                            simp [hc, hh]
+                        rcases h_lookup with h_u32 | h_i32
+                        · simp [Quanta.KOps.evalOp, h_u32, Quanta.KOps.evalCast, kst_cast]
+                        · simp [Quanta.KOps.evalOp, h_i32, Quanta.KOps.evalCast, kst_cast, h_c_toNat]
                       have h_lookup_cast :
                           Quanta.KOps.regLookup kst_cast.rf cond_bool
                             = some (Quanta.KOps.Value.vBool (!decide (c = 0))) := by
@@ -3714,6 +3856,7 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                         have hfind_s2 :
                             s2.localReg.find? (fun p => p.fst = i) = some (i, r) := by
                           rw [← h_s3_lr]; exact hfind
+                        rw [show (localTyOf s3.localTy i) = localTyOf s2.localTy i from by rw [h_s3_lt]]
                         exact R_b.locs i r hfind_s2 v hv
                       · refine ⟨?_, ?_⟩
                         · intro sv hsv r hr
@@ -3731,8 +3874,8 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                         have hq_s2 : q ∈ s2.localReg := by rw [← h_s3_lr]; exact hq
                         exact R_b.injLocals p q hp_s2 hq_s2
                       · -- currentReg: s3.currentReg = s2.currentReg (h_s3_cr)
-                        show CurrentRegRefines layout ws_ab.locals s3.currentReg kst_ab.rf
-                        rw [h_s3_cr]
+                        show CurrentRegRefines layout ws_ab.locals s3.currentReg s3.localTy kst_ab.rf
+                        rw [h_s3_cr, h_s3_lt]
                         exact R_b.currentReg
                       · intro r hr
                         rw [h_s3_cr] at hr
@@ -3759,7 +3902,15 @@ theorem preservation_evalInstrs_cons_wif_fallthrough_noLocalSet
                       have h_cast_max : Quanta.KOps.evalOp F kst1
                           (KernelOp.cast cond_bool cond Quanta.KOps.Scalar.u32 Quanta.KOps.Scalar.bool)
                           = some kst_cast := by
-                        simp [Quanta.KOps.evalOp, h_lookup, Quanta.KOps.evalCast, kst_cast]
+                        have h_c_toNat : decide (c.toNat = 0) = decide (c = 0) := by
+                          by_cases hc : c = 0
+                          · subst hc; rfl
+                          · have hh : c.toNat ≠ 0 := by
+                              intro h; exact hc (by simpa using congrArg UInt32.ofNat h)
+                            simp [hc, hh]
+                        rcases h_lookup with h_u32 | h_i32
+                        · simp [Quanta.KOps.evalOp, h_u32, Quanta.KOps.evalCast, kst_cast]
+                        · simp [Quanta.KOps.evalOp, h_i32, Quanta.KOps.evalCast, kst_cast, h_c_toNat]
                       have h_lookup_cast :
                           Quanta.KOps.regLookup kst_cast.rf cond_bool
                             = some (Quanta.KOps.Value.vBool (!decide (c = 0))) := by
@@ -4565,7 +4716,7 @@ theorem const0_brIf0_lowering_shape
     (h_lb : lowerInstrs bt (.loopK :: frames) s_b
               [.i32Const 0, .brIf 0] = some (s'_b, bodyOps)) :
     bodyOps =
-      [KernelOp.const s_b.nextReg (.u32 (UInt32.ofNat 0)),
+      [KernelOp.const s_b.nextReg (.i32 ((UInt32.ofNat 0).toNat)),
        KernelOp.cast (s_b.nextReg + 1) s_b.nextReg .u32 .bool,
        KernelOp.branch (s_b.nextReg + 1) [] [KernelOp.breakOp]] := by
   have h_get0 : (FrameKind.loopK :: frames).get? 0 = some .loopK := rfl
@@ -4600,8 +4751,9 @@ theorem const0_brIf0_exits_with_broke
              Option.bind_eq_bind, Option.some_bind, pure,
              regLookup_regWrite_self,
              h_kst_no_broke, Bool.false_eq_true, if_false] at h_ev_b
-  -- Reduce vU32 / vBool aliases so the match arms fire.
-  simp only [Quanta.KOps.vU32, Quanta.KOps.vBool] at h_ev_b
+  -- Reduce vI32 / vBool aliases so the match arms fire (the i32.const 0
+  -- now commits a `vI32 0`; the bool cast reads `0.toNat ≠ 0 = false`).
+  simp only [Quanta.KOps.vU32, Quanta.KOps.vI32, Quanta.KOps.vBool] at h_ev_b
   simp at h_ev_b
   rw [← h_ev_b]
 
@@ -4824,7 +4976,7 @@ def LoadAddressesInBounds
   ∀ slot base lstk_rest,
     s.stack = .bufferAccess slot base 4 :: lstk_rest →
     ∀ b : UInt32,
-      regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+      regHoldsU32Bits kst.rf base b →
       b.toNat < layout.length slot
 
 /-- Kernel-wide assumption: when an i32Store is about to lower,
@@ -4837,7 +4989,7 @@ def StoreAddressInBounds
   ∀ sv_val slot base lstk_rest,
     s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest →
     ∀ b : UInt32,
-      regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+      regHoldsU32Bits kst.rf base b →
       b.toNat < layout.length slot
 
 /-- Kernel-wide assumption: the buffer layout has no slot overlap.
@@ -4851,7 +5003,7 @@ def StoreLayoutNoOverlap
   ∀ sv_val slot base lstk_rest,
     s.stack = sv_val :: .bufferAccess slot base 4 :: lstk_rest →
     ∀ b : UInt32,
-      regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+      regHoldsU32Bits kst.rf base b →
       ∀ slot' idx',
         idx' < layout.length slot' →
         (slot', idx') ≠ (slot, b.toNat) →
@@ -5136,7 +5288,7 @@ theorem framework_preservation_straightLine
             | 4 =>
                 have h_load_bnd :
                     ∀ b : UInt32,
-                      regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+                      regHoldsU32Bits kst.rf base b →
                       b.toNat < layout.length slot :=
                   h_load_bounds s kst slot base lstk h_stk
                 exact preservation_evalInstrs_cons_i32Load_bridge
@@ -6289,7 +6441,7 @@ theorem framework_preservation_kernel
               | 4 =>
                   have h_load_bnd :
                       ∀ b : UInt32,
-                        regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+                        regHoldsU32Bits kst.rf base b →
                         b.toNat < layout.length slot :=
                     h_load_bounds s kst slot base lstk h_stk
                   exact preservation_evalInstrs_cons_i32Load_bridge

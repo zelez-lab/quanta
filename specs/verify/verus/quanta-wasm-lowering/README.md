@@ -26,7 +26,7 @@ the project `CLAUDE.md`.)
 | `lower_instr_refine.rs` | V5 (bridge + straight-line, full) | The imperative→functional bridge (`view`: production `Vec`-end stack ↔ spec `Seq`-head; `reverse_push`; `pops_leave_rest`) plus **full** per-op refinements — exact state + ops equality — for i32Const, the whole register-operand binop family (op-parametric, all 9 binops in one proof), the cmp family (all 6 cmps in one proof), and the shl/add fast-path view-alignment. Local-binding/memory arms join with the extended `LowerState`; the Rust `i32Add`'s chained-address-arithmetic cases are out of the Lean slice-1 subset. |
 | `local_arms_spec.rs` | V5 (local/memory) + **V8-#1** | The extended `LowerState` (adds the four binding maps — `local_reg`/`local_ty`/`current_reg`/`buffer_slots` as `Map`s) and the spec arms `localGet` (buffer / current-binding / stable-fallback / uninit-refuse), `localSet` (the **zero-init `Const(fresh, zeroConst ty)` then dual-Copy**, existing-stable and fresh-local cases — synced to the post-V8 Lean spec), and `i32Load` (typed Load on a 4-byte BufferAccess). Definitional lemmas pin each arm's shape, including the two-alloc `next_reg + 2` behavior of a first localSet. Production refinement of these arms (the `view`/`step` layer) composes against these. |
 | `local_arms_refine.rs` | V5 (local prod refinement) + **V8-#1 closed** | Production `localSet` (existing-stable), `localGet` (current-binding read + buffer-ptr push), and `i32Load` (typed Load on a 4-byte BufferAccess) refined against the spec arms, via an extended `view` mapping the production `Vec<LocalInfo>` (`{cur, stable, stable_ty}`) onto the spec binding `Map`s. `view_exposes_{stable,current,buffer_slot}` pin the field correspondence. **V8 divergence #1 folded in**: the Lean spec (and these spec arms) now emit the frame-0 zero-init `Const(fresh, zeroConst ty)` inline. `refine_local_set_existing_stable` proves the spec body equals production's full emission `prelude ++ body` (`[Const]` ++ `[Copy,Copy]`) as sequences; `local_set_placement_residual` pins the **only** remaining gap — production routes the const to the frame-0 head rather than inline, a dead-write hoist (same op multiset, semantically inert position). |
-| `commit_refine.rs` | V6 | `commit` refinement: Reg case full equality, BufferPtr both-refuse, const register/state agreement. **Surfaces two real divergences (pinned, not hidden)**: (1) the const scalar TAG — production emits `Const(dst, I32 n)`, the Lean spec `Const(dst, U32 n)` (same value, proven to differ); (2) production `commit` materializes `ScaledIdx`/`BufferAccess`/`I64Const` that the Lean spec refuses (rustc-optimizer pointer-arith shapes outside the slice-1 Lean subset). Both recorded for V8. |
+| `commit_refine.rs` | V6 + **V8-#2 closed** | `commit` refinement: Reg case full equality, BufferPtr both-refuse, and — after V8-#2 — **const case FULL equality** (`commit_const_full_refine`): production and spec both emit `Const(dst, I32 n)`. `commit_const_tag_agrees` pins the now-matching tag (formerly a recorded divergence). Remaining gap is **domain only**: production materializes `ScaledIdx`/`BufferAccess`/`I64Const` that the Lean spec refuses (rustc-optimizer pointer-arith shapes outside the slice-1 Lean subset). |
 | `lower_instructions_refine.rs` | **V7 — closes the arm** | **Top-level composition.** The production list fold `lower_instructions` (folding the per-instruction `step` over a `Seq<WasmInstr>`, threading `ProdCtx`, concatenating ops) refines the Lean `lowerInstrs` straight-line layer (`spec_lower_instrs`). The theorem `refine_lower_instructions` — `view ∘ lower_instructions == spec_lower_instrs ∘ view`, on state and ops, lifted through `Option` (refuse-iff-refuse) — is proved by **induction on the list**: the inductive step is `refine_step` (the head, the V5 per-op refinement lifted to the uniform `step`) composed with the IH (the tail). `view`/`unview` are mutual inverses (`reverse_reverse`), so the threaded production state slots back through `view` cleanly at each position. Two corollaries (`_refuse_iff`, `_ops`) specialize the closer for the framework-claim write-up. **Scope: the slice-1 straight-line subset** — every instruction the V5 per-op refinements cover, over arbitrary-length lists. The structured-control layer (block/wloop/wif/br/brIf/wreturn; fuel + frames + `splitAtEnd`) is mechanized in `structured_refine.rs` (below); on the straight-line subset, fuel/frames are inert and `lowerInstrs` reduces definitionally to this fold (proved there as `straightline_agrees`). |
 | `structured_refine.rs` | **V7-structured** | The structured-control layer of `lowerInstrs` (`block`/`wloop`/`wif`/`br`/`brIf`/`wreturn`; Translate.lean:555-728). Mechanizes: the **splitters** (`split_at_end`/`split_at_else_or_end`/`closer_index`, mirrors of `Quanta.Wasm.Structured`) with the **progress lemma** `split_at_end_shrinks` (body + post-suffix strictly shorter than input — what makes the fuel-bounded fold well-founded); the **frame predicates** `has_loop_above`/`loops_above`; the full fuel-bounded fold `lower_instrs` with every arm transcribed; **conservativity** `straightline_agrees` (on a list with no structured openers/branches, the structured fold equals the V7 straight-line fold — V7-structured is a conservative *extension*); and **per-arm shape lemmas** — `block_splices` (body splices, no wrapper), `loop_wraps` (`[LoopOp body_ops]`), `br_loop0_no_ir`, `br_cross_loop_breaks`, plus the **not-yet-modeled refusals** `br_exitflag_refuses` (the `emit_loop_crossing_exit` shape) / `br_record_refuses` (`record_br_at`) / `br_oob_refuses`. The per-arm *production* refinement (streaming-`Vec<Frame>` ↔ recursive-descent equivalence at the body boundary) is **mechanized** in `streaming_equiv.rs` (below) for the wrapper-assembly shape — the one place the two strategies could diverge. |
 | `streaming_equiv.rs` | **hardening** | The streaming-`Vec<Frame>` ↔ recursive-descent equivalence — the largest trust step under V7-structured, formerly a prose note in `Quanta.Wasm.Structured`. Models op-assembly on both sides (`step_stream`/`run_stream` = production's push-frame/accumulate/pop-and-fold walk; `descend` = the `split_at_end` recursive descent) routed through a single `wrap` (Block→splice, Loop→`[LoopOp]`, If→`[Branch cond · []]`). Proves: the three **close lemmas** (`close_block_splices`/`close_loop_wraps`/`close_if_branches` — a `wend` close folds exactly `wrap(kind, body)` into the parent), plain-accumulation + height preservation, and the concrete **`stream_equiv_recursive_flat`** (`run_stream` from a Function frame == `descend`, by induction, on flat streams). **Honest scope:** the full *nested* `run_stream == descend` (arbitrary depth) is not driven end-to-end here; what's proved is (1) flat-stream equality and (2) per-`wend` `wrap`-agreement — the only divergence point — so the nested composition is mechanical but un-driven. Shrinks, does not fully retire, the body-boundary obligation. |
@@ -49,10 +49,14 @@ production effect modeled and its shape pinned), not just prose.
    and `local_set_placement_residual` pins the **sole** remaining
    difference — production routes the const to the frame-0 head, not
    inline (a dead-write hoist; identical op multiset, inert position).
-2. **`commit` const tag + address materialization** (`commit_refine.rs`):
-   production tags consts `I32`/`I64` and materializes `ScaledIdx`/
-   `BufferAccess`; the Lean spec uses `U32` and refuses the address
-   forms. Same values; the spec's `commit` domain is narrower.
+2. **`commit` const tag** — **CLOSED (V8-#2)** (`commit_refine.rs`).
+   The Lean spec now tags committed `i32.const`s `I32` (the wrapped
+   32-bit pattern), coherent with the `.reg dst .i32` encoding; the op
+   is byte-identical to production. `commit_const_full_refine` proves
+   full `commit` equality on the const arm and `commit_const_tag_agrees`
+   pins the now-matching tag. The remaining `commit` gap is domain only:
+   production materializes `ScaledIdx`/`BufferAccess`/`I64Const` the
+   slice-1 Lean subset refuses (rustc pointer-arith shapes).
 3. **`i32.add` chained-address arithmetic** (`i32add_chained_refine.rs`):
    beyond the Lean `BufferPtr + ScaledIdx → BufferAccess` no-IR
    fast-path, production folds three IR-emitting chained shapes —
@@ -60,12 +64,21 @@ production effect modeled and its shape pinned), not just prose.
    ratio), and const-offset add — when rustc precomputes part of a byte
    offset. The Lean `lowerI32Add` refuses these (commits the address
    SymVals); production composes them. Each arm's shape (reg count + ops
-   + pushed `BufferAccess`) is pinned; the const-offset arm re-exhibits
-   the gap-2 `I32` const tag.
+   + pushed `BufferAccess`) is pinned. (The const-offset arm's const now
+   carries the V8-#2-aligned `I32` tag.)
 
-None affects semantics. #1 is now synced into the spec (the residual is
-op *placement*, not the op set); #2 and #3 remain as mechanized
-witnesses and candidate spec syncs.
+Additionally, **V8-#2 closed the binop/cmp result-type threading on the
+Lean side**: `lowerI32Bin`/`lowerI32Cmp` derive the pushed reg's scalar
+from the committed operands (`binResultTy = if tags match then tag else
+.i32`) instead of hardcoding `.u32`, matching production's
+`ty = if ty_a == ty_b { ty_a } else { I32 }`. Locals carry the
+committed value's type (`commitTy`), and a `local.get` reads it back at
+that tag — the full local surface (`LocalsRefines`/`CurrentRegRefines`
+generalized to the recorded `localTy`) is proven in `Preservation.lean`.
+
+None affects semantics. #1 and #2 are now synced into the spec (#1's
+residual is op *placement*, not the op set); #3 remains as a mechanized
+witness for production's rustc-specific address folds.
 
 ### The model↔Rust correspondence (trust boundary)
 

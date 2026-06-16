@@ -331,7 +331,7 @@ example :
       (lowerInstrsP 4 [] ⟨LowerState.empty, []⟩
         [.block 0, .i32Const 1, .brIf 0, .i32Const 7, .drop, .wend])
       (some (⟨{ LowerState.empty with nextReg := 2 }, []⟩,
-        [.const 0 (.u32 1),
+        [.const 0 (.i32 1),
          .cast 1 0 .u32 .bool,
          .branch 1 [] []])) = true := by native_decide
 
@@ -355,13 +355,13 @@ example :
       (some (⟨{ LowerState.empty with
                  nextReg := 8,
                  localReg := [(1, 7), (0, 4)],
-                 localTy := [(1, .u32), (0, .u32)],
+                 localTy := [(1, .i32), (0, .i32)],
                  currentReg := [(1, 6), (0, 3)] }, []⟩,
-        [.const 0 (.u32 1),
+        [.const 0 (.i32 1),
          .cast 1 0 .u32 .bool,
          .branch 1 [] [],
-         .branch 1 [] [.const 2 (.u32 5), .const 3 (.u32 0), .copy 3 2, .copy 4 3],
-         .const 5 (.u32 9), .const 6 (.u32 0), .copy 6 5, .copy 7 6])) = true := by native_decide
+         .branch 1 [] [.const 2 (.i32 5), .const 3 (.i32 0), .copy 3 2, .copy 4 3],
+         .const 5 (.i32 9), .const 6 (.i32 0), .copy 6 5, .copy 7 6])) = true := by native_decide
 
 /-- Unconditional `br 1` record-and-wrap: constant-`true` cond, the
     inner scope's rest dropped as dead code, the inner post wrapped
@@ -379,10 +379,10 @@ example :
       (some (⟨{ LowerState.empty with
                  nextReg := 4,
                  localReg := [(0, 3)],
-                 localTy := [(0, .u32)],
+                 localTy := [(0, .i32)],
                  currentReg := [(0, 2)] }, []⟩,
         [.const 0 (.bool true),
-         .branch 0 [] [.const 1 (.u32 5), .const 2 (.u32 0), .copy 2 1, .copy 3 2]])) = true := by
+         .branch 0 [] [.const 1 (.i32 5), .const 2 (.i32 0), .copy 2 1, .copy 3 2]])) = true := by
   native_decide
 
 /-- Old-subset agreement witness: a body with locals, a `block`,

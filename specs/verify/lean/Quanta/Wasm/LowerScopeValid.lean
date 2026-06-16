@@ -582,7 +582,7 @@ theorem lowerInstr_localGet_nonbuffer_scopeValid
         LowerState.lookupLocal_mem_scopeEnv hws hloc
       have hmem_alloc : stable ∈ s.alloc.snd.scopeEnv :=
         LowerState.scopeEnv_subset_alloc s hmem_s
-      simp [hloc, LowerState.alloc, LowerState.push] at h
+      simp [hloc, LowerState.alloc, LowerState.pushSym] at h
       obtain ⟨h_s_eq, h_ops⟩ := h
       subst h_ops
       subst h_s_eq
@@ -598,7 +598,7 @@ theorem lowerInstr_localGet_nonbuffer_scopeValid
       LowerState.lookupCurrentReg_mem_scopeEnv hws hcur
     have hmem_alloc : curReg ∈ s.alloc.snd.scopeEnv :=
       LowerState.scopeEnv_subset_alloc s hmem_s
-    simp [hcur, Option.orElse, LowerState.alloc, LowerState.push] at h
+    simp [hcur, Option.orElse, LowerState.alloc, LowerState.pushSym] at h
     obtain ⟨h_s_eq, h_ops⟩ := h
     subst h_ops
     subst h_s_eq
@@ -731,7 +731,7 @@ theorem lowerInstr_localGet_nonbuffer_preserves_wellScoped
   · simp [hcur, Option.orElse] at h
     rcases hloc : s.lookupLocal i with _ | stable
     · simp [hloc] at h
-    · simp [hloc, LowerState.alloc, LowerState.push] at h
+    · simp [hloc, LowerState.alloc, LowerState.pushSym] at h
       obtain ⟨h_s_eq, _⟩ := h
       subst h_s_eq
       obtain ⟨hstk, hlocws, hcurws⟩ := hws
@@ -739,7 +739,7 @@ theorem lowerInstr_localGet_nonbuffer_preserves_wellScoped
       · intro sv hsv r hr
         simp at hsv
         rcases hsv with rfl | hsv
-        · -- head is `.reg s.nextReg .u32`; regs = [s.nextReg]
+        · -- head is `.reg s.nextReg ty`; regs = [s.nextReg]
           simp [SymVal.regs] at hr
           subst hr
           exact Nat.lt_succ_self _
@@ -749,7 +749,7 @@ theorem lowerInstr_localGet_nonbuffer_preserves_wellScoped
         exact Nat.lt_succ_of_lt (hlocws p hp)
       · intro p hp
         exact Nat.lt_succ_of_lt (hcurws p hp)
-  · simp [hcur, Option.orElse, LowerState.alloc, LowerState.push] at h
+  · simp [hcur, Option.orElse, LowerState.alloc, LowerState.pushSym] at h
     obtain ⟨h_s_eq, _⟩ := h
     subst h_s_eq
     obtain ⟨hstk, hlocws, hcurws⟩ := hws
@@ -892,7 +892,7 @@ theorem lowerI32Bin_scopeValid
     rw [List.mem_range]
     exact Nat.lt_succ_of_lt hrb_s4
   -- The goal's scopeEnv unfolds to envS' (both are List.range (s4.nextReg + 1)).
-  show scopeValidOps envS' (opsA ++ (opsB ++ [KernelOp.binOp s4.nextReg ra rb op .u32]))
+  show scopeValidOps envS' (opsA ++ (opsB ++ [KernelOp.binOp s4.nextReg ra rb op (LowerState.binResultTy sva svb)]))
   apply Quanta.KOps.KernelOp.scopeValidOps_append
   · exact LowerState.commit_ops_scopeValid envS' hca
   · apply Quanta.KOps.KernelOp.scopeValidOps_append
@@ -1705,7 +1705,7 @@ theorem lowerI32Bin_preserves_wellScoped
   rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
   · simp [hcb] at h
   simp only [hcb, Option.some_bind] at h
-  simp [LowerState.alloc, LowerState.push] at h
+  simp [LowerState.alloc, LowerState.pushSym] at h
   obtain ⟨h_s_eq, _⟩ := h
   -- Thread wellScoped.
   have hws1 : s1.wellScoped := LowerState.popSym_preserves_wellScoped hws hb
@@ -1714,8 +1714,8 @@ theorem lowerI32Bin_preserves_wellScoped
   have hws4 : s4.wellScoped := LowerState.commit_preserves_wellScoped hws3 hcb
   subst h_s_eq
   -- Goal: { s4 with nextReg := s4.nextReg + 1,
-  --                  stack := .reg s4.nextReg .u32 :: s4.stack }.wellScoped
-  -- This is `(s4.alloc.snd).push s4.nextReg`.
+  --                  stack := .reg s4.nextReg <ty> :: s4.stack }.wellScoped
+  -- This is `(s4.alloc.snd).pushSym (.reg s4.nextReg <ty>)`.
   obtain ⟨hstk, hloc, hcur⟩ := hws4
   refine ⟨?_, ?_, ?_⟩
   · intro sv hsv r hr
@@ -2217,7 +2217,7 @@ theorem lowerInstr_localTee_preserves_wellScoped
                    bufferSlots := s2.bufferSlots, currentReg := s2.currentReg }
                    : LowerState).lookupLocal i with _ | stable
   · -- New stable + post_fresh alloc. Final s'.nextReg = s2.nextReg + 3.
-    simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+    simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg, LowerState.pushSym] at h
     obtain ⟨h_s_eq, _⟩ := h
     subst h_s_eq
     -- Direct destructuring against the simp-flattened record.
@@ -2259,7 +2259,7 @@ theorem lowerInstr_localTee_preserves_wellScoped
           hcur p (List.mem_filter.mp hp').1
         exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hpsnd_s2))
   · -- Existing stable + post_fresh alloc.
-    simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg] at h
+    simp [hlk, LowerState.setLocalReg, LowerState.setCurrentReg, LowerState.pushSym] at h
     obtain ⟨h_s_eq, _⟩ := h
     have hstable_lt_s2 : stable < s2.nextReg := by
       obtain ⟨_, hlocws, _⟩ := hws2

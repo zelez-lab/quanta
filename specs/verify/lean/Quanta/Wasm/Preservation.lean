@@ -147,6 +147,33 @@ def HeapRefines (mem : WasmMem) (heap : Quanta.KOps.Heap) (layout : BufferLayout
 -- Refinement relation
 -- ════════════════════════════════════════════════════════════════════
 
+/-- A register holds the 32-bit pattern `b` under either integer tag:
+    `vU32 b`, or `vI32 (b.toNat)` (the same bits, the `evalCast u32→i32`
+    image). Address-base registers (`scaledIdx`/`bufferAccess`) are used
+    as raw bit-pattern indices, so a production i32-tagged base (a binop
+    result, a const) encodes the same offset as a u32 one — this lets
+    the address encodings admit both tags. -/
+def regHoldsU32Bits (rf : Quanta.KOps.RegFile) (r : Reg) (b : UInt32) : Prop :=
+  regLookup rf r = some (Quanta.KOps.Value.vU32 b) ∨
+  regLookup rf r = some (Quanta.KOps.Value.vI32 (b.toNat))
+
+/-- `regHoldsU32Bits` transfers along any regfile equality at `r`. -/
+theorem regHoldsU32Bits_of_lookup_eq
+    {rf rf' : Quanta.KOps.RegFile} {r : Reg} {b : UInt32}
+    (h_eq : regLookup rf' r = regLookup rf r)
+    (h : regHoldsU32Bits rf r b) : regHoldsU32Bits rf' r b := by
+  unfold regHoldsU32Bits at h ⊢; rw [h_eq]; exact h
+
+/-- The KOps value that encodes a `wI32 b` at a given scalar tag: the
+    raw `vU32 b` for an unsigned tag, the cast image `vI32 b.toNat` for
+    a signed tag (the only two tags `WasmValue.encodes` admits for a
+    `.reg`). Any other tag is unreachable for a value reg; mapped to
+    `vU32 b` as an inert default. The `localSet`/`localTee` dual-Copy
+    threads this value uniformly across both tags. -/
+def tagVal (b : UInt32) : Quanta.KOps.Scalar → Quanta.KOps.Value
+  | .i32 => Quanta.KOps.Value.vI32 (b.toNat)
+  | _    => Quanta.KOps.Value.vU32 b
+
 /-- A WASM value is encoded by a SymVal stack slot if any of:
     * the slot is `.reg r .u32` and the regfile holds the matching
       `vU32` at that register, or
@@ -170,6 +197,10 @@ def WasmValue.encodes
     (rf : Quanta.KOps.RegFile) (sv : SymVal) : Prop :=
   match v, sv with
   | .wI32 n, .reg r .u32      => regLookup rf r = some (Quanta.KOps.Value.vU32 n)
+  -- `.reg r .i32`: production tags some value regs `.i32` (a committed
+  -- const, or a binop with an i32 operand). Same 32-bit pattern `n`,
+  -- carried as `vI32 n.toNat` (the `evalCast u32→i32` image).
+  | .wI32 n, .reg r .i32      => regLookup rf r = some (Quanta.KOps.Value.vI32 (n.toNat))
   | .wI32 n, .i32ConstSym m   => n = UInt32.ofNat m.toNat
   | .wI32 n, .bufferPtr slot  => n.toNat = layout.startAddr slot
   -- `scaledIdx base scale` represents the byte offset
@@ -177,13 +208,13 @@ def WasmValue.encodes
   -- `n.toNat = b.toNat * scale` forces `b.toNat * scale < 2^32`.
   -- Future kernel-entry composition theorem will discharge that.
   | .wI32 n, .scaledIdx base scale =>
-      ∃ b : UInt32, regLookup rf base = some (Quanta.KOps.Value.vU32 b) ∧
+      ∃ b : UInt32, regHoldsU32Bits rf base b ∧
                     n.toNat = b.toNat * scale
   -- `bufferAccess slot base scale` represents the absolute address
   -- `layout.startAddr slot + (lookup base) * scale`. Same Nat-
   -- equation form refuses overflow on the address arithmetic.
   | .wI32 n, .bufferAccess slot base scale =>
-      ∃ b : UInt32, regLookup rf base = some (Quanta.KOps.Value.vU32 b) ∧
+      ∃ b : UInt32, regHoldsU32Bits rf base b ∧
                     n.toNat = layout.startAddr slot + b.toNat * scale
   | _, _                      => False
 
@@ -194,20 +225,38 @@ def StackRefines (layout : BufferLayout)
   ws.length = svs.length ∧
   ∀ i, ∀ v, ws.get? i = some v → ∃ sv, svs.get? i = some sv ∧ v.encodes layout rf sv
 
+/-- The scalar type recorded for local `i` in a `localTy` assoc list,
+    defaulting to `.u32` (the type of an unset local / a u32 value).
+    Mirrors `LowerState.lookupLocalTy ... |>.getD .u32`. -/
+def localTyOf (ltys : List (Nat × Quanta.KOps.Scalar)) (i : Nat) : Quanta.KOps.Scalar :=
+  ((ltys.find? (fun p => p.fst = i)).map Prod.snd).getD .u32
+
+/-- `lookupLocalTy |>.getD .u32` is exactly `localTyOf` over the
+    `localTy` field — bridges the spec's `lowerLocalGet` push tag
+    (written via `lookupLocalTy`) to the `LocalsRefines` encoding tag
+    (written via `localTyOf`). Definitional, but stated so `simp`/`rw`
+    can align the two syntactic forms. -/
+@[simp] theorem lookupLocalTy_getD_eq_localTyOf (s : LowerState) (i : Nat) :
+    (s.lookupLocalTy i).getD .u32 = localTyOf s.localTy i := rfl
+
 /-- Locals refinement: every local with a stable register encodes
-    through that register, lifted into the symbolic alphabet as
-    `.reg r .u32`. Locals not in `localReg` are unconstrained.
+    through that register at the local's recorded type `localTyOf`.
+    Locals not in `localReg` are unconstrained.
 
     Note: post the `currentReg` field addition, `localReg` plays the
     role of production's `stable_reg`. Every `localSet` keeps it in
     sync via a parallel `Copy { stable, fresh }` op so this
-    refinement remains an invariant of the lowered IR. The new
-    `CurrentRegRefines` predicate (below) imposes the same shape on
-    the per-frame `currentReg` map. -/
+    refinement remains an invariant of the lowered IR. The recorded
+    type pins the encoding tag so a `local.get` reads the value back
+    at the same tag it was set with (`.i32` for an i32-const set,
+    `.u32` otherwise). The new `CurrentRegRefines` predicate (below)
+    imposes the same shape on the per-frame `currentReg` map. -/
 def LocalsRefines (layout : BufferLayout)
-    (locs : List WasmValue) (lreg : List (Nat × Reg)) (rf : Quanta.KOps.RegFile) : Prop :=
+    (locs : List WasmValue) (lreg : List (Nat × Reg))
+    (ltys : List (Nat × Quanta.KOps.Scalar)) (rf : Quanta.KOps.RegFile) : Prop :=
   ∀ i r, lreg.find? (fun p => p.fst = i) = some (i, r) →
-    ∀ v, locs.get? i = some v → v.encodes layout rf (SymVal.reg r .u32)
+    ∀ v, locs.get? i = some v →
+      v.encodes layout rf (SymVal.reg r (localTyOf ltys i))
 
 /-- Per-frame current-binding refinement: every local with a
     `currentReg` entry encodes its WASM value through that register
@@ -219,9 +268,11 @@ def LocalsRefines (layout : BufferLayout)
     Locals NOT in `currentReg` are unconstrained — readers fall back
     to `localReg` (the stable merge anchor). -/
 def CurrentRegRefines (layout : BufferLayout)
-    (locs : List WasmValue) (creg : List (Nat × Reg)) (rf : Quanta.KOps.RegFile) : Prop :=
+    (locs : List WasmValue) (creg : List (Nat × Reg))
+    (ltys : List (Nat × Quanta.KOps.Scalar)) (rf : Quanta.KOps.RegFile) : Prop :=
   ∀ i r, creg.find? (fun p => p.fst = i) = some (i, r) →
-    ∀ v, locs.get? i = some v → v.encodes layout rf (SymVal.reg r .u32)
+    ∀ v, locs.get? i = some v →
+      v.encodes layout rf (SymVal.reg r (localTyOf ltys i))
 
 /-- Freshness invariant: every register the lowering currently holds
     (any reg referenced by any stack SymVal, plus every local stable
@@ -295,12 +346,12 @@ def CurrentLocalDisjoint (s : LowerState) : Prop :=
 structure Refines (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
                   (layout : BufferLayout) : Prop where
   stk          : StackRefines layout ws.stack s.stack kst.rf
-  locs         : LocalsRefines layout ws.locals s.localReg kst.rf
+  locs         : LocalsRefines layout ws.locals s.localReg s.localTy kst.rf
   fresh        : Fresh s
   aliasFree    : AliasFree s
   injLocals    : InjectiveLocals s
   heapRefines  : HeapRefines ws.mem kst.heap layout
-  currentReg   : CurrentRegRefines layout ws.locals s.currentReg kst.rf
+  currentReg   : CurrentRegRefines layout ws.locals s.currentReg s.localTy kst.rf
   freshCurrent : FreshCurrent s
   curLocDisj   : CurrentLocalDisjoint s
 
@@ -485,6 +536,12 @@ theorem WasmValue.encodes_preserved_of_fresh
     show regLookup (regWrite rf nr newval) r = some (Quanta.KOps.Value.vU32 n)
     rw [regLookup_preserved_of_fresh hr_lt]
     exact h'
+  | .wI32 n, .reg r .i32, h =>
+    have h' : regLookup rf r = some (Quanta.KOps.Value.vI32 (n.toNat)) := h
+    have hr_lt : r < nr := h_lt r (by simp [SymVal.regs])
+    show regLookup (regWrite rf nr newval) r = some (Quanta.KOps.Value.vI32 (n.toNat))
+    rw [regLookup_preserved_of_fresh hr_lt]
+    exact h'
   | .wI32 _, .i32ConstSym _, h =>
     -- i32ConstSym encoding is regfile-independent.
     exact h
@@ -493,19 +550,13 @@ theorem WasmValue.encodes_preserved_of_fresh
     -- regfile-independent.
     exact h
   | .wI32 n, .scaledIdx base scale, h =>
-    -- Existential ⟨b, regLookup rf base = some (vU32 b), n.toNat = b.toNat * scale⟩.
-    -- The base reg lookup lifts past the fresh write because `base ∈ sv.regs`.
     obtain ⟨b, h_lookup, h_eq⟩ := h
-    refine ⟨b, ?_, h_eq⟩
     have hb_lt : base < nr := h_lt base (by simp [SymVal.regs])
-    rw [regLookup_preserved_of_fresh hb_lt]
-    exact h_lookup
+    exact ⟨b, regHoldsU32Bits_of_lookup_eq (regLookup_preserved_of_fresh hb_lt) h_lookup, h_eq⟩
   | .wI32 n, .bufferAccess slot base scale, h =>
     obtain ⟨b, h_lookup, h_eq⟩ := h
-    refine ⟨b, ?_, h_eq⟩
     have hb_lt : base < nr := h_lt base (by simp [SymVal.regs])
-    rw [regLookup_preserved_of_fresh hb_lt]
-    exact h_lookup
+    exact ⟨b, regHoldsU32Bits_of_lookup_eq (regLookup_preserved_of_fresh hb_lt) h_lookup, h_eq⟩
 
 /-- Encoding is preserved under any register write disjoint from the
     SymVal's reg projection. The general-form companion to
@@ -529,28 +580,31 @@ theorem WasmValue.encodes_preserved_of_disjoint
     show regLookup (regWrite rf dst newval) r = some (Quanta.KOps.Value.vU32 n)
     rw [regLookup_regWrite_of_ne rf dst r newval hr_ne]
     exact h'
+  | .wI32 n, .reg r .i32, h =>
+    have h' : regLookup rf r = some (Quanta.KOps.Value.vI32 (n.toNat)) := h
+    have hr_ne : r ≠ dst := by
+      intro h_eq
+      apply h_disj
+      simp [SymVal.regs, h_eq]
+    show regLookup (regWrite rf dst newval) r = some (Quanta.KOps.Value.vI32 (n.toNat))
+    rw [regLookup_regWrite_of_ne rf dst r newval hr_ne]
+    exact h'
   | .wI32 _, .i32ConstSym _, h =>
     exact h
   | .wI32 _, .bufferPtr _, h =>
     exact h
   | .wI32 _, .scaledIdx base _, h =>
     obtain ⟨b, h_lookup, h_eq⟩ := h
-    refine ⟨b, ?_, h_eq⟩
     have hb_ne : base ≠ dst := by
-      intro h_eq2
-      apply h_disj
-      simp [SymVal.regs, h_eq2]
-    rw [regLookup_regWrite_of_ne rf dst base newval hb_ne]
-    exact h_lookup
+      intro h_eq2; apply h_disj; simp [SymVal.regs, h_eq2]
+    exact ⟨b, regHoldsU32Bits_of_lookup_eq
+      (regLookup_regWrite_of_ne rf dst base newval hb_ne) h_lookup, h_eq⟩
   | .wI32 _, .bufferAccess _ base _, h =>
     obtain ⟨b, h_lookup, h_eq⟩ := h
-    refine ⟨b, ?_, h_eq⟩
     have hb_ne : base ≠ dst := by
-      intro h_eq2
-      apply h_disj
-      simp [SymVal.regs, h_eq2]
-    rw [regLookup_regWrite_of_ne rf dst base newval hb_ne]
-    exact h_lookup
+      intro h_eq2; apply h_disj; simp [SymVal.regs, h_eq2]
+    exact ⟨b, regHoldsU32Bits_of_lookup_eq
+      (regLookup_regWrite_of_ne rf dst base newval hb_ne) h_lookup, h_eq⟩
 
 /-- Lift `CurrentRegRefines` past a fresh regWrite at `r` when
     `r` is above every register currently bound in `currentReg`.
@@ -560,10 +614,11 @@ theorem WasmValue.encodes_preserved_of_disjoint
     write at a fresh register. -/
 theorem CurrentRegRefines_preserved_fresh
     {layout : BufferLayout} {locs : List WasmValue}
-    {creg : List (Nat × Reg)} {rf : Quanta.KOps.RegFile}
-    (h : CurrentRegRefines layout locs creg rf)
+    {creg : List (Nat × Reg)} {ltys : List (Nat × Quanta.KOps.Scalar)}
+    {rf : Quanta.KOps.RegFile}
+    (h : CurrentRegRefines layout locs creg ltys rf)
     {dst : Reg} (h_fresh : ∀ ir ∈ creg, ir.snd < dst) (v : Quanta.KOps.Value) :
-    CurrentRegRefines layout locs creg (regWrite rf dst v) := by
+    CurrentRegRefines layout locs creg ltys (regWrite rf dst v) := by
   intro i r_cur hfind v_w hloc
   have henc := h i r_cur hfind v_w hloc
   have hpair : (i, r_cur) ∈ creg := List.mem_of_find?_eq_some hfind
@@ -592,18 +647,19 @@ theorem WasmValue.encodes_preserved_of_lookup_eq
     have h_eq := h_lookup r (by simp [SymVal.regs])
     show regLookup rf' r = some (Quanta.KOps.Value.vU32 n)
     rw [h_eq]; exact h'
+  | .wI32 n, .reg r .i32, h =>
+    have h' : regLookup rf r = some (Quanta.KOps.Value.vI32 (n.toNat)) := h
+    have h_eq := h_lookup r (by simp [SymVal.regs])
+    show regLookup rf' r = some (Quanta.KOps.Value.vI32 (n.toNat))
+    rw [h_eq]; exact h'
   | .wI32 _, .i32ConstSym _, h => exact h
   | .wI32 _, .bufferPtr _, h => exact h
   | .wI32 _, .scaledIdx base _, h =>
     obtain ⟨b, h_lup, h_eq⟩ := h
-    refine ⟨b, ?_, h_eq⟩
-    have h_lup_eq := h_lookup base (by simp [SymVal.regs])
-    rw [h_lup_eq]; exact h_lup
+    exact ⟨b, regHoldsU32Bits_of_lookup_eq (h_lookup base (by simp [SymVal.regs])) h_lup, h_eq⟩
   | .wI32 _, .bufferAccess _ base _, h =>
     obtain ⟨b, h_lup, h_eq⟩ := h
-    refine ⟨b, ?_, h_eq⟩
-    have h_lup_eq := h_lookup base (by simp [SymVal.regs])
-    rw [h_lup_eq]; exact h_lup
+    exact ⟨b, regHoldsU32Bits_of_lookup_eq (h_lookup base (by simp [SymVal.regs])) h_lup, h_eq⟩
 
 /-- Inverting a `wI32`-encoding-via-`.reg`: forces the scalar type to
     `.u32` and exposes the underlying regfile lookup. Used by the
@@ -613,9 +669,11 @@ theorem WasmValue.encodes_wI32_reg_inv
     {n : UInt32} {layout : BufferLayout} {rf : Quanta.KOps.RegFile}
     {r : Reg} {ty : Quanta.KOps.Scalar}
     (h : (WasmValue.wI32 n).encodes layout rf (.reg r ty)) :
-    ty = .u32 ∧ regLookup rf r = some (Quanta.KOps.Value.vU32 n) := by
+    (ty = .u32 ∧ regLookup rf r = some (Quanta.KOps.Value.vU32 n)) ∨
+    (ty = .i32 ∧ regLookup rf r = some (Quanta.KOps.Value.vI32 (n.toNat))) := by
   match ty, h with
-  | .u32, h => exact ⟨rfl, h⟩
+  | .u32, h => exact Or.inl ⟨rfl, h⟩
+  | .i32, h => exact Or.inr ⟨rfl, h⟩
 
 /-- Stronger inversion: from `v.encodes rf (.reg r ty)` *non-False*,
     deduce `v = wI32 n` AND `ty = .u32` AND the regfile lookup. The
@@ -626,9 +684,34 @@ theorem WasmValue.encodes_reg_shape
     {v : WasmValue} {layout : BufferLayout} {rf : Quanta.KOps.RegFile}
     {r : Reg} {ty : Quanta.KOps.Scalar}
     (h : v.encodes layout rf (.reg r ty)) :
-    ∃ n, v = .wI32 n ∧ ty = .u32 ∧ regLookup rf r = some (Quanta.KOps.Value.vU32 n) := by
+    ∃ n, v = .wI32 n ∧
+      ((ty = .u32 ∧ regLookup rf r = some (Quanta.KOps.Value.vU32 n)) ∨
+       (ty = .i32 ∧ regLookup rf r = some (Quanta.KOps.Value.vI32 (n.toNat)))) := by
   match v, ty, h with
-  | .wI32 n, .u32, h => exact ⟨n, rfl, rfl, h⟩
+  | .wI32 n, .u32, h => exact ⟨n, rfl, Or.inl ⟨rfl, h⟩⟩
+  | .wI32 n, .i32, h => exact ⟨n, rfl, Or.inr ⟨rfl, h⟩⟩
+
+/-- A reg holding `tagVal b ty` encodes `wI32 b` at tag `ty` — provided
+    `ty` is one of the two value tags (`.u32`/`.i32`). Discharges the
+    set-local encoding obligation after the dual-Copy. -/
+theorem encodes_wI32_reg_of_tagVal
+    {layout : BufferLayout} {rf : Quanta.KOps.RegFile} {r : Reg}
+    {b : UInt32} {ty : Quanta.KOps.Scalar}
+    (h_ty : ty = .u32 ∨ ty = .i32)
+    (h_lk : regLookup rf r = some (tagVal b ty)) :
+    (WasmValue.wI32 b).encodes layout rf (.reg r ty) := by
+  rcases h_ty with h | h <;> subst h <;>
+    simp only [WasmValue.encodes, tagVal] <;> exact h_lk
+
+/-- The encoding of `wI32 b` at tag `ty` (a value tag) forces the reg to
+    hold exactly `tagVal b ty`. The inverse of `encodes_wI32_reg_of_tagVal`. -/
+theorem tagVal_of_encodes_wI32_reg
+    {layout : BufferLayout} {rf : Quanta.KOps.RegFile} {r : Reg}
+    {b : UInt32} {ty : Quanta.KOps.Scalar}
+    (h : (WasmValue.wI32 b).encodes layout rf (.reg r ty)) :
+    (ty = .u32 ∨ ty = .i32) ∧ regLookup rf r = some (tagVal b ty) := by
+  rcases WasmValue.encodes_wI32_reg_inv h with ⟨hty, hlk⟩ | ⟨hty, hlk⟩ <;>
+    subst hty <;> exact ⟨by simp, by simpa [tagVal] using hlk⟩
 
 /-- Inversion for `i32ConstSym` encoding. -/
 theorem WasmValue.encodes_i32ConstSym_inv
@@ -674,7 +757,11 @@ theorem commit_correct
     {v_w : WasmValue} (h_enc : v_w.encodes layout kst.rf sv) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧
             Refines ws s' kst' layout ∧
-            v_w.encodes layout kst'.rf (.reg r .u32) ∧
+            -- The committed reg encodes `v_w` at exactly `commitTy sv`:
+            -- a `.reg` operand keeps its own type, an `i32ConstSym`
+            -- materializes `.i32`. Ties the encoding tag to
+            -- `binResultTy` in the binop proof.
+            v_w.encodes layout kst'.rf (.reg r (LowerState.commitTy sv)) ∧
             (∀ r', r' < s.nextReg → regLookup kst'.rf r' = regLookup kst.rf r') ∧
             s.nextReg ≤ s'.nextReg ∧
             r < s'.nextReg := by
@@ -688,20 +775,22 @@ theorem commit_correct
     · subst hops; simp [evalOps]
     · subst hs'; exact R
     · subst hr
-      obtain ⟨n, hv_eq, htysv, h_lookup⟩ := WasmValue.encodes_reg_shape h_enc
-      subst hv_eq htysv
-      -- Goal: (wI32 n).encodes kst.rf (.reg rsv .u32) = regLookup kst.rf rsv = some (vU32 n).
-      simpa [WasmValue.encodes] using h_lookup
+      -- commit is identity on a reg: encodes at `commitTy = tysv`.
+      have hcty : LowerState.commitTy (SymVal.reg rsv tysv) = tysv := rfl
+      rw [hcty]; exact h_enc
     · intro r' _; rfl
     · subst hs'; exact Nat.le_refl _
     · subst hs' hr; exact hrsv_lt
   | .i32ConstSym n, h_commit =>
     simp [LowerState.commit, LowerState.alloc] at h_commit
     obtain ⟨hr, hs', hops⟩ := h_commit
+    -- Post-V8-#2: commit emits `.const dst (.i32 ((ofNat n.toNat).toNat))`,
+    -- so the fresh reg holds `vI32 ((ofNat n.toNat).toNat)`.
     refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
-                          (vU32 (UInt32.ofNat n.toNat)) }, ?_, ?_, ?_, ?_, ?_, ?_⟩
+                          (Quanta.KOps.Value.vI32 ((UInt32.ofNat n.toNat).toNat)) },
+            ?_, ?_, ?_, ?_, ?_, ?_⟩
     · subst hops
-      simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst]
+      simp [evalOps, Quanta.KOps.evalOp, Quanta.KOps.evalConst, Quanta.KOps.vI32]
     · subst hs'
       refine ⟨?_, ?_, ?_, R.aliasFree, R.injLocals, R.heapRefines, ?_, ?_, R.curLocDisj⟩
       · -- StackRefines: stack unchanged; lift each entry past the fresh write.
@@ -733,12 +822,17 @@ theorem commit_correct
       · -- FreshCurrent: nextReg bumps by 1; currentReg unchanged.
         intro ir hir
         exact Nat.lt_succ_of_lt (R.freshCurrent ir hir)
-    · -- v_w encodes via .reg s.nextReg .u32 in the new regfile.
+    · -- v_w encodes via `.reg s.nextReg (commitTy = .i32)`: the fresh
+      -- reg holds `vI32 ((ofNat n.toNat).toNat)`, v_w is `wI32 (ofNat n.toNat)`.
       subst hr
+      have hcty : LowerState.commitTy (SymVal.i32ConstSym n) = .i32 := rfl
+      rw [hcty]
       have hv_eq := WasmValue.encodes_i32ConstSym_inv h_enc
       subst hv_eq
-      simp [WasmValue.encodes, regLookup_regWrite_self]
-      rfl
+      show regLookup (regWrite kst.rf s.nextReg
+              (Quanta.KOps.Value.vI32 ((UInt32.ofNat n.toNat).toNat))) s.nextReg
+            = some (Quanta.KOps.Value.vI32 ((UInt32.ofNat n.toNat).toNat))
+      rw [regLookup_regWrite_self]
     · -- Lookups below s.nextReg are preserved through the single fresh write.
       intro r' hr'_lt
       exact regLookup_preserved_of_fresh hr'_lt
@@ -1041,17 +1135,19 @@ theorem localGet_post_refines_via_localReg
     {ws : WasmState} {s : LowerState} {kst : Quanta.KOps.State}
     {layout : BufferLayout} (R : Refines ws s kst layout)
     {i : Nat} {v : WasmValue} {nv : UInt32} {entry_snd : Reg}
+    {ty : Quanta.KOps.Scalar} {vsrc : Quanta.KOps.Value}
     (hloc : ws.locals.get? i = some v)
     (_hfind' : s.localReg.find? (fun p => p.fst = i) = some (i, entry_snd))
-    (_h_lookup : regLookup kst.rf entry_snd = some (Quanta.KOps.Value.vU32 nv))
+    (_h_lookup : regLookup kst.rf entry_snd = some vsrc)
+    (h_enc : (WasmValue.wI32 nv).encodes layout (regWrite kst.rf s.nextReg vsrc)
+               (SymVal.reg s.nextReg ty))
     (h_v_eq : v = .wI32 nv := by trivial) :
     Refines { ws with stack := v :: ws.stack }
             { nextReg := s.nextReg + 1,
-              stack := SymVal.reg s.nextReg .u32 :: s.stack,
+              stack := SymVal.reg s.nextReg ty :: s.stack,
               localReg := s.localReg, localTy := s.localTy,
               bufferSlots := s.bufferSlots, currentReg := s.currentReg }
-            { kst with rf := regWrite kst.rf s.nextReg
-                                (Quanta.KOps.Value.vU32 nv) }
+            { kst with rf := regWrite kst.rf s.nextReg vsrc }
             layout := by
   subst h_v_eq
   refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_, R.curLocDisj⟩
@@ -1061,9 +1157,9 @@ theorem localGet_post_refines_via_localReg
     cases j with
     | zero =>
       simp at hvj
-      refine ⟨SymVal.reg s.nextReg .u32, by simp, ?_⟩
+      refine ⟨SymVal.reg s.nextReg ty, by simp, ?_⟩
       subst hvj
-      simp [WasmValue.encodes]
+      exact h_enc
     | succ k =>
       have hwsk : ws.stack.get? k = some vj := by simpa using hvj
       obtain ⟨svk, hsvk, henc⟩ := R.stk.right k vj hwsk
@@ -1117,17 +1213,19 @@ theorem localGet_post_refines_via_currentReg
     {ws : WasmState} {s : LowerState} {kst : Quanta.KOps.State}
     {layout : BufferLayout} (R : Refines ws s kst layout)
     {i : Nat} {v : WasmValue} {nv : UInt32} {cur_snd : Reg}
+    {ty : Quanta.KOps.Scalar} {vsrc : Quanta.KOps.Value}
     (hloc : ws.locals.get? i = some v)
     (_hfind' : s.currentReg.find? (fun p => p.fst = i) = some (i, cur_snd))
-    (_h_lookup : regLookup kst.rf cur_snd = some (Quanta.KOps.Value.vU32 nv))
+    (_h_lookup : regLookup kst.rf cur_snd = some vsrc)
+    (h_enc : (WasmValue.wI32 nv).encodes layout (regWrite kst.rf s.nextReg vsrc)
+               (SymVal.reg s.nextReg ty))
     (h_v_eq : v = .wI32 nv := by trivial) :
     Refines { ws with stack := v :: ws.stack }
             { nextReg := s.nextReg + 1,
-              stack := SymVal.reg s.nextReg .u32 :: s.stack,
+              stack := SymVal.reg s.nextReg ty :: s.stack,
               localReg := s.localReg, localTy := s.localTy,
               bufferSlots := s.bufferSlots, currentReg := s.currentReg }
-            { kst with rf := regWrite kst.rf s.nextReg
-                                (Quanta.KOps.Value.vU32 nv) }
+            { kst with rf := regWrite kst.rf s.nextReg vsrc }
             layout := by
   subst h_v_eq
   refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_, R.curLocDisj⟩
@@ -1136,9 +1234,9 @@ theorem localGet_post_refines_via_currentReg
     cases j with
     | zero =>
       simp at hvj
-      refine ⟨SymVal.reg s.nextReg .u32, by simp, ?_⟩
+      refine ⟨SymVal.reg s.nextReg ty, by simp, ?_⟩
       subst hvj
-      simp [WasmValue.encodes]
+      exact h_enc
     | succ k =>
       have hwsk : ws.stack.get? k = some vj := by simpa using hvj
       obtain ⟨svk, hsvk, henc⟩ := R.stk.right k vj hwsk
@@ -1219,13 +1317,26 @@ theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         have henc_local := R.locs i entry.snd hfind' v hloc
         cases v with
         | wI32 nv =>
-          simp only [WasmValue.encodes] at henc_local
-          refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
-                                  (Quanta.KOps.Value.vU32 nv) }, ?_, ?_⟩
-          · subst hops_eq
-            simp [evalOps, Quanta.KOps.evalOp, henc_local]
-          · subst hs_eq; subst hw
-            exact localGet_post_refines_via_localReg R hloc hfind' henc_local
+          -- The local's recorded type pins the encoding tag; the source
+          -- reg holds the value at that tag (vU32 or vI32). `.copy`
+          -- propagates it to the fresh reg, which is pushed at the same
+          -- tag, so the pushed slot encodes `wI32 nv`.
+          rcases WasmValue.encodes_wI32_reg_inv henc_local with
+            ⟨hty_u, h_lk⟩ | ⟨hty_i, h_lk⟩
+          · refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
+                                    (Quanta.KOps.Value.vU32 nv) }, ?_, ?_⟩
+            · subst hops_eq
+              simp [evalOps, Quanta.KOps.evalOp, h_lk]
+            · subst hs_eq; subst hw
+              refine localGet_post_refines_via_localReg R hloc hfind' h_lk ?_
+              simp [hty_u, WasmValue.encodes, regLookup_regWrite_self]
+          · refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
+                                    (Quanta.KOps.Value.vI32 (nv.toNat)) }, ?_, ?_⟩
+            · subst hops_eq
+              simp [evalOps, Quanta.KOps.evalOp, h_lk]
+            · subst hs_eq; subst hw
+              refine localGet_post_refines_via_localReg R hloc hfind' h_lk ?_
+              simp [hty_i, WasmValue.encodes, regLookup_regWrite_self]
         | _ =>
           unfold WasmValue.encodes at henc_local
           exact henc_local.elim
@@ -1244,13 +1355,22 @@ theorem preservation_localGet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       have henc_cur := R.currentReg i cur_entry.snd hfind' v hloc
       cases v with
       | wI32 nv =>
-        simp only [WasmValue.encodes] at henc_cur
-        refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
-                                (Quanta.KOps.Value.vU32 nv) }, ?_, ?_⟩
-        · subst hops_eq
-          simp [evalOps, Quanta.KOps.evalOp, henc_cur]
-        · subst hs_eq; subst hw
-          exact localGet_post_refines_via_currentReg R hloc hfind' henc_cur
+        rcases WasmValue.encodes_wI32_reg_inv henc_cur with
+          ⟨hty_u, h_lk⟩ | ⟨hty_i, h_lk⟩
+        · refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
+                                  (Quanta.KOps.Value.vU32 nv) }, ?_, ?_⟩
+          · subst hops_eq
+            simp [evalOps, Quanta.KOps.evalOp, h_lk]
+          · subst hs_eq; subst hw
+            refine localGet_post_refines_via_currentReg R hloc hfind' h_lk ?_
+            simp [hty_u, WasmValue.encodes, regLookup_regWrite_self]
+        · refine ⟨{ kst with rf := regWrite kst.rf s.nextReg
+                                  (Quanta.KOps.Value.vI32 (nv.toNat)) }, ?_, ?_⟩
+          · subst hops_eq
+            simp [evalOps, Quanta.KOps.evalOp, h_lk]
+          · subst hs_eq; subst hw
+            refine localGet_post_refines_via_currentReg R hloc hfind' h_lk ?_
+            simp [hty_i, WasmValue.encodes, regLookup_regWrite_self]
       | _ =>
         unfold WasmValue.encodes at henc_cur
         exact henc_cur.elim
@@ -1422,11 +1542,11 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
       s4.localReg = s.localReg ∧ s4.localTy = s.localTy ∧
       s.nextReg ≤ s4.nextReg ∧
       s' = { nextReg := s4.nextReg + 1,
-             stack := SymVal.reg s4.nextReg .u32 :: lrest,
+             stack := SymVal.reg s4.nextReg (LowerState.binResultTy sva svb) :: lrest,
              localReg := s.localReg,
              localTy := s.localTy,
              bufferSlots := s.bufferSlots, currentReg := s.currentReg } ∧
-      ops = opsA ++ opsB ++ [.binOp s4.nextReg ra rb bop .u32] := by
+      ops = opsA ++ opsB ++ [.binOp s4.nextReg ra rb bop (LowerState.binResultTy sva svb)] := by
   unfold lowerI32Bin at h
   rcases hs : s.stack with _ | ⟨svb, _ | ⟨sva, lrest⟩⟩
   · simp [hs, LowerState.popSym] at h
@@ -1444,7 +1564,7 @@ theorem lowerI32Bin_some_shape {bop : Quanta.KOps.BinOp} {s s' : LowerState}
       rcases hcb : s3.commit svb with _ | ⟨rb, s4, opsB⟩
       · simp [hcb] at h
       ·
-        simp only [hcb, Option.some_bind, LowerState.alloc, LowerState.push] at h
+        simp only [hcb, Option.some_bind, LowerState.alloc, LowerState.pushSym] at h
         -- h : some ({...post-state...}, opsA ++ opsB ++ [...]) = some (s', ops)
         obtain ⟨hs_eq, hops_eq⟩ := Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
         -- Derive stack/locals/nextReg facts about s3, s4.
@@ -1582,8 +1702,22 @@ theorem preservation_i32Bin_generic
     (instr : WasmInstr) (op_w : UInt32 → UInt32 → UInt32)
     (op_k : Quanta.KOps.BinOp)
     (h_w : ∀ s, evalInstr s instr = binI32 op_w s)
+    -- The op agrees with `op_w` on the bit pattern for every integer
+    -- operand-tag combination the lowering can feed it. Each
+    -- instantiation discharges these from the `evalBinOp` lanes + the
+    -- mixed-lane lemmas (all four are one-line `simp`s).
     (h_agree : ∀ av bv,
        Quanta.KOps.evalBinOp op_k (vU32 av) (vU32 bv) = some (vU32 (op_w av bv)))
+    (h_agree_i : ∀ av bv,
+       Quanta.KOps.evalBinOp op_k
+         (Quanta.KOps.Value.vI32 (av.toNat)) (Quanta.KOps.Value.vI32 (bv.toNat))
+         = some (Quanta.KOps.Value.vI32 ((op_w av bv).toNat)))
+    (h_agree_ui : ∀ av bv,
+       Quanta.KOps.evalBinOp op_k (vU32 av) (Quanta.KOps.Value.vI32 (bv.toNat))
+         = some (Quanta.KOps.Value.vI32 ((op_w av bv).toNat)))
+    (h_agree_iu : ∀ av bv,
+       Quanta.KOps.evalBinOp op_k (Quanta.KOps.Value.vI32 (av.toNat)) (vU32 bv)
+         = some (Quanta.KOps.Value.vI32 ((op_w av bv).toNat)))
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
@@ -1672,36 +1806,110 @@ theorem preservation_i32Bin_generic
     commit_correct R1 h_svb_lt_s3 hcb h_enc_svb1
   have h_kst2_ok : kst2.broke = false := by
     rw [commit_preserves_broke hcb h_evalB]; exact h_kst1_ok
-  -- Lift ra's encoding from kst1 to kst2 via the second commit's lookup-preservation.
-  have h_enc_ra2 : (WasmValue.wI32 av).encodes layout kst2.rf (.reg ra .u32) :=
+  -- Lift ra's encoding from kst1 to kst2; it now lands at `commitTy sva`.
+  have h_enc_ra2 : (WasmValue.wI32 av).encodes layout kst2.rf
+        (.reg ra (LowerState.commitTy sva)) :=
     WasmValue.encodes_preserved_of_lookup_eq
-      (fun r hr => by
-        simp [SymVal.regs] at hr
-        rw [hr]
-        exact h_lookupB ra h_ra_lt_s3)
-      h_enc_ra1
-  -- Extract reg lookups in kst2 from the encodings (used by the binOp eval).
-  have h_lookup_ra : regLookup kst2.rf ra = some (vU32 av) := h_enc_ra2
-  have h_lookup_rb : regLookup kst2.rf rb = some (vU32 bv) := h_enc_rb2
-  -- Final kst'. Note: `broke := false` rather than `kst2.broke` so the
-  -- post-binOp simp output (which substitutes h_kst2_ok) matches without
-  -- an extra rewrite. heap and dispatch carry through from kst2.
-  refine ⟨{ rf := regWrite kst2.rf s4.nextReg (vU32 (op_w av bv)),
+      (fun r hr => by simp [SymVal.regs] at hr; rw [hr]; exact h_lookupB ra h_ra_lt_s3) h_enc_ra1
+  -- Resolve the binOp's result value `binVal` (= what evalBinOp gives on
+  -- the two reg-values) and prove it encodes `wI32 (op_w av bv)` at the
+  -- pushed type `binResultTy sva svb`. Case-split on each operand's
+  -- committed tag (`.i32` for a const, else `.u32`). `binResultTy` and
+  -- the result value/tag stay coherent in all four branches.
+  -- Each operand reg holds `av`/`bv` under its committed tag.
+  obtain ⟨va, hva⟩ : ∃ va, regLookup kst2.rf ra = some va := by
+    rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨_, hlk⟩ | ⟨_, hlk⟩ <;> exact ⟨_, hlk⟩
+  obtain ⟨vb, hvb⟩ : ∃ vb, regLookup kst2.rf rb = some vb := by
+    rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨_, hlk⟩ | ⟨_, hlk⟩ <;> exact ⟨_, hlk⟩
+  obtain ⟨binVal, h_eval', h_binenc⟩ :
+      ∃ binVal, Quanta.KOps.evalBinOp op_k va vb = some binVal ∧
+        (∀ rf : Quanta.KOps.RegFile, regLookup rf s4.nextReg = some binVal →
+          (WasmValue.wI32 (op_w av bv)).encodes layout rf
+            (.reg s4.nextReg (LowerState.binResultTy sva svb))) := by
+    by_cases hca_i : LowerState.commitTy sva = .i32 <;>
+      by_cases hcb_i : LowerState.commitTy svb = .i32
+    · -- both i32 → rty = .i32, result vI32 ((op_w av bv).toNat).
+      have hva' : va = Quanta.KOps.Value.vI32 (av.toNat) := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨ht, _⟩ | ⟨_, hlk⟩
+        · rw [hca_i] at ht; exact absurd ht (by decide)
+        · rw [hva] at hlk; exact (Option.some.injEq _ _).mp hlk
+      have hvb' : vb = Quanta.KOps.Value.vI32 (bv.toNat) := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨ht, _⟩ | ⟨_, hlk⟩
+        · rw [hcb_i] at ht; exact absurd ht (by decide)
+        · rw [hvb] at hlk; exact (Option.some.injEq _ _).mp hlk
+      refine ⟨Quanta.KOps.Value.vI32 ((op_w av bv).toNat), by rw [hva', hvb']; exact h_agree_i av bv, ?_⟩
+      intro rf hrf
+      have : LowerState.binResultTy sva svb = .i32 := by
+        simp [LowerState.binResultTy, hca_i, hcb_i]
+      rw [this]; exact hrf
+    · -- i32 + u32 → rty = .i32.
+      have hva' : va = Quanta.KOps.Value.vI32 (av.toNat) := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨ht, _⟩ | ⟨_, hlk⟩
+        · rw [hca_i] at ht; exact absurd ht (by decide)
+        · rw [hva] at hlk; exact (Option.some.injEq _ _).mp hlk
+      have hvb' : vb = vU32 bv := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨_, hlk⟩ | ⟨ht, _⟩
+        · rw [hvb] at hlk; exact (Option.some.injEq _ _).mp hlk
+        · exact absurd ht hcb_i
+      refine ⟨Quanta.KOps.Value.vI32 ((op_w av bv).toNat), by rw [hva', hvb']; exact h_agree_iu av bv, ?_⟩
+      intro rf hrf
+      have : LowerState.binResultTy sva svb = .i32 := by
+        simp [LowerState.binResultTy, hca_i, hcb_i]
+      rw [this]; exact hrf
+    · -- u32 + i32 → rty = .i32.
+      have hva' : va = vU32 av := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨_, hlk⟩ | ⟨ht, _⟩
+        · rw [hva] at hlk; exact (Option.some.injEq _ _).mp hlk
+        · exact absurd ht hca_i
+      have hvb' : vb = Quanta.KOps.Value.vI32 (bv.toNat) := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨ht, _⟩ | ⟨_, hlk⟩
+        · rw [hcb_i] at ht; exact absurd ht (by decide)
+        · rw [hvb] at hlk; exact (Option.some.injEq _ _).mp hlk
+      refine ⟨Quanta.KOps.Value.vI32 ((op_w av bv).toNat), by rw [hva', hvb']; exact h_agree_ui av bv, ?_⟩
+      intro rf hrf
+      have : LowerState.binResultTy sva svb = .i32 := by
+        simp [LowerState.binResultTy, hca_i, hcb_i]
+      rw [this]; exact hrf
+    · -- both u32 → rty = .u32, result vU32 (op_w av bv).
+      have hva' : va = vU32 av := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨_, hlk⟩ | ⟨ht, _⟩
+        · rw [hva] at hlk; exact (Option.some.injEq _ _).mp hlk
+        · exact absurd ht hca_i
+      have hvb' : vb = vU32 bv := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨_, hlk⟩ | ⟨ht, _⟩
+        · rw [hvb] at hlk; exact (Option.some.injEq _ _).mp hlk
+        · exact absurd ht hcb_i
+      refine ⟨vU32 (op_w av bv), by rw [hva', hvb']; exact h_agree av bv, ?_⟩
+      intro rf hrf
+      -- Both operands encode a wI32, so their non-i32 tags are .u32.
+      have htya : LowerState.commitTy sva = .u32 := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨ht, _⟩ | ⟨ht, _⟩
+        · exact ht
+        · exact absurd ht hca_i
+      have htyb : LowerState.commitTy svb = .u32 := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨ht, _⟩ | ⟨ht, _⟩
+        · exact ht
+        · exact absurd ht hcb_i
+      have : LowerState.binResultTy sva svb = .u32 := by
+        simp [LowerState.binResultTy, htya, htyb]
+      rw [this]; exact hrf
+  -- Final kst'.
+  refine ⟨{ rf := regWrite kst2.rf s4.nextReg binVal,
             heap := kst2.heap, dispatch := kst2.dispatch, broke := false }, ?_, ?_⟩
   · -- evalOps 0 kst (opsA ++ opsB ++ [binOp …]) = some kst3.
     subst hops_eq
-    -- Glue the three sub-evaluations via evalOps_append.
-    rw [show opsA ++ opsB ++ [KernelOp.binOp s4.nextReg ra rb op_k Quanta.KOps.Scalar.u32]
-          = opsA ++ (opsB ++ [KernelOp.binOp s4.nextReg ra rb op_k Quanta.KOps.Scalar.u32]) from
+    rw [show opsA ++ opsB ++ [KernelOp.binOp s4.nextReg ra rb op_k (LowerState.binResultTy sva svb)]
+          = opsA ++ (opsB ++ [KernelOp.binOp s4.nextReg ra rb op_k (LowerState.binResultTy sva svb)]) from
         by rw [List.append_assoc]]
     rw [evalOps_append h_evalA h_kst1_ok]
     rw [evalOps_append h_evalB h_kst2_ok]
-    -- Now reduce the single-op `evalOps 0 kst2 [binOp …]`.
-    simp [evalOps, Quanta.KOps.evalOp, h_lookup_ra, h_lookup_rb, h_agree, h_kst2_ok]
+    -- The binOp reduces to binVal via the in-scope hva/hvb/h_eval'.
+    simp only [evalOps, Quanta.KOps.evalOp, hva, hvb, Option.bind_eq_bind, Option.some_bind,
+               h_eval', Option.pure_def, h_kst2_ok, if_neg (by decide : ¬ (false = true))]
   · -- Refines ws' s' kst3 layout.
     subst hs_eq; subst hws_eq
     refine ⟨?_, ?_, ?_, ?_, ?_, R2.heapRefines, ?_, ?_, ?_⟩
-    · -- StackRefines on (wI32 (op_w av bv) :: rest, .reg s4.nextReg .u32 :: lrest).
+    · -- StackRefines on (wI32 (op_w av bv) :: rest, .reg s4.nextReg rty :: lrest).
       refine ⟨?_, ?_⟩
       · -- Length.
         simp; exact h_rest_lrest_len
@@ -1709,11 +1917,9 @@ theorem preservation_i32Bin_generic
         cases j with
         | zero =>
           simp at hv
-          refine ⟨SymVal.reg s4.nextReg .u32, by simp, ?_⟩
+          refine ⟨SymVal.reg s4.nextReg (LowerState.binResultTy sva svb), by simp, ?_⟩
           subst hv
-          show regLookup (regWrite kst2.rf s4.nextReg (vU32 (op_w av bv))) s4.nextReg
-                 = some (vU32 (op_w av bv))
-          simp [regLookup_regWrite_self]
+          exact h_binenc _ (by rw [regLookup_regWrite_self])
         | succ k =>
           -- Re-extract via R2.stk.right at index k. ws_pop.stack = rest, s4.stack = lrest.
           have hk : ws_pop.stack.get? k = some v := by
@@ -1734,6 +1940,7 @@ theorem preservation_i32Bin_generic
       have hpair : (i, r) ∈ s4.localReg := List.mem_of_find?_eq_some hfind
       have hr_lt : r < s4.nextReg := R2.fresh.right (i, r) hpair
       have henc := R2.locs i r hfind v hv
+      rw [h_s4_lt] at henc
       apply WasmValue.encodes_preserved_of_fresh _ henc
       intro r' hr'_in
       simp [SymVal.regs] at hr'_in
@@ -1773,10 +1980,10 @@ theorem preservation_i32Bin_generic
       have h_s4_cur : s4.currentReg = s.currentReg := by
         rw [commit_preserves_currentReg hcb, commit_preserves_currentReg hca]
       have h_lift := CurrentRegRefines_preserved_fresh R2.currentReg
-        R2.freshCurrent (vU32 (op_w av bv))
-      show CurrentRegRefines layout ws.locals s.currentReg
-            (regWrite kst2.rf s4.nextReg (vU32 (op_w av bv)))
-      rw [← h_s4_cur]
+        R2.freshCurrent binVal
+      show CurrentRegRefines layout ws.locals s.currentReg s.localTy
+            (regWrite kst2.rf s4.nextReg binVal)
+      rw [← h_s4_cur, ← h_s4_lt]
       have h_locs_eq : ws.locals = ws_pop.locals := rfl
       rw [h_locs_eq]
       exact h_lift
@@ -1816,7 +2023,14 @@ theorem preservation_i32Sub
     (hl : lowerInstr s .i32Sub = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32Sub eval_u32_wrapping_sub .sub
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, eval_u32_wrapping_sub, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_sub, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_sub, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_sub, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
 theorem preservation_i32Mul
@@ -1827,7 +2041,14 @@ theorem preservation_i32Mul
     (hl : lowerInstr s .i32Mul = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32Mul eval_u32_wrapping_mul .mul
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, eval_u32_wrapping_mul, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_mul, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_mul, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_mul, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
 theorem preservation_i32And
@@ -1838,7 +2059,14 @@ theorem preservation_i32And
     (hl : lowerInstr s .i32And = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32And eval_u32_bitand .bAnd
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, eval_u32_bitand, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitand, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitand, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitand, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
 theorem preservation_i32Or
@@ -1849,7 +2077,14 @@ theorem preservation_i32Or
     (hl : lowerInstr s .i32Or = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32Or eval_u32_bitor .bOr
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, eval_u32_bitor, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
 theorem preservation_i32Xor
@@ -1860,7 +2095,14 @@ theorem preservation_i32Xor
     (hl : lowerInstr s .i32Xor = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32Xor eval_u32_bitxor .bXor
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, eval_u32_bitxor, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitxor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitxor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_bitxor, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
 theorem preservation_i32ShrU
@@ -1871,7 +2113,14 @@ theorem preservation_i32ShrU
     (hl : lowerInstr s .i32ShrU = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32ShrU (fun a b => a >>> b) .shr
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
 theorem preservation_i32DivU
@@ -1882,7 +2131,14 @@ theorem preservation_i32DivU
     (hl : lowerInstr s .i32DivU = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32DivU eval_u32_div .div
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
 theorem preservation_i32RemU
@@ -1893,7 +2149,14 @@ theorem preservation_i32RemU
     (hl : lowerInstr s .i32RemU = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout :=
   preservation_i32Bin_generic .i32RemU eval_u32_rem .rem
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops rfl hw hl
 
 /-- The buffer-pattern stack shape `lowerI32Add` recognizes:
@@ -1920,7 +2183,14 @@ theorem preservation_i32Add
     next slot base scale rest hs => exact absurd hs (h_no_buf slot base scale rest).right
     next => rfl
   exact preservation_i32Bin_generic .i32Add eval_u32_wrapping_add .add
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, eval_u32_wrapping_add, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_add, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_add, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, eval_u32_wrapping_add, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops h_l hw hl
 
 /-- The buffer-pattern stack shape `lowerI32Shl` recognizes:
@@ -1944,7 +2214,14 @@ theorem preservation_i32Shl
     next k base ty rest hs => exact absurd hs (h_no_buf k base ty rest)
     next => rfl
   exact preservation_i32Bin_generic .i32Shl (fun a b => a <<< b) .shl
-    (fun _ => rfl) (by intro av bv; rfl)
+    (fun _ => rfl)
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Quanta.KOps.liftU32, Quanta.KOps.vU32, Option.orElse])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
+    (fun _ _ => by simp [Quanta.KOps.evalBinOp, Option.orElse,
+          Quanta.KOps.liftMixedI32, Quanta.KOps.liftU32, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32])
     ws s kst layout R h_kst_ok ws' s' ops h_l hw hl
 
 /-- Folded `i32.shl` preservation: when the popped stack matches
@@ -1967,7 +2244,7 @@ theorem preservation_i32Shl_bufferPattern
     (k : Int) (base : Reg) (ty : Quanta.KOps.Scalar) (rest : List SymVal)
     (h_stack : s.stack = .i32ConstSym k :: .reg base ty :: rest)
     (h_shift_eq : ∀ a : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 a) →
+       regHoldsU32Bits kst.rf base a →
        (a <<< (UInt32.ofNat k.toNat)).toNat = a.toNat * (1 <<< k.toNat))
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws .i32Shl = some ws')
@@ -2005,7 +2282,12 @@ theorem preservation_i32Shl_bufferPattern
   have hsv1_eq : sv1 = .reg base ty :=
     ((Option.some.injEq _ _).mp hsv1_get).symm
   rw [hsv1_eq] at henc1
-  obtain ⟨_h_ty_eq, h_lookup_a⟩ := WasmValue.encodes_wI32_reg_inv henc1
+  -- The base reg holds `a_w`'s bits under either tag (u32 array index,
+  -- or an i32 binop result used as an index) — `regHoldsU32Bits`.
+  have h_bits_a : regHoldsU32Bits kst.rf base a_w := by
+    rcases WasmValue.encodes_wI32_reg_inv henc1 with ⟨_, hlk⟩ | ⟨_, hlk⟩
+    · exact Or.inl hlk
+    · exact Or.inr hlk
   -- 4. ops = [] → kst' = kst.
   refine ⟨kst, ?_, ?_⟩
   · rw [← hops_eq]; simp [evalOps]
@@ -2027,7 +2309,7 @@ theorem preservation_i32Shl_bufferPattern
           show (WasmValue.wI32 (a_w <<< b_w)).encodes layout kst.rf
                  (.scaledIdx base (1 <<< k.toNat))
           rw [h_b_eq]
-          refine ⟨a_w, h_lookup_a, h_shift_eq a_w h_lookup_a⟩
+          exact ⟨a_w, h_bits_a, h_shift_eq a_w h_bits_a⟩
         | succ j' =>
           have hwsk : ws.stack.get? (j' + 2) = some vj := by
             rw [h_ws_stack]; simpa using hvj
@@ -2082,7 +2364,7 @@ theorem preservation_i32Add_bufferPattern_scaledFirst
     (slot : Nat) (base : Reg) (scale : Nat) (rest : List SymVal)
     (h_stack : s.stack = .scaledIdx base scale :: .bufferPtr slot :: rest)
     (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        a.toNat = b.toNat * scale →
        b_ptr.toNat = layout.startAddr slot →
        (b_ptr + a).toNat = layout.startAddr slot + b.toNat * scale)
@@ -2145,7 +2427,7 @@ theorem preservation_i32Add_bufferPattern_scaledFirst
           show (WasmValue.wI32 (eval_u32_wrapping_add a_w b_w)).encodes layout kst.rf
                  (.bufferAccess slot base scale)
           -- eval_u32_wrapping_add av bv := av + bv.
-          show ∃ b', regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b') ∧
+          show ∃ b', regHoldsU32Bits kst.rf base b' ∧
                  (eval_u32_wrapping_add a_w b_w).toNat =
                    layout.startAddr slot + b'.toNat * scale
           refine ⟨b, h_lookup_b, ?_⟩
@@ -2198,7 +2480,7 @@ theorem preservation_i32Add_bufferPattern_ptrFirst
     (slot : Nat) (base : Reg) (scale : Nat) (rest : List SymVal)
     (h_stack : s.stack = .bufferPtr slot :: .scaledIdx base scale :: rest)
     (h_addr_eq : ∀ a b_ptr : UInt32, ∀ b : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        a.toNat = b.toNat * scale →
        b_ptr.toNat = layout.startAddr slot →
        (a + b_ptr).toNat = layout.startAddr slot + b.toNat * scale)
@@ -2247,7 +2529,7 @@ theorem preservation_i32Add_bufferPattern_ptrFirst
         | zero =>
           simp at hvj; subst hvj
           refine ⟨.bufferAccess slot base scale, by simp, ?_⟩
-          show ∃ b', regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b') ∧
+          show ∃ b', regHoldsU32Bits kst.rf base b' ∧
                  (eval_u32_wrapping_add a_w b_w).toNat =
                    layout.startAddr slot + b'.toNat * scale
           refine ⟨b, h_lookup_b, ?_⟩
@@ -2326,7 +2608,7 @@ theorem preservation_i32Load
     (h_stack : s.stack = .bufferAccess slot base 4 :: rest)
     (h_offset : offset = 0)
     (h_in_bounds : ∀ b : UInt32,
-       regLookup kst.rf base = some (Quanta.KOps.Value.vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        b.toNat < layout.length slot)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstr ws (.i32Load offset align) = some ws')
@@ -2386,7 +2668,11 @@ theorem preservation_i32Load
   -- the StackRefines proof bridges to wI32 n via h_n_eq.
   refine ⟨{ kst with rf := regWrite kst.rf s.nextReg (Quanta.KOps.Value.vU32 nh) }, ?_, ?_⟩
   · rw [← hops_eq]
-    simp [evalOps, Quanta.KOps.evalOp, h_lookup_b, h_heap_lookup]
+    -- The index reg holds `b`'s bits under either tag; both load arms
+    -- read `b.toNat`, so the load reduces the same way.
+    rcases h_lookup_b with h_u32 | h_i32
+    · simp [evalOps, Quanta.KOps.evalOp, h_u32, h_heap_lookup]
+    · simp [evalOps, Quanta.KOps.evalOp, h_i32, h_heap_lookup]
   · rw [← hs_eq]; rw [← hw']
     refine ⟨?_, ?_, ?_, ?_, R.injLocals, ?_, ?_, ?_, ?_⟩
     · -- StackRefines: top wI32 n ↔ .reg s.nextReg .u32; tail past fresh write.
@@ -2491,10 +2777,10 @@ theorem preservation_i32Store
     (h_stack : s.stack = sv_val :: .bufferAccess slot base 4 :: rest)
     (h_offset : offset = 0)
     (h_in_bounds : ∀ b : UInt32,
-       regLookup kst.rf base = some (vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        b.toNat < layout.length slot)
     (h_layout_no_overlap : ∀ b : UInt32,
-       regLookup kst.rf base = some (vU32 b) →
+       regHoldsU32Bits kst.rf base b →
        ∀ slot' idx',
          idx' < layout.length slot' →
          (slot', idx') ≠ (slot, b.toNat) →
@@ -2583,18 +2869,29 @@ theorem preservation_i32Store
       commit_correct R_pop h_sv_val_lt hca' henc_val
     have h_kst1_ok : kst1.broke = false := by
       rw [commit_preserves_broke hca' h_evalCommit]; exact h_kst_ok
-    -- 6. KOps .store needs lookups for base (in kst1.rf) and src (= val_w).
+    -- 6. KOps .store needs lookups for base (the index, in kst1.rf) and
+    -- src (the stored value). The base holds `b`'s bits (either tag, via
+    -- regHoldsU32Bits); the value `src` holds `val_w`'s bits at
+    -- `commitTy sv_val` — both reinterpret to the same offset/bits.
     have h_base_lt : base < s.nextReg :=
       R.fresh.left (.bufferAccess slot base 4) (by rw [h_stack]; simp) base (by simp [SymVal.regs])
-    have h_lookup_b1 : regLookup kst1.rf base = some (vU32 b) := by
-      rw [h_lookup_lo base h_base_lt]; exact h_lookup_b
-    have h_lookup_src : regLookup kst1.rf src = some (vU32 val_w) := h_enc_src1
-    -- 7. Compute kst' via the .store op.
+    have h_bits_b1 : regHoldsU32Bits kst1.rf base b :=
+      regHoldsU32Bits_of_lookup_eq (h_lookup_lo base h_base_lt) h_lookup_b
+    -- src's value: `vU32 val_w` (u32) or `vI32 (val_w.toNat)` (i32); both
+    -- give `asU32Bits = some val_w`, so the store writes `vU32 val_w`.
+    obtain ⟨vsrc, hvsrc, h_src_bits⟩ :
+        ∃ vsrc, regLookup kst1.rf src = some vsrc ∧
+          Quanta.KOps.asU32Bits vsrc = some val_w := by
+      rcases WasmValue.encodes_wI32_reg_inv h_enc_src1 with ⟨_, hlk⟩ | ⟨_, hlk⟩
+      · exact ⟨_, hlk, by simp [Quanta.KOps.asU32Bits, Quanta.KOps.vU32]⟩
+      · exact ⟨_, hlk, by simp [Quanta.KOps.asU32Bits, Quanta.KOps.vI32]⟩
+    -- 7. Compute kst' via the .store op (heap holds the normalized vU32).
     refine ⟨{ kst1 with heap := Quanta.KOps.heapStore kst1.heap slot b.toNat (vU32 val_w) }, ?_, ?_⟩
     · rw [← hops_eq]
       rw [evalOps_append h_evalCommit h_kst1_ok]
-      simp [evalOps, Quanta.KOps.evalOp, h_lookup_b1, h_lookup_src, h_kst1_ok,
-            Quanta.KOps.vU32]
+      rcases h_bits_b1 with h_b_u32 | h_b_i32
+      · simp [evalOps, Quanta.KOps.evalOp, h_b_u32, hvsrc, h_src_bits, h_kst1_ok, Quanta.KOps.vU32]
+      · simp [evalOps, Quanta.KOps.evalOp, h_b_i32, hvsrc, h_src_bits, h_kst1_ok, Quanta.KOps.vU32]
     · -- Refines ws' s' kst' layout.
       rw [← hs_eq]; rw [← hw']
       have h_in_bounds_b : b.toNat < layout.length slot := h_in_bounds b h_lookup_b
@@ -2709,6 +3006,18 @@ theorem preservation_i32Cmp_generic
     (h_agree : ∀ av bv,
        Quanta.KOps.evalCmpOp op_k (vU32 av) (vU32 bv)
          = some (Quanta.KOps.Value.vBool (p_w av bv)))
+    -- The cmp agrees with `p_w` for every integer operand-tag combo (the
+    -- result is the same `vBool` since `evalCmpOp` compares bit patterns).
+    (h_agree_i : ∀ av bv,
+       Quanta.KOps.evalCmpOp op_k
+         (Quanta.KOps.Value.vI32 (av.toNat)) (Quanta.KOps.Value.vI32 (bv.toNat))
+         = some (Quanta.KOps.Value.vBool (p_w av bv)))
+    (h_agree_ui : ∀ av bv,
+       Quanta.KOps.evalCmpOp op_k (vU32 av) (Quanta.KOps.Value.vI32 (bv.toNat))
+         = some (Quanta.KOps.Value.vBool (p_w av bv)))
+    (h_agree_iu : ∀ av bv,
+       Quanta.KOps.evalCmpOp op_k (Quanta.KOps.Value.vI32 (av.toNat)) (vU32 bv)
+         = some (Quanta.KOps.Value.vBool (p_w av bv)))
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
@@ -2789,17 +3098,58 @@ theorem preservation_i32Cmp_generic
     commit_correct R1 h_svb_lt_s3 hcb h_enc_svb1
   have h_kst2_ok : kst2.broke = false := by
     rw [commit_preserves_broke hcb h_evalB]; exact h_kst1_ok
-  have h_enc_ra2 : (WasmValue.wI32 av).encodes layout kst2.rf (.reg ra .u32) :=
+  -- ra encodes `wI32 av` at `commitTy sva` in kst2; rb at `commitTy svb`.
+  have h_enc_ra2 : (WasmValue.wI32 av).encodes layout kst2.rf
+        (.reg ra (LowerState.commitTy sva)) :=
     WasmValue.encodes_preserved_of_lookup_eq
-      (fun r hr => by
-        simp [SymVal.regs] at hr
-        rw [hr]
-        exact h_lookupB ra h_ra_lt_s3)
-      h_enc_ra1
-  have h_lookup_ra : regLookup kst2.rf ra = some (vU32 av) := h_enc_ra2
-  have h_lookup_rb : regLookup kst2.rf rb = some (vU32 bv) := h_enc_rb2
+      (fun r hr => by simp [SymVal.regs] at hr; rw [hr]; exact h_lookupB ra h_ra_lt_s3) h_enc_ra1
+  -- Operand reg lookups + the cmp result. Case-split each tag; the
+  -- result `vBool (p_w av bv)` is the same in all four combos.
+  obtain ⟨va, hva⟩ : ∃ va, regLookup kst2.rf ra = some va := by
+    rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨_, hlk⟩ | ⟨_, hlk⟩ <;> exact ⟨_, hlk⟩
+  obtain ⟨vb, hvb⟩ : ∃ vb, regLookup kst2.rf rb = some vb := by
+    rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨_, hlk⟩ | ⟨_, hlk⟩ <;> exact ⟨_, hlk⟩
+  have h_cmp_eval : Quanta.KOps.evalCmpOp op_k va vb
+      = some (Quanta.KOps.Value.vBool (p_w av bv)) := by
+    by_cases hca_i : LowerState.commitTy sva = .i32 <;>
+      by_cases hcb_i : LowerState.commitTy svb = .i32
+    · have hva' : va = Quanta.KOps.Value.vI32 (av.toNat) := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨ht, _⟩ | ⟨_, hlk⟩
+        · rw [hca_i] at ht; exact absurd ht (by decide)
+        · rw [hva] at hlk; exact (Option.some.injEq _ _).mp hlk
+      have hvb' : vb = Quanta.KOps.Value.vI32 (bv.toNat) := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨ht, _⟩ | ⟨_, hlk⟩
+        · rw [hcb_i] at ht; exact absurd ht (by decide)
+        · rw [hvb] at hlk; exact (Option.some.injEq _ _).mp hlk
+      rw [hva', hvb']; exact h_agree_i av bv
+    · have hva' : va = Quanta.KOps.Value.vI32 (av.toNat) := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨ht, _⟩ | ⟨_, hlk⟩
+        · rw [hca_i] at ht; exact absurd ht (by decide)
+        · rw [hva] at hlk; exact (Option.some.injEq _ _).mp hlk
+      have hvb' : vb = vU32 bv := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨_, hlk⟩ | ⟨ht, _⟩
+        · rw [hvb] at hlk; exact (Option.some.injEq _ _).mp hlk
+        · exact absurd ht hcb_i
+      rw [hva', hvb']; exact h_agree_iu av bv
+    · have hva' : va = vU32 av := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨_, hlk⟩ | ⟨ht, _⟩
+        · rw [hva] at hlk; exact (Option.some.injEq _ _).mp hlk
+        · exact absurd ht hca_i
+      have hvb' : vb = Quanta.KOps.Value.vI32 (bv.toNat) := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨ht, _⟩ | ⟨_, hlk⟩
+        · rw [hcb_i] at ht; exact absurd ht (by decide)
+        · rw [hvb] at hlk; exact (Option.some.injEq _ _).mp hlk
+      rw [hva', hvb']; exact h_agree_ui av bv
+    · have hva' : va = vU32 av := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_ra2 with ⟨_, hlk⟩ | ⟨ht, _⟩
+        · rw [hva] at hlk; exact (Option.some.injEq _ _).mp hlk
+        · exact absurd ht hca_i
+      have hvb' : vb = vU32 bv := by
+        rcases WasmValue.encodes_wI32_reg_inv h_enc_rb2 with ⟨_, hlk⟩ | ⟨ht, _⟩
+        · rw [hvb] at hlk; exact (Option.some.injEq _ _).mp hlk
+        · exact absurd ht hcb_i
+      rw [hva', hvb']; exact h_agree av bv
   -- Final kst' has both writes applied (vBool at s4.nextReg, vU32 at s4.nextReg+1).
-  -- broke := false matches the simp output (h_kst2_ok normalizes kst2.broke).
   refine ⟨{ rf := regWrite (regWrite kst2.rf s4.nextReg
                               (Quanta.KOps.Value.vBool (p_w av bv)))
                             (s4.nextReg + 1)
@@ -2817,7 +3167,7 @@ theorem preservation_i32Cmp_generic
     rw [evalOps_append h_evalA h_kst1_ok]
     rw [evalOps_append h_evalB h_kst2_ok]
     -- Now reduce the 2-op `evalOps 0 kst2 [cmp …, cast …]`.
-    simp [evalOps, Quanta.KOps.evalOp, h_lookup_ra, h_lookup_rb, h_agree,
+    simp [evalOps, Quanta.KOps.evalOp, hva, hvb, h_cmp_eval,
           regLookup_regWrite_self, Quanta.KOps.evalCast, h_kst2_ok]
   · -- Refines ws' s' kst3 layout.
     subst hs_eq; subst hws_eq
@@ -2866,6 +3216,7 @@ theorem preservation_i32Cmp_generic
       have hpair : (i, r) ∈ s4.localReg := List.mem_of_find?_eq_some hfind
       have hr_lt : r < s4.nextReg := R2.fresh.right (i, r) hpair
       have henc := R2.locs i r hfind v hv
+      rw [h_s4_lt] at henc
       apply h_lift _ _ _ henc
       intro r' hr'_in
       simp [SymVal.regs] at hr'_in
@@ -2911,8 +3262,8 @@ theorem preservation_i32Cmp_generic
         fun ir hir => Nat.lt_succ_of_lt (R2.freshCurrent ir hir)
       have h_lift2 := CurrentRegRefines_preserved_fresh h_lift1
         h_freshCurrent_bump1 (Quanta.KOps.Value.vU32 (if p_w av bv then 1 else 0))
-      show CurrentRegRefines layout ws.locals s.currentReg _
-      rw [← h_s4_cur]
+      show CurrentRegRefines layout ws.locals s.currentReg s.localTy _
+      rw [← h_s4_cur, ← h_s4_lt]
       exact h_lift2
     · -- FreshCurrent: nextReg bumps by 2; currentReg = s.currentReg.
       intro ir hir
@@ -2933,32 +3284,50 @@ theorem preservation_i32Cmp_generic
 def preservation_i32Eq :=
   preservation_i32Cmp_generic .i32Eq (· == ·) .eq
     (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Quanta.KOps.liftCmpU32, Quanta.KOps.vU32, Quanta.KOps.vBool, Option.orElse])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
 
 def preservation_i32Ne :=
   preservation_i32Cmp_generic .i32Ne (· != ·) .ne
     (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Quanta.KOps.liftCmpU32, Quanta.KOps.vU32, Quanta.KOps.vBool, Option.orElse])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
 
 def preservation_i32LtU :=
   preservation_i32Cmp_generic .i32LtU (· < ·) .lt
     (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Quanta.KOps.liftCmpU32, Quanta.KOps.vU32, Quanta.KOps.vBool, Option.orElse])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
 
 def preservation_i32LeU :=
   preservation_i32Cmp_generic .i32LeU (· <= ·) .le
     (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Quanta.KOps.liftCmpU32, Quanta.KOps.vU32, Quanta.KOps.vBool, Option.orElse])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
 
 def preservation_i32GtU :=
   preservation_i32Cmp_generic .i32GtU (· > ·) .gt
     (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Quanta.KOps.liftCmpU32, Quanta.KOps.vU32, Quanta.KOps.vBool, Option.orElse])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
 
 def preservation_i32GeU :=
   preservation_i32Cmp_generic .i32GeU (· >= ·) .ge
     (fun _ => rfl) (fun _ => rfl)
-    (by intro av bv; rfl)
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Quanta.KOps.liftCmpU32, Quanta.KOps.vU32, Quanta.KOps.vBool, Option.orElse])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
+    (by intro av bv; simp [Quanta.KOps.evalCmpOp, Option.orElse, Quanta.KOps.liftCmpMixed, Quanta.KOps.liftCmpU32, Quanta.KOps.liftBoolBin, Quanta.KOps.asU32Bits, Quanta.KOps.vI32, Quanta.KOps.vU32, Quanta.KOps.vBool])
 
 -- ════════════════════════════════════════════════════════════════════
 -- Slice 3 follow-up: localSet preservation
@@ -3070,8 +3439,12 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     commit_correct R_pop h_sva_lt hca hv_enc
   have h_kst1_ok : kst1.broke = false := by
     rw [commit_preserves_broke hca h_evalC]; exact h_kst_ok
-  have h_src_lookup : regLookup kst1.rf src = some (Quanta.KOps.Value.vU32 n_w) :=
-    h_enc_src1
+  -- The committed source carries the value at its commit tag
+  -- `commitTy sva` (`tagVal n_w (LowerState.commitTy sva)` for a u32 reg, `vI32 n_w.toNat` for an
+  -- i32 const). The dual-Copy propagates this value through fresh +
+  -- stable, and the local is recorded at that tag, so the set-local
+  -- encoding holds at it. We abbreviate the value as `tagVal n_w cty`.
+  obtain ⟨h_cty_val, h_src_lookup⟩ := tagVal_of_encodes_wI32_reg h_enc_src1
   have h_s2_lr : s2.localReg = s.localReg := (commit_preserves_locals hca).1
   have h_s2_lt : s2.localTy  = s.localTy  := (commit_preserves_locals hca).2
   have h_s2_stack : s2.stack = lrest := commit_preserves_stack hca
@@ -3091,20 +3464,20 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
   -- evaluated against kst1 → kst_after_fresh → kst'.
   let fresh : Reg := s2.nextReg
   -- Encoding of source value at kst1's regWrite-progressed regfile.
-  -- After .copy fresh src, the regfile has fresh ↦ vU32 n_w. After
-  -- .copy stable fresh, also stable ↦ vU32 n_w.
+  -- After .copy fresh src, the regfile has fresh ↦ tagVal n_w (LowerState.commitTy sva). After
+  -- .copy stable fresh, also stable ↦ tagVal n_w (LowerState.commitTy sva).
   rcases hreg_find : s.localReg.find? (fun p => p.fst = i) with _ | entry
   -- Case B: first write, allocate new stable too. lookupLocal returns none.
   · simp [hreg_find] at hl
     obtain ⟨hs_eq, hops_eq⟩ := hl
     -- stable = s2.nextReg + 1 (allocated after fresh).
     let stable : Reg := s2.nextReg + 1
-    -- kst_after_fresh = kst1 with rf := regWrite kst1.rf fresh (vU32 n_w).
+    -- kst_after_fresh = kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)).
     let kst_after_fresh : Quanta.KOps.State :=
-      { kst1 with rf := regWrite kst1.rf fresh (vU32 n_w) }
-    -- kst' = kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (vU32 n_w).
+      { kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)) }
+    -- kst' = kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva)).
     let kst' : Quanta.KOps.State :=
-      { kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (vU32 n_w) }
+      { kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva)) }
     refine ⟨kst', ?_, ?_⟩
     · -- evalOps 0 kst (opsCommit ++ [zinit, .copy fresh src, .copy stable fresh]) = some kst'.
       subst hops_eq
@@ -3126,14 +3499,14 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         simp only [Option.bind_eq_bind, Option.bind, Option.some_bind, pure, h_kst1_ok]
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
-        show ({ kst1 with rf := regWrite kst1.rf fresh (vU32 n_w),
+        show ({ kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)),
                           broke := false } : Quanta.KOps.State) = kst_after_fresh
         rw [show (false : Bool) = kst1.broke from h_kst1_ok.symm]
       have h_kaf_ok : kst_after_fresh.broke = false := h_kst1_ok
       -- Step 3: evalOps over [.copy stable fresh] from kst_after_fresh gives kst'.
       have h_lookup_fresh :
-          regLookup kst_after_fresh.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+          regLookup kst_after_fresh.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_self]
       have h_evalC2 : evalOps 0 kst_after_fresh [.copy stable fresh] = some kst' := by
         simp only [evalOps, Quanta.KOps.evalOp]
@@ -3142,7 +3515,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
         show ({ kst_after_fresh with
-                  rf := regWrite kst_after_fresh.rf stable (vU32 n_w),
+                  rf := regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva)),
                   broke := false } : Quanta.KOps.State) = kst'
         rw [show (false : Bool) = kst_after_fresh.broke from h_kaf_ok.symm]
       -- Compose: evalOps 0 kst (opsCommit ++ [copy fresh src, copy stable fresh]) = kst'.
@@ -3153,7 +3526,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       exact h_evalC2
     · -- Refines ws' s' kst' layout.
       subst hs_eq
-      -- kst'.rf = regWrite (regWrite kst1.rf fresh v) stable v where v = vU32 n_w.
+      -- kst'.rf = regWrite (regWrite kst1.rf fresh v) stable v where v = tagVal n_w (LowerState.commitTy sva).
       -- s'.localReg = (i, stable) :: filter(≠i) s.localReg (since hreg_find = none).
       -- s'.currentReg = (i, fresh) :: filter(≠i) s2.currentReg = ... :: filter(≠i) s.currentReg.
       -- s'.nextReg = s2.nextReg + 1 + 1.
@@ -3161,15 +3534,15 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       have h_fresh_ge_s2 : s2.nextReg ≤ fresh := Nat.le_refl _
       have h_stable_ge_s2 : s2.nextReg ≤ stable := Nat.le_succ _
       -- Lookup helpers in kst'.rf.
-      have h_lookup_stable_kst' : regLookup kst'.rf stable = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_fresh.rf stable (vU32 n_w)) stable = _
+      have h_lookup_stable_kst' : regLookup kst'.rf stable = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva))) stable = _
         rw [regLookup_regWrite_self]
       have h_lookup_fresh_kaf :
-          regLookup kst_after_fresh.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+          regLookup kst_after_fresh.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_self]
-      have h_lookup_fresh_kst' : regLookup kst'.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_fresh.rf stable (vU32 n_w)) fresh = _
+      have h_lookup_fresh_kst' : regLookup kst'.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_of_ne _ stable fresh _ (Nat.ne_of_lt h_stable_gt_fresh)]
         exact h_lookup_fresh_kaf
       refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_, ?_⟩
@@ -3212,7 +3585,15 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [hget] at hv
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
-          simp [WasmValue.encodes]; exact h_lookup_stable_kst'
+          -- The set local `k` is recorded at `commitTy sva` (the spec
+          -- threads the committed type), so the encoding tag is
+          -- `commitTy sva` and `stable` holds `tagVal n_w (commitTy sva)`.
+          have hty_k : localTyOf
+              ((k, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = k)) s.localTy) k
+                = LowerState.commitTy sva := by simp [localTyOf]
+          rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
+          exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_stable_kst'
         · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
                    ((i, stable) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
                  = some (k, r) at hfind
@@ -3224,6 +3605,16 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           have hfind_s2 : s2.localReg.find? (fun p => p.fst = k) = some (k, r) := by
             rw [h_s2_lr]; exact hfind
           have henc := R1.locs k r hfind_s2 v hv_old
+          -- Local `k ≠ i` keeps its recorded type: the set only writes
+          -- the `i` entry, so `localTyOf` at `k` is unchanged from s2.
+          have hty_keq : localTyOf
+              ((i, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = i)) s.localTy) k
+                = localTyOf s2.localTy k := by
+            rw [h_s2_lt]
+            unfold localTyOf
+            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+          rw [hty_keq]
           have hr_lt : r < s2.nextReg := by
             have hpair : (k, r) ∈ s2.localReg :=
               List.mem_of_find?_eq_some hfind_s2
@@ -3311,7 +3702,12 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [hget] at hv
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
-          simp [WasmValue.encodes]; exact h_lookup_fresh_kst'
+          have hty_k : localTyOf
+              ((k, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = k)) s.localTy) k
+                = LowerState.commitTy sva := by simp [localTyOf]
+          rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
+          exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_fresh_kst'
         · -- Other indices fall back to filter — but s2.currentReg = s.currentReg.
           change List.find? (fun p : Nat × Reg => decide (p.fst = k))
                    ((i, fresh) :: List.filter (fun p => !decide (p.fst = i)) s2.currentReg)
@@ -3323,6 +3719,14 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [List.getElem?_set_ne (Ne.symm hki)] at hv
             exact hv
           have henc := R1.currentReg k r_cur hfind v hv_old
+          have hty_keq : localTyOf
+              ((i, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = i)) s.localTy) k
+                = localTyOf s2.localTy k := by
+            rw [h_s2_lt]
+            unfold localTyOf
+            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+          rw [hty_keq]
           -- R1.currentReg gives encodes against kst1.rf.
           -- Need encodes against kst'.rf = regWrite (regWrite kst1.rf fresh _) stable _.
           -- The reg `r_cur` was in s2.currentReg = s.currentReg, so its value is < s.nextReg.
@@ -3392,11 +3796,11 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       have := List.find?_some hreg_find
       simpa using this
     let stable_old : Reg := entry.snd
-    -- kst_after_fresh = kst1 with rf := regWrite kst1.rf fresh (vU32 n_w).
+    -- kst_after_fresh = kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)).
     let kst_after_fresh_A : Quanta.KOps.State :=
-      { kst1 with rf := regWrite kst1.rf fresh (vU32 n_w) }
+      { kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)) }
     let kst'_A : Quanta.KOps.State :=
-      { kst_after_fresh_A with rf := regWrite kst_after_fresh_A.rf stable_old (vU32 n_w) }
+      { kst_after_fresh_A with rf := regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva)) }
     have hentry_in : entry ∈ s.localReg :=
       List.mem_of_find?_eq_some hreg_find
     have hentry_in_s2 : entry ∈ s2.localReg := by rw [h_s2_lr]; exact hentry_in
@@ -3427,13 +3831,13 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         simp only [Option.bind_eq_bind, Option.bind, Option.some_bind, pure, h_kst1_ok]
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
-        show ({ kst1 with rf := regWrite kst1.rf fresh (vU32 n_w),
+        show ({ kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)),
                           broke := false } : Quanta.KOps.State) = kst_after_fresh_A
         rw [show (false : Bool) = kst1.broke from h_kst1_ok.symm]
       have h_kaf_ok : kst_after_fresh_A.broke = false := h_kst1_ok
       have h_lookup_fresh_A :
-          regLookup kst_after_fresh_A.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+          regLookup kst_after_fresh_A.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_self]
       have h_evalC2 : evalOps 0 kst_after_fresh_A [.copy stable_old fresh] = some kst'_A := by
         simp only [evalOps, Quanta.KOps.evalOp]
@@ -3442,7 +3846,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
         show ({ kst_after_fresh_A with
-                  rf := regWrite kst_after_fresh_A.rf stable_old (vU32 n_w),
+                  rf := regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva)),
                   broke := false } : Quanta.KOps.State) = kst'_A
         rw [show (false : Bool) = kst_after_fresh_A.broke from h_kaf_ok.symm]
       rw [show (opsCommit ++ [KernelOp.copy fresh src, KernelOp.copy stable_old fresh])
@@ -3452,8 +3856,8 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       exact h_evalC2
     · -- Refines on the post-state.
       subst hs_eq
-      have h_lookup_stable_kst'A : regLookup kst'_A.rf stable_old = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_fresh_A.rf stable_old (vU32 n_w)) stable_old = _
+      have h_lookup_stable_kst'A : regLookup kst'_A.rf stable_old = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva))) stable_old = _
         rw [regLookup_regWrite_self]
       refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_, ?_⟩
       · -- StackRefines. Lift past write at fresh (≥ s2.nextReg) AND stable_old.
@@ -3495,7 +3899,12 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [hget] at hv
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
-          simp [WasmValue.encodes]; exact h_lookup_stable_kst'A
+          have hty_k : localTyOf
+              ((k, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = k)) s.localTy) k
+                = LowerState.commitTy sva := by simp [localTyOf]
+          rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
+          exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_stable_kst'A
         · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
                    ((i, stable_old) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
                  = some (k, r) at hfind
@@ -3507,6 +3916,14 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           have hfind_s2 : s2.localReg.find? (fun p => p.fst = k) = some (k, r) := by
             rw [h_s2_lr]; exact hfind
           have henc := R1.locs k r hfind_s2 v hv_old
+          have hty_keq : localTyOf
+              ((i, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = i)) s.localTy) k
+                = localTyOf s2.localTy k := by
+            rw [h_s2_lt]
+            unfold localTyOf
+            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+          rw [hty_keq]
           have hkr_in_s2 : (k, r) ∈ s2.localReg :=
             List.mem_of_find?_eq_some hfind_s2
           have hr_lt : r < s2.nextReg := R1.fresh.right (k, r) hkr_in_s2
@@ -3589,12 +4006,17 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [hget] at hv
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
-          have h_lookup_fresh_A_kst' : regLookup kst'_A.rf fresh = some (vU32 n_w) := by
-            show regLookup (regWrite kst_after_fresh_A.rf stable_old (vU32 n_w)) fresh = _
+          have h_lookup_fresh_A_kst' : regLookup kst'_A.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+            show regLookup (regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva))) fresh = _
             rw [regLookup_regWrite_of_ne _ stable_old fresh _ (Ne.symm h_stable_old_ne_fresh)]
-            show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+            show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
             rw [regLookup_regWrite_self]
-          simp [WasmValue.encodes]; exact h_lookup_fresh_A_kst'
+          have hty_k : localTyOf
+              ((k, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = k)) s.localTy) k
+                = LowerState.commitTy sva := by simp [localTyOf]
+          rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
+          exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_fresh_A_kst'
         · -- Off-i: s2.currentReg = s.currentReg, fall back via R1.currentReg.
           change List.find? (fun p : Nat × Reg => decide (p.fst = k))
                    ((i, fresh) :: List.filter (fun p => !decide (p.fst = i)) s2.currentReg)
@@ -3605,6 +4027,14 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [List.getElem?_set_ne (Ne.symm hki)] at hv
             exact hv
           have henc := R1.currentReg k r_cur hfind v hv_old
+          have hty_keq : localTyOf
+              ((i, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = i)) s.localTy) k
+                = localTyOf s2.localTy k := by
+            rw [h_s2_lt]
+            unfold localTyOf
+            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+          rw [hty_keq]
           have hpair_cur : (k, r_cur) ∈ s2.currentReg :=
             List.mem_of_find?_eq_some hfind
           have hpair_s_cur : (k, r_cur) ∈ s.currentReg := by rw [← h_s2_cr]; exact hpair_cur
@@ -3775,8 +4205,12 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     commit_correct R_pop h_sva_lt hca hv_enc
   have h_kst1_ok : kst1.broke = false := by
     rw [commit_preserves_broke hca h_evalC]; exact h_kst_ok
-  have h_src_lookup : regLookup kst1.rf src = some (Quanta.KOps.Value.vU32 n_w) :=
-    h_enc_src1
+  -- The committed source carries the value at its commit tag
+  -- `commitTy sva` (`tagVal n_w (LowerState.commitTy sva)` for a u32 reg, `vI32 n_w.toNat` for an
+  -- i32 const). The dual-Copy propagates this value through fresh +
+  -- stable, and the local is recorded at that tag, so the set-local
+  -- encoding holds at it. We abbreviate the value as `tagVal n_w cty`.
+  obtain ⟨h_cty_val, h_src_lookup⟩ := tagVal_of_encodes_wI32_reg h_enc_src1
   have h_s2_lr : s2.localReg = s.localReg := (commit_preserves_locals hca).1
   have h_s2_lt : s2.localTy  = s.localTy  := (commit_preserves_locals hca).2
   have h_s2_stack : s2.stack = lrest := commit_preserves_stack hca
@@ -3785,7 +4219,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     exact h
   -- Branch on lookupLocal post-alloc.
   simp only [LowerState.lookupLocal, LowerState.lookupLocalTy, LowerState.alloc,
-             LowerState.setLocalReg, LowerState.setCurrentReg, LowerState.push,
+             LowerState.setLocalReg, LowerState.setCurrentReg, LowerState.pushSym,
              Option.bind_eq_bind, Option.bind, pure] at hl
   rw [h_s2_lt, h_s2_lr] at hl
   let fresh : Reg := s2.nextReg
@@ -3796,11 +4230,11 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     let stable : Reg := s2.nextReg + 1
     let post_fresh : Reg := s2.nextReg + 1 + 1
     let kst_after_fresh : Quanta.KOps.State :=
-      { kst1 with rf := regWrite kst1.rf fresh (vU32 n_w) }
+      { kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)) }
     let kst_after_stable : Quanta.KOps.State :=
-      { kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (vU32 n_w) }
+      { kst_after_fresh with rf := regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva)) }
     let kst' : Quanta.KOps.State :=
-      { kst_after_stable with rf := regWrite kst_after_stable.rf post_fresh (vU32 n_w) }
+      { kst_after_stable with rf := regWrite kst_after_stable.rf post_fresh (tagVal n_w (LowerState.commitTy sva)) }
     refine ⟨kst', ?_, ?_⟩
     · -- evalOps closes via three Copy steps.
       subst hops_eq
@@ -3815,13 +4249,13 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         simp only [Option.bind_eq_bind, Option.bind, Option.some_bind, pure, h_kst1_ok]
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
-        show ({ kst1 with rf := regWrite kst1.rf fresh (vU32 n_w),
+        show ({ kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)),
                           broke := false } : Quanta.KOps.State) = kst_after_fresh
         rw [show (false : Bool) = kst1.broke from h_kst1_ok.symm]
       have h_kaf_ok : kst_after_fresh.broke = false := h_kst1_ok
       have h_lookup_fresh_kaf :
-          regLookup kst_after_fresh.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+          regLookup kst_after_fresh.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_self]
       have h_evalC2 : evalOps 0 kst_after_fresh [.copy stable fresh] = some kst_after_stable := by
         simp only [evalOps, Quanta.KOps.evalOp]
@@ -3830,13 +4264,13 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
         show ({ kst_after_fresh with
-                  rf := regWrite kst_after_fresh.rf stable (vU32 n_w),
+                  rf := regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva)),
                   broke := false } : Quanta.KOps.State) = kst_after_stable
         rw [show (false : Bool) = kst_after_fresh.broke from h_kaf_ok.symm]
       have h_kas_ok : kst_after_stable.broke = false := h_kaf_ok
       have h_lookup_fresh_kas :
-          regLookup kst_after_stable.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_fresh.rf stable (vU32 n_w)) fresh = _
+          regLookup kst_after_stable.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_of_ne _ stable fresh _
               (Nat.ne_of_lt (Nat.lt_succ_self _))]
         exact h_lookup_fresh_kaf
@@ -3848,7 +4282,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
         show ({ kst_after_stable with
-                  rf := regWrite kst_after_stable.rf post_fresh (vU32 n_w),
+                  rf := regWrite kst_after_stable.rf post_fresh (tagVal n_w (LowerState.commitTy sva)),
                   broke := false } : Quanta.KOps.State) = kst'
         rw [show (false : Bool) = kst_after_stable.broke from h_kas_ok.symm]
       rw [show (opsCommit ++ [KernelOp.copy fresh src,
@@ -3874,43 +4308,43 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         Nat.le_of_lt (Nat.lt_of_le_of_lt h_stable_ge_s2 h_post_fresh_gt_stable)
       -- Lookup helpers in kst'.rf.
       have h_lookup_post_fresh_kst' :
-          regLookup kst'.rf post_fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_stable.rf post_fresh (vU32 n_w)) post_fresh = _
+          regLookup kst'.rf post_fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_stable.rf post_fresh (tagVal n_w (LowerState.commitTy sva))) post_fresh = _
         rw [regLookup_regWrite_self]
       have h_lookup_stable_kst' :
-          regLookup kst'.rf stable = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_stable.rf post_fresh (vU32 n_w)) stable = _
+          regLookup kst'.rf stable = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_stable.rf post_fresh (tagVal n_w (LowerState.commitTy sva))) stable = _
         rw [regLookup_regWrite_of_ne _ post_fresh stable _
               (Nat.ne_of_lt h_post_fresh_gt_stable)]
-        show regLookup (regWrite kst_after_fresh.rf stable (vU32 n_w)) stable = _
+        show regLookup (regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva))) stable = _
         rw [regLookup_regWrite_self]
       have h_lookup_fresh_kst' :
-          regLookup kst'.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_stable.rf post_fresh (vU32 n_w)) fresh = _
+          regLookup kst'.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_stable.rf post_fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_of_ne _ post_fresh fresh _
               (Nat.ne_of_lt h_post_fresh_gt_fresh)]
-        show regLookup (regWrite kst_after_fresh.rf stable (vU32 n_w)) fresh = _
+        show regLookup (regWrite kst_after_fresh.rf stable (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_of_ne _ stable fresh _
               (Nat.ne_of_lt h_stable_gt_fresh)]
-        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+        show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_self]
       refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_, ?_⟩
       · -- StackRefines: ws'.stack = wI32 n_w :: rest;
         -- s'.stack = .reg post_fresh .u32 :: s2.stack.
         refine ⟨?_, ?_⟩
         · show (WasmValue.wI32 n_w :: rest).length
-              = (SymVal.reg post_fresh .u32 :: s2.stack).length
+              = (SymVal.reg post_fresh (LowerState.commitTy sva) :: s2.stack).length
           rw [h_s2_stack]; simpa using h_rest_lrest_len
         · intro j v hv
           cases j with
           | zero =>
             simp at hv
-            refine ⟨SymVal.reg post_fresh .u32, ?_, ?_⟩
-            · show (SymVal.reg post_fresh .u32 :: s2.stack).get? 0
-                = some (SymVal.reg post_fresh .u32)
+            refine ⟨SymVal.reg post_fresh (LowerState.commitTy sva), ?_, ?_⟩
+            · show (SymVal.reg post_fresh (LowerState.commitTy sva) :: s2.stack).get? 0
+                = some (SymVal.reg post_fresh (LowerState.commitTy sva))
               rfl
             subst hv
-            simp [WasmValue.encodes]; exact h_lookup_post_fresh_kst'
+            exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_post_fresh_kst'
           | succ k =>
             have hk : ws_pop.stack.get? k = some v := by
               show rest.get? k = some v; simpa using hv
@@ -3950,7 +4384,12 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [hget] at hv
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
-          simp [WasmValue.encodes]; exact h_lookup_stable_kst'
+          have hty_k : localTyOf
+              ((k, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = k)) s.localTy) k
+                = LowerState.commitTy sva := by simp [localTyOf]
+          rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
+          exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_stable_kst'
         · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
                    ((i, stable) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
                  = some (k, r) at hfind
@@ -3962,6 +4401,14 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           have hfind_s2 : s2.localReg.find? (fun p => p.fst = k) = some (k, r) := by
             rw [h_s2_lr]; exact hfind
           have henc := R1.locs k r hfind_s2 v hv_old
+          have hty_keq : localTyOf
+              ((i, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = i)) s.localTy) k
+                = localTyOf s2.localTy k := by
+            rw [h_s2_lt]
+            unfold localTyOf
+            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+          rw [hty_keq]
           have hr_lt : r < s2.nextReg := by
             have hpair : (k, r) ∈ s2.localReg :=
               List.mem_of_find?_eq_some hfind_s2
@@ -4072,7 +4519,12 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [hget] at hv
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
-          simp [WasmValue.encodes]; exact h_lookup_fresh_kst'
+          have hty_k : localTyOf
+              ((k, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = k)) s.localTy) k
+                = LowerState.commitTy sva := by simp [localTyOf]
+          rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
+          exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_fresh_kst'
         · -- Off-i: lift R1.currentReg past 3 writes.
           change List.find? (fun p : Nat × Reg => decide (p.fst = k))
                    ((i, fresh) :: List.filter (fun p => !decide (p.fst = i)) s2.currentReg)
@@ -4083,6 +4535,14 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [List.getElem?_set_ne (Ne.symm hki)] at hv
             exact hv
           have henc := R1.currentReg k r_cur hfind v hv_old
+          have hty_keq : localTyOf
+              ((i, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = i)) s.localTy) k
+                = localTyOf s2.localTy k := by
+            rw [h_s2_lt]
+            unfold localTyOf
+            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+          rw [hty_keq]
           have hpair_cur : (k, r_cur) ∈ s2.currentReg :=
             List.mem_of_find?_eq_some hfind
           have hpair_s_cur : (k, r_cur) ∈ s.currentReg := by rw [← h_s2_cr]; exact hpair_cur
@@ -4151,13 +4611,13 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     let stable_old : Reg := entry.snd
     let post_fresh_A : Reg := s2.nextReg + 1
     let kst_after_fresh_A : Quanta.KOps.State :=
-      { kst1 with rf := regWrite kst1.rf fresh (vU32 n_w) }
+      { kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)) }
     let kst_after_stable_A : Quanta.KOps.State :=
       { kst_after_fresh_A with
-          rf := regWrite kst_after_fresh_A.rf stable_old (vU32 n_w) }
+          rf := regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva)) }
     let kst'_A : Quanta.KOps.State :=
       { kst_after_stable_A with
-          rf := regWrite kst_after_stable_A.rf post_fresh_A (vU32 n_w) }
+          rf := regWrite kst_after_stable_A.rf post_fresh_A (tagVal n_w (LowerState.commitTy sva)) }
     have hentry_in : entry ∈ s.localReg :=
       List.mem_of_find?_eq_some hreg_find
     have hentry_in_s2 : entry ∈ s2.localReg := by rw [h_s2_lr]; exact hentry_in
@@ -4194,13 +4654,13 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         simp only [Option.bind_eq_bind, Option.bind, Option.some_bind, pure, h_kst1_ok]
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
-        show ({ kst1 with rf := regWrite kst1.rf fresh (vU32 n_w),
+        show ({ kst1 with rf := regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva)),
                           broke := false } : Quanta.KOps.State) = kst_after_fresh_A
         rw [show (false : Bool) = kst1.broke from h_kst1_ok.symm]
       have h_kaf_ok : kst_after_fresh_A.broke = false := h_kst1_ok
       have h_lookup_fresh_kaf :
-          regLookup kst_after_fresh_A.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+          regLookup kst_after_fresh_A.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_self]
       have h_evalC2 :
           evalOps 0 kst_after_fresh_A [.copy stable_old fresh] = some kst_after_stable_A := by
@@ -4210,13 +4670,13 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
         show ({ kst_after_fresh_A with
-                  rf := regWrite kst_after_fresh_A.rf stable_old (vU32 n_w),
+                  rf := regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva)),
                   broke := false } : Quanta.KOps.State) = kst_after_stable_A
         rw [show (false : Bool) = kst_after_fresh_A.broke from h_kaf_ok.symm]
       have h_kas_ok : kst_after_stable_A.broke = false := h_kaf_ok
       have h_lookup_fresh_kas :
-          regLookup kst_after_stable_A.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_fresh_A.rf stable_old (vU32 n_w)) fresh = _
+          regLookup kst_after_stable_A.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_of_ne _ stable_old fresh _
               (Ne.symm h_stable_old_ne_fresh)]
         exact h_lookup_fresh_kaf
@@ -4228,7 +4688,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         rw [if_neg (by decide : ¬ (false = true))]
         congr 1
         show ({ kst_after_stable_A with
-                  rf := regWrite kst_after_stable_A.rf post_fresh_A (vU32 n_w),
+                  rf := regWrite kst_after_stable_A.rf post_fresh_A (tagVal n_w (LowerState.commitTy sva)),
                   broke := false } : Quanta.KOps.State) = kst'_A
         rw [show (false : Bool) = kst_after_stable_A.broke from h_kas_ok.symm]
       rw [show (opsCommit ++ [KernelOp.copy fresh src,
@@ -4245,42 +4705,42 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
     · -- Refines on the post-state.
       subst hs_eq
       have h_lookup_post_fresh_kst'_A :
-          regLookup kst'_A.rf post_fresh_A = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_stable_A.rf post_fresh_A (vU32 n_w)) post_fresh_A = _
+          regLookup kst'_A.rf post_fresh_A = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_stable_A.rf post_fresh_A (tagVal n_w (LowerState.commitTy sva))) post_fresh_A = _
         rw [regLookup_regWrite_self]
       have h_lookup_stable_kst'_A :
-          regLookup kst'_A.rf stable_old = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_stable_A.rf post_fresh_A (vU32 n_w)) stable_old = _
+          regLookup kst'_A.rf stable_old = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_stable_A.rf post_fresh_A (tagVal n_w (LowerState.commitTy sva))) stable_old = _
         rw [regLookup_regWrite_of_ne _ post_fresh_A stable_old _
               h_stable_old_ne_post_fresh]
-        show regLookup (regWrite kst_after_fresh_A.rf stable_old (vU32 n_w)) stable_old = _
+        show regLookup (regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva))) stable_old = _
         rw [regLookup_regWrite_self]
       have h_lookup_fresh_kst'_A :
-          regLookup kst'_A.rf fresh = some (vU32 n_w) := by
-        show regLookup (regWrite kst_after_stable_A.rf post_fresh_A (vU32 n_w)) fresh = _
+          regLookup kst'_A.rf fresh = some (tagVal n_w (LowerState.commitTy sva)) := by
+        show regLookup (regWrite kst_after_stable_A.rf post_fresh_A (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_of_ne _ post_fresh_A fresh _
               (Nat.ne_of_lt h_post_fresh_A_gt_fresh)]
-        show regLookup (regWrite kst_after_fresh_A.rf stable_old (vU32 n_w)) fresh = _
+        show regLookup (regWrite kst_after_fresh_A.rf stable_old (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_of_ne _ stable_old fresh _
               (Ne.symm h_stable_old_ne_fresh)]
-        show regLookup (regWrite kst1.rf fresh (vU32 n_w)) fresh = _
+        show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
         rw [regLookup_regWrite_self]
       refine ⟨?_, ?_, ?_, ?_, ?_, R1.heapRefines, ?_, ?_, ?_⟩
       · -- StackRefines: top wI32 n_w ↔ .reg post_fresh_A .u32; tail lift.
         refine ⟨?_, ?_⟩
         · show (WasmValue.wI32 n_w :: rest).length
-              = (SymVal.reg post_fresh_A .u32 :: s2.stack).length
+              = (SymVal.reg post_fresh_A (LowerState.commitTy sva) :: s2.stack).length
           rw [h_s2_stack]; simpa using h_rest_lrest_len
         · intro j v hv
           cases j with
           | zero =>
             simp at hv
-            refine ⟨SymVal.reg post_fresh_A .u32, ?_, ?_⟩
-            · show (SymVal.reg post_fresh_A .u32 :: s2.stack).get? 0
-                  = some (SymVal.reg post_fresh_A .u32)
+            refine ⟨SymVal.reg post_fresh_A (LowerState.commitTy sva), ?_, ?_⟩
+            · show (SymVal.reg post_fresh_A (LowerState.commitTy sva) :: s2.stack).get? 0
+                  = some (SymVal.reg post_fresh_A (LowerState.commitTy sva))
               rfl
             subst hv
-            simp [WasmValue.encodes]; exact h_lookup_post_fresh_kst'_A
+            exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_post_fresh_kst'_A
           | succ k =>
             have hk : ws_pop.stack.get? k = some v := by
               show rest.get? k = some v; simpa using hv
@@ -4321,7 +4781,12 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [hget] at hv
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
-          simp [WasmValue.encodes]; exact h_lookup_stable_kst'_A
+          have hty_k : localTyOf
+              ((k, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = k)) s.localTy) k
+                = LowerState.commitTy sva := by simp [localTyOf]
+          rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
+          exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_stable_kst'_A
         · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
                    ((i, stable_old) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
                  = some (k, r) at hfind
@@ -4333,6 +4798,14 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           have hfind_s2 : s2.localReg.find? (fun p => p.fst = k) = some (k, r) := by
             rw [h_s2_lr]; exact hfind
           have henc := R1.locs k r hfind_s2 v hv_old
+          have hty_keq : localTyOf
+              ((i, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = i)) s.localTy) k
+                = localTyOf s2.localTy k := by
+            rw [h_s2_lt]
+            unfold localTyOf
+            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+          rw [hty_keq]
           have hkr_in_s2 : (k, r) ∈ s2.localReg :=
             List.mem_of_find?_eq_some hfind_s2
           have hr_lt : r < s2.nextReg := R1.fresh.right (k, r) hkr_in_s2
@@ -4444,7 +4917,12 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [hget] at hv
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
-          simp [WasmValue.encodes]; exact h_lookup_fresh_kst'_A
+          have hty_k : localTyOf
+              ((k, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = k)) s.localTy) k
+                = LowerState.commitTy sva := by simp [localTyOf]
+          rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
+          exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_fresh_kst'_A
         · -- Off-i: lift R1.currentReg via curLocDisj (for stable_old) + freshness (fresh, post_fresh_A).
           change List.find? (fun p : Nat × Reg => decide (p.fst = k))
                    ((i, fresh) :: List.filter (fun p => !decide (p.fst = i)) s2.currentReg)
@@ -4455,6 +4933,14 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [List.getElem?_set_ne (Ne.symm hki)] at hv
             exact hv
           have henc := R1.currentReg k r_cur hfind v hv_old
+          have hty_keq : localTyOf
+              ((i, LowerState.commitTy sva) :: List.filter
+                (fun p => !decide (p.fst = i)) s.localTy) k
+                = localTyOf s2.localTy k := by
+            rw [h_s2_lt]
+            unfold localTyOf
+            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+          rw [hty_keq]
           have hpair_cur : (k, r_cur) ∈ s2.currentReg :=
             List.mem_of_find?_eq_some hfind
           have hpair_s_cur : (k, r_cur) ∈ s.currentReg := by rw [← h_s2_cr]; exact hpair_cur

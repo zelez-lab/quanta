@@ -224,11 +224,33 @@ def commit (s : LowerState) (sv : SymVal) : Option (Reg × LowerState × List Ke
   match sv with
   | .reg r _              => some (r, s, [])
   | .i32ConstSym n        =>
+      -- Production tags a committed const I32 (lower.rs `commit()`
+      -- returns `ScalarType::I32`). The materialized value is the
+      -- WRAPPED 32-bit pattern as a non-negative Int, so `evalConst`
+      -- yields `vI32 bits` — coherent with the `.reg dst .i32` encoding
+      -- of `wI32 (UInt32.ofNat n.toNat)`. The i32-tag SEED (V8-#2).
       let (dst, s1) := s.alloc
-      some (dst, s1, [.const dst (.u32 (UInt32.ofNat n.toNat))])
+      some (dst, s1, [.const dst (.i32 ((UInt32.ofNat n.toNat).toNat))])
   | .bufferPtr _          => none
   | .scaledIdx _ _        => none
   | .bufferAccess _ _ _   => none
+
+/-- The scalar type a committed `SymVal` carries — mirrors production's
+    `commit()` return type. A `.reg r ty` keeps `ty`; an `i32ConstSym`
+    materializes `.i32`. Used by `lowerI32Bin` to derive the binop
+    result type the way production does. -/
+def commitTy : SymVal → Scalar
+  | .reg _ ty             => ty
+  | .i32ConstSym _        => .i32
+  | .bufferPtr _          => .u32
+  | .scaledIdx _ _        => .u32
+  | .bufferAccess _ _ _   => .u32
+
+/-- Binop result type on two committed operands: matched types pass
+    through, mixed falls to `.i32` (production `ty = if ty_a == ty_b
+    { ty_a } else { I32 }`). -/
+def binResultTy (a b : SymVal) : Scalar :=
+  if commitTy a = commitTy b then commitTy a else .i32
 
 end LowerState
 
@@ -261,8 +283,11 @@ def lowerI32Bin (s : LowerState) (op : BinOp) : Option (LowerState × List Kerne
   let (ra, s3, opsA) ← s2.commit sva
   let (rb, s4, opsB) ← s3.commit svb
   let (dst, s5) := s4.alloc
-  let s6 := s5.push dst
-  pure (s6, opsA ++ opsB ++ [.binOp dst ra rb op .u32])
+  -- Result type derived from operand types (production's rule). All-u32
+  -- subset keeps `.u32`; a committed i32 const operand makes it `.i32`.
+  let ty : Scalar := LowerState.binResultTy sva svb
+  let s6 := s5.pushSym (.reg dst ty)
+  pure (s6, opsA ++ opsB ++ [.binOp dst ra rb op ty])
 
 /-- Lower a single i32 comparison. KOps `Cmp` produces a `vBool`, but
     WASM's `i32.{eq,ne,lt,le,gt,ge}` push an `wI32 0/1` — so we emit
@@ -392,7 +417,12 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
           -- doesn't clobber stack-aliased copies of an older value.
           let source ← (s.lookupCurrentReg i).orElse (fun _ => s.lookupLocal i)
           let (fresh, s1) := s.alloc
-          let s2 := s1.push fresh
+          -- Push `fresh` at the local's recorded type: an i32-set local
+          -- reads back `.i32`, a u32 local `.u32` (default for unset).
+          -- The `.copy` preserves the value, so the fresh reg holds the
+          -- same tag the source did (V8-#2 local read).
+          let ty : Scalar := (s.lookupLocalTy i).getD .u32
+          let s2 := s1.pushSym (.reg fresh ty)
           pure (s2, [.copy fresh source])
   | .localSet i => do
       -- popSym + commit (matches binop/cmp/localTee): a popped
@@ -402,11 +432,11 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       -- them earlier).
       let (sv, s1) ← s.popSym
       let (src, s2, opsCommit) ← s1.commit sv
-      -- ty defaults to `.u32` when the local has no recorded type yet
-      -- (slice 1 only models i32). Using `getD` (not `getDM`) keeps the
-      -- result a plain `Scalar` instead of an `Option Scalar`, which
-      -- avoids an extra monadic bind in the proof.
-      let ty : Scalar := (s2.lookupLocalTy i).getD .u32
+      -- The local takes the COMMITTED value's type (`commitTy sv`): an
+      -- i32-const set tags the local `.i32`, a u32 reg keeps `.u32`.
+      -- This is what makes a later `local.get` of an i32-set local
+      -- read back at the right tag (V8-#2 local surface).
+      let ty : Scalar := LowerState.commitTy sv
       -- Dual-Copy pattern (mirrors production's `write_local_via_copy`):
       --   1. allocate `fresh` reg — the new per-set binding
       --   2. emit Copy { dst := fresh, src }
@@ -447,7 +477,7 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       -- emits a const-op prefix in `opsCommit`.
       let (sv, s1) ← s.popSym
       let (src, s2, opsCommit) ← s1.commit sv
-      let ty : Scalar := (s2.lookupLocalTy i).getD .u32
+      let ty : Scalar := LowerState.commitTy sv
       -- Dual-Copy + tee re-read pattern:
       --   1. allocate `fresh` reg — new per-set binding
       --   2. emit Copy { dst := fresh, src }
@@ -463,14 +493,16 @@ def lowerInstr (s : LowerState) : WasmInstr → Option (LowerState × List Kerne
       | some stable =>
           let s4 := (s3.setLocalReg i stable ty).setCurrentReg i fresh
           let (post_fresh, s5) := s4.alloc
-          pure (s5.push post_fresh,
+          -- The tee re-read copies `fresh` (which holds the committed
+          -- value at tag `ty`) into `post_fresh`, so push it at `ty`.
+          pure (s5.pushSym (.reg post_fresh ty),
                 opsCommit ++ [zinit, .copy fresh src, .copy stable fresh,
                               .copy post_fresh fresh])
       | none =>
           let (stable, s4) := s3.alloc
           let s5 := (s4.setLocalReg i stable ty).setCurrentReg i fresh
           let (post_fresh, s6) := s5.alloc
-          pure (s6.push post_fresh,
+          pure (s6.pushSym (.reg post_fresh ty),
                 opsCommit ++ [zinit, .copy fresh src, .copy stable fresh,
                               .copy post_fresh fresh])
   -- i32 arithmetic. `i32.shl` and `i32.add` carry the buffer-pattern

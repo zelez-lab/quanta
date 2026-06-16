@@ -282,10 +282,10 @@ theorem lowerInstr_preserves_bufferSlots
         · simp [hcur, Option.orElse] at h
           rcases hloc : s.lookupLocal i with _ | stable
           · simp [hloc] at h
-          · simp [hloc, LowerState.alloc, LowerState.push] at h
+          · simp [hloc, LowerState.alloc, LowerState.pushSym] at h
             rcases h with ⟨h_s_eq, _⟩
             rw [← h_s_eq]
-        · simp [hcur, Option.orElse, LowerState.alloc, LowerState.push] at h
+        · simp [hcur, Option.orElse, LowerState.alloc, LowerState.pushSym] at h
           rcases h with ⟨h_s_eq, _⟩
           rw [← h_s_eq]
       · rw [hbuf] at h

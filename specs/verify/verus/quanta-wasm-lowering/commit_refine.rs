@@ -5,33 +5,31 @@
 //! emitting any ops needed. It is the shared subroutine of every
 //! binop/cmp/localSet arm, so its refinement underwrites all of them.
 //!
-//! ## A genuine production↔spec divergence (recorded for V8)
+//! ## Production↔spec agreement (V8-#2 closed the const-tag gap)
 //!
-//! Production `commit` is RICHER than the Lean spec:
+//! The remaining shape differences are domain (the Lean spec refuses
+//! shapes production materializes), not tag disagreement:
 //!
-//! | SymVal         | production `commit`              | Lean spec `commit`   |
-//! |----------------|---------------------------------|----------------------|
-//! | Reg / Opaque   | (r, ty), no ops, no alloc       | (r, _), no ops       |  ✔ agree
-//! | I32Const c     | alloc dst; Const dst (I32 c)    | alloc dst; Const dst (U32 c) |  ~ value agrees, TYPE TAG differs
-//! | I64Const c     | alloc dst; Const dst (I64 c)    | (refused)            |  ✗ out of spec
-//! | ScaledIdx      | alloc×2; Const+Shl (materialize)| (refused)            |  ✗ out of spec
-//! | BufferAccess   | alloc dst; Load                 | (refused)            |  ✗ out of spec
-//! | BufferPtr      | (refused)                       | (refused)            |  ✔ agree
+//! | SymVal         | production `commit`              | Lean spec `commit`           |
+//! |----------------|---------------------------------|------------------------------|
+//! | Reg / Opaque   | (r, ty), no ops, no alloc       | (r, _), no ops               |  ✔ agree
+//! | I32Const c     | alloc dst; Const dst (I32 c)    | alloc dst; Const dst (I32 c) |  ✔ agree (V8-#2)
+//! | I64Const c     | alloc dst; Const dst (I64 c)    | (refused)                    |  ✗ out of spec
+//! | ScaledIdx      | alloc×2; Const+Shl (materialize)| (refused)                    |  ✗ out of spec
+//! | BufferAccess   | alloc dst; Load                 | (refused)                    |  ✗ out of spec
+//! | BufferPtr      | (refused)                       | (refused)                    |  ✔ agree
 //!
 //! So the faithful refinement statements are:
 //!   - Reg/Opaque: FULL equality (identity).
-//!   - I32Const: register/state effect agrees (one alloc, push one
-//!     `Const`); the const's scalar TAG differs (prod I32 vs spec
-//!     U32) — same 32-bit value, recorded as a known divergence.
+//!   - I32Const: FULL equality — V8-#2 folded the I32 tag into the Lean
+//!     spec (`commit` now emits `Const(dst, .i32 (wrapped bits))`,
+//!     coherent with the `.reg dst .i32` encoding of the const value).
+//!     Production and spec now emit byte-identical ops.
 //!   - BufferPtr: both refuse — agree.
 //!   - I64Const / ScaledIdx / BufferAccess: production materializes,
 //!     the Lean spec refuses → outside the Lean `commit` domain,
 //!     recorded. These shapes only reach `commit` via rustc-optimizer
 //!     pointer-arith hoisting the slice-1 Lean subset doesn't model.
-//!
-//! These divergences are exactly the kind of finding the refinement
-//! arm exists to surface; we PROVE the agreeing cases and PIN the
-//! divergences as explicit lemmas rather than hiding them.
 
 use vstd::prelude::*;
 
@@ -65,8 +63,10 @@ pub open spec fn spec_commit(s: LowerState, v: SymVal) -> Option<(Reg, LowerStat
     match v {
         SymVal::Reg(r, _) => Some((r, s, Seq::empty())),
         SymVal::I32ConstSym(n) => {
+            // V8-#2: the Lean spec emits the I32 tag (the const value is
+            // the wrapped 32-bit pattern), matching production exactly.
             let (dst, s1) = alloc(s);
-            Some((dst, s1, seq![KernelOp::Const(dst, ConstValue::U32(n))]))
+            Some((dst, s1, seq![KernelOp::Const(dst, ConstValue::I32(n))]))
         },
         _ => None,
     }
@@ -108,34 +108,28 @@ proof fn commit_bufferptr_both_refuse(s: LowerState, slot: nat)
         spec_commit(s, SymVal::BufferPtr(slot)).is_none(),
 {}
 
-/// Const case, register/state agreement: both allocate exactly one
-/// reg (dst = next_reg) and emit exactly one `Const` into it. The
-/// resulting state (next_reg + 1) and the dst register match.
-proof fn commit_const_state_refine(s: LowerState, n: int)
-    ensures
-        prod_commit(s, SymVal::I32ConstSym(n)).unwrap().0
-            == spec_commit(s, SymVal::I32ConstSym(n)).unwrap().0,
-        prod_commit(s, SymVal::I32ConstSym(n)).unwrap().1
-            == spec_commit(s, SymVal::I32ConstSym(n)).unwrap().1,
-        prod_commit(s, SymVal::I32ConstSym(n)).unwrap().2.len() == 1,
-        spec_commit(s, SymVal::I32ConstSym(n)).unwrap().2.len() == 1,
+/// Const case: production and spec commit are now IDENTICAL — register,
+/// state, and ops all equal. V8-#2 aligned the const tag (both emit
+/// `Const(dst, I32 n)`), so the const arm joins Reg in full agreement.
+proof fn commit_const_full_refine(s: LowerState, n: int)
+    ensures prod_commit(s, SymVal::I32ConstSym(n)) == spec_commit(s, SymVal::I32ConstSym(n)),
 {}
 
-// ── The recorded divergence (proven to differ, for V8) ─────────────
+// ── The const-tag agreement (V8-#2 closed; formerly a divergence) ──
 
-/// Const case, the TAG divergence: production emits `Const dst (I32 n)`
-/// while the Lean spec emits `Const dst (U32 n)`. Same dst, same value
-/// n, different scalar tag. We PROVE they differ so the gap is on the
-/// record, not silently assumed away. (Semantically a 32-bit value is
-/// a 32-bit value; the downstream emitters treat I32/U32 const loads
-/// identically. A future spec sync could align the tags.)
-proof fn commit_const_tag_diverges(s: LowerState, n: int)
+/// Const case, the TAG now AGREES: both production and spec emit
+/// `Const dst (I32 n)`. Previously the spec emitted `U32 n`; V8-#2's
+/// full semantic threading folded the I32 tag (the wrapped 32-bit
+/// pattern) into the Lean spec, so the op is byte-identical. Kept as
+/// an explicit witness that the gap is closed, not hidden.
+proof fn commit_const_tag_agrees(s: LowerState, n: int)
     ensures
         prod_commit(s, SymVal::I32ConstSym(n)).unwrap().2[0]
             == KernelOp::Const(s.next_reg, ConstValue::I32(n)),
         spec_commit(s, SymVal::I32ConstSym(n)).unwrap().2[0]
-            == KernelOp::Const(s.next_reg, ConstValue::U32(n)),
-        ConstValue::I32(n) != ConstValue::U32(n),
+            == KernelOp::Const(s.next_reg, ConstValue::I32(n)),
+        prod_commit(s, SymVal::I32ConstSym(n)).unwrap().2[0]
+            == spec_commit(s, SymVal::I32ConstSym(n)).unwrap().2[0],
 {}
 
 } // verus!

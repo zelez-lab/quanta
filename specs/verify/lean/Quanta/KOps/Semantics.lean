@@ -237,17 +237,47 @@ def liftMixedI32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Optio
     liftMixedI32 op (vI32 (a.toNat)) (vU32 b) = some (vI32 ((op a b).toNat)) := by
   simp [liftMixedI32, asU32Bits, vI32, vU32]
 
-private def liftCmpU32 (p : UInt32 → UInt32 → Bool) : Value → Value → Option Value
+def liftCmpU32 (p : UInt32 → UInt32 → Bool) : Value → Value → Option Value
   | .vU32 a, .vU32 b => some (vBool (p a b))
   | _, _ => none
 
-private def liftCmpI32 (p : Int → Int → Bool) : Value → Value → Option Value
-  | .vI32 a, .vI32 b => some (vBool (p a b))
-  | _, _ => none
+/-- Mixed/i32 comparison lane: when an operand carries a different
+    integer tag than `vU32`, reinterpret BOTH to the common 32-bit
+    pattern (`asU32Bits`) and apply the UNSIGNED predicate `p` —
+    matching wasm's `i32.{lt,le,gt,ge}_u` / `eq` / `ne`, which compare
+    the bit pattern. Inert on the `vU32,vU32` case (handled by
+    `liftCmpU32`), so it wires as an `orElse` fallback. -/
+def liftCmpMixed (p : UInt32 → UInt32 → Bool) : Value → Value → Option Value
+  | va, vb =>
+    match va, vb with
+    | .vU32 _, .vU32 _ => none
+    | _, _ =>
+      match asU32Bits va, asU32Bits vb with
+      | some a, some b => some (vBool (p a b))
+      | _, _ => none
 
-private def liftBoolBin (op : Bool → Bool → Bool) : Value → Value → Option Value
+@[simp] theorem liftCmpMixed_i32_i32 (p : UInt32 → UInt32 → Bool) (a b : UInt32) :
+    liftCmpMixed p (vI32 (a.toNat)) (vI32 (b.toNat)) = some (vBool (p a b)) := by
+  simp [liftCmpMixed, asU32Bits, vI32]
+@[simp] theorem liftCmpMixed_u32_i32 (p : UInt32 → UInt32 → Bool) (a b : UInt32) :
+    liftCmpMixed p (vU32 a) (vI32 (b.toNat)) = some (vBool (p a b)) := by
+  simp [liftCmpMixed, asU32Bits, vI32, vU32]
+@[simp] theorem liftCmpMixed_i32_u32 (p : UInt32 → UInt32 → Bool) (a b : UInt32) :
+    liftCmpMixed p (vI32 (a.toNat)) (vU32 b) = some (vBool (p a b)) := by
+  simp [liftCmpMixed, asU32Bits, vI32, vU32]
+@[simp] theorem liftCmpU32_i32_left (p : UInt32 → UInt32 → Bool) (a : Int) (v : Value) :
+    liftCmpU32 p (vI32 a) v = none := by cases v <;> simp [liftCmpU32, vI32]
+@[simp] theorem liftCmpU32_i32_right (p : UInt32 → UInt32 → Bool) (a : UInt32) (b : Int) :
+    liftCmpU32 p (vU32 a) (vI32 b) = none := by simp [liftCmpU32, vU32, vI32]
+
+def liftBoolBin (op : Bool → Bool → Bool) : Value → Value → Option Value
   | .vBool a, .vBool b => some (vBool (op a b))
   | _, _ => none
+
+@[simp] theorem liftBoolBin_i32_left (op : Bool → Bool → Bool) (a : Int) (v : Value) :
+    liftBoolBin op (vI32 a) v = none := by cases v <;> simp [liftBoolBin, vI32]
+@[simp] theorem liftBoolBin_i32_right (op : Bool → Bool → Bool) (a : UInt32) (b : Int) :
+    liftBoolBin op (vU32 a) (vI32 b) = none := by simp [liftBoolBin, vU32, vI32]
 
 def evalBinOp : BinOp → Value → Value → Option Value
   -- u32 lane first; every non-(u32,u32) integer combination (i32+i32 or
@@ -357,26 +387,27 @@ def evalUnaryOp : UnaryOp → Value → Option Value
       | _       => none
 
 def evalCmpOp : CmpOp → Value → Value → Option Value
+  -- u32 lane first, then bool (for `eq`/`ne` on `vBool`), then the
+  -- mixed/i32 lane (unsigned compare on the common bit pattern). The
+  -- old signed `liftCmpI32` arm is dropped — the lowered slice only
+  -- emits UNSIGNED i32 comparisons (`i32.lt_u` etc.), and a signed Int
+  -- compare on i32-typed values would be wrong for those.
   | .eq => fun va vb =>
       (liftCmpU32 (· == ·) va vb).orElse (fun _ =>
-      (liftCmpI32 (· == ·) va vb).orElse (fun _ =>
-        liftBoolBin (· == ·) va vb))
+      (liftBoolBin (· == ·) va vb).orElse (fun _ =>
+        liftCmpMixed (· == ·) va vb))
   | .ne => fun va vb =>
       (liftCmpU32 (· != ·) va vb).orElse (fun _ =>
-      (liftCmpI32 (· != ·) va vb).orElse (fun _ =>
-        liftBoolBin (· != ·) va vb))
+      (liftBoolBin (· != ·) va vb).orElse (fun _ =>
+        liftCmpMixed (· != ·) va vb))
   | .lt => fun va vb =>
-      (liftCmpU32 (· < ·) va vb).orElse (fun _ =>
-        liftCmpI32 (· < ·) va vb)
+      (liftCmpU32 (· < ·) va vb).orElse (fun _ => liftCmpMixed (· < ·) va vb)
   | .le => fun va vb =>
-      (liftCmpU32 (· <= ·) va vb).orElse (fun _ =>
-        liftCmpI32 (· <= ·) va vb)
+      (liftCmpU32 (· <= ·) va vb).orElse (fun _ => liftCmpMixed (· <= ·) va vb)
   | .gt => fun va vb =>
-      (liftCmpU32 (· > ·) va vb).orElse (fun _ =>
-        liftCmpI32 (· > ·) va vb)
+      (liftCmpU32 (· > ·) va vb).orElse (fun _ => liftCmpMixed (· > ·) va vb)
   | .ge => fun va vb =>
-      (liftCmpU32 (· >= ·) va vb).orElse (fun _ =>
-        liftCmpI32 (· >= ·) va vb)
+      (liftCmpU32 (· >= ·) va vb).orElse (fun _ => liftCmpMixed (· >= ·) va vb)
 
 /-- Cast follows Rust `as`: same alphabet as `KRust.evalCast`,
     just keyed on the *target* `Scalar` since the source type is
@@ -404,6 +435,9 @@ def evalCast (v : Value) : Scalar → Option Value
       -- `.cast cond_bool cond .u32 .bool` between the comparison's
       -- u32 result and the `.branch`'s bool input. Total on vU32.
       | .vU32 n  => some (vBool (n ≠ 0))
+      -- An i32-tagged condition (e.g. `br_if (i32.const k)`) carries the
+      -- same 32-bit pattern; non-zero ⇒ true. (V8-#2.)
+      | .vI32 z  => some (vBool (z.toNat ≠ 0))
       | _        => none
   | _ => none
 
@@ -456,12 +490,24 @@ def evalOp (fuel : Nat) (s : State) : KernelOp → Option State
       | .vU32 n =>
           let v ← heapLookup s.heap field n.toNat
           pure { s with rf := regWrite s.rf dst v }
+      -- An i32-tagged index reg carries the same byte offset as a u32
+      -- one (`z.toNat` is the bit pattern); production's pointer
+      -- arithmetic can tag the index either way. (V8-#2.)
+      | .vI32 z =>
+          let v ← heapLookup s.heap field z.toNat
+          pure { s with rf := regWrite s.rf dst v }
       | _ => none
   | .store field idx src _ty => do
       let vi ← regLookup s.rf idx
       let vs ← regLookup s.rf src
+      -- The stored value is normalized to its 32-bit pattern as `vU32`:
+      -- a flat-buffer cell holds bits, and production may tag the stored
+      -- value i32 or u32 (same bits). Keeps the heap u32-shaped so
+      -- `HeapRefines` / typed loads see a consistent alphabet. (V8-#2.)
+      let bits ← asU32Bits vs
       match vi with
-      | .vU32 n => pure { s with heap := heapStore s.heap field n.toNat vs }
+      | .vU32 n => pure { s with heap := heapStore s.heap field n.toNat (vU32 bits) }
+      | .vI32 z => pure { s with heap := heapStore s.heap field z.toNat (vU32 bits) }
       | _ => none
   | .branch cond thenOps elseOps => do
       let vc ← regLookup s.rf cond

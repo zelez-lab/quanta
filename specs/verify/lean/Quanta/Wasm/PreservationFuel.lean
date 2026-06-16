@@ -544,7 +544,12 @@ theorem evalOp_loopFree_no_break_preserves_broke
       | some vi =>
         cases vi with
         | vBool _ => simp [Quanta.KOps.evalOp, hi] at h
-        | vI32 _  => simp [Quanta.KOps.evalOp, hi] at h
+        | vI32 z  =>
+          cases hl : Quanta.KOps.heapLookup s.heap field z.toNat with
+          | none => simp [Quanta.KOps.evalOp, hi, hl] at h
+          | some v =>
+            simp [Quanta.KOps.evalOp, hi, hl] at h
+            rw [← h]
         | vF32 _  => simp [Quanta.KOps.evalOp, hi] at h
         | vU32 n =>
           cases hl : Quanta.KOps.heapLookup s.heap field n.toNat with
@@ -559,13 +564,18 @@ theorem evalOp_loopFree_no_break_preserves_broke
         cases hs2 : Quanta.KOps.regLookup s.rf src with
         | none => simp [Quanta.KOps.evalOp, hi, hs2] at h
         | some vs =>
-          cases vi with
-          | vBool _ => simp [Quanta.KOps.evalOp, hi, hs2] at h
-          | vI32 _  => simp [Quanta.KOps.evalOp, hi, hs2] at h
-          | vF32 _  => simp [Quanta.KOps.evalOp, hi, hs2] at h
-          | vU32 n =>
-            simp [Quanta.KOps.evalOp, hi, hs2] at h
-            rw [← h]
+          cases hbits : Quanta.KOps.asU32Bits vs with
+          | none => simp [Quanta.KOps.evalOp, hi, hs2, hbits] at h
+          | some bits =>
+            cases vi with
+            | vBool _ => simp [Quanta.KOps.evalOp, hi, hs2, hbits] at h
+            | vI32 z  =>
+              simp [Quanta.KOps.evalOp, hi, hs2, hbits] at h
+              rw [← h]
+            | vF32 _  => simp [Quanta.KOps.evalOp, hi, hs2, hbits] at h
+            | vU32 n =>
+              simp [Quanta.KOps.evalOp, hi, hs2, hbits] at h
+              rw [← h]
   | quarkId _ =>
       rw [Quanta.KOps.evalOp.eq_def] at h
       simp at h; rw [← h]
