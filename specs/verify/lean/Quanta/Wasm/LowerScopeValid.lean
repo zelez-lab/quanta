@@ -1014,6 +1014,181 @@ theorem lowerInstr_i32Shl_scopeValid
 -- Per-arm: i32Add (two buffer-pattern arms + lowerI32Bin fallback)
 -- ════════════════════════════════════════════════════════════════════
 
+/-- `const` ops never read registers, so a singleton/prefix of them is
+    scope-valid against any env. -/
+theorem scopeValid_const (env : List Reg) (dst : Reg) (v : Quanta.KOps.ConstValue) :
+    scopeValid env (.const dst v) := by
+  intro r hr; simp [KernelOp.usedRegs] at hr
+
+/-- A `binOp` op is scope-valid when both operands are in env. -/
+theorem scopeValid_binOp (env : List Reg) (dst a b : Reg)
+    (op : Quanta.KOps.BinOp) (ty : Scalar) (ha : a ∈ env) (hb : b ∈ env) :
+    scopeValid env (.binOp dst a b op ty) := by
+  intro r hr; simp [KernelOp.usedRegs] at hr; rcases hr with rfl | rfl <;> assumption
+
+/-- Scope-validity of a chained-address `i32.add` arm. The popped
+    address SymVals (`scaledIdx`/`bufferAccess`/`i32ConstSym`) contribute
+    `base`/`b2` regs that `wellScoped` places below `s.nextReg`; the
+    emitted `Const`/`Shl`/`Add` ops only reference those and freshly
+    allocated regs, all below the post-state `nextReg`. The `i32ConstSym`
+    arm's `Const` defines `off` before the `Add` uses it. -/
+theorem lowerI32Add_chained_scopeValid
+    {s s' : LowerState} {ops : List KernelOp} {sv1 sv2 : SymVal} {rs2 : List SymVal}
+    (hws : s.wellScoped)
+    (hs : s.stack = sv1 :: sv2 :: rs2)
+    (h : (match sv1, sv2 with
+          | .scaledIdx b2 s2, .bufferAccess slot base scale =>
+              if scale = s2 then
+                let (dst, s1) := s.alloc
+                some ({ s1 with stack := .bufferAccess slot dst scale :: rs2 },
+                      [.binOp dst base b2 .add .u32])
+              else if scale > s2 ∧ scale % s2 = 0 ∧ (1 <<< log2 (scale / s2)) = scale / s2 then
+                let (shift, s1) := s.alloc
+                let (scaled, s2') := s1.alloc
+                let (dst, s3) := s2'.alloc
+                some ({ s3 with stack := .bufferAccess slot dst s2 :: rs2 },
+                      [.const shift (.u32 (UInt32.ofNat (log2 (scale / s2)))),
+                       .binOp scaled base shift .shl .u32,
+                       .binOp dst scaled b2 .add .u32])
+              else lowerI32Bin s .add
+          | .bufferAccess slot base scale, .scaledIdx b2 s2 =>
+              if scale = s2 then
+                let (dst, s1) := s.alloc
+                some ({ s1 with stack := .bufferAccess slot dst scale :: rs2 },
+                      [.binOp dst base b2 .add .u32])
+              else if scale > s2 ∧ scale % s2 = 0 ∧ (1 <<< log2 (scale / s2)) = scale / s2 then
+                let (shift, s1) := s.alloc
+                let (scaled, s2') := s1.alloc
+                let (dst, s3) := s2'.alloc
+                some ({ s3 with stack := .bufferAccess slot dst s2 :: rs2 },
+                      [.const shift (.u32 (UInt32.ofNat (log2 (scale / s2)))),
+                       .binOp scaled base shift .shl .u32,
+                       .binOp dst scaled b2 .add .u32])
+              else lowerI32Bin s .add
+          | .i32ConstSym c, .bufferAccess slot base scale =>
+              if scale ≠ 0 ∧ c % (scale : Int) = 0 then
+                let (off, s1) := s.alloc
+                let (dst, s2') := s1.alloc
+                some ({ s2' with stack := .bufferAccess slot dst scale :: rs2 },
+                      [.const off (.i32 (c / (scale : Int))),
+                       .binOp dst base off .add .u32])
+              else lowerI32Bin s .add
+          | .bufferAccess slot base scale, .i32ConstSym c =>
+              if scale ≠ 0 ∧ c % (scale : Int) = 0 then
+                let (off, s1) := s.alloc
+                let (dst, s2') := s1.alloc
+                some ({ s2' with stack := .bufferAccess slot dst scale :: rs2 },
+                      [.const off (.i32 (c / (scale : Int))),
+                       .binOp dst base off .add .u32])
+              else lowerI32Bin s .add
+          | _, _ => lowerI32Bin s .add) = some (s', ops)) :
+    scopeValidOps s'.scopeEnv ops := by
+  -- Regs in the top two stack slots are < s.nextReg (wellScoped).
+  have h_regs_lt : ∀ r ∈ sv1.regs ++ sv2.regs, r < s.nextReg := by
+    intro r hr
+    rw [List.mem_append] at hr
+    rcases hr with hr | hr
+    · exact hws.1 sv1 (by rw [hs]; simp) r hr
+    · exact hws.1 sv2 (by rw [hs]; simp [List.mem_cons]) r hr
+  -- Membership in the post-state scopeEnv for a reg < s.nextReg + k.
+  cases sv1 with
+  | scaledIdx b2 s2 =>
+    cases sv2 with
+    | bufferAccess slot base scale =>
+      have hb2 : b2 < s.nextReg := h_regs_lt b2 (by simp [SymVal.regs])
+      have hbase : base < s.nextReg := h_regs_lt base (by simp [SymVal.regs])
+      simp only [LowerState.alloc] at h
+      split at h
+      · obtain ⟨h_s_eq, h_ops⟩ :=
+          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        rw [← h_s_eq, ← h_ops]
+        refine ⟨scopeValid_binOp _ _ _ _ _ _ ?_ ?_, trivial⟩
+        · rw [LowerState.mem_scopeEnv]; exact Nat.lt_succ_of_lt hbase
+        · rw [LowerState.mem_scopeEnv]; exact Nat.lt_succ_of_lt hb2
+      · split at h
+        · obtain ⟨h_s_eq, h_ops⟩ :=
+            Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+          rw [← h_s_eq, ← h_ops]
+          refine ⟨scopeValid_const _ _ _, ?_, ?_, trivial⟩
+          · refine scopeValid_binOp _ _ _ _ _ _ ?_ ?_
+            · simp only [KernelOp.extendEnv, KernelOp.definedReg]
+              apply List.mem_cons_of_mem; rw [LowerState.mem_scopeEnv]
+              exact Nat.lt_of_lt_of_le hbase (by simp_arith)
+            · simp only [KernelOp.extendEnv, KernelOp.definedReg]; exact List.mem_cons_self _ _
+          · refine scopeValid_binOp _ _ _ _ _ _ ?_ ?_
+            · simp only [KernelOp.extendEnv, KernelOp.definedReg]
+              apply List.mem_cons_self
+            · simp only [KernelOp.extendEnv, KernelOp.definedReg]
+              apply List.mem_cons_of_mem; apply List.mem_cons_of_mem
+              rw [LowerState.mem_scopeEnv]
+              exact Nat.lt_of_lt_of_le hb2 (by simp_arith)
+        · exact lowerI32Bin_scopeValid hws h
+    | _ => exact lowerI32Bin_scopeValid hws h
+  | bufferAccess slot base scale =>
+    cases sv2 with
+    | scaledIdx b2 s2 =>
+      have hb2 : b2 < s.nextReg := h_regs_lt b2 (by simp [SymVal.regs])
+      have hbase : base < s.nextReg := h_regs_lt base (by simp [SymVal.regs])
+      simp only [LowerState.alloc] at h
+      split at h
+      · obtain ⟨h_s_eq, h_ops⟩ :=
+          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        rw [← h_s_eq, ← h_ops]
+        refine ⟨scopeValid_binOp _ _ _ _ _ _ ?_ ?_, trivial⟩
+        · rw [LowerState.mem_scopeEnv]; exact Nat.lt_succ_of_lt hbase
+        · rw [LowerState.mem_scopeEnv]; exact Nat.lt_succ_of_lt hb2
+      · split at h
+        · obtain ⟨h_s_eq, h_ops⟩ :=
+            Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+          rw [← h_s_eq, ← h_ops]
+          refine ⟨scopeValid_const _ _ _, ?_, ?_, trivial⟩
+          · refine scopeValid_binOp _ _ _ _ _ _ ?_ ?_
+            · simp only [KernelOp.extendEnv, KernelOp.definedReg]
+              apply List.mem_cons_of_mem; rw [LowerState.mem_scopeEnv]
+              exact Nat.lt_of_lt_of_le hbase (by simp_arith)
+            · simp only [KernelOp.extendEnv, KernelOp.definedReg]; exact List.mem_cons_self _ _
+          · refine scopeValid_binOp _ _ _ _ _ _ ?_ ?_
+            · simp only [KernelOp.extendEnv, KernelOp.definedReg]
+              apply List.mem_cons_self
+            · simp only [KernelOp.extendEnv, KernelOp.definedReg]
+              apply List.mem_cons_of_mem; apply List.mem_cons_of_mem
+              rw [LowerState.mem_scopeEnv]
+              exact Nat.lt_of_lt_of_le hb2 (by simp_arith)
+        · exact lowerI32Bin_scopeValid hws h
+    | i32ConstSym c =>
+      have hbase : base < s.nextReg := h_regs_lt base (by simp [SymVal.regs])
+      simp only [LowerState.alloc] at h
+      split at h
+      · obtain ⟨h_s_eq, h_ops⟩ :=
+          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        rw [← h_s_eq, ← h_ops]
+        refine ⟨scopeValid_const _ _ _, ?_, trivial⟩
+        refine scopeValid_binOp _ _ _ _ _ _ ?_ ?_
+        · simp only [KernelOp.extendEnv, KernelOp.definedReg]
+          apply List.mem_cons_of_mem; rw [LowerState.mem_scopeEnv]
+          exact Nat.lt_of_lt_of_le hbase (by simp_arith)
+        · simp only [KernelOp.extendEnv, KernelOp.definedReg]; exact List.mem_cons_self _ _
+      · exact lowerI32Bin_scopeValid hws h
+    | _ => exact lowerI32Bin_scopeValid hws h
+  | i32ConstSym c =>
+    cases sv2 with
+    | bufferAccess slot base scale =>
+      have hbase : base < s.nextReg := h_regs_lt base (by simp [SymVal.regs])
+      simp only [LowerState.alloc] at h
+      split at h
+      · obtain ⟨h_s_eq, h_ops⟩ :=
+          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        rw [← h_s_eq, ← h_ops]
+        refine ⟨scopeValid_const _ _ _, ?_, trivial⟩
+        refine scopeValid_binOp _ _ _ _ _ _ ?_ ?_
+        · simp only [KernelOp.extendEnv, KernelOp.definedReg]
+          apply List.mem_cons_of_mem; rw [LowerState.mem_scopeEnv]
+          exact Nat.lt_of_lt_of_le hbase (by simp_arith)
+        · simp only [KernelOp.extendEnv, KernelOp.definedReg]; exact List.mem_cons_self _ _
+      · exact lowerI32Bin_scopeValid hws h
+    | _ => exact lowerI32Bin_scopeValid hws h
+  | _ => exact lowerI32Bin_scopeValid hws h
+
 theorem lowerI32Add_scopeValid
     {s s' : LowerState} {ops : List KernelOp}
     (hws : s.wellScoped)
@@ -1036,7 +1211,10 @@ theorem lowerI32Add_scopeValid
             | reg _ _ => exact lowerI32Bin_scopeValid hws h
             | i32ConstSym _ => exact lowerI32Bin_scopeValid hws h
             | scaledIdx _ _ => exact lowerI32Bin_scopeValid hws h
-            | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
+            | bufferAccess slot2 base2 scale2 =>
+                -- scaledIdx{base,scale} + bufferAccess{slot2,base2,scale2}:
+                -- chained same-scale / rescale add (or guard-fail → bin).
+                exact lowerI32Add_chained_scopeValid hws hs h
     | bufferPtr slot =>
         cases rs with
         | nil => exact lowerI32Bin_scopeValid hws h
@@ -1051,8 +1229,29 @@ theorem lowerI32Add_scopeValid
             | bufferPtr _ => exact lowerI32Bin_scopeValid hws h
             | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
     | reg _ _ => exact lowerI32Bin_scopeValid hws h
-    | i32ConstSym _ => exact lowerI32Bin_scopeValid hws h
-    | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
+    | i32ConstSym c =>
+        cases rs with
+        | nil => exact lowerI32Bin_scopeValid hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | bufferAccess slot2 base2 scale2 =>
+                exact lowerI32Add_chained_scopeValid hws hs h
+            | reg _ _ => exact lowerI32Bin_scopeValid hws h
+            | i32ConstSym _ => exact lowerI32Bin_scopeValid hws h
+            | bufferPtr _ => exact lowerI32Bin_scopeValid hws h
+            | scaledIdx _ _ => exact lowerI32Bin_scopeValid hws h
+    | bufferAccess slot base scale =>
+        cases rs with
+        | nil => exact lowerI32Bin_scopeValid hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | scaledIdx b2 s2 =>
+                exact lowerI32Add_chained_scopeValid hws hs h
+            | i32ConstSym c =>
+                exact lowerI32Add_chained_scopeValid hws hs h
+            | reg _ _ => exact lowerI32Bin_scopeValid hws h
+            | bufferPtr _ => exact lowerI32Bin_scopeValid hws h
+            | bufferAccess _ _ _ => exact lowerI32Bin_scopeValid hws h
 
 theorem lowerInstr_i32Add_scopeValid
     {s s' : LowerState} {ops : List KernelOp}
@@ -1925,6 +2124,162 @@ theorem lowerInstr_i32Shl_preserves_wellScoped
     s'.wellScoped :=
   lowerI32Shl_preserves_wellScoped hws h
 
+/-- The post-state of a chained-address `i32.add` arm is well-scoped:
+    the new top is `bufferAccess slot dst k` with `dst` a freshly
+    allocated reg (`< s'.nextReg`); `rs2` regs lift from `< s.nextReg`;
+    `localReg`/`currentReg` are untouched. -/
+theorem lowerI32Add_chained_wellScoped
+    {s s' : LowerState} {ops : List KernelOp} {sv1 sv2 : SymVal} {rs2 : List SymVal}
+    (hws : s.wellScoped)
+    (hs : s.stack = sv1 :: sv2 :: rs2)
+    (h : (match sv1, sv2 with
+          | .scaledIdx b2 s2, .bufferAccess slot base scale =>
+              if scale = s2 then
+                let (dst, s1) := s.alloc
+                some ({ s1 with stack := .bufferAccess slot dst scale :: rs2 },
+                      [.binOp dst base b2 .add .u32])
+              else if scale > s2 ∧ scale % s2 = 0 ∧ (1 <<< log2 (scale / s2)) = scale / s2 then
+                let (shift, s1) := s.alloc
+                let (scaled, s2') := s1.alloc
+                let (dst, s3) := s2'.alloc
+                some ({ s3 with stack := .bufferAccess slot dst s2 :: rs2 },
+                      [.const shift (.u32 (UInt32.ofNat (log2 (scale / s2)))),
+                       .binOp scaled base shift .shl .u32,
+                       .binOp dst scaled b2 .add .u32])
+              else lowerI32Bin s .add
+          | .bufferAccess slot base scale, .scaledIdx b2 s2 =>
+              if scale = s2 then
+                let (dst, s1) := s.alloc
+                some ({ s1 with stack := .bufferAccess slot dst scale :: rs2 },
+                      [.binOp dst base b2 .add .u32])
+              else if scale > s2 ∧ scale % s2 = 0 ∧ (1 <<< log2 (scale / s2)) = scale / s2 then
+                let (shift, s1) := s.alloc
+                let (scaled, s2') := s1.alloc
+                let (dst, s3) := s2'.alloc
+                some ({ s3 with stack := .bufferAccess slot dst s2 :: rs2 },
+                      [.const shift (.u32 (UInt32.ofNat (log2 (scale / s2)))),
+                       .binOp scaled base shift .shl .u32,
+                       .binOp dst scaled b2 .add .u32])
+              else lowerI32Bin s .add
+          | .i32ConstSym c, .bufferAccess slot base scale =>
+              if scale ≠ 0 ∧ c % (scale : Int) = 0 then
+                let (off, s1) := s.alloc
+                let (dst, s2') := s1.alloc
+                some ({ s2' with stack := .bufferAccess slot dst scale :: rs2 },
+                      [.const off (.i32 (c / (scale : Int))),
+                       .binOp dst base off .add .u32])
+              else lowerI32Bin s .add
+          | .bufferAccess slot base scale, .i32ConstSym c =>
+              if scale ≠ 0 ∧ c % (scale : Int) = 0 then
+                let (off, s1) := s.alloc
+                let (dst, s2') := s1.alloc
+                some ({ s2' with stack := .bufferAccess slot dst scale :: rs2 },
+                      [.const off (.i32 (c / (scale : Int))),
+                       .binOp dst base off .add .u32])
+              else lowerI32Bin s .add
+          | _, _ => lowerI32Bin s .add) = some (s', ops)) :
+    s'.wellScoped := by
+  -- Old-stack regs lift below the (larger) post-state nextReg.
+  obtain ⟨hstk, hloc, hcur⟩ := hws
+  have h_rs2_lt : ∀ sv ∈ rs2, ∀ r ∈ sv.regs, r < s.nextReg := by
+    intro sv hsv r hr
+    exact hstk sv (by rw [hs]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hsv)) r hr
+  -- The post-state's localReg / currentReg are `s`'s, so those clauses
+  -- hold against the larger nextReg directly.
+  cases sv1 with
+  | scaledIdx b2 s2 =>
+    cases sv2 with
+    | bufferAccess slot base scale =>
+      simp only [LowerState.alloc] at h
+      split at h
+      · obtain ⟨h_s_eq, _⟩ :=
+          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        rw [← h_s_eq]
+        refine ⟨?_, fun p hp => Nat.lt_succ_of_lt (hloc p hp),
+                   fun p hp => Nat.lt_succ_of_lt (hcur p hp)⟩
+        intro sv hsv r hr
+        simp only [List.mem_cons] at hsv
+        rcases hsv with rfl | hsv
+        · simp only [SymVal.regs, List.mem_singleton] at hr; subst hr
+          simp_arith
+        · exact Nat.lt_succ_of_lt (h_rs2_lt sv hsv r hr)
+      · split at h
+        · obtain ⟨h_s_eq, _⟩ :=
+            Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+          rw [← h_s_eq]
+          refine ⟨?_, fun p hp => Nat.lt_of_lt_of_le (hloc p hp) (by simp_arith),
+                     fun p hp => Nat.lt_of_lt_of_le (hcur p hp) (by simp_arith)⟩
+          intro sv hsv r hr
+          simp only [List.mem_cons] at hsv
+          rcases hsv with rfl | hsv
+          · simp only [SymVal.regs, List.mem_singleton] at hr; subst hr; simp_arith
+          · exact Nat.lt_of_lt_of_le (h_rs2_lt sv hsv r hr) (by simp_arith)
+        · exact lowerI32Bin_preserves_wellScoped ⟨hstk, hloc, hcur⟩ h
+    | _ => exact lowerI32Bin_preserves_wellScoped ⟨hstk, hloc, hcur⟩ h
+  | bufferAccess slot base scale =>
+    cases sv2 with
+    | scaledIdx b2 s2 =>
+      simp only [LowerState.alloc] at h
+      split at h
+      · obtain ⟨h_s_eq, _⟩ :=
+          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        rw [← h_s_eq]
+        refine ⟨?_, fun p hp => Nat.lt_succ_of_lt (hloc p hp),
+                   fun p hp => Nat.lt_succ_of_lt (hcur p hp)⟩
+        intro sv hsv r hr
+        simp only [List.mem_cons] at hsv
+        rcases hsv with rfl | hsv
+        · simp only [SymVal.regs, List.mem_singleton] at hr; subst hr
+          simp_arith
+        · exact Nat.lt_succ_of_lt (h_rs2_lt sv hsv r hr)
+      · split at h
+        · obtain ⟨h_s_eq, _⟩ :=
+            Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+          rw [← h_s_eq]
+          refine ⟨?_, fun p hp => Nat.lt_of_lt_of_le (hloc p hp) (by simp_arith),
+                     fun p hp => Nat.lt_of_lt_of_le (hcur p hp) (by simp_arith)⟩
+          intro sv hsv r hr
+          simp only [List.mem_cons] at hsv
+          rcases hsv with rfl | hsv
+          · simp only [SymVal.regs, List.mem_singleton] at hr; subst hr; simp_arith
+          · exact Nat.lt_of_lt_of_le (h_rs2_lt sv hsv r hr) (by simp_arith)
+        · exact lowerI32Bin_preserves_wellScoped ⟨hstk, hloc, hcur⟩ h
+    | i32ConstSym c =>
+      simp only [LowerState.alloc] at h
+      split at h
+      · obtain ⟨h_s_eq, _⟩ :=
+          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        rw [← h_s_eq]
+        refine ⟨?_, fun p hp => Nat.lt_of_lt_of_le (hloc p hp) (by simp_arith),
+                   fun p hp => Nat.lt_of_lt_of_le (hcur p hp) (by simp_arith)⟩
+        intro sv hsv r hr
+        simp only [List.mem_cons] at hsv
+        rcases hsv with rfl | hsv
+        · simp only [SymVal.regs, List.mem_singleton] at hr; subst hr
+          simp_arith
+        · exact Nat.lt_of_lt_of_le (h_rs2_lt sv hsv r hr) (by simp_arith)
+      · exact lowerI32Bin_preserves_wellScoped ⟨hstk, hloc, hcur⟩ h
+    | _ => exact lowerI32Bin_preserves_wellScoped ⟨hstk, hloc, hcur⟩ h
+  | i32ConstSym c =>
+    cases sv2 with
+    | bufferAccess slot base scale =>
+      simp only [LowerState.alloc] at h
+      split at h
+      · obtain ⟨h_s_eq, _⟩ :=
+          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+        rw [← h_s_eq]
+        refine ⟨?_, fun p hp => Nat.lt_of_lt_of_le (hloc p hp) (by simp_arith),
+                   fun p hp => Nat.lt_of_lt_of_le (hcur p hp) (by simp_arith)⟩
+        intro sv hsv r hr
+        simp only [List.mem_cons] at hsv
+        rcases hsv with rfl | hsv
+        · simp only [SymVal.regs, List.mem_singleton] at hr; subst hr
+          simp_arith
+        · exact Nat.lt_of_lt_of_le (h_rs2_lt sv hsv r hr) (by simp_arith)
+      · exact lowerI32Bin_preserves_wellScoped ⟨hstk, hloc, hcur⟩ h
+    | _ => exact lowerI32Bin_preserves_wellScoped ⟨hstk, hloc, hcur⟩ h
+  | _ => exact lowerI32Bin_preserves_wellScoped ⟨hstk, hloc, hcur⟩ h
+
 theorem lowerI32Add_preserves_wellScoped
     {s s' : LowerState} {ops : List KernelOp}
     (hws : s.wellScoped)
@@ -1962,7 +2317,8 @@ theorem lowerI32Add_preserves_wellScoped
             | reg _ _ => exact lowerI32Bin_preserves_wellScoped hws h
             | i32ConstSym _ => exact lowerI32Bin_preserves_wellScoped hws h
             | scaledIdx _ _ => exact lowerI32Bin_preserves_wellScoped hws h
-            | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferAccess slot2 base2 scale2 =>
+                exact lowerI32Add_chained_wellScoped hws hs h
     | bufferPtr slot =>
         cases rs with
         | nil => exact lowerI32Bin_preserves_wellScoped hws h
@@ -1992,8 +2348,29 @@ theorem lowerI32Add_preserves_wellScoped
             | bufferPtr _ => exact lowerI32Bin_preserves_wellScoped hws h
             | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
     | reg _ _ => exact lowerI32Bin_preserves_wellScoped hws h
-    | i32ConstSym _ => exact lowerI32Bin_preserves_wellScoped hws h
-    | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | i32ConstSym c =>
+        cases rs with
+        | nil => exact lowerI32Bin_preserves_wellScoped hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | bufferAccess slot2 base2 scale2 =>
+                exact lowerI32Add_chained_wellScoped hws hs h
+            | reg _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | i32ConstSym _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferPtr _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | scaledIdx _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+    | bufferAccess slot base scale =>
+        cases rs with
+        | nil => exact lowerI32Bin_preserves_wellScoped hws h
+        | cons sv2 rs2 =>
+            cases sv2 with
+            | scaledIdx b2 s2 =>
+                exact lowerI32Add_chained_wellScoped hws hs h
+            | i32ConstSym c =>
+                exact lowerI32Add_chained_wellScoped hws hs h
+            | reg _ _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferPtr _ => exact lowerI32Bin_preserves_wellScoped hws h
+            | bufferAccess _ _ _ => exact lowerI32Bin_preserves_wellScoped hws h
 
 theorem lowerInstr_i32Add_preserves_wellScoped
     {s s' : LowerState} {ops : List KernelOp}
@@ -2565,7 +2942,17 @@ theorem lowerInstr_nextReg_mono
                 | reg _ _ => exact lowerI32Bin_nextReg_mono h
                 | i32ConstSym _ => exact lowerI32Bin_nextReg_mono h
                 | scaledIdx _ _ => exact lowerI32Bin_nextReg_mono h
-                | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
+                | bufferAccess slot2 base2 scale2 =>
+                    simp only [LowerState.alloc] at h
+                    split at h
+                    · obtain ⟨h_s_eq, _⟩ :=
+                        Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+                      rw [← h_s_eq]; simp_arith
+                    · split at h
+                      · obtain ⟨h_s_eq, _⟩ :=
+                          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+                        rw [← h_s_eq]; simp_arith
+                      · exact lowerI32Bin_nextReg_mono h
         | bufferPtr slot =>
             cases rs with
             | nil => exact lowerI32Bin_nextReg_mono h
@@ -2580,8 +2967,48 @@ theorem lowerInstr_nextReg_mono
                 | bufferPtr _ => exact lowerI32Bin_nextReg_mono h
                 | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
         | reg _ _ => exact lowerI32Bin_nextReg_mono h
-        | i32ConstSym _ => exact lowerI32Bin_nextReg_mono h
-        | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
+        | i32ConstSym c =>
+            cases rs with
+            | nil => exact lowerI32Bin_nextReg_mono h
+            | cons sv2 rs2 =>
+                cases sv2 with
+                | bufferAccess slot2 base2 scale2 =>
+                    simp only [LowerState.alloc] at h
+                    split at h
+                    · obtain ⟨h_s_eq, _⟩ :=
+                        Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+                      rw [← h_s_eq]; simp_arith
+                    · exact lowerI32Bin_nextReg_mono h
+                | reg _ _ => exact lowerI32Bin_nextReg_mono h
+                | i32ConstSym _ => exact lowerI32Bin_nextReg_mono h
+                | bufferPtr _ => exact lowerI32Bin_nextReg_mono h
+                | scaledIdx _ _ => exact lowerI32Bin_nextReg_mono h
+        | bufferAccess slot base scale =>
+            cases rs with
+            | nil => exact lowerI32Bin_nextReg_mono h
+            | cons sv2 rs2 =>
+                cases sv2 with
+                | scaledIdx b2 s2 =>
+                    simp only [LowerState.alloc] at h
+                    split at h
+                    · obtain ⟨h_s_eq, _⟩ :=
+                        Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+                      rw [← h_s_eq]; simp_arith
+                    · split at h
+                      · obtain ⟨h_s_eq, _⟩ :=
+                          Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+                        rw [← h_s_eq]; simp_arith
+                      · exact lowerI32Bin_nextReg_mono h
+                | i32ConstSym c =>
+                    simp only [LowerState.alloc] at h
+                    split at h
+                    · obtain ⟨h_s_eq, _⟩ :=
+                        Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+                      rw [← h_s_eq]; simp_arith
+                    · exact lowerI32Bin_nextReg_mono h
+                | reg _ _ => exact lowerI32Bin_nextReg_mono h
+                | bufferPtr _ => exact lowerI32Bin_nextReg_mono h
+                | bufferAccess _ _ _ => exact lowerI32Bin_nextReg_mono h
   | i32Sub => exact lowerI32Bin_nextReg_mono h
   | i32Mul => exact lowerI32Bin_nextReg_mono h
   | i32And => exact lowerI32Bin_nextReg_mono h

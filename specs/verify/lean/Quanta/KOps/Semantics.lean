@@ -209,6 +209,14 @@ def liftU32 (op : UInt32 → UInt32 → UInt32) : Value → Value → Option Val
   | .vI32 z => some (UInt32.ofNat z.toNat)
   | _       => none
 
+/-- Round-trip: a `vI32` carrying the `Nat` bit pattern of a `UInt32`
+    reads back as that `UInt32` through `asU32Bits` (the `vI32`↔`vU32`
+    bit coherence). Used by the chained-address-add preservation, where
+    the mixed evaluator tags a combined index `vI32 ↑(x.toNat)`. -/
+@[simp] theorem asU32Bits_vI32_ofNat_toNat (x : UInt32) :
+    asU32Bits (vI32 ↑(x.toNat)) = some x := by
+  simp only [asU32Bits, vI32, Int.toNat_ofNat, UInt32.ofNat_toNat]
+
 /-- Mixed-operand integer binop: when the operands carry different
     integer tags (one `vU32`, one `vI32`), reinterpret both to the
     common 32-bit pattern, apply the `UInt32` op, and tag the result
@@ -374,6 +382,49 @@ theorem evalBinOp_add_i32_i32 (a b : UInt32) :
       = some (vI32 ((eval_u32_wrapping_add a b).toNat)) := by
   simp [evalBinOp, liftU32, liftMixedI32, asU32Bits, eval_u32_wrapping_add, vI32, vU32,
         Option.orElse]
+
+/-- Bit-level `.add` over arbitrary integer-tagged operands: from the
+    32-bit patterns `a`/`b` of two values (`asU32Bits`), `evalBinOp .add`
+    succeeds and the RESULT carries the wrapping-add pattern `a + b`
+    (regardless of the two operand tags — u32+u32 keeps `vU32`, any mix
+    keeps `vI32`, but `asU32Bits` of the result is `a + b` either way).
+    The address-fold preservation reads only the bit pattern of the
+    combined index, so this tag-agnostic form is exactly what it needs. -/
+theorem evalBinOp_add_asU32Bits {va vb : Value} {a b : UInt32}
+    (ha : asU32Bits va = some a) (hb : asU32Bits vb = some b) :
+    ∃ vr, evalBinOp .add va vb = some vr ∧
+      (vr = vU32 (a + b) ∨ vr = vI32 ↑((a + b).toNat)) := by
+  -- Case on the two value tags. Only integer values have `asU32Bits`.
+  cases va with
+  | vU32 na =>
+    cases vb with
+    | vU32 nb =>
+      simp only [asU32Bits, Option.some.injEq] at ha hb; subst ha; subst hb
+      exact ⟨vU32 (na + nb), by
+        simp [evalBinOp, liftU32, vU32, eval_u32_wrapping_add, Option.orElse], Or.inl rfl⟩
+    | vI32 nb =>
+      simp only [asU32Bits, Option.some.injEq] at ha hb; subst ha; subst hb
+      refine ⟨vI32 ((na + UInt32.ofNat nb.toNat).toNat), ?_, Or.inr rfl⟩
+      simp [evalBinOp, liftU32, liftMixedI32, asU32Bits, eval_u32_wrapping_add,
+            vU32, vI32, Option.orElse]
+    | vBool _ => simp [asU32Bits] at hb
+    | vF32 _ => simp [asU32Bits] at hb
+  | vI32 na =>
+    cases vb with
+    | vU32 nb =>
+      simp only [asU32Bits, Option.some.injEq] at ha hb; subst ha; subst hb
+      refine ⟨vI32 ((UInt32.ofNat na.toNat + nb).toNat), ?_, Or.inr rfl⟩
+      simp [evalBinOp, liftU32, liftMixedI32, asU32Bits, eval_u32_wrapping_add,
+            vU32, vI32, Option.orElse]
+    | vI32 nb =>
+      simp only [asU32Bits, Option.some.injEq] at ha hb; subst ha; subst hb
+      refine ⟨vI32 ((UInt32.ofNat na.toNat + UInt32.ofNat nb.toNat).toNat), ?_, Or.inr rfl⟩
+      simp [evalBinOp, liftU32, liftMixedI32, asU32Bits, eval_u32_wrapping_add,
+            vI32, Option.orElse]
+    | vBool _ => simp [asU32Bits] at hb
+    | vF32 _ => simp [asU32Bits] at hb
+  | vBool _ => simp [asU32Bits] at ha
+  | vF32 _ => simp [asU32Bits] at ha
 
 def evalUnaryOp : UnaryOp → Value → Option Value
   | .neg    => fun v => match v with

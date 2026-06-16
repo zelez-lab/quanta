@@ -850,9 +850,13 @@ theorem preservation_evalInstrs_cons_i32Add
     (h_no_branch : ws.branchTarget = none)
     (h_no_halt : ws.halted = false)
     (h_kst_no_broke : kst.broke = false)
-    (h_no_buf : ∀ slot base scale rest,
+    (h_no_buf : ∀ slot base scale b2 s2 c rest,
       s.stack ≠ .scaledIdx base scale :: .bufferPtr slot :: rest ∧
-      s.stack ≠ .bufferPtr slot :: .scaledIdx base scale :: rest)
+      s.stack ≠ .bufferPtr slot :: .scaledIdx base scale :: rest ∧
+      s.stack ≠ .scaledIdx b2 s2 :: .bufferAccess slot base scale :: rest ∧
+      s.stack ≠ .bufferAccess slot base scale :: .scaledIdx b2 s2 :: rest ∧
+      s.stack ≠ .i32ConstSym c :: .bufferAccess slot base scale :: rest ∧
+      s.stack ≠ .bufferAccess slot base scale :: .i32ConstSym c :: rest)
     (rest : List WasmInstr)
     (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
         {kst_mid : Quanta.KOps.State}
@@ -876,9 +880,17 @@ theorem preservation_evalInstrs_cons_i32Add
     unfold lowerI32Add
     split
     next base scale slot rest hs =>
-        exact absurd hs (h_no_buf slot base scale rest).left
+        exact absurd hs (h_no_buf slot base scale 0 0 0 rest).1
     next slot base scale rest hs =>
-        exact absurd hs (h_no_buf slot base scale rest).right
+        exact absurd hs (h_no_buf slot base scale 0 0 0 rest).2.1
+    next b2 s2 slot base scale rest hs =>
+        exact absurd hs (h_no_buf slot base scale b2 s2 0 rest).2.2.1
+    next slot base scale b2 s2 rest hs =>
+        exact absurd hs (h_no_buf slot base scale b2 s2 0 rest).2.2.2.1
+    next c slot base scale rest hs =>
+        exact absurd hs (h_no_buf slot base scale 0 0 c rest).2.2.2.2.1
+    next slot base scale c rest hs =>
+        exact absurd hs (h_no_buf slot base scale 0 0 c rest).2.2.2.2.2
     next => rfl
   exact preservation_evalInstrs_cons_i32Bin_generic
     .i32Add eval_u32_wrapping_add .add

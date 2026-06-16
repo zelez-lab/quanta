@@ -190,41 +190,21 @@ theorem lowerI32Add_preserves_bufferSlots
     {s s' : LowerState} {ops : List KernelOp}
     (h : lowerI32Add s = some (s', ops)) :
     s'.bufferSlots = s.bufferSlots := by
+  -- Every successful `lowerI32Add` outcome is either a fall-through to
+  -- `lowerI32Bin` (handled by its own lemma) or a state built from `s`
+  -- by `alloc`s + a `stack` rewrite — neither touches `bufferSlots`.
+  -- `split at h` over the whole match + nested guards enumerates them;
+  -- each non-bin leaf is `some ({.. with stack := ..}, ..) = some (s', ops)`,
+  -- whose `bufferSlots` reduces to `s.bufferSlots` by `rfl`.
   unfold lowerI32Add at h
-  rcases hs : s.stack with _ | ⟨sv1, rs⟩
-  · rw [hs] at h
-    exact lowerI32Bin_preserves_bufferSlots h
-  · rw [hs] at h
-    cases sv1 with
-    | scaledIdx base scale =>
-        cases rs with
-        | nil => exact lowerI32Bin_preserves_bufferSlots h
-        | cons sv2 rs2 =>
-            cases sv2 with
-            | bufferPtr slot =>
-                simp at h
-                rcases h with ⟨h_s_eq, _⟩
-                rw [← h_s_eq]
-            | reg _ _ => exact lowerI32Bin_preserves_bufferSlots h
-            | i32ConstSym _ => exact lowerI32Bin_preserves_bufferSlots h
-            | scaledIdx _ _ => exact lowerI32Bin_preserves_bufferSlots h
-            | bufferAccess _ _ _ => exact lowerI32Bin_preserves_bufferSlots h
-    | bufferPtr slot =>
-        cases rs with
-        | nil => exact lowerI32Bin_preserves_bufferSlots h
-        | cons sv2 rs2 =>
-            cases sv2 with
-            | scaledIdx base scale =>
-                simp at h
-                rcases h with ⟨h_s_eq, _⟩
-                rw [← h_s_eq]
-            | reg _ _ => exact lowerI32Bin_preserves_bufferSlots h
-            | i32ConstSym _ => exact lowerI32Bin_preserves_bufferSlots h
-            | bufferPtr _ => exact lowerI32Bin_preserves_bufferSlots h
-            | bufferAccess _ _ _ => exact lowerI32Bin_preserves_bufferSlots h
-    | reg _ _ => exact lowerI32Bin_preserves_bufferSlots h
-    | i32ConstSym _ => exact lowerI32Bin_preserves_bufferSlots h
-    | bufferAccess _ _ _ => exact lowerI32Bin_preserves_bufferSlots h
+  simp only [LowerState.alloc] at h
+  repeat' split at h
+  all_goals
+    first
+    | exact lowerI32Bin_preserves_bufferSlots h
+    | (obtain ⟨h_s_eq, _⟩ :=
+        Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp h)
+       rw [← h_s_eq])
 
 /-- `lowerI32Load` preserves `bufferSlots`. Only the `bufferAccess`
     arm succeeds; the resulting state is `{s1 with stack := ...}`

@@ -2169,9 +2169,13 @@ theorem preservation_i32Add
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
-    (h_no_buf : ∀ slot base scale rest,
+    (h_no_buf : ∀ slot base scale b2 s2 c rest,
       s.stack ≠ .scaledIdx base scale :: .bufferPtr slot :: rest ∧
-      s.stack ≠ .bufferPtr slot :: .scaledIdx base scale :: rest)
+      s.stack ≠ .bufferPtr slot :: .scaledIdx base scale :: rest ∧
+      s.stack ≠ .scaledIdx b2 s2 :: .bufferAccess slot base scale :: rest ∧
+      s.stack ≠ .bufferAccess slot base scale :: .scaledIdx b2 s2 :: rest ∧
+      s.stack ≠ .i32ConstSym c :: .bufferAccess slot base scale :: rest ∧
+      s.stack ≠ .bufferAccess slot base scale :: .i32ConstSym c :: rest)
     (hw : evalInstr ws .i32Add = some ws')
     (hl : lowerInstr s .i32Add = some (s', ops)) :
     ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
@@ -2179,8 +2183,16 @@ theorem preservation_i32Add
     show lowerI32Add s = lowerI32Bin s .add
     unfold lowerI32Add
     split
-    next base scale slot rest hs => exact absurd hs (h_no_buf slot base scale rest).left
-    next slot base scale rest hs => exact absurd hs (h_no_buf slot base scale rest).right
+    next base scale slot rest hs => exact absurd hs (h_no_buf slot base scale 0 0 0 rest).1
+    next slot base scale rest hs => exact absurd hs (h_no_buf slot base scale 0 0 0 rest).2.1
+    next b2 s2 slot base scale rest hs =>
+      exact absurd hs (h_no_buf slot base scale b2 s2 0 rest).2.2.1
+    next slot base scale b2 s2 rest hs =>
+      exact absurd hs (h_no_buf slot base scale b2 s2 0 rest).2.2.2.1
+    next c slot base scale rest hs =>
+      exact absurd hs (h_no_buf slot base scale 0 0 c rest).2.2.2.2.1
+    next slot base scale c rest hs =>
+      exact absurd hs (h_no_buf slot base scale 0 0 c rest).2.2.2.2.2
     next => rfl
   exact preservation_i32Bin_generic .i32Add eval_u32_wrapping_add .add
     (fun _ => rfl)
@@ -2568,6 +2580,183 @@ theorem preservation_i32Add_bufferPattern_ptrFirst
       · have hsv_in_s : sv ∈ s.stack := by
           rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
         exact R.aliasFree ir hir sv hsv_in_s
+
+open Quanta.KOps (vU32) in
+/-- `i32.add` preservation for the **same-scale chained** buffer pattern:
+    `scaledIdx b2 scale :: bufferAccess slot base scale :: rest` (the
+    index on top of an already-folded buffer access). The lowering emits
+    `Add(dst, base, b2)` and pushes `bufferAccess slot dst scale` — it
+    combines the two element indices into one. After the add, `dst`
+    holds `base_val + b2_val`, so the merged access encodes the WASM
+    `addr + idx` by distributivity:
+      startAddr + (base_val + b2_val) * scale
+        = (startAddr + base_val * scale) + b2_val * scale.
+
+    `h_idx_eq` captures no-overflow on the index add (the runtime sum of
+    the two index registers stays in `u32`); `h_addr_eq` captures
+    no-overflow on the resulting address arithmetic. Both are discharged
+    downstream from kernel array bounds. -/
+theorem preservation_i32Add_chained_sameScale
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (slot : Nat) (base b2 : Reg) (scale : Nat) (rest : List SymVal)
+    (h_stack : s.stack = .scaledIdx b2 scale :: .bufferAccess slot base scale :: rest)
+    (h_idx_eq : ∀ bb bidx : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       regHoldsU32Bits kst.rf b2 bidx →
+       (bb + bidx).toNat = bb.toNat + bidx.toNat)
+    (h_addr_eq : ∀ idx addr : UInt32, ∀ bb bidx : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       regHoldsU32Bits kst.rf b2 bidx →
+       idx.toNat = bidx.toNat * scale →
+       addr.toNat = layout.startAddr slot + bb.toNat * scale →
+       (addr + idx).toNat = layout.startAddr slot + (bb.toNat + bidx.toNat) * scale)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Add = some ws')
+    (hl : lowerInstr s .i32Add = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Reduce the lowering: same-scale arm fires (scale = scale).
+  have hl_reduced : lowerInstr s .i32Add =
+      some ({ (s.alloc.snd) with
+                stack := .bufferAccess slot s.nextReg scale :: rest },
+            [.binOp s.nextReg base b2 .add .u32]) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+    simp only [LowerState.alloc, if_true, ite_true, reduceIte]
+  rw [hl_reduced] at hl
+  obtain ⟨hs_eq, hops_eq⟩ :=
+    Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp hl)
+  -- WASM add: top = idx (b_w), second = addr (a_w), result = addr + idx.
+  have hw' : binI32 eval_u32_wrapping_add ws = some ws' := hw
+  obtain ⟨a_w, b_w, ws_rest, h_ws_stack, h_ws_eq⟩ := binI32_some_shape hw'
+  -- ws.stack[0] = wI32 b_w ↔ s.stack[0] = scaledIdx b2 scale.
+  have h_stk0 := R.stk.right 0 (.wI32 b_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv0, hsv0_get, henc0⟩ := h_stk0
+  have hs0_eq : s.stack.get? 0 = some (.scaledIdx b2 scale) := by rw [h_stack]; simp
+  rw [hs0_eq] at hsv0_get
+  rw [((Option.some.injEq _ _).mp hsv0_get).symm] at henc0
+  obtain ⟨bidx, h_lookup_b2, h_bw_eq⟩ := henc0
+  -- ws.stack[1] = wI32 a_w ↔ s.stack[1] = bufferAccess slot base scale.
+  have h_stk1 := R.stk.right 1 (.wI32 a_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv1, hsv1_get, henc1⟩ := h_stk1
+  have hs1_eq : s.stack.get? 1 = some (.bufferAccess slot base scale) := by rw [h_stack]; simp
+  rw [hs1_eq] at hsv1_get
+  rw [((Option.some.injEq _ _).mp hsv1_get).symm] at henc1
+  obtain ⟨bb, h_lookup_base, h_aw_eq⟩ := henc1
+  -- base / b2 hold values below s.nextReg, so the fresh write at
+  -- s.nextReg doesn't disturb their lookups.
+  have hbase_lt : base < s.nextReg := by
+    have hmem : (SymVal.bufferAccess slot base scale) ∈ s.stack := by rw [h_stack]; simp
+    exact R.fresh.left _ hmem base (by simp [SymVal.regs])
+  have hb2_lt : b2 < s.nextReg := by
+    have hmem : (SymVal.scaledIdx b2 scale) ∈ s.stack := by rw [h_stack]; simp
+    exact R.fresh.left _ hmem b2 (by simp [SymVal.regs])
+  -- Lookups of base, b2 as concrete vU32/vI32 values for the Add eval.
+  -- `regHoldsU32Bits` packages both tags; the Add reads bit patterns.
+  -- evalBinOp on the looked-up values yields a `vU32` (or `vI32`); the
+  -- `dst` register then holds `bb + bidx`'s pattern.
+  -- For the eval we use the concrete lookups from the encodings.
+  obtain ⟨vbase, h_base_v, h_base_bits⟩ :
+      ∃ v, regLookup kst.rf base = some v ∧ Quanta.KOps.asU32Bits v = some bb := by
+    rcases h_lookup_base with hv | hv
+    · exact ⟨_, hv, rfl⟩
+    · exact ⟨_, hv, Quanta.KOps.asU32Bits_vI32_ofNat_toNat _⟩
+  obtain ⟨vb2, h_b2_v, h_b2_bits⟩ :
+      ∃ v, regLookup kst.rf b2 = some v ∧ Quanta.KOps.asU32Bits v = some bidx := by
+    rcases h_lookup_b2 with hv | hv
+    · exact ⟨_, hv, rfl⟩
+    · exact ⟨_, hv, Quanta.KOps.asU32Bits_vI32_ofNat_toNat _⟩
+  -- The KOps Add of the two looked-up values: bit pattern `bb + bidx`
+  -- (the mixed evaluator normalises both tags to bits then wraps).
+  obtain ⟨vres, h_add_eval, h_res_bits⟩ :=
+    Quanta.KOps.evalBinOp_add_asU32Bits h_base_bits h_b2_bits
+  -- The post-state: write `dst = s.nextReg ↦ vres` (vres holds `bb+bidx`).
+  refine ⟨{ kst with rf := regWrite kst.rf s.nextReg vres }, ?_, ?_⟩
+  · -- evalOps over [binOp s.nextReg base b2 .add .u32].
+    rw [← hops_eq]
+    simp only [evalOps, Quanta.KOps.evalOp, h_base_v, h_b2_v, Option.bind_eq_bind,
+               Option.some_bind, pure, h_add_eval]
+    rw [if_neg (by rw [show ({ kst with rf := regWrite kst.rf s.nextReg vres } :
+                    Quanta.KOps.State).broke = kst.broke from rfl, h_kst_ok]; decide)]
+  · -- Refines: the new top `bufferAccess slot s.nextReg scale` encodes
+    -- the WASM add via `dst = s.nextReg` holding `bb + bidx`.
+    rw [← hs_eq]; subst h_ws_eq
+    -- `dst = s.nextReg` holds bits `bb + bidx` (either tag).
+    have h_dst : regHoldsU32Bits (regWrite kst.rf s.nextReg vres) s.nextReg (bb + bidx) := by
+      rcases h_res_bits with hv | hv
+      · exact Or.inl (by rw [hv]; exact regLookup_regWrite_self _ _ _)
+      · exact Or.inr (by rw [hv]; exact regLookup_regWrite_self _ _ _)
+    -- Old regs (base, b2, and every reg in the old stack/locals) are
+    -- < s.nextReg, so the fresh write at s.nextReg leaves their lookups
+    -- and encodings intact.
+    have h_fresh_write : ∀ (sv : SymVal), (∀ r ∈ sv.regs, r < s.nextReg) →
+        ∀ v_w : WasmValue, v_w.encodes layout kst.rf sv →
+        v_w.encodes layout (regWrite kst.rf s.nextReg vres) sv := by
+      intro sv h_sv_lt v_w h_enc
+      exact WasmValue.encodes_preserved_of_fresh (fun r hr => h_sv_lt r hr) h_enc
+    refine ⟨?_, ?_, ?_, ?_, R.injLocals, R.heapRefines, ?_, ?_, R.curLocDisj⟩
+    · -- StackRefines.
+      refine ⟨?_, ?_⟩
+      · have hlen := R.stk.left
+        rw [h_stack, h_ws_stack] at hlen
+        simpa using hlen
+      · intro j vj hvj
+        cases j with
+        | zero =>
+          simp at hvj; subst hvj
+          refine ⟨.bufferAccess slot s.nextReg scale, by simp, ?_⟩
+          -- encode the WASM add result `a_w + b_w` via the merged access.
+          show ∃ b', regHoldsU32Bits (regWrite kst.rf s.nextReg vres) s.nextReg b' ∧
+                 (eval_u32_wrapping_add a_w b_w).toNat =
+                   layout.startAddr slot + b'.toNat * scale
+          refine ⟨bb + bidx, h_dst, ?_⟩
+          show (a_w + b_w).toNat = layout.startAddr slot + (bb + bidx).toNat * scale
+          rw [h_idx_eq bb bidx h_lookup_base h_lookup_b2]
+          exact h_addr_eq b_w a_w bb bidx h_lookup_base h_lookup_b2 h_bw_eq h_aw_eq
+        | succ j' =>
+          have hwsk : ws.stack.get? (j' + 2) = some vj := by
+            rw [h_ws_stack]; simpa using hvj
+          obtain ⟨svk, hsvk, henck⟩ := R.stk.right (j' + 2) vj hwsk
+          have hsk : s.stack.get? (j' + 2) = some svk := hsvk
+          have hsk_rest : rest.get? j' = some svk := by
+            rw [h_stack] at hsk; simpa using hsk
+          refine ⟨svk, by simpa using hsk_rest, ?_⟩
+          have hsvk_in : svk ∈ s.stack := by
+            rw [h_stack]
+            exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_of_get? hsk_rest))
+          exact h_fresh_write svk (fun r hr => R.fresh.left svk hsvk_in r hr) vj henck
+    · -- LocalsRefines: localReg unchanged; lift past the fresh write.
+      intro i r hfind v hv
+      have hr_lt : r < s.nextReg := R.fresh.right (i, r) (List.mem_of_find?_eq_some hfind)
+      have henc := R.locs i r hfind v hv
+      exact h_fresh_write _ (by intro r' hr'; simp [SymVal.regs] at hr'; subst hr'; exact hr_lt) v henc
+    · -- Fresh: new top has regs = [s.nextReg]; old regs lift.
+      refine ⟨?_, ?_⟩
+      · intro sv hsv r' hr'
+        simp at hsv
+        rcases hsv with h_eq | h_in
+        · subst h_eq; simp [SymVal.regs] at hr'; subst hr'; exact Nat.lt_succ_self _
+        · have hsv_in : sv ∈ s.stack := by
+            rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+          exact Nat.lt_succ_of_lt (R.fresh.left sv hsv_in r' hr')
+      · intro ir hir
+        exact Nat.lt_succ_of_lt (R.fresh.right ir hir)
+    · -- AliasFree: new top's reg is the fresh s.nextReg, above all locals.
+      intro ir hir sv hsv
+      have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq; simp [SymVal.regs]; exact Nat.ne_of_lt hir_lt
+      · have hsv_in : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.aliasFree ir hir sv hsv_in
+    · -- CurrentRegRefines: currentReg + localTy unchanged; lift past fresh.
+      exact CurrentRegRefines_preserved_fresh R.currentReg
+        (fun ir hir => R.freshCurrent ir hir) vres
+    · -- FreshCurrent: nextReg bumps by 1; currentReg unchanged.
+      intro ir hir
+      exact Nat.lt_succ_of_lt (R.freshCurrent ir hir)
 
 /-- Inversion for `bufferAccess` encoding: the encoded WASM value
     must be `wI32` (every other constructor encodes to `False`). -/

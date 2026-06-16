@@ -326,18 +326,92 @@ def lowerI32Shl (s : LowerState) : Option (LowerState × List KernelOp) :=
       some ({ s with stack := .scaledIdx base scale :: rest }, [])
   | _ => lowerI32Bin s .shl
 
-/-- Lower `i32.add`. Production fast-path: if the popped operands are
-    `<bufferPtr slot> <scaledIdx base scale>` (in either order), fold
-    to `SymVal.bufferAccess slot base scale` with no IR emitted. The
-    typed `KernelOp.Load`/`Store` consumes the `bufferAccess` in the
-    next memory op. Otherwise fall through to `lowerI32Bin .add`.
-    Mirrors `RawInstr::I32Add` in `lower.rs`. -/
+/-- `log2 n` for a power-of-two `n` (mirrors production's
+    `(scale / s2).trailing_zeros()`): the shift amount that recovers a
+    power-of-two scale ratio. Defined for all `n`; only the power-of-two
+    case is exercised, where `1 <<< log2 n = n`. -/
+def log2 : Nat → Nat
+  | 0 => 0
+  | 1 => 0
+  | (n + 2) => 1 + log2 ((n + 2) / 2)
+decreasing_by exact Nat.div_lt_self (by omega) (by omega)
+
+/-- Lower `i32.add`. Production fast-paths (`RawInstr::I32Add` in
+    `lower.rs`), tried in order on the top two symbolic stack slots
+    (either operand order, mirroring production's `match (a, b)`):
+
+    * `<bufferPtr slot> + <scaledIdx base scale>` → `bufferAccess slot
+      base scale`, NO IR (the canonical pointer + element-offset fold).
+    * **same-scale chained add**: `<bufferAccess slot base scale> +
+      <scaledIdx b2 scale>` (equal scale) → emit `Add(dst, base, b2)`,
+      push `bufferAccess slot dst scale`. Combines two runtime indices.
+    * **rescale chained add**: `<bufferAccess slot base scale> +
+      <scaledIdx b2 s2>` with `scale > s2`, `s2 ∣ scale`, `scale / s2`
+      a power of two → emit `Const(shift, log2(scale/s2))`,
+      `Shl(scaled, base, shift)`, `Add(dst, scaled, b2)`, push
+      `bufferAccess slot dst s2` at the SMALLER scale.
+    * **const-offset chained add**: `<bufferAccess slot base scale> +
+      <i32ConstSym c>` with `scale ∣ c` → emit `Const(off, c/scale)`
+      [I32-tagged], `Add(dst, base, off)`, push `bufferAccess slot dst
+      scale`. Folds a precomputed constant element offset.
+
+    These chained arms are the address shapes rustc emits when it has
+    precomputed part of a byte offset and leaves the rest runtime
+    (`out + block_off + pos_off`). Anything else falls through to the
+    generic `lowerI32Bin .add`. -/
 def lowerI32Add (s : LowerState) : Option (LowerState × List KernelOp) :=
   match s.stack with
+  -- ── pointer + element-offset fold (no IR) ──
   | .scaledIdx base scale :: .bufferPtr slot :: rest =>
       some ({ s with stack := .bufferAccess slot base scale :: rest }, [])
   | .bufferPtr slot :: .scaledIdx base scale :: rest =>
       some ({ s with stack := .bufferAccess slot base scale :: rest }, [])
+  -- ── same-scale chained add ──
+  | .scaledIdx b2 s2 :: .bufferAccess slot base scale :: rest =>
+      if scale = s2 then
+        let (dst, s1) := s.alloc
+        some ({ s1 with stack := .bufferAccess slot dst scale :: rest },
+              [.binOp dst base b2 .add .u32])
+      else if scale > s2 ∧ scale % s2 = 0 ∧ (1 <<< log2 (scale / s2)) = scale / s2 then
+        let (shift, s1) := s.alloc
+        let (scaled, s2') := s1.alloc
+        let (dst, s3) := s2'.alloc
+        some ({ s3 with stack := .bufferAccess slot dst s2 :: rest },
+              [.const shift (.u32 (UInt32.ofNat (log2 (scale / s2)))),
+               .binOp scaled base shift .shl .u32,
+               .binOp dst scaled b2 .add .u32])
+      else lowerI32Bin s .add
+  | .bufferAccess slot base scale :: .scaledIdx b2 s2 :: rest =>
+      if scale = s2 then
+        let (dst, s1) := s.alloc
+        some ({ s1 with stack := .bufferAccess slot dst scale :: rest },
+              [.binOp dst base b2 .add .u32])
+      else if scale > s2 ∧ scale % s2 = 0 ∧ (1 <<< log2 (scale / s2)) = scale / s2 then
+        let (shift, s1) := s.alloc
+        let (scaled, s2') := s1.alloc
+        let (dst, s3) := s2'.alloc
+        some ({ s3 with stack := .bufferAccess slot dst s2 :: rest },
+              [.const shift (.u32 (UInt32.ofNat (log2 (scale / s2)))),
+               .binOp scaled base shift .shl .u32,
+               .binOp dst scaled b2 .add .u32])
+      else lowerI32Bin s .add
+  -- ── const-offset chained add ──
+  | .i32ConstSym c :: .bufferAccess slot base scale :: rest =>
+      if scale ≠ 0 ∧ c % (scale : Int) = 0 then
+        let (off, s1) := s.alloc
+        let (dst, s2') := s1.alloc
+        some ({ s2' with stack := .bufferAccess slot dst scale :: rest },
+              [.const off (.i32 (c / (scale : Int))),
+               .binOp dst base off .add .u32])
+      else lowerI32Bin s .add
+  | .bufferAccess slot base scale :: .i32ConstSym c :: rest =>
+      if scale ≠ 0 ∧ c % (scale : Int) = 0 then
+        let (off, s1) := s.alloc
+        let (dst, s2') := s1.alloc
+        some ({ s2' with stack := .bufferAccess slot dst scale :: rest },
+              [.const off (.i32 (c / (scale : Int))),
+               .binOp dst base off .add .u32])
+      else lowerI32Bin s .add
   | _ => lowerI32Bin s .add
 
 /-- Lower `i32.load`. Only succeeds on a `BufferAccess { scale := 4 }`
