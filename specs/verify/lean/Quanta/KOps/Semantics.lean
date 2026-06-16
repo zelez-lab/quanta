@@ -426,6 +426,27 @@ theorem evalBinOp_add_asU32Bits {va vb : Value} {a b : UInt32}
   | vBool _ => simp [asU32Bits] at ha
   | vF32 _ => simp [asU32Bits] at ha
 
+/-- Bit-level `.shl` over an integer-tagged base and a `vU32` shift
+    amount: from the base's 32-bit pattern `a` and the shift `sh`,
+    `evalBinOp .shl` succeeds and the result carries `a <<< sh`
+    (`vU32` for a u32 base, `vI32` for an i32 base; `asU32Bits` of the
+    result is `a <<< sh` either way). The rescale address fold reads only
+    the shifted base's bit pattern. -/
+theorem evalBinOp_shl_asU32Bits {va : Value} {a sh : UInt32}
+    (ha : asU32Bits va = some a) :
+    ∃ vr, evalBinOp .shl va (vU32 sh) = some vr ∧
+      (vr = vU32 (a <<< sh) ∨ vr = vI32 ↑((a <<< sh).toNat)) := by
+  cases va with
+  | vU32 na =>
+    simp only [asU32Bits, Option.some.injEq] at ha; subst ha
+    exact ⟨vU32 (na <<< sh), by simp [evalBinOp, vU32], Or.inl rfl⟩
+  | vI32 na =>
+    simp only [asU32Bits, Option.some.injEq] at ha; subst ha
+    refine ⟨vI32 ((UInt32.ofNat na.toNat <<< sh).toNat), ?_, Or.inr rfl⟩
+    simp [evalBinOp, liftMixedI32, asU32Bits, vU32, vI32]
+  | vBool _ => simp [asU32Bits] at ha
+  | vF32 _ => simp [asU32Bits] at ha
+
 def evalUnaryOp : UnaryOp → Value → Option Value
   | .neg    => fun v => match v with
       | .vI32 n => some (vI32 (-n))

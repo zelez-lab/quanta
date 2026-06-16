@@ -2758,6 +2758,453 @@ theorem preservation_i32Add_chained_sameScale
       intro ir hir
       exact Nat.lt_succ_of_lt (R.freshCurrent ir hir)
 
+open Quanta.KOps (vU32 vI32) in
+/-- `i32.add` preservation for the **const-offset chained** buffer
+    pattern: `i32ConstSym c :: bufferAccess slot base scale :: rest` with
+    `scale ∣ c`. The lowering folds the constant element offset: emit
+    `Const(off, c/scale)` (I32-tagged) and `Add(dst, base, off)`, then
+    push `bufferAccess slot dst scale`. After the two ops, `dst` holds
+    `base_val + c/scale`, so the merged access encodes the WASM `addr + c`:
+      startAddr + (base_val + c/scale) * scale
+        = (startAddr + base_val * scale) + (c/scale) * scale
+        = addr_val + c        (using `c = (c/scale) * scale`).
+
+    `h_scale` requires `scale ∣ c` and `scale ≠ 0` (the lowering guard);
+    `h_const_eq` pins the WASM const value `b_w = ofNat c.toNat`;
+    `h_addr_eq` captures no-overflow on the resulting address. -/
+theorem preservation_i32Add_chained_constOff
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (slot : Nat) (base : Reg) (scale : Nat) (c : Int) (rest : List SymVal)
+    (h_stack : s.stack = .i32ConstSym c :: .bufferAccess slot base scale :: rest)
+    (h_guard : scale ≠ 0 ∧ c % (scale : Int) = 0)
+    (h_addr_eq : ∀ cst addr : UInt32, ∀ bb : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       cst = UInt32.ofNat c.toNat →
+       addr.toNat = layout.startAddr slot + bb.toNat * scale →
+       (addr + cst).toNat = layout.startAddr slot + (bb + UInt32.ofNat (c / scale).toNat).toNat * scale)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Add = some ws')
+    (hl : lowerInstr s .i32Add = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  obtain ⟨h_scale_ne, h_div⟩ := h_guard
+  -- Reduce the lowering: const-offset arm fires.
+  have hl_reduced : lowerInstr s .i32Add =
+      some ({ (s.alloc.snd.alloc.snd) with
+                stack := .bufferAccess slot (s.nextReg + 1) scale :: rest },
+            [.const s.nextReg (.i32 (c / (scale : Int))),
+             .binOp (s.nextReg + 1) base s.nextReg .add .u32]) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+    simp only [LowerState.alloc, h_scale_ne, h_div, ne_eq, not_false_eq_true, and_self,
+               if_true, ite_true, reduceIte]
+  rw [hl_reduced] at hl
+  obtain ⟨hs_eq, hops_eq⟩ :=
+    Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp hl)
+  have hw' : binI32 eval_u32_wrapping_add ws = some ws' := hw
+  obtain ⟨a_w, b_w, ws_rest, h_ws_stack, h_ws_eq⟩ := binI32_some_shape hw'
+  -- ws.stack[0] = wI32 b_w ↔ s.stack[0] = i32ConstSym c.
+  have h_stk0 := R.stk.right 0 (.wI32 b_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv0, hsv0_get, henc0⟩ := h_stk0
+  have hs0_eq : s.stack.get? 0 = some (.i32ConstSym c) := by rw [h_stack]; simp
+  rw [hs0_eq] at hsv0_get
+  rw [((Option.some.injEq _ _).mp hsv0_get).symm] at henc0
+  -- henc0 : b_w = UInt32.ofNat c.toNat.
+  have h_bw_eq : b_w = UInt32.ofNat c.toNat := henc0
+  -- ws.stack[1] = wI32 a_w ↔ s.stack[1] = bufferAccess slot base scale.
+  have h_stk1 := R.stk.right 1 (.wI32 a_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv1, hsv1_get, henc1⟩ := h_stk1
+  have hs1_eq : s.stack.get? 1 = some (.bufferAccess slot base scale) := by rw [h_stack]; simp
+  rw [hs1_eq] at hsv1_get
+  rw [((Option.some.injEq _ _).mp hsv1_get).symm] at henc1
+  obtain ⟨bb, h_lookup_base, h_aw_eq⟩ := henc1
+  have hbase_lt : base < s.nextReg := by
+    have hmem : (SymVal.bufferAccess slot base scale) ∈ s.stack := by rw [h_stack]; simp
+    exact R.fresh.left _ hmem base (by simp [SymVal.regs])
+  -- After Const(off=s.nextReg, .i32 (c/scale)), `off` holds vI32 (c/scale).
+  -- After Add(dst=s.nextReg+1, base, off), `dst` holds the mixed-add of
+  -- base's value (bb) and (c/scale), i.e. bits `bb + ofNat (c/scale).toNat`.
+  -- Build the two-op post-state.
+  obtain ⟨vbase, h_base_v, h_base_bits⟩ :
+      ∃ v, regLookup kst.rf base = some v ∧ Quanta.KOps.asU32Bits v = some bb := by
+    rcases h_lookup_base with hv | hv
+    · exact ⟨_, hv, rfl⟩
+    · exact ⟨_, hv, Quanta.KOps.asU32Bits_vI32_ofNat_toNat _⟩
+  -- off's value after the const write.
+  let off_val : Quanta.KOps.Value := vI32 (c / (scale : Int))
+  have h_off_def : off_val = vI32 (c / (scale : Int)) := rfl
+  have h_off_bits : Quanta.KOps.asU32Bits off_val = some (UInt32.ofNat (c / scale).toNat) := by
+    rw [h_off_def]; rfl
+  -- kst after the const op.
+  let kst1 : Quanta.KOps.State := { kst with rf := regWrite kst.rf s.nextReg off_val }
+  have h_kst1_def : kst1 = { kst with rf := regWrite kst.rf s.nextReg off_val } := rfl
+  -- base lookup survives the const write (base ≠ s.nextReg).
+  have h_base_v1 : regLookup kst1.rf base = some vbase := by
+    rw [h_kst1_def]; show regLookup (regWrite kst.rf s.nextReg off_val) base = _
+    rw [regLookup_regWrite_of_ne _ _ _ _ (Nat.ne_of_lt hbase_lt)]; exact h_base_v
+  have h_off_v1 : regLookup kst1.rf s.nextReg = some off_val := by
+    rw [h_kst1_def]; show regLookup (regWrite kst.rf s.nextReg off_val) s.nextReg = _
+    exact regLookup_regWrite_self _ _ _
+  -- The Add of base + off: bit pattern bb + ofNat (c/scale).toNat.
+  obtain ⟨vres, h_add_eval, h_res_bits⟩ :=
+    Quanta.KOps.evalBinOp_add_asU32Bits h_base_bits h_off_bits
+  let kst2 : Quanta.KOps.State :=
+    { kst1 with rf := regWrite kst1.rf (s.nextReg + 1) vres }
+  have h_kst2_def : kst2 = { kst1 with rf := regWrite kst1.rf (s.nextReg + 1) vres } := rfl
+  refine ⟨kst2, ?_, ?_⟩
+  · -- evalOps over [const off (.i32 _), binOp (s.nextReg+1) base off add u32].
+    rw [← hops_eq]
+    -- Step 1: const op writes off ↦ vI32 (c/scale), giving kst1.
+    have h_step1 : Quanta.KOps.evalOp 0 kst (.const s.nextReg (.i32 (c / (scale : Int))))
+        = some kst1 := by
+      simp only [Quanta.KOps.evalOp, Quanta.KOps.evalConst]
+      rw [h_kst1_def, h_off_def]; rfl
+    -- Step 2: binOp from kst1 writes dst ↦ vres, giving kst2.
+    have h_step2 : Quanta.KOps.evalOp 0 kst1 (.binOp (s.nextReg + 1) base s.nextReg .add .u32)
+        = some kst2 := by
+      simp only [Quanta.KOps.evalOp, h_base_v1, h_off_v1, Option.bind_eq_bind,
+                 Option.some_bind, pure, h_add_eval]
+      rw [h_kst2_def]
+    have h_kst1_ok : kst1.broke = false := h_kst_ok
+    -- evalOps over [const] then [binOp], chained past the broke flag.
+    have h_const_ops : evalOps 0 kst [.const s.nextReg (.i32 (c / (scale : Int)))] = some kst1 := by
+      simp only [evalOps, h_step1, Option.bind_eq_bind, Option.some_bind, pure, ite_self]
+    have h_binop_ops : evalOps 0 kst1 [.binOp (s.nextReg + 1) base s.nextReg .add .u32]
+        = some kst2 := by
+      simp only [evalOps, h_step2, Option.bind_eq_bind, Option.some_bind, pure, ite_self]
+    show evalOps 0 kst [_, _] = some kst2
+    rw [show [KernelOp.const s.nextReg (.i32 (c / (scale : Int))),
+             KernelOp.binOp (s.nextReg + 1) base s.nextReg .add .u32]
+          = [KernelOp.const s.nextReg (.i32 (c / (scale : Int)))]
+            ++ [KernelOp.binOp (s.nextReg + 1) base s.nextReg .add .u32] from rfl]
+    rw [evalOps_append h_const_ops h_kst1_ok, h_binop_ops]
+  · -- Refines.
+    rw [← hs_eq]; subst h_ws_eq
+    -- dst = s.nextReg + 1 holds bits `bb + ofNat (c/scale).toNat`.
+    have h_dst : regHoldsU32Bits kst2.rf (s.nextReg + 1) (bb + UInt32.ofNat (c / scale).toNat) := by
+      rw [h_kst2_def]
+      show regHoldsU32Bits (regWrite kst1.rf (s.nextReg + 1) vres) (s.nextReg + 1) _
+      rcases h_res_bits with hv | hv
+      · exact Or.inl (by rw [hv]; exact regLookup_regWrite_self _ _ _)
+      · exact Or.inr (by rw [hv]; exact regLookup_regWrite_self _ _ _)
+    -- Old stack/local regs are < s.nextReg ≤ s.nextReg + 1 + 1; both
+    -- fresh writes (at s.nextReg, s.nextReg+1) leave them intact.
+    have h_fresh2 : ∀ (sv : SymVal), (∀ r ∈ sv.regs, r < s.nextReg) →
+        ∀ v_w : WasmValue, v_w.encodes layout kst.rf sv →
+        v_w.encodes layout kst2.rf sv := by
+      intro sv h_sv_lt v_w h_enc
+      show v_w.encodes layout (regWrite (regWrite kst.rf s.nextReg off_val) (s.nextReg + 1) vres) sv
+      apply WasmValue.encodes_preserved_of_fresh
+        (fun r hr => Nat.lt_succ_of_lt (h_sv_lt r hr))
+      apply WasmValue.encodes_preserved_of_fresh
+        (fun r hr => h_sv_lt r hr)
+      exact h_enc
+    refine ⟨?_, ?_, ?_, ?_, R.injLocals, R.heapRefines, ?_, ?_, R.curLocDisj⟩
+    · -- StackRefines.
+      refine ⟨?_, ?_⟩
+      · have hlen := R.stk.left
+        rw [h_stack, h_ws_stack] at hlen; simpa using hlen
+      · intro j vj hvj
+        cases j with
+        | zero =>
+          simp at hvj; subst hvj
+          refine ⟨.bufferAccess slot (s.nextReg + 1) scale, by simp, ?_⟩
+          show ∃ b', regHoldsU32Bits kst2.rf (s.nextReg + 1) b' ∧
+                 (eval_u32_wrapping_add a_w b_w).toNat =
+                   layout.startAddr slot + b'.toNat * scale
+          refine ⟨bb + UInt32.ofNat (c / scale).toNat, h_dst, ?_⟩
+          show (a_w + b_w).toNat = layout.startAddr slot
+                 + (bb + UInt32.ofNat (c / scale).toNat).toNat * scale
+          exact h_addr_eq b_w a_w bb h_lookup_base h_bw_eq h_aw_eq
+        | succ j' =>
+          have hwsk : ws.stack.get? (j' + 2) = some vj := by
+            rw [h_ws_stack]; simpa using hvj
+          obtain ⟨svk, hsvk, henck⟩ := R.stk.right (j' + 2) vj hwsk
+          have hsk_rest : rest.get? j' = some svk := by
+            have : s.stack.get? (j' + 2) = some svk := hsvk
+            rw [h_stack] at this; simpa using this
+          refine ⟨svk, by simpa using hsk_rest, ?_⟩
+          have hsvk_in : svk ∈ s.stack := by
+            rw [h_stack]
+            exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_of_get? hsk_rest))
+          exact h_fresh2 svk (fun r hr => R.fresh.left svk hsvk_in r hr) vj henck
+    · -- LocalsRefines.
+      intro i r hfind v hv
+      have hr_lt : r < s.nextReg := R.fresh.right (i, r) (List.mem_of_find?_eq_some hfind)
+      exact h_fresh2 _ (by intro r' hr'; simp [SymVal.regs] at hr'; subst hr'; exact hr_lt)
+        v (R.locs i r hfind v hv)
+    · -- Fresh: nextReg bumps by 2.
+      have h_nr : ({ (s.alloc.snd.alloc.snd) with
+            stack := SymVal.bufferAccess slot (s.nextReg + 1) scale :: rest } :
+          LowerState).nextReg = s.nextReg + 1 + 1 := rfl
+      refine ⟨?_, ?_⟩
+      · intro sv hsv r' hr'
+        rw [h_nr]
+        simp at hsv
+        rcases hsv with h_eq | h_in
+        · subst h_eq; simp [SymVal.regs] at hr'; subst hr'; exact Nat.lt_succ_self _
+        · have hsv_in : sv ∈ s.stack := by
+            rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+          exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R.fresh.left sv hsv_in r' hr'))
+      · intro ir hir; rw [h_nr]
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R.fresh.right ir hir))
+    · -- AliasFree.
+      intro ir hir sv hsv
+      have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq; simp [SymVal.regs]
+        exact Nat.ne_of_lt (Nat.lt_succ_of_lt hir_lt)
+      · have hsv_in : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.aliasFree ir hir sv hsv_in
+    · -- CurrentRegRefines: lift past two fresh writes.
+      show CurrentRegRefines layout ws.locals s.currentReg s.localTy
+        (regWrite (regWrite kst.rf s.nextReg off_val) (s.nextReg + 1) vres)
+      exact CurrentRegRefines_preserved_fresh
+        (CurrentRegRefines_preserved_fresh R.currentReg
+          (fun ir hir => R.freshCurrent ir hir) off_val)
+        (fun ir hir => Nat.lt_succ_of_lt (R.freshCurrent ir hir)) vres
+    · -- FreshCurrent.
+      have h_nr : ({ (s.alloc.snd.alloc.snd) with
+            stack := SymVal.bufferAccess slot (s.nextReg + 1) scale :: rest } :
+          LowerState).nextReg = s.nextReg + 1 + 1 := rfl
+      intro ir hir; rw [h_nr]
+      exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R.freshCurrent ir hir))
+
+open Quanta.KOps (vU32 vI32) in
+/-- `i32.add` preservation for the **rescale chained** buffer pattern:
+    `scaledIdx b2 s2 :: bufferAccess slot base scale :: rest` with
+    `scale > s2`, `s2 ∣ scale`, and `scale / s2` a power of two. The
+    lowering rescales the coarser buffer-access index to the finer scale:
+    emit `Const(shift, log2(scale/s2))`, `Shl(scaled, base, shift)`,
+    `Add(dst, scaled, b2)`, and push `bufferAccess slot dst s2` at the
+    SMALLER scale. After the three ops `dst` holds
+    `(base_val <<< log2(scale/s2)) + b2_val`; the merged access encodes
+    the WASM `addr + idx`:
+      startAddr + ((base_val <<< sh) + b2_val) * s2
+        = startAddr + base_val * scale + b2_val * s2
+        = addr_val + idx_val,    using `base_val <<< sh = base_val * (scale/s2)`
+                                  and `(scale/s2) * s2 = scale`.
+
+    `h_guard` is the lowering's power-of-two divisibility condition.
+    `h_addr_eq` bundles the no-overflow facts on the shift-as-multiply
+    and the resulting address; discharged downstream from kernel bounds. -/
+theorem preservation_i32Add_chained_rescale
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout) (R : Refines ws s kst layout) (h_kst_ok : kst.broke = false)
+    (slot : Nat) (base b2 : Reg) (scale s2 : Nat) (rest : List SymVal)
+    (h_stack : s.stack = .scaledIdx b2 s2 :: .bufferAccess slot base scale :: rest)
+    (h_guard : scale > s2 ∧ scale % s2 = 0 ∧ (1 <<< Quanta.Wasm.log2 (scale / s2)) = scale / s2)
+    (h_addr_eq : ∀ idx addr : UInt32, ∀ bb bidx : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       regHoldsU32Bits kst.rf b2 bidx →
+       idx.toNat = bidx.toNat * s2 →
+       addr.toNat = layout.startAddr slot + bb.toNat * scale →
+       (addr + idx).toNat = layout.startAddr slot
+         + ((bb <<< UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))) + bidx).toNat * s2)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstr ws .i32Add = some ws')
+    (hl : lowerInstr s .i32Add = some (s', ops)) :
+    ∃ kst', evalOps 0 kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  obtain ⟨h_gt, h_mod, h_pow⟩ := h_guard
+  have h_ne : ¬ (scale = s2) := Nat.ne_of_gt h_gt
+  -- Reduce the lowering: rescale arm fires (scale ≠ s2, guard holds).
+  have hl_reduced : lowerInstr s .i32Add =
+      some ({ (s.alloc.snd.alloc.snd.alloc.snd) with
+                stack := .bufferAccess slot (s.nextReg + 1 + 1) s2 :: rest },
+            [.const s.nextReg (.u32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2)))),
+             .binOp (s.nextReg + 1) base s.nextReg .shl .u32,
+             .binOp (s.nextReg + 1 + 1) (s.nextReg + 1) b2 .add .u32]) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+    simp only [LowerState.alloc, h_ne, h_gt, h_mod, h_pow, gt_iff_lt, and_self,
+               if_false, if_true, ite_true, ite_false, reduceIte]
+  rw [hl_reduced] at hl
+  obtain ⟨hs_eq, hops_eq⟩ :=
+    Prod.mk.injEq _ _ _ _ |>.mp ((Option.some.injEq _ _).mp hl)
+  have hw' : binI32 eval_u32_wrapping_add ws = some ws' := hw
+  obtain ⟨a_w, b_w, ws_rest, h_ws_stack, h_ws_eq⟩ := binI32_some_shape hw'
+  -- ws.stack[0] = wI32 b_w ↔ s.stack[0] = scaledIdx b2 s2 (the idx).
+  have h_stk0 := R.stk.right 0 (.wI32 b_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv0, hsv0_get, henc0⟩ := h_stk0
+  have hs0_eq : s.stack.get? 0 = some (.scaledIdx b2 s2) := by rw [h_stack]; simp
+  rw [hs0_eq] at hsv0_get
+  rw [((Option.some.injEq _ _).mp hsv0_get).symm] at henc0
+  obtain ⟨bidx, h_lookup_b2, h_bw_eq⟩ := henc0
+  -- ws.stack[1] = wI32 a_w ↔ s.stack[1] = bufferAccess slot base scale.
+  have h_stk1 := R.stk.right 1 (.wI32 a_w) (by rw [h_ws_stack]; simp)
+  obtain ⟨sv1, hsv1_get, henc1⟩ := h_stk1
+  have hs1_eq : s.stack.get? 1 = some (.bufferAccess slot base scale) := by rw [h_stack]; simp
+  rw [hs1_eq] at hsv1_get
+  rw [((Option.some.injEq _ _).mp hsv1_get).symm] at henc1
+  obtain ⟨bb, h_lookup_base, h_aw_eq⟩ := henc1
+  have hbase_lt : base < s.nextReg := by
+    have hmem : (SymVal.bufferAccess slot base scale) ∈ s.stack := by rw [h_stack]; simp
+    exact R.fresh.left _ hmem base (by simp [SymVal.regs])
+  have hb2_lt : b2 < s.nextReg := by
+    have hmem : (SymVal.scaledIdx b2 s2) ∈ s.stack := by rw [h_stack]; simp
+    exact R.fresh.left _ hmem b2 (by simp [SymVal.regs])
+  -- Concrete base / b2 lookups (bit patterns bb, bidx).
+  obtain ⟨vbase, h_base_v, h_base_bits⟩ :
+      ∃ v, regLookup kst.rf base = some v ∧ Quanta.KOps.asU32Bits v = some bb := by
+    rcases h_lookup_base with hv | hv
+    · exact ⟨_, hv, rfl⟩
+    · exact ⟨_, hv, Quanta.KOps.asU32Bits_vI32_ofNat_toNat _⟩
+  obtain ⟨vb2, h_b2_v, h_b2_bits⟩ :
+      ∃ v, regLookup kst.rf b2 = some v ∧ Quanta.KOps.asU32Bits v = some bidx := by
+    rcases h_lookup_b2 with hv | hv
+    · exact ⟨_, hv, rfl⟩
+    · exact ⟨_, hv, Quanta.KOps.asU32Bits_vI32_ofNat_toNat _⟩
+  -- The shift amount value and the three intermediate KOps states.
+  let shval : Quanta.KOps.Value := vU32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2)))
+  let kst1 : Quanta.KOps.State := { kst with rf := regWrite kst.rf s.nextReg shval }
+  -- After Shl: `scaled = base <<< shift`.
+  have h_base_v1 : regLookup kst1.rf base = some vbase := by
+    show regLookup (regWrite kst.rf s.nextReg shval) base = _
+    rw [regLookup_regWrite_of_ne _ _ _ _ (Nat.ne_of_lt hbase_lt)]; exact h_base_v
+  have h_sh_v1 : regLookup kst1.rf s.nextReg = some shval := regLookup_regWrite_self _ _ _
+  obtain ⟨vscaled, h_shl_eval, h_scaled_bits⟩ :=
+    Quanta.KOps.evalBinOp_shl_asU32Bits (sh := UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))) h_base_bits
+  let kst2 : Quanta.KOps.State := { kst1 with rf := regWrite kst1.rf (s.nextReg + 1) vscaled }
+  -- After Add: `dst = scaled + b2`.
+  have h_scaled_v2 : regLookup kst2.rf (s.nextReg + 1) = some vscaled := regLookup_regWrite_self _ _ _
+  have h_b2_v2 : regLookup kst2.rf b2 = some vb2 := by
+    show regLookup (regWrite kst1.rf (s.nextReg + 1) vscaled) b2 = _
+    rw [regLookup_regWrite_of_ne _ _ _ _ (Nat.ne_of_lt (Nat.lt_succ_of_lt hb2_lt))]
+    show regLookup (regWrite kst.rf s.nextReg shval) b2 = _
+    rw [regLookup_regWrite_of_ne _ _ _ _ (Nat.ne_of_lt hb2_lt)]; exact h_b2_v
+  -- scaled holds `bb <<< sh`.
+  have h_scaled_bits' : Quanta.KOps.asU32Bits vscaled
+      = some (bb <<< UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))) := by
+    rcases h_scaled_bits with hv | hv
+    · rw [hv]; rfl
+    · rw [hv]; exact Quanta.KOps.asU32Bits_vI32_ofNat_toNat _
+  obtain ⟨vres, h_add_eval, h_res_bits⟩ :=
+    Quanta.KOps.evalBinOp_add_asU32Bits h_scaled_bits' h_b2_bits
+  let kst3 : Quanta.KOps.State := { kst2 with rf := regWrite kst2.rf (s.nextReg + 1 + 1) vres }
+  refine ⟨kst3, ?_, ?_⟩
+  · -- evalOps over the three ops, chained past broke flags.
+    rw [← hops_eq]
+    have h_step1 : Quanta.KOps.evalOp 0 kst
+        (.const s.nextReg (.u32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))))) = some kst1 := by
+      simp only [Quanta.KOps.evalOp, Quanta.KOps.evalConst]; rfl
+    have h_step2 : Quanta.KOps.evalOp 0 kst1 (.binOp (s.nextReg + 1) base s.nextReg .shl .u32)
+        = some kst2 := by
+      simp only [Quanta.KOps.evalOp, h_base_v1, h_sh_v1, Option.bind_eq_bind, Option.some_bind,
+                 pure]
+      show (Quanta.KOps.evalBinOp .shl vbase shval).bind _ = _
+      rw [show shval = vU32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))) from rfl, h_shl_eval]; rfl
+    have h_step3 : Quanta.KOps.evalOp 0 kst2 (.binOp (s.nextReg + 1 + 1) (s.nextReg + 1) b2 .add .u32)
+        = some kst3 := by
+      simp only [Quanta.KOps.evalOp, h_scaled_v2, h_b2_v2, Option.bind_eq_bind, Option.some_bind,
+                 pure, h_add_eval]; rfl
+    have h_k1 : kst1.broke = false := h_kst_ok
+    have h_k2 : kst2.broke = false := h_kst_ok
+    have h_o1 : evalOps 0 kst [.const s.nextReg (.u32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))))]
+        = some kst1 := by simp only [evalOps, h_step1, Option.bind_eq_bind, Option.some_bind, pure, ite_self]
+    have h_o2 : evalOps 0 kst1 [.binOp (s.nextReg + 1) base s.nextReg .shl .u32] = some kst2 := by
+      simp only [evalOps, h_step2, Option.bind_eq_bind, Option.some_bind, pure, ite_self]
+    have h_o3 : evalOps 0 kst2 [.binOp (s.nextReg + 1 + 1) (s.nextReg + 1) b2 .add .u32] = some kst3 := by
+      simp only [evalOps, h_step3, Option.bind_eq_bind, Option.some_bind, pure, ite_self]
+    rw [show [KernelOp.const s.nextReg (.u32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2)))),
+             KernelOp.binOp (s.nextReg + 1) base s.nextReg .shl .u32,
+             KernelOp.binOp (s.nextReg + 1 + 1) (s.nextReg + 1) b2 .add .u32]
+          = [KernelOp.const s.nextReg (.u32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))))]
+            ++ ([KernelOp.binOp (s.nextReg + 1) base s.nextReg .shl .u32]
+               ++ [KernelOp.binOp (s.nextReg + 1 + 1) (s.nextReg + 1) b2 .add .u32]) from rfl]
+    rw [evalOps_append h_o1 h_k1, evalOps_append h_o2 h_k2, h_o3]
+  · -- Refines.
+    rw [← hs_eq]; subst h_ws_eq
+    have h_dst : regHoldsU32Bits kst3.rf (s.nextReg + 1 + 1)
+        ((bb <<< UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))) + bidx) := by
+      show regHoldsU32Bits (regWrite kst2.rf (s.nextReg + 1 + 1) vres) (s.nextReg + 1 + 1) _
+      rcases h_res_bits with hv | hv
+      · exact Or.inl (by rw [hv]; exact regLookup_regWrite_self _ _ _)
+      · exact Or.inr (by rw [hv]; exact regLookup_regWrite_self _ _ _)
+    have h_fresh3 : ∀ (sv : SymVal), (∀ r ∈ sv.regs, r < s.nextReg) →
+        ∀ v_w : WasmValue, v_w.encodes layout kst.rf sv →
+        v_w.encodes layout kst3.rf sv := by
+      intro sv h_sv_lt v_w h_enc
+      show v_w.encodes layout (regWrite (regWrite (regWrite kst.rf s.nextReg shval)
+        (s.nextReg + 1) vscaled) (s.nextReg + 1 + 1) vres) sv
+      apply WasmValue.encodes_preserved_of_fresh
+        (fun r hr => Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (h_sv_lt r hr)))
+      apply WasmValue.encodes_preserved_of_fresh
+        (fun r hr => Nat.lt_succ_of_lt (h_sv_lt r hr))
+      apply WasmValue.encodes_preserved_of_fresh (fun r hr => h_sv_lt r hr)
+      exact h_enc
+    refine ⟨?_, ?_, ?_, ?_, R.injLocals, R.heapRefines, ?_, ?_, R.curLocDisj⟩
+    · refine ⟨?_, ?_⟩
+      · have hlen := R.stk.left
+        rw [h_stack, h_ws_stack] at hlen; simpa using hlen
+      · intro j vj hvj
+        cases j with
+        | zero =>
+          simp at hvj; subst hvj
+          refine ⟨.bufferAccess slot (s.nextReg + 1 + 1) s2, by simp, ?_⟩
+          show ∃ b', regHoldsU32Bits kst3.rf (s.nextReg + 1 + 1) b' ∧
+                 (eval_u32_wrapping_add a_w b_w).toNat = layout.startAddr slot + b'.toNat * s2
+          refine ⟨(bb <<< UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))) + bidx, h_dst, ?_⟩
+          show (a_w + b_w).toNat = layout.startAddr slot
+                 + ((bb <<< UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))) + bidx).toNat * s2
+          exact h_addr_eq b_w a_w bb bidx h_lookup_base h_lookup_b2 h_bw_eq h_aw_eq
+        | succ j' =>
+          have hwsk : ws.stack.get? (j' + 2) = some vj := by
+            rw [h_ws_stack]; simpa using hvj
+          obtain ⟨svk, hsvk, henck⟩ := R.stk.right (j' + 2) vj hwsk
+          have hsk_rest : rest.get? j' = some svk := by
+            have : s.stack.get? (j' + 2) = some svk := hsvk
+            rw [h_stack] at this; simpa using this
+          refine ⟨svk, by simpa using hsk_rest, ?_⟩
+          have hsvk_in : svk ∈ s.stack := by
+            rw [h_stack]
+            exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_of_get? hsk_rest))
+          exact h_fresh3 svk (fun r hr => R.fresh.left svk hsvk_in r hr) vj henck
+    · intro i r hfind v hv
+      have hr_lt : r < s.nextReg := R.fresh.right (i, r) (List.mem_of_find?_eq_some hfind)
+      exact h_fresh3 _ (by intro r' hr'; simp [SymVal.regs] at hr'; subst hr'; exact hr_lt)
+        v (R.locs i r hfind v hv)
+    · -- Fresh: nextReg bumps by 3.
+      have h_nr : ({ (s.alloc.snd.alloc.snd.alloc.snd) with
+            stack := SymVal.bufferAccess slot (s.nextReg + 1 + 1) s2 :: rest } :
+          LowerState).nextReg = s.nextReg + 1 + 1 + 1 := rfl
+      refine ⟨?_, ?_⟩
+      · intro sv hsv r' hr'
+        rw [h_nr]; simp at hsv
+        rcases hsv with h_eq | h_in
+        · subst h_eq; simp [SymVal.regs] at hr'; subst hr'; exact Nat.lt_succ_self _
+        · have hsv_in : sv ∈ s.stack := by
+            rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+          exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R.fresh.left sv hsv_in r' hr')))
+      · intro ir hir; rw [h_nr]
+        exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R.fresh.right ir hir)))
+    · intro ir hir sv hsv
+      have hir_lt : ir.snd < s.nextReg := R.fresh.right ir hir
+      simp at hsv
+      rcases hsv with h_eq | h_in
+      · subst h_eq; simp [SymVal.regs]
+        exact Nat.ne_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hir_lt))
+      · have hsv_in : sv ∈ s.stack := by
+          rw [h_stack]; exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h_in)
+        exact R.aliasFree ir hir sv hsv_in
+    · show CurrentRegRefines layout ws.locals s.currentReg s.localTy
+        (regWrite (regWrite (regWrite kst.rf s.nextReg shval) (s.nextReg + 1) vscaled)
+          (s.nextReg + 1 + 1) vres)
+      exact CurrentRegRefines_preserved_fresh
+        (CurrentRegRefines_preserved_fresh
+          (CurrentRegRefines_preserved_fresh R.currentReg
+            (fun ir hir => R.freshCurrent ir hir) shval)
+          (fun ir hir => Nat.lt_succ_of_lt (R.freshCurrent ir hir)) vscaled)
+        (fun ir hir => Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R.freshCurrent ir hir))) vres
+    · have h_nr : ({ (s.alloc.snd.alloc.snd.alloc.snd) with
+            stack := SymVal.bufferAccess slot (s.nextReg + 1 + 1) s2 :: rest } :
+          LowerState).nextReg = s.nextReg + 1 + 1 + 1 := rfl
+      intro ir hir; rw [h_nr]
+      exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (R.freshCurrent ir hir)))
+
 /-- Inversion for `bufferAccess` encoding: the encoded WASM value
     must be `wI32` (every other constructor encodes to `False`). -/
 theorem WasmValue.encodes_bufferAccess_wI32_inv

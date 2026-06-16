@@ -22,20 +22,23 @@
 //!      offset. Emit `Const(off, c/scale)`, `Add(dst, base, off)`; push
 //!      `BufferAccess{slot, dst, scale}`. (lower.rs:1177-1199)
 //!
-//! All three are **outside the Lean slice-1 subset** — the Lean
-//! `lowerI32Add` refuses (commits) these address SymVals rather than
-//! composing them, so they are a production-richer-than-spec divergence
-//! of the same character as the V8 items (frame-0 zero-inits; the
-//! commit const-tag + address materialization). This file **models the
-//! production effect and pins each arm's exact shape**, so the
-//! divergence is recorded with a mechanized witness rather than left in
-//! prose — the candidate spec-sync target for V8.
+//! These three folds are now **CLOSED in the Lean spec (V8-#3)**:
+//! `Translate.lean`'s `lowerI32Add` has matching same-scale, rescale,
+//! and const-offset arms (either operand order), and
+//! `Preservation.lean` proves each one's encoding correctness end to
+//! end (`preservation_i32Add_chained_{sameScale,constOff,rescale}`):
+//! the emitted `Add` / `Shl`+`Add` / `Const`+`Add` make the merged
+//! `bufferAccess` encode the WASM `addr + idx` by the distributivity /
+//! shift-as-multiply / divisibility facts, with no-overflow discharged
+//! by per-arm preconditions. The structural lowering invariants
+//! (scope-validity, well-scopedness, nextReg-monotonicity,
+//! bufferSlots) are also proven for the new arms.
 //!
-//! What is proved here is the *production transcription's* shape (the
-//! `step_i32_add_chained_*` effect equals the stated state+ops), the
-//! same status the straight-line `step_<op>` models carry. What it is
-//! NOT is a refinement against a Lean arm — there is no Lean arm to
-//! refine against yet; that is exactly the recorded gap.
+//! This file remains as the **production transcription** — it pins each
+//! arm's exact register/op shape (`step_i32_add_chained_*` effect equals
+//! the stated state + ops), the same status the straight-line
+//! `step_<op>` models carry. It is no longer a recorded *gap*: the Lean
+//! arm it would refine against now exists and is proven.
 
 use vstd::prelude::*;
 

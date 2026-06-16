@@ -31,11 +31,14 @@ the project `CLAUDE.md`.)
 | `structured_refine.rs` | **V7-structured** | The structured-control layer of `lowerInstrs` (`block`/`wloop`/`wif`/`br`/`brIf`/`wreturn`; Translate.lean:555-728). Mechanizes: the **splitters** (`split_at_end`/`split_at_else_or_end`/`closer_index`, mirrors of `Quanta.Wasm.Structured`) with the **progress lemma** `split_at_end_shrinks` (body + post-suffix strictly shorter than input — what makes the fuel-bounded fold well-founded); the **frame predicates** `has_loop_above`/`loops_above`; the full fuel-bounded fold `lower_instrs` with every arm transcribed; **conservativity** `straightline_agrees` (on a list with no structured openers/branches, the structured fold equals the V7 straight-line fold — V7-structured is a conservative *extension*); and **per-arm shape lemmas** — `block_splices` (body splices, no wrapper), `loop_wraps` (`[LoopOp body_ops]`), `br_loop0_no_ir`, `br_cross_loop_breaks`, plus the **not-yet-modeled refusals** `br_exitflag_refuses` (the `emit_loop_crossing_exit` shape) / `br_record_refuses` (`record_br_at`) / `br_oob_refuses`. The per-arm *production* refinement (streaming-`Vec<Frame>` ↔ recursive-descent equivalence at the body boundary) is **mechanized** in `streaming_equiv.rs` (below) for the wrapper-assembly shape — the one place the two strategies could diverge. |
 | `streaming_equiv.rs` | **hardening** | The streaming-`Vec<Frame>` ↔ recursive-descent equivalence — the largest trust step under V7-structured, formerly a prose note in `Quanta.Wasm.Structured`. Models op-assembly on both sides (`step_stream`/`run_stream` = production's push-frame/accumulate/pop-and-fold walk; `descend` = the `split_at_end` recursive descent) routed through a single `wrap` (Block→splice, Loop→`[LoopOp]`, If→`[Branch cond · []]`). Proves: the three **close lemmas** (`close_block_splices`/`close_loop_wraps`/`close_if_branches` — a `wend` close folds exactly `wrap(kind, body)` into the parent), plain-accumulation + height preservation, and the concrete **`stream_equiv_recursive_flat`** (`run_stream` from a Function frame == `descend`, by induction, on flat streams). **Honest scope:** the full *nested* `run_stream == descend` (arbitrary depth) is not driven end-to-end here; what's proved is (1) flat-stream equality and (2) per-`wend` `wrap`-agreement — the only divergence point — so the nested composition is mechanical but un-driven. Shrinks, does not fully retire, the body-boundary obligation. |
 
-### Production↔spec divergences (V8)
+### Production↔spec divergences (V8) — all closed
 
 The refinement surfaced three gaps where production did more than the
-Lean spec modeled. Each was recorded with a **mechanized witness** (the
-production effect modeled and its shape pinned), not just prose.
+Lean spec modeled. Each was first recorded with a **mechanized witness**
+(the production effect modeled and its shape pinned), then closed by
+adding the matching Lean arm with proven preservation. All three (V8-#1
+frame-0 zero-inits, V8-#2 const-tag + type threading, V8-#3
+chained-address folds) are now synced into the spec.
 
 1. **Frame-0 zero-inits** — **CLOSED (V8-#1)**. The Lean spec
    (`Translate.lean`'s `localSet`/`localTee`, via the new `zeroConst`
@@ -57,15 +60,23 @@ production effect modeled and its shape pinned), not just prose.
    pins the now-matching tag. The remaining `commit` gap is domain only:
    production materializes `ScaledIdx`/`BufferAccess`/`I64Const` the
    slice-1 Lean subset refuses (rustc pointer-arith shapes).
-3. **`i32.add` chained-address arithmetic** (`i32add_chained_refine.rs`):
-   beyond the Lean `BufferPtr + ScaledIdx → BufferAccess` no-IR
-   fast-path, production folds three IR-emitting chained shapes —
-   same-scale add, rescale add (larger BufferAccess scale, power-of-two
-   ratio), and const-offset add — when rustc precomputes part of a byte
-   offset. The Lean `lowerI32Add` refuses these (commits the address
-   SymVals); production composes them. Each arm's shape (reg count + ops
-   + pushed `BufferAccess`) is pinned. (The const-offset arm's const now
-   carries the V8-#2-aligned `I32` tag.)
+3. **`i32.add` chained-address arithmetic** — **CLOSED (V8-#3)**
+   (`i32add_chained_refine.rs`). Beyond the Lean `BufferPtr + ScaledIdx
+   → BufferAccess` no-IR fast-path, production folds three IR-emitting
+   chained shapes — same-scale add, rescale add (larger BufferAccess
+   scale, power-of-two ratio), and const-offset add — when rustc
+   precomputes part of a byte offset. `Translate.lean`'s `lowerI32Add`
+   now has matching arms for all three (either operand order), and
+   `Preservation.lean` proves each one's encoding correctness
+   (`preservation_i32Add_chained_{sameScale,constOff,rescale}`): the
+   emitted `Add` / `Shl`+`Add` / `Const`+`Add` make the merged
+   `BufferAccess` encode the WASM `addr + idx` by distributivity /
+   shift-as-multiply / divisibility (no-overflow via per-arm
+   preconditions). Scope-validity, well-scopedness, nextReg-monotonicity
+   and bufferSlots are proven for the new arms; `evalBinOp_add_asU32Bits`
+   / `evalBinOp_shl_asU32Bits` give the tag-agnostic bit-pattern results
+   the folds read. This Verus file now stands as the production
+   transcription matched by a proven Lean arm, not an open gap.
 
 Additionally, **V8-#2 closed the binop/cmp result-type threading on the
 Lean side**: `lowerI32Bin`/`lowerI32Cmp` derive the pushed reg's scalar
@@ -76,9 +87,11 @@ committed value's type (`commitTy`), and a `local.get` reads it back at
 that tag — the full local surface (`LocalsRefines`/`CurrentRegRefines`
 generalized to the recorded `localTy`) is proven in `Preservation.lean`.
 
-None affects semantics. #1 and #2 are now synced into the spec (#1's
-residual is op *placement*, not the op set); #3 remains as a mechanized
-witness for production's rustc-specific address folds.
+None affects semantics. #1, #2, and #3 are all now synced into the Lean
+spec with proven preservation (#1's residual is op *placement*, not the
+op set). No open production↔spec divergences remain on the modeled
+surface; the Verus files stand as the production transcriptions matched
+by proven Lean arms.
 
 ### The model↔Rust correspondence (trust boundary)
 
