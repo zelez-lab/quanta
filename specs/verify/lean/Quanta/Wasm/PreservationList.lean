@@ -2454,6 +2454,330 @@ theorem preservation_evalInstrs_cons_i32Add_bufferPattern_ptrFirst
           · rw [← h_s_eq]; exact R_rest
 
 -- ════════════════════════════════════════════════════════════════════
+-- i32Add chained-address cons cases
+--
+-- Unlike the no-IR `bufferPtr + scaledIdx` fold, the chained folds
+-- EMIT IR (Add / Const+Add / Const+Shl+Add) and advance `kst`. The
+-- wrappers run the head via the standalone chained-preservation
+-- theorem, derive `kst_mid.broke = false` from the head ops being
+-- loop-free-no-break, then thread the IH `preservation_rest` (which
+-- sees the merged `bufferAccess` on top) and compose `evalOps` over
+-- `ops_head ++ postOps` via `preservation_evalInstrs_cons_compose_shallow`.
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `i32.add :: rest` cons preservation for the **same-scale chained**
+    fold (`scaledIdx b2 scale :: bufferAccess slot base scale`). The head
+    emits `[Add(dst, base, b2)]` and leaves `bufferAccess slot dst scale`
+    on top for `rest`. -/
+theorem preservation_evalInstrs_cons_i32Add_chained_sameScale
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (slot : Nat) (base b2 : Quanta.KOps.Reg) (scale : Nat) (lstk_rest : List SymVal)
+    (h_stack : s.stack = .scaledIdx b2 scale :: .bufferAccess slot base scale :: lstk_rest)
+    (h_idx_eq : ∀ bb bidx : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       regHoldsU32Bits kst.rf b2 bidx →
+       (bb + bidx).toNat = bb.toNat + bidx.toNat)
+    (h_addr_eq : ∀ idx addr : UInt32, ∀ bb bidx : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       regHoldsU32Bits kst.rf b2 bidx →
+       idx.toNat = bidx.toNat * scale →
+       addr.toNat = layout.startAddr slot + bb.toNat * scale →
+       (addr + idx).toNat = layout.startAddr slot + (bb.toNat + bidx.toNat) * scale)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        (_h_stack_eq : s_mid.stack = .bufferAccess slot s.nextReg scale :: lstk_rest)
+        (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  rw [lowerInstrs_cons_default fuel frames s .i32Add rest rfl] at hl
+  -- Head lowering = the same-scale arm.
+  have h_head : lowerInstr s .i32Add =
+      some ({ (s.alloc.snd) with
+                stack := .bufferAccess slot s.nextReg scale :: lstk_rest },
+            [.binOp s.nextReg base b2 .add .u32]) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+    simp only [LowerState.alloc, if_true, ite_true, reduceIte]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ (s.alloc.snd) with stack := .bufferAccess slot s.nextReg scale :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Add rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Add with
+      | none => rw [h_eval_head] at hw; simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          -- Run the head via the standalone chained-sameScale theorem.
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Add_chained_sameScale ws s kst layout R h_kst_no_broke
+              slot base b2 scale lstk_rest h_stack h_idx_eq h_addr_eq
+              ws_after _ _ h_eval_head h_head
+          -- The head op-list is loop-free-no-break ⇒ broke preserved.
+          have h_lf_head : loopFreeNoBreak [KernelOp.binOp s.nextReg base b2 .add .u32] = true := rfl
+          have h_mid_broke : kst_mid.broke = false :=
+            evalOps_loopFreeNoBreak_preserves_broke h_lf_head h_kst_no_broke h_kst_eval
+          have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by rw [h_ws_eq]; simp [h_no_halt]
+          have h_stack_after :
+              ({ (s.alloc.snd) with stack := .bufferAccess slot s.nextReg scale :: lstk_rest }
+                : LowerState).stack = .bufferAccess slot s.nextReg scale :: lstk_rest := rfl
+          have h_bs_after :
+              ({ (s.alloc.snd) with stack := .bufferAccess slot s.nextReg scale :: lstk_rest }
+                : LowerState).bufferSlots = s.bufferSlots := rfl
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke
+              h_stack_after h_bs_after hw h_post
+          obtain ⟨kst'', h_eval'', R''⟩ :=
+            preservation_evalInstrs_cons_compose_shallow
+              (loopFreeNoBreak_implies_loopFree h_lf_head) h_kst_eval h_mid_broke
+              ⟨kst'_mid, h_eval_rest, R_rest⟩
+          refine ⟨kst'', F_rest, ?_, ?_⟩
+          · rw [← h_ops_eq]; exact h_eval''
+          · rw [← h_s_eq]; exact R''
+
+/-- `i32.add :: rest` cons preservation for the **const-offset chained**
+    fold (`i32ConstSym c :: bufferAccess slot base scale`, `scale ∣ c`).
+    The head emits `[Const(off, c/scale), Add(dst, base, off)]` and leaves
+    `bufferAccess slot dst scale` on top (`dst = s.nextReg + 1`). -/
+theorem preservation_evalInstrs_cons_i32Add_chained_constOff
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (slot : Nat) (base : Quanta.KOps.Reg) (scale : Nat) (c : Int) (lstk_rest : List SymVal)
+    (h_stack : s.stack = .i32ConstSym c :: .bufferAccess slot base scale :: lstk_rest)
+    (h_guard : scale ≠ 0 ∧ c % (scale : Int) = 0)
+    (h_addr_eq : ∀ cst addr : UInt32, ∀ bb : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       cst = UInt32.ofNat c.toNat →
+       addr.toNat = layout.startAddr slot + bb.toNat * scale →
+       (addr + cst).toNat = layout.startAddr slot + (bb + UInt32.ofNat (c / scale).toNat).toNat * scale)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        (_h_stack_eq : s_mid.stack = .bufferAccess slot (s.nextReg + 1) scale :: lstk_rest)
+        (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  obtain ⟨h_scale_ne, h_div⟩ := h_guard
+  rw [lowerInstrs_cons_default fuel frames s .i32Add rest rfl] at hl
+  have h_head : lowerInstr s .i32Add =
+      some ({ (s.alloc.snd.alloc.snd) with
+                stack := .bufferAccess slot (s.nextReg + 1) scale :: lstk_rest },
+            [.const s.nextReg (.i32 (c / (scale : Int))),
+             .binOp (s.nextReg + 1) base s.nextReg .add .u32]) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+    simp only [LowerState.alloc, h_scale_ne, h_div, ne_eq, not_false_eq_true, and_self,
+               if_true, ite_true, reduceIte]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ (s.alloc.snd.alloc.snd) with
+                      stack := .bufferAccess slot (s.nextReg + 1) scale :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Add rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Add with
+      | none => rw [h_eval_head] at hw; simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Add_chained_constOff ws s kst layout R h_kst_no_broke
+              slot base scale c lstk_rest h_stack ⟨h_scale_ne, h_div⟩ h_addr_eq
+              ws_after _ _ h_eval_head h_head
+          have h_lf_head : loopFreeNoBreak
+              [KernelOp.const s.nextReg (.i32 (c / (scale : Int))),
+               KernelOp.binOp (s.nextReg + 1) base s.nextReg .add .u32] = true := rfl
+          have h_mid_broke : kst_mid.broke = false :=
+            evalOps_loopFreeNoBreak_preserves_broke h_lf_head h_kst_no_broke h_kst_eval
+          have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by rw [h_ws_eq]; simp [h_no_halt]
+          have h_stack_after :
+              ({ (s.alloc.snd.alloc.snd) with
+                  stack := .bufferAccess slot (s.nextReg + 1) scale :: lstk_rest } : LowerState).stack
+              = .bufferAccess slot (s.nextReg + 1) scale :: lstk_rest := rfl
+          have h_bs_after :
+              ({ (s.alloc.snd.alloc.snd) with
+                  stack := .bufferAccess slot (s.nextReg + 1) scale :: lstk_rest }
+                : LowerState).bufferSlots = s.bufferSlots := rfl
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke
+              h_stack_after h_bs_after hw h_post
+          obtain ⟨kst'', h_eval'', R''⟩ :=
+            preservation_evalInstrs_cons_compose_shallow
+              (loopFreeNoBreak_implies_loopFree h_lf_head) h_kst_eval h_mid_broke
+              ⟨kst'_mid, h_eval_rest, R_rest⟩
+          refine ⟨kst'', F_rest, ?_, ?_⟩
+          · rw [← h_ops_eq]; exact h_eval''
+          · rw [← h_s_eq]; exact R''
+
+/-- `i32.add :: rest` cons preservation for the **rescale chained** fold
+    (`scaledIdx b2 s2 :: bufferAccess slot base scale`, `scale > s2`,
+    `s2 ∣ scale`, `scale / s2` a power of two). The head emits
+    `[Const(shift, log2(scale/s2)), Shl(scaled, base, shift),
+    Add(dst, scaled, b2)]` and leaves `bufferAccess slot dst s2` on top
+    at the smaller scale (`dst = s.nextReg + 1 + 1`). -/
+theorem preservation_evalInstrs_cons_i32Add_chained_rescale
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (slot : Nat) (base b2 : Quanta.KOps.Reg) (scale s2 : Nat) (lstk_rest : List SymVal)
+    (h_stack : s.stack = .scaledIdx b2 s2 :: .bufferAccess slot base scale :: lstk_rest)
+    (h_guard : scale > s2 ∧ scale % s2 = 0 ∧ (1 <<< Quanta.Wasm.log2 (scale / s2)) = scale / s2)
+    (h_addr_eq : ∀ idx addr : UInt32, ∀ bb bidx : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       regHoldsU32Bits kst.rf b2 bidx →
+       idx.toNat = bidx.toNat * s2 →
+       addr.toNat = layout.startAddr slot + bb.toNat * scale →
+       (addr + idx).toNat = layout.startAddr slot
+         + ((bb <<< UInt32.ofNat (Quanta.Wasm.log2 (scale / s2))) + bidx).toNat * s2)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        (_h_stack_eq : s_mid.stack = .bufferAccess slot (s.nextReg + 1 + 1) s2 :: lstk_rest)
+        (_h_bs_eq : s_mid.bufferSlots = s.bufferSlots)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  obtain ⟨h_gt, h_mod, h_pow⟩ := h_guard
+  have h_ne : ¬ (scale = s2) := Nat.ne_of_gt h_gt
+  rw [lowerInstrs_cons_default fuel frames s .i32Add rest rfl] at hl
+  have h_head : lowerInstr s .i32Add =
+      some ({ (s.alloc.snd.alloc.snd.alloc.snd) with
+                stack := .bufferAccess slot (s.nextReg + 1 + 1) s2 :: lstk_rest },
+            [.const s.nextReg (.u32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2)))),
+             .binOp (s.nextReg + 1) base s.nextReg .shl .u32,
+             .binOp (s.nextReg + 1 + 1) (s.nextReg + 1) b2 .add .u32]) := by
+    show lowerI32Add s = _
+    unfold lowerI32Add
+    rw [h_stack]
+    simp only [LowerState.alloc, h_ne, h_gt, h_mod, h_pow, gt_iff_lt, and_self,
+               if_false, if_true, ite_true, ite_false, reduceIte]
+  rw [h_head] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  cases h_post : lowerInstrs fuel frames
+                  ({ (s.alloc.snd.alloc.snd.alloc.snd) with
+                      stack := .bufferAccess slot (s.nextReg + 1 + 1) s2 :: lstk_rest })
+                  rest with
+  | none => simp [h_post] at hl
+  | some post_pair =>
+      rcases post_pair with ⟨s_post, postOps⟩
+      simp [h_post] at hl
+      rcases hl with ⟨h_s_eq, h_ops_eq⟩
+      rw [evalInstrs_cons_default fuel ws .i32Add rest h_no_branch h_no_halt rfl] at hw
+      cases h_eval_head : evalInstr ws .i32Add with
+      | none => rw [h_eval_head] at hw; simp at hw
+      | some ws_after =>
+          rw [h_eval_head] at hw
+          simp only at hw
+          obtain ⟨kst_mid, h_kst_eval, R_mid⟩ :=
+            preservation_i32Add_chained_rescale ws s kst layout R h_kst_no_broke
+              slot base b2 scale s2 lstk_rest h_stack ⟨h_gt, h_mod, h_pow⟩ h_addr_eq
+              ws_after _ _ h_eval_head h_head
+          have h_lf_head : loopFreeNoBreak
+              [KernelOp.const s.nextReg (.u32 (UInt32.ofNat (Quanta.Wasm.log2 (scale / s2)))),
+               KernelOp.binOp (s.nextReg + 1) base s.nextReg .shl .u32,
+               KernelOp.binOp (s.nextReg + 1 + 1) (s.nextReg + 1) b2 .add .u32] = true := rfl
+          have h_mid_broke : kst_mid.broke = false :=
+            evalOps_loopFreeNoBreak_preserves_broke h_lf_head h_kst_no_broke h_kst_eval
+          have h_w : evalInstr ws .i32Add = binI32 eval_u32_wrapping_add ws := rfl
+          rw [h_w] at h_eval_head
+          obtain ⟨_, _, _, _, h_ws_eq⟩ := binI32_some_shape h_eval_head
+          have h_mid_no_branch : ws_after.branchTarget = none := by rw [h_ws_eq]; simp [h_no_branch]
+          have h_mid_no_halt : ws_after.halted = false := by rw [h_ws_eq]; simp [h_no_halt]
+          have h_stack_after :
+              ({ (s.alloc.snd.alloc.snd.alloc.snd) with
+                  stack := .bufferAccess slot (s.nextReg + 1 + 1) s2 :: lstk_rest } : LowerState).stack
+              = .bufferAccess slot (s.nextReg + 1 + 1) s2 :: lstk_rest := rfl
+          have h_bs_after :
+              ({ (s.alloc.snd.alloc.snd.alloc.snd) with
+                  stack := .bufferAccess slot (s.nextReg + 1 + 1) s2 :: lstk_rest }
+                : LowerState).bufferSlots = s.bufferSlots := rfl
+          obtain ⟨kst'_mid, F_rest, h_eval_rest, R_rest⟩ :=
+            preservation_rest R_mid h_mid_no_branch h_mid_no_halt h_mid_broke
+              h_stack_after h_bs_after hw h_post
+          obtain ⟨kst'', h_eval'', R''⟩ :=
+            preservation_evalInstrs_cons_compose_shallow
+              (loopFreeNoBreak_implies_loopFree h_lf_head) h_kst_eval h_mid_broke
+              ⟨kst'_mid, h_eval_rest, R_rest⟩
+          refine ⟨kst'', F_rest, ?_, ?_⟩
+          · rw [← h_ops_eq]; exact h_eval''
+          · rw [← h_s_eq]; exact R''
+
+-- ════════════════════════════════════════════════════════════════════
 -- i32Load / i32Store (buffer-access path) cons cases
 --
 -- i32Load emits a single `.load` op against the BufferAccess address.
@@ -2770,6 +3094,77 @@ theorem preservation_evalInstrs_cons_i32Store
 -- `.scaledIdx` SymVal on the stack; L1c extends through
 -- `i32Add :: i32Load 0 align :: rest` to close the full chain.
 -- ════════════════════════════════════════════════════════════════════
+
+/-- **Composition demonstration** — the same-scale chained fold feeding a
+    load. From `scaledIdx b2 4 :: bufferAccess slot base 4 :: lstk_rest`
+    (a folded buffer access plus a fresh element index), the sequence
+    `i32.add :: i32.load 0 align :: rest` folds the two indices into one
+    `bufferAccess slot dst 4` and loads from it. Wires
+    `cons_i32Add_chained_sameScale` into `cons_i32Load`, showing the
+    merged access flows through a subsequent memory op — the chained-fold
+    preservation is load-bearing, not just a standalone lemma.
+
+    `h_in_bounds_merged` bounds the combined index `bb + bidx` (the value
+    the add writes to `dst = s.nextReg`) for the load. -/
+theorem preservation_evalInstrs_chain_chained_sameScale_load
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (slot : Nat) (base b2 : Quanta.KOps.Reg) (lstk_rest : List SymVal)
+    (offset align : Nat) (h_offset : offset = 0)
+    (h_stack : s.stack = .scaledIdx b2 4 :: .bufferAccess slot base 4 :: lstk_rest)
+    (h_idx_eq : ∀ bb bidx : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       regHoldsU32Bits kst.rf b2 bidx →
+       (bb + bidx).toNat = bb.toNat + bidx.toNat)
+    (h_addr_eq : ∀ idx addr : UInt32, ∀ bb bidx : UInt32,
+       regHoldsU32Bits kst.rf base bb →
+       regHoldsU32Bits kst.rf b2 bidx →
+       idx.toNat = bidx.toNat * 4 →
+       addr.toNat = layout.startAddr slot + bb.toNat * 4 →
+       (addr + idx).toNat = layout.startAddr slot + (bb.toNat + bidx.toNat) * 4)
+    (h_in_bounds_merged : ∀ m : UInt32, m.toNat < layout.length slot)
+    (rest : List WasmInstr)
+    (preservation_rest : ∀ {ws_mid : WasmState} {s_mid : LowerState}
+        {kst_mid : Quanta.KOps.State}
+        (_R_mid : Refines ws_mid s_mid kst_mid layout)
+        (_h_no_branch_mid : ws_mid.branchTarget = none)
+        (_h_no_halt_mid : ws_mid.halted = false)
+        (_h_kst_no_broke_mid : kst_mid.broke = false)
+        {ws'_mid : WasmState} {s'_mid : LowerState} {postOps : List KernelOp}
+        (_hw_mid : evalInstrs fuel ws_mid rest = some ws'_mid)
+        (_hl_mid : lowerInstrs fuel frames s_mid rest = some (s'_mid, postOps)),
+      ∃ (kst'_mid : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_mid postOps = some kst'_mid ∧
+        Refines ws'_mid s'_mid kst'_mid layout)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs fuel ws (.i32Add :: .i32Load offset align :: rest) = some ws')
+    (hl : lowerInstrs fuel frames s (.i32Add :: .i32Load offset align :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧ Refines ws' s' kst' layout := by
+  -- Head: the same-scale chained fold (scale 4 = 4).
+  apply preservation_evalInstrs_cons_i32Add_chained_sameScale
+    fuel frames ws s kst layout R h_no_branch h_no_halt h_kst_no_broke
+    slot base b2 4 lstk_rest h_stack h_idx_eq h_addr_eq
+    (.i32Load offset align :: rest)
+    ?_ ws' s' ops hw hl
+  -- IH at the post-fold state: stack = `bufferAccess slot s.nextReg 4 ::
+  -- lstk_rest`; dispatch the load against the merged access.
+  intro ws2 s2 kst2 R2 h_nb2 h_nh2 h_kb2 h_stack_add h_bs_add
+        ws'2 s'2 postOps2 hw2 hl2
+  apply preservation_evalInstrs_cons_i32Load
+    fuel frames ws2 s2 kst2 layout R2 h_nb2 h_nh2 h_kb2
+    slot s.nextReg lstk_rest offset align h_stack_add h_offset
+    (fun b _ => h_in_bounds_merged b)
+    rest
+    ?_ ws'2 s'2 postOps2 hw2 hl2
+  -- Tail: forward to the user IH.
+  intro ws3 s3 kst3 R3 h_nb3 h_nh3 h_kb3 ws'3 s'3 postOps3 hw3 hl3
+  exact preservation_rest R3 h_nb3 h_nh3 h_kb3 hw3 hl3
 
 /-- L1a: the 2-step buffer-pointer address prelude. -/
 theorem preservation_evalInstrs_chain_buffer_prelude_2step
