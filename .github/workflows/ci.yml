@@ -312,3 +312,59 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -- -D warnings
+
+  # ─── Vulkan SPIR-V lane via lavapipe (per-PR) ────────────────────────
+  #
+  # The software lane in host-tests doesn't exercise the SPIR-V emitter,
+  # so emitter bugs (wrong opcodes, missing capabilities) only surface on
+  # a real Vulkan driver. lavapipe is Mesa's software Vulkan ICD: it lets
+  # a GPU-less runner build and dispatch the emitted SPIR-V and compare
+  # results against the CPU reference. The full hardware matrix (AMDGPU /
+  # NVIDIA) runs nightly in diff-full.yml; this is the per-PR guard.
+  gpu-tests-vulkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-cargo-vulkan-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-cargo-vulkan-
+            ubuntu-cargo-
+
+      - name: Install Mesa Vulkan + validation layers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            libvulkan-dev \
+            vulkan-validationlayers
+
+      - name: Locate lavapipe ICD
+        run: |
+          ICD=$(find /usr/share/vulkan/icd.d/ -name "lvp_icd*.json" | head -1)
+          test -n "$ICD" || { echo "::error::lavapipe ICD not found in /usr/share/vulkan/icd.d/"; ls /usr/share/vulkan/icd.d/ || true; exit 1; }
+          echo "VK_ICD_FILENAMES=$ICD" >> $GITHUB_ENV
+          echo "lavapipe ICD: $ICD"
+          VK_ICD_FILENAMES="$ICD" vulkaninfo --summary
+
+      # `jit` is required: op_matrix + differential build KernelDef IR at
+      # runtime and feed it through wave_jit (the SPIR-V emitter path).
+      - name: Op-matrix tests (vulkan lane via lavapipe)
+        run: cargo test --test op_matrix --no-default-features --features vulkan,jit
+
+      - name: Differential tests (vulkan lane via lavapipe)
+        run: cargo test --test differential --no-default-features --features vulkan,jit
