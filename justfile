@@ -112,3 +112,9 @@ clippy-vulkan:
 quality: fmt clippy test-conformance
 
 verify: quality clippy-vulkan test
+
+# Wire up the tracked git hooks (.githooks/pre-commit runs fmt + clippy).
+# Run once after cloning — git does not pick up .githooks automatically.
+hooks:
+    git config core.hooksPath .githooks
+    @echo "pre-commit hook active (fmt --check + clippy -D warnings)"

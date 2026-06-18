@@ -44,6 +44,9 @@ By signing off you certify the following (full text at
 
 - One logical change per PR.
 - All tests must pass (`just test`).
+- Run `just hooks` once after cloning to enable the pre-commit hook
+  (`fmt --check` + `clippy -D warnings`); git does not pick up
+  `.githooks/` on its own.
 - Run `just fmt` and `just clippy` before pushing.
 - If your change touches a verified component, run the relevant Verus or
   Lean check (see `specs/verify/`).
