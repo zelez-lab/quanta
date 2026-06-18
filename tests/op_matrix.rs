@@ -117,9 +117,7 @@ fn op_matrix_vulkan_matches_reference() {
         if !f64_ok && matches!(case.expected, RawValues::F64(_)) {
             continue;
         }
-        if !i64_ok
-            && matches!(case.input_a, RawValues::U64(_) | RawValues::I64(_))
-        {
+        if !i64_ok && matches!(case.input_a, RawValues::U64(_) | RawValues::I64(_)) {
             continue;
         }
         let oracle = case.oracle();

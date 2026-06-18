@@ -493,9 +493,8 @@ impl GpuDevice for CpuDevice {
                 let first_err = &first_err;
                 scope.spawn(move || {
                     let mut shared: HashMap<u32, Vec<u8>> = HashMap::new();
-                    let mut thread_regs: Vec<HashMap<u32, Value>> = (0..threads_per_group)
-                        .map(|_| HashMap::new())
-                        .collect();
+                    let mut thread_regs: Vec<HashMap<u32, Value>> =
+                        (0..threads_per_group).map(|_| HashMap::new()).collect();
                     for gid in start..end {
                         // Early-out if another worker already failed.
                         if first_err.lock().unwrap().is_some() {

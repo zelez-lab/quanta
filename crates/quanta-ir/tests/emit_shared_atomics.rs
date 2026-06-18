@@ -164,7 +164,10 @@ fn wgsl_emits_atomic_decoration_and_validates() {
         wgsl.contains("var<workgroup> shared_0: array<atomic<u32>, 256>;"),
         "shared slot must be declared atomic<u32>:\n{wgsl}"
     );
-    assert!(wgsl.contains("atomicAdd(&shared_0["), "missing atomicAdd:\n{wgsl}");
+    assert!(
+        wgsl.contains("atomicAdd(&shared_0["),
+        "missing atomicAdd:\n{wgsl}"
+    );
     assert!(
         wgsl.contains("atomicStore(&shared_0["),
         "plain store on an atomic slot must become atomicStore:\n{wgsl}"
@@ -197,11 +200,16 @@ fn wgsl_non_atomic_slots_stay_plain() {
     // the plain declaration and plain accesses — the atomic tagging
     // must not leak onto untouched slots.
     let mut kernel = shared_atomic_kernel();
-    kernel.body.retain(|op| !matches!(op, KernelOp::SharedAtomicOp { .. }));
+    kernel
+        .body
+        .retain(|op| !matches!(op, KernelOp::SharedAtomicOp { .. }));
     let wgsl = quanta_ir::emit_wgsl::emit(&kernel).expect("WGSL emission must succeed");
     assert!(
         wgsl.contains("var<workgroup> shared_0: array<u32, 256>;"),
         "untouched slot must stay plain:\n{wgsl}"
     );
-    assert!(!wgsl.contains("atomicLoad"), "no atomicLoad expected:\n{wgsl}");
+    assert!(
+        !wgsl.contains("atomicLoad"),
+        "no atomicLoad expected:\n{wgsl}"
+    );
 }

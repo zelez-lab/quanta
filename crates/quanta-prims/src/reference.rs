@@ -340,6 +340,9 @@ pub fn segmented_reduce_add_u32_blocks(
     let num_blocks = data.len() / block_size;
     assert_eq!(counts_out.len(), num_blocks);
     totals_out.fill(0);
+    // `b` indexes counts_out and also drives the `b * block_size` offset
+    // into data/totals_out, so a range loop is the clearest form here.
+    #[allow(clippy::needless_range_loop)]
     for b in 0..num_blocks {
         let start = b * block_size;
         let mut seg = 0usize;

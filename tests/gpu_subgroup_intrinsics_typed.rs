@@ -260,7 +260,10 @@ fn reduce_add_f32_returns_warp_sum() {
     for (lane, &v) in result.iter().enumerate() {
         let g = lane / s;
         let expected: f32 = values[g * s..(g * s + s).min(N)].iter().sum();
-        assert!((v - expected).abs() < 1e-3, "lane {lane}: got {v}, expected ~{expected}");
+        assert!(
+            (v - expected).abs() < 1e-3,
+            "lane {lane}: got {v}, expected ~{expected}"
+        );
     }
 }
 
@@ -314,7 +317,10 @@ fn reduce_min_f32_returns_warp_min() {
             .iter()
             .cloned()
             .fold(f32::INFINITY, f32::min);
-        assert!((v - expected).abs() < 1e-6, "lane {lane}: got {v}, expected {expected}");
+        assert!(
+            (v - expected).abs() < 1e-6,
+            "lane {lane}: got {v}, expected {expected}"
+        );
     }
 }
 
@@ -365,7 +371,10 @@ fn reduce_max_f32_returns_warp_max() {
             .iter()
             .cloned()
             .fold(f32::NEG_INFINITY, f32::max);
-        assert!((v - expected).abs() < 1e-3, "lane {lane}: got {v}, expected {expected}");
+        assert!(
+            (v - expected).abs() < 1e-3,
+            "lane {lane}: got {v}, expected {expected}"
+        );
     }
 }
 

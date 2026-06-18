@@ -125,17 +125,38 @@ fn uniform_fills_match_generated_oracles() {
     let (lo, hi) = (SEED as u32, (SEED >> 32) as u32);
 
     let got_u32 = fill_uniform_u32_gpu(&gpu, n, SEED).expect("dispatch u32");
-    let mut want_u32 = FillUniformU32Data { out: vec![0u32; n], seed_lo: lo, seed_hi: hi };
+    let mut want_u32 = FillUniformU32Data {
+        out: vec![0u32; n],
+        seed_lo: lo,
+        seed_hi: hi,
+    };
     unsafe { fill_uniform_u32_host_oracle(n as u32, &mut want_u32) };
-    assert_eq!(got_u32, want_u32.out, "fill_uniform_u32 diverged from oracle");
+    assert_eq!(
+        got_u32, want_u32.out,
+        "fill_uniform_u32 diverged from oracle"
+    );
 
     let got_u64 = fill_uniform_u64_gpu(&gpu, n, SEED).expect("dispatch u64");
-    let mut want_u64 = FillUniformU64Data { out: vec![0u64; n], seed_lo: lo, seed_hi: hi };
+    let mut want_u64 = FillUniformU64Data {
+        out: vec![0u64; n],
+        seed_lo: lo,
+        seed_hi: hi,
+    };
     unsafe { fill_uniform_u64_host_oracle(n as u32, &mut want_u64) };
-    assert_eq!(got_u64, want_u64.out, "fill_uniform_u64 diverged from oracle");
+    assert_eq!(
+        got_u64, want_u64.out,
+        "fill_uniform_u64 diverged from oracle"
+    );
 
     let got_f32 = fill_uniform_f32_gpu(&gpu, n, SEED).expect("dispatch f32");
-    let mut want_f32 = FillUniformF32Data { out: vec![0.0f32; n], seed_lo: lo, seed_hi: hi };
+    let mut want_f32 = FillUniformF32Data {
+        out: vec![0.0f32; n],
+        seed_lo: lo,
+        seed_hi: hi,
+    };
     unsafe { fill_uniform_f32_host_oracle(n as u32, &mut want_f32) };
-    assert_eq!(got_f32, want_f32.out, "fill_uniform_f32 diverged from oracle");
+    assert_eq!(
+        got_f32, want_f32.out,
+        "fill_uniform_f32 diverged from oracle"
+    );
 }

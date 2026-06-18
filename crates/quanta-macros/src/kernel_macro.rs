@@ -119,8 +119,7 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     // WASM lowerer, and the body is derived from `rustc → wasm32 →
     // KernelOps`. Struct-ref and flat-param kernels dispatch to
     // their respective emitters inside `swap_body_via_wasm_route`.
-    let host_oracle = match swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref())
-    {
+    let host_oracle = match swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref()) {
         Ok(oracle) => oracle.unwrap_or_default(),
         Err(err) => {
             let msg = format!("WASM route failed: {err}");

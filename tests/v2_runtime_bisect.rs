@@ -125,8 +125,7 @@ fn bisect_l2_2_stub_philox_real_gamma(input: &[f32], out: &mut [u32]) {
         let log_z: f32 = z.ln();
         let inv_z: f32 = 1.0f32 / z;
         let inv_z3: f32 = inv_z * inv_z * inv_z;
-        (z - 0.5f32) * log_z - z + half_log_2pi
-            + inv_z * (1.0f32 / 12.0f32)
+        (z - 0.5f32) * log_z - z + half_log_2pi + inv_z * (1.0f32 / 12.0f32)
             - inv_z3 * (1.0f32 / 360.0f32)
     }
     let id = quark_id();
@@ -199,8 +198,7 @@ fn bisect_l4_early_exit_loop_cond(input: &[f32], out: &mut [u32]) {
         let log_z: f32 = z.ln();
         let inv_z: f32 = 1.0f32 / z;
         let inv_z3: f32 = inv_z * inv_z * inv_z;
-        (z - 0.5f32) * log_z - z + half_log_2pi
-            + inv_z * (1.0f32 / 12.0f32)
+        (z - 0.5f32) * log_z - z + half_log_2pi + inv_z * (1.0f32 / 12.0f32)
             - inv_z3 * (1.0f32 / 360.0f32)
     }
     let id = quark_id();
@@ -227,8 +225,7 @@ fn bisect_l4_early_exit_loop_cond(input: &[f32], out: &mut [u32]) {
                 done = 1u32;
             } else if !(us < 0.013f32 && v > us) {
                 let lhs: f32 = ln(v) + log_inv_alpha - ln(a / (us * us) + b);
-                let rhs: f32 =
-                    (0.0f32 - lam) + (k_f * log_lam) - bisect_log_gamma_l4(k_f + 1.0f32);
+                let rhs: f32 = (0.0f32 - lam) + (k_f * log_lam) - bisect_log_gamma_l4(k_f + 1.0f32);
                 if lhs <= rhs {
                     result = k_f as u32;
                     done = 1u32;
@@ -320,8 +317,7 @@ fn bisect_l3_gamma_no_clamp(input: &[f32], out: &mut [u32]) {
         let log_z: f32 = z.ln();
         let inv_z: f32 = 1.0f32 / z;
         let inv_z3: f32 = inv_z * inv_z * inv_z;
-        (z - 0.5f32) * log_z - z + half_log_2pi
-            + inv_z * (1.0f32 / 12.0f32)
+        (z - 0.5f32) * log_z - z + half_log_2pi + inv_z * (1.0f32 / 12.0f32)
             - inv_z3 * (1.0f32 / 360.0f32)
     }
     let id = quark_id();

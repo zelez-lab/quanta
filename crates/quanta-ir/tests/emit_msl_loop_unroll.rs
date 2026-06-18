@@ -9,9 +9,7 @@
 
 #![cfg(feature = "jit")]
 
-use quanta_ir::{
-    ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, emit_msl,
-};
+use quanta_ir::{ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, emit_msl};
 
 const UNROLL_PRAGMA: &str = "#pragma clang loop unroll(full)";
 

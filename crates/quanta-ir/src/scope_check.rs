@@ -689,8 +689,7 @@ mod tests {
                 }],
             },
         ]);
-        let err = scope_check(&def)
-            .expect_err("sibling-branch use of sub-scope reg should fail");
+        let err = scope_check(&def).expect_err("sibling-branch use of sub-scope reg should fail");
         assert_eq!(err.reg, Reg(2));
         assert_eq!(err.location, "BinOp.a");
     }

@@ -130,8 +130,7 @@ fn fill_poisson_u32_large_no_default_zeros() {
     // samples — any positive fraction signals algorithm breakage.
     let gpu = quanta::init_cpu();
     let n = 8192;
-    let samples =
-        fill_poisson_u32_large_gpu(&gpu, n, SEED, 50.0f32).expect("dispatch");
+    let samples = fill_poisson_u32_large_gpu(&gpu, n, SEED, 50.0f32).expect("dispatch");
     let zero_count = samples.iter().filter(|&&x| x == 0).count();
     assert_eq!(
         zero_count, 0,

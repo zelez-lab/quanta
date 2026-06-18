@@ -97,7 +97,9 @@ fn reduce_max_i32_all_negative() {
 #[test]
 fn reduce_min_i32_with_negatives() {
     let Some(gpu) = try_gpu() else { return };
-    let data: Vec<i32> = (0..777i32).map(|i| if i == 400 { -9999 } else { i }).collect();
+    let data: Vec<i32> = (0..777i32)
+        .map(|i| if i == 400 { -9999 } else { i })
+        .collect();
     let expected = reference::reduce_min_i32(&data);
     assert_eq!(device_reduce_min_i32(&gpu, &data).unwrap(), expected);
 }

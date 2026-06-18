@@ -474,6 +474,7 @@ impl<'a> LowerCtx<'a> {
     /// Two br_ifs at positions p1 < p2 mean:
     /// - ops[p1..p2-1] execute on !cond1.
     /// - ops[p2..] execute on !cond1 AND !cond2.
+    ///
     /// Processing in reverse: first wrap ops[p2..] inside
     /// `Branch{cond2, then=[], else=…}`, replacing target.ops[p2..]
     /// with that single new op. Then wrap ops[p1..] (which now
@@ -2259,10 +2260,10 @@ impl<'a> LowerCtx<'a> {
                 // strict WASM semantics.
                 let mut prior_cond: Option<Reg> = None;
                 for d in 0..*depth {
-                    if let Some(f) = self.frame_at_depth(d) {
-                        if let Some(record) = f.brifs.last() {
-                            prior_cond = Some(record.cond);
-                        }
+                    if let Some(f) = self.frame_at_depth(d)
+                        && let Some(record) = f.brifs.last()
+                    {
+                        prior_cond = Some(record.cond);
                     }
                 }
                 let cond_reg = if let Some(prior) = prior_cond {

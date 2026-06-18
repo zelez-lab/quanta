@@ -140,7 +140,10 @@ fn head_at_block_boundary_and_multi_block() {
     // (redundant with the implicit restart — must not double-count),
     // block 2 has none (single implicit segment), block 3 mixes.
     let n = 4 * BLOCK;
-    let data = xorshift(0xB10C, n).into_iter().map(|x| x % 100).collect::<Vec<_>>();
+    let data = xorshift(0xB10C, n)
+        .into_iter()
+        .map(|x| x % 100)
+        .collect::<Vec<_>>();
     let mut flags = vec![0u32; n];
     flags[BLOCK] = 1; // explicit head exactly at block 1's start
     flags[BLOCK + 7] = 1;
@@ -176,4 +179,3 @@ fn wrapping_sums_match_reference() {
     flags[128] = 1;
     check_both(&gpu, &data, &flags);
 }
-

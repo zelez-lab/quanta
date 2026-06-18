@@ -22,8 +22,7 @@ use quanta_rand::gpu_kernel::fill_poisson_u32_large_gpu;
 #[test]
 fn ptrd_cpu_smoke_lambda10() {
     let gpu = quanta::init_cpu();
-    let samples = fill_poisson_u32_large_gpu(&gpu, 32, 0xCAFE_BABE, 10.0)
-        .expect("dispatch");
+    let samples = fill_poisson_u32_large_gpu(&gpu, 32, 0xCAFE_BABE, 10.0).expect("dispatch");
     let nonzero = samples.iter().filter(|&&x| x != 0).count();
     let mean: f64 = samples.iter().map(|&x| x as f64).sum::<f64>() / 32.0;
     // For Poisson(10), Pr(X=0) ≈ 4.5e-5; essentially all samples are non-zero.

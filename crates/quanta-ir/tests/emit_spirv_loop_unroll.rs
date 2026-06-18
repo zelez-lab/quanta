@@ -8,9 +8,7 @@
 
 #![cfg(feature = "jit")]
 
-use quanta_ir::{
-    ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, emit_spirv,
-};
+use quanta_ir::{ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, emit_spirv};
 
 /// SPIR-V opcode for `OpLoopMerge` (per SPIR-V spec §3.49.5).
 const OP_LOOP_MERGE: u16 = 246;

@@ -97,7 +97,10 @@ fn random_unique_keys_multi_block() {
         }
         keys.extend(perm);
     }
-    let vals: Vec<u32> = keys.iter().map(|k| k.wrapping_mul(31).wrapping_add(5)).collect();
+    let vals: Vec<u32> = keys
+        .iter()
+        .map(|k| k.wrapping_mul(31).wrapping_add(5))
+        .collect();
     check_unique(&gpu, &keys, &vals);
 }
 

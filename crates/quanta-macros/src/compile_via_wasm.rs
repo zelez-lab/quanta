@@ -85,12 +85,12 @@ pub(crate) fn compile_struct_ref_kernel_via_wasm(
     // when scope_check passes. Complements QUANTA_SCOPE_DUMP (which
     // only fires on violation) — needed for runtime-semantics bugs
     // where the IR is scope-valid but wrong.
-    if let Ok(target) = std::env::var("QUANTA_DUMP_KERNEL") {
-        if target == def.name {
-            eprintln!("[quanta] IR dump for `{}`:", def.name);
-            for (i, op) in def.body.iter().enumerate() {
-                eprintln!("  [{i}] {op:?}");
-            }
+    if let Ok(target) = std::env::var("QUANTA_DUMP_KERNEL")
+        && target == def.name
+    {
+        eprintln!("[quanta] IR dump for `{}`:", def.name);
+        for (i, op) in def.body.iter().enumerate() {
+            eprintln!("  [{i}] {op:?}");
         }
     }
     // Dynamic oracle: structural use-before-def check. Catches bug #1
@@ -590,12 +590,12 @@ pub(crate) fn compile_flat_param_kernel_via_wasm(
     // when scope_check passes. Complements QUANTA_SCOPE_DUMP (which
     // only fires on violation) — needed for runtime-semantics bugs
     // where the IR is scope-valid but wrong.
-    if let Ok(target) = std::env::var("QUANTA_DUMP_KERNEL") {
-        if target == def.name {
-            eprintln!("[quanta] IR dump for `{}`:", def.name);
-            for (i, op) in def.body.iter().enumerate() {
-                eprintln!("  [{i}] {op:?}");
-            }
+    if let Ok(target) = std::env::var("QUANTA_DUMP_KERNEL")
+        && target == def.name
+    {
+        eprintln!("[quanta] IR dump for `{}`:", def.name);
+        for (i, op) in def.body.iter().enumerate() {
+            eprintln!("  [{i}] {op:?}");
         }
     }
     // Dynamic oracle: structural use-before-def check. Catches bug #1
@@ -1187,22 +1187,44 @@ mod tests {
 /// wrapper names kernels actually write.
 const ORACLE_BLOCKERS: &[&str] = &[
     // identity beyond quark_id
-    "local_id", "group_id", "workgroup_size", "proton_id", "nucleus_id",
+    "local_id",
+    "group_id",
+    "workgroup_size",
+    "proton_id",
+    "nucleus_id",
     "proton_size",
     // synchronization + memory model
-    "barrier", "memory_fence", "fence",
+    "barrier",
+    "memory_fence",
+    "fence",
     // atomics (public wrappers + suffixed externs)
-    "atomic_add", "atomic_sub", "atomic_min", "atomic_max", "atomic_and",
-    "atomic_or", "atomic_xor", "atomic_exchange", "atomic_cas",
+    "atomic_add",
+    "atomic_sub",
+    "atomic_min",
+    "atomic_max",
+    "atomic_and",
+    "atomic_or",
+    "atomic_xor",
+    "atomic_exchange",
+    "atomic_cas",
     // subgroup / wave ops
-    "subgroup_size", "subgroup_id", "ballot", "shuffle",
+    "subgroup_size",
+    "subgroup_id",
+    "ballot",
+    "shuffle",
     // cross-lane collectives
-    "reduce_add", "reduce_min", "reduce_max", "scan_add",
+    "reduce_add",
+    "reduce_min",
+    "reduce_max",
+    "scan_add",
     "scan_add_exclusive",
     // workgroup-shared accessors (rewritten shared decls)
-    "shared_load", "shared_store",
+    "shared_load",
+    "shared_store",
     // textures
-    "texture_sample_2d", "texture_load_2d", "texture_load_3d",
+    "texture_sample_2d",
+    "texture_load_2d",
+    "texture_load_3d",
     "texture_write_2d",
 ];
 
@@ -1216,17 +1238,16 @@ fn oracle_blocker_in_block(block: &syn::Block) -> Option<String> {
     }
     impl<'ast> Visit<'ast> for V {
         fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-            if self.hit.is_none() {
-                if let syn::Expr::Path(p) = call.func.as_ref() {
-                    if let Some(seg) = p.path.segments.last() {
-                        let name = seg.ident.to_string();
-                        if ORACLE_BLOCKERS
-                            .iter()
-                            .any(|b| name == *b || name.starts_with(&format!("{b}_")))
-                        {
-                            self.hit = Some(name);
-                        }
-                    }
+            if self.hit.is_none()
+                && let syn::Expr::Path(p) = call.func.as_ref()
+                && let Some(seg) = p.path.segments.last()
+            {
+                let name = seg.ident.to_string();
+                if ORACLE_BLOCKERS
+                    .iter()
+                    .any(|b| name == *b || name.starts_with(&format!("{b}_")))
+                {
+                    self.hit = Some(name);
                 }
             }
             syn::visit::visit_expr_call(self, call);

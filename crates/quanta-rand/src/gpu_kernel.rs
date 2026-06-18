@@ -721,15 +721,14 @@ fn log_gamma_f32(z_in: f32) -> f32 {
     // Clamp to avoid log(z) blowing up. Callers should already
     // ensure z ≥ 1 via the `k >= 0` early reject in PTRD.
     let z: f32 = if z_in < 1.0f32 { 1.0f32 } else { z_in };
-    let half_log_2pi: f32 = 0.918938533f32;
+    let half_log_2pi: f32 = 0.918_938_5_f32;
     // Use method-call form `.ln()` so device-fn name resolution
     // works on the host build (intrinsics aren't `use`d at module
     // scope in this file for device fns, only inside kernel bodies).
     let log_z: f32 = z.ln();
     let inv_z: f32 = 1.0f32 / z;
     let inv_z3: f32 = inv_z * inv_z * inv_z;
-    (z - 0.5f32) * log_z - z + half_log_2pi
-        + inv_z * (1.0f32 / 12.0f32)
+    (z - 0.5f32) * log_z - z + half_log_2pi + inv_z * (1.0f32 / 12.0f32)
         - inv_z3 * (1.0f32 / 360.0f32)
 }
 
@@ -780,10 +779,8 @@ pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
     let mut result: u32 = 0u32;
     let mut done: u32 = 0u32;
     while iter < 32u32 && done == 0u32 {
-        let r1: u32 =
-            philox4x32_10_first_u32_kernel(id, iter, 0u32, 0u32, d.seed_lo, d.seed_hi);
-        let r2: u32 =
-            philox4x32_10_first_u32_kernel(id, iter, 1u32, 0u32, d.seed_lo, d.seed_hi);
+        let r1: u32 = philox4x32_10_first_u32_kernel(id, iter, 0u32, 0u32, d.seed_lo, d.seed_hi);
+        let r2: u32 = philox4x32_10_first_u32_kernel(id, iter, 1u32, 0u32, d.seed_lo, d.seed_hi);
         let u_bits: u32 = r1 >> 8u32;
         let v_bits: u32 = r2 >> 8u32;
         let scale: f32 = 1.0f32 / 16_777_216.0f32;
@@ -797,8 +794,7 @@ pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
                 done = 1u32;
             } else if !(us < 0.013f32 && v > us) {
                 let lhs: f32 = ln(v) + log_inv_alpha - ln(a / (us * us) + b);
-                let rhs: f32 =
-                    (0.0f32 - lam) + (k_f * log_lam) - log_gamma_f32(k_f + 1.0f32);
+                let rhs: f32 = (0.0f32 - lam) + (k_f * log_lam) - log_gamma_f32(k_f + 1.0f32);
                 if lhs <= rhs {
                     result = k_f as u32;
                     done = 1u32;

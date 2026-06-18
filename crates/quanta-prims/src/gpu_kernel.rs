@@ -1532,4 +1532,3 @@ pub fn global_bitonic_pass_u32(data: &mut [u32], k: u32, j: u32) {
         }
     }
 }
-
