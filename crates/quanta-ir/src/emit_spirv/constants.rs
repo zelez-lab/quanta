@@ -39,10 +39,15 @@ pub(crate) const OP_MEMBER_DECORATE: u16 = 72;
 pub(crate) const OP_COMPOSITE_CONSTRUCT: u16 = 80;
 pub(crate) const OP_COMPOSITE_EXTRACT: u16 = 81;
 pub(crate) const OP_COPY_OBJECT: u16 = 83;
+// SPIR-V §3.42 numeric conversions. These four were previously
+// mis-numbered (FToU/FToS/SToF shifted up by 3/5/3), which made the
+// emitter spell f→int and int→f conversions as OpFConvert/OpSConvert —
+// a float-to-float / int-to-int conversion of mismatched types that
+// drivers execute as a reinterpret, returning the source bit pattern.
+pub(crate) const OP_CONVERT_F_TO_U: u16 = 109;
+pub(crate) const OP_CONVERT_F_TO_S: u16 = 110;
+pub(crate) const OP_CONVERT_S_TO_F: u16 = 111;
 pub(crate) const OP_CONVERT_U_TO_F: u16 = 112;
-pub(crate) const OP_CONVERT_F_TO_U: u16 = 113;
-pub(crate) const OP_CONVERT_S_TO_F: u16 = 114;
-pub(crate) const OP_CONVERT_F_TO_S: u16 = 115;
 pub(crate) const OP_BITCAST: u16 = 124;
 pub(crate) const OP_S_NEGATE: u16 = 126;
 pub(crate) const OP_F_NEGATE: u16 = 127;
@@ -56,22 +61,28 @@ pub(crate) const OP_UDIV: u16 = 134;
 pub(crate) const OP_SDIV: u16 = 135;
 pub(crate) const OP_FDIV: u16 = 136;
 pub(crate) const OP_UMOD: u16 = 137;
-pub(crate) const OP_SMOD: u16 = 138;
+// 138 is OpSRem (remainder, sign follows dividend — matches Rust `%`).
+// OpSMod (139) differs for mixed-sign operands; not what `BinOp::Rem` wants.
+pub(crate) const OP_SREM: u16 = 138;
 pub(crate) const OP_FREM: u16 = 140;
 pub(crate) const OP_DOT: u16 = 148;
 pub(crate) const OP_LOGICAL_NOT: u16 = 168;
+pub(crate) const OP_SELECT: u16 = 169;
+// SPIR-V §3.42.18 comparison opcodes. The signed/unsigned GreaterThanEqual
+// and LessThanEqual pairs were swapped, and FOrdNotEqual was off by one
+// (181 is OpFUnordEqual — an inverted result). Verified against spirv-dis.
 pub(crate) const OP_IEQUAL: u16 = 170;
 pub(crate) const OP_INOT_EQUAL: u16 = 171;
 pub(crate) const OP_UGREATER_THAN: u16 = 172;
-pub(crate) const OP_UGREATER_THAN_EQUAL: u16 = 173;
-pub(crate) const OP_SGREATER_THAN: u16 = 174;
+pub(crate) const OP_SGREATER_THAN: u16 = 173;
+pub(crate) const OP_UGREATER_THAN_EQUAL: u16 = 174;
 pub(crate) const OP_SGREATER_THAN_EQUAL: u16 = 175;
 pub(crate) const OP_ULESS_THAN: u16 = 176;
-pub(crate) const OP_ULESS_THAN_EQ: u16 = 177;
-pub(crate) const OP_SLESS_THAN: u16 = 178;
+pub(crate) const OP_SLESS_THAN: u16 = 177;
+pub(crate) const OP_ULESS_THAN_EQ: u16 = 178;
 pub(crate) const OP_SLESS_THAN_EQUAL: u16 = 179;
 pub(crate) const OP_FORD_EQUAL: u16 = 180;
-pub(crate) const OP_FORD_NOT_EQUAL: u16 = 181;
+pub(crate) const OP_FORD_NOT_EQUAL: u16 = 182;
 pub(crate) const OP_FORD_LESS_THAN: u16 = 184;
 pub(crate) const OP_FORD_GREATER_THAN: u16 = 186;
 pub(crate) const OP_FORD_LESS_THAN_EQUAL: u16 = 188;
@@ -79,9 +90,12 @@ pub(crate) const OP_FORD_GREATER_THAN_EQUAL: u16 = 190;
 pub(crate) const OP_SHIFT_RIGHT_LOGICAL: u16 = 194;
 pub(crate) const OP_SHIFT_RIGHT_ARITHMETIC: u16 = 195;
 pub(crate) const OP_SHIFT_LEFT_LOGICAL: u16 = 196;
-pub(crate) const OP_BITWISE_AND: u16 = 197;
-pub(crate) const OP_BITWISE_OR: u16 = 198;
-pub(crate) const OP_BITWISE_XOR: u16 = 199;
+// SPIR-V §3.42.14 — these three were rotated (AND↔Or, OR↔Xor, XOR↔And).
+// Verified against spirv-dis. The bug surfaced on i64 rotate (which masks
+// with OpBitwiseAnd) and i64 bitxor.
+pub(crate) const OP_BITWISE_OR: u16 = 197;
+pub(crate) const OP_BITWISE_XOR: u16 = 198;
+pub(crate) const OP_BITWISE_AND: u16 = 199;
 pub(crate) const OP_NOT: u16 = 200;
 pub(crate) const OP_BIT_COUNT: u16 = 205;
 pub(crate) const OP_CONTROL_BARRIER: u16 = 224;
@@ -103,17 +117,21 @@ pub(crate) const OP_LABEL: u16 = 248;
 pub(crate) const OP_BRANCH: u16 = 249;
 pub(crate) const OP_BRANCH_CONDITIONAL: u16 = 250;
 pub(crate) const OP_RETURN: u16 = 253;
+pub(crate) const OP_GROUP_NON_UNIFORM_SHUFFLE_XOR: u16 = 346;
 pub(crate) const OP_GROUP_NON_UNIFORM_IADD: u16 = 349;
 pub(crate) const OP_GROUP_NON_UNIFORM_FADD: u16 = 350;
-pub(crate) const OP_GROUP_NON_UNIFORM_SMIN: u16 = 354;
-pub(crate) const OP_GROUP_NON_UNIFORM_UMIN: u16 = 355;
-pub(crate) const OP_GROUP_NON_UNIFORM_FMIN: u16 = 356;
-pub(crate) const OP_GROUP_NON_UNIFORM_SMAX: u16 = 357;
-pub(crate) const OP_GROUP_NON_UNIFORM_UMAX: u16 = 358;
-pub(crate) const OP_GROUP_NON_UNIFORM_FMAX: u16 = 359;
+// SPIR-V §3.42.24 — the min/max block was shifted +1 (SMin→354=UMin, …,
+// FMax→359=BitwiseAnd), corrupting signed subgroup reductions. Verified
+// against spirv-dis.
+pub(crate) const OP_GROUP_NON_UNIFORM_SMIN: u16 = 353;
+pub(crate) const OP_GROUP_NON_UNIFORM_UMIN: u16 = 354;
+pub(crate) const OP_GROUP_NON_UNIFORM_FMIN: u16 = 355;
+pub(crate) const OP_GROUP_NON_UNIFORM_SMAX: u16 = 356;
+pub(crate) const OP_GROUP_NON_UNIFORM_UMAX: u16 = 357;
+pub(crate) const OP_GROUP_NON_UNIFORM_FMAX: u16 = 358;
 
 #[allow(dead_code)]
-pub(crate) const OP_IMAGE_FETCH: u16 = 164;
+pub(crate) const OP_IMAGE_FETCH: u16 = 95;
 
 // ── Storage classes ─────────────────────────────────────────────────────────
 
@@ -167,8 +185,11 @@ pub(crate) const MEMORY_MODEL_GLSL450: u32 = 1;
 
 pub(crate) const CAPABILITY_SHADER: u32 = 1;
 pub(crate) const CAPABILITY_FLOAT16: u32 = 9;
+pub(crate) const CAPABILITY_FLOAT64: u32 = 10;
+pub(crate) const CAPABILITY_INT64: u32 = 11;
 pub(crate) const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
 pub(crate) const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
+pub(crate) const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 65;
 
 // ── Scope / memory semantics ────────────────────────────────────────────────
 

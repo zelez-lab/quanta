@@ -83,6 +83,14 @@ impl SpvEmitter {
         }
         let id = self.alloc_id();
         Self::emit_op(&mut self.sec_type_const, OP_TYPE_FLOAT, &[id, 64]);
+        // Declare Float64 capability when f64 types are used — referencing
+        // OpTypeFloat 64 without it is invalid SPIR-V (rejected by
+        // spirv-val and by drivers at pipeline-creation time).
+        Self::emit_op(
+            &mut self.sec_capability,
+            OP_CAPABILITY,
+            &[CAPABILITY_FLOAT64],
+        );
         self.type_f64 = Some(id);
         id
     }

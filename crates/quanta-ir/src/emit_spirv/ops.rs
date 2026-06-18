@@ -71,16 +71,16 @@ impl SpvEmitter {
                         (self.emit_constant_u32(*v), ty)
                     }
                     ConstValue::U64(v) => {
-                        let ty = self.ensure_type_u32();
-                        (self.emit_constant_u32(*v as u32), ty)
+                        let ty = self.ensure_type_u64();
+                        (self.emit_constant_u64(*v), ty)
                     }
                     ConstValue::I32(v) => {
                         let ty = self.ensure_type_i32();
                         (self.emit_constant_i32(*v), ty)
                     }
                     ConstValue::I64(v) => {
-                        let ty = self.ensure_type_i32();
-                        (self.emit_constant_i32(*v as i32), ty)
+                        let ty = self.ensure_type_i64();
+                        (self.emit_constant_i64(*v), ty)
                     }
                     ConstValue::Bool(v) => {
                         let ty = self.ensure_type_bool();
@@ -231,13 +231,21 @@ impl SpvEmitter {
                         ScalarType::Bool => 1,
                     };
                     let mask = width - 1;
-                    // Const ids for width and mask. SPIR-V shift
-                    // operands are matched on width-class; for our
-                    // slice-1 surface (i32 rotations) we use u32
-                    // constants. (Future i64 rotations will need
-                    // u64 constants via a parallel emit_constant_u64.)
-                    let mask_val = self.emit_constant_u32(mask);
-                    let width_val = self.emit_constant_u32(width);
+                    // Width/mask constants feed OpISub and OpBitwiseAnd
+                    // whose result is `result_ty`, so they must share its
+                    // bit width — 64-bit constants for i64/u64 rotations,
+                    // 32-bit otherwise. A width mismatch is invalid SPIR-V.
+                    let (mask_val, width_val) = match ty {
+                        ScalarType::U64 => (
+                            self.emit_constant_u64(mask as u64),
+                            self.emit_constant_u64(width as u64),
+                        ),
+                        ScalarType::I64 => (
+                            self.emit_constant_i64(mask as i64),
+                            self.emit_constant_i64(width as i64),
+                        ),
+                        _ => (self.emit_constant_u32(mask), self.emit_constant_u32(width)),
+                    };
                     // k_masked = b & mask
                     let k_masked = self.alloc_id();
                     Self::emit_op(
@@ -299,6 +307,62 @@ impl SpvEmitter {
                     return Ok(());
                 }
 
+                // Unsigned saturating add/sub: SPIR-V has no native op.
+                // The op-matrix only generates these on unsigned types.
+                //   satadd(a,b) = let s = a+b in (s < a) ? MAX : s   (overflow)
+                //   satsub(a,b) = (a < b) ? 0 : a-b                  (underflow)
+                if matches!(op, BinOp::SatAdd | BinOp::SatSub) && !is_float && !is_signed {
+                    let result = if matches!(op, BinOp::SatAdd) {
+                        let sum = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_IADD,
+                            &[result_ty, sum, a_val, b_val],
+                        );
+                        // overflow ⇔ sum < a (unsigned)
+                        let bool_ty = self.ensure_type_bool();
+                        let overflowed = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_ULESS_THAN,
+                            &[bool_ty, overflowed, sum, a_val],
+                        );
+                        let max_val = self.emit_constant_unsigned_max(*ty);
+                        let res = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_SELECT,
+                            &[result_ty, res, overflowed, max_val, sum],
+                        );
+                        res
+                    } else {
+                        let diff = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_ISUB,
+                            &[result_ty, diff, a_val, b_val],
+                        );
+                        // underflow ⇔ a < b (unsigned)
+                        let bool_ty = self.ensure_type_bool();
+                        let underflowed = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_ULESS_THAN,
+                            &[bool_ty, underflowed, a_val, b_val],
+                        );
+                        let zero = self.emit_constant_typed_zero(*ty);
+                        let res = self.alloc_id();
+                        Self::emit_op(
+                            &mut self.sec_function,
+                            OP_SELECT,
+                            &[result_ty, res, underflowed, zero, diff],
+                        );
+                        res
+                    };
+                    self.set_reg(*dst, result, result_ty);
+                    return Ok(());
+                }
+
                 let opcode = match (op, is_float, is_signed) {
                     (BinOp::Add, true, _) => OP_FADD,
                     (BinOp::Add, false, _) => OP_IADD,
@@ -310,7 +374,7 @@ impl SpvEmitter {
                     (BinOp::Div, false, true) => OP_SDIV,
                     (BinOp::Div, false, false) => OP_UDIV,
                     (BinOp::Rem, true, _) => OP_FREM,
-                    (BinOp::Rem, false, true) => OP_SMOD,
+                    (BinOp::Rem, false, true) => OP_SREM,
                     (BinOp::Rem, false, false) => OP_UMOD,
                     (BinOp::BitAnd, _, _) => OP_BITWISE_AND,
                     (BinOp::BitOr, _, _) => OP_BITWISE_OR,
@@ -318,7 +382,9 @@ impl SpvEmitter {
                     (BinOp::Shl, _, _) => OP_SHIFT_LEFT_LOGICAL,
                     (BinOp::Shr, _, true) => OP_SHIFT_RIGHT_ARITHMETIC,
                     (BinOp::Shr, _, false) => OP_SHIFT_RIGHT_LOGICAL,
-                    // Saturating add/sub: SPIR-V has no native op, use regular add/sub
+                    // Unsigned sat add/sub handled by the early-return above.
+                    // Float/signed sat fall back to wrapping add/sub (not
+                    // generated by the matrix; no saturation modeled here).
                     (BinOp::SatAdd, true, _) => OP_FADD,
                     (BinOp::SatAdd, false, _) => OP_IADD,
                     (BinOp::SatSub, true, _) => OP_FSUB,
@@ -415,6 +481,38 @@ impl SpvEmitter {
             KernelOp::Cast { dst, src, from, to } => {
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*to);
+
+                // Bool→int: a boolean has no bit representation in SPIR-V,
+                // so OpBitcast is illegal here (it produced an invalid
+                // module that drivers reject at pipeline creation with
+                // VK_ERROR_UNKNOWN). Materialize 0/1 of the target type
+                // with OpSelect instead. This is the Cmp→Cast(Bool,U32)
+                // path that every comparison kernel takes.
+                if matches!(from, ScalarType::Bool)
+                    && matches!(
+                        to,
+                        ScalarType::U8
+                            | ScalarType::U16
+                            | ScalarType::U32
+                            | ScalarType::U64
+                            | ScalarType::I8
+                            | ScalarType::I16
+                            | ScalarType::I32
+                            | ScalarType::I64
+                    )
+                {
+                    let one = self.emit_constant_typed_one(*to);
+                    let zero = self.emit_constant_typed_zero(*to);
+                    let result = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_SELECT,
+                        &[result_ty, result, src_val, one, zero],
+                    );
+                    self.set_reg(*dst, result, result_ty);
+                    return Ok(());
+                }
+
                 let from_float =
                     matches!(from, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
                 let to_float = matches!(to, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
@@ -1104,12 +1202,27 @@ impl SpvEmitter {
                 self.set_reg(*dst, result_id, result_ty);
             }
 
-            KernelOp::WaveShuffle { dst, .. } => {
-                // Wave/subgroup ops require SubgroupBallotKHR capability.
-                // Emit zero placeholder for now.
-                let uint_ty = self.ensure_type_u32();
-                let zero = self.emit_constant_u32(0);
-                self.set_reg(*dst, zero, uint_ty);
+            KernelOp::WaveShuffle {
+                dst,
+                src,
+                lane_delta,
+                ty,
+            } => {
+                // `shuffle(v, delta)` reads the value held by lane
+                // `self ^ delta` — OpGroupNonUniformShuffleXor over the
+                // Subgroup scope. Matches the WGSL/MSL emitters'
+                // subgroupShuffleXor / simd_shuffle_xor lowering.
+                let src_val = self.reg_value_id(*src)?;
+                let mask_val = self.reg_value_id(*lane_delta)?;
+                let result_ty = self.scalar_type_id(*ty);
+                let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_GROUP_NON_UNIFORM_SHUFFLE_XOR,
+                    &[result_ty, result, scope, src_val, mask_val],
+                );
+                self.set_reg(*dst, result, result_ty);
             }
 
             KernelOp::WaveBallot { dst, .. }

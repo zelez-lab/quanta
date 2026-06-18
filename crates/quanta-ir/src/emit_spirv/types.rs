@@ -53,6 +53,41 @@ impl SpvEmitter {
         id
     }
 
+    pub(crate) fn ensure_type_u64(&mut self) -> u32 {
+        if let Some(id) = self.type_u64 {
+            return id;
+        }
+        // 64-bit ints require the Int64 capability — without it the
+        // module is invalid and drivers reject the pipeline (same failure
+        // mode as Float64). Declared once, before either 64-bit int type.
+        self.ensure_capability_int64();
+        let id = self.alloc_id();
+        // OpTypeInt %id 64 0 (unsigned).
+        Self::emit_op(&mut self.sec_type_const, OP_TYPE_INT, &[id, 64, 0]);
+        self.type_u64 = Some(id);
+        id
+    }
+
+    pub(crate) fn ensure_type_i64(&mut self) -> u32 {
+        if let Some(id) = self.type_i64 {
+            return id;
+        }
+        self.ensure_capability_int64();
+        let id = self.alloc_id();
+        // OpTypeInt %id 64 1 (signed).
+        Self::emit_op(&mut self.sec_type_const, OP_TYPE_INT, &[id, 64, 1]);
+        self.type_i64 = Some(id);
+        id
+    }
+
+    /// Emit `OpCapability Int64` exactly once, regardless of how many
+    /// 64-bit integer types the module ends up using.
+    fn ensure_capability_int64(&mut self) {
+        if self.type_u64.is_none() && self.type_i64.is_none() {
+            Self::emit_op(&mut self.sec_capability, OP_CAPABILITY, &[CAPABILITY_INT64]);
+        }
+    }
+
     pub(crate) fn ensure_type_f16(&mut self) -> u32 {
         if let Some(id) = self.type_f16 {
             return id;
@@ -85,6 +120,15 @@ impl SpvEmitter {
         }
         let id = self.alloc_id();
         Self::emit_op(&mut self.sec_type_const, OP_TYPE_FLOAT, &[id, 64]);
+        // Declare Float64 capability when f64 types are used. Without
+        // this, a module that references OpTypeFloat 64 is invalid; some
+        // drivers pass module creation but reject the pipeline with
+        // VK_ERROR_UNKNOWN (-13) at vkCreateComputePipelines time.
+        Self::emit_op(
+            &mut self.sec_capability,
+            OP_CAPABILITY,
+            &[CAPABILITY_FLOAT64],
+        );
         self.type_f64 = Some(id);
         id
     }
@@ -210,12 +254,9 @@ impl SpvEmitter {
             ScalarType::F32 => self.ensure_type_f32(),
             ScalarType::F64 => self.ensure_type_f64(),
             ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => self.ensure_type_u32(),
-            ScalarType::U64 => {
-                // For now, map U64 to U32 (Vulkan compute typically 32-bit)
-                self.ensure_type_u32()
-            }
+            ScalarType::U64 => self.ensure_type_u64(),
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => self.ensure_type_i32(),
-            ScalarType::I64 => self.ensure_type_i32(),
+            ScalarType::I64 => self.ensure_type_i64(),
             ScalarType::F16 => self.ensure_type_f16(),
             ScalarType::Bool => self.ensure_type_bool(),
         }
@@ -287,6 +328,67 @@ impl SpvEmitter {
         Self::emit_op(&mut self.sec_type_const, OP_CONSTANT, &[ty, id, val as u32]);
         self.const_cache.insert(key, id);
         id
+    }
+
+    pub(crate) fn emit_constant_u64(&mut self, val: u64) -> u32 {
+        let ty = self.ensure_type_u64();
+        let lo = val as u32;
+        let hi = (val >> 32) as u32;
+        let key = format!("{}:{}:{}", ty, lo, hi);
+        if let Some(&id) = self.const_cache.get(&key) {
+            return id;
+        }
+        let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_CONSTANT, &[ty, id, lo, hi]);
+        self.const_cache.insert(key, id);
+        id
+    }
+
+    pub(crate) fn emit_constant_i64(&mut self, val: i64) -> u32 {
+        let ty = self.ensure_type_i64();
+        let bits = val as u64;
+        let lo = bits as u32;
+        let hi = (bits >> 32) as u32;
+        let key = format!("{}:{}:{}", ty, lo, hi);
+        if let Some(&id) = self.const_cache.get(&key) {
+            return id;
+        }
+        let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_CONSTANT, &[ty, id, lo, hi]);
+        self.const_cache.insert(key, id);
+        id
+    }
+
+    /// Emit a `0` constant of the integer type `ty` lowers to. Used by
+    /// the Bool→int cast (OpSelect). Mirrors `scalar_type_id`'s widths.
+    pub(crate) fn emit_constant_typed_zero(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::U64 => self.emit_constant_u64(0),
+            ScalarType::I64 => self.emit_constant_i64(0),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => self.emit_constant_i32(0),
+            _ => self.emit_constant_u32(0),
+        }
+    }
+
+    /// Emit the all-ones (MAX) constant of an unsigned integer type.
+    /// Used by unsigned saturating-add. Only u32/u64 are exercised; the
+    /// narrower unsigned types lower through u32 and saturate at its max.
+    pub(crate) fn emit_constant_unsigned_max(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::U64 => self.emit_constant_u64(u64::MAX),
+            _ => self.emit_constant_u32(u32::MAX),
+        }
+    }
+
+    /// Emit a `1` constant of the integer type `ty` lowers to. See
+    /// `emit_constant_typed_zero`.
+    pub(crate) fn emit_constant_typed_one(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::U64 => self.emit_constant_u64(1),
+            ScalarType::I64 => self.emit_constant_i64(1),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => self.emit_constant_i32(1),
+            _ => self.emit_constant_u32(1),
+        }
     }
 
     #[allow(dead_code)] // f16 emission infrastructure; reachable via future codegen paths

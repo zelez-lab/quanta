@@ -48,10 +48,12 @@ pub const OP_TRANSPOSE: u16 = 84;
 pub const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
 pub const OP_IMAGE_FETCH: u16 = 95;
 pub const OP_IMAGE_WRITE: u16 = 99;
+// SPIR-V §3.42 numeric conversions — corrected from a prior mis-numbering
+// that emitted OpFConvert/OpSConvert (reinterpret) for f↔int casts.
+pub const OP_CONVERT_F_TO_U: u16 = 109;
+pub const OP_CONVERT_F_TO_S: u16 = 110;
+pub const OP_CONVERT_S_TO_F: u16 = 111;
 pub const OP_CONVERT_U_TO_F: u16 = 112;
-pub const OP_CONVERT_F_TO_U: u16 = 113;
-pub const OP_CONVERT_S_TO_F: u16 = 114;
-pub const OP_CONVERT_F_TO_S: u16 = 115;
 pub const OP_BITCAST: u16 = 124;
 pub const OP_S_NEGATE: u16 = 126;
 pub const OP_F_NEGATE: u16 = 127;
@@ -65,7 +67,8 @@ pub const OP_UDIV: u16 = 134;
 pub const OP_SDIV: u16 = 135;
 pub const OP_FDIV: u16 = 136;
 pub const OP_UMOD: u16 = 137;
-pub const OP_SMOD: u16 = 138;
+// 138 is OpSRem (sign follows dividend — matches Rust `%`), not OpSMod (139).
+pub const OP_SREM: u16 = 138;
 pub const OP_FREM: u16 = 140;
 pub const OP_MATRIX_TIMES_VECTOR: u16 = 145;
 pub const OP_VECTOR_TIMES_MATRIX: u16 = 144;
@@ -75,16 +78,18 @@ pub const OP_LOGICAL_NOT: u16 = 168;
 pub const OP_SELECT: u16 = 169;
 pub const OP_IEQUAL: u16 = 170;
 pub const OP_INOT_EQUAL: u16 = 171;
+// SPIR-V §3.42.18 — signed/unsigned GE and LE pairs were swapped and
+// FOrdNotEqual was off by one (181 = OpFUnordEqual). Verified vs spirv-dis.
 pub const OP_UGREATER_THAN: u16 = 172;
-pub const OP_UGREATER_THAN_EQUAL: u16 = 173;
-pub const OP_SGREATER_THAN: u16 = 174;
+pub const OP_SGREATER_THAN: u16 = 173;
+pub const OP_UGREATER_THAN_EQUAL: u16 = 174;
 pub const OP_SGREATER_THAN_EQUAL: u16 = 175;
 pub const OP_ULESS_THAN: u16 = 176;
-pub const OP_ULESS_THAN_EQ: u16 = 177;
-pub const OP_SLESS_THAN: u16 = 178;
+pub const OP_SLESS_THAN: u16 = 177;
+pub const OP_ULESS_THAN_EQ: u16 = 178;
 pub const OP_SLESS_THAN_EQUAL: u16 = 179;
 pub const OP_FORD_EQUAL: u16 = 180;
-pub const OP_FORD_NOT_EQUAL: u16 = 181;
+pub const OP_FORD_NOT_EQUAL: u16 = 182;
 pub const OP_FORD_LESS_THAN: u16 = 184;
 pub const OP_FORD_GREATER_THAN: u16 = 186;
 pub const OP_FORD_LESS_THAN_EQUAL: u16 = 188;
@@ -116,18 +121,20 @@ pub const OP_LABEL: u16 = 248;
 pub const OP_BRANCH: u16 = 249;
 pub const OP_BRANCH_CONDITIONAL: u16 = 250;
 pub const OP_RETURN: u16 = 253;
+// OpGroupNonUniformAll is 334 (336 is OpGroupNonUniformAllEqual). Any is 335.
+pub const OP_GROUP_NON_UNIFORM_ALL: u16 = 334;
 pub const OP_GROUP_NON_UNIFORM_ANY: u16 = 335;
-pub const OP_GROUP_NON_UNIFORM_ALL: u16 = 336;
 pub const OP_GROUP_NON_UNIFORM_BALLOT: u16 = 339;
 pub const OP_GROUP_NON_UNIFORM_SHUFFLE: u16 = 345;
 pub const OP_GROUP_NON_UNIFORM_IADD: u16 = 349;
 pub const OP_GROUP_NON_UNIFORM_FADD: u16 = 350;
-pub const OP_GROUP_NON_UNIFORM_SMIN: u16 = 354;
-pub const OP_GROUP_NON_UNIFORM_UMIN: u16 = 355;
-pub const OP_GROUP_NON_UNIFORM_FMIN: u16 = 356;
-pub const OP_GROUP_NON_UNIFORM_SMAX: u16 = 357;
-pub const OP_GROUP_NON_UNIFORM_UMAX: u16 = 358;
-pub const OP_GROUP_NON_UNIFORM_FMAX: u16 = 359;
+// SPIR-V §3.42.24 — min/max block was shifted +1. Verified vs spirv-dis.
+pub const OP_GROUP_NON_UNIFORM_SMIN: u16 = 353;
+pub const OP_GROUP_NON_UNIFORM_UMIN: u16 = 354;
+pub const OP_GROUP_NON_UNIFORM_FMIN: u16 = 355;
+pub const OP_GROUP_NON_UNIFORM_SMAX: u16 = 356;
+pub const OP_GROUP_NON_UNIFORM_UMAX: u16 = 357;
+pub const OP_GROUP_NON_UNIFORM_FMAX: u16 = 358;
 
 // ── Storage classes ─────────────────────────────────────────────────────────
 
@@ -182,6 +189,7 @@ pub const MEMORY_MODEL_GLSL450: u32 = 1;
 
 pub const CAPABILITY_SHADER: u32 = 1;
 pub const CAPABILITY_FLOAT16: u32 = 9;
+pub const CAPABILITY_FLOAT64: u32 = 10;
 pub const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
 pub const CAPABILITY_GROUP_NON_UNIFORM_BALLOT: u32 = 62;
 pub const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;

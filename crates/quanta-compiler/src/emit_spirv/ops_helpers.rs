@@ -192,7 +192,7 @@ impl SpvEmitter {
             (BinOp::Div, false, true) => OP_SDIV,
             (BinOp::Div, false, false) => OP_UDIV,
             (BinOp::Rem, true, _) => OP_FREM,
-            (BinOp::Rem, false, true) => OP_SMOD,
+            (BinOp::Rem, false, true) => OP_SREM,
             (BinOp::Rem, false, false) => OP_UMOD,
             (BinOp::BitAnd, _, _) => OP_BITWISE_AND,
             (BinOp::BitOr, _, _) => OP_BITWISE_OR,

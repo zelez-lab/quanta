@@ -9,7 +9,9 @@ use super::constants::*;
 use super::emitter::SpvEmitter;
 
 impl SpvEmitter {
-    /// Check if any ops in the kernel body use subgroup operations.
+    /// Check if any ops in the kernel body use subgroup *arithmetic*
+    /// operations (reduce/scan), which require the
+    /// GroupNonUniformArithmetic capability.
     pub(crate) fn uses_subgroup_ops(ops: &[KernelOp]) -> bool {
         for op in ops {
             match op {
@@ -32,6 +34,28 @@ impl SpvEmitter {
         false
     }
 
+    /// Check if any ops use subgroup shuffle, which requires the
+    /// GroupNonUniformShuffle capability (distinct from Arithmetic).
+    pub(crate) fn uses_subgroup_shuffle(ops: &[KernelOp]) -> bool {
+        for op in ops {
+            match op {
+                KernelOp::WaveShuffle { .. } => return true,
+                KernelOp::Branch {
+                    then_ops, else_ops, ..
+                } if Self::uses_subgroup_shuffle(then_ops)
+                    || Self::uses_subgroup_shuffle(else_ops) =>
+                {
+                    return true;
+                }
+                KernelOp::Loop { body, .. } if Self::uses_subgroup_shuffle(body) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub(crate) fn emit_kernel(&mut self, kernel: &KernelDef) -> Result<(), String> {
         // 1. Capability
         Self::emit_op(
@@ -40,17 +64,30 @@ impl SpvEmitter {
             &[CAPABILITY_SHADER],
         );
 
-        // Add subgroup capabilities if needed
-        if Self::uses_subgroup_ops(&kernel.body) {
+        // Add subgroup capabilities if needed. Arithmetic (reduce/scan)
+        // and shuffle are separate SPIR-V capabilities; both build on the
+        // base GroupNonUniform capability.
+        let uses_arith = Self::uses_subgroup_ops(&kernel.body);
+        let uses_shuffle = Self::uses_subgroup_shuffle(&kernel.body);
+        if uses_arith || uses_shuffle {
             Self::emit_op(
                 &mut self.sec_capability,
                 OP_CAPABILITY,
                 &[CAPABILITY_GROUP_NON_UNIFORM],
             );
+        }
+        if uses_arith {
             Self::emit_op(
                 &mut self.sec_capability,
                 OP_CAPABILITY,
                 &[CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC],
+            );
+        }
+        if uses_shuffle {
+            Self::emit_op(
+                &mut self.sec_capability,
+                OP_CAPABILITY,
+                &[CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE],
             );
         }
 
