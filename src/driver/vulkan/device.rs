@@ -126,6 +126,17 @@ pub struct VulkanDevice {
     /// future native bind-sparse work can gate on a single bool.
     /// Step 063 slice 16.
     pub(super) sparse_binding_supported: bool,
+    /// Whether `VkPhysicalDeviceFeatures.shaderFloat64` is available
+    /// on this physical device AND was enabled at `vkCreateDevice`.
+    /// A kernel that uses `f64` emits the `Float64` SPIR-V capability,
+    /// which is only valid when this feature is enabled — otherwise
+    /// `vkCreateComputePipelines` fails with `VK_ERROR_UNKNOWN`. The
+    /// Broadcom V3D GPU reports `false`; llvmpipe reports `true`.
+    pub(super) shader_float64_supported: bool,
+    /// Whether `VkPhysicalDeviceFeatures.shaderInt64` is available and
+    /// was enabled at `vkCreateDevice`. Kernels using `i64`/`u64` emit
+    /// the `Int64` capability, valid only when this feature is enabled.
+    pub(super) shader_int64_supported: bool,
     /// Per-tile memory bindings for sparse textures. Key is
     /// `(texture_handle, mip, tile_x, tile_y)`; value is the
     /// `VkDeviceMemory` allocation that backs that tile after
@@ -693,6 +704,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         let mut device_features = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
         unsafe { ffi::vkGetPhysicalDeviceFeatures(pd, &mut device_features) };
         let tessellation_feature = device_features.tessellation_shader != 0;
+        let shader_float64_supported = device_features.shader_float64 != 0;
+        let shader_int64_supported = device_features.shader_int64 != 0;
 
         // Find a queue family that supports compute + graphics
         let queue_family = queue_families.iter().enumerate().find(|(_, qf)| {
@@ -814,6 +827,17 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         let mut enabled_feats = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
         if device_features.sparse_binding != 0 {
             enabled_feats.sparse_binding = 1;
+        }
+        // Enable 64-bit floats when the device advertises them, so
+        // kernels that use `f64` (and emit the Float64 SPIR-V
+        // capability) can create a compute pipeline. Left disabled,
+        // such a pipeline is invalid and the driver rejects it.
+        if shader_float64_supported {
+            enabled_feats.shader_float64 = 1;
+        }
+        // Likewise for 64-bit integers (the Int64 SPIR-V capability).
+        if shader_int64_supported {
+            enabled_feats.shader_int64 = 1;
         }
 
         let device_create = ffi::VkDeviceCreateInfo {
@@ -1081,6 +1105,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             tessellation_feature,
             supported_shading_rates,
             sparse_binding_supported,
+            shader_float64_supported,
+            shader_int64_supported,
             sparse_tile_bindings: RwLock::new(HashMap::new()),
             buffer_device_address_enabled: has_accel_ext,
             acceleration_structures: RwLock::new(HashMap::new()),

@@ -94,6 +94,20 @@ impl Gpu {
         self.inner.supports_sparse_residency()
     }
 
+    /// Whether the active backend can run kernels that use 64-bit
+    /// floats. The software lane and llvmpipe support f64; Metal and
+    /// the Broadcom V3D GPU do not.
+    pub fn supports_f64(&self) -> bool {
+        self.inner.supports_f64()
+    }
+
+    /// Whether the active backend can run kernels that use 64-bit
+    /// integers. The software lane and llvmpipe support i64/u64; the
+    /// Broadcom V3D GPU does not.
+    pub fn supports_i64(&self) -> bool {
+        self.inner.supports_i64()
+    }
+
     /// Hardware-supported VRS shading rates as `(width, height)`
     /// pairs. Empty when VRS isn't supported.
     pub fn supported_shading_rates(&self) -> Vec<(u32, u32)> {

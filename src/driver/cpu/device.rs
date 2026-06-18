@@ -241,6 +241,16 @@ impl GpuDevice for CpuDevice {
         &self.caps
     }
 
+    fn supports_f64(&self) -> bool {
+        // The software interpreter computes f64 ops natively.
+        true
+    }
+
+    fn supports_i64(&self) -> bool {
+        // The software interpreter computes i64/u64 ops natively.
+        true
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, _usage: FieldUsage) -> Result<u64, QuantaError> {

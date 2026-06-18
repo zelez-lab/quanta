@@ -42,6 +42,14 @@ impl GpuDevice for VulkanDevice {
         self.sparse_binding_supported
     }
 
+    fn supports_f64(&self) -> bool {
+        self.shader_float64_supported
+    }
+
+    fn supports_i64(&self) -> bool {
+        self.shader_int64_supported
+    }
+
     fn supported_shading_rates(&self) -> Vec<(u32, u32)> {
         self.supported_shading_rates.clone()
     }

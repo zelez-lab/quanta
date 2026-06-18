@@ -62,6 +62,23 @@ pub trait GpuDevice: Send + Sync {
         false
     }
 
+    /// Whether the backend can run kernels that use 64-bit floats.
+    /// Vulkan: `VkPhysicalDeviceFeatures.shaderFloat64` enabled at
+    /// device creation (true on llvmpipe, false on Broadcom V3D).
+    /// The CPU reference interpreter always supports f64; Metal has
+    /// no `double` type and reports false.
+    fn supports_f64(&self) -> bool {
+        false
+    }
+
+    /// Whether the backend can run kernels that use 64-bit integers.
+    /// Vulkan: `VkPhysicalDeviceFeatures.shaderInt64` enabled at device
+    /// creation (true on llvmpipe, false on Broadcom V3D). The CPU
+    /// reference interpreter always supports i64/u64.
+    fn supports_i64(&self) -> bool {
+        false
+    }
+
     /// Hardware-supported shading rates as `(width, height)` pairs.
     /// Empty when VRS isn't supported. The render encoder validates
     /// requested rates against this list before submission.
