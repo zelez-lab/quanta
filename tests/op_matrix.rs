@@ -106,8 +106,22 @@ fn op_matrix_metal_matches_reference() {
 #[test]
 fn op_matrix_vulkan_matches_reference() {
     let gpu = quanta::init().expect("vulkan lane requires a vulkan-capable device");
+    let f64_ok = gpu.supports_f64();
+    let i64_ok = gpu.supports_i64();
     let mut failures = Vec::new();
     for case in cases() {
+        // F64 / Int64 kernels emit the matching SPIR-V capability, which
+        // only builds a pipeline on a device that enables the feature
+        // (llvmpipe yes, Broadcom V3D no). Skip them where the device
+        // can't run them rather than failing pipeline creation.
+        if !f64_ok && matches!(case.expected, RawValues::F64(_)) {
+            continue;
+        }
+        if !i64_ok
+            && matches!(case.input_a, RawValues::U64(_) | RawValues::I64(_))
+        {
+            continue;
+        }
         let oracle = case.oracle();
         let candidate = dispatch_on(&gpu, &case, Lane::Vulkan);
         if let Err(div) = compare_case(&case, &oracle, &candidate) {
