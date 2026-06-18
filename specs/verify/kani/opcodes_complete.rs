@@ -16,15 +16,15 @@
 const OP_IEQUAL: u16 = 170;
 const OP_INOT_EQUAL: u16 = 171;
 const OP_UGREATER_THAN: u16 = 172;
-const OP_UGREATER_THAN_EQUAL: u16 = 173;
-const OP_SGREATER_THAN: u16 = 174;
+const OP_SGREATER_THAN: u16 = 173;
+const OP_UGREATER_THAN_EQUAL: u16 = 174;
 const OP_SGREATER_THAN_EQUAL: u16 = 175;
 const OP_ULESS_THAN: u16 = 176;
-const OP_ULESS_THAN_EQ: u16 = 177;
-const OP_SLESS_THAN: u16 = 178;
+const OP_SLESS_THAN: u16 = 177;
+const OP_ULESS_THAN_EQ: u16 = 178;
 const OP_SLESS_THAN_EQUAL: u16 = 179;
 const OP_FORD_EQUAL: u16 = 180;
-const OP_FORD_NOT_EQUAL: u16 = 181;
+const OP_FORD_NOT_EQUAL: u16 = 182;
 const OP_FORD_LESS_THAN: u16 = 184;
 const OP_FORD_GREATER_THAN: u16 = 186;
 const OP_FORD_LESS_THAN_EQUAL: u16 = 188;
@@ -64,10 +64,10 @@ const OP_BRANCH_CONDITIONAL: u16 = 250;
 const OP_RETURN: u16 = 253;
 
 // Conversion opcodes
+const OP_CONVERT_F_TO_U: u16 = 109;
+const OP_CONVERT_F_TO_S: u16 = 110;
+const OP_CONVERT_S_TO_F: u16 = 111;
 const OP_CONVERT_U_TO_F: u16 = 112;
-const OP_CONVERT_F_TO_U: u16 = 113;
-const OP_CONVERT_S_TO_F: u16 = 114;
-const OP_CONVERT_F_TO_S: u16 = 115;
 const OP_BITCAST: u16 = 124;
 
 // Atomic opcodes
@@ -85,18 +85,19 @@ const OP_ATOMIC_OR: u16 = 241;
 const OP_ATOMIC_XOR: u16 = 242;
 
 // Subgroup opcodes (full set from constants.rs)
+const OP_GROUP_NON_UNIFORM_ALL: u16 = 334;
 const OP_GROUP_NON_UNIFORM_ANY: u16 = 335;
-const OP_GROUP_NON_UNIFORM_ALL: u16 = 336;
 const OP_GROUP_NON_UNIFORM_BALLOT: u16 = 339;
 const OP_GROUP_NON_UNIFORM_SHUFFLE: u16 = 345;
+const OP_GROUP_NON_UNIFORM_SHUFFLE_XOR: u16 = 346;
 const OP_GROUP_NON_UNIFORM_IADD: u16 = 349;
 const OP_GROUP_NON_UNIFORM_FADD: u16 = 350;
-const OP_GROUP_NON_UNIFORM_SMIN: u16 = 354;
-const OP_GROUP_NON_UNIFORM_UMIN: u16 = 355;
-const OP_GROUP_NON_UNIFORM_FMIN: u16 = 356;
-const OP_GROUP_NON_UNIFORM_SMAX: u16 = 357;
-const OP_GROUP_NON_UNIFORM_UMAX: u16 = 358;
-const OP_GROUP_NON_UNIFORM_FMAX: u16 = 359;
+const OP_GROUP_NON_UNIFORM_SMIN: u16 = 353;
+const OP_GROUP_NON_UNIFORM_UMIN: u16 = 354;
+const OP_GROUP_NON_UNIFORM_FMIN: u16 = 355;
+const OP_GROUP_NON_UNIFORM_SMAX: u16 = 356;
+const OP_GROUP_NON_UNIFORM_UMAX: u16 = 357;
+const OP_GROUP_NON_UNIFORM_FMAX: u16 = 358;
 
 // Remaining opcodes (already in opcodes.rs but needed for global collision check)
 const OP_NAME: u16 = 5;
@@ -134,7 +135,7 @@ const OP_UDIV: u16 = 134;
 const OP_SDIV: u16 = 135;
 const OP_FDIV: u16 = 136;
 const OP_UMOD: u16 = 137;
-const OP_SMOD: u16 = 138;
+const OP_SREM: u16 = 138;
 const OP_FREM: u16 = 140;
 const OP_VECTOR_TIMES_MATRIX: u16 = 144;
 const OP_MATRIX_TIMES_VECTOR: u16 = 145;
@@ -156,7 +157,7 @@ const CAPABILITY_SHADER: u32 = 1;
 const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
 const CAPABILITY_GROUP_NON_UNIFORM_BALLOT: u32 = 62;
 const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
-const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 64;
+const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 65;
 
 // Storage classes
 const STORAGE_CLASS_UNIFORM_CONSTANT: u32 = 0;
@@ -223,17 +224,17 @@ mod proofs {
         assert_eq!(OP_IEQUAL, 170, "OpIEqual");
         assert_eq!(OP_INOT_EQUAL, 171, "OpINotEqual");
         assert_eq!(OP_UGREATER_THAN, 172, "OpUGreaterThan");
-        assert_eq!(OP_UGREATER_THAN_EQUAL, 173, "OpUGreaterThanEqual");
-        assert_eq!(OP_SGREATER_THAN, 174, "OpSGreaterThan");
+        assert_eq!(OP_SGREATER_THAN, 173, "OpSGreaterThan");
+        assert_eq!(OP_UGREATER_THAN_EQUAL, 174, "OpUGreaterThanEqual");
         assert_eq!(OP_SGREATER_THAN_EQUAL, 175, "OpSGreaterThanEqual");
         assert_eq!(OP_ULESS_THAN, 176, "OpULessThan");
-        assert_eq!(OP_ULESS_THAN_EQ, 177, "OpULessThanEqual");
-        assert_eq!(OP_SLESS_THAN, 178, "OpSLessThan");
+        assert_eq!(OP_SLESS_THAN, 177, "OpSLessThan");
+        assert_eq!(OP_ULESS_THAN_EQ, 178, "OpULessThanEqual");
         assert_eq!(OP_SLESS_THAN_EQUAL, 179, "OpSLessThanEqual");
 
         // Float ordered comparisons (SPIR-V 1.6 section 3.37.16)
         assert_eq!(OP_FORD_EQUAL, 180, "OpFOrdEqual");
-        assert_eq!(OP_FORD_NOT_EQUAL, 181, "OpFOrdNotEqual");
+        assert_eq!(OP_FORD_NOT_EQUAL, 182, "OpFOrdNotEqual");
         assert_eq!(OP_FORD_LESS_THAN, 184, "OpFOrdLessThan");
         assert_eq!(OP_FORD_GREATER_THAN, 186, "OpFOrdGreaterThan");
         assert_eq!(OP_FORD_LESS_THAN_EQUAL, 188, "OpFOrdLessThanEqual");
@@ -300,14 +301,14 @@ mod proofs {
 
     #[kani::proof]
     fn verify_conversion_opcodes() {
+        assert_eq!(OP_CONVERT_F_TO_U, 109, "OpConvertFToU");
+        assert_eq!(OP_CONVERT_F_TO_S, 110, "OpConvertFToS");
+        assert_eq!(OP_CONVERT_S_TO_F, 111, "OpConvertSToF");
         assert_eq!(OP_CONVERT_U_TO_F, 112, "OpConvertUToF");
-        assert_eq!(OP_CONVERT_F_TO_U, 113, "OpConvertFToU");
-        assert_eq!(OP_CONVERT_S_TO_F, 114, "OpConvertSToF");
-        assert_eq!(OP_CONVERT_F_TO_S, 115, "OpConvertFToS");
         assert_eq!(OP_BITCAST, 124, "OpBitcast");
 
-        // The four convert opcodes form a contiguous block 112..=115
-        assert_eq!(OP_CONVERT_F_TO_S - OP_CONVERT_U_TO_F, 3);
+        // The four convert opcodes form a contiguous block 109..=112
+        assert_eq!(OP_CONVERT_U_TO_F - OP_CONVERT_F_TO_U, 3);
     }
 
     // ── 6. Cast opcodes: no collision ──────────────────────────────────────
@@ -315,10 +316,10 @@ mod proofs {
     #[kani::proof]
     fn verify_cast_opcodes_no_collision() {
         let casts: [u16; 5] = [
+            OP_CONVERT_F_TO_U,  // 109
+            OP_CONVERT_F_TO_S,  // 110
+            OP_CONVERT_S_TO_F,  // 111
             OP_CONVERT_U_TO_F,  // 112
-            OP_CONVERT_F_TO_U,  // 113
-            OP_CONVERT_S_TO_F,  // 114
-            OP_CONVERT_F_TO_S,  // 115
             OP_BITCAST,         // 124
         ];
         let mut i: usize = 0;
@@ -358,26 +359,31 @@ mod proofs {
     #[kani::proof]
     fn verify_subgroup_opcodes_complete() {
         // Vote operations
+        assert_eq!(OP_GROUP_NON_UNIFORM_ALL, 334, "OpGroupNonUniformAll");
         assert_eq!(OP_GROUP_NON_UNIFORM_ANY, 335, "OpGroupNonUniformAny");
-        assert_eq!(OP_GROUP_NON_UNIFORM_ALL, 336, "OpGroupNonUniformAll");
 
         // Ballot
         assert_eq!(OP_GROUP_NON_UNIFORM_BALLOT, 339, "OpGroupNonUniformBallot");
 
         // Shuffle
         assert_eq!(OP_GROUP_NON_UNIFORM_SHUFFLE, 345, "OpGroupNonUniformShuffle");
+        assert_eq!(
+            OP_GROUP_NON_UNIFORM_SHUFFLE_XOR,
+            346,
+            "OpGroupNonUniformShuffleXor"
+        );
 
         // Arithmetic reductions
         assert_eq!(OP_GROUP_NON_UNIFORM_IADD, 349, "OpGroupNonUniformIAdd");
         assert_eq!(OP_GROUP_NON_UNIFORM_FADD, 350, "OpGroupNonUniformFAdd");
-        assert_eq!(OP_GROUP_NON_UNIFORM_SMIN, 354, "OpGroupNonUniformSMin");
-        assert_eq!(OP_GROUP_NON_UNIFORM_UMIN, 355, "OpGroupNonUniformUMin");
-        assert_eq!(OP_GROUP_NON_UNIFORM_FMIN, 356, "OpGroupNonUniformFMin");
-        assert_eq!(OP_GROUP_NON_UNIFORM_SMAX, 357, "OpGroupNonUniformSMax");
-        assert_eq!(OP_GROUP_NON_UNIFORM_UMAX, 358, "OpGroupNonUniformUMax");
-        assert_eq!(OP_GROUP_NON_UNIFORM_FMAX, 359, "OpGroupNonUniformFMax");
+        assert_eq!(OP_GROUP_NON_UNIFORM_SMIN, 353, "OpGroupNonUniformSMin");
+        assert_eq!(OP_GROUP_NON_UNIFORM_UMIN, 354, "OpGroupNonUniformUMin");
+        assert_eq!(OP_GROUP_NON_UNIFORM_FMIN, 355, "OpGroupNonUniformFMin");
+        assert_eq!(OP_GROUP_NON_UNIFORM_SMAX, 356, "OpGroupNonUniformSMax");
+        assert_eq!(OP_GROUP_NON_UNIFORM_UMAX, 357, "OpGroupNonUniformUMax");
+        assert_eq!(OP_GROUP_NON_UNIFORM_FMAX, 358, "OpGroupNonUniformFMax");
 
-        // Min/Max block is contiguous (354..=359)
+        // Min/Max block is contiguous (353..=358)
         assert_eq!(OP_GROUP_NON_UNIFORM_FMAX - OP_GROUP_NON_UNIFORM_SMIN, 5);
     }
 
@@ -387,12 +393,12 @@ mod proofs {
     fn verify_capability_constants() {
         assert_eq!(CAPABILITY_SHADER, 1, "Shader");
         assert_eq!(CAPABILITY_GROUP_NON_UNIFORM, 61, "GroupNonUniform");
-        assert_eq!(CAPABILITY_GROUP_NON_UNIFORM_BALLOT, 62, "GroupNonUniformBallot");
         assert_eq!(CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC, 63, "GroupNonUniformArithmetic");
-        assert_eq!(CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE, 64, "GroupNonUniformShuffle");
+        assert_eq!(CAPABILITY_GROUP_NON_UNIFORM_BALLOT, 64, "GroupNonUniformBallot");
+        assert_eq!(CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE, 65, "GroupNonUniformShuffle");
 
-        // GroupNonUniform capabilities form contiguous block 61..=64
-        assert_eq!(CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE - CAPABILITY_GROUP_NON_UNIFORM, 3);
+        // GroupNonUniform capabilities span 61..=65 (Vote=62 unused here)
+        assert_eq!(CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE - CAPABILITY_GROUP_NON_UNIFORM, 4);
 
         // All distinct
         let caps: [u32; 5] = [
@@ -421,7 +427,7 @@ mod proofs {
     fn verify_all_opcodes_no_collision() {
         // Complete list of all u16 opcode constants from constants.rs,
         // sorted by value for readability.
-        let all: [u16; 96] = [
+        let all: [u16; 122] = [
             OP_NAME,                          //   5
             OP_EXT_INST_IMPORT,               //  11
             OP_EXT_INST,                      //  12
@@ -463,10 +469,10 @@ mod proofs {
             OP_IMAGE_SAMPLE_IMPLICIT_LOD,     //  87
             OP_IMAGE_FETCH,                   //  95
             OP_IMAGE_WRITE,                   //  99
+            OP_CONVERT_F_TO_U,                // 109
+            OP_CONVERT_F_TO_S,                // 110
+            OP_CONVERT_S_TO_F,                // 111
             OP_CONVERT_U_TO_F,                // 112
-            OP_CONVERT_F_TO_U,                // 113
-            OP_CONVERT_S_TO_F,                // 114
-            OP_CONVERT_F_TO_S,                // 115
             OP_BITCAST,                       // 124
             OP_S_NEGATE,                      // 126
             OP_F_NEGATE,                      // 127
@@ -480,7 +486,7 @@ mod proofs {
             OP_SDIV,                          // 135
             OP_FDIV,                          // 136
             OP_UMOD,                          // 137
-            OP_SMOD,                          // 138
+            OP_SREM,                          // 138
             OP_FREM,                          // 140
             OP_VECTOR_TIMES_MATRIX,           // 144
             OP_MATRIX_TIMES_VECTOR,           // 145
@@ -491,15 +497,15 @@ mod proofs {
             OP_IEQUAL,                        // 170
             OP_INOT_EQUAL,                    // 171
             OP_UGREATER_THAN,                 // 172
-            OP_UGREATER_THAN_EQUAL,           // 173
-            OP_SGREATER_THAN,                 // 174
+            OP_SGREATER_THAN,                 // 173
+            OP_UGREATER_THAN_EQUAL,           // 174
             OP_SGREATER_THAN_EQUAL,           // 175
             OP_ULESS_THAN,                    // 176
-            OP_ULESS_THAN_EQ,                 // 177
-            OP_SLESS_THAN,                    // 178
+            OP_SLESS_THAN,                    // 177
+            OP_ULESS_THAN_EQ,                 // 178
             OP_SLESS_THAN_EQUAL,              // 179
             OP_FORD_EQUAL,                    // 180
-            OP_FORD_NOT_EQUAL,                // 181
+            OP_FORD_NOT_EQUAL,                // 182
             OP_FORD_LESS_THAN,                // 184
             OP_FORD_GREATER_THAN,             // 186
             OP_FORD_LESS_THAN_EQUAL,          // 188
@@ -531,18 +537,19 @@ mod proofs {
             OP_BRANCH,                        // 249
             OP_BRANCH_CONDITIONAL,            // 250
             OP_RETURN,                        // 253
+            OP_GROUP_NON_UNIFORM_ALL,         // 334
             OP_GROUP_NON_UNIFORM_ANY,         // 335
-            OP_GROUP_NON_UNIFORM_ALL,         // 336
             OP_GROUP_NON_UNIFORM_BALLOT,      // 339
             OP_GROUP_NON_UNIFORM_SHUFFLE,     // 345
+            OP_GROUP_NON_UNIFORM_SHUFFLE_XOR, // 346
             OP_GROUP_NON_UNIFORM_IADD,        // 349
             OP_GROUP_NON_UNIFORM_FADD,        // 350
-            OP_GROUP_NON_UNIFORM_SMIN,        // 354
-            OP_GROUP_NON_UNIFORM_UMIN,        // 355
-            OP_GROUP_NON_UNIFORM_FMIN,        // 356
-            OP_GROUP_NON_UNIFORM_SMAX,        // 357
-            OP_GROUP_NON_UNIFORM_UMAX,        // 358
-            OP_GROUP_NON_UNIFORM_FMAX,        // 359
+            OP_GROUP_NON_UNIFORM_SMIN,        // 353
+            OP_GROUP_NON_UNIFORM_UMIN,        // 354
+            OP_GROUP_NON_UNIFORM_FMIN,        // 355
+            OP_GROUP_NON_UNIFORM_SMAX,        // 356
+            OP_GROUP_NON_UNIFORM_UMAX,        // 357
+            OP_GROUP_NON_UNIFORM_FMAX,        // 358
         ];
 
         // O(n^2) pairwise distinctness. N=96 so CBMC handles this

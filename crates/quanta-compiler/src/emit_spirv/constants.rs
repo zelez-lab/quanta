@@ -1,7 +1,8 @@
 //! SPIR-V opcode and constant definitions.
 //!
-//! All values match the SPIR-V 1.6 specification.
-//! Proven correct by Kani harnesses in specs/proofs/kani/opcodes.rs.
+//! All values match the SPIR-V 1.6 specification, verified against
+//! spirv-dis. Kani harnesses in specs/verify/kani/opcodes.rs and
+//! opcodes_complete.rs pin each constant to its spec value.
 
 #![allow(dead_code)]
 
@@ -190,10 +191,12 @@ pub const MEMORY_MODEL_GLSL450: u32 = 1;
 pub const CAPABILITY_SHADER: u32 = 1;
 pub const CAPABILITY_FLOAT16: u32 = 9;
 pub const CAPABILITY_FLOAT64: u32 = 10;
+// SPIR-V §3.31 capabilities: NonUniform=61, Vote=62, Arithmetic=63,
+// Ballot=64, Shuffle=65. Ballot and Shuffle were each one too low.
 pub const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
-pub const CAPABILITY_GROUP_NON_UNIFORM_BALLOT: u32 = 62;
 pub const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
-pub const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 64;
+pub const CAPABILITY_GROUP_NON_UNIFORM_BALLOT: u32 = 64;
+pub const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 65;
 
 // ── Scope / memory semantics ────────────────────────────────────────────────
 

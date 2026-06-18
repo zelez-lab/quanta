@@ -14,7 +14,7 @@ mod spec {
     pub const OP_SDIV: u16 = 135;
     pub const OP_FDIV: u16 = 136;
     pub const OP_UMOD: u16 = 137;
-    pub const OP_SMOD: u16 = 138;
+    pub const OP_SREM: u16 = 138;
     pub const OP_FREM: u16 = 140;
     pub const OP_BITWISE_OR: u16 = 197;
     pub const OP_BITWISE_XOR: u16 = 198;
@@ -48,7 +48,7 @@ mod spec {
     pub const OP_GROUP_NON_UNIFORM_SHUFFLE: u16 = 345;
     pub const OP_GROUP_NON_UNIFORM_BALLOT: u16 = 339;
     pub const OP_GROUP_NON_UNIFORM_ANY: u16 = 335;
-    pub const OP_GROUP_NON_UNIFORM_ALL: u16 = 336;
+    pub const OP_GROUP_NON_UNIFORM_ALL: u16 = 334;
 }
 
 /// Values from our emit_spirv.rs (must match spec exactly).
@@ -63,7 +63,7 @@ mod ours {
     pub const OP_SDIV: u16 = 135;
     pub const OP_FDIV: u16 = 136;
     pub const OP_UMOD: u16 = 137;
-    pub const OP_SMOD: u16 = 138;
+    pub const OP_SREM: u16 = 138;
     pub const OP_FREM: u16 = 140;
     pub const OP_BITWISE_OR: u16 = 197;
     pub const OP_BITWISE_XOR: u16 = 198;
@@ -79,7 +79,7 @@ mod ours {
     pub const OP_GROUP_NON_UNIFORM_SHUFFLE: u16 = 345;
     pub const OP_GROUP_NON_UNIFORM_BALLOT: u16 = 339;
     pub const OP_GROUP_NON_UNIFORM_ANY: u16 = 335;
-    pub const OP_GROUP_NON_UNIFORM_ALL: u16 = 336;
+    pub const OP_GROUP_NON_UNIFORM_ALL: u16 = 334;
 }
 
 #[cfg(kani)]
@@ -105,7 +105,7 @@ mod proofs {
         assert_eq!(ours::OP_SDIV, spec::OP_SDIV);
         assert_eq!(ours::OP_FDIV, spec::OP_FDIV);
         assert_eq!(ours::OP_UMOD, spec::OP_UMOD);
-        assert_eq!(ours::OP_SMOD, spec::OP_SMOD);
+        assert_eq!(ours::OP_SREM, spec::OP_SREM);
         assert_eq!(ours::OP_FREM, spec::OP_FREM);
     }
 
@@ -143,7 +143,7 @@ mod proofs {
         let ops = [
             ours::OP_IADD, ours::OP_FADD, ours::OP_ISUB, ours::OP_FSUB,
             ours::OP_IMUL, ours::OP_FMUL, ours::OP_UDIV, ours::OP_SDIV,
-            ours::OP_FDIV, ours::OP_UMOD, ours::OP_SMOD, ours::OP_FREM,
+            ours::OP_FDIV, ours::OP_UMOD, ours::OP_SREM, ours::OP_FREM,
             ours::OP_BITWISE_OR, ours::OP_BITWISE_XOR, ours::OP_BITWISE_AND,
             ours::OP_SHIFT_LEFT_LOGICAL, ours::OP_SHIFT_RIGHT_LOGICAL,
             ours::OP_SHIFT_RIGHT_ARITHMETIC,
