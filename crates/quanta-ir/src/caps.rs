@@ -92,6 +92,7 @@ impl TypeSupport {
 pub struct BackendCaps {
     pub backend: Backend,
     pub f16: TypeSupport,
+    pub bf16: TypeSupport,
     pub f32: TypeSupport,
     pub f64: TypeSupport,
     pub u8_: TypeSupport,
@@ -110,6 +111,7 @@ impl BackendCaps {
     pub fn scalar(&self, ty: ScalarType) -> TypeSupport {
         match ty {
             ScalarType::F16 => self.f16,
+            ScalarType::BF16 => self.bf16,
             ScalarType::F32 => self.f32,
             ScalarType::F64 => self.f64,
             ScalarType::U8 => self.u8_,
@@ -133,6 +135,7 @@ impl BackendCaps {
 pub const METAL: BackendCaps = BackendCaps {
     backend: Backend::Metal,
     f16: TypeSupport::Native,
+    bf16: TypeSupport::Native, // always available via f32-emulated path
     f32: TypeSupport::Native,
     f64: TypeSupport::NotSupported("Metal Shading Language has no double type"),
     u8_: TypeSupport::Native,
@@ -155,6 +158,7 @@ pub const METAL: BackendCaps = BackendCaps {
 pub const VULKAN: BackendCaps = BackendCaps {
     backend: Backend::Vulkan,
     f16: TypeSupport::RequiresFeature("shaderFloat16"),
+    bf16: TypeSupport::Native, // always available via f32-emulated path
     f32: TypeSupport::Native,
     f64: TypeSupport::RequiresFeature("shaderFloat64"),
     u8_: TypeSupport::Native,
@@ -175,6 +179,7 @@ pub const VULKAN: BackendCaps = BackendCaps {
 pub const WEBGPU: BackendCaps = BackendCaps {
     backend: Backend::WebGpu,
     f16: TypeSupport::RequiresFeature("f16"),
+    bf16: TypeSupport::Native, // always available via f32-emulated path
     f32: TypeSupport::Native,
     f64: TypeSupport::NotSupported("WGSL has no f64 type"),
     u8_: TypeSupport::NotSupported("WGSL has no u8 storage type"),
@@ -194,6 +199,7 @@ pub const WEBGPU: BackendCaps = BackendCaps {
 pub const CPU: BackendCaps = BackendCaps {
     backend: Backend::Cpu,
     f16: TypeSupport::Native,
+    bf16: TypeSupport::Native, // always available via f32-emulated path
     f32: TypeSupport::Native,
     f64: TypeSupport::Native,
     u8_: TypeSupport::Native,

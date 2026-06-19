@@ -159,6 +159,7 @@ fn param_name_and_type(p: &KernelParam) -> (&str, ScalarType) {
 fn const_value_type(v: &ConstValue) -> ScalarType {
     match v {
         ConstValue::F16(_) => ScalarType::F16,
+        ConstValue::BF16(_) => ScalarType::BF16,
         ConstValue::F32(_) => ScalarType::F32,
         ConstValue::F64(_) => ScalarType::F64,
         ConstValue::U32(_) => ScalarType::U32,

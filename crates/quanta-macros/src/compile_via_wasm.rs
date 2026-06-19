@@ -803,6 +803,7 @@ fn scalar_type_of(p: &KernelParam) -> ScalarType {
 fn scalar_type_to_short_name(ty: ScalarType) -> &'static str {
     match ty {
         ScalarType::F16 => "f16",
+        ScalarType::BF16 => "bf16",
         ScalarType::F32 => "f32",
         ScalarType::F64 => "f64",
         ScalarType::U8 => "u8",

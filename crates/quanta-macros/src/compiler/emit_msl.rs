@@ -236,7 +236,8 @@ fn emit_msl_op(
                     | quanta_ir::ScalarType::F16 => 16,
                     quanta_ir::ScalarType::U32
                     | quanta_ir::ScalarType::I32
-                    | quanta_ir::ScalarType::F32 => 32,
+                    | quanta_ir::ScalarType::F32
+                    | quanta_ir::ScalarType::BF16 => 32,
                     quanta_ir::ScalarType::U64
                     | quanta_ir::ScalarType::I64
                     | quanta_ir::ScalarType::F64 => 64,
@@ -836,6 +837,10 @@ fn const_to_msl(value: &quanta_ir::ConstValue) -> (&'static str, String) {
             "half",
             format!("(half){}", f32::from_bits((*v as u32) << 16)),
         ),
+        // bf16 emulated as f32 in the body.
+        quanta_ir::ConstValue::BF16(v) => {
+            ("float", format!("{}", f32::from_bits((*v as u32) << 16)))
+        }
     }
 }
 

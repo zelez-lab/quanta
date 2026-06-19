@@ -79,7 +79,9 @@ pub(super) fn emit_op(
                     let width: u32 = match ty {
                         ScalarType::U8 | ScalarType::I8 => 8,
                         ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
-                        ScalarType::U32 | ScalarType::I32 | ScalarType::F32 => 32,
+                        ScalarType::U32 | ScalarType::I32 | ScalarType::F32 | ScalarType::BF16 => {
+                            32
+                        }
                         ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                         ScalarType::Bool => 1,
                     };

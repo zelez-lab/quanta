@@ -332,6 +332,7 @@ fn scalar_type_to_rust(ty: &quanta_ir::ScalarType) -> &'static str {
         quanta_ir::ScalarType::I64 => "i64",
         quanta_ir::ScalarType::Bool => "bool",
         quanta_ir::ScalarType::F16 => "f32",
+        quanta_ir::ScalarType::BF16 => "f32",
     }
 }
 

@@ -332,6 +332,7 @@ fn param_scalar_type(p: &quanta_ir::KernelParam) -> quanta_ir::ScalarType {
 fn scalar_type_to_name(ty: quanta_ir::ScalarType) -> String {
     match ty {
         quanta_ir::ScalarType::F16 => "f16",
+        quanta_ir::ScalarType::BF16 => "bf16",
         quanta_ir::ScalarType::F32 => "f32",
         quanta_ir::ScalarType::F64 => "f64",
         quanta_ir::ScalarType::U8 => "u8",

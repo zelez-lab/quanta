@@ -258,6 +258,9 @@ impl SpvEmitter {
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => self.ensure_type_i32(),
             ScalarType::I64 => self.ensure_type_i64(),
             ScalarType::F16 => self.ensure_type_f16(),
+            // bf16 computes in f32 in the body (emulated path); 16-bit
+            // storage is handled at the Load/Store boundary (Phase B).
+            ScalarType::BF16 => self.ensure_type_f32(),
             ScalarType::Bool => self.ensure_type_bool(),
         }
     }
@@ -266,6 +269,7 @@ impl SpvEmitter {
     pub(crate) fn scalar_byte_size(ty: ScalarType) -> u32 {
         match ty {
             ScalarType::F16 => 2,
+            ScalarType::BF16 => 2,
             ScalarType::F32 => 4,
             ScalarType::F64 => 8,
             ScalarType::U8 | ScalarType::I8 => 1,

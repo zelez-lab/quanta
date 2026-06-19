@@ -132,6 +132,7 @@ fn build_binop_def(op_name: &str, ty: ScalarType, op: BinOp) -> KernelDef {
 fn scalar_tag(ty: ScalarType) -> &'static str {
     match ty {
         ScalarType::F16 => "f16",
+        ScalarType::BF16 => "bf16",
         ScalarType::F32 => "f32",
         ScalarType::F64 => "f64",
         ScalarType::U8 => "u8",

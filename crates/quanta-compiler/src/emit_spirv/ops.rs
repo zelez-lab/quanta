@@ -91,6 +91,12 @@ impl SpvEmitter {
                         let f = f32::from_bits((*v as u32) << 16);
                         (self.emit_constant_f32(f), ty)
                     }
+                    ConstValue::BF16(v) => {
+                        // bf16 unpack: (bits << 16) → f32 (emulated body).
+                        let ty = self.ensure_type_f32();
+                        let f = f32::from_bits((*v as u32) << 16);
+                        (self.emit_constant_f32(f), ty)
+                    }
                 };
                 self.set_reg(*dst, id, ty);
                 // Track integer constants for T1405 (Loop unroll on

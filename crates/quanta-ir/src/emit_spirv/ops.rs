@@ -92,6 +92,13 @@ impl SpvEmitter {
                         let f = f32::from_bits((*v as u32) << 16);
                         (self.emit_constant_f32(f), ty)
                     }
+                    ConstValue::BF16(v) => {
+                        // bf16 is the top 16 bits of an f32 — unpack by
+                        // left-shifting into place. Emulated body is f32.
+                        let ty = self.ensure_type_f32();
+                        let f = f32::from_bits((*v as u32) << 16);
+                        (self.emit_constant_f32(f), ty)
+                    }
                 };
                 self.set_reg(*dst, id, ty);
                 // Track integer constants so the Loop emitter can pick
@@ -212,7 +219,10 @@ impl SpvEmitter {
                 let a_val = self.reg_value_id(*a)?;
                 let b_val = self.reg_value_id(*b)?;
                 let result_ty = self.scalar_type_id(*ty);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let is_signed = matches!(
                     ty,
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
@@ -226,7 +236,11 @@ impl SpvEmitter {
                     let width: u32 = match ty {
                         ScalarType::U8 | ScalarType::I8 => 8,
                         ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
-                        ScalarType::U32 | ScalarType::I32 | ScalarType::F32 => 32,
+                        // bf16's body is f32; rotate-on-float is never
+                        // generated, but the width must be exhaustive.
+                        ScalarType::U32 | ScalarType::I32 | ScalarType::F32 | ScalarType::BF16 => {
+                            32
+                        }
                         ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                         ScalarType::Bool => 1,
                     };
@@ -405,7 +419,10 @@ impl SpvEmitter {
             KernelOp::UnaryOp { dst, a, op, ty } => {
                 let a_val = self.reg_value_id(*a)?;
                 let result_ty = self.scalar_type_id(*ty);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
 
                 let result = self.alloc_id();
                 match op {
@@ -444,7 +461,10 @@ impl SpvEmitter {
                 let a_val = self.reg_value_id(*a)?;
                 let b_val = self.reg_value_id(*b)?;
                 let bool_ty = self.ensure_type_bool();
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let is_signed = matches!(
                     ty,
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
@@ -513,9 +533,14 @@ impl SpvEmitter {
                     return Ok(());
                 }
 
-                let from_float =
-                    matches!(from, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
-                let to_float = matches!(to, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let from_float = matches!(
+                    from,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
+                let to_float = matches!(
+                    to,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let from_signed = matches!(
                     from,
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
@@ -833,7 +858,10 @@ impl SpvEmitter {
             } => {
                 let ext_id = self.ensure_glsl_ext();
                 let result_ty = self.scalar_type_id(*ty);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let is_signed = matches!(
                     ty,
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
@@ -940,7 +968,10 @@ impl SpvEmitter {
                 let a_val = self.reg_value_id(*a)?;
                 let b_val = self.reg_value_id(*b)?;
                 let result_ty = self.scalar_type_id(*ty);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let opcode = if is_float { OP_FMUL } else { OP_IMUL };
                 let result = self.alloc_id();
                 Self::emit_op(
@@ -973,7 +1004,9 @@ impl SpvEmitter {
                     // Fallback: emit zero constant if function not found
                     let result_ty = self.scalar_type_id(*ty);
                     let zero = match ty {
-                        ScalarType::F32 | ScalarType::F16 => self.emit_constant_f32(0.0),
+                        ScalarType::F32 | ScalarType::F16 | ScalarType::BF16 => {
+                            self.emit_constant_f32(0.0)
+                        }
                         ScalarType::F64 => self.emit_constant_f64(0.0),
                         ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
                             self.emit_constant_i32(0)
@@ -1326,7 +1359,10 @@ impl SpvEmitter {
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
                 let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let opcode = if is_float {
                     OP_GROUP_NON_UNIFORM_FADD
                 } else {
@@ -1345,7 +1381,10 @@ impl SpvEmitter {
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
                 let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let is_signed = matches!(
                     ty,
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
@@ -1370,7 +1409,10 @@ impl SpvEmitter {
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
                 let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let is_signed = matches!(
                     ty,
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
@@ -1395,7 +1437,10 @@ impl SpvEmitter {
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
                 let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let opcode = if is_float {
                     OP_GROUP_NON_UNIFORM_FADD
                 } else {
@@ -1420,7 +1465,10 @@ impl SpvEmitter {
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
                 let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
-                let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
+                let is_float = matches!(
+                    ty,
+                    ScalarType::F32 | ScalarType::F64 | ScalarType::F16 | ScalarType::BF16
+                );
                 let opcode = if is_float {
                     OP_GROUP_NON_UNIFORM_FADD
                 } else {

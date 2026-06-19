@@ -7,6 +7,12 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarType {
     F16,
+    /// bfloat16: 1 sign / 8 exponent / 7 mantissa bits — the truncated
+    /// top 16 bits of an f32, giving f32-range at half width. Native on
+    /// backends that support it, otherwise computed in f32 with
+    /// round-on-store. Encoding differs from [`F16`] (e5m10); only the
+    /// bit-pattern conversions distinguish the two.
+    BF16,
     F32,
     F64,
     U8,
@@ -28,6 +34,8 @@ pub struct Reg(pub u32);
 #[derive(Debug, Clone, Copy)]
 pub enum ConstValue {
     F16(u16),
+    /// Raw bfloat16 bit pattern (top 16 bits of the f32 encoding).
+    BF16(u16),
     F32(f32),
     F64(f64),
     U32(u32),
@@ -586,6 +594,11 @@ impl ScalarType {
     pub fn msl_name(&self) -> &'static str {
         match self {
             Self::F16 => "half",
+            // bf16 in-body register type is `float`: the emulated path
+            // computes in f32 (pack/unpack happens at load/store). The
+            // native `bfloat` fork is selected in the emitter when the
+            // device advertises it.
+            Self::BF16 => "float",
             Self::F32 => "float",
             Self::F64 => "double",
             Self::U8 => "uint8_t",
@@ -604,6 +617,9 @@ impl ScalarType {
     pub fn wgsl_name(&self) -> &'static str {
         match self {
             Self::F16 => "f16",
+            // WGSL has no bf16 type; the in-body register is f32 and
+            // bf16 lives only in buffer storage (pack/unpack at I/O).
+            Self::BF16 => "f32",
             Self::F32 => "f32",
             Self::F64 => "f64",
             Self::U8 | Self::U16 | Self::U32 => "u32",

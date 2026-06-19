@@ -119,7 +119,7 @@ impl Value {
 pub(super) fn scalar_size(ty: &ScalarType) -> usize {
     match ty {
         ScalarType::Bool | ScalarType::U8 | ScalarType::I8 => 1,
-        ScalarType::F16 | ScalarType::U16 | ScalarType::I16 => 2,
+        ScalarType::F16 | ScalarType::BF16 | ScalarType::U16 | ScalarType::I16 => 2,
         ScalarType::F32 | ScalarType::U32 | ScalarType::I32 => 4,
         ScalarType::F64 | ScalarType::U64 | ScalarType::I64 => 8,
     }
@@ -149,6 +149,7 @@ pub(super) fn read_scalar_at_offset(buf: &[u8], offset: usize, ty: &ScalarType) 
             let bits = u16::from_le_bytes(bytes.try_into().unwrap());
             Value::F32(f16_to_f32(bits))
         }
+        ScalarType::BF16 => Value::F32(bf16_to_f32(u16::from_le_bytes(bytes.try_into().unwrap()))),
         ScalarType::Bool => Value::Bool(bytes[0] != 0),
     }
 }
@@ -176,6 +177,7 @@ pub(super) fn read_scalar(buf: &[u8], index: u32, ty: &ScalarType) -> Value {
             let bits = u16::from_le_bytes(bytes.try_into().unwrap());
             Value::F32(f16_to_f32(bits))
         }
+        ScalarType::BF16 => Value::F32(bf16_to_f32(u16::from_le_bytes(bytes.try_into().unwrap()))),
         ScalarType::Bool => Value::Bool(bytes[0] != 0),
     }
 }
@@ -202,8 +204,31 @@ pub(super) fn write_scalar(buf: &mut [u8], index: u32, val: Value, ty: &ScalarTy
             let bits = f32_to_f16(val.as_f32());
             dest.copy_from_slice(&bits.to_le_bytes());
         }
+        ScalarType::BF16 => {
+            let bits = f32_to_bf16(val.as_f32());
+            dest.copy_from_slice(&bits.to_le_bytes());
+        }
         ScalarType::Bool => dest[0] = val.as_bool() as u8,
     }
+}
+
+/// bfloat16 → f32: bf16 is the top 16 bits of an f32, so place them back.
+pub(super) fn bf16_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
+
+/// f32 → bfloat16, round-to-nearest-even. NaN is preserved (kept quiet by
+/// forcing a mantissa bit). This is the inverse of `bf16_to_f32` for every
+/// value representable in bf16, so the round-trip is exact there.
+pub(super) fn f32_to_bf16(val: f32) -> u16 {
+    let bits = val.to_bits();
+    if val.is_nan() {
+        // Keep it a NaN after truncation (set a high mantissa bit).
+        return ((bits >> 16) as u16) | 0x0040;
+    }
+    // Round-to-nearest-even: add the rounding bias then truncate.
+    let rounding_bias = 0x7fff + ((bits >> 16) & 1);
+    ((bits + rounding_bias) >> 16) as u16
 }
 
 /// IEEE 754 half-precision to single-precision.
@@ -275,5 +300,6 @@ pub(super) fn value_from_const(cv: &ConstValue) -> Value {
         ConstValue::I64(v) => Value::I64(*v),
         ConstValue::Bool(v) => Value::Bool(*v),
         ConstValue::F16(bits) => Value::F32(f16_to_f32(*bits)),
+        ConstValue::BF16(bits) => Value::F32(bf16_to_f32(*bits)),
     }
 }

@@ -15,6 +15,8 @@ pub(super) fn const_msl(v: &ConstValue) -> (&'static str, String) {
             "half",
             format!("(half){}", float_lit_msl(f32::from_bits((*x as u32) << 16))),
         ),
+        // bf16 emulated as f32 in the body: unpack (bits << 16) to f32.
+        ConstValue::BF16(x) => ("float", float_lit_msl(f32::from_bits((*x as u32) << 16))),
     }
 }
 

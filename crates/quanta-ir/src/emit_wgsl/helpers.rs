@@ -28,6 +28,8 @@ pub(super) fn const_wgsl(v: &ConstValue) -> String {
             // WGSL `enable f16;` uses `h` suffix.
             format!("{:?}h", f32::from_bits((*x as u32) << 16))
         }
+        // bf16 has no WGSL type; emit as an f32 literal (body is f32).
+        ConstValue::BF16(x) => format!("{:?}f", f32::from_bits((*x as u32) << 16)),
     }
 }
 
@@ -85,7 +87,7 @@ pub(super) fn binop_wgsl(
             let width: u32 = match ty {
                 ScalarType::U8 | ScalarType::I8 => 8,
                 ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
-                ScalarType::U32 | ScalarType::I32 | ScalarType::F32 => 32,
+                ScalarType::U32 | ScalarType::I32 | ScalarType::F32 | ScalarType::BF16 => 32,
                 ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                 ScalarType::Bool => 1,
             };
