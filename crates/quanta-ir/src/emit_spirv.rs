@@ -15,11 +15,22 @@ mod types;
 
 use emitter::SpvEmitter;
 
-/// Emit Vulkan SPIR-V binary from a KernelDef.
+pub use crate::emit_caps::EmitCaps;
+
+/// Emit Vulkan SPIR-V binary from a KernelDef, using the portable default
+/// capability set (no optional device features assumed).
 ///
 /// Returns the SPIR-V module as bytes, ready for `vkCreateShaderModule`.
 pub fn emit(kernel: &crate::KernelDef) -> Result<Vec<u8>, String> {
+    emit_with_caps(kernel, &EmitCaps::portable())
+}
+
+/// Emit SPIR-V with explicit device capabilities. A driver that knows its
+/// device supports optional features (e.g. 16-bit storage for native bf16
+/// buffers) passes them here; the portable `emit` assumes none.
+pub fn emit_with_caps(kernel: &crate::KernelDef, caps: &EmitCaps) -> Result<Vec<u8>, String> {
     let mut e = SpvEmitter::new();
+    e.caps = *caps;
     e.emit_kernel(kernel)?;
     Ok(e.finalize())
 }
