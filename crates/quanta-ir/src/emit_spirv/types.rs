@@ -42,6 +42,27 @@ impl SpvEmitter {
         id
     }
 
+    /// 16-bit unsigned int — the native bf16 storage element. Requires the
+    /// Int16 capability; the `StorageBuffer16BitAccess` capability for
+    /// using it in a storage buffer is added when such a field is declared.
+    pub(crate) fn ensure_type_u16(&mut self) -> u32 {
+        if let Some(id) = self.type_u16 {
+            return id;
+        }
+        self.ensure_capability_int16();
+        let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_TYPE_INT, &[id, 16, 0]);
+        self.type_u16 = Some(id);
+        id
+    }
+
+    /// Emit `OpCapability Int16` once.
+    fn ensure_capability_int16(&mut self) {
+        if self.type_u16.is_none() {
+            Self::emit_op(&mut self.sec_capability, OP_CAPABILITY, &[CAPABILITY_INT16]);
+        }
+    }
+
     pub(crate) fn ensure_type_i32(&mut self) -> u32 {
         if let Some(id) = self.type_i32 {
             return id;
@@ -265,11 +286,47 @@ impl SpvEmitter {
         }
     }
 
-    /// Get byte size of a scalar type (for ArrayStride decoration).
+    /// The SPIR-V type of a field's *buffer storage* element (which can
+    /// differ from the in-register body type). bf16 stores as a 16-bit int
+    /// natively, or a 32-bit int in the portable fallback; everything else
+    /// stores as its body type.
+    pub(crate) fn storage_scalar_type_id(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::BF16 => {
+                if self.caps.bf16_native_storage {
+                    self.ensure_type_u16()
+                } else {
+                    self.ensure_type_u32()
+                }
+            }
+            _ => self.scalar_type_id(ty),
+        }
+    }
+
+    /// Storage stride for a field element, in bytes. Matches
+    /// `storage_scalar_type_id`. bf16 is caps-dependent: 2 native, 4
+    /// fallback.
+    pub(crate) fn storage_byte_size(&self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::BF16 => {
+                if self.caps.bf16_native_storage {
+                    2
+                } else {
+                    4
+                }
+            }
+            _ => Self::scalar_byte_size(ty),
+        }
+    }
+
+    /// Get byte size of a scalar type (for ArrayStride decoration). This is
+    /// the *body* size; storage uses `storage_byte_size`.
     pub(crate) fn scalar_byte_size(ty: ScalarType) -> u32 {
         match ty {
             ScalarType::F16 => 2,
-            ScalarType::BF16 => 2,
+            // Body alignment for bf16 is its f32 register (4); storage
+            // stride is computed by `storage_byte_size`.
+            ScalarType::BF16 => 4,
             ScalarType::F32 => 4,
             ScalarType::F64 => 8,
             ScalarType::U8 | ScalarType::I8 => 1,

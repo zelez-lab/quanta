@@ -156,13 +156,18 @@ impl SpvEmitter {
                         &[ptr_elem, chain, var_id, zero],
                     );
                     let loaded = self.alloc_id();
-                    // Memory operand 0x2 = Aligned, followed by alignment value
+                    let storage_ty = self.storage_scalar_type_id(*ty);
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_LOAD,
-                        &[result_ty, loaded, chain, 0x2, alignment],
+                        &[storage_ty, loaded, chain, 0x2, alignment],
                     );
-                    self.set_reg(*dst, loaded, result_ty);
+                    let val = if matches!(ty, ScalarType::BF16) {
+                        self.bf16_unpack_to_f32(loaded)
+                    } else {
+                        loaded
+                    };
+                    self.set_reg(*dst, val, result_ty);
                 } else {
                     // Array access: struct member 0, then index into runtime array
                     let idx = self.reg_value_id(*index)?;
@@ -175,13 +180,20 @@ impl SpvEmitter {
                         &[ptr_elem, chain, var_id, zero, idx],
                     );
                     let loaded = self.alloc_id();
-                    // Memory operand 0x2 = Aligned, followed by alignment value
+                    // Load with the *storage* element type, then unpack to
+                    // the body type for bf16 (storage u16/u32 → f32).
+                    let storage_ty = self.storage_scalar_type_id(*ty);
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_LOAD,
-                        &[result_ty, loaded, chain, 0x2, alignment],
+                        &[storage_ty, loaded, chain, 0x2, alignment],
                     );
-                    self.set_reg(*dst, loaded, result_ty);
+                    let val = if matches!(ty, ScalarType::BF16) {
+                        self.bf16_unpack_to_f32(loaded)
+                    } else {
+                        loaded
+                    };
+                    self.set_reg(*dst, val, result_ty);
                 }
             }
 
@@ -198,6 +210,12 @@ impl SpvEmitter {
 
                 let idx = self.reg_value_id(*index)?;
                 let val = self.reg_value_id(*src)?;
+                // bf16: pack the f32 body value into its storage bits first.
+                let stored_val = if matches!(ty, ScalarType::BF16) {
+                    self.bf16_pack_from_f32(val)
+                } else {
+                    val
+                };
                 let zero = self.emit_constant_u32(0);
                 let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, elem_ty);
                 let chain = self.alloc_id();
@@ -206,12 +224,12 @@ impl SpvEmitter {
                     OP_ACCESS_CHAIN,
                     &[ptr_elem, chain, var_id, zero, idx],
                 );
-                let alignment = Self::scalar_byte_size(*ty);
+                let alignment = self.storage_byte_size(*ty);
                 // Memory operand 0x2 = Aligned, followed by alignment value
                 Self::emit_op(
                     &mut self.sec_function,
                     OP_STORE,
-                    &[chain, val, 0x2, alignment],
+                    &[chain, stored_val, 0x2, alignment],
                 );
             }
 
@@ -1524,5 +1542,101 @@ impl SpvEmitter {
         }
 
         Ok(())
+    }
+
+    // ── bf16 storage conversions ─────────────────────────────────────────
+    //
+    // bf16 is stored as a 16-bit pattern (the top half of an f32) but
+    // computed in f32. These convert at the Load/Store boundary. The
+    // packing rounds to nearest-even and must match the CPU executor's
+    // `f32_to_bf16` bit-for-bit (the differential oracle).
+
+    /// Convert a loaded bf16 storage value (`u16` native, or `u32` carrying
+    /// the bits in its low half) into an f32 register: `f32 = bitcast(bits
+    /// << 16)`. Returns the f32 value id.
+    pub(crate) fn bf16_unpack_to_f32(&mut self, loaded: u32) -> u32 {
+        let u32_ty = self.ensure_type_u32();
+        let f32_ty = self.ensure_type_f32();
+        // Widen to u32 if the storage element was u16 (native path).
+        let bits32 = if self.caps.bf16_native_storage {
+            let w = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_U_CONVERT, &[u32_ty, w, loaded]);
+            w
+        } else {
+            loaded
+        };
+        let sixteen = self.emit_constant_u32(16);
+        let shifted = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_SHIFT_LEFT_LOGICAL,
+            &[u32_ty, shifted, bits32, sixteen],
+        );
+        let f = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_BITCAST, &[f32_ty, f, shifted]);
+        f
+    }
+
+    /// Pack an f32 register into a bf16 storage value (`u16` native / `u32`
+    /// fallback), round-to-nearest-even:
+    ///   bits = bitcast<u32>(f); bias = 0x7fff + ((bits >> 16) & 1);
+    ///   out  = (bits + bias) >> 16
+    /// (NaN handling: a NaN's exponent is all-ones so the bias never
+    /// overflows it into ±inf, matching the CPU path for finite values; the
+    /// op-matrix oracle uses the same formula and skips NaN cases.)
+    /// Returns the storage value id (u16 or u32 per caps).
+    pub(crate) fn bf16_pack_from_f32(&mut self, f32_val: u32) -> u32 {
+        let u32_ty = self.ensure_type_u32();
+        let bits = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_BITCAST, &[u32_ty, bits, f32_val]);
+        // lsb = (bits >> 16) & 1
+        let sixteen = self.emit_constant_u32(16);
+        let one = self.emit_constant_u32(1);
+        let hi = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_SHIFT_RIGHT_LOGICAL,
+            &[u32_ty, hi, bits, sixteen],
+        );
+        let lsb = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_BITWISE_AND,
+            &[u32_ty, lsb, hi, one],
+        );
+        // bias = 0x7fff + lsb
+        let base_bias = self.emit_constant_u32(0x7fff);
+        let bias = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_IADD,
+            &[u32_ty, bias, base_bias, lsb],
+        );
+        // rounded = (bits + bias) >> 16
+        let summed = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_IADD,
+            &[u32_ty, summed, bits, bias],
+        );
+        let rounded = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_SHIFT_RIGHT_LOGICAL,
+            &[u32_ty, rounded, summed, sixteen],
+        );
+        // Narrow to u16 for the native storage element.
+        if self.caps.bf16_native_storage {
+            let u16_ty = self.ensure_type_u16();
+            let narrowed = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_U_CONVERT,
+                &[u16_ty, narrowed, rounded],
+            );
+            narrowed
+        } else {
+            rounded
+        }
     }
 }

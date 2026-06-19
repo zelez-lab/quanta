@@ -228,8 +228,8 @@ impl SpvEmitter {
                     scalar_type,
                 } => {
                     let is_writable = matches!(param, KernelParam::FieldWrite { .. });
-                    let elem_ty = self.scalar_type_id(*scalar_type);
-                    let stride = Self::scalar_byte_size(*scalar_type);
+                    let elem_ty = self.storage_scalar_type_id(*scalar_type);
+                    let stride = self.storage_byte_size(*scalar_type);
 
                     // RuntimeArray of element type
                     let rt_arr = self.ensure_type_runtime_array(elem_ty);
@@ -273,7 +273,7 @@ impl SpvEmitter {
                     slot,
                     scalar_type,
                 } => {
-                    let elem_ty = self.scalar_type_id(*scalar_type);
+                    let elem_ty = self.storage_scalar_type_id(*scalar_type);
                     // Push constants: wrap in a struct with Block decoration,
                     // use PushConstant storage class (matches vkCmdPushConstants).
                     let struct_ty = self.ensure_type_struct(&[elem_ty]);

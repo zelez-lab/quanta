@@ -48,6 +48,7 @@ pub(crate) const OP_CONVERT_F_TO_U: u16 = 109;
 pub(crate) const OP_CONVERT_F_TO_S: u16 = 110;
 pub(crate) const OP_CONVERT_S_TO_F: u16 = 111;
 pub(crate) const OP_CONVERT_U_TO_F: u16 = 112;
+pub(crate) const OP_U_CONVERT: u16 = 113; // unsigned int width conversion (u16↔u32)
 pub(crate) const OP_BITCAST: u16 = 124;
 pub(crate) const OP_S_NEGATE: u16 = 126;
 pub(crate) const OP_F_NEGATE: u16 = 127;
@@ -187,6 +188,10 @@ pub(crate) const CAPABILITY_SHADER: u32 = 1;
 pub(crate) const CAPABILITY_FLOAT16: u32 = 9;
 pub(crate) const CAPABILITY_FLOAT64: u32 = 10;
 pub(crate) const CAPABILITY_INT64: u32 = 11;
+pub(crate) const CAPABILITY_INT16: u32 = 22;
+// 16-bit storage-buffer access (SPV_KHR_16bit_storage). Used for native
+// bf16 buffers when the device advertises `storageBuffer16BitAccess`.
+pub(crate) const CAPABILITY_STORAGE_BUFFER_16BIT_ACCESS: u32 = 4433;
 pub(crate) const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
 pub(crate) const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
 pub(crate) const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 65;
