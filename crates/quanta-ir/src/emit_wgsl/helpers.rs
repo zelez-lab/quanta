@@ -75,9 +75,13 @@ pub(super) fn binop_wgsl(
         }
         BinOp::Rotl | BinOp::Rotr => {
             // WGSL has no rotate builtin. Emit the masked manual
-            // decomposition `(x << k) | (x >> (W - k))` with `k`
-            // masked to [0, W) so the (W - k) shift never reaches W
-            // (UB territory).
+            // decomposition `(x << k) | (x >> (W - k))` with `k` masked
+            // to [0, W) so the (W - k) shift never reaches W (UB).
+            //
+            // The shifts MUST run in the *unsigned* domain: a signed `>>`
+            // in WGSL is arithmetic (sign-extending), which corrupts the
+            // bits that should rotate in. So cast the operand to the
+            // same-width unsigned type, rotate there, and bitcast back.
             let width: u32 = match ty {
                 ScalarType::U8 | ScalarType::I8 => 8,
                 ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
@@ -86,65 +90,45 @@ pub(super) fn binop_wgsl(
                 ScalarType::Bool => 1,
             };
             let mask = width - 1;
-            if matches!(op, BinOp::Rotl) {
-                out.push_str(&format!(
-                    "{}let r{}_k: u32 = u32(r{}) & {}u; \
-                     let r{}_l: {} = r{} << r{}_k; \
-                     let r{}_r: {} = r{} >> (({}u - r{}_k) & {}u); \
-                     let r{}: {} = r{}_l | r{}_r;\n",
-                    pad,
-                    dst,
-                    b,
-                    mask,
-                    dst,
-                    ty_w,
-                    a,
-                    dst,
-                    dst,
-                    ty_w,
-                    a,
-                    width,
-                    dst,
-                    mask,
-                    dst,
-                    ty_w,
-                    dst,
-                    dst,
-                ));
+            // Unsigned WGSL type of matching width, and the cast that
+            // returns the rotated bits to the operand type.
+            let (uw, back) = if width >= 64 {
+                ("u64", format!("bitcast<{ty_w}>"))
             } else {
-                out.push_str(&format!(
-                    "{}let r{}_k: u32 = u32(r{}) & {}u; \
-                     let r{}_r: {} = r{} >> r{}_k; \
-                     let r{}_l: {} = r{} << (({}u - r{}_k) & {}u); \
-                     let r{}: {} = r{}_l | r{}_r;\n",
-                    pad,
-                    dst,
-                    b,
-                    mask,
-                    dst,
-                    ty_w,
-                    a,
-                    dst,
-                    dst,
-                    ty_w,
-                    a,
-                    width,
-                    dst,
-                    mask,
-                    dst,
-                    ty_w,
-                    dst,
-                    dst,
-                ));
-            }
+                ("u32", format!("bitcast<{ty_w}>"))
+            };
+            // For unsigned operand types the bitcast is a no-op the WGSL
+            // compiler accepts; emit it uniformly for simplicity.
+            let (shl_amt, shr_amt) = if matches!(op, BinOp::Rotl) {
+                (
+                    format!("r{dst}_k"),
+                    format!("(({width}u - r{dst}_k) & {mask}u)"),
+                )
+            } else {
+                (
+                    format!("(({width}u - r{dst}_k) & {mask}u)"),
+                    format!("r{dst}_k"),
+                )
+            };
+            out.push_str(&format!(
+                "{pad}let r{dst}_k: u32 = u32(r{b}) & {mask}u; \
+                 let r{dst}_x: {uw} = bitcast<{uw}>(r{a}); \
+                 let r{dst}_l: {uw} = r{dst}_x << {shl_amt}; \
+                 let r{dst}_r: {uw} = r{dst}_x >> {shr_amt}; \
+                 let r{dst}: {ty_w} = {back}(r{dst}_l | r{dst}_r);\n",
+            ));
             return;
         }
     };
-    // WGSL's shift operators require unsigned RHS — cast explicitly.
+    // WGSL's shift operators require an unsigned RHS — cast explicitly.
+    // The LHS is bitcast to the op's declared type so the shift runs in
+    // the right domain: an unsigned `Shr` is logical even when the source
+    // register happens to be signed (the i32.shr_u-after-cast pattern), a
+    // signed `Shr` stays arithmetic.
     if matches!(op, BinOp::Shl | BinOp::Shr) {
         out.push_str(&format!(
-            "{}let r{}: {} = r{} {} u32(r{});\n",
-            pad, dst, ty_w, a, op_str, b
+            "{}let r{}: {} = bitcast<{}>(r{}) {} u32(r{});\n",
+            pad, dst, ty_w, ty_w, a, op_str, b
         ));
     } else {
         out.push_str(&format!(

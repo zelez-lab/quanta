@@ -160,10 +160,22 @@
         const raceCand = new Uint32Array(raceBytes.buffer, raceBytes.byteOffset, raceBytes.length / 4);
         const raceOk = appendVerdict("race (permitted-set, N=2)", compareInSet(raceCand, RACE_PERMITTED));
 
-        const allOk = saxpyOk && reduceOk && counterOk && raceOk;
+        // op-matrix: every per-op case (cast / cmp / bitwise / sat / …)
+        // run through real WebGPU and compared in-wasm against the CPU
+        // reference. The wasm side returns "passed total skipped | detail".
+        const omBytes = await mod.runReturningBytes("web_diff_op_matrix_run");
+        const omText = new TextDecoder().decode(omBytes);
+        const [omCounts, omDetail = ""] = omText.split("|");
+        const [omPassed, omTotal, omSkipped] = omCounts.trim().split(/\s+/).map(Number);
+        const omOk = appendVerdict(
+          `op-matrix (${omPassed}/${omTotal} cases, ${omSkipped} 64-bit skipped)`,
+          { ok: omPassed === omTotal && omTotal > 0, detail: omDetail.trim() },
+        );
+
+        const allOk = saxpyOk && reduceOk && counterOk && raceOk && omOk;
         statusEl.className = allOk ? "ok" : "fail";
         statusEl.textContent = allOk
-          ? `PASS — 4 / 4 kernels match across the WGSL lane`
+          ? `PASS — 5 / 5 checks match across the WGSL lane`
           : `FAIL — see per-kernel verdicts below`;
 
         outEl.textContent =

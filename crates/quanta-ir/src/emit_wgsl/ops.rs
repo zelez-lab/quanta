@@ -88,19 +88,22 @@ pub(super) fn emit_op(
             ));
         }
         KernelOp::UnaryOp { dst, a, op, ty } => {
-            let o = match op {
-                UnaryOp::Neg => "-",
-                UnaryOp::BitNot => "~",
-                UnaryOp::LogicalNot => "!",
+            let tyw = ty.wgsl_name();
+            // WGSL forbids unary `-` on unsigned integers. Negate as a
+            // two's-complement subtraction from zero, which is correct
+            // (and wrapping) for both signed and unsigned ints; floats
+            // keep the unary minus.
+            let is_uint = matches!(
+                ty,
+                ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64
+            );
+            let expr = match op {
+                UnaryOp::Neg if is_uint => format!("({tyw}(0) - r{})", a.0),
+                UnaryOp::Neg => format!("-r{}", a.0),
+                UnaryOp::BitNot => format!("~r{}", a.0),
+                UnaryOp::LogicalNot => format!("!r{}", a.0),
             };
-            out.push_str(&format!(
-                "{}let r{}: {} = {}r{};\n",
-                pad,
-                dst.0,
-                ty.wgsl_name(),
-                o,
-                a.0
-            ));
+            out.push_str(&format!("{}let r{}: {} = {};\n", pad, dst.0, tyw, expr));
         }
         KernelOp::Cast { dst, src, to, .. } => {
             out.push_str(&format!(

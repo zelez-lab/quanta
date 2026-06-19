@@ -111,7 +111,7 @@ test("web_textured — SetTexture+SetSampler wiring (step C)", async ({ page }) 
   }
 });
 
-test("web_diff — WGSL lane: saxpy + reduce_sum + counter + race (steps D.2-D.3b.2)", async ({ page }) => {
+test("web_diff — WGSL lane: saxpy + reduce_sum + counter + race + op-matrix", async ({ page }) => {
   const consoleMsgs: string[] = [];
   page.on("console", (msg) => consoleMsgs.push(`[${msg.type()}] ${msg.text()}`));
   page.on("pageerror", (e) => consoleMsgs.push(`[pageerror] ${e.message}`));
@@ -121,7 +121,7 @@ test("web_diff — WGSL lane: saxpy + reduce_sum + counter + race (steps D.2-D.3
     const status = page.locator("#status");
     try {
       await expect(status).toContainText("PASS", { timeout: 30_000 });
-      await expect(status).toContainText("4 / 4 kernels match");
+      await expect(status).toContainText("5 / 5 checks match");
     } catch (e) {
       console.error("---console output---\n" + consoleMsgs.join("\n"));
       throw e;

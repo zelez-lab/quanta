@@ -545,3 +545,192 @@ pub extern "C" fn web_diff_race_run(task: u32) {
         }
     });
 }
+
+// ───────────────────── op-matrix (WGSL audit) ─────────────────────
+//
+// Runs the shared per-op differential matrix through real WebGPU and
+// compares each case against its CPU-computed `expected`. This is the
+// WGSL counterpart to the software / Metal / Vulkan op_matrix lanes —
+// the lane that exposed the SPIR-V emitter opcode bugs. WGSL has no
+// 64-bit scalar types, so u64/i64/f64 cases are skipped (the native
+// op_matrix lanes gate them the same way).
+
+use quanta_ir::op_matrix_cases::{OpCase, RawValues, cases};
+
+/// Little-endian byte image of a typed buffer.
+fn raw_to_bytes(v: &RawValues) -> Vec<u8> {
+    let mut out = Vec::new();
+    match v {
+        RawValues::F32(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        RawValues::U32(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        RawValues::I32(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        RawValues::F64(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        RawValues::U64(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        RawValues::I64(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+    }
+    out
+}
+
+fn raw_elem_size(v: &RawValues) -> usize {
+    match v {
+        RawValues::F32(_) | RawValues::U32(_) | RawValues::I32(_) => 4,
+        RawValues::F64(_) | RawValues::U64(_) | RawValues::I64(_) => 8,
+    }
+}
+
+/// WGSL (and the WebGPU shaders Quanta emits) has no 64-bit scalar type;
+/// skip any case whose inputs or output are 64-bit, matching how the
+/// native op_matrix lanes gate u64/i64/f64.
+fn case_is_64bit(c: &OpCase) -> bool {
+    let is64 =
+        |v: &RawValues| matches!(v, RawValues::F64(_) | RawValues::U64(_) | RawValues::I64(_));
+    is64(&c.input_a) || is64(&c.input_b) || is64(&c.expected)
+}
+
+/// f32 ULP distance (sign-magnitude ordering), mirroring the host
+/// comparator's tolerance handling.
+fn ulp_distance_f32(a: f32, b: f32) -> u32 {
+    if a.is_nan() || b.is_nan() {
+        return u32::MAX;
+    }
+    let ai = a.to_bits() as i32;
+    let bi = b.to_bits() as i32;
+    let order = |i: i32| if i < 0 { i32::MIN.wrapping_sub(i) } else { i };
+    (order(ai).wrapping_sub(order(bi))).unsigned_abs()
+}
+
+/// Compare a readback against the expected buffer with the case's
+/// tolerance. Returns Ok(()) or a short mismatch description.
+fn compare_case(case: &OpCase, got: &[u8]) -> Result<(), String> {
+    let want = raw_to_bytes(&case.expected);
+    if got.len() < want.len() {
+        return Err(format!("short readback ({} < {})", got.len(), want.len()));
+    }
+    // Float output with a ULP tolerance: compare element-wise.
+    if let RawValues::F32(exp) = &case.expected {
+        if case.max_ulps > 0 {
+            for (i, &e) in exp.iter().enumerate() {
+                let g = f32::from_le_bytes([
+                    got[i * 4],
+                    got[i * 4 + 1],
+                    got[i * 4 + 2],
+                    got[i * 4 + 3],
+                ]);
+                let d = ulp_distance_f32(e, g);
+                if d > case.max_ulps {
+                    return Err(format!("got {g}, want {e} ({d} ULP > {})", case.max_ulps));
+                }
+            }
+            return Ok(());
+        }
+    }
+    // Everything else: bit-exact.
+    if got[..want.len()] == want[..] {
+        Ok(())
+    } else {
+        Err("bit-exact mismatch".into())
+    }
+}
+
+async fn dispatch_case(
+    dev: &quanta::webgpu::WebgpuDevice,
+    case: &OpCase,
+) -> Result<Vec<u8>, String> {
+    let usage = quanta::FieldUsage::default_compute();
+    let in_sz = raw_elem_size(&case.input_a);
+    let out_sz = raw_elem_size(&case.expected);
+
+    let fa = dev
+        .field_alloc(in_sz, usage)
+        .map_err(|e| format!("alloc a: {e:?}"))?;
+    let fb = dev
+        .field_alloc(in_sz, usage)
+        .map_err(|e| format!("alloc b: {e:?}"))?;
+    let fout = dev
+        .field_alloc(out_sz, usage)
+        .map_err(|e| format!("alloc out: {e:?}"))?;
+
+    dev.field_write_bytes(fa, &raw_to_bytes(&case.input_a))
+        .map_err(|e| format!("write a: {e:?}"))?;
+    dev.field_write_bytes(fb, &raw_to_bytes(&case.input_b))
+        .map_err(|e| format!("write b: {e:?}"))?;
+
+    let kernel_bytes = serialize_kernel(&case.def);
+    let mut wave = dev
+        .wave_jit(&kernel_bytes)
+        .map_err(|e| format!("wave_jit: {e:?}"))?;
+    wave.bind_handle(0, fa);
+    wave.bind_handle(1, fb);
+    wave.bind_handle(2, fout);
+    let _pulse = dev
+        .wave_dispatch(&wave, [1, 1, 1])
+        .map_err(|e| format!("dispatch: {e:?}"))?;
+
+    dev.field_read_bytes_async(fout, out_sz)
+        .await
+        .map_err(|e| format!("readback: {e:?}"))
+}
+
+async fn run_op_matrix() -> Result<Vec<u8>, String> {
+    let dev = quanta::webgpu::WebgpuDevice::new_async()
+        .await
+        .map_err(|e| format!("new_async: {e:?}"))?;
+
+    let mut passed = 0u32;
+    let mut skipped = 0u32;
+    let mut total = 0u32;
+    let mut first_fail = String::new();
+
+    for case in cases() {
+        if case_is_64bit(&case) {
+            skipped += 1;
+            continue;
+        }
+        total += 1;
+        match dispatch_case(&dev, &case).await {
+            Ok(bytes) => match compare_case(&case, &bytes) {
+                Ok(()) => passed += 1,
+                Err(why) => {
+                    if first_fail.is_empty() {
+                        first_fail = format!("{}: {}", case.name, why);
+                    }
+                }
+            },
+            Err(why) => {
+                if first_fail.is_empty() {
+                    first_fail = format!("{}: dispatch {}", case.name, why);
+                }
+            }
+        }
+    }
+
+    // Verdict line consumed by the page: "passed total skipped | detail".
+    let verdict = format!("{passed} {total} {skipped} | {first_fail}");
+    Ok(verdict.into_bytes())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn web_diff_op_matrix_run(task: u32) {
+    spawn_local(async move {
+        match run_op_matrix().await {
+            Ok(bytes) => unsafe {
+                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
+            },
+            Err(msg) => unsafe {
+                quanta_complete_err(task, msg.as_ptr(), msg.len());
+            },
+        }
+    });
+}
