@@ -48,7 +48,8 @@ vulkan = ["std"]
 ## CPU software driver: execute KernelDef IR without GPU hardware.
 software = ["std", "jit"]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
-jit = ["quanta-ir/jit"]
+## Also exposes the op-matrix case generator shared with the test harness.
+jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]
 ## WebGPU driver, browser-only (target_arch = "wasm32"). Wired to the
 ## browser via Quanta's own ABI (bare `extern "C"` blocks under
 ## `src/driver/webgpu/ffi.rs` plus a TypeScript-authored

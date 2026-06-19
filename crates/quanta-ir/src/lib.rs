@@ -26,6 +26,12 @@ pub mod emit_msl;
 #[cfg(feature = "jit")]
 pub mod emit_wgsl;
 
+/// Per-op differential matrix case generator. Shared source of truth for
+/// the `op_matrix` test harness and the WGSL browser audit. Enabled by
+/// the `op-matrix-cases` feature.
+#[cfg(feature = "op-matrix-cases")]
+pub mod op_matrix_cases;
+
 // ── Re-exports for backward compatibility ────────────────────────────────────
 
 pub use output::CompilerOutput;

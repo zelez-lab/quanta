@@ -15,6 +15,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 default = []
 ## Enable runtime emitters (SPIR-V + MSL) for JIT compilation.
 jit = []
+## Expose the per-op differential matrix case generator, shared by the
+## op_matrix test harness and the WGSL browser audit (examples/web_diff).
+op-matrix-cases = []
 
 [dev-dependencies]
 proptest = "1"

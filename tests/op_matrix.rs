@@ -25,7 +25,7 @@ mod diff;
 
 use diff::compare::{Divergence, compare_bit_exact, compare_f32};
 use diff::lane::Lane;
-use diff::op_matrix::{OpCase, cases, dispatch_on};
+use diff::op_matrix::{OpCase, cases, dispatch_on, oracle};
 use diff::output::{RawOutput, RawValues};
 
 /// Pick the right comparator for a case's output type and ULP
@@ -56,7 +56,7 @@ fn op_matrix_software_matches_reference() {
     let gpu = quanta::init_cpu();
     let mut failures = Vec::new();
     for case in cases() {
-        let oracle = case.oracle();
+        let oracle = oracle(&case);
         let candidate = dispatch_on(&gpu, &case, Lane::Software);
         if let Err(div) = compare_case(&case, &oracle, &candidate) {
             failures.push(format!("{}: {}", case.name, div));
@@ -85,7 +85,7 @@ fn op_matrix_metal_matches_reference() {
         if case.skip_on_metal {
             continue;
         }
-        let oracle = case.oracle();
+        let oracle = oracle(&case);
         let candidate = dispatch_on(&gpu, &case, Lane::Metal);
         if let Err(div) = compare_case(&case, &oracle, &candidate) {
             failures.push(format!("{}: {}", case.name, div));
@@ -120,7 +120,7 @@ fn op_matrix_vulkan_matches_reference() {
         if !i64_ok && matches!(case.input_a, RawValues::U64(_) | RawValues::I64(_)) {
             continue;
         }
-        let oracle = case.oracle();
+        let oracle = oracle(&case);
         let candidate = dispatch_on(&gpu, &case, Lane::Vulkan);
         if let Err(div) = compare_case(&case, &oracle, &candidate) {
             failures.push(format!("{}: {}", case.name, div));
