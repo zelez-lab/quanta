@@ -248,6 +248,10 @@ pub fn compare_bit_exact(oracle: &RawOutput, candidate: &RawOutput) -> Result<()
         // finite f64 inputs so direct PartialEq works; NaN-aware
         // float comparators land when we ship F64 transcendentals.
         (RawValues::F64(a), RawValues::F64(b)) => f64_bit_pattern_eq(oracle, candidate, a, b),
+        // bf16 is compared on its raw 16-bit storage pattern: the kernel
+        // and the oracle pack with the identical round-to-nearest-even
+        // formula, so agreement is exact.
+        (RawValues::BF16(a), RawValues::BF16(b)) => slice_bit_exact(oracle, candidate, a, b),
         _ => Err(div(
             oracle,
             candidate,

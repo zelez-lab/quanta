@@ -109,6 +109,12 @@ fn dispatch_pair_typed(
         (RawValues::I32(a), RawValues::I32(b), RawValues::F32(_)) => {
             dispatch_pair::<i32, f32>(gpu, wave, a, b, RawValues::F32)
         }
+        // bf16: storage is the portable u32-slot (one bf16 per 32-bit
+        // word), so the host fields are `Field<u32>` carrying the bf16
+        // bits zero-extended; readback narrows back to u16.
+        (RawValues::BF16(a), RawValues::BF16(b), RawValues::BF16(_)) => {
+            dispatch_bf16(gpu, wave, a, b)
+        }
         _ => panic!(
             "op_matrix::read_output: in/out type combo not yet wired \
              (a={}, b={}, out={})",
@@ -141,4 +147,25 @@ fn dispatch_pair<TIn: Copy + 'static, TOut: Copy + 'static>(
     let mut pulse = gpu.dispatch(wave, 1).unwrap();
     pulse.wait().unwrap();
     wrap(fout.read().unwrap())
+}
+
+/// bf16 dispatch over the portable u32-slot storage: each bf16 value is a
+/// `u32` carrying its bits in the low 16. Uploads bf16-bits-as-u32, reads
+/// back, and narrows to `u16` for the `RawValues::BF16` result.
+#[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
+fn dispatch_bf16(gpu: &quanta::Gpu, wave: &mut quanta::Wave, a: &[u16], b: &[u16]) -> RawValues {
+    let a32: Vec<u32> = a.iter().map(|&x| x as u32).collect();
+    let b32: Vec<u32> = b.iter().map(|&x| x as u32).collect();
+    let fa = gpu.field::<u32>(1).unwrap();
+    let fb = gpu.field::<u32>(1).unwrap();
+    let fout = gpu.field::<u32>(1).unwrap();
+    fa.write(&a32).unwrap();
+    fb.write(&b32).unwrap();
+    wave.bind(0, &fa);
+    wave.bind(1, &fb);
+    wave.bind(2, &fout);
+    let mut pulse = gpu.dispatch(wave, 1).unwrap();
+    pulse.wait().unwrap();
+    let out: Vec<u16> = fout.read().unwrap().into_iter().map(|w| w as u16).collect();
+    RawValues::BF16(out)
 }

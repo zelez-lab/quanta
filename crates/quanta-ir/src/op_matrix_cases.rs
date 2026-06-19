@@ -21,6 +21,8 @@ pub enum RawValues {
     U64(Vec<u64>),
     I32(Vec<i32>),
     I64(Vec<i64>),
+    /// bfloat16 values carried as their raw 16-bit storage patterns.
+    BF16(Vec<u16>),
 }
 
 impl RawValues {
@@ -32,6 +34,7 @@ impl RawValues {
             RawValues::U64(_) => "u64",
             RawValues::I32(_) => "i32",
             RawValues::I64(_) => "i64",
+            RawValues::BF16(_) => "bf16",
         }
     }
 }
@@ -1037,6 +1040,85 @@ fn cases_f32() -> Vec<OpCase> {
     out
 }
 
+// ── bf16 ─────────────────────────────────────────────────────────────
+
+/// bf16 → f32: place the 16 bits into the f32 high half.
+fn bf16_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
+
+/// f32 → bf16, round-to-nearest-even (matches the CPU executor and every
+/// emitter's pack sequence bit-for-bit).
+fn f32_to_bf16(val: f32) -> u16 {
+    let bits = val.to_bits();
+    if val.is_nan() {
+        return ((bits >> 16) as u16) | 0x0040;
+    }
+    let bias = 0x7fff + ((bits >> 16) & 1);
+    ((bits + bias) >> 16) as u16
+}
+
+/// bf16 input pairs (as f32 values that are exactly bf16-representable —
+/// low 16 mantissa bits zero — so no input rounding muddies the test).
+fn bf16_inputs() -> &'static [(f32, f32)] {
+    &[
+        (1.0, 2.0),
+        (1.5, 0.5),
+        (-1.0, 1.0),
+        (3.0, 4.0),
+        (0.0, 5.0),
+        (-2.5, 2.5),
+        (100.0, 0.25),
+        (-0.0, 1.0),
+    ]
+}
+
+fn case_bf16(op: BinOp, a: f32, b: f32, expected_bits: u16) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:e}_b{:e}",
+            NAME_PREFIX,
+            binop_tag(op),
+            scalar_tag(ScalarType::BF16),
+            a,
+            b
+        ),
+        def: build_binop_def(binop_tag(op), ScalarType::BF16, op),
+        input_a: RawValues::BF16(vec![f32_to_bf16(a)]),
+        input_b: RawValues::BF16(vec![f32_to_bf16(b)]),
+        expected: RawValues::BF16(vec![expected_bits]),
+        max_ulps: 0, // bf16 result is packed identically host- and device-side.
+        // WGSL/Vulkan/Metal all run bf16 via the portable u32-slot path.
+        skip_on_metal: false,
+    }
+}
+
+fn cases_bf16() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    // Add/Sub/Mul are exact-then-rounded; Div is too but stays in range.
+    for &op in &[BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div] {
+        for &(a, b) in bf16_inputs() {
+            // The kernel loads bf16 inputs (already rounded), computes in
+            // f32, and packs the result. The oracle does the same: unpack
+            // the stored inputs, apply the op, pack the result.
+            let fa = bf16_to_f32(f32_to_bf16(a));
+            let fb = bf16_to_f32(f32_to_bf16(b));
+            let r = match op {
+                BinOp::Add => fa + fb,
+                BinOp::Sub => fa - fb,
+                BinOp::Mul => fa * fb,
+                BinOp::Div if fb != 0.0 => fa / fb,
+                _ => continue,
+            };
+            if r.is_nan() || (r != 0.0 && r.abs() < f32::MIN_POSITIVE) {
+                continue;
+            }
+            out.push(case_bf16(op, a, b, f32_to_bf16(r)));
+        }
+    }
+    out
+}
+
 fn cases_f64() -> Vec<OpCase> {
     let mut out = Vec::new();
     for &op in FLOAT_BINOPS {
@@ -1536,6 +1618,7 @@ pub fn cases() -> Vec<OpCase> {
     all.extend(cases_i64());
     all.extend(cases_f32());
     all.extend(cases_f64());
+    all.extend(cases_bf16());
     all.extend(cases_unary());
     all.extend(cases_cmp());
     all.extend(cases_cast());
