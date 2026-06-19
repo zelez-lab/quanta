@@ -96,6 +96,9 @@ import Quanta.Tensor.Bridge
 -- Block-cooperative primitives (companion crate quanta-prims)
 import Quanta.Prims.Reference
 
+-- Numeric dtype conversions (step 084.1 — bf16 round-trip)
+import Quanta.Dtype.Bf16
+
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
 import Quanta.Theorems.IdlConformance
