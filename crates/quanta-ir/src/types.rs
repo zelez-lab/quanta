@@ -613,6 +613,16 @@ impl ScalarType {
         }
     }
 
+    /// MSL *buffer storage* element type. Differs from `msl_name` only for
+    /// bf16: stored as `uint` (one bf16 per word) with pack/unpack at
+    /// load/store. (A native `bfloat` storage fork is a follow-up.)
+    pub fn msl_storage_name(&self) -> &'static str {
+        match self {
+            Self::BF16 => "uint",
+            _ => self.msl_name(),
+        }
+    }
+
     /// WebGPU Shading Language type name.
     pub fn wgsl_name(&self) -> &'static str {
         match self {
@@ -627,6 +637,16 @@ impl ScalarType {
             Self::I8 | Self::I16 | Self::I32 => "i32",
             Self::I64 => "i64",
             Self::Bool => "bool",
+        }
+    }
+
+    /// WGSL *buffer storage* element type. Differs from `wgsl_name` only
+    /// for bf16: WGSL has no 16-bit storage, so a bf16 buffer is `array<u32>`
+    /// (one bf16 per word) with pack/unpack at load/store.
+    pub fn wgsl_storage_name(&self) -> &'static str {
+        match self {
+            Self::BF16 => "u32",
+            _ => self.wgsl_name(),
         }
     }
 }

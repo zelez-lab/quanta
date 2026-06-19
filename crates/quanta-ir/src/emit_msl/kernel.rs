@@ -37,7 +37,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
             } => {
                 param_lines.push(format!(
                     "    device const {}* {} [[buffer({})]]",
-                    scalar_type.msl_name(),
+                    scalar_type.msl_storage_name(),
                     name,
                     slot
                 ));
@@ -50,7 +50,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
             } => {
                 param_lines.push(format!(
                     "    device {}* {} [[buffer({})]]",
-                    scalar_type.msl_name(),
+                    scalar_type.msl_storage_name(),
                     name,
                     slot
                 ));
@@ -63,7 +63,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
             } => {
                 param_lines.push(format!(
                     "    constant {}& {} [[buffer({})]]",
-                    scalar_type.msl_name(),
+                    scalar_type.msl_storage_name(),
                     name,
                     slot
                 ));

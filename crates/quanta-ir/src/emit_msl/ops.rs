@@ -41,24 +41,44 @@ pub(super) fn emit_op(
             ty,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
-            if index.0 == u32::MAX {
-                out.push_str(&format!("{}{} r{} = {};\n", pad, ty.msl_name(), dst.0, n));
+            let elem = if index.0 == u32::MAX {
+                n.to_string()
+            } else {
+                format!("{}[r{}]", n, index.0)
+            };
+            if matches!(ty, ScalarType::BF16) {
+                // bf16 storage is `uint` (one per word); unpack to float.
+                out.push_str(&format!(
+                    "{}float r{} = as_type<float>({} << 16);\n",
+                    pad, dst.0, elem
+                ));
             } else {
                 out.push_str(&format!(
-                    "{}{} r{} = {}[r{}];\n",
+                    "{}{} r{} = {};\n",
                     pad,
                     ty.msl_name(),
                     dst.0,
-                    n,
-                    index.0
+                    elem
                 ));
             }
         }
         KernelOp::Store {
-            field, index, src, ..
+            field,
+            index,
+            src,
+            ty,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
-            out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
+            if matches!(ty, ScalarType::BF16) {
+                // Pack float → bf16 (round-to-nearest-even), store as uint.
+                out.push_str(&format!(
+                    "{}uint r{}_b = as_type<uint>(r{}); \
+                     {}[r{}] = (r{}_b + 0x7fffu + ((r{}_b >> 16) & 1u)) >> 16;\n",
+                    pad, src.0, src.0, n, index.0, src.0, src.0
+                ));
+            } else {
+                out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
+            }
         }
         KernelOp::BinOp { dst, a, b, op, ty } => {
             match op {

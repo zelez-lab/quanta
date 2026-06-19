@@ -53,6 +53,12 @@ pub(super) fn emit_op(
                     n,
                     index.0
                 ));
+            } else if matches!(ty, ScalarType::BF16) {
+                // bf16 storage is u32 (one per word); unpack to f32.
+                out.push_str(&format!(
+                    "{}let r{}: f32 = bitcast<f32>({}[r{}] << 16u);\n",
+                    pad, dst.0, n, index.0
+                ));
             } else {
                 out.push_str(&format!(
                     "{}let r{}: {} = {}[r{}];\n",
@@ -65,13 +71,23 @@ pub(super) fn emit_op(
             }
         }
         KernelOp::Store {
-            field, index, src, ..
+            field,
+            index,
+            src,
+            ty,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             if atomic_fields.contains(field) {
                 out.push_str(&format!(
                     "{}atomicStore(&{}[r{}], r{});\n",
                     pad, n, index.0, src.0
+                ));
+            } else if matches!(ty, ScalarType::BF16) {
+                // Pack f32 → bf16 (round-to-nearest-even), store as u32.
+                out.push_str(&format!(
+                    "{}let r{}_b: u32 = bitcast<u32>(r{}); \
+                     {}[r{}] = (r{}_b + 0x7fffu + ((r{}_b >> 16u) & 1u)) >> 16u;\n",
+                    pad, src.0, src.0, n, index.0, src.0, src.0
                 ));
             } else {
                 out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));

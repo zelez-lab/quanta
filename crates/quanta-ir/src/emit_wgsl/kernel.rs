@@ -59,7 +59,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                     "@group(0) @binding({}) var<storage, read> {}: array<{}>;\n",
                     slot,
                     name,
-                    scalar_type.wgsl_name()
+                    scalar_type.wgsl_storage_name()
                 ));
                 slot_names.insert(*slot, name.clone());
             }
@@ -69,9 +69,9 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                 scalar_type,
             } => {
                 let elem = if atomic_fields.contains(slot) {
-                    format!("atomic<{}>", scalar_type.wgsl_name())
+                    format!("atomic<{}>", scalar_type.wgsl_storage_name())
                 } else {
-                    scalar_type.wgsl_name().to_string()
+                    scalar_type.wgsl_storage_name().to_string()
                 };
                 out.push_str(&format!(
                     "@group(0) @binding({}) var<storage, read_write> {}: array<{}>;\n",
