@@ -62,7 +62,7 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::SatSub => va.saturating_sub(vb),
             })
         }
-        ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => {
+        ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
             let va = a.as_i32();
             let vb = b.as_i32();
             Value::I32(match op {
@@ -207,7 +207,7 @@ pub(super) fn eval_cmp(a: Value, b: Value, op: &CmpOp, ty: &ScalarType) -> Value
                 CmpOp::Ge => va >= vb,
             }
         }
-        ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => {
+        ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
             let va = a.as_i32();
             let vb = b.as_i32();
             match op {
@@ -265,7 +265,7 @@ pub(super) fn eval_unary(a: Value, op: &UnaryOp, ty: &ScalarType) -> Value {
             | ScalarType::FP8E5M2
             | ScalarType::FP8E4M3 => Value::F32(-a.as_f32()),
             ScalarType::F64 => Value::F64(-a.as_f64()),
-            ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => {
+            ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
                 Value::I32(a.as_i32().wrapping_neg())
             }
             ScalarType::I64 => Value::I64(a.as_i64().wrapping_neg()),
@@ -277,7 +277,9 @@ pub(super) fn eval_unary(a: Value, op: &UnaryOp, ty: &ScalarType) -> Value {
         },
         UnaryOp::BitNot => match ty {
             ScalarType::U32 | ScalarType::U16 | ScalarType::U8 => Value::U32(!a.as_u32()),
-            ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => Value::I32(!a.as_i32()),
+            ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
+                Value::I32(!a.as_i32())
+            }
             ScalarType::U64 => Value::U64(!a.as_u64()),
             ScalarType::I64 => Value::I64(!a.as_i64()),
             ScalarType::Bool => Value::Bool(!a.as_bool()),
@@ -364,7 +366,7 @@ pub(super) fn eval_cast(val: Value, from: &ScalarType, to: &ScalarType) -> Value
     // `Cast { from: U32, to: U64 }` semantics: drop high bits to the
     // source width, then widen.
     let zero_extended_u64: u64 = match from {
-        ScalarType::U8 | ScalarType::I8 => (val.as_u32() & 0xFF) as u64,
+        ScalarType::U8 | ScalarType::I8 | ScalarType::I4 => (val.as_u32() & 0xFF) as u64,
         ScalarType::U16 | ScalarType::I16 => (val.as_u32() & 0xFFFF) as u64,
         ScalarType::U32 | ScalarType::I32 => val.as_u32() as u64,
         _ => val.as_u64(),
@@ -383,7 +385,9 @@ pub(super) fn eval_cast(val: Value, from: &ScalarType, to: &ScalarType) -> Value
         | ScalarType::FP8E4M3 => Value::F32(val.as_f32()),
         ScalarType::F64 => Value::F64(val.as_f64()),
         ScalarType::U32 | ScalarType::U16 | ScalarType::U8 => Value::U32(val.as_u32()),
-        ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => Value::I32(val.as_i32()),
+        ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
+            Value::I32(val.as_i32())
+        }
         // For widening to u64: zero-extend honouring `from`.
         ScalarType::U64 => Value::U64(zero_extended_u64),
         // For widening to i64: sign-extend honouring `from`.
@@ -416,7 +420,7 @@ pub(super) fn eval_atomic(
             };
             (Value::U32(new), Value::U32(o))
         }
-        ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => {
+        ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
             let o = old.as_i32();
             let v = operand.as_i32();
             let new = match op {

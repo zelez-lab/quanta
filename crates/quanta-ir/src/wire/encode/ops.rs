@@ -5,7 +5,7 @@ use crate::KernelOp;
 use super::header::Writer;
 use super::helpers::{
     write_atomicop, write_binop, write_cmpop, write_const_value, write_mathfn, write_memory_order,
-    write_reg, write_scalar_type, write_unaryop,
+    write_quant_scheme, write_reg, write_scalar_type, write_unaryop,
 };
 
 // ---------------------------------------------------------------------------
@@ -635,6 +635,37 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             write_atomicop(w, op);
             write_scalar_type(w, ty);
             write_memory_order(w, order);
+        }
+
+        // 53 — Quantize { dst, src, scale, zero_point, scheme }
+        KernelOp::Quantize {
+            dst,
+            src,
+            scale,
+            zero_point,
+            scheme,
+        } => {
+            w.u8(53);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_reg(w, scale);
+            write_reg(w, zero_point);
+            write_quant_scheme(w, scheme);
+        }
+        // 54 — Dequantize { dst, src, scale, zero_point, scheme }
+        KernelOp::Dequantize {
+            dst,
+            src,
+            scale,
+            zero_point,
+            scheme,
+        } => {
+            w.u8(54);
+            write_reg(w, dst);
+            write_reg(w, src);
+            write_reg(w, scale);
+            write_reg(w, zero_point);
+            write_quant_scheme(w, scheme);
         }
     }
 }

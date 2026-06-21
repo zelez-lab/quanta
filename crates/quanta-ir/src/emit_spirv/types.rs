@@ -278,6 +278,9 @@ impl SpvEmitter {
             ScalarType::U64 => self.ensure_type_u64(),
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => self.ensure_type_i32(),
             ScalarType::I64 => self.ensure_type_i64(),
+            // int4 computes in i32 in the body; nibble pack/unpack at the
+            // Load/Store boundary (Phase B).
+            ScalarType::I4 => self.ensure_type_i32(),
             ScalarType::F16 => self.ensure_type_f16(),
             // bf16 computes in f32 in the body (emulated path); 16-bit
             // storage is handled at the Load/Store boundary (Phase B).
@@ -303,6 +306,8 @@ impl SpvEmitter {
             // fp8 always uses the portable u32-slot path for v1 (native
             // 8-bit storage needs StorageBuffer8BitAccess — a later fork).
             ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_u32(),
+            // int4 packs into u32 words (8 nibbles/word, PackedU32).
+            ScalarType::I4 => self.ensure_type_u32(),
             _ => self.scalar_type_id(ty),
         }
     }
@@ -320,6 +325,7 @@ impl SpvEmitter {
                 }
             }
             ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => 4, // u32-slot
+            ScalarType::I4 => 4,                            // u32-slot (PackedU32)
             _ => Self::scalar_byte_size(ty),
         }
     }
@@ -339,6 +345,7 @@ impl SpvEmitter {
             ScalarType::U16 | ScalarType::I16 => 2,
             ScalarType::U32 | ScalarType::I32 => 4,
             ScalarType::U64 | ScalarType::I64 => 8,
+            ScalarType::I4 => 4, // body is i32
             ScalarType::Bool => 4,
         }
     }

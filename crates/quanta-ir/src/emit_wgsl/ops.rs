@@ -211,6 +211,10 @@ pub(super) fn emit_op(
         KernelOp::Copy { dst, src, .. } => {
             out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
         }
+        // Quantization affine map — lowering lands in Phase B.
+        KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
+            out.push_str(&format!("{}/* quantize: lowering pending */\n", pad));
+        }
         KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!("{}workgroupBarrier();\n", pad)),
         // WGSL has no per-op memory ordering — atomicAdd / atomicLoad are

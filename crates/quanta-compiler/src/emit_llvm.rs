@@ -233,6 +233,8 @@ pub(crate) fn scalar_to_llvm_type<'ctx>(
         ScalarType::U16 | ScalarType::I16 => context.i16_type().into(),
         ScalarType::U32 | ScalarType::I32 => context.i32_type().into(),
         ScalarType::U64 | ScalarType::I64 => context.i64_type().into(),
+        // int4 computes as i32 in the body (nibble-packed at I/O).
+        ScalarType::I4 => context.i32_type().into(),
         ScalarType::Bool => context.bool_type().into(),
     }
 }

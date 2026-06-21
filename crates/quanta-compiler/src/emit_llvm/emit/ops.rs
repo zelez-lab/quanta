@@ -434,6 +434,11 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
             reg_store(ectx.context, ectx.builder, ectx.reg_slots, dst.0, val, *ty)?;
         }
 
+        // Quantization affine map — lowering lands in Phase B.
+        KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
+            return Err("LLVM: Quantize/Dequantize lowering pending".to_string());
+        }
+
         KernelOp::Break => {
             // Break is handled at the Loop level — no-op here
         }

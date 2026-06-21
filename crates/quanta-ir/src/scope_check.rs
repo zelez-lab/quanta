@@ -193,6 +193,23 @@ fn check_uses(op: &KernelOp, env: &HashSet<Reg>) -> Result<(), ScopeViolation> {
         // Type conversion.
         KernelOp::Cast { src, .. } => check(*src, "Cast.src"),
         KernelOp::Const { .. } => Ok(()),
+        // Quantization: src + scale + zero_point are all reads.
+        KernelOp::Quantize {
+            src,
+            scale,
+            zero_point,
+            ..
+        }
+        | KernelOp::Dequantize {
+            src,
+            scale,
+            zero_point,
+            ..
+        } => {
+            check(*src, "Quant.src")?;
+            check(*scale, "Quant.scale")?;
+            check(*zero_point, "Quant.zero_point")
+        }
         // Vector.
         KernelOp::VecConstruct { components, .. } => {
             for c in components {
@@ -300,6 +317,8 @@ pub fn defined_reg(op: &KernelOp) -> Option<Reg> {
         | KernelOp::WaveAll { dst, .. }
         | KernelOp::Cast { dst, .. }
         | KernelOp::Const { dst, .. }
+        | KernelOp::Quantize { dst, .. }
+        | KernelOp::Dequantize { dst, .. }
         | KernelOp::VecConstruct { dst, .. }
         | KernelOp::VecExtract { dst, .. }
         | KernelOp::MatMul { dst, .. }
@@ -395,6 +414,18 @@ pub fn used_regs(op: &KernelOp) -> Vec<Reg> {
         // Type conversion.
         KernelOp::Cast { src, .. } => vec![*src],
         KernelOp::Const { .. } => vec![],
+        KernelOp::Quantize {
+            src,
+            scale,
+            zero_point,
+            ..
+        }
+        | KernelOp::Dequantize {
+            src,
+            scale,
+            zero_point,
+            ..
+        } => vec![*src, *scale, *zero_point],
         // Vector.
         KernelOp::VecConstruct { components, .. } => components.clone(),
         KernelOp::VecExtract { vec, .. } => vec![*vec],

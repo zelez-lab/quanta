@@ -122,7 +122,8 @@ pub(super) fn scalar_size(ty: &ScalarType) -> usize {
         | ScalarType::U8
         | ScalarType::I8
         | ScalarType::FP8E5M2
-        | ScalarType::FP8E4M3 => 1,
+        | ScalarType::FP8E4M3
+        | ScalarType::I4 => 1,
         ScalarType::F16 | ScalarType::BF16 | ScalarType::U16 | ScalarType::I16 => 2,
         ScalarType::F32 | ScalarType::U32 | ScalarType::I32 => 4,
         ScalarType::F64 | ScalarType::U64 | ScalarType::I64 => 8,
@@ -156,6 +157,10 @@ pub(super) fn read_scalar_at_offset(buf: &[u8], offset: usize, ty: &ScalarType) 
         ScalarType::BF16 => Value::F32(bf16_to_f32(u16::from_le_bytes(bytes.try_into().unwrap()))),
         ScalarType::FP8E5M2 => Value::F32(quanta_ir::dtype::fp8_to_f32(bytes[0], 5, 2)),
         ScalarType::FP8E4M3 => Value::F32(quanta_ir::dtype::fp8_to_f32(bytes[0], 4, 3)),
+        // int4: unpack nibble 0 of the slot's low byte (sign-extended).
+        // The full PackedU32 nibble layout is exercised in Phase B; the
+        // single-element op-matrix path uses one nibble per slot.
+        ScalarType::I4 => Value::I32(quanta_ir::dtype::int4_unpack(bytes[0] as u32, 0)),
         ScalarType::Bool => Value::Bool(bytes[0] != 0),
     }
 }
@@ -186,6 +191,10 @@ pub(super) fn read_scalar(buf: &[u8], index: u32, ty: &ScalarType) -> Value {
         ScalarType::BF16 => Value::F32(bf16_to_f32(u16::from_le_bytes(bytes.try_into().unwrap()))),
         ScalarType::FP8E5M2 => Value::F32(quanta_ir::dtype::fp8_to_f32(bytes[0], 5, 2)),
         ScalarType::FP8E4M3 => Value::F32(quanta_ir::dtype::fp8_to_f32(bytes[0], 4, 3)),
+        // int4: unpack nibble 0 of the slot's low byte (sign-extended).
+        // The full PackedU32 nibble layout is exercised in Phase B; the
+        // single-element op-matrix path uses one nibble per slot.
+        ScalarType::I4 => Value::I32(quanta_ir::dtype::int4_unpack(bytes[0] as u32, 0)),
         ScalarType::Bool => Value::Bool(bytes[0] != 0),
     }
 }
@@ -218,6 +227,8 @@ pub(super) fn write_scalar(buf: &mut [u8], index: u32, val: Value, ty: &ScalarTy
         }
         ScalarType::FP8E5M2 => dest[0] = quanta_ir::dtype::f32_to_fp8(val.as_f32(), 5, 2),
         ScalarType::FP8E4M3 => dest[0] = quanta_ir::dtype::f32_to_fp8(val.as_f32(), 4, 3),
+        // int4: pack the i32 code into nibble 0 of the low byte.
+        ScalarType::I4 => dest[0] = quanta_ir::dtype::int4_pack(0, 0, val.as_i32()) as u8,
         ScalarType::Bool => dest[0] = val.as_bool() as u8,
     }
 }

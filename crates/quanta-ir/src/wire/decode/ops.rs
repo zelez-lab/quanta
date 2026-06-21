@@ -9,7 +9,7 @@ use crate::KernelOp;
 use super::header::Reader;
 use super::helpers::{
     read_atomicop, read_binop, read_cmpop, read_const_value, read_mathfn, read_memory_order,
-    read_reg, read_scalar_type, read_unaryop,
+    read_quant_scheme, read_reg, read_scalar_type, read_unaryop,
 };
 
 // ---------------------------------------------------------------------------
@@ -587,6 +587,37 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
                 op,
                 ty,
                 order,
+            })
+        }
+
+        // 53 — Quantize
+        53 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let scale = read_reg(r)?;
+            let zero_point = read_reg(r)?;
+            let scheme = read_quant_scheme(r)?;
+            Ok(KernelOp::Quantize {
+                dst,
+                src,
+                scale,
+                zero_point,
+                scheme,
+            })
+        }
+        // 54 — Dequantize
+        54 => {
+            let dst = read_reg(r)?;
+            let src = read_reg(r)?;
+            let scale = read_reg(r)?;
+            let zero_point = read_reg(r)?;
+            let scheme = read_quant_scheme(r)?;
+            Ok(KernelOp::Dequantize {
+                dst,
+                src,
+                scale,
+                zero_point,
+                scheme,
             })
         }
 

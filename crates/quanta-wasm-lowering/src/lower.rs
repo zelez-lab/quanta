@@ -568,7 +568,9 @@ impl<'a> LowerCtx<'a> {
             ScalarType::F64 => ConstValue::F64(0.0),
             ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
             ScalarType::U64 => ConstValue::U64(0),
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 => {
+                ConstValue::I32(0)
+            }
             ScalarType::I64 => ConstValue::I64(0),
             ScalarType::Bool => ConstValue::Bool(false),
         };
@@ -728,9 +730,11 @@ impl<'a> LowerCtx<'a> {
                 | ScalarType::F32 => ConstValue::F32(0.0),
                 ScalarType::F64 => ConstValue::F64(0.0),
                 ScalarType::Bool => ConstValue::Bool(false),
-                ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
-                    ConstValue::I32(0)
-                }
+                ScalarType::I8
+                | ScalarType::I16
+                | ScalarType::I32
+                | ScalarType::I64
+                | ScalarType::I4 => ConstValue::I32(0),
                 ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64 => {
                     ConstValue::U32(0)
                 }
@@ -779,7 +783,9 @@ impl<'a> LowerCtx<'a> {
             | ScalarType::F32 => ConstValue::F32(0.0),
             ScalarType::F64 => ConstValue::F64(0.0),
             ScalarType::Bool => ConstValue::Bool(false),
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 => {
+                ConstValue::I32(0)
+            }
             ScalarType::I64 => ConstValue::I64(0),
             ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
             ScalarType::U64 => ConstValue::U64(0),
@@ -935,7 +941,9 @@ impl<'a> LowerCtx<'a> {
             | ScalarType::F32 => ConstValue::F32(0.0),
             ScalarType::F64 => ConstValue::F64(0.0),
             ScalarType::Bool => ConstValue::Bool(false),
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 => {
+                ConstValue::I32(0)
+            }
             ScalarType::I64 => ConstValue::I64(0),
             ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
             ScalarType::U64 => ConstValue::U64(0),
@@ -2642,9 +2650,11 @@ impl<'a> LowerCtx<'a> {
                     | ScalarType::F32 => ConstValue::F32(0.0),
                     ScalarType::F64 => ConstValue::F64(0.0),
                     ScalarType::Bool => ConstValue::Bool(false),
-                    ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
-                        ConstValue::I32(0)
-                    }
+                    ScalarType::I8
+                    | ScalarType::I16
+                    | ScalarType::I32
+                    | ScalarType::I64
+                    | ScalarType::I4 => ConstValue::I32(0),
                     ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64 => {
                         ConstValue::U32(0)
                     }
@@ -3341,7 +3351,9 @@ impl<'a> LowerCtx<'a> {
                 | ScalarType::F32 => ConstValue::F32(0.0),
                 ScalarType::F64 => ConstValue::F64(0.0),
                 ScalarType::Bool => ConstValue::Bool(false),
-                ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
+                ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 => {
+                    ConstValue::I32(0)
+                }
                 ScalarType::I64 => ConstValue::I64(0),
                 ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
                 ScalarType::U64 => ConstValue::U64(0),

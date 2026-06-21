@@ -153,6 +153,7 @@ fn scalar_tag(ty: ScalarType) -> &'static str {
         ScalarType::I16 => "i16",
         ScalarType::I32 => "i32",
         ScalarType::I64 => "i64",
+        ScalarType::I4 => "i4",
         ScalarType::Bool => "bool",
     }
 }

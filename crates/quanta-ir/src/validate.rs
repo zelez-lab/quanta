@@ -244,6 +244,15 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
         Loop { body, .. } => {
             walk_ops(caps, report, body, &format!("{}.body", loc));
         }
+        Quantize { scheme, .. } | Dequantize { scheme, .. } => {
+            // The quantized storage payload must be a supported scalar.
+            check(
+                caps,
+                report,
+                scheme.value.storage_scalar(),
+                &format!("{}: {}", loc, op_name(op)),
+            );
+        }
         // Ops with no ScalarType field — thread indexing, control
         // flow, fences, ballot/any/all (predicates are bool-typed,
         // not parameterised by ScalarType), texture-size queries
@@ -295,6 +304,8 @@ fn op_name(op: &KernelOp) -> &'static str {
         WaveAll { .. } => "WaveAll",
         Cast { .. } => "Cast",
         Const { .. } => "Const",
+        Quantize { .. } => "Quantize",
+        Dequantize { .. } => "Dequantize",
         VecConstruct { .. } => "VecConstruct",
         VecExtract { .. } => "VecExtract",
         MatMul { .. } => "MatMul",

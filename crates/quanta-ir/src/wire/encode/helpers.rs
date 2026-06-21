@@ -26,8 +26,39 @@ pub(crate) fn write_scalar_type(w: &mut Writer, ty: &ScalarType) {
         ScalarType::BF16 => 12,
         ScalarType::FP8E5M2 => 13,
         ScalarType::FP8E4M3 => 14,
+        // int4 (quantization storage payload) appended (tag 15).
+        ScalarType::I4 => 15,
     };
     w.u8(tag);
+}
+
+// ---------------------------------------------------------------------------
+// QuantScheme  (4 orthogonal axis bytes)
+// ---------------------------------------------------------------------------
+
+pub(in crate::wire) fn write_quant_scheme(w: &mut Writer, s: &crate::QuantScheme) {
+    use crate::{QuantLevel, QuantMode, QuantStore, QuantValue};
+    w.u8(match s.value {
+        QuantValue::Q8S => 0,
+        QuantValue::Q4S => 1,
+    });
+    w.u8(match s.store {
+        QuantStore::Native => 0,
+        QuantStore::PackedU32 => 1,
+    });
+    // level: byte tag, plus a u32 payload for Block(n).
+    match s.level {
+        QuantLevel::PerTensor => w.u8(0),
+        QuantLevel::Block(n) => {
+            w.u8(1);
+            w.u32(n);
+        }
+        QuantLevel::PerChannel => w.u8(2),
+    }
+    w.u8(match s.mode {
+        QuantMode::Symmetric => 0,
+        QuantMode::Affine => 1,
+    });
 }
 
 // ---------------------------------------------------------------------------

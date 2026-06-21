@@ -345,6 +345,7 @@ fn scalar_type_to_name(ty: quanta_ir::ScalarType) -> String {
         quanta_ir::ScalarType::I16 => "i16",
         quanta_ir::ScalarType::I32 => "i32",
         quanta_ir::ScalarType::I64 => "i64",
+        quanta_ir::ScalarType::I4 => "i4",
         quanta_ir::ScalarType::Bool => "bool",
     }
     .to_string()

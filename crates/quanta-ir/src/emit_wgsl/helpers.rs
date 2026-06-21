@@ -95,7 +95,8 @@ pub(super) fn binop_wgsl(
                 | ScalarType::F32
                 | ScalarType::BF16
                 | ScalarType::FP8E5M2
-                | ScalarType::FP8E4M3 => 32,
+                | ScalarType::FP8E4M3
+                | ScalarType::I4 => 32,
                 ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                 ScalarType::Bool => 1,
             };

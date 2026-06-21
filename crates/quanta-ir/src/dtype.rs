@@ -151,6 +151,61 @@ fn round_shift_rne(v: u32, s: u32) -> u32 {
 pub const E5M2: (u32, u32) = (5, 2);
 pub const E4M3: (u32, u32) = (4, 3);
 
+// ── int8 / int4 symmetric quantization ───────────────────────────────
+//
+// Quantization is NOT a self-describing dtype: an integer `q` means
+// `real = scale * (q - zero_point)`, with (scale, zero_point) external to
+// the value. The first increment is per-tensor SYMMETRIC (zero_point = 0):
+//   quantize(x)   = clamp(round_ties_even(x / scale), lo, hi)
+//   dequantize(q) = scale * q
+// `lo`/`hi` are the signed integer range: int8 = [-128, 127], int4 =
+// [-8, 7]. Rounding is round-half-to-even to match WGSL/MSL `round` and
+// SPIR-V `OpExtInst Round` bit-for-bit. int4 is stored packed 8 nibbles
+// per 32-bit word (the `store` axis — see the nibble helpers below).
+//
+// These are the reference host conversions; the CPU oracle, the GPU
+// emitters, and the Lean spec mirror them.
+
+/// Signed integer range `(lo, hi)` for a quantized value width in bits
+/// (8 → int8, 4 → int4).
+pub const fn quant_range(bits: u32) -> (i32, i32) {
+    let hi = (1i32 << (bits - 1)) - 1;
+    (-(hi + 1), hi)
+}
+
+/// Symmetric quantize: `clamp(round_ties_even(x / scale), lo, hi)`.
+pub fn quantize_sym(x: f32, scale: f32, bits: u32) -> i32 {
+    let (lo, hi) = quant_range(bits);
+    let r = (x / scale).round_ties_even() as i32;
+    r.clamp(lo, hi)
+}
+
+/// Symmetric dequantize: `scale * q`.
+pub fn dequantize_sym(q: i32, scale: f32) -> f32 {
+    scale * (q as f32)
+}
+
+// ── int4 sub-byte packing (8 signed nibbles per u32 word) ────────────
+//
+// The `store` axis: int4 *values* are logical 4-bit signed integers; their
+// *storage* packs 8 per 32-bit word, low nibble first (GPTQ / llama.cpp
+// layout). Load reads + sign-extends a nibble; Store is read-modify-write.
+
+/// Read the signed int4 at nibble index `i` (0..8) of a packed word.
+pub fn int4_unpack(word: u32, i: u32) -> i32 {
+    let n = (word >> (i * 4)) & 0xF;
+    // sign-extend the 4-bit value: (n ^ 0x8) - 0x8.
+    (n ^ 0x8).wrapping_sub(0x8) as i32
+}
+
+/// Write the signed int4 `q` into nibble index `i` (0..8), preserving the
+/// other nibbles (read-modify-write).
+pub fn int4_pack(word: u32, i: u32, q: i32) -> u32 {
+    let shift = i * 4;
+    let n = (q as u32) & 0xF;
+    (word & !(0xF << shift)) | (n << shift)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +341,51 @@ mod tests {
         // ±0.
         assert_eq!(f32_to_fp8(0.0, 5, 2), 0x00);
         assert_eq!(f32_to_fp8(-0.0, 5, 2), 0x80);
+    }
+
+    #[test]
+    fn quant_ranges() {
+        assert_eq!(quant_range(8), (-128, 127));
+        assert_eq!(quant_range(4), (-8, 7));
+    }
+
+    #[test]
+    fn int4_pack_unpack_roundtrip_all_nibbles() {
+        // Every signed int4 value in every nibble slot round-trips, and
+        // packing one nibble leaves the other seven untouched.
+        for i in 0u32..8 {
+            let mut word = 0xDEAD_BEEFu32;
+            for v in -8i32..=7 {
+                let w = int4_pack(word, i, v);
+                assert_eq!(int4_unpack(w, i), v, "nibble {i} value {v}");
+                for j in 0u32..8 {
+                    if j != i {
+                        assert_eq!(
+                            int4_unpack(w, j),
+                            int4_unpack(word, j),
+                            "nibble {j} clobbered"
+                        );
+                    }
+                }
+                word = w;
+            }
+        }
+    }
+
+    #[test]
+    fn quantize_sym_clamps_rounds_dequantizes() {
+        let s = 0.5f32;
+        // exact multiples, clamping, and round-half-to-even.
+        assert_eq!(quantize_sym(0.0, s, 4), 0);
+        assert_eq!(quantize_sym(0.5, s, 4), 1);
+        assert_eq!(quantize_sym(-1.0, s, 4), -2);
+        assert_eq!(quantize_sym(3.5, s, 4), 7);
+        assert_eq!(quantize_sym(3.6, s, 4), 7); // clamp hi
+        assert_eq!(quantize_sym(-5.0, s, 4), -8); // clamp lo
+        assert_eq!(quantize_sym(0.24, s, 4), 0); // 0.48 → 0
+        assert_eq!(quantize_sym(0.26, s, 4), 1); // 0.52 → 1
+        assert_eq!(quantize_sym(300.0, 1.0, 8), 127); // int8 saturates
+        assert_eq!(dequantize_sym(7, s), 3.5);
+        assert_eq!(dequantize_sym(-8, s), -4.0);
     }
 }

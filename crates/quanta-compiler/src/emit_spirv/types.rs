@@ -235,6 +235,8 @@ impl SpvEmitter {
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
                 self.ensure_type_i32()
             }
+            // int4 computes as i32 in the body (nibble-packed at I/O).
+            ScalarType::I4 => self.ensure_type_i32(),
             ScalarType::F16 => self.ensure_type_f16(),
             // bf16/fp8 compute in f32 in the body (emulated path).
             ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_f32(),
@@ -253,6 +255,7 @@ impl SpvEmitter {
             ScalarType::U16 | ScalarType::I16 => 2,
             ScalarType::U32 | ScalarType::I32 => 4,
             ScalarType::U64 | ScalarType::I64 => 8,
+            ScalarType::I4 => 1, // logical nibble; PackedU32 at I/O
             ScalarType::Bool => 4,
         }
     }

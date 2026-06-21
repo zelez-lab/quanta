@@ -26,8 +26,42 @@ pub(crate) fn read_scalar_type(r: &mut Reader) -> Result<ScalarType, &'static st
         12 => Ok(ScalarType::BF16),
         13 => Ok(ScalarType::FP8E5M2),
         14 => Ok(ScalarType::FP8E4M3),
+        15 => Ok(ScalarType::I4),
         _ => Err("invalid ScalarType tag"),
     }
+}
+
+pub(in crate::wire) fn read_quant_scheme(
+    r: &mut Reader,
+) -> Result<crate::QuantScheme, &'static str> {
+    use crate::{QuantLevel, QuantMode, QuantScheme, QuantStore, QuantValue};
+    let value = match r.u8()? {
+        0 => QuantValue::Q8S,
+        1 => QuantValue::Q4S,
+        _ => return Err("invalid QuantValue tag"),
+    };
+    let store = match r.u8()? {
+        0 => QuantStore::Native,
+        1 => QuantStore::PackedU32,
+        _ => return Err("invalid QuantStore tag"),
+    };
+    let level = match r.u8()? {
+        0 => QuantLevel::PerTensor,
+        1 => QuantLevel::Block(r.u32()?),
+        2 => QuantLevel::PerChannel,
+        _ => return Err("invalid QuantLevel tag"),
+    };
+    let mode = match r.u8()? {
+        0 => QuantMode::Symmetric,
+        1 => QuantMode::Affine,
+        _ => return Err("invalid QuantMode tag"),
+    };
+    Ok(QuantScheme {
+        value,
+        store,
+        level,
+        mode,
+    })
 }
 
 // ---------------------------------------------------------------------------

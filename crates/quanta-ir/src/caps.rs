@@ -105,6 +105,9 @@ pub struct BackendCaps {
     pub i16_: TypeSupport,
     pub i32_: TypeSupport,
     pub i64_: TypeSupport,
+    /// int4 (quantization storage payload). Always available via the
+    /// packed-nibble emulated path.
+    pub i4_: TypeSupport,
     pub bool_: TypeSupport,
 }
 
@@ -126,6 +129,7 @@ impl BackendCaps {
             ScalarType::I16 => self.i16_,
             ScalarType::I32 => self.i32_,
             ScalarType::I64 => self.i64_,
+            ScalarType::I4 => self.i4_,
             ScalarType::Bool => self.bool_,
         }
     }
@@ -152,6 +156,7 @@ pub const METAL: BackendCaps = BackendCaps {
     i16_: TypeSupport::Native,
     i32_: TypeSupport::Native,
     i64_: TypeSupport::Native,
+    i4_: TypeSupport::Native, // packed-nibble emulated path
     bool_: TypeSupport::Native,
 };
 
@@ -177,6 +182,7 @@ pub const VULKAN: BackendCaps = BackendCaps {
     i16_: TypeSupport::Native,
     i32_: TypeSupport::Native,
     i64_: TypeSupport::Native,
+    i4_: TypeSupport::Native, // packed-nibble emulated path
     bool_: TypeSupport::Native,
 };
 
@@ -200,6 +206,7 @@ pub const WEBGPU: BackendCaps = BackendCaps {
     i16_: TypeSupport::NotSupported("WGSL has no i16 storage type"),
     i32_: TypeSupport::Native,
     i64_: TypeSupport::NotSupported("WGSL has no i64 type"),
+    i4_: TypeSupport::Native, // packed-nibble emulated path
     bool_: TypeSupport::Native,
 };
 
@@ -222,6 +229,7 @@ pub const CPU: BackendCaps = BackendCaps {
     i16_: TypeSupport::Native,
     i32_: TypeSupport::Native,
     i64_: TypeSupport::Native,
+    i4_: TypeSupport::Native, // packed-nibble emulated path
     bool_: TypeSupport::Native,
 };
 

@@ -172,6 +172,30 @@ pub(super) fn execute_ops(
                 let v = reg(ctx, src)?;
                 ctx.regs.insert(dst.0, v);
             }
+            // Per-tensor symmetric quantization (the oracle for the GPU
+            // emitters). Quantize: f32 → integer code; Dequantize: code →
+            // f32. zero_point is 0 for Symmetric (the register is read for
+            // shape parity but unused).
+            KernelOp::Quantize {
+                dst,
+                src,
+                scale,
+                scheme,
+                ..
+            } => {
+                let x = reg(ctx, src)?.as_f32();
+                let s = reg(ctx, scale)?.as_f32();
+                let q = quanta_ir::dtype::quantize_sym(x, s, scheme.value.bits());
+                ctx.regs.insert(dst.0, Value::I32(q));
+            }
+            KernelOp::Dequantize {
+                dst, src, scale, ..
+            } => {
+                let q = reg(ctx, src)?.as_i32();
+                let s = reg(ctx, scale)?.as_f32();
+                ctx.regs
+                    .insert(dst.0, Value::F32(quanta_ir::dtype::dequantize_sym(q, s)));
+            }
             KernelOp::SharedDecl { id, ty, count } => {
                 let size = scalar_size(ty) * (*count as usize);
                 ctx.shared.entry(*id).or_insert_with(|| vec![0u8; size]);

@@ -239,7 +239,8 @@ fn emit_msl_op(
                     | quanta_ir::ScalarType::F32
                     | quanta_ir::ScalarType::BF16
                     | quanta_ir::ScalarType::FP8E5M2
-                    | quanta_ir::ScalarType::FP8E4M3 => 32,
+                    | quanta_ir::ScalarType::FP8E4M3
+                    | quanta_ir::ScalarType::I4 => 32,
                     quanta_ir::ScalarType::U64
                     | quanta_ir::ScalarType::I64
                     | quanta_ir::ScalarType::F64 => 64,
@@ -346,6 +347,9 @@ fn emit_msl_op(
         }
         Copy { dst, src, .. } => {
             out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
+        }
+        Quantize { .. } | Dequantize { .. } => {
+            out.push_str(&format!("{}/* quantize: lowering pending */\n", pad));
         }
         Break => {
             out.push_str(&format!("{}break;\n", pad));

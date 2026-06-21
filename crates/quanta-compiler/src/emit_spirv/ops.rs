@@ -174,6 +174,11 @@ impl SpvEmitter {
                 self.set_reg(*dst, src_val, result_ty);
             }
 
+            // Quantization affine map — lowering lands in Phase B.
+            KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
+                return Err("SPIR-V (AOT): Quantize/Dequantize lowering pending".to_string());
+            }
+
             KernelOp::Branch {
                 cond,
                 then_ops,

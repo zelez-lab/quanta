@@ -297,7 +297,8 @@ impl SpvEmitter {
                         | ScalarType::F32
                         | ScalarType::BF16
                         | ScalarType::FP8E5M2
-                        | ScalarType::FP8E4M3 => 32,
+                        | ScalarType::FP8E4M3
+                        | ScalarType::I4 => 32,
                         ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                         ScalarType::Bool => 1,
                     };
@@ -648,6 +649,11 @@ impl SpvEmitter {
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
                 self.set_reg(*dst, src_val, result_ty);
+            }
+
+            // Quantization affine map. Lowering lands in Phase B.
+            KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
+                return Err("SPIR-V: Quantize/Dequantize lowering pending".to_string());
             }
 
             KernelOp::Branch {

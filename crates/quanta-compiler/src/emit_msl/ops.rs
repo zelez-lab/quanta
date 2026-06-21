@@ -114,7 +114,8 @@ pub(crate) fn emit_op(
                     | ScalarType::F32
                     | ScalarType::BF16
                     | ScalarType::FP8E5M2
-                    | ScalarType::FP8E4M3 => 32,
+                    | ScalarType::FP8E4M3
+                    | ScalarType::I4 => 32,
                     ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                     ScalarType::Bool => 1,
                 };
@@ -248,6 +249,10 @@ pub(crate) fn emit_op(
         }
         KernelOp::Copy { dst, src, .. } => {
             out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
+        }
+        // Quantization affine map — lowering lands in Phase B.
+        KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
+            out.push_str(&format!("{}/* quantize: lowering pending */\n", pad));
         }
         KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!(

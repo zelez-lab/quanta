@@ -244,6 +244,9 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
         Copy { dst, src, .. } => {
             out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
         }
+        Quantize { .. } | Dequantize { .. } => {
+            out.push_str(&format!("{}/* quantize: lowering pending */\n", pad));
+        }
         Break => {
             out.push_str(&format!("{}break;\n", pad));
         }

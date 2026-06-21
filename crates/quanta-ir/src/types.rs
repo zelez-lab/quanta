@@ -3,6 +3,8 @@
 //! All core types that represent GPU kernels in platform-agnostic IR form:
 //! scalar types, registers, operations, and the top-level [`KernelDef`].
 
+use crate::quant::QuantScheme;
+
 /// Scalar types supported in GPU kernels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarType {
@@ -31,6 +33,12 @@ pub enum ScalarType {
     I16,
     I32,
     I64,
+    /// Signed 4-bit integer. A *logical* 4-bit element in the range
+    /// [-8, 7]; physical storage packs 8 nibbles per 32-bit word (the
+    /// `store` axis of quantization — see `dtype::int4_{pack,unpack}`).
+    /// Computed in i32/f32; used as the storage payload for int4 symmetric
+    /// quantization.
+    I4,
     Bool,
 }
 
@@ -385,6 +393,27 @@ pub enum KernelOp {
         value: ConstValue,
     },
 
+    // Quantization (per-tensor symmetric in the first increment). The
+    // affine map runs in f32; `scale`/`zero_point` are register operands
+    // (loaded from a push-constant for per-tensor; a side buffer later for
+    // per-channel). `src`/`dst` of Quantize are f32→int code; Dequantize is
+    // int code→f32. zero_point is 0 for Symmetric but carried so Affine is
+    // a value change, not a shape change.
+    Quantize {
+        dst: Reg,
+        src: Reg,
+        scale: Reg,
+        zero_point: Reg,
+        scheme: QuantScheme,
+    },
+    Dequantize {
+        dst: Reg,
+        src: Reg,
+        scale: Reg,
+        zero_point: Reg,
+        scheme: QuantScheme,
+    },
+
     // Vector
     VecConstruct {
         dst: Reg,
@@ -622,17 +651,21 @@ impl ScalarType {
             Self::I16 => "short",
             Self::I32 => "int",
             Self::I64 => "long",
+            // int4 in-body register is `int`: computed as i32, packed into
+            // a `uint` word at load/store (8 nibbles per word).
+            Self::I4 => "int",
             Self::Bool => "bool",
         }
     }
 
     /// MSL *buffer storage* element type. Differs from `msl_name` only for
-    /// bf16: stored as `uint` (one bf16 per word) with pack/unpack at
-    /// load/store. (A native `bfloat` storage fork is a follow-up.)
+    /// bf16/fp8 (one per `uint` word) and int4 (8 nibbles per `uint` word):
+    /// pack/unpack happens at load/store.
     pub fn msl_storage_name(&self) -> &'static str {
         match self {
             Self::BF16 => "uint",
             Self::FP8E5M2 | Self::FP8E4M3 => "uint",
+            Self::I4 => "uint",
             _ => self.msl_name(),
         }
     }
@@ -651,17 +684,20 @@ impl ScalarType {
             Self::U64 => "u64",
             Self::I8 | Self::I16 | Self::I32 => "i32",
             Self::I64 => "i64",
+            // int4 in-body register is `i32`; packed into a `u32` word.
+            Self::I4 => "i32",
             Self::Bool => "bool",
         }
     }
 
-    /// WGSL *buffer storage* element type. Differs from `wgsl_name` only
-    /// for bf16: WGSL has no 16-bit storage, so a bf16 buffer is `array<u32>`
-    /// (one bf16 per word) with pack/unpack at load/store.
+    /// WGSL *buffer storage* element type. Differs from `wgsl_name` for
+    /// bf16/fp8 (one per `u32` word) and int4 (8 nibbles per `u32` word):
+    /// pack/unpack at load/store.
     pub fn wgsl_storage_name(&self) -> &'static str {
         match self {
             Self::BF16 => "u32",
             Self::FP8E5M2 | Self::FP8E4M3 => "u32",
+            Self::I4 => "u32",
             _ => self.wgsl_name(),
         }
     }
