@@ -154,8 +154,8 @@ pub(super) fn read_scalar_at_offset(buf: &[u8], offset: usize, ty: &ScalarType) 
             Value::F32(f16_to_f32(bits))
         }
         ScalarType::BF16 => Value::F32(bf16_to_f32(u16::from_le_bytes(bytes.try_into().unwrap()))),
-        ScalarType::FP8E5M2 => Value::F32(fp8_to_f32(bytes[0], 5, 2)),
-        ScalarType::FP8E4M3 => Value::F32(fp8_to_f32(bytes[0], 4, 3)),
+        ScalarType::FP8E5M2 => Value::F32(quanta_ir::dtype::fp8_to_f32(bytes[0], 5, 2)),
+        ScalarType::FP8E4M3 => Value::F32(quanta_ir::dtype::fp8_to_f32(bytes[0], 4, 3)),
         ScalarType::Bool => Value::Bool(bytes[0] != 0),
     }
 }
@@ -184,8 +184,8 @@ pub(super) fn read_scalar(buf: &[u8], index: u32, ty: &ScalarType) -> Value {
             Value::F32(f16_to_f32(bits))
         }
         ScalarType::BF16 => Value::F32(bf16_to_f32(u16::from_le_bytes(bytes.try_into().unwrap()))),
-        ScalarType::FP8E5M2 => Value::F32(fp8_to_f32(bytes[0], 5, 2)),
-        ScalarType::FP8E4M3 => Value::F32(fp8_to_f32(bytes[0], 4, 3)),
+        ScalarType::FP8E5M2 => Value::F32(quanta_ir::dtype::fp8_to_f32(bytes[0], 5, 2)),
+        ScalarType::FP8E4M3 => Value::F32(quanta_ir::dtype::fp8_to_f32(bytes[0], 4, 3)),
         ScalarType::Bool => Value::Bool(bytes[0] != 0),
     }
 }
@@ -216,8 +216,8 @@ pub(super) fn write_scalar(buf: &mut [u8], index: u32, val: Value, ty: &ScalarTy
             let bits = f32_to_bf16(val.as_f32());
             dest.copy_from_slice(&bits.to_le_bytes());
         }
-        ScalarType::FP8E5M2 => dest[0] = f32_to_fp8(val.as_f32(), 5, 2),
-        ScalarType::FP8E4M3 => dest[0] = f32_to_fp8(val.as_f32(), 4, 3),
+        ScalarType::FP8E5M2 => dest[0] = quanta_ir::dtype::f32_to_fp8(val.as_f32(), 5, 2),
+        ScalarType::FP8E4M3 => dest[0] = quanta_ir::dtype::f32_to_fp8(val.as_f32(), 4, 3),
         ScalarType::Bool => dest[0] = val.as_bool() as u8,
     }
 }
@@ -241,129 +241,9 @@ pub(super) fn f32_to_bf16(val: f32) -> u16 {
     ((bits + rounding_bias) >> 16) as u16
 }
 
-// ── fp8 (e5m2 / e4m3) ────────────────────────────────────────────────
-//
-// Two 8-bit float formats: e5m2 (1 sign, 5 exp bias-15, 2 mantissa) and
-// e4m3 (1 sign, 4 exp bias-7, 3 mantissa). IEEE-style here: all-ones
-// exponent is inf/NaN, exponent-0 is zero/subnormal. Conversions are
-// parameterised by (exp_bits, mant_bits) so both formats share one impl;
-// the emitters and the Lean spec mirror this exact arithmetic.
-
-/// fp8 → f32. `eb`/`mb` are the exponent/mantissa bit widths.
-pub(super) fn fp8_to_f32(bits: u8, eb: u32, mb: u32) -> f32 {
-    let bits = bits as u32;
-    let sign = (bits >> (eb + mb)) & 1;
-    let exp = (bits >> mb) & ((1 << eb) - 1);
-    let mant = bits & ((1 << mb) - 1);
-    let bias = (1u32 << (eb - 1)) - 1;
-    let exp_mask = (1u32 << eb) - 1;
-
-    let f32_sign = sign << 31;
-    if exp == exp_mask {
-        // inf / NaN
-        let f32_mant = if mant != 0 { 0x0040_0000 } else { 0 };
-        let f32_exp = 0xFFu32 << 23;
-        return f32::from_bits(f32_sign | f32_exp | f32_mant);
-    }
-    if exp == 0 {
-        if mant == 0 {
-            return f32::from_bits(f32_sign); // ±0
-        }
-        // subnormal: value = mant * 2^(1-bias-mb). Normalise into f32.
-        let mut e: i32 = 1 - bias as i32 - mb as i32;
-        let mut m = mant;
-        // shift mantissa up until the implicit bit is set
-        while m & (1 << mb) == 0 {
-            m <<= 1;
-            e -= 1;
-        }
-        m &= (1 << mb) - 1; // drop the now-implicit leading bit
-        let f32_exp = ((e + (mb as i32) + 127) as u32) << 23;
-        let f32_mant = m << (23 - mb);
-        return f32::from_bits(f32_sign | f32_exp | f32_mant);
-    }
-    // normal: rebias exponent, left-justify mantissa.
-    let f32_exp = (exp + 127 - bias) << 23;
-    let f32_mant = mant << (23 - mb);
-    f32::from_bits(f32_sign | f32_exp | f32_mant)
-}
-
-/// f32 → fp8 with round-to-nearest-even. Overflow saturates to the format
-/// max-exponent inf encoding; NaN maps to a canonical fp8 NaN.
-pub(super) fn f32_to_fp8(val: f32, eb: u32, mb: u32) -> u8 {
-    let b = val.to_bits();
-    let sign = ((b >> 31) & 1) as u8;
-    let sign_slot = sign << (eb + mb);
-    let f32_exp = ((b >> 23) & 0xFF) as i32;
-    let f32_mant = b & 0x007F_FFFF;
-    let bias = (1i32 << (eb - 1)) - 1;
-    let exp_mask = (1u32 << eb) - 1;
-
-    if f32_exp == 0xFF {
-        // inf or NaN
-        let m = if f32_mant != 0 { 1u32 << (mb - 1) } else { 0 };
-        return (sign_slot as u32 | (exp_mask << mb) | m) as u8;
-    }
-    if f32_exp == 0 && f32_mant == 0 {
-        return sign_slot; // ±0
-    }
-    // unbiased f32 exponent, plus the implicit leading 1.
-    let e = f32_exp - 127;
-    let target_exp = e + bias;
-    let max_exp = (exp_mask - 1) as i32; // largest finite fp8 exponent
-
-    if target_exp >= exp_mask as i32 {
-        // overflow → inf
-        return (sign_slot as u32 | (exp_mask << mb)) as u8;
-    }
-    // full significand with implicit bit: 1.mant (24 bits)
-    let signif = f32_mant | 0x0080_0000;
-    if target_exp <= 0 {
-        // subnormal in fp8 (or underflow to zero). Shift right so the
-        // value's binary point lands at fp8's subnormal scale, RNE.
-        let shift = (23 - mb) as i32 + (1 - target_exp);
-        if shift > 31 {
-            return sign_slot; // underflow to ±0
-        }
-        let rounded = round_shift_rne(signif, shift as u32);
-        return (sign_slot as u32 | rounded) as u8;
-        // (rounded may carry into the exponent field; that is the correct
-        // subnormal→normal boundary and fits because rounded < 2^(mb+1).)
-    }
-    // normal: round the 23-bit mantissa down to mb bits, RNE.
-    let drop = 23 - mb;
-    let rounded = round_shift_rne(f32_mant, drop);
-    let mut out_exp = target_exp as u32;
-    let mut out_mant = rounded;
-    if out_mant >> mb != 0 {
-        // mantissa overflowed into the implicit bit → bump exponent.
-        out_mant = 0;
-        out_exp += 1;
-        if out_exp >= exp_mask {
-            return (sign_slot as u32 | (exp_mask << mb)) as u8; // → inf
-        }
-    }
-    let _ = max_exp;
-    (sign_slot as u32 | (out_exp << mb) | (out_mant & ((1 << mb) - 1))) as u8
-}
-
-/// Right-shift `v` by `s` bits with round-to-nearest-even.
-fn round_shift_rne(v: u32, s: u32) -> u32 {
-    if s == 0 {
-        return v;
-    }
-    if s >= 32 {
-        return 0;
-    }
-    let kept = v >> s;
-    let rem = v & ((1u32 << s) - 1);
-    let half = 1u32 << (s - 1);
-    if rem > half || (rem == half && (kept & 1) == 1) {
-        kept + 1
-    } else {
-        kept
-    }
-}
+// fp8 (e5m2 / e4m3) conversions live in the shared `quanta_ir::dtype`
+// module so the CPU oracle, the GPU emitters, and the Lean spec all use
+// the identical arithmetic. Use `quanta_ir::dtype::{fp8_to_f32, f32_to_fp8}`.
 
 /// IEEE 754 half-precision to single-precision.
 pub(super) fn f16_to_f32(bits: u16) -> f32 {
@@ -435,7 +315,7 @@ pub(super) fn value_from_const(cv: &ConstValue) -> Value {
         ConstValue::Bool(v) => Value::Bool(*v),
         ConstValue::F16(bits) => Value::F32(f16_to_f32(*bits)),
         ConstValue::BF16(bits) => Value::F32(bf16_to_f32(*bits)),
-        ConstValue::FP8E5M2(bits) => Value::F32(fp8_to_f32(*bits, 5, 2)),
-        ConstValue::FP8E4M3(bits) => Value::F32(fp8_to_f32(*bits, 4, 3)),
+        ConstValue::FP8E5M2(bits) => Value::F32(quanta_ir::dtype::fp8_to_f32(*bits, 5, 2)),
+        ConstValue::FP8E4M3(bits) => Value::F32(quanta_ir::dtype::fp8_to_f32(*bits, 4, 3)),
     }
 }

@@ -11,6 +11,15 @@ use std::collections::{HashMap, HashSet};
 
 use super::helpers::*;
 
+/// `(exp_bits, mant_bits)` for an fp8 scalar type, else `None`.
+fn fp8_dims(ty: &ScalarType) -> Option<(u32, u32)> {
+    match ty {
+        ScalarType::FP8E5M2 => Some((5, 2)),
+        ScalarType::FP8E4M3 => Some((4, 3)),
+        _ => None,
+    }
+}
+
 pub(super) fn emit_op(
     out: &mut String,
     op: &KernelOp,
@@ -59,6 +68,13 @@ pub(super) fn emit_op(
                     "{}let r{}: f32 = bitcast<f32>({}[r{}] << 16u);\n",
                     pad, dst.0, n, index.0
                 ));
+            } else if let Some((eb, mb)) = fp8_dims(ty) {
+                // fp8 storage is u32 (one byte per word); unpack to f32.
+                let tag = crate::dtype_codegen::fp8_tag(eb, mb);
+                out.push_str(&format!(
+                    "{}let r{}: f32 = qa_fp8_{}_unpack({}[r{}]);\n",
+                    pad, dst.0, tag, n, index.0
+                ));
             } else {
                 out.push_str(&format!(
                     "{}let r{}: {} = {}[r{}];\n",
@@ -88,6 +104,13 @@ pub(super) fn emit_op(
                     "{}let r{}_b: u32 = bitcast<u32>(r{}); \
                      {}[r{}] = (r{}_b + 0x7fffu + ((r{}_b >> 16u) & 1u)) >> 16u;\n",
                     pad, src.0, src.0, n, index.0, src.0, src.0
+                ));
+            } else if let Some((eb, mb)) = fp8_dims(ty) {
+                // Pack f32 → fp8 (round-to-nearest-even), store as u32.
+                let tag = crate::dtype_codegen::fp8_tag(eb, mb);
+                out.push_str(&format!(
+                    "{}{}[r{}] = qa_fp8_{}_pack(r{});\n",
+                    pad, n, index.0, tag, src.0
                 ));
             } else {
                 out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));

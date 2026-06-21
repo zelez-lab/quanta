@@ -115,6 +115,13 @@ fn dispatch_pair_typed(
         (RawValues::BF16(a), RawValues::BF16(b), RawValues::BF16(_)) => {
             dispatch_bf16(gpu, wave, a, b)
         }
+        // fp8: same portable u32-slot storage as bf16, one byte per word.
+        (RawValues::FP8E5M2(a), RawValues::FP8E5M2(b), RawValues::FP8E5M2(_)) => {
+            dispatch_fp8(gpu, wave, a, b, RawValues::FP8E5M2)
+        }
+        (RawValues::FP8E4M3(a), RawValues::FP8E4M3(b), RawValues::FP8E4M3(_)) => {
+            dispatch_fp8(gpu, wave, a, b, RawValues::FP8E4M3)
+        }
         _ => panic!(
             "op_matrix::read_output: in/out type combo not yet wired \
              (a={}, b={}, out={})",
@@ -168,4 +175,31 @@ fn dispatch_bf16(gpu: &quanta::Gpu, wave: &mut quanta::Wave, a: &[u16], b: &[u16
     pulse.wait().unwrap();
     let out: Vec<u16> = fout.read().unwrap().into_iter().map(|w| w as u16).collect();
     RawValues::BF16(out)
+}
+
+/// fp8 dispatch over the portable u32-slot storage: each fp8 byte is a
+/// `u32` carrying its bits in the low 8. Uploads fp8-bits-as-u32, reads
+/// back, and narrows to `u8` for the `RawValues::FP8*` result.
+#[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
+fn dispatch_fp8(
+    gpu: &quanta::Gpu,
+    wave: &mut quanta::Wave,
+    a: &[u8],
+    b: &[u8],
+    wrap: fn(Vec<u8>) -> RawValues,
+) -> RawValues {
+    let a32: Vec<u32> = a.iter().map(|&x| x as u32).collect();
+    let b32: Vec<u32> = b.iter().map(|&x| x as u32).collect();
+    let fa = gpu.field::<u32>(1).unwrap();
+    let fb = gpu.field::<u32>(1).unwrap();
+    let fout = gpu.field::<u32>(1).unwrap();
+    fa.write(&a32).unwrap();
+    fb.write(&b32).unwrap();
+    wave.bind(0, &fa);
+    wave.bind(1, &fb);
+    wave.bind(2, &fout);
+    let mut pulse = gpu.dispatch(wave, 1).unwrap();
+    pulse.wait().unwrap();
+    let out: Vec<u8> = fout.read().unwrap().into_iter().map(|w| w as u8).collect();
+    wrap(out)
 }

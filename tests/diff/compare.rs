@@ -252,6 +252,10 @@ pub fn compare_bit_exact(oracle: &RawOutput, candidate: &RawOutput) -> Result<()
         // and the oracle pack with the identical round-to-nearest-even
         // formula, so agreement is exact.
         (RawValues::BF16(a), RawValues::BF16(b)) => slice_bit_exact(oracle, candidate, a, b),
+        // fp8 compared on its raw 8-bit storage pattern — kernel and
+        // oracle pack with the identical branchless RNE conversion.
+        (RawValues::FP8E5M2(a), RawValues::FP8E5M2(b)) => slice_bit_exact(oracle, candidate, a, b),
+        (RawValues::FP8E4M3(a), RawValues::FP8E4M3(b)) => slice_bit_exact(oracle, candidate, a, b),
         _ => Err(div(
             oracle,
             candidate,

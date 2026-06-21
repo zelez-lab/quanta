@@ -67,6 +67,8 @@ pub(crate) const OP_UMOD: u16 = 137;
 pub(crate) const OP_SREM: u16 = 138;
 pub(crate) const OP_FREM: u16 = 140;
 pub(crate) const OP_DOT: u16 = 148;
+pub(crate) const OP_LOGICAL_OR: u16 = 166;
+pub(crate) const OP_LOGICAL_AND: u16 = 167;
 pub(crate) const OP_LOGICAL_NOT: u16 = 168;
 pub(crate) const OP_SELECT: u16 = 169;
 // SPIR-V §3.42.18 comparison opcodes. The signed/unsigned GreaterThanEqual

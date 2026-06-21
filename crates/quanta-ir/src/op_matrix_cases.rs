@@ -23,6 +23,9 @@ pub enum RawValues {
     I64(Vec<i64>),
     /// bfloat16 values carried as their raw 16-bit storage patterns.
     BF16(Vec<u16>),
+    /// fp8 values carried as their raw 8-bit storage patterns.
+    FP8E5M2(Vec<u8>),
+    FP8E4M3(Vec<u8>),
 }
 
 impl RawValues {
@@ -35,6 +38,8 @@ impl RawValues {
             RawValues::I32(_) => "i32",
             RawValues::I64(_) => "i64",
             RawValues::BF16(_) => "bf16",
+            RawValues::FP8E5M2(_) => "fp8e5m2",
+            RawValues::FP8E4M3(_) => "fp8e4m3",
         }
     }
 }
@@ -1121,6 +1126,85 @@ fn cases_bf16() -> Vec<OpCase> {
     out
 }
 
+// ── fp8 (e5m2 / e4m3) ────────────────────────────────────────────────
+
+/// fp8 input pairs — small magnitudes that are exactly representable in
+/// both formats, so no input rounding muddies the differential test.
+fn fp8_inputs() -> &'static [(f32, f32)] {
+    &[
+        (1.0, 2.0),
+        (1.5, 0.5),
+        (-1.0, 1.0),
+        (3.0, 4.0),
+        (0.0, 5.0),
+        (-2.5, 2.5),
+        (0.5, 0.25),
+        (-0.0, 1.0),
+    ]
+}
+
+fn case_fp8(eb: u32, mb: u32, op: BinOp, a: f32, b: f32, expected: u8) -> OpCase {
+    let sty = if (eb, mb) == (5, 2) {
+        ScalarType::FP8E5M2
+    } else {
+        ScalarType::FP8E4M3
+    };
+    let wrap: fn(Vec<u8>) -> RawValues = if (eb, mb) == (5, 2) {
+        RawValues::FP8E5M2
+    } else {
+        RawValues::FP8E4M3
+    };
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:e}_b{:e}",
+            NAME_PREFIX,
+            binop_tag(op),
+            scalar_tag(sty),
+            a,
+            b
+        ),
+        def: build_binop_def(binop_tag(op), sty, op),
+        input_a: wrap(vec![crate::dtype::f32_to_fp8(a, eb, mb)]),
+        input_b: wrap(vec![crate::dtype::f32_to_fp8(b, eb, mb)]),
+        expected: wrap(vec![expected]),
+        max_ulps: 0, // fp8 result is packed identically host- and device-side.
+        skip_on_metal: false,
+    }
+}
+
+fn cases_fp8() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    for &(eb, mb) in &[crate::dtype::E5M2, crate::dtype::E4M3] {
+        for &op in &[BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div] {
+            for &(a, b) in fp8_inputs() {
+                // Kernel loads fp8 inputs (already rounded), computes in
+                // f32, packs the result. The oracle does the same.
+                let fa = crate::dtype::fp8_to_f32(crate::dtype::f32_to_fp8(a, eb, mb), eb, mb);
+                let fb = crate::dtype::fp8_to_f32(crate::dtype::f32_to_fp8(b, eb, mb), eb, mb);
+                let r = match op {
+                    BinOp::Add => fa + fb,
+                    BinOp::Sub => fa - fb,
+                    BinOp::Mul => fa * fb,
+                    BinOp::Div if fb != 0.0 => fa / fb,
+                    _ => continue,
+                };
+                if r.is_nan() || r.is_infinite() {
+                    continue;
+                }
+                out.push(case_fp8(
+                    eb,
+                    mb,
+                    op,
+                    a,
+                    b,
+                    crate::dtype::f32_to_fp8(r, eb, mb),
+                ));
+            }
+        }
+    }
+    out
+}
+
 fn cases_f64() -> Vec<OpCase> {
     let mut out = Vec::new();
     for &op in FLOAT_BINOPS {
@@ -1621,6 +1705,7 @@ pub fn cases() -> Vec<OpCase> {
     all.extend(cases_f32());
     all.extend(cases_f64());
     all.extend(cases_bf16());
+    all.extend(cases_fp8());
     all.extend(cases_unary());
     all.extend(cases_cmp());
     all.extend(cases_cast());

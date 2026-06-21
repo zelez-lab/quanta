@@ -11,6 +11,12 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
         "#pragma clang fp contract(fast)\n#include <metal_stdlib>\nusing namespace metal;\n\n",
     );
 
+    // fp8 conversion helpers (one set per format used at a Load/Store).
+    for (eb, mb) in crate::dtype_codegen::kernel_fp8_formats(kernel) {
+        out.push_str(&crate::dtype_codegen::msl_fp8_helpers(eb, mb));
+        out.push('\n');
+    }
+
     // Emit device helper functions (from inner fn definitions)
     for src in &kernel.device_sources {
         out.push_str(&translate_device_fn_to_msl(src));

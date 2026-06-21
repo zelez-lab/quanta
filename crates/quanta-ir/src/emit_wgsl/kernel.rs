@@ -30,6 +30,12 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
         out.push('\n');
     }
 
+    // fp8 conversion helpers (one set per format used at a Load/Store).
+    for (eb, mb) in crate::dtype_codegen::kernel_fp8_formats(kernel) {
+        out.push_str(&crate::dtype_codegen::wgsl_fp8_helpers(eb, mb));
+        out.push('\n');
+    }
+
     // Device helper functions — these come before atomics because some helpers
     // operate on plain values, not atomic-wrapped storage cells.
     for src in &kernel.device_sources {
