@@ -160,15 +160,15 @@ impl MetalDevice {
 
     pub(crate) fn sampler_create_impl(
         &self,
-        desc: &crate::render_pass::SamplerDesc,
+        desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         unsafe {
             let sd = ffi::msg_id(ffi::cls(b"MTLSamplerDescriptor\0") as ffi::Id, b"new\0");
             ffi::msg_void_u64(sd, b"setMinFilter:\0", filter_to_metal(desc.min_filter));
             ffi::msg_void_u64(sd, b"setMagFilter:\0", filter_to_metal(desc.mag_filter));
             let mip_filter = match desc.mip_filter {
-                crate::render_pass::Filter::Nearest => ffi::MTL_SAMPLER_MIP_FILTER_NEAREST,
-                crate::render_pass::Filter::Linear => ffi::MTL_SAMPLER_MIP_FILTER_LINEAR,
+                crate::texture::Filter::Nearest => ffi::MTL_SAMPLER_MIP_FILTER_NEAREST,
+                crate::texture::Filter::Linear => ffi::MTL_SAMPLER_MIP_FILTER_LINEAR,
             };
             ffi::msg_void_u64(sd, b"setMipFilter:\0", mip_filter);
             ffi::msg_void_u64(sd, b"setSAddressMode:\0", address_to_metal(desc.address_u));

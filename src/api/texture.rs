@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use crate::{Format, GpuDevice, QuantaError};
+use crate::{CompareOp, Format, GpuDevice, QuantaError};
 
 /// GPU-resident 2D image.
 ///
@@ -192,4 +192,50 @@ impl Drop for Sampler {
             f(self.handle);
         }
     }
+}
+
+// ── Sampler configuration ────────────────────────────────────────────
+//
+// Shared compute/render: the `Gpu::sampler()` path, the `GpuDevice` trait,
+// and every backend driver use `SamplerDesc`. Compute kernels sample
+// textures too, so these live with `Sampler` here, not in the render face.
+
+/// Texture sampling configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct SamplerDesc {
+    pub min_filter: Filter,
+    pub mag_filter: Filter,
+    pub mip_filter: Filter,
+    pub address_u: AddressMode,
+    pub address_v: AddressMode,
+    pub max_anisotropy: u8,
+    /// Comparison function for depth/shadow samplers. None = regular sampler.
+    pub compare: Option<CompareOp>,
+}
+
+impl Default for SamplerDesc {
+    fn default() -> Self {
+        Self {
+            min_filter: Filter::Linear,
+            mag_filter: Filter::Linear,
+            mip_filter: Filter::Nearest,
+            address_u: AddressMode::ClampToEdge,
+            address_v: AddressMode::ClampToEdge,
+            max_anisotropy: 1,
+            compare: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filter {
+    Nearest,
+    Linear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressMode {
+    ClampToEdge,
+    Repeat,
+    MirrorRepeat,
 }

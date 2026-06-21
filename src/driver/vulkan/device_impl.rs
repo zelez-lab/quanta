@@ -92,7 +92,7 @@ impl GpuDevice for VulkanDevice {
 
     fn sampler_create(
         &self,
-        desc: &crate::render_pass::SamplerDesc,
+        desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         self.sampler_create_impl(desc)
     }

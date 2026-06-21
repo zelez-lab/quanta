@@ -3,7 +3,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
-    Color, CompareOp, Field, LoadOp, OcclusionQuery, Pipeline, ShadingRate, StoreOp, Texture,
+    Color, Field, LoadOp, OcclusionQuery, Pipeline, SamplerDesc, ShadingRate, StoreOp, Texture,
 };
 
 /// A color attachment target with load/store operations.
@@ -151,46 +151,6 @@ pub(crate) enum RenderOp {
         bundle_handle: u64,
         count: u32,
     },
-}
-
-/// Texture sampling configuration.
-#[derive(Debug, Clone, Copy)]
-pub struct SamplerDesc {
-    pub min_filter: Filter,
-    pub mag_filter: Filter,
-    pub mip_filter: Filter,
-    pub address_u: AddressMode,
-    pub address_v: AddressMode,
-    pub max_anisotropy: u8,
-    /// Comparison function for depth/shadow samplers. None = regular sampler.
-    pub compare: Option<CompareOp>,
-}
-
-impl Default for SamplerDesc {
-    fn default() -> Self {
-        Self {
-            min_filter: Filter::Linear,
-            mag_filter: Filter::Linear,
-            mip_filter: Filter::Nearest,
-            address_u: AddressMode::ClampToEdge,
-            address_v: AddressMode::ClampToEdge,
-            max_anisotropy: 1,
-            compare: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Filter {
-    Nearest,
-    Linear,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddressMode {
-    ClampToEdge,
-    Repeat,
-    MirrorRepeat,
 }
 
 impl RenderPass {

@@ -15,7 +15,8 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::render_pass::{ColorTarget, DepthTarget, SamplerDesc};
+use crate::render_pass::{ColorTarget, DepthTarget};
+use crate::texture::SamplerDesc;
 use crate::{
     Color, Field, GpuDevice, OcclusionQuery, Pipeline, Pulse, QuantaError, RenderPass, ShadingRate,
     Texture,

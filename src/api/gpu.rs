@@ -228,7 +228,7 @@ impl Gpu {
     /// Create a reusable sampler.
     pub fn sampler(
         &self,
-        desc: &crate::render_pass::SamplerDesc,
+        desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         self.inner.sampler_create(desc)
     }

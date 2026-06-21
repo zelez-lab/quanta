@@ -347,10 +347,10 @@ impl VulkanDevice {
                             mag_filter: super::super::filter_to_vk(sampler.mag_filter),
                             min_filter: super::super::filter_to_vk(sampler.min_filter),
                             mipmap_mode: match sampler.mip_filter {
-                                crate::render_pass::Filter::Nearest => {
+                                crate::texture::Filter::Nearest => {
                                     ffi::VK_SAMPLER_MIPMAP_MODE_NEAREST
                                 }
-                                crate::render_pass::Filter::Linear => {
+                                crate::texture::Filter::Linear => {
                                     ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR
                                 }
                             },

@@ -121,7 +121,7 @@ pub trait GpuDevice: Send + Sync {
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError>;
     fn sampler_create(
         &self,
-        desc: &crate::render_pass::SamplerDesc,
+        desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError>;
     fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError>;
 

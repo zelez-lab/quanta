@@ -95,19 +95,17 @@ pub(super) fn compare_op_to_vk(op: crate::CompareOp) -> u32 {
     }
 }
 
-pub(super) fn filter_to_vk(f: crate::render_pass::Filter) -> u32 {
+pub(super) fn filter_to_vk(f: crate::texture::Filter) -> u32 {
     match f {
-        crate::render_pass::Filter::Nearest => ffi::VK_FILTER_NEAREST,
-        crate::render_pass::Filter::Linear => ffi::VK_FILTER_LINEAR,
+        crate::texture::Filter::Nearest => ffi::VK_FILTER_NEAREST,
+        crate::texture::Filter::Linear => ffi::VK_FILTER_LINEAR,
     }
 }
 
-pub(super) fn address_to_vk(a: crate::render_pass::AddressMode) -> u32 {
+pub(super) fn address_to_vk(a: crate::texture::AddressMode) -> u32 {
     match a {
-        crate::render_pass::AddressMode::ClampToEdge => ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        crate::render_pass::AddressMode::Repeat => ffi::VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        crate::render_pass::AddressMode::MirrorRepeat => {
-            ffi::VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
-        }
+        crate::texture::AddressMode::ClampToEdge => ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        crate::texture::AddressMode::Repeat => ffi::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        crate::texture::AddressMode::MirrorRepeat => ffi::VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
     }
 }

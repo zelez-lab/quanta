@@ -368,18 +368,18 @@ fn format_code(f: Format) -> Result<u32, QuantaError> {
     })
 }
 
-fn filter_code(f: crate::render_pass::Filter) -> u32 {
+fn filter_code(f: crate::texture::Filter) -> u32 {
     match f {
-        crate::render_pass::Filter::Nearest => ffi::filter::NEAREST,
-        crate::render_pass::Filter::Linear => ffi::filter::LINEAR,
+        crate::texture::Filter::Nearest => ffi::filter::NEAREST,
+        crate::texture::Filter::Linear => ffi::filter::LINEAR,
     }
 }
 
-fn address_code(a: crate::render_pass::AddressMode) -> u32 {
+fn address_code(a: crate::texture::AddressMode) -> u32 {
     match a {
-        crate::render_pass::AddressMode::ClampToEdge => ffi::address::CLAMP_TO_EDGE,
-        crate::render_pass::AddressMode::Repeat => ffi::address::REPEAT,
-        crate::render_pass::AddressMode::MirrorRepeat => ffi::address::MIRROR_REPEAT,
+        crate::texture::AddressMode::ClampToEdge => ffi::address::CLAMP_TO_EDGE,
+        crate::texture::AddressMode::Repeat => ffi::address::REPEAT,
+        crate::texture::AddressMode::MirrorRepeat => ffi::address::MIRROR_REPEAT,
     }
 }
 
@@ -784,7 +784,7 @@ impl QGpuDevice for WebgpuDevice {
 
     fn sampler_create(
         &self,
-        desc: &crate::render_pass::SamplerDesc,
+        desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         let device = self.dev()?;
         let compare_code = match desc.compare {

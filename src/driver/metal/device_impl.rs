@@ -101,7 +101,7 @@ impl GpuDevice for MetalDevice {
 
     fn sampler_create(
         &self,
-        desc: &crate::render_pass::SamplerDesc,
+        desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         self.sampler_create_impl(desc)
     }
@@ -1398,20 +1398,18 @@ pub(crate) fn format_bytes_per_pixel(format: Format) -> usize {
     }
 }
 
-pub(crate) fn filter_to_metal(f: crate::render_pass::Filter) -> ffi::NSUInteger {
+pub(crate) fn filter_to_metal(f: crate::texture::Filter) -> ffi::NSUInteger {
     match f {
-        crate::render_pass::Filter::Nearest => ffi::MTL_SAMPLER_MIN_MAG_FILTER_NEAREST,
-        crate::render_pass::Filter::Linear => ffi::MTL_SAMPLER_MIN_MAG_FILTER_LINEAR,
+        crate::texture::Filter::Nearest => ffi::MTL_SAMPLER_MIN_MAG_FILTER_NEAREST,
+        crate::texture::Filter::Linear => ffi::MTL_SAMPLER_MIN_MAG_FILTER_LINEAR,
     }
 }
 
-pub(crate) fn address_to_metal(a: crate::render_pass::AddressMode) -> ffi::NSUInteger {
+pub(crate) fn address_to_metal(a: crate::texture::AddressMode) -> ffi::NSUInteger {
     match a {
-        crate::render_pass::AddressMode::ClampToEdge => ffi::MTL_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        crate::render_pass::AddressMode::Repeat => ffi::MTL_SAMPLER_ADDRESS_MODE_REPEAT,
-        crate::render_pass::AddressMode::MirrorRepeat => {
-            ffi::MTL_SAMPLER_ADDRESS_MODE_MIRROR_REPEAT
-        }
+        crate::texture::AddressMode::ClampToEdge => ffi::MTL_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        crate::texture::AddressMode::Repeat => ffi::MTL_SAMPLER_ADDRESS_MODE_REPEAT,
+        crate::texture::AddressMode::MirrorRepeat => ffi::MTL_SAMPLER_ADDRESS_MODE_MIRROR_REPEAT,
     }
 }
 

@@ -128,7 +128,7 @@ impl GpuDevice for ValidationDevice {
 
     fn sampler_create(
         &self,
-        desc: &crate::render_pass::SamplerDesc,
+        desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         self.inner.sampler_create(desc)
     }

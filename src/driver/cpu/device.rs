@@ -368,7 +368,7 @@ impl GpuDevice for CpuDevice {
 
     fn sampler_create(
         &self,
-        _desc: &crate::render_pass::SamplerDesc,
+        _desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         Ok(crate::Sampler {
             handle: self.alloc_handle(),

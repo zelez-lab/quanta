@@ -255,7 +255,7 @@ impl VulkanDevice {
 
     pub(crate) fn sampler_create_impl(
         &self,
-        desc: &crate::render_pass::SamplerDesc,
+        desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
         let (compare_enable, compare_op) = if let Some(cmp) = desc.compare {
             (1u32, super::super::compare_op_to_vk(cmp))
@@ -269,8 +269,8 @@ impl VulkanDevice {
             mag_filter: super::super::filter_to_vk(desc.mag_filter),
             min_filter: super::super::filter_to_vk(desc.min_filter),
             mipmap_mode: match desc.mip_filter {
-                crate::render_pass::Filter::Nearest => ffi::VK_SAMPLER_MIPMAP_MODE_NEAREST,
-                crate::render_pass::Filter::Linear => ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                crate::texture::Filter::Nearest => ffi::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                crate::texture::Filter::Linear => ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR,
             },
             address_mode_u: super::super::address_to_vk(desc.address_u),
             address_mode_v: super::super::address_to_vk(desc.address_v),
