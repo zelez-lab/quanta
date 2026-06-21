@@ -579,6 +579,16 @@ fn raw_to_bytes(v: &RawValues) -> Vec<u8> {
         RawValues::I64(xs) => xs
             .iter()
             .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        // Narrow floats use the portable u32-slot storage (one value per
+        // 32-bit word), carrying the raw pattern zero-extended. These cases
+        // are skipped in the run loop (see `case_is_narrow_float`), but the
+        // byte image stays well-defined.
+        RawValues::BF16(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&(*x as u32).to_le_bytes())),
+        RawValues::FP8E5M2(xs) | RawValues::FP8E4M3(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&(*x as u32).to_le_bytes())),
     }
     out
 }
@@ -587,7 +597,23 @@ fn raw_elem_size(v: &RawValues) -> usize {
     match v {
         RawValues::F32(_) | RawValues::U32(_) | RawValues::I32(_) => 4,
         RawValues::F64(_) | RawValues::U64(_) | RawValues::I64(_) => 8,
+        // u32-slot storage for the narrow floats.
+        RawValues::BF16(_) | RawValues::FP8E5M2(_) | RawValues::FP8E4M3(_) => 4,
     }
+}
+
+/// Narrow-float cases (bf16, fp8) run through the portable u32-slot path
+/// with pack/unpack helpers in the emitted shader. The browser differential
+/// lane doesn't exercise them yet (the native software / Metal / Vulkan
+/// op_matrix lanes already prove them bit-exact), so skip them here.
+fn case_is_narrow_float(c: &OpCase) -> bool {
+    let narrow = |v: &RawValues| {
+        matches!(
+            v,
+            RawValues::BF16(_) | RawValues::FP8E5M2(_) | RawValues::FP8E4M3(_)
+        )
+    };
+    narrow(&c.input_a) || narrow(&c.input_b) || narrow(&c.expected)
 }
 
 /// WGSL (and the WebGPU shaders Quanta emits) has no 64-bit scalar type;
@@ -694,7 +720,7 @@ async fn run_op_matrix() -> Result<Vec<u8>, String> {
     let mut first_fail = String::new();
 
     for case in cases() {
-        if case_is_64bit(&case) {
+        if case_is_64bit(&case) || case_is_narrow_float(&case) {
             skipped += 1;
             continue;
         }
