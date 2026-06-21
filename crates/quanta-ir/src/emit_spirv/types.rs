@@ -282,6 +282,7 @@ impl SpvEmitter {
             // bf16 computes in f32 in the body (emulated path); 16-bit
             // storage is handled at the Load/Store boundary (Phase B).
             ScalarType::BF16 => self.ensure_type_f32(),
+            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_f32(),
             ScalarType::Bool => self.ensure_type_bool(),
         }
     }
@@ -299,6 +300,9 @@ impl SpvEmitter {
                     self.ensure_type_u32()
                 }
             }
+            // fp8 always uses the portable u32-slot path for v1 (native
+            // 8-bit storage needs StorageBuffer8BitAccess — a later fork).
+            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_u32(),
             _ => self.scalar_type_id(ty),
         }
     }
@@ -315,6 +319,7 @@ impl SpvEmitter {
                     4
                 }
             }
+            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => 4, // u32-slot
             _ => Self::scalar_byte_size(ty),
         }
     }
@@ -327,6 +332,7 @@ impl SpvEmitter {
             // Body alignment for bf16 is its f32 register (4); storage
             // stride is computed by `storage_byte_size`.
             ScalarType::BF16 => 4,
+            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => 4, // body is f32
             ScalarType::F32 => 4,
             ScalarType::F64 => 8,
             ScalarType::U8 | ScalarType::I8 => 1,

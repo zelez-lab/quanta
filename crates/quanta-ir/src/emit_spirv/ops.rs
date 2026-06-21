@@ -99,6 +99,22 @@ impl SpvEmitter {
                         let f = f32::from_bits((*v as u32) << 16);
                         (self.emit_constant_f32(f), ty)
                     }
+                    ConstValue::FP8E5M2(v) => {
+                        let ty = self.ensure_type_f32();
+                        let (eb, mb) = crate::dtype::E5M2;
+                        (
+                            self.emit_constant_f32(crate::dtype::fp8_to_f32(*v, eb, mb)),
+                            ty,
+                        )
+                    }
+                    ConstValue::FP8E4M3(v) => {
+                        let ty = self.ensure_type_f32();
+                        let (eb, mb) = crate::dtype::E4M3;
+                        (
+                            self.emit_constant_f32(crate::dtype::fp8_to_f32(*v, eb, mb)),
+                            ty,
+                        )
+                    }
                 };
                 self.set_reg(*dst, id, ty);
                 // Track integer constants so the Loop emitter can pick
@@ -256,9 +272,12 @@ impl SpvEmitter {
                         ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
                         // bf16's body is f32; rotate-on-float is never
                         // generated, but the width must be exhaustive.
-                        ScalarType::U32 | ScalarType::I32 | ScalarType::F32 | ScalarType::BF16 => {
-                            32
-                        }
+                        ScalarType::U32
+                        | ScalarType::I32
+                        | ScalarType::F32
+                        | ScalarType::BF16
+                        | ScalarType::FP8E5M2
+                        | ScalarType::FP8E4M3 => 32,
                         ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                         ScalarType::Bool => 1,
                     };
@@ -1022,9 +1041,11 @@ impl SpvEmitter {
                     // Fallback: emit zero constant if function not found
                     let result_ty = self.scalar_type_id(*ty);
                     let zero = match ty {
-                        ScalarType::F32 | ScalarType::F16 | ScalarType::BF16 => {
-                            self.emit_constant_f32(0.0)
-                        }
+                        ScalarType::F32
+                        | ScalarType::F16
+                        | ScalarType::BF16
+                        | ScalarType::FP8E5M2
+                        | ScalarType::FP8E4M3 => self.emit_constant_f32(0.0),
                         ScalarType::F64 => self.emit_constant_f64(0.0),
                         ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
                             self.emit_constant_i32(0)

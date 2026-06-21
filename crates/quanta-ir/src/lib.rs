@@ -6,6 +6,7 @@
 
 pub mod caps;
 pub mod const_analysis;
+pub mod dtype;
 pub mod output;
 pub mod scope_check;
 pub mod serial;

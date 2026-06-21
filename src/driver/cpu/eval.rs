@@ -8,7 +8,11 @@ use super::value::Value;
 
 pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Value {
     match ty {
-        ScalarType::F32 | ScalarType::F16 | ScalarType::BF16 => {
+        ScalarType::F32
+        | ScalarType::F16
+        | ScalarType::BF16
+        | ScalarType::FP8E5M2
+        | ScalarType::FP8E4M3 => {
             let va = a.as_f32();
             let vb = b.as_f32();
             Value::F32(match op {
@@ -163,7 +167,11 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
 
 pub(super) fn eval_cmp(a: Value, b: Value, op: &CmpOp, ty: &ScalarType) -> Value {
     let result = match ty {
-        ScalarType::F32 | ScalarType::F16 | ScalarType::BF16 => {
+        ScalarType::F32
+        | ScalarType::F16
+        | ScalarType::BF16
+        | ScalarType::FP8E5M2
+        | ScalarType::FP8E4M3 => {
             let va = a.as_f32();
             let vb = b.as_f32();
             match op {
@@ -251,7 +259,11 @@ pub(super) fn eval_cmp(a: Value, b: Value, op: &CmpOp, ty: &ScalarType) -> Value
 pub(super) fn eval_unary(a: Value, op: &UnaryOp, ty: &ScalarType) -> Value {
     match op {
         UnaryOp::Neg => match ty {
-            ScalarType::F32 | ScalarType::F16 | ScalarType::BF16 => Value::F32(-a.as_f32()),
+            ScalarType::F32
+            | ScalarType::F16
+            | ScalarType::BF16
+            | ScalarType::FP8E5M2
+            | ScalarType::FP8E4M3 => Value::F32(-a.as_f32()),
             ScalarType::F64 => Value::F64(-a.as_f64()),
             ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => {
                 Value::I32(a.as_i32().wrapping_neg())
@@ -364,7 +376,11 @@ pub(super) fn eval_cast(val: Value, from: &ScalarType, to: &ScalarType) -> Value
         _ => val.as_i64(),
     };
     match to {
-        ScalarType::F32 | ScalarType::F16 | ScalarType::BF16 => Value::F32(val.as_f32()),
+        ScalarType::F32
+        | ScalarType::F16
+        | ScalarType::BF16
+        | ScalarType::FP8E5M2
+        | ScalarType::FP8E4M3 => Value::F32(val.as_f32()),
         ScalarType::F64 => Value::F64(val.as_f64()),
         ScalarType::U32 | ScalarType::U16 | ScalarType::U8 => Value::U32(val.as_u32()),
         ScalarType::I32 | ScalarType::I16 | ScalarType::I8 => Value::I32(val.as_i32()),

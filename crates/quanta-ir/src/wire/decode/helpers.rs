@@ -24,6 +24,8 @@ pub(crate) fn read_scalar_type(r: &mut Reader) -> Result<ScalarType, &'static st
         10 => Ok(ScalarType::I64),
         11 => Ok(ScalarType::Bool),
         12 => Ok(ScalarType::BF16),
+        13 => Ok(ScalarType::FP8E5M2),
+        14 => Ok(ScalarType::FP8E4M3),
         _ => Err("invalid ScalarType tag"),
     }
 }
@@ -179,6 +181,8 @@ pub(crate) fn read_const_value(r: &mut Reader) -> Result<ConstValue, &'static st
         6 => Ok(ConstValue::I64(r.i64()?)),
         7 => Ok(ConstValue::Bool(r.bool_val()?)),
         8 => Ok(ConstValue::BF16(r.u16()?)),
+        9 => Ok(ConstValue::FP8E5M2(r.u8()?)),
+        10 => Ok(ConstValue::FP8E4M3(r.u8()?)),
         _ => Err("invalid ConstValue tag"),
     }
 }

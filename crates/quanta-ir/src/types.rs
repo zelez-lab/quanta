@@ -13,6 +13,14 @@ pub enum ScalarType {
     /// round-on-store. Encoding differs from [`F16`] (e5m10); only the
     /// bit-pattern conversions distinguish the two.
     BF16,
+    /// fp8 E5M2: 1 sign / 5 exponent (bias 15) / 2 mantissa. The wider-
+    /// range 8-bit float (used for gradients). Stored in 8 bits, computed
+    /// in f32 (emulated path); pack/unpack rebias + round, unlike bf16's
+    /// plain bit-shift.
+    FP8E5M2,
+    /// fp8 E4M3: 1 sign / 4 exponent (bias 7) / 3 mantissa. The higher-
+    /// precision 8-bit float (used for weights/activations).
+    FP8E4M3,
     F32,
     F64,
     U8,
@@ -36,6 +44,10 @@ pub enum ConstValue {
     F16(u16),
     /// Raw bfloat16 bit pattern (top 16 bits of the f32 encoding).
     BF16(u16),
+    /// Raw fp8 E5M2 bit pattern.
+    FP8E5M2(u8),
+    /// Raw fp8 E4M3 bit pattern.
+    FP8E4M3(u8),
     F32(f32),
     F64(f64),
     U32(u32),
@@ -599,6 +611,7 @@ impl ScalarType {
             // native `bfloat` fork is selected in the emitter when the
             // device advertises it.
             Self::BF16 => "float",
+            Self::FP8E5M2 | Self::FP8E4M3 => "float",
             Self::F32 => "float",
             Self::F64 => "double",
             Self::U8 => "uint8_t",
@@ -619,6 +632,7 @@ impl ScalarType {
     pub fn msl_storage_name(&self) -> &'static str {
         match self {
             Self::BF16 => "uint",
+            Self::FP8E5M2 | Self::FP8E4M3 => "uint",
             _ => self.msl_name(),
         }
     }
@@ -630,6 +644,7 @@ impl ScalarType {
             // WGSL has no bf16 type; the in-body register is f32 and
             // bf16 lives only in buffer storage (pack/unpack at I/O).
             Self::BF16 => "f32",
+            Self::FP8E5M2 | Self::FP8E4M3 => "f32",
             Self::F32 => "f32",
             Self::F64 => "f64",
             Self::U8 | Self::U16 | Self::U32 => "u32",
@@ -646,6 +661,7 @@ impl ScalarType {
     pub fn wgsl_storage_name(&self) -> &'static str {
         match self {
             Self::BF16 => "u32",
+            Self::FP8E5M2 | Self::FP8E4M3 => "u32",
             _ => self.wgsl_name(),
         }
     }

@@ -333,6 +333,8 @@ fn scalar_type_to_name(ty: quanta_ir::ScalarType) -> String {
     match ty {
         quanta_ir::ScalarType::F16 => "f16",
         quanta_ir::ScalarType::BF16 => "bf16",
+        quanta_ir::ScalarType::FP8E5M2 => "fp8e5m2",
+        quanta_ir::ScalarType::FP8E4M3 => "fp8e4m3",
         quanta_ir::ScalarType::F32 => "f32",
         quanta_ir::ScalarType::F64 => "f64",
         quanta_ir::ScalarType::U8 => "u8",

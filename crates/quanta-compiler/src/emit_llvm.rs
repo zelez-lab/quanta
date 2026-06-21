@@ -225,8 +225,8 @@ pub(crate) fn scalar_to_llvm_type<'ctx>(
 ) -> BasicTypeEnum<'ctx> {
     match ty {
         ScalarType::F16 => context.f16_type().into(),
-        // bf16 computes as f32 in the body (emulated path).
-        ScalarType::BF16 => context.f32_type().into(),
+        // bf16/fp8 compute as f32 in the body (emulated path).
+        ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => context.f32_type().into(),
         ScalarType::F32 => context.f32_type().into(),
         ScalarType::F64 => context.f64_type().into(),
         ScalarType::U8 | ScalarType::I8 => context.i8_type().into(),
@@ -258,6 +258,15 @@ pub(crate) fn const_to_llvm<'ctx>(
             .f32_type()
             .const_float(f32::from_bits((*v as u32) << 16) as f64)
             .into(),
+        // fp8 unpacks via the format conversion to an f32 constant.
+        ConstValue::FP8E5M2(v) => context
+            .f32_type()
+            .const_float(quanta_ir::dtype::fp8_to_f32(*v, 5, 2) as f64)
+            .into(),
+        ConstValue::FP8E4M3(v) => context
+            .f32_type()
+            .const_float(quanta_ir::dtype::fp8_to_f32(*v, 4, 3) as f64)
+            .into(),
     }
 }
 
@@ -265,6 +274,8 @@ pub(crate) fn const_scalar_type(value: &ConstValue) -> ScalarType {
     match value {
         ConstValue::F16(_) => ScalarType::F16,
         ConstValue::BF16(_) => ScalarType::BF16,
+        ConstValue::FP8E5M2(_) => ScalarType::FP8E5M2,
+        ConstValue::FP8E4M3(_) => ScalarType::FP8E4M3,
         ConstValue::F32(_) => ScalarType::F32,
         ConstValue::F64(_) => ScalarType::F64,
         ConstValue::U32(_) => ScalarType::U32,
@@ -278,6 +289,11 @@ pub(crate) fn const_scalar_type(value: &ConstValue) -> ScalarType {
 pub(crate) fn is_float_type(ty: &ScalarType) -> bool {
     matches!(
         ty,
-        ScalarType::F16 | ScalarType::BF16 | ScalarType::F32 | ScalarType::F64
+        ScalarType::F16
+            | ScalarType::BF16
+            | ScalarType::FP8E5M2
+            | ScalarType::FP8E4M3
+            | ScalarType::F32
+            | ScalarType::F64
     )
 }

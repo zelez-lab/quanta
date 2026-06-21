@@ -237,7 +237,9 @@ fn emit_msl_op(
                     quanta_ir::ScalarType::U32
                     | quanta_ir::ScalarType::I32
                     | quanta_ir::ScalarType::F32
-                    | quanta_ir::ScalarType::BF16 => 32,
+                    | quanta_ir::ScalarType::BF16
+                    | quanta_ir::ScalarType::FP8E5M2
+                    | quanta_ir::ScalarType::FP8E4M3 => 32,
                     quanta_ir::ScalarType::U64
                     | quanta_ir::ScalarType::I64
                     | quanta_ir::ScalarType::F64 => 64,
@@ -841,6 +843,15 @@ fn const_to_msl(value: &quanta_ir::ConstValue) -> (&'static str, String) {
         quanta_ir::ConstValue::BF16(v) => {
             ("float", format!("{}", f32::from_bits((*v as u32) << 16)))
         }
+        // fp8 emulated as f32 in the body.
+        quanta_ir::ConstValue::FP8E5M2(v) => (
+            "float",
+            format!("{}", quanta_ir::dtype::fp8_to_f32(*v, 5, 2)),
+        ),
+        quanta_ir::ConstValue::FP8E4M3(v) => (
+            "float",
+            format!("{}", quanta_ir::dtype::fp8_to_f32(*v, 4, 3)),
+        ),
     }
 }
 

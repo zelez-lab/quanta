@@ -136,6 +136,8 @@ fn scalar_tag(ty: ScalarType) -> &'static str {
     match ty {
         ScalarType::F16 => "f16",
         ScalarType::BF16 => "bf16",
+        ScalarType::FP8E5M2 => "fp8e5m2",
+        ScalarType::FP8E4M3 => "fp8e4m3",
         ScalarType::F32 => "f32",
         ScalarType::F64 => "f64",
         ScalarType::U8 => "u8",

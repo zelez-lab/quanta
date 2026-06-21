@@ -236,8 +236,8 @@ impl SpvEmitter {
                 self.ensure_type_i32()
             }
             ScalarType::F16 => self.ensure_type_f16(),
-            // bf16 computes in f32 in the body (emulated path).
-            ScalarType::BF16 => self.ensure_type_f32(),
+            // bf16/fp8 compute in f32 in the body (emulated path).
+            ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_f32(),
             ScalarType::Bool => self.ensure_type_bool(),
         }
     }
@@ -246,6 +246,7 @@ impl SpvEmitter {
         match ty {
             ScalarType::F16 => 2,
             ScalarType::BF16 => 2,
+            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => 1,
             ScalarType::F32 => 4,
             ScalarType::F64 => 8,
             ScalarType::U8 | ScalarType::I8 => 1,

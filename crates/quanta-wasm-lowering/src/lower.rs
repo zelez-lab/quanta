@@ -562,8 +562,8 @@ impl<'a> LowerCtx<'a> {
         let mat = self.alloc_reg();
         let zero = match ty {
             ScalarType::F16 => ConstValue::F16(0),
-            // bf16 zero materializes as an f32 zero (emulated body).
-            ScalarType::BF16 => ConstValue::F32(0.0),
+            // bf16/fp8 zero materializes as an f32 zero (emulated body).
+            ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => ConstValue::F32(0.0),
             ScalarType::F32 => ConstValue::F32(0.0),
             ScalarType::F64 => ConstValue::F64(0.0),
             ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => ConstValue::U32(0),
@@ -721,7 +721,11 @@ impl<'a> LowerCtx<'a> {
             let ty = self.locals[i].stable_ty;
             let dst = self.alloc_reg();
             let init = match ty {
-                ScalarType::F16 | ScalarType::BF16 | ScalarType::F32 => ConstValue::F32(0.0),
+                ScalarType::F16
+                | ScalarType::BF16
+                | ScalarType::FP8E5M2
+                | ScalarType::FP8E4M3
+                | ScalarType::F32 => ConstValue::F32(0.0),
                 ScalarType::F64 => ConstValue::F64(0.0),
                 ScalarType::Bool => ConstValue::Bool(false),
                 ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
@@ -768,7 +772,11 @@ impl<'a> LowerCtx<'a> {
         };
         let dst = self.alloc_reg();
         let init = match ty {
-            ScalarType::F16 | ScalarType::BF16 | ScalarType::F32 => ConstValue::F32(0.0),
+            ScalarType::F16
+            | ScalarType::BF16
+            | ScalarType::FP8E5M2
+            | ScalarType::FP8E4M3
+            | ScalarType::F32 => ConstValue::F32(0.0),
             ScalarType::F64 => ConstValue::F64(0.0),
             ScalarType::Bool => ConstValue::Bool(false),
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
@@ -920,7 +928,11 @@ impl<'a> LowerCtx<'a> {
         // emits `rN = rM;`, assignment-only) depends on. Mirrors
         // the `ensure_stable_reg_for` pattern for stable regs.
         let init = match stable_ty {
-            ScalarType::F16 | ScalarType::BF16 | ScalarType::F32 => ConstValue::F32(0.0),
+            ScalarType::F16
+            | ScalarType::BF16
+            | ScalarType::FP8E5M2
+            | ScalarType::FP8E4M3
+            | ScalarType::F32 => ConstValue::F32(0.0),
             ScalarType::F64 => ConstValue::F64(0.0),
             ScalarType::Bool => ConstValue::Bool(false),
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),
@@ -2623,7 +2635,11 @@ impl<'a> LowerCtx<'a> {
                 let (b_reg, _) = self.commit(b_sv)?;
                 let dst = self.alloc_reg();
                 let init = match ty {
-                    ScalarType::F16 | ScalarType::BF16 | ScalarType::F32 => ConstValue::F32(0.0),
+                    ScalarType::F16
+                    | ScalarType::BF16
+                    | ScalarType::FP8E5M2
+                    | ScalarType::FP8E4M3
+                    | ScalarType::F32 => ConstValue::F32(0.0),
                     ScalarType::F64 => ConstValue::F64(0.0),
                     ScalarType::Bool => ConstValue::Bool(false),
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
@@ -3318,7 +3334,11 @@ impl<'a> LowerCtx<'a> {
             let ty = self.locals[i].stable_ty;
             let dst = self.alloc_reg();
             let init = match ty {
-                ScalarType::F16 | ScalarType::BF16 | ScalarType::F32 => ConstValue::F32(0.0),
+                ScalarType::F16
+                | ScalarType::BF16
+                | ScalarType::FP8E5M2
+                | ScalarType::FP8E4M3
+                | ScalarType::F32 => ConstValue::F32(0.0),
                 ScalarType::F64 => ConstValue::F64(0.0),
                 ScalarType::Bool => ConstValue::Bool(false),
                 ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => ConstValue::I32(0),

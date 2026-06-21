@@ -30,6 +30,9 @@ pub(super) fn const_wgsl(v: &ConstValue) -> String {
         }
         // bf16 has no WGSL type; emit as an f32 literal (body is f32).
         ConstValue::BF16(x) => format!("{:?}f", f32::from_bits((*x as u32) << 16)),
+        // fp8 likewise → f32 literal via the format conversion.
+        ConstValue::FP8E5M2(x) => format!("{:?}f", crate::dtype::fp8_to_f32(*x, 5, 2)),
+        ConstValue::FP8E4M3(x) => format!("{:?}f", crate::dtype::fp8_to_f32(*x, 4, 3)),
     }
 }
 
@@ -87,7 +90,12 @@ pub(super) fn binop_wgsl(
             let width: u32 = match ty {
                 ScalarType::U8 | ScalarType::I8 => 8,
                 ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
-                ScalarType::U32 | ScalarType::I32 | ScalarType::F32 | ScalarType::BF16 => 32,
+                ScalarType::U32
+                | ScalarType::I32
+                | ScalarType::F32
+                | ScalarType::BF16
+                | ScalarType::FP8E5M2
+                | ScalarType::FP8E4M3 => 32,
                 ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                 ScalarType::Bool => 1,
             };

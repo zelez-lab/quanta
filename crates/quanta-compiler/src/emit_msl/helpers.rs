@@ -19,6 +19,15 @@ pub(crate) fn const_msl(v: &ConstValue) -> (&'static str, String) {
         ),
         // bf16 emulated as f32 in the body: unpack (bits << 16).
         ConstValue::BF16(x) => ("float", float_lit_msl(f32::from_bits((*x as u32) << 16))),
+        // fp8 emulated as f32: unpack via the format conversion.
+        ConstValue::FP8E5M2(x) => (
+            "float",
+            float_lit_msl(quanta_ir::dtype::fp8_to_f32(*x, 5, 2)),
+        ),
+        ConstValue::FP8E4M3(x) => (
+            "float",
+            float_lit_msl(quanta_ir::dtype::fp8_to_f32(*x, 4, 3)),
+        ),
     }
 }
 

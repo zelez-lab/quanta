@@ -97,6 +97,21 @@ impl SpvEmitter {
                         let f = f32::from_bits((*v as u32) << 16);
                         (self.emit_constant_f32(f), ty)
                     }
+                    ConstValue::FP8E5M2(v) => {
+                        // fp8 unpack via the format conversion → f32.
+                        let ty = self.ensure_type_f32();
+                        (
+                            self.emit_constant_f32(quanta_ir::dtype::fp8_to_f32(*v, 5, 2)),
+                            ty,
+                        )
+                    }
+                    ConstValue::FP8E4M3(v) => {
+                        let ty = self.ensure_type_f32();
+                        (
+                            self.emit_constant_f32(quanta_ir::dtype::fp8_to_f32(*v, 4, 3)),
+                            ty,
+                        )
+                    }
                 };
                 self.set_reg(*dst, id, ty);
                 // Track integer constants for T1405 (Loop unroll on

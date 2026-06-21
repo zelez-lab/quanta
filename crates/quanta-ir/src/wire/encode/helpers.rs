@@ -24,6 +24,8 @@ pub(crate) fn write_scalar_type(w: &mut Writer, ty: &ScalarType) {
         ScalarType::Bool => 11,
         // BF16 appended (tag 12) so the existing tags stay stable.
         ScalarType::BF16 => 12,
+        ScalarType::FP8E5M2 => 13,
+        ScalarType::FP8E4M3 => 14,
     };
     w.u8(tag);
 }
@@ -170,6 +172,14 @@ pub(crate) fn write_const_value(w: &mut Writer, cv: &ConstValue) {
         ConstValue::BF16(v) => {
             w.u8(8);
             w.u16(*v);
+        }
+        ConstValue::FP8E5M2(v) => {
+            w.u8(9);
+            w.u8(*v);
+        }
+        ConstValue::FP8E4M3(v) => {
+            w.u8(10);
+            w.u8(*v);
         }
         ConstValue::F32(v) => {
             w.u8(1);
