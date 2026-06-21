@@ -1,10 +1,10 @@
+#![cfg(feature = "render")]
 //! Tier 2 -- Sampler creation and configuration.
 //!
 //! Verifies sampler_create with various configurations.
 //! Requires a GPU; skips gracefully if none available.
 
-use quanta::render_pass::{AddressMode, Filter, SamplerDesc};
-use quanta::{CompareOp, Format};
+use quanta::{AddressMode, CompareOp, Filter, Format, SamplerDesc};
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()

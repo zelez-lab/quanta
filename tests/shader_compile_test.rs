@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Compile-time verification that #[quanta::vertex] and #[quanta::fragment]
 //! macros produce valid ShaderBinary statics.
 //!

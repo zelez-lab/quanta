@@ -8,11 +8,12 @@ use alloc::vec::Vec;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use crate::{Caps, FieldUsage, GpuDevice, Pulse, QuantaError, Texture, TextureDesc, Vendor, Wave};
+// Render types used only by the render-gated GpuDevice impl methods (085).
+#[cfg(feature = "render")]
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
-use crate::{
-    Caps, FieldUsage, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc,
-    Vendor, Wave,
-};
+#[cfg(feature = "render")]
+use crate::{Pipeline, RenderPass};
 use quanta_ir::{KernelDef, KernelOp};
 
 use super::exec::{ExecCtx, execute_ops};
@@ -578,8 +579,9 @@ impl GpuDevice for CpuDevice {
         ))
     }
 
-    // === Render (stubs) ===
+    // === Render (stubs) === (render-gated, step 085)
 
+    #[cfg(feature = "render")]
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
         // Step 063 slice 12 — close the silent-drop on CPU for
         // symmetry with the Metal/Vulkan/WebGPU gates (slices 5
@@ -610,12 +612,14 @@ impl GpuDevice for CpuDevice {
         })
     }
 
+    #[cfg(feature = "render")]
     fn render_begin(&self, _target: &Texture) -> Result<RenderPass, QuantaError> {
         Err(QuantaError::not_supported(
             "render passes not supported on CPU device",
         ))
     }
 
+    #[cfg(feature = "render")]
     fn render_end(&self, _pass: RenderPass) -> Result<Pulse, QuantaError> {
         Err(QuantaError::not_supported(
             "render passes not supported on CPU device",
@@ -650,6 +654,7 @@ impl GpuDevice for CpuDevice {
     // handle. Rasterization / intersection are not modeled — the
     // proven contract is lifecycle + dispatch ordering only.
 
+    #[cfg(feature = "render")]
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
         if geometry.is_empty() {
             return Err(QuantaError::invalid_param(
@@ -667,6 +672,7 @@ impl GpuDevice for CpuDevice {
         Ok(handle)
     }
 
+    #[cfg(feature = "render")]
     fn create_ray_tracing_pipeline(
         &self,
         desc: &RayTracingPipelineDesc,

@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 1 (host, no GPU) conformance tests — API type invariants.
 //!
 //! Tests Format, ResourceState, LoadOp, StoreOp, CompareOp, BlendState

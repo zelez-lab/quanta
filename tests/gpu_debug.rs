@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 2 -- Debug label operations.
 //!
 //! Verifies debug_push and debug_pop do not panic.

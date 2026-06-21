@@ -4,11 +4,14 @@ use core::marker::PhantomData;
 
 use crate::{
     Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, QuantaError,
-    ResourceState, Texture, TextureDesc, TextureUsage, TextureView, TextureViewDesc,
-    TimestampQuery,
+    ResourceState, Texture, TextureDesc, TextureView, TextureViewDesc, TimestampQuery,
 };
+// Used only by the render-gated render_target / msaa_target helpers (085).
+#[cfg(feature = "render")]
+use crate::TextureUsage;
 
 mod compute;
+#[cfg(feature = "render")]
 mod render;
 
 /// A GPU device handle. The main entry point for Quanta.
@@ -192,6 +195,8 @@ impl Gpu {
     }
 
     /// Create a render target texture (can be drawn to and read from shaders).
+    /// Render-only (step 085): also offered via `quanta_render::RenderGpu`.
+    #[cfg(feature = "render")]
     pub fn render_target(
         &self,
         width: u32,
@@ -208,6 +213,8 @@ impl Gpu {
     }
 
     /// Create an MSAA render target.
+    /// Render-only (step 085).
+    #[cfg(feature = "render")]
     pub fn msaa_target(
         &self,
         width: u32,
@@ -237,6 +244,8 @@ impl Gpu {
     ///
     /// The source must be a multi-sampled render target, and the destination
     /// must be a single-sample texture of the same dimensions and format.
+    /// Render-only (step 085).
+    #[cfg(feature = "render")]
     pub fn resolve_texture(
         &self,
         msaa_src: &Texture,
@@ -391,6 +400,8 @@ impl Gpu {
     // === M2.6: Stencil read-back ===
 
     /// Read stencil buffer contents from a depth/stencil texture.
+    /// Render-only (step 085).
+    #[cfg(feature = "render")]
     pub fn stencil_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
         self.inner.stencil_read(texture.handle())
     }
@@ -400,6 +411,26 @@ impl Gpu {
     /// Create a sparse (virtual) texture.
     pub fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError> {
         self.inner.sparse_texture_create(desc)
+    }
+
+    /// Allocate a typed [`SparseTexture`](crate::SparseTexture) (virtual
+    /// texture whose physical memory is allocated lazily per tile).
+    /// Steps 030 + 031.
+    ///
+    /// Shared compute/render: compute kernels read sparse textures
+    /// (`texture_load_2d`), so this stays on the compute surface.
+    ///
+    /// Backends without sparse-binding support (`VK_EXT_sparse_binding`,
+    /// Apple Silicon) return `NotSupported` here so user code can branch.
+    pub fn sparse_texture(&self, desc: &TextureDesc) -> Result<crate::SparseTexture, QuantaError> {
+        let handle = self.inner.sparse_texture_create(desc)?;
+        Ok(crate::SparseTexture {
+            handle,
+            width: desc.width,
+            height: desc.height,
+            device: self.inner.clone(),
+            live: true,
+        })
     }
 
     /// Map a physical backing page to a sparse texture tile.

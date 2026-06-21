@@ -80,32 +80,39 @@ pub use api::*;
 // Re-export kernel types
 pub use kernel::{GpuType, KernelBinary, ScalarType, ShaderBinary, ShaderStage};
 
-// Re-export proc macros
+// Re-export proc macros (compute — always available)
 pub use quanta_macros::__kernel_inner;
 pub use quanta_macros::device;
-pub use quanta_macros::fragment;
 pub use quanta_macros::gpu_type;
 pub use quanta_macros::import_devices;
 pub use quanta_macros::kernel;
-pub use quanta_macros::vertex;
 
-// Derive macros
+// Derive macros (compute / shared)
 pub use quanta_macros::Fields;
 pub use quanta_macros::Uniforms;
+
+// Render-stage shader macros — only when the `render` feature is on.
+// (`quanta-render` enables it; a headless build omits them entirely.)
+#[cfg(feature = "render")]
 pub use quanta_macros::Vertex;
-
-// M4.1: Tessellation shader macros
-pub use quanta_macros::tess_control;
-pub use quanta_macros::tess_eval;
-
-// M4.2: Mesh shader macros
-pub use quanta_macros::mesh;
-pub use quanta_macros::task;
-
-// M4.3: Ray tracing shader macros
+#[cfg(feature = "render")]
 pub use quanta_macros::closest_hit;
+#[cfg(feature = "render")]
+pub use quanta_macros::fragment;
+#[cfg(feature = "render")]
+pub use quanta_macros::mesh;
+#[cfg(feature = "render")]
 pub use quanta_macros::miss;
+#[cfg(feature = "render")]
 pub use quanta_macros::ray_gen;
+#[cfg(feature = "render")]
+pub use quanta_macros::task;
+#[cfg(feature = "render")]
+pub use quanta_macros::tess_control;
+#[cfg(feature = "render")]
+pub use quanta_macros::tess_eval;
+#[cfg(feature = "render")]
+pub use quanta_macros::vertex;
 
 /// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
 #[cfg(feature = "std")]

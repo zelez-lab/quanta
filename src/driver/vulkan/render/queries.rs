@@ -289,6 +289,7 @@ impl VulkanDevice {
     }
 }
 
+#[cfg(feature = "render")]
 pub(super) fn attr_format_to_vulkan(fmt: crate::AttributeFormat) -> u32 {
     match fmt {
         crate::AttributeFormat::Float => ffi::VK_FORMAT_R32_SFLOAT,

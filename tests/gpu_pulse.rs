@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 2 -- Pulse lifecycle (sync primitives).
 //!
 //! Verifies pulse_poll, pulse_wait, and reset behavior.

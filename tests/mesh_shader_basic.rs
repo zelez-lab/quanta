@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Integration tests for `MeshPipeline` (steps 024 + 025).
 //!
 //! Refines the proven Lean theorems T7300–T7305 + Verus theorems

@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Integration tests for `IndirectCommandBuffer` (steps 032 + 033).
 //!
 //! Exercises the typed ICB API on the CPU software device:

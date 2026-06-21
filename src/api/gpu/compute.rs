@@ -2,7 +2,11 @@
 
 use alloc::vec::Vec;
 
-use crate::{Batch, Field, Pipeline, Pulse, QuantaError, QueueFamily, QueueType, Wave};
+use crate::{Batch, Field, Pulse, QuantaError, QueueFamily, QueueType, Wave};
+// `Pipeline` is a render type; only the render-gated `dispatch_mesh`
+// wrapper (which takes a graphics pipeline) references it.
+#[cfg(feature = "render")]
+use crate::Pipeline;
 
 use super::Gpu;
 
@@ -175,6 +179,8 @@ impl Gpu {
     // === M4.2: Mesh shaders ===
 
     /// Dispatch a mesh shader pipeline.
+    /// Render-typed (`&Pipeline`); gated with the `render` feature (step 085).
+    #[cfg(feature = "render")]
     pub fn dispatch_mesh(&self, pipeline: &Pipeline, groups: [u32; 3]) -> Result<(), QuantaError> {
         self.inner.dispatch_mesh(pipeline.handle(), groups)
     }

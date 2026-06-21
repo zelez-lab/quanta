@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Game-engine readiness tests.
 //!
 //! Proves the full rendering pipeline works for real 3D:
@@ -683,10 +684,10 @@ fn textured_quad() {
         .texture(0, &tex)
         .sampler(
             0,
-            quanta::render_pass::SamplerDesc {
-                min_filter: quanta::render_pass::Filter::Nearest,
-                mag_filter: quanta::render_pass::Filter::Nearest,
-                ..quanta::render_pass::SamplerDesc::default()
+            quanta::SamplerDesc {
+                min_filter: quanta::Filter::Nearest,
+                mag_filter: quanta::Filter::Nearest,
+                ..quanta::SamplerDesc::default()
             },
         )
         .draw(6)

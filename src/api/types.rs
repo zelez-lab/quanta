@@ -309,6 +309,9 @@ pub struct QueueFamily {
 ///
 /// Lower rates (e.g. 4x4) reduce shading cost for areas that don't need
 /// per-pixel detail (distant geometry, motion-blurred regions).
+///
+/// Render-only (step 085): gated with the `render` feature.
+#[cfg(feature = "render")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShadingRate {
     /// One fragment invocation per pixel (full rate).

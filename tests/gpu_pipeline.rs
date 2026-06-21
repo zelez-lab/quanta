@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 2 -- Render pipeline creation and draw operations.
 //!
 //! Verifies pipeline_create with various configurations.

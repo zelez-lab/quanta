@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 2 -- MSAA resolve operations.
 //!
 //! Verifies resolve_texture between MSAA and single-sample textures.

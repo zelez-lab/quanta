@@ -42,11 +42,15 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
-    Caps, FieldUsage, Format, FormatCaps, Gpu, GpuDevice as QGpuDevice, Pipeline, Pulse,
-    QuantaError, RenderPass, Texture, TextureDesc, Vendor, Wave,
+    Caps, FieldUsage, Format, FormatCaps, Gpu, GpuDevice as QGpuDevice, Pulse, QuantaError,
+    Texture, TextureDesc, Vendor, Wave,
 };
+// Render types used only by the render-gated impl methods + helpers (085).
+#[cfg(feature = "render")]
+use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
+#[cfg(feature = "render")]
+use crate::{Pipeline, RenderPass};
 
 use ffi::{NULL_HANDLE, buffer_usage};
 use state::{SendCell, State, WaveEntry};
@@ -396,6 +400,7 @@ fn compare_op_code(c: crate::CompareOp) -> u32 {
     }
 }
 
+#[cfg(feature = "render")]
 fn compare_func_code(c: crate::pipeline::CompareFunc) -> u32 {
     match c {
         crate::pipeline::CompareFunc::Never => ffi::compare::NEVER,
@@ -409,6 +414,7 @@ fn compare_func_code(c: crate::pipeline::CompareFunc) -> u32 {
     }
 }
 
+#[cfg(feature = "render")]
 fn attribute_format_code(f: crate::pipeline::AttributeFormat) -> u32 {
     use crate::pipeline::AttributeFormat as A;
     match f {
@@ -428,6 +434,7 @@ fn attribute_format_code(f: crate::pipeline::AttributeFormat) -> u32 {
     }
 }
 
+#[cfg(feature = "render")]
 fn topology_code(p: crate::pipeline::Primitive) -> u32 {
     use crate::pipeline::Primitive as P;
     match p {
@@ -439,6 +446,7 @@ fn topology_code(p: crate::pipeline::Primitive) -> u32 {
     }
 }
 
+#[cfg(feature = "render")]
 fn cull_mode_code(c: crate::pipeline::CullMode) -> u32 {
     use crate::pipeline::CullMode as C;
     match c {
@@ -448,6 +456,7 @@ fn cull_mode_code(c: crate::pipeline::CullMode) -> u32 {
     }
 }
 
+#[cfg(feature = "render")]
 fn blend_factor_code(f: crate::pipeline::BlendFactor) -> u32 {
     use crate::pipeline::BlendFactor as F;
     match f {
@@ -464,6 +473,7 @@ fn blend_factor_code(f: crate::pipeline::BlendFactor) -> u32 {
     }
 }
 
+#[cfg(feature = "render")]
 fn blend_op_code(o: crate::pipeline::BlendOp) -> u32 {
     use crate::pipeline::BlendOp as O;
     match o {
@@ -475,6 +485,7 @@ fn blend_op_code(o: crate::pipeline::BlendOp) -> u32 {
     }
 }
 
+#[cfg(feature = "render")]
 fn step_mode_code(s: crate::pipeline::StepMode) -> u32 {
     match s {
         crate::pipeline::StepMode::Vertex => ffi::step_mode::VERTEX,
@@ -816,8 +827,9 @@ impl QGpuDevice for WebgpuDevice {
         Err(Self::err("WebGPU mipmap generation pending"))
     }
 
-    // ── Render path ────────────────────────────────────────────────────────
+    // ── Render path ──────────────────────────────────────────────────────── (render-gated, step 085)
 
+    #[cfg(feature = "render")]
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
         // Step 063 slice 11 — WebGPU spec doesn't include
         // tessellation, mesh shaders, or conservative rasterization.
@@ -966,6 +978,7 @@ impl QGpuDevice for WebgpuDevice {
         })
     }
 
+    #[cfg(feature = "render")]
     fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
         Ok(RenderPass {
             handle: target.handle,
@@ -979,6 +992,7 @@ impl QGpuDevice for WebgpuDevice {
         })
     }
 
+    #[cfg(feature = "render")]
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         let device = self.dev()?;
 
@@ -1417,9 +1431,11 @@ impl QGpuDevice for WebgpuDevice {
             "mesh shaders are not in the WebGPU spec",
         ))
     }
+    #[cfg(feature = "render")]
     fn build_acceleration_structure(&self, _geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
         Err(Self::not_supported("ray tracing is not in the WebGPU spec"))
     }
+    #[cfg(feature = "render")]
     fn create_ray_tracing_pipeline(
         &self,
         _desc: &RayTracingPipelineDesc,

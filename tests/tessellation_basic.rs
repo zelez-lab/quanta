@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Integration tests for `TessellationPipeline` (steps 022 + 023).
 //!
 //! Refines the proven Lean theorems T7200–T7206 + Verus theorems

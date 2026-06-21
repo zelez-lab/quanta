@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! SPIR-V binary validation via spirv-val.
 //!
 //! Compiles test kernels through the quanta-compiler binary, pipes

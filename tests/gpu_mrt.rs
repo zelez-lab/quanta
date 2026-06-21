@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 2 -- Multiple render target (MRT) tests.
 //!
 //! Verifies rendering to multiple color targets simultaneously.

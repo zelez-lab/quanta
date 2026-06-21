@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 2 -- Occlusion query lifecycle.
 //!
 //! Verifies occlusion_query_create, begin/end in render pass, and read.

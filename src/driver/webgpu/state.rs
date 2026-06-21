@@ -36,6 +36,8 @@ pub(super) struct WaveEntry {
 
 pub(super) struct TextureEntry {
     pub texture: u32,
+    /// Default view — used by the render-gated attachment path (step 085).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
     pub view: u32,
     pub width: u32,
     pub height: u32,
@@ -43,6 +45,8 @@ pub(super) struct TextureEntry {
     pub bytes_per_row: u32,
 }
 
+// Render-only: populated by the render-gated pipeline path (step 085).
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
 pub(super) struct PipelineEntry {
     pub pipeline: u32,
     /// Layout(0): vertex/fragment uniforms + textures.
@@ -106,6 +110,7 @@ pub(super) struct State {
     pub textures: SendCell<BTreeMap<u64, TextureEntry>>,
     /// Quanta u64 → JS GPUSampler handle.
     pub samplers: SendCell<BTreeMap<u64, u32>>,
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
     pub pipelines: SendCell<BTreeMap<u64, PipelineEntry>>,
     /// Indirect Command Buffers (steps 032 + 033). See `WebgpuIcb`.
     pub icbs: SendCell<BTreeMap<u64, WebgpuIcb>>,
@@ -145,6 +150,8 @@ pub(super) struct WebgpuRenderBundle {
 }
 
 /// One recorded draw inside a render bundle.
+/// Render-only: read by the render-gated render-bundle path (step 085).
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
 pub(super) struct RenderBundleDraw {
     pub pipeline_handle: u64,
     pub vertex_count: u32,

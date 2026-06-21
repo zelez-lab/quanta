@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! End-to-end test for the VRS render-encoder path (step 063).
 //!
 //! Validates slice 1's contract through the typed `RenderBuilder`:

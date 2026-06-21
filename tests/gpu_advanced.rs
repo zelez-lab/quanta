@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 2 -- Advanced features (error handling for unsupported paths).
 //!
 //! Verifies that features returning "not supported" return proper Err, not panic.

@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Integration tests for `AccelerationStructure` + `RayTracingPipeline`
 //! (steps 026 + 027).
 //!

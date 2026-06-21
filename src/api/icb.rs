@@ -16,7 +16,11 @@
 
 use alloc::sync::Arc;
 
-use crate::{GpuDevice, Pipeline, QuantaError, Wave};
+use crate::{GpuDevice, QuantaError, Wave};
+// `Pipeline` is a render type; only the render-gated `record_draw` paths
+// (compute ICB draw + the render bundle) reference it.
+#[cfg(feature = "render")]
+use crate::Pipeline;
 
 /// A pre-recorded sequence of GPU dispatch commands. Created via
 /// [`Gpu::indirect_command_buffer`](crate::Gpu::indirect_command_buffer).
@@ -98,6 +102,9 @@ impl IndirectCommandBuffer {
     /// consumed, or the backend has not yet wired its render-path
     /// ICB lowering (the proof contract is in place; per-backend
     /// lowering is staged in follow-up commits).
+    ///
+    /// Render-only (step 085): takes a render `Pipeline`.
+    #[cfg(feature = "render")]
     pub fn record_draw(
         &mut self,
         pipeline: &Pipeline,
@@ -168,6 +175,9 @@ impl Drop for IndirectCommandBuffer {
 /// equivalence theorem (T7000 / T7006). The buffer has a fixed
 /// capacity supplied at create time; records past `capacity()`
 /// return an error; `Drop` releases the underlying handle.
+///
+/// Render-only (step 085): gated with the `render` feature.
+#[cfg(feature = "render")]
 pub struct IndirectRenderBundle {
     pub(crate) handle: u64,
     pub(crate) cap: u32,
@@ -176,6 +186,7 @@ pub struct IndirectRenderBundle {
     pub(crate) live: bool,
 }
 
+#[cfg(feature = "render")]
 impl IndirectRenderBundle {
     /// Underlying device handle.
     pub fn handle(&self) -> u64 {
@@ -228,6 +239,7 @@ impl IndirectRenderBundle {
     }
 }
 
+#[cfg(feature = "render")]
 impl Drop for IndirectRenderBundle {
     fn drop(&mut self) {
         if self.live {

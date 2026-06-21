@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Step 052 -- Visual diff tests.
 //!
 //! Verify rendering and compute correctness by computing expected pixel/data

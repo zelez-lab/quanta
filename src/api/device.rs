@@ -1,11 +1,15 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
-    Caps, FieldUsage, Format, FormatCaps, Pipeline, Pulse, QuantaError, QueueFamily, QueueType,
-    RenderPass, ResourceState, Texture, TextureDesc, TextureViewDesc, Timeline, Wave,
+    Caps, FieldUsage, Format, FormatCaps, Pulse, QuantaError, QueueFamily, QueueType,
+    ResourceState, Texture, TextureDesc, TextureViewDesc, Timeline, Wave,
 };
+// Render types used only by the render-gated trait methods (step 085).
+#[cfg(feature = "render")]
+use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
+#[cfg(feature = "render")]
+use crate::{Pipeline, RenderPass};
 
 /// Core trait — every GPU driver implements this.
 ///
@@ -161,10 +165,13 @@ pub trait GpuDevice: Send + Sync {
         Err(QuantaError::not_supported("batch dispatch not supported"))
     }
 
-    // === Render ===
+    // === Render === (render-typed; gated with the `render` feature, step 085)
 
+    #[cfg(feature = "render")]
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError>;
+    #[cfg(feature = "render")]
     fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError>;
+    #[cfg(feature = "render")]
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError>;
 
     // === Sync ===
@@ -504,9 +511,13 @@ pub trait GpuDevice: Send + Sync {
     // === M4.3: Ray tracing ===
 
     /// Build a bottom-level acceleration structure from geometry.
+    /// Render-typed (`GeometryDesc`); gated with the `render` feature.
+    #[cfg(feature = "render")]
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError>;
 
     /// Create a ray tracing pipeline from shader stages.
+    /// Render-typed (`RayTracingPipelineDesc`); gated with `render`.
+    #[cfg(feature = "render")]
     fn create_ray_tracing_pipeline(
         &self,
         desc: &RayTracingPipelineDesc,

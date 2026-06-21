@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 2 — Render to texture (clear operations).
 //!
 //! Tests render pass clear operations which do not require compiled shaders.

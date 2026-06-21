@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Verifies that the typed-API surface returns the right `QuantaErrorKind`
 //! variant for each error class (step 070).
 //!

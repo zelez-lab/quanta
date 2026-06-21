@@ -10,11 +10,15 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use std::eprintln;
 
-use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
-    Caps, FieldUsage, GpuDevice, Pipeline, Pulse, QuantaError, RenderPass, Texture, TextureDesc,
-    TextureViewDesc, Timeline, Wave,
+    Caps, FieldUsage, GpuDevice, Pulse, QuantaError, Texture, TextureDesc, TextureViewDesc,
+    Timeline, Wave,
 };
+// Render types used only by the render-gated forwards (step 085).
+#[cfg(feature = "render")]
+use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
+#[cfg(feature = "render")]
+use crate::{Pipeline, RenderPass};
 use std::collections::HashSet;
 use std::sync::Mutex;
 
@@ -170,16 +174,19 @@ impl GpuDevice for ValidationDevice {
         self.inner.wave_dispatch_indirect(wave, buffer, offset)
     }
 
-    // === Render ===
+    // === Render === (render-gated, step 085)
 
+    #[cfg(feature = "render")]
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
         self.inner.pipeline_create(desc)
     }
 
+    #[cfg(feature = "render")]
     fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
         self.inner.render_begin(target)
     }
 
+    #[cfg(feature = "render")]
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         self.inner.render_end(pass)
     }
@@ -320,12 +327,14 @@ impl GpuDevice for ValidationDevice {
         self.inner.dispatch_mesh(pipeline, groups)
     }
 
-    // === Ray tracing ===
+    // === Ray tracing === (render-typed methods gated, step 085)
 
+    #[cfg(feature = "render")]
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
         self.inner.build_acceleration_structure(geometry)
     }
 
+    #[cfg(feature = "render")]
     fn create_ray_tracing_pipeline(
         &self,
         desc: &RayTracingPipelineDesc,

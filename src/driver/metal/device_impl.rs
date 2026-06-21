@@ -4,11 +4,15 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
-    Caps, FieldUsage, Format, GpuDevice, Pipeline, Pulse, QuantaError, QueueFamily, QueueType,
-    RenderPass, ResourceState, Texture, TextureDesc, TextureViewDesc, Wave,
+    Caps, FieldUsage, Format, GpuDevice, Pulse, QuantaError, QueueFamily, QueueType, ResourceState,
+    Texture, TextureDesc, TextureViewDesc, Wave,
 };
+// Render types used only by the render-gated impl methods (step 085).
+#[cfg(feature = "render")]
+use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
+#[cfg(feature = "render")]
+use crate::{Pipeline, RenderPass};
 
 use super::compute;
 use super::device::MetalDevice;
@@ -152,12 +156,14 @@ impl GpuDevice for MetalDevice {
         })
     }
 
-    // === Render ===
+    // === Render === (render-gated, step 085)
 
+    #[cfg(feature = "render")]
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
         self.pipeline_create_impl(desc)
     }
 
+    #[cfg(feature = "render")]
     fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
         Ok(RenderPass {
             handle: target.handle(),
@@ -167,6 +173,7 @@ impl GpuDevice for MetalDevice {
         })
     }
 
+    #[cfg(feature = "render")]
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         self.render_end_impl(pass)
     }
@@ -463,6 +470,7 @@ impl GpuDevice for MetalDevice {
 
     // === Ray tracing (M4.3) ===
 
+    #[cfg(feature = "render")]
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
         // Metal ray tracing requires Apple GPU family 6+ (A14/M1 and later).
         // Check via supportsFamily: with MTLGPUFamilyApple6 (= 1006).
@@ -505,6 +513,7 @@ impl GpuDevice for MetalDevice {
         Ok(handle)
     }
 
+    #[cfg(feature = "render")]
     fn create_ray_tracing_pipeline(
         &self,
         _desc: &RayTracingPipelineDesc,
@@ -1413,6 +1422,7 @@ pub(crate) fn address_to_metal(a: crate::texture::AddressMode) -> ffi::NSUIntege
     }
 }
 
+#[cfg(feature = "render")]
 pub(crate) fn compare_to_metal(f: crate::CompareFunc) -> ffi::NSUInteger {
     use crate::CompareFunc::*;
     match f {
@@ -1441,6 +1451,7 @@ pub(crate) fn compare_op_to_metal(op: crate::CompareOp) -> ffi::NSUInteger {
     }
 }
 
+#[cfg(feature = "render")]
 pub(crate) fn stencil_op_to_metal(op: crate::StencilOp) -> ffi::NSUInteger {
     use crate::StencilOp::*;
     match op {
@@ -1455,6 +1466,7 @@ pub(crate) fn stencil_op_to_metal(op: crate::StencilOp) -> ffi::NSUInteger {
     }
 }
 
+#[cfg(feature = "render")]
 pub(crate) fn blend_factor_to_metal(f: crate::BlendFactor) -> ffi::NSUInteger {
     use crate::BlendFactor::*;
     match f {
@@ -1471,6 +1483,7 @@ pub(crate) fn blend_factor_to_metal(f: crate::BlendFactor) -> ffi::NSUInteger {
     }
 }
 
+#[cfg(feature = "render")]
 pub(crate) fn blend_op_to_metal(op: crate::BlendOp) -> ffi::NSUInteger {
     use crate::BlendOp::*;
     match op {

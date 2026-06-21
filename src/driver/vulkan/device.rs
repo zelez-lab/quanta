@@ -102,6 +102,8 @@ pub struct VulkanDevice {
     /// always needs the whole set. Step 063 slice 15.
     pub(super) accel_create_fn: Option<ffi::PfnVkCreateAccelerationStructureKHR>,
     pub(super) accel_destroy_fn: Option<ffi::PfnVkDestroyAccelerationStructureKHR>,
+    // Read only by the render-gated ray-tracing build path (step 085).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
     pub(super) accel_build_sizes_fn: Option<ffi::PfnVkGetAccelerationStructureBuildSizesKHR>,
     pub(super) accel_build_fn: Option<ffi::PfnVkCmdBuildAccelerationStructuresKHR>,
     /// Whether `VkPhysicalDeviceFeatures.tessellationShader` is
@@ -313,6 +315,8 @@ impl VulkanDevice {
     }
 
     /// Check if a device extension is available on the physical device.
+    /// Used only by the render-gated ray-tracing path (step 085).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
     pub(super) fn has_device_extension(&self, ext_name: &[u8]) -> bool {
         let mut count = 0u32;
         let result = unsafe {

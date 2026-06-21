@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Metal-backed render-path ICB smoke test (steps 032 + 033).
 //!
 //! Exercises the `IndirectRenderBundle` typed wrapper against the

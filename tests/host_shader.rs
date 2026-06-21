@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Tier 1 (host, no GPU) conformance tests — shader compilation output (proc macros).
 //!
 //! Tests that all macro types produce valid output:

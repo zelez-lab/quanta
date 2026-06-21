@@ -1,0 +1,34 @@
+[package]
+name = "quanta-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rendering face of Quanta — render passes, pipelines, textures-as-targets, mesh/tessellation/ray-tracing. Depends on quanta (compute)."
+keywords = ["gpu", "render", "graphics", "metal", "vulkan"]
+categories = ["graphics", "rendering"]
+
+[features]
+# Backend selection is forwarded to the quanta crate. quanta-render adds
+# no backend axis of its own; it mirrors quanta's.
+default = ["metal"]
+std = ["quanta/std"]
+metal = ["std", "quanta/metal"]
+vulkan = ["std", "quanta/vulkan"]
+software = ["std", "quanta/software"]
+webgpu = ["std", "quanta/webgpu"]
+
+[dependencies]
+# quanta-render always builds quanta with the render face on; backend
+# features are forwarded from this crate's own features above.
+quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
+    "render",
+] }
+quanta-macros = { path = "../quanta-macros", version = "0.1.0-alpha.2", features = [
+    "render",
+] }
+
+[dev-dependencies]
+quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
+    "software",
+] }

@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! Integration tests for `VrsState` (steps 028 + 029).
 //!
 //! Refines the proven Lean theorems T7500–T7505 + Verus theorems

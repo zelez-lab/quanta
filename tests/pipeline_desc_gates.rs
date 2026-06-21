@@ -1,3 +1,4 @@
+#![cfg(feature = "render")]
 //! End-to-end test for the cross-backend `PipelineDesc` deferred-feature
 //! gate — step 063 slices 5, 11, 12.
 //!

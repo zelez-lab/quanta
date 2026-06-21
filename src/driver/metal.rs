@@ -9,6 +9,7 @@ mod device;
 mod device_impl;
 pub(crate) mod ffi;
 mod memory;
+#[cfg(feature = "render")]
 mod render;
 mod sparse;
 mod texture;

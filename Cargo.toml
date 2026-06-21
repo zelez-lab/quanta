@@ -12,6 +12,7 @@ members = [
     "crates/quanta-rand-import-test",
     "crates/quanta-tensor",
     "crates/quanta-prims",
+    "crates/quanta-render",
     "examples/web_add_one",
     "examples/web_triangle",
     "examples/web_textured",
@@ -41,10 +42,17 @@ categories = ["graphics", "hardware-support"]
 readme = "README.md"
 
 [features]
-default = ["metal"]
+default = ["metal", "render"]
 std = []
 metal = ["std"]
 vulkan = ["std"]
+## Rendering face: render passes, graphics pipelines, mesh/tessellation/
+## ray-tracing, VRS, render-bundle ICB, and texture-as-render-target
+## helpers. On by default. A headless compute consumer builds with
+## `default-features = false` to compile zero render code and expose a
+## render-free surface. The `quanta-render` crate enables this and adds
+## the `RenderGpu` ergonomic extension trait. (Step 085.)
+render = ["quanta-macros/render"]
 ## CPU software driver: execute KernelDef IR without GPU hardware.
 software = ["std", "jit"]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
@@ -61,7 +69,7 @@ jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]
 webgpu = ["std", "jit"]
 
 [dependencies]
-quanta-macros = { path = "crates/quanta-macros", version = "0.1.0-alpha.2" }
+quanta-macros = { path = "crates/quanta-macros", version = "0.1.0-alpha.2", default-features = false }
 quanta-ir.workspace = true
 
 [dev-dependencies]

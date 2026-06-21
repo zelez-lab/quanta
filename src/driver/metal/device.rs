@@ -84,6 +84,9 @@ pub(crate) struct MetalMeshPipeline {
 /// 032 + 033, render path. Replayed from inside an active render
 /// pass via `executeCommandsInBuffer:withRange:` on the render
 /// encoder; see `RenderOp::ExecuteRenderBundle`.
+// Render-path state; some fields are only read by the render-gated
+// render_bundle paths (step 085).
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
 pub(crate) struct MetalRenderBundle {
     /// The MTLIndirectCommandBuffer object (DRAW-typed).
     pub(crate) icb: ffi::Id,
@@ -126,6 +129,8 @@ pub struct MetalDevice {
     pub(crate) textures: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) compute_pipelines: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) render_pipelines: RwLock<HashMap<u64, ffi::Id>>,
+    // Only populated/read by the render-gated pipeline path (step 085).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
     pub(crate) depth_stencil_states: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) samplers: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) queues: RwLock<HashMap<u64, ffi::Id>>,

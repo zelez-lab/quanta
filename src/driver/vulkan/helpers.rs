@@ -54,6 +54,7 @@ pub(super) fn format_bytes_per_pixel_vk(format: Format) -> usize {
     }
 }
 
+#[cfg(feature = "render")]
 pub(super) fn blend_factor_to_vk(f: crate::BlendFactor) -> u32 {
     use crate::BlendFactor::*;
     match f {
@@ -70,6 +71,7 @@ pub(super) fn blend_factor_to_vk(f: crate::BlendFactor) -> u32 {
     }
 }
 
+#[cfg(feature = "render")]
 pub(super) fn blend_op_to_vk(op: crate::BlendOp) -> u32 {
     use crate::BlendOp::*;
     match op {

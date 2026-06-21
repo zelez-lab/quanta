@@ -3,11 +3,15 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{
-    Caps, FieldUsage, GpuDevice, Pipeline, Pulse, QuantaError, QueueFamily, QueueType, RenderPass,
-    ResourceState, Texture, TextureDesc, TextureViewDesc, Wave,
+    Caps, FieldUsage, GpuDevice, Pulse, QuantaError, QueueFamily, QueueType, ResourceState,
+    Texture, TextureDesc, TextureViewDesc, Wave,
 };
+// Render types used only by the render-gated impl methods (step 085).
+#[cfg(feature = "render")]
+use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
+#[cfg(feature = "render")]
+use crate::{Pipeline, RenderPass};
 
 use super::device::{VkQueryPool, VulkanDevice};
 use super::ffi;
@@ -125,16 +129,19 @@ impl GpuDevice for VulkanDevice {
         self.wave_dispatch_indirect_impl(wave, buffer, offset)
     }
 
-    // === Render ===
+    // === Render === (render-gated, step 085)
 
+    #[cfg(feature = "render")]
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError> {
         self.pipeline_create_impl(desc)
     }
 
+    #[cfg(feature = "render")]
     fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
         self.render_begin_impl(target)
     }
 
+    #[cfg(feature = "render")]
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         self.render_end_impl(pass)
     }
@@ -430,12 +437,14 @@ impl GpuDevice for VulkanDevice {
         ))
     }
 
-    // === Ray tracing (M4.3) ===
+    // === Ray tracing (M4.3) === (render-typed methods gated, step 085)
 
+    #[cfg(feature = "render")]
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
         self.build_acceleration_structure_native(geometry)
     }
 
+    #[cfg(feature = "render")]
     fn create_ray_tracing_pipeline(
         &self,
         _desc: &RayTracingPipelineDesc,
@@ -474,6 +483,11 @@ impl GpuDevice for VulkanDevice {
         // a real VkAccelerationStructureKHR to destroy + storage
         // buffer to free. Fall through to field_free_impl for
         // compatibility with handles from older shim paths.
+        //
+        // The native AS registry only exists with `render` on (accel.rs is
+        // render-gated); render-off can never have built one, so fall
+        // straight through.
+        #[cfg(feature = "render")]
         if self.destroy_as_native_if_present(handle) {
             return Ok(());
         }
