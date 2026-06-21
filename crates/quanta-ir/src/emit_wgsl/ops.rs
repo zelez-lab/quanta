@@ -75,6 +75,18 @@ pub(super) fn emit_op(
                     "{}let r{}: f32 = qa_fp8_{}_unpack({}[r{}]);\n",
                     pad, dst.0, tag, n, index.0
                 ));
+            } else if matches!(ty, ScalarType::I4) {
+                // int4 PackedU32: element i lives in word i/8, nibble i%8.
+                // Load sign-extends the 4-bit value: ((n ^ 8) - 8).
+                out.push_str(&format!(
+                    "{pad}let r{d}_sh: u32 = (r{i} % 8u) * 4u; \
+                     let r{d}_n: u32 = ({n}[r{i} / 8u] >> r{d}_sh) & 0xFu; \
+                     let r{d}: i32 = i32((r{d}_n ^ 0x8u) - 0x8u);\n",
+                    pad = pad,
+                    d = dst.0,
+                    i = index.0,
+                    n = n
+                ));
             } else {
                 out.push_str(&format!(
                     "{}let r{}: {} = {}[r{}];\n",
@@ -111,6 +123,20 @@ pub(super) fn emit_op(
                 out.push_str(&format!(
                     "{}{}[r{}] = qa_fp8_{}_pack(r{});\n",
                     pad, n, index.0, tag, src.0
+                ));
+            } else if matches!(ty, ScalarType::I4) {
+                // int4 PackedU32: write nibble i%8 of word i/8 (read-modify-
+                // write). Single-quark in the op-matrix; a multi-quark packed
+                // store would need per-word ownership or atomics.
+                out.push_str(&format!(
+                    "{pad}let r{s}_w: u32 = r{i} / 8u; \
+                     let r{s}_sh: u32 = (r{i} % 8u) * 4u; \
+                     {n}[r{s}_w] = ({n}[r{s}_w] & ~(0xFu << r{s}_sh)) \
+                     | ((u32(r{s}) & 0xFu) << r{s}_sh);\n",
+                    pad = pad,
+                    s = src.0,
+                    i = index.0,
+                    n = n
                 ));
             } else {
                 out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
@@ -211,9 +237,29 @@ pub(super) fn emit_op(
         KernelOp::Copy { dst, src, .. } => {
             out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
         }
-        // Quantization affine map — lowering lands in Phase B.
-        KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
-            out.push_str(&format!("{}/* quantize: lowering pending */\n", pad));
+        // Per-tensor symmetric quantize: q = clamp(i32(round(x/scale)), lo, hi).
+        // round is round-half-to-even (matches the CPU oracle + SPIR-V/MSL).
+        KernelOp::Quantize {
+            dst,
+            src,
+            scale,
+            scheme,
+            ..
+        } => {
+            let (lo, hi) = scheme.value.range();
+            out.push_str(&format!(
+                "{}let r{}: i32 = clamp(i32(round(r{} / r{})), {}, {});\n",
+                pad, dst.0, src.0, scale.0, lo, hi
+            ));
+        }
+        // Per-tensor symmetric dequantize: dq = scale * f32(q).
+        KernelOp::Dequantize {
+            dst, src, scale, ..
+        } => {
+            out.push_str(&format!(
+                "{}let r{}: f32 = r{} * f32(r{});\n",
+                pad, dst.0, scale.0, src.0
+            ));
         }
         KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!("{}workgroupBarrier();\n", pad)),

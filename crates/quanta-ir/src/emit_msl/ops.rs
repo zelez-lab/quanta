@@ -68,6 +68,18 @@ pub(super) fn emit_op(
                     "{}float r{} = qa_fp8_{}_unpack({});\n",
                     pad, dst.0, tag, elem
                 ));
+            } else if matches!(ty, ScalarType::I4) {
+                // int4 PackedU32: element i lives in word i/8, nibble i%8;
+                // load sign-extends the 4-bit value: ((n ^ 8) - 8).
+                out.push_str(&format!(
+                    "{pad}uint r{d}_sh = (r{i} % 8u) * 4u; \
+                     uint r{d}_n = ({n}[r{i} / 8u] >> r{d}_sh) & 0xFu; \
+                     int r{d} = int((r{d}_n ^ 0x8u) - 0x8u);\n",
+                    pad = pad,
+                    d = dst.0,
+                    i = index.0,
+                    n = n
+                ));
             } else {
                 out.push_str(&format!(
                     "{}{} r{} = {};\n",
@@ -98,6 +110,19 @@ pub(super) fn emit_op(
                 out.push_str(&format!(
                     "{}{}[r{}] = qa_fp8_{}_pack(r{});\n",
                     pad, n, index.0, tag, src.0
+                ));
+            } else if matches!(ty, ScalarType::I4) {
+                // int4 PackedU32: write nibble i%8 of word i/8 (read-modify-
+                // write; single-quark in the op-matrix).
+                out.push_str(&format!(
+                    "{pad}uint r{s}_w = r{i} / 8u; \
+                     uint r{s}_sh = (r{i} % 8u) * 4u; \
+                     {n}[r{s}_w] = ({n}[r{s}_w] & ~(0xFu << r{s}_sh)) \
+                     | ((uint(r{s}) & 0xFu) << r{s}_sh);\n",
+                    pad = pad,
+                    s = src.0,
+                    i = index.0,
+                    n = n
                 ));
             } else {
                 out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
@@ -289,9 +314,30 @@ pub(super) fn emit_op(
         KernelOp::Copy { dst, src, .. } => {
             out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
         }
-        // Quantization affine map — lowering lands in Phase B.
-        KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
-            out.push_str(&format!("{}/* quantize: lowering pending */\n", pad));
+        // Per-tensor symmetric quantize: q = clamp(int(rint(x/scale)), lo, hi).
+        // MSL `rint` is round-half-to-even (MSL `round` is half-away-from-
+        // zero); this matches the CPU oracle + WGSL/SPIR-V.
+        KernelOp::Quantize {
+            dst,
+            src,
+            scale,
+            scheme,
+            ..
+        } => {
+            let (lo, hi) = scheme.value.range();
+            out.push_str(&format!(
+                "{}int r{} = clamp(int(rint(r{} / r{})), {}, {});\n",
+                pad, dst.0, src.0, scale.0, lo, hi
+            ));
+        }
+        // Per-tensor symmetric dequantize: dq = scale * float(q).
+        KernelOp::Dequantize {
+            dst, src, scale, ..
+        } => {
+            out.push_str(&format!(
+                "{}float r{} = r{} * float(r{});\n",
+                pad, dst.0, scale.0, src.0
+            ));
         }
         KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
         KernelOp::Barrier => out.push_str(&format!(

@@ -195,6 +195,12 @@ impl SpvEmitter {
                         loaded
                     };
                     self.set_reg(*dst, val, result_ty);
+                } else if matches!(ty, ScalarType::I4) {
+                    // int4 PackedU32: word = idx/8, nibble = idx%8. Load the
+                    // word, extract and sign-extend the nibble to i32.
+                    let idx = self.reg_value_id(*index)?;
+                    let val = self.i4_load_nibble(var_id, idx);
+                    self.set_reg(*dst, val, result_ty);
                 } else {
                     // Array access: struct member 0, then index into runtime array
                     let idx = self.reg_value_id(*index)?;
@@ -239,6 +245,12 @@ impl SpvEmitter {
 
                 let idx = self.reg_value_id(*index)?;
                 let val = self.reg_value_id(*src)?;
+                // int4 PackedU32: write nibble idx%8 of word idx/8 via
+                // read-modify-write (single-quark in the op-matrix).
+                if matches!(ty, ScalarType::I4) {
+                    self.i4_store_nibble(var_id, idx, val);
+                    return Ok(());
+                }
                 // bf16: pack the f32 body value into its storage bits first.
                 let stored_val = if matches!(ty, ScalarType::BF16) {
                     self.bf16_pack_from_f32(val)
@@ -651,9 +663,67 @@ impl SpvEmitter {
                 self.set_reg(*dst, src_val, result_ty);
             }
 
-            // Quantization affine map. Lowering lands in Phase B.
-            KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
-                return Err("SPIR-V: Quantize/Dequantize lowering pending".to_string());
+            // Per-tensor symmetric quantize:
+            //   q = clamp(i32(RoundEven(x / scale)), lo, hi)
+            KernelOp::Quantize {
+                dst,
+                src,
+                scale,
+                scheme,
+                ..
+            } => {
+                let (lo, hi) = scheme.value.range();
+                let x = self.reg_value_id(*src)?;
+                let s = self.reg_value_id(*scale)?;
+                let f32_ty = self.ensure_type_f32();
+                let i32_ty = self.ensure_type_i32();
+                let ext = self.ensure_glsl_ext();
+                // x / scale
+                let div = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_FDIV, &[f32_ty, div, x, s]);
+                // RoundEven
+                let rounded = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_EXT_INST,
+                    &[f32_ty, rounded, ext, GLSL_ROUND_EVEN, div],
+                );
+                // i32(rounded)
+                let q = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_CONVERT_F_TO_S,
+                    &[i32_ty, q, rounded],
+                );
+                // clamp: SMax(q, lo) then SMin(·, hi)
+                let lo_c = self.emit_constant_i32(lo);
+                let hi_c = self.emit_constant_i32(hi);
+                let cmax = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_EXT_INST,
+                    &[i32_ty, cmax, ext, GLSL_SMAX, q, lo_c],
+                );
+                let cmin = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_EXT_INST,
+                    &[i32_ty, cmin, ext, GLSL_SMIN, cmax, hi_c],
+                );
+                self.set_reg(*dst, cmin, i32_ty);
+            }
+            // Per-tensor symmetric dequantize: dq = scale * f32(q).
+            KernelOp::Dequantize {
+                dst, src, scale, ..
+            } => {
+                let q = self.reg_value_id(*src)?;
+                let s = self.reg_value_id(*scale)?;
+                let f32_ty = self.ensure_type_f32();
+                let qf = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_CONVERT_S_TO_F, &[f32_ty, qf, q]);
+                let dq = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_FMUL, &[f32_ty, dq, s, qf]);
+                self.set_reg(*dst, dq, f32_ty);
             }
 
             KernelOp::Branch {
@@ -2075,5 +2145,79 @@ impl SpvEmitter {
         let r0 = self.spv_select(u, s_z, v, r);
         // big ? 0 : r0
         self.spv_select(u, big, zero, r0)
+    }
+
+    // ── int4 PackedU32 nibble access (8 signed nibbles per u32 word) ──────
+    //
+    // Element `idx` lives in word `idx/8`, nibble `idx%8`. Mirrors
+    // `dtype::int4_{unpack,pack}`. Single-quark in the op-matrix; a packed
+    // multi-quark store would need per-word ownership or atomics.
+
+    /// Access-chain pointer to word `idx/8` of an int4 (u32-storage) field.
+    fn i4_word_ptr(&mut self, var_id: u32, idx: u32) -> u32 {
+        let u = self.spv_u32();
+        let eight = self.spv_const(8);
+        let word_idx = self.spv_bin(OP_UDIV, u, idx, eight);
+        let zero = self.spv_const(0);
+        let ptr_u32 = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, u);
+        let chain = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_ACCESS_CHAIN,
+            &[ptr_u32, chain, var_id, zero, word_idx],
+        );
+        chain
+    }
+
+    /// `(idx % 8) * 4` — the bit shift of nibble `idx%8`.
+    fn i4_nibble_shift(&mut self, idx: u32) -> u32 {
+        let eight = self.spv_const(8);
+        let four = self.spv_const(4);
+        let u = self.spv_u32();
+        let nib = self.spv_bin(OP_UMOD, u, idx, eight);
+        self.spv_mul(nib, four)
+    }
+
+    /// Load + sign-extend the int4 at element `idx` → i32 value id.
+    fn i4_load_nibble(&mut self, var_id: u32, idx: u32) -> u32 {
+        let u = self.spv_u32();
+        let chain = self.i4_word_ptr(var_id, idx);
+        let word = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_LOAD, &[u, word, chain, 0x2, 4]);
+        let shift = self.i4_nibble_shift(idx);
+        let shifted = self.spv_shr(word, shift);
+        let mask = self.spv_const(0xF);
+        let nib = self.spv_and(shifted, mask);
+        // sign-extend 4-bit: (nib ^ 8) - 8
+        let eight = self.spv_const(8);
+        let xored = self.spv_bin(OP_BITWISE_XOR, u, nib, eight);
+        let ext = self.spv_sub(xored, eight);
+        // reinterpret the u32 bit pattern as i32 (same bits).
+        let i32_ty = self.ensure_type_i32();
+        let out = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_BITCAST, &[i32_ty, out, ext]);
+        out
+    }
+
+    /// Read-modify-write the int4 nibble at element `idx` with i32 `val`.
+    fn i4_store_nibble(&mut self, var_id: u32, idx: u32, val: u32) {
+        let u = self.spv_u32();
+        let chain = self.i4_word_ptr(var_id, idx);
+        let word = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_LOAD, &[u, word, chain, 0x2, 4]);
+        let shift = self.i4_nibble_shift(idx);
+        // val as u32 bits, masked to the low nibble.
+        let val_u = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_BITCAST, &[u, val_u, val]);
+        let mask4 = self.spv_const(0xF);
+        let nib = self.spv_and(val_u, mask4);
+        let nib_sh = self.spv_shl(nib, shift);
+        // clear the target nibble: word & ~(0xF << shift). OpNot is unary.
+        let lane_mask = self.spv_shl(mask4, shift);
+        let not_mask = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_NOT, &[u, not_mask, lane_mask]);
+        let cleared = self.spv_and(word, not_mask);
+        let merged = self.spv_or(cleared, nib_sh);
+        Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, merged, 0x2, 4]);
     }
 }

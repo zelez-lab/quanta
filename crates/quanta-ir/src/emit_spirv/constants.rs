@@ -234,6 +234,8 @@ pub(crate) const SPIRV_SCHEMA: u32 = 0;
 // ── GLSL.std.450 extended instruction numbers ───────────────────────────────
 
 pub(crate) const GLSL_ROUND: u32 = 1;
+/// Round-to-nearest-even (deterministic on .5 — unlike GLSL_ROUND).
+pub(crate) const GLSL_ROUND_EVEN: u32 = 2;
 pub(crate) const GLSL_FABS: u32 = 4;
 pub(crate) const GLSL_SABS: u32 = 5;
 pub(crate) const GLSL_FLOOR: u32 = 8;
