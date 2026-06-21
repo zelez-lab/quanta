@@ -31,6 +31,16 @@ impl Gpu {
         Self { inner }
     }
 
+    /// Internal device-handle accessor for the `quanta-render` extension
+    /// crate. The render methods live on `RenderGpu` (a sibling-crate
+    /// extension trait) and reach the shared `GpuDevice` through this.
+    /// Not part of the stable public surface — hidden from docs so the
+    /// compute crate's documented surface stays render-free.
+    #[doc(hidden)]
+    pub fn device_handle(&self) -> &Arc<dyn GpuDevice> {
+        &self.inner
+    }
+
     // === Device info ===
 
     pub fn caps(&self) -> &Caps {
