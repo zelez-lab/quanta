@@ -320,6 +320,7 @@ fn download_compiler_binary() -> Option<String> {
 // ============================================================================
 
 /// Output from shader compilation — SPIR-V and metallib binaries.
+#[cfg(feature = "render")]
 pub(crate) struct ShaderCompileOutput {
     pub(crate) spirv: Option<Vec<u8>>,
     pub(crate) metallib: Option<Vec<u8>>,
@@ -330,6 +331,7 @@ pub(crate) struct ShaderCompileOutput {
 ///
 /// Serializes the ShaderDef to the compiler's stdin, reads ShaderOutput
 /// from stdout. Returns None if the compiler binary is not found.
+#[cfg(feature = "render")]
 pub(crate) fn compile_shader(
     name: &str,
     stage: &str,
@@ -395,6 +397,7 @@ pub(crate) fn compile_shader(
     })
 }
 
+#[cfg(feature = "render")]
 fn shader_type_to_ir(ty: &ShaderType) -> quanta_ir::ShaderType {
     match ty {
         ShaderType::F32 => quanta_ir::ShaderType::F32,

@@ -10,6 +10,7 @@ pub(crate) mod shader_emit;
 pub(crate) mod shader_types;
 
 pub use binary::compile_kernel;
+#[cfg(feature = "render")]
 #[allow(unused_imports)]
 pub(crate) use binary::{ShaderCompileOutput, compile_shader};
 #[allow(unused_imports)]

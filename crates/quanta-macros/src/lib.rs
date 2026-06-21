@@ -12,9 +12,11 @@ mod kernel_macro;
 mod kernel_signature;
 mod kernel_type_inference;
 mod parse;
+#[cfg(feature = "render")]
 mod shader_macro;
 mod uniforms_derive;
 mod validate;
+#[cfg(feature = "render")]
 mod vertex_derive;
 mod wasm_compile;
 use proc_macro::TokenStream;
@@ -146,6 +148,7 @@ pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -167,6 +170,7 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     color * Vec4::new(uv.x, uv.y, 0.0, 1.0)
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -186,6 +190,7 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     TessFactors { edge: [4.0; 4], inside: [4.0; 2] }
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn tess_control(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -205,6 +210,7 @@ pub fn tess_control(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     Vec4::new(p.x, p.y, p.z, 1.0)
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn tess_eval(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -227,6 +233,7 @@ pub fn tess_eval(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     }
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -248,6 +255,7 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     set_primitive(0, [0, 1, 2]);
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn mesh(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -268,6 +276,7 @@ pub fn mesh(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     trace_ray(scene, ray, 0, 1000.0);
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn ray_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -287,6 +296,7 @@ pub fn ray_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     color * dot(normal, light_dir).max(0.0)
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn closest_hit(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -305,6 +315,7 @@ pub fn closest_hit(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     Vec4::lerp(Vec4::splat(1.0), Vec4::new(0.5, 0.7, 1.0, 1.0), t)
 /// }
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_attribute]
 pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -360,6 +371,7 @@ pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // MyVertex::ATTRIBUTES — const array of VertexAttribute
 /// // MyVertex::vertex_layout() -> VertexLayout
 /// ```
+#[cfg(feature = "render")]
 #[proc_macro_derive(Vertex)]
 pub fn derive_vertex(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
