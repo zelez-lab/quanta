@@ -40,7 +40,7 @@ quanta/                         Main library (no_std, zero external deps)
 
 crates/quanta-ir/               Shared IR definition (zero external deps)
 +-- src/
-|   +-- lib.rs                  KernelOp (47 variants), KernelDef, CompilerOutput
+|   +-- lib.rs                  KernelOp (51 variants), KernelDef, CompilerOutput
 |   +-- wire/                   Binary serialization (custom format, no serde)
 |       +-- encode.rs           KernelDef -> bytes
 |       +-- decode.rs           bytes -> KernelDef

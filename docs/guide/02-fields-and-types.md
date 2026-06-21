@@ -51,6 +51,9 @@ Any type implementing `GpuType` can appear in fields. Built-in:
 |-----------|----------|------------------------------------|
 | `f32`     | 4 bytes  | Standard GPU float                 |
 | `f64`     | 8 bytes  | Not all GPUs support double        |
+| `f16`     | 2 bytes  | Half-precision float               |
+| `bf16`    | 2 bytes  | bfloat16 — f32 range, half width; the modern training/inference dtype. Computed in f32, packed on store. |
+| `fp8` (e5m2 / e4m3) | 1 byte | 8-bit floats for quantized inference. Computed in f32, packed on store. |
 | `u32`     | 4 bytes  | Standard GPU unsigned integer      |
 | `i32`     | 4 bytes  | Standard GPU signed integer        |
 | `u64`     | 8 bytes  | Atomics may not support 64-bit     |
@@ -59,8 +62,13 @@ Any type implementing `GpuType` can appear in fields. Built-in:
 | `i16`     | 2 bytes  |                                    |
 | `u8`      | 1 byte   | Byte-level access                  |
 | `i8`      | 1 byte   |                                    |
+| `i4`      | 4 bits   | Signed 4-bit, packed 8/word — int4 quantization storage |
 
-`f32` and `u32` are universally supported and fastest on all GPUs.
+`f32` and `u32` are universally supported and fastest on all GPUs. The
+narrow floats (`bf16`/`fp8`) and quantized ints (`i8`/`i4` via the
+quantization scheme) are emulated in f32 where the backend lacks native
+support — the conversions live in `quanta-ir`'s `dtype` module and are
+proven bit-exact across all backends.
 
 ## Field operations (resource-owned)
 
