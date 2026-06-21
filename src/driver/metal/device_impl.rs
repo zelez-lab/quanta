@@ -340,6 +340,7 @@ impl GpuDevice for MetalDevice {
 
     // === MSAA Resolve ===
 
+    #[cfg(feature = "render")]
     fn resolve_texture(&self, src_handle: u64, dst_handle: u64) -> Result<(), QuantaError> {
         let textures = self
             .textures

@@ -13,6 +13,7 @@ members = [
     "crates/quanta-tensor",
     "crates/quanta-prims",
     "crates/quanta-render",
+    "examples/headless_compute",
     "examples/web_add_one",
     "examples/web_triangle",
     "examples/web_textured",

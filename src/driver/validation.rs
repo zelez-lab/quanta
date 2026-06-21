@@ -285,6 +285,7 @@ impl GpuDevice for ValidationDevice {
 
     // === MSAA Resolve ===
 
+    #[cfg(feature = "render")]
     fn resolve_texture(&self, src_handle: u64, dst_handle: u64) -> Result<(), QuantaError> {
         self.inner.resolve_texture(src_handle, dst_handle)
     }

@@ -313,6 +313,46 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
+  # ─── Compute/render separation invariants (step 085) ─────────────────
+  # The compute/render boundary is the `render` Cargo feature. Two checks
+  # keep it from regressing:
+  #   1. Surface-disjointness — with render OFF, no render type name is
+  #      reachable from quanta's public surface (rustdoc-JSON membership).
+  #   2. Dependency-acyclicity — no quanta -> quanta-render edge.
+  # Plus: the headless_compute fixture builds + runs on `quanta` alone with
+  # render off, and its dependency tree contains no quanta-render.
+  render-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + nightly for rustdoc JSON)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Add nightly
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-cargo-boundary-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Render-boundary invariants (disjointness + acyclicity)
+        run: ./scripts/check-render-boundary.sh
+
+      - name: Headless compute fixture builds + runs (quanta alone, render off)
+        run: cargo run -p headless-compute
+
+      - name: Headless tree has no quanta-render
+        run: |
+          if cargo tree -p headless-compute | grep -q quanta-render; then
+            echo "::error::headless-compute pulls quanta-render"; exit 1
+          fi
+          echo "ok: headless-compute tree is render-free"
+
   # ─── Vulkan SPIR-V lane via lavapipe (per-PR) ────────────────────────
   #
   # The software lane in host-tests doesn't exercise the SPIR-V emitter,

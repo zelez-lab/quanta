@@ -1,0 +1,13 @@
+[package]
+name = "headless-compute"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A headless GPGPU consumer (the Thiaba / ai_project shape): depends on
+# `quanta` ALONE, render OFF. Step 085 acceptance fixture — `cargo tree`
+# for this crate must contain no `quanta-render`, and it builds + runs a
+# compute dispatch with zero render code compiled.
+[dependencies]
+quanta = { path = "../..", default-features = false, features = ["software"] }

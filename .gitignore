@@ -53,3 +53,4 @@ examples/web_diff/generated/
 web/test-results/
 web/playwright-report/
 web/playwright/.cache/
+examples/*/target/

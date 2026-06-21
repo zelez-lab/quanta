@@ -297,6 +297,7 @@ pub trait GpuDevice: Send + Sync {
     // === MSAA Resolve ===
 
     /// Resolve an MSAA texture to a single-sample texture.
+    #[cfg(feature = "render")]
     fn resolve_texture(&self, _src_handle: u64, _dst_handle: u64) -> Result<(), QuantaError> {
         Err(QuantaError::not_supported("MSAA resolve not supported"))
     }
@@ -334,6 +335,7 @@ pub trait GpuDevice: Send + Sync {
     // === M2.6: Stencil read-back ===
 
     /// Read stencil buffer contents from a depth/stencil texture.
+    #[cfg(feature = "render")]
     fn stencil_read(&self, _texture: u64) -> Result<Vec<u8>, QuantaError> {
         Err(QuantaError::not_supported(
             "stencil read-back not supported",
