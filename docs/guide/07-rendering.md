@@ -5,6 +5,15 @@ fragment shading, blending, and render targets. This page covers the pipeline
 from a high level. See [vertex and fragment shaders](08-vertex-fragment.md)
 for shader authoring.
 
+> **Enabling rendering.** The render face is behind the default-on `render`
+> feature. With default features, everything on this page works through
+> `quanta` directly (`use quanta::*`). If you build `quanta` with
+> `default-features = false` (the headless-compute setup), add the
+> `quanta-render` crate to bring back the render types, the
+> `#[quanta::vertex]` / `#[quanta::fragment]` macros, and the render
+> methods on `Gpu`. See
+> [Getting Started](../getting-started.md#compute-only-or-compute--rendering).
+
 ## The render pipeline
 
 ```

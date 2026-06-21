@@ -20,6 +20,40 @@ quanta = { git = "https://github.com/zelez-lab/quanta" }
 Pin to a specific revision with `--rev <sha>` (or `--tag <tag>` once
 tagged releases exist) for reproducible builds.
 
+### Compute only, or compute + rendering?
+
+Quanta has two faces: **GPU compute** (the CUDA-like side — kernels,
+fields, dispatch) and **rendering** (render passes, graphics pipelines,
+mesh/tessellation/ray-tracing). They live behind a Cargo feature so a
+headless consumer never compiles a line of rendering code.
+
+- **Compute only** (a database, an ML runtime, any GPGPU app) — depend on
+  `quanta` with the default `render` feature turned off:
+
+  ```toml
+  [dependencies]
+  quanta = { git = "...", default-features = false, features = ["metal"] }
+  # or "vulkan" / "software" instead of "metal"
+  ```
+
+  Your build has **no rendering types on its surface** and skips compiling
+  the render code entirely (~37% less of the `quanta` crate to compile).
+
+- **Compute + rendering** (a graphical app, a UI) — keep the default
+  feature on, and add the `quanta-render` crate for the render surface:
+
+  ```toml
+  [dependencies]
+  quanta = { git = "..." }                       # render on by default
+  quanta-render = { git = "...", features = ["metal"] }
+  ```
+
+  `quanta-render` brings render types (`RenderPass`, `Pipeline`, …), the
+  shader-stage macros (`#[quanta::vertex]`, `#[quanta::fragment]`, …), and
+  the render methods on `Gpu` (`gpu.render_target(...)`, `gpu.render(...)`).
+
+The rest of this guide is pure compute and works either way.
+
 ## Write a kernel
 
 A kernel is a function that runs on the GPU. Thousands of copies run in parallel,

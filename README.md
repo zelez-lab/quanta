@@ -57,6 +57,15 @@ Quanta is not on crates.io yet — add it from the git repository:
 cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
 
+**Compute-only or compute + rendering?** Quanta's rendering face lives
+behind a default-on `render` feature. A headless GPGPU app (database, ML
+runtime) turns it off — `quanta = { ..., default-features = false,
+features = ["metal"] }` — and compiles **zero rendering code** with no
+render type on its surface. A graphical app keeps the default and adds the
+`quanta-render` crate for render passes, pipelines, and the
+`#[quanta::vertex]` / `#[quanta::fragment]` shader macros. See
+[Getting Started](docs/getting-started.md#compute-only-or-compute--rendering).
+
 ### System requirements
 
 **Universal:** Rust 1.85+ stable (edition 2024). No nightly needed.

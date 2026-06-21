@@ -73,7 +73,40 @@ crates/quanta-compiler/         LLVM compiler binary (depends on inkwell/LLVM 22
 |   +-- emit_wgsl.rs            KernelOp -> WGSL source text
 |   +-- rustc_compile.rs        Alternative path: Rust source -> rustc -> LLVM IR
 +-- build.rs                    LLVM detection and linking
+
+crates/quanta-render/            Rendering front door (depends on quanta)
++-- src/
+|   +-- lib.rs                  Re-exports render types + shader macros
+|   +-- gpu_ext.rs              RenderGpu marker trait over quanta::Gpu
 ```
+
+## Compute / render split (the `render` feature)
+
+Quanta has two faces — GPU **compute** (CUDA-like) and **rendering**
+(Metal/Vulkan/WGSL-like) — that share the `#[quanta::kernel]` family, the
+IR, and the LLVM backend. They are separated by the **`render` Cargo
+feature** on the root `quanta` crate, not by splitting the crate.
+
+Why a feature and not a separate compute crate: the compute/render boundary
+cuts *through* the driver line, not above it. The `GpuDevice` trait speaks
+render types (`pipeline_create(&PipelineDesc) -> Pipeline`,
+`render_begin -> RenderPass`, …) and all four backend drivers execute
+render ops, so the render code can't live in a sibling crate without a
+dependency cycle. Instead the render API modules, the render `GpuDevice`
+methods, the render driver code, and the render `Gpu` methods all carry
+`#[cfg(feature = "render")]` in `quanta`.
+
+- **Headless compute** (Thiaba, `ai_project`, any GPGPU app) depends on
+  `quanta` with `default-features = false`: zero render code compiled, no
+  render type on the surface (~37% less of the `quanta` crate to build).
+- **Graphical** consumers add `crates/quanta-render`, which turns the
+  feature on, re-exports the render types + shader macros, and offers the
+  `RenderGpu` marker. The render methods stay inherent on `quanta::Gpu`.
+
+Two CI invariants keep the boundary from regressing (step 085):
+surface-disjointness (render-off `quanta` exposes no render type name,
+checked from rustdoc JSON) and dependency-acyclicity (no
+`quanta -> quanta-render` edge). See `scripts/check-render-boundary.sh`.
 
 ## Build-time compilation flow
 
@@ -184,15 +217,19 @@ The validation layer wraps any `GpuDevice` and adds runtime checks.
 
 ```toml
 [features]
-default = ["std", "metal"]
+default = ["metal", "render"]
 std = []
-metal = ["std"]        # macOS/iOS only
-vulkan = ["std"]       # Linux/Android/Windows
-software = ["std"]     # CPU software executor (IR interpreter)
-jit = ["std"]          # Runtime JIT compilation via wave_jit()
+metal = ["std"]                    # macOS/iOS only
+vulkan = ["std"]                   # Linux/Android/Windows
+software = ["std", "jit"]          # CPU software executor (IR interpreter)
+jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]  # runtime JIT via wave_jit()
+webgpu = ["std", "jit"]            # browser (wasm32)
+render = ["quanta-macros/render"]  # the rendering face (see compute/render split)
 ```
 
 Without `std`, only types and the kernel language are available (for `no_std` environments).
+A **headless compute** consumer builds with `default-features = false` to drop the
+`render` (and `metal`) defaults — see the compute/render split above.
 
 The `software` feature adds a full CPU executor that interprets kernel IR with
 barrier-correct workgroup execution. The `jit` feature enables `gpu.wave_jit()`
