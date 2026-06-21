@@ -256,6 +256,10 @@ pub fn compare_bit_exact(oracle: &RawOutput, candidate: &RawOutput) -> Result<()
         // oracle pack with the identical branchless RNE conversion.
         (RawValues::FP8E5M2(a), RawValues::FP8E5M2(b)) => slice_bit_exact(oracle, candidate, a, b),
         (RawValues::FP8E4M3(a), RawValues::FP8E4M3(b)) => slice_bit_exact(oracle, candidate, a, b),
+        // Quantized integer codes — exact match (the affine map + clamp +
+        // round-half-to-even agree across backends).
+        (RawValues::Q8(a), RawValues::Q8(b)) => slice_bit_exact(oracle, candidate, a, b),
+        (RawValues::Q4(a), RawValues::Q4(b)) => slice_bit_exact(oracle, candidate, a, b),
         _ => Err(div(
             oracle,
             candidate,

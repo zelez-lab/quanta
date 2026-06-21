@@ -38,10 +38,13 @@ impl QuantValue {
         crate::dtype::quant_range(self.bits())
     }
 
-    /// The storage ScalarType carrying the int payload.
+    /// The storage ScalarType carrying the int payload. Q8 rides the
+    /// portable i32 slot (one code per word — the int8-ness is the range
+    /// clamp, not the storage width); Q4 packs nibbles via the dedicated
+    /// I4 type. Native sub-byte int8 storage is a later `store`-axis fork.
     pub fn storage_scalar(self) -> crate::ScalarType {
         match self {
-            QuantValue::Q8S => crate::ScalarType::I8,
+            QuantValue::Q8S => crate::ScalarType::I32,
             QuantValue::Q4S => crate::ScalarType::I4,
         }
     }

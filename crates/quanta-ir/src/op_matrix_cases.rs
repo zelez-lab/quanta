@@ -9,7 +9,10 @@
 //! This module is pure case generation: no GPU dispatch, no comparison.
 //! Those live test-side / example-side, parameterised over `OpCase`.
 
-use crate::{BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, UnaryOp};
+use crate::{
+    BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, QuantScheme, QuantValue, Reg,
+    ScalarType, UnaryOp,
+};
 
 /// Typed scalar buffer — one variant per supported scalar width. Inputs
 /// and expected outputs are carried as length-1 vectors.
@@ -26,6 +29,9 @@ pub enum RawValues {
     /// fp8 values carried as their raw 8-bit storage patterns.
     FP8E5M2(Vec<u8>),
     FP8E4M3(Vec<u8>),
+    /// Quantized integer codes (symmetric int8 / int4), carried as i8.
+    Q8(Vec<i8>),
+    Q4(Vec<i8>),
 }
 
 impl RawValues {
@@ -40,6 +46,8 @@ impl RawValues {
             RawValues::BF16(_) => "bf16",
             RawValues::FP8E5M2(_) => "fp8e5m2",
             RawValues::FP8E4M3(_) => "fp8e4m3",
+            RawValues::Q8(_) => "q8",
+            RawValues::Q4(_) => "q4",
         }
     }
 }
@@ -1206,6 +1214,203 @@ fn cases_fp8() -> Vec<OpCase> {
     out
 }
 
+// ── int8 / int4 symmetric quantization ───────────────────────────────
+//
+// Two kernel shapes prove the round-trip end-to-end:
+//   Quantize:   Load f32 a → Const scale → Quantize → Store int code
+//   Dequantize: Load int code a → Const scale → Dequantize → Store f32
+// The scale rides a `Const` (the op-matrix tests fixed scales), so no
+// push-constant plumbing is needed. The oracle uses the identical
+// dtype::{quantize_sym, dequantize_sym}.
+
+/// Quantize kernel: `out_code = quantize(a, scale)`.
+fn build_quantize_def(scheme: QuantScheme, scale: f32) -> KernelDef {
+    let int_ty = scheme.value.storage_scalar();
+    let zp = Reg(2); // reuse the scale reg slot for zero_point (Symmetric → unused)
+    KernelDef {
+        name: format!("{}_quantize_{}", NAME_PREFIX, scalar_tag(int_ty)),
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: ScalarType::F32,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: ScalarType::F32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 2,
+                scalar_type: int_ty,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty: ScalarType::F32,
+            },
+            KernelOp::Const {
+                dst: Reg(2),
+                value: ConstValue::F32(scale),
+            },
+            KernelOp::Quantize {
+                dst: Reg(3),
+                src: Reg(1),
+                scale: Reg(2),
+                zero_point: zp,
+                scheme,
+            },
+            KernelOp::Store {
+                field: 2,
+                index: Reg(0),
+                src: Reg(3),
+                ty: int_ty,
+            },
+        ],
+        body_source: None,
+        next_reg: 4,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+/// Dequantize kernel: `out_f32 = dequantize(a_code, scale)`.
+fn build_dequantize_def(scheme: QuantScheme, scale: f32) -> KernelDef {
+    let int_ty = scheme.value.storage_scalar();
+    let zp = Reg(2);
+    KernelDef {
+        name: format!("{}_dequantize_{}", NAME_PREFIX, scalar_tag(int_ty)),
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: int_ty,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: int_ty,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 2,
+                scalar_type: ScalarType::F32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty: int_ty,
+            },
+            KernelOp::Const {
+                dst: Reg(2),
+                value: ConstValue::F32(scale),
+            },
+            KernelOp::Dequantize {
+                dst: Reg(3),
+                src: Reg(1),
+                scale: Reg(2),
+                zero_point: zp,
+                scheme,
+            },
+            KernelOp::Store {
+                field: 2,
+                index: Reg(0),
+                src: Reg(3),
+                ty: ScalarType::F32,
+            },
+        ],
+        body_source: None,
+        next_reg: 4,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+/// f32 inputs spanning in-range, clamp-hi, clamp-lo, and round-to-even
+/// ties for a given scale.
+fn quant_inputs(scale: f32) -> Vec<f32> {
+    vec![
+        0.0,
+        scale,
+        -scale,
+        2.0 * scale,
+        -3.0 * scale,
+        0.5 * scale,  // tie → round to even (0)
+        1.5 * scale,  // tie → round to even (2)
+        2.5 * scale,  // tie → round to even (2)
+        1000.0,       // clamp hi
+        -1000.0,      // clamp lo
+        0.49 * scale, // → 0
+        0.51 * scale, // → 1
+    ]
+}
+
+fn cases_quant() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    for &qv in &[QuantValue::Q8S, QuantValue::Q4S] {
+        let scheme = QuantScheme::per_tensor_symmetric(qv);
+        let int_ty = scheme.value.storage_scalar();
+        let bits = qv.bits();
+        let scale = 0.5f32;
+
+        // Quantize: f32 → code.
+        let q_wrap: fn(Vec<i8>) -> RawValues = match qv {
+            QuantValue::Q8S => RawValues::Q8,
+            QuantValue::Q4S => RawValues::Q4,
+        };
+        for &x in &quant_inputs(scale) {
+            let code = crate::dtype::quantize_sym(x, scale, bits) as i8;
+            out.push(OpCase {
+                name: format!("{}_quantize_{}_x{:e}", NAME_PREFIX, scalar_tag(int_ty), x),
+                def: build_quantize_def(scheme, scale),
+                input_a: RawValues::F32(vec![x]),
+                input_b: RawValues::F32(vec![x]),
+                expected: q_wrap(vec![code]),
+                max_ulps: 0,
+                skip_on_metal: false,
+            });
+        }
+
+        // Dequantize: code → f32, over every representable code.
+        let (lo, hi) = scheme.value.range();
+        for code in lo..=hi {
+            let dq = crate::dtype::dequantize_sym(code, scale);
+            out.push(OpCase {
+                name: format!(
+                    "{}_dequantize_{}_c{}",
+                    NAME_PREFIX,
+                    scalar_tag(int_ty),
+                    code
+                ),
+                def: build_dequantize_def(scheme, scale),
+                input_a: q_wrap(vec![code as i8]),
+                input_b: q_wrap(vec![code as i8]),
+                expected: RawValues::F32(vec![dq]),
+                max_ulps: 0,
+                skip_on_metal: false,
+            });
+        }
+    }
+    out
+}
+
 fn cases_f64() -> Vec<OpCase> {
     let mut out = Vec::new();
     for &op in FLOAT_BINOPS {
@@ -1707,6 +1912,7 @@ pub fn cases() -> Vec<OpCase> {
     all.extend(cases_f64());
     all.extend(cases_bf16());
     all.extend(cases_fp8());
+    all.extend(cases_quant());
     all.extend(cases_unary());
     all.extend(cases_cmp());
     all.extend(cases_cast());

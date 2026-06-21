@@ -589,6 +589,10 @@ fn raw_to_bytes(v: &RawValues) -> Vec<u8> {
         RawValues::FP8E5M2(xs) | RawValues::FP8E4M3(xs) => xs
             .iter()
             .for_each(|x| out.extend_from_slice(&(*x as u32).to_le_bytes())),
+        // Quantized codes ride the i32/u32 slot; skipped in the run loop.
+        RawValues::Q8(xs) | RawValues::Q4(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&(*x as i32).to_le_bytes())),
     }
     out
 }
@@ -597,8 +601,9 @@ fn raw_elem_size(v: &RawValues) -> usize {
     match v {
         RawValues::F32(_) | RawValues::U32(_) | RawValues::I32(_) => 4,
         RawValues::F64(_) | RawValues::U64(_) | RawValues::I64(_) => 8,
-        // u32-slot storage for the narrow floats.
+        // u32-slot storage for the narrow floats / quantized codes.
         RawValues::BF16(_) | RawValues::FP8E5M2(_) | RawValues::FP8E4M3(_) => 4,
+        RawValues::Q8(_) | RawValues::Q4(_) => 4,
     }
 }
 
@@ -610,7 +615,11 @@ fn case_is_narrow_float(c: &OpCase) -> bool {
     let narrow = |v: &RawValues| {
         matches!(
             v,
-            RawValues::BF16(_) | RawValues::FP8E5M2(_) | RawValues::FP8E4M3(_)
+            RawValues::BF16(_)
+                | RawValues::FP8E5M2(_)
+                | RawValues::FP8E4M3(_)
+                | RawValues::Q8(_)
+                | RawValues::Q4(_)
         )
     };
     narrow(&c.input_a) || narrow(&c.input_b) || narrow(&c.expected)

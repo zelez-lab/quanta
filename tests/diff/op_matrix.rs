@@ -122,6 +122,21 @@ fn dispatch_pair_typed(
         (RawValues::FP8E4M3(a), RawValues::FP8E4M3(b), RawValues::FP8E4M3(_)) => {
             dispatch_fp8(gpu, wave, a, b, RawValues::FP8E4M3)
         }
+        // Quantize: f32 in → integer code out. The int code field uses the
+        // i32 storage slot (Q8) or u32 packed-nibble slot (Q4).
+        (RawValues::F32(a), RawValues::F32(b), RawValues::Q8(_)) => {
+            dispatch_quantize(gpu, wave, a, b, false)
+        }
+        (RawValues::F32(a), RawValues::F32(b), RawValues::Q4(_)) => {
+            dispatch_quantize(gpu, wave, a, b, true)
+        }
+        // Dequantize: integer code in → f32 out.
+        (RawValues::Q8(a), RawValues::Q8(b), RawValues::F32(_)) => {
+            dispatch_dequantize(gpu, wave, a, b, false)
+        }
+        (RawValues::Q4(a), RawValues::Q4(b), RawValues::F32(_)) => {
+            dispatch_dequantize(gpu, wave, a, b, true)
+        }
         _ => panic!(
             "op_matrix::read_output: in/out type combo not yet wired \
              (a={}, b={}, out={})",
@@ -202,4 +217,82 @@ fn dispatch_fp8(
     pulse.wait().unwrap();
     let out: Vec<u8> = fout.read().unwrap().into_iter().map(|w| w as u8).collect();
     wrap(out)
+}
+
+/// Quantize dispatch: f32 inputs in, integer code out. Q8 codes ride the
+/// i32 storage slot; Q4 codes ride a u32 packed-nibble slot (nibble 0).
+/// Reads the code back and narrows to i8 for `RawValues::Q8`/`Q4`.
+#[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
+fn dispatch_quantize(
+    gpu: &quanta::Gpu,
+    wave: &mut quanta::Wave,
+    a: &[f32],
+    b: &[f32],
+    q4: bool,
+) -> RawValues {
+    let fa = gpu.field::<f32>(1).unwrap();
+    let fb = gpu.field::<f32>(1).unwrap();
+    fa.write(a).unwrap();
+    fb.write(b).unwrap();
+    wave.bind(0, &fa);
+    wave.bind(1, &fb);
+    if q4 {
+        let fout = gpu.field::<u32>(1).unwrap();
+        wave.bind(2, &fout);
+        gpu.dispatch(wave, 1).unwrap().wait().unwrap();
+        // nibble 0 of the word, sign-extended to i8.
+        let out: Vec<i8> = fout
+            .read()
+            .unwrap()
+            .into_iter()
+            .map(|w| (((w & 0xF) ^ 0x8).wrapping_sub(0x8)) as i8)
+            .collect();
+        RawValues::Q4(out)
+    } else {
+        let fout = gpu.field::<i32>(1).unwrap();
+        wave.bind(2, &fout);
+        gpu.dispatch(wave, 1).unwrap().wait().unwrap();
+        let out: Vec<i8> = fout.read().unwrap().into_iter().map(|w| w as i8).collect();
+        RawValues::Q8(out)
+    }
+}
+
+/// Dequantize dispatch: integer code in, f32 out. Codes are uploaded into
+/// the i32 slot (Q8) or u32 packed-nibble slot (Q4).
+#[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
+fn dispatch_dequantize(
+    gpu: &quanta::Gpu,
+    wave: &mut quanta::Wave,
+    a: &[i8],
+    b: &[i8],
+    q4: bool,
+) -> RawValues {
+    let fout = gpu.field::<f32>(1).unwrap();
+    // Bind through the input fields; these must outlive the dispatch, so
+    // hold them in this scope rather than an inner block.
+    if q4 {
+        // pack the code into nibble 0 of a u32 word.
+        let a32: Vec<u32> = a.iter().map(|&x| (x as u32) & 0xF).collect();
+        let b32: Vec<u32> = b.iter().map(|&x| (x as u32) & 0xF).collect();
+        let fa = gpu.field::<u32>(1).unwrap();
+        let fb = gpu.field::<u32>(1).unwrap();
+        fa.write(&a32).unwrap();
+        fb.write(&b32).unwrap();
+        wave.bind(0, &fa);
+        wave.bind(1, &fb);
+        wave.bind(2, &fout);
+        gpu.dispatch(wave, 1).unwrap().wait().unwrap();
+    } else {
+        let a32: Vec<i32> = a.iter().map(|&x| x as i32).collect();
+        let b32: Vec<i32> = b.iter().map(|&x| x as i32).collect();
+        let fa = gpu.field::<i32>(1).unwrap();
+        let fb = gpu.field::<i32>(1).unwrap();
+        fa.write(&a32).unwrap();
+        fb.write(&b32).unwrap();
+        wave.bind(0, &fa);
+        wave.bind(1, &fb);
+        wave.bind(2, &fout);
+        gpu.dispatch(wave, 1).unwrap().wait().unwrap();
+    }
+    RawValues::F32(fout.read().unwrap())
 }

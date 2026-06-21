@@ -99,6 +99,7 @@ import Quanta.Prims.Reference
 -- Numeric dtype conversions (step 084.1 — bf16 / fp8 round-trip)
 import Quanta.Dtype.Bf16
 import Quanta.Dtype.Fp8
+import Quanta.Dtype.Quant
 
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
