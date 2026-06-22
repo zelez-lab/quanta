@@ -76,6 +76,22 @@ impl<T: GpuType> Array<T> {
         &self.gpu
     }
 
+    /// Borrow the backing field (for binding into a dispatch).
+    pub(crate) fn field_ref(&self) -> &Field<T> {
+        &self.field
+    }
+
+    /// A new `Array` view sharing the same backing field + layout (cheap
+    /// `Arc` share — used when an op's input is already in the form it
+    /// needs and no copy is required).
+    pub(crate) fn shallow_clone(&self) -> Array<T> {
+        Array {
+            field: Arc::clone(&self.field),
+            layout: self.layout.clone(),
+            gpu: self.gpu.clone(),
+        }
+    }
+
     /// Whether the layout is row-major contiguous from offset 0 (the fast
     /// path: a plain linear walk matches logical order).
     pub fn is_contiguous(&self) -> bool {

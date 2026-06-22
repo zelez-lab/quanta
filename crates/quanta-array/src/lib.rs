@@ -32,6 +32,7 @@
 mod array;
 mod construct;
 mod error;
+mod ufunc;
 
 pub use array::Array;
 pub use error::ArrayError;
