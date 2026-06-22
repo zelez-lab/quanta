@@ -30,6 +30,7 @@
 //! ```
 
 mod array;
+mod broadcast;
 mod construct;
 mod error;
 mod ufunc;

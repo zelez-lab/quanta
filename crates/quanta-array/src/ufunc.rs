@@ -139,10 +139,7 @@ impl<T: GpuType> Array<T> {
     /// have the same shape (broadcasting lands in the next commit).
     fn binary_op(&self, rhs: &Array<T>, op: IrBinOp) -> Result<Array<T>, ArrayError> {
         if self.shape() != rhs.shape() {
-            return Err(ArrayError::LengthMismatch {
-                expected: self.len(),
-                got: rhs.len(),
-            });
+            return self.broadcast_binary(rhs, crate::broadcast::Combine::Bin(op));
         }
         let a = self.contiguous_if_needed()?;
         let b = rhs.contiguous_if_needed()?;
@@ -210,10 +207,7 @@ impl<T: GpuType> Array<T> {
     /// Apply a binary math function (`MathFn::Pow`, …) elementwise.
     fn math2(&self, rhs: &Array<T>, func: MathFn) -> Result<Array<T>, ArrayError> {
         if self.shape() != rhs.shape() {
-            return Err(ArrayError::LengthMismatch {
-                expected: self.len(),
-                got: rhs.len(),
-            });
+            return self.broadcast_binary(rhs, crate::broadcast::Combine::Math(func));
         }
         let a = self.contiguous_if_needed()?;
         let b = rhs.contiguous_if_needed()?;
@@ -350,6 +344,12 @@ impl<T: GpuType> Array<T> {
     /// Realize into a contiguous array only when the layout isn't already
     /// the linear fast path; otherwise reuse self (cheap Arc share).
     fn contiguous_if_needed(&self) -> Result<Array<T>, ArrayError> {
+        self.contiguous_or_self()
+    }
+
+    /// Contiguous form of this array, reusing `self` (Arc share) when it is
+    /// already contiguous. Shared with the broadcast path.
+    pub(crate) fn contiguous_or_self(&self) -> Result<Array<T>, ArrayError> {
         if self.is_contiguous() {
             Ok(self.shallow_clone())
         } else {
