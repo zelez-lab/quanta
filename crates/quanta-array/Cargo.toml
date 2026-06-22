@@ -1,0 +1,31 @@
+[package]
+name = "quanta-array"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NumPy-equivalent N-dimensional GPU array for Quanta — Array<T> over Field + layout algebra, broadcasting ufuncs, reductions. Compute-only (depends on quanta with render off)."
+keywords = ["gpu", "ndarray", "numpy", "compute", "tensor"]
+categories = ["mathematics", "science"]
+
+[lib]
+name = "quanta_array"
+path = "src/lib.rs"
+
+[features]
+# Backend selection forwarded to quanta (render off — quanta-array is a
+# pure-compute consumer, the headless shape from step 085).
+default = ["software"]
+software = ["quanta/software"]
+metal = ["quanta/metal"]
+vulkan = ["quanta/vulkan"]
+
+[dependencies]
+quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false }
+quanta-tensor.workspace = true
+quanta-ir.workspace = true
+
+[dev-dependencies]
+quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
+    "software",
+] }
