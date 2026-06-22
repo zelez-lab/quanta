@@ -33,6 +33,7 @@ mod array;
 mod broadcast;
 mod construct;
 mod error;
+mod reduce;
 mod ufunc;
 
 pub use array::Array;
