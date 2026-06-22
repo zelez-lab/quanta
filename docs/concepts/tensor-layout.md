@@ -3,8 +3,10 @@
 `quanta-tensor` is the **shape-correctness substrate** for Quanta's
 math-crate program. It ships pure-Rust types and functions: no GPU
 runtime, no proc-macro, no kernels. Downstream math crates
-(`quanta-prims` and `quanta-rand` today; `quanta-blas`, `quanta-fft`
-to come) depend on it and inherit its shape proofs.
+(`quanta-prims`, `quanta-rand`, and `quanta-array` today; `quanta-blas`,
+`quanta-fft` to come) depend on it and inherit its shape proofs.
+`quanta-array` in particular builds every zero-copy view directly on
+this layout algebra.
 
 ## Why a separate crate
 
@@ -187,9 +189,10 @@ covered under "Design notes" below.
   / `Vec<isize>` at runtime, not in the type system. CuTe's
   compile-time-tuple form is more powerful but doesn't interop
   with the dynamic-shape paths every downstream math crate
-  eventually needs. The companion crates (`quanta-prims` today;
-  `quanta-blas`, `quanta-fft` to come) accept this trade-off in
-  exchange for one runtime type that all four backends agree on.
+  eventually needs. The companion crates (`quanta-prims` and
+  `quanta-array` today; `quanta-blas`, `quanta-fft` to come) accept
+  this trade-off in exchange for one runtime type that all four
+  backends agree on.
 - **Downstream proc-macros should consume accessors.** Use
   `Layout::shape()` and `Layout::strides()` (and `Shape::dims()`)
   rather than the private struct fields. The internal
