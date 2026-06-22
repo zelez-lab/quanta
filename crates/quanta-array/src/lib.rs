@@ -28,16 +28,31 @@
 //! let s = c.sum()?;           // whole-array reduction
 //! assert_eq!(c.to_vec()?, vec![2.0, 3.0, 4.0, 5.0]);
 //! ```
+//!
+//! ## Dtype safety
+//!
+//! Construction and arithmetic are generic over every numeric dtype, but the
+//! transcendental math ufuncs (`sqrt`/`exp`/`sin`/…) are floating-point only.
+//! Calling one on an integer array is a **compile error**, not a silent wrong
+//! result:
+//!
+//! ```compile_fail
+//! let g = quanta::init_cpu();
+//! let a = quanta_array::Array::from_slice(&g, &[4i32, 9, 16], &[3]).unwrap();
+//! let _ = a.sqrt(); // ERROR: `i32: FloatScalar` is not satisfied
+//! ```
 
 mod array;
 mod broadcast;
 mod construct;
 mod error;
 mod reduce;
+mod scalar;
 mod ufunc;
 
 pub use array::Array;
 pub use error::ArrayError;
+pub use scalar::{ArrayScalar, FloatScalar, ReduceScalar};
 
 // Re-export the layout vocabulary so users name shapes through quanta-array.
 pub use quanta_tensor::{Layout, Shape};

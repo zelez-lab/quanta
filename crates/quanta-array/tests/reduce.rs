@@ -59,3 +59,30 @@ fn reduce_after_ufunc() {
     assert!((c.sum().unwrap() - 14.0).abs() <= 1e-4);
     assert_eq!(c.max().unwrap(), 5.0);
 }
+
+#[test]
+fn reduce_i32() {
+    let g = gpu();
+    let a = Array::from_slice(&g, &[3i32, -1, 7, 2, -5, 4], &[2, 3]).unwrap();
+    assert_eq!(a.sum().unwrap(), 10);
+    assert_eq!(a.min().unwrap(), -5);
+    assert_eq!(a.max().unwrap(), 7);
+}
+
+#[test]
+fn reduce_u32() {
+    let g = gpu();
+    let a = Array::from_slice(&g, &[3u32, 1, 7, 2, 5, 4], &[6]).unwrap();
+    assert_eq!(a.sum().unwrap(), 22);
+    assert_eq!(a.min().unwrap(), 1);
+    assert_eq!(a.max().unwrap(), 7);
+}
+
+// Note: f64 has the math ufuncs (FloatScalar) but no device reduce —
+// quanta-prims only provides reduces for u32/i32/f32, so `f64_array.sum()`
+// does not compile. That's the honest boundary, not a silent fallback.
+//
+// Empty arrays aren't tested here because the layout layer rejects a
+// zero-extent shape at construction (`ZeroExtent`), so an empty `Array`
+// is unrepresentable; the empty guards in `sum`/`min`/`max` remain as
+// defensive cover for any future empty-view path.

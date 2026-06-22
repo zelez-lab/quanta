@@ -18,6 +18,7 @@ use quanta_ir::{
 
 use crate::array::Array;
 use crate::error::ArrayError;
+use crate::scalar::FloatScalar;
 
 impl<T: GpuType> Array<T> {
     /// Realize this array as a fresh contiguous row-major `Array` (copies
@@ -271,72 +272,27 @@ impl<T: GpuType> Array<T> {
         a.dispatch_binary(&b, &def, n)
     }
 
-    // ── named ufunc methods ──────────────────────────────────────────────
+    // ── named arithmetic ufuncs (all numeric dtypes) ─────────────────────
 
     /// Elementwise negation.
     pub fn neg(&self) -> Result<Array<T>, ArrayError> {
         self.unary_op(IrUnaryOp::Neg)
     }
-    /// Elementwise absolute value.
-    pub fn abs(&self) -> Result<Array<T>, ArrayError> {
-        self.math1(MathFn::Abs)
-    }
-    /// Elementwise square root.
-    pub fn sqrt(&self) -> Result<Array<T>, ArrayError> {
-        self.math1(MathFn::Sqrt)
-    }
-    /// Elementwise natural exponential.
-    pub fn exp(&self) -> Result<Array<T>, ArrayError> {
-        self.math1(MathFn::Exp)
-    }
-    /// Elementwise natural logarithm.
-    pub fn log(&self) -> Result<Array<T>, ArrayError> {
-        self.math1(MathFn::Log)
-    }
-    /// Elementwise sine.
-    pub fn sin(&self) -> Result<Array<T>, ArrayError> {
-        self.math1(MathFn::Sin)
-    }
-    /// Elementwise cosine.
-    pub fn cos(&self) -> Result<Array<T>, ArrayError> {
-        self.math1(MathFn::Cos)
-    }
-    /// Elementwise floor.
-    pub fn floor(&self) -> Result<Array<T>, ArrayError> {
-        self.math1(MathFn::Floor)
-    }
-    /// Elementwise ceil.
-    pub fn ceil(&self) -> Result<Array<T>, ArrayError> {
-        self.math1(MathFn::Ceil)
-    }
-
-    /// Elementwise add (same shape).
+    /// Elementwise add (broadcasting).
     pub fn add(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
         self.binary_op(rhs, IrBinOp::Add)
     }
-    /// Elementwise subtract (same shape).
+    /// Elementwise subtract (broadcasting).
     pub fn sub(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
         self.binary_op(rhs, IrBinOp::Sub)
     }
-    /// Elementwise multiply (same shape).
+    /// Elementwise multiply (broadcasting).
     pub fn mul(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
         self.binary_op(rhs, IrBinOp::Mul)
     }
-    /// Elementwise divide (same shape).
+    /// Elementwise divide (broadcasting).
     pub fn div(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
         self.binary_op(rhs, IrBinOp::Div)
-    }
-    /// Elementwise minimum (same shape).
-    pub fn minimum(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
-        self.math2(rhs, MathFn::Min)
-    }
-    /// Elementwise maximum (same shape).
-    pub fn maximum(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
-        self.math2(rhs, MathFn::Max)
-    }
-    /// Elementwise power (`self ** rhs`, same shape).
-    pub fn pow(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
-        self.math2(rhs, MathFn::Pow)
     }
 
     // ── dispatch plumbing ────────────────────────────────────────────────
@@ -389,6 +345,59 @@ impl<T: GpuType> Array<T> {
             out,
             quanta_tensor::Layout::row_major(self.shape())?,
         ))
+    }
+}
+
+// ── math-function ufuncs (floating-point dtypes only) ─────────────────
+//
+// Transcendentals and rounding map to `MathFn`, which every backend
+// implements for floats only. Restricting them to `FloatScalar` makes
+// `int_array.sqrt()` a compile error instead of a wrong result (the
+// `compile_fail` doctest in lib.rs pins this contract).
+impl<T: FloatScalar> Array<T> {
+    /// Elementwise absolute value.
+    pub fn abs(&self) -> Result<Array<T>, ArrayError> {
+        self.math1(MathFn::Abs)
+    }
+    /// Elementwise square root.
+    pub fn sqrt(&self) -> Result<Array<T>, ArrayError> {
+        self.math1(MathFn::Sqrt)
+    }
+    /// Elementwise natural exponential.
+    pub fn exp(&self) -> Result<Array<T>, ArrayError> {
+        self.math1(MathFn::Exp)
+    }
+    /// Elementwise natural logarithm.
+    pub fn log(&self) -> Result<Array<T>, ArrayError> {
+        self.math1(MathFn::Log)
+    }
+    /// Elementwise sine.
+    pub fn sin(&self) -> Result<Array<T>, ArrayError> {
+        self.math1(MathFn::Sin)
+    }
+    /// Elementwise cosine.
+    pub fn cos(&self) -> Result<Array<T>, ArrayError> {
+        self.math1(MathFn::Cos)
+    }
+    /// Elementwise floor.
+    pub fn floor(&self) -> Result<Array<T>, ArrayError> {
+        self.math1(MathFn::Floor)
+    }
+    /// Elementwise ceil.
+    pub fn ceil(&self) -> Result<Array<T>, ArrayError> {
+        self.math1(MathFn::Ceil)
+    }
+    /// Elementwise minimum (broadcasting).
+    pub fn minimum(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.math2(rhs, MathFn::Min)
+    }
+    /// Elementwise maximum (broadcasting).
+    pub fn maximum(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.math2(rhs, MathFn::Max)
+    }
+    /// Elementwise power (`self ** rhs`, broadcasting).
+    pub fn pow(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.math2(rhs, MathFn::Pow)
     }
 }
 

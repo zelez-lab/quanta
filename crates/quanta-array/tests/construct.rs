@@ -21,11 +21,11 @@ fn from_slice_roundtrip() {
 fn zeros_ones_full() {
     let g = gpu();
     assert_eq!(
-        Array::zeros(&g, &[2, 2]).unwrap().to_vec().unwrap(),
+        Array::<f32>::zeros(&g, &[2, 2]).unwrap().to_vec().unwrap(),
         vec![0.0; 4]
     );
     assert_eq!(
-        Array::ones(&g, &[3]).unwrap().to_vec().unwrap(),
+        Array::<f32>::ones(&g, &[3]).unwrap().to_vec().unwrap(),
         vec![1.0; 3]
     );
     assert_eq!(
@@ -35,18 +35,49 @@ fn zeros_ones_full() {
 }
 
 #[test]
+fn construct_int_dtypes() {
+    let g = gpu();
+    // The numeric builders are generic over ArrayScalar — integer dtypes too.
+    assert_eq!(
+        Array::<i32>::zeros(&g, &[3]).unwrap().to_vec().unwrap(),
+        vec![0; 3]
+    );
+    assert_eq!(
+        Array::<u32>::ones(&g, &[2]).unwrap().to_vec().unwrap(),
+        vec![1u32; 2]
+    );
+    assert_eq!(
+        Array::<i32>::arange(&g, 0.0, 2.0, 4)
+            .unwrap()
+            .to_vec()
+            .unwrap(),
+        vec![0i32, 2, 4, 6]
+    );
+    assert_eq!(
+        Array::<i32>::eye(&g, 2).unwrap().to_vec().unwrap(),
+        vec![1i32, 0, 0, 1]
+    );
+}
+
+#[test]
 fn arange_linspace_eye() {
     let g = gpu();
     assert_eq!(
-        Array::arange(&g, 0.0, 2.0, 4).unwrap().to_vec().unwrap(),
+        Array::<f32>::arange(&g, 0.0, 2.0, 4)
+            .unwrap()
+            .to_vec()
+            .unwrap(),
         vec![0.0, 2.0, 4.0, 6.0]
     );
     assert_eq!(
-        Array::linspace(&g, 0.0, 1.0, 5).unwrap().to_vec().unwrap(),
+        Array::<f32>::linspace(&g, 0.0, 1.0, 5)
+            .unwrap()
+            .to_vec()
+            .unwrap(),
         vec![0.0, 0.25, 0.5, 0.75, 1.0]
     );
     assert_eq!(
-        Array::eye(&g, 3).unwrap().to_vec().unwrap(),
+        Array::<f32>::eye(&g, 3).unwrap().to_vec().unwrap(),
         vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     );
 }
@@ -54,7 +85,7 @@ fn arange_linspace_eye() {
 #[test]
 fn reshape_is_contiguous_view() {
     let g = gpu();
-    let a = Array::arange(&g, 0.0, 1.0, 6).unwrap(); // [0,1,2,3,4,5]
+    let a = Array::<f32>::arange(&g, 0.0, 1.0, 6).unwrap(); // [0,1,2,3,4,5]
     let b = a.reshape(&[2, 3]).unwrap();
     assert_eq!(b.shape(), &[2, 3]);
     assert_eq!(b.to_vec().unwrap(), vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
