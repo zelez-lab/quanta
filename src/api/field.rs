@@ -123,6 +123,18 @@ impl<T: Copy> Field<T> {
         self.device.field_write_bytes(self.handle, bytes)
     }
 
+    /// Write `data` into this field starting at element `offset`, leaving the
+    /// rest of the buffer untouched. Used for partial updates (e.g. filling a
+    /// padding tail) without re-uploading the whole buffer.
+    pub fn write_at(&self, offset: usize, data: &[T]) -> Result<(), QuantaError> {
+        let byte_offset = offset * core::mem::size_of::<T>();
+        let bytes = unsafe {
+            core::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
+        };
+        self.device
+            .field_write_bytes_at(self.handle, byte_offset, bytes)
+    }
+
     /// Read data from this GPU field back to CPU.
     pub fn read(&self) -> Result<Vec<T>, QuantaError> {
         let bytes = self

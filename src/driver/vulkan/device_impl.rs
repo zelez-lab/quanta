@@ -72,6 +72,15 @@ impl GpuDevice for VulkanDevice {
         self.field_write_bytes_impl(handle, data)
     }
 
+    fn field_write_bytes_at(
+        &self,
+        handle: u64,
+        byte_offset: usize,
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        self.field_write_bytes_at_impl(handle, byte_offset, data)
+    }
+
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError> {
         self.field_read_bytes_impl(handle, size)
     }

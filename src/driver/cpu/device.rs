@@ -280,6 +280,24 @@ impl GpuDevice for CpuDevice {
         Ok(())
     }
 
+    fn field_write_bytes_at(
+        &self,
+        handle: u64,
+        byte_offset: usize,
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        let mut bufs = self.buffers.lock().unwrap();
+        let buf = bufs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
+        if byte_offset >= buf.data.len() {
+            return Ok(());
+        }
+        let len = data.len().min(buf.data.len() - byte_offset);
+        buf.data[byte_offset..byte_offset + len].copy_from_slice(&data[..len]);
+        Ok(())
+    }
+
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError> {
         let bufs = self.buffers.lock().unwrap();
         let buf = bufs

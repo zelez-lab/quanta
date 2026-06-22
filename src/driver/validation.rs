@@ -70,6 +70,21 @@ impl GpuDevice for ValidationDevice {
         self.inner.field_write_bytes(handle, data)
     }
 
+    fn field_write_bytes_at(
+        &self,
+        handle: u64,
+        byte_offset: usize,
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        if !self.live_fields.lock().unwrap().contains(&handle) {
+            panic!(
+                "QUANTA_VALIDATE: field_write_bytes_at to freed handle {handle}. \
+                 The field was already dropped or never allocated."
+            );
+        }
+        self.inner.field_write_bytes_at(handle, byte_offset, data)
+    }
+
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError> {
         if !self.live_fields.lock().unwrap().contains(&handle) {
             panic!(

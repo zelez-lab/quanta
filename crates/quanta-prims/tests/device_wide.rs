@@ -10,9 +10,11 @@
 #![cfg(feature = "gpu")]
 
 use quanta_prims::{
-    device_reduce_add_f32, device_reduce_add_i32, device_reduce_add_u32, device_reduce_max_f32,
-    device_reduce_max_i32, device_reduce_max_u32, device_reduce_min_f32, device_reduce_min_i32,
-    device_reduce_min_u32, device_sort_u32, reference,
+    device_reduce_add_f32, device_reduce_add_i32, device_reduce_add_u32,
+    device_reduce_add_u32_field, device_reduce_max_f32, device_reduce_max_i32,
+    device_reduce_max_u32, device_reduce_max_u32_field, device_reduce_min_f32,
+    device_reduce_min_i32, device_reduce_min_u32, device_reduce_min_u32_field, device_sort_u32,
+    reference,
 };
 
 fn try_gpu() -> Option<quanta::Gpu> {
@@ -49,6 +51,42 @@ fn reduce_add_u32_non_multiple_of_block() {
     let data: Vec<u32> = (1..=1000u32).collect();
     let expected = reference::reduce_add_u32(&data);
     assert_eq!(device_reduce_add_u32(&gpu, &data).unwrap(), expected);
+}
+
+#[test]
+fn reduce_field_matches_slice_and_oracle() {
+    let Some(gpu) = try_gpu() else { return };
+    // Exercises the device-resident `_field` path (device copy + tail
+    // offset-write) against the slice variant and the CPU oracle. 1000 is a
+    // padding-tail case; 256 is an exact multiple; 70_000 forces multi-pass.
+    for &n in &[1usize, 256, 1000, 70_000] {
+        let data: Vec<u32> = (0..n as u32)
+            .map(|i| (i.wrapping_mul(2654435761)) % 9973)
+            .collect();
+        let field = gpu.field::<u32>(n).unwrap();
+        field.write(&data).unwrap();
+
+        assert_eq!(
+            device_reduce_add_u32_field(&gpu, &field, n).unwrap(),
+            reference::reduce_add_u32(&data),
+            "add n={n}"
+        );
+        assert_eq!(
+            device_reduce_add_u32_field(&gpu, &field, n).unwrap(),
+            device_reduce_add_u32(&gpu, &data).unwrap(),
+            "add field vs slice n={n}"
+        );
+        assert_eq!(
+            device_reduce_min_u32_field(&gpu, &field, n).unwrap(),
+            *data.iter().min().unwrap(),
+            "min n={n}"
+        );
+        assert_eq!(
+            device_reduce_max_u32_field(&gpu, &field, n).unwrap(),
+            *data.iter().max().unwrap(),
+            "max n={n}"
+        );
+    }
 }
 
 #[test]
