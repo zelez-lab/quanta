@@ -16,7 +16,10 @@ use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{Pipeline, RenderPass};
 use quanta_ir::{KernelDef, KernelOp};
 
-use super::exec::{ExecCtx, execute_ops};
+use super::exec::{
+    ExecCtx, SUBGROUP_SIZE, SubgroupKind, SubgroupMode, execute_ops, resolve_warp,
+    segment_has_subgroup,
+};
 use super::value::Value;
 
 // ── CPU Device ───────────────────────────────────────────────────────────────
@@ -507,31 +510,118 @@ impl GpuDevice for CpuDevice {
                         }
                         for &(seg_start, seg_end) in segments {
                             let segment = &body[seg_start..seg_end];
-                            for lid in 0..threads_per_group {
-                                let quark_id = (gid * threads_per_group + lid) as u32;
-                                let local_id = lid as u32;
-                                let group_id = gid as u32;
+                            let tpg = threads_per_group as u32;
+
+                            // Subgroup reduce/scan ops need all warp lanes'
+                            // inputs at once, but lanes run sequentially. For
+                            // segments that use them, resolve cooperatively
+                            // per warp via a side-effect-free Collect dry run
+                            // + a real Resolve pass (see SubgroupMode). Other
+                            // segments take the plain single-pass loop.
+                            let run_lane = |lid: u32,
+                                            regs: HashMap<u32, Value>,
+                                            shared: &mut HashMap<u32, Vec<u8>>,
+                                            mode: SubgroupMode|
+                             -> Result<HashMap<u32, Value>, String> {
                                 let mut ctx = ExecCtx {
-                                    quark_id,
-                                    local_id,
-                                    group_id,
+                                    quark_id: (gid * threads_per_group + lid as u64) as u32,
+                                    local_id: lid,
+                                    group_id: gid as u32,
                                     group_size: group_size_x,
                                     quark_count: total_threads as u32,
-                                    regs: core::mem::take(&mut thread_regs[lid as usize]),
+                                    regs,
                                     fields: field_data,
-                                    shared: &mut shared,
+                                    shared,
                                     push_data,
+                                    subgroup: mode,
                                 };
-                                if let Err(e) = execute_ops(&mut ctx, segment) {
-                                    let mut slot = first_err.lock().unwrap();
-                                    if slot.is_none() {
-                                        *slot = Some(format!(
-                                            "CPU execution error (quark {quark_id}): {e}"
-                                        ));
-                                    }
-                                    return;
+                                execute_ops(&mut ctx, segment)?;
+                                Ok(ctx.regs)
+                            };
+
+                            let report = |e: String, quark_id: u32| {
+                                let mut slot = first_err.lock().unwrap();
+                                if slot.is_none() {
+                                    *slot = Some(format!(
+                                        "CPU execution error (quark {quark_id}): {e}"
+                                    ));
                                 }
-                                thread_regs[lid as usize] = ctx.regs;
+                            };
+
+                            if segment_has_subgroup(segment) {
+                                // Warp-cooperative path.
+                                let mut lid = 0u32;
+                                while lid < tpg {
+                                    let warp_end = (lid + SUBGROUP_SIZE).min(tpg);
+                                    let warp: Vec<u32> = (lid..warp_end).collect();
+
+                                    // Pass 1 — Collect (dry run; writes off).
+                                    let mut cohort: Vec<Vec<(SubgroupKind, Value)>> =
+                                        Vec::with_capacity(warp.len());
+                                    for &wl in &warp {
+                                        let regs = thread_regs[wl as usize].clone();
+                                        let mut inputs = Vec::new();
+                                        let r = {
+                                            let mut sh = shared.clone();
+                                            run_lane(
+                                                wl,
+                                                regs,
+                                                &mut sh,
+                                                SubgroupMode::Collect {
+                                                    inputs: &mut inputs,
+                                                },
+                                            )
+                                        };
+                                        if let Err(e) = r {
+                                            report(e, (gid * threads_per_group + wl as u64) as u32);
+                                            return;
+                                        }
+                                        cohort.push(inputs);
+                                    }
+
+                                    // Reduce per site across the warp.
+                                    let resolved = resolve_warp(&cohort);
+
+                                    // Pass 2 — Resolve (real writes).
+                                    for (slot_i, &wl) in warp.iter().enumerate() {
+                                        let regs = core::mem::take(&mut thread_regs[wl as usize]);
+                                        let res = run_lane(
+                                            wl,
+                                            regs,
+                                            &mut shared,
+                                            SubgroupMode::Resolve {
+                                                resolved: &resolved[slot_i],
+                                                cursor: 0,
+                                            },
+                                        );
+                                        match res {
+                                            Ok(regs) => thread_regs[wl as usize] = regs,
+                                            Err(e) => {
+                                                report(
+                                                    e,
+                                                    (gid * threads_per_group + wl as u64) as u32,
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    lid = warp_end;
+                                }
+                            } else {
+                                // Plain single-pass path (no subgroup ops).
+                                for lid in 0..tpg {
+                                    let regs = core::mem::take(&mut thread_regs[lid as usize]);
+                                    match run_lane(lid, regs, &mut shared, SubgroupMode::None) {
+                                        Ok(regs) => thread_regs[lid as usize] = regs,
+                                        Err(e) => {
+                                            report(
+                                                e,
+                                                (gid * threads_per_group + lid as u64) as u32,
+                                            );
+                                            return;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
