@@ -6,8 +6,9 @@
 //! scalar (numpy `arr.sum()` with no axis). Per-axis reductions are a later
 //! increment (they need a segmented/strided reduce shape).
 //!
-//! The prims reduce takes a host slice (it uploads internally), so the
-//! array's logical row-major data is materialized first via `to_vec`.
+//! The prims reduce consumes an on-device `Field`, so a strided view is first
+//! gathered to a contiguous field **on the GPU** (`contiguous_or_self`) and
+//! the field is handed straight to prims — the data never leaves the device.
 //! `prod` is deferred — prims has add/min/max device reduces but no
 //! multiply-reduce yet.
 
@@ -19,33 +20,36 @@ impl<T: ReduceScalar> Array<T> {
     /// Sum of all elements (numpy `arr.sum()`). Float sums use tree
     /// reduction order, so expect a few ULP of drift vs a sequential fold.
     pub fn sum(&self) -> Result<T, ArrayError> {
-        let data = self.to_vec()?;
-        if data.is_empty() {
+        let src = self.contiguous_or_self()?;
+        let n = src.len();
+        if n == 0 {
             return Ok(T::ZERO);
         }
-        Ok(T::reduce_add(self.gpu(), &data)?)
+        Ok(T::reduce_add(self.gpu(), src.field_ref(), n)?)
     }
 
     /// Minimum element (numpy `arr.min()`). Errors on an empty array.
     pub fn min(&self) -> Result<T, ArrayError> {
-        let data = self.to_vec()?;
-        if data.is_empty() {
+        let src = self.contiguous_or_self()?;
+        let n = src.len();
+        if n == 0 {
             return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
                 "min of an empty array",
             )));
         }
-        Ok(T::reduce_min(self.gpu(), &data)?)
+        Ok(T::reduce_min(self.gpu(), src.field_ref(), n)?)
     }
 
     /// Maximum element (numpy `arr.max()`). Errors on an empty array.
     pub fn max(&self) -> Result<T, ArrayError> {
-        let data = self.to_vec()?;
-        if data.is_empty() {
+        let src = self.contiguous_or_self()?;
+        let n = src.len();
+        if n == 0 {
             return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
                 "max of an empty array",
             )));
         }
-        Ok(T::reduce_max(self.gpu(), &data)?)
+        Ok(T::reduce_max(self.gpu(), src.field_ref(), n)?)
     }
 }
 

@@ -124,8 +124,26 @@ views:
 assert_eq!(t.to_vec()?, vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0]);
 ```
 
-A ufunc on a strided view first compacts it to a contiguous buffer, so the
-result is always a clean row-major array.
+A ufunc on a strided view first compacts it to a contiguous buffer. That
+compaction runs as a gather **kernel on the device** — the data never round-
+trips through host memory.
+
+## Everything stays on the device
+
+`Array<T>` is a GPU-resident contract, not "an ndarray that visits the GPU".
+The hot-path operations keep their data on the device:
+
+- **ufuncs** dispatch a kernel; nothing is downloaded.
+- **strided-view compaction** (`contiguous`) is an on-device gather kernel.
+- **reductions** hand the array's `Field` straight to the `quanta-prims`
+  device reduce — the whole array is never downloaded; only the tiny
+  per-block partials (256× smaller) touch host memory between passes.
+
+The only host transfers are the ones you ask for: building from a host slice
+(`from_slice`) and reading back (`to_vec`). This matters because the layers
+above (autograd, nn ops) chain many operations — a host round-trip per op
+would dominate. Keeping the contract device-resident is what makes those
+layers viable.
 
 ## Where the algebra is proven
 

@@ -21,15 +21,15 @@ use crate::error::ArrayError;
 use crate::scalar::FloatScalar;
 
 impl<T: GpuType> Array<T> {
-    /// Realize this array as a fresh contiguous row-major `Array` (copies
-    /// through the device if it's a strided/transposed view). A no-op clone
-    /// of the backing buffer when already contiguous.
+    /// Realize this array as a fresh contiguous row-major `Array`. Already
+    /// contiguous arrays are a cheap `Arc` share; strided / transposed /
+    /// broadcast views are gathered **on the device** (no host round-trip).
     pub fn contiguous(&self) -> Result<Array<T>, ArrayError> {
-        // Host round-trip: download in logical order, re-upload row-major.
-        // (A copy *kernel* over strided indices is a later optimization;
-        // correctness first.)
-        let data = self.to_vec()?;
-        Array::from_slice(self.gpu(), &data, self.shape())
+        if self.is_contiguous() {
+            Ok(self.shallow_clone())
+        } else {
+            self.gather_contiguous()
+        }
     }
 
     /// Apply a unary IR op (`UnaryOp::Neg`) elementwise.
@@ -304,13 +304,10 @@ impl<T: GpuType> Array<T> {
     }
 
     /// Contiguous form of this array, reusing `self` (Arc share) when it is
-    /// already contiguous. Shared with the broadcast path.
+    /// already contiguous. Shared with the broadcast path. (Now identical to
+    /// `contiguous`, which already short-circuits the contiguous case.)
     pub(crate) fn contiguous_or_self(&self) -> Result<Array<T>, ArrayError> {
-        if self.is_contiguous() {
-            Ok(self.shallow_clone())
-        } else {
-            self.contiguous()
-        }
+        self.contiguous()
     }
 
     fn dispatch_unary(&self, def: &KernelDef, n: usize) -> Result<Array<T>, ArrayError> {

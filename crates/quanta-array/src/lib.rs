@@ -46,6 +46,7 @@ mod array;
 mod broadcast;
 mod construct;
 mod error;
+mod gather;
 mod reduce;
 mod scalar;
 mod ufunc;

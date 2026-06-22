@@ -28,23 +28,50 @@ pub trait FloatScalar: ArrayScalar {}
 /// An array element with device-wide reductions (`sum`/`min`/`max`),
 /// dispatched to the matching `quanta-prims` reduce kernel. Implemented for
 /// the types prims provides reduces for: f32 / i32 / u32.
+///
+/// The reductions take an on-device [`Field`](quanta::Field) so the data
+/// never round-trips through host memory — the array stays GPU-resident.
 pub trait ReduceScalar: ArrayScalar {
-    fn reduce_add(gpu: &quanta::Gpu, data: &[Self]) -> Result<Self, quanta::QuantaError>;
-    fn reduce_min(gpu: &quanta::Gpu, data: &[Self]) -> Result<Self, quanta::QuantaError>;
-    fn reduce_max(gpu: &quanta::Gpu, data: &[Self]) -> Result<Self, quanta::QuantaError>;
+    fn reduce_add(
+        gpu: &quanta::Gpu,
+        data: &quanta::Field<Self>,
+        n: usize,
+    ) -> Result<Self, quanta::QuantaError>;
+    fn reduce_min(
+        gpu: &quanta::Gpu,
+        data: &quanta::Field<Self>,
+        n: usize,
+    ) -> Result<Self, quanta::QuantaError>;
+    fn reduce_max(
+        gpu: &quanta::Gpu,
+        data: &quanta::Field<Self>,
+        n: usize,
+    ) -> Result<Self, quanta::QuantaError>;
 }
 
 macro_rules! reduce_scalar {
     ($t:ty, $add:ident, $min:ident, $max:ident) => {
         impl ReduceScalar for $t {
-            fn reduce_add(gpu: &quanta::Gpu, data: &[Self]) -> Result<Self, quanta::QuantaError> {
-                quanta_prims::$add(gpu, data)
+            fn reduce_add(
+                gpu: &quanta::Gpu,
+                data: &quanta::Field<Self>,
+                n: usize,
+            ) -> Result<Self, quanta::QuantaError> {
+                quanta_prims::$add(gpu, data, n)
             }
-            fn reduce_min(gpu: &quanta::Gpu, data: &[Self]) -> Result<Self, quanta::QuantaError> {
-                quanta_prims::$min(gpu, data)
+            fn reduce_min(
+                gpu: &quanta::Gpu,
+                data: &quanta::Field<Self>,
+                n: usize,
+            ) -> Result<Self, quanta::QuantaError> {
+                quanta_prims::$min(gpu, data, n)
             }
-            fn reduce_max(gpu: &quanta::Gpu, data: &[Self]) -> Result<Self, quanta::QuantaError> {
-                quanta_prims::$max(gpu, data)
+            fn reduce_max(
+                gpu: &quanta::Gpu,
+                data: &quanta::Field<Self>,
+                n: usize,
+            ) -> Result<Self, quanta::QuantaError> {
+                quanta_prims::$max(gpu, data, n)
             }
         }
     };
@@ -52,21 +79,21 @@ macro_rules! reduce_scalar {
 
 reduce_scalar!(
     f32,
-    device_reduce_add_f32,
-    device_reduce_min_f32,
-    device_reduce_max_f32
+    device_reduce_add_f32_field,
+    device_reduce_min_f32_field,
+    device_reduce_max_f32_field
 );
 reduce_scalar!(
     i32,
-    device_reduce_add_i32,
-    device_reduce_min_i32,
-    device_reduce_max_i32
+    device_reduce_add_i32_field,
+    device_reduce_min_i32_field,
+    device_reduce_max_i32_field
 );
 reduce_scalar!(
     u32,
-    device_reduce_add_u32,
-    device_reduce_min_u32,
-    device_reduce_max_u32
+    device_reduce_add_u32_field,
+    device_reduce_min_u32_field,
+    device_reduce_max_u32_field
 );
 
 macro_rules! int_scalar {
