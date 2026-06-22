@@ -706,3 +706,83 @@ fn scan_kernel_def_roundtrip_via_cpu() {
     let wave = gpu.wave_jit(&bytes);
     assert!(wave.is_ok(), "scan kernel should JIT-compile on CPU");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cooperative subgroup (warp) reductions on the CPU lane
+//
+// Regression guard: the software executor must reduce SubgroupReduceAdd
+// cooperatively across a warp (32 lanes), not return each lane's own value.
+// Before the fix, a 32-lane SubgroupReduceAdd returned the lane's input
+// (and SubgroupSize returned 1); now every lane in a warp gets the warp sum.
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn build_subgroup_reduce_add_kernel() -> Vec<u8> {
+    // out[i] = subgroup_reduce_add(in[i]) — every lane in the warp gets the
+    // warp-wide sum.
+    let def = KernelDef {
+        name: "sg_reduce_add".into(),
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: ScalarType::F32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 1,
+                scalar_type: ScalarType::F32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty: ScalarType::F32,
+            },
+            KernelOp::SubgroupReduceAdd {
+                dst: Reg(2),
+                src: Reg(1),
+                ty: ScalarType::F32,
+            },
+            KernelOp::Store {
+                field: 1,
+                index: Reg(0),
+                src: Reg(2),
+                ty: ScalarType::F32,
+            },
+        ],
+        body_source: None,
+        next_reg: 3,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [32, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    };
+    quanta_ir::serialize_kernel(&def)
+}
+
+#[test]
+fn cpu_subgroup_reduce_add_is_cooperative() {
+    let gpu = quanta::init_cpu();
+    // One warp of 32 lanes: inputs 1.0..=32.0, sum = 528.
+    let input: Vec<f32> = (1..=32).map(|i| i as f32).collect();
+    let a = gpu.field::<f32>(32).unwrap();
+    let out = gpu.field::<f32>(32).unwrap();
+    a.write(&input).unwrap();
+
+    let bytes = build_subgroup_reduce_add_kernel();
+    let mut wave = gpu.wave_jit(&bytes).unwrap();
+    wave.bind(0, &a);
+    wave.bind(1, &out);
+    gpu.dispatch(&wave, 32).unwrap().wait().unwrap();
+
+    let got = out.read().unwrap();
+    // Every lane in the warp sees the full warp sum (not its own value).
+    for (i, &v) in got.iter().enumerate() {
+        assert!((v - 528.0).abs() <= 1e-3, "lane {i}: {v} (want 528)");
+    }
+}

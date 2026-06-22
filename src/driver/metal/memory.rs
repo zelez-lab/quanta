@@ -55,6 +55,28 @@ impl MetalDevice {
         Ok(())
     }
 
+    pub(crate) fn field_write_bytes_at_impl(
+        &self,
+        handle: u64,
+        byte_offset: usize,
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buffer = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_write_bytes_at: handle {handle}"))
+        })?;
+        // Shared storage: write straight into the mapped contents at offset.
+        unsafe {
+            let contents = ffi::msg_ptr(*buffer, b"contents\0").add(byte_offset);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), contents, data.len());
+        }
+        Ok(())
+    }
+
     pub(crate) fn field_read_bytes_impl(
         &self,
         handle: u64,

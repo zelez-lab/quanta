@@ -16,7 +16,10 @@ use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 use crate::{Pipeline, RenderPass};
 use quanta_ir::{KernelDef, KernelOp};
 
-use super::exec::{ExecCtx, execute_ops};
+use super::exec::{
+    ExecCtx, SUBGROUP_SIZE, SubgroupKind, SubgroupMode, execute_ops, resolve_warp,
+    segment_has_subgroup,
+};
 use super::value::Value;
 
 // ── CPU Device ───────────────────────────────────────────────────────────────
@@ -277,6 +280,24 @@ impl GpuDevice for CpuDevice {
         Ok(())
     }
 
+    fn field_write_bytes_at(
+        &self,
+        handle: u64,
+        byte_offset: usize,
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        let mut bufs = self.buffers.lock().unwrap();
+        let buf = bufs
+            .get_mut(&handle)
+            .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
+        if byte_offset >= buf.data.len() {
+            return Ok(());
+        }
+        let len = data.len().min(buf.data.len() - byte_offset);
+        buf.data[byte_offset..byte_offset + len].copy_from_slice(&data[..len]);
+        Ok(())
+    }
+
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError> {
         let bufs = self.buffers.lock().unwrap();
         let buf = bufs
@@ -391,8 +412,15 @@ impl GpuDevice for CpuDevice {
     }
 
     fn wave_jit(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
-        let def = quanta_ir::deserialize_kernel(kernel_def_bytes)
+        let mut def = quanta_ir::deserialize_kernel(kernel_def_bytes)
             .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
+        // Hoist barriers nested in (uniform) control flow up to the top
+        // level so the cooperative segmenter sees them. A barrier under a
+        // divergent branch is UB on real GPUs, so the only barriers we
+        // encounter inside branches are uniform — the inliner's structural
+        // wrappers — and lifting them preserves semantics (the guard is
+        // duplicated onto both halves). See `hoist_barriers`.
+        def.body = hoist_barriers(core::mem::take(&mut def.body));
         let handle = self.alloc_handle();
         let workgroup_size = def.workgroup_size;
         let segments = barrier_segment_ranges(&def.body);
@@ -507,31 +535,118 @@ impl GpuDevice for CpuDevice {
                         }
                         for &(seg_start, seg_end) in segments {
                             let segment = &body[seg_start..seg_end];
-                            for lid in 0..threads_per_group {
-                                let quark_id = (gid * threads_per_group + lid) as u32;
-                                let local_id = lid as u32;
-                                let group_id = gid as u32;
+                            let tpg = threads_per_group as u32;
+
+                            // Subgroup reduce/scan ops need all warp lanes'
+                            // inputs at once, but lanes run sequentially. For
+                            // segments that use them, resolve cooperatively
+                            // per warp via a side-effect-free Collect dry run
+                            // + a real Resolve pass (see SubgroupMode). Other
+                            // segments take the plain single-pass loop.
+                            let run_lane = |lid: u32,
+                                            regs: HashMap<u32, Value>,
+                                            shared: &mut HashMap<u32, Vec<u8>>,
+                                            mode: SubgroupMode|
+                             -> Result<HashMap<u32, Value>, String> {
                                 let mut ctx = ExecCtx {
-                                    quark_id,
-                                    local_id,
-                                    group_id,
+                                    quark_id: (gid * threads_per_group + lid as u64) as u32,
+                                    local_id: lid,
+                                    group_id: gid as u32,
                                     group_size: group_size_x,
                                     quark_count: total_threads as u32,
-                                    regs: core::mem::take(&mut thread_regs[lid as usize]),
+                                    regs,
                                     fields: field_data,
-                                    shared: &mut shared,
+                                    shared,
                                     push_data,
+                                    subgroup: mode,
                                 };
-                                if let Err(e) = execute_ops(&mut ctx, segment) {
-                                    let mut slot = first_err.lock().unwrap();
-                                    if slot.is_none() {
-                                        *slot = Some(format!(
-                                            "CPU execution error (quark {quark_id}): {e}"
-                                        ));
-                                    }
-                                    return;
+                                execute_ops(&mut ctx, segment)?;
+                                Ok(ctx.regs)
+                            };
+
+                            let report = |e: String, quark_id: u32| {
+                                let mut slot = first_err.lock().unwrap();
+                                if slot.is_none() {
+                                    *slot = Some(format!(
+                                        "CPU execution error (quark {quark_id}): {e}"
+                                    ));
                                 }
-                                thread_regs[lid as usize] = ctx.regs;
+                            };
+
+                            if segment_has_subgroup(segment) {
+                                // Warp-cooperative path.
+                                let mut lid = 0u32;
+                                while lid < tpg {
+                                    let warp_end = (lid + SUBGROUP_SIZE).min(tpg);
+                                    let warp: Vec<u32> = (lid..warp_end).collect();
+
+                                    // Pass 1 — Collect (dry run; writes off).
+                                    let mut cohort: Vec<Vec<(SubgroupKind, Value)>> =
+                                        Vec::with_capacity(warp.len());
+                                    for &wl in &warp {
+                                        let regs = thread_regs[wl as usize].clone();
+                                        let mut inputs = Vec::new();
+                                        let r = {
+                                            let mut sh = shared.clone();
+                                            run_lane(
+                                                wl,
+                                                regs,
+                                                &mut sh,
+                                                SubgroupMode::Collect {
+                                                    inputs: &mut inputs,
+                                                },
+                                            )
+                                        };
+                                        if let Err(e) = r {
+                                            report(e, (gid * threads_per_group + wl as u64) as u32);
+                                            return;
+                                        }
+                                        cohort.push(inputs);
+                                    }
+
+                                    // Reduce per site across the warp.
+                                    let resolved = resolve_warp(&cohort);
+
+                                    // Pass 2 — Resolve (real writes).
+                                    for (slot_i, &wl) in warp.iter().enumerate() {
+                                        let regs = core::mem::take(&mut thread_regs[wl as usize]);
+                                        let res = run_lane(
+                                            wl,
+                                            regs,
+                                            &mut shared,
+                                            SubgroupMode::Resolve {
+                                                resolved: &resolved[slot_i],
+                                                cursor: 0,
+                                            },
+                                        );
+                                        match res {
+                                            Ok(regs) => thread_regs[wl as usize] = regs,
+                                            Err(e) => {
+                                                report(
+                                                    e,
+                                                    (gid * threads_per_group + wl as u64) as u32,
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    lid = warp_end;
+                                }
+                            } else {
+                                // Plain single-pass path (no subgroup ops).
+                                for lid in 0..tpg {
+                                    let regs = core::mem::take(&mut thread_regs[lid as usize]);
+                                    match run_lane(lid, regs, &mut shared, SubgroupMode::None) {
+                                        Ok(regs) => thread_regs[lid as usize] = regs,
+                                        Err(e) => {
+                                            report(
+                                                e,
+                                                (gid * threads_per_group + lid as u64) as u32,
+                                            );
+                                            return;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1373,6 +1488,100 @@ impl GpuDevice for CpuDevice {
 /// Each range covers the ops between consecutive barriers.
 /// The barrier ops themselves are excluded. Zero allocation at dispatch
 /// time — segments are sliced from the original body via `&ops[start..end]`.
+/// Rewrite an op list so every barrier sits at the top level, lifting
+/// barriers out of (uniform) control flow.
+///
+/// The CPU dispatcher segments a workgroup body at top-level barriers and
+/// runs each segment for all lanes cooperatively (so a `shared_store`
+/// before a barrier is visible to a `shared_load` after it). But inlining a
+/// `#[quanta::device]` fn wraps the callee body in structural blocks, so a
+/// barrier written between a store and a load can end up nested inside a
+/// `Branch`. The segmenter then misses it and the cooperative store→load
+/// collapses into one segment, reading stale shared memory.
+///
+/// A barrier inside a *divergent* branch is undefined behaviour on real
+/// GPUs, so any branch we find containing a barrier is workgroup-uniform.
+/// Lifting it is therefore sound: a branch whose body is `pre; barrier;
+/// post` is equivalent to `if c {pre}; barrier; if c {post}` when `c` is
+/// uniform. We split such a branch at each barrier, duplicating the
+/// condition onto each half, and emit the barrier at the top level.
+fn hoist_barriers(ops: Vec<KernelOp>) -> Vec<KernelOp> {
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        match op {
+            KernelOp::Branch {
+                cond,
+                then_ops,
+                else_ops,
+            } => {
+                let then_h = hoist_barriers(then_ops);
+                let else_h = hoist_barriers(else_ops);
+                let then_contains = then_h.iter().any(|o| matches!(o, KernelOp::Barrier));
+                let else_contains = else_h.iter().any(|o| matches!(o, KernelOp::Barrier));
+                if !then_contains && !else_contains {
+                    // No barrier inside — keep as a single branch.
+                    out.push(KernelOp::Branch {
+                        cond,
+                        then_ops: then_h,
+                        else_ops: else_h,
+                    });
+                } else {
+                    // Split both arms into barrier-separated chunks and
+                    // interleave: chunk0(then/else); Barrier; chunk1; ...
+                    let then_chunks = split_chunks(then_h);
+                    let else_chunks = split_chunks(else_h);
+                    let n = then_chunks.len().max(else_chunks.len());
+                    for i in 0..n {
+                        let tc = then_chunks.get(i).cloned().unwrap_or_default();
+                        let ec = else_chunks.get(i).cloned().unwrap_or_default();
+                        if !tc.is_empty() || !ec.is_empty() {
+                            out.push(KernelOp::Branch {
+                                cond,
+                                then_ops: tc,
+                                else_ops: ec,
+                            });
+                        }
+                        if i + 1 < n {
+                            out.push(KernelOp::Barrier);
+                        }
+                    }
+                }
+            }
+            KernelOp::Loop {
+                count,
+                iter_reg,
+                body,
+            } => {
+                // Recurse for nested correctness; barriers crossing a loop
+                // boundary aren't hoisted (and prims kernels don't put
+                // barriers in loops).
+                out.push(KernelOp::Loop {
+                    count,
+                    iter_reg,
+                    body: hoist_barriers(body),
+                });
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Split a (barrier-hoisted) op list into the maximal chunks between
+/// top-level barriers. Barriers themselves are dropped. A list with no
+/// barrier yields a single chunk.
+fn split_chunks(ops: Vec<KernelOp>) -> Vec<Vec<KernelOp>> {
+    let mut chunks = vec![Vec::new()];
+    for op in ops {
+        if matches!(op, KernelOp::Barrier) {
+            chunks.push(Vec::new());
+        } else {
+            chunks.last_mut().unwrap().push(op);
+        }
+    }
+    chunks
+}
+
 fn barrier_segment_ranges(ops: &[KernelOp]) -> Vec<(usize, usize)> {
     let mut segments = Vec::new();
     let mut start = 0;

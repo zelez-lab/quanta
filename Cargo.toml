@@ -13,6 +13,7 @@ members = [
     "crates/quanta-tensor",
     "crates/quanta-prims",
     "crates/quanta-render",
+    "crates/quanta-array",
     "examples/headless_compute",
     "examples/web_add_one",
     "examples/web_triangle",
@@ -29,6 +30,7 @@ repository = "https://github.com/zelez-lab/quanta"
 
 [workspace.dependencies]
 quanta-ir = { path = "crates/quanta-ir", version = "0.1.0-alpha.2" }
+quanta-tensor = { path = "crates/quanta-tensor", version = "0.1.0-alpha.2" }
 quanta-wasm-lowering = { path = "crates/quanta-wasm-lowering", version = "0.1.0-alpha.2" }
 
 [package]

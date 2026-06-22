@@ -31,6 +31,7 @@
 - [Multi-Queue](guide/15-multi-queue.md)
 - [Async Copy and Printf](guide/16-async-copy-and-printf.md)
 - [Block Primitives](guide/17-block-primitives.md)
+- [Arrays](guide/18-arrays.md)
 
 # Expert
 
@@ -59,12 +60,14 @@
 - [Indirect Commands](cookbook/indirect-commands.md)
 - [Multi-Queue](cookbook/multi-queue.md)
 - [Async Copy and GPU Printf](cookbook/async-copy-and-printf.md)
+- [Array Math (NumPy on the GPU)](cookbook/arrays-numpy.md)
 
 # Migration
 
 - [From CUDA](migration/from-cuda.md)
 - [From wgpu](migration/from-wgpu.md)
 - [From Metal/Vulkan](migration/from-metal-vulkan.md)
+- [From NumPy](migration/from-numpy.md)
 
 # Reference
 

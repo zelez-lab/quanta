@@ -193,6 +193,47 @@ impl VulkanDevice {
         Ok(())
     }
 
+    pub(crate) fn field_write_bytes_at_impl(
+        &self,
+        handle: u64,
+        byte_offset: usize,
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers.get(&handle).ok_or_else(|| {
+            QuantaError::invalid_param("bad field handle")
+                .with_context(&format!("field_write_bytes_at: handle {handle}"))
+        })?;
+        if let Some(ptr) = buf.mapped_ptr {
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), ptr.add(byte_offset), data.len());
+            }
+        } else {
+            // Map from offset 0 (avoids per-driver map-offset alignment
+            // requirements) and write at the byte offset within the mapping.
+            let map_len = byte_offset + data.len();
+            unsafe {
+                let mut ptr: *mut c_void = core::ptr::null_mut();
+                let result =
+                    ffi::vkMapMemory(self.device, buf.memory, 0, map_len as u64, 0, &mut ptr);
+                if result != ffi::VK_SUCCESS {
+                    return Err(QuantaError::invalid_param("map failed")
+                        .with_context(&format!("field_write_bytes_at: handle {handle}")));
+                }
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    (ptr as *mut u8).add(byte_offset),
+                    data.len(),
+                );
+                ffi::vkUnmapMemory(self.device, buf.memory);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn field_read_bytes_impl(
         &self,
         handle: u64,

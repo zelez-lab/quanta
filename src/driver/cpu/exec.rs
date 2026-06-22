@@ -19,6 +19,59 @@ use super::value::{
 /// Signal to break out of the current loop.
 pub(super) struct BreakSignal;
 
+/// CPU subgroup (warp) width. Subgroup reductions on the software lane
+/// are resolved cooperatively over chunks of this many lanes within a
+/// workgroup, matching typical hardware warp/subgroup width. The prims
+/// block kernels derive their warp structure from `subgroup_size()`, so
+/// this must equal what [`KernelOp::SubgroupSize`] reports.
+pub(super) const SUBGROUP_SIZE: u32 = 32;
+
+/// How a segment is being executed with respect to subgroup ops.
+///
+/// CPU execution runs every lane of a workgroup through a barrier segment
+/// before the next segment, which makes shared memory cooperative — but a
+/// subgroup reduction needs *all* lanes' inputs, and a lane reaching the
+/// reduce can't see lanes that haven't run yet. We resolve this per warp
+/// with two passes:
+///
+/// - `Collect`: a side-effect-free dry run that records each subgroup op's
+///   input value per lane (memory writes suppressed; reads still happen so
+///   register values are realistic). Subgroup ops return their own input
+///   as a placeholder so dependent code still computes.
+/// - `Resolve`: the real run. Subgroup ops return the precomputed
+///   cooperative result for this lane+site (from `resolved`); all memory
+///   writes happen normally.
+///
+/// `None`-mode (no subgroup ops in the segment) runs once, normally.
+pub(super) enum SubgroupMode<'r> {
+    /// Normal single-pass execution (segment has no subgroup ops).
+    None,
+    /// Dry run: capture subgroup-op (kind, input) per lane, suppress
+    /// memory writes.
+    Collect {
+        /// Per-site `(kind, input)` for THIS lane, pushed in execution
+        /// order.
+        inputs: &'r mut Vec<(SubgroupKind, Value)>,
+    },
+    /// Real run: subgroup ops read their resolved result for this lane.
+    Resolve {
+        /// Per-site resolved values for THIS lane, indexed by site order.
+        resolved: &'r [Value],
+        /// Next site index to consume (advanced as ops execute).
+        cursor: usize,
+    },
+}
+
+/// The reduction/scan a subgroup op performs across a warp's lanes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SubgroupKind {
+    ReduceAdd,
+    ReduceMin,
+    ReduceMax,
+    InclusiveAdd,
+    ExclusiveAdd,
+}
+
 /// Per-thread execution state.
 ///
 /// `fields` is shared by reference across all quark workers so that
@@ -45,6 +98,15 @@ pub(super) struct ExecCtx<'a> {
     /// A `KernelOp::Load` with `index = Reg(u32::MAX)` is the
     /// sentinel for a push-constant read.
     pub(super) push_data: &'a [u8; crate::api::wave::PUSH_DATA_CAP],
+    /// Subgroup-op resolution mode for the current segment pass.
+    pub(super) subgroup: SubgroupMode<'a>,
+}
+
+impl ExecCtx<'_> {
+    /// Whether memory writes should be suppressed (the `Collect` dry run).
+    fn writes_suppressed(&self) -> bool {
+        matches!(self.subgroup, SubgroupMode::Collect { .. })
+    }
 }
 
 pub(super) fn execute_ops(
@@ -106,12 +168,15 @@ pub(super) fn execute_ops(
             } => {
                 let idx = reg(ctx, index)?;
                 let val = reg(ctx, src)?;
-                let slot = *field as usize;
-                let lock = ctx.fields[slot]
-                    .as_ref()
-                    .ok_or_else(|| format!("Store: field slot {slot} not bound"))?;
-                let mut buf = lock.lock().unwrap();
-                write_scalar(&mut buf, idx.as_u32(), val, ty);
+                // Suppress writes during the subgroup Collect dry run.
+                if !ctx.writes_suppressed() {
+                    let slot = *field as usize;
+                    let lock = ctx.fields[slot]
+                        .as_ref()
+                        .ok_or_else(|| format!("Store: field slot {slot} not bound"))?;
+                    let mut buf = lock.lock().unwrap();
+                    write_scalar(&mut buf, idx.as_u32(), val, ty);
+                }
             }
             KernelOp::BinOp { dst, a, b, op, ty } => {
                 let va = reg(ctx, a)?;
@@ -212,11 +277,14 @@ pub(super) fn execute_ops(
             KernelOp::SharedStore { id, index, src, ty } => {
                 let idx = reg(ctx, index)?.as_u32();
                 let val = reg(ctx, src)?;
-                let buf = ctx
-                    .shared
-                    .get_mut(id)
-                    .ok_or_else(|| format!("SharedStore: shared id {id} not declared"))?;
-                write_scalar(buf, idx, val, ty);
+                // Suppress writes during the subgroup Collect dry run.
+                if !ctx.writes_suppressed() {
+                    let buf = ctx
+                        .shared
+                        .get_mut(id)
+                        .ok_or_else(|| format!("SharedStore: shared id {id} not declared"))?;
+                    write_scalar(buf, idx, val, ty);
+                }
             }
             KernelOp::Barrier => {
                 // No-op: sequential execution means shared memory is always visible.
@@ -246,7 +314,11 @@ pub(super) fn execute_ops(
                 let mut buf = lock.lock().unwrap();
                 let old = read_scalar(&buf, idx, ty);
                 let (new_val, old_val) = eval_atomic(old, operand, op, ty);
-                write_scalar(&mut buf, idx, new_val, ty);
+                // Suppress the write during the subgroup Collect dry run
+                // (still return the read value so dependent regs compute).
+                if !ctx.writes_suppressed() {
+                    write_scalar(&mut buf, idx, new_val, ty);
+                }
                 ctx.regs.insert(dst.0, old_val);
             }
             KernelOp::AtomicCas {
@@ -271,7 +343,8 @@ pub(super) fn execute_ops(
                 let old = read_scalar(&buf, idx, ty);
                 let old_u64 = old.as_u64();
                 let exp_u64 = exp.as_u64();
-                if old_u64 == exp_u64 {
+                // Suppress the write during the subgroup Collect dry run.
+                if old_u64 == exp_u64 && !ctx.writes_suppressed() {
                     write_scalar(&mut buf, idx, des, ty);
                 }
                 ctx.regs.insert(dst.0, old);
@@ -299,8 +372,11 @@ pub(super) fn execute_ops(
                     .ok_or_else(|| format!("SharedAtomicOp: shared id {slot} not declared"))?;
                 let old = read_scalar(buf, idx, ty);
                 let (new_val, old_val) = eval_atomic(old, operand, op, ty);
-                let buf = ctx.shared.get_mut(slot).unwrap();
-                write_scalar(buf, idx, new_val, ty);
+                // Suppress the write during the subgroup Collect dry run.
+                if !ctx.writes_suppressed() {
+                    let buf = ctx.shared.get_mut(slot).unwrap();
+                    write_scalar(buf, idx, new_val, ty);
+                }
                 ctx.regs.insert(dst.0, old_val);
             }
             // Wave/subgroup intrinsics: return identity values in sequential mode
@@ -321,21 +397,30 @@ pub(super) fn execute_ops(
                 let v = reg(ctx, predicate)?;
                 ctx.regs.insert(dst.0, Value::Bool(v.as_bool()));
             }
-            KernelOp::SubgroupReduceAdd { dst, src, .. }
-            | KernelOp::SubgroupInclusiveAdd { dst, src, .. }
-            | KernelOp::SubgroupExclusiveAdd { dst, src, .. } => {
-                // Single-thread: reduce/scan = own value (exclusive = 0)
-                if matches!(op, KernelOp::SubgroupExclusiveAdd { .. }) {
-                    ctx.regs.insert(dst.0, Value::U32(0));
-                } else {
-                    let v = reg(ctx, src)?;
-                    ctx.regs.insert(dst.0, v);
-                }
-            }
-            KernelOp::SubgroupReduceMin { dst, src, .. }
-            | KernelOp::SubgroupReduceMax { dst, src, .. } => {
+            KernelOp::SubgroupReduceAdd { dst, src, .. } => {
                 let v = reg(ctx, src)?;
-                ctx.regs.insert(dst.0, v);
+                let r = subgroup_value(ctx, SubgroupKind::ReduceAdd, v);
+                ctx.regs.insert(dst.0, r);
+            }
+            KernelOp::SubgroupReduceMin { dst, src, .. } => {
+                let v = reg(ctx, src)?;
+                let r = subgroup_value(ctx, SubgroupKind::ReduceMin, v);
+                ctx.regs.insert(dst.0, r);
+            }
+            KernelOp::SubgroupReduceMax { dst, src, .. } => {
+                let v = reg(ctx, src)?;
+                let r = subgroup_value(ctx, SubgroupKind::ReduceMax, v);
+                ctx.regs.insert(dst.0, r);
+            }
+            KernelOp::SubgroupInclusiveAdd { dst, src, .. } => {
+                let v = reg(ctx, src)?;
+                let r = subgroup_value(ctx, SubgroupKind::InclusiveAdd, v);
+                ctx.regs.insert(dst.0, r);
+            }
+            KernelOp::SubgroupExclusiveAdd { dst, src, .. } => {
+                let v = reg(ctx, src)?;
+                let r = subgroup_value(ctx, SubgroupKind::ExclusiveAdd, v);
+                ctx.regs.insert(dst.0, r);
             }
             // Vector ops
             KernelOp::VecConstruct {
@@ -433,8 +518,8 @@ pub(super) fn execute_ops(
                 ctx.regs.insert(dst.0, Value::F32(0.0));
             }
             KernelOp::SubgroupSize { dst } => {
-                // Single-threaded CPU: subgroup size = 1.
-                ctx.regs.insert(dst.0, Value::U32(1));
+                // Cooperative warp width on the CPU lane (see SUBGROUP_SIZE).
+                ctx.regs.insert(dst.0, Value::U32(SUBGROUP_SIZE));
             }
             KernelOp::SharedDeclDyn { id, ty } => {
                 // Dynamic shared memory: allocate a default-sized buffer.
@@ -455,4 +540,161 @@ pub(super) fn reg(ctx: &ExecCtx, r: &Reg) -> Result<Value, String> {
         .get(&r.0)
         .copied()
         .ok_or_else(|| format!("register r{} not set", r.0))
+}
+
+/// Resolve a subgroup op given its already-read input `v`, per the current
+/// [`SubgroupMode`]:
+/// - `Collect`: record `v`, return `v` (placeholder for the dry run).
+/// - `Resolve`: return the precomputed cooperative result for this site,
+///   advancing the cursor; falls back to `v` if the cursor overruns (a
+///   site count mismatch — shouldn't happen, but degrade safely).
+/// - `None`: return `v` (no cooperative resolution requested).
+fn subgroup_value(ctx: &mut ExecCtx, kind: SubgroupKind, v: Value) -> Value {
+    match &mut ctx.subgroup {
+        SubgroupMode::None => v,
+        SubgroupMode::Collect { inputs } => {
+            inputs.push((kind, v));
+            v
+        }
+        SubgroupMode::Resolve { resolved, cursor } => {
+            let out = resolved.get(*cursor).copied().unwrap_or(v);
+            *cursor += 1;
+            out
+        }
+    }
+}
+
+/// Does this segment contain any subgroup reduce/scan op (possibly nested
+/// in branches/loops)? Drives whether the dispatcher runs the cooperative
+/// two-pass path for the segment.
+pub(super) fn segment_has_subgroup(ops: &[KernelOp]) -> bool {
+    ops.iter().any(|op| match op {
+        KernelOp::SubgroupReduceAdd { .. }
+        | KernelOp::SubgroupReduceMin { .. }
+        | KernelOp::SubgroupReduceMax { .. }
+        | KernelOp::SubgroupInclusiveAdd { .. }
+        | KernelOp::SubgroupExclusiveAdd { .. } => true,
+        KernelOp::Branch {
+            then_ops, else_ops, ..
+        } => segment_has_subgroup(then_ops) || segment_has_subgroup(else_ops),
+        KernelOp::Loop { body, .. } => segment_has_subgroup(body),
+        _ => false,
+    })
+}
+
+/// Cooperatively reduce one warp's collected `(kind, input)` site values
+/// into the per-lane resolved values. `cohort[lane][site] = (kind, input)`;
+/// returns `out[lane][site] = resolved`. All lanes are assumed to hit the
+/// same sequence of sites (true for non-divergent subgroup use, which is
+/// the only well-defined case on real hardware too).
+pub(super) fn resolve_warp(cohort: &[Vec<(SubgroupKind, Value)>]) -> Vec<Vec<Value>> {
+    let lanes = cohort.len();
+    let mut out: Vec<Vec<Value>> = cohort
+        .iter()
+        .map(|sites| Vec::with_capacity(sites.len()))
+        .collect();
+    if lanes == 0 {
+        return out;
+    }
+    let num_sites = cohort.iter().map(|s| s.len()).max().unwrap_or(0);
+    for site in 0..num_sites {
+        // Gather this site's (kind, input) across the lanes that have it.
+        let mut kind = None;
+        let mut inputs: Vec<Value> = Vec::with_capacity(lanes);
+        let mut present: Vec<usize> = Vec::with_capacity(lanes);
+        for (lane, sites) in cohort.iter().enumerate() {
+            if let Some((k, v)) = sites.get(site).copied() {
+                kind.get_or_insert(k);
+                inputs.push(v);
+                present.push(lane);
+            }
+        }
+        let kind = kind.unwrap_or(SubgroupKind::ReduceAdd);
+        // Compute the per-lane result for the lanes present at this site.
+        let results = reduce_site(kind, &inputs);
+        for (slot, &lane) in present.iter().enumerate() {
+            out[lane].push(results[slot]);
+        }
+    }
+    out
+}
+
+/// Apply a subgroup reduction/scan over `inputs` (the lanes present at a
+/// site, in lane order). Returns one result per input lane.
+fn reduce_site(kind: SubgroupKind, inputs: &[Value]) -> Vec<Value> {
+    // Type follows the first input's variant.
+    let proto = inputs.first().copied().unwrap_or(Value::U32(0));
+    match kind {
+        SubgroupKind::ReduceAdd | SubgroupKind::ReduceMin | SubgroupKind::ReduceMax => {
+            let acc = fold_all(kind, inputs, proto);
+            vec![acc; inputs.len()]
+        }
+        SubgroupKind::InclusiveAdd => {
+            let mut out = Vec::with_capacity(inputs.len());
+            let mut acc = identity_add(proto);
+            for &v in inputs {
+                acc = add_values(acc, v);
+                out.push(acc);
+            }
+            out
+        }
+        SubgroupKind::ExclusiveAdd => {
+            let mut out = Vec::with_capacity(inputs.len());
+            let mut acc = identity_add(proto);
+            for &v in inputs {
+                out.push(acc);
+                acc = add_values(acc, v);
+            }
+            out
+        }
+    }
+}
+
+fn fold_all(kind: SubgroupKind, inputs: &[Value], proto: Value) -> Value {
+    let mut it = inputs.iter().copied();
+    let mut acc = match it.next() {
+        Some(v) => v,
+        None => return proto,
+    };
+    for v in it {
+        acc = match kind {
+            SubgroupKind::ReduceAdd => add_values(acc, v),
+            SubgroupKind::ReduceMin => min_values(acc, v),
+            SubgroupKind::ReduceMax => max_values(acc, v),
+            _ => add_values(acc, v),
+        };
+    }
+    acc
+}
+
+fn identity_add(proto: Value) -> Value {
+    match proto {
+        Value::F32(_) => Value::F32(0.0),
+        Value::I32(_) => Value::I32(0),
+        _ => Value::U32(0),
+    }
+}
+
+fn add_values(a: Value, b: Value) -> Value {
+    match a {
+        Value::F32(_) => Value::F32(a.as_f32() + b.as_f32()),
+        Value::I32(_) => Value::I32(a.as_i32().wrapping_add(b.as_i32())),
+        _ => Value::U32(a.as_u32().wrapping_add(b.as_u32())),
+    }
+}
+
+fn min_values(a: Value, b: Value) -> Value {
+    match a {
+        Value::F32(_) => Value::F32(a.as_f32().min(b.as_f32())),
+        Value::I32(_) => Value::I32(a.as_i32().min(b.as_i32())),
+        _ => Value::U32(a.as_u32().min(b.as_u32())),
+    }
+}
+
+fn max_values(a: Value, b: Value) -> Value {
+    match a {
+        Value::F32(_) => Value::F32(a.as_f32().max(b.as_f32())),
+        Value::I32(_) => Value::I32(a.as_i32().max(b.as_i32())),
+        _ => Value::U32(a.as_u32().max(b.as_u32())),
+    }
 }

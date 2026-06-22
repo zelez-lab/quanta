@@ -24,6 +24,10 @@ mod render;
 /// let wave = vector_add(&gpu)?;
 /// gpu.dispatch(&wave, 1_000_000)?;
 /// ```
+/// Cheap to clone — the handle is an `Arc` over the one device, so clones
+/// share it (no second device, no re-init). Lets consumers (e.g.
+/// `quanta-array`) store a `Gpu` alongside their data.
+#[derive(Clone)]
 pub struct Gpu {
     inner: Arc<dyn GpuDevice>,
 }

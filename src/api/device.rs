@@ -98,6 +98,30 @@ pub trait GpuDevice: Send + Sync {
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError>;
     fn field_copy_bytes(&self, dst: u64, src: u64, size: usize) -> Result<(), QuantaError>;
 
+    /// Write `data` into a field starting at byte offset `byte_offset`,
+    /// leaving the rest of the buffer untouched. Native partial-upload on
+    /// CPU / Metal / Vulkan (host-visible mapping at the offset); WebGPU uses
+    /// the default read-modify-write fallback below. Writing past the end of
+    /// the buffer is clamped.
+    fn field_write_bytes_at(
+        &self,
+        handle: u64,
+        byte_offset: usize,
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        if byte_offset == 0 {
+            return self.field_write_bytes(handle, data);
+        }
+        // Read the prefix we must preserve, splice in `data`, write it back.
+        let end = byte_offset + data.len();
+        let mut buf = self.field_read_bytes(handle, end)?;
+        if buf.len() < end {
+            buf.resize(end, 0);
+        }
+        buf[byte_offset..end].copy_from_slice(data);
+        self.field_write_bytes(handle, &buf)
+    }
+
     /// Map a GPU buffer into CPU address space for direct read/write access.
     fn field_map(&self, _handle: u64, _size: usize) -> Result<*mut u8, QuantaError> {
         Err(QuantaError::not_supported("mapped buffers not supported"))
