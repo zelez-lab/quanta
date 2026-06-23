@@ -47,6 +47,18 @@ Broadcasting follows the NumPy rule (trailing dimensions align; size-1 axes
 stretch). It is lowered into strided indexing in the generated kernel, so no
 operand is ever physically expanded.
 
+## Linear algebra (f32)
+
+| NumPy | quanta-array |
+|-------|--------------|
+| `a @ b` (2-D) / `np.matmul(a, b)` | `a.matmul(&b)?` |
+| `a @ b` (1-D) / `np.dot(a, b)` | `a.dot(&b)?` |
+| `np.linalg.norm(a)` | `a.norm()?` |
+
+These call down into `quanta-blas` (the verified Level-1 / GEMM ops), so they
+carry the proven forward-error bounds. f32-only for now; strided operands are
+gathered to contiguous on the device before the call.
+
 ## Views
 
 | NumPy | quanta-array |
@@ -92,6 +104,9 @@ let out = centered.div(&Array::full(&gpu, span, &[4])?)?.to_vec()?;
   but no device reduce yet.
 - **No per-axis reductions or fancy indexing yet.** `arr.sum(axis=0)`,
   `arr[mask]`, and `arr[idx]` are planned increments, not in this release.
+- **Linear algebra is f32-only and 2-D.** `matmul`/`dot`/`norm` are f32; batched
+  matmul, `solve`/`inv`/decompositions follow later. The GEMM is the naive
+  kernel — correct everywhere, with the tuned tensor-core path still to come.
 - **Explicit `Gpu` + `Result`.** Every constructor takes the `Gpu` and every
   operation returns a `Result` (the operators panic for ergonomics; the named
   methods don't).

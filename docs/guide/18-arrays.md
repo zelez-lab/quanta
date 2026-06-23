@@ -105,6 +105,28 @@ does not compile — again, an honest boundary rather than a hidden fallback.
 > Per-axis reductions (`arr.sum(axis=0)`) and `prod` are a later increment —
 > they need a segmented/strided reduce shape that prims doesn't ship yet.
 
+## Linear algebra (f32)
+
+`Array<f32>` gets `matmul`, `dot`, and `norm`, which call down into the
+verified `quanta-blas` ops — so they carry the same mechanically-proven
+forward-error bounds (Higham). Strided/transposed operands are gathered to
+contiguous **on the device** first, so no host round-trip happens for the
+math.
+
+```rust,ignore
+let a = Array::from_slice(&gpu, &[1.0f32, 2.0, 3.0, 4.0], &[2, 2])?;
+let b = Array::from_slice(&gpu, &[5.0f32, 6.0, 7.0, 8.0], &[2, 2])?;
+
+let c = a.matmul(&b)?;              // [2,2] · [2,2] → [2,2]  (numpy a @ b)
+let d = a.reshape(&[4])?.dot(&b.reshape(&[4])?)?; // 1-D inner product → f32
+let n = a.norm()?;                 // L2 norm over all elements → f32
+```
+
+`matmul` requires 2-D operands with a matching inner dimension; `dot`
+requires equal-length 1-D operands. It's f32-only for now (the blas Level-1
++ GEMM surface is f32). The GEMM underneath is the naive kernel — correct on
+every backend; the tiled/tensor-core path is a later perf increment.
+
 ## Views are zero-copy
 
 `reshape`, `permute`, `transpose`, and `broadcast_to` only rewrite the
