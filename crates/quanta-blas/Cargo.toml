@@ -1,0 +1,33 @@
+[package]
+name = "quanta-blas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Verified-numerics BLAS for Quanta — Level-1/2/3 with mechanically-proven forward-error bounds"
+readme = "README.md"
+
+[lib]
+name = "quanta_blas"
+path = "src/lib.rs"
+
+[features]
+default = []
+# `gpu` pulls in the Quanta runtime + the `#[quanta::kernel]` / JIT path.
+# Off by default so the crate doubles as a pure-Rust reference library
+# (the differential-test oracle). `gpu` alone gives the software CPU
+# backend; pick a backend-specific feature below for a real GPU.
+gpu = ["dep:quanta", "quanta-prims/gpu"]
+gpu-metal = ["gpu", "quanta/metal", "quanta-prims/gpu-metal"]
+gpu-vulkan = ["gpu", "quanta/vulkan", "quanta-prims/gpu-vulkan"]
+
+[dependencies]
+quanta = { path = "../..", default-features = false, features = [
+    "software",
+], optional = true }
+quanta-ir = { path = "../quanta-ir" }
+quanta-prims = { path = "../quanta-prims" }
+
+[[bench]]
+name = "level1"
+harness = false
+required-features = ["gpu"]
