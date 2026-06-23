@@ -43,6 +43,38 @@ pub fn nrm2(x: &[f32]) -> f32 {
     acc.sqrt() as f32
 }
 
+/// `gemm`: `C ← alpha·A·B + beta·C`, all row-major.
+///
+/// `a` is `m×k`, `b` is `k×n`, `c` is `m×n` (read for the `beta·C` term and
+/// overwritten with the result). The inner product accumulates in `f64` for
+/// a tight reference. Mirrors `quanta_blas::level1`-style contract; this is
+/// the differential oracle for `gemm_f32`.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a: &[f32],
+    b: &[f32],
+    beta: f32,
+    c: &mut [f32],
+) {
+    assert_eq!(a.len(), m * k, "gemm: A must be m×k");
+    assert_eq!(b.len(), k * n, "gemm: B must be k×n");
+    assert_eq!(c.len(), m * n, "gemm: C must be m×n");
+    for row in 0..m {
+        for col in 0..n {
+            let mut acc = 0.0f64;
+            for p in 0..k {
+                acc += (a[row * k + p] as f64) * (b[p * n + col] as f64);
+            }
+            let cval = c[row * n + col];
+            c[row * n + col] = (alpha as f64 * acc + beta as f64 * cval as f64) as f32;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +102,26 @@ mod tests {
     #[test]
     fn nrm2_basic() {
         assert_eq!(nrm2(&[3.0, 4.0]), 5.0);
+    }
+
+    #[test]
+    fn gemm_basic() {
+        // [[1,2],[3,4]] · [[5,6],[7,8]] = [[19,22],[43,50]]
+        let a = vec![1.0f32, 2.0, 3.0, 4.0];
+        let b = vec![5.0f32, 6.0, 7.0, 8.0];
+        let mut c = vec![0.0f32; 4];
+        gemm(2, 2, 2, 1.0, &a, &b, 0.0, &mut c);
+        assert_eq!(c, vec![19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn gemm_alpha_beta() {
+        // C starts at 1; alpha=2, beta=3 → 2·(A·B) + 3·C
+        let a = vec![1.0f32, 0.0, 0.0, 1.0]; // identity
+        let b = vec![5.0f32, 6.0, 7.0, 8.0];
+        let mut c = vec![1.0f32; 4];
+        gemm(2, 2, 2, 2.0, &a, &b, 3.0, &mut c);
+        // 2·B + 3·1 = [13,15,17,19]
+        assert_eq!(c, vec![13.0, 15.0, 17.0, 19.0]);
     }
 }

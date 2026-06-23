@@ -9,7 +9,7 @@ Cross-backend by construction (Metal / Vulkan / WebGPU / CPU), built on
 `quanta-tensor` (shape proofs) and `quanta-prims` (device-resident
 reductions).
 
-## Status — Level-1 (f32)
+## Status — Level-1 + naive GEMM (f32)
 
 | op | signature | notes |
 |----|-----------|-------|
@@ -17,10 +17,13 @@ reductions).
 | `axpy` | `axpy(gpu, α, &x, &y)` | `y ← α·x + y`, in place |
 | `dot`  | `dot(gpu, &x, &y) -> f32` | `Σ xᵢ·yᵢ`, device-resident reduction |
 | `nrm2` | `nrm2(gpu, &x) -> f32` | `√(Σ xᵢ²)` |
+| `gemm` | `gemm(gpu, m, n, k, α, &a, &b, β, &c)` | `C ← α·A·B + β·C`, row-major, in place on C |
 
 `scal`/`axpy` mutate in place (these ops are memory-bandwidth-bound;
 avoiding a second buffer is the win). `dot`/`nrm2` multiply into a temp
 field on the GPU and reduce there, so the vector never leaves the device.
+`gemm` is the **naive** kernel (one thread per output entry) — correct on
+every backend and matching the proven Higham §3.5 contract.
 
 The crate is a pure-Rust reference library (`quanta_blas::reference`, the
 differential-test oracle) until you enable `gpu` + a backend:
@@ -29,8 +32,8 @@ differential-test oracle) until you enable `gpu` + a backend:
 quanta-blas = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan
 ```
 
-Coming next: Level-2 (`gemv`), Level-3 (`gemm`) with the cooperative-matrix
-tensor-core paths, and the f16/bf16/i8 dtype matrix.
+Coming next: tiled / cooperative-matrix `gemm` (the tensor-core perf path),
+Level-2 (`gemv`), and the f16/bf16/i8 dtype matrix.
 
 ## Performance (honest framing)
 
