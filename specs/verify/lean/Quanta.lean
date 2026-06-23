@@ -96,6 +96,9 @@ import Quanta.Tensor.Bridge
 -- Block-cooperative primitives (companion crate quanta-prims)
 import Quanta.Prims.Reference
 
+-- Level-1 BLAS forward-error bounds (companion crate quanta-blas)
+import Quanta.Blas.Reference
+
 -- Numeric dtype conversions (step 084.1 — bf16 / fp8 round-trip)
 import Quanta.Dtype.Bf16
 import Quanta.Dtype.Fp8
