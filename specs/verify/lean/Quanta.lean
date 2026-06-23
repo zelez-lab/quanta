@@ -98,6 +98,8 @@ import Quanta.Prims.Reference
 
 -- Level-1 BLAS forward-error bounds (companion crate quanta-blas)
 import Quanta.Blas.Reference
+-- Level-3 BLAS GEMM forward-error bound
+import Quanta.Blas.Gemm
 
 -- Numeric dtype conversions (step 084.1 — bf16 / fp8 round-trip)
 import Quanta.Dtype.Bf16
