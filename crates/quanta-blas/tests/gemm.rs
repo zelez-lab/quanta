@@ -117,3 +117,59 @@ fn gemm_shape_mismatch_errors() {
     // declare wrong A length: m=2,k=4 → needs 8, have 6
     assert!(quanta_blas::gemm(&g, 2, 4, 4, 1.0, &a, &b, 0.0, &c).is_err());
 }
+
+#[test]
+fn gemm_tiled_exact_32() {
+    check(32, 32, 32, 1.0, 0.0);
+}
+
+#[test]
+fn gemm_tiled_one_block_32k() {
+    check(17, 17, 17, 1.0, 0.0);
+}
+
+#[test]
+fn gemm_tiled_ones() {
+    // All-ones A·B over the tiled path → every C entry equals k.
+    let g = gpu();
+    let (m, n, k) = (32usize, 32, 32);
+    let a = vec![1.0f32; m * k];
+    let b = vec![1.0f32; k * n];
+    let af = g.field::<f32>(m * k).unwrap();
+    af.write(&a).unwrap();
+    let bf = g.field::<f32>(k * n).unwrap();
+    bf.write(&b).unwrap();
+    let cf = g.field::<f32>(m * n).unwrap();
+    cf.write(&vec![0.0; m * n]).unwrap();
+    quanta_blas::gemm(&g, m as u32, n as u32, k as u32, 1.0, &af, &bf, 0.0, &cf).unwrap();
+    let got = cf.read().unwrap();
+    assert!(
+        got.iter().all(|&x| (x - (k as f32)).abs() < 1e-3),
+        "all entries should equal k={k}; C[0]={}",
+        got[0]
+    );
+}
+
+#[test]
+fn gemm_tiled_n_partial() {
+    // m,k multiple of 16; n NOT (24 = 16+8). Isolates N-tail.
+    check(32, 24, 32, 1.0, 0.0);
+}
+
+#[test]
+fn gemm_tiled_k_partial() {
+    // m,n multiple of 16; k NOT (40 = 16+16+8). Isolates K-tail.
+    check(32, 32, 40, 1.0, 0.0);
+}
+
+#[test]
+fn gemm_tiled_m_partial() {
+    // n,k multiple of 16; m NOT (24). Isolates M-tail.
+    check(24, 32, 32, 1.0, 0.0);
+}
+
+#[test]
+fn gemm_tiled_n24_simple() {
+    // smallest N-partial: 16 rows (1 M-tile), 24 cols (2 N-tiles, 2nd partial), 16 k
+    check(16, 24, 16, 1.0, 0.0);
+}
