@@ -156,6 +156,29 @@ struct LowerCtx<'a> {
     /// local with a prior in-loop read is loop-carried and must be
     /// materialized through its stable register.
     loop_reads: Vec<std::collections::BTreeSet<u32>>,
+    /// Debug instrumentation: an ordered log of local get/set events
+    /// with the loop-nesting depth at each. Recording is gated on
+    /// `QUANTA_LOWER_DEBUG=<kernel_name>` (empty Vec when off). Dumped at
+    /// the end of `lower()` to diagnose loop-invariant-vs-mutated local
+    /// aliasing (the tiled-GEMM register-reuse bug). See `dump_local_debug`.
+    local_events: Vec<LocalEvent>,
+    /// Whether local-event recording is on for this kernel.
+    local_debug: bool,
+}
+
+/// One get/set of a wasm local during lowering, with the loop-nesting
+/// depth at the moment it happened. Used by `dump_local_debug`.
+#[derive(Clone, Copy)]
+struct LocalEvent {
+    local: u32,
+    kind: LocalEventKind,
+    loop_depth: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum LocalEventKind {
+    Get,
+    Set,
 }
 
 /// One br/br_if's intent recorded on its target frame.
@@ -334,6 +357,89 @@ impl<'a> LowerCtx<'a> {
             next_reg: 0,
             intrinsic_names,
             loop_reads: Vec::new(),
+            local_events: Vec::new(),
+            local_debug: std::env::var("QUANTA_LOWER_DEBUG")
+                .is_ok_and(|v| v == side_table.kernel_name || v == "*"),
+        }
+    }
+
+    /// Record a local get/set event (no-op unless local-debug is on for
+    /// this kernel). `loop_depth` is the count of currently-open Loop frames.
+    fn record_local_event(&mut self, local: u32, kind: LocalEventKind) {
+        if self.local_debug {
+            let loop_depth = self.loop_reads.len();
+            self.local_events.push(LocalEvent {
+                local,
+                kind,
+                loop_depth,
+            });
+        }
+    }
+
+    /// Dump a per-local summary of the recorded get/set events, gated on
+    /// `QUANTA_LOWER_DEBUG=<kernel_name>` (or `*` for all). For each local:
+    /// its `stable_reg`, whether it is read / written inside a loop, and the
+    /// ordered event sequence `[G0 S1 G1 …]` where the letter is Get/Set and
+    /// the digit is the loop-nesting depth at that event.
+    ///
+    /// This is the diagnostic for loop-local register reuse (the tiled-GEMM
+    /// "off by num_k_tiles−1" bug): a local read-and-written inside a loop
+    /// is routed through its `stable_reg` by `force_locals_to_stable`, which
+    /// is correct for a true accumulator (`sum = sum + x`, one SSA chain)
+    /// but corrupts a value whose in-loop read and in-loop write are
+    /// *different* producers coalesced into one wasm local. The event
+    /// sequence distinguishes shapes; comparing a working kernel
+    /// (`QUANTA_LOWER_DEBUG=gemm_f32`) with the failing one
+    /// (`gemm_f32_tiled`) localizes the offending local.
+    fn dump_local_debug(&self) {
+        if !self.local_debug {
+            return;
+        }
+        eprintln!(
+            "[lower-locals] kernel `{}`: {} locals, {} events  (LEGEND: G=get S=set, digit=loop depth)",
+            self.side_table.kernel_name,
+            self.locals.len(),
+            self.local_events.len()
+        );
+        for (idx, info) in self.locals.iter().enumerate() {
+            let events: Vec<&LocalEvent> = self
+                .local_events
+                .iter()
+                .filter(|e| e.local == idx as u32)
+                .collect();
+            if events.is_empty() {
+                continue;
+            }
+            let read_in_loop = events
+                .iter()
+                .any(|e| e.kind == LocalEventKind::Get && e.loop_depth > 0);
+            let written_in_loop = events
+                .iter()
+                .any(|e| e.kind == LocalEventKind::Set && e.loop_depth > 0);
+            let seq: String = events
+                .iter()
+                .map(|e| {
+                    let k = if e.kind == LocalEventKind::Get {
+                        "G"
+                    } else {
+                        "S"
+                    };
+                    format!("{k}{}", e.loop_depth)
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            // Mark locals read AND written inside a loop — the population the
+            // discriminator must split (accumulators stay; coalesced
+            // invariant+mutated must not collapse to stable_reg).
+            let mark = if read_in_loop && written_in_loop {
+                " [loop r+w]"
+            } else {
+                ""
+            };
+            eprintln!(
+                "  local {idx:>3}  stable={:?}  r_in_loop={read_in_loop} w_in_loop={written_in_loop}{mark}  [{seq}]",
+                info.stable_reg,
+            );
         }
     }
 
@@ -749,6 +855,7 @@ impl<'a> LowerCtx<'a> {
             self.lower_instr(instr)?;
         }
 
+        self.dump_local_debug();
         Ok(self.into_kernel_def())
     }
 
@@ -989,9 +1096,11 @@ impl<'a> LowerCtx<'a> {
                 for reads in &mut self.loop_reads {
                     reads.insert(*idx);
                 }
+                self.record_local_event(*idx, LocalEventKind::Get);
                 self.stack.push(val);
             }
             RawInstr::LocalSet(idx) => {
+                self.record_local_event(*idx, LocalEventKind::Set);
                 let v = self.pop()?;
                 // Route value-typed SymVals (Reg/Opaque/Const) through
                 // the stable register so post-merge reads see a defined
@@ -1033,6 +1142,7 @@ impl<'a> LowerCtx<'a> {
                 }
             }
             RawInstr::LocalTee(idx) => {
+                self.record_local_event(*idx, LocalEventKind::Set);
                 let v = self.stack.last().copied().ok_or_else(|| {
                     LoweringError::ShapeMismatch("local.tee on empty stack".into())
                 })?;
