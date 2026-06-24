@@ -17,8 +17,8 @@ use crate::{Pipeline, RenderPass};
 use quanta_ir::{KernelDef, KernelOp};
 
 use super::exec::{
-    ExecCtx, SUBGROUP_SIZE, SubgroupKind, SubgroupMode, execute_ops, resolve_warp,
-    segment_has_subgroup,
+    CoopGroup, ExecCtx, SUBGROUP_SIZE, SubgroupKind, SubgroupMode, execute_ops, resolve_warp,
+    segment_has_barrier_loop, segment_has_subgroup,
 };
 use super::value::Value;
 
@@ -573,7 +573,31 @@ impl GpuDevice for CpuDevice {
                                 }
                             };
 
-                            if segment_has_subgroup(segment) {
+                            if segment_has_barrier_loop(segment) && !segment_has_subgroup(segment) {
+                                // A barrier inside a loop is a cross-lane sync
+                                // point; run the loop iteration-synchronized
+                                // across all lanes so in-loop shared writes are
+                                // visible (the top-level segmenter only splits
+                                // at top-level barriers). Segments that ALSO use
+                                // subgroup ops keep the warp-cooperative path
+                                // below (the prims block kernels put their
+                                // barriers at the top level, not inside loops,
+                                // so they never need both).
+                                let coop = CoopGroup {
+                                    gid,
+                                    threads_per_group,
+                                    group_size: group_size_x,
+                                    quark_count: total_threads as u32,
+                                    fields: field_data,
+                                    push_data,
+                                };
+                                if let Err(e) =
+                                    coop.run_segment(segment, &mut thread_regs, &mut shared)
+                                {
+                                    report(e, (gid * threads_per_group) as u32);
+                                    return;
+                                }
+                            } else if segment_has_subgroup(segment) {
                                 // Warp-cooperative path.
                                 let mut lid = 0u32;
                                 while lid < tpg {

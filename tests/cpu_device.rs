@@ -207,6 +207,171 @@ fn cpu_dispatch_vector_add() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Cooperative in-loop barrier — regression for the barrier-bearing-loop fix
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A `Barrier` inside a `Loop` body is a cross-lane sync point. The CPU
+/// cooperative executor must run such a loop iteration-synchronized across
+/// all lanes (every lane completes the pre-barrier sub-segment before any
+/// lane runs the post-barrier sub-segment), or a lane's in-loop shared store
+/// isn't visible to other lanes' in-loop loads. See
+/// `CoopGroup::run_barrier_loop` in `src/driver/cpu/exec.rs`.
+///
+/// Kernel (workgroup = 4 lanes, shared `s[4]`), `reps` iterations:
+///   s[local] = local + 1;  barrier;
+///   acc += s[(local + 1) % 4];  barrier;
+/// out[gid] = acc.
+///
+/// Lane `L` reads `s[(L+1)%4] = ((L+1)%4)+1` each iteration — a value it
+/// never stored itself — so a correct result requires the in-loop barrier to
+/// publish the other lane's store. With `reps` iterations the result is
+/// `reps * (((L+1)%4) + 1)`.
+fn build_inloop_barrier_kernel(reps: u32) -> Vec<u8> {
+    let def = KernelDef {
+        name: "inloop_barrier".into(),
+        params: vec![KernelParam::FieldWrite {
+            name: "out".into(),
+            slot: 0,
+            scalar_type: ScalarType::F32,
+        }],
+        body: vec![
+            // Declare the 4-element f32 shared array (slot 0).
+            KernelOp::SharedDecl {
+                id: 0,
+                ty: ScalarType::F32,
+                count: 4,
+            },
+            // r0 = local lane id (proton_id within the 4-lane workgroup)
+            KernelOp::ProtonId { dst: Reg(0) },
+            // r1 = global id (for the output index)
+            KernelOp::QuarkId { dst: Reg(1) },
+            // r2 = acc = 0.0
+            KernelOp::Const {
+                dst: Reg(2),
+                value: ConstValue::F32(0.0),
+            },
+            // r10 = loop count = reps
+            KernelOp::Const {
+                dst: Reg(10),
+                value: ConstValue::U32(reps),
+            },
+            KernelOp::Loop {
+                count: Reg(10),
+                iter_reg: Reg(11),
+                body: vec![
+                    // s[local] = local + 1   (as f32)
+                    KernelOp::Const {
+                        dst: Reg(3),
+                        value: ConstValue::U32(1),
+                    },
+                    KernelOp::BinOp {
+                        dst: Reg(4),
+                        a: Reg(0),
+                        b: Reg(3),
+                        op: BinOp::Add,
+                        ty: ScalarType::U32,
+                    },
+                    KernelOp::Cast {
+                        dst: Reg(5),
+                        src: Reg(4),
+                        from: ScalarType::U32,
+                        to: ScalarType::F32,
+                    },
+                    KernelOp::SharedStore {
+                        id: 0,
+                        index: Reg(0),
+                        src: Reg(5),
+                        ty: ScalarType::F32,
+                    },
+                    KernelOp::Barrier,
+                    // idx = (local + 1) % 4
+                    KernelOp::Const {
+                        dst: Reg(6),
+                        value: ConstValue::U32(1),
+                    },
+                    KernelOp::BinOp {
+                        dst: Reg(7),
+                        a: Reg(0),
+                        b: Reg(6),
+                        op: BinOp::Add,
+                        ty: ScalarType::U32,
+                    },
+                    KernelOp::Const {
+                        dst: Reg(8),
+                        value: ConstValue::U32(4),
+                    },
+                    KernelOp::BinOp {
+                        dst: Reg(9),
+                        a: Reg(7),
+                        b: Reg(8),
+                        op: BinOp::Rem,
+                        ty: ScalarType::U32,
+                    },
+                    // acc += s[idx]
+                    KernelOp::SharedLoad {
+                        dst: Reg(12),
+                        id: 0,
+                        index: Reg(9),
+                        ty: ScalarType::F32,
+                    },
+                    KernelOp::BinOp {
+                        dst: Reg(2),
+                        a: Reg(2),
+                        b: Reg(12),
+                        op: BinOp::Add,
+                        ty: ScalarType::F32,
+                    },
+                    KernelOp::Barrier,
+                ],
+            },
+            // out[gid] = acc
+            KernelOp::Store {
+                field: 0,
+                index: Reg(1),
+                src: Reg(2),
+                ty: ScalarType::F32,
+            },
+        ],
+        body_source: None,
+        next_reg: 13,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [4, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    };
+    quanta_ir::serialize_kernel(&def)
+}
+
+#[test]
+fn cpu_in_loop_barrier_is_cooperative() {
+    let gpu = quanta::init_cpu();
+
+    let reps = 3u32;
+    let out = gpu.field::<f32>(4).unwrap();
+    out.write(&[0.0; 4]).unwrap();
+
+    let kernel_bytes = build_inloop_barrier_kernel(reps);
+    let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
+    wave.bind(0, &out);
+    let mut pulse = gpu.dispatch(&wave, 4).unwrap();
+    pulse.wait().unwrap();
+
+    // Lane L reads s[(L+1)%4] = ((L+1)%4)+1 each iteration:
+    //   L=0 -> s[1]=2, L=1 -> s[2]=3, L=2 -> s[3]=4, L=3 -> s[0]=1
+    // times `reps` iterations.
+    let result = out.read().unwrap();
+    let want: Vec<f32> = (0..4)
+        .map(|l: u32| reps as f32 * (((l + 1) % 4) + 1) as f32)
+        .collect();
+    assert_eq!(
+        result, want,
+        "in-loop barrier must publish cross-lane stores"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Branching kernel — conditional write
 // ═══════════════════════════════════════════════════════════════════════════
 

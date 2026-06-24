@@ -109,6 +109,215 @@ impl ExecCtx<'_> {
     }
 }
 
+/// Per-workgroup invariant context for cooperative segment execution.
+///
+/// Bundles the references every lane's [`ExecCtx`] needs (besides its own
+/// `regs` and the shared `HashMap`, which are threaded in per call). Used by
+/// the cooperative **barrier-loop** runner: a `Barrier` inside a `Loop` body
+/// is a cross-lane sync point, so the loop can't run lane-by-lane as a unit
+/// (see `segment_has_barrier_loop`). The runner instead executes the loop
+/// **iteration-synchronized**: every lane completes each iteration's
+/// pre-barrier sub-segment before any lane starts the post-barrier
+/// sub-segment, exactly like the top-level barrier segmenter but per
+/// iteration. This makes in-loop shared-memory stores visible across lanes.
+pub(super) struct CoopGroup<'a> {
+    pub(super) gid: u64,
+    pub(super) threads_per_group: u64,
+    pub(super) group_size: u32,
+    pub(super) quark_count: u32,
+    pub(super) fields: &'a [Option<Mutex<Vec<u8>>>; 16],
+    pub(super) push_data: &'a [u8; crate::api::wave::PUSH_DATA_CAP],
+}
+
+impl CoopGroup<'_> {
+    fn quark_id(&self, lid: u32) -> u32 {
+        (self.gid * self.threads_per_group + lid as u64) as u32
+    }
+
+    /// Run `ops` for a single lane against its `regs` and the workgroup
+    /// `shared`, normal (non-subgroup) mode. Returns whether the lane hit a
+    /// `Break`.
+    fn run_lane_ops(
+        &self,
+        lid: u32,
+        regs: &mut HashMap<u32, Value>,
+        shared: &mut HashMap<u32, Vec<u8>>,
+        ops: &[KernelOp],
+    ) -> Result<bool, String> {
+        let mut ctx = ExecCtx {
+            quark_id: self.quark_id(lid),
+            local_id: lid,
+            group_id: self.gid as u32,
+            group_size: self.group_size,
+            quark_count: self.quark_count,
+            regs: core::mem::take(regs),
+            fields: self.fields,
+            shared,
+            push_data: self.push_data,
+            subgroup: SubgroupMode::None,
+        };
+        let broke = execute_ops(&mut ctx, ops)?.is_some();
+        *regs = ctx.regs;
+        Ok(broke)
+    }
+
+    /// Run one op-slice across ALL lanes (a cooperative sub-segment): every
+    /// lane executes `ops` before the next sub-segment, so shared writes are
+    /// visible to other lanes' subsequent reads. Returns whether any lane
+    /// hit a `Break` (uniform across lanes for well-defined kernels).
+    fn run_subsegment_all_lanes(
+        &self,
+        ops: &[KernelOp],
+        thread_regs: &mut [HashMap<u32, Value>],
+        shared: &mut HashMap<u32, Vec<u8>>,
+    ) -> Result<bool, String> {
+        let tpg = self.threads_per_group as u32;
+        let mut any_break = false;
+        for lid in 0..tpg {
+            let mut regs = core::mem::take(&mut thread_regs[lid as usize]);
+            let broke = self.run_lane_ops(lid, &mut regs, shared, ops)?;
+            thread_regs[lid as usize] = regs;
+            any_break |= broke;
+        }
+        Ok(any_break)
+    }
+
+    /// Cooperatively execute a segment that may contain a barrier-bearing
+    /// loop. Straight-line stretches run per-lane; a barrier-bearing `Loop`
+    /// runs iteration-synchronized across all lanes (see the struct doc). A
+    /// `Branch` whose taken arm contains a barrier-loop is descended into
+    /// cooperatively — its condition must be uniform across lanes (the
+    /// inliner's structural guards and any guard around an in-loop barrier
+    /// are; a divergent in-loop barrier is GPU UB).
+    pub(super) fn run_segment(
+        &self,
+        segment: &[KernelOp],
+        thread_regs: &mut [HashMap<u32, Value>],
+        shared: &mut HashMap<u32, Vec<u8>>,
+    ) -> Result<(), String> {
+        // Walk top-level ops, batching straight-line ops and handling each
+        // op that contains a barrier-loop (a `Loop` directly, or a `Branch`
+        // whose arm holds one) specially.
+        let mut straight: Vec<KernelOp> = Vec::new();
+        let flush = |straight: &mut Vec<KernelOp>,
+                     thread_regs: &mut [HashMap<u32, Value>],
+                     shared: &mut HashMap<u32, Vec<u8>>|
+         -> Result<(), String> {
+            if !straight.is_empty() {
+                self.run_subsegment_all_lanes(straight, thread_regs, shared)?;
+                straight.clear();
+            }
+            Ok(())
+        };
+
+        for op in segment {
+            match op {
+                KernelOp::Loop {
+                    count,
+                    iter_reg,
+                    body,
+                } if ops_contain_barrier(body) => {
+                    flush(&mut straight, thread_regs, shared)?;
+                    self.run_barrier_loop(count, iter_reg, body, thread_regs, shared)?;
+                }
+                KernelOp::Branch {
+                    cond,
+                    then_ops,
+                    else_ops,
+                } if ops_contain_barrier(then_ops) || ops_contain_barrier(else_ops) => {
+                    flush(&mut straight, thread_regs, shared)?;
+                    self.run_barrier_branch(cond, then_ops, else_ops, thread_regs, shared)?;
+                }
+                other => straight.push(other.clone()),
+            }
+        }
+        flush(&mut straight, thread_regs, shared)?;
+        Ok(())
+    }
+
+    /// Cooperatively execute a `Branch` whose taken arm contains a
+    /// barrier-loop. The condition is uniform across lanes (required for a
+    /// well-defined in-loop barrier), so evaluate it on lane 0 and run the
+    /// taken arm cooperatively for every lane via `run_segment`.
+    fn run_barrier_branch(
+        &self,
+        cond: &Reg,
+        then_ops: &[KernelOp],
+        else_ops: &[KernelOp],
+        thread_regs: &mut [HashMap<u32, Value>],
+        shared: &mut HashMap<u32, Vec<u8>>,
+    ) -> Result<(), String> {
+        let take_then = thread_regs
+            .first()
+            .and_then(|r| r.get(&cond.0))
+            .map(|v| v.as_bool())
+            .unwrap_or(false);
+        let arm = if take_then { then_ops } else { else_ops };
+        self.run_segment(arm, thread_regs, shared)
+    }
+
+    /// Iteration-synchronized execution of a barrier-bearing loop. The loop
+    /// count is uniform across lanes (a divergent in-loop barrier is GPU UB);
+    /// the real exit is the body's down-counter `Break`. Each iteration: set
+    /// `iter_reg` in every lane, split the body at its barriers, and run each
+    /// sub-segment across all lanes. Stop when the body signals `Break`.
+    fn run_barrier_loop(
+        &self,
+        count: &Reg,
+        iter_reg: &Reg,
+        body: &[KernelOp],
+        thread_regs: &mut [HashMap<u32, Value>],
+        shared: &mut HashMap<u32, Vec<u8>>,
+    ) -> Result<(), String> {
+        // The loop's `count` reg bounds the iteration count (the lowerer caps
+        // it at a fuel limit and relies on the body's `Break`). Read it from
+        // lane 0; all lanes agree (uniform). Fall back to 0 if unset.
+        let max_iters = thread_regs
+            .first()
+            .and_then(|r| r.get(&count.0))
+            .map(|v| v.as_u32())
+            .unwrap_or(0);
+
+        // Sub-segment the body at its (top-level) barriers once.
+        let sub_ranges = subsegment_ranges(body);
+
+        for i in 0..max_iters {
+            // Set the iteration register in every lane before this iteration.
+            for regs in thread_regs.iter_mut() {
+                regs.insert(iter_reg.0, Value::U32(i));
+            }
+            let mut broke = false;
+            for &(s, e) in &sub_ranges {
+                let sub = &body[s..e];
+                if self.run_subsegment_all_lanes(sub, thread_regs, shared)? {
+                    broke = true;
+                }
+            }
+            if broke {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Split a loop body into maximal op-slices between top-level `Barrier` ops
+/// (the barriers themselves are skipped). Mirrors `barrier_segment_ranges`
+/// but returns ranges over a body slice — used by the cooperative
+/// barrier-loop runner to sub-segment each iteration.
+fn subsegment_ranges(ops: &[KernelOp]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    for (i, op) in ops.iter().enumerate() {
+        if matches!(op, KernelOp::Barrier) {
+            ranges.push((start, i));
+            start = i + 1;
+        }
+    }
+    ranges.push((start, ops.len()));
+    ranges
+}
+
 pub(super) fn execute_ops(
     ctx: &mut ExecCtx,
     ops: &[KernelOp],
@@ -562,6 +771,35 @@ fn subgroup_value(ctx: &mut ExecCtx, kind: SubgroupKind, v: Value) -> Value {
             out
         }
     }
+}
+
+/// Does this segment contain a `Loop` whose body has a `Barrier`? Such a
+/// loop cannot be run lane-by-lane as one unit: the in-loop barrier is a
+/// cross-lane synchronization point, so every lane must complete each
+/// iteration's pre-barrier work before any lane starts the post-barrier
+/// work (otherwise cross-thread shared-memory writes inside the loop aren't
+/// visible). The dispatcher routes these segments to the cooperative
+/// per-iteration loop runner instead of the plain single-pass loop.
+pub(super) fn segment_has_barrier_loop(ops: &[KernelOp]) -> bool {
+    ops.iter().any(|op| match op {
+        KernelOp::Loop { body, .. } => ops_contain_barrier(body),
+        KernelOp::Branch {
+            then_ops, else_ops, ..
+        } => segment_has_barrier_loop(then_ops) || segment_has_barrier_loop(else_ops),
+        _ => false,
+    })
+}
+
+/// Whether `ops` contains a `Barrier` at any nesting depth.
+pub(super) fn ops_contain_barrier(ops: &[KernelOp]) -> bool {
+    ops.iter().any(|op| match op {
+        KernelOp::Barrier => true,
+        KernelOp::Branch {
+            then_ops, else_ops, ..
+        } => ops_contain_barrier(then_ops) || ops_contain_barrier(else_ops),
+        KernelOp::Loop { body, .. } => ops_contain_barrier(body),
+        _ => false,
+    })
 }
 
 /// Does this segment contain any subgroup reduce/scan op (possibly nested
