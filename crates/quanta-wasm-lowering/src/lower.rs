@@ -1016,12 +1016,12 @@ impl<'a> LowerCtx<'a> {
             .iter()
             .enumerate()
             .filter_map(|(i, info)| match info.val {
-                Some(SymVal::ScaledIdx { base, .. })
-                    if !body_writes.contains(&(i as u32))
-                        && self.locals.iter().any(|l| l.stable_reg == Some(base)) =>
-                {
-                    Some(i)
-                }
+                // A `ScaledIdx` that is NOT written inside the loop is
+                // loop-invariant; snapshot it so its in-loop reads don't
+                // re-materialize `base << scale` from a clobbered base. (A
+                // ScaledIdx written in the loop is a genuine per-iteration
+                // index and must keep advancing — excluded via body_writes.)
+                Some(SymVal::ScaledIdx { .. }) if !body_writes.contains(&(i as u32)) => Some(i),
                 _ => None,
             })
             .collect();
@@ -1030,6 +1030,18 @@ impl<'a> LowerCtx<'a> {
                 && let Ok((r, ty)) = self.commit(v)
             {
                 self.locals[i].val = Some(SymVal::Reg(r, ty));
+                // Keep the stable register consistent with the snapshot, so
+                // the value-typed rebind below (which points reads at
+                // stable_reg) reads the snapshot rather than the local's
+                // pre-loop zero-init. Without this, the committed snapshot is
+                // discarded and the index reads 0.
+                if let Some(stable_reg) = self.locals[i].stable_reg {
+                    self.emit(KernelOp::Copy {
+                        dst: stable_reg,
+                        src: r,
+                        ty,
+                    });
+                }
             }
         }
 
