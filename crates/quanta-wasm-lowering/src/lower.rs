@@ -164,6 +164,15 @@ struct LowerCtx<'a> {
     local_events: Vec<LocalEvent>,
     /// Whether local-event recording is on for this kernel.
     local_debug: bool,
+    /// Precomputed per-loop "locals written inside the loop body" sets, one
+    /// entry per `Loop` instruction in source order. Consumed at each Loop
+    /// open so `force_locals_to_stable` can snapshot loop-INVARIANT
+    /// `ScaledIdx` indices (read-but-not-written in the loop) while leaving
+    /// loop-VARIANT ones alone — fixes the tiled-GEMM in-loop ScaledIdx
+    /// re-materialized-from-a-clobbered-base bug.
+    loop_body_writes: Vec<std::collections::BTreeSet<u32>>,
+    /// Cursor into `loop_body_writes`, advanced at each Loop open.
+    loop_body_writes_cursor: usize,
 }
 
 /// One get/set of a wasm local during lowering, with the loop-nesting
@@ -360,7 +369,54 @@ impl<'a> LowerCtx<'a> {
             local_events: Vec::new(),
             local_debug: std::env::var("QUANTA_LOWER_DEBUG")
                 .is_ok_and(|v| v == side_table.kernel_name || v == "*"),
+            loop_body_writes: Vec::new(),
+            loop_body_writes_cursor: 0,
         }
+    }
+
+    /// Pre-pass: for each `Loop` instruction (source order), compute the set
+    /// of wasm locals written (`LocalSet`/`LocalTee`) anywhere in its body
+    /// (to the matching `End`, nested constructs included). Used by
+    /// `force_locals_to_stable` to tell loop-invariant indices (snapshot)
+    /// from loop-variant ones (leave symbolic).
+    fn precompute_loop_body_writes(&mut self, instrs: &[RawInstr]) {
+        let mut result: Vec<std::collections::BTreeSet<u32>> = Vec::new();
+        for (i, instr) in instrs.iter().enumerate() {
+            if matches!(instr, RawInstr::Loop { .. }) {
+                let mut depth = 0i32;
+                let mut writes = std::collections::BTreeSet::new();
+                for nested in &instrs[i + 1..] {
+                    match nested {
+                        RawInstr::Loop { .. } | RawInstr::Block { .. } | RawInstr::If { .. } => {
+                            depth += 1;
+                        }
+                        RawInstr::End => {
+                            if depth == 0 {
+                                break;
+                            }
+                            depth -= 1;
+                        }
+                        RawInstr::LocalSet(idx) | RawInstr::LocalTee(idx) => {
+                            writes.insert(*idx);
+                        }
+                        _ => {}
+                    }
+                }
+                result.push(writes);
+            }
+        }
+        self.loop_body_writes = result;
+    }
+
+    /// The "locals written in body" set for the Loop currently being opened.
+    fn next_loop_writes(&mut self) -> std::collections::BTreeSet<u32> {
+        let set = self
+            .loop_body_writes
+            .get(self.loop_body_writes_cursor)
+            .cloned()
+            .unwrap_or_default();
+        self.loop_body_writes_cursor += 1;
+        set
     }
 
     /// Record a local get/set event (no-op unless local-debug is on for
@@ -851,6 +907,7 @@ impl<'a> LowerCtx<'a> {
         }
 
         let instrs = self.body.instructions.clone();
+        self.precompute_loop_body_writes(&instrs);
         for instr in &instrs {
             self.lower_instr(instr)?;
         }
@@ -938,13 +995,49 @@ impl<'a> LowerCtx<'a> {
     /// stable_reg instead of any fresh-reg binding. Called at
     /// Loop entry so accumulators work across iterations — see
     /// the Loop case in `lower_instr` for the full rationale.
-    fn force_locals_to_stable(&mut self) {
+    fn force_locals_to_stable(&mut self, body_writes: &std::collections::BTreeSet<u32>) {
+        // Snapshot loop-INVARIANT `ScaledIdx` indices at loop entry. A
+        // `ScaledIdx` (`base << log2(scale)`) is kept symbolic for the
+        // buffer-addressing recognizer and re-materialized at each USE. If
+        // such an index is computed before the loop and only READ inside it,
+        // but `base` is a wasm local the loop mutates (rustc coalesces a
+        // loop-invariant index base with an induction var into one local),
+        // the in-loop re-materialization reads the CLOBBERED base and the
+        // index is wrong on iterations ≥2 (tiled GEMM: the p=0 shared-tile
+        // index `tr<<4` recomputed from the K-tile induction register →
+        // reads OOB → drops one product per tile). Commit it to a register
+        // here so the in-loop read uses the loop-entry snapshot.
+        //
+        // Only snapshot a local NOT written inside the loop body — a
+        // `ScaledIdx` local written in the loop is a genuine per-iteration
+        // index that must advance. `body_writes` is that set (precomputed).
+        let to_commit: Vec<usize> = self
+            .locals
+            .iter()
+            .enumerate()
+            .filter_map(|(i, info)| match info.val {
+                Some(SymVal::ScaledIdx { base, .. })
+                    if !body_writes.contains(&(i as u32))
+                        && self.locals.iter().any(|l| l.stable_reg == Some(base)) =>
+                {
+                    Some(i)
+                }
+                _ => None,
+            })
+            .collect();
+        for i in to_commit {
+            if let Some(v) = self.locals[i].val
+                && let Ok((r, ty)) = self.commit(v)
+            {
+                self.locals[i].val = Some(SymVal::Reg(r, ty));
+            }
+        }
+
         for info in self.locals.iter_mut() {
             if let Some(stable_reg) = info.stable_reg {
-                // Only rebind value-typed locals. Buffer-access
-                // and other non-value SymVals are consumed by
-                // load/store pattern recognition; replacing them
-                // with a Reg would corrupt their semantics.
+                // Rebind value-typed locals (incl. just-committed ScaledIdx →
+                // Reg) to their stable register so accumulators and
+                // snapshotted indices survive the iteration boundary.
                 if matches!(info.val, Some(ref v) if is_value_symval(v)) {
                     info.val = Some(SymVal::Reg(stable_reg, info.stable_ty));
                 }
@@ -2140,7 +2233,8 @@ impl<'a> LowerCtx<'a> {
                 //
                 // Straight-line code with no loop is unaffected
                 // (no frame entry → no force).
-                self.force_locals_to_stable();
+                let body_writes = self.next_loop_writes();
+                self.force_locals_to_stable(&body_writes);
                 self.loop_reads.push(std::collections::BTreeSet::new());
                 let parent_brifs = self.frames.last().map(|f| f.brifs.len()).unwrap_or(0);
                 self.frames.push(Frame {
