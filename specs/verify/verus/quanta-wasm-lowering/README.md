@@ -29,13 +29,47 @@ the project `CLAUDE.md`.)
 | `commit_refine.rs` | V6 + **V8-#2 closed** | `commit` refinement: Reg case full equality, BufferPtr both-refuse, and — after V8-#2 — **const case FULL equality** (`commit_const_full_refine`): production and spec both emit `Const(dst, I32 n)`. `commit_const_tag_agrees` pins the now-matching tag (formerly a recorded divergence). Remaining gap is **domain only**: production materializes `ScaledIdx`/`BufferAccess`/`I64Const` that the Lean spec refuses (rustc-optimizer pointer-arith shapes outside the slice-1 Lean subset). |
 | `lower_instructions_refine.rs` | **V7 — closes the arm** | **Top-level composition.** The production list fold `lower_instructions` (folding the per-instruction `step` over a `Seq<WasmInstr>`, threading `ProdCtx`, concatenating ops) refines the Lean `lowerInstrs` straight-line layer (`spec_lower_instrs`). The theorem `refine_lower_instructions` — `view ∘ lower_instructions == spec_lower_instrs ∘ view`, on state and ops, lifted through `Option` (refuse-iff-refuse) — is proved by **induction on the list**: the inductive step is `refine_step` (the head, the V5 per-op refinement lifted to the uniform `step`) composed with the IH (the tail). `view`/`unview` are mutual inverses (`reverse_reverse`), so the threaded production state slots back through `view` cleanly at each position. Two corollaries (`_refuse_iff`, `_ops`) specialize the closer for the framework-claim write-up. **Scope: the slice-1 straight-line subset** — every instruction the V5 per-op refinements cover, over arbitrary-length lists. The structured-control layer (block/wloop/wif/br/brIf/wreturn; fuel + frames + `splitAtEnd`) is mechanized in `structured_refine.rs` (below); on the straight-line subset, fuel/frames are inert and `lowerInstrs` reduces definitionally to this fold (proved there as `straightline_agrees`). |
 | `structured_refine.rs` | **V7-structured** | The structured-control layer of `lowerInstrs` (`block`/`wloop`/`wif`/`br`/`brIf`/`wreturn`; Translate.lean:555-728). Mechanizes: the **splitters** (`split_at_end`/`split_at_else_or_end`/`closer_index`, mirrors of `Quanta.Wasm.Structured`) with the **progress lemma** `split_at_end_shrinks` (body + post-suffix strictly shorter than input — what makes the fuel-bounded fold well-founded); the **frame predicates** `has_loop_above`/`loops_above`; the full fuel-bounded fold `lower_instrs` with every arm transcribed; **conservativity** `straightline_agrees` (on a list with no structured openers/branches, the structured fold equals the V7 straight-line fold — V7-structured is a conservative *extension*); and **per-arm shape lemmas** — `block_splices` (body splices, no wrapper), `loop_wraps` (`[LoopOp body_ops]`), `br_loop0_no_ir`, `br_cross_loop_breaks`, plus the **not-yet-modeled refusals** `br_exitflag_refuses` (the `emit_loop_crossing_exit` shape) / `br_record_refuses` (`record_br_at`) / `br_oob_refuses`. The per-arm *production* refinement (streaming-`Vec<Frame>` ↔ recursive-descent equivalence at the body boundary) is **mechanized** in `streaming_equiv.rs` (below) for the wrapper-assembly shape — the one place the two strategies could diverge. |
+| `loop_scaledidx_snapshot_refine.rs` | **V8-#4 (open divergence)** | The loop-entry `ScaledIdx` snapshot that `force_locals_to_stable` now performs (the tiled-GEMM correctness fix). Models the production effect (commit `base << log2(scale)` + stable-reg Copy) vs the spec's no-op loop-entry snapshot; proves agreement on value-typed locals and pins the `ScaledIdx` divergence shape (3 verified). A recorded extension of the pre-existing `ScaledIdx` domain gap — see the V8 section below. |
 | `streaming_equiv.rs` | **hardening** | The streaming-`Vec<Frame>` ↔ recursive-descent equivalence — the largest trust step under V7-structured, formerly a prose note in `Quanta.Wasm.Structured`. Models op-assembly on both sides (`step_stream`/`run_stream` = production's push-frame/accumulate/pop-and-fold walk; `descend` = the `split_at_end` recursive descent) routed through a single `wrap` (Block→splice, Loop→`[LoopOp]`, If→`[Branch cond · []]`). Proves: the three **close lemmas** (`close_block_splices`/`close_loop_wraps`/`close_if_branches` — a `wend` close folds exactly `wrap(kind, body)` into the parent), plain-accumulation + height preservation, and the concrete **`stream_equiv_recursive_flat`** (`run_stream` from a Function frame == `descend`, by induction, on flat streams). **Honest scope:** the full *nested* `run_stream == descend` (arbitrary depth) is not driven end-to-end here; what's proved is (1) flat-stream equality and (2) per-`wend` `wrap`-agreement — the only divergence point — so the nested composition is mechanical but un-driven. Shrinks, does not fully retire, the body-boundary obligation. |
 
-### Production↔spec divergences (V8) — all closed
+### Production↔spec divergences (V8)
 
-The refinement surfaced three gaps where production did more than the
-Lean spec modeled. Each was first recorded with a **mechanized witness**
-(the production effect modeled and its shape pinned), then closed by
+The refinement surfaced gaps where production did more than the Lean spec
+modeled. Each is first recorded with a **mechanized witness** (the
+production effect modeled and its shape pinned), then closed by adding the
+matching Lean arm. #1–#3 are closed; **#4 is an OPEN, recorded divergence**
+(it extends the pre-existing `ScaledIdx` domain gap, which can't close until
+`ScaledIdx` is lifted into the Lean subset).
+
+| # | File | Status | What |
+|---|------|--------|------|
+| V8-#1 | `local_arms_refine.rs` | closed | frame-0 zero-inits |
+| V8-#2 | `commit_refine.rs` | closed | const-tag + type threading |
+| V8-#3 | `i32add_chained_refine.rs` | closed | `i32.add` chained-address folds |
+| **V8-#4** | **`loop_scaledidx_snapshot_refine.rs`** | **OPEN (recorded)** | **loop-entry `ScaledIdx` snapshot** |
+
+**V8-#4 — loop-entry `ScaledIdx` snapshot (OPEN, recorded 2026-06-25).**
+Production's `force_locals_to_stable` now commits a loop-invariant
+`ScaledIdx` local at loop entry (`Const(c,0) ; Shl(t,base,log2 scale) ;
+Copy(stable,t)`) so its in-loop reads aren't re-materialized from a base
+register the loop body clobbers (the tiled-GEMM correctness fix). The Lean
+`wloop` arm models loop entry as a pure binding-map snapshot and emits no
+ops; `ScaledIdx` itself is already outside the Lean subset (`commit`/
+`localGet` refuse it — see the `commit_refine` domain-gap note). So this
+**breaks no proven theorem** (all refinement crates re-verify: 9/4/15/9, 0
+errors) but it WIDENS the existing `ScaledIdx` gap to a new program point.
+`loop_scaledidx_snapshot_refine.rs` (3 verified, 0 errors) pins the
+divergence: the snapshot's exact 3-op shape, its `next_reg + 2` advance,
+that it writes only fresh registers + the ScaledIdx local's own stable reg
+(so the in-subset preservation proofs are undisturbed), and that it AGREES
+with the spec on value-typed locals. Closing it requires first lifting
+`ScaledIdx` into the Lean slice subset — tracked, not done.
+
+---
+
+The three closed divergences. Each was first recorded with a **mechanized
+witness** (the production effect modeled and its shape pinned), then closed
+by
 adding the matching Lean arm with proven preservation. All three (V8-#1
 frame-0 zero-inits, V8-#2 const-tag + type threading, V8-#3
 chained-address folds) are now synced into the spec.
