@@ -31,3 +31,8 @@ quanta-prims = { path = "../quanta-prims" }
 name = "level1"
 harness = false
 required-features = ["gpu"]
+
+[[bench]]
+name = "gemm"
+harness = false
+required-features = ["gpu"]

@@ -213,27 +213,57 @@ pub fn gemm(
         return Ok(());
     }
 
-    // Sub-tile problems: the naive kernel avoids the shared-mem + double-
-    // barrier overhead where there's nothing to tile.
+    // Sub-tile problems route to the naive kernel — it avoids the shared-mem
+    // + double-barrier overhead where there's nothing to tile.
     if m <= TILE && n <= TILE && k <= TILE {
-        let mut wave = kernel::gemm_f32_naive(gpu)?;
-        wave.bind(0, a);
-        wave.bind(1, b);
-        wave.bind(2, c);
-        wave.set_value(3, m);
-        wave.set_value(4, n);
-        wave.set_value(5, k);
-        wave.set_value(6, alpha);
-        wave.set_value(7, beta);
-        gpu.dispatch(&wave, (mu * nu) as u32)?.wait()?;
-        return Ok(());
+        dispatch_naive(gpu, m, n, k, alpha, a, b, beta, c)
+    } else {
+        dispatch_tiled(gpu, m, n, k, alpha, a, b, beta, c)
     }
+}
 
-    // Tiled path: one 256-thread workgroup per 16×16 output tile.
-    let tiles_m = m.div_ceil(TILE);
-    let tiles_n = n.div_ceil(TILE);
-    let total_threads = tiles_m * tiles_n * (TILE * TILE);
+/// Dispatch the naive kernel (one thread per output entry, `m·n` threads).
+/// No shape validation — `gemm` does it.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_naive(
+    gpu: &Gpu,
+    m: u32,
+    n: u32,
+    k: u32,
+    alpha: f32,
+    a: &Field<f32>,
+    b: &Field<f32>,
+    beta: f32,
+    c: &Field<f32>,
+) -> Result<(), QuantaError> {
+    let mut wave = kernel::gemm_f32_naive(gpu)?;
+    wave.bind(0, a);
+    wave.bind(1, b);
+    wave.bind(2, c);
+    wave.set_value(3, m);
+    wave.set_value(4, n);
+    wave.set_value(5, k);
+    wave.set_value(6, alpha);
+    wave.set_value(7, beta);
+    gpu.dispatch(&wave, m * n)?.wait()?;
+    Ok(())
+}
 
+/// Dispatch the tiled kernel — one 256-thread workgroup per 16×16 output
+/// tile. No shape validation — `gemm` does it.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_tiled(
+    gpu: &Gpu,
+    m: u32,
+    n: u32,
+    k: u32,
+    alpha: f32,
+    a: &Field<f32>,
+    b: &Field<f32>,
+    beta: f32,
+    c: &Field<f32>,
+) -> Result<(), QuantaError> {
+    let total_threads = m.div_ceil(TILE) * n.div_ceil(TILE) * (TILE * TILE);
     let mut wave = kernel::gemm_f32_tiled(gpu)?;
     wave.bind(0, a);
     wave.bind(1, b);
@@ -245,4 +275,47 @@ pub fn gemm(
     wave.set_value(7, beta);
     gpu.dispatch(&wave, total_threads)?.wait()?;
     Ok(())
+}
+
+/// Benchmark/regression shim: force the **naive** kernel regardless of shape.
+/// Not part of the stable surface — exists so `benches/gemm.rs` can compare
+/// naive vs tiled on the same problem. Validates shapes like `gemm`.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_naive(
+    gpu: &Gpu,
+    m: u32,
+    n: u32,
+    k: u32,
+    alpha: f32,
+    a: &Field<f32>,
+    b: &Field<f32>,
+    beta: f32,
+    c: &Field<f32>,
+) -> Result<(), QuantaError> {
+    if m * n == 0 || k == 0 {
+        return Ok(());
+    }
+    dispatch_naive(gpu, m, n, k, alpha, a, b, beta, c)
+}
+
+/// Benchmark/regression shim: force the **tiled** kernel regardless of shape.
+/// See [`gemm_naive`].
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_tiled(
+    gpu: &Gpu,
+    m: u32,
+    n: u32,
+    k: u32,
+    alpha: f32,
+    a: &Field<f32>,
+    b: &Field<f32>,
+    beta: f32,
+    c: &Field<f32>,
+) -> Result<(), QuantaError> {
+    if m * n == 0 || k == 0 {
+        return Ok(());
+    }
+    dispatch_tiled(gpu, m, n, k, alpha, a, b, beta, c)
 }

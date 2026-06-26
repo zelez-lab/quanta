@@ -37,10 +37,14 @@ Level-2 (`gemv`), and the f16/bf16/i8 dtype matrix.
 
 ## Performance (honest framing)
 
-quanta-blas v0.1 targets **~50% of vendor BLAS** on tier-1 datacentre GPUs
-(H100, MI300X), **~80%** on tier-2 consumer / Apple-Silicon GPUs, and is
-the **only** option where vendor BLAS doesn't exist (WebGPU, mobile).
-Level-1 ops are bandwidth-bound, so the generic cross-backend kernel is
-already near memory roofline. The GEMM tensor-core work is where the tuned
-per-backend paths and the bigger competitive gap-closing happen. We never
-hide where we lose — see `PERFORMANCE.md`.
+The tiled GEMM is a real win over the naive kernel — **3.8× at N=512** on an
+M1 Pro (369 vs 97 GFLOP/s), the speedup growing with size as the shared-memory
+reuse compounds. But that is still only ~7% of the M1 Pro's fp32 peak: the
+generic tiled kernel closes the *easy* gap over naive, not the vendor gap. The
+strategic targets (~80% of vendor BLAS on tier-2 Apple-Silicon GPUs) are
+reached by the **cooperative-matrix / tensor-core path** (`simdgroup_matrix`,
+`VK_KHR_cooperative_matrix`), the next GEMM increment. Level-1 ops are
+bandwidth-bound — the generic kernel is already near memory roofline.
+
+We never hide where we lose — full numbers, backend coverage, and the gaps
+are in [`PERFORMANCE.md`](PERFORMANCE.md).
