@@ -75,6 +75,27 @@ pub fn gemm(
     }
 }
 
+/// `gemv`: `y ← alpha·A·x + beta·y`, A row-major `m×n`.
+///
+/// `a` is `m×n`, `x` is length `n`, `y` is length `m` (read for the `beta·y`
+/// term and overwritten with the result). The inner product accumulates in
+/// `f64` for a tight reference — the differential oracle for `gemv_f32`. A
+/// gemv row is a gemm entry (`alpha·dot(row, x) + beta·y[i]`), so this mirrors
+/// the gemm reference with `n = 1` output columns.
+pub fn gemv(m: usize, n: usize, alpha: f32, a: &[f32], x: &[f32], beta: f32, y: &mut [f32]) {
+    assert_eq!(a.len(), m * n, "gemv: A must be m×n");
+    assert_eq!(x.len(), n, "gemv: x must be length n");
+    assert_eq!(y.len(), m, "gemv: y must be length m");
+    for row in 0..m {
+        let mut acc = 0.0f64;
+        for j in 0..n {
+            acc += (a[row * n + j] as f64) * (x[j] as f64);
+        }
+        let yval = y[row];
+        y[row] = (alpha as f64 * acc + beta as f64 * yval as f64) as f32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +133,27 @@ mod tests {
         let mut c = vec![0.0f32; 4];
         gemm(2, 2, 2, 1.0, &a, &b, 0.0, &mut c);
         assert_eq!(c, vec![19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn gemv_basic() {
+        // [[1,2],[3,4]] · [5,6] = [1·5+2·6, 3·5+4·6] = [17, 39]
+        let a = vec![1.0f32, 2.0, 3.0, 4.0];
+        let x = vec![5.0f32, 6.0];
+        let mut y = vec![0.0f32; 2];
+        gemv(2, 2, 1.0, &a, &x, 0.0, &mut y);
+        assert_eq!(y, vec![17.0, 39.0]);
+    }
+
+    #[test]
+    fn gemv_alpha_beta() {
+        // y starts at 1; alpha=2, beta=3 → 2·(A·x) + 3·y
+        let a = vec![1.0f32, 0.0, 0.0, 1.0]; // identity
+        let x = vec![5.0f32, 6.0];
+        let mut y = vec![1.0f32; 2];
+        gemv(2, 2, 2.0, &a, &x, 3.0, &mut y);
+        // 2·[5,6] + 3·[1,1] = [13, 15]
+        assert_eq!(y, vec![13.0, 15.0]);
     }
 
     #[test]
