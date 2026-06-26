@@ -328,6 +328,10 @@ jobs:
 
       - name: Install Rust (stable + nightly for rustdoc JSON)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # headless-compute runs `#[quanta::kernel]`, which compiles the
+          # kernel body to wasm32 at build time — the target must be present.
+          targets: wasm32-unknown-unknown
       - name: Add nightly
         run: rustup toolchain install nightly --profile minimal
 
