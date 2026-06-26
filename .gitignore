@@ -54,3 +54,10 @@ web/test-results/
 web/playwright-report/
 web/playwright/.cache/
 examples/*/target/
+
+# Workspace-level content lives in the PARENT folder, not this repo.
+# `roadmap/` (planning, design docs, dossiers) and `research/` (probes,
+# audits) are part of the workspace, not Quanta — ignore any strays that
+# get created under the repo root so they can't drift back into history.
+/roadmap/
+/research/
