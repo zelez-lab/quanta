@@ -46,7 +46,7 @@ The strategy is ~80% of vendor BLAS on tier-2 (Apple-Silicon) GPUs. We are
 |---------|-------------|
 | Software (CPU) | correct (differential tests) |
 | Metal (M1 Pro) | correct + benched (above) |
-| Vulkan (lavapipe) | compiles; runtime validation pending — the tiled kernel uses shared memory + barriers, which the Pi's Mesa stack has rejected for other shared-memory kernels, so this lane needs a real Vulkan device to confirm |
+| Vulkan (lavapipe, RPi 5 Mesa LLVM 20) | **correct — 15/15 gemm tests pass** (all tiled + partial-tail cases). The tiled kernel's shared-memory + barriers lower to SPIR-V lavapipe accepts. (Note: lavapipe *does* reject subgroup reduce/scan ops — prims block kernels fail there with `VkResult -13` — but GEMM uses neither, only shared memory.) |
 | WebGPU | not yet wired |
 
 ## Level-1 (f32)
