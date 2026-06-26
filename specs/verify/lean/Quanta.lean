@@ -100,6 +100,8 @@ import Quanta.Prims.Reference
 import Quanta.Blas.Reference
 -- Level-3 BLAS GEMM forward-error bound
 import Quanta.Blas.Gemm
+-- Level-2 BLAS GEMV forward-error bound (reuses the GEMM entry contract)
+import Quanta.Blas.Gemv
 
 -- Numeric dtype conversions (step 084.1 — bf16 / fp8 round-trip)
 import Quanta.Dtype.Bf16
