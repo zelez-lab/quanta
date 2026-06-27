@@ -302,4 +302,45 @@ theorem gemmEntryMixedQ8Sym_error_split (α β : ℝ) (a b : List ℝ) (c : ℝ)
   unfold gemmEntryMixedQ8SymRounded
   exact gemmEntry_narrow_error_split α β (q8symList a) (q8symList b) a b c
 
+-- ── int4 per-tensor symmetric — the same quant-as-rounding split ─────────
+--
+-- int4 is int8 with a 4-bit range; the dequantise-as-rounding argument is
+-- identical (nearest multiple of `scale`, larger step ⇒ larger unit roundoff
+-- `q4Unit` ≈ 2⁻³). The bit-exact packed nibble layout is the storage axis
+-- (`int4_pack`/`int4_unpack`); it doesn't change the numeric rounding, so the
+-- same entry-error split applies.
+
+/-- int4 per-tensor-symmetric quant unit roundoff (abstract; ≈ 2⁻³). -/
+axiom q4Unit : ℝ
+
+/-- Quantise-then-dequantise a real to its nearest int4-symmetric multiple. -/
+axiom q4symRound (v : ℝ) : ℝ
+
+/-- **The int4 symmetric quant rounding model**, realised by
+    `quanta_ir::dtype::{quantize_sym, dequantize_sym}` (bits = 4). -/
+axiom q4sym_rounding_model :
+    0 ≤ q4Unit ∧
+    ∀ v : ℝ, ∃ δ : ℝ, |δ| ≤ q4Unit ∧ q4symRound v = v * (1 + δ)
+
+/-- The int4 quant unit roundoff is non-negative. -/
+theorem q4Unit_nonneg : 0 ≤ q4Unit := q4sym_rounding_model.1
+
+/-- Elementwise int4-symmetric quantisation of a list. -/
+noncomputable def q4symList (xs : List ℝ) : List ℝ :=
+  xs.map q4symRound
+
+/-- Computed mixed-int4-symmetric gemm entry. -/
+noncomputable def gemmEntryMixedQ4SymRounded (α β : ℝ) (a b : List ℝ) (c : ℝ) : ℝ :=
+  gemmEntryRounded α β (q4symList a) (q4symList b) c
+
+/-- **Mixed-int4-symmetric entry error split** — instance of
+    `gemmEntry_narrow_error_split`. -/
+theorem gemmEntryMixedQ4Sym_error_split (α β : ℝ) (a b : List ℝ) (c : ℝ) :
+    |gemmEntryMixedQ4SymRounded α β a b c - gemmEntry α β a b c|
+      ≤ |gemmEntryRounded α β (q4symList a) (q4symList b) c
+            - gemmEntry α β (q4symList a) (q4symList b) c|
+        + |α * dot (q4symList a) (q4symList b) - α * dot a b| := by
+  unfold gemmEntryMixedQ4SymRounded
+  exact gemmEntry_narrow_error_split α β (q4symList a) (q4symList b) a b c
+
 end Quanta.Blas
