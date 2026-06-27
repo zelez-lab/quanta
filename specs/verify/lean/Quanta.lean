@@ -102,6 +102,8 @@ import Quanta.Blas.Reference
 import Quanta.Blas.Gemm
 -- Level-2 BLAS GEMV forward-error bound (reuses the GEMM entry contract)
 import Quanta.Blas.Gemv
+-- Mixed-precision GEMM forward-error bound (bf16 inputs, f32 accumulate)
+import Quanta.Blas.GemmMixed
 
 -- Numeric dtype conversions (step 084.1 — bf16 / fp8 round-trip)
 import Quanta.Dtype.Bf16
