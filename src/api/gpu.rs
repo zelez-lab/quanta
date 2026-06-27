@@ -111,6 +111,14 @@ impl Gpu {
         self.inner.supports_sparse_residency()
     }
 
+    /// Whether the active backend can lower the cooperative-matrix ops to
+    /// native tensor-core / SIMD-group-matrix instructions (Metal Apple GPU
+    /// family 7+; Vulkan `VK_KHR_cooperative_matrix`, not yet wired). The
+    /// software lane reports `false`.
+    pub fn supports_cooperative_matrix(&self) -> bool {
+        self.inner.supports_cooperative_matrix()
+    }
+
     /// Whether the active backend can run kernels that use 64-bit
     /// floats. The software lane and llvmpipe support f64; Metal and
     /// the Broadcom V3D GPU do not.

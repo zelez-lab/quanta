@@ -18,7 +18,8 @@ reductions).
 | `dot`  | `dot(gpu, &x, &y) -> f32` | `Σ xᵢ·yᵢ`, device-resident reduction |
 | `nrm2` | `nrm2(gpu, &x) -> f32` | `√(Σ xᵢ²)` |
 | `gemv` | `gemv(gpu, m, n, α, &a, &x, β, &y)` | `y ← α·A·x + β·y`, A row-major `m×n`, in place on y |
-| `gemm` | `gemm(gpu, m, n, k, α, &a, &b, β, &c)` | `C ← α·A·B + β·C`, row-major, in place on C |
+| `gemm` | `gemm(gpu, m, n, k, α, &a, &b, β, &c)` | `C ← α·A·B + β·C`, row-major, in place on C (auto-routes to the tensor-core path when it fits) |
+| `gemm_f32_tc` | `gemm_f32_tc(gpu, m, n, k, &a, &b, &c)` | `C ← A·B + C` via Metal `simdgroup_matrix`; needs cooperative-matrix support, m/n mult 16, k mult 8 |
 | `gemm_mixed` | `gemm_mixed(gpu, dtype, …, &a: Field<u16>, …)` | mixed-precision, 2-byte inputs (bf16/f16), C f32 |
 | `gemm_mixed8` | `gemm_mixed8(gpu, dtype, …, &a: Field<u8>, …)` | mixed-precision, 1-byte inputs (fp8 E5M2/E4M3), C f32 |
 | `gemv_mixed` / `gemv_mixed8` | `gemv_mixed(gpu, dtype, m, n, α, &a, &x, β, &y)` | mixed-precision GEMV (via `gemm_mixed*` N=1) |
@@ -62,19 +63,22 @@ differential-test oracle) until you enable `gpu` + a backend:
 quanta-blas = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan
 ```
 
-The dtype matrix is complete (f32 + bf16/f16/fp8/int8/int4). Coming next: the
-cooperative-matrix / tensor-core `gemm` path (the vendor perf gap).
+The dtype matrix is complete (f32 + bf16/f16/fp8/int8/int4) and `gemm` has a
+**tensor-core** path (`gemm_f32_tc`, Metal `simdgroup_matrix`). Coming next:
+deeper fragment reuse for GEMM and the Vulkan cooperative-matrix path.
 
 ## Performance (honest framing)
 
-The tiled GEMM is a real win over the naive kernel — **3.8× at N=512** on an
-M1 Pro (369 vs 97 GFLOP/s), the speedup growing with size as the shared-memory
-reuse compounds. But that is still only ~7% of the M1 Pro's fp32 peak: the
-generic tiled kernel closes the *easy* gap over naive, not the vendor gap. The
-strategic targets (~80% of vendor BLAS on tier-2 Apple-Silicon GPUs) are
-reached by the **cooperative-matrix / tensor-core path** (`simdgroup_matrix`,
-`VK_KHR_cooperative_matrix`), the next GEMM increment. Level-1 ops are
-bandwidth-bound — the generic kernel is already near memory roofline.
+On a real M1 Pro (Metal): the tiled GEMM beats naive (**375 vs 90 GFLOP/s at
+N=512**), and the **tensor-core kernel beats tiled — 498 GFLOP/s at N=512,
+1.33×** — using `simdgroup_matrix` with 2×2 fragment register-blocking. That is
+~10% of the M1 Pro's ~5 TFLOP/s fp32 peak (tiled was ~7.5%). `gemm()` routes to
+the tensor-core path automatically when the device supports cooperative matrices
+and the problem fits (`C += A·B`, N≥256, m/n multiple of 16, k multiple of 8),
+else the tiled kernel. The remaining vendor gap (~80% of Accelerate/cuBLAS)
+needs more fragment reuse (4×4 blocking + shared-memory staging). The Vulkan
+`VK_KHR_cooperative_matrix` path is not yet wired (Metal-only today). Level-1
+ops are bandwidth-bound — the generic kernel is already near memory roofline.
 
 We never hide where we lose — full numbers, backend coverage, and the gaps
 are in [`PERFORMANCE.md`](PERFORMANCE.md).

@@ -20,11 +20,22 @@ fn main() {
         return;
     };
 
-    println!("quanta-blas GEMM (f32, square M=N=K), naive vs tiled");
+    let tc = gpu.supports_cooperative_matrix();
     println!(
-        "{:>5} | {:>10} {:>9} | {:>10} {:>9} | {:>7}",
-        "N", "naive ms", "GFLOP/s", "tiled ms", "GFLOP/s", "speedup"
+        "quanta-blas GEMM (f32, square M=N=K), naive vs tiled{}",
+        if tc { " vs tensor-core" } else { "" }
     );
+    if tc {
+        println!(
+            "{:>5} | {:>10} {:>9} | {:>10} {:>9} | {:>10} {:>9} | {:>9}",
+            "N", "naive ms", "GFLOP/s", "tiled ms", "GFLOP/s", "tc ms", "GFLOP/s", "tc/tiled"
+        );
+    } else {
+        println!(
+            "{:>5} | {:>10} {:>9} | {:>10} {:>9} | {:>7}",
+            "N", "naive ms", "GFLOP/s", "tiled ms", "GFLOP/s", "speedup"
+        );
+    }
 
     for &n in &SIZES {
         let flops = 2.0 * (n as f64) * (n as f64) * (n as f64);
@@ -83,14 +94,42 @@ fn main() {
 
         let naive_gflops = flops / naive_s / 1e9;
         let tiled_gflops = flops / tiled_s / 1e9;
-        println!(
-            "{:>5} | {:>10.3} {:>9.2} | {:>10.3} {:>9.2} | {:>6.2}x",
-            n,
-            naive_s * 1e3,
-            naive_gflops,
-            tiled_s * 1e3,
-            tiled_gflops,
-            naive_s / tiled_s,
-        );
+
+        // Tensor-core path (C += A·B): only when supported and N is a multiple
+        // of 8 (the v1 fragment-tile constraint).
+        if tc && n % 8 == 0 {
+            let c_tc = gpu.field::<f32>(n * n).unwrap();
+            let run_tc = |c: &quanta::Field<f32>| {
+                c.write(&vec![0.0f32; n * n]).unwrap();
+                quanta_blas::gemm_f32_tc(&gpu, nu, nu, nu, &a, &b, c).unwrap();
+            };
+            run_tc(&c_tc); // warm
+            let t = Instant::now();
+            for _ in 0..iters {
+                run_tc(black_box(&c_tc));
+            }
+            let tc_s = t.elapsed().as_secs_f64() / iters as f64;
+            println!(
+                "{:>5} | {:>10.3} {:>9.2} | {:>10.3} {:>9.2} | {:>10.3} {:>9.2} | {:>8.2}x",
+                n,
+                naive_s * 1e3,
+                naive_gflops,
+                tiled_s * 1e3,
+                tiled_gflops,
+                tc_s * 1e3,
+                flops / tc_s / 1e9,
+                tiled_s / tc_s,
+            );
+        } else {
+            println!(
+                "{:>5} | {:>10.3} {:>9.2} | {:>10.3} {:>9.2} | {:>6.2}x",
+                n,
+                naive_s * 1e3,
+                naive_gflops,
+                tiled_s * 1e3,
+                tiled_gflops,
+                naive_s / tiled_s,
+            );
+        }
     }
 }

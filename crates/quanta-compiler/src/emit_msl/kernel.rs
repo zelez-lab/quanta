@@ -15,6 +15,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
         "#pragma clang fp contract(fast)\n\
          #include <metal_stdlib>\n\
          #include <metal_atomic>\n\
+         #include <metal_simdgroup_matrix>\n\
          using namespace metal;\n\n",
     );
 

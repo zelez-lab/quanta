@@ -6,14 +6,17 @@
 //! on `quanta-tensor` (shape proofs), `quanta-prims` (device-resident
 //! reductions), and the Quanta JIT.
 //!
-//! ## This release: Level-1 + GEMV + tiled GEMM (f32) + mixed-precision (bf16/f16/fp8/int8/int4)
+//! ## This release: Level-1 + GEMV + tiled/tensor-core GEMM (f32) + mixed-precision (bf16/f16/fp8/int8/int4)
 //!
 //! - [`scal`](level1::scal) — `x ← α·x` (in place)
 //! - [`axpy`](level1::axpy) — `y ← α·x + y` (in place)
 //! - [`dot`](level1::dot) — `Σ xᵢ·yᵢ` (device-resident reduction)
 //! - [`nrm2`](level1::nrm2) — `‖x‖₂ = √(Σ xᵢ²)`
 //! - [`gemv`](level2::gemv) — `y ← α·A·x + β·y` (Level-2, via GEMM N=1)
-//! - [`gemm`](gemm::gemm) — `C ← α·A·B + β·C` (Level-3, tiled kernel)
+//! - [`gemm`](gemm::gemm) — `C ← α·A·B + β·C` (Level-3, tiled kernel; routes to
+//!   the tensor-core path when supported)
+//! - [`gemm_f32_tc`](mixed_tc::gemm_f32_tc) — `C ← A·B + C` via Metal
+//!   `simdgroup_matrix` (cooperative-matrix / tensor cores)
 //! - [`gemm_mixed`](mixed::gemm_mixed) / [`gemv_mixed`](mixed::gemv_mixed) —
 //!   narrow float inputs (bf16 / f16 via `gemm_mixed`; fp8 via `gemm_mixed8`),
 //!   f32 accumulate
@@ -67,6 +70,9 @@ mod mixed_kernel;
 pub mod mixed_quant;
 
 #[cfg(feature = "gpu")]
+pub mod mixed_tc;
+
+#[cfg(feature = "gpu")]
 pub use gemm::gemm;
 #[cfg(feature = "gpu")]
 pub use level1::{axpy, dot, nrm2, scal};
@@ -76,3 +82,5 @@ pub use level2::gemv;
 pub use mixed::{GemmInputType, gemm_mixed, gemm_mixed8, gemv_mixed, gemv_mixed8};
 #[cfg(feature = "gpu")]
 pub use mixed_quant::{GemmQuantType, gemm_quant, gemm_quant4, gemv_quant, gemv_quant4};
+#[cfg(feature = "gpu")]
+pub use mixed_tc::gemm_f32_tc;

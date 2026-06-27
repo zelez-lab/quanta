@@ -9,7 +9,7 @@
 // Re-export IR types from the shared crate
 pub use quanta_ir::{
     AtomicOp, BinOp, CmpOp, CompilerOutput, ConstValue, KernelDef, KernelOp, KernelParam, MathFn,
-    MemoryOrder, Reg, ScalarType, UnaryOp,
+    MatrixFrag, MemoryOrder, Reg, ScalarType, UnaryOp,
 };
 
 /// Marker trait for types that can be used in GPU kernels.

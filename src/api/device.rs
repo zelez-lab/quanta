@@ -66,6 +66,17 @@ pub trait GpuDevice: Send + Sync {
         false
     }
 
+    /// Whether the backend can lower the cooperative-matrix IR ops
+    /// (`CooperativeMatrixLoad` / `CooperativeMMA` / `CooperativeMatrixStore`)
+    /// to native tensor-core / SIMD-group-matrix instructions. Metal: Apple
+    /// GPU family 7+ (`simdgroup_matrix`). Vulkan: `VK_KHR_cooperative_matrix`
+    /// (not yet wired). The CPU reference interpreter reports `false`, so
+    /// callers (e.g. `quanta-blas`'s tensor-core GEMM) fall back to a scalar
+    /// kernel there.
+    fn supports_cooperative_matrix(&self) -> bool {
+        false
+    }
+
     /// Whether the backend can run kernels that use 64-bit floats.
     /// Vulkan: `VkPhysicalDeviceFeatures.shaderFloat64` enabled at
     /// device creation (true on llvmpipe, false on Broadcom V3D).

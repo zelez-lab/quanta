@@ -51,6 +51,12 @@ impl GpuDevice for MetalDevice {
         self.sparse_supported
     }
 
+    fn supports_cooperative_matrix(&self) -> bool {
+        // `simdgroup_matrix` is available on Apple GPU family 7+ (and Mac2);
+        // reuse the family-7 proxy that gates sparse/VRS here.
+        self.sparse_supported
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {
