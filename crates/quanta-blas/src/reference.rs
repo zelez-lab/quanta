@@ -96,15 +96,45 @@ pub fn gemv(m: usize, n: usize, alpha: f32, a: &[f32], x: &[f32], beta: f32, y: 
     }
 }
 
-/// `gemm_bf16`: mixed-precision GEMM oracle — A,B are bf16 (passed as raw
-/// `u16` bit patterns), C is f32. Mirrors the GPU `gemm_mixed` kernel exactly:
-/// each A/B element is converted bf16→f32 on load (`bf16_to_f32`), the inner
-/// product accumulates **in f32 left-to-right** (the kernel's order), and the
-/// result is the f32 `α·acc + β·C`. Accumulating in f32 (not f64) makes this
-/// the kernel's exact numerical twin, so the differential test is a tight
-/// match rather than a tolerance band.
-///
-/// `a` is `m×k`, `b` is `k×n`, `c` is `m×n` (read for `β·C`, overwritten).
+/// Mixed-precision GEMM oracle parameterised by the narrow→f32 load
+/// conversion. A,B are raw `u16` bit patterns of the narrow dtype, C is f32.
+/// Mirrors the GPU `gemm_mixed` kernel exactly: each A/B element is converted
+/// to f32 on load via `to_f32`, the inner product accumulates **in f32
+/// left-to-right** (the kernel's order), and the result is the f32 `α·acc +
+/// β·C`. Accumulating in f32 (not f64) makes this the kernel's exact numerical
+/// twin, so the differential test is a tight match, not a tolerance band.
+#[allow(clippy::too_many_arguments)]
+fn gemm_narrow(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a: &[u16],
+    b: &[u16],
+    beta: f32,
+    c: &mut [f32],
+    to_f32: impl Fn(u16) -> f32,
+) {
+    assert_eq!(a.len(), m * k, "gemm_narrow: A must be m×k");
+    assert_eq!(b.len(), k * n, "gemm_narrow: B must be k×n");
+    assert_eq!(c.len(), m * n, "gemm_narrow: C must be m×n");
+    for row in 0..m {
+        for col in 0..n {
+            let mut acc = 0.0f32;
+            for p in 0..k {
+                let av = to_f32(a[row * k + p]);
+                let bv = to_f32(b[p * n + col]);
+                acc += av * bv;
+            }
+            let cval = c[row * n + col];
+            c[row * n + col] = alpha * acc + beta * cval;
+        }
+    }
+}
+
+/// `gemm_bf16`: mixed-precision GEMM oracle for bf16 inputs (the differential
+/// twin of `gemm_mixed(GemmInputType::Bf16, …)`). `a` is `m×k`, `b` is `k×n`,
+/// `c` is `m×n` (read for `β·C`, overwritten).
 #[allow(clippy::too_many_arguments)]
 pub fn gemm_bf16(
     m: usize,
@@ -116,22 +146,23 @@ pub fn gemm_bf16(
     beta: f32,
     c: &mut [f32],
 ) {
-    use quanta_ir::dtype::bf16_to_f32;
-    assert_eq!(a.len(), m * k, "gemm_bf16: A must be m×k");
-    assert_eq!(b.len(), k * n, "gemm_bf16: B must be k×n");
-    assert_eq!(c.len(), m * n, "gemm_bf16: C must be m×n");
-    for row in 0..m {
-        for col in 0..n {
-            let mut acc = 0.0f32;
-            for p in 0..k {
-                let av = bf16_to_f32(a[row * k + p]);
-                let bv = bf16_to_f32(b[p * n + col]);
-                acc += av * bv;
-            }
-            let cval = c[row * n + col];
-            c[row * n + col] = alpha * acc + beta * cval;
-        }
-    }
+    gemm_narrow(m, n, k, alpha, a, b, beta, c, quanta_ir::dtype::bf16_to_f32);
+}
+
+/// `gemm_f16`: mixed-precision GEMM oracle for IEEE-half inputs (the
+/// differential twin of `gemm_mixed(GemmInputType::F16, …)`).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_f16(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a: &[u16],
+    b: &[u16],
+    beta: f32,
+    c: &mut [f32],
+) {
+    gemm_narrow(m, n, k, alpha, a, b, beta, c, quanta_ir::dtype::f16_to_f32);
 }
 
 #[cfg(test)]
@@ -227,6 +258,23 @@ mod tests {
         gemm_bf16(1, 1, 1, 1.0, &a, &b, 0.0, &mut c);
         assert_eq!(c[0], xr);
         assert_ne!(c[0], x, "input must be quantised to bf16, not exact f32");
+    }
+
+    #[test]
+    fn gemm_f16_basic() {
+        use quanta_ir::dtype::f32_to_f16;
+        // Same exact-integer case as bf16 — all representable in f16.
+        let a: Vec<u16> = [1.0f32, 2.0, 3.0, 4.0]
+            .iter()
+            .map(|&x| f32_to_f16(x))
+            .collect();
+        let b: Vec<u16> = [5.0f32, 6.0, 7.0, 8.0]
+            .iter()
+            .map(|&x| f32_to_f16(x))
+            .collect();
+        let mut c = vec![0.0f32; 4];
+        gemm_f16(2, 2, 2, 1.0, &a, &b, 0.0, &mut c);
+        assert_eq!(c, vec![19.0, 22.0, 43.0, 50.0]);
     }
 
     #[test]

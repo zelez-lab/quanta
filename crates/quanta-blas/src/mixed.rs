@@ -26,18 +26,22 @@ use quanta_ir::{
 pub enum GemmInputType {
     /// bfloat16 — 1 sign / 8 exponent / 7 mantissa (top 16 bits of an f32).
     Bf16,
+    /// IEEE half — 1 sign / 5 exponent / 10 mantissa.
+    F16,
 }
 
 impl GemmInputType {
     fn scalar_type(self) -> ScalarType {
         match self {
             GemmInputType::Bf16 => ScalarType::BF16,
+            GemmInputType::F16 => ScalarType::F16,
         }
     }
 
     fn tag(self) -> &'static str {
         match self {
             GemmInputType::Bf16 => "bf16",
+            GemmInputType::F16 => "f16",
         }
     }
 }
@@ -201,7 +205,12 @@ fn build_gemm_mixed_def(dtype: GemmInputType, n: u32, k: u32, alpha: f32, beta: 
                     op: BinOp::Add,
                     ty: U32,
                 },
-                // load narrow → f32
+                // load narrow → register, then cast to f32. bf16/fp8 load
+                // into an f32 register already (msl_name = float), so the cast
+                // is a no-op there; f16 loads into a native `half` register, so
+                // the cast forces the f32 promotion BEFORE the multiply — the
+                // product must be f32 (the oracle accumulates in f32), not
+                // half-precision.
                 KernelOp::Load {
                     dst: Reg(9),
                     field: 0,
@@ -214,10 +223,22 @@ fn build_gemm_mixed_def(dtype: GemmInputType, n: u32, k: u32, alpha: f32, beta: 
                     index: Reg(8),
                     ty: in_ty,
                 },
+                KernelOp::Cast {
+                    dst: Reg(18),
+                    src: Reg(9),
+                    from: in_ty,
+                    to: F32,
+                },
+                KernelOp::Cast {
+                    dst: Reg(19),
+                    src: Reg(10),
+                    from: in_ty,
+                    to: F32,
+                },
                 KernelOp::BinOp {
                     dst: Reg(11),
-                    a: Reg(9),
-                    b: Reg(10),
+                    a: Reg(18),
+                    b: Reg(19),
                     op: BinOp::Mul,
                     ty: F32,
                 },
@@ -294,7 +315,7 @@ fn build_gemm_mixed_def(dtype: GemmInputType, n: u32, k: u32, alpha: f32, beta: 
         ],
         body,
         body_source: None,
-        next_reg: 18,
+        next_reg: 20,
         opt_level: 0,
         device_sources: vec![],
         device_functions: vec![],

@@ -47,8 +47,8 @@ backend coverage exactly — every row below applies to `gemv` too.
 
 | Backend | GEMM status |
 |---------|-------------|
-| Software (CPU) | correct (differential tests; gemv 9/9; mixed-bf16 8/8) |
-| Metal (M1 Pro) | correct + benched (above); gemv 9/9; mixed-bf16 8/8 |
+| Software (CPU) | correct (differential tests; gemv 9/9; mixed bf16+f16 7/7) |
+| Metal (M1 Pro) | correct + benched (above); gemv 9/9; mixed bf16+f16 7/7 |
 | Vulkan (lavapipe, RPi 5 Mesa LLVM 20) | **correct — 15/15 gemm tests pass** (all tiled + partial-tail cases). The tiled kernel's shared-memory + barriers lower to SPIR-V lavapipe accepts. (Note: lavapipe *does* reject subgroup reduce/scan ops — prims block kernels fail there with `VkResult -13` — but GEMM uses neither, only shared memory.) |
 | WebGPU | not yet wired |
 

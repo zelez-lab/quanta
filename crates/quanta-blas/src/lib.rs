@@ -6,7 +6,7 @@
 //! on `quanta-tensor` (shape proofs), `quanta-prims` (device-resident
 //! reductions), and the Quanta JIT.
 //!
-//! ## This release: Level-1 + GEMV + tiled GEMM (f32) + mixed-precision (bf16)
+//! ## This release: Level-1 + GEMV + tiled GEMM (f32) + mixed-precision (bf16/f16)
 //!
 //! - [`scal`](level1::scal) — `x ← α·x` (in place)
 //! - [`axpy`](level1::axpy) — `y ← α·x + y` (in place)
@@ -15,7 +15,7 @@
 //! - [`gemv`](level2::gemv) — `y ← α·A·x + β·y` (Level-2, via GEMM N=1)
 //! - [`gemm`](gemm::gemm) — `C ← α·A·B + β·C` (Level-3, tiled kernel)
 //! - [`gemm_mixed`](mixed::gemm_mixed) / [`gemv_mixed`](mixed::gemv_mixed) —
-//!   narrow inputs (bf16), f32 accumulate
+//!   narrow inputs (bf16 / f16), f32 accumulate
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/

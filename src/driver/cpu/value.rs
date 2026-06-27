@@ -257,63 +257,7 @@ pub(super) fn f32_to_bf16(val: f32) -> u16 {
 // the identical arithmetic. Use `quanta_ir::dtype::{fp8_to_f32, f32_to_fp8}`.
 
 /// IEEE 754 half-precision to single-precision.
-pub(super) fn f16_to_f32(bits: u16) -> f32 {
-    let sign = ((bits >> 15) & 1) as u32;
-    let exp = ((bits >> 10) & 0x1F) as u32;
-    let frac = (bits & 0x3FF) as u32;
-
-    if exp == 0 {
-        if frac == 0 {
-            f32::from_bits(sign << 31)
-        } else {
-            // subnormal
-            let mut e = 1u32;
-            let mut f = frac;
-            while f & 0x400 == 0 {
-                f <<= 1;
-                e += 1;
-            }
-            f &= 0x3FF;
-            let f32_exp = 127 - 15 - e + 1;
-            f32::from_bits((sign << 31) | (f32_exp << 23) | (f << 13))
-        }
-    } else if exp == 31 {
-        if frac == 0 {
-            f32::from_bits((sign << 31) | (0xFF << 23))
-        } else {
-            f32::NAN
-        }
-    } else {
-        let f32_exp = exp + (127 - 15);
-        f32::from_bits((sign << 31) | (f32_exp << 23) | (frac << 13))
-    }
-}
-
-/// Single-precision to IEEE 754 half-precision (round to nearest even).
-pub(super) fn f32_to_f16(val: f32) -> u16 {
-    let bits = val.to_bits();
-    let sign = (bits >> 31) & 1;
-    let exp = ((bits >> 23) & 0xFF) as i32;
-    let frac = bits & 0x7FFFFF;
-
-    if exp == 0xFF {
-        // inf/nan
-        if frac == 0 {
-            ((sign << 15) | 0x7C00) as u16
-        } else {
-            ((sign << 15) | 0x7C00 | (frac >> 13).max(1)) as u16
-        }
-    } else if exp > 142 {
-        // overflow to inf
-        ((sign << 15) | 0x7C00) as u16
-    } else if exp < 113 {
-        // underflow to zero
-        (sign << 15) as u16
-    } else {
-        let new_exp = (exp - 112) as u32;
-        ((sign << 15) | (new_exp << 10) | (frac >> 13)) as u16
-    }
-}
+pub(super) use quanta_ir::dtype::{f16_to_f32, f32_to_f16};
 
 pub(super) fn value_from_const(cv: &ConstValue) -> Value {
     match cv {
