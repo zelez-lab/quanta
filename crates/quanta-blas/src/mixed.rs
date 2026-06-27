@@ -22,12 +22,19 @@ use quanta_ir::{
 };
 
 /// Input element dtype for a mixed-precision GEMM. Output (C) is always f32.
+/// The storage width is intrinsic to the dtype — 2-byte dtypes (bf16/f16) ride
+/// a `Field<u16>` and dispatch through [`gemm_mixed`]; 1-byte dtypes (fp8) ride
+/// a `Field<u8>` and dispatch through [`gemm_mixed8`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GemmInputType {
     /// bfloat16 — 1 sign / 8 exponent / 7 mantissa (top 16 bits of an f32).
     Bf16,
     /// IEEE half — 1 sign / 5 exponent / 10 mantissa.
     F16,
+    /// fp8 E5M2 — 1 sign / 5 exponent / 2 mantissa.
+    Fp8E5M2,
+    /// fp8 E4M3 — 1 sign / 4 exponent / 3 mantissa.
+    Fp8E4M3,
 }
 
 impl GemmInputType {
@@ -35,6 +42,8 @@ impl GemmInputType {
         match self {
             GemmInputType::Bf16 => ScalarType::BF16,
             GemmInputType::F16 => ScalarType::F16,
+            GemmInputType::Fp8E5M2 => ScalarType::FP8E5M2,
+            GemmInputType::Fp8E4M3 => ScalarType::FP8E4M3,
         }
     }
 
@@ -42,14 +51,26 @@ impl GemmInputType {
         match self {
             GemmInputType::Bf16 => "bf16",
             GemmInputType::F16 => "f16",
+            GemmInputType::Fp8E5M2 => "fp8e5m2",
+            GemmInputType::Fp8E4M3 => "fp8e4m3",
+        }
+    }
+
+    /// Storage width in bytes — 2 for bf16/f16, 1 for fp8. Selects which public
+    /// entry (`gemm_mixed` vs `gemm_mixed8`) accepts the dtype.
+    fn storage_bytes(self) -> usize {
+        match self {
+            GemmInputType::Bf16 | GemmInputType::F16 => 2,
+            GemmInputType::Fp8E5M2 | GemmInputType::Fp8E4M3 => 1,
         }
     }
 }
 
-/// `gemm_mixed`: `C ← α·A·B + β·C`, A `m×k` and B `k×n` row-major in the
-/// narrow `dtype`, C `m×n` in f32. A and B are `Field<u16>` holding one bf16
-/// bit pattern per (2-byte) element; C is `Field<f32>` (read for `β·C`,
-/// overwritten with the result). Errors on a shape mismatch.
+/// `gemm_mixed`: `C ← α·A·B + β·C`, A `m×k` and B `k×n` row-major in a 2-byte
+/// narrow `dtype` (`Bf16` / `F16`), C `m×n` in f32. A and B are `Field<u16>`
+/// holding one element per 2-byte slot; C is `Field<f32>` (read for `β·C`,
+/// overwritten). Errors on a shape mismatch, or if `dtype` is not a 2-byte
+/// dtype (use [`gemm_mixed8`] for fp8).
 #[allow(clippy::too_many_arguments)]
 pub fn gemm_mixed(
     gpu: &Gpu,
@@ -60,6 +81,55 @@ pub fn gemm_mixed(
     alpha: f32,
     a: &Field<u16>,
     b: &Field<u16>,
+    beta: f32,
+    c: &Field<f32>,
+) -> Result<(), QuantaError> {
+    if dtype.storage_bytes() != 2 {
+        return Err(QuantaError::invalid_param(
+            "gemm_mixed: dtype is not 2-byte — use gemm_mixed8",
+        ));
+    }
+    dispatch_mixed(gpu, dtype, m, n, k, alpha, a, b, beta, c)
+}
+
+/// `gemm_mixed8`: like [`gemm_mixed`] but for 1-byte fp8 dtypes (`Fp8E5M2` /
+/// `Fp8E4M3`). A and B are `Field<u8>` (one fp8 byte per slot); C is f32.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_mixed8(
+    gpu: &Gpu,
+    dtype: GemmInputType,
+    m: u32,
+    n: u32,
+    k: u32,
+    alpha: f32,
+    a: &Field<u8>,
+    b: &Field<u8>,
+    beta: f32,
+    c: &Field<f32>,
+) -> Result<(), QuantaError> {
+    if dtype.storage_bytes() != 1 {
+        return Err(QuantaError::invalid_param(
+            "gemm_mixed8: dtype is not 1-byte — use gemm_mixed",
+        ));
+    }
+    dispatch_mixed(gpu, dtype, m, n, k, alpha, a, b, beta, c)
+}
+
+/// Shared dispatch for any narrow input storage type `T` (`u16` for bf16/f16,
+/// `u8` for fp8). Validates shapes, builds the per-dtype `KernelDef`, binds and
+/// dispatches `m·n` threads. The kernel reads A/B at the dtype's native stride
+/// (`scalar_size`), so `T` must match the dtype's storage width — the public
+/// `gemm_mixed`/`gemm_mixed8` wrappers enforce that.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_mixed<T: quanta::GpuType>(
+    gpu: &Gpu,
+    dtype: GemmInputType,
+    m: u32,
+    n: u32,
+    k: u32,
+    alpha: f32,
+    a: &Field<T>,
+    b: &Field<T>,
     beta: f32,
     c: &Field<f32>,
 ) -> Result<(), QuantaError> {
@@ -93,7 +163,7 @@ pub fn gemm_mixed(
     Ok(())
 }
 
-/// `gemv_mixed`: `y ← α·A·x + β·y`, A `m×n` row-major in `dtype`, x in
+/// `gemv_mixed`: `y ← α·A·x + β·y`, A `m×n` row-major in a 2-byte `dtype`, x in
 /// `dtype`, y in f32. A gemv is a gemm with one output column (N=1), so this
 /// routes into `gemm_mixed(m, 1, n, …)` — same kernel, same proven bound
 /// (`Quanta.Blas.gemvEntry_eq_gemmEntry`).
@@ -109,19 +179,24 @@ pub fn gemv_mixed(
     beta: f32,
     y: &Field<f32>,
 ) -> Result<(), QuantaError> {
-    let (mu, nu) = (m as usize, n as usize);
-    if a.len() != mu * nu {
-        return Err(QuantaError::invalid_param(
-            "gemv_mixed: A length must be m*n",
-        ));
-    }
-    if x.len() != nu {
-        return Err(QuantaError::invalid_param("gemv_mixed: x length must be n"));
-    }
-    if y.len() != mu {
-        return Err(QuantaError::invalid_param("gemv_mixed: y length must be m"));
-    }
     gemm_mixed(gpu, dtype, m, 1, n, alpha, a, x, beta, y)
+}
+
+/// `gemv_mixed8`: [`gemv_mixed`] for 1-byte fp8 dtypes — routes into
+/// `gemm_mixed8(m, 1, n, …)`.
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_mixed8(
+    gpu: &Gpu,
+    dtype: GemmInputType,
+    m: u32,
+    n: u32,
+    alpha: f32,
+    a: &Field<u8>,
+    x: &Field<u8>,
+    beta: f32,
+    y: &Field<f32>,
+) -> Result<(), QuantaError> {
+    gemm_mixed8(gpu, dtype, m, 1, n, alpha, a, x, beta, y)
 }
 
 /// Naive mixed-precision GEMM kernel: one thread per output entry `C[row,col]`

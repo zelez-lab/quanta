@@ -104,16 +104,16 @@ pub fn gemv(m: usize, n: usize, alpha: f32, a: &[f32], x: &[f32], beta: f32, y: 
 /// β·C`. Accumulating in f32 (not f64) makes this the kernel's exact numerical
 /// twin, so the differential test is a tight match, not a tolerance band.
 #[allow(clippy::too_many_arguments)]
-fn gemm_narrow(
+fn gemm_narrow<E: Copy>(
     m: usize,
     n: usize,
     k: usize,
     alpha: f32,
-    a: &[u16],
-    b: &[u16],
+    a: &[E],
+    b: &[E],
     beta: f32,
     c: &mut [f32],
-    to_f32: impl Fn(u16) -> f32,
+    to_f32: impl Fn(E) -> f32,
 ) {
     assert_eq!(a.len(), m * k, "gemm_narrow: A must be m×k");
     assert_eq!(b.len(), k * n, "gemm_narrow: B must be k×n");
@@ -163,6 +163,44 @@ pub fn gemm_f16(
     c: &mut [f32],
 ) {
     gemm_narrow(m, n, k, alpha, a, b, beta, c, quanta_ir::dtype::f16_to_f32);
+}
+
+/// `gemm_fp8_e5m2`: mixed-precision GEMM oracle for fp8 E5M2 inputs (raw `u8`
+/// bit patterns), the differential twin of
+/// `gemm_mixed8(GemmInputType::Fp8E5M2, …)`.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_fp8_e5m2(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a: &[u8],
+    b: &[u8],
+    beta: f32,
+    c: &mut [f32],
+) {
+    let (eb, mb) = quanta_ir::dtype::E5M2;
+    gemm_narrow(m, n, k, alpha, a, b, beta, c, |x| {
+        quanta_ir::dtype::fp8_to_f32(x, eb, mb)
+    });
+}
+
+/// `gemm_fp8_e4m3`: mixed-precision GEMM oracle for fp8 E4M3 inputs.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_fp8_e4m3(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a: &[u8],
+    b: &[u8],
+    beta: f32,
+    c: &mut [f32],
+) {
+    let (eb, mb) = quanta_ir::dtype::E4M3;
+    gemm_narrow(m, n, k, alpha, a, b, beta, c, |x| {
+        quanta_ir::dtype::fp8_to_f32(x, eb, mb)
+    });
 }
 
 #[cfg(test)]
@@ -275,6 +313,20 @@ mod tests {
         let mut c = vec![0.0f32; 4];
         gemm_f16(2, 2, 2, 1.0, &a, &b, 0.0, &mut c);
         assert_eq!(c, vec![19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn gemm_fp8_basic() {
+        use quanta_ir::dtype::{E4M3, f32_to_fp8};
+        // Small integers, exactly representable in E4M3:
+        // [[1,2],[2,1]] · [[1,0],[0,2]] = [[1,4],[2,2]].
+        let (eb, mb) = E4M3;
+        let enc = |x: f32| f32_to_fp8(x, eb, mb);
+        let a: Vec<u8> = [1.0f32, 2.0, 2.0, 1.0].iter().map(|&x| enc(x)).collect();
+        let b: Vec<u8> = [1.0f32, 0.0, 0.0, 2.0].iter().map(|&x| enc(x)).collect();
+        let mut c = vec![0.0f32; 4];
+        gemm_fp8_e4m3(2, 2, 2, 1.0, &a, &b, 0.0, &mut c);
+        assert_eq!(c, vec![1.0, 4.0, 2.0, 2.0]);
     }
 
     #[test]
