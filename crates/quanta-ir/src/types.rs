@@ -46,6 +46,21 @@ pub enum ScalarType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Reg(pub u32);
 
+/// Role of a cooperative-matrix fragment in a tile GEMM `D = A·B + C`. The role
+/// fixes the fragment's logical shape and memory layout when loading/storing:
+/// `A` is `m×k` row-major, `B` is `k×n` row-major, `Accumulator` is `m×n`
+/// (the `C`/`D` tile). Backends map these to `simdgroup_matrix` /
+/// `OpTypeCooperativeMatrixKHR` "use" operands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatrixFrag {
+    /// Left operand `A` (`m×k`).
+    A,
+    /// Right operand `B` (`k×n`).
+    B,
+    /// Accumulator `C`/`D` (`m×n`).
+    Accumulator,
+}
+
 /// Constant value.
 #[derive(Debug, Clone, Copy)]
 pub enum ConstValue {
@@ -440,6 +455,36 @@ pub enum KernelOp {
         a: Reg,
         b: Reg,
         c: Reg,
+        m: u8,
+        n: u8,
+        k: u8,
+        ty: ScalarType,
+    },
+    /// Load a cooperative-matrix fragment from a buffer. The fragment is a
+    /// subgroup-scoped `m×n×k`-shaped tile (the `frag` role fixes which two of
+    /// the three dims apply); `field`/`index` give the buffer slot and the
+    /// element index of the tile's top-left corner, `stride` the row stride (in
+    /// elements) of the source matrix. Each backend lowers to its native
+    /// fragment load (`simdgroup_load` / `OpCooperativeMatrixLoadKHR`).
+    CooperativeMatrixLoad {
+        dst: Reg,
+        field: u32,
+        index: Reg,
+        stride: Reg,
+        frag: MatrixFrag,
+        m: u8,
+        n: u8,
+        k: u8,
+        ty: ScalarType,
+    },
+    /// Store a cooperative-matrix accumulator fragment to a buffer. Mirrors
+    /// `CooperativeMatrixLoad`; `src` is the fragment register, written as an
+    /// `m×n` tile at `(field, index)` with row `stride`.
+    CooperativeMatrixStore {
+        field: u32,
+        index: Reg,
+        stride: Reg,
+        src: Reg,
         m: u8,
         n: u8,
         k: u8,

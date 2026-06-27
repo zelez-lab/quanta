@@ -797,6 +797,14 @@ pub(super) fn emit_op(
             // Cooperative matrix multiply-add not yet supported in MSL; placeholder zero.
             out.push_str(&format!("{}{} r{} = 0;\n", pad, ty.msl_name(), dst.0));
         }
+        KernelOp::CooperativeMatrixLoad { dst, ty, .. } => {
+            // Real simdgroup_matrix codegen lands with the tensor-core GEMM
+            // path; placeholder zero until then.
+            out.push_str(&format!("{}{} r{} = 0;\n", pad, ty.msl_name(), dst.0));
+        }
+        KernelOp::CooperativeMatrixStore { .. } => {
+            // Placeholder no-op until native simdgroup_store codegen lands.
+        }
     }
 }
 

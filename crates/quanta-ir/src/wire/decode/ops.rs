@@ -563,6 +563,55 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
                 ty,
             })
         }
+        // 55 — CooperativeMatrixLoad
+        55 => {
+            let dst = read_reg(r)?;
+            let field = r.u32()?;
+            let index = read_reg(r)?;
+            let stride = read_reg(r)?;
+            let frag = match r.u8()? {
+                0 => crate::MatrixFrag::A,
+                1 => crate::MatrixFrag::B,
+                2 => crate::MatrixFrag::Accumulator,
+                _ => return Err("invalid MatrixFrag tag"),
+            };
+            let m = r.u8()?;
+            let n = r.u8()?;
+            let k = r.u8()?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::CooperativeMatrixLoad {
+                dst,
+                field,
+                index,
+                stride,
+                frag,
+                m,
+                n,
+                k,
+                ty,
+            })
+        }
+        // 56 — CooperativeMatrixStore
+        56 => {
+            let field = r.u32()?;
+            let index = read_reg(r)?;
+            let stride = read_reg(r)?;
+            let src = read_reg(r)?;
+            let m = r.u8()?;
+            let n = r.u8()?;
+            let k = r.u8()?;
+            let ty = read_scalar_type(r)?;
+            Ok(KernelOp::CooperativeMatrixStore {
+                field,
+                index,
+                stride,
+                src,
+                m,
+                n,
+                k,
+                ty,
+            })
+        }
 
         // 51 — Fence
         51 => {

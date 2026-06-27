@@ -728,5 +728,10 @@ pub(crate) fn emit_op(
                 pad, t, m, k, c.0, ty.msl_name(), dst.0
             ));
         }
+        KernelOp::CooperativeMatrixLoad { dst, ty, .. } => {
+            // Real simdgroup_load codegen lands with the tensor-core GEMM path.
+            out.push_str(&format!("{}{} r{} = 0;\n", pad, ty.msl_name(), dst.0));
+        }
+        KernelOp::CooperativeMatrixStore { .. } => {}
     }
 }

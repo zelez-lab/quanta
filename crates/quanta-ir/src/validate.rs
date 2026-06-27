@@ -200,6 +200,8 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
         | VecExtract { ty, .. }
         | MatMul { ty, .. }
         | CooperativeMMA { ty, .. }
+        | CooperativeMatrixLoad { ty, .. }
+        | CooperativeMatrixStore { ty, .. }
         | TextureSample2D { ty, .. }
         | TextureSample3D { ty, .. }
         | TextureLoad2D { ty, .. }
@@ -310,6 +312,8 @@ fn op_name(op: &KernelOp) -> &'static str {
         VecExtract { .. } => "VecExtract",
         MatMul { .. } => "MatMul",
         CooperativeMMA { .. } => "CooperativeMMA",
+        CooperativeMatrixLoad { .. } => "CooperativeMatrixLoad",
+        CooperativeMatrixStore { .. } => "CooperativeMatrixStore",
         TextureSample2D { .. } => "TextureSample2D",
         TextureSample3D { .. } => "TextureSample3D",
         TextureWrite2D { .. } => "TextureWrite2D",

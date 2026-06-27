@@ -227,6 +227,17 @@ fn check_uses(op: &KernelOp, env: &HashSet<Reg>) -> Result<(), ScopeViolation> {
             check(*b, "CooperativeMMA.b")?;
             check(*c, "CooperativeMMA.c")
         }
+        KernelOp::CooperativeMatrixLoad { index, stride, .. } => {
+            check(*index, "CooperativeMatrixLoad.index")?;
+            check(*stride, "CooperativeMatrixLoad.stride")
+        }
+        KernelOp::CooperativeMatrixStore {
+            index, stride, src, ..
+        } => {
+            check(*index, "CooperativeMatrixStore.index")?;
+            check(*stride, "CooperativeMatrixStore.stride")?;
+            check(*src, "CooperativeMatrixStore.src")
+        }
         // Texture.
         KernelOp::TextureSample2D { x, y, .. } => {
             check(*x, "TextureSample2D.x")?;
@@ -323,6 +334,7 @@ pub fn defined_reg(op: &KernelOp) -> Option<Reg> {
         | KernelOp::VecExtract { dst, .. }
         | KernelOp::MatMul { dst, .. }
         | KernelOp::CooperativeMMA { dst, .. }
+        | KernelOp::CooperativeMatrixLoad { dst, .. }
         | KernelOp::TextureSample2D { dst, .. }
         | KernelOp::TextureSample3D { dst, .. }
         | KernelOp::TextureLoad2D { dst, .. }
@@ -345,6 +357,7 @@ pub fn defined_reg(op: &KernelOp) -> Option<Reg> {
         KernelOp::TextureSize { dst_w, .. } => Some(*dst_w),
         // No defined reg.
         KernelOp::Store { .. }
+        | KernelOp::CooperativeMatrixStore { .. }
         | KernelOp::SharedDecl { .. }
         | KernelOp::SharedDeclDyn { .. }
         | KernelOp::SharedStore { .. }
@@ -431,6 +444,10 @@ pub fn used_regs(op: &KernelOp) -> Vec<Reg> {
         KernelOp::VecExtract { vec, .. } => vec![*vec],
         KernelOp::MatMul { a, b, .. } => vec![*a, *b],
         KernelOp::CooperativeMMA { a, b, c, .. } => vec![*a, *b, *c],
+        KernelOp::CooperativeMatrixLoad { index, stride, .. } => vec![*index, *stride],
+        KernelOp::CooperativeMatrixStore {
+            index, stride, src, ..
+        } => vec![*index, *stride, *src],
         // Texture.
         KernelOp::TextureSample2D { x, y, .. } | KernelOp::TextureLoad2D { x, y, .. } => {
             vec![*x, *y]

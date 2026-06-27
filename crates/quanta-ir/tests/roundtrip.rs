@@ -173,3 +173,73 @@ fn roundtrip_all_ops() {
     assert_eq!(restored.body.len(), 8);
     assert_eq!(restored.opt_level, 2);
 }
+
+#[test]
+fn roundtrip_cooperative_matrix_ops() {
+    // The three cooperative-matrix ops (load A/B fragments, MMA, store the
+    // accumulator) round-trip through the wire format. KernelOp has no
+    // PartialEq (it carries Vecs), so we check stability by re-encoding the
+    // decoded kernel and comparing bytes — a faithful round-trip witness.
+    let kernel = KernelDef {
+        name: "coop_matrix".to_string(),
+        params: vec![],
+        body: vec![
+            KernelOp::CooperativeMatrixLoad {
+                dst: Reg(0),
+                field: 0,
+                index: Reg(10),
+                stride: Reg(11),
+                frag: MatrixFrag::A,
+                m: 8,
+                n: 8,
+                k: 8,
+                ty: ScalarType::F32,
+            },
+            KernelOp::CooperativeMatrixLoad {
+                dst: Reg(1),
+                field: 1,
+                index: Reg(12),
+                stride: Reg(13),
+                frag: MatrixFrag::B,
+                m: 8,
+                n: 8,
+                k: 8,
+                ty: ScalarType::F32,
+            },
+            KernelOp::CooperativeMMA {
+                dst: Reg(2),
+                a: Reg(0),
+                b: Reg(1),
+                c: Reg(2),
+                m: 8,
+                n: 8,
+                k: 8,
+                ty: ScalarType::F32,
+            },
+            KernelOp::CooperativeMatrixStore {
+                field: 2,
+                index: Reg(14),
+                stride: Reg(15),
+                src: Reg(2),
+                m: 8,
+                n: 8,
+                k: 8,
+                ty: ScalarType::F32,
+            },
+        ],
+        body_source: None,
+        next_reg: 16,
+        opt_level: 0,
+        device_sources: Vec::new(),
+        device_functions: Vec::new(),
+        workgroup_size: [32, 1, 1],
+        subgroup_size: Some(32),
+        dynamic_shared_bytes: 0,
+    };
+
+    let bytes = serialize_kernel(&kernel);
+    let restored = deserialize_kernel(&bytes).unwrap();
+    assert_eq!(restored.body.len(), 4);
+    // Re-encode and compare bytes: the decode reproduced every field exactly.
+    assert_eq!(serialize_kernel(&restored), bytes);
+}

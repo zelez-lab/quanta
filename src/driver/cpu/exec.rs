@@ -723,8 +723,18 @@ pub(super) fn execute_ops(
                 ctx.regs.insert(dst.0, Value::U32(0));
             }
             KernelOp::CooperativeMMA { dst, .. } => {
-                // Cooperative matrix multiply-accumulate: not supported in CPU mode.
+                // Cooperative matrix multiply-accumulate: not supported in CPU
+                // mode (the CPU lane reports supports_cooperative_matrix=false,
+                // so quanta-blas routes to the scalar tiled GEMM here).
                 ctx.regs.insert(dst.0, Value::F32(0.0));
+            }
+            KernelOp::CooperativeMatrixLoad { dst, .. } => {
+                // Subgroup-collective fragment load: no CPU execution (gated
+                // out by capability). Placeholder so the op is total.
+                ctx.regs.insert(dst.0, Value::F32(0.0));
+            }
+            KernelOp::CooperativeMatrixStore { .. } => {
+                // Placeholder no-op (gated out on the CPU lane).
             }
             KernelOp::SubgroupSize { dst } => {
                 // Cooperative warp width on the CPU lane (see SUBGROUP_SIZE).

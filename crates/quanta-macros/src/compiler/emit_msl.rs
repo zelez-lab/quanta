@@ -827,6 +827,10 @@ fn emit_msl_op(
                 c.0
             ));
         }
+        CooperativeMatrixLoad { dst, ty, .. } => {
+            out.push_str(&format!("{}{} r{} = 0;\n", pad, ty.msl_name(), dst.0));
+        }
+        CooperativeMatrixStore { .. } => {}
     }
 }
 

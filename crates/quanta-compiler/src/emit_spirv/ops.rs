@@ -584,6 +584,16 @@ impl SpvEmitter {
                 );
                 self.set_reg(*dst, result, result_ty);
             }
+            KernelOp::CooperativeMatrixLoad { dst, ty, .. } => {
+                // SPV_KHR_cooperative_matrix codegen is a later (post-Metal) arm;
+                // placeholder zero so the op is total.
+                let result_ty = self.scalar_type_id(*ty);
+                let zero = self.emit_constant_f32(0.0);
+                self.set_reg(*dst, zero, result_ty);
+            }
+            KernelOp::CooperativeMatrixStore { .. } => {
+                // Placeholder no-op until native cooperative-matrix store lands.
+            }
         }
 
         Ok(())

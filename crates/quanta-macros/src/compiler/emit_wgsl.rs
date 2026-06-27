@@ -561,6 +561,16 @@ fn emit_wgsl_op(out: &mut String, op: &quanta_ir::KernelOp, indent: usize) {
                 c.0
             ));
         }
+        CooperativeMatrixLoad { dst, ty, .. } => {
+            out.push_str(&format!(
+                "{}var r{}: {} = {}(0);\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                ty.wgsl_name()
+            ));
+        }
+        CooperativeMatrixStore { .. } => {}
     }
 }
 

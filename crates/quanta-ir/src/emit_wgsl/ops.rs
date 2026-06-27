@@ -645,5 +645,18 @@ pub(super) fn emit_op(
                 c.0
             ));
         }
+        KernelOp::CooperativeMatrixLoad { dst, ty, .. } => {
+            // WGSL has no cooperative-matrix type; placeholder zero.
+            out.push_str(&format!(
+                "{}var r{}: {} = {}(0);\n",
+                pad,
+                dst.0,
+                ty.wgsl_name(),
+                ty.wgsl_name()
+            ));
+        }
+        KernelOp::CooperativeMatrixStore { .. } => {
+            // Placeholder no-op (WGSL has no cooperative-matrix store).
+        }
     }
 }

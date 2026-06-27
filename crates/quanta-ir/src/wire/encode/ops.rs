@@ -611,6 +611,54 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             w.u8(*k);
             write_scalar_type(w, ty);
         }
+        // 55 — CooperativeMatrixLoad
+        KernelOp::CooperativeMatrixLoad {
+            dst,
+            field,
+            index,
+            stride,
+            frag,
+            m,
+            n,
+            k,
+            ty,
+        } => {
+            w.u8(55);
+            write_reg(w, dst);
+            w.u32(*field);
+            write_reg(w, index);
+            write_reg(w, stride);
+            w.u8(match frag {
+                crate::MatrixFrag::A => 0,
+                crate::MatrixFrag::B => 1,
+                crate::MatrixFrag::Accumulator => 2,
+            });
+            w.u8(*m);
+            w.u8(*n);
+            w.u8(*k);
+            write_scalar_type(w, ty);
+        }
+        // 56 — CooperativeMatrixStore
+        KernelOp::CooperativeMatrixStore {
+            field,
+            index,
+            stride,
+            src,
+            m,
+            n,
+            k,
+            ty,
+        } => {
+            w.u8(56);
+            w.u32(*field);
+            write_reg(w, index);
+            write_reg(w, stride);
+            write_reg(w, src);
+            w.u8(*m);
+            w.u8(*n);
+            w.u8(*k);
+            write_scalar_type(w, ty);
+        }
         // 51 — Fence { order }
         KernelOp::Fence { order } => {
             w.u8(51);
