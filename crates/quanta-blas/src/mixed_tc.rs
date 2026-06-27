@@ -96,6 +96,214 @@ pub fn gemm_f32_tc(
     Ok(())
 }
 
+/// Probe: single-tile (8×8×8, one subgroup) shared-staged GEMM `C = A·B`.
+/// Stages the 8×8 A and B tiles into threadgroup memory cooperatively (32
+/// threads copy 2 elements each), barriers, loads both fragments **from
+/// shared**, one MMA into a zeroed accumulator, stores. Validates that
+/// `simdgroup_load` works against a `shared_<id>` array before the full
+/// shared-staged kernel is built on it. `#[doc(hidden)]` — test-only.
+#[doc(hidden)]
+pub fn gemm_f32_tc_shared_probe(
+    gpu: &Gpu,
+    a: &Field<f32>,
+    b: &Field<f32>,
+    c: &Field<f32>,
+) -> Result<(), QuantaError> {
+    if !gpu.supports_cooperative_matrix() {
+        return Err(QuantaError::not_supported("no cooperative matrix"));
+    }
+    let def = build_tc_shared_probe_def();
+    let bytes = serialize_kernel(&def);
+    let mut wave = gpu.wave_jit(&bytes)?;
+    wave.bind(0, a);
+    wave.bind(1, b);
+    wave.bind(2, c);
+    gpu.dispatch(&wave, 32)?.wait()?; // one subgroup
+    Ok(())
+}
+
+fn build_tc_shared_probe_def() -> KernelDef {
+    use ScalarType::{F32, U32};
+    let f8: u8 = FRAG as u8;
+    // Shared tiles: id 0 = A (8×8), id 1 = B (8×8).
+    let mut next = 50u32;
+    let mut fresh = || {
+        let r = next;
+        next += 1;
+        r
+    };
+    let tid = 0u32; // proton_id (in-workgroup thread index)
+    let n8 = fresh(); // const 8
+    let n64 = fresh(); // const 64
+    let n32 = fresh(); // const 32
+    let mut body = vec![
+        KernelOp::SharedDecl {
+            id: 0,
+            ty: F32,
+            count: 64,
+        },
+        KernelOp::SharedDecl {
+            id: 1,
+            ty: F32,
+            count: 64,
+        },
+        KernelOp::ProtonId { dst: Reg(tid) },
+        KernelOp::Const {
+            dst: Reg(n8),
+            value: ConstValue::U32(8),
+        },
+        KernelOp::Const {
+            dst: Reg(n64),
+            value: ConstValue::U32(64),
+        },
+        KernelOp::Const {
+            dst: Reg(n32),
+            value: ConstValue::U32(32),
+        },
+    ];
+    // Cooperative copy: thread t copies element t and t+32 of each 8×8 tile.
+    // The tiles are contiguous 8×8 row-major in both global (stride 8) and
+    // shared, so the flat index is identical — a straight copy.
+    for half in 0..2u32 {
+        let e = fresh(); // element index = tid + half*32
+        let off = fresh();
+        body.push(KernelOp::Const {
+            dst: Reg(off),
+            value: ConstValue::U32(half * 32),
+        });
+        body.push(KernelOp::BinOp {
+            dst: Reg(e),
+            a: Reg(tid),
+            b: Reg(off),
+            op: BinOp::Add,
+            ty: U32,
+        });
+        // a_sh[e] = a[e]; b_sh[e] = b[e]
+        let av = fresh();
+        body.push(KernelOp::Load {
+            dst: Reg(av),
+            field: 0,
+            index: Reg(e),
+            ty: F32,
+        });
+        body.push(KernelOp::SharedStore {
+            id: 0,
+            index: Reg(e),
+            src: Reg(av),
+            ty: F32,
+        });
+        let bv = fresh();
+        body.push(KernelOp::Load {
+            dst: Reg(bv),
+            field: 1,
+            index: Reg(e),
+            ty: F32,
+        });
+        body.push(KernelOp::SharedStore {
+            id: 1,
+            index: Reg(e),
+            src: Reg(bv),
+            ty: F32,
+        });
+    }
+    body.push(KernelOp::Barrier);
+    // Load A,B fragments from shared (stride 8), zero accumulator, MMA, store.
+    let zero_idx = fresh();
+    body.push(KernelOp::Const {
+        dst: Reg(zero_idx),
+        value: ConstValue::U32(0),
+    });
+    let af = fresh();
+    let bf = fresh();
+    let acc = fresh();
+    body.push(KernelOp::CooperativeMatrixLoad {
+        dst: Reg(af),
+        field: 0,
+        index: Reg(zero_idx),
+        stride: Reg(n8),
+        frag: MatrixFrag::A,
+        from_shared: true,
+        m: f8,
+        n: f8,
+        k: f8,
+        ty: F32,
+    });
+    body.push(KernelOp::CooperativeMatrixLoad {
+        dst: Reg(bf),
+        field: 1,
+        index: Reg(zero_idx),
+        stride: Reg(n8),
+        frag: MatrixFrag::B,
+        from_shared: true,
+        m: f8,
+        n: f8,
+        k: f8,
+        ty: F32,
+    });
+    // acc starts at the (zeroed) C tile loaded from global → C = A·B + C0.
+    body.push(KernelOp::CooperativeMatrixLoad {
+        dst: Reg(acc),
+        field: 2,
+        index: Reg(zero_idx),
+        stride: Reg(n8),
+        frag: MatrixFrag::Accumulator,
+        from_shared: false,
+        m: f8,
+        n: f8,
+        k: f8,
+        ty: F32,
+    });
+    body.push(KernelOp::CooperativeMMA {
+        dst: Reg(acc),
+        a: Reg(af),
+        b: Reg(bf),
+        c: Reg(acc),
+        m: f8,
+        n: f8,
+        k: f8,
+        ty: F32,
+    });
+    body.push(KernelOp::CooperativeMatrixStore {
+        field: 2,
+        index: Reg(zero_idx),
+        stride: Reg(n8),
+        src: Reg(acc),
+        m: f8,
+        n: f8,
+        k: f8,
+        ty: F32,
+    });
+    KernelDef {
+        name: "blas_gemm_f32_tc_shared_probe".into(),
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: F32,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: F32,
+            },
+            KernelParam::FieldWrite {
+                name: "c".into(),
+                slot: 2,
+                scalar_type: F32,
+            },
+        ],
+        body,
+        body_source: None,
+        next_reg: next + 1,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [32, 1, 1],
+        subgroup_size: Some(32),
+        dynamic_shared_bytes: 0,
+    }
+}
+
 /// Build the register-blocked cooperative-matrix GEMM kernel (`C += A·B`,
 /// `TILE_M×TILE_N` output tile per subgroup, `BR×BC` fragments). `n`, `k` are
 /// baked constants. The op sequence is generated programmatically over the
@@ -121,6 +329,7 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         index,
         stride,
         frag: role,
+        from_shared: false,
         m: f8,
         n: f8,
         k: f8,

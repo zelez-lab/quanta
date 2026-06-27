@@ -40,10 +40,17 @@ The strategy is ~80% of vendor BLAS on tier-2 (Apple-Silicon) GPUs.
 
 - M1 Pro fp32 peak is roughly ~5 TFLOP/s; the tensor-core GEMM tops out near
   ~550 GFLOP/s at N=512 — order ~11% of peak (tiled was ~7.5%). The 4×4
-  register-blocked kernel is a real step past the SIMT tiled path; the next
-  lever is **threadgroup-shared staging** of the A/B tiles (load each tile to
-  shared once, many subgroups read fragments from it) to cut the global
-  fragment loads, then larger tiles / multiple subgroups per workgroup.
+  register-blocked kernel is the **Apple-optimal** path.
+- **Shared-staging was tried and is slower on Apple Silicon** (a 64×64-tile,
+  4-subgroup kernel that stages A/B through threadgroup memory measured
+  ~432 GFLOP/s at N=512 vs the register kernel's ~557). On unified memory the
+  bandwidth a staged tile would save is mostly already served by the system
+  cache, so the two `barrier()`s per K-step the staging needs cost more than
+  they save — the register kernel runs its subgroups barrier-free. The
+  shared-source fragment load (`CooperativeMatrixLoad { from_shared }`) is kept
+  and validated (`tc_shared_load_probe`) because shared-staging is the right
+  strategy on **discrete** GPUs (NVIDIA-style, where global memory is far); it
+  is reserved for the Vulkan path.
 - Vulkan `VK_KHR_cooperative_matrix` is **not yet wired** — the Metal
   `simdgroup_matrix` path is the validated one; the SPIR-V emitter still falls
   back to scalar (so `supports_cooperative_matrix()` is Metal-only today).

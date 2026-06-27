@@ -837,30 +837,40 @@ pub(super) fn emit_op(
             index,
             stride,
             frag,
+            from_shared,
             m,
             n,
             k,
             ty,
         } => {
             // Declare a simdgroup_matrix of the fragment's shape and load it
-            // from `field` at the tile's top-left element (`index`) with row
-            // `stride`. A is m×k, B is k×n, the accumulator is m×n.
+            // from the tile's top-left element (`index`) with row `stride`. A is
+            // m×k, B is k×n, the accumulator is m×n. `from_shared` selects the
+            // threadgroup-shared array `shared_<field>` instead of a buffer.
             let t = simd_matrix_elem(ty);
             let (rows, cols) = match frag {
                 crate::MatrixFrag::A => (m, k),
                 crate::MatrixFrag::B => (k, n),
                 crate::MatrixFrag::Accumulator => (m, n),
             };
-            let buf = names.get(field).map(|s| s.as_str()).unwrap_or("field");
+            let base = if *from_shared {
+                format!("shared_{}", field)
+            } else {
+                names
+                    .get(field)
+                    .map(|s| s.as_str())
+                    .unwrap_or("field")
+                    .to_string()
+            };
             out.push_str(&format!(
                 "{pad}simdgroup_matrix<{t}, {rows}, {cols}> r{d}; \
-                 simdgroup_load(r{d}, &{buf}[r{i}], r{s});\n",
+                 simdgroup_load(r{d}, &{base}[r{i}], r{s});\n",
                 pad = pad,
                 t = t,
                 rows = rows,
                 cols = cols,
                 d = dst.0,
-                buf = buf,
+                base = base,
                 i = index.0,
                 s = stride.0
             ));

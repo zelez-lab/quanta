@@ -575,6 +575,7 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
                 2 => crate::MatrixFrag::Accumulator,
                 _ => return Err("invalid MatrixFrag tag"),
             };
+            let from_shared = r.u8()? != 0;
             let m = r.u8()?;
             let n = r.u8()?;
             let k = r.u8()?;
@@ -585,6 +586,7 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
                 index,
                 stride,
                 frag,
+                from_shared,
                 m,
                 n,
                 k,

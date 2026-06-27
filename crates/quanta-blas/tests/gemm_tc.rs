@@ -88,3 +88,32 @@ fn tc_rectangular() {
 fn tc_larger() {
     check_metal(128, 128, 128);
 }
+
+#[cfg(feature = "gpu-metal")]
+#[test]
+fn tc_shared_load_probe() {
+    // Validates simdgroup_load from a threadgroup-shared array: single 8×8 tile
+    // staged to shared, loaded as fragments, MMA'd, stored. C = A·B.
+    let g = quanta::init().expect("metal device");
+    if !g.supports_cooperative_matrix() {
+        return;
+    }
+    let a = mat(8, 8, 1);
+    let b = mat(8, 8, 2);
+    let af = g.field::<f32>(64).unwrap();
+    let bf = g.field::<f32>(64).unwrap();
+    let cf = g.field::<f32>(64).unwrap();
+    af.write(&a).unwrap();
+    bf.write(&b).unwrap();
+    cf.write(&vec![0.0f32; 64]).unwrap();
+    quanta_blas::mixed_tc::gemm_f32_tc_shared_probe(&g, &af, &bf, &cf).unwrap();
+    let got = cf.read().unwrap();
+    let mut want = vec![0.0f32; 64];
+    reference::gemm(8, 8, 8, 1.0, &a, &b, 0.0, &mut want);
+    for (i, (&gv, &wv)) in got.iter().zip(want.iter()).enumerate() {
+        assert!(
+            (gv - wv).abs() <= 1e-3 * (1.0 + wv.abs()),
+            "shared-probe entry {i}: {gv} vs {wv}"
+        );
+    }
+}

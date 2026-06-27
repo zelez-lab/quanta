@@ -618,6 +618,7 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
             index,
             stride,
             frag,
+            from_shared,
             m,
             n,
             k,
@@ -633,6 +634,7 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
                 crate::MatrixFrag::B => 1,
                 crate::MatrixFrag::Accumulator => 2,
             });
+            w.u8(*from_shared as u8);
             w.u8(*m);
             w.u8(*n);
             w.u8(*k);

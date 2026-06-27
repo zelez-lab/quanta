@@ -462,16 +462,20 @@ pub enum KernelOp {
     },
     /// Load a cooperative-matrix fragment from a buffer. The fragment is a
     /// subgroup-scoped `m×n×k`-shaped tile (the `frag` role fixes which two of
-    /// the three dims apply); `field`/`index` give the buffer slot and the
+    /// the three dims apply); `field`/`index` give the source slot and the
     /// element index of the tile's top-left corner, `stride` the row stride (in
-    /// elements) of the source matrix. Each backend lowers to its native
-    /// fragment load (`simdgroup_load` / `OpCooperativeMatrixLoadKHR`).
+    /// elements) of the source matrix. When `from_shared` is set, `field` is a
+    /// `SharedDecl` id (threadgroup memory) instead of a buffer slot — this is
+    /// how a shared-staged GEMM loads fragments out of the workgroup tile. Each
+    /// backend lowers to its native fragment load (`simdgroup_load` /
+    /// `OpCooperativeMatrixLoadKHR`).
     CooperativeMatrixLoad {
         dst: Reg,
         field: u32,
         index: Reg,
         stride: Reg,
         frag: MatrixFrag,
+        from_shared: bool,
         m: u8,
         n: u8,
         k: u8,
