@@ -96,6 +96,44 @@ pub fn gemv(m: usize, n: usize, alpha: f32, a: &[f32], x: &[f32], beta: f32, y: 
     }
 }
 
+/// `gemm_bf16`: mixed-precision GEMM oracle — A,B are bf16 (passed as raw
+/// `u16` bit patterns), C is f32. Mirrors the GPU `gemm_mixed` kernel exactly:
+/// each A/B element is converted bf16→f32 on load (`bf16_to_f32`), the inner
+/// product accumulates **in f32 left-to-right** (the kernel's order), and the
+/// result is the f32 `α·acc + β·C`. Accumulating in f32 (not f64) makes this
+/// the kernel's exact numerical twin, so the differential test is a tight
+/// match rather than a tolerance band.
+///
+/// `a` is `m×k`, `b` is `k×n`, `c` is `m×n` (read for `β·C`, overwritten).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_bf16(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a: &[u16],
+    b: &[u16],
+    beta: f32,
+    c: &mut [f32],
+) {
+    use quanta_ir::dtype::bf16_to_f32;
+    assert_eq!(a.len(), m * k, "gemm_bf16: A must be m×k");
+    assert_eq!(b.len(), k * n, "gemm_bf16: B must be k×n");
+    assert_eq!(c.len(), m * n, "gemm_bf16: C must be m×n");
+    for row in 0..m {
+        for col in 0..n {
+            let mut acc = 0.0f32;
+            for p in 0..k {
+                let av = bf16_to_f32(a[row * k + p]);
+                let bv = bf16_to_f32(b[p * n + col]);
+                acc += av * bv;
+            }
+            let cval = c[row * n + col];
+            c[row * n + col] = alpha * acc + beta * cval;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +192,41 @@ mod tests {
         gemv(2, 2, 2.0, &a, &x, 3.0, &mut y);
         // 2·[5,6] + 3·[1,1] = [13, 15]
         assert_eq!(y, vec![13.0, 15.0]);
+    }
+
+    #[test]
+    fn gemm_bf16_basic() {
+        use quanta_ir::dtype::f32_to_bf16;
+        // [[1,2],[3,4]] · [[5,6],[7,8]] = [[19,22],[43,50]] — exact in bf16
+        // (all integers < 256 are bf16-representable, products exact in f32).
+        let a: Vec<u16> = [1.0f32, 2.0, 3.0, 4.0]
+            .iter()
+            .map(|&x| f32_to_bf16(x))
+            .collect();
+        let b: Vec<u16> = [5.0f32, 6.0, 7.0, 8.0]
+            .iter()
+            .map(|&x| f32_to_bf16(x))
+            .collect();
+        let mut c = vec![0.0f32; 4];
+        gemm_bf16(2, 2, 2, 1.0, &a, &b, 0.0, &mut c);
+        assert_eq!(c, vec![19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn gemm_bf16_rounds_inputs() {
+        use quanta_ir::dtype::{bf16_to_f32, f32_to_bf16};
+        // A value that is NOT bf16-representable gets rounded on the way in,
+        // and the oracle uses the rounded value — confirming it models the
+        // narrow-storage path, not exact f32.
+        let x = 1.0001f32;
+        let xb = f32_to_bf16(x);
+        let xr = bf16_to_f32(xb); // the value the kernel actually multiplies
+        let a = vec![xb];
+        let b = vec![f32_to_bf16(1.0)];
+        let mut c = vec![0.0f32];
+        gemm_bf16(1, 1, 1, 1.0, &a, &b, 0.0, &mut c);
+        assert_eq!(c[0], xr);
+        assert_ne!(c[0], x, "input must be quantised to bf16, not exact f32");
     }
 
     #[test]

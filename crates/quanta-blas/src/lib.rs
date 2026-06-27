@@ -6,7 +6,7 @@
 //! on `quanta-tensor` (shape proofs), `quanta-prims` (device-resident
 //! reductions), and the Quanta JIT.
 //!
-//! ## This release: Level-1 + GEMV + tiled GEMM (f32)
+//! ## This release: Level-1 + GEMV + tiled GEMM (f32) + mixed-precision (bf16)
 //!
 //! - [`scal`](level1::scal) — `x ← α·x` (in place)
 //! - [`axpy`](level1::axpy) — `y ← α·x + y` (in place)
@@ -14,6 +14,8 @@
 //! - [`nrm2`](level1::nrm2) — `‖x‖₂ = √(Σ xᵢ²)`
 //! - [`gemv`](level2::gemv) — `y ← α·A·x + β·y` (Level-2, via GEMM N=1)
 //! - [`gemm`](gemm::gemm) — `C ← α·A·B + β·C` (Level-3, tiled kernel)
+//! - [`gemm_mixed`](mixed::gemm_mixed) / [`gemv_mixed`](mixed::gemv_mixed) —
+//!   narrow inputs (bf16), f32 accumulate
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -52,8 +54,13 @@ pub mod level2;
 pub mod gemm;
 
 #[cfg(feature = "gpu")]
+pub mod mixed;
+
+#[cfg(feature = "gpu")]
 pub use gemm::gemm;
 #[cfg(feature = "gpu")]
 pub use level1::{axpy, dot, nrm2, scal};
 #[cfg(feature = "gpu")]
 pub use level2::gemv;
+#[cfg(feature = "gpu")]
+pub use mixed::{GemmInputType, gemm_mixed, gemv_mixed};

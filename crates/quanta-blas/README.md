@@ -9,7 +9,7 @@ Cross-backend by construction (Metal / Vulkan / WebGPU / CPU), built on
 `quanta-tensor` (shape proofs) and `quanta-prims` (device-resident
 reductions).
 
-## Status — Level-1 + Level-2 GEMV + tiled GEMM (f32)
+## Status — Level-1 + GEMV + tiled GEMM (f32) + mixed-precision GEMM (bf16)
 
 | op | signature | notes |
 |----|-----------|-------|
@@ -19,6 +19,8 @@ reductions).
 | `nrm2` | `nrm2(gpu, &x) -> f32` | `√(Σ xᵢ²)` |
 | `gemv` | `gemv(gpu, m, n, α, &a, &x, β, &y)` | `y ← α·A·x + β·y`, A row-major `m×n`, in place on y |
 | `gemm` | `gemm(gpu, m, n, k, α, &a, &b, β, &c)` | `C ← α·A·B + β·C`, row-major, in place on C |
+| `gemm_mixed` | `gemm_mixed(gpu, dtype, m, n, k, α, &a, &b, β, &c)` | mixed-precision: A,B narrow (`GemmInputType`), C f32 |
+| `gemv_mixed` | `gemv_mixed(gpu, dtype, m, n, α, &a, &x, β, &y)` | mixed-precision GEMV (via `gemm_mixed` N=1) |
 
 `scal`/`axpy` mutate in place (these ops are memory-bandwidth-bound;
 avoiding a second buffer is the win). `dot`/`nrm2` multiply into a temp
@@ -28,6 +30,15 @@ field on the GPU and reduce there, so the vector never leaves the device.
 `gemm` uses the **tiled shared-memory** kernel (sub-tile problems route to a
 naive kernel that skips the barrier overhead) — correct on every backend and
 matching the proven Higham §3.5 contract.
+
+`gemm_mixed` / `gemv_mixed` store A,B in a narrow dtype (currently **bf16**,
+in a `Field<u16>` — one bf16 per 2-byte element), convert each element to f32
+on load, and **accumulate in f32** — the standard ML mixed-precision path.
+The output contract is the same real-arithmetic GEMM entry; the dtype is an
+implementation detail of *how* the entry is computed. The forward-error bound
+splits into the proven f32 GEMM error over the bf16-rounded inputs plus the
+input-quantisation error (`Quanta.Blas.gemmEntryMixedBf16_error_split`), so
+each dtype reuses the GEMM proof. f16 / fp8 / int8 / int4 land next.
 
 The crate is a pure-Rust reference library (`quanta_blas::reference`, the
 differential-test oracle) until you enable `gpu` + a backend:
