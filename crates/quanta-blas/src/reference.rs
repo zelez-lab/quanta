@@ -203,6 +203,28 @@ pub fn gemm_fp8_e4m3(
     });
 }
 
+/// `gemm_q8_sym`: per-tensor symmetric int8 quantized GEMM oracle — the
+/// differential twin of `gemm_quant(GemmQuantType::Q8Symmetric, …)`. A,B are
+/// int8 codes (as `i32`), C is f32. Dequantisation folds into the effective
+/// scale: the kernel accumulates `Σ(qa·qb)` in f32 (codes cast to f32) and
+/// scales the whole sum by `α·sa·sb`, so this mirrors that order exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_q8_sym(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a_scale: f32,
+    b_scale: f32,
+    a: &[i32],
+    b: &[i32],
+    beta: f32,
+    c: &mut [f32],
+) {
+    let alpha_eff = alpha * a_scale * b_scale;
+    gemm_narrow(m, n, k, alpha_eff, a, b, beta, c, |q| q as f32);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +349,18 @@ mod tests {
         let mut c = vec![0.0f32; 4];
         gemm_fp8_e4m3(2, 2, 2, 1.0, &a, &b, 0.0, &mut c);
         assert_eq!(c, vec![1.0, 4.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn gemm_q8_sym_basic() {
+        // Codes [[2,4],[6,8]] · [[1,0],[0,1]] with sa=0.5, sb=0.25.
+        // Dequantised A = [[1,2],[3,4]], B = identity → A·I = A.
+        let a = vec![2i32, 4, 6, 8];
+        let b = vec![1i32, 0, 0, 1];
+        let mut c = vec![0.0f32; 4];
+        gemm_q8_sym(2, 2, 2, 1.0, 0.5, 0.25, &a, &b, 0.0, &mut c);
+        // α·sa·sb·(codes·codes) = 0.125 · [[2,4],[6,8]] = [[0.25,0.5],[0.75,1.0]]
+        assert_eq!(c, vec![0.25, 0.5, 0.75, 1.0]);
     }
 
     #[test]

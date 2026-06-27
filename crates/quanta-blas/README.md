@@ -9,7 +9,7 @@ Cross-backend by construction (Metal / Vulkan / WebGPU / CPU), built on
 `quanta-tensor` (shape proofs) and `quanta-prims` (device-resident
 reductions).
 
-## Status — Level-1 + GEMV + tiled GEMM (f32) + mixed-precision GEMM (bf16/f16/fp8)
+## Status — Level-1 + GEMV + tiled GEMM (f32) + mixed-precision (bf16/f16/fp8/int8)
 
 | op | signature | notes |
 |----|-----------|-------|
@@ -22,6 +22,8 @@ reductions).
 | `gemm_mixed` | `gemm_mixed(gpu, dtype, …, &a: Field<u16>, …)` | mixed-precision, 2-byte inputs (bf16/f16), C f32 |
 | `gemm_mixed8` | `gemm_mixed8(gpu, dtype, …, &a: Field<u8>, …)` | mixed-precision, 1-byte inputs (fp8 E5M2/E4M3), C f32 |
 | `gemv_mixed` / `gemv_mixed8` | `gemv_mixed(gpu, dtype, m, n, α, &a, &x, β, &y)` | mixed-precision GEMV (via `gemm_mixed*` N=1) |
+| `gemm_quant` | `gemm_quant(gpu, qty, …, sa, sb, &a: Field<i32>, …)` | int8 (Q8 symmetric) codes + per-tensor scales, C f32 |
+| `gemv_quant` | `gemv_quant(gpu, qty, m, n, α, sa, sx, &a, &x, β, &y)` | quantized GEMV (via `gemm_quant` N=1) |
 
 `scal`/`axpy` mutate in place (these ops are memory-bandwidth-bound;
 avoiding a second buffer is the win). `dot`/`nrm2` multiply into a temp
@@ -42,7 +44,13 @@ the dtype is an implementation detail of *how* the entry is computed. The
 forward-error bound splits into the proven f32 GEMM error over the
 narrow-rounded inputs plus the input-quantisation error
 (`Quanta.Blas.gemmEntry_narrow_error_split`, with per-dtype instances), so each
-dtype reuses the GEMM proof. int8 / int4 land next.
+dtype reuses the GEMM proof.
+
+`gemm_quant` / `gemv_quant` take **int8** (Q8 per-tensor symmetric) codes in a
+`Field<i32>` plus per-tensor scales `sa`/`sb`. Dequantisation folds into the
+effective alpha — `(sa·A)·(sb·B) = sa·sb·(A·B)` — so the same kernel runs over
+the raw codes and the same split bound applies (a quantized entry is the real
+GEMM entry over the dequantised inputs). int4 lands next.
 
 The crate is a pure-Rust reference library (`quanta_blas::reference`, the
 differential-test oracle) until you enable `gpu` + a backend:
@@ -52,7 +60,7 @@ quanta-blas = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan
 ```
 
 Coming next: the cooperative-matrix / tensor-core `gemm` path (the vendor
-perf gap) and the int8 / int4 quantized dtype matrix.
+perf gap) and int4 quantized inputs.
 
 ## Performance (honest framing)
 
