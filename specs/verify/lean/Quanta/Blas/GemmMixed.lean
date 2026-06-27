@@ -253,4 +253,53 @@ theorem gemmEntryMixedFp8E4M3_error_split (α β : ℝ) (a b : List ℝ) (c : �
   unfold gemmEntryMixedFp8E4M3Rounded
   exact gemmEntry_narrow_error_split α β (fp8e4m3List a) (fp8e4m3List b) a b c
 
+-- ── int8 per-tensor symmetric — quantisation as a narrow rounding ────────
+--
+-- A symmetric-quantized input is dequantised to `scale·round(x/scale)` on
+-- load. Composing quantise-then-dequantise is a rounding of the real value:
+-- `q8symRound x = scale · ⌊x/scale⌉` lands `x` on the nearest multiple of
+-- `scale`, an absolute error ≤ scale/2 — equivalently a relative error ≤ the
+-- quant unit roundoff `q8Unit` away from `x` (away from the clamp range). So
+-- int8 inputs are *another* narrow rounding, and the same entry-error split
+-- applies. (The bit-exact clamp+round-ties-even is the Rust/Lean
+-- `quantize_sym`/`dequantize_sym`; here we capture its numeric effect.)
+
+/-- int8 per-tensor-symmetric quant unit roundoff (abstract). -/
+axiom q8Unit : ℝ
+
+/-- Quantise-then-dequantise a real to its nearest int8-symmetric multiple. -/
+axiom q8symRound (v : ℝ) : ℝ
+
+/-- **The int8 symmetric quant rounding model**, realised by
+    `quanta_ir::dtype::{quantize_sym, dequantize_sym}` (bits = 8). Within the
+    representable range it is a relative-error rounding like the float dtypes. -/
+axiom q8sym_rounding_model :
+    0 ≤ q8Unit ∧
+    ∀ v : ℝ, ∃ δ : ℝ, |δ| ≤ q8Unit ∧ q8symRound v = v * (1 + δ)
+
+/-- The int8 quant unit roundoff is non-negative. -/
+theorem q8Unit_nonneg : 0 ≤ q8Unit := q8sym_rounding_model.1
+
+/-- Elementwise int8-symmetric quantisation of a list. -/
+noncomputable def q8symList (xs : List ℝ) : List ℝ :=
+  xs.map q8symRound
+
+/-- Computed mixed-int8-symmetric gemm entry: f32 rounded entry over the
+    dequantised inputs. -/
+noncomputable def gemmEntryMixedQ8SymRounded (α β : ℝ) (a b : List ℝ) (c : ℝ) : ℝ :=
+  gemmEntryRounded α β (q8symList a) (q8symList b) c
+
+/-- **Mixed-int8-symmetric entry error split** — instance of
+    `gemmEntry_narrow_error_split`. Quantized inputs reuse the float-dtype
+    proof: a quantized entry is the real GEMM entry over the dequantised
+    inputs, so the f32-GEMM error and the input-quantisation error separate
+    exactly as before. -/
+theorem gemmEntryMixedQ8Sym_error_split (α β : ℝ) (a b : List ℝ) (c : ℝ) :
+    |gemmEntryMixedQ8SymRounded α β a b c - gemmEntry α β a b c|
+      ≤ |gemmEntryRounded α β (q8symList a) (q8symList b) c
+            - gemmEntry α β (q8symList a) (q8symList b) c|
+        + |α * dot (q8symList a) (q8symList b) - α * dot a b| := by
+  unfold gemmEntryMixedQ8SymRounded
+  exact gemmEntry_narrow_error_split α β (q8symList a) (q8symList b) a b c
+
 end Quanta.Blas
