@@ -182,4 +182,75 @@ theorem gemmEntryMixedF16_error_split (α β : ℝ) (a b : List ℝ) (c : ℝ) :
   unfold gemmEntryMixedF16Rounded gemmEntryMixedF16
   exact gemmEntry_narrow_error_split α β (f16List a) (f16List b) a b c
 
+-- ── fp8 E5M2 — the same split, its own unit roundoff ─────────────────────
+
+/-- fp8 E5M2 unit roundoff (abstract; `2⁻³` for the 2-bit mantissa). -/
+axiom fp8e5m2Unit : ℝ
+
+/-- Round a real to the nearest fp8 E5M2 value. -/
+axiom fp8e5m2Round (v : ℝ) : ℝ
+
+/-- **The fp8 E5M2 rounding model**, realised by
+    `quanta_ir::dtype::f32_to_fp8 _ 5 2`. -/
+axiom fp8e5m2_rounding_model :
+    0 ≤ fp8e5m2Unit ∧
+    ∀ v : ℝ, ∃ δ : ℝ, |δ| ≤ fp8e5m2Unit ∧ fp8e5m2Round v = v * (1 + δ)
+
+/-- The fp8 E5M2 unit roundoff is non-negative. -/
+theorem fp8e5m2Unit_nonneg : 0 ≤ fp8e5m2Unit := fp8e5m2_rounding_model.1
+
+/-- Elementwise fp8 E5M2 quantisation of a list. -/
+noncomputable def fp8e5m2List (xs : List ℝ) : List ℝ :=
+  xs.map fp8e5m2Round
+
+/-- Computed mixed-fp8-E5M2 gemm entry: f32 rounded entry over the quantised
+    inputs. -/
+noncomputable def gemmEntryMixedFp8E5M2Rounded (α β : ℝ) (a b : List ℝ) (c : ℝ) : ℝ :=
+  gemmEntryRounded α β (fp8e5m2List a) (fp8e5m2List b) c
+
+/-- **Mixed-fp8-E5M2 entry error split** — instance of
+    `gemmEntry_narrow_error_split`. -/
+theorem gemmEntryMixedFp8E5M2_error_split (α β : ℝ) (a b : List ℝ) (c : ℝ) :
+    |gemmEntryMixedFp8E5M2Rounded α β a b c - gemmEntry α β a b c|
+      ≤ |gemmEntryRounded α β (fp8e5m2List a) (fp8e5m2List b) c
+            - gemmEntry α β (fp8e5m2List a) (fp8e5m2List b) c|
+        + |α * dot (fp8e5m2List a) (fp8e5m2List b) - α * dot a b| := by
+  unfold gemmEntryMixedFp8E5M2Rounded
+  exact gemmEntry_narrow_error_split α β (fp8e5m2List a) (fp8e5m2List b) a b c
+
+-- ── fp8 E4M3 — the same split, its own unit roundoff ─────────────────────
+
+/-- fp8 E4M3 unit roundoff (abstract; `2⁻⁴` for the 3-bit mantissa). -/
+axiom fp8e4m3Unit : ℝ
+
+/-- Round a real to the nearest fp8 E4M3 value. -/
+axiom fp8e4m3Round (v : ℝ) : ℝ
+
+/-- **The fp8 E4M3 rounding model**, realised by
+    `quanta_ir::dtype::f32_to_fp8 _ 4 3`. -/
+axiom fp8e4m3_rounding_model :
+    0 ≤ fp8e4m3Unit ∧
+    ∀ v : ℝ, ∃ δ : ℝ, |δ| ≤ fp8e4m3Unit ∧ fp8e4m3Round v = v * (1 + δ)
+
+/-- The fp8 E4M3 unit roundoff is non-negative. -/
+theorem fp8e4m3Unit_nonneg : 0 ≤ fp8e4m3Unit := fp8e4m3_rounding_model.1
+
+/-- Elementwise fp8 E4M3 quantisation of a list. -/
+noncomputable def fp8e4m3List (xs : List ℝ) : List ℝ :=
+  xs.map fp8e4m3Round
+
+/-- Computed mixed-fp8-E4M3 gemm entry. -/
+noncomputable def gemmEntryMixedFp8E4M3Rounded (α β : ℝ) (a b : List ℝ) (c : ℝ) : ℝ :=
+  gemmEntryRounded α β (fp8e4m3List a) (fp8e4m3List b) c
+
+/-- **Mixed-fp8-E4M3 entry error split** — instance of
+    `gemmEntry_narrow_error_split`. -/
+theorem gemmEntryMixedFp8E4M3_error_split (α β : ℝ) (a b : List ℝ) (c : ℝ) :
+    |gemmEntryMixedFp8E4M3Rounded α β a b c - gemmEntry α β a b c|
+      ≤ |gemmEntryRounded α β (fp8e4m3List a) (fp8e4m3List b) c
+            - gemmEntry α β (fp8e4m3List a) (fp8e4m3List b) c|
+        + |α * dot (fp8e4m3List a) (fp8e4m3List b) - α * dot a b| := by
+  unfold gemmEntryMixedFp8E4M3Rounded
+  exact gemmEntry_narrow_error_split α β (fp8e4m3List a) (fp8e4m3List b) a b c
+
 end Quanta.Blas
