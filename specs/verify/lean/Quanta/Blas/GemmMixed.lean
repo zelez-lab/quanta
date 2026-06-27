@@ -91,44 +91,95 @@ def gemmEntryMixedBf16 (α β : ℝ) (a b : List ℝ) (c : ℝ) : ℝ :=
 noncomputable def gemmEntryMixedBf16Rounded (α β : ℝ) (a b : List ℝ) (c : ℝ) : ℝ :=
   gemmEntryRounded α β (bf16List a) (bf16List b) c
 
-/-- **Mixed-bf16 entry error splits into f32-GEMM error + input-quantisation
-    error.** The forward error of the bf16-input, f32-accumulate gemm entry
-    against the intended real entry is at most the f32 gemm-entry error
-    (taken over the bf16-rounded inputs, supplied verbatim by
-    `gemmEntry_error_decomp`) plus the error from quantising the inputs to
-    bf16 before the inner product, `|α · (dot(bf16 a, bf16 b) − dot a b)|`.
+/-- **Generic narrow-input entry error split.** For *any* elementwise input
+    rounding `qa : ℝ → ℝ` applied to A and `qb` to B (here both the same
+    narrow quantiser), the forward error of the narrow-input, f32-accumulate
+    gemm entry against the intended real entry is at most the f32 gemm-entry
+    error (over the quantised inputs, supplied verbatim by
+    `gemmEntry_error_decomp`) plus the input-quantisation error
+    `|α · (dot(qa, qb) − dot a b)|`. The proof is the triangle split at the
+    quantised inner product; it never touches the rounding model, so it holds
+    for bf16, f16, fp8 — any narrow input dtype. -/
+theorem gemmEntry_narrow_error_split (α β : ℝ) (a' b' a b : List ℝ) (c : ℝ) :
+    |gemmEntryRounded α β a' b' c - gemmEntry α β a b c|
+      ≤ |gemmEntryRounded α β a' b' c - gemmEntry α β a' b' c|
+        + |α * dot a' b' - α * dot a b| := by
+  -- pivot on the exact entry over the quantised inputs (Eb).
+  set Eb := gemmEntry α β a' b' c with hEb
+  have hsplit :
+      |gemmEntryRounded α β a' b' c - gemmEntry α β a b c|
+        ≤ |gemmEntryRounded α β a' b' c - Eb| + |Eb - gemmEntry α β a b c| := by
+    have := abs_add (gemmEntryRounded α β a' b' c - Eb) (Eb - gemmEntry α β a b c)
+    have he : (gemmEntryRounded α β a' b' c - Eb) + (Eb - gemmEntry α β a b c)
+        = gemmEntryRounded α β a' b' c - gemmEntry α β a b c := by ring
+    rwa [he] at this
+  have hbeta : Eb - gemmEntry α β a b c = α * dot a' b' - α * dot a b := by
+    rw [hEb]; unfold gemmEntry; ring
+  rw [hbeta] at hsplit
+  exact hsplit
 
-    This is the triangle split at the bf16-rounded inner product: it isolates
-    the *already-proven* f32 numerics from the single new bf16-quantisation
-    term, so adding a narrow dtype reuses the GEMM proof rather than redoing
-    it. -/
+/-- **Mixed-bf16 entry error splits into f32-GEMM error + input-quantisation
+    error.** The bf16 instance of `gemmEntry_narrow_error_split`: isolates the
+    *already-proven* f32 numerics from the single new bf16-quantisation term,
+    so adding a narrow dtype reuses the GEMM proof rather than redoing it. -/
 theorem gemmEntryMixedBf16_error_split (α β : ℝ) (a b : List ℝ) (c : ℝ) :
     |gemmEntryMixedBf16Rounded α β a b c - gemmEntryMixedBf16 α β a b c|
       ≤ |gemmEntryRounded α β (bf16List a) (bf16List b) c
             - gemmEntry α β (bf16List a) (bf16List b) c|
         + |α * dot (bf16List a) (bf16List b) - α * dot a b| := by
   unfold gemmEntryMixedBf16Rounded gemmEntryMixedBf16
-  -- target = |R − E| where R is the bf16-input rounded entry, E the exact
-  -- real entry. Insert the exact entry over the bf16-rounded inputs (Eb) as
-  -- a pivot: |R − E| ≤ |R − Eb| + |Eb − E|, and Eb − E = α·(dotb − dot).
-  set Eb := gemmEntry α β (bf16List a) (bf16List b) c with hEb
-  have hsplit :
-      |gemmEntryRounded α β (bf16List a) (bf16List b) c - gemmEntry α β a b c|
-        ≤ |gemmEntryRounded α β (bf16List a) (bf16List b) c - Eb|
-          + |Eb - gemmEntry α β a b c| := by
-    have := abs_add
-      (gemmEntryRounded α β (bf16List a) (bf16List b) c - Eb)
-      (Eb - gemmEntry α β a b c)
-    have he : (gemmEntryRounded α β (bf16List a) (bf16List b) c - Eb)
-        + (Eb - gemmEntry α β a b c)
-        = gemmEntryRounded α β (bf16List a) (bf16List b) c - gemmEntry α β a b c := by
-      ring
-    rwa [he] at this
-  -- Eb − E = (α·dotb + β·c) − (α·dot + β·c) = α·dotb − α·dot.
-  have hbeta : Eb - gemmEntry α β a b c
-      = α * dot (bf16List a) (bf16List b) - α * dot a b := by
-    rw [hEb]; unfold gemmEntry; ring
-  rw [hbeta] at hsplit
-  exact hsplit
+  exact gemmEntry_narrow_error_split α β (bf16List a) (bf16List b) a b c
+
+-- ── f16 (IEEE half) — the same split, its own unit roundoff ──────────────
+
+/-- f16 unit roundoff `u_f16` (abstract; `2⁻¹¹` for f16's 10-bit mantissa). -/
+axiom f16Unit : ℝ
+
+/-- Round a real to the nearest f16-representable value. -/
+axiom f16Round (v : ℝ) : ℝ
+
+/-- **The f16 rounding model.** The f16 analogue of the f32 `rounding_model`,
+    realised by `quanta_ir::dtype::f32_to_f16`. -/
+axiom f16_rounding_model :
+    0 ≤ f16Unit ∧
+    ∀ v : ℝ, ∃ δ : ℝ, |δ| ≤ f16Unit ∧ f16Round v = v * (1 + δ)
+
+/-- The f16 unit roundoff is non-negative. -/
+theorem f16Unit_nonneg : 0 ≤ f16Unit := f16_rounding_model.1
+
+/-- A single f16 rounding has absolute forward error at most `u_f16·|v|`. -/
+theorem f16Round_error (v : ℝ) : |f16Round v - v| ≤ f16Unit * |v| := by
+  obtain ⟨δ, hδ, hv⟩ := f16_rounding_model.2 v
+  rw [hv]
+  have : v * (1 + δ) - v = v * δ := by ring
+  rw [this, abs_mul, mul_comm]
+  exact mul_le_mul_of_nonneg_right hδ (abs_nonneg v)
+
+/-- Elementwise f16 quantisation of a list. -/
+noncomputable def f16List (xs : List ℝ) : List ℝ :=
+  xs.map f16Round
+
+/-- f16 quantisation preserves length. -/
+theorem f16List_length (xs : List ℝ) : (f16List xs).length = xs.length := by
+  simp [f16List]
+
+/-- Exact intended mixed-f16 gemm entry (the real-arithmetic `gemmEntry`). -/
+def gemmEntryMixedF16 (α β : ℝ) (a b : List ℝ) (c : ℝ) : ℝ :=
+  gemmEntry α β a b c
+
+/-- The computed mixed-f16 gemm entry: f32 rounded entry over f16-quantised
+    inputs. -/
+noncomputable def gemmEntryMixedF16Rounded (α β : ℝ) (a b : List ℝ) (c : ℝ) : ℝ :=
+  gemmEntryRounded α β (f16List a) (f16List b) c
+
+/-- **Mixed-f16 entry error split** — the f16 instance of
+    `gemmEntry_narrow_error_split`. -/
+theorem gemmEntryMixedF16_error_split (α β : ℝ) (a b : List ℝ) (c : ℝ) :
+    |gemmEntryMixedF16Rounded α β a b c - gemmEntryMixedF16 α β a b c|
+      ≤ |gemmEntryRounded α β (f16List a) (f16List b) c
+            - gemmEntry α β (f16List a) (f16List b) c|
+        + |α * dot (f16List a) (f16List b) - α * dot a b| := by
+  unfold gemmEntryMixedF16Rounded gemmEntryMixedF16
+  exact gemmEntry_narrow_error_split α β (f16List a) (f16List b) a b c
 
 end Quanta.Blas
