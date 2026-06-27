@@ -6,7 +6,7 @@
 //! on `quanta-tensor` (shape proofs), `quanta-prims` (device-resident
 //! reductions), and the Quanta JIT.
 //!
-//! ## This release: Level-1 + GEMV + tiled GEMM (f32) + mixed-precision (bf16/f16/fp8/int8)
+//! ## This release: Level-1 + GEMV + tiled GEMM (f32) + mixed-precision (bf16/f16/fp8/int8/int4)
 //!
 //! - [`scal`](level1::scal) — `x ← α·x` (in place)
 //! - [`axpy`](level1::axpy) — `y ← α·x + y` (in place)
@@ -18,8 +18,8 @@
 //!   narrow float inputs (bf16 / f16 via `gemm_mixed`; fp8 via `gemm_mixed8`),
 //!   f32 accumulate
 //! - [`gemm_quant`](mixed_quant::gemm_quant) /
-//!   [`gemv_quant`](mixed_quant::gemv_quant) — int8 (Q8 symmetric) codes +
-//!   per-tensor scales, f32 accumulate
+//!   [`gemm_quant4`](mixed_quant::gemm_quant4) (+ `gemv_*`) — int8 (Q8) and
+//!   int4 (Q4) symmetric codes + per-tensor scales, f32 accumulate
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -75,4 +75,4 @@ pub use level2::gemv;
 #[cfg(feature = "gpu")]
 pub use mixed::{GemmInputType, gemm_mixed, gemm_mixed8, gemv_mixed, gemv_mixed8};
 #[cfg(feature = "gpu")]
-pub use mixed_quant::{GemmQuantType, gemm_quant, gemv_quant};
+pub use mixed_quant::{GemmQuantType, gemm_quant, gemm_quant4, gemv_quant, gemv_quant4};

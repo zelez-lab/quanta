@@ -253,3 +253,51 @@ pub(crate) fn dispatch<T: quanta::GpuType>(
     gpu.dispatch(&wave, m * n)?.wait()?;
     Ok(())
 }
+
+/// Dispatch for the **packed int4** path: A/B are `Field<u32>` holding 8 signed
+/// nibbles per word, so their field length is `ceil(m·k / 8)` / `ceil(k·n / 8)`
+/// words, not the logical element count. The kernel still indexes by the
+/// logical `(m, n, k)` — `Load { ty: I4 }` resolves word `idx/8`, nibble
+/// `idx%8` on every backend. C is f32.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dispatch_i4(
+    gpu: &Gpu,
+    tag: &str,
+    m: u32,
+    n: u32,
+    k: u32,
+    alpha: f32,
+    a: &Field<u32>,
+    b: &Field<u32>,
+    beta: f32,
+    c: &Field<f32>,
+) -> Result<(), QuantaError> {
+    let (mu, nu, ku) = (m as usize, n as usize, k as usize);
+    let words = |elems: usize| elems.div_ceil(8);
+    if a.len() != words(mu * ku) {
+        return Err(QuantaError::invalid_param(
+            "gemm_quant4: A length must be ceil(m*k/8) packed words",
+        ));
+    }
+    if b.len() != words(ku * nu) {
+        return Err(QuantaError::invalid_param(
+            "gemm_quant4: B length must be ceil(k*n/8) packed words",
+        ));
+    }
+    if c.len() != mu * nu {
+        return Err(QuantaError::invalid_param(
+            "gemm_quant4: C length must be m*n",
+        ));
+    }
+    if mu * nu == 0 || ku == 0 {
+        return Ok(());
+    }
+    let def = build_def(ScalarType::I4, tag, n, k, alpha, beta);
+    let bytes = serialize_kernel(&def);
+    let mut wave = gpu.wave_jit(&bytes)?;
+    wave.bind(0, a);
+    wave.bind(1, b);
+    wave.bind(2, c);
+    gpu.dispatch(&wave, m * n)?.wait()?;
+    Ok(())
+}

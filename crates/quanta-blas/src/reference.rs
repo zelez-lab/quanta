@@ -225,6 +225,43 @@ pub fn gemm_q8_sym(
     gemm_narrow(m, n, k, alpha_eff, a, b, beta, c, |q| q as f32);
 }
 
+/// `gemm_q4_sym`: per-tensor symmetric int4 quantized GEMM oracle — the
+/// differential twin of `gemm_quant4(GemmQuantType::Q4Symmetric, …)`. A,B are
+/// int4 codes packed 8 per `u32` word (`a` is `ceil(m·k/8)` words, `b` is
+/// `ceil(k·n/8)`); C is f32. Unpacks each logical code with `int4_unpack`
+/// (word `idx/8`, nibble `idx%8`), exactly as the kernel's `Load { ty: I4 }`
+/// does, then runs the same fold-into-alpha int8 path.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_q4_sym(
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a_scale: f32,
+    b_scale: f32,
+    a: &[u32],
+    b: &[u32],
+    beta: f32,
+    c: &mut [f32],
+) {
+    use quanta_ir::dtype::int4_unpack;
+    let unpack = |packed: &[u32], idx: usize| int4_unpack(packed[idx / 8], (idx % 8) as u32) as f32;
+    assert_eq!(a.len(), (m * k).div_ceil(8), "gemm_q4_sym: A packed words");
+    assert_eq!(b.len(), (k * n).div_ceil(8), "gemm_q4_sym: B packed words");
+    assert_eq!(c.len(), m * n, "gemm_q4_sym: C must be m×n");
+    let alpha_eff = alpha * a_scale * b_scale;
+    for row in 0..m {
+        for col in 0..n {
+            let mut acc = 0.0f32;
+            for p in 0..k {
+                acc += unpack(a, row * k + p) * unpack(b, p * n + col);
+            }
+            let cval = c[row * n + col];
+            c[row * n + col] = alpha_eff * acc + beta * cval;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +398,26 @@ mod tests {
         gemm_q8_sym(2, 2, 2, 1.0, 0.5, 0.25, &a, &b, 0.0, &mut c);
         // α·sa·sb·(codes·codes) = 0.125 · [[2,4],[6,8]] = [[0.25,0.5],[0.75,1.0]]
         assert_eq!(c, vec![0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn gemm_q4_sym_basic() {
+        use quanta_ir::dtype::int4_pack;
+        // 2×2 · 2×2, codes A=[[1,2],[3,-1]], B=identity, sa=1, sb=2.
+        // Pack each matrix's 4 codes into one u32 word (nibbles 0..4).
+        let pack = |codes: &[i32]| {
+            let mut w = 0u32;
+            for (i, &q) in codes.iter().enumerate() {
+                w = int4_pack(w, i as u32, q);
+            }
+            vec![w]
+        };
+        let a = pack(&[1, 2, 3, -1]);
+        let b = pack(&[1, 0, 0, 1]); // identity
+        let mut c = vec![0.0f32; 4];
+        gemm_q4_sym(2, 2, 2, 1.0, 1.0, 2.0, &a, &b, 0.0, &mut c);
+        // dequant A=[[1,2],[3,-1]], B scaled by 2 → A·(2I) = 2A = [[2,4],[6,-2]]
+        assert_eq!(c, vec![2.0, 4.0, 6.0, -2.0]);
     }
 
     #[test]

@@ -166,6 +166,19 @@ pub(super) fn read_scalar_at_offset(buf: &[u8], offset: usize, ty: &ScalarType) 
 }
 
 pub(super) fn read_scalar(buf: &[u8], index: u32, ty: &ScalarType) -> Value {
+    // int4 is the one packed dtype: 8 signed nibbles per u32 word (the GPU
+    // emitters' PackedU32 layout). Logical element `index` lives in word
+    // `index/8`, nibble `index%8` — NOT at a `index*size` byte offset. Read the
+    // whole word and unpack the nibble, matching emit_*/ops.rs bit-for-bit.
+    if let ScalarType::I4 = ty {
+        let word_idx = (index / 8) as usize;
+        let byte_off = word_idx * 4;
+        if byte_off + 4 > buf.len() {
+            return Value::I32(0);
+        }
+        let word = u32::from_le_bytes(buf[byte_off..byte_off + 4].try_into().unwrap());
+        return Value::I32(quanta_ir::dtype::int4_unpack(word, index % 8));
+    }
     let size = scalar_size(ty);
     let offset = index as usize * size;
     if offset + size > buf.len() {
@@ -200,6 +213,19 @@ pub(super) fn read_scalar(buf: &[u8], index: u32, ty: &ScalarType) -> Value {
 }
 
 pub(super) fn write_scalar(buf: &mut [u8], index: u32, val: Value, ty: &ScalarType) {
+    // int4: read-modify-write nibble `index%8` of word `index/8` (the packed
+    // PackedU32 layout), preserving the other 7 nibbles — matches the emitters.
+    if let ScalarType::I4 = ty {
+        let word_idx = (index / 8) as usize;
+        let byte_off = word_idx * 4;
+        if byte_off + 4 > buf.len() {
+            return;
+        }
+        let word = u32::from_le_bytes(buf[byte_off..byte_off + 4].try_into().unwrap());
+        let packed = quanta_ir::dtype::int4_pack(word, index % 8, val.as_i32());
+        buf[byte_off..byte_off + 4].copy_from_slice(&packed.to_le_bytes());
+        return;
+    }
     let size = scalar_size(ty);
     let offset = index as usize * size;
     if offset + size > buf.len() {
