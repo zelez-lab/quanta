@@ -60,27 +60,27 @@ fn check_metal(m: usize, n: usize, k: usize) {
 #[cfg(feature = "gpu-metal")]
 #[test]
 fn tc_single_tile() {
-    // One 16×16 output tile (one subgroup, 2×2 fragments), k = one fragment.
-    check_metal(16, 16, 8);
+    // One 32×32 output tile (one subgroup, 4×4 fragments), k = one fragment.
+    check_metal(32, 32, 8);
 }
 
 #[cfg(feature = "gpu-metal")]
 #[test]
 fn tc_multi_tile_square() {
-    check_metal(32, 32, 32);
+    check_metal(64, 64, 64);
 }
 
 #[cfg(feature = "gpu-metal")]
 #[test]
 fn tc_k_sweep() {
-    // one 16×16 tile; k spans 5 fragments (40 = 8·5).
-    check_metal(16, 16, 40);
+    // one 32×32 tile; k spans 5 fragments (40 = 8·5).
+    check_metal(32, 32, 40);
 }
 
 #[cfg(feature = "gpu-metal")]
 #[test]
 fn tc_rectangular() {
-    check_metal(48, 32, 16);
+    check_metal(96, 64, 16);
 }
 
 #[cfg(feature = "gpu-metal")]

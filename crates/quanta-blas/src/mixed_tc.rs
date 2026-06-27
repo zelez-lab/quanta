@@ -1,13 +1,14 @@
 //! Tensor-core / cooperative-matrix GEMM (f32) — Metal `simdgroup_matrix`.
 //!
-//! `C ← A·B + C`, row-major f32, with `m`/`n` multiples of 16 and `k` a
-//! multiple of 8. Each subgroup (32 lanes) owns a **16×16 output tile** held as
-//! a 2×2 grid of 8×8 `simdgroup_matrix` accumulators (loaded from C). It sweeps
-//! K in 8-wide steps loading 2 A row-strip fragments + 2 B col-strip fragments
-//! and issuing 4 `simdgroup_multiply_accumulate`s — so each loaded fragment
-//! feeds two MMAs (2× arithmetic intensity), which is what lets the tensor-core
-//! units beat the SIMT tiled kernel (~1.33× at N=512 on M1 Pro). The
-//! accumulators are stored back at the end.
+//! `C ← A·B + C`, row-major f32, with `m`/`n` multiples of 32 and `k` a
+//! multiple of 8. Each subgroup (32 lanes) owns a **32×32 output tile** held as
+//! a 4×4 grid of 8×8 `simdgroup_matrix` accumulators (loaded from C). It sweeps
+//! K in 8-wide steps loading 4 A row-strip fragments + 4 B col-strip fragments
+//! and issuing 16 `simdgroup_multiply_accumulate`s — so 8 global fragment loads
+//! feed 16 MMAs (each A-frag feeds 4 MMAs, each B-frag 4), the arithmetic
+//! intensity that lets the tensor-core units beat the SIMT tiled kernel
+//! (~1.5× at N=512 on M1 Pro, 553 vs 372 GFLOP/s). The accumulators are stored
+//! back at the end. The blocking factor is `BR`×`BC` (currently 4×4).
 //!
 //! Reuses the proven `gemmEntry` contract — the differential test against the
 //! f32 reference is the binding check, no new Lean. The kernel is hand-built
@@ -17,9 +18,10 @@
 //! them. Only backends advertising `supports_cooperative_matrix()` run this;
 //! others return `NotSupported`.
 //!
-//! v1 scope: `C += A·B` (α = β = 1), m/n multiple of 16, k multiple of 8.
-//! General α/β, tails, and deeper (4×4 + shared-staged) blocking are later
-//! increments; the public `gemm` routes everything else to the tiled kernel.
+//! Scope: `C += A·B` (α = β = 1), m/n multiple of 32, k multiple of 8. General
+//! α/β, tails, and threadgroup-shared staging of the A/B tiles (which would cut
+//! the global fragment loads further) are later increments; the public `gemm`
+//! routes everything else to the tiled kernel.
 
 use quanta::{Field, Gpu, QuantaError};
 use quanta_ir::{
@@ -28,18 +30,21 @@ use quanta_ir::{
 };
 
 const FRAG: u32 = 8; // simdgroup_matrix fragment edge (8×8×8 MMA)
-const TILE: u32 = 16; // output tile edge per subgroup (2×2 = 4 fragments)
+const BR: u32 = 4; // accumulator fragments down (rows) per subgroup
+const BC: u32 = 4; // accumulator fragments across (cols) per subgroup
+const TILE_M: u32 = FRAG * BR; // output tile rows per subgroup (32)
+const TILE_N: u32 = FRAG * BC; // output tile cols per subgroup (32)
 
 /// `gemm_f32_tc`: `C ← A·B + C` on the cooperative-matrix path. Requires
-/// `supports_cooperative_matrix()` and `m`/`n`/`k` all multiples of 16;
-/// otherwise returns `NotSupported` so the caller can fall back to the tiled
-/// kernel.
+/// `supports_cooperative_matrix()`, `m`/`n` multiples of 32 and `k` a multiple
+/// of 8; otherwise returns `NotSupported` so the caller can fall back to the
+/// tiled kernel.
 ///
-/// Register-blocked: each subgroup owns a 16×16 output tile = a 2×2 grid of
-/// 8×8 accumulator fragments. Per K-step it loads 2 A-fragments (the tile's two
-/// row-strips) and 2 B-fragments (two col-strips) and issues 4 MMAs — so each
-/// loaded fragment feeds two MMAs (2× arithmetic intensity over the 1-fragment
-/// kernel), the reuse that lets the tensor-core units beat the SIMT tiled path.
+/// Register-blocked: each subgroup owns a 32×32 output tile = a 4×4 grid of 8×8
+/// accumulator fragments. Per K-step it loads 4 A row-strip fragments + 4 B
+/// col-strip fragments and issues 16 MMAs — so 8 loads feed 16 MMAs (each
+/// fragment reused 4×), the arithmetic intensity that lets the tensor-core
+/// units beat the SIMT tiled path (~1.5× at N=512 on M1 Pro).
 pub fn gemm_f32_tc(
     gpu: &Gpu,
     m: u32,
@@ -54,9 +59,9 @@ pub fn gemm_f32_tc(
             "cooperative matrix (tensor cores) not available on this backend",
         ));
     }
-    if !m.is_multiple_of(TILE) || !n.is_multiple_of(TILE) || !k.is_multiple_of(FRAG) {
+    if !m.is_multiple_of(TILE_M) || !n.is_multiple_of(TILE_N) || !k.is_multiple_of(FRAG) {
         return Err(QuantaError::not_supported(
-            "gemm_f32_tc requires m, n multiples of 16 and k a multiple of 8 (v1)",
+            "gemm_f32_tc requires m multiple of 32, n multiple of 32, k multiple of 8",
         ));
     }
     let (mu, nu, ku) = (m as usize, n as usize, k as usize);
@@ -85,20 +90,28 @@ pub fn gemm_f32_tc(
     wave.bind(0, a);
     wave.bind(1, b);
     wave.bind(2, c); // in place: C is the accumulator (read + written)
-    // One subgroup (32 lanes) per 16×16 output tile.
-    let tiles = (m / TILE) * (n / TILE);
+    // One subgroup (32 lanes) per TILE_M×TILE_N output tile.
+    let tiles = (m / TILE_M) * (n / TILE_N);
     gpu.dispatch(&wave, tiles * 32)?.wait()?;
     Ok(())
 }
 
 /// Build the register-blocked cooperative-matrix GEMM kernel (`C += A·B`,
-/// 16×16 output tile per subgroup, 2×2 fragments). `n`, `k` are baked
-/// constants. The op sequence is generated programmatically to keep the 4
-/// accumulators, their C/A/B indices, and the K-loop bookkeeping in one place.
+/// `TILE_M×TILE_N` output tile per subgroup, `BR×BC` fragments). `n`, `k` are
+/// baked constants. The op sequence is generated programmatically over the
+/// fragment grid so the blocking factor is just `BR`/`BC`.
 ///
-/// Register map: a running counter (`nr`) hands out fresh registers — the MSL
-/// JIT emitter declares `rN` per op, so a dst must never alias an operand, and
-/// every BinOp result takes a new register.
+/// Each loaded A row-strip fragment feeds `BC` MMAs and each B col-strip feeds
+/// `BR`, so a `BR×BC` tile does `BR·BC` MMAs from `BR+BC` global loads per
+/// K-step — the arithmetic intensity that lets the MMA units run ahead of the
+/// memory system.
+///
+/// Register map (the MSL JIT emitter declares `rN` per op, so a dst must never
+/// alias an operand and every result takes a fresh register):
+/// - r0..r10: tile coordinates + loop bounds (fixed).
+/// - acc fragments: a fixed block starting at `ACC` (persist across the loop).
+/// - rowbase[r] / colbase[c] / c_index[r][c]: fixed blocks the store reuses.
+/// - everything else: `fresh()`.
 fn build_tc_def(n: u32, k: u32) -> KernelDef {
     use ScalarType::{F32, U32};
     let f8: u8 = FRAG as u8;
@@ -114,10 +127,22 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         ty: F32,
     };
 
-    // Constants + tile coordinates.
-    // r0=tile id; r1=FRAG(8); r2=TILE(16); r3=n; r4=k;
-    // r5=tiles_n=n/16; r6=block_row=tile/tiles_n; r7=block_col=tile%tiles_n;
-    // r8=row0=block_row*16; r9=col0=block_col*16; r10=num_k_tiles=k/8.
+    // Fixed register blocks.
+    let n_acc = (BR * BC) as usize;
+    const ACC: u32 = 100; // acc[r*BC + c]
+    let rowbase = 40u32; // rowbase[r], r in 0..BR
+    let colbase = 50u32; // colbase[c], c in 0..BC
+    let cidx = 60u32; // c_index[r*BC + c], reused by the store
+    let mut next = 200u32;
+    let mut fresh = || {
+        let r = next;
+        next += 1;
+        r
+    };
+
+    // r0=tile id; r1=FRAG(8); r2=TILE_N; r3=n; r4=k; r5=tiles_n=n/TILE_N;
+    // r6=block_row; r7=block_col; r8=row0=block_row*TILE_M; r9=col0;
+    // r10=num_k_tiles=k/8. (TILE_M baked as a const where needed.)
     let mut body = vec![
         KernelOp::NucleusId { dst: Reg(0) },
         KernelOp::Const {
@@ -126,7 +151,7 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         },
         KernelOp::Const {
             dst: Reg(2),
-            value: ConstValue::U32(TILE),
+            value: ConstValue::U32(TILE_N),
         },
         KernelOp::Const {
             dst: Reg(3),
@@ -135,6 +160,10 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         KernelOp::Const {
             dst: Reg(4),
             value: ConstValue::U32(k),
+        },
+        KernelOp::Const {
+            dst: Reg(11),
+            value: ConstValue::U32(TILE_M),
         },
         KernelOp::BinOp {
             dst: Reg(5),
@@ -160,7 +189,7 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         KernelOp::BinOp {
             dst: Reg(8),
             a: Reg(6),
-            b: Reg(2),
+            b: Reg(11),
             op: BinOp::Mul,
             ty: U32,
         },
@@ -180,81 +209,69 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         },
     ];
 
-    // Fragment sub-offsets within the 16×16 tile (2×2 grid of 8×8 frags).
-    let offsets = [(0u32, 0u32), (0, 8), (8, 0), (8, 8)];
-    // Fixed accumulator registers (persist across the K-loop), one per frag.
-    let acc_reg = [40u32, 41, 42, 43];
-    let mut nr = 50u32; // fresh-register counter for everything else
-
-    // Per-frag absolute row/col base (row0+fr, col0+fc) and the C index, then
-    // load the accumulator tile from C (the β·C term, β = 1).
-    // rowbase[i] in r(20+i), colbase[i] in r(24+i) — small fixed block so the
-    // K-loop can recompute A/B indices from them.
-    for (i, (fr, fc)) in offsets.iter().enumerate() {
-        // rowbase = row0 + fr
-        let fr_c = nr;
-        nr += 1;
+    // rowbase[r] = row0 + r*8
+    for r in 0..BR {
+        let off = fresh();
         body.push(KernelOp::Const {
-            dst: Reg(fr_c),
-            value: ConstValue::U32(*fr),
+            dst: Reg(off),
+            value: ConstValue::U32(r * FRAG),
         });
         body.push(KernelOp::BinOp {
-            dst: Reg(20 + i as u32),
+            dst: Reg(rowbase + r),
             a: Reg(8),
-            b: Reg(fr_c),
+            b: Reg(off),
             op: BinOp::Add,
             ty: U32,
         });
-        // colbase = col0 + fc
-        let fc_c = nr;
-        nr += 1;
+    }
+    // colbase[c] = col0 + c*8
+    for c in 0..BC {
+        let off = fresh();
         body.push(KernelOp::Const {
-            dst: Reg(fc_c),
-            value: ConstValue::U32(*fc),
+            dst: Reg(off),
+            value: ConstValue::U32(c * FRAG),
         });
         body.push(KernelOp::BinOp {
-            dst: Reg(24 + i as u32),
+            dst: Reg(colbase + c),
             a: Reg(9),
-            b: Reg(fc_c),
+            b: Reg(off),
             op: BinOp::Add,
             ty: U32,
         });
-        // c_index = rowbase*n + colbase, written straight into the fixed reg
-        // r(32+i) the matching store reuses (no Copy — the MSL emitter's Copy
-        // assigns without declaring, so the dst must already exist).
-        let mul = nr;
-        nr += 1;
-        body.push(KernelOp::BinOp {
-            dst: Reg(mul),
-            a: Reg(20 + i as u32),
-            b: Reg(3),
-            op: BinOp::Mul,
-            ty: U32,
-        });
-        body.push(KernelOp::BinOp {
-            dst: Reg(32 + i as u32),
-            a: Reg(mul),
-            b: Reg(24 + i as u32),
-            op: BinOp::Add,
-            ty: U32,
-        });
-        body.push(frag(
-            Reg(acc_reg[i]),
-            2,
-            Reg(32 + i as u32),
-            Reg(3),
-            MatrixFrag::Accumulator,
-        ));
+    }
+    // c_index[r][c] = rowbase[r]*n + colbase[c]; load each accumulator from C.
+    for r in 0..BR {
+        for c in 0..BC {
+            let idx = (r * BC + c) as usize;
+            let mul = fresh();
+            body.push(KernelOp::BinOp {
+                dst: Reg(mul),
+                a: Reg(rowbase + r),
+                b: Reg(3),
+                op: BinOp::Mul,
+                ty: U32,
+            });
+            body.push(KernelOp::BinOp {
+                dst: Reg(cidx + idx as u32),
+                a: Reg(mul),
+                b: Reg(colbase + c),
+                op: BinOp::Add,
+                ty: U32,
+            });
+            body.push(frag(
+                Reg(ACC + idx as u32),
+                2,
+                Reg(cidx + idx as u32),
+                Reg(3),
+                MatrixFrag::Accumulator,
+            ));
+        }
     }
 
-    // K-loop: for each 8-wide K-tile, load the 2 A row-strips + 2 B col-strips,
-    // then 4 MMAs (each loaded fragment feeds two accumulators).
-    let kt = nr;
-    nr += 1;
+    // K-loop: load BR A row-strips + BC B col-strips, then BR·BC MMAs.
+    let kt = fresh();
     let mut loop_body: Vec<KernelOp> = Vec::new();
-    // kt8 = kt * 8
-    let kt8 = nr;
-    nr += 1;
+    let kt8 = fresh();
     loop_body.push(KernelOp::BinOp {
         dst: Reg(kt8),
         a: Reg(kt),
@@ -262,20 +279,14 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         op: BinOp::Mul,
         ty: U32,
     });
-    // A row-strips: a_index[r] = rowbase[r]*k + kt8, for the two distinct rows
-    // (offsets 0 and 8 → accumulators {0,1} share row 0; {2,3} share row 8).
-    // rowbase for row-group g is r(20 + g*2) (i=0 and i=2).
-    let a_frag = [nr, nr + 1];
-    nr += 2;
-    for (g, &af) in a_frag.iter().enumerate() {
-        let rb = 20 + (g as u32) * 2; // rowbase reg of the first frag in the row group
-        let mul = nr;
-        nr += 1;
-        let aidx = nr;
-        nr += 1;
+    // a_frag[r] from A at rowbase[r]*k + kt8 (stride k).
+    let a_frag: Vec<u32> = (0..BR).map(|_| fresh()).collect();
+    for r in 0..BR {
+        let mul = fresh();
+        let aidx = fresh();
         loop_body.push(KernelOp::BinOp {
             dst: Reg(mul),
-            a: Reg(rb),
+            a: Reg(rowbase + r),
             b: Reg(4),
             op: BinOp::Mul,
             ty: U32,
@@ -287,18 +298,19 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
             op: BinOp::Add,
             ty: U32,
         });
-        loop_body.push(frag(Reg(af), 0, Reg(aidx), Reg(4), MatrixFrag::A));
+        loop_body.push(frag(
+            Reg(a_frag[r as usize]),
+            0,
+            Reg(aidx),
+            Reg(4),
+            MatrixFrag::A,
+        ));
     }
-    // B col-strips: b_index[c] = kt8*n + colbase[c] (colbase of cols 0 and 8 →
-    // accumulators {0,2} share col 0; {1,3} share col 8). colbase reg = r(24+i).
-    let b_frag = [nr, nr + 1];
-    nr += 2;
-    for (g, &bf) in b_frag.iter().enumerate() {
-        let cb = 24 + g as u32; // colbase reg for col group g (i=0 → col 0, i=1 → col 8)
-        let mul = nr;
-        nr += 1;
-        let bidx = nr;
-        nr += 1;
+    // b_frag[c] from B at kt8*n + colbase[c] (stride n).
+    let b_frag: Vec<u32> = (0..BC).map(|_| fresh()).collect();
+    for c in 0..BC {
+        let mul = fresh();
+        let bidx = fresh();
         loop_body.push(KernelOp::BinOp {
             dst: Reg(mul),
             a: Reg(kt8),
@@ -309,26 +321,33 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         loop_body.push(KernelOp::BinOp {
             dst: Reg(bidx),
             a: Reg(mul),
-            b: Reg(cb),
+            b: Reg(colbase + c),
             op: BinOp::Add,
             ty: U32,
         });
-        loop_body.push(frag(Reg(bf), 1, Reg(bidx), Reg(3), MatrixFrag::B));
+        loop_body.push(frag(
+            Reg(b_frag[c as usize]),
+            1,
+            Reg(bidx),
+            Reg(3),
+            MatrixFrag::B,
+        ));
     }
-    // 4 MMAs: acc += A[row group] · B[col group], each fragment feeding two.
-    for (&(fr, fc), &acc) in offsets.iter().zip(acc_reg.iter()) {
-        let ag = if fr == 0 { a_frag[0] } else { a_frag[1] };
-        let bg = if fc == 0 { b_frag[0] } else { b_frag[1] };
-        loop_body.push(KernelOp::CooperativeMMA {
-            dst: Reg(acc),
-            a: Reg(ag),
-            b: Reg(bg),
-            c: Reg(acc),
-            m: f8,
-            n: f8,
-            k: f8,
-            ty: F32,
-        });
+    // acc[r][c] += a_frag[r] · b_frag[c]
+    for r in 0..BR {
+        for c in 0..BC {
+            let acc = ACC + (r * BC + c);
+            loop_body.push(KernelOp::CooperativeMMA {
+                dst: Reg(acc),
+                a: Reg(a_frag[r as usize]),
+                b: Reg(b_frag[c as usize]),
+                c: Reg(acc),
+                m: f8,
+                n: f8,
+                k: f8,
+                ty: F32,
+            });
+        }
     }
     body.push(KernelOp::Loop {
         count: Reg(10),
@@ -336,19 +355,20 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         body: loop_body,
     });
 
-    // Store the 4 accumulators back to C (C index of frag i is in r(32+i)).
-    for (i, &acc) in acc_reg.iter().enumerate() {
+    // Store the accumulators back to C (each C index is in cidx[r*BC+c]).
+    for idx in 0..n_acc as u32 {
         body.push(KernelOp::CooperativeMatrixStore {
             field: 2,
-            index: Reg(32 + i as u32),
+            index: Reg(cidx + idx),
             stride: Reg(3),
-            src: Reg(acc),
+            src: Reg(ACC + idx),
             m: f8,
             n: f8,
             k: f8,
             ty: F32,
         });
     }
+    let nr = next;
 
     KernelDef {
         name: "blas_gemm_f32_tc".into(),

@@ -19,7 +19,7 @@ reductions).
 | `nrm2` | `nrm2(gpu, &x) -> f32` | `√(Σ xᵢ²)` |
 | `gemv` | `gemv(gpu, m, n, α, &a, &x, β, &y)` | `y ← α·A·x + β·y`, A row-major `m×n`, in place on y |
 | `gemm` | `gemm(gpu, m, n, k, α, &a, &b, β, &c)` | `C ← α·A·B + β·C`, row-major, in place on C (auto-routes to the tensor-core path when it fits) |
-| `gemm_f32_tc` | `gemm_f32_tc(gpu, m, n, k, &a, &b, &c)` | `C ← A·B + C` via Metal `simdgroup_matrix`; needs cooperative-matrix support, m/n mult 16, k mult 8 |
+| `gemm_f32_tc` | `gemm_f32_tc(gpu, m, n, k, &a, &b, &c)` | `C ← A·B + C` via Metal `simdgroup_matrix` (4×4 blocked); needs cooperative-matrix support, m/n mult 32, k mult 8 |
 | `gemm_mixed` | `gemm_mixed(gpu, dtype, …, &a: Field<u16>, …)` | mixed-precision, 2-byte inputs (bf16/f16), C f32 |
 | `gemm_mixed8` | `gemm_mixed8(gpu, dtype, …, &a: Field<u8>, …)` | mixed-precision, 1-byte inputs (fp8 E5M2/E4M3), C f32 |
 | `gemv_mixed` / `gemv_mixed8` | `gemv_mixed(gpu, dtype, m, n, α, &a, &x, β, &y)` | mixed-precision GEMV (via `gemm_mixed*` N=1) |
@@ -69,14 +69,15 @@ deeper fragment reuse for GEMM and the Vulkan cooperative-matrix path.
 
 ## Performance (honest framing)
 
-On a real M1 Pro (Metal): the tiled GEMM beats naive (**375 vs 90 GFLOP/s at
-N=512**), and the **tensor-core kernel beats tiled — 498 GFLOP/s at N=512,
-1.33×** — using `simdgroup_matrix` with 2×2 fragment register-blocking. That is
-~10% of the M1 Pro's ~5 TFLOP/s fp32 peak (tiled was ~7.5%). `gemm()` routes to
-the tensor-core path automatically when the device supports cooperative matrices
-and the problem fits (`C += A·B`, N≥256, m/n multiple of 16, k multiple of 8),
-else the tiled kernel. The remaining vendor gap (~80% of Accelerate/cuBLAS)
-needs more fragment reuse (4×4 blocking + shared-memory staging). The Vulkan
+On a real M1 Pro (Metal): the tiled GEMM beats naive (**372 vs 85 GFLOP/s at
+N=512**), and the **tensor-core kernel beats tiled — 553 GFLOP/s at N=512,
+~1.5×** — using `simdgroup_matrix` with 4×4 fragment register-blocking (8
+fragment loads feed 16 MMAs per K-step). That is ~11% of the M1 Pro's ~5 TFLOP/s
+fp32 peak (tiled was ~7.5%). `gemm()` routes to the tensor-core path
+automatically when the device supports cooperative matrices and the problem fits
+(`C += A·B`, N≥512, m/n multiple of 32, k multiple of 8), else the tiled kernel.
+The remaining vendor gap (~80% of Accelerate/cuBLAS) needs threadgroup-shared
+staging of the A/B tiles on top of the register blocking. The Vulkan
 `VK_KHR_cooperative_matrix` path is not yet wired (Metal-only today). Level-1
 ops are bandwidth-bound — the generic kernel is already near memory roofline.
 

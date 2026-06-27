@@ -214,16 +214,17 @@ pub fn gemm(
     }
 
     // Tensor-core path: when the device has cooperative matrices and the
-    // problem fits the v1 contract (C += A·B, i.e. α = β = 1, with m/n a
-    // multiple of 16 and k a multiple of 8), the register-blocked
-    // simdgroup_matrix kernel beats the tiled kernel (~1.3× at N=512). The
-    // size threshold avoids the launch overhead dominating tiny problems.
+    // problem fits the contract (C += A·B, i.e. α = β = 1, with m/n a multiple
+    // of 32 and k a multiple of 8), the 4×4 register-blocked simdgroup_matrix
+    // kernel beats the tiled kernel (~1.5× at N=512). The N≥512 threshold keeps
+    // it to where the 32×32 tiles fill the GPU; smaller problems under-occupy
+    // and the tiled kernel wins, so they stay on it.
     if alpha == 1.0
         && beta == 1.0
-        && m >= 256
-        && n >= 256
-        && m.is_multiple_of(16)
-        && n.is_multiple_of(16)
+        && m >= 512
+        && n >= 512
+        && m.is_multiple_of(32)
+        && n.is_multiple_of(32)
         && k.is_multiple_of(8)
         && gpu.supports_cooperative_matrix()
         && crate::mixed_tc::gemm_f32_tc(gpu, m, n, k, a, b, c).is_ok()

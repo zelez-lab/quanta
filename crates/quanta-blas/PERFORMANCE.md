@@ -17,31 +17,33 @@ path; `tc/tiled` is its speedup over the tiled kernel.
 
 | N | naive GFLOP/s | tiled GFLOP/s | tc GFLOP/s | tc/tiled |
 |---|--------------:|--------------:|-----------:|---------:|
-| 64  | 1.94  | 2.18   | 1.80   | 0.83× |
-| 128 | 14.09 | 15.94  | 14.20  | 0.89× |
-| 256 | 57.11 | 84.87  | 98.66  | 1.16× |
-| 512 | 89.82 | 375.84 | 498.28 | 1.33× |
+| 64  | 2.28  | 2.31   | 1.46   | 0.63× |
+| 128 | 13.57 | 17.60  | 12.55  | 0.71× |
+| 256 | 61.14 | 88.72  | 88.64  | 1.00× |
+| 512 | 85.43 | 371.80 | 552.55 | 1.49× |
 
 The tiled kernel (one 256-thread workgroup per 16×16 output tile, A/B blocks
 staged in shared memory) pulls away from naive as N grows. The **tensor-core**
-kernel then beats *tiled* at N≥256: each subgroup owns a 16×16 tile as a 2×2
-grid of 8×8 `simdgroup_matrix` accumulators, so every loaded fragment feeds two
-MMAs (2× arithmetic intensity), and the MMA units carry it to **1.33× over
-tiled at N=512** (498 vs 376 GFLOP/s). At N≤128 launch overhead dominates and
-tiled wins, so `gemm()` only routes to the tensor-core path at N≥256 (and only
-for `C += A·B`, m/n multiples of 16, k a multiple of 8). The bench cross-checks
-every kernel against the reference, so a perf run doubles as a correctness
-check.
+kernel then beats *tiled* at large N: each subgroup owns a 32×32 tile as a 4×4
+grid of 8×8 `simdgroup_matrix` accumulators, so per K-step 8 global fragment
+loads feed 16 MMAs (each fragment reused 4×) — the arithmetic intensity that
+carries it to **~1.5× over tiled at N=512** (553 vs 372 GFLOP/s). At N≤256 the
+32×32 tiles under-occupy the GPU (and launch overhead dominates the tiny sizes),
+so `gemm()` only routes to the tensor-core path at **N≥512** (and only for
+`C += A·B`, m/n multiples of 32, k a multiple of 8); smaller problems stay on
+the tiled kernel. The bench cross-checks every kernel against the reference, so
+a perf run doubles as a correctness check.
 
 ## Where we are vs the target
 
 The strategy is ~80% of vendor BLAS on tier-2 (Apple-Silicon) GPUs.
 
 - M1 Pro fp32 peak is roughly ~5 TFLOP/s; the tensor-core GEMM tops out near
-  ~500 GFLOP/s at N=512 — order ~10% of peak (tiled was ~7.5%). The 2×2
-  register-blocked kernel is the first real step past the SIMT tiled path;
-  more fragment reuse (4×4 blocking + threadgroup-shared staging of the A/B
-  tiles) is the next lever toward the vendor gap.
+  ~550 GFLOP/s at N=512 — order ~11% of peak (tiled was ~7.5%). The 4×4
+  register-blocked kernel is a real step past the SIMT tiled path; the next
+  lever is **threadgroup-shared staging** of the A/B tiles (load each tile to
+  shared once, many subgroups read fragments from it) to cut the global
+  fragment loads, then larger tiles / multiple subgroups per workgroup.
 - Vulkan `VK_KHR_cooperative_matrix` is **not yet wired** — the Metal
   `simdgroup_matrix` path is the validated one; the SPIR-V emitter still falls
   back to scalar (so `supports_cooperative_matrix()` is Metal-only today).
