@@ -137,3 +137,107 @@ fn grad_foreign_var_errors() {
     let b = t2.var(Array::from_slice(&g, &[1.0], &[1]).unwrap());
     assert!(a.grad(&b).is_err());
 }
+
+// ── matmul VJP: ∂A = G·Bᵀ, ∂B = Aᵀ·G, gradient-checked numerically ──────
+
+/// Host reference: loss = sum(A·B) for A (m×k), B (k×n), row-major flat.
+fn matmul_loss(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> f32 {
+    let mut s = 0.0f32;
+    for i in 0..m {
+        for j in 0..n {
+            let mut acc = 0.0f32;
+            for p in 0..k {
+                acc += a[i * k + p] * b[p * n + j];
+            }
+            s += acc;
+        }
+    }
+    s
+}
+
+#[test]
+fn grad_matmul() {
+    let g = gpu();
+    let (m, k, n) = (2usize, 3, 2);
+    let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2×3
+    let b = vec![0.5f32, -1.0, 2.0, 1.0, -0.5, 0.0]; // 3×2
+
+    // Analytic grads via the tape.
+    let tape = Tape::<f32>::new();
+    let av = tape.var(Array::from_slice(&g, &a, &[m, k]).unwrap());
+    let bv = tape.var(Array::from_slice(&g, &b, &[k, n]).unwrap());
+    let loss = av.matmul(&bv).unwrap().sum().unwrap();
+    let ga = loss.grad(&av).unwrap().to_vec().unwrap();
+    let gb = loss.grad(&bv).unwrap().to_vec().unwrap();
+
+    // Central-difference grad w.r.t. each element of A and B.
+    let h = 1e-2f32;
+    for idx in 0..a.len() {
+        let mut ap = a.clone();
+        ap[idx] += h;
+        let mut am = a.clone();
+        am[idx] -= h;
+        let num = (matmul_loss(&ap, &b, m, k, n) - matmul_loss(&am, &b, m, k, n)) / (2.0 * h);
+        assert!(
+            (ga[idx] - num).abs() <= 1e-2 * (1.0 + num.abs()),
+            "∂A[{idx}] = {} vs numeric {num}",
+            ga[idx]
+        );
+    }
+    for idx in 0..b.len() {
+        let mut bp = b.clone();
+        bp[idx] += h;
+        let mut bm = b.clone();
+        bm[idx] -= h;
+        let num = (matmul_loss(&a, &bp, m, k, n) - matmul_loss(&a, &bm, m, k, n)) / (2.0 * h);
+        assert!(
+            (gb[idx] - num).abs() <= 1e-2 * (1.0 + num.abs()),
+            "∂B[{idx}] = {} vs numeric {num}",
+            gb[idx]
+        );
+    }
+}
+
+#[test]
+fn grad_matmul_chain() {
+    // loss = sum((A·B) * (A·B)) — matmul feeding an elementwise square, so the
+    // upstream gradient into matmul is non-uniform (2·(A·B)), exercising the
+    // real G·Bᵀ / Aᵀ·G path rather than the all-ones special case.
+    let g = gpu();
+    let (m, k, n) = (2usize, 2, 2);
+    let a = vec![1.0f32, 2.0, -1.0, 0.5];
+    let b = vec![0.5f32, 1.0, 2.0, -1.0];
+    let tape = Tape::<f32>::new();
+    let av = tape.var(Array::from_slice(&g, &a, &[m, k]).unwrap());
+    let bv = tape.var(Array::from_slice(&g, &b, &[k, n]).unwrap());
+    let y = av.matmul(&bv).unwrap();
+    let loss = y.mul(&y).unwrap().sum().unwrap();
+    let ga = loss.grad(&av).unwrap().to_vec().unwrap();
+
+    let host_loss = |a: &[f32], b: &[f32]| -> f32 {
+        let mut s = 0.0;
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = 0.0f32;
+                for p in 0..k {
+                    acc += a[i * k + p] * b[p * n + j];
+                }
+                s += acc * acc;
+            }
+        }
+        s
+    };
+    let h = 1e-2f32;
+    for idx in 0..a.len() {
+        let mut ap = a.clone();
+        ap[idx] += h;
+        let mut am = a.clone();
+        am[idx] -= h;
+        let num = (host_loss(&ap, &b) - host_loss(&am, &b)) / (2.0 * h);
+        assert!(
+            (ga[idx] - num).abs() <= 2e-2 * (1.0 + num.abs()),
+            "chain ∂A[{idx}] = {} vs numeric {num}",
+            ga[idx]
+        );
+    }
+}

@@ -75,3 +75,21 @@ pub fn sqrt<T: FloatScalar + ReduceScalar>(g: &Array<T>, y: &Array<T>) -> R<T> {
     let two_y = y.add(y)?; // 2y
     g.div(&two_y)
 }
+
+/// `matmul`: Y = A·B (A is m×k, B is k×n) ⇒
+///   ∂L/∂A = G·Bᵀ   (m×n · n×k → m×k)
+///   ∂L/∂B = Aᵀ·G   (k×m · m×n → k×n)
+/// where G = ∂L/∂Y. Both VJPs are themselves matmuls (reusing the proven
+/// quanta-blas gemm); the transposes are zero-copy views materialized by
+/// matmul's contiguous-gather.
+pub fn matmul<T: crate::scalar::DiffScalar>(
+    g: &Array<T>,
+    a: &Array<T>,
+    b: &Array<T>,
+) -> Result<(Array<T>, Array<T>), ArrayError> {
+    let bt = b.transpose(0, 1)?;
+    let at = a.transpose(0, 1)?;
+    let ga = T::array_matmul(g, &bt)?; // G·Bᵀ
+    let gb = T::array_matmul(&at, g)?; // Aᵀ·G
+    Ok((ga, gb))
+}

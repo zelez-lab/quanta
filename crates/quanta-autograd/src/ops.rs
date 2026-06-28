@@ -5,12 +5,13 @@
 
 use std::rc::Rc;
 
-use quanta_array::{Array, FloatScalar, ReduceScalar};
+use quanta_array::Array;
 
 use crate::error::AutogradError;
+use crate::scalar::DiffScalar;
 use crate::tape::{Op, Tape, Var};
 
-impl<T: FloatScalar + ReduceScalar> Var<T> {
+impl<T: DiffScalar> Var<T> {
     fn same_tape(&self, other: &Var<T>) -> Result<(), AutogradError> {
         if Rc::ptr_eq(&self.tape, &other.tape) {
             Ok(())
@@ -95,5 +96,18 @@ impl<T: FloatScalar + ReduceScalar> Var<T> {
         let in_shape = x.shape().to_vec();
         let scalar = Array::full(x.gpu(), s, &[1])?;
         Ok(self.tape_handle().push(Op::Sum(self.id, in_shape), scalar))
+    }
+
+    /// 2-D matrix multiply `self (m×k) · rhs (k×n) → (m×n)`. The VJPs are
+    /// themselves matmuls (∂A = G·Bᵀ, ∂B = Aᵀ·G), captured by recording both
+    /// forward operands.
+    pub fn matmul(&self, rhs: &Var<T>) -> Result<Var<T>, AutogradError> {
+        self.same_tape(rhs)?;
+        let av = self.value();
+        let bv = rhs.value();
+        let y = T::array_matmul(&av, &bv)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::Matmul(self.id, rhs.id, av, bv), y))
     }
 }

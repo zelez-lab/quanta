@@ -13,15 +13,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use quanta_array::{Array, FloatScalar, ReduceScalar};
+use quanta_array::Array;
 
 use crate::error::AutogradError;
+use crate::scalar::DiffScalar;
 use crate::vjp;
 
 /// Which op produced a node — enough to run its VJP in the backward pass. The
 /// `usize` fields are node ids of the inputs; arrays captured here are the
 /// forward values the VJP needs (an input, or the output `y`).
-pub(crate) enum Op<T: FloatScalar + ReduceScalar> {
+pub(crate) enum Op<T: DiffScalar> {
     /// A leaf (input / parameter). No inputs; gradient just accumulates.
     Leaf,
     Neg(usize),
@@ -39,31 +40,33 @@ pub(crate) enum Op<T: FloatScalar + ReduceScalar> {
     /// sum over all elements → scalar. Captures the input shape so backward can
     /// broadcast the scalar grad back to a full ones·g array.
     Sum(usize, Vec<usize>),
+    /// matmul(a, b): captures both forward operands; ∂A = G·Bᵀ, ∂B = Aᵀ·G.
+    Matmul(usize, usize, Array<T>, Array<T>),
 }
 
-pub(crate) struct Node<T: FloatScalar + ReduceScalar> {
+pub(crate) struct Node<T: DiffScalar> {
     pub(crate) op: Op<T>,
 }
 
 /// The shared recording buffer behind every [`Var`].
-pub(crate) struct TapeInner<T: FloatScalar + ReduceScalar> {
+pub(crate) struct TapeInner<T: DiffScalar> {
     pub(crate) nodes: Vec<Node<T>>,
     pub(crate) values: Vec<Array<T>>,
 }
 
 /// A reverse-mode autodiff tape. Build leaves with [`Tape::var`], run ops on the
 /// resulting [`Var`]s, then [`Tape::backward`] and read [`Var::grad`].
-pub struct Tape<T: FloatScalar + ReduceScalar> {
+pub struct Tape<T: DiffScalar> {
     inner: Rc<RefCell<TapeInner<T>>>,
 }
 
-impl<T: FloatScalar + ReduceScalar> Default for Tape<T> {
+impl<T: DiffScalar> Default for Tape<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: FloatScalar + ReduceScalar> Tape<T> {
+impl<T: DiffScalar> Tape<T> {
     /// A fresh, empty tape.
     pub fn new() -> Self {
         Tape {
@@ -99,12 +102,12 @@ impl<T: FloatScalar + ReduceScalar> Tape<T> {
 }
 
 /// A node in a [`Tape`] — a differentiable value handle.
-pub struct Var<T: FloatScalar + ReduceScalar> {
+pub struct Var<T: DiffScalar> {
     pub(crate) tape: Rc<RefCell<TapeInner<T>>>,
     pub(crate) id: usize,
 }
 
-impl<T: FloatScalar + ReduceScalar> Var<T> {
+impl<T: DiffScalar> Var<T> {
     /// The forward value at this node (cheap Arc-share view).
     pub fn value(&self) -> Array<T> {
         self.tape.borrow().values[self.id].shallow_clone()
@@ -147,7 +150,7 @@ impl<T: FloatScalar + ReduceScalar> Var<T> {
         grads[self.id] = Some(Array::ones(&gpu, &out_shape)?);
 
         // Accumulate g into node id (add if already present).
-        fn accum<U: FloatScalar + ReduceScalar>(
+        fn accum<U: DiffScalar>(
             slot: &mut Option<Array<U>>,
             g: Array<U>,
         ) -> Result<(), AutogradError> {
@@ -197,6 +200,11 @@ impl<T: FloatScalar + ReduceScalar> Var<T> {
                     let gval = g.to_vec()?[0];
                     let gin = Array::full(&gpu, gval, in_shape)?;
                     accum(&mut grads[*a], gin)?;
+                }
+                Op::Matmul(a, b, av, bv) => {
+                    let (ga, gb) = vjp::matmul(&g, av, bv)?;
+                    accum(&mut grads[*a], ga)?;
+                    accum(&mut grads[*b], gb)?;
                 }
             }
         }

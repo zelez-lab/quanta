@@ -38,8 +38,10 @@
 
 pub mod error;
 pub mod ops;
+pub mod scalar;
 pub mod tape;
 pub mod vjp;
 
 pub use error::AutogradError;
+pub use scalar::DiffScalar;
 pub use tape::{Tape, Var};
