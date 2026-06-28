@@ -109,6 +109,7 @@ import Quanta.Blas.GemmMixed
 import Quanta.Autograd.Vjp
 import Quanta.Autograd.MatmulVjp
 import Quanta.Autograd.ReduceVjp
+import Quanta.Autograd.ActivationVjp
 
 -- Numeric dtype conversions (step 084.1 — bf16 / fp8 round-trip)
 import Quanta.Dtype.Bf16
