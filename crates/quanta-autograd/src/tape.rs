@@ -26,8 +26,10 @@ pub(crate) enum Op<T: DiffScalar> {
     /// A leaf (input / parameter). No inputs; gradient just accumulates.
     Leaf,
     Neg(usize),
-    Add(usize, usize),
-    Sub(usize, usize),
+    /// add(a, b): stores both operand shapes so the gradient can be
+    /// un-broadcast back to each (add/sub broadcast but capture no values).
+    Add(usize, usize, Vec<usize>, Vec<usize>),
+    Sub(usize, usize, Vec<usize>, Vec<usize>),
     /// mul(a, b): needs both forward values for the cross multipliers.
     Mul(usize, usize, Array<T>, Array<T>),
     Div(usize, usize, Array<T>, Array<T>),
@@ -42,6 +44,11 @@ pub(crate) enum Op<T: DiffScalar> {
     Sum(usize, Vec<usize>),
     /// matmul(a, b): captures both forward operands; ∂A = G·Bᵀ, ∂B = Aᵀ·G.
     Matmul(usize, usize, Array<T>, Array<T>),
+    /// sum_axis(a, axis): captures the input shape; ∂/∂x = broadcast(g) back to
+    /// it (every summed element shares the upstream gradient).
+    SumAxis(usize, usize, Vec<usize>),
+    /// mean_axis(a, axis, count): like sum_axis but the gradient is g/count.
+    MeanAxis(usize, usize, Vec<usize>, usize),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -171,13 +178,13 @@ impl<T: DiffScalar> Var<T> {
                     let ga = vjp::neg(&g)?;
                     accum(&mut grads[*a], ga)?;
                 }
-                Op::Add(a, b) => {
-                    let (ga, gb) = vjp::add(&g)?;
+                Op::Add(a, b, sa, sb) => {
+                    let (ga, gb) = vjp::add(&g, sa, sb)?;
                     accum(&mut grads[*a], ga)?;
                     accum(&mut grads[*b], gb)?;
                 }
-                Op::Sub(a, b) => {
-                    let (ga, gb) = vjp::sub(&g)?;
+                Op::Sub(a, b, sa, sb) => {
+                    let (ga, gb) = vjp::sub(&g, sa, sb)?;
                     accum(&mut grads[*a], ga)?;
                     accum(&mut grads[*b], gb)?;
                 }
@@ -205,6 +212,18 @@ impl<T: DiffScalar> Var<T> {
                     let (ga, gb) = vjp::matmul(&g, av, bv)?;
                     accum(&mut grads[*a], ga)?;
                     accum(&mut grads[*b], gb)?;
+                }
+                Op::SumAxis(a, _axis, in_shape) => {
+                    // ∂(Σ over axis)/∂xᵢ = 1: broadcast g (keepdims) back up.
+                    let gin = g.broadcast_to(in_shape)?.contiguous()?;
+                    accum(&mut grads[*a], gin)?;
+                }
+                Op::MeanAxis(a, _axis, in_shape, count) => {
+                    // mean = sum/count ⇒ grad = broadcast(g) / count.
+                    let inv = Array::full(&gpu, T::from_f64(1.0 / *count as f64), &[1])?;
+                    let scaled = g.mul(&inv.broadcast_to(g.shape())?)?;
+                    let gin = scaled.broadcast_to(in_shape)?.contiguous()?;
+                    accum(&mut grads[*a], gin)?;
                 }
             }
         }

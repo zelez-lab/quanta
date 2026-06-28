@@ -18,45 +18,83 @@ use quanta_array::{Array, ArrayError, FloatScalar, ReduceScalar};
 
 type R<T> = Result<Array<T>, ArrayError>;
 
+/// **Un-broadcast** a gradient `g` back to `target` shape. When a forward op
+/// broadcast an input of shape `target` up to `g`'s shape, the reverse step
+/// sums `g` over the broadcast axes: leading axes the target lacks are summed
+/// away, and axes where the target had extent 1 (but `g` has > 1) are summed
+/// with keepdims. The result has exactly `target` shape, ready to accumulate
+/// onto that input's gradient. (A no-op when shapes already match.)
+pub fn unbroadcast<T: FloatScalar + ReduceScalar>(g: &Array<T>, target: &[usize]) -> R<T> {
+    if g.shape() == target {
+        return Ok(g.shallow_clone());
+    }
+    let mut cur = g.shallow_clone();
+    // 1. Drop leading axes the target doesn't have (sum over axis 0, squeeze).
+    while cur.shape().len() > target.len() {
+        let summed = cur.sum_axis(0)?; // [1, rest…]
+        let new_shape: Vec<usize> = cur.shape()[1..].to_vec();
+        cur = summed.reshape(&new_shape)?;
+    }
+    // 2. Sum (keepdims) the axes where target == 1 but cur > 1.
+    for (i, &t) in target.iter().enumerate() {
+        if t == 1 && cur.shape()[i] != 1 {
+            cur = cur.sum_axis(i)?;
+        }
+    }
+    // Defensive: land exactly on `target` (handles any residual unit dims).
+    if cur.shape() != target {
+        cur = cur.reshape(target)?;
+    }
+    Ok(cur)
+}
+
 /// `neg`: y = -x ⇒ ∂L/∂x = -g.
 pub fn neg<T: FloatScalar + ReduceScalar>(g: &Array<T>) -> R<T> {
     g.neg()
 }
 
-/// `add`: y = a + b ⇒ (∂L/∂a, ∂L/∂b) = (g, g).
+/// `add`: y = a + b ⇒ (∂L/∂a, ∂L/∂b) = (g, g), each un-broadcast to its
+/// operand's original shape.
 pub fn add<T: FloatScalar + ReduceScalar>(
     g: &Array<T>,
+    sa: &[usize],
+    sb: &[usize],
 ) -> Result<(Array<T>, Array<T>), ArrayError> {
-    Ok((g.shallow_clone(), g.shallow_clone()))
+    Ok((unbroadcast(g, sa)?, unbroadcast(g, sb)?))
 }
 
-/// `sub`: y = a - b ⇒ (g, -g).
+/// `sub`: y = a - b ⇒ (g, -g), each un-broadcast to its operand's shape.
 pub fn sub<T: FloatScalar + ReduceScalar>(
     g: &Array<T>,
+    sa: &[usize],
+    sb: &[usize],
 ) -> Result<(Array<T>, Array<T>), ArrayError> {
-    Ok((g.shallow_clone(), g.neg()?))
+    Ok((unbroadcast(g, sa)?, unbroadcast(&g.neg()?, sb)?))
 }
 
-/// `mul`: y = a·b ⇒ (g·b, g·a).
+/// `mul`: y = a·b ⇒ (g·b, g·a), each un-broadcast to the operand's shape (the
+/// products are at the output/broadcast shape).
 pub fn mul<T: FloatScalar + ReduceScalar>(
     g: &Array<T>,
     a: &Array<T>,
     b: &Array<T>,
 ) -> Result<(Array<T>, Array<T>), ArrayError> {
-    Ok((g.mul(b)?, g.mul(a)?))
+    let ga = unbroadcast(&g.mul(b)?, a.shape())?;
+    let gb = unbroadcast(&g.mul(a)?, b.shape())?;
+    Ok((ga, gb))
 }
 
-/// `div`: y = a/b ⇒ (g/b, -g·a/b²).
+/// `div`: y = a/b ⇒ (g/b, -g·a/b²), each un-broadcast to the operand's shape.
 pub fn div<T: FloatScalar + ReduceScalar>(
     g: &Array<T>,
     a: &Array<T>,
     b: &Array<T>,
 ) -> Result<(Array<T>, Array<T>), ArrayError> {
-    let ga = g.div(b)?;
+    let ga = unbroadcast(&g.div(b)?, a.shape())?;
     // ∂/∂b = -g·a/b² = -(g·a) / (b·b)
     let num = g.mul(a)?;
     let b2 = b.mul(b)?;
-    let gb = num.div(&b2)?.neg()?;
+    let gb = unbroadcast(&num.div(&b2)?.neg()?, b.shape())?;
     Ok((ga, gb))
 }
 

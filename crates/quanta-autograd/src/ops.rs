@@ -32,18 +32,24 @@ impl<T: DiffScalar> Var<T> {
         Ok(self.tape_handle().push(Op::Neg(self.id), y))
     }
 
-    /// Elementwise add.
+    /// Elementwise add (broadcasting; gradients un-broadcast in backward).
     pub fn add(&self, rhs: &Var<T>) -> Result<Var<T>, AutogradError> {
         self.same_tape(rhs)?;
-        let y = self.value().add(&rhs.value())?;
-        Ok(self.tape_handle().push(Op::Add(self.id, rhs.id), y))
+        let av = self.value();
+        let bv = rhs.value();
+        let (sa, sb) = (av.shape().to_vec(), bv.shape().to_vec());
+        let y = av.add(&bv)?;
+        Ok(self.tape_handle().push(Op::Add(self.id, rhs.id, sa, sb), y))
     }
 
-    /// Elementwise subtract.
+    /// Elementwise subtract (broadcasting; gradients un-broadcast in backward).
     pub fn sub(&self, rhs: &Var<T>) -> Result<Var<T>, AutogradError> {
         self.same_tape(rhs)?;
-        let y = self.value().sub(&rhs.value())?;
-        Ok(self.tape_handle().push(Op::Sub(self.id, rhs.id), y))
+        let av = self.value();
+        let bv = rhs.value();
+        let (sa, sb) = (av.shape().to_vec(), bv.shape().to_vec());
+        let y = av.sub(&bv)?;
+        Ok(self.tape_handle().push(Op::Sub(self.id, rhs.id, sa, sb), y))
     }
 
     /// Elementwise multiply.
@@ -96,6 +102,30 @@ impl<T: DiffScalar> Var<T> {
         let in_shape = x.shape().to_vec();
         let scalar = Array::full(x.gpu(), s, &[1])?;
         Ok(self.tape_handle().push(Op::Sum(self.id, in_shape), scalar))
+    }
+
+    /// Sum over `axis`, keeping it as a size-1 dim. Gradient broadcasts back.
+    pub fn sum_axis(&self, axis: usize) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let in_shape = x.shape().to_vec();
+        let y = x.sum_axis(axis)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::SumAxis(self.id, axis, in_shape), y))
+    }
+
+    /// Mean over `axis`, keeping it as a size-1 dim (sum_axis / extent).
+    pub fn mean_axis(&self, axis: usize) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let in_shape = x.shape().to_vec();
+        let count = in_shape[axis];
+        let summed = x.sum_axis(axis)?;
+        // y = summed / count
+        let inv = Array::full(x.gpu(), T::from_f64(1.0 / count as f64), &[1])?;
+        let y = summed.mul(&inv.broadcast_to(summed.shape())?)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::MeanAxis(self.id, axis, in_shape, count), y))
     }
 
     /// 2-D matrix multiply `self (m×k) · rhs (k×n) → (m×n)`. The VJPs are

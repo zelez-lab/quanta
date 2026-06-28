@@ -241,3 +241,93 @@ fn grad_matmul_chain() {
         );
     }
 }
+
+// ── broadcast + axis-reduction grads ────────────────────────────────────
+
+/// loss = sum( a[1,n] + b[m,n] ). grad_a sums g over the broadcast axis 0,
+/// so each a[j] gets m (= every row contributed 1). grad_b is all ones.
+#[test]
+fn grad_broadcast_add() {
+    let g = gpu();
+    let (m, n) = (3usize, 4usize);
+    let a = vec![1.0f32, 2.0, 3.0, 4.0]; // [1,n]
+    let b: Vec<f32> = (0..m * n).map(|i| i as f32 * 0.1).collect(); // [m,n]
+    let tape = Tape::<f32>::new();
+    let av = tape.var(Array::from_slice(&g, &a, &[1, n]).unwrap());
+    let bv = tape.var(Array::from_slice(&g, &b, &[m, n]).unwrap());
+    let loss = av.add(&bv).unwrap().sum().unwrap();
+    let ga = loss.grad(&av).unwrap();
+    let gb = loss.grad(&bv).unwrap();
+    assert_eq!(ga.shape(), &[1, n]); // un-broadcast back to a's shape
+    assert_eq!(gb.shape(), &[m, n]);
+    // ∂loss/∂a[j] = Σ_i 1 = m  (the broadcast axis summed).
+    for v in ga.to_vec().unwrap() {
+        assert!((v - m as f32).abs() <= 1e-4, "grad_a = {v}, want {m}");
+    }
+    for v in gb.to_vec().unwrap() {
+        assert!((v - 1.0).abs() <= 1e-4, "grad_b = {v}, want 1");
+    }
+}
+
+/// loss = sum( (a[1,n] * b[m,n]) ). grad_a[j] = Σ_i b[i,j] (broadcast mul VJP
+/// un-broadcast over axis 0); check vs a host column-sum of b.
+#[test]
+fn grad_broadcast_mul() {
+    let g = gpu();
+    let (m, n) = (2usize, 3usize);
+    let a = vec![2.0f32, -1.0, 0.5];
+    let b: Vec<f32> = (0..m * n).map(|i| (i as f32) - 2.0).collect();
+    let tape = Tape::<f32>::new();
+    let av = tape.var(Array::from_slice(&g, &a, &[1, n]).unwrap());
+    let bv = tape.var(Array::from_slice(&g, &b, &[m, n]).unwrap());
+    let loss = av.mul(&bv).unwrap().sum().unwrap();
+    let ga = loss.grad(&av).unwrap().to_vec().unwrap();
+    // want[j] = Σ_i b[i,j]
+    let want: Vec<f32> = (0..n).map(|j| (0..m).map(|i| b[i * n + j]).sum()).collect();
+    for (j, (&x, &y)) in ga.iter().zip(want.iter()).enumerate() {
+        assert!(
+            (x - y).abs() <= 1e-3 * (1.0 + y.abs()),
+            "grad_a[{j}] {x} vs {y}"
+        );
+    }
+}
+
+/// loss = sum( sum_axis(x*x, 0) ) = sum(x*x) ⇒ grad = 2x (the sum_axis VJP
+/// broadcasts the upstream grad back over the reduced axis).
+#[test]
+fn grad_sum_axis() {
+    let g = gpu();
+    let (m, n) = (3usize, 2usize);
+    let x: Vec<f32> = (1..=m * n).map(|i| i as f32 * 0.5).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[m, n]).unwrap());
+    let sq = xv.mul(&xv).unwrap();
+    let loss = sq.sum_axis(0).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    for (i, (&gi, &xi)) in gx.iter().zip(x.iter()).enumerate() {
+        assert!(
+            (gi - 2.0 * xi).abs() <= 1e-2 * (1.0 + xi.abs()),
+            "grad[{i}] {gi} vs {}",
+            2.0 * xi
+        );
+    }
+}
+
+/// loss = sum( mean_axis(x, 0) ) over [m,n] ⇒ ∂/∂x[i,j] = 1/m.
+#[test]
+fn grad_mean_axis() {
+    let g = gpu();
+    let (m, n) = (4usize, 3usize);
+    let x: Vec<f32> = (0..m * n).map(|i| i as f32).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[m, n]).unwrap());
+    let loss = xv.mean_axis(0).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    for (i, &gi) in gx.iter().enumerate() {
+        assert!(
+            (gi - 1.0 / m as f32).abs() <= 1e-4,
+            "grad[{i}] = {gi}, want {}",
+            1.0 / m as f32
+        );
+    }
+}
