@@ -114,6 +114,26 @@ pub fn sqrt<T: FloatScalar + ReduceScalar>(g: &Array<T>, y: &Array<T>) -> R<T> {
     g.div(&two_y)
 }
 
+/// `relu`: y = max(x, 0) ⇒ ∂L/∂x = g · [x > 0] (the positive-step mask). The
+/// subgradient at 0 is taken as 0.
+pub fn relu<T: FloatScalar + ReduceScalar>(g: &Array<T>, x: &Array<T>) -> R<T> {
+    g.mul(&x.step_positive()?)
+}
+
+/// `sigmoid`: y = σ(x) ⇒ ∂L/∂x = g · y · (1 − y) (reuse the forward output `y`).
+pub fn sigmoid<T: FloatScalar + ReduceScalar>(g: &Array<T>, y: &Array<T>) -> R<T> {
+    let one = Array::full(y.gpu(), T::ONE, &[1])?.broadcast_to(y.shape())?;
+    let one_minus_y = one.sub(y)?;
+    g.mul(y)?.mul(&one_minus_y)
+}
+
+/// `tanh`: y = tanh(x) ⇒ ∂L/∂x = g · (1 − y²) (reuse the forward output `y`).
+pub fn tanh<T: FloatScalar + ReduceScalar>(g: &Array<T>, y: &Array<T>) -> R<T> {
+    let one = Array::full(y.gpu(), T::ONE, &[1])?.broadcast_to(y.shape())?;
+    let one_minus_y2 = one.sub(&y.mul(y)?)?;
+    g.mul(&one_minus_y2)
+}
+
 /// `matmul`: Y = A·B (A is m×k, B is k×n) ⇒
 ///   ∂L/∂A = G·Bᵀ   (m×n · n×k → m×k)
 ///   ∂L/∂B = Aᵀ·G   (k×m · m×n → k×n)

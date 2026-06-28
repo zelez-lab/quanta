@@ -39,6 +39,12 @@ pub(crate) enum Op<T: DiffScalar> {
     Log(usize, Array<T>),
     /// sqrt(x): captures the output y (= √x), since ∂/∂x = g/(2y).
     Sqrt(usize, Array<T>),
+    /// relu(x): captures the input x; ∂/∂x = g·[x>0].
+    Relu(usize, Array<T>),
+    /// sigmoid(x): captures the output y; ∂/∂x = g·y·(1−y).
+    Sigmoid(usize, Array<T>),
+    /// tanh(x): captures the output y; ∂/∂x = g·(1−y²).
+    Tanh(usize, Array<T>),
     /// sum over all elements → scalar. Captures the input shape so backward can
     /// broadcast the scalar grad back to a full ones·g array.
     Sum(usize, Vec<usize>),
@@ -201,6 +207,9 @@ impl<T: DiffScalar> Var<T> {
                 Op::Exp(a, y) => accum(&mut grads[*a], vjp::exp(&g, y)?)?,
                 Op::Log(a, x) => accum(&mut grads[*a], vjp::log(&g, x)?)?,
                 Op::Sqrt(a, y) => accum(&mut grads[*a], vjp::sqrt(&g, y)?)?,
+                Op::Relu(a, x) => accum(&mut grads[*a], vjp::relu(&g, x)?)?,
+                Op::Sigmoid(a, y) => accum(&mut grads[*a], vjp::sigmoid(&g, y)?)?,
+                Op::Tanh(a, y) => accum(&mut grads[*a], vjp::tanh(&g, y)?)?,
                 Op::Sum(a, in_shape) => {
                     // sum → scalar: ∂(Σx)/∂xᵢ = 1, so grad broadcasts the scalar
                     // g to every input element: g_in = ones(in_shape) · g_scalar.

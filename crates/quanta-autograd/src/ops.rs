@@ -94,6 +94,38 @@ impl<T: DiffScalar> Var<T> {
             .push(Op::Sqrt(self.id, y.shallow_clone()), y))
     }
 
+    /// ReLU: `max(x, 0)`. VJP `g·[x>0]` (subgradient 0 at the kink).
+    pub fn relu(&self) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let zeros = Array::full(x.gpu(), T::ZERO, &[1])?.broadcast_to(x.shape())?;
+        let y = x.maximum(&zeros)?;
+        Ok(self.tape_handle().push(Op::Relu(self.id, x), y))
+    }
+
+    /// Sigmoid `σ(x) = 1/(1 + e⁻ˣ)`. VJP `g·y·(1−y)` (captures output y).
+    pub fn sigmoid(&self) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let one = Array::full(x.gpu(), T::ONE, &[1])?.broadcast_to(x.shape())?;
+        // y = 1 / (1 + exp(-x))
+        let denom = one.add(&x.neg()?.exp()?)?;
+        let y = one.div(&denom)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::Sigmoid(self.id, y.shallow_clone()), y))
+    }
+
+    /// Tanh. VJP `g·(1−y²)` (captures output y). Computed from exp (no array
+    /// `tanh` primitive): `(e^x − e⁻ˣ)/(e^x + e⁻ˣ)`.
+    pub fn tanh(&self) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let ex = x.exp()?;
+        let enx = x.neg()?.exp()?;
+        let y = ex.sub(&enx)?.div(&ex.add(&enx)?)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::Tanh(self.id, y.shallow_clone()), y))
+    }
+
     /// Sum of all elements → a 1-element (scalar) `Var`. The natural way to
     /// produce a scalar loss to call `grad` on.
     pub fn sum(&self) -> Result<Var<T>, AutogradError> {

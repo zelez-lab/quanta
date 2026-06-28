@@ -331,3 +331,50 @@ fn grad_mean_axis() {
         );
     }
 }
+
+// ── activations ─────────────────────────────────────────────────────────
+
+#[test]
+fn grad_relu() {
+    // f(x) = relu(x); f' = 1 (x>0), 0 (x<0). Avoid x=0 (the kink).
+    let g = gpu();
+    let x = vec![-2.0f32, -0.5, 0.5, 3.0];
+    let an = analytic_grad(&g, &x, |v| v.relu().unwrap());
+    let num = numeric_grad(&x, |x| x.max(0.0));
+    assert_close(&an, &num, 1e-2, "relu");
+}
+
+#[test]
+fn grad_sigmoid() {
+    // f(x) = σ(x); f' = σ(1−σ).
+    let g = gpu();
+    let x = vec![-1.0f32, 0.0, 0.5, 2.0];
+    let an = analytic_grad(&g, &x, |v| v.sigmoid().unwrap());
+    let num = numeric_grad(&x, |x| 1.0 / (1.0 + (-x).exp()));
+    assert_close(&an, &num, 1e-2, "sigmoid");
+}
+
+#[test]
+fn grad_tanh() {
+    // f(x) = tanh(x); f' = 1 − tanh².
+    let g = gpu();
+    let x = vec![-1.5f32, -0.3, 0.4, 1.2];
+    let an = analytic_grad(&g, &x, |v| v.tanh().unwrap());
+    let num = numeric_grad(&x, |x| x.tanh());
+    assert_close(&an, &num, 1e-2, "tanh");
+}
+
+#[test]
+fn grad_relu_chain() {
+    // f(x) = relu(x)·relu(x): smooth except the x=0 kink; ⇒ f' = 2·relu(x)·[x>0]
+    // = 2x for x>0, 0 for x<0. Chains relu into a mul, so the upstream gradient
+    // into relu is non-uniform (2·relu(x)), not all-ones.
+    let g = gpu();
+    let x = vec![-2.0f32, -0.5, 0.5, 3.0];
+    let an = analytic_grad(&g, &x, |v| {
+        let r = v.relu().unwrap();
+        r.mul(&r).unwrap()
+    });
+    let num = numeric_grad(&x, |x| x.max(0.0) * x.max(0.0));
+    assert_close(&an, &num, 1e-2, "relu_chain");
+}
