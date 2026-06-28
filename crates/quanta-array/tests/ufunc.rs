@@ -110,3 +110,12 @@ fn shape_mismatch_errors() {
     let b = Array::from_slice(&g, &[1.0f32, 2.0, 3.0], &[3]).unwrap();
     assert!(a.add(&b).is_err());
 }
+
+#[test]
+fn step_positive_mask() {
+    let g = gpu();
+    let a = Array::from_slice(&g, &[-2.0f32, -0.0, 0.0, 0.5, 3.0], &[5]).unwrap();
+    let r = a.step_positive().unwrap();
+    // > 0 → 1, else 0 (0 and -0 are not > 0).
+    approx(&r.to_vec().unwrap(), &[0.0, 0.0, 0.0, 1.0, 1.0]);
+}

@@ -396,6 +396,84 @@ impl<T: FloatScalar> Array<T> {
     pub fn pow(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
         self.math2(rhs, MathFn::Pow)
     }
+
+    /// Positive-step indicator: `1.0` where `x > 0`, else `0.0`. This is the
+    /// derivative mask of `relu` (`max(x,0)`) — `quanta-autograd` uses it for
+    /// the relu VJP. Kernel: `Cast(Cmp(x > 0))`.
+    pub fn step_positive(&self) -> Result<Array<T>, ArrayError> {
+        use quanta_ir::{CmpOp, ScalarType};
+        let src = self.contiguous_if_needed()?;
+        let n = src.len();
+        let ty = T::scalar_type();
+        let def = KernelDef {
+            name: "qa_step_positive".into(),
+            params: vec![
+                KernelParam::FieldRead {
+                    name: "a".into(),
+                    slot: 0,
+                    scalar_type: ty,
+                },
+                KernelParam::FieldWrite {
+                    name: "out".into(),
+                    slot: 1,
+                    scalar_type: ty,
+                },
+            ],
+            body: vec![
+                KernelOp::QuarkId { dst: Reg(0) },
+                KernelOp::Load {
+                    dst: Reg(1),
+                    field: 0,
+                    index: Reg(0),
+                    ty,
+                },
+                // zero of the element type
+                KernelOp::Const {
+                    dst: Reg(2),
+                    value: zero_const(ty),
+                },
+                // mask = (x > 0) : bool
+                KernelOp::Cmp {
+                    dst: Reg(3),
+                    a: Reg(1),
+                    b: Reg(2),
+                    op: CmpOp::Gt,
+                    ty,
+                },
+                // out = (T) mask  (true → 1, false → 0)
+                KernelOp::Cast {
+                    dst: Reg(4),
+                    src: Reg(3),
+                    from: ScalarType::Bool,
+                    to: ty,
+                },
+                KernelOp::Store {
+                    field: 1,
+                    index: Reg(0),
+                    src: Reg(4),
+                    ty,
+                },
+            ],
+            body_source: None,
+            next_reg: 5,
+            opt_level: 0,
+            device_sources: vec![],
+            device_functions: vec![],
+            workgroup_size: [1, 1, 1],
+            subgroup_size: None,
+            dynamic_shared_bytes: 0,
+        };
+        src.dispatch_unary(&def, n)
+    }
+}
+
+/// Zero constant of a float element type (for the step comparison).
+fn zero_const(ty: quanta_ir::ScalarType) -> quanta_ir::ConstValue {
+    use quanta_ir::{ConstValue, ScalarType};
+    match ty {
+        ScalarType::F64 => ConstValue::F64(0.0),
+        _ => ConstValue::F32(0.0),
+    }
 }
 
 // Operator-trait sugar: `&a + &b` etc. (panics on shape/gpu error — use
