@@ -49,6 +49,7 @@ mod error;
 mod gather;
 mod linalg;
 mod reduce;
+mod reduce_axis;
 mod scalar;
 mod ufunc;
 

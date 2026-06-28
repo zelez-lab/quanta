@@ -3,8 +3,8 @@
 //! `sum` / `min` / `max` wrap `quanta-prims` device-wide reduce kernels
 //! (generic over [`ReduceScalar`] — f32 / i32 / u32); `mean` derives from
 //! `sum` and is floating-point only. These reduce the **entire** array to a
-//! scalar (numpy `arr.sum()` with no axis). Per-axis reductions are a later
-//! increment (they need a segmented/strided reduce shape).
+//! scalar (numpy `arr.sum()` with no axis). Per-axis reductions live in
+//! `reduce_axis` (`sum_axis(axis)`, keepdims).
 //!
 //! The prims reduce consumes an on-device `Field`, so a strided view is first
 //! gathered to a contiguous field **on the GPU** (`contiguous_or_self`) and
