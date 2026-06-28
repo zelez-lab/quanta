@@ -22,6 +22,7 @@ and the verifier output.
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
 | **Verified Tier-A tracks** | 9 (ICB, tessellation, mesh shaders, ray tracing, VRS, sparse textures, multi-queue, async copy, printf) |
+| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`) |
 
 **Sustainment state (2026-04-30).** The post-E finalization closed
 `kernel_body_compose` from a single monolithic axiom to a body-level
@@ -34,6 +35,25 @@ translation shape + one-step heap projection. See
 Verifiers in active use: **Lean 4** (semantics + axioms), **Verus**
 (code-matches-spec), **Kani** (bounded model checking), **herd7**
 (memory-model litmus tests), **Miri** (UB detection on native).
+
+## Companion-crate numerics
+
+The math companion crates carry their own proof obligations, in the same
+"theorem not axiom" spirit:
+
+* **`quanta-blas`** — every op ships a mechanically-proven Higham `(1+δ)`
+  forward-error bound (`specs/verify/lean/Quanta/Blas/`), and the
+  mixed-precision GEMM splits the entry error into the proven f32 bound plus a
+  per-dtype input-quantisation term (`gemmEntry_narrow_error_split`).
+* **`quanta-autograd`** — every reverse-mode VJP multiplier is proven *equal to
+  the analytic derivative* via Mathlib's `HasDerivAt`
+  (`specs/verify/lean/Quanta/Autograd/`): elementwise + activations
+  (`Vjp.lean`, `ActivationVjp.lean` — relu/sigmoid/tanh), `matmul` (`G·Bᵀ`,
+  `Aᵀ·G` in `MatmulVjp.lean`), and reductions (`ReduceVjp.lean`). These are not
+  restatements — `sigmoid' = σ(1−σ)`, `tanh' = 1−tanh²`, and the matmul Jacobian
+  fall out of the inverse/quotient/chain rules. The Rust crate cross-checks
+  every rule against finite differences on real GPU execution, and an MLP
+  trains end-to-end. 0 sorry, no new axioms (rests on Mathlib calculus).
 
 ## Verification chain
 

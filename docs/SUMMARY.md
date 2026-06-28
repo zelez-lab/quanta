@@ -61,6 +61,7 @@
 - [Multi-Queue](cookbook/multi-queue.md)
 - [Async Copy and GPU Printf](cookbook/async-copy-and-printf.md)
 - [Array Math (NumPy on the GPU)](cookbook/arrays-numpy.md)
+- [Training with Autodiff](cookbook/autograd-training.md)
 
 # Migration
 
