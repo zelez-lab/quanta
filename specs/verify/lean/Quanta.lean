@@ -110,6 +110,7 @@ import Quanta.Autograd.Vjp
 import Quanta.Autograd.MatmulVjp
 import Quanta.Autograd.ReduceVjp
 import Quanta.Autograd.ActivationVjp
+import Quanta.Autograd.ConvVjp
 
 -- FFT: Cooley-Tukey radix-2 butterfly identity (companion crate quanta-fft)
 import Quanta.Fft.Dft
