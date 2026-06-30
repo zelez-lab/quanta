@@ -59,8 +59,11 @@ Three layers of confidence, all green:
   (`HasDerivAt`): elementwise + activations in `Vjp.lean` / `ActivationVjp.lean`,
   matmul in `MatmulVjp.lean`, reductions in `ReduceVjp.lean`. `conv2d` reduces to
   matmul plus the im2col/col2im adjoint, and `ConvVjp.lean` proves that adjoint
-  (`⟨im2col x, y⟩ = ⟨x, col2im y⟩`) — so its `∂x` is the true gradient. 0 sorry;
-  rests on Mathlib calculus (no new axioms).
+  (`⟨im2col x, y⟩ = ⟨x, col2im y⟩`) — so its `∂x` is the true gradient.
+  `PoolVjp.lean` proves the pooling backwards: avgpool's is its adjoint
+  (`⟨avgpool x, y⟩ = ⟨x, avgpoolBack y⟩`) and maxpool's routes each output's
+  gradient to its window argmax. 0 sorry; rests on Mathlib calculus (no new
+  axioms).
 - **Per-op gradient checks** — every op cross-checked against central
   finite differences on real GPU execution (`tests/gradcheck.rs`); `conv2d` and
   the pooling ops add real-Metal lanes against host references (maxpool is

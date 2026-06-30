@@ -49,16 +49,19 @@ The math companion crates carry their own proof obligations, in the same
   the analytic derivative* via Mathlib's `HasDerivAt`
   (`specs/verify/lean/Quanta/Autograd/`): elementwise + activations
   (`Vjp.lean`, `ActivationVjp.lean` — relu/sigmoid/tanh), `matmul` (`G·Bᵀ`,
-  `Aᵀ·G` in `MatmulVjp.lean`), reductions (`ReduceVjp.lean`), and `conv2d`
-  (`ConvVjp.lean`). These are not restatements — `sigmoid' = σ(1−σ)`,
-  `tanh' = 1−tanh²`, and the matmul Jacobian fall out of the
+  `Aᵀ·G` in `MatmulVjp.lean`), reductions (`ReduceVjp.lean`), `conv2d`
+  (`ConvVjp.lean`), and pooling (`PoolVjp.lean`). These are not restatements —
+  `sigmoid' = σ(1−σ)`, `tanh' = 1−tanh²`, and the matmul Jacobian fall out of the
   inverse/quotient/chain rules. `conv2d` is im2col → matmul → reshape, so its
   backward *is* the matmul VJP plus the `col2im` step; `ConvVjp.lean` proves the
   one fact that step rests on — that **col2im is the transpose of im2col**
   (`⟨im2col x, y⟩ = ⟨x, col2im y⟩`, for any gather), so the `∂x` it computes is
-  the true reverse-mode gradient. The Rust crate cross-checks every rule against
-  finite differences on real GPU execution, and an MLP trains end-to-end. 0
-  sorry, no new axioms (rests on Mathlib calculus).
+  the true reverse-mode gradient. Pooling is the same shape: `PoolVjp.lean`
+  proves avgpool's backward is its adjoint (`⟨avgpool x, y⟩ = ⟨x, avgpoolBack
+  y⟩`) and that maxpool's subgradient routes each output to its window argmax.
+  The Rust crate cross-checks every rule against finite differences on real GPU
+  execution, and an MLP trains end-to-end. 0 sorry, no new axioms (rests on
+  Mathlib calculus).
 * **`quanta-fft`** — Cooley-Tukey radix-2 is proven *equal to the direct DFT*,
   end to end (`specs/verify/lean/Quanta/Fft/`): the butterfly identity
   `X[k] = Xe[k] + ω_{2M}^k·Xo[k]` (`dft_radix2`) and its `log₂N` iteration to
