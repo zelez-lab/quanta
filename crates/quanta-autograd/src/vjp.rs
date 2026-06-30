@@ -151,3 +151,33 @@ pub fn matmul<T: crate::scalar::DiffScalar>(
     let gb = T::array_matmul(&at, g)?; // Aᵀ·G
     Ok((ga, gb))
 }
+
+/// `conv2d`: Y = conv(X, W) via cols·wm. With G = ∂L/∂Y at [N,Cout,OH,OW]:
+/// reshape G to Gm[N·OH·OW, Cout], then this is exactly a matmul backward over
+/// (cols, wm):
+///   ∂cols = Gm·wmᵀ   → col2im → ∂X[N,Cin,H,W]
+///   ∂wm   = colsᵀ·Gm → reshape → ∂W[Cout,Cin,kh,kw]
+/// reusing the proven matmul VJP and the im2col/col2im adjoint pair.
+pub fn conv2d<T: crate::scalar::DiffScalar>(
+    g: &Array<T>,
+    cols: &Array<T>,
+    wm: &Array<T>,
+    p: &crate::conv::ConvParams,
+) -> Result<(Array<T>, Array<T>), ArrayError> {
+    // G[N,Cout,OH,OW] → [N,OH,OW,Cout] → Gm[N·OH·OW, Cout].
+    let gm = g
+        .permute(&[0, 2, 3, 1])?
+        .contiguous()?
+        .reshape(&[p.n * p.oh * p.ow, p.cout])?;
+    // Matmul backward over (cols, wm): ∂cols = Gm·wmᵀ, ∂wm = colsᵀ·Gm.
+    let (dcols, dwm) = matmul(&gm, cols, wm)?;
+    // ∂X = col2im(∂cols).
+    let dx = dcols.col2im(p.n, p.cin, p.h, p.w, p.kh, p.kw, p.stride, p.pad)?;
+    // ∂W: wm = [kdim, Cout] flattened from [Cout,kdim]ᵀ, so ∂wm[kdim,Cout]ᵀ →
+    // [Cout,kdim] → [Cout,Cin,kh,kw].
+    let dw = dwm
+        .transpose(0, 1)?
+        .contiguous()?
+        .reshape(&[p.cout, p.cin, p.kh, p.kw])?;
+    Ok((dx, dw))
+}

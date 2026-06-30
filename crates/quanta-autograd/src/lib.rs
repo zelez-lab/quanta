@@ -30,12 +30,15 @@
 //! ## This release
 //!
 //! Tape-based reverse mode over elementwise ops (neg, add, sub, mul, div, exp,
-//! log, sqrt) and the `sum` reduction (scalar loss). The VJP rules are factored
-//! as standalone functions ([`vjp`]) so a future graph/fusion layer can reuse
-//! them. matmul/gemm VJP and broadcast-axis reduction are later increments.
+//! log, sqrt), activations (relu, sigmoid, tanh), the `sum`/`sum_axis`/
+//! `mean_axis` reductions, `matmul`, and `conv2d` (NCHW, via im2col → matmul →
+//! reshape, with the backward reusing the matmul VJP and the im2col/col2im
+//! adjoint pair). The VJP rules are factored as standalone functions ([`vjp`])
+//! so a future graph/fusion layer can reuse them.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod conv;
 pub mod error;
 pub mod ops;
 pub mod scalar;

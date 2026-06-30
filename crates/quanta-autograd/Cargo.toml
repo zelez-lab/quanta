@@ -16,16 +16,11 @@ path = "src/lib.rs"
 # Backend forwarded to quanta-array (which forwards to quanta/-prims/-blas).
 # `software` is the CPU-JIT lane used for differential gradient-check tests.
 default = ["software"]
-software = ["quanta-array/software"]
-metal = ["quanta-array/metal"]
-vulkan = ["quanta-array/vulkan"]
+software = ["quanta-array/software", "quanta/software"]
+metal = ["quanta-array/metal", "quanta/metal"]
+vulkan = ["quanta-array/vulkan", "quanta/vulkan"]
 
 [dependencies]
 quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false }
 quanta-array = { path = "../quanta-array", version = "0.1.0-alpha.2", default-features = false }
 quanta-blas = { path = "../quanta-blas", version = "0.1.0-alpha.2", default-features = false }
-
-[dev-dependencies]
-quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
-    "software",
-] }

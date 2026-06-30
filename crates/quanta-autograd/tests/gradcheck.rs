@@ -378,3 +378,199 @@ fn grad_relu_chain() {
     let num = numeric_grad(&x, |x| x.max(0.0) * x.max(0.0));
     assert_close(&an, &num, 1e-2, "relu_chain");
 }
+
+// ── conv2d (im2col + matmul) ─────────────────────────────────────────────
+
+/// Host naive NCHW conv2d: x[N,Cin,H,W] ⊛ w[Cout,Cin,kh,kw] → y[N,Cout,OH,OW],
+/// zero-padded. The reference the autograd forward must match.
+#[allow(clippy::too_many_arguments)]
+fn host_conv2d(
+    x: &[f32],
+    w: &[f32],
+    n: usize,
+    cin: usize,
+    h: usize,
+    wd: usize,
+    cout: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+    pad: usize,
+) -> (Vec<f32>, usize, usize) {
+    let oh = (h + 2 * pad - kh) / stride + 1;
+    let ow = (wd + 2 * pad - kw) / stride + 1;
+    let mut y = vec![0.0f32; n * cout * oh * ow];
+    for ni in 0..n {
+        for co in 0..cout {
+            for ohi in 0..oh {
+                for owi in 0..ow {
+                    let mut acc = 0.0f32;
+                    for ci in 0..cin {
+                        for ki in 0..kh {
+                            for kj in 0..kw {
+                                let ih = ohi * stride + ki;
+                                let iw = owi * stride + kj;
+                                if ih >= pad && ih < h + pad && iw >= pad && iw < wd + pad {
+                                    let xv =
+                                        x[((ni * cin + ci) * h + (ih - pad)) * wd + (iw - pad)];
+                                    let wv = w[((co * cin + ci) * kh + ki) * kw + kj];
+                                    acc += xv * wv;
+                                }
+                            }
+                        }
+                    }
+                    y[((ni * cout + co) * oh + ohi) * ow + owi] = acc;
+                }
+            }
+        }
+    }
+    (y, oh, ow)
+}
+
+#[test]
+fn conv2d_forward_matches_host() {
+    let g = gpu();
+    let (n, cin, h, wd, cout, kh, kw, stride, pad) = (2usize, 3, 5, 5, 4, 3, 3, 1, 1);
+    let x: Vec<f32> = (0..n * cin * h * wd)
+        .map(|i| (i % 7) as f32 - 3.0)
+        .collect();
+    let w: Vec<f32> = (0..cout * cin * kh * kw)
+        .map(|i| ((i * 3) % 5) as f32 - 2.0)
+        .collect();
+
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, cin, h, wd]).unwrap());
+    let wv = tape.var(Array::from_slice(&g, &w, &[cout, cin, kh, kw]).unwrap());
+    let y = xv.conv2d(&wv, stride, pad).unwrap();
+    let (want, oh, ow) = host_conv2d(&x, &w, n, cin, h, wd, cout, kh, kw, stride, pad);
+    assert_eq!(y.value().shape(), &[n, cout, oh, ow]);
+    let got = y.value().to_vec().unwrap();
+    assert_close(&got, &want, 1e-4, "conv2d_forward");
+}
+
+#[test]
+fn grad_conv2d() {
+    // loss = sum(conv2d(x, w)); gradient-check both ∂x and ∂w against central
+    // differences of the host conv2d, exercising col2im (∂x) and the weight
+    // VJP (∂w) — both via the matmul backward.
+    let g = gpu();
+    let (n, cin, h, wd, cout, kh, kw, stride, pad) = (1usize, 2, 4, 4, 3, 3, 3, 1, 1);
+    let x: Vec<f32> = (0..n * cin * h * wd)
+        .map(|i| (i % 5) as f32 - 2.0)
+        .collect();
+    let w: Vec<f32> = (0..cout * cin * kh * kw)
+        .map(|i| ((i * 2) % 7) as f32 - 3.0)
+        .collect();
+
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, cin, h, wd]).unwrap());
+    let wv = tape.var(Array::from_slice(&g, &w, &[cout, cin, kh, kw]).unwrap());
+    let loss = xv.conv2d(&wv, stride, pad).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    let gw = loss.grad(&wv).unwrap().to_vec().unwrap();
+
+    let host_loss = |x: &[f32], w: &[f32]| -> f32 {
+        host_conv2d(x, w, n, cin, h, wd, cout, kh, kw, stride, pad)
+            .0
+            .iter()
+            .sum()
+    };
+    let hh = 1e-2f32;
+    for idx in 0..x.len() {
+        let mut xp = x.clone();
+        xp[idx] += hh;
+        let mut xm = x.clone();
+        xm[idx] -= hh;
+        let num = (host_loss(&xp, &w) - host_loss(&xm, &w)) / (2.0 * hh);
+        assert!(
+            (gx[idx] - num).abs() <= 1e-2 * (1.0 + num.abs()),
+            "∂x[{idx}] = {} vs {num}",
+            gx[idx]
+        );
+    }
+    for idx in 0..w.len() {
+        let mut wp = w.clone();
+        wp[idx] += hh;
+        let mut wm = w.clone();
+        wm[idx] -= hh;
+        let num = (host_loss(&x, &wp) - host_loss(&x, &wm)) / (2.0 * hh);
+        assert!(
+            (gw[idx] - num).abs() <= 1e-2 * (1.0 + num.abs()),
+            "∂w[{idx}] = {} vs {num}",
+            gw[idx]
+        );
+    }
+}
+
+/// Real-Metal lane: the conv2d forward + both gradients must match the same
+/// host references on hardware (the CPU lane runs the interpreter, so this is
+/// the binding check that im2col/col2im/matmul emit correct MSL).
+#[cfg(feature = "metal")]
+#[test]
+fn conv2d_metal_matches_host() {
+    let g = match quanta::init() {
+        Ok(g) => g,
+        Err(_) => {
+            eprintln!("skip: no Metal device");
+            return;
+        }
+    };
+    let (n, cin, h, wd, cout, kh, kw, stride, pad) = (2usize, 3, 5, 5, 4, 3, 3, 1, 1);
+    let x: Vec<f32> = (0..n * cin * h * wd)
+        .map(|i| (i % 7) as f32 - 3.0)
+        .collect();
+    let w: Vec<f32> = (0..cout * cin * kh * kw)
+        .map(|i| ((i * 3) % 5) as f32 - 2.0)
+        .collect();
+
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, cin, h, wd]).unwrap());
+    let wv = tape.var(Array::from_slice(&g, &w, &[cout, cin, kh, kw]).unwrap());
+    let loss = xv.conv2d(&wv, stride, pad).unwrap().sum().unwrap();
+
+    // Forward.
+    let y = xv.conv2d(&wv, stride, pad).unwrap();
+    let (want, oh, ow) = host_conv2d(&x, &w, n, cin, h, wd, cout, kh, kw, stride, pad);
+    assert_eq!(y.value().shape(), &[n, cout, oh, ow]);
+    assert_close(
+        &y.value().to_vec().unwrap(),
+        &want,
+        1e-3,
+        "conv2d_metal_fwd",
+    );
+
+    // Gradients vs central differences of the host conv.
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    let gw = loss.grad(&wv).unwrap().to_vec().unwrap();
+    let host_loss = |x: &[f32], w: &[f32]| -> f32 {
+        host_conv2d(x, w, n, cin, h, wd, cout, kh, kw, stride, pad)
+            .0
+            .iter()
+            .sum()
+    };
+    let hh = 1e-2f32;
+    for idx in 0..x.len() {
+        let mut xp = x.clone();
+        xp[idx] += hh;
+        let mut xm = x.clone();
+        xm[idx] -= hh;
+        let num = (host_loss(&xp, &w) - host_loss(&xm, &w)) / (2.0 * hh);
+        assert!(
+            (gx[idx] - num).abs() <= 2e-2 * (1.0 + num.abs()),
+            "metal ∂x[{idx}] = {} vs {num}",
+            gx[idx]
+        );
+    }
+    for idx in 0..w.len() {
+        let mut wp = w.clone();
+        wp[idx] += hh;
+        let mut wm = w.clone();
+        wm[idx] -= hh;
+        let num = (host_loss(&x, &wp) - host_loss(&x, &wm)) / (2.0 * hh);
+        assert!(
+            (gw[idx] - num).abs() <= 2e-2 * (1.0 + num.abs()),
+            "metal ∂w[{idx}] = {} vs {num}",
+            gw[idx]
+        );
+    }
+}

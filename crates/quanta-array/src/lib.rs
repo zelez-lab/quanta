@@ -55,6 +55,7 @@ mod scalar;
 mod ufunc;
 
 pub use array::Array;
+pub use conv::conv_out;
 pub use error::ArrayError;
 pub use scalar::{ArrayScalar, FloatScalar, ReduceScalar};
 

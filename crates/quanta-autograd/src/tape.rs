@@ -55,6 +55,11 @@ pub(crate) enum Op<T: DiffScalar> {
     SumAxis(usize, usize, Vec<usize>),
     /// mean_axis(a, axis, count): like sum_axis but the gradient is g/count.
     MeanAxis(usize, usize, Vec<usize>, usize),
+    /// conv2d(x, w): NCHW 2-D convolution via im2col→matmul. Captures the
+    /// im2col patch matrix `cols` (for ∂w) and the reshaped weight matrix
+    /// `wm = [Cin·kh·kw, Cout]` (for ∂cols → col2im → ∂x), plus the geometry
+    /// needed to fold/reshape gradients back. Both VJPs are matmuls.
+    Conv2d(usize, usize, Array<T>, Array<T>, crate::conv::ConvParams),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -233,6 +238,11 @@ impl<T: DiffScalar> Var<T> {
                     let scaled = g.mul(&inv.broadcast_to(g.shape())?)?;
                     let gin = scaled.broadcast_to(in_shape)?.contiguous()?;
                     accum(&mut grads[*a], gin)?;
+                }
+                Op::Conv2d(a, b, cols, wm, p) => {
+                    let (gx, gw) = vjp::conv2d(&g, cols, wm, p)?;
+                    accum(&mut grads[*a], gx)?;
+                    accum(&mut grads[*b], gw)?;
                 }
             }
         }

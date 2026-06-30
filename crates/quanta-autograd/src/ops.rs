@@ -21,7 +21,7 @@ impl<T: DiffScalar> Var<T> {
     }
 
     /// A `Tape` handle pointing at this var's tape (to push new nodes).
-    fn tape_handle(&self) -> Tape<T> {
+    pub(crate) fn tape_handle(&self) -> Tape<T> {
         // Tape wraps the same Rc; reconstruct a handle from it.
         Tape::from_inner(Rc::clone(&self.tape))
     }
