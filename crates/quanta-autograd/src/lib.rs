@@ -41,6 +41,7 @@
 pub mod conv;
 pub mod error;
 pub mod ops;
+pub mod pool;
 pub mod scalar;
 pub mod tape;
 pub mod vjp;

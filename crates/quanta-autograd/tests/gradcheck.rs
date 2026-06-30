@@ -605,3 +605,218 @@ fn conv2d_bias_broadcasts() {
         );
     }
 }
+
+// ── pooling (avg / max) ──────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn host_avgpool(
+    x: &[f32],
+    n: usize,
+    c: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+    pad: usize,
+) -> Vec<f32> {
+    let oh = (h + 2 * pad - kh) / stride + 1;
+    let ow = (w + 2 * pad - kw) / stride + 1;
+    let mut y = vec![0.0f32; n * c * oh * ow];
+    for ni in 0..n {
+        for ci in 0..c {
+            for ohi in 0..oh {
+                for owi in 0..ow {
+                    let mut acc = 0.0f32;
+                    for ki in 0..kh {
+                        for kj in 0..kw {
+                            let ih = ohi * stride + ki;
+                            let iw = owi * stride + kj;
+                            if ih >= pad && ih < h + pad && iw >= pad && iw < w + pad {
+                                acc += x[((ni * c + ci) * h + (ih - pad)) * w + (iw - pad)];
+                            }
+                        }
+                    }
+                    y[((ni * c + ci) * oh + ohi) * ow + owi] = acc / (kh * kw) as f32;
+                }
+            }
+        }
+    }
+    y
+}
+
+#[allow(clippy::too_many_arguments)]
+fn host_maxpool(
+    x: &[f32],
+    n: usize,
+    c: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+    pad: usize,
+) -> Vec<f32> {
+    let oh = (h + 2 * pad - kh) / stride + 1;
+    let ow = (w + 2 * pad - kw) / stride + 1;
+    let mut y = vec![0.0f32; n * c * oh * ow];
+    for ni in 0..n {
+        for ci in 0..c {
+            for ohi in 0..oh {
+                for owi in 0..ow {
+                    let mut best = f32::MIN;
+                    for ki in 0..kh {
+                        for kj in 0..kw {
+                            let ih = ohi * stride + ki;
+                            let iw = owi * stride + kj;
+                            if ih >= pad && ih < h + pad && iw >= pad && iw < w + pad {
+                                let v = x[((ni * c + ci) * h + (ih - pad)) * w + (iw - pad)];
+                                if v > best {
+                                    best = v;
+                                }
+                            }
+                        }
+                    }
+                    y[((ni * c + ci) * oh + ohi) * ow + owi] = best;
+                }
+            }
+        }
+    }
+    y
+}
+
+#[test]
+fn grad_avgpool() {
+    // loss = sum(avgpool(x)); ∂x checked against central differences of the
+    // host avgpool (avgpool is linear, so the gradient is exact).
+    let g = gpu();
+    let (n, c, h, w, kh, kw, stride, pad) = (2usize, 2, 5, 5, 3, 3, 2, 1);
+    let x: Vec<f32> = (0..n * c * h * w).map(|i| (i % 9) as f32 - 4.0).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c, h, w]).unwrap());
+    let loss = xv.avgpool2d(kh, kw, stride, pad).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    let host_loss = |x: &[f32]| -> f32 {
+        host_avgpool(x, n, c, h, w, kh, kw, stride, pad)
+            .iter()
+            .sum()
+    };
+    let hh = 1e-2f32;
+    for idx in 0..x.len() {
+        let mut xp = x.clone();
+        xp[idx] += hh;
+        let mut xm = x.clone();
+        xm[idx] -= hh;
+        let num = (host_loss(&xp) - host_loss(&xm)) / (2.0 * hh);
+        assert!(
+            (gx[idx] - num).abs() <= 1e-2 * (1.0 + num.abs()),
+            "avgpool ∂x[{idx}] = {} vs {num}",
+            gx[idx]
+        );
+    }
+}
+
+#[test]
+fn grad_maxpool() {
+    // loss = sum(maxpool(x)·maxpool(x)) — square so the upstream gradient into
+    // maxpool is non-uniform (2·max). Distinct x (no ties) and a small h⁻¹
+    // perturbation keep the argmax fixed across the central difference.
+    let g = gpu();
+    let (n, c, h, w, kh, kw, stride, pad) = (1usize, 2, 4, 4, 2, 2, 2, 0);
+    let x: Vec<f32> = (0..n * c * h * w)
+        .map(|i| (i as f32) * 0.37 - 3.0)
+        .collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c, h, w]).unwrap());
+    let mp = xv.maxpool2d(kh, kw, stride, pad).unwrap();
+    let loss = mp.mul(&mp).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    let host_loss = |x: &[f32]| -> f32 {
+        host_maxpool(x, n, c, h, w, kh, kw, stride, pad)
+            .iter()
+            .map(|v| v * v)
+            .sum()
+    };
+    let hh = 1e-3f32;
+    for idx in 0..x.len() {
+        let mut xp = x.clone();
+        xp[idx] += hh;
+        let mut xm = x.clone();
+        xm[idx] -= hh;
+        let num = (host_loss(&xp) - host_loss(&xm)) / (2.0 * hh);
+        assert!(
+            (gx[idx] - num).abs() <= 2e-2 * (1.0 + num.abs()),
+            "maxpool ∂x[{idx}] = {} vs {num}",
+            gx[idx]
+        );
+    }
+}
+
+#[test]
+fn pool_requires_4d() {
+    let g = gpu();
+    let tape = Tape::<f32>::new();
+    let a = tape.var(Array::from_slice(&g, &[1.0f32, 2.0], &[2]).unwrap());
+    assert!(a.avgpool2d(2, 2, 1, 0).is_err());
+    assert!(a.maxpool2d(2, 2, 1, 0).is_err());
+}
+
+/// Real-Metal lane for pooling: forward + gradient must match the host
+/// references on hardware (the CPU lane is the interpreter).
+#[cfg(feature = "metal")]
+#[test]
+fn pool_metal_matches_host() {
+    let g = match quanta::init() {
+        Ok(g) => g,
+        Err(_) => {
+            eprintln!("skip: no Metal device");
+            return;
+        }
+    };
+    let (n, c, h, w, kh, kw, stride, pad) = (2usize, 2, 5, 5, 3, 3, 2, 1);
+    let x: Vec<f32> = (0..n * c * h * w).map(|i| (i % 9) as f32 - 4.0).collect();
+
+    // avgpool forward + grad.
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c, h, w]).unwrap());
+    let yv = xv.avgpool2d(kh, kw, stride, pad).unwrap();
+    assert_close(
+        &yv.value().to_vec().unwrap(),
+        &host_avgpool(&x, n, c, h, w, kh, kw, stride, pad),
+        1e-3,
+        "avgpool_metal_fwd",
+    );
+    let loss = yv.sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    let host_loss = |x: &[f32]| -> f32 {
+        host_avgpool(x, n, c, h, w, kh, kw, stride, pad)
+            .iter()
+            .sum()
+    };
+    let hh = 1e-2f32;
+    for idx in 0..x.len() {
+        let mut xp = x.clone();
+        xp[idx] += hh;
+        let mut xm = x.clone();
+        xm[idx] -= hh;
+        let num = (host_loss(&xp) - host_loss(&xm)) / (2.0 * hh);
+        assert!(
+            (gx[idx] - num).abs() <= 2e-2 * (1.0 + num.abs()),
+            "metal avgpool ∂x[{idx}] = {} vs {num}",
+            gx[idx]
+        );
+    }
+
+    // maxpool forward on hardware (distinct values).
+    let xm: Vec<f32> = (0..n * c * h * w)
+        .map(|i| (i as f32) * 0.37 - 3.0)
+        .collect();
+    let xv2 = tape.var(Array::from_slice(&g, &xm, &[n, c, h, w]).unwrap());
+    let yv2 = xv2.maxpool2d(kh, kw, stride, pad).unwrap();
+    assert_close(
+        &yv2.value().to_vec().unwrap(),
+        &host_maxpool(&xm, n, c, h, w, kh, kw, stride, pad),
+        1e-3,
+        "maxpool_metal_fwd",
+    );
+}

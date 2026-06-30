@@ -60,6 +60,14 @@ pub(crate) enum Op<T: DiffScalar> {
     /// `wm = [Cin·kh·kw, Cout]` (for ∂cols → col2im → ∂x), plus the geometry
     /// needed to fold/reshape gradients back. Both VJPs are matmuls.
     Conv2d(usize, usize, Array<T>, Array<T>, crate::conv::ConvParams),
+    /// avgpool2d(x): NCHW average pooling. Captures the geometry; the gradient
+    /// is `avgpool2d_backward` (each input pixel sums g/(kh·kw) over its
+    /// windows — avgpool's own adjoint).
+    AvgPool2d(usize, crate::pool::PoolParams),
+    /// maxpool2d(x): NCHW max pooling. Captures the `argmax` index array (which
+    /// input pixel won each window) and the geometry; the gradient routes each
+    /// output's g to its argmax pixel via `maxpool2d_backward`.
+    MaxPool2d(usize, Array<u32>, crate::pool::PoolParams),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -243,6 +251,14 @@ impl<T: DiffScalar> Var<T> {
                     let (gx, gw) = vjp::conv2d(&g, cols, wm, p)?;
                     accum(&mut grads[*a], gx)?;
                     accum(&mut grads[*b], gw)?;
+                }
+                Op::AvgPool2d(a, p) => {
+                    let gx = g.avgpool2d_backward(p.h, p.w, p.kh, p.kw, p.stride, p.pad)?;
+                    accum(&mut grads[*a], gx)?;
+                }
+                Op::MaxPool2d(a, argmax, p) => {
+                    let gx = g.maxpool2d_backward(argmax, p.h, p.w, p.kh, p.kw, p.stride, p.pad)?;
+                    accum(&mut grads[*a], gx)?;
                 }
             }
         }
