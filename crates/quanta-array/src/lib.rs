@@ -49,6 +49,7 @@ mod conv;
 mod error;
 mod gather;
 mod linalg;
+mod pool;
 mod reduce;
 mod reduce_axis;
 mod scalar;
