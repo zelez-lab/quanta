@@ -21,6 +21,7 @@ correct gradients. Built on `quanta-array` (the differentiable values) and
 | `exp` / `log` / `sqrt` | elementwise | `g·y`, `g/x`, `g/(2y)` |
 | `relu` / `sigmoid` / `tanh` | activations | `g·[x>0]`, `g·y·(1-y)`, `g·(1-y²)` |
 | `matmul` | `A·B` (2-D) | `G·Bᵀ`, `Aᵀ·G` |
+| `conv2d` | NCHW conv (im2col·matmul) | matmul VJP + `col2im` (∂x), reshape (∂w) |
 | `sum` / `sum_axis` / `mean_axis` | reductions | broadcast `g` (mean: `g/count`) |
 
 A `Tape` records the forward ops as they run (define-by-run); `Var` is a handle
@@ -55,10 +56,13 @@ Three layers of confidence, all green:
 
 - **Lean** — each VJP multiplier is proven equal to the analytic derivative
   (`HasDerivAt`): elementwise + activations in `Vjp.lean` / `ActivationVjp.lean`,
-  matmul in `MatmulVjp.lean`, reductions in `ReduceVjp.lean`. 0 sorry; rests on
-  Mathlib calculus (no new axioms).
+  matmul in `MatmulVjp.lean`, reductions in `ReduceVjp.lean`. `conv2d` reduces to
+  matmul plus the im2col/col2im adjoint, and `ConvVjp.lean` proves that adjoint
+  (`⟨im2col x, y⟩ = ⟨x, col2im y⟩`) — so its `∂x` is the true gradient. 0 sorry;
+  rests on Mathlib calculus (no new axioms).
 - **Per-op gradient checks** — every op cross-checked against central
-  finite differences on real GPU execution (`tests/gradcheck.rs`, 19 checks).
+  finite differences on real GPU execution (`tests/gradcheck.rs`); `conv2d` adds
+  a real-Metal lane checking both `∂x` and `∂w` against a host convolution.
 - **End-to-end** — `tests/training.rs` fits a model by SGD (the loop composes),
   and `examples/mlp_training.rs` trains a 2-layer MLP to learn `y = x²`.
 
@@ -67,7 +71,7 @@ Run them: `cargo test -p quanta-autograd` and
 
 ## Coming next
 
-Convolutions and more activations; broadcasting beyond the right-aligned numpy
-cases; the graph/fusion layer (fuse forward + backward) the pure VJP functions
-were factored for. f16/bf16 differentiation once `quanta-blas`'s mixed-precision
-GEMM is wired through the matmul VJP.
+Pooling (max / average) and more activations; broadcasting beyond the
+right-aligned numpy cases; the graph/fusion layer (fuse forward + backward) the
+pure VJP functions were factored for. f16/bf16 differentiation once
+`quanta-blas`'s mixed-precision GEMM is wired through the matmul VJP.

@@ -574,3 +574,34 @@ fn conv2d_metal_matches_host() {
         );
     }
 }
+
+#[test]
+fn conv2d_bias_broadcasts() {
+    // [N,Cout,OH,OW] + [1,Cout,1,1] must broadcast (per-channel bias), and the
+    // bias gradient sums over N, OH, OW back to [1,Cout,1,1].
+    let g = gpu();
+    let (n, cin, h, wd, cout) = (2usize, 2, 4, 4, 3);
+    let x: Vec<f32> = (0..n * cin * h * wd)
+        .map(|i| (i % 5) as f32 - 2.0)
+        .collect();
+    let w: Vec<f32> = (0..cout * cin * 3 * 3)
+        .map(|i| (i % 4) as f32 - 1.0)
+        .collect();
+    let b: Vec<f32> = vec![0.5, -1.0, 2.0];
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, cin, h, wd]).unwrap());
+    let wv = tape.var(Array::from_slice(&g, &w, &[cout, cin, 3, 3]).unwrap());
+    let bv = tape.var(Array::from_slice(&g, &b, &[1, cout, 1, 1]).unwrap());
+    let y = xv.conv2d(&wv, 1, 1).unwrap().add(&bv).unwrap();
+    let loss = y.sum().unwrap();
+    let gb = loss.grad(&bv).unwrap();
+    assert_eq!(gb.shape(), &[1, cout, 1, 1]);
+    // ∂(Σ y)/∂b[c] = number of (n,oh,ow) positions = n*oh*ow (oh=ow=4 here).
+    let positions = (n * 4 * 4) as f32;
+    for v in gb.to_vec().unwrap() {
+        assert!(
+            (v - positions).abs() <= 1e-3,
+            "bias grad {v} vs {positions}"
+        );
+    }
+}

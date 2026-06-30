@@ -46,8 +46,8 @@ let gx = loss.grad(&x)?;
 ```
 
 Available ops: `neg`, `add`, `sub`, `mul`, `div` (all broadcasting), `exp`,
-`log`, `sqrt`, the activations `relu` / `sigmoid` / `tanh`, `matmul`, and the
-reductions `sum` / `sum_axis` / `mean_axis`.
+`log`, `sqrt`, the activations `relu` / `sigmoid` / `tanh`, `matmul`, `conv2d`,
+and the reductions `sum` / `sum_axis` / `mean_axis`.
 
 ## Broadcasting (bias-style)
 
@@ -73,6 +73,43 @@ let pred = x.matmul(&w)?.add(&b)?;
 let diff = pred.sub(&y)?;
 let loss = diff.mul(&diff)?.mean_axis(0)?.sum()?;
 ```
+
+## A convolution layer
+
+`conv2d` is a 2-D NCHW convolution — the CNN workhorse. Input is
+`[N, Cin, H, W]`, the weight is `[Cout, Cin, kh, kw]`, and the output is
+`[N, Cout, OH, OW]` with `OH = (H + 2·pad − kh)/stride + 1` (likewise `OW`):
+
+```rust,ignore
+// x: [N, Cin, H, W]   w: [Cout, Cin, kh, kw]
+let x = tape.var(Array::from_slice(&gpu, &input, &[n, cin, h, w])?);
+let w = tape.var(Array::from_slice(&gpu, &kernel, &[cout, cin, kh, kw])?);
+
+let y = x.conv2d(&w, /* stride */ 1, /* pad */ 1)?;   // [N, Cout, OH, OW]
+let loss = y.sum()?;
+let gx = loss.grad(&x)?;   // [N, Cin, H, W]
+let gw = loss.grad(&w)?;   // [Cout, Cin, kh, kw]
+```
+
+Under the hood `conv2d` is `im2col → matmul → reshape`: the input is unfolded
+into a patch matrix, multiplied by the flattened weight, and reshaped back. So
+its backward is just `matmul`'s VJP plus `col2im` (the unfold's adjoint) for the
+input gradient — nothing new to trust. The one extra fact, *col2im is the
+transpose of im2col*, is [proven in Lean](../verification/index.md); the kernels
+are gradient-checked against a host convolution on both the software lane and a
+real GPU.
+
+A bias adds per output channel — broadcast a `[1, Cout, 1, 1]` term:
+
+```rust,ignore
+let b = tape.var(Array::from_slice(&gpu, &bias, &[1, cout, 1, 1])?);
+let y = x.conv2d(&w, 1, 1)?.add(&b)?;     // bias broadcasts over N, OH, OW
+let act = y.relu()?;                       // conv → bias → activation
+```
+
+`stride` and `pad` are symmetric (same in H and W); zero-padding reads 0 outside
+the input. Both `x` and `w` must be 4-D — anything else is an error, not a silent
+reshape.
 
 ## The training loop
 
