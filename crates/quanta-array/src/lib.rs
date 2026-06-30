@@ -45,6 +45,7 @@
 mod array;
 mod broadcast;
 mod construct;
+mod conv;
 mod error;
 mod gather;
 mod linalg;
