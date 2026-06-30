@@ -111,6 +111,9 @@ import Quanta.Autograd.MatmulVjp
 import Quanta.Autograd.ReduceVjp
 import Quanta.Autograd.ActivationVjp
 
+-- FFT: Cooley-Tukey radix-2 butterfly identity (companion crate quanta-fft)
+import Quanta.Fft.Dft
+
 -- Numeric dtype conversions (step 084.1 — bf16 / fp8 round-trip)
 import Quanta.Dtype.Bf16
 import Quanta.Dtype.Fp8
