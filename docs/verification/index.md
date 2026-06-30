@@ -22,7 +22,7 @@ and the verifier output.
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
 | **Verified Tier-A tracks** | 9 (ICB, tessellation, mesh shaders, ray tracing, VRS, sparse textures, multi-queue, async copy, printf) |
-| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`) |
+| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT |
 
 **Sustainment state (2026-04-30).** The post-E finalization closed
 `kernel_body_compose` from a single monolithic axiom to a body-level
@@ -54,6 +54,13 @@ The math companion crates carry their own proof obligations, in the same
   fall out of the inverse/quotient/chain rules. The Rust crate cross-checks
   every rule against finite differences on real GPU execution, and an MLP
   trains end-to-end. 0 sorry, no new axioms (rests on Mathlib calculus).
+* **`quanta-fft`** — Cooley-Tukey radix-2 is proven *equal to the direct DFT*,
+  end to end (`specs/verify/lean/Quanta/Fft/`): the butterfly identity
+  `X[k] = Xe[k] + ω_{2M}^k·Xo[k]` (`dft_radix2`) and its `log₂N` iteration to
+  the full transform (`fftRec_eq_dftN`), built from scratch over an ℕ-indexed
+  DFT (Mathlib has the DFT but no radix-2 decomposition). The Rust crate is
+  differential-tested against the direct DFT on the software lane and real
+  Metal. 0 sorry, rests on Mathlib.
 
 ## Verification chain
 
