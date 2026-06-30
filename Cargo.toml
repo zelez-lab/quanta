@@ -16,6 +16,7 @@ members = [
     "crates/quanta-array",
     "crates/quanta-blas",
     "crates/quanta-autograd",
+    "crates/quanta-fft",
     "examples/headless_compute",
     "examples/web_add_one",
     "examples/web_triangle",

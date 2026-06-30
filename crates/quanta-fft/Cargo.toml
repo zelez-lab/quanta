@@ -1,0 +1,27 @@
+[package]
+name = "quanta-fft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GPU FFT for Quanta — radix-2 Cooley-Tukey (split re/im, power-of-2), forward + inverse. Differential-tested against a direct-DFT oracle; Cooley-Tukey = DFT proof is a parallel Lean track."
+keywords = ["gpu", "fft", "dft", "fourier", "signal"]
+categories = ["mathematics", "science"]
+
+[lib]
+name = "quanta_fft"
+path = "src/lib.rs"
+
+[features]
+# `gpu` pulls in the Quanta runtime + JIT path. Off by default so the crate
+# doubles as a pure-Rust reference library (the direct-DFT differential oracle).
+default = []
+gpu = ["dep:quanta"]
+gpu-metal = ["gpu", "quanta/metal"]
+gpu-vulkan = ["gpu", "quanta/vulkan"]
+
+[dependencies]
+quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
+    "software",
+], optional = true }
+quanta-ir = { path = "../quanta-ir", version = "0.1.0-alpha.2" }
