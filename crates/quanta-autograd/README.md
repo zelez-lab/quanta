@@ -22,6 +22,7 @@ correct gradients. Built on `quanta-array` (the differentiable values) and
 | `relu` / `sigmoid` / `tanh` | activations | `g·[x>0]`, `g·y·(1-y)`, `g·(1-y²)` |
 | `matmul` | `A·B` (2-D) | `G·Bᵀ`, `Aᵀ·G` |
 | `conv2d` | NCHW conv (im2col·matmul) | matmul VJP + `col2im` (∂x), reshape (∂w) |
+| `avgpool2d` / `maxpool2d` | NCHW pooling | scatter `g/(kh·kw)` / route `g` to the argmax pixel |
 | `sum` / `sum_axis` / `mean_axis` | reductions | broadcast `g` (mean: `g/count`) |
 
 A `Tape` records the forward ops as they run (define-by-run); `Var` is a handle
@@ -61,8 +62,9 @@ Three layers of confidence, all green:
   (`⟨im2col x, y⟩ = ⟨x, col2im y⟩`) — so its `∂x` is the true gradient. 0 sorry;
   rests on Mathlib calculus (no new axioms).
 - **Per-op gradient checks** — every op cross-checked against central
-  finite differences on real GPU execution (`tests/gradcheck.rs`); `conv2d` adds
-  a real-Metal lane checking both `∂x` and `∂w` against a host convolution.
+  finite differences on real GPU execution (`tests/gradcheck.rs`); `conv2d` and
+  the pooling ops add real-Metal lanes against host references (maxpool is
+  checked through a squared loss so the upstream gradient is non-uniform).
 - **End-to-end** — `tests/training.rs` fits a model by SGD (the loop composes),
   and `examples/mlp_training.rs` trains a 2-layer MLP to learn `y = x²`.
 
@@ -71,7 +73,7 @@ Run them: `cargo test -p quanta-autograd` and
 
 ## Coming next
 
-Pooling (max / average) and more activations; broadcasting beyond the
-right-aligned numpy cases; the graph/fusion layer (fuse forward + backward) the
-pure VJP functions were factored for. f16/bf16 differentiation once
-`quanta-blas`'s mixed-precision GEMM is wired through the matmul VJP.
+A small CNN example (conv → pool → linear) and more activations; broadcasting
+beyond the right-aligned numpy cases; the graph/fusion layer (fuse forward +
+backward) the pure VJP functions were factored for. f16/bf16 differentiation
+once `quanta-blas`'s mixed-precision GEMM is wired through the matmul VJP.

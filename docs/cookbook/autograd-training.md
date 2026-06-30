@@ -47,7 +47,7 @@ let gx = loss.grad(&x)?;
 
 Available ops: `neg`, `add`, `sub`, `mul`, `div` (all broadcasting), `exp`,
 `log`, `sqrt`, the activations `relu` / `sigmoid` / `tanh`, `matmul`, `conv2d`,
-and the reductions `sum` / `sum_axis` / `mean_axis`.
+`avgpool2d` / `maxpool2d`, and the reductions `sum` / `sum_axis` / `mean_axis`.
 
 ## Broadcasting (bias-style)
 
@@ -110,6 +110,30 @@ let act = y.relu()?;                       // conv → bias → activation
 `stride` and `pad` are symmetric (same in H and W); zero-padding reads 0 outside
 the input. Both `x` and `w` must be 4-D — anything else is an error, not a silent
 reshape.
+
+## Pooling (downsampling)
+
+After a conv → activation, pooling halves the spatial size. Both poolers take an
+NCHW input `[N, C, H, W]` and a `kh×kw` window with `stride` / `pad`, producing
+`[N, C, OH, OW]` (channels unchanged — pooling is per-channel):
+
+```rust,ignore
+let h = x.conv2d(&w, 1, 1)?.relu()?;
+let pooled = h.maxpool2d(2, 2, /* stride */ 2, /* pad */ 0)?;  // 2×2 max, halves H,W
+// average pooling instead:
+let avg = h.avgpool2d(2, 2, 2, 0)?;
+```
+
+The gradients differ by kind. `avgpool2d` is linear: each input pixel's gradient
+is the sum of `g/(kh·kw)` over the windows containing it. `maxpool2d` is the
+nonlinear one — the forward records which input pixel won each window (its
+argmax), and the backward routes that window's gradient to exactly that pixel
+and nowhere else (the subgradient). Both backwards are atomic-free gather
+kernels, so they're deterministic.
+
+`avgpool2d` counts padding toward the `kh·kw` divisor (`count_include_pad`), and
+`maxpool2d` assumes each window covers at least one real pixel (the usual
+`pad ≤ k/2`). As with `conv2d`, both require a 4-D input.
 
 ## The training loop
 
