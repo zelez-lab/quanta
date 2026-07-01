@@ -43,6 +43,7 @@ pub mod conv;
 pub mod error;
 pub mod loss;
 pub mod ops;
+pub mod optim;
 pub mod pool;
 pub mod scalar;
 pub mod tape;
