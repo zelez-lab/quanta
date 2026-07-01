@@ -929,3 +929,80 @@ fn grad_gather_rows_weighted() {
         }
     }
 }
+
+// ── cross-entropy loss (the classification head) ─────────────────────────
+
+/// Host cross-entropy: mean over rows of −log_softmax(logits)[label].
+fn host_cross_entropy(logits: &[f32], labels: &[u32], n: usize, c: usize) -> f32 {
+    let mut total = 0.0f32;
+    for i in 0..n {
+        let row = &logits[i * c..(i + 1) * c];
+        let m = row.iter().cloned().fold(f32::MIN, f32::max);
+        let sum_exp: f32 = row.iter().map(|&x| (x - m).exp()).sum();
+        let logp = row[labels[i] as usize] - m - sum_exp.ln();
+        total += -logp;
+    }
+    total / n as f32
+}
+
+#[test]
+fn cross_entropy_value_matches_host() {
+    let g = gpu();
+    let (n, c) = (4usize, 3usize);
+    let logits: Vec<f32> = (0..n * c).map(|i| (i % 5) as f32 - 2.0).collect();
+    let labels = [0u32, 2, 1, 2];
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &logits, &[n, c]).unwrap());
+    let lab = Array::from_slice(&g, &labels, &[n]).unwrap();
+    let loss = xv.cross_entropy(&lab).unwrap();
+    let got = loss.value().to_vec().unwrap()[0];
+    let want = host_cross_entropy(&logits, &labels, n, c);
+    assert!(
+        (got - want).abs() <= 1e-4 * (1.0 + want.abs()),
+        "CE {got} vs {want}"
+    );
+}
+
+#[test]
+fn grad_cross_entropy() {
+    // gradient-check ∂loss/∂logits against central differences of host CE.
+    let g = gpu();
+    let (n, c) = (3usize, 4usize);
+    let logits: Vec<f32> = (0..n * c).map(|i| (i as f32) * 0.3 - 1.5).collect();
+    let labels = [2u32, 0, 3];
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &logits, &[n, c]).unwrap());
+    let lab = Array::from_slice(&g, &labels, &[n]).unwrap();
+    let loss = xv.cross_entropy(&lab).unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+
+    let hh = 1e-2f32;
+    for idx in 0..logits.len() {
+        let mut lp = logits.clone();
+        lp[idx] += hh;
+        let mut lm = logits.clone();
+        lm[idx] -= hh;
+        let num = (host_cross_entropy(&lp, &labels, n, c) - host_cross_entropy(&lm, &labels, n, c))
+            / (2.0 * hh);
+        assert!(
+            (gx[idx] - num).abs() <= 1e-2 * (1.0 + num.abs()),
+            "∂CE[{idx}] = {} vs {num}",
+            gx[idx]
+        );
+    }
+}
+
+#[test]
+fn log_softmax_normalizes() {
+    // exp(log_softmax(x)) rows must sum to 1.
+    let g = gpu();
+    let (n, c) = (2usize, 5usize);
+    let x: Vec<f32> = (0..n * c).map(|i| (i as f32) * 0.7 - 3.0).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let lp = xv.log_softmax().unwrap().value().to_vec().unwrap();
+    for i in 0..n {
+        let s: f32 = (0..c).map(|j| lp[i * c + j].exp()).sum();
+        assert!((s - 1.0).abs() <= 1e-4, "row {i} sums to {s}, want 1");
+    }
+}

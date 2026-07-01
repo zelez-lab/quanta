@@ -41,6 +41,7 @@
 
 pub mod conv;
 pub mod error;
+pub mod loss;
 pub mod ops;
 pub mod pool;
 pub mod scalar;
