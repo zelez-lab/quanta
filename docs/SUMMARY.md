@@ -79,9 +79,11 @@
 
 ## Tutorials
 
-- [Textures](rendering/tutorials/textures.md)
-- [Rendering](rendering/tutorials/rendering.md)
+- [Overview](rendering/tutorials/index.md)
+- [Your first triangle](rendering/tutorials/first-triangle.md)
 - [Vertex and Fragment Shaders](rendering/tutorials/vertex-fragment.md)
+- [Rendering pipeline](rendering/tutorials/rendering.md)
+- [Textures](rendering/tutorials/textures.md)
 - [Tessellation](rendering/tutorials/tessellation.md)
 - [Mesh Shaders](rendering/tutorials/mesh-shaders.md)
 - [Ray Tracing](rendering/tutorials/ray-tracing.md)

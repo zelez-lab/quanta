@@ -102,11 +102,36 @@ let out = centered.div(&Array::full(&gpu, span, &[4])?)?.to_vec()?;
 - **Reduction dtypes.** `sum`/`min`/`max` exist for `f32`/`i32`/`u32` (the
   reduces `quanta-prims` ships); `mean` is float-only. `f64` has math functions
   but no device reduce yet.
-- **No per-axis reductions or fancy indexing yet.** `arr.sum(axis=0)`,
-  `arr[mask]`, and `arr[idx]` are planned increments, not in this release.
+- **Per-axis reductions land, fancy indexing doesn't yet.** `arr.sum(axis=0,
+  keepdims=True)` maps to `arr.sum_axis(0)?` (and `mean_axis`); `arr[mask]` and
+  `arr[idx]` (masked / fancy indexing) are planned increments, not in this release.
 - **Linear algebra is f32-only and 2-D.** `matmul`/`dot`/`norm` are f32; batched
-  matmul, `solve`/`inv`/decompositions follow later. The GEMM is the naive
-  kernel — correct everywhere, with the tuned tensor-core path still to come.
+  matmul, `solve`/`inv`/decompositions follow later. The GEMM is tiled and has a
+  tensor-core path on capable hardware.
 - **Explicit `Gpu` + `Result`.** Every constructor takes the `Gpu` and every
   operation returns a `Result` (the operators panic for ergonomics; the named
   methods don't).
+
+## Beyond NumPy: autodiff and neural nets
+
+Where NumPy stops, Quanta keeps going — the same arrays flow into
+[`quanta-autograd`](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-autograd/README.md)
+for gradients (the PyTorch layer), so you can train models on the arrays you just
+built:
+
+| PyTorch | Quanta |
+|---------|--------|
+| `x.requires_grad_()` | `tape.var(x)` |
+| `y = x @ w + b` | `x.matmul(&w)?.add(&b)?` |
+| `torch.relu / sigmoid / tanh` | `.relu()? / .sigmoid()? / .tanh()?` |
+| `F.conv2d(x, w, ...)` | `x.conv2d(&w, stride, pad)?` |
+| `F.max_pool2d / avg_pool2d` | `.maxpool2d(...)? / .avgpool2d(...)?` |
+| `x.reshape / x.flatten(1)` | `.reshape(&s)? / .flatten()?` |
+| `loss.backward(); x.grad` | `loss.grad(&x)?` |
+
+## Learn it in order
+
+This guide is the lookup table. To learn the API as a sequence — from your first
+array to training a CNN — follow the
+[computation tutorials](../computation/tutorials/index.md): arrays → reductions →
+shape → linear algebra → FFT → random → autodiff → MLP → conv/pool → CNN.
