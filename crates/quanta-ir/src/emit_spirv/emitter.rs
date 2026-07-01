@@ -194,6 +194,25 @@ impl SpvEmitter {
             .ok_or_else(|| format!("register r{} type unknown", reg.0))
     }
 
+    /// Coerce a value from `from_ty` to `to_ty`, inserting an `OpBitcast` if they
+    /// differ. SPIR-V is strictly typed, so a value produced as `%int` (signed)
+    /// cannot feed an op — or a phi — declared `%uint` (unsigned), even though
+    /// the bits are identical. This bridges that gap: same-size int↔int (and the
+    /// reverse) is a free reinterpret. When the types already match it is a
+    /// no-op. Returns the (possibly new) value id.
+    pub(crate) fn coerce_to(&mut self, val: u32, from_ty: u32, to_ty: u32) -> u32 {
+        if from_ty == to_ty {
+            return val;
+        }
+        let out = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            crate::emit_spirv::constants::OP_BITCAST,
+            &[to_ty, out, val],
+        );
+        out
+    }
+
     // ── Name / decoration helpers ───────────────────────────────────────────
 
     pub(crate) fn emit_name(&mut self, id: u32, name: &str) {

@@ -280,6 +280,15 @@ impl SpvEmitter {
                 let a_val = self.reg_value_id(*a)?;
                 let b_val = self.reg_value_id(*b)?;
                 let result_ty = self.scalar_type_id(*ty);
+                // Coerce both operands to the result type. Integer registers can
+                // arrive as `%int` or `%uint` depending on which op produced them
+                // (a U32 op vs an I32 op); SPIR-V forbids mixing them in one
+                // instruction, so bitcast any mismatch to `result_ty` first. A
+                // no-op when they already match (the common case).
+                let a_ty = self.reg_type_id(*a)?;
+                let b_ty = self.reg_type_id(*b)?;
+                let a_val = self.coerce_to(a_val, a_ty, result_ty);
+                let b_val = self.coerce_to(b_val, b_ty, result_ty);
                 let is_float = matches!(
                     ty,
                     ScalarType::F32
@@ -536,6 +545,14 @@ impl SpvEmitter {
                 let a_val = self.reg_value_id(*a)?;
                 let b_val = self.reg_value_id(*b)?;
                 let bool_ty = self.ensure_type_bool();
+                // The opcode (S* vs U* compare) is chosen from `ty`'s signedness,
+                // so both operands must carry that exact type. Coerce any operand
+                // that arrived as the other int signedness (no-op when matching).
+                let operand_ty = self.scalar_type_id(*ty);
+                let a_ty = self.reg_type_id(*a)?;
+                let b_ty = self.reg_type_id(*b)?;
+                let a_val = self.coerce_to(a_val, a_ty, operand_ty);
+                let b_val = self.coerce_to(b_val, b_ty, operand_ty);
                 let is_float = matches!(
                     ty,
                     ScalarType::F32
@@ -901,7 +918,12 @@ impl SpvEmitter {
                 for &(reg_num, _header_phi, continue_copy, ty_id) in &carried_phis {
                     // The body may have updated reg_num. Read its current value
                     // and emit an OpCopyObject so the continue_copy ID is defined.
+                    // If the body reassigned it to the other int signedness,
+                    // coerce back to the phi's type so the copy (and the phi edge
+                    // it feeds) stay type-consistent.
                     let current = self.reg_ids[&reg_num];
+                    let current_ty = self.reg_types[&reg_num];
+                    let current = self.coerce_to(current, current_ty, ty_id);
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_COPY_OBJECT,
