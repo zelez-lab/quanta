@@ -83,13 +83,17 @@ impl SpvEmitter {
                         let ty = self.ensure_type_u64();
                         (self.emit_constant_u64(*v), ty)
                     }
+                    // Int SSA values are canonically unsigned (see
+                    // scalar_type_id): emit signed constants as their `%uint`
+                    // bit pattern. Two's-complement means `v as u32` is the same
+                    // bits; a later signed op bitcasts to `%int` as needed.
                     ConstValue::I32(v) => {
-                        let ty = self.ensure_type_i32();
-                        (self.emit_constant_i32(*v), ty)
+                        let ty = self.ensure_type_u32();
+                        (self.emit_constant_u32(*v as u32), ty)
                     }
                     ConstValue::I64(v) => {
-                        let ty = self.ensure_type_i64();
-                        (self.emit_constant_i64(*v), ty)
+                        let ty = self.ensure_type_u64();
+                        (self.emit_constant_u64(*v as u64), ty)
                     }
                     ConstValue::Bool(v) => {
                         let ty = self.ensure_type_bool();
@@ -279,16 +283,9 @@ impl SpvEmitter {
             KernelOp::BinOp { dst, a, b, op, ty } => {
                 let a_val = self.reg_value_id(*a)?;
                 let b_val = self.reg_value_id(*b)?;
-                let result_ty = self.scalar_type_id(*ty);
-                // Coerce both operands to the result type. Integer registers can
-                // arrive as `%int` or `%uint` depending on which op produced them
-                // (a U32 op vs an I32 op); SPIR-V forbids mixing them in one
-                // instruction, so bitcast any mismatch to `result_ty` first. A
-                // no-op when they already match (the common case).
                 let a_ty = self.reg_type_id(*a)?;
                 let b_ty = self.reg_type_id(*b)?;
-                let a_val = self.coerce_to(a_val, a_ty, result_ty);
-                let b_val = self.coerce_to(b_val, b_ty, result_ty);
+                let result_ty = self.scalar_type_id(*ty);
                 let is_float = matches!(
                     ty,
                     ScalarType::F32
@@ -486,12 +483,27 @@ impl SpvEmitter {
                     (BinOp::Rotl, _, _) | (BinOp::Rotr, _, _) => unreachable!(),
                 };
 
-                let result = self.alloc_id();
-                Self::emit_op(
-                    &mut self.sec_function,
-                    opcode,
-                    &[result_ty, result, a_val, b_val],
+                // Signed integer ops (SDiv/SRem/arithmetic-shift-right) need
+                // `%int` operands and produce an `%int` result; every other int
+                // op works on the canonical `%uint`. Since int SSA values are
+                // canonically `%uint`, bitcast operands to the op's expected type
+                // and the result back to `%uint`. Floats use their own type.
+                let needs_signed = matches!(
+                    (op, is_signed),
+                    (BinOp::Div, true) | (BinOp::Rem, true) | (BinOp::Shr, true)
                 );
+                let op_ty = if is_float {
+                    result_ty
+                } else if needs_signed {
+                    self.ensure_type_i32_for(*ty)
+                } else {
+                    result_ty
+                };
+                let a_val = self.coerce_to(a_val, a_ty, op_ty);
+                let b_val = self.coerce_to(b_val, b_ty, op_ty);
+                let raw = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, opcode, &[op_ty, raw, a_val, b_val]);
+                let result = self.coerce_to(raw, op_ty, result_ty);
                 self.set_reg(*dst, result, result_ty);
             }
 
@@ -544,15 +556,9 @@ impl SpvEmitter {
             KernelOp::Cmp { dst, a, b, op, ty } => {
                 let a_val = self.reg_value_id(*a)?;
                 let b_val = self.reg_value_id(*b)?;
-                let bool_ty = self.ensure_type_bool();
-                // The opcode (S* vs U* compare) is chosen from `ty`'s signedness,
-                // so both operands must carry that exact type. Coerce any operand
-                // that arrived as the other int signedness (no-op when matching).
-                let operand_ty = self.scalar_type_id(*ty);
                 let a_ty = self.reg_type_id(*a)?;
                 let b_ty = self.reg_type_id(*b)?;
-                let a_val = self.coerce_to(a_val, a_ty, operand_ty);
-                let b_val = self.coerce_to(b_val, b_ty, operand_ty);
+                let bool_ty = self.ensure_type_bool();
                 let is_float = matches!(
                     ty,
                     ScalarType::F32
@@ -586,6 +592,18 @@ impl SpvEmitter {
                     (CmpOp::Ge, false, false) => OP_UGREATER_THAN_EQUAL,
                 };
 
+                // Operands must share the type the opcode expects: `%int` for a
+                // signed compare (S*), the canonical `%uint` for unsigned/float.
+                // Coerce any int operand that arrived as the other signedness.
+                let operand_ty = if is_float {
+                    self.scalar_type_id(*ty)
+                } else if is_signed {
+                    self.ensure_type_i32_for(*ty)
+                } else {
+                    self.scalar_type_id(*ty)
+                };
+                let a_val = self.coerce_to(a_val, a_ty, operand_ty);
+                let b_val = self.coerce_to(b_val, b_ty, operand_ty);
                 let result = self.alloc_id();
                 Self::emit_op(
                     &mut self.sec_function,

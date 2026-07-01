@@ -270,17 +270,36 @@ impl SpvEmitter {
     // ── Scalar type mapping ─────────────────────────────────────────────────
 
     /// Map ScalarType to SPIR-V type ID.
+    /// The *signed* SPIR-V int type matching `ty`'s width — used to bitcast into
+    /// a genuinely-signed op (SDiv/SRem/SAR) whose canonical operands are the
+    /// unsigned form. 32-bit family → `%int`, 64-bit family → `%long`.
+    pub(crate) fn ensure_type_i32_for(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::I64 | ScalarType::U64 => self.ensure_type_i64(),
+            _ => self.ensure_type_i32(),
+        }
+    }
+
     pub(crate) fn scalar_type_id(&mut self, ty: ScalarType) -> u32 {
         match ty {
             ScalarType::F32 => self.ensure_type_f32(),
             ScalarType::F64 => self.ensure_type_f64(),
-            ScalarType::U8 | ScalarType::U16 | ScalarType::U32 => self.ensure_type_u32(),
-            ScalarType::U64 => self.ensure_type_u64(),
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => self.ensure_type_i32(),
-            ScalarType::I64 => self.ensure_type_i64(),
-            // int4 computes in i32 in the body; nibble pack/unpack at the
-            // Load/Store boundary (Phase B).
-            ScalarType::I4 => self.ensure_type_i32(),
+            // ALL 32-bit ints — signed and unsigned — share ONE canonical SSA
+            // type: unsigned (`%uint`). SPIR-V types are strict, so mixing
+            // `%int` and `%uint` values in one instruction or a loop-carried phi
+            // is invalid (Metal's MSL hides it; Vulkan rejects it). Signedness is
+            // a property of the *operation* (SDiv vs UDiv, SLessThan vs
+            // ULessThan), not the value — the few signed ops bitcast to `%int`
+            // locally and back (see the BinOp/Cmp arms). This keeps every int
+            // SSA value one type, so phis and bitwise ops can never mismatch.
+            ScalarType::U8
+            | ScalarType::U16
+            | ScalarType::U32
+            | ScalarType::I8
+            | ScalarType::I16
+            | ScalarType::I32
+            | ScalarType::I4 => self.ensure_type_u32(),
+            ScalarType::U64 | ScalarType::I64 => self.ensure_type_u64(),
             ScalarType::F16 => self.ensure_type_f16(),
             // bf16 computes in f32 in the body (emulated path); 16-bit
             // storage is handled at the Load/Store boundary (Phase B).

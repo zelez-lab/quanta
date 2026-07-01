@@ -167,6 +167,55 @@ impl SpvEmitter {
         self.reg_types.insert(reg.0, type_id);
     }
 
+    pub(crate) fn reg_type_id(&self, reg: quanta_ir::Reg) -> Result<u32, String> {
+        self.reg_types
+            .get(&reg.0)
+            .copied()
+            .ok_or_else(|| format!("register r{} type unknown", reg.0))
+    }
+
+    /// Coerce a value from `from_ty` to `to_ty`, inserting an `OpBitcast` if they
+    /// differ (a free reinterpret; no-op when equal). SPIR-V is strictly typed,
+    /// so a `%int` value cannot feed an op — or a phi — declared `%uint`, even
+    /// though the bits match. See the JIT emitter (`quanta-ir`) for the full
+    /// rationale; this mirrors it in the ahead-of-time path.
+    pub(crate) fn coerce_to(&mut self, val: u32, from_ty: u32, to_ty: u32) -> u32 {
+        if from_ty == to_ty {
+            return val;
+        }
+        let out = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            super::constants::OP_BITCAST,
+            &[to_ty, out, val],
+        );
+        out
+    }
+
+    /// Ensure a value is `%bool` for use as a branch/select condition. Converts
+    /// an **integer** condition (a C-style truthiness test) with `!= 0`; a value
+    /// that is already bool — or any non-int type — passes through unchanged.
+    /// Only the canonical int types trigger the conversion, so a compare result
+    /// (already `%bool`) is never double-tested.
+    pub(crate) fn ensure_bool(&mut self, val: u32, val_ty: u32) -> u32 {
+        let uint_ty = self.ensure_type_u32();
+        let int_ty = self.ensure_type_i32();
+        if val_ty != uint_ty && val_ty != int_ty {
+            // Already bool (or another type we don't touch) — leave it.
+            return val;
+        }
+        let zero = self.emit_constant_u32(0);
+        let v = self.coerce_to(val, val_ty, uint_ty);
+        let bool_ty = self.ensure_type_bool();
+        let out = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            super::constants::OP_INOT_EQUAL,
+            &[bool_ty, out, v, zero],
+        );
+        out
+    }
+
     // ── Name / decoration helpers ───────────────────────────────────────────
 
     pub(crate) fn emit_name(&mut self, id: u32, name: &str) {

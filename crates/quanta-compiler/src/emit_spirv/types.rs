@@ -225,18 +225,30 @@ impl SpvEmitter {
 
     // ── Scalar type mapping ─────────────────────────────────────────────────
 
+    /// The *signed* SPIR-V int type to bitcast into for a genuinely-signed op
+    /// (SDiv/SRem/SAR) whose canonical operands are the unsigned form. This
+    /// emitter models all ints in 32-bit width, so `%int` suffices.
+    pub(crate) fn ensure_type_i32_for(&mut self, _ty: ScalarType) -> u32 {
+        self.ensure_type_i32()
+    }
+
     pub(crate) fn scalar_type_id(&mut self, ty: ScalarType) -> u32 {
         match ty {
             ScalarType::F32 => self.ensure_type_f32(),
             ScalarType::F64 => self.ensure_type_f64(),
-            ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64 => {
-                self.ensure_type_u32()
-            }
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
-                self.ensure_type_i32()
-            }
-            // int4 computes as i32 in the body (nibble-packed at I/O).
-            ScalarType::I4 => self.ensure_type_i32(),
+            // ALL 32-bit ints (signed and unsigned) share ONE canonical SSA
+            // type: unsigned. Signedness is a property of the *op* (SDiv vs
+            // UDiv), not the value — the few signed ops bitcast to `%int`
+            // locally and back. This keeps every int SSA value one type so phis
+            // and bitwise ops can never mismatch (invalid SPIR-V Vulkan rejects).
+            ScalarType::U8
+            | ScalarType::U16
+            | ScalarType::U32
+            | ScalarType::I8
+            | ScalarType::I16
+            | ScalarType::I32
+            | ScalarType::I4 => self.ensure_type_u32(),
+            ScalarType::U64 | ScalarType::I64 => self.ensure_type_u32(),
             ScalarType::F16 => self.ensure_type_f16(),
             // bf16/fp8 compute in f32 in the body (emulated path).
             ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_f32(),

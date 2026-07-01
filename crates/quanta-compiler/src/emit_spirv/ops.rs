@@ -73,13 +73,16 @@ impl SpvEmitter {
                         let ty = self.ensure_type_u32();
                         (self.emit_constant_u32(*v as u32), ty)
                     }
+                    // Int SSA values are canonically unsigned (see
+                    // scalar_type_id); emit signed constants as their `%uint` bit
+                    // pattern (two's-complement — same bits).
                     ConstValue::I32(v) => {
-                        let ty = self.ensure_type_i32();
-                        (self.emit_constant_i32(*v), ty)
+                        let ty = self.ensure_type_u32();
+                        (self.emit_constant_u32(*v as u32), ty)
                     }
                     ConstValue::I64(v) => {
-                        let ty = self.ensure_type_i32();
-                        (self.emit_constant_i32(*v as i32), ty)
+                        let ty = self.ensure_type_u32();
+                        (self.emit_constant_u32(*v as u32), ty)
                     }
                     ConstValue::Bool(v) => {
                         let ty = self.ensure_type_bool();

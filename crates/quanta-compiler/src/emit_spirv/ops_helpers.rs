@@ -112,6 +112,8 @@ impl SpvEmitter {
     ) -> Result<(), String> {
         let a_val = self.reg_value_id(a)?;
         let b_val = self.reg_value_id(b)?;
+        let a_ty = self.reg_type_id(a)?;
+        let b_ty = self.reg_type_id(b)?;
         let result_ty = self.scalar_type_id(ty);
         let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
         let is_signed = matches!(
@@ -270,12 +272,25 @@ impl SpvEmitter {
                 self.set_reg(dst, result, result_ty);
             }
         } else {
-            let result = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                opcode,
-                &[result_ty, result, a_val, b_val],
+            // Signed int ops (SDiv/SRem/arithmetic-shift-right) need `%int`
+            // operands + result; everything else uses the canonical `%uint`.
+            // Coerce operands to the op's type and the result back to `%uint`.
+            let needs_signed = matches!(
+                (op, is_signed),
+                (BinOp::Div, true) | (BinOp::Rem, true) | (BinOp::Shr, true)
             );
+            let op_ty = if is_float {
+                result_ty
+            } else if needs_signed {
+                self.ensure_type_i32_for(ty)
+            } else {
+                result_ty
+            };
+            let a_val = self.coerce_to(a_val, a_ty, op_ty);
+            let b_val = self.coerce_to(b_val, b_ty, op_ty);
+            let raw = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, opcode, &[op_ty, raw, a_val, b_val]);
+            let result = self.coerce_to(raw, op_ty, result_ty);
             self.set_reg(dst, result, result_ty);
         }
         Ok(())
@@ -336,12 +351,27 @@ impl SpvEmitter {
     ) -> Result<(), String> {
         let a_val = self.reg_value_id(a)?;
         let b_val = self.reg_value_id(b)?;
+        let a_ty = self.reg_type_id(a)?;
+        let b_ty = self.reg_type_id(b)?;
         let bool_ty = self.ensure_type_bool();
         let is_float = matches!(ty, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
         let is_signed = matches!(
             ty,
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
         );
+
+        // Operands must share the type the opcode expects: `%int` for a signed
+        // compare, `%uint`/float otherwise. Coerce any int operand that arrived
+        // as the other signedness (no-op when matching).
+        let operand_ty = if is_float {
+            self.scalar_type_id(ty)
+        } else if is_signed {
+            self.ensure_type_i32_for(ty)
+        } else {
+            self.scalar_type_id(ty)
+        };
+        let a_val = self.coerce_to(a_val, a_ty, operand_ty);
+        let b_val = self.coerce_to(b_val, b_ty, operand_ty);
 
         let opcode = match (op, is_float, is_signed) {
             (CmpOp::Eq, true, _) => OP_FORD_EQUAL,

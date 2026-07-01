@@ -18,6 +18,11 @@ impl SpvEmitter {
         num_wg_var: u32,
     ) -> Result<(), String> {
         let cond_val = self.reg_value_id(cond)?;
+        let cond_ty = self.reg_type_id(cond)?;
+        // OpBranchConditional requires a %bool condition. If the IR handed us an
+        // integer (a C-style truthiness test, e.g. a wasm `br_if`), convert it
+        // with `!= 0` first.
+        let cond_val = self.ensure_bool(cond_val, cond_ty);
         let then_label = self.alloc_id();
         let else_label = self.alloc_id();
         let merge_label = self.alloc_id();
@@ -186,7 +191,12 @@ impl SpvEmitter {
         // Continue block: copy carried values, increment counter
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[continue_label]);
         for &(reg_num, _header_phi, continue_copy, ty_id) in &carried_phis {
+            // Coerce the body's final value back to the phi's type if it was
+            // reassigned to the other int signedness, so the copy — and the phi
+            // edge it feeds — stay type-consistent.
             let current = self.reg_ids[&reg_num];
+            let current_ty = self.reg_types[&reg_num];
+            let current = self.coerce_to(current, current_ty, ty_id);
             Self::emit_op(
                 &mut self.sec_function,
                 OP_COPY_OBJECT,
