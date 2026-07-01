@@ -14,6 +14,17 @@
 
 ## Tutorials
 
+- [Overview](computation/tutorials/index.md)
+- [Arrays and broadcasting](computation/tutorials/arrays-and-broadcasting.md)
+- [Reductions](computation/tutorials/reductions.md)
+- [Shape and views](computation/tutorials/shape-and-views.md)
+- [Linear algebra](computation/tutorials/linear-algebra.md)
+- [FFT](computation/tutorials/fft.md)
+- [Random numbers](computation/tutorials/random-numbers.md)
+- [Autodiff basics](computation/tutorials/autodiff-basics.md)
+- [Training an MLP](computation/tutorials/training-an-mlp.md)
+- [Convolution and pooling](computation/tutorials/convolution-and-pooling.md)
+- [Training a CNN](computation/tutorials/training-a-cnn.md)
 - [Compute Basics](computation/tutorials/compute-basics.md)
 - [Fields and Types](computation/tutorials/fields-and-types.md)
 - [Shared Memory](computation/tutorials/shared-memory.md)
@@ -22,7 +33,7 @@
 - [Device Functions](computation/tutorials/device-functions.md)
 - [Async Copy and Printf](computation/tutorials/async-copy-and-printf.md)
 - [Block Primitives](computation/tutorials/block-primitives.md)
-- [Arrays](computation/tutorials/arrays.md)
+- [Arrays (under the hood)](computation/tutorials/arrays.md)
 
 ## How-to
 
