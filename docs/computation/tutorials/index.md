@@ -29,6 +29,7 @@ Full walkthroughs that end with a complete, standalone Cargo project you run
 yourself:
 
 - [Project: linear regression](project-linear-regression.md) — fit a line by gradient descent, from `cargo new` to a working program
+- [Project: recognize digits (MNIST)](project-mnist.md) — download MNIST and train a convnet to classify handwritten digits
 
 ## The kernel track
 
