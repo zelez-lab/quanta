@@ -23,6 +23,13 @@ Work with data, not threads. No kernels, no dispatch — just arrays.
 9. [Convolution and pooling](convolution-and-pooling.md) — the CNN building blocks
 10. [Training a CNN](training-a-cnn.md) — a convolutional network end to end
 
+### Build a whole project
+
+Full walkthroughs that end with a complete, standalone Cargo project you run
+yourself:
+
+- [Project: linear regression](project-linear-regression.md) — fit a line by gradient descent, from `cargo new` to a working program
+
 ## The kernel track
 
 Drop to the metal: write your own GPU kernel in Rust and dispatch it.

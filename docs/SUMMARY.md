@@ -25,6 +25,7 @@
 - [Training an MLP](computation/tutorials/training-an-mlp.md)
 - [Convolution and pooling](computation/tutorials/convolution-and-pooling.md)
 - [Training a CNN](computation/tutorials/training-a-cnn.md)
+- [Project: linear regression](computation/tutorials/project-linear-regression.md)
 - [Compute Basics](computation/tutorials/compute-basics.md)
 - [Fields and Types](computation/tutorials/fields-and-types.md)
 - [Shared Memory](computation/tutorials/shared-memory.md)
