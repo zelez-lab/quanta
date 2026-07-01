@@ -820,3 +820,49 @@ fn pool_metal_matches_host() {
         "maxpool_metal_fwd",
     );
 }
+
+// ── reshape / flatten ────────────────────────────────────────────────────
+
+#[test]
+fn grad_reshape() {
+    // loss = sum( reshape(x*x) ): reshape is linear & shape-only, so ∂x = 2x
+    // regardless of the intermediate shape.
+    let g = gpu();
+    let x = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[2, 3]).unwrap());
+    let y = xv.mul(&xv).unwrap().reshape(&[3, 2]).unwrap();
+    assert_eq!(y.value().shape(), &[3, 2]);
+    let loss = y.sum().unwrap();
+    let gx = loss.grad(&xv).unwrap();
+    assert_eq!(gx.shape(), &[2, 3]); // gradient comes back in x's shape
+    for (i, (&gi, &xi)) in gx.to_vec().unwrap().iter().zip(x.iter()).enumerate() {
+        assert!(
+            (gi - 2.0 * xi).abs() <= 1e-3,
+            "reshape ∂x[{i}] {gi} vs {}",
+            2.0 * xi
+        );
+    }
+}
+
+#[test]
+fn grad_flatten() {
+    // flatten [N,C,H,W] → [N, C·H·W]; loss = sum(flatten(x)·flatten(x)) ⇒ ∂x = 2x.
+    let g = gpu();
+    let (n, c, h, w) = (2usize, 2, 2, 2);
+    let x: Vec<f32> = (0..n * c * h * w).map(|i| i as f32 - 4.0).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c, h, w]).unwrap());
+    let f = xv.flatten().unwrap();
+    assert_eq!(f.value().shape(), &[n, c * h * w]);
+    let loss = f.mul(&f).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap();
+    assert_eq!(gx.shape(), &[n, c, h, w]);
+    for (i, (&gi, &xi)) in gx.to_vec().unwrap().iter().zip(x.iter()).enumerate() {
+        assert!(
+            (gi - 2.0 * xi).abs() <= 1e-3,
+            "flatten ∂x[{i}] {gi} vs {}",
+            2.0 * xi
+        );
+    }
+}

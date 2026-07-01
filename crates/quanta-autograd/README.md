@@ -23,6 +23,7 @@ correct gradients. Built on `quanta-array` (the differentiable values) and
 | `matmul` | `A·B` (2-D) | `G·Bᵀ`, `Aᵀ·G` |
 | `conv2d` | NCHW conv (im2col·matmul) | matmul VJP + `col2im` (∂x), reshape (∂w) |
 | `avgpool2d` / `maxpool2d` | NCHW pooling | scatter `g/(kh·kw)` / route `g` to the argmax pixel |
+| `reshape` / `flatten` | shape-only view | `g` reshaped back to the input shape |
 | `sum` / `sum_axis` / `mean_axis` | reductions | broadcast `g` (mean: `g/count`) |
 
 A `Tape` records the forward ops as they run (define-by-run); `Var` is a handle
@@ -69,14 +70,16 @@ Three layers of confidence, all green:
   the pooling ops add real-Metal lanes against host references (maxpool is
   checked through a squared loss so the upstream gradient is non-uniform).
 - **End-to-end** — `tests/training.rs` fits a model by SGD (the loop composes),
-  and `examples/mlp_training.rs` trains a 2-layer MLP to learn `y = x²`.
+  `examples/mlp_training.rs` trains a 2-layer MLP to learn `y = x²`, and
+  `examples/cnn_training.rs` trains a conv → relu → maxpool → linear net to
+  classify horizontal vs vertical stripes (8/8) — the whole conv stack composed.
 
 Run them: `cargo test -p quanta-autograd` and
-`cargo run --example mlp_training -p quanta-autograd --release`.
+`cargo run --example cnn_training -p quanta-autograd --release`.
 
 ## Coming next
 
-A small CNN example (conv → pool → linear) and more activations; broadcasting
-beyond the right-aligned numpy cases; the graph/fusion layer (fuse forward +
-backward) the pure VJP functions were factored for. f16/bf16 differentiation
-once `quanta-blas`'s mixed-precision GEMM is wired through the matmul VJP.
+More activations; broadcasting beyond the right-aligned numpy cases; the
+graph/fusion layer (fuse forward + backward) the pure VJP functions were
+factored for. f16/bf16 differentiation once `quanta-blas`'s mixed-precision GEMM
+is wired through the matmul VJP.

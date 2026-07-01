@@ -126,6 +126,29 @@ impl<T: DiffScalar> Var<T> {
             .push(Op::Tanh(self.id, y.shallow_clone()), y))
     }
 
+    /// Reshape to `shape` (same element count) — a zero-copy view. The gradient
+    /// passes straight through, reshaped back to this var's shape. Errors if the
+    /// element counts don't match (delegated to `Array::reshape`).
+    pub fn reshape(&self, shape: &[usize]) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let in_shape = x.shape().to_vec();
+        let y = x.contiguous()?.reshape(shape)?;
+        Ok(self.tape_handle().push(Op::Reshape(self.id, in_shape), y))
+    }
+
+    /// Flatten the trailing dims into one, keeping axis 0 as the batch:
+    /// `[N, d1, d2, …]` → `[N, d1·d2·…]`. The standard conv/pool → linear bridge.
+    pub fn flatten(&self) -> Result<Var<T>, AutogradError> {
+        let d = self.value().shape().to_vec();
+        if d.is_empty() {
+            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("flatten: need at least 1 dim"),
+            )));
+        }
+        let rest: usize = d[1..].iter().product();
+        self.reshape(&[d[0], rest])
+    }
+
     /// Sum of all elements → a 1-element (scalar) `Var`. The natural way to
     /// produce a scalar loss to call `grad` on.
     pub fn sum(&self) -> Result<Var<T>, AutogradError> {

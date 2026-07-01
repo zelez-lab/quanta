@@ -68,6 +68,10 @@ pub(crate) enum Op<T: DiffScalar> {
     /// input pixel won each window) and the geometry; the gradient routes each
     /// output's g to its argmax pixel via `maxpool2d_backward`.
     MaxPool2d(usize, Array<u32>, crate::pool::PoolParams),
+    /// reshape(x): a zero-copy shape change (same elements). Captures the input
+    /// shape; the gradient just reshapes the upstream grad back to it (reshape
+    /// is linear and element-preserving — the VJP is its own inverse reshape).
+    Reshape(usize, Vec<usize>),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -258,6 +262,12 @@ impl<T: DiffScalar> Var<T> {
                 }
                 Op::MaxPool2d(a, argmax, p) => {
                     let gx = g.maxpool2d_backward(argmax, p.h, p.w, p.kh, p.kw, p.stride, p.pad)?;
+                    accum(&mut grads[*a], gx)?;
+                }
+                Op::Reshape(a, in_shape) => {
+                    // reshape is shape-only: pass g through, reshaped back to the
+                    // input shape (contiguous first, since g may be a view).
+                    let gx = g.contiguous()?.reshape(in_shape)?;
                     accum(&mut grads[*a], gx)?;
                 }
             }

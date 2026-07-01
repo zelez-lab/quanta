@@ -31,10 +31,11 @@
 //!
 //! Tape-based reverse mode over elementwise ops (neg, add, sub, mul, div, exp,
 //! log, sqrt), activations (relu, sigmoid, tanh), the `sum`/`sum_axis`/
-//! `mean_axis` reductions, `matmul`, and `conv2d` (NCHW, via im2col → matmul →
+//! `mean_axis` reductions, `matmul`, `conv2d` (NCHW, via im2col → matmul →
 //! reshape, with the backward reusing the matmul VJP and the im2col/col2im
-//! adjoint pair). The VJP rules are factored as standalone functions ([`vjp`])
-//! so a future graph/fusion layer can reuse them.
+//! adjoint pair), `avgpool2d`/`maxpool2d`, and `reshape`/`flatten`. The VJP
+//! rules are factored as standalone functions ([`vjp`]) so a future
+//! graph/fusion layer can reuse them.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
