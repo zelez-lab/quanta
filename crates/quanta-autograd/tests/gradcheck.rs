@@ -866,3 +866,66 @@ fn grad_flatten() {
         );
     }
 }
+
+// ── gather_rows (label pick, the cross-entropy piece) ────────────────────
+
+#[test]
+fn grad_gather_rows() {
+    // loss = sum( gather_rows(x, idx) )  ⇒  ∂x[i,c] = 1 iff c==idx[i], else 0.
+    let g = gpu();
+    let (n, c) = (4usize, 5usize);
+    let x: Vec<f32> = (0..n * c).map(|i| (i % 7) as f32 - 3.0).collect();
+    let idx = Array::from_slice(&g, &[2u32, 0, 4, 1], &[n]).unwrap();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let picked = xv.gather_rows(&idx).unwrap();
+    assert_eq!(picked.value().shape(), &[n]);
+    let loss = picked.sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    // Expected: one-hot per row at the label column.
+    let idx_v = [2usize, 0, 4, 1];
+    for i in 0..n {
+        for cc in 0..c {
+            let want = if cc == idx_v[i] { 1.0 } else { 0.0 };
+            assert!(
+                (gx[i * c + cc] - want).abs() <= 1e-5,
+                "∂x[{i},{cc}] {} vs {want}",
+                gx[i * c + cc]
+            );
+        }
+    }
+}
+
+#[test]
+fn grad_gather_rows_weighted() {
+    // loss = sum( gather_rows(x·x, idx) )  — nonlinear upstream, ∂ = 2x at label col.
+    let g = gpu();
+    let (n, c) = (3usize, 4usize);
+    let x: Vec<f32> = (0..n * c).map(|i| (i as f32) * 0.5 - 2.0).collect();
+    let idx = Array::from_slice(&g, &[1u32, 3, 0], &[n]).unwrap();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let loss = xv
+        .mul(&xv)
+        .unwrap()
+        .gather_rows(&idx)
+        .unwrap()
+        .sum()
+        .unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    let idx_v = [1usize, 3, 0];
+    for i in 0..n {
+        for cc in 0..c {
+            let want = if cc == idx_v[i] {
+                2.0 * x[i * c + cc]
+            } else {
+                0.0
+            };
+            assert!(
+                (gx[i * c + cc] - want).abs() <= 1e-4 * (1.0 + want.abs()),
+                "∂x[{i},{cc}] {} vs {want}",
+                gx[i * c + cc]
+            );
+        }
+    }
+}

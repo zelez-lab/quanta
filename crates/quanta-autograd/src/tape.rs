@@ -72,6 +72,11 @@ pub(crate) enum Op<T: DiffScalar> {
     /// shape; the gradient just reshapes the upstream grad back to it (reshape
     /// is linear and element-preserving — the VJP is its own inverse reshape).
     Reshape(usize, Vec<usize>),
+    /// gather_rows(x, idx): pick one column per row of a [N, C] table by the
+    /// (non-differentiable) label array `idx`. Captures `idx` and the column
+    /// count `C`; the gradient scatters back with `scatter_rows_add` (the
+    /// gather's adjoint).
+    GatherRows(usize, Array<u32>, usize),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -268,6 +273,11 @@ impl<T: DiffScalar> Var<T> {
                     // reshape is shape-only: pass g through, reshaped back to the
                     // input shape (contiguous first, since g may be a view).
                     let gx = g.contiguous()?.reshape(in_shape)?;
+                    accum(&mut grads[*a], gx)?;
+                }
+                Op::GatherRows(a, idx, c) => {
+                    // ∂/∂table = scatter g back to the gathered columns.
+                    let gx = g.scatter_rows_add(idx, *c)?;
                     accum(&mut grads[*a], gx)?;
                 }
             }

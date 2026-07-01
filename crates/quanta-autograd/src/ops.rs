@@ -136,6 +136,25 @@ impl<T: DiffScalar> Var<T> {
         Ok(self.tape_handle().push(Op::Reshape(self.id, in_shape), y))
     }
 
+    /// Row-wise gather: pick column `idx[i]` from each row of this `[N, C]`
+    /// table, giving `[N]` where `out[i] = self[i, idx[i]]`. `idx` is a plain
+    /// `[N]` `u32` array (labels aren't differentiated). The gradient scatters
+    /// back to the gathered columns — the piece a cross-entropy loss needs.
+    pub fn gather_rows(&self, idx: &Array<u32>) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let d = x.shape();
+        if d.len() != 2 {
+            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("gather_rows: table must be 2-D [N, C]"),
+            )));
+        }
+        let c = d[1];
+        let y = x.gather_rows(idx)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::GatherRows(self.id, idx.shallow_clone(), c), y))
+    }
+
     /// Flatten the trailing dims into one, keeping axis 0 as the batch:
     /// `[N, d1, d2, …]` → `[N, d1·d2·…]`. The standard conv/pool → linear bridge.
     pub fn flatten(&self) -> Result<Var<T>, AutogradError> {
