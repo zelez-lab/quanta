@@ -163,7 +163,7 @@ don't implement it.
 | `VK_EXT_debug_printf`                                     | `gpu.printf_buffer(cap)?.drain()?`                               |
 
 The argument layout for indirect draws follows the Vulkan / Metal convention
-exactly — see [Guide: Indirect commands](../guide/14-indirect-commands.md).
+exactly — see [Guide: Indirect commands](../rendering/tutorials/indirect-commands.md).
 
 ### Memory ordering note for Vulkan developers
 
@@ -171,4 +171,4 @@ Vulkan's `OpMemoryBarrier` accepts arbitrary semantics. Metal's `device atomic_*
 pointers accept *only* `memory_order_relaxed` — `xcrun metal` rejects anything
 stronger. Quanta clamps device-atomic ordering to `Relaxed` at MSL emission and
 leans on explicit `threadgroup_barrier` / device barriers for cross-queue
-visibility. See [Guide: Atomics: Memory ordering](../guide/04-atomics.md#memory-ordering).
+visibility. See [Guide: Atomics: Memory ordering](../computation/tutorials/atomics.md#memory-ordering).

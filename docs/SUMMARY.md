@@ -14,29 +14,30 @@
 
 ## Tutorials
 
-- [Compute Basics](guide/01-compute-basics.md)
-- [Fields and Types](guide/02-fields-and-types.md)
-- [Shared Memory](guide/03-shared-memory.md)
-- [Atomics](guide/04-atomics.md)
-- [Wave Intrinsics](guide/05-wave-intrinsics.md)
-- [Device Functions](guide/09-device-functions.md)
-- [Block Primitives](guide/17-block-primitives.md)
-- [Arrays](guide/18-arrays.md)
+- [Compute Basics](computation/tutorials/compute-basics.md)
+- [Fields and Types](computation/tutorials/fields-and-types.md)
+- [Shared Memory](computation/tutorials/shared-memory.md)
+- [Atomics](computation/tutorials/atomics.md)
+- [Wave Intrinsics](computation/tutorials/wave-intrinsics.md)
+- [Device Functions](computation/tutorials/device-functions.md)
+- [Async Copy and Printf](computation/tutorials/async-copy-and-printf.md)
+- [Block Primitives](computation/tutorials/block-primitives.md)
+- [Arrays](computation/tutorials/arrays.md)
 
 ## How-to
 
-- [Vector Add](how-to/vector-add.md)
-- [Matrix Multiply](how-to/matrix-multiply.md)
-- [Parallel Reduce](how-to/parallel-reduce.md)
-- [Histogram](how-to/histogram.md)
-- [Image Blur](how-to/image-blur.md)
-- [N-Body Simulation](how-to/nbody-simulation.md)
-- [Particle System](how-to/particle-system.md)
-- [Mandelbrot](how-to/mandelbrot.md)
-- [Array Math (NumPy on the GPU)](how-to/arrays-numpy.md)
-- [Training with Autodiff](how-to/autograd-training.md)
-- [FFT (Fourier Transforms)](how-to/fft.md)
-- [Async Copy and GPU Printf](how-to/async-copy-and-printf.md)
+- [Vector Add](computation/how-to/vector-add.md)
+- [Matrix Multiply](computation/how-to/matrix-multiply.md)
+- [Parallel Reduce](computation/how-to/parallel-reduce.md)
+- [Histogram](computation/how-to/histogram.md)
+- [Image Blur](computation/how-to/image-blur.md)
+- [N-Body Simulation](computation/how-to/nbody-simulation.md)
+- [Particle System](computation/how-to/particle-system.md)
+- [Mandelbrot](computation/how-to/mandelbrot.md)
+- [Array Math (NumPy on the GPU)](computation/how-to/arrays-numpy.md)
+- [Training with Autodiff](computation/how-to/autograd-training.md)
+- [FFT (Fourier Transforms)](computation/how-to/fft.md)
+- [Async Copy and GPU Printf](computation/how-to/async-copy-and-printf.md)
 
 ## Reference
 
@@ -67,26 +68,26 @@
 
 ## Tutorials
 
-- [Textures](guide/06-textures.md)
-- [Rendering](guide/07-rendering.md)
-- [Vertex and Fragment Shaders](guide/08-vertex-fragment.md)
-- [Tessellation](guide/10-tessellation.md)
-- [Mesh Shaders](guide/11-mesh-shaders.md)
-- [Ray Tracing](guide/12-ray-tracing.md)
-- [Variable Rate Shading](guide/13-variable-rate-shading.md)
-- [Indirect Commands](guide/14-indirect-commands.md)
-- [Multi-Queue](guide/15-multi-queue.md)
+- [Textures](rendering/tutorials/textures.md)
+- [Rendering](rendering/tutorials/rendering.md)
+- [Vertex and Fragment Shaders](rendering/tutorials/vertex-fragment.md)
+- [Tessellation](rendering/tutorials/tessellation.md)
+- [Mesh Shaders](rendering/tutorials/mesh-shaders.md)
+- [Ray Tracing](rendering/tutorials/ray-tracing.md)
+- [Variable Rate Shading](rendering/tutorials/variable-rate-shading.md)
+- [Indirect Commands](rendering/tutorials/indirect-commands.md)
+- [Multi-Queue](rendering/tutorials/multi-queue.md)
 
 ## How-to
 
-- [Shadow Mapping](how-to/shadow-mapping.md)
-- [Deferred Rendering](how-to/deferred-rendering.md)
-- [Tessellation](how-to/tessellation.md)
-- [Mesh Shaders](how-to/mesh-shaders.md)
-- [Ray Tracing](how-to/ray-tracing.md)
-- [Variable Rate Shading](how-to/variable-rate-shading.md)
-- [Indirect Commands](how-to/indirect-commands.md)
-- [Multi-Queue](how-to/multi-queue.md)
+- [Shadow Mapping](rendering/how-to/shadow-mapping.md)
+- [Deferred Rendering](rendering/how-to/deferred-rendering.md)
+- [Tessellation](rendering/how-to/tessellation.md)
+- [Mesh Shaders](rendering/how-to/mesh-shaders.md)
+- [Ray Tracing](rendering/how-to/ray-tracing.md)
+- [Variable Rate Shading](rendering/how-to/variable-rate-shading.md)
+- [Indirect Commands](rendering/how-to/indirect-commands.md)
+- [Multi-Queue](rendering/how-to/multi-queue.md)
 
 ## Explanation
 

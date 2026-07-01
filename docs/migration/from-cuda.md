@@ -112,7 +112,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 ## CUB block primitives
 
 The `quanta-prims` companion crate covers the `cub::Block*` surface —
-see [Block Primitives](../guide/17-block-primitives.md):
+see [Block Primitives](../computation/tutorials/block-primitives.md):
 
 | CUB | quanta-prims |
 |-----|--------------|

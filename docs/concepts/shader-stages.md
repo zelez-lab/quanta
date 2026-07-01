@@ -106,7 +106,7 @@ fn textured(uv: Vec2, texture: &Texture) -> Vec4 {
 The hardware handles filtering (bilinear, trilinear) so the image looks smooth
 even when stretched or compressed.
 
-See [Guide: Textures](../guide/06-textures.md) for details on texture formats
+See [Guide: Textures](../rendering/tutorials/textures.md) for details on texture formats
 and sampling.
 
 ## Quanta render code
@@ -137,7 +137,7 @@ let pass = gpu.render_begin(&target)?;
 gpu.render_end(pass)?;
 ```
 
-See [Guide: Vertex and Fragment Shaders](../guide/08-vertex-fragment.md) for a
+See [Guide: Vertex and Fragment Shaders](../rendering/tutorials/vertex-fragment.md) for a
 full walkthrough of writing render pipelines.
 
 ## Compute vs render: when to use which
@@ -156,5 +156,5 @@ everything else, use compute kernels (`#[quanta::kernel]`).
 Compute kernels are simpler -- no pipeline stages, no rasterization, no
 vertex/fragment split. You control the inputs, outputs, and dispatch directly.
 
-See [Guide: Compute Basics](../guide/01-compute-basics.md) for compute,
-and [Guide: Rendering](../guide/07-rendering.md) for the render pipeline.
+See [Guide: Compute Basics](../computation/tutorials/compute-basics.md) for compute,
+and [Guide: Rendering](../rendering/tutorials/rendering.md) for the render pipeline.

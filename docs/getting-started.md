@@ -183,7 +183,7 @@ fn vector_add(data: &VecAdd) {
 }
 ```
 
-See [Compute basics](guide/01-compute-basics.md) for details on 1D/2D/3D
+See [Compute basics](computation/tutorials/compute-basics.md) for details on 1D/2D/3D
 workgroup sizes.
 
 ## Structured GPU data
@@ -212,7 +212,7 @@ struct Simulation {
 }
 ```
 
-See [Fields and types](guide/02-fields-and-types.md) for the full reference.
+See [Fields and types](computation/tutorials/fields-and-types.md) for the full reference.
 
 ## Manual API
 
@@ -262,14 +262,14 @@ match gpu.sparse_texture(&desc) {
 `NotFound` is the partner variant — it means a handle no longer points at a
 live resource (typically a double-free or use-after-drop).
 
-See [Compute basics: Error handling](guide/01-compute-basics.md#error-handling)
+See [Compute basics: Error handling](computation/tutorials/compute-basics.md#error-handling)
 and [Reference: Errors](reference/errors.md) for the full kind list.
 
 ## Next
 
-- [Compute basics](guide/01-compute-basics.md) -- execution model, workgroups, optimization
-- [Fields and types](guide/02-fields-and-types.md) -- GPU memory management
-- [Multi-queue](guide/15-multi-queue.md), [Indirect commands](guide/14-indirect-commands.md),
-  [Tessellation](guide/10-tessellation.md), [Mesh shaders](guide/11-mesh-shaders.md),
-  [Ray tracing](guide/12-ray-tracing.md), [VRS](guide/13-variable-rate-shading.md),
-  [Async copy + printf](guide/16-async-copy-and-printf.md) -- v0.1 advanced surface
+- [Compute basics](computation/tutorials/compute-basics.md) -- execution model, workgroups, optimization
+- [Fields and types](computation/tutorials/fields-and-types.md) -- GPU memory management
+- [Multi-queue](rendering/tutorials/multi-queue.md), [Indirect commands](rendering/tutorials/indirect-commands.md),
+  [Tessellation](rendering/tutorials/tessellation.md), [Mesh shaders](rendering/tutorials/mesh-shaders.md),
+  [Ray tracing](rendering/tutorials/ray-tracing.md), [VRS](rendering/tutorials/variable-rate-shading.md),
+  [Async copy + printf](computation/tutorials/async-copy-and-printf.md) -- v0.1 advanced surface

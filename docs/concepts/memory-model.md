@@ -64,7 +64,7 @@ let particles = gpu.compute_field::<Particle>(100_000)?;
 The `#[quanta::gpu_type]` macro ensures the struct layout matches what the GPU
 expects (`#[repr(C)]`, no padding surprises).
 
-See [Guide: Fields and Types](../guide/02-fields-and-types.md) for details.
+See [Guide: Fields and Types](../computation/tutorials/fields-and-types.md) for details.
 
 ## Push constants: small values sent per dispatch
 
@@ -117,7 +117,7 @@ fn reduce(data: &[f32], result: &mut [f32]) {
 Shared memory only lives for the duration of the dispatch, and is only visible
 within one workgroup.
 
-See [Guide: Shared Memory](../guide/03-shared-memory.md) for tiling patterns.
+See [Guide: Shared Memory](../computation/tutorials/shared-memory.md) for tiling patterns.
 
 ## Textures: 2D/3D images with hardware sampling
 
@@ -142,7 +142,7 @@ fn textured(uv: Vec2, tex: &Texture) -> Vec4 {
 
 Compute kernels can also read and write textures for image processing.
 
-See [Guide: Textures](../guide/06-textures.md) for formats and sampling modes.
+See [Guide: Textures](../rendering/tutorials/textures.md) for formats and sampling modes.
 
 ## Mapped memory: zero-copy CPU-GPU sharing
 

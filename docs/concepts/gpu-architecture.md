@@ -122,7 +122,7 @@ fn double(data: &mut [f32]) {
 gpu.dispatch(&wave, 1024)?;
 ```
 
-See [Guide: Compute Basics](../guide/01-compute-basics.md) for a full walkthrough.
+See [Guide: Compute Basics](../computation/tutorials/compute-basics.md) for a full walkthrough.
 
 ## Key insight
 

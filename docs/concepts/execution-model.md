@@ -156,7 +156,7 @@ let val = tile[(local_id() + 1) % 256]; // read from fast shared
 Shared memory is visible only within a workgroup. Quarks in other workgroups
 cannot see it. It exists only for the lifetime of the dispatch.
 
-See [Guide: Shared Memory](../guide/03-shared-memory.md) for patterns like
+See [Guide: Shared Memory](../computation/tutorials/shared-memory.md) for patterns like
 tiled matrix multiply and reductions.
 
 ## Execution order guarantees
@@ -187,7 +187,7 @@ parallel:
 Quanta's `Gpu::queue_families()` reports what the active backend exposes;
 `gpu.queue(QueueType::Compute)` returns a typed `Queue` you can `submit` on.
 WebGPU has only a single global queue; multiple `Queue` handles there share
-that queue. See [Guide: Multi-queue](../guide/15-multi-queue.md).
+that queue. See [Guide: Multi-queue](../rendering/tutorials/multi-queue.md).
 
 The mental model: a queue is a single timeline. Two submits on the same queue
 happen in submit order. Two submits on different queues happen in arbitrary
