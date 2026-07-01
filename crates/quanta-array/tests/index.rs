@@ -64,3 +64,32 @@ fn gather_scatter_adjoint() {
         "adjoint: {lhs} vs {rhs}"
     );
 }
+
+#[test]
+fn max_axis_last_basic() {
+    let g = gpu();
+    // [3,4]; row max
+    let t = vec![
+        1.0f32, 5.0, 2.0, 3.0, // max 5
+        -1.0, -3.0, -2.0, -0.5, // max -0.5
+        4.0, 4.0, 4.0, 4.0, // max 4
+    ];
+    let m = Array::from_slice(&g, &t, &[3, 4]).unwrap();
+    let out = m.max_axis_last().unwrap();
+    assert_eq!(out.shape(), &[3, 1]);
+    approx(&out.to_vec().unwrap(), &[5.0, -0.5, 4.0]);
+}
+
+#[test]
+fn argmax_last_basic() {
+    let g = gpu();
+    let t = vec![
+        1.0f32, 5.0, 2.0, 3.0, // argmax 1
+        -1.0, -3.0, -2.0, -0.5, // argmax 3
+        7.0, 4.0, 7.0, 4.0, // tie at 0 and 2 → first wins → 0
+    ];
+    let m = Array::from_slice(&g, &t, &[3, 4]).unwrap();
+    let out = m.argmax_last().unwrap();
+    assert_eq!(out.shape(), &[3]);
+    assert_eq!(out.to_vec().unwrap(), vec![1u32, 3, 0]);
+}
