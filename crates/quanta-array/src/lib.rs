@@ -48,6 +48,7 @@ mod construct;
 mod conv;
 mod error;
 mod gather;
+mod index;
 mod linalg;
 mod pool;
 mod reduce;
