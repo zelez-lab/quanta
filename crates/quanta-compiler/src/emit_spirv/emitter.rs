@@ -57,6 +57,12 @@ pub(crate) struct SpvEmitter {
     pub(crate) push_constant_size: u32,
     pub(crate) push_constant_slots: std::collections::HashSet<u32>,
 
+    // Value ids that are `%bool` (compare results). The wasm-route lowering can
+    // reuse one IR register for both an int and a bool value, leaving the
+    // register's *tracked type* stale; this set records the real bool-ness of a
+    // value id so `ensure_bool` never re-tests an already-bool value.
+    pub(crate) bool_vals: std::collections::HashSet<u32>,
+
     // Shared memory: id → (variable_id, element_type_id)
     pub(crate) shared_vars: HashMap<u32, (u32, u32)>,
 
@@ -108,6 +114,7 @@ impl SpvEmitter {
             field_vars: HashMap::new(),
             push_constant_size: 0,
             push_constant_slots: std::collections::HashSet::new(),
+            bool_vals: std::collections::HashSet::new(),
             shared_vars: HashMap::new(),
             decorated_stride: std::collections::HashSet::new(),
             decorated_block: std::collections::HashSet::new(),
@@ -192,16 +199,38 @@ impl SpvEmitter {
         out
     }
 
+    /// Materialize a `%bool` value as a `%uint` (`bool ? 1 : 0`) — for when the
+    /// wasm route feeds a compare result into an integer op.
+    pub(crate) fn bool_to_int(&mut self, val: u32) -> u32 {
+        let uint_ty = self.ensure_type_u32();
+        let one = self.emit_constant_u32(1);
+        let zero = self.emit_constant_u32(0);
+        let out = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            super::constants::OP_SELECT,
+            &[uint_ty, out, val, one, zero],
+        );
+        out
+    }
+
     /// Ensure a value is `%bool` for use as a branch/select condition. Converts
     /// an **integer** condition (a C-style truthiness test) with `!= 0`; a value
     /// that is already bool — or any non-int type — passes through unchanged.
     /// Only the canonical int types trigger the conversion, so a compare result
     /// (already `%bool`) is never double-tested.
     pub(crate) fn ensure_bool(&mut self, val: u32, val_ty: u32) -> u32 {
+        let bool_ty = self.ensure_type_bool();
+        // Already a bool (by tracked type or by value id) — never re-test it.
+        // The value-id set catches the case where a register was reused for both
+        // an int and a bool, so its tracked type is stale.
+        if val_ty == bool_ty || self.bool_vals.contains(&val) {
+            return val;
+        }
         let uint_ty = self.ensure_type_u32();
         let int_ty = self.ensure_type_i32();
         if val_ty != uint_ty && val_ty != int_ty {
-            // Already bool (or another type we don't touch) — leave it.
+            // Not an int we know how to truth-test — leave it (defensive).
             return val;
         }
         let zero = self.emit_constant_u32(0);

@@ -53,6 +53,18 @@ pub fn compile_kernel(args: &[String]) {
     std::io::Read::read_to_end(&mut std::io::stdin(), &mut input).unwrap();
     let kernel: KernelDef = quanta_ir::deserialize_kernel(&input).unwrap();
 
+    // Debug mode: emit only the raw Vulkan SPIR-V to stdout (for spirv-val).
+    if args.iter().any(|a| a == "--spirv-only") {
+        match emit_spirv::emit(&kernel) {
+            Ok(spirv) => {
+                use std::io::Write;
+                std::io::stdout().write_all(&spirv).unwrap();
+            }
+            Err(e) => eprintln!("[quanta] SPIR-V emitter error: {}", e),
+        }
+        return;
+    }
+
     let targets = parse_targets(args);
     let mut output = CompilerOutput {
         amd: None,

@@ -361,14 +361,25 @@ impl SpvEmitter {
         );
 
         // Operands must share the type the opcode expects: `%int` for a signed
-        // compare, `%uint`/float otherwise. Coerce any int operand that arrived
-        // as the other signedness (no-op when matching).
+        // compare, `%uint`/float otherwise. First materialize any bool operand as
+        // an int (`bool ? 1 : 0`) — the wasm route emits integer compares like
+        // `i32.eqz` directly on a compare result — then coerce signedness.
         let operand_ty = if is_float {
             self.scalar_type_id(ty)
         } else if is_signed {
             self.ensure_type_i32_for(ty)
         } else {
             self.scalar_type_id(ty)
+        };
+        let (a_val, a_ty) = if !is_float && self.bool_vals.contains(&a_val) {
+            (self.bool_to_int(a_val), self.ensure_type_u32())
+        } else {
+            (a_val, a_ty)
+        };
+        let (b_val, b_ty) = if !is_float && self.bool_vals.contains(&b_val) {
+            (self.bool_to_int(b_val), self.ensure_type_u32())
+        } else {
+            (b_val, b_ty)
         };
         let a_val = self.coerce_to(a_val, a_ty, operand_ty);
         let b_val = self.coerce_to(b_val, b_ty, operand_ty);
@@ -398,6 +409,7 @@ impl SpvEmitter {
             opcode,
             &[bool_ty, result, a_val, b_val],
         );
+        self.bool_vals.insert(result);
         self.set_reg(dst, result, bool_ty);
         Ok(())
     }
