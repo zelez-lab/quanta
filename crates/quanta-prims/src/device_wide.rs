@@ -209,6 +209,15 @@ pub fn device_sort_u32(gpu: &Gpu, data: &[u32]) -> Result<Vec<u32>, QuantaError>
     if n <= 1 {
         return Ok(data.to_vec());
     }
+    // The single-tile block radix sort uses a subgroup scan (OpGroupNonUniform*),
+    // which a device without subgroup arithmetic (e.g. Broadcom V3D) can't lower
+    // — it would abort the driver. Refuse cleanly there rather than crash. Unlike
+    // the reduce family, sort has no subgroup-free fallback yet.
+    if !gpu.supports_subgroups() {
+        return Err(QuantaError::not_supported(
+            "device_sort_u32 requires subgroup arithmetic (no subgroup-free path yet)",
+        ));
+    }
     let padded_len = n.next_power_of_two().max(BLOCK);
     let mut padded = data.to_vec();
     padded.resize(padded_len, u32::MAX);
