@@ -70,19 +70,19 @@ impl SpvEmitter {
                         (self.emit_constant_u32(*v), ty)
                     }
                     ConstValue::U64(v) => {
-                        let ty = self.ensure_type_u32();
-                        (self.emit_constant_u32(*v as u32), ty)
+                        let ty = self.ensure_type_u64();
+                        (self.emit_constant_u64(*v), ty)
                     }
                     // Int SSA values are canonically unsigned (see
-                    // scalar_type_id); emit signed constants as their `%uint` bit
-                    // pattern (two's-complement — same bits).
+                    // scalar_type_id); emit signed constants as their `%uint` /
+                    // `%ulong` bit pattern (two's-complement — same bits).
                     ConstValue::I32(v) => {
                         let ty = self.ensure_type_u32();
                         (self.emit_constant_u32(*v as u32), ty)
                     }
                     ConstValue::I64(v) => {
-                        let ty = self.ensure_type_u32();
-                        (self.emit_constant_u32(*v as u32), ty)
+                        let ty = self.ensure_type_u64();
+                        (self.emit_constant_u64(*v as u64), ty)
                     }
                     ConstValue::Bool(v) => {
                         let ty = self.ensure_type_bool();
@@ -129,13 +129,16 @@ impl SpvEmitter {
                         self.reg_const_int.insert(dst.0, *v as i64);
                     }
                     ConstValue::U64(v) => {
-                        self.reg_const_int.insert(dst.0, (*v as u32) as i64);
+                        // Emitted at full 64-bit width; a value above
+                        // i64::MAX wraps negative here, which can never
+                        // match the 1..=8 unroll window — safe.
+                        self.reg_const_int.insert(dst.0, *v as i64);
                     }
                     ConstValue::I32(v) => {
                         self.reg_const_int.insert(dst.0, *v as i64);
                     }
                     ConstValue::I64(v) => {
-                        self.reg_const_int.insert(dst.0, (*v as i32) as i64);
+                        self.reg_const_int.insert(dst.0, *v);
                     }
                     _ => {}
                 }

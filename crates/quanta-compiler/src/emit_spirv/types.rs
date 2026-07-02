@@ -51,6 +51,41 @@ impl SpvEmitter {
         id
     }
 
+    pub(crate) fn ensure_type_u64(&mut self) -> u32 {
+        if let Some(id) = self.type_u64 {
+            return id;
+        }
+        // 64-bit ints require the Int64 capability — without it the
+        // module is invalid and drivers reject the pipeline (same failure
+        // mode as Float64). Declared once, before either 64-bit int type.
+        self.ensure_capability_int64();
+        let id = self.alloc_id();
+        // OpTypeInt %id 64 0 (unsigned).
+        Self::emit_op(&mut self.sec_type_const, OP_TYPE_INT, &[id, 64, 0]);
+        self.type_u64 = Some(id);
+        id
+    }
+
+    pub(crate) fn ensure_type_i64(&mut self) -> u32 {
+        if let Some(id) = self.type_i64 {
+            return id;
+        }
+        self.ensure_capability_int64();
+        let id = self.alloc_id();
+        // OpTypeInt %id 64 1 (signed).
+        Self::emit_op(&mut self.sec_type_const, OP_TYPE_INT, &[id, 64, 1]);
+        self.type_i64 = Some(id);
+        id
+    }
+
+    /// Emit `OpCapability Int64` exactly once, regardless of how many
+    /// 64-bit integer types the module ends up using.
+    fn ensure_capability_int64(&mut self) {
+        if self.type_u64.is_none() && self.type_i64.is_none() {
+            Self::emit_op(&mut self.sec_capability, OP_CAPABILITY, &[CAPABILITY_INT64]);
+        }
+    }
+
     pub(crate) fn ensure_type_f16(&mut self) -> u32 {
         if let Some(id) = self.type_f16 {
             return id;
@@ -225,11 +260,14 @@ impl SpvEmitter {
 
     // ── Scalar type mapping ─────────────────────────────────────────────────
 
-    /// The *signed* SPIR-V int type to bitcast into for a genuinely-signed op
-    /// (SDiv/SRem/SAR) whose canonical operands are the unsigned form. This
-    /// emitter models all ints in 32-bit width, so `%int` suffices.
-    pub(crate) fn ensure_type_i32_for(&mut self, _ty: ScalarType) -> u32 {
-        self.ensure_type_i32()
+    /// The *signed* SPIR-V int type matching `ty`'s width — used to bitcast
+    /// into a genuinely-signed op (SDiv/SRem/SAR) whose canonical operands are
+    /// the unsigned form. 32-bit family → `%int`, 64-bit family → `%long`.
+    pub(crate) fn ensure_type_i32_for(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::I64 | ScalarType::U64 => self.ensure_type_i64(),
+            _ => self.ensure_type_i32(),
+        }
     }
 
     pub(crate) fn scalar_type_id(&mut self, ty: ScalarType) -> u32 {
@@ -248,7 +286,12 @@ impl SpvEmitter {
             | ScalarType::I16
             | ScalarType::I32
             | ScalarType::I4 => self.ensure_type_u32(),
-            ScalarType::U64 | ScalarType::I64 => self.ensure_type_u32(),
+            // 64-bit ints keep their full width — collapsing them to `%uint`
+            // silently truncates u64 arithmetic (the `(hi as u64) << 32 | lo`
+            // pack in fill_uniform_f64 shifted the high word out to zero).
+            // Same canonicalization as the 32-bit family: unsigned SSA type,
+            // signed ops bitcast to `%long` locally.
+            ScalarType::U64 | ScalarType::I64 => self.ensure_type_u64(),
             ScalarType::F16 => self.ensure_type_f16(),
             // bf16/fp8 compute in f32 in the body (emulated path).
             ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_f32(),
@@ -326,6 +369,64 @@ impl SpvEmitter {
         Self::emit_op(&mut self.sec_type_const, OP_CONSTANT, &[ty, id, val as u32]);
         self.const_cache.insert(key, id);
         id
+    }
+
+    pub(crate) fn emit_constant_u64(&mut self, val: u64) -> u32 {
+        let ty = self.ensure_type_u64();
+        let lo = val as u32;
+        let hi = (val >> 32) as u32;
+        let key = format!("{}:{}:{}", ty, lo, hi);
+        if let Some(&id) = self.const_cache.get(&key) {
+            return id;
+        }
+        let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_CONSTANT, &[ty, id, lo, hi]);
+        self.const_cache.insert(key, id);
+        id
+    }
+
+    pub(crate) fn emit_constant_i64(&mut self, val: i64) -> u32 {
+        let ty = self.ensure_type_i64();
+        let bits = val as u64;
+        let lo = bits as u32;
+        let hi = (bits >> 32) as u32;
+        let key = format!("{}:{}:{}", ty, lo, hi);
+        if let Some(&id) = self.const_cache.get(&key) {
+            return id;
+        }
+        let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_CONSTANT, &[ty, id, lo, hi]);
+        self.const_cache.insert(key, id);
+        id
+    }
+
+    /// Emit a `0` constant of the integer type `ty` lowers to. Used by
+    /// the Bool→int cast (OpSelect) and unsigned saturating-sub. Mirrors
+    /// `scalar_type_id`'s widths (all ints canonically unsigned).
+    pub(crate) fn emit_constant_typed_zero(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::U64 | ScalarType::I64 => self.emit_constant_u64(0),
+            _ => self.emit_constant_u32(0),
+        }
+    }
+
+    /// Emit a `1` constant of the integer type `ty` lowers to. See
+    /// `emit_constant_typed_zero`.
+    pub(crate) fn emit_constant_typed_one(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::U64 | ScalarType::I64 => self.emit_constant_u64(1),
+            _ => self.emit_constant_u32(1),
+        }
+    }
+
+    /// Emit the all-ones (MAX) constant of an unsigned integer type.
+    /// Used by unsigned saturating-add. The narrower unsigned types
+    /// lower through u32 and saturate at its max.
+    pub(crate) fn emit_constant_unsigned_max(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::U64 | ScalarType::I64 => self.emit_constant_u64(u64::MAX),
+            _ => self.emit_constant_u32(u32::MAX),
+        }
     }
 
     #[allow(dead_code)]

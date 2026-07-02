@@ -55,6 +55,13 @@ pub const OP_CONVERT_F_TO_U: u16 = 109;
 pub const OP_CONVERT_F_TO_S: u16 = 110;
 pub const OP_CONVERT_S_TO_F: u16 = 111;
 pub const OP_CONVERT_U_TO_F: u16 = 112;
+// Width conversions: OpUConvert zero-extends/truncates, OpSConvert
+// sign-extends/truncates, OpFConvert changes float width. OpBitcast is
+// only valid between types of the SAME total bit width — a 32↔64-bit
+// int cast spelled as OpBitcast is invalid SPIR-V.
+pub const OP_U_CONVERT: u16 = 113;
+pub const OP_S_CONVERT: u16 = 114;
+pub const OP_F_CONVERT: u16 = 115;
 pub const OP_BITCAST: u16 = 124;
 pub const OP_S_NEGATE: u16 = 126;
 pub const OP_F_NEGATE: u16 = 127;
@@ -192,6 +199,7 @@ pub const MEMORY_MODEL_GLSL450: u32 = 1;
 pub const CAPABILITY_SHADER: u32 = 1;
 pub const CAPABILITY_FLOAT16: u32 = 9;
 pub const CAPABILITY_FLOAT64: u32 = 10;
+pub const CAPABILITY_INT64: u32 = 11;
 // SPIR-V §3.31 capabilities: NonUniform=61, Vote=62, Arithmetic=63,
 // Ballot=64, Shuffle=65. Ballot and Shuffle were each one too low.
 pub const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;

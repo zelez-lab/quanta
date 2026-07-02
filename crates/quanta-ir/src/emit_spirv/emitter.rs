@@ -305,6 +305,19 @@ impl SpvEmitter {
             );
             return out;
         }
+        // Int↔int across widths: OpBitcast requires equal total bit width,
+        // so bridge with OpUConvert (zero-extend / truncate) instead. This
+        // catches operands whose tracked width is stale relative to the op
+        // that consumes them (the wasm route reuses registers freely).
+        let is_64 = |s: &Self, t: u32| s.type_u64 == Some(t) || s.type_i64 == Some(t);
+        let is_32 = |s: &Self, t: u32| s.type_u32 == Some(t) || s.type_i32 == Some(t);
+        if (is_64(self, from_ty) && is_32(self, to_ty))
+            || (is_32(self, from_ty) && is_64(self, to_ty))
+        {
+            let out = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_U_CONVERT, &[to_ty, out, val]);
+            return out;
+        }
         let out = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_BITCAST, &[to_ty, out, val]);
         out

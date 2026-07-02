@@ -151,11 +151,17 @@ impl SpvEmitter {
                 ScalarType::Bool => 1,
             };
             let mask = width - 1;
-            // For slice-1 surface (i32/u32 rotations) the shift
-            // operand width is u32. Future i64 rotations need an
-            // emit_constant_u64 + matching width type.
-            let mask_val = self.emit_constant_u32(mask);
-            let width_val = self.emit_constant_u32(width);
+            // Width/mask constants feed OpISub and OpBitwiseAnd whose
+            // result is `result_ty`, so they must share its bit width —
+            // 64-bit constants for i64/u64 rotations, 32-bit otherwise.
+            // A width mismatch is invalid SPIR-V.
+            let (mask_val, width_val) = match ty {
+                ScalarType::U64 | ScalarType::I64 => (
+                    self.emit_constant_u64(mask as u64),
+                    self.emit_constant_u64(width as u64),
+                ),
+                _ => (self.emit_constant_u32(mask), self.emit_constant_u32(width)),
+            };
             let k_masked = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
@@ -252,7 +258,7 @@ impl SpvEmitter {
                     OP_ULESS_THAN,
                     &[bool_ty, overflow, sum, a_val],
                 );
-                let max_val = self.emit_constant_u32(u32::MAX);
+                let max_val = self.emit_constant_unsigned_max(ty);
                 let result = self.alloc_id();
                 Self::emit_op(
                     &mut self.sec_function,
@@ -274,7 +280,7 @@ impl SpvEmitter {
                     OP_ISUB,
                     &[result_ty, diff, a_val, b_val],
                 );
-                let zero = self.emit_constant_u32(0);
+                let zero = self.emit_constant_typed_zero(ty);
                 let result = self.alloc_id();
                 Self::emit_op(
                     &mut self.sec_function,
@@ -447,10 +453,44 @@ impl SpvEmitter {
         // wasm route can reuse a register for both an int and a bool value.
         let src_is_bool = matches!(from, ScalarType::Bool) || self.bool_vals.contains(&src_val);
         if src_is_bool && !matches!(to, ScalarType::Bool) {
-            let as_int = self.bool_to_int(src_val);
-            let uint_ty = self.ensure_type_u32();
-            let result = self.coerce_to(as_int, uint_ty, result_ty);
-            self.set_reg(dst, result, result_ty);
+            let to_is_int = matches!(
+                to,
+                ScalarType::U8
+                    | ScalarType::U16
+                    | ScalarType::U32
+                    | ScalarType::U64
+                    | ScalarType::I8
+                    | ScalarType::I16
+                    | ScalarType::I32
+                    | ScalarType::I64
+                    | ScalarType::I4
+            );
+            if to_is_int {
+                // Select 0/1 of the TARGET's width directly — routing through
+                // a %uint intermediate would need a width-mismatched bitcast
+                // for 64-bit targets.
+                let one = self.emit_constant_typed_one(to);
+                let zero = self.emit_constant_typed_zero(to);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_SELECT,
+                    &[result_ty, result, src_val, one, zero],
+                );
+                self.set_reg(dst, result, result_ty);
+            } else {
+                // Float target: materialize 0/1 as %uint, then a real
+                // unsigned→float conversion (a bitcast would reinterpret the
+                // bit pattern, not convert the value).
+                let as_int = self.bool_to_int(src_val);
+                let result = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_CONVERT_U_TO_F,
+                    &[result_ty, result, as_int],
+                );
+                self.set_reg(dst, result, result_ty);
+            }
             return Ok(());
         }
         if matches!(to, ScalarType::Bool) && !src_is_bool {
@@ -473,14 +513,50 @@ impl SpvEmitter {
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
         );
 
-        let result = self.alloc_id();
+        // Same canonical SPIR-V type (e.g. u32↔i32 — both `%uint`): a pure
+        // alias. OpBitcast between identical types is invalid SPIR-V.
+        let src_ty = self.reg_type_id(src)?;
+        if src_ty == result_ty {
+            self.set_reg(dst, src_val, result_ty);
+            return Ok(());
+        }
+
         let opcode = match (from_float, to_float, from_signed, to_signed) {
             (false, true, true, _) => OP_CONVERT_S_TO_F,
             (false, true, false, _) => OP_CONVERT_U_TO_F,
             (true, false, _, true) => OP_CONVERT_F_TO_S,
             (true, false, _, false) => OP_CONVERT_F_TO_U,
-            _ => OP_BITCAST,
+            // Float width change (f32↔f64, f16↔f32): a real conversion.
+            // OpBitcast across widths is invalid SPIR-V.
+            (true, true, _, _) => OP_F_CONVERT,
+            (false, false, _, _) => {
+                // Int↔int. Same canonical width is a free reinterpret; a
+                // width change needs a real conversion — this was the u64
+                // silent-truncation path when 64-bit ints collapsed to
+                // `%uint` (OpBitcast can't change width).
+                let from_64 = self.type_u64 == Some(src_ty) || self.type_i64 == Some(src_ty);
+                let to_64 = self.type_u64 == Some(result_ty) || self.type_i64 == Some(result_ty);
+                if from_64 == to_64 {
+                    OP_BITCAST
+                } else if to_64 && from_signed {
+                    // Sign-extend: bitcast the canonical `%uint` to `%int`,
+                    // OpSConvert to `%long`, bitcast back to the canonical
+                    // `%ulong`.
+                    let int_ty = self.ensure_type_i32();
+                    let long_ty = self.ensure_type_i64();
+                    let s = self.coerce_to(src_val, src_ty, int_ty);
+                    let ext = self.alloc_id();
+                    Self::emit_op(&mut self.sec_function, OP_S_CONVERT, &[long_ty, ext, s]);
+                    let out = self.coerce_to(ext, long_ty, result_ty);
+                    self.set_reg(dst, out, result_ty);
+                    return Ok(());
+                } else {
+                    // Zero-extend (32→64 unsigned) or truncate (64→32).
+                    OP_U_CONVERT
+                }
+            }
         };
+        let result = self.alloc_id();
         Self::emit_op(
             &mut self.sec_function,
             opcode,

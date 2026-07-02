@@ -706,14 +706,54 @@ impl SpvEmitter {
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
                 );
 
-                let result = self.alloc_id();
+                // Same canonical SPIR-V type (e.g. u32↔i32 — both `%uint`):
+                // a pure alias. OpBitcast between identical types is invalid
+                // SPIR-V.
+                let src_ty = self.reg_type_id(*src)?;
+                if src_ty == result_ty {
+                    self.set_reg(*dst, src_val, result_ty);
+                    return Ok(());
+                }
+
                 let opcode = match (from_float, to_float, from_signed, to_signed) {
                     (false, true, true, _) => OP_CONVERT_S_TO_F,
                     (false, true, false, _) => OP_CONVERT_U_TO_F,
                     (true, false, _, true) => OP_CONVERT_F_TO_S,
                     (true, false, _, false) => OP_CONVERT_F_TO_U,
-                    _ => OP_BITCAST, // int<->int, float<->float of same size
+                    // Float width change (f32↔f64, f16↔f32): a real
+                    // conversion — OpBitcast across widths is invalid.
+                    (true, true, _, _) => OP_F_CONVERT,
+                    (false, false, _, _) => {
+                        // Int↔int. Same canonical width is a free
+                        // reinterpret; a width change needs a real
+                        // conversion (OpBitcast can't change total width —
+                        // it produced invalid modules for the u64 pack
+                        // shape `(hi as u64) << 32 | lo`).
+                        let from_64 =
+                            self.type_u64 == Some(src_ty) || self.type_i64 == Some(src_ty);
+                        let to_64 =
+                            self.type_u64 == Some(result_ty) || self.type_i64 == Some(result_ty);
+                        if from_64 == to_64 {
+                            OP_BITCAST
+                        } else if to_64 && from_signed {
+                            // Sign-extend: bitcast the canonical `%uint` to
+                            // `%int`, OpSConvert to `%long`, bitcast back to
+                            // the canonical `%ulong`.
+                            let int_ty = self.ensure_type_i32();
+                            let long_ty = self.ensure_type_i64();
+                            let s = self.coerce_to(src_val, src_ty, int_ty);
+                            let ext = self.alloc_id();
+                            Self::emit_op(&mut self.sec_function, OP_S_CONVERT, &[long_ty, ext, s]);
+                            let out = self.coerce_to(ext, long_ty, result_ty);
+                            self.set_reg(*dst, out, result_ty);
+                            return Ok(());
+                        } else {
+                            // Zero-extend (32→64 unsigned) or truncate (64→32).
+                            OP_U_CONVERT
+                        }
+                    }
                 };
+                let result = self.alloc_id();
                 Self::emit_op(
                     &mut self.sec_function,
                     opcode,

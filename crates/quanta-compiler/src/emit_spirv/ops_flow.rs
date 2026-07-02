@@ -373,9 +373,8 @@ impl SpvEmitter {
             let zero = match ty {
                 ScalarType::F32 | ScalarType::F16 => self.emit_constant_f32(0.0),
                 ScalarType::F64 => self.emit_constant_f64(0.0),
-                ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
-                    self.emit_constant_i32(0)
-                }
+                ScalarType::U64 | ScalarType::I64 => self.emit_constant_u64(0),
+                ScalarType::I8 | ScalarType::I16 | ScalarType::I32 => self.emit_constant_i32(0),
                 _ => self.emit_constant_u32(0),
             };
             self.set_reg(dst, zero, result_ty);

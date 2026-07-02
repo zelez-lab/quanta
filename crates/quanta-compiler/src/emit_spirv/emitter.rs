@@ -28,6 +28,8 @@ pub(crate) struct SpvEmitter {
     pub(crate) type_bool: Option<u32>,
     pub(crate) type_u32: Option<u32>,
     pub(crate) type_i32: Option<u32>,
+    pub(crate) type_u64: Option<u32>,
+    pub(crate) type_i64: Option<u32>,
     pub(crate) type_f16: Option<u32>,
     pub(crate) type_f32: Option<u32>,
     pub(crate) type_f64: Option<u32>,
@@ -113,6 +115,8 @@ impl SpvEmitter {
             type_bool: None,
             type_u32: None,
             type_i32: None,
+            type_u64: None,
+            type_i64: None,
             type_f16: None,
             type_f32: None,
             type_f64: None,
@@ -250,6 +254,10 @@ impl SpvEmitter {
             Some((self.emit_constant_u32(0), self.emit_constant_u32(1)))
         } else if self.type_i32 == Some(ty) {
             Some((self.emit_constant_i32(0), self.emit_constant_i32(1)))
+        } else if self.type_u64 == Some(ty) {
+            Some((self.emit_constant_u64(0), self.emit_constant_u64(1)))
+        } else if self.type_i64 == Some(ty) {
+            Some((self.emit_constant_i64(0), self.emit_constant_i64(1)))
         } else {
             None
         }
@@ -294,6 +302,23 @@ impl SpvEmitter {
                 &mut self.sec_function,
                 super::constants::OP_SELECT,
                 &[to_ty, out, val, one, zero],
+            );
+            return out;
+        }
+        // Int↔int across widths: OpBitcast requires equal total bit width,
+        // so bridge with OpUConvert (zero-extend / truncate) instead. This
+        // catches operands whose tracked width is stale relative to the op
+        // that consumes them (the wasm route reuses registers freely).
+        let is_64 = |s: &Self, t: u32| s.type_u64 == Some(t) || s.type_i64 == Some(t);
+        let is_32 = |s: &Self, t: u32| s.type_u32 == Some(t) || s.type_i32 == Some(t);
+        if (is_64(self, from_ty) && is_32(self, to_ty))
+            || (is_32(self, from_ty) && is_64(self, to_ty))
+        {
+            let out = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                super::constants::OP_U_CONVERT,
+                &[to_ty, out, val],
             );
             return out;
         }
