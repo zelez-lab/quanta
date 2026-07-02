@@ -2667,18 +2667,22 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32Rotl => self.bin_op_int(BinOp::Rotl, ScalarType::I32)?,
             RawInstr::I32Rotr => self.bin_op_int(BinOp::Rotr, ScalarType::I32)?,
 
-            RawInstr::I32LtU | RawInstr::I32LtS => {
-                self.cmp_op_int(quanta_ir::CmpOp::Lt, ScalarType::I32)?
-            }
-            RawInstr::I32LeU | RawInstr::I32LeS => {
-                self.cmp_op_int(quanta_ir::CmpOp::Le, ScalarType::I32)?
-            }
-            RawInstr::I32GtU | RawInstr::I32GtS => {
-                self.cmp_op_int(quanta_ir::CmpOp::Gt, ScalarType::I32)?
-            }
-            RawInstr::I32GeU | RawInstr::I32GeS => {
-                self.cmp_op_int(quanta_ir::CmpOp::Ge, ScalarType::I32)?
-            }
+            // Ordered comparisons carry signedness at the wasm
+            // instruction level, exactly like the shifts above. Keep
+            // the distinction in the IR's Cmp type: emitters pick
+            // OpULessThan vs OpSLessThan (SPIR-V) / a `uint` vs `int`
+            // operand cast (MSL) from it. Collapsing LtU into I32 made
+            // u32 comparisons of values ≥ 2^31 compare signed
+            // (caught by the tree-reduce min/max differential test
+            // with full-range u32 inputs).
+            RawInstr::I32LtU => self.cmp_op_int(quanta_ir::CmpOp::Lt, ScalarType::U32)?,
+            RawInstr::I32LtS => self.cmp_op_int(quanta_ir::CmpOp::Lt, ScalarType::I32)?,
+            RawInstr::I32LeU => self.cmp_op_int(quanta_ir::CmpOp::Le, ScalarType::U32)?,
+            RawInstr::I32LeS => self.cmp_op_int(quanta_ir::CmpOp::Le, ScalarType::I32)?,
+            RawInstr::I32GtU => self.cmp_op_int(quanta_ir::CmpOp::Gt, ScalarType::U32)?,
+            RawInstr::I32GtS => self.cmp_op_int(quanta_ir::CmpOp::Gt, ScalarType::I32)?,
+            RawInstr::I32GeU => self.cmp_op_int(quanta_ir::CmpOp::Ge, ScalarType::U32)?,
+            RawInstr::I32GeS => self.cmp_op_int(quanta_ir::CmpOp::Ge, ScalarType::I32)?,
             RawInstr::I32Eq => self.cmp_op_int(quanta_ir::CmpOp::Eq, ScalarType::I32)?,
             RawInstr::I32Ne => self.cmp_op_int(quanta_ir::CmpOp::Ne, ScalarType::I32)?,
 
@@ -2705,18 +2709,16 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I64Rotr => self.bin_op_int(BinOp::Rotr, ScalarType::I64)?,
             RawInstr::I64Eq => self.cmp_op_int(quanta_ir::CmpOp::Eq, ScalarType::I64)?,
             RawInstr::I64Ne => self.cmp_op_int(quanta_ir::CmpOp::Ne, ScalarType::I64)?,
-            RawInstr::I64LtU | RawInstr::I64LtS => {
-                self.cmp_op_int(quanta_ir::CmpOp::Lt, ScalarType::I64)?
-            }
-            RawInstr::I64LeU | RawInstr::I64LeS => {
-                self.cmp_op_int(quanta_ir::CmpOp::Le, ScalarType::I64)?
-            }
-            RawInstr::I64GtU | RawInstr::I64GtS => {
-                self.cmp_op_int(quanta_ir::CmpOp::Gt, ScalarType::I64)?
-            }
-            RawInstr::I64GeU | RawInstr::I64GeS => {
-                self.cmp_op_int(quanta_ir::CmpOp::Ge, ScalarType::I64)?
-            }
+            // Signedness preserved — same rationale as the i32
+            // comparison arms above.
+            RawInstr::I64LtU => self.cmp_op_int(quanta_ir::CmpOp::Lt, ScalarType::U64)?,
+            RawInstr::I64LtS => self.cmp_op_int(quanta_ir::CmpOp::Lt, ScalarType::I64)?,
+            RawInstr::I64LeU => self.cmp_op_int(quanta_ir::CmpOp::Le, ScalarType::U64)?,
+            RawInstr::I64LeS => self.cmp_op_int(quanta_ir::CmpOp::Le, ScalarType::I64)?,
+            RawInstr::I64GtU => self.cmp_op_int(quanta_ir::CmpOp::Gt, ScalarType::U64)?,
+            RawInstr::I64GtS => self.cmp_op_int(quanta_ir::CmpOp::Gt, ScalarType::I64)?,
+            RawInstr::I64GeU => self.cmp_op_int(quanta_ir::CmpOp::Ge, ScalarType::U64)?,
+            RawInstr::I64GeS => self.cmp_op_int(quanta_ir::CmpOp::Ge, ScalarType::I64)?,
             RawInstr::I64Eqz => {
                 let a = self.pop()?;
                 let (ar, _) = self.commit(a)?;

@@ -222,12 +222,39 @@ pub(super) fn emit_op(
                 }
             }
         }
-        KernelOp::Cmp { dst, a, b, op, .. } => {
+        KernelOp::Cmp { dst, a, b, op, ty } => {
             let o = cmpop_str(op);
-            out.push_str(&format!(
-                "{}bool r{} = (r{} {} r{});\n",
-                pad, dst.0, a.0, o, b.0
-            ));
+            // Cast both operands to the comparison type for integer
+            // compares. Registers feeding a Cmp can carry mixed
+            // int/uint MSL declarations (the lowerer's Copy ops retype
+            // freely — SSA ints are canonically unsigned); C's usual
+            // arithmetic conversions would then promote to `uint` and
+            // silently turn an `I32` signed compare into an unsigned
+            // one (observed: the i32 min tree-reduce returning the
+            // smallest *positive* value on Metal).
+            match ty {
+                ScalarType::I8
+                | ScalarType::I16
+                | ScalarType::I32
+                | ScalarType::I64
+                | ScalarType::I4
+                | ScalarType::U8
+                | ScalarType::U16
+                | ScalarType::U32
+                | ScalarType::U64 => {
+                    let c = ty.msl_name();
+                    out.push_str(&format!(
+                        "{}bool r{} = (({})r{} {} ({})r{});\n",
+                        pad, dst.0, c, a.0, o, c, b.0
+                    ));
+                }
+                _ => {
+                    out.push_str(&format!(
+                        "{}bool r{} = (r{} {} r{});\n",
+                        pad, dst.0, a.0, o, b.0
+                    ));
+                }
+            }
         }
         KernelOp::UnaryOp { dst, a, op, ty } => {
             let o = match op {
