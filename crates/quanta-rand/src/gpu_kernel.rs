@@ -100,6 +100,7 @@ pub fn fill_uniform_u32(d: &FillUniformU32Data) {
 /// `Vec<u32>` of length `len` filled with bit-exact Philox4×32-10
 /// output (counter = quark_id).
 pub fn fill_uniform_u32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u32>, QuantaError> {
+    require_i64(gpu)?;
     let mut data = FillUniformU32Data {
         out: vec![0u32; len],
         seed_lo: seed as u32,
@@ -136,6 +137,7 @@ pub fn fill_uniform_u64(d: &FillUniformU64Data) {
 
 /// Host-side dispatch for `fill_uniform_u64`.
 pub fn fill_uniform_u64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u64>, QuantaError> {
+    require_i64(gpu)?;
     let mut data = FillUniformU64Data {
         out: vec![0u64; len],
         seed_lo: seed as u32,
@@ -169,6 +171,7 @@ pub fn fill_uniform_f32(d: &FillUniformF32Data) {
 
 /// Host-side dispatch for `fill_uniform_f32`.
 pub fn fill_uniform_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>, QuantaError> {
+    require_i64(gpu)?;
     let mut data = FillUniformF32Data {
         out: vec![0.0f32; len],
         seed_lo: seed as u32,
@@ -202,12 +205,28 @@ pub fn fill_uniform_f64(d: &FillUniformF64Data) {
 }
 
 /// Host-side dispatch for `fill_uniform_f64`.
-/// Guard the `f64` distribution kernels: a device that doesn't advertise
-/// `f64` (e.g. the Raspberry Pi's V3D, whose Mesa NIR backend can't lower a
-/// `u2f64` and *aborts the process* on one) must get a clean `NotSupported`
-/// error, never a dispatch that crashes the driver. The CPU backend and any
-/// `shaderFloat64`-capable GPU pass through.
+/// Guard every RNG kernel: the Philox4×32 core computes a 32×32→64 multiply
+/// (`philox_mulhi32`, `philox4x32_10_first_u32_kernel`), so it needs 64-bit
+/// integers. A device without `shaderInt64` (e.g. the Raspberry Pi's V3D,
+/// whose Mesa NIR backend can't lower a `u2u64`/`u64` op and *aborts the
+/// process*) must get a clean `NotSupported` error, never a dispatch that
+/// crashes the driver — or, worse, silently truncates the multiply to 32-bit
+/// and returns non-Philox bits. The CPU backend and any `shaderInt64`-capable
+/// GPU pass through.
+fn require_i64(gpu: &Gpu) -> Result<(), QuantaError> {
+    if gpu.supports_i64() {
+        Ok(())
+    } else {
+        Err(QuantaError::not_supported(
+            "GPU random generation requires a device with 64-bit integer support (shaderInt64)",
+        ))
+    }
+}
+
+/// Additional guard for the `f64` distribution kernels: they also need `f64`
+/// (`shaderFloat64`) on top of the i64 requirement every RNG kernel has.
 fn require_f64(gpu: &Gpu) -> Result<(), QuantaError> {
+    require_i64(gpu)?;
     if gpu.supports_f64() {
         Ok(())
     } else {
@@ -293,6 +312,7 @@ pub fn fill_normal_f32(d: &FillNormalF32Data) {
 /// values drawn from N(0, 1). Internally dispatches `(len + 1) / 2`
 /// quarks (each produces a pair) and trims the result.
 pub fn fill_normal_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>, QuantaError> {
+    require_i64(gpu)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -406,6 +426,7 @@ pub fn fill_exponential_f32_gpu(
     seed: u64,
     lambda: f32,
 ) -> Result<Vec<f32>, QuantaError> {
+    require_i64(gpu)?;
     let mut data = FillExponentialF32Data {
         out: vec![0.0f32; len],
         seed_lo: seed as u32,
@@ -570,6 +591,7 @@ pub fn fill_lognormal_f32_gpu(
     mu: f32,
     sigma: f32,
 ) -> Result<Vec<f32>, QuantaError> {
+    require_i64(gpu)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -624,6 +646,7 @@ pub fn fill_bernoulli_u32_gpu(
     seed: u64,
     p: f32,
 ) -> Result<Vec<u32>, QuantaError> {
+    require_i64(gpu)?;
     let mut data = FillBernoulliU32Data {
         out: vec![0u32; len],
         seed_lo: seed as u32,
@@ -697,6 +720,7 @@ pub fn fill_poisson_u32_gpu(
     seed: u64,
     lambda: f32,
 ) -> Result<Vec<u32>, QuantaError> {
+    require_i64(gpu)?;
     let mut data = FillPoissonU32Data {
         out: vec![0u32; len],
         seed_lo: seed as u32,
@@ -836,6 +860,7 @@ pub fn fill_poisson_u32_large_gpu(
     seed: u64,
     lambda: f32,
 ) -> Result<Vec<u32>, QuantaError> {
+    require_i64(gpu)?;
     let mut data = FillPoissonLargeU32Data {
         out: vec![0u32; len],
         seed_lo: seed as u32,
