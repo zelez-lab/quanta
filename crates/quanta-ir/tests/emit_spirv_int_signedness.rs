@@ -426,10 +426,11 @@ fn bool_stored_into_uint_buffer_is_valid_spirv() {
 }
 
 /// `out[i] = ln(x)` with an `f64` element type. The GLSL.std.450
-/// transcendentals (Log/Exp/Sin/…) accept only 16/32-bit floats; a `%double`
-/// operand is invalid SPIR-V (`spirv-val`: "expected operand to be a 16 or
-/// 32-bit float"). This is the `fill_normal_f64`/`fill_exponential_f64` shape.
-/// The emitter must evaluate the transcendental at f32 and widen back to f64.
+/// transcendentals (Log/Exp/Sin/…) accept only 16/32-bit floats, and
+/// f32-emulating them at f64 is silently lossy (it corrupts Box-Muller-style
+/// algorithms whose ln() argument can be tiny). The SPIR-V backend therefore
+/// *refuses* f64 transcendentals: the emitter returns an error and
+/// `validate_for(VULKAN, …)` reports the op as unsupported.
 fn f64_transcendental_kernel() -> KernelDef {
     let body = vec![
         KernelOp::QuarkId { dst: Reg(0) },
@@ -472,7 +473,24 @@ fn f64_transcendental_kernel() -> KernelDef {
 }
 
 #[test]
-fn f64_transcendental_is_valid_spirv() {
-    let spirv = emit_spirv::emit(&f64_transcendental_kernel()).expect("emit");
-    assert_spirv_val(&spirv);
+fn f64_transcendental_is_refused_by_emitter() {
+    let err = emit_spirv::emit(&f64_transcendental_kernel())
+        .expect_err("f64 transcendental must be refused, not emulated");
+    assert!(
+        err.contains("f64 transcendental"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn f64_transcendental_is_reported_unsupported_on_vulkan() {
+    use quanta_ir::{caps, validate};
+    let report = validate::validate_for(&caps::VULKAN, &f64_transcendental_kernel());
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.reason.contains("f64 transcendental")),
+        "validate_for(VULKAN) should flag the f64 transcendental: {report:?}"
+    );
 }

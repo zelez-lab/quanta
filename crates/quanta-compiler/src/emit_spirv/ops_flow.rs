@@ -324,55 +324,24 @@ impl SpvEmitter {
             MathFn::Fma => GLSL_FMA,
         };
 
+        // The transcendental GLSL.std.450 instructions (Sin/Cos/…/Exp/Log/Pow)
+        // accept only 16- or 32-bit floats. There is no correct f64 path:
+        // emulating one by narrowing to f32 is silently lossy (it corrupts
+        // algorithms whose argument can be tiny, e.g. Box-Muller's ln()), so
+        // f64 transcendentals are refused outright. `validate_for(VULKAN, …)`
+        // reports them as NotSupported and callers get a clean error, never
+        // wrong numbers — this is the defensive backstop for that gate.
+        if matches!(ty, ScalarType::F64) && is_f64_transcendental(func) {
+            return Err(
+                "f64 transcendental math is not supported on the SPIR-V backend \
+                 (GLSL.std.450 has no f64 variant)"
+                    .to_string(),
+            );
+        }
+
         let mut operand_ids = Vec::with_capacity(args.len());
         for arg in args {
             operand_ids.push(self.reg_value_id(*arg)?);
-        }
-
-        // The transcendental GLSL.std.450 instructions (Sin/Cos/…/Exp/Log/Pow)
-        // accept only 16- or 32-bit floats — a 64-bit operand is invalid
-        // SPIR-V (spirv-val rejects it, breaking the f64 RNG distribution
-        // kernels on Vulkan). Emulate f64 by narrowing operands to f32,
-        // evaluating at f32, then widening the result back to f64. The
-        // width-limited ops are exactly the transcendentals; Sqrt/Abs/Min/Max/
-        // Clamp/Fma/Floor/Ceil/Round accept f64 natively.
-        let is_transcendental = matches!(
-            func,
-            MathFn::Sin
-                | MathFn::Cos
-                | MathFn::Tan
-                | MathFn::Asin
-                | MathFn::Acos
-                | MathFn::Atan
-                | MathFn::Atan2
-                | MathFn::Exp
-                | MathFn::Exp2
-                | MathFn::Log
-                | MathFn::Log2
-                | MathFn::Pow
-        );
-        if matches!(ty, ScalarType::F64) && is_transcendental {
-            let f32_ty = self.ensure_type_f32();
-            let narrowed: Vec<u32> = operand_ids
-                .iter()
-                .map(|&id| {
-                    let out = self.alloc_id();
-                    Self::emit_op(&mut self.sec_function, OP_F_CONVERT, &[f32_ty, out, id]);
-                    out
-                })
-                .collect();
-            let f32_result = self.alloc_id();
-            let mut ops = vec![f32_ty, f32_result, ext_id, glsl_op];
-            ops.extend_from_slice(&narrowed);
-            Self::emit_op(&mut self.sec_function, OP_EXT_INST, &ops);
-            let result = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_F_CONVERT,
-                &[result_ty, result, f32_result],
-            );
-            self.set_reg(dst, result, result_ty);
-            return Ok(());
         }
 
         let result = self.alloc_id();

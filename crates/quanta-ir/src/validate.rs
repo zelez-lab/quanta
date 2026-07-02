@@ -182,6 +182,24 @@ fn walk_ops(caps: &BackendCaps, report: &mut ValidationReport, ops: &[KernelOp],
 fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc: &str) {
     use KernelOp::*;
     match op {
+        // GLSL.std.450 transcendentals (Sin/…/Exp/Log/Pow) have no f64 variant;
+        // the SPIR-V backends refuse them rather than emulate lossily. Report as
+        // unsupported so callers get a clean error instead of wrong numbers.
+        // (Must precede the generic MathCall arm below, which only type-checks.)
+        MathCall { func, ty, .. }
+            if *ty == ScalarType::F64
+                && crate::is_f64_transcendental(*func)
+                && matches!(
+                    caps.backend,
+                    crate::caps::Backend::Vulkan | crate::caps::Backend::WebGpu
+                ) =>
+        {
+            report.issues.push(ValidationIssue {
+                location: format!("{}: {}", loc, op_name(op)),
+                ty: *ty,
+                reason: "f64 transcendental math (GLSL.std.450 has no f64 variant)",
+            });
+        }
         Load { ty, .. }
         | Store { ty, .. }
         | SharedDecl { ty, .. }

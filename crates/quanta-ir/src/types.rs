@@ -220,6 +220,29 @@ pub enum MathFn {
     Fma,
 }
 
+/// Whether a math function is a transcendental with no f64 variant on the
+/// SPIR-V backend. The GLSL.std.450 transcendentals (Sin/Cos/…/Exp/Log/Pow)
+/// accept only 16- or 32-bit floats, so these are refused for f64 rather than
+/// emulated (f32 emulation is silently lossy). Sqrt/Rsqrt/Abs/Min/Max/Clamp/
+/// Floor/Ceil/Round/Fma accept f64 natively and are not in this set.
+pub fn is_f64_transcendental(func: MathFn) -> bool {
+    matches!(
+        func,
+        MathFn::Sin
+            | MathFn::Cos
+            | MathFn::Tan
+            | MathFn::Asin
+            | MathFn::Acos
+            | MathFn::Atan
+            | MathFn::Atan2
+            | MathFn::Exp
+            | MathFn::Exp2
+            | MathFn::Log
+            | MathFn::Log2
+            | MathFn::Pow
+    )
+}
+
 /// A single kernel IR operation.
 #[derive(Debug, Clone)]
 pub enum KernelOp {
