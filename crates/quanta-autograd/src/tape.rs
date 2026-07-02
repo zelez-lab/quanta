@@ -77,6 +77,10 @@ pub(crate) enum Op<T: DiffScalar> {
     /// count `C`; the gradient scatters back with `scatter_rows_add` (the
     /// gather's adjoint).
     GatherRows(usize, Array<u32>, usize),
+    /// narrow(x, start, len) on axis 0: a zero-copy row window. Captures the
+    /// window `start` and the input shape; the gradient scatters back into a
+    /// zero tensor of that shape at `start` with `pad_axis0` (narrow's adjoint).
+    Narrow(usize, usize, Vec<usize>),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -278,6 +282,11 @@ impl<T: DiffScalar> Var<T> {
                 Op::GatherRows(a, idx, c) => {
                     // ∂/∂table = scatter g back to the gathered columns.
                     let gx = g.scatter_rows_add(idx, *c)?;
+                    accum(&mut grads[*a], gx)?;
+                }
+                Op::Narrow(a, start, in_shape) => {
+                    // ∂/∂x = scatter g into zeros(in_shape) at rows [start, …).
+                    let gx = g.contiguous()?.pad_axis0(in_shape[0], *start)?;
                     accum(&mut grads[*a], gx)?;
                 }
             }

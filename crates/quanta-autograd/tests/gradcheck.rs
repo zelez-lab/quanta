@@ -1006,3 +1006,64 @@ fn log_softmax_normalizes() {
         assert!((s - 1.0).abs() <= 1e-4, "row {i} sums to {s}, want 1");
     }
 }
+
+#[test]
+fn grad_narrow_is_window_mask() {
+    // L = sum(narrow(x, start=1, len=2)) over x[4,3].
+    // ∂L/∂x = 1 for rows 1,2 (the window), 0 elsewhere.
+    let g = gpu();
+    let (n, c) = (4usize, 3usize);
+    let x: Vec<f32> = (0..n * c).map(|i| i as f32).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let loss = xv.narrow(1, 2).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    let mut want = vec![0.0f32; n * c];
+    for cell in want.iter_mut().take(3 * c).skip(c) {
+        *cell = 1.0; // rows 1 and 2
+    }
+    assert_close(&gx, &want, 1e-6, "narrow window mask");
+}
+
+#[test]
+fn grad_narrow_composes_with_matmul() {
+    // A real minibatch shape: narrow the batch, run it through a linear layer,
+    // and check the sliced-out rows get zero gradient.
+    let g = gpu();
+    let (n, k, m) = (5usize, 3usize, 2usize);
+    let x: Vec<f32> = (0..n * k).map(|i| (i as f32) * 0.1 - 0.7).collect();
+    let w: Vec<f32> = (0..k * m).map(|i| (i as f32) * 0.2 - 0.3).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, k]).unwrap());
+    let wv = tape.var(Array::from_slice(&g, &w, &[k, m]).unwrap());
+    // train on rows [1, 4): a 3-row minibatch
+    let loss = xv.narrow(1, 3).unwrap().matmul(&wv).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    // rows 0 and 4 are outside the window → zero gradient.
+    for j in 0..k {
+        assert!(
+            gx[j].abs() <= 1e-6,
+            "row 0 col {j} should be 0, got {}",
+            gx[j]
+        );
+        assert!(
+            gx[4 * k + j].abs() <= 1e-6,
+            "row 4 col {j} should be 0, got {}",
+            gx[4 * k + j]
+        );
+    }
+    // in-window rows get the standard matmul gradient (row-sum of W).
+    let wsum: Vec<f32> = (0..k)
+        .map(|kk| (0..m).map(|mm| w[kk * m + mm]).sum())
+        .collect();
+    for r in 1..4 {
+        for j in 0..k {
+            assert!(
+                (gx[r * k + j] - wsum[j]).abs() <= 1e-4,
+                "row {r} col {j}: {} vs {}",
+                gx[r * k + j],
+                wsum[j]
+            );
+        }
+    }
+}

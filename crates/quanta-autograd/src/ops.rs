@@ -136,6 +136,22 @@ impl<T: DiffScalar> Var<T> {
         Ok(self.tape_handle().push(Op::Reshape(self.id, in_shape), y))
     }
 
+    /// Zero-copy sub-range along axis 0: keep `len` rows starting at `start`.
+    /// The forward is a view ([`Array::narrow`]); the gradient scatters back
+    /// into a zero tensor of this var's shape at the same offset
+    /// ([`Array::pad_axis0`]). This is the differentiable minibatch selector —
+    /// `x.narrow(b * bs, bs)` trains on batch `b`. Only axis 0 is supported
+    /// (the adjoint kernel is axis-0 only); slicing other axes is a view via
+    /// `Array::narrow` but not yet differentiable.
+    pub fn narrow(&self, start: usize, len: usize) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let in_shape = x.shape().to_vec();
+        let y = x.narrow(0, start, len)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::Narrow(self.id, start, in_shape), y))
+    }
+
     /// Row-wise gather: pick column `idx[i]` from each row of this `[N, C]`
     /// table, giving `[N]` where `out[i] = self[i, idx[i]]`. `idx` is a plain
     /// `[N]` `u32` array (labels aren't differentiated). The gradient scatters

@@ -50,6 +50,7 @@ mod error;
 mod gather;
 mod index;
 mod linalg;
+mod pad;
 mod pool;
 mod reduce;
 mod reduce_axis;

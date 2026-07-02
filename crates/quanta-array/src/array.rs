@@ -160,6 +160,21 @@ impl<T: GpuType> Array<T> {
         })
     }
 
+    /// Zero-copy sub-range along one axis: keep `len` elements starting at
+    /// `start` (a half-open `[start, start+len)` window). The result shares
+    /// this array's buffer with the `axis` extent clipped and `base_offset`
+    /// advanced — the same-strides / advanced-base algebra proven in
+    /// `Quanta.Tensor.Layout` (`t8016`/`t8017`). This is the minibatch-view
+    /// primitive: `x.narrow(0, b * bs, bs)` selects batch `b` with no copy.
+    pub fn narrow(&self, axis: usize, start: usize, len: usize) -> Result<Array<T>, ArrayError> {
+        let layout = self.layout.slice(axis, start, start + len)?;
+        Ok(Array {
+            field: self.field.clone(),
+            layout,
+            gpu: self.gpu.clone(),
+        })
+    }
+
     // ── Materialization ─────────────────────────────────────────────────
 
     /// Download the array to host memory in **logical row-major order**.
