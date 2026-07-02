@@ -32,6 +32,13 @@ the [COOKBOOK.md](COOKBOOK.md) shows when to use which distribution
   | Bernoulli    | `fill_bernoulli_u32_gpu`         | `Vec<u32>`    | 1 with prob p        |
   | Poisson      | `fill_poisson_u32_gpu`           | `Vec<u32>`    | Knuth, λ ≤ ~30       |
 
+  > **`f64` on Vulkan:** the `f64` normal / exponential / lognormal
+  > distributions rely on transcendentals (`ln`, `cos`, `exp`), which
+  > SPIR-V's GLSL.std.450 provides only at 16/32-bit. On a Vulkan device
+  > these return `NotSupported` rather than lossy results — use the `f32`
+  > variants, or the CPU backend (native `f64`). Metal and all `f32`
+  > distributions are unaffected.
+
 - **Determinism**: every call is a pure function of `(seed, len)`.
   Re-running with the same seed produces bit-identical output. Host
   and GPU agree byte-for-byte.

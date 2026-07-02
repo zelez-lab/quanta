@@ -41,6 +41,13 @@ quanta_rand::fill_poisson_u32_gpu(&gpu, &out_u32, seed, 4.0)?;   // Poisson(λ=4
 Normal weights for a layer, a Bernoulli dropout mask, Poisson event counts — the
 building blocks are one call each.
 
+> Each distribution also has an `f64` twin (`fill_normal_f64_gpu`, …). The
+> `f64` normal / exponential / lognormal draws use transcendentals (`ln`,
+> `cos`, `exp`) that SPIR-V provides only at 16/32-bit, so on a **Vulkan**
+> device they return `NotSupported` instead of lossy values — prefer the
+> `f32` variants there, or run them on the CPU backend (native `f64`).
+> Metal and the `f32` distributions work everywhere.
+
 ## Host-side streaming
 
 When you need random numbers on the CPU (a quick reference value, a seed) there's
