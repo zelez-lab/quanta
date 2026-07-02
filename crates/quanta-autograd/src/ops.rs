@@ -152,6 +152,27 @@ impl<T: DiffScalar> Var<T> {
             .push(Op::Narrow(self.id, start, in_shape), y))
     }
 
+    /// Concatenate `parts` along axis 0 (the inverse of `narrow`). All parts
+    /// must be on the same tape and share the trailing shape. The gradient of
+    /// each part is the slice of the output gradient at that part's window, so
+    /// this composes cleanly with minibatch code (e.g. re-assembling batches).
+    pub fn concat_axis0(parts: &[&Var<T>]) -> Result<Var<T>, AutogradError> {
+        let first = parts.first().ok_or_else(|| {
+            AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("concat_axis0: need at least one var"),
+            ))
+        })?;
+        for p in parts {
+            first.same_tape(p)?;
+        }
+        let arrays: Vec<Array<T>> = parts.iter().map(|p| p.value()).collect();
+        let refs: Vec<&Array<T>> = arrays.iter().collect();
+        let y = Array::concat_axis0(&refs)?;
+        let ids: Vec<usize> = parts.iter().map(|p| p.id).collect();
+        let lens: Vec<usize> = arrays.iter().map(|a| a.shape()[0]).collect();
+        Ok(first.tape_handle().push(Op::Concat(ids, lens), y))
+    }
+
     /// Row-wise gather: pick column `idx[i]` from each row of this `[N, C]`
     /// table, giving `[N]` where `out[i] = self[i, idx[i]]`. `idx` is a plain
     /// `[N]` `u32` array (labels aren't differentiated). The gradient scatters

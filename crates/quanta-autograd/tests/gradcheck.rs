@@ -1067,3 +1067,39 @@ fn grad_narrow_composes_with_matmul() {
         }
     }
 }
+
+#[test]
+fn grad_concat_routes_slices_to_inputs() {
+    // out = concat([a, b]); L = sum(out * out) = sum(a²) + sum(b²).
+    // ∂L/∂a = 2a, ∂L/∂b = 2b — each input gets exactly its slice of the grad.
+    let g = gpu();
+    let a_data = vec![1.0f32, 2.0, 3.0, 4.0]; // [2, 2]
+    let b_data = vec![5.0f32, 6.0]; // [1, 2]
+    let tape = Tape::<f32>::new();
+    let a = tape.var(Array::from_slice(&g, &a_data, &[2, 2]).unwrap());
+    let b = tape.var(Array::from_slice(&g, &b_data, &[1, 2]).unwrap());
+    let out = quanta_autograd::Var::concat_axis0(&[&a, &b]).unwrap();
+    let loss = out.mul(&out).unwrap().sum().unwrap();
+    let ga = loss.grad(&a).unwrap().to_vec().unwrap();
+    let gb = loss.grad(&b).unwrap().to_vec().unwrap();
+    let want_a: Vec<f32> = a_data.iter().map(|x| 2.0 * x).collect();
+    let want_b: Vec<f32> = b_data.iter().map(|x| 2.0 * x).collect();
+    assert_close(&ga, &want_a, 1e-2, "concat grad a");
+    assert_close(&gb, &want_b, 1e-2, "concat grad b");
+}
+
+#[test]
+fn grad_concat_narrow_roundtrip_is_identity_grad() {
+    // Split x with narrow, concat the pieces back, sum. Every element flows
+    // through exactly once → ∂L/∂x is all ones.
+    let g = gpu();
+    let x_data: Vec<f32> = (0..8).map(|i| i as f32).collect(); // [4, 2]
+    let tape = Tape::<f32>::new();
+    let x = tape.var(Array::from_slice(&g, &x_data, &[4, 2]).unwrap());
+    let top = x.narrow(0, 2).unwrap();
+    let bot = x.narrow(2, 2).unwrap();
+    let rejoined = quanta_autograd::Var::concat_axis0(&[&top, &bot]).unwrap();
+    let loss = rejoined.sum().unwrap();
+    let gx = loss.grad(&x).unwrap().to_vec().unwrap();
+    assert_close(&gx, &vec![1.0f32; 8], 1e-6, "concat/narrow roundtrip grad");
+}

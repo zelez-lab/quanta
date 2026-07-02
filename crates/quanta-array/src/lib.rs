@@ -44,6 +44,7 @@
 
 mod array;
 mod broadcast;
+mod concat;
 mod construct;
 mod conv;
 mod error;

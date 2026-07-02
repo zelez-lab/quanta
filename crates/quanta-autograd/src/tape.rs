@@ -81,6 +81,11 @@ pub(crate) enum Op<T: DiffScalar> {
     /// window `start` and the input shape; the gradient scatters back into a
     /// zero tensor of that shape at `start` with `pad_axis0` (narrow's adjoint).
     Narrow(usize, usize, Vec<usize>),
+    /// concat_axis0([a, b, …]): join inputs along axis 0. Captures the input
+    /// node ids and each input's axis-0 length; the gradient of input `i` is
+    /// the `narrow` of the upstream grad at that input's row window (concat's
+    /// adjoint is a split — the inverse of narrow's pad).
+    Concat(Vec<usize>, Vec<usize>),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -288,6 +293,17 @@ impl<T: DiffScalar> Var<T> {
                     // ∂/∂x = scatter g into zeros(in_shape) at rows [start, …).
                     let gx = g.contiguous()?.pad_axis0(in_shape[0], *start)?;
                     accum(&mut grads[*a], gx)?;
+                }
+                Op::Concat(ids, lens) => {
+                    // ∂/∂inputᵢ = the slice of g at input i's row window
+                    // (concat's adjoint is a split — narrow the upstream grad).
+                    let gc = g.contiguous()?;
+                    let mut offset = 0usize;
+                    for (id, len) in ids.iter().zip(lens.iter()) {
+                        let gi = gc.narrow(0, offset, *len)?;
+                        accum(&mut grads[*id], gi)?;
+                        offset += *len;
+                    }
                 }
             }
         }
