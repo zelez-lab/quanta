@@ -63,7 +63,14 @@ impl VulkanDevice {
 
         let spirv = quanta_ir::emit_spirv::emit(&kernel)
             .map_err(|e| QuantaError::compilation_failed(format!("JIT SPIR-V emit: {}", e)))?;
-        self.wave_impl(&spirv)
+        let mut wave = self.wave_impl(&spirv)?;
+        // The KernelDef is authoritative for the workgroup size. If the Wave
+        // carried a different value, `wave_dispatch_threads` would compute a
+        // group count for the wrong local size and silently under-dispatch
+        // (the [64,1,1] guess vs quanta-array's LocalSize-1 kernels ran only
+        // ⌈n/64⌉ of n threads — zeros for the remaining 63/64 of the output).
+        wave.workgroup_size = kernel.workgroup_size;
+        Ok(wave)
     }
 
     pub(crate) fn wave_impl(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
@@ -90,6 +97,13 @@ impl VulkanDevice {
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
+
+        // Read the module's declared workgroup size so thread-count
+        // dispatches (`wave_dispatch_threads`) compute the right group
+        // count. Falling back to [64,1,1] keeps the old behavior only for
+        // modules that don't declare a literal LocalSize.
+        let workgroup_size =
+            crate::driver::spirv_meta::local_size(&spirv_words).unwrap_or([64, 1, 1]);
 
         // Create shader module
         let module_info = ffi::VkShaderModuleCreateInfo {
@@ -218,7 +232,7 @@ impl VulkanDevice {
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
-            workgroup_size: [64, 1, 1],
+            workgroup_size,
             drop_fn: None,
         })
     }

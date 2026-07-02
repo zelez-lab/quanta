@@ -4,6 +4,9 @@ pub mod metal;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 
+#[cfg(any(feature = "vulkan", test))]
+pub(crate) mod spirv_meta;
+
 #[cfg(feature = "software")]
 pub mod cpu;
 
