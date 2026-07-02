@@ -54,6 +54,10 @@ impl GpuDevice for VulkanDevice {
         self.shader_int64_supported
     }
 
+    fn supports_subgroups(&self) -> bool {
+        self.subgroup_arithmetic_supported
+    }
+
     fn supported_shading_rates(&self) -> Vec<(u32, u32)> {
         self.supported_shading_rates.clone()
     }
@@ -115,6 +119,13 @@ impl GpuDevice for VulkanDevice {
     }
 
     // === Compute ===
+
+    fn wave_dispatch_threads(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
+        // Folds oversized 1D dispatches (groups >
+        // maxComputeWorkGroupCount[0]) into a 2D grid — see
+        // wave_dispatch_threads_impl.
+        self.wave_dispatch_threads_impl(wave, quarks)
+    }
 
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
         self.wave_impl(kernel)

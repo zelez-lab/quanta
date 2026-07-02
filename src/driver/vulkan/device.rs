@@ -139,6 +139,20 @@ pub struct VulkanDevice {
     /// was enabled at `vkCreateDevice`. Kernels using `i64`/`u64` emit
     /// the `Int64` capability, valid only when this feature is enabled.
     pub(super) shader_int64_supported: bool,
+    /// Whether `VkPhysicalDeviceSubgroupProperties.supportedOperations`
+    /// advertises `VK_SUBGROUP_FEATURE_ARITHMETIC_BIT` for the compute
+    /// stage. Kernels using subgroup reduce/scan emit
+    /// `OpGroupNonUniform*` arithmetic, which Broadcom V3D cannot lower
+    /// (the driver aborts at pipeline creation); llvmpipe supports it.
+    /// Queried at discovery via `vkGetPhysicalDeviceProperties2`.
+    pub(super) subgroup_arithmetic_supported: bool,
+    /// `vkCmdDispatchBase` (core Vulkan 1.1), resolved at device
+    /// creation; `None` on 1.0-only implementations. Used by the
+    /// folded 1D-dispatch path (`wave_dispatch_threads_impl`) to issue
+    /// the remainder row at a non-zero base workgroup so oversized
+    /// thread-count dispatches can exceed
+    /// `maxComputeWorkGroupCount[0]` without waste threads.
+    pub(super) dispatch_base_fn: Option<ffi::PfnVkCmdDispatchBase>,
     /// Per-tile memory bindings for sparse textures. Key is
     /// `(texture_handle, mip, tile_x, tile_y)`; value is the
     /// `VkDeviceMemory` allocation that backs that tile after
@@ -668,6 +682,29 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         }
     };
 
+    // TASK 37 — resolve `vkGetPhysicalDeviceProperties2` (core 1.1)
+    // once. Used below to chain the subgroup-properties query onto
+    // each physical device. Null on 1.0-only loaders — the subgroup
+    // capability then conservatively reports false.
+    let get_props2_fn: Option<ffi::PfnVkGetPhysicalDeviceProperties2> = {
+        let name = b"vkGetPhysicalDeviceProperties2\0";
+        let p = unsafe {
+            ffi::vkGetInstanceProcAddr(instance, name.as_ptr() as *const core::ffi::c_char)
+        };
+        if p.is_null() {
+            None
+        } else {
+            // SAFETY: vkGetInstanceProcAddr returns a valid function
+            // pointer of the documented signature when non-null.
+            Some(unsafe {
+                core::mem::transmute::<
+                    *const core::ffi::c_void,
+                    ffi::PfnVkGetPhysicalDeviceProperties2,
+                >(p)
+            })
+        }
+    };
+
     let mut count = 0u32;
     let result =
         unsafe { ffi::vkEnumeratePhysicalDevices(instance, &mut count, core::ptr::null_mut()) };
@@ -710,6 +747,33 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         let tessellation_feature = device_features.tessellation_shader != 0;
         let shader_float64_supported = device_features.shader_float64 != 0;
         let shader_int64_supported = device_features.shader_int64 != 0;
+
+        // TASK 37 — subgroup arithmetic capability. Chain
+        // VkPhysicalDeviceSubgroupProperties onto a properties2 query;
+        // the prims subgroup-reduce path is only sound when the
+        // compute stage supports the ARITHMETIC class. V3D: false
+        // (BASIC only); llvmpipe: true.
+        let subgroup_arithmetic_supported = match get_props2_fn {
+            Some(get_props2) => {
+                let mut subgroup_props = ffi::VkPhysicalDeviceSubgroupProperties {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
+                    p_next: core::ptr::null_mut(),
+                    subgroup_size: 0,
+                    supported_stages: 0,
+                    supported_operations: 0,
+                    quad_operations_in_all_stages: 0,
+                };
+                let mut props2 = ffi::VkPhysicalDeviceProperties2 {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                    p_next: &mut subgroup_props as *mut _ as *mut core::ffi::c_void,
+                    properties: unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceProperties>() },
+                };
+                unsafe { get_props2(pd, &mut props2) };
+                (subgroup_props.supported_operations & ffi::VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0
+                    && (subgroup_props.supported_stages & ffi::VK_SHADER_STAGE_COMPUTE_BIT) != 0
+            }
+            None => false,
+        };
 
         // Find a queue family that supports compute + graphics
         let queue_family = queue_families.iter().enumerate().find(|(_, qf)| {
@@ -1004,6 +1068,14 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
                 >(p)
             });
 
+        // vkCmdDispatchBase is core Vulkan 1.1 (no extension gate) —
+        // resolve unconditionally; null only on 1.0-only drivers.
+        // Enables the folded 1D-dispatch path for group counts above
+        // maxComputeWorkGroupCount[0].
+        let dispatch_base_fn = resolve_pfn(true, b"vkCmdDispatchBase\0").map(|p| unsafe {
+            core::mem::transmute::<*const core::ffi::c_void, ffi::PfnVkCmdDispatchBase>(p)
+        });
+
         // Command pool
         let pool_info = ffi::VkCommandPoolCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -1111,6 +1183,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             sparse_binding_supported,
             shader_float64_supported,
             shader_int64_supported,
+            subgroup_arithmetic_supported,
+            dispatch_base_fn,
             sparse_tile_bindings: RwLock::new(HashMap::new()),
             buffer_device_address_enabled: has_accel_ext,
             acceleration_structures: RwLock::new(HashMap::new()),

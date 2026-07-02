@@ -32,6 +32,11 @@ gpu-vulkan = ["gpu", "quanta/vulkan"]
 [dependencies]
 quanta = { path = "../..", default-features = false, features = ["software"], optional = true }
 
+[dev-dependencies]
+# Used by tests/block_reduce_tree.rs to deserialize the embedded
+# KernelDef IR and assert the tree-reduce kernels are subgroup-free.
+quanta-ir.workspace = true
+
 # Three of the four examples need a real GPU backend (cooperative
 # primitives don't degrade gracefully to single-thread). They
 # skip with a "no GPU" message if `quanta::init()` fails, so

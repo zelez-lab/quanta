@@ -34,6 +34,10 @@ impl SpvEmitter {
     }
 
     pub(crate) fn emit_kernel(&mut self, kernel: &KernelDef) -> Result<(), String> {
+        // Record wg_x for the folded-dispatch linearization constant
+        // in QuarkId (see load_linear builtin helper).
+        self.wg_x = kernel.workgroup_size[0].max(1);
+
         // 1. Capability
         Self::emit_op(
             &mut self.sec_capability,
@@ -337,5 +341,48 @@ impl SpvEmitter {
             &[uint_ty, x_val, loaded, 0],
         );
         x_val
+    }
+
+    /// Load a built-in vec3<u32> and compute the folded-dispatch
+    /// linear index `v.x + v.y * row_span`. `row_span` is the fixed
+    /// per-row element count of a folded 1D dispatch
+    /// (`FOLD_ROW_GROUPS * wg_x` for GlobalInvocationId,
+    /// `FOLD_ROW_GROUPS` for WorkgroupId — see
+    /// `quanta_ir::dispatch_fold`). For ordinary 1D dispatches
+    /// `v.y == 0`, so the result is exactly the old `.x` read.
+    pub(crate) fn load_builtin_linear(&mut self, var_id: u32, row_span: u32) -> u32 {
+        let v3uint = self.ensure_type_v3uint();
+        let uint_ty = self.ensure_type_u32();
+
+        let loaded = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_LOAD, &[v3uint, loaded, var_id]);
+
+        let x_val = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_COMPOSITE_EXTRACT,
+            &[uint_ty, x_val, loaded, 0],
+        );
+        let y_val = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_COMPOSITE_EXTRACT,
+            &[uint_ty, y_val, loaded, 1],
+        );
+        let span_const = self.emit_constant_u32(row_span);
+        let y_scaled = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_IMUL,
+            &[uint_ty, y_scaled, y_val, span_const],
+        );
+        let linear = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_IADD,
+            &[uint_ty, linear, x_val, y_scaled],
+        );
+
+        linear
     }
 }

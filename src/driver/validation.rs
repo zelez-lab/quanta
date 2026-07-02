@@ -236,6 +236,24 @@ impl GpuDevice for ValidationDevice {
         self.inner.timestamp_query_read(handle)
     }
 
+    // === Capability queries ===
+    //
+    // Must reflect the wrapped device, not the trait defaults —
+    // otherwise QUANTA_VALIDATE=1 silently steers capability-gated
+    // paths (64-bit kernels, subgroup reduce) onto their fallbacks.
+
+    fn supports_f64(&self) -> bool {
+        self.inner.supports_f64()
+    }
+
+    fn supports_i64(&self) -> bool {
+        self.inner.supports_i64()
+    }
+
+    fn supports_subgroups(&self) -> bool {
+        self.inner.supports_subgroups()
+    }
+
     // === Async compute ===
 
     fn supports_async_compute(&self) -> bool {

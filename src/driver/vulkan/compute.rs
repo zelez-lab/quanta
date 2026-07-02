@@ -177,10 +177,21 @@ impl VulkanDevice {
             p_specialization_info: core::ptr::null(),
         };
 
+        // Folded 1D dispatches issue their remainder row through
+        // vkCmdDispatchBase with a non-zero base workgroup, which is
+        // only valid on pipelines created with the DISPATCH_BASE flag
+        // (core Vulkan 1.1). Set it whenever the entry point resolved
+        // so any wave can be folded when its group count exceeds
+        // maxComputeWorkGroupCount[0].
+        let pipeline_flags = if self.dispatch_base_fn.is_some() {
+            ffi::VK_PIPELINE_CREATE_DISPATCH_BASE
+        } else {
+            0
+        };
         let pipeline_info = ffi::VkComputePipelineCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
             p_next: core::ptr::null(),
-            flags: 0,
+            flags: pipeline_flags,
             stage,
             layout: pipeline_layout,
             base_pipeline_handle: ffi::null_handle(),
@@ -241,6 +252,76 @@ impl VulkanDevice {
         &self,
         wave: &Wave,
         groups: [u32; 3],
+    ) -> Result<Pulse, QuantaError> {
+        self.wave_dispatch_records_impl(wave, &[([0, 0, 0], groups)])
+    }
+
+    /// Dispatch by total thread count, folding oversized 1D dispatches
+    /// into a 2D grid. When `ceil(quarks / wg_x)` exceeds the device's
+    /// `maxComputeWorkGroupCount[0]`, the groups are split into a
+    /// full-rows rectangle of `FOLD_ROW_GROUPS`-wide rows plus a
+    /// remainder row issued at base workgroup (0, full_rows) via
+    /// `vkCmdDispatchBase` — no waste threads, so unguarded elementwise
+    /// kernels stay exact. The SPIR-V emitters bake the matching
+    /// linearization into `QuarkId` / `NucleusId` (see
+    /// `quanta_ir::dispatch_fold`), so 1D dispatch semantics are
+    /// unchanged; the grid is merely physically 2D.
+    pub(crate) fn wave_dispatch_threads_impl(
+        &self,
+        wave: &Wave,
+        quarks: u32,
+    ) -> Result<Pulse, QuantaError> {
+        let wg_x = wave.workgroup_size[0].max(1);
+        let groups = quarks.div_ceil(wg_x);
+        let limit_x = self.caps.max_groups[0].max(1);
+        if groups <= limit_x {
+            return self.wave_dispatch_impl(wave, [groups, 1, 1]);
+        }
+
+        let row = quanta_ir::dispatch_fold::FOLD_ROW_GROUPS;
+        if row > limit_x {
+            // Linearization is baked against FOLD_ROW_GROUPS; a device
+            // that can't even fit one folded row can't run this shape.
+            return Err(QuantaError::not_supported(
+                "dispatch group count exceeds maxComputeWorkGroupCount[0] \
+                 and the device grid is narrower than the fold row width",
+            ));
+        }
+        if self.dispatch_base_fn.is_none() {
+            return Err(QuantaError::not_supported(
+                "dispatch group count exceeds maxComputeWorkGroupCount[0] \
+                 and vkCmdDispatchBase (Vulkan 1.1) is unavailable",
+            ));
+        }
+        let (full_rows, rem) = quanta_ir::dispatch_fold::fold_groups(groups);
+        let rows_total = full_rows + u32::from(rem > 0);
+        if rows_total > self.caps.max_groups[1].max(1) {
+            return Err(QuantaError::not_supported(
+                "dispatch group count exceeds the folded 2D grid capacity \
+                 (maxComputeWorkGroupCount[0] * [1])",
+            ));
+        }
+
+        let mut records: Vec<([u32; 3], [u32; 3])> = Vec::with_capacity(2);
+        if full_rows > 0 {
+            records.push(([0, 0, 0], [row, full_rows, 1]));
+        }
+        if rem > 0 {
+            records.push(([0, full_rows, 0], [rem, 1, 1]));
+        }
+        self.wave_dispatch_records_impl(wave, &records)
+    }
+
+    /// Shared dispatch body: bind pipeline + descriptors + push
+    /// constants once, then record each `(base_workgroup, group_count)`
+    /// entry — `vkCmdDispatch` for zero bases, `vkCmdDispatchBase`
+    /// otherwise — into a single command buffer / submission. Entries
+    /// of a folded dispatch cover disjoint linear ranges, so no
+    /// barrier is needed between them.
+    fn wave_dispatch_records_impl(
+        &self,
+        wave: &Wave,
+        records: &[([u32; 3], [u32; 3])],
     ) -> Result<Pulse, QuantaError> {
         let compute_pipelines = self
             .compute_pipelines
@@ -351,7 +432,20 @@ impl VulkanDevice {
                 );
             }
 
-            ffi::vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
+            for &(base, counts) in records {
+                if base == [0, 0, 0] {
+                    ffi::vkCmdDispatch(cmd, counts[0], counts[1], counts[2]);
+                } else {
+                    // Callers only build non-zero-base records after
+                    // checking dispatch_base_fn is resolved.
+                    let dispatch_base = self.dispatch_base_fn.ok_or_else(|| {
+                        QuantaError::not_supported("vkCmdDispatchBase is unavailable")
+                    })?;
+                    dispatch_base(
+                        cmd, base[0], base[1], base[2], counts[0], counts[1], counts[2],
+                    );
+                }
+            }
             let r = ffi::vkEndCommandBuffer(cmd);
             if r != ffi::VK_SUCCESS {
                 return Err(QuantaError::submit_failed());

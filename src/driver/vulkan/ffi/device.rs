@@ -98,6 +98,32 @@ pub struct VkPhysicalDeviceSparseProperties {
     pub residency_non_resident_strict: u32,
 }
 
+/// `VkPhysicalDeviceSubgroupProperties` (core Vulkan 1.1) — chained
+/// onto [`VkPhysicalDeviceProperties2`] via `p_next` to learn which
+/// subgroup operation classes the device supports. Broadcom V3D
+/// reports BASIC only (no ARITHMETIC — its NIR backend cannot lower
+/// `OpGroupNonUniform*` reduce/scan); llvmpipe reports the full set.
+#[repr(C)]
+pub struct VkPhysicalDeviceSubgroupProperties {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub subgroup_size: u32,
+    pub supported_stages: u32,
+    pub supported_operations: u32,
+    pub quad_operations_in_all_stages: u32,
+}
+
+/// `VkPhysicalDeviceProperties2` (core Vulkan 1.1) — the base
+/// properties plus an extensible `p_next` chain. Only used at device
+/// discovery to hang [`VkPhysicalDeviceSubgroupProperties`] off it;
+/// the base `properties` are read through the existing v1.0 call.
+#[repr(C)]
+pub struct VkPhysicalDeviceProperties2 {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub properties: VkPhysicalDeviceProperties,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct VkQueueFamilyProperties {

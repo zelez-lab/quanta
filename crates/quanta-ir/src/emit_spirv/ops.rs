@@ -28,8 +28,13 @@ impl SpvEmitter {
     ) -> Result<(), String> {
         match op {
             KernelOp::QuarkId { dst } => {
+                // Folded-dispatch linearization: gid.x + gid.y *
+                // (FOLD_ROW_GROUPS * wg_x). Identity for plain 1D
+                // dispatches (gid.y == 0); exact continuation across
+                // the rectangle + remainder rows of a folded one.
                 let uint_ty = self.ensure_type_u32();
-                let val = self.load_builtin_x(gid_var);
+                let row_span = crate::dispatch_fold::FOLD_ROW_GROUPS * self.wg_x;
+                let val = self.load_builtin_linear(gid_var, row_span);
                 self.set_reg(*dst, val, uint_ty);
             }
 
@@ -40,8 +45,11 @@ impl SpvEmitter {
             }
 
             KernelOp::NucleusId { dst } => {
+                // Same linearization as QuarkId, at workgroup
+                // granularity: wg_id.x + wg_id.y * FOLD_ROW_GROUPS.
                 let uint_ty = self.ensure_type_u32();
-                let val = self.load_builtin_x(nucleus_id_var);
+                let val =
+                    self.load_builtin_linear(nucleus_id_var, crate::dispatch_fold::FOLD_ROW_GROUPS);
                 self.set_reg(*dst, val, uint_ty);
             }
 

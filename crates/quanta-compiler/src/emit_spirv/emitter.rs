@@ -94,6 +94,11 @@ pub(crate) struct SpvEmitter {
     // emitter (T1405) to apply LOOP_CONTROL_UNROLL for short known
     // iteration counts.
     pub(crate) reg_const_int: HashMap<u32, i64>,
+
+    // Workgroup size x of the kernel being emitted (set by
+    // emit_kernel). Feeds the folded-dispatch linearization constant
+    // in QuarkId (`FOLD_ROW_GROUPS * wg_x`).
+    pub(crate) wg_x: u32,
 }
 
 impl SpvEmitter {
@@ -140,6 +145,7 @@ impl SpvEmitter {
             device_fn_ids: HashMap::new(),
             sec_device_fns: Vec::new(),
             reg_const_int: HashMap::new(),
+            wg_x: 1,
         }
     }
 

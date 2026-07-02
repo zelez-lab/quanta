@@ -33,10 +33,15 @@
 //! to a single [`block_radix_sort_u32_buffer`] launch.
 
 use crate::gpu_kernel::{
-    block_radix_sort_u32_buffer, block_reduce_add_f32_buffer, block_reduce_add_i32_buffer,
-    block_reduce_add_u32_buffer, block_reduce_max_f32_buffer, block_reduce_max_i32_buffer,
-    block_reduce_max_u32_buffer, block_reduce_min_f32_buffer, block_reduce_min_i32_buffer,
-    block_reduce_min_u32_buffer, global_bitonic_pass_u32,
+    block_radix_sort_u32_buffer, block_reduce_add_f32_buffer, block_reduce_add_f32_tree_buffer,
+    block_reduce_add_i32_buffer, block_reduce_add_i32_tree_buffer, block_reduce_add_u32_buffer,
+    block_reduce_add_u32_tree_buffer, block_reduce_max_f32_buffer,
+    block_reduce_max_f32_tree_buffer, block_reduce_max_i32_buffer,
+    block_reduce_max_i32_tree_buffer, block_reduce_max_u32_buffer,
+    block_reduce_max_u32_tree_buffer, block_reduce_min_f32_buffer,
+    block_reduce_min_f32_tree_buffer, block_reduce_min_i32_buffer,
+    block_reduce_min_i32_tree_buffer, block_reduce_min_u32_buffer,
+    block_reduce_min_u32_tree_buffer, global_bitonic_pass_u32,
 };
 use quanta::{Field, Gpu, QuantaError};
 
@@ -44,7 +49,8 @@ use quanta::{Field, Gpu, QuantaError};
 const BLOCK: usize = 256;
 
 macro_rules! device_reduce {
-    ($(#[$doc:meta])* $name:ident, $field_name:ident, $ty:ty, $builder:ident, $identity:expr) => {
+    ($(#[$doc:meta])* $name:ident, $field_name:ident, $ty:ty, $builder:ident,
+     $tree_builder:ident, $identity:expr) => {
         $(#[$doc])*
         pub fn $name(gpu: &Gpu, data: &[$ty]) -> Result<$ty, QuantaError> {
             if data.is_empty() {
@@ -52,9 +58,19 @@ macro_rules! device_reduce {
                     "device-wide reduce requires a non-empty input",
                 ));
             }
+            // Subgroup-capable backends take the warp-reduce kernel;
+            // devices without subgroup arithmetic (Broadcom V3D) take
+            // the shared-memory tree kernel. Same dispatch contract.
+            let builder = |g: &Gpu| {
+                if g.supports_subgroups() {
+                    $builder(g)
+                } else {
+                    $tree_builder(g)
+                }
+            };
             let mut current: Vec<$ty> = data.to_vec();
             while current.len() > 1 {
-                current = reduce_pass(gpu, &mut current, $identity, $builder)?;
+                current = reduce_pass(gpu, &mut current, $identity, builder)?;
             }
             Ok(current[0])
         }
@@ -69,9 +85,16 @@ macro_rules! device_reduce {
                     "device-wide reduce requires a non-empty input",
                 ));
             }
-            let mut current = reduce_pass_field(gpu, data, n, $identity, $builder)?;
+            let builder = |g: &Gpu| {
+                if g.supports_subgroups() {
+                    $builder(g)
+                } else {
+                    $tree_builder(g)
+                }
+            };
+            let mut current = reduce_pass_field(gpu, data, n, $identity, builder)?;
             while current.len() > 1 {
-                current = reduce_pass(gpu, &mut current, $identity, $builder)?;
+                current = reduce_pass(gpu, &mut current, $identity, builder)?;
             }
             Ok(current[0])
         }
@@ -136,41 +159,41 @@ fn reduce_pass<T: Copy>(
 
 device_reduce!(
     /// Device-wide sum of `data` on the GPU. Errors on empty input.
-    device_reduce_add_u32, device_reduce_add_u32_field, u32, block_reduce_add_u32_buffer, 0u32
+    device_reduce_add_u32, device_reduce_add_u32_field, u32, block_reduce_add_u32_buffer, block_reduce_add_u32_tree_buffer, 0u32
 );
 device_reduce!(
     /// Device-wide sum of `data` on the GPU. Errors on empty input.
-    device_reduce_add_i32, device_reduce_add_i32_field, i32, block_reduce_add_i32_buffer, 0i32
+    device_reduce_add_i32, device_reduce_add_i32_field, i32, block_reduce_add_i32_buffer, block_reduce_add_i32_tree_buffer, 0i32
 );
 device_reduce!(
     /// Device-wide sum of `data` on the GPU. Errors on empty input.
     /// Tree-reduction order: expect a few ULP of drift vs a
     /// sequential fold.
-    device_reduce_add_f32, device_reduce_add_f32_field, f32, block_reduce_add_f32_buffer, 0f32
+    device_reduce_add_f32, device_reduce_add_f32_field, f32, block_reduce_add_f32_buffer, block_reduce_add_f32_tree_buffer, 0f32
 );
 device_reduce!(
     /// Device-wide minimum of `data` on the GPU. Errors on empty input.
-    device_reduce_min_u32, device_reduce_min_u32_field, u32, block_reduce_min_u32_buffer, u32::MAX
+    device_reduce_min_u32, device_reduce_min_u32_field, u32, block_reduce_min_u32_buffer, block_reduce_min_u32_tree_buffer, u32::MAX
 );
 device_reduce!(
     /// Device-wide minimum of `data` on the GPU. Errors on empty input.
-    device_reduce_min_i32, device_reduce_min_i32_field, i32, block_reduce_min_i32_buffer, i32::MAX
+    device_reduce_min_i32, device_reduce_min_i32_field, i32, block_reduce_min_i32_buffer, block_reduce_min_i32_tree_buffer, i32::MAX
 );
 device_reduce!(
     /// Device-wide minimum of `data` on the GPU. Errors on empty input.
-    device_reduce_min_f32, device_reduce_min_f32_field, f32, block_reduce_min_f32_buffer, f32::INFINITY
+    device_reduce_min_f32, device_reduce_min_f32_field, f32, block_reduce_min_f32_buffer, block_reduce_min_f32_tree_buffer, f32::INFINITY
 );
 device_reduce!(
     /// Device-wide maximum of `data` on the GPU. Errors on empty input.
-    device_reduce_max_u32, device_reduce_max_u32_field, u32, block_reduce_max_u32_buffer, 0u32
+    device_reduce_max_u32, device_reduce_max_u32_field, u32, block_reduce_max_u32_buffer, block_reduce_max_u32_tree_buffer, 0u32
 );
 device_reduce!(
     /// Device-wide maximum of `data` on the GPU. Errors on empty input.
-    device_reduce_max_i32, device_reduce_max_i32_field, i32, block_reduce_max_i32_buffer, i32::MIN
+    device_reduce_max_i32, device_reduce_max_i32_field, i32, block_reduce_max_i32_buffer, block_reduce_max_i32_tree_buffer, i32::MIN
 );
 device_reduce!(
     /// Device-wide maximum of `data` on the GPU. Errors on empty input.
-    device_reduce_max_f32, device_reduce_max_f32_field, f32, block_reduce_max_f32_buffer, f32::NEG_INFINITY
+    device_reduce_max_f32, device_reduce_max_f32_field, f32, block_reduce_max_f32_buffer, block_reduce_max_f32_tree_buffer, f32::NEG_INFINITY
 );
 
 /// Sort `data` ascending on the GPU and return the sorted copy.

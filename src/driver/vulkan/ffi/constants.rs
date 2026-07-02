@@ -373,6 +373,50 @@ pub type PfnVkGetPhysicalDeviceFragmentShadingRatesKHR = unsafe extern "C" fn(
     p_rates: *mut super::structs::VkPhysicalDeviceFragmentShadingRateKHR,
 ) -> VkResult;
 
+// ─── Subgroup capability query (Vulkan 1.1 core) ────────────────────────────
+
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2: u32 = 1000059001;
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: u32 = 1000094001;
+
+/// `VkSubgroupFeatureFlagBits` — the operation classes a device's
+/// subgroups support. We gate the prims subgroup-reduce path on
+/// ARITHMETIC (reduce/scan intrinsics → `OpGroupNonUniformFAdd` etc.).
+pub const VK_SUBGROUP_FEATURE_ARITHMETIC_BIT: u32 = 0x00000008;
+
+/// Function-pointer type for `vkGetPhysicalDeviceProperties2`
+/// (core since Vulkan 1.1). Resolved once via `vkGetInstanceProcAddr`
+/// after instance creation; used during device discovery to chain
+/// `VkPhysicalDeviceSubgroupProperties` onto the base properties
+/// query. The v1.0 `vkGetPhysicalDeviceProperties` extern stays for
+/// the base limits read.
+pub type PfnVkGetPhysicalDeviceProperties2 = unsafe extern "C" fn(
+    physical_device: VkPhysicalDevice,
+    p_properties: *mut super::device::VkPhysicalDeviceProperties2,
+);
+
+// ─── Folded 1D dispatch (vkCmdDispatchBase, Vulkan 1.1 core) ────────────────
+
+/// `VK_PIPELINE_CREATE_DISPATCH_BASE` — compute pipelines created with
+/// this flag may be used with `vkCmdDispatchBase` and a non-zero base
+/// workgroup. Set on every compute pipeline when the device resolves
+/// `vkCmdDispatchBase`, so oversized 1D dispatches can fold into a
+/// 2D grid (full-rows rectangle + remainder row at a base offset).
+pub const VK_PIPELINE_CREATE_DISPATCH_BASE: u32 = 0x00000010;
+
+/// Function-pointer type for `vkCmdDispatchBase` (core since Vulkan
+/// 1.1, from VK_KHR_device_group). Records a dispatch whose workgroup
+/// IDs start at (base_x, base_y, base_z) instead of the origin —
+/// `gl_WorkGroupID` (and thus `GlobalInvocationId`) include the base.
+pub type PfnVkCmdDispatchBase = unsafe extern "C" fn(
+    cmd_buf: VkCommandBuffer,
+    base_group_x: u32,
+    base_group_y: u32,
+    base_group_z: u32,
+    group_count_x: u32,
+    group_count_y: u32,
+    group_count_z: u32,
+);
+
 // ─── VK_EXT_mesh_shader (step 063) ──────────────────────────────────────────
 
 /// Function-pointer type for `vkCmdDrawMeshTasksEXT`. Issued from

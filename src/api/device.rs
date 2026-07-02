@@ -94,6 +94,22 @@ pub trait GpuDevice: Send + Sync {
         false
     }
 
+    /// Whether the backend can run kernels that use subgroup (warp/
+    /// SIMD-group) *arithmetic* operations — `reduce_add_*` /
+    /// `reduce_min_*` / `reduce_max_*` / `scan_add_*` and friends.
+    /// Vulkan: `VkPhysicalDeviceSubgroupProperties.supportedOperations`
+    /// contains `VK_SUBGROUP_FEATURE_ARITHMETIC_BIT` for the compute
+    /// stage (true on llvmpipe, false on Broadcom V3D — Mesa's V3D NIR
+    /// backend cannot lower `OpGroupNonUniformFAdd`, the driver aborts
+    /// at pipeline creation). Metal always has SIMD-group reductions;
+    /// the CPU reference interpreter resolves subgroup ops
+    /// warp-cooperatively. Callers with a subgroup-free fallback (e.g.
+    /// quanta-prims' shared-memory tree reduction) should select on
+    /// this at dispatch-build time.
+    fn supports_subgroups(&self) -> bool {
+        false
+    }
+
     /// Hardware-supported shading rates as `(width, height)` pairs.
     /// Empty when VRS isn't supported. The render encoder validates
     /// requested rates against this list before submission.

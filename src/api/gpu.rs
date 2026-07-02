@@ -133,6 +133,17 @@ impl Gpu {
         self.inner.supports_i64()
     }
 
+    /// Whether the active backend can run kernels that use subgroup
+    /// (warp / SIMD-group) arithmetic operations (subgroup reduce /
+    /// scan). The software lane, Metal, and llvmpipe support them;
+    /// the Broadcom V3D GPU does not (its Mesa backend cannot lower
+    /// `OpGroupNonUniform*` arithmetic and aborts at pipeline
+    /// creation). Kernels with a subgroup-free fallback should select
+    /// on this before building the wave.
+    pub fn supports_subgroups(&self) -> bool {
+        self.inner.supports_subgroups()
+    }
+
     /// Hardware-supported VRS shading rates as `(width, height)`
     /// pairs. Empty when VRS isn't supported.
     pub fn supported_shading_rates(&self) -> Vec<(u32, u32)> {

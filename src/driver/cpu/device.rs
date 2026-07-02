@@ -255,6 +255,12 @@ impl GpuDevice for CpuDevice {
         true
     }
 
+    fn supports_subgroups(&self) -> bool {
+        // The software interpreter resolves subgroup reduce/scan ops
+        // warp-cooperatively (SubgroupMode Collect + Resolve passes).
+        true
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, _usage: FieldUsage) -> Result<u64, QuantaError> {

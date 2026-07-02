@@ -57,6 +57,13 @@ impl GpuDevice for MetalDevice {
         self.sparse_supported
     }
 
+    fn supports_subgroups(&self) -> bool {
+        // SIMD-group reductions (`simd_sum` / `simd_min` / `simd_max` /
+        // prefix sums) are available on every Metal GPU Quanta targets;
+        // the subgroup prims path has always run on this backend.
+        true
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {

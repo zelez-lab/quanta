@@ -568,6 +568,386 @@ pub fn block_reduce_max_f32_buffer(data: &[f32], out: &mut [f32]) {
     }
 }
 
+// ── Top-level kernels: subgroup-free tree reduce ──────────────────
+//
+// Shared-memory tree reduction — the fallback for devices whose
+// driver cannot lower subgroup arithmetic (`OpGroupNonUniform*`
+// reduce). Broadcom V3D is the motivating target: its Mesa NIR
+// backend aborts at pipeline creation on any subgroup reduce
+// (`Unknown intrinsic: @reduce`), while the shared-memory + barrier
+// discipline below is proven to work there (same shape as the
+// Hillis-Steele scans and the tiled GEMM).
+//
+// Algorithm: every lane parks its value in a 256-slot shared array,
+// then log2(256) = 8 halving steps combine `tree[lane]` with
+// `tree[lane + s]` for `lane < s`, with the read phase and write
+// phase split by barriers (every lane rewrites its own slot each
+// step, unchanged when `lane >= s`). Lane 0 ends up holding the
+// block total and writes it to `out[block]`.
+//
+// Same dispatch contract as the subgroup `block_reduce_*_buffer`
+// kernels: workgroup 256, input padded to a multiple of 256 with the
+// operation's identity element, one output per block. The host
+// wrappers in `device_wide` pick between the two families at
+// runtime via `gpu.supports_subgroups()`.
+//
+// Numerical note (f32 add): both families reduce in tree order, but
+// in *different* tree orders, so sums agree only within a few ULP —
+// same caveat as GPU-vs-sequential.
+
+// (The nine kernels are written out longhand rather than through a
+// macro_rules template: `$ty:ty` substitution wraps the type in an
+// invisible token group that the `#[quanta::kernel]` signature parser
+// rejects with "expected a scalar type".)
+
+/// Subgroup-free u32 sum reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_add_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
+    #[quanta::shared]
+    let tree: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: u32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: u32 = tree[p];
+        let nv = if lane < s { v + o } else { v };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
+/// Subgroup-free i32 sum reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_add_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
+    #[quanta::shared]
+    let tree: [i32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: i32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: i32 = tree[p];
+        let nv = if lane < s { v + o } else { v };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
+/// Subgroup-free f32 sum reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_add_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
+    #[quanta::shared]
+    let tree: [f32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: f32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: f32 = tree[p];
+        let nv = if lane < s { v + o } else { v };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
+/// Subgroup-free u32 min reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_min_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
+    #[quanta::shared]
+    let tree: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: u32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: u32 = tree[p];
+        let nv = if lane < s {
+            if o < v { o } else { v }
+        } else {
+            v
+        };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
+/// Subgroup-free i32 min reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_min_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
+    #[quanta::shared]
+    let tree: [i32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: i32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: i32 = tree[p];
+        let nv = if lane < s {
+            if o < v { o } else { v }
+        } else {
+            v
+        };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
+/// Subgroup-free f32 min reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_min_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
+    #[quanta::shared]
+    let tree: [f32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: f32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: f32 = tree[p];
+        let nv = if lane < s {
+            if o < v { o } else { v }
+        } else {
+            v
+        };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
+/// Subgroup-free u32 max reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_max_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
+    #[quanta::shared]
+    let tree: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: u32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: u32 = tree[p];
+        let nv = if lane < s {
+            if o > v { o } else { v }
+        } else {
+            v
+        };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
+/// Subgroup-free i32 max reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_max_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
+    #[quanta::shared]
+    let tree: [i32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: i32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: i32 = tree[p];
+        let nv = if lane < s {
+            if o > v { o } else { v }
+        } else {
+            v
+        };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
+/// Subgroup-free f32 max reduce, one output per block.
+#[quanta::kernel(workgroup = [256])]
+pub fn block_reduce_max_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
+    #[quanta::shared]
+    let tree: [f32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    tree[lane] = data[i as usize];
+    barrier();
+
+    let mut s: u32 = 128u32;
+    while s > 0u32 {
+        // Branchless step: partner index and combine are if-else
+        // *expressions* (selects), never statements — statement-form
+        // guards around shared accesses let LLVM merge the barrier
+        // into divergent control flow when it unrolls this loop
+        // (observed as a halved sum on Metal). Lanes >= s read and
+        // rewrite their own slot unchanged.
+        let v: f32 = tree[lane];
+        let p = if lane < s { lane + s } else { lane };
+        let o: f32 = tree[p];
+        let nv = if lane < s {
+            if o > v { o } else { v }
+        } else {
+            v
+        };
+        barrier();
+        tree[lane] = nv;
+        barrier();
+        s = s / 2u32;
+    }
+
+    if lane == 0u32 {
+        out[block as usize] = tree[0u32];
+    }
+}
+
 // ── Device functions: block scan family ──────────────────────────
 //
 // Block-wide **inclusive** prefix-sum scan. For each lane k in the
