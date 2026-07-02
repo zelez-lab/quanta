@@ -49,6 +49,7 @@ mod construct;
 mod conv;
 mod error;
 mod gather;
+mod gather_dim;
 mod index;
 mod linalg;
 mod pad;

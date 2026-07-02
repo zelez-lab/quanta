@@ -1103,3 +1103,30 @@ fn grad_concat_narrow_roundtrip_is_identity_grad() {
     let gx = loss.grad(&x).unwrap().to_vec().unwrap();
     assert_close(&gx, &vec![1.0f32; 8], 1e-6, "concat/narrow roundtrip grad");
 }
+
+#[test]
+fn grad_gather_last_scatters_back() {
+    // out = gather_last(x, idx); L = sum(out²).
+    // ∂L/∂x[r,c] = Σ_j 2·out[r,j]·[idx[r,j]==c] — the scatter-add of 2·out.
+    let g = gpu();
+    let (r, d, k) = (2usize, 3usize, 4usize);
+    let x_data: Vec<f32> = (0..r * d).map(|i| (i as f32) - 2.0).collect();
+    let idx_data: Vec<u32> = vec![0, 2, 0, 1, 2, 2, 1, 0]; // [2,4], has repeats
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x_data, &[r, d]).unwrap());
+    let idx = Array::from_slice(&g, &idx_data, &[r, k]).unwrap();
+    let out = xv.gather_last(&idx).unwrap();
+    let loss = out.mul(&out).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+
+    // host reference: scatter-add 2·out back through idx.
+    let mut want = vec![0.0f32; r * d];
+    for row in 0..r {
+        for j in 0..k {
+            let col = idx_data[row * k + j] as usize;
+            let ov = x_data[row * d + col]; // out[row,j] = x[row, col]
+            want[row * d + col] += 2.0 * ov;
+        }
+    }
+    assert_close(&gx, &want, 1e-2, "gather_last grad");
+}

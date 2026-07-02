@@ -192,6 +192,24 @@ impl<T: DiffScalar> Var<T> {
             .push(Op::GatherRows(self.id, idx.shallow_clone(), c), y))
     }
 
+    /// Gather along the last axis: `self [L…, D]`, `idx [L…, K]` → `[L…, K]`
+    /// where `out[l…, j] = self[l…, idx[l…, j]]`. The general data-dependent
+    /// lookup (embeddings, top-k, attention) — `idx` isn't differentiated; the
+    /// gradient scatter-adds back to the gathered positions, so repeated picks
+    /// accumulate.
+    pub fn gather_last(&self, idx: &Array<u32>) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let d = *x.shape().last().ok_or_else(|| {
+            AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("gather_last: input needs at least one axis"),
+            ))
+        })?;
+        let y = x.gather_last(idx)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::GatherLast(self.id, idx.shallow_clone(), d), y))
+    }
+
     /// Flatten the trailing dims into one, keeping axis 0 as the batch:
     /// `[N, d1, d2, …]` → `[N, d1·d2·…]`. The standard conv/pool → linear bridge.
     pub fn flatten(&self) -> Result<Var<T>, AutogradError> {

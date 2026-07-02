@@ -86,6 +86,11 @@ pub(crate) enum Op<T: DiffScalar> {
     /// the `narrow` of the upstream grad at that input's row window (concat's
     /// adjoint is a split — the inverse of narrow's pad).
     Concat(Vec<usize>, Vec<usize>),
+    /// gather_last(x, idx): pick entries along the last axis by the
+    /// (non-differentiable) index array. Captures `idx` and the source
+    /// last-axis extent `D`; the gradient scatter-adds back with
+    /// `scatter_last_add` (repeated picks accumulate — gather's adjoint).
+    GatherLast(usize, Array<u32>, usize),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -304,6 +309,11 @@ impl<T: DiffScalar> Var<T> {
                         accum(&mut grads[*id], gi)?;
                         offset += *len;
                     }
+                }
+                Op::GatherLast(a, idx, d) => {
+                    // ∂/∂x = scatter-add g back to the gathered positions.
+                    let gx = g.scatter_last_add(idx, *d)?;
+                    accum(&mut grads[*a], gx)?;
                 }
             }
         }
