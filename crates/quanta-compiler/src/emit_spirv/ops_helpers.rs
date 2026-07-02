@@ -25,8 +25,9 @@ impl SpvEmitter {
         let alignment = Self::scalar_byte_size(ty);
 
         if index.0 == u32::MAX {
-            // Push constant: access member 0 of the struct
-            let zero = self.emit_constant_u32(0);
+            // Push constant: access this slot's member of the shared block
+            let member_idx = self.push_constant_member.get(&field).copied().unwrap_or(0);
+            let member = self.emit_constant_u32(member_idx);
             let sc = if self.is_push_constant_field(field) {
                 STORAGE_CLASS_PUSH_CONSTANT
             } else {
@@ -37,7 +38,7 @@ impl SpvEmitter {
             Self::emit_op(
                 &mut self.sec_function,
                 OP_ACCESS_CHAIN,
-                &[ptr_elem, chain, var_id, zero],
+                &[ptr_elem, chain, var_id, member],
             );
             let loaded = self.alloc_id();
             // Memory operand 0x2 = Aligned, followed by alignment value
@@ -368,6 +369,11 @@ impl SpvEmitter {
             self.scalar_type_id(ty)
         } else if is_signed {
             self.ensure_type_i32_for(ty)
+        } else if matches!(ty, ScalarType::Bool) {
+            // OpIEqual & friends take *int* operands — a Bool-typed compare
+            // lane (wasm `i32.eq` over compare results) compares the 0/1
+            // materializations, never `%bool` values directly.
+            self.ensure_type_u32()
         } else {
             self.scalar_type_id(ty)
         };
@@ -423,6 +429,28 @@ impl SpvEmitter {
     ) -> Result<(), String> {
         let src_val = self.reg_value_id(src)?;
         let result_ty = self.scalar_type_id(to);
+
+        // OpBitcast to or from %bool is invalid SPIR-V (bools have no bit
+        // representation). Bool → int materializes 0/1; int → bool is a
+        // truthiness test. Trust `bool_vals` over the declared `from` — the
+        // wasm route can reuse a register for both an int and a bool value.
+        let src_is_bool = matches!(from, ScalarType::Bool) || self.bool_vals.contains(&src_val);
+        if src_is_bool && !matches!(to, ScalarType::Bool) {
+            let as_int = self.bool_to_int(src_val);
+            let uint_ty = self.ensure_type_u32();
+            let result = self.coerce_to(as_int, uint_ty, result_ty);
+            self.set_reg(dst, result, result_ty);
+            return Ok(());
+        }
+        if matches!(to, ScalarType::Bool) && !src_is_bool {
+            let src_ty = self.reg_type_id(src)?;
+            let bool_ty = self.ensure_type_bool();
+            let result = self.coerce_to(src_val, src_ty, bool_ty);
+            self.bool_vals.insert(result);
+            self.set_reg(dst, result, bool_ty);
+            return Ok(());
+        }
+
         let from_float = matches!(from, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
         let to_float = matches!(to, ScalarType::F32 | ScalarType::F64 | ScalarType::F16);
         let from_signed = matches!(

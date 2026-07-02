@@ -133,7 +133,11 @@ impl SpvEmitter {
                 // Track integer constants so the Loop emitter can pick
                 // LOOP_CONTROL_UNROLL for short iteration counts (TODO T1405).
                 // Floats and booleans aren't tracked — they don't feed
-                // Loop.count.
+                // Loop.count. Demoted (mutable) registers aren't tracked
+                // either: their value can change after this Const.
+                if self.demoted_regs.contains_key(&dst.0) {
+                    return Ok(());
+                }
                 match value {
                     ConstValue::U32(v) => {
                         self.reg_const_int.insert(dst.0, *v as i64);
@@ -170,8 +174,10 @@ impl SpvEmitter {
                 let alignment = Self::scalar_byte_size(*ty);
 
                 if index.0 == u32::MAX {
-                    // Push constant: access member 0 of the struct
-                    let zero = self.emit_constant_u32(0);
+                    // Push constant: access this slot's member of the
+                    // shared block
+                    let member_idx = self.push_constant_member.get(field).copied().unwrap_or(0);
+                    let member = self.emit_constant_u32(member_idx);
                     let sc = if self.is_push_constant_field(*field) {
                         STORAGE_CLASS_PUSH_CONSTANT
                     } else {
@@ -182,7 +188,7 @@ impl SpvEmitter {
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_ACCESS_CHAIN,
-                        &[ptr_elem, chain, var_id, zero],
+                        &[ptr_elem, chain, var_id, member],
                     );
                     let loaded = self.alloc_id();
                     let storage_ty = self.storage_scalar_type_id(*ty);
@@ -599,6 +605,12 @@ impl SpvEmitter {
                     self.scalar_type_id(*ty)
                 } else if is_signed {
                     self.ensure_type_i32_for(*ty)
+                } else if matches!(ty, ScalarType::Bool) {
+                    // OpIEqual & friends take *int* operands — a Bool-typed
+                    // compare lane compares the 0/1 materializations
+                    // (coerce_to turns a %bool operand into OpSelect 1/0),
+                    // never `%bool` values directly.
+                    self.ensure_type_u32()
                 } else {
                     self.scalar_type_id(*ty)
                 };
@@ -648,6 +660,17 @@ impl SpvEmitter {
                     return Ok(());
                 }
 
+                // Int→bool: OpBitcast to %bool is equally illegal (bools
+                // have no bit representation). Truthiness-test instead —
+                // `coerce_to` emits `OpINotEqual src, 0` for int sources.
+                if matches!(to, ScalarType::Bool) && !matches!(from, ScalarType::Bool) {
+                    let src_ty = self.reg_type_id(*src)?;
+                    let bool_ty = self.ensure_type_bool();
+                    let result = self.coerce_to(src_val, src_ty, bool_ty);
+                    self.set_reg(*dst, result, bool_ty);
+                    return Ok(());
+                }
+
                 let from_float = matches!(
                     from,
                     ScalarType::F32
@@ -692,7 +715,11 @@ impl SpvEmitter {
             }
 
             KernelOp::Copy { dst, src, ty } => {
-                // In SSA, Copy is just an alias
+                // For a demoted (mutable) dst this materializes as an
+                // OpStore into its variable via set_reg — the anchoring
+                // Copies the lowering emits for loop-carried / branch-
+                // assigned locals MUST produce a real write. A single-def
+                // dst stays a pure SSA alias.
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
                 self.set_reg(*dst, src_val, result_ty);
@@ -818,7 +845,10 @@ impl SpvEmitter {
                 let uint_ty = self.ensure_type_u32();
 
                 // Detect loop-carried registers: defined before the loop AND
-                // written inside the body (as dst).
+                // written inside the body (as dst). Demoted (mutable)
+                // registers never appear here — they live in `demoted_regs`,
+                // not `reg_ids`, and go through their Function-storage
+                // variable instead of header phis.
                 let written_in_body = Self::collect_dsts(body);
                 let mut carried: Vec<(u32, u32, u32)> = Vec::new(); // (reg_num, pre_loop_id, type_id)
                 for &reg_num in &written_in_body {
@@ -862,7 +892,6 @@ impl SpvEmitter {
                         continue_label,
                     ],
                 );
-                self.set_reg(*iter_reg, phi_id, uint_ty);
 
                 // OpPhi for each loop-carried variable.
                 let mut carried_phis: Vec<(u32, u32, u32, u32)> = Vec::new();
@@ -886,6 +915,11 @@ impl SpvEmitter {
                     self.set_reg(Reg(reg_num), header_phi, ty_id);
                     carried_phis.push((reg_num, header_phi, continue_copy, ty_id));
                 }
+
+                // Bind the counter register AFTER all header phis are
+                // emitted: for a demoted iter_reg this set_reg emits an
+                // OpStore, and no non-phi instruction may precede a phi.
+                self.set_reg(*iter_reg, phi_id, uint_ty);
 
                 // OpLoopMerge (must be penultimate).
                 //

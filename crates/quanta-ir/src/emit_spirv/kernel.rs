@@ -197,6 +197,12 @@ impl SpvEmitter {
         let entry_label = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[entry_label]);
 
+        // Demote mutable registers (written more than once, or written in a
+        // Branch arm / Loop body and read past the merge) to Function-storage
+        // variables. SPIR-V requires the OpVariables in the first block.
+        let demoted = crate::reg_mutability::collect_mutable_regs(&[], &kernel.body);
+        self.declare_demoted_regs(&demoted);
+
         // Emit the body ops
         self.emit_ops(
             &kernel.body,
@@ -214,7 +220,17 @@ impl SpvEmitter {
     }
 
     /// Set up storage buffers and push constants for each kernel parameter.
+    ///
+    /// Vulkan allows at most ONE push-constant block per entry point, so
+    /// scalar `Constant` params are gathered into a single Block struct (one
+    /// member per param, offset = slot*16 — the runtime pushes one blob with
+    /// each slot at a 16-byte-aligned offset). The previous
+    /// one-variable-per-constant emission violated
+    /// VUID-StandaloneSpirv-OpEntryPoint-06674 and, worse, same-typed
+    /// constants shared one cached struct type so only the first slot's
+    /// Offset decoration ever landed.
     fn emit_kernel_params(&mut self, params: &[KernelParam]) -> Result<(), String> {
+        let mut constants: Vec<(String, u32, ScalarType)> = Vec::new();
         for param in params {
             match param {
                 KernelParam::FieldRead {
@@ -273,39 +289,59 @@ impl SpvEmitter {
                     slot,
                     scalar_type,
                 } => {
-                    let elem_ty = self.storage_scalar_type_id(*scalar_type);
-                    // Push constants: wrap in a struct with Block decoration,
-                    // use PushConstant storage class (matches vkCmdPushConstants).
-                    let struct_ty = self.ensure_type_struct(&[elem_ty]);
-                    if self.decorated_block.insert(struct_ty) {
-                        self.decorate(struct_ty, DECORATION_BLOCK, &[]);
-                        self.member_decorate(struct_ty, 0, DECORATION_OFFSET, &[*slot * 16]);
-                    }
-
-                    let ptr_struct =
-                        self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, struct_ty);
-
-                    let var_id = self.alloc_id();
-                    Self::emit_op(
-                        &mut self.sec_global_var,
-                        OP_VARIABLE,
-                        &[ptr_struct, var_id, STORAGE_CLASS_PUSH_CONSTANT],
-                    );
-                    self.emit_name(var_id, name);
-                    // PushConstant doesn't use DescriptorSet/Binding — it's accessed
-                    // via the push constant range in the pipeline layout.
-
-                    // Store as field_vars — Load with index=MAX will access member 0
-                    self.field_vars.insert(*slot, (var_id, elem_ty, false));
-                    self.push_constant_slots.insert(*slot);
-                    self.push_constant_size += 16;
+                    constants.push((name.clone(), *slot, *scalar_type));
                 }
                 _ => {
                     // Texture params — not yet supported in SPIR-V emitter
                 }
             }
         }
+        self.emit_push_constant_block(&constants);
         Ok(())
+    }
+
+    /// Emit the single push-constant Block for all scalar `Constant` params.
+    /// Member `i` (in slot order) sits at byte offset `slot*16`, matching the
+    /// runtime's inline push buffer layout (`Wave::set_value`).
+    fn emit_push_constant_block(&mut self, constants: &[(String, u32, ScalarType)]) {
+        if constants.is_empty() {
+            return;
+        }
+        let mut constants = constants.to_vec();
+        constants.sort_by_key(|&(_, slot, _)| slot);
+
+        let member_tys: Vec<u32> = constants
+            .iter()
+            .map(|&(_, _, sty)| self.storage_scalar_type_id(sty))
+            .collect();
+        let struct_ty = self.ensure_type_struct(&member_tys);
+        if self.decorated_block.insert(struct_ty) {
+            self.decorate(struct_ty, DECORATION_BLOCK, &[]);
+            for (i, &(_, slot, _)) in constants.iter().enumerate() {
+                self.member_decorate(struct_ty, i as u32, DECORATION_OFFSET, &[slot * 16]);
+            }
+        }
+
+        let ptr_struct = self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, struct_ty);
+        let var_id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_global_var,
+            OP_VARIABLE,
+            &[ptr_struct, var_id, STORAGE_CLASS_PUSH_CONSTANT],
+        );
+        self.emit_name(var_id, "push_constants");
+        // PushConstant doesn't use DescriptorSet/Binding — it's accessed
+        // via the push constant range in the pipeline layout.
+
+        for (i, &(_, slot, sty)) in constants.iter().enumerate() {
+            let elem_ty = self.storage_scalar_type_id(sty);
+            // Store as field_vars — Load with index=MAX accesses this
+            // slot's member of the shared block.
+            self.field_vars.insert(slot, (var_id, elem_ty, false));
+            self.push_constant_slots.insert(slot);
+            self.push_constant_member.insert(slot, i as u32);
+            self.push_constant_size += 16;
+        }
     }
 
     /// Collect all register numbers written (as dst) in a sequence of ops.
@@ -509,6 +545,7 @@ impl SpvEmitter {
             // OpFunctionParameter for each param — save the register mapping
             let old_reg_ids = self.reg_ids.clone();
             let old_reg_types = self.reg_types.clone();
+            let old_demoted = std::mem::take(&mut self.demoted_regs);
             self.reg_ids.clear();
             self.reg_types.clear();
 
@@ -527,12 +564,35 @@ impl SpvEmitter {
                 self.reg_types.insert(i as u32, type_id);
             }
 
-            // OpLabel for the function body
-            let body_label = self.alloc_id();
-            Self::emit_op(&mut self.sec_device_fns, OP_LABEL, &[body_label]);
+            // Mutable-register pre-pass for the device function body; the
+            // params count as a first write at the outermost scope.
+            let pre_written: Vec<(u32, crate::ScalarType)> = device_fn
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, (_, ty))| (i as u32, *ty))
+                .collect();
+            let demoted =
+                crate::reg_mutability::collect_mutable_regs(&pre_written, &device_fn.body);
 
-            // Emit the function body into a temporary buffer, then move to sec_device_fns
+            // Emit the function body (entry label first, so the demoted
+            // OpVariables land in the function's first block) into a
+            // temporary buffer, then move it to sec_device_fns.
             let saved_fn = std::mem::take(&mut self.sec_function);
+            let body_label = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_LABEL, &[body_label]);
+            self.declare_demoted_regs(&demoted);
+            // A demoted param's incoming value seeds its variable; drop the
+            // SSA mapping so later reads go through the variable.
+            for (i, (_, ty)) in device_fn.params.iter().enumerate() {
+                let reg = i as u32;
+                if demoted.contains_key(&reg)
+                    && let Some(param_id) = self.reg_ids.remove(&reg)
+                {
+                    let param_ty = self.scalar_type_id(*ty);
+                    self.set_reg(crate::Reg(reg), param_id, param_ty);
+                }
+            }
             self.emit_ops(
                 &device_fn.body,
                 gid_var,
@@ -566,13 +626,16 @@ impl SpvEmitter {
             // Restore main function's register context
             self.reg_ids = old_reg_ids;
             self.reg_types = old_reg_types;
+            self.demoted_regs = old_demoted;
         }
         Ok(())
     }
 
     /// Find the SPIR-V ID of the return value for a device function body.
-    /// The last expression in the body determines the return value.
-    fn find_return_value(&self, ops: &[KernelOp], _ret_ty: ScalarType) -> Option<u32> {
+    /// The last expression in the body determines the return value. For a
+    /// demoted (mutable) register this emits an `OpLoad` of its variable, so
+    /// it must run while `sec_function` still holds the device fn body.
+    fn find_return_value(&mut self, ops: &[KernelOp], _ret_ty: ScalarType) -> Option<u32> {
         // Walk backwards to find the last op that writes to a dst register
         for op in ops.iter().rev() {
             let dst_reg = match op {
@@ -600,10 +663,13 @@ impl SpvEmitter {
                 | KernelOp::SubgroupSize { dst, .. } => Some(dst.0),
                 _ => None,
             };
-            if let Some(reg_num) = dst_reg
-                && let Some(&id) = self.reg_ids.get(&reg_num)
-            {
-                return Some(id);
+            if let Some(reg_num) = dst_reg {
+                if self.demoted_regs.contains_key(&reg_num) {
+                    return self.reg_value_id(Reg(reg_num)).ok();
+                }
+                if let Some(&id) = self.reg_ids.get(&reg_num) {
+                    return Some(id);
+                }
             }
         }
         None

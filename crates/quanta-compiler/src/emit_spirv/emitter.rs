@@ -50,12 +50,25 @@ pub(crate) struct SpvEmitter {
     pub(crate) reg_ids: HashMap<u32, u32>,
     pub(crate) reg_types: HashMap<u32, u32>,
 
+    // Mutable registers demoted to `Function`-storage OpVariables:
+    // reg → (variable_id, element_type_id). The KernelOp contract allows a
+    // register to be written in a Branch arm / Loop body and read after the
+    // merge (mutable-register semantics); pure SSA renames can't express
+    // that, so those registers go through OpLoad/OpStore on a function-local
+    // variable instead — mirroring the LLVM backend's `reg_slots` allocas.
+    // Detected up front by `quanta_ir::reg_mutability::collect_mutable_regs`;
+    // single-def temporaries stay SSA renames in `reg_ids`.
+    pub(crate) demoted_regs: HashMap<u32, (u32, u32)>,
+
     // Field slot → (variable_id, element_type_id, is_writable)
     pub(crate) field_vars: HashMap<u32, (u32, u32, bool)>,
 
     // Push constant tracking
     pub(crate) push_constant_size: u32,
     pub(crate) push_constant_slots: std::collections::HashSet<u32>,
+    // Slot → member index inside the single push-constant Block (Vulkan
+    // allows only one push-constant interface per entry point).
+    pub(crate) push_constant_member: HashMap<u32, u32>,
 
     // Value ids that are `%bool` (compare results). The wasm-route lowering can
     // reuse one IR register for both an int and a bool value, leaving the
@@ -111,9 +124,11 @@ impl SpvEmitter {
             loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
+            demoted_regs: HashMap::new(),
             field_vars: HashMap::new(),
             push_constant_size: 0,
             push_constant_slots: std::collections::HashSet::new(),
+            push_constant_member: HashMap::new(),
             bool_vals: std::collections::HashSet::new(),
             shared_vars: HashMap::new(),
             decorated_stride: std::collections::HashSet::new(),
@@ -162,7 +177,20 @@ impl SpvEmitter {
 
     // ── Register management ─────────────────────────────────────────────────
 
-    pub(crate) fn reg_value_id(&self, reg: quanta_ir::Reg) -> Result<u32, String> {
+    pub(crate) fn reg_value_id(&mut self, reg: quanta_ir::Reg) -> Result<u32, String> {
+        // Demoted (mutable) register: read its current value from the
+        // function-local variable. Loads from Function storage are
+        // dominance-valid anywhere in the function.
+        if let Some(&(var_id, elem_ty)) = self.demoted_regs.get(&reg.0) {
+            let out = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_LOAD, &[elem_ty, out, var_id]);
+            // A load of a %bool slot is a bool value — keep `ensure_bool`
+            // and the binop/cmp bool-operand paths working on it.
+            if self.type_bool == Some(elem_ty) {
+                self.bool_vals.insert(out);
+            }
+            return Ok(out);
+        }
         self.reg_ids
             .get(&reg.0)
             .copied()
@@ -170,8 +198,61 @@ impl SpvEmitter {
     }
 
     pub(crate) fn set_reg(&mut self, reg: quanta_ir::Reg, id: u32, type_id: u32) {
+        // Demoted (mutable) register: writes become OpStore into its
+        // function-local variable (coerced to the slot's element type).
+        // `reg_ids` is deliberately NOT updated — every later read loads
+        // the variable, so Branch/Loop need no reg-id reconciliation.
+        if let Some(&(var_id, elem_ty)) = self.demoted_regs.get(&reg.0) {
+            // The tracked type can be stale when the wasm route reuses one
+            // register for both an int and a bool value; trust `bool_vals`.
+            let type_id = if self.bool_vals.contains(&id) {
+                self.ensure_type_bool()
+            } else {
+                type_id
+            };
+            let val = self.coerce_to(id, type_id, elem_ty);
+            Self::emit_op(&mut self.sec_function, OP_STORE, &[var_id, val]);
+            self.reg_types.insert(reg.0, elem_ty);
+            return;
+        }
         self.reg_ids.insert(reg.0, id);
         self.reg_types.insert(reg.0, type_id);
+    }
+
+    /// Declare `Function`-storage OpVariables for the demoted (mutable)
+    /// registers of a body. Must be called right after the function's entry
+    /// `OpLabel` — SPIR-V requires all Function-storage variables in the
+    /// first block of the function.
+    pub(crate) fn declare_demoted_regs(
+        &mut self,
+        demoted: &std::collections::BTreeMap<u32, quanta_ir::ScalarType>,
+    ) {
+        for (&reg, &sty) in demoted {
+            let elem_ty = self.scalar_type_id(sty);
+            let ptr_ty = self.ensure_type_pointer(STORAGE_CLASS_FUNCTION, elem_ty);
+            let var_id = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_VARIABLE,
+                &[ptr_ty, var_id, STORAGE_CLASS_FUNCTION],
+            );
+            self.emit_name(var_id, &format!("r{}_slot", reg));
+            self.demoted_regs.insert(reg, (var_id, elem_ty));
+            self.reg_types.insert(reg, elem_ty);
+        }
+    }
+
+    /// Typed `(zero, one)` constants for a known *integer* type id, or
+    /// `None` if the id isn't one of the cached int types. Reads the type
+    /// caches without materializing new types.
+    fn int_zero_one_of(&mut self, ty: u32) -> Option<(u32, u32)> {
+        if self.type_u32 == Some(ty) {
+            Some((self.emit_constant_u32(0), self.emit_constant_u32(1)))
+        } else if self.type_i32 == Some(ty) {
+            Some((self.emit_constant_i32(0), self.emit_constant_i32(1)))
+        } else {
+            None
+        }
     }
 
     pub(crate) fn reg_type_id(&self, reg: quanta_ir::Reg) -> Result<u32, String> {
@@ -189,6 +270,32 @@ impl SpvEmitter {
     pub(crate) fn coerce_to(&mut self, val: u32, from_ty: u32, to_ty: u32) -> u32 {
         if from_ty == to_ty {
             return val;
+        }
+        // `%bool` has no bit representation in SPIR-V, so OpBitcast to or
+        // from it is invalid. Bridge with a semantic conversion instead:
+        // int → bool is a truthiness test (`val != 0`), bool → int
+        // materializes 0/1 with OpSelect.
+        if self.type_bool == Some(to_ty)
+            && let Some((zero, _)) = self.int_zero_one_of(from_ty)
+        {
+            let out = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                super::constants::OP_INOT_EQUAL,
+                &[to_ty, out, val, zero],
+            );
+            return out;
+        }
+        if self.type_bool == Some(from_ty)
+            && let Some((zero, one)) = self.int_zero_one_of(to_ty)
+        {
+            let out = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                super::constants::OP_SELECT,
+                &[to_ty, out, val, one, zero],
+            );
+            return out;
         }
         let out = self.alloc_id();
         Self::emit_op(

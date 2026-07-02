@@ -78,7 +78,9 @@ impl SpvEmitter {
         let count_val = self.reg_value_id(count)?;
         let uint_ty = self.ensure_type_u32();
 
-        // Detect loop-carried registers
+        // Detect loop-carried registers. Demoted (mutable) registers never
+        // appear here — they live in `demoted_regs`, not `reg_ids`, and go
+        // through their Function-storage variable instead of header phis.
         let written_in_body = Self::collect_dsts(body);
         let mut carried: Vec<(u32, u32, u32)> = Vec::new();
         for &reg_num in &written_in_body {
@@ -122,7 +124,6 @@ impl SpvEmitter {
                 continue_label,
             ],
         );
-        self.set_reg(iter_reg, phi_id, uint_ty);
 
         // OpPhi for each loop-carried variable
         let mut carried_phis: Vec<(u32, u32, u32, u32)> = Vec::new();
@@ -144,6 +145,11 @@ impl SpvEmitter {
             self.set_reg(Reg(reg_num), header_phi, ty_id);
             carried_phis.push((reg_num, header_phi, continue_copy, ty_id));
         }
+
+        // Bind the counter register AFTER all header phis are emitted: for
+        // a demoted iter_reg this set_reg emits an OpStore, and no non-phi
+        // instruction may precede a phi.
+        self.set_reg(iter_reg, phi_id, uint_ty);
 
         // OpLoopMerge.
         //

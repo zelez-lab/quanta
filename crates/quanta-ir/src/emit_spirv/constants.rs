@@ -141,6 +141,7 @@ pub(crate) const OP_IMAGE_FETCH: u16 = 95;
 pub(crate) const STORAGE_CLASS_INPUT: u32 = 1;
 pub(crate) const STORAGE_CLASS_OUTPUT: u32 = 3;
 pub(crate) const STORAGE_CLASS_WORKGROUP: u32 = 4;
+pub(crate) const STORAGE_CLASS_FUNCTION: u32 = 7;
 pub(crate) const STORAGE_CLASS_PUSH_CONSTANT: u32 = 9;
 pub(crate) const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
 

@@ -161,6 +161,12 @@ impl SpvEmitter {
         let entry_label = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[entry_label]);
 
+        // Demote mutable registers (written more than once, or written in a
+        // Branch arm / Loop body and read past the merge) to Function-storage
+        // variables. SPIR-V requires the OpVariables in the first block.
+        let demoted = quanta_ir::reg_mutability::collect_mutable_regs(&[], &kernel.body);
+        self.declare_demoted_regs(&demoted);
+
         // Emit the body ops
         self.emit_ops(
             &kernel.body,

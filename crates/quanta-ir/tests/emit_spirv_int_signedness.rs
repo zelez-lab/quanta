@@ -204,3 +204,162 @@ fn bitor_mixed_signedness_is_valid_spirv() {
     let spirv = emit_spirv::emit(&bitor_mixed_kernel()).expect("emit");
     assert_spirv_val(&spirv);
 }
+
+// ── Mutable-register (demoted OpVariable) regression shapes ──────────────────
+//
+// The KernelOp contract is mutable-register semantics: a register may be
+// written in a Branch arm / Loop body and read after the merge. The emitter
+// used to model registers as pure SSA renames, which (a) leaked whichever
+// arm's id was emitted last past a Branch merge (silent miscompile of
+// `let idx = if c { i } else { 0 }`) and (b) produced dominance-invalid
+// modules when a loop-carried register was read past a bypassable loop
+// (`spirv-val`: "ID defined in block X does not dominate its use"). Both
+// shapes are now demoted to Function-storage OpVariables; these tests pin
+// that the emitted modules stay valid.
+
+/// `idx = if i < n { i } else { 999 }` — a register written in a Branch arm
+/// (entry-Const init + re-Copy) and read after the merge.
+fn branch_select_kernel() -> KernelDef {
+    let body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        // idx: entry init with the else value
+        KernelOp::Const {
+            dst: Reg(1),
+            value: ConstValue::U32(999),
+        },
+        // n
+        KernelOp::Const {
+            dst: Reg(2),
+            value: ConstValue::U32(5),
+        },
+        KernelOp::Cmp {
+            dst: Reg(3),
+            a: Reg(0),
+            b: Reg(2),
+            op: CmpOp::Lt,
+            ty: ScalarType::U32,
+        },
+        KernelOp::Branch {
+            cond: Reg(3),
+            then_ops: vec![KernelOp::Copy {
+                dst: Reg(1),
+                src: Reg(0),
+                ty: ScalarType::U32,
+            }],
+            else_ops: vec![],
+        },
+        // Post-merge read: must observe the then-arm write iff taken.
+        KernelOp::Store {
+            field: 0,
+            index: Reg(0),
+            src: Reg(1),
+            ty: ScalarType::U32,
+        },
+    ];
+    KernelDef {
+        name: "branch_select".into(),
+        params: vec![KernelParam::FieldWrite {
+            name: "o".into(),
+            slot: 0,
+            scalar_type: ScalarType::U32,
+        }],
+        body,
+        body_source: None,
+        next_reg: 4,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+#[test]
+fn branch_arm_write_read_after_merge_is_valid_spirv() {
+    let spirv = emit_spirv::emit(&branch_select_kernel()).expect("emit");
+    assert_spirv_val(&spirv);
+}
+
+/// A loop-carried f32 accumulator whose Loop sits inside a *bypassable*
+/// Branch arm, read after the Branch merge — the `gemm_f32_naive` shape
+/// that produced the dominance error (the old emitter re-pointed the
+/// register at the loop-header phi, which does not dominate the merge).
+fn loop_in_branch_carried_kernel() -> KernelDef {
+    let body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        // acc: f32, loop-carried
+        KernelOp::Const {
+            dst: Reg(1),
+            value: ConstValue::F32(0.0),
+        },
+        // trip count
+        KernelOp::Const {
+            dst: Reg(2),
+            value: ConstValue::U32(4),
+        },
+        // bound for the bypassable branch
+        KernelOp::Const {
+            dst: Reg(3),
+            value: ConstValue::U32(100),
+        },
+        KernelOp::Cmp {
+            dst: Reg(4),
+            a: Reg(0),
+            b: Reg(3),
+            op: CmpOp::Lt,
+            ty: ScalarType::U32,
+        },
+        KernelOp::Branch {
+            cond: Reg(4),
+            then_ops: vec![KernelOp::Loop {
+                count: Reg(2),
+                iter_reg: Reg(5),
+                body: vec![
+                    KernelOp::Const {
+                        dst: Reg(6),
+                        value: ConstValue::F32(1.5),
+                    },
+                    KernelOp::BinOp {
+                        dst: Reg(1),
+                        a: Reg(1),
+                        b: Reg(6),
+                        op: BinOp::Add,
+                        ty: ScalarType::F32,
+                    },
+                ],
+            }],
+            else_ops: vec![],
+        },
+        // Post-merge read of the carried register.
+        KernelOp::Store {
+            field: 0,
+            index: Reg(0),
+            src: Reg(1),
+            ty: ScalarType::F32,
+        },
+    ];
+    KernelDef {
+        name: "loop_in_branch_carried".into(),
+        params: vec![KernelParam::FieldWrite {
+            name: "o".into(),
+            slot: 0,
+            scalar_type: ScalarType::F32,
+        }],
+        body,
+        body_source: None,
+        next_reg: 7,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+#[test]
+fn loop_carried_reg_read_after_bypassable_loop_is_valid_spirv() {
+    let spirv = emit_spirv::emit(&loop_in_branch_carried_kernel()).expect("emit");
+    assert_spirv_val(&spirv);
+}

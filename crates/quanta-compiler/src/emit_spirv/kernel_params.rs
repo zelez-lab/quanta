@@ -8,6 +8,15 @@ use super::emitter::SpvEmitter;
 impl SpvEmitter {
     /// Emit kernel parameter declarations (storage buffers, push constants, textures).
     pub(crate) fn emit_kernel_params(&mut self, params: &[KernelParam]) -> Result<(), String> {
+        // Vulkan allows at most ONE push-constant block per entry point, so
+        // scalar `Constant` params are gathered into a single Block struct
+        // (one member per param, offset = slot*16 — the runtime pushes one
+        // blob with each slot at a 16-byte-aligned offset). The previous
+        // one-variable-per-constant emission violated
+        // VUID-StandaloneSpirv-OpEntryPoint-06674 and, worse, same-typed
+        // constants shared one cached struct type so only the first slot's
+        // Offset decoration ever landed.
+        let mut constants: Vec<(String, u32, quanta_ir::ScalarType)> = Vec::new();
         for param in params {
             match param {
                 KernelParam::FieldRead {
@@ -61,27 +70,7 @@ impl SpvEmitter {
                     slot,
                     scalar_type,
                 } => {
-                    let elem_ty = self.scalar_type_id(*scalar_type);
-                    let struct_ty = self.ensure_type_struct(&[elem_ty]);
-                    if self.decorated_block.insert(struct_ty) {
-                        self.decorate(struct_ty, DECORATION_BLOCK, &[]);
-                        self.member_decorate(struct_ty, 0, DECORATION_OFFSET, &[*slot * 16]);
-                    }
-
-                    let ptr_struct =
-                        self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, struct_ty);
-
-                    let var_id = self.alloc_id();
-                    Self::emit_op(
-                        &mut self.sec_global_var,
-                        OP_VARIABLE,
-                        &[ptr_struct, var_id, STORAGE_CLASS_PUSH_CONSTANT],
-                    );
-                    self.emit_name(var_id, name);
-
-                    self.field_vars.insert(*slot, (var_id, elem_ty, false));
-                    self.push_constant_slots.insert(*slot);
-                    self.push_constant_size += 16;
+                    constants.push((name.clone(), *slot, *scalar_type));
                 }
                 KernelParam::Texture2DRead { name, slot, .. } => {
                     self.emit_texture_2d_read(name, *slot);
@@ -94,7 +83,48 @@ impl SpvEmitter {
                 }
             }
         }
+        self.emit_push_constant_block(&constants);
         Ok(())
+    }
+
+    /// Emit the single push-constant Block for all scalar `Constant` params.
+    /// Member `i` (in slot order) sits at byte offset `slot*16`, matching the
+    /// runtime's inline push buffer layout (`Wave::set_value`).
+    fn emit_push_constant_block(&mut self, constants: &[(String, u32, quanta_ir::ScalarType)]) {
+        if constants.is_empty() {
+            return;
+        }
+        let mut constants = constants.to_vec();
+        constants.sort_by_key(|&(_, slot, _)| slot);
+
+        let member_tys: Vec<u32> = constants
+            .iter()
+            .map(|&(_, _, sty)| self.scalar_type_id(sty))
+            .collect();
+        let struct_ty = self.ensure_type_struct(&member_tys);
+        if self.decorated_block.insert(struct_ty) {
+            self.decorate(struct_ty, DECORATION_BLOCK, &[]);
+            for (i, &(_, slot, _)) in constants.iter().enumerate() {
+                self.member_decorate(struct_ty, i as u32, DECORATION_OFFSET, &[slot * 16]);
+            }
+        }
+
+        let ptr_struct = self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, struct_ty);
+        let var_id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_global_var,
+            OP_VARIABLE,
+            &[ptr_struct, var_id, STORAGE_CLASS_PUSH_CONSTANT],
+        );
+        self.emit_name(var_id, "push_constants");
+
+        for (i, &(_, slot, sty)) in constants.iter().enumerate() {
+            let elem_ty = self.scalar_type_id(sty);
+            self.field_vars.insert(slot, (var_id, elem_ty, false));
+            self.push_constant_slots.insert(slot);
+            self.push_constant_member.insert(slot, i as u32);
+            self.push_constant_size += 16;
+        }
     }
 
     pub(crate) fn emit_texture_2d_read(&mut self, name: &str, slot: u32) {

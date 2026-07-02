@@ -54,6 +54,16 @@ pub(crate) struct SpvEmitter {
     // Register → type ID (so we know what type a register holds)
     pub(crate) reg_types: HashMap<u32, u32>,
 
+    // Mutable registers demoted to `Function`-storage OpVariables:
+    // reg → (variable_id, element_type_id). The KernelOp contract allows a
+    // register to be written in a Branch arm / Loop body and read after the
+    // merge (mutable-register semantics); pure SSA renames can't express
+    // that, so those registers go through OpLoad/OpStore on a function-local
+    // variable instead — mirroring the LLVM backend's `reg_slots` allocas.
+    // Detected up front by `reg_mutability::collect_mutable_regs`;
+    // single-def temporaries stay SSA renames in `reg_ids`.
+    pub(crate) demoted_regs: HashMap<u32, (u32, u32)>,
+
     // Field slot → (variable_id, element_type_id, is_writable)
     pub(crate) field_vars: HashMap<u32, (u32, u32, bool)>,
 
@@ -61,6 +71,9 @@ pub(crate) struct SpvEmitter {
     pub(crate) push_constant_size: u32,
     // Which field slots are push constants (PushConstant storage class)
     pub(crate) push_constant_slots: std::collections::HashSet<u32>,
+    // Slot → member index inside the single push-constant Block (Vulkan
+    // allows only one push-constant interface per entry point).
+    pub(crate) push_constant_member: HashMap<u32, u32>,
 
     // Shared memory: id → (variable_id, element_type_id)
     pub(crate) shared_vars: HashMap<u32, (u32, u32)>,
@@ -117,9 +130,11 @@ impl SpvEmitter {
             loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
+            demoted_regs: HashMap::new(),
             field_vars: HashMap::new(),
             push_constant_size: 0,
             push_constant_slots: std::collections::HashSet::new(),
+            push_constant_member: HashMap::new(),
             shared_vars: HashMap::new(),
             decorated_stride: std::collections::HashSet::new(),
             decorated_block: std::collections::HashSet::new(),
@@ -166,7 +181,15 @@ impl SpvEmitter {
 
     // ── Register management ─────────────────────────────────────────────────
 
-    pub(crate) fn reg_value_id(&self, reg: crate::Reg) -> Result<u32, String> {
+    pub(crate) fn reg_value_id(&mut self, reg: crate::Reg) -> Result<u32, String> {
+        // Demoted (mutable) register: read its current value from the
+        // function-local variable. Loads from Function storage are
+        // dominance-valid anywhere in the function.
+        if let Some(&(var_id, elem_ty)) = self.demoted_regs.get(&reg.0) {
+            let out = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_LOAD, &[elem_ty, out, var_id]);
+            return Ok(out);
+        }
         self.reg_ids
             .get(&reg.0)
             .copied()
@@ -182,8 +205,60 @@ impl SpvEmitter {
     }
 
     pub(crate) fn set_reg(&mut self, reg: crate::Reg, id: u32, type_id: u32) {
+        // Demoted (mutable) register: writes become OpStore into its
+        // function-local variable (coerced to the slot's element type).
+        // `reg_ids` is deliberately NOT updated — every later read loads
+        // the variable, so Branch/Loop need no reg-id reconciliation.
+        if let Some(&(var_id, elem_ty)) = self.demoted_regs.get(&reg.0) {
+            let val = self.coerce_to(id, type_id, elem_ty);
+            Self::emit_op(&mut self.sec_function, OP_STORE, &[var_id, val]);
+            self.reg_types.insert(reg.0, elem_ty);
+            return;
+        }
         self.reg_ids.insert(reg.0, id);
         self.reg_types.insert(reg.0, type_id);
+    }
+
+    /// Declare `Function`-storage OpVariables for the demoted (mutable)
+    /// registers of a body. Must be called right after the function's entry
+    /// `OpLabel` — SPIR-V requires all Function-storage variables in the
+    /// first block of the function.
+    pub(crate) fn declare_demoted_regs(
+        &mut self,
+        demoted: &std::collections::BTreeMap<u32, crate::ScalarType>,
+    ) {
+        for (&reg, &sty) in demoted {
+            let elem_ty = self.scalar_type_id(sty);
+            let ptr_ty = self.ensure_type_pointer(STORAGE_CLASS_FUNCTION, elem_ty);
+            let var_id = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_VARIABLE,
+                &[ptr_ty, var_id, STORAGE_CLASS_FUNCTION],
+            );
+            self.emit_name(var_id, &format!("r{}_slot", reg));
+            self.demoted_regs.insert(reg, (var_id, elem_ty));
+            self.reg_types.insert(reg, elem_ty);
+        }
+    }
+
+    /// Typed `(zero, one)` constants for a known *integer* type id, or
+    /// `None` if the id isn't one of the cached int types. Reads the type
+    /// caches without materializing new types (calling `ensure_type_u64`
+    /// here would inject an unused 64-bit type — and its capability — into
+    /// every module).
+    fn int_zero_one_of(&mut self, ty: u32) -> Option<(u32, u32)> {
+        if self.type_u32 == Some(ty) {
+            Some((self.emit_constant_u32(0), self.emit_constant_u32(1)))
+        } else if self.type_i32 == Some(ty) {
+            Some((self.emit_constant_i32(0), self.emit_constant_i32(1)))
+        } else if self.type_u64 == Some(ty) {
+            Some((self.emit_constant_u64(0), self.emit_constant_u64(1)))
+        } else if self.type_i64 == Some(ty) {
+            Some((self.emit_constant_i64(0), self.emit_constant_i64(1)))
+        } else {
+            None
+        }
     }
 
     #[allow(dead_code)]
@@ -204,12 +279,34 @@ impl SpvEmitter {
         if from_ty == to_ty {
             return val;
         }
+        // `%bool` has no bit representation in SPIR-V, so OpBitcast to or
+        // from it is invalid. Bridge with a semantic conversion instead:
+        // int → bool is a truthiness test (`val != 0`), bool → int
+        // materializes 0/1 with OpSelect.
+        if self.type_bool == Some(to_ty)
+            && let Some((zero, _)) = self.int_zero_one_of(from_ty)
+        {
+            let out = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_INOT_EQUAL,
+                &[to_ty, out, val, zero],
+            );
+            return out;
+        }
+        if self.type_bool == Some(from_ty)
+            && let Some((zero, one)) = self.int_zero_one_of(to_ty)
+        {
+            let out = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SELECT,
+                &[to_ty, out, val, one, zero],
+            );
+            return out;
+        }
         let out = self.alloc_id();
-        Self::emit_op(
-            &mut self.sec_function,
-            crate::emit_spirv::constants::OP_BITCAST,
-            &[to_ty, out, val],
-        );
+        Self::emit_op(&mut self.sec_function, OP_BITCAST, &[to_ty, out, val]);
         out
     }
 

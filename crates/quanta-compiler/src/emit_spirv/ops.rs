@@ -119,7 +119,11 @@ impl SpvEmitter {
                 self.set_reg(*dst, id, ty);
                 // Track integer constants for T1405 (Loop unroll on
                 // small known counts). Match the truncation the SPIR-V
-                // type system actually sees.
+                // type system actually sees. Demoted (mutable) registers
+                // aren't tracked: their value can change after this Const.
+                if self.demoted_regs.contains_key(&dst.0) {
+                    return Ok(());
+                }
                 match value {
                     ConstValue::U32(v) => {
                         self.reg_const_int.insert(dst.0, *v as i64);
@@ -172,6 +176,11 @@ impl SpvEmitter {
             }
 
             KernelOp::Copy { dst, src, ty } => {
+                // For a demoted (mutable) dst this materializes as an
+                // OpStore into its variable via set_reg — the anchoring
+                // Copies the lowering emits for loop-carried / branch-
+                // assigned locals MUST produce a real write. A single-def
+                // dst stays a pure SSA alias.
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
                 self.set_reg(*dst, src_val, result_ty);

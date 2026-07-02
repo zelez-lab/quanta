@@ -55,6 +55,7 @@ impl SpvEmitter {
             // OpFunctionParameter for each param — save the register mapping
             let old_reg_ids = self.reg_ids.clone();
             let old_reg_types = self.reg_types.clone();
+            let old_demoted = std::mem::take(&mut self.demoted_regs);
             self.reg_ids.clear();
             self.reg_types.clear();
 
@@ -73,12 +74,35 @@ impl SpvEmitter {
                 self.reg_types.insert(i as u32, type_id);
             }
 
-            // OpLabel for the function body
-            let body_label = self.alloc_id();
-            Self::emit_op(&mut self.sec_device_fns, OP_LABEL, &[body_label]);
+            // Mutable-register pre-pass for the device function body; the
+            // params count as a first write at the outermost scope.
+            let pre_written: Vec<(u32, ScalarType)> = device_fn
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, (_, ty))| (i as u32, *ty))
+                .collect();
+            let demoted =
+                quanta_ir::reg_mutability::collect_mutable_regs(&pre_written, &device_fn.body);
 
-            // Emit the function body into a temporary buffer, then move to sec_device_fns
+            // Emit the function body (entry label first, so the demoted
+            // OpVariables land in the function's first block) into a
+            // temporary buffer, then move it to sec_device_fns.
             let saved_fn = std::mem::take(&mut self.sec_function);
+            let body_label = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_LABEL, &[body_label]);
+            self.declare_demoted_regs(&demoted);
+            // A demoted param's incoming value seeds its variable; drop the
+            // SSA mapping so later reads go through the variable.
+            for (i, (_, ty)) in device_fn.params.iter().enumerate() {
+                let reg = i as u32;
+                if demoted.contains_key(&reg)
+                    && let Some(param_id) = self.reg_ids.remove(&reg)
+                {
+                    let param_ty = self.scalar_type_id(*ty);
+                    self.set_reg(quanta_ir::Reg(reg), param_id, param_ty);
+                }
+            }
             self.emit_ops(
                 &device_fn.body,
                 gid_var,
@@ -109,13 +133,20 @@ impl SpvEmitter {
             // Restore main function's register context
             self.reg_ids = old_reg_ids;
             self.reg_types = old_reg_types;
+            self.demoted_regs = old_demoted;
         }
         Ok(())
     }
 
     /// Find the SPIR-V ID of the return value for a device function body.
-    /// The last expression in the body determines the return value.
-    pub(crate) fn find_return_value(&self, ops: &[KernelOp], _ret_ty: ScalarType) -> Option<u32> {
+    /// The last expression in the body determines the return value. For a
+    /// demoted (mutable) register this emits an `OpLoad` of its variable, so
+    /// it must run while `sec_function` still holds the device fn body.
+    pub(crate) fn find_return_value(
+        &mut self,
+        ops: &[KernelOp],
+        _ret_ty: ScalarType,
+    ) -> Option<u32> {
         // Walk backwards to find the last op that writes to a dst register
         for op in ops.iter().rev() {
             let dst_reg = match op {
@@ -143,10 +174,13 @@ impl SpvEmitter {
                 | KernelOp::SubgroupSize { dst, .. } => Some(dst.0),
                 _ => None,
             };
-            if let Some(reg_num) = dst_reg
-                && let Some(&id) = self.reg_ids.get(&reg_num)
-            {
-                return Some(id);
+            if let Some(reg_num) = dst_reg {
+                if self.demoted_regs.contains_key(&reg_num) {
+                    return self.reg_value_id(quanta_ir::Reg(reg_num)).ok();
+                }
+                if let Some(&id) = self.reg_ids.get(&reg_num) {
+                    return Some(id);
+                }
             }
         }
         None

@@ -10,6 +10,7 @@ pub mod dtype;
 pub mod dtype_codegen;
 pub mod output;
 pub mod quant;
+pub mod reg_mutability;
 pub mod scope_check;
 pub mod serial;
 pub mod shader;
@@ -44,6 +45,7 @@ pub mod op_matrix_cases;
 
 pub use output::CompilerOutput;
 pub use quant::{QuantLevel, QuantMode, QuantScheme, QuantStore, QuantValue};
+pub use reg_mutability::collect_mutable_regs;
 pub use serial::{
     deserialize_kernel, deserialize_output, deserialize_shader, deserialize_shader_output,
     serialize_kernel, serialize_output, serialize_shader, serialize_shader_output,
