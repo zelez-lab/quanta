@@ -8,6 +8,53 @@ use quanta_ir::*;
 use crate::targets::GpuTarget;
 use crate::{emit_llvm, emit_msl, emit_spirv, emit_wgsl, metallib};
 
+/// Validate an emitted SPIR-V module with `spirv-val` if it's on PATH.
+///
+/// Invalid SPIR-V (wrong types, dominance violations) is accepted by
+/// `vkCreateShaderModule` on some drivers and only crashes at pipeline creation
+/// on others — so an emitter or lowering bug can ship silently. This gate runs
+/// the reference validator at build time and, on failure, prints a loud
+/// diagnostic naming the kernel. It is a no-op when `spirv-val` isn't installed
+/// (common on end-user machines). Set `QUANTA_SPIRV_VAL_STRICT=1` to turn a
+/// validation failure into a hard build error (recommended in CI).
+fn spirv_val_gate(kernel_name: &str, spirv: &[u8]) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let child = Command::new("spirv-val")
+        .args(["--target-env", "vulkan1.3", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(_) => return, // spirv-val not available — skip silently
+    };
+    if let Some(stdin) = child.stdin.as_mut()
+        && stdin.write_all(spirv).is_err()
+    {
+        let _ = child.wait();
+        return;
+    }
+    let out = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr);
+        eprintln!(
+            "[quanta] ERROR: emitted SPIR-V for kernel `{kernel_name}` is INVALID \
+             (spirv-val):\n{}",
+            msg.trim()
+        );
+        if std::env::var("QUANTA_SPIRV_VAL_STRICT").as_deref() == Ok("1") {
+            eprintln!("[quanta] QUANTA_SPIRV_VAL_STRICT=1 → aborting build.");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Parse `--targets nvptx,amdgpu` from CLI args.
 pub fn parse_targets(args: &[String]) -> Vec<GpuTarget> {
     for (i, arg) in args.iter().enumerate() {
@@ -114,7 +161,18 @@ pub fn compile_kernel(args: &[String]) {
     let vulkan_report = quanta_ir::validate::validate_for(&quanta_ir::caps::VULKAN, &kernel);
     if vulkan_report.is_ok() {
         match emit_spirv::emit(&kernel) {
-            Ok(spirv) => output.spirv = Some(spirv),
+            Ok(spirv) => {
+                // Safety gate: validate the emitted module with `spirv-val` when
+                // it's on PATH. Invalid SPIR-V (a bad type, a dominance error)
+                // only surfaces at pipeline creation on a real Vulkan driver —
+                // catching it here means an emitter/lowering bug fails at build
+                // time with the kernel name, not silently on someone's GPU.
+                // A no-op when spirv-val isn't installed; set
+                // `QUANTA_SPIRV_VAL_STRICT=1` to hard-fail the build on invalid
+                // output (CI).
+                spirv_val_gate(&kernel.name, &spirv);
+                output.spirv = Some(spirv);
+            }
             Err(e) => eprintln!("[quanta] SPIR-V emitter error: {}", e),
         }
     } else if verbose {
