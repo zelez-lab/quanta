@@ -202,7 +202,23 @@ pub fn fill_uniform_f64(d: &FillUniformF64Data) {
 }
 
 /// Host-side dispatch for `fill_uniform_f64`.
+/// Guard the `f64` distribution kernels: a device that doesn't advertise
+/// `f64` (e.g. the Raspberry Pi's V3D, whose Mesa NIR backend can't lower a
+/// `u2f64` and *aborts the process* on one) must get a clean `NotSupported`
+/// error, never a dispatch that crashes the driver. The CPU backend and any
+/// `shaderFloat64`-capable GPU pass through.
+fn require_f64(gpu: &Gpu) -> Result<(), QuantaError> {
+    if gpu.supports_f64() {
+        Ok(())
+    } else {
+        Err(QuantaError::not_supported(
+            "f64 random distributions require a device with f64 support (shaderFloat64)",
+        ))
+    }
+}
+
 pub fn fill_uniform_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>, QuantaError> {
+    require_f64(gpu)?;
     let mut data = FillUniformF64Data {
         out: vec![0.0f64; len],
         seed_lo: seed as u32,
@@ -339,6 +355,7 @@ pub fn fill_normal_f64(d: &FillNormalF64Data) {
 }
 
 pub fn fill_normal_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>, QuantaError> {
+    require_f64(gpu)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -429,6 +446,7 @@ pub fn fill_exponential_f64_gpu(
     seed: u64,
     lambda: f64,
 ) -> Result<Vec<f64>, QuantaError> {
+    require_f64(gpu)?;
     let mut data = FillExponentialF64Data {
         out: vec![0.0f64; len],
         seed_lo: seed as u32,
@@ -487,6 +505,7 @@ pub fn fill_lognormal_f64_gpu(
     mu: f64,
     sigma: f64,
 ) -> Result<Vec<f64>, QuantaError> {
+    require_f64(gpu)?;
     if len == 0 {
         return Ok(Vec::new());
     }
