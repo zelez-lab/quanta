@@ -55,6 +55,7 @@ pub const OP_CONVERT_F_TO_U: u16 = 109;
 pub const OP_CONVERT_F_TO_S: u16 = 110;
 pub const OP_CONVERT_S_TO_F: u16 = 111;
 pub const OP_CONVERT_U_TO_F: u16 = 112;
+pub const OP_F_CONVERT: u16 = 115; // float width conversion (f32↔f64)
 pub const OP_BITCAST: u16 = 124;
 pub const OP_S_NEGATE: u16 = 126;
 pub const OP_F_NEGATE: u16 = 127;

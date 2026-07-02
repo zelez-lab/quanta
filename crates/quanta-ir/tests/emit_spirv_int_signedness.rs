@@ -13,7 +13,7 @@
 #![cfg(feature = "jit")]
 
 use quanta_ir::{
-    BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, emit_spirv,
+    BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType, emit_spirv,
 };
 
 fn assert_spirv_val(spirv: &[u8]) {
@@ -361,5 +361,118 @@ fn loop_in_branch_carried_kernel() -> KernelDef {
 #[test]
 fn loop_carried_reg_read_after_bypassable_loop_is_valid_spirv() {
     let spirv = emit_spirv::emit(&loop_in_branch_carried_kernel()).expect("emit");
+    assert_spirv_val(&spirv);
+}
+
+/// `out[i] = (u < p) as u32` — a comparison result (a `%bool`) written into a
+/// register that is then stored into a `u32` buffer. This is the
+/// `fill_bernoulli_u32` shape. OpStore is strictly typed: a `%bool` value into
+/// a `%uint` element is invalid SPIR-V (`spirv-val`: "Expected Object type to
+/// match Pointer type"). The Store arm must materialize the bool as an int
+/// (OpSelect 1/0) first.
+fn bool_stored_into_uint_kernel() -> KernelDef {
+    let body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        // v: entry-init 0u32 (the register is demoted; the branch/compare
+        // writes it) — mirrors `let v: u32 = if u < p { 1 } else { 0 }`.
+        KernelOp::Const {
+            dst: Reg(1),
+            value: ConstValue::U32(0),
+        },
+        // p threshold
+        KernelOp::Const {
+            dst: Reg(2),
+            value: ConstValue::U32(3),
+        },
+        // The compare result is a %bool value stored straight into a u32
+        // register, then into the u32 buffer.
+        KernelOp::Cmp {
+            dst: Reg(3),
+            a: Reg(0),
+            b: Reg(2),
+            op: CmpOp::Lt,
+            ty: ScalarType::U32,
+        },
+        KernelOp::Store {
+            field: 0,
+            index: Reg(0),
+            src: Reg(3),
+            ty: ScalarType::U32,
+        },
+    ];
+    KernelDef {
+        name: "bool_into_uint".into(),
+        params: vec![KernelParam::FieldWrite {
+            name: "o".into(),
+            slot: 0,
+            scalar_type: ScalarType::U32,
+        }],
+        body,
+        body_source: None,
+        next_reg: 4,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+#[test]
+fn bool_stored_into_uint_buffer_is_valid_spirv() {
+    let spirv = emit_spirv::emit(&bool_stored_into_uint_kernel()).expect("emit");
+    assert_spirv_val(&spirv);
+}
+
+/// `out[i] = ln(x)` with an `f64` element type. The GLSL.std.450
+/// transcendentals (Log/Exp/Sin/…) accept only 16/32-bit floats; a `%double`
+/// operand is invalid SPIR-V (`spirv-val`: "expected operand to be a 16 or
+/// 32-bit float"). This is the `fill_normal_f64`/`fill_exponential_f64` shape.
+/// The emitter must evaluate the transcendental at f32 and widen back to f64.
+fn f64_transcendental_kernel() -> KernelDef {
+    let body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        // x: an f64 input constant
+        KernelOp::Const {
+            dst: Reg(1),
+            value: ConstValue::F64(2.5),
+        },
+        // ln(x) at f64 — must be f32-emulated to stay valid.
+        KernelOp::MathCall {
+            dst: Reg(2),
+            func: MathFn::Log,
+            args: vec![Reg(1)],
+            ty: ScalarType::F64,
+        },
+        KernelOp::Store {
+            field: 0,
+            index: Reg(0),
+            src: Reg(2),
+            ty: ScalarType::F64,
+        },
+    ];
+    KernelDef {
+        name: "f64_log".into(),
+        params: vec![KernelParam::FieldWrite {
+            name: "o".into(),
+            slot: 0,
+            scalar_type: ScalarType::F64,
+        }],
+        body,
+        body_source: None,
+        next_reg: 3,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+#[test]
+fn f64_transcendental_is_valid_spirv() {
+    let spirv = emit_spirv::emit(&f64_transcendental_kernel()).expect("emit");
     assert_spirv_val(&spirv);
 }

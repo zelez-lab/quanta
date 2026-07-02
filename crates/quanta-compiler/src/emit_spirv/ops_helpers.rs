@@ -84,7 +84,18 @@ impl SpvEmitter {
             .ok_or_else(|| format!("field {} not declared", field))?;
 
         let idx = self.reg_value_id(index)?;
-        let val = self.reg_value_id(src)?;
+        let mut val = self.reg_value_id(src)?;
+        // The stored value must match the buffer element type. A bool value
+        // (e.g. a compare result flowing into `out[i] = (a < b) as u32`) must be
+        // materialized as an int first — OpStore is strictly typed and there is
+        // no bool buffer element type. Other type combinations are already
+        // reconciled upstream by the producing op.
+        let bool_ty = self.ensure_type_bool();
+        if elem_ty != bool_ty && self.bool_vals.contains(&val) {
+            let as_uint = self.bool_to_int(val);
+            let uint_ty = self.ensure_type_u32();
+            val = self.coerce_to(as_uint, uint_ty, elem_ty);
+        }
         let zero = self.emit_constant_u32(0);
         let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, elem_ty);
         let chain = self.alloc_id();

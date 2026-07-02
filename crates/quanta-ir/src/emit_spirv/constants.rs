@@ -49,6 +49,7 @@ pub(crate) const OP_CONVERT_F_TO_S: u16 = 110;
 pub(crate) const OP_CONVERT_S_TO_F: u16 = 111;
 pub(crate) const OP_CONVERT_U_TO_F: u16 = 112;
 pub(crate) const OP_U_CONVERT: u16 = 113; // unsigned int width conversion (u16↔u32)
+pub(crate) const OP_F_CONVERT: u16 = 115; // float width conversion (f32↔f64)
 pub(crate) const OP_BITCAST: u16 = 124;
 pub(crate) const OP_S_NEGATE: u16 = 126;
 pub(crate) const OP_F_NEGATE: u16 = 127;
