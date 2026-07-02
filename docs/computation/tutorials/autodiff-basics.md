@@ -52,8 +52,14 @@ let gx = loss.grad(&x)?;
 The differentiable ops are the same array operations you already know —
 `add` / `sub` / `mul` / `div` (broadcasting), `exp` / `log` / `sqrt`, the
 activations `relu` / `sigmoid` / `tanh`, `matmul`, `conv2d`, `avgpool2d` /
-`maxpool2d`, and the reductions `sum` / `sum_axis` / `mean_axis` — now on `Var`s
-instead of `Array`s.
+`maxpool2d`, `reshape` / `flatten`, and the reductions `sum` / `sum_axis` /
+`mean_axis` — now on `Var`s instead of `Array`s.
+
+`Var::narrow(start, len)` is the differentiable minibatch selector: it takes a
+zero-copy row window of a `[N, …]` batch and, in the backward pass, routes the
+gradient back only to those rows (the sliced-out rows get zero). That's what
+lets a training loop step over `x.narrow(b * batch, batch)` one minibatch at a
+time — see the [MNIST walkthrough](project-mnist.md).
 
 ## Gradients of a broadcast
 

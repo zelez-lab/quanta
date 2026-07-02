@@ -49,6 +49,23 @@ let big = bias.broadcast_to(&[4, 3])?; // 4 identical rows, zero extra memory
 This is exactly the machinery behind the broadcasting in
 [lesson 1](arrays-and-broadcasting.md) — now you can invoke it explicitly.
 
+## Narrow: a sub-range view
+
+`narrow(axis, start, len)` keeps `len` elements along one axis starting at
+`start`, sharing the buffer with the extent clipped and the base offset
+advanced — no copy:
+
+```rust,ignore
+let x = Array::from_slice(&gpu, &(0..12).map(|i| i as f32).collect::<Vec<_>>(), &[4, 3])?;
+let mid = x.narrow(0, 1, 2)?;   // rows 1 and 2 → a [2, 3] view
+let cols = x.narrow(1, 0, 2)?;  // first two columns → a strided [4, 2] view
+```
+
+This is the minibatch selector: `x.narrow(0, b * batch, batch)` picks batch `b`
+out of a stacked `[N, …]` array for free. The autograd version,
+[`Var::narrow`](autodiff-basics.md), makes it differentiable — the gradient
+flows back only to the selected rows.
+
 ## Why zero-copy matters
 
 On a GPU, a copy is a real cost: bandwidth and a synchronization point. Keeping

@@ -134,41 +134,57 @@ fn main() {
     opt.register(&wl).unwrap();
     opt.register(&bl).unwrap();
 
+    let batch = 64;
+    let n_batches = n / batch; // drop the ragged tail for simplicity
+
     for epoch in 0..20 {
-        opt.advance();
-        let tape = Tape::<f32>::new();
-        let xv = tape.var(x.shallow_clone());
-        let wcv = tape.var(wc.shallow_clone());
-        let wlv = tape.var(wl.shallow_clone());
-        let blv = tape.var(bl.shallow_clone());
+        let mut epoch_loss = 0.0f32;
+        for b in 0..n_batches {
+            opt.advance();
+            let tape = Tape::<f32>::new();
 
-        // Forward: conv → relu → maxpool → flatten → linear.
-        let logits = xv
-            .conv2d(&wcv, 1, 1).unwrap()
-            .relu().unwrap()
-            .maxpool2d(2, 2, 2, 0).unwrap()
-            .flatten().unwrap()
-            .matmul(&wlv).unwrap()
-            .add(&blv).unwrap();
+            // Select this minibatch — `narrow` is a zero-copy view over the
+            // full [N, 1, 28, 28] batch, differentiable so gradients flow only
+            // to the selected rows. Labels ride as a plain `Array<u32>`.
+            let xb = tape.var(x.shallow_clone()).narrow(b * batch, batch).unwrap();
+            let yb = y.narrow(0, b * batch, batch).unwrap();
 
-        // Cross-entropy loss against the integer labels.
-        let loss = logits.cross_entropy(&y).unwrap();
+            let wcv = tape.var(wc.shallow_clone());
+            let wlv = tape.var(wl.shallow_clone());
+            let blv = tape.var(bl.shallow_clone());
 
-        // Backward + Adam update.
-        let gwc = loss.grad(&wcv).unwrap();
-        let gwl = loss.grad(&wlv).unwrap();
-        let gbl = loss.grad(&blv).unwrap();
-        wc = opt.step(0, &wc, &gwc).unwrap();
-        wl = opt.step(1, &wl, &gwl).unwrap();
-        bl = opt.step(2, &bl, &gbl).unwrap();
+            // Forward: conv → relu → maxpool → flatten → linear.
+            let logits = xb
+                .conv2d(&wcv, 1, 1).unwrap()
+                .relu().unwrap()
+                .maxpool2d(2, 2, 2, 0).unwrap()
+                .flatten().unwrap()
+                .matmul(&wlv).unwrap()
+                .add(&blv).unwrap();
 
-        println!("epoch {epoch:2}  loss {:.4}", loss.value().to_vec().unwrap()[0]);
+            // Cross-entropy loss against this batch's labels.
+            let loss = logits.cross_entropy(&yb).unwrap();
+
+            // Backward + Adam update.
+            let gwc = loss.grad(&wcv).unwrap();
+            let gwl = loss.grad(&wlv).unwrap();
+            let gbl = loss.grad(&blv).unwrap();
+            wc = opt.step(0, &wc, &gwc).unwrap();
+            wl = opt.step(1, &wl, &gwl).unwrap();
+            bl = opt.step(2, &bl, &gbl).unwrap();
+
+            epoch_loss += loss.value().to_vec().unwrap()[0];
+        }
+        println!("epoch {epoch:2}  loss {:.4}", epoch_loss / n_batches as f32);
     }
 ```
 
-Full-batch gradient descent (one step over all images per epoch) keeps the code
-simple. For larger runs you'd slice the data into minibatches; the loop body is
-identical, just over a subset each step.
+Minibatch SGD: each step trains on a `batch`-row window that
+[`Var::narrow`](https://docs.rs/quanta-autograd) selects as a zero-copy view of
+the full array — the gradient flows only to the selected rows, so slicing costs
+nothing and stays differentiable. `n / batch` steps make an epoch; the reported
+loss is the epoch average. (For a stronger model, shuffle the row order each
+epoch; the loop body is unchanged.)
 
 ### Measure test accuracy
 
@@ -203,21 +219,22 @@ with `argmax_last`:
 cargo run --release
 ```
 
-The loss starts near `ln 10 ≈ 2.30` — the score of random guessing across 10
-classes — and falls steadily as the network learns:
+The reported loss is the per-epoch average over the minibatches; it starts
+below `ln 10 ≈ 2.30` (each step has already updated the weights) and falls
+steadily as the network learns:
 
 ```text
 training on 60000 images
-epoch  0  loss 2.3026
-epoch  4  loss 0.5...
-epoch 19  loss 0.1...
+epoch  0  loss 1.0...
+epoch  4  loss 0.16...
+epoch  9  loss 0.04...
 
 test accuracy: 9xxx/10000 = 9x.x%
 ```
 
 This small single-conv model lands in the mid-to-high 90s% on the test set — a
-real digit recognizer. Exact numbers vary with the init and epoch count; more
-conv channels, a second layer, minibatching, and more epochs push it toward 99%,
+real digit recognizer. Exact numbers vary with the init, batch size, and epoch
+count; more conv channels, a second layer, and more epochs push it toward 99%,
 the standard MNIST ceiling for convnets.
 
 ## 6. What you built
@@ -228,7 +245,7 @@ correct. The whole classification stack (`conv2d`, `maxpool2d`, `flatten`,
 `matmul`, `log_softmax`, `cross_entropy`, `argmax`, `Adam`) is what any image
 classifier is made of; MNIST is just the first dataset you point it at.
 
-- Push accuracy up: more conv channels, a second conv layer, minibatches, more
-  epochs.
+- Push accuracy up: more conv channels, a second conv layer, a shuffled row
+  order, more epochs.
 - Coming from PyTorch? The [From NumPy](../../migration/from-numpy.md) guide's
   "Beyond NumPy" table maps `F.cross_entropy`, `F.conv2d`, and friends.
