@@ -9,8 +9,19 @@
 use quanta_array::Array;
 use quanta_autograd::Tape;
 
+/// The device these training tests run on. With a hardware backend feature
+/// (`metal` / `vulkan`) they run on the real GPU — fast, and exercising the
+/// device path. Otherwise they fall back to the CPU JIT interpreter (portable,
+/// no GPU required, but slow on conv-heavy models).
 fn gpu() -> quanta::Gpu {
-    quanta::init_cpu()
+    #[cfg(any(feature = "metal", feature = "vulkan"))]
+    {
+        quanta::init().expect("a GPU device (metal/vulkan feature is on)")
+    }
+    #[cfg(not(any(feature = "metal", feature = "vulkan")))]
+    {
+        quanta::init_cpu()
+    }
 }
 
 /// `p ← p - lr·g`, as plain array ops (the optimizer step lives outside the
