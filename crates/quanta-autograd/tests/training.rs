@@ -78,3 +78,69 @@ fn fits_linear_regression() {
     assert!((wf - 2.0).abs() < 1e-1, "w = {wf}, want 2.0");
     assert!((bf - 0.5).abs() < 1e-1, "b = {bf}, want 0.5");
 }
+
+/// Softmax (multinomial logistic) regression — a single linear layer trained
+/// with cross-entropy separates three linearly-separable classes to ~100%.
+/// The parity example for scikit's `LogisticRegression(multi_class="multinomial")`.
+#[test]
+fn softmax_regression_separates_three_classes() {
+    use quanta_autograd::optim::Adam;
+
+    let g = gpu();
+    let (n_per, d, k) = (10usize, 2usize, 3usize);
+    let n = n_per * k;
+    // widely separated blobs → separable in few epochs (keeps the CPU test fast)
+    let centers = [(0.0f32, 0.0), (6.0, 0.0), (3.0, 6.0)];
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for (c, (cx, cy)) in centers.iter().enumerate() {
+        for i in 0..n_per {
+            let a = i as f32 * 2.399;
+            let r = 0.6 * ((i % 7) as f32 / 7.0);
+            xs.push(cx + r * a.cos());
+            xs.push(cy + r * a.sin());
+            ys.push(c as u32);
+        }
+    }
+    let x = Array::from_slice(&g, &xs, &[n, d]).unwrap();
+    let y = Array::from_slice(&g, &ys, &[n]).unwrap();
+
+    let init = |shape: &[usize], s: f32| {
+        let c: usize = shape.iter().product();
+        let v: Vec<f32> = (0..c).map(|i| s * (i as f32 * 1.3).sin()).collect();
+        Array::from_slice(&g, &v, shape).unwrap()
+    };
+    let mut w = init(&[d, k], 0.1);
+    let mut b = Array::<f32>::zeros(&g, &[1, k]).unwrap();
+    let mut opt = Adam::new(0.05);
+    opt.register(&w).unwrap();
+    opt.register(&b).unwrap();
+
+    for _ in 0..40 {
+        opt.advance();
+        let tape = Tape::<f32>::new();
+        let xv = tape.var(x.shallow_clone());
+        let wv = tape.var(w.shallow_clone());
+        let bv = tape.var(b.shallow_clone());
+        let logits = xv.matmul(&wv).unwrap().add(&bv).unwrap();
+        let loss = logits.cross_entropy(&y).unwrap();
+        let gw = loss.grad(&wv).unwrap();
+        let gb = loss.grad(&bv).unwrap();
+        w = opt.step(0, &w, &gw).unwrap();
+        b = opt.step(1, &b, &gb).unwrap();
+    }
+
+    let tape = Tape::<f32>::new();
+    let logits = tape
+        .var(x.shallow_clone())
+        .matmul(&tape.var(w.shallow_clone()))
+        .unwrap()
+        .add(&tape.var(b.shallow_clone()))
+        .unwrap();
+    let pred = logits.value().argmax_last().unwrap().to_vec().unwrap();
+    let correct = pred.iter().zip(ys.iter()).filter(|(a, b)| a == b).count();
+    assert!(
+        correct as f32 / n as f32 > 0.95,
+        "softmax regression only got {correct}/{n}"
+    );
+}
