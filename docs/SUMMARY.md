@@ -31,6 +31,7 @@
 - [Project: cluster points (k-means)](computation/tutorials/project-kmeans.md)
 - [Project: word embeddings (word2vec)](computation/tutorials/project-word2vec.md)
 - [Project: denoise a signal (FFT)](computation/tutorials/project-fft-denoise.md)
+- [Project: price an option (Monte-Carlo)](computation/tutorials/project-monte-carlo.md)
 - [Compute Basics](computation/tutorials/compute-basics.md)
 - [Fields and Types](computation/tutorials/fields-and-types.md)
 - [Shared Memory](computation/tutorials/shared-memory.md)
