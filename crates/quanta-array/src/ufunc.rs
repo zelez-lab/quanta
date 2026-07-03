@@ -12,13 +12,13 @@ use core::ops::{Add, Div, Mul, Sub};
 
 use quanta::GpuType;
 use quanta_ir::{
-    BinOp as IrBinOp, KernelDef, KernelOp, KernelParam, MathFn, Reg, UnaryOp as IrUnaryOp,
-    serialize_kernel,
+    BinOp as IrBinOp, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType,
+    UnaryOp as IrUnaryOp, serialize_kernel,
 };
 
 use crate::array::Array;
 use crate::error::ArrayError;
-use crate::scalar::FloatScalar;
+use crate::scalar::{ArrayScalar, FloatScalar};
 
 impl<T: GpuType> Array<T> {
     /// Realize this array as a fresh contiguous row-major `Array`. Already
@@ -272,6 +272,107 @@ impl<T: GpuType> Array<T> {
         a.dispatch_binary(&b, &def, n)
     }
 
+    /// Apply an elementwise comparison, returning a `{0, 1}` mask of `Self`'s
+    /// type (broadcasting like the arithmetic ops). `1` where the predicate
+    /// holds, `0` otherwise.
+    fn compare_op(&self, rhs: &Array<T>, op: quanta_ir::CmpOp) -> Result<Array<T>, ArrayError> {
+        if self.shape() != rhs.shape() {
+            return self.broadcast_binary(rhs, crate::broadcast::Combine::Cmp(op));
+        }
+        let a = self.contiguous_if_needed()?;
+        let b = rhs.contiguous_if_needed()?;
+        let n = a.len();
+        let ty = T::scalar_type();
+        let def = KernelDef {
+            name: "qa_compare".into(),
+            params: vec![
+                KernelParam::FieldRead {
+                    name: "a".into(),
+                    slot: 0,
+                    scalar_type: ty,
+                },
+                KernelParam::FieldRead {
+                    name: "b".into(),
+                    slot: 1,
+                    scalar_type: ty,
+                },
+                KernelParam::FieldWrite {
+                    name: "out".into(),
+                    slot: 2,
+                    scalar_type: ty,
+                },
+            ],
+            body: vec![
+                KernelOp::QuarkId { dst: Reg(0) },
+                KernelOp::Load {
+                    dst: Reg(1),
+                    field: 0,
+                    index: Reg(0),
+                    ty,
+                },
+                KernelOp::Load {
+                    dst: Reg(2),
+                    field: 1,
+                    index: Reg(0),
+                    ty,
+                },
+                KernelOp::Cmp {
+                    dst: Reg(3),
+                    a: Reg(1),
+                    b: Reg(2),
+                    op,
+                    ty,
+                },
+                KernelOp::Cast {
+                    dst: Reg(4),
+                    src: Reg(3),
+                    from: ScalarType::Bool,
+                    to: ty,
+                },
+                KernelOp::Store {
+                    field: 2,
+                    index: Reg(0),
+                    src: Reg(4),
+                    ty,
+                },
+            ],
+            body_source: None,
+            next_reg: 5,
+            opt_level: 0,
+            device_sources: vec![],
+            device_functions: vec![],
+            workgroup_size: [1, 1, 1],
+            subgroup_size: None,
+            dynamic_shared_bytes: 0,
+        };
+        a.dispatch_binary(&b, &def, n)
+    }
+
+    /// Elementwise `self == rhs` as a `{0, 1}` mask.
+    pub fn eq(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.compare_op(rhs, quanta_ir::CmpOp::Eq)
+    }
+    /// Elementwise `self != rhs` as a `{0, 1}` mask.
+    pub fn ne(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.compare_op(rhs, quanta_ir::CmpOp::Ne)
+    }
+    /// Elementwise `self < rhs` as a `{0, 1}` mask.
+    pub fn lt(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.compare_op(rhs, quanta_ir::CmpOp::Lt)
+    }
+    /// Elementwise `self <= rhs` as a `{0, 1}` mask.
+    pub fn le(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.compare_op(rhs, quanta_ir::CmpOp::Le)
+    }
+    /// Elementwise `self > rhs` as a `{0, 1}` mask.
+    pub fn gt(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.compare_op(rhs, quanta_ir::CmpOp::Gt)
+    }
+    /// Elementwise `self >= rhs` as a `{0, 1}` mask.
+    pub fn ge(&self, rhs: &Array<T>) -> Result<Array<T>, ArrayError> {
+        self.compare_op(rhs, quanta_ir::CmpOp::Ge)
+    }
+
     // ── named arithmetic ufuncs (all numeric dtypes) ─────────────────────
 
     /// Elementwise negation.
@@ -342,6 +443,18 @@ impl<T: GpuType> Array<T> {
             out,
             quanta_tensor::Layout::row_major(self.shape())?,
         ))
+    }
+}
+
+impl<T: ArrayScalar> Array<T> {
+    /// Select elementwise from `a` where `self` (a `{0, 1}` mask) is nonzero,
+    /// else from `b`: `out = mask·a + (1 − mask)·b`. All three broadcast. Pairs
+    /// with the comparison ops (`lt`/`ge`/…) to express masked/conditional
+    /// updates without control flow.
+    pub fn where_mask(&self, a: &Array<T>, b: &Array<T>) -> Result<Array<T>, ArrayError> {
+        let one = Array::full(self.gpu(), T::ONE, &[1])?.broadcast_to(self.shape())?;
+        let inv = one.sub(self)?; // 1 − mask
+        self.mul(a)?.add(&inv.mul(b)?)
     }
 }
 

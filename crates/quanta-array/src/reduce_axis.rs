@@ -202,7 +202,7 @@ impl<T: ArrayScalar> Array<T> {
         let (n, c) = self.two_d("max_axis_last")?;
         let ty = T::scalar_type();
         let src = self.contiguous_or_self()?;
-        let def = build_rowreduce_def(c, ty, /* want_arg */ false);
+        let def = build_rowreduce_def(c, ty, /* want_arg */ false, CmpOp::Gt);
         let out = self.gpu().field::<T>(n)?;
         let bytes = serialize_kernel(&def);
         let mut wave = self.gpu().wave_jit(&bytes)?;
@@ -223,7 +223,48 @@ impl<T: ArrayScalar> Array<T> {
         let (n, c) = self.two_d("argmax_last")?;
         let ty = T::scalar_type();
         let src = self.contiguous_or_self()?;
-        let def = build_rowreduce_def(c, ty, /* want_arg */ true);
+        let def = build_rowreduce_def(c, ty, /* want_arg */ true, CmpOp::Gt);
+        let out = self.gpu().field::<u32>(n)?;
+        let bytes = serialize_kernel(&def);
+        let mut wave = self.gpu().wave_jit(&bytes)?;
+        wave.bind(0, src.field_ref());
+        wave.bind(1, &out);
+        self.gpu().dispatch(&wave, n as u32)?.wait()?;
+        Ok(Array::from_parts(
+            self.gpu().clone(),
+            out,
+            Layout::row_major(&[n])?,
+        ))
+    }
+
+    /// Minimum over the **last axis** of a 2-D `[N, C]` array, keepdims:
+    /// `[N, C] → [N, 1]`. The min-reduction twin of `max_axis_last`.
+    pub fn min_axis_last(&self) -> Result<Array<T>, ArrayError> {
+        let (n, c) = self.two_d("min_axis_last")?;
+        let ty = T::scalar_type();
+        let src = self.contiguous_or_self()?;
+        let def = build_rowreduce_def(c, ty, /* want_arg */ false, CmpOp::Lt);
+        let out = self.gpu().field::<T>(n)?;
+        let bytes = serialize_kernel(&def);
+        let mut wave = self.gpu().wave_jit(&bytes)?;
+        wave.bind(0, src.field_ref());
+        wave.bind(1, &out);
+        self.gpu().dispatch(&wave, n as u32)?.wait()?;
+        Ok(Array::from_parts(
+            self.gpu().clone(),
+            out,
+            Layout::row_major(&[n, 1])?,
+        ))
+    }
+
+    /// Index of the minimum over the **last axis** of a 2-D `[N, C]` array:
+    /// `[N, C] → [N]` (`u32`). On ties, the first (lowest-index) minimum wins.
+    /// The k-means assignment step (nearest centroid per point).
+    pub fn argmin_last(&self) -> Result<Array<u32>, ArrayError> {
+        let (n, c) = self.two_d("argmin_last")?;
+        let ty = T::scalar_type();
+        let src = self.contiguous_or_self()?;
+        let def = build_rowreduce_def(c, ty, /* want_arg */ true, CmpOp::Lt);
         let out = self.gpu().field::<u32>(n)?;
         let bytes = serialize_kernel(&def);
         let mut wave = self.gpu().wave_jit(&bytes)?;
@@ -243,6 +284,8 @@ impl<T: ArrayScalar> Array<T> {
             return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
                 match who {
                     "max_axis_last" => "max_axis_last: input must be 2-D [N, C]",
+                    "min_axis_last" => "min_axis_last: input must be 2-D [N, C]",
+                    "argmin_last" => "argmin_last: input must be 2-D [N, C]",
                     _ => "argmax_last: input must be 2-D [N, C]",
                 },
             )));
@@ -252,10 +295,11 @@ impl<T: ArrayScalar> Array<T> {
 }
 
 /// Row-wise reduce over the last axis of `[N, C]`: thread `i` loops `c` over the
-/// row tracking a running max (and, if `want_arg`, its argmax) branchlessly with
-/// a `seen` flag so the first in-bounds element always takes — no float
-/// sentinel. Writes the max (want_arg=false) or the argmax index (true).
-fn build_rowreduce_def(c: usize, ty: ScalarType, want_arg: bool) -> KernelDef {
+/// row tracking a running extremum (and, if `want_arg`, its arg-index)
+/// branchlessly with a `seen` flag so the first in-bounds element always takes —
+/// no float sentinel. `cmp` picks the extremum: `Gt` → running max, `Lt` →
+/// running min. Writes the extremum value (want_arg=false) or its index (true).
+fn build_rowreduce_def(c: usize, ty: ScalarType, want_arg: bool, cmp: CmpOp) -> KernelDef {
     let mut next = 1u32;
     let mut fresh = || {
         let r = next;
@@ -316,12 +360,12 @@ fn build_rowreduce_def(c: usize, ty: ScalarType, want_arg: bool) -> KernelDef {
             index: idx,
             ty,
         },
-        // strict = (v > acc) as u32
+        // strict = (v `cmp` acc) as u32  (Gt → max, Lt → min)
         KernelOp::Cmp {
             dst: gtf,
             a: v,
             b: acc,
-            op: CmpOp::Gt,
+            op: cmp,
             ty,
         },
         KernelOp::Cast {

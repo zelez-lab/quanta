@@ -60,6 +60,8 @@ pub(crate) fn broadcast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>, Ar
 pub(crate) enum Combine {
     Bin(quanta_ir::BinOp),
     Math(quanta_ir::MathFn),
+    /// Elementwise comparison → a `{0, 1}` mask of the operand type.
+    Cmp(quanta_ir::CmpOp),
 }
 
 impl<T: GpuType> Array<T> {
@@ -172,21 +174,39 @@ impl<T: GpuType> Array<T> {
             index: b_off,
             ty,
         });
-        body.push(match combine {
-            Combine::Bin(op) => KernelOp::BinOp {
+        match combine {
+            Combine::Bin(op) => body.push(KernelOp::BinOp {
                 dst: res,
                 a: av,
                 b: bv,
                 op,
                 ty,
-            },
-            Combine::Math(func) => KernelOp::MathCall {
+            }),
+            Combine::Math(func) => body.push(KernelOp::MathCall {
                 dst: res,
                 func,
                 args: vec![av, bv],
                 ty,
-            },
-        });
+            }),
+            Combine::Cmp(op) => {
+                // compare → bool, then materialize a {0,1} mask of `ty`.
+                let m = Reg(next);
+                next += 1;
+                body.push(KernelOp::Cmp {
+                    dst: m,
+                    a: av,
+                    b: bv,
+                    op,
+                    ty,
+                });
+                body.push(KernelOp::Cast {
+                    dst: res,
+                    src: m,
+                    from: quanta_ir::ScalarType::Bool,
+                    to: ty,
+                });
+            }
+        }
         body.push(KernelOp::Store {
             field: 2,
             index: Reg(0),

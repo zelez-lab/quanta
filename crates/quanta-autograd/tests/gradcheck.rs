@@ -1130,3 +1130,40 @@ fn grad_gather_last_scatters_back() {
     }
     assert_close(&gx, &want, 1e-2, "gather_last grad");
 }
+
+#[test]
+fn grad_where_routes_by_mask() {
+    // out = where(mask, a, b); L = sum(out² ). ∂L/∂a = 2a·mask, ∂L/∂b = 2b·(1-mask).
+    let g = gpu();
+    let a_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let b_data = vec![10.0f32, 20.0, 30.0, 40.0];
+    let mask_data = vec![1.0f32, 0.0, 1.0, 0.0];
+    let tape = Tape::<f32>::new();
+    let a = tape.var(Array::from_slice(&g, &a_data, &[4]).unwrap());
+    let b = tape.var(Array::from_slice(&g, &b_data, &[4]).unwrap());
+    let mask = Array::from_slice(&g, &mask_data, &[4]).unwrap();
+    let out = a.where_mask(&mask, &b).unwrap();
+    // value: pick a where mask=1 else b → [1, 20, 3, 40]
+    assert_close(
+        &out.value().to_vec().unwrap(),
+        &[1.0, 20.0, 3.0, 40.0],
+        1e-6,
+        "where value",
+    );
+    let loss = out.mul(&out).unwrap().sum().unwrap();
+    let ga = loss.grad(&a).unwrap().to_vec().unwrap();
+    let gb = loss.grad(&b).unwrap().to_vec().unwrap();
+    // ∂L/∂a = 2·a·mask ; ∂L/∂b = 2·b·(1-mask)
+    let wa: Vec<f32> = a_data
+        .iter()
+        .zip(&mask_data)
+        .map(|(x, m)| 2.0 * x * m)
+        .collect();
+    let wb: Vec<f32> = b_data
+        .iter()
+        .zip(&mask_data)
+        .map(|(x, m)| 2.0 * x * (1.0 - m))
+        .collect();
+    assert_close(&ga, &wa, 1e-2, "where grad a");
+    assert_close(&gb, &wb, 1e-2, "where grad b");
+}

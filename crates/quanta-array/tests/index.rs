@@ -93,3 +93,31 @@ fn argmax_last_basic() {
     assert_eq!(out.shape(), &[3]);
     assert_eq!(out.to_vec().unwrap(), vec![1u32, 3, 0]);
 }
+
+#[test]
+fn min_axis_last_basic() {
+    let g = gpu();
+    let t = vec![
+        1.0f32, 5.0, 2.0, 3.0, // min 1
+        -1.0, -3.0, -2.0, -0.5, // min -3
+        4.0, 4.0, 4.0, 4.0, // min 4
+    ];
+    let m = Array::from_slice(&g, &t, &[3, 4]).unwrap();
+    let out = m.min_axis_last().unwrap();
+    assert_eq!(out.shape(), &[3, 1]);
+    approx(&out.to_vec().unwrap(), &[1.0, -3.0, 4.0]);
+}
+
+#[test]
+fn argmin_last_basic() {
+    let g = gpu();
+    let t = vec![
+        1.0f32, 5.0, 2.0, 3.0, // argmin 0
+        -1.0, -3.0, -2.0, -0.5, // argmin 1
+        4.0, 7.0, 4.0, 7.0, // tie at 0 and 2 → first wins → 0
+    ];
+    let m = Array::from_slice(&g, &t, &[3, 4]).unwrap();
+    let out = m.argmin_last().unwrap();
+    assert_eq!(out.shape(), &[3]);
+    assert_eq!(out.to_vec().unwrap(), vec![0u32, 1, 0]);
+}

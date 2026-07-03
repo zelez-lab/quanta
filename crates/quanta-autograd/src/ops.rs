@@ -192,6 +192,18 @@ impl<T: DiffScalar> Var<T> {
             .push(Op::GatherRows(self.id, idx.shallow_clone(), c), y))
     }
 
+    /// Select elementwise: `out = mask·self + (1−mask)·other`, where `mask` is
+    /// a non-differentiable `{0,1}` array (typically from a comparison). The
+    /// gradient routes to `self` where the mask is 1 and to `other` where it's
+    /// 0 — a differentiable conditional without control flow.
+    pub fn where_mask(&self, mask: &Array<T>, other: &Var<T>) -> Result<Var<T>, AutogradError> {
+        self.same_tape(other)?;
+        let y = mask.where_mask(&self.value(), &other.value())?;
+        Ok(self
+            .tape_handle()
+            .push(Op::Where(self.id, other.id, mask.shallow_clone()), y))
+    }
+
     /// Gather along the last axis: `self [L…, D]`, `idx [L…, K]` → `[L…, K]`
     /// where `out[l…, j] = self[l…, idx[l…, j]]`. The general data-dependent
     /// lookup (embeddings, top-k, attention) — `idx` isn't differentiated; the

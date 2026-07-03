@@ -91,6 +91,11 @@ pub(crate) enum Op<T: DiffScalar> {
     /// last-axis extent `D`; the gradient scatter-adds back with
     /// `scatter_last_add` (repeated picks accumulate — gather's adjoint).
     GatherLast(usize, Array<u32>, usize),
+    /// where(mask, a, b) = mask·a + (1−mask)·b, mask a non-differentiable
+    /// `{0,1}` array. Captures the two input ids and the mask; the gradient
+    /// routes to `a` where the mask is 1 (`mask·g`) and to `b` where it's 0
+    /// (`(1−mask)·g`).
+    Where(usize, usize, Array<T>),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -314,6 +319,14 @@ impl<T: DiffScalar> Var<T> {
                     // ∂/∂x = scatter-add g back to the gathered positions.
                     let gx = g.scatter_last_add(idx, *d)?;
                     accum(&mut grads[*a], gx)?;
+                }
+                Op::Where(a, b, mask) => {
+                    // ∂/∂a = mask·g ; ∂/∂b = (1−mask)·g.
+                    let ga = g.mul(mask)?;
+                    let one = Array::full(mask.gpu(), T::ONE, &[1])?.broadcast_to(mask.shape())?;
+                    let gb = g.mul(&one.sub(mask)?)?;
+                    accum(&mut grads[*a], ga)?;
+                    accum(&mut grads[*b], gb)?;
                 }
             }
         }
