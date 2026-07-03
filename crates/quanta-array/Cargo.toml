@@ -33,3 +33,5 @@ quanta-blas = { path = "../quanta-blas", version = "0.1.0-alpha.2", default-feat
 quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
     "software",
 ] }
+# Host-side RNG for the Monte-Carlo pricing test (no GPU features needed).
+quanta-rand = { path = "../quanta-rand", version = "0.1.0-alpha.2", default-features = false }

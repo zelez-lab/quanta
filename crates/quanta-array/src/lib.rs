@@ -60,6 +60,7 @@ mod pool;
 mod reduce;
 mod reduce_axis;
 mod scalar;
+mod scan;
 mod ufunc;
 
 pub use array::Array;
