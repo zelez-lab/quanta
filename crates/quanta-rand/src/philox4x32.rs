@@ -133,6 +133,15 @@ pub const fn philox4x32_10(ctr: Counter, key: Key) -> Counter {
 /// Host-side use is also supported (the attribute emits the fn
 /// unchanged), so the same source serves CPU reference and GPU
 /// kernel byte-for-byte.
+///
+/// The round multiplies compute the 64-bit product's high half via
+/// the pure-32-bit 16-bit-split form (bit-identical to `mulhilo32`,
+/// see `mulhilo32_split_matches_u64_form` in the tests) instead of
+/// a u64 intermediate, so the spliced kernel lowers on devices
+/// without `shaderInt64` (Metal, Broadcom V3D). The split is
+/// inlined — not a helper call — because the splice is verbatim
+/// and must stay self-contained, same reason the constants are
+/// local.
 #[cfg_attr(feature = "gpu", quanta::device)]
 pub fn philox4x32_10_first_u32(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k1: u32) -> u32 {
     // Constants must be local — `#[quanta::device]` splices the
@@ -156,12 +165,41 @@ pub fn philox4x32_10_first_u32(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k1: 
             key0 = key0.wrapping_add(W0_K);
             key1 = key1.wrapping_add(W1_K);
         }
-        let product0 = (M0_K as u64).wrapping_mul(x0 as u64);
-        let hi0 = (product0 >> 32) as u32;
-        let lo0 = product0 as u32;
-        let product1 = (M1_K as u64).wrapping_mul(x2 as u64);
-        let hi1 = (product1 >> 32) as u32;
-        let lo1 = product1 as u32;
+        // mulhi(M0_K, x0) via 16-bit split — pure u32, bit-identical
+        // to the 64-bit form (each partial fits; carry < 2^18).
+        let m0_lo: u32 = M0_K & 0xFFFFu32;
+        let m0_hi: u32 = M0_K >> 16u32;
+        let x0_lo: u32 = x0 & 0xFFFFu32;
+        let x0_hi: u32 = x0 >> 16u32;
+        let p0_lolo: u32 = m0_lo.wrapping_mul(x0_lo);
+        let p0_lohi: u32 = m0_lo.wrapping_mul(x0_hi);
+        let p0_hilo: u32 = m0_hi.wrapping_mul(x0_lo);
+        let p0_hihi: u32 = m0_hi.wrapping_mul(x0_hi);
+        let p0_cross: u32 = (p0_lolo >> 16u32)
+            .wrapping_add(p0_lohi & 0xFFFFu32)
+            .wrapping_add(p0_hilo & 0xFFFFu32);
+        let hi0: u32 = p0_hihi
+            .wrapping_add(p0_lohi >> 16u32)
+            .wrapping_add(p0_hilo >> 16u32)
+            .wrapping_add(p0_cross >> 16u32);
+        let lo0: u32 = M0_K.wrapping_mul(x0);
+        // mulhi(M1_K, x2), same split.
+        let m1_lo: u32 = M1_K & 0xFFFFu32;
+        let m1_hi: u32 = M1_K >> 16u32;
+        let x2_lo: u32 = x2 & 0xFFFFu32;
+        let x2_hi: u32 = x2 >> 16u32;
+        let p1_lolo: u32 = m1_lo.wrapping_mul(x2_lo);
+        let p1_lohi: u32 = m1_lo.wrapping_mul(x2_hi);
+        let p1_hilo: u32 = m1_hi.wrapping_mul(x2_lo);
+        let p1_hihi: u32 = m1_hi.wrapping_mul(x2_hi);
+        let p1_cross: u32 = (p1_lolo >> 16u32)
+            .wrapping_add(p1_lohi & 0xFFFFu32)
+            .wrapping_add(p1_hilo & 0xFFFFu32);
+        let hi1: u32 = p1_hihi
+            .wrapping_add(p1_lohi >> 16u32)
+            .wrapping_add(p1_hilo >> 16u32)
+            .wrapping_add(p1_cross >> 16u32);
+        let lo1: u32 = M1_K.wrapping_mul(x2);
         let new_x0 = hi1 ^ x1 ^ key0;
         let new_x1 = lo1;
         let new_x2 = hi0 ^ x3 ^ key1;
@@ -243,6 +281,106 @@ mod tests {
             ),
         ];
         for &(c, k) in cases {
+            let canonical = philox4x32_10(Counter(c), Key(k));
+            let scalar = philox4x32_10_first_u32(c[0], c[1], c[2], c[3], k[0], k[1]);
+            assert_eq!(
+                scalar, canonical.0[0],
+                "scalar form diverges from canonical first word for {c:?} / {k:?}"
+            );
+        }
+    }
+
+    /// The 16-bit-split mulhi used inside `philox4x32_10_first_u32`
+    /// (and the in-kernel twin in `gpu_kernel.rs`) must be
+    /// bit-identical to the u64-based `mulhilo32` for every input.
+    /// Sweeps the corner lattice (all pairs of boundary-shaped
+    /// words) plus a dense splitmix-driven random sweep.
+    #[test]
+    fn mulhilo32_split_matches_u64_form() {
+        fn mulhi_split(a: u32, b: u32) -> u32 {
+            let a_lo = a & 0xFFFF;
+            let a_hi = a >> 16;
+            let b_lo = b & 0xFFFF;
+            let b_hi = b >> 16;
+            let lolo = a_lo.wrapping_mul(b_lo);
+            let lohi = a_lo.wrapping_mul(b_hi);
+            let hilo = a_hi.wrapping_mul(b_lo);
+            let hihi = a_hi.wrapping_mul(b_hi);
+            let cross = (lolo >> 16)
+                .wrapping_add(lohi & 0xFFFF)
+                .wrapping_add(hilo & 0xFFFF);
+            hihi.wrapping_add(lohi >> 16)
+                .wrapping_add(hilo >> 16)
+                .wrapping_add(cross >> 16)
+        }
+
+        // Corner lattice: values that stress the 16-bit halves and
+        // the carry chain.
+        let corners: &[u32] = &[
+            0,
+            1,
+            2,
+            0x7FFF,
+            0x8000,
+            0xFFFF,
+            0x0001_0000,
+            0x0001_0001,
+            0x7FFF_FFFF,
+            0x8000_0000,
+            0xFFFF_0000,
+            0xFFFF_FFFE,
+            u32::MAX,
+            M0,
+            M1,
+            W0,
+            W1,
+        ];
+        for &a in corners {
+            for &b in corners {
+                assert_eq!(
+                    mulhi_split(a, b),
+                    mulhilo32(a, b).0,
+                    "split mulhi diverges at a={a:#010x}, b={b:#010x}"
+                );
+            }
+        }
+
+        // Dense sweep: 1M pseudorandom pairs via splitmix32.
+        let mut state = 0x9E37_79B9u32;
+        let mut next = || {
+            state = state.wrapping_add(0x9E37_79B9);
+            let mut z = state;
+            z = (z ^ (z >> 16)).wrapping_mul(0x85EB_CA6B);
+            z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35);
+            z ^ (z >> 16)
+        };
+        for _ in 0..1_000_000 {
+            let a = next();
+            let b = next();
+            assert_eq!(
+                mulhi_split(a, b),
+                mulhilo32(a, b).0,
+                "split mulhi diverges at a={a:#010x}, b={b:#010x}"
+            );
+        }
+    }
+
+    /// Dense cross-check of the full scalar Philox (with its
+    /// inlined split mulhi) against the canonical u64-based
+    /// `philox4x32_10` — 10k pseudorandom counter/key draws.
+    #[test]
+    fn scalar_form_matches_struct_form_dense_sweep() {
+        let mut state = 0xBB67_AE85u32;
+        let mut next = || {
+            state = state.wrapping_add(0x9E37_79B9);
+            let mut z = state;
+            z = (z ^ (z >> 16)).wrapping_mul(0x85EB_CA6B);
+            z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35);
+            z ^ (z >> 16)
+        };
+        for _ in 0..10_000 {
+            let c = [next(), next(), next(), next()];
+            let k = [next(), next()];
             let canonical = philox4x32_10(Counter(c), Key(k));
             let scalar = philox4x32_10_first_u32(c[0], c[1], c[2], c[3], k[0], k[1]);
             assert_eq!(

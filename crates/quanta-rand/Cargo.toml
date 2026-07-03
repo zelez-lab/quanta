@@ -17,6 +17,13 @@ default = []
 # by default so the crate is usable as a pure-Rust RNG on hosts
 # (correctness oracle for downstream tests).
 gpu = ["dep:quanta"]
+# Backend selectors, same shape as quanta-prims/quanta-blas: `gpu`
+# alone gives the software CPU JIT backend (the correctness oracle);
+# `gpu-metal` / `gpu-vulkan` add a hardware backend so
+# `tests/gpu_backend_bitexact.rs` can prove the fills bit-exact on
+# real devices (including ones without shaderInt64).
+gpu-metal = ["gpu", "quanta/metal"]
+gpu-vulkan = ["gpu", "quanta/vulkan"]
 
 [dependencies]
 quanta = { path = "../..", default-features = false, features = ["software"], optional = true }

@@ -24,21 +24,44 @@
 
 use quanta::*;
 
-/// 32×32 → 64-bit multiply, returning hi half. Used inside the
-/// in-kernel Philox round. `#[quanta::device]` exposes the source
-/// to the wasm shell at macro expansion time; the LLVM optimiser
-/// at -O3 typically folds these into the caller.
+/// High 32 bits of the 32×32 product, computed with pure 32-bit
+/// arithmetic (16-bit split) so it lowers on devices without
+/// `shaderInt64` (Metal, Broadcom V3D). Bit-identical to
+/// `((a as u64) * (b as u64)) >> 32` for all inputs — each 16×16
+/// partial product fits in a u32 and the carry chain (`cross`)
+/// tops out below 2^18, so nothing overflows. `#[quanta::device]`
+/// exposes the source to the wasm shell at macro expansion time.
 #[allow(dead_code)]
 #[quanta::device]
 fn philox_mulhi32(a: u32, b: u32) -> u32 {
-    let prod = (a as u64).wrapping_mul(b as u64);
-    (prod >> 32u32) as u32
+    let a_lo: u32 = a & 0xFFFFu32;
+    let a_hi: u32 = a >> 16u32;
+    let b_lo: u32 = b & 0xFFFFu32;
+    let b_hi: u32 = b >> 16u32;
+    let lolo: u32 = a_lo.wrapping_mul(b_lo);
+    let lohi: u32 = a_lo.wrapping_mul(b_hi);
+    let hilo: u32 = a_hi.wrapping_mul(b_lo);
+    let hihi: u32 = a_hi.wrapping_mul(b_hi);
+    // Carry from the low 32 bits of the product into the high 32.
+    let cross: u32 = (lolo >> 16u32)
+        .wrapping_add(lohi & 0xFFFFu32)
+        .wrapping_add(hilo & 0xFFFFu32);
+    hihi.wrapping_add(lohi >> 16u32)
+        .wrapping_add(hilo >> 16u32)
+        .wrapping_add(cross >> 16u32)
 }
 
 /// In-kernel Philox4×32-10, returning the first output word. Same
 /// algorithm as `philox4x32::philox4x32_10_first_u32` in the host
 /// API; transcribed here so the kernel macro can splice it into
 /// the wasm shell.
+///
+/// The round multiplies use the pure-32-bit mulhi form (see
+/// `philox_mulhi32`) inlined into the loop body rather than a call:
+/// this fn is imported cross-crate via `quanta::import_devices!`
+/// and the splice is verbatim, so it must stay self-contained —
+/// the same reason the round constants are local. No u64 appears
+/// anywhere, so the kernel lowers on devices without `shaderInt64`.
 #[allow(dead_code)]
 #[quanta::device]
 fn philox4x32_10_first_u32_kernel(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k1: u32) -> u32 {
@@ -60,12 +83,41 @@ fn philox4x32_10_first_u32_kernel(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k
             key0 = key0.wrapping_add(W0_K);
             key1 = key1.wrapping_add(W1_K);
         }
-        let p0 = (M0_K as u64).wrapping_mul(x0 as u64);
-        let hi0 = (p0 >> 32u32) as u32;
-        let lo0 = p0 as u32;
-        let p1 = (M1_K as u64).wrapping_mul(x2 as u64);
-        let hi1 = (p1 >> 32u32) as u32;
-        let lo1 = p1 as u32;
+        // mulhi(M0_K, x0) via 16-bit split — pure u32, bit-identical
+        // to the 64-bit form (each partial fits; carry < 2^18).
+        let m0_lo: u32 = M0_K & 0xFFFFu32;
+        let m0_hi: u32 = M0_K >> 16u32;
+        let x0_lo: u32 = x0 & 0xFFFFu32;
+        let x0_hi: u32 = x0 >> 16u32;
+        let p0_lolo: u32 = m0_lo.wrapping_mul(x0_lo);
+        let p0_lohi: u32 = m0_lo.wrapping_mul(x0_hi);
+        let p0_hilo: u32 = m0_hi.wrapping_mul(x0_lo);
+        let p0_hihi: u32 = m0_hi.wrapping_mul(x0_hi);
+        let p0_cross: u32 = (p0_lolo >> 16u32)
+            .wrapping_add(p0_lohi & 0xFFFFu32)
+            .wrapping_add(p0_hilo & 0xFFFFu32);
+        let hi0: u32 = p0_hihi
+            .wrapping_add(p0_lohi >> 16u32)
+            .wrapping_add(p0_hilo >> 16u32)
+            .wrapping_add(p0_cross >> 16u32);
+        let lo0: u32 = M0_K.wrapping_mul(x0);
+        // mulhi(M1_K, x2), same split.
+        let m1_lo: u32 = M1_K & 0xFFFFu32;
+        let m1_hi: u32 = M1_K >> 16u32;
+        let x2_lo: u32 = x2 & 0xFFFFu32;
+        let x2_hi: u32 = x2 >> 16u32;
+        let p1_lolo: u32 = m1_lo.wrapping_mul(x2_lo);
+        let p1_lohi: u32 = m1_lo.wrapping_mul(x2_hi);
+        let p1_hilo: u32 = m1_hi.wrapping_mul(x2_lo);
+        let p1_hihi: u32 = m1_hi.wrapping_mul(x2_hi);
+        let p1_cross: u32 = (p1_lolo >> 16u32)
+            .wrapping_add(p1_lohi & 0xFFFFu32)
+            .wrapping_add(p1_hilo & 0xFFFFu32);
+        let hi1: u32 = p1_hihi
+            .wrapping_add(p1_lohi >> 16u32)
+            .wrapping_add(p1_hilo >> 16u32)
+            .wrapping_add(p1_cross >> 16u32);
+        let lo1: u32 = M1_K.wrapping_mul(x2);
         let new_x0 = hi1 ^ x1 ^ key0;
         let new_x1 = lo1;
         let new_x2 = hi0 ^ x3 ^ key1;
@@ -100,7 +152,6 @@ pub fn fill_uniform_u32(d: &FillUniformU32Data) {
 /// `Vec<u32>` of length `len` filled with bit-exact Philox4×32-10
 /// output (counter = quark_id).
 pub fn fill_uniform_u32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u32>, QuantaError> {
-    require_i64(gpu)?;
     let mut data = FillUniformU32Data {
         out: vec![0u32; len],
         seed_lo: seed as u32,
@@ -171,7 +222,6 @@ pub fn fill_uniform_f32(d: &FillUniformF32Data) {
 
 /// Host-side dispatch for `fill_uniform_f32`.
 pub fn fill_uniform_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>, QuantaError> {
-    require_i64(gpu)?;
     let mut data = FillUniformF32Data {
         out: vec![0.0f32; len],
         seed_lo: seed as u32,
@@ -204,27 +254,32 @@ pub fn fill_uniform_f64(d: &FillUniformF64Data) {
     d.out[id as usize] = v;
 }
 
-/// Host-side dispatch for `fill_uniform_f64`.
-/// Guard every RNG kernel: the Philox4×32 core computes a 32×32→64 multiply
-/// (`philox_mulhi32`, `philox4x32_10_first_u32_kernel`), so it needs 64-bit
-/// integers. A device without `shaderInt64` (e.g. the Raspberry Pi's V3D,
-/// whose Mesa NIR backend can't lower a `u2u64`/`u64` op and *aborts the
-/// process*) must get a clean `NotSupported` error, never a dispatch that
-/// crashes the driver — or, worse, silently truncates the multiply to 32-bit
-/// and returns non-Philox bits. The CPU backend and any `shaderInt64`-capable
-/// GPU pass through.
+/// Guard for kernels whose OUTPUT genuinely needs 64-bit integers
+/// (the `(hi << 32) | lo` u64 pack in `fill_uniform_u64` and the
+/// f64 variants). The Philox core itself no longer needs this: its
+/// mulhi is pure 32-bit (see `philox_mulhi32`), so the u32/f32
+/// paths run ungated on Metal and V3D.
+///
+/// A device without `shaderInt64` (e.g. the Raspberry Pi's V3D,
+/// whose Mesa NIR backend can't lower a `u2u64`/`u64` op and
+/// *aborts the process*) must get a clean `NotSupported` error,
+/// never a dispatch that crashes the driver — or, worse, silently
+/// truncates and returns wrong bits. The CPU backend and any
+/// `shaderInt64`-capable GPU pass through.
 fn require_i64(gpu: &Gpu) -> Result<(), QuantaError> {
     if gpu.supports_i64() {
         Ok(())
     } else {
         Err(QuantaError::not_supported(
-            "GPU random generation requires a device with 64-bit integer support (shaderInt64)",
+            "64-bit random output requires a device with 64-bit integer support (shaderInt64)",
         ))
     }
 }
 
-/// Additional guard for the `f64` distribution kernels: they also need `f64`
-/// (`shaderFloat64`) on top of the i64 requirement every RNG kernel has.
+/// Guard for the `f64` distribution kernels: they need `f64`
+/// (`shaderFloat64`) for the double math AND 64-bit integers for
+/// the `(hi << 32) | lo` pack that feeds it, so this implies
+/// `require_i64`. Never enable f64 on a device without it.
 fn require_f64(gpu: &Gpu) -> Result<(), QuantaError> {
     require_i64(gpu)?;
     if gpu.supports_f64() {
@@ -236,6 +291,7 @@ fn require_f64(gpu: &Gpu) -> Result<(), QuantaError> {
     }
 }
 
+/// Host-side dispatch for `fill_uniform_f64`.
 pub fn fill_uniform_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>, QuantaError> {
     require_f64(gpu)?;
     let mut data = FillUniformF64Data {
@@ -312,7 +368,6 @@ pub fn fill_normal_f32(d: &FillNormalF32Data) {
 /// values drawn from N(0, 1). Internally dispatches `(len + 1) / 2`
 /// quarks (each produces a pair) and trims the result.
 pub fn fill_normal_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>, QuantaError> {
-    require_i64(gpu)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -426,7 +481,6 @@ pub fn fill_exponential_f32_gpu(
     seed: u64,
     lambda: f32,
 ) -> Result<Vec<f32>, QuantaError> {
-    require_i64(gpu)?;
     let mut data = FillExponentialF32Data {
         out: vec![0.0f32; len],
         seed_lo: seed as u32,
@@ -591,7 +645,6 @@ pub fn fill_lognormal_f32_gpu(
     mu: f32,
     sigma: f32,
 ) -> Result<Vec<f32>, QuantaError> {
-    require_i64(gpu)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -646,7 +699,6 @@ pub fn fill_bernoulli_u32_gpu(
     seed: u64,
     p: f32,
 ) -> Result<Vec<u32>, QuantaError> {
-    require_i64(gpu)?;
     let mut data = FillBernoulliU32Data {
         out: vec![0u32; len],
         seed_lo: seed as u32,
@@ -720,7 +772,6 @@ pub fn fill_poisson_u32_gpu(
     seed: u64,
     lambda: f32,
 ) -> Result<Vec<u32>, QuantaError> {
-    require_i64(gpu)?;
     let mut data = FillPoissonU32Data {
         out: vec![0u32; len],
         seed_lo: seed as u32,
@@ -860,7 +911,6 @@ pub fn fill_poisson_u32_large_gpu(
     seed: u64,
     lambda: f32,
 ) -> Result<Vec<u32>, QuantaError> {
-    require_i64(gpu)?;
     let mut data = FillPoissonLargeU32Data {
         out: vec![0u32; len],
         seed_lo: seed as u32,

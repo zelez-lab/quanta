@@ -5,7 +5,8 @@
 //!
 //! Validates the full chain: kernel macro expansion, the
 //! `#[quanta::device]` source-splice, WASM-route lowering, CPU
-//! eval (push-const path + i64.mul path), and the host-side
+//! eval (push-const path + the pure-32-bit Philox mulhi; the u64
+//! variants also cover the i64 pack path), and the host-side
 //! `u32`/`u64`/`f32`/`f64` conversion contract.
 //!
 //! Runs only with the `gpu` feature.
