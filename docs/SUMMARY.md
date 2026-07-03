@@ -27,6 +27,7 @@
 - [Training a CNN](computation/tutorials/training-a-cnn.md)
 - [Project: linear regression](computation/tutorials/project-linear-regression.md)
 - [Project: recognize digits (MNIST)](computation/tutorials/project-mnist.md)
+- [Project: cluster points (k-means)](computation/tutorials/project-kmeans.md)
 - [Compute Basics](computation/tutorials/compute-basics.md)
 - [Fields and Types](computation/tutorials/fields-and-types.md)
 - [Shared Memory](computation/tutorials/shared-memory.md)
