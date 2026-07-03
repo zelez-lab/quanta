@@ -76,7 +76,7 @@ impl<T: DiffScalar> Var<T> {
         let eps_v = {
             let tape = Tape::from_inner(std::rc::Rc::clone(&self.tape));
             tape.var(
-                Array::full(&g, T::from_f64(eps), &[1])?
+                Array::full(g, T::from_f64(eps), &[1])?
                     .broadcast_to(&[n, 1])?
                     .contiguous()?,
             )

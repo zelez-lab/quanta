@@ -147,7 +147,7 @@ fn min_i32_matches_reference_with_negatives() {
 fn min_f32_matches_reference() {
     let Some(gpu) = try_gpu() else { return };
     let mut data: Vec<f32> = vec![1000.0f32; BLOCK];
-    data[77] = -3.14;
+    data[77] = -3.25;
     let expected = reference::reduce_min_f32(&data);
     let result = run_f32(&gpu, block_reduce_min_f32_buffer, &data);
     let got = result[0];

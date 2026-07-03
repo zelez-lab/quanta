@@ -170,16 +170,6 @@ pub struct VkQueueFamilyProperties {
     pub min_image_transfer_granularity: VkExtent3D,
 }
 
-impl Default for VkExtent3D {
-    fn default() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            depth: 0,
-        }
-    }
-}
-
 /// Find a suitable memory type index given requirements and desired property flags.
 pub fn find_memory_type(
     props: &VkPhysicalDeviceMemoryProperties,

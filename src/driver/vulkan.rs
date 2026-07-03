@@ -24,11 +24,11 @@ pub use device::{VulkanDevice, discover};
 
 // Re-export internal types used by submodules via `super::`.
 #[cfg(feature = "render")]
-pub(self) use device::VkRenderPipeline;
-pub(self) use device::{VkBuffer, VkComputePipeline, VkQueryPool, VkTexture};
-pub(self) use helpers::{
+ use device::VkRenderPipeline;
+ use device::{VkBuffer, VkComputePipeline, VkQueryPool, VkTexture};
+ use helpers::{
     address_to_vk, compare_op_to_vk, filter_to_vk, format_bytes_per_pixel_vk, format_to_vulkan,
     sample_count_to_vk,
 };
 #[cfg(feature = "render")]
-pub(self) use helpers::{blend_factor_to_vk, blend_op_to_vk};
+ use helpers::{blend_factor_to_vk, blend_op_to_vk};

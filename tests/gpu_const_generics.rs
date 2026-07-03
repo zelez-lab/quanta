@@ -30,12 +30,8 @@ fn const_generic_fills_buffer() {
     p.wait().unwrap();
 
     let result = output.read().unwrap();
-    for i in 0..n {
-        assert_eq!(
-            result[i], 42,
-            "const generic: expected 42, got {}",
-            result[i]
-        );
+    for &got in result.iter().take(n) {
+        assert_eq!(got, 42, "const generic: expected 42, got {}", got);
     }
 }
 

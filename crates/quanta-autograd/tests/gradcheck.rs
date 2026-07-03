@@ -1101,7 +1101,7 @@ fn grad_concat_narrow_roundtrip_is_identity_grad() {
     let rejoined = quanta_autograd::Var::concat_axis0(&[&top, &bot]).unwrap();
     let loss = rejoined.sum().unwrap();
     let gx = loss.grad(&x).unwrap().to_vec().unwrap();
-    assert_close(&gx, &vec![1.0f32; 8], 1e-6, "concat/narrow roundtrip grad");
+    assert_close(&gx, &[1.0f32; 8], 1e-6, "concat/narrow roundtrip grad");
 }
 
 #[test]
@@ -1196,7 +1196,7 @@ fn mean_matches_host() {
     assert!((m - 3.0).abs() <= 1e-5, "mean {m} != 3.0");
     // ∂mean/∂xᵢ = 1/n
     let gx = xv.mean().unwrap().grad(&xv).unwrap().to_vec().unwrap();
-    assert_close(&gx, &vec![0.2f32; 5], 1e-4, "mean grad");
+    assert_close(&gx, &[0.2f32; 5], 1e-4, "mean grad");
 }
 
 #[test]
@@ -1241,7 +1241,7 @@ fn grad_embedding_is_sparse_scatter() {
 
     // host: scatter-add 2·(gathered value) back through ids.
     let mut want = vec![0.0f32; v * e];
-    for (b, &r) in ids_data.iter().enumerate() {
+    for &r in ids_data.iter() {
         let r = r as usize;
         for c in 0..e {
             let ov = table_data[r * e + c]; // out[b,c] = table[r,c]
@@ -1250,6 +1250,7 @@ fn grad_embedding_is_sparse_scatter() {
     }
     assert_close(&gt, &want, 1e-2, "embedding grad");
     // rows never looked up (0 and 2) must be exactly zero.
+    #[allow(clippy::erasing_op)] // `0 * e + c` kept parallel to `2 * e + c` for readability
     for c in 0..e {
         assert!(gt[0 * e + c].abs() < 1e-6, "row 0 should be 0");
         assert!(gt[2 * e + c].abs() < 1e-6, "row 2 should be 0");

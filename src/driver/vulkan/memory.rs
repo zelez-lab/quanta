@@ -19,7 +19,7 @@ impl VulkanDevice {
         let mut mem_props = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceMemoryProperties>() };
         unsafe { ffi::vkGetPhysicalDeviceMemoryProperties(self.physical_device, &mut mem_props) };
         ffi::find_memory_type(&mem_props, type_filter, properties)
-            .ok_or_else(|| QuantaError::out_of_memory())
+            .ok_or_else(QuantaError::out_of_memory)
     }
 
     pub(crate) fn field_alloc_impl(

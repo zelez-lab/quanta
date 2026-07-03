@@ -30,12 +30,12 @@ impl VulkanDevice {
                 "vertex and fragment SPIR-V binaries must be non-empty",
             ));
         }
-        if desc.vertex.len() % 4 != 0 {
+        if !desc.vertex.len().is_multiple_of(4) {
             return Err(QuantaError::compilation_failed(
                 "vertex SPIR-V binary length must be a multiple of 4",
             ));
         }
-        if desc.fragment.len() % 4 != 0 {
+        if !desc.fragment.len().is_multiple_of(4) {
             return Err(QuantaError::compilation_failed(
                 "fragment SPIR-V binary length must be a multiple of 4",
             ));

@@ -140,7 +140,7 @@ fn host_normal_pair(id: u32, lo: u32, hi: u32) -> (f32, f32) {
     let u2 = u32_to_open_unit_f32(r1);
     let ln_u1 = u1.ln();
     let r = (-2.0f32 * ln_u1).sqrt();
-    let two_pi = 6.2831_8530_7179_586f32;
+    let two_pi = 6.283_185_5_f32;
     let theta = two_pi * u2;
     (r * theta.cos(), r * theta.sin())
 }
@@ -274,7 +274,7 @@ fn fill_lognormal_f32_bit_exact_pair_with_host() {
         let u1 = u32_to_open_unit_f32(r0);
         let u2 = u32_to_open_unit_f32(r1);
         let r = (-2.0f32 * u1.ln()).sqrt();
-        let theta = 6.2831_8530_7179_586f32 * u2;
+        let theta = 6.283_185_5_f32 * u2;
         let n1 = r * theta.cos();
         let n2 = r * theta.sin();
         expected.push((mu + sigma * n1).exp());

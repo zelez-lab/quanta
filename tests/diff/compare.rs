@@ -342,7 +342,7 @@ fn ulp_distance(x: f32, y: f32) -> Option<u32> {
     }
     let xb = x.to_bits();
     let yb = y.to_bits();
-    Some(if xb > yb { xb - yb } else { yb - xb })
+    Some(xb.abs_diff(yb))
 }
 
 #[cfg(test)]

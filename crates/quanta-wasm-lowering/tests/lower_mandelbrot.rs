@@ -118,10 +118,8 @@ fn no_break_outside_loop(ops: &[KernelOp]) -> bool {
             }
             KernelOp::Branch {
                 then_ops, else_ops, ..
-            } => {
-                if !no_break_outside_loop(then_ops) || !no_break_outside_loop(else_ops) {
-                    return false;
-                }
+            } if !no_break_outside_loop(then_ops) || !no_break_outside_loop(else_ops) => {
+                return false;
             }
             _ => {}
         }

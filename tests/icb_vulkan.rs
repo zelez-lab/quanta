@@ -41,9 +41,9 @@ fn icb_vulkan_record_two_dispatches_matches_direct() {
         }
     };
     wave_a.bind(0, &field_a);
-    let mut p1 = gpu.dispatch(&wave_a, count as u32).unwrap();
+    let mut p1 = gpu.dispatch(&wave_a, count).unwrap();
     p1.wait().unwrap();
-    let mut p2 = gpu.dispatch(&wave_a, count as u32).unwrap();
+    let mut p2 = gpu.dispatch(&wave_a, count).unwrap();
     p2.wait().unwrap();
     let direct = field_a.read().unwrap();
 
@@ -59,7 +59,7 @@ fn icb_vulkan_record_two_dispatches_matches_direct() {
             return;
         }
     };
-    let groups = [count as u32 / wave_b.workgroup_size[0].max(1), 1, 1];
+    let groups = [count / wave_b.workgroup_size[0].max(1), 1, 1];
     icb.record_dispatch(&wave_b, groups).unwrap();
     icb.record_dispatch(&wave_b, groups).unwrap();
     icb.execute_all().unwrap();

@@ -1642,7 +1642,7 @@ mod tests {
     fn value_conversions() {
         assert_eq!(Value::U32(42).as_u32(), 42);
         assert_eq!(Value::U32(42).as_f32(), 42.0);
-        assert_eq!(Value::F32(3.14).as_u32(), 3);
+        assert_eq!(Value::F32(3.25).as_u32(), 3);
         assert!(Value::U32(1).as_bool());
         assert!(!Value::U32(0).as_bool());
         assert!(Value::Bool(true).as_bool());
@@ -1651,9 +1651,9 @@ mod tests {
     #[test]
     fn scalar_read_write_roundtrip() {
         let mut buf = vec![0u8; 16];
-        write_scalar(&mut buf, 0, Value::F32(3.14), &ScalarType::F32);
+        write_scalar(&mut buf, 0, Value::F32(3.25), &ScalarType::F32);
         let v = read_scalar(&buf, 0, &ScalarType::F32);
-        assert!((v.as_f32() - 3.14).abs() < 1e-6);
+        assert!((v.as_f32() - 3.25).abs() < 1e-6);
 
         write_scalar(&mut buf, 1, Value::U32(42), &ScalarType::U32);
         let v = read_scalar(&buf, 1, &ScalarType::U32);

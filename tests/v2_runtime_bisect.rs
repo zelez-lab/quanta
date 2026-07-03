@@ -241,7 +241,7 @@ fn bisect_l4_early_exit_loop_cond(input: &[f32], out: &mut [u32]) {
 fn l4_host_reference(lam: f32) -> u32 {
     let log_gamma = |z_in: f32| -> f32 {
         let z = if z_in < 1.0 { 1.0f32 } else { z_in };
-        let half_log_2pi = 0.918938533f32;
+        let half_log_2pi = 0.918_938_5_f32;
         let log_z = z.ln();
         let inv_z = 1.0 / z;
         let inv_z3 = inv_z * inv_z * inv_z;

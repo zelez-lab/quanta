@@ -158,6 +158,7 @@ fn shared_memory_reverse() {
     let result = output.read().unwrap();
 
     // Group 0: indices 0..64 reversed => [63, 62, ..., 0]
+    #[allow(clippy::needless_range_loop)] // i is the reversed-index arithmetic, not just a cursor
     for i in 0..group_size {
         let expected = (group_size - 1 - i) as f32;
         assert!(

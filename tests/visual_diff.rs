@@ -432,6 +432,7 @@ fn shared_memory_reduction_vs_cpu() {
     let result = output.read().unwrap();
     assert_eq!(result.len(), num_groups);
 
+    #[allow(clippy::needless_range_loop)] // g computes slice bounds, not just an index
     for g in 0..num_groups {
         let start = g * group_size;
         let end = start + group_size;
@@ -594,6 +595,7 @@ fn multi_format_clear_rgba16float() {
 
     for p in 0..num_pixels {
         let base = p * 8;
+        #[allow(clippy::needless_range_loop)] // ch computes the byte offset and indexes expected
         for ch in 0..4 {
             let offset = base + ch * 2;
             let half_bits = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);

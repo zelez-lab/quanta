@@ -179,6 +179,7 @@ pub struct VkImageViewCreateInfo {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[derive(Default)]
 pub struct VkComponentMapping {
     pub r: u32,
     pub g: u32,
@@ -186,17 +187,6 @@ pub struct VkComponentMapping {
     pub a: u32,
 }
 
-impl Default for VkComponentMapping {
-    fn default() -> Self {
-        // VK_COMPONENT_SWIZZLE_IDENTITY = 0
-        Self {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: 0,
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -427,7 +417,7 @@ pub struct VkBindSparseInfo {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct VkExtent3D {
     pub width: u32,
     pub height: u32,
@@ -436,6 +426,7 @@ pub struct VkExtent3D {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[derive(Default)]
 pub struct VkExtent2D {
     pub width: u32,
     pub height: u32,
@@ -458,14 +449,6 @@ pub struct VkPhysicalDeviceFragmentShadingRateKHR {
 /// `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR`.
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR: u32 = 1000226001;
 
-impl Default for VkExtent2D {
-    fn default() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Copy, Clone)]

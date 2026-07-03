@@ -146,7 +146,7 @@ fn multiple_blocks_independent() {
             if blk == 2 {
                 0
             } else {
-                u32::from(within % (11 + blk) == 0)
+                u32::from(within.is_multiple_of(11 + blk))
             }
         })
         .collect();

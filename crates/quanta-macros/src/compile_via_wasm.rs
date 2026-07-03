@@ -1021,6 +1021,7 @@ fn kinds_compatible(decl: TextureKind, used: TextureKind) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)] // oracle helpers below are grouped with the production code they support
 mod tests {
     use super::*;
     use crate::kernel_signature::{detect_struct_ref_param, scan_struct_field_accesses};

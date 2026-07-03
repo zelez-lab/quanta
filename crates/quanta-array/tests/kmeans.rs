@@ -27,7 +27,7 @@ fn kmeans_step(points: &Array<f32>, centers: &Array<f32>, k: usize, d: usize) ->
     // assign: nearest centroid per point → [N] u32
     let assign = points.cdist_sq(centers).unwrap().argmin_last().unwrap();
     // one-hot [N, K] as f32: onehot[n, k] = (assign[n] == k)
-    let cols = Array::<u32>::arange(&g, 0.0, 1.0, k).unwrap();
+    let cols = Array::<u32>::arange(g, 0.0, 1.0, k).unwrap();
     let a2 = assign
         .reshape(&[n, 1])
         .unwrap()
@@ -42,7 +42,7 @@ fn kmeans_step(points: &Array<f32>, centers: &Array<f32>, k: usize, d: usize) ->
     // sums [K, D] = onehotᵀ·points ; counts [K, 1] = onehotᵀ·ones
     let oht = onehot.transpose(0, 1).unwrap();
     let sums = oht.matmul(points).unwrap();
-    let ones = Array::<f32>::ones(&g, &[n, 1]).unwrap();
+    let ones = Array::<f32>::ones(g, &[n, 1]).unwrap();
     let counts = oht.matmul(&ones).unwrap();
     // new centers = sums / counts
     sums.div(&counts.broadcast_to(&[k, d]).unwrap()).unwrap()

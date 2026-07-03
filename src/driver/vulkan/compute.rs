@@ -359,8 +359,8 @@ impl VulkanDevice {
 
         for slot in 0..wave.binding_count as usize {
             let handle = wave.bindings[slot];
-            if handle != 0 {
-                if let Some(buf) = buffers_guard.get(&handle) {
+            if handle != 0
+                && let Some(buf) = buffers_guard.get(&handle) {
                     buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
                         buffer: buf.buffer,
                         offset: 0,
@@ -380,7 +380,6 @@ impl VulkanDevice {
                     };
                     write_count += 1;
                 }
-            }
         }
 
         if write_count > 0 {
@@ -506,8 +505,8 @@ impl VulkanDevice {
 
         for slot in 0..wave.binding_count as usize {
             let handle = wave.bindings[slot];
-            if handle != 0 {
-                if let Some(buf) = buffers_guard.get(&handle) {
+            if handle != 0
+                && let Some(buf) = buffers_guard.get(&handle) {
                     buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
                         buffer: buf.buffer,
                         offset: 0,
@@ -527,7 +526,6 @@ impl VulkanDevice {
                     };
                     write_count += 1;
                 }
-            }
         }
         if write_count > 0 {
             unsafe {

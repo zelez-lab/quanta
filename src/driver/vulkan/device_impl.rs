@@ -1487,7 +1487,7 @@ impl GpuDevice for VulkanDevice {
 
         // Allocate a buffer to track the array binding. Full implementation would create
         // a descriptor set with variable descriptor count.
-        let size = (textures.len().max(1) * 8) as usize;
+        let size = textures.len().max(1) * 8;
         let handle = self.field_alloc_impl(size, FieldUsage::READ.union(FieldUsage::TRANSFER))?;
         Ok(handle)
     }
@@ -1504,7 +1504,7 @@ impl GpuDevice for VulkanDevice {
         }
         drop(buf_map);
 
-        let size = (buffers.len().max(1) * 8) as usize;
+        let size = buffers.len().max(1) * 8;
         let handle = self.field_alloc_impl(size, FieldUsage::READ.union(FieldUsage::TRANSFER))?;
         Ok(handle)
     }

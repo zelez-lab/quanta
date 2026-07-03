@@ -236,6 +236,7 @@ fn chi_square_poisson() {
     let lam = lambda as f64;
     let mut chi2: f64 = 0.0;
     let mut p_k = (-lam).exp();
+    #[allow(clippy::needless_range_loop)] // k drives the Poisson pmf recurrence, not just indexing
     for k in 0..=max_k {
         let expected = SAMPLE_N as f64 * p_k;
         if expected >= 5.0 {

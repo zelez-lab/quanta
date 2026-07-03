@@ -57,7 +57,7 @@ fn run<T: Copy + Default>(gpu: &quanta::Gpu, builder: Builder, data: &[T]) -> Ve
 }
 
 fn per_block<T: Copy, R>(data: &[T], f: impl Fn(&[T]) -> R) -> Vec<R> {
-    data.chunks(BLOCK).map(|c| f(c)).collect()
+    data.chunks(BLOCK).map(f).collect()
 }
 
 /// Run the SUBGROUP reference kernel, but only on devices that support

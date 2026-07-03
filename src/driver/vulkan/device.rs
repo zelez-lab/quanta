@@ -251,6 +251,10 @@ pub(super) struct VkIcb {
 /// Fields are written at record time and consumed by the replay
 /// path — suppressed until native vkCmdExecuteCommands lands.
 #[allow(dead_code)]
+// Dispatch carries the full binding + push-data payload inline (boxing the
+// common dispatch path would add an allocation per recorded command); Draw is
+// deliberately small. The size spread is intrinsic to the command payloads.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum VkIcbCommand {
     Dispatch {
         wave_handle: u64,
@@ -509,11 +513,10 @@ impl VulkanDevice {
         min_size: usize,
     ) -> Result<(ffi::VkBuffer, ffi::VkDeviceMemory, usize), QuantaError> {
         // Try to find a suitable buffer in the pool.
-        if let Ok(mut pool) = self.staging_pool.lock() {
-            if let Some(idx) = pool.iter().position(|&(_, _, cap)| cap >= min_size) {
+        if let Ok(mut pool) = self.staging_pool.lock()
+            && let Some(idx) = pool.iter().position(|&(_, _, cap)| cap >= min_size) {
                 return Ok(pool.swap_remove(idx));
             }
-        }
         // Pool miss — allocate a new staging buffer (both SRC and DST for read-back reuse).
         let staging_info = ffi::VkBufferCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -953,22 +956,22 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         let mut enabled_extensions: Vec<*const core::ffi::c_char> = Vec::new();
         if has_vrs_ext {
             enabled_extensions
-                .push(b"VK_KHR_fragment_shading_rate\0".as_ptr() as *const core::ffi::c_char);
+                .push(c"VK_KHR_fragment_shading_rate".as_ptr());
         }
         if has_mesh_ext {
-            enabled_extensions.push(b"VK_EXT_mesh_shader\0".as_ptr() as *const core::ffi::c_char);
+            enabled_extensions.push(c"VK_EXT_mesh_shader".as_ptr());
         }
         if has_rt {
             enabled_extensions
-                .push(b"VK_KHR_acceleration_structure\0".as_ptr() as *const core::ffi::c_char);
+                .push(c"VK_KHR_acceleration_structure".as_ptr());
             enabled_extensions
-                .push(b"VK_KHR_ray_tracing_pipeline\0".as_ptr() as *const core::ffi::c_char);
+                .push(c"VK_KHR_ray_tracing_pipeline".as_ptr());
             // Both ray-tracing extensions require deferred-host-ops.
             enabled_extensions
-                .push(b"VK_KHR_deferred_host_operations\0".as_ptr() as *const core::ffi::c_char);
+                .push(c"VK_KHR_deferred_host_operations".as_ptr());
             // VK_KHR_acceleration_structure requires VK_KHR_buffer_device_address.
             enabled_extensions
-                .push(b"VK_KHR_buffer_device_address\0".as_ptr() as *const core::ffi::c_char);
+                .push(c"VK_KHR_buffer_device_address".as_ptr());
         }
         let (enabled_ext_count, enabled_ext_ptr) = if enabled_extensions.is_empty() {
             (0u32, core::ptr::null())
@@ -1251,6 +1254,10 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             query_pools: RwLock::new(HashMap::new()),
             queues: RwLock::new(HashMap::new()),
             next_handle: AtomicU64::new(0),
+            // The pool handle is genuinely shared (cloned out at dispatch time),
+            // so Arc is intended; VkCommandBuffer is a raw FFI pointer that can't
+            // be Send+Sync, which is inherent to the Vulkan handle model.
+            #[allow(clippy::arc_with_non_send_sync)]
             cmd_buffer_pool: std::sync::Arc::new(Mutex::new(Vec::new())),
             descriptor_pool_cache: Mutex::new(Vec::new()),
             staging_pool: Mutex::new(Vec::new()),

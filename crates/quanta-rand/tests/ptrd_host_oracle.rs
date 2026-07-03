@@ -32,7 +32,7 @@ fn host_ptrd(id: u32, seed: u64, lam: f32) -> u32 {
     let log_inv_alpha = inv_alpha.ln();
     let log_gamma = |z_in: f32| -> f32 {
         let z = if z_in < 1.0 { 1.0 } else { z_in };
-        let half_log_2pi = 0.918938533f32;
+        let half_log_2pi = 0.918_938_5_f32;
         let log_z = z.ln();
         let inv_z = 1.0 / z;
         let inv_z3 = inv_z * inv_z * inv_z;

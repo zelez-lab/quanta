@@ -676,7 +676,7 @@ impl VulkanDevice {
                                 cmd,
                                 rp.layout,
                                 ffi::VK_SHADER_STAGE_VERTEX_BIT | ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
-                                (*slot * 16) as u32,
+                                *slot * 16,
                                 data.len() as u32,
                                 data.as_ptr() as *const c_void,
                             );

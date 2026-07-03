@@ -83,7 +83,7 @@ fn compile_and_validate(kernel: &quanta_ir::KernelDef, label: &str) {
 
     let spirv = co
         .spirv
-        .expect(&format!("[{}] compiler produced no SPIR-V output", label));
+        .unwrap_or_else(|| panic!("[{}] compiler produced no SPIR-V output", label));
     assert!(
         spirv.len() >= 4,
         "[{}] SPIR-V binary too small ({} bytes)",
@@ -103,7 +103,7 @@ fn compile_and_validate(kernel: &quanta_ir::KernelDef, label: &str) {
     // The LLVM SPIR-V backend may emit trailing bytes that break alignment.
     // Truncate to the last 4-byte boundary (trailing bytes are LLVM metadata,
     // not SPIR-V instructions).
-    let misaligned = spirv.len() % 4 != 0;
+    let misaligned = !spirv.len().is_multiple_of(4);
     let spirv_clean = if misaligned {
         let trim = spirv.len() - (spirv.len() % 4);
         eprintln!(
