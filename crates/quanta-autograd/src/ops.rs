@@ -136,6 +136,15 @@ impl<T: DiffScalar> Var<T> {
         Ok(self.tape_handle().push(Op::Reshape(self.id, in_shape), y))
     }
 
+    /// Swap two axes — a zero-copy transposing view. Transpose is its own
+    /// inverse, so the backward pass just transposes the upstream gradient back
+    /// over the same pair of axes. The `Kᵀ` in attention scores, and any place
+    /// a computation graph needs a transpose.
+    pub fn transpose(&self, d0: usize, d1: usize) -> Result<Var<T>, AutogradError> {
+        let y = self.value().transpose(d0, d1)?;
+        Ok(self.tape_handle().push(Op::Transpose(self.id, d0, d1), y))
+    }
+
     /// Zero-copy sub-range along axis 0: keep `len` rows starting at `start`.
     /// The forward is a view ([`Array::narrow`]); the gradient scatters back
     /// into a zero tensor of this var's shape at the same offset

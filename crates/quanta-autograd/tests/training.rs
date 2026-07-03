@@ -206,3 +206,90 @@ fn word2vec_embeddings_separate_topics() {
         "embeddings didn't separate topics: {correct}/{b}"
     );
 }
+
+/// Single-head self-attention, composed from matmul + transpose + softmax +
+/// scale — the core of a transformer. Trains an induction task: each position
+/// must output the payload of the *next* position, solvable only by attending
+/// there. Proves the attention pattern trains end to end through the tape.
+#[test]
+fn self_attention_learns_an_induction_shift() {
+    use quanta_autograd::optim::Adam;
+
+    let g = gpu();
+    let (s, d, dh) = (4usize, 8usize, 8usize);
+
+    // input: each position = a position one-hot (dims 0..4) + a payload (4..8)
+    let mut xd = vec![0.0f32; s * d];
+    for i in 0..s {
+        xd[i * d + i] = 1.0;
+        xd[i * d + 4 + (i % 4)] = 0.5 + 0.1 * i as f32;
+    }
+    let x = Array::from_slice(&g, &xd, &[s, d]).unwrap();
+    // target: position i outputs the payload of position (i+1)%S — a shift.
+    let mut target = vec![0.0f32; s * dh];
+    for i in 0..s {
+        let src = (i + 1) % s;
+        target[i * dh + 4 + (src % 4)] = 0.5 + 0.1 * src as f32;
+    }
+    let tgt = Array::from_slice(&g, &target, &[s, dh]).unwrap();
+
+    let init = |shape: &[usize], sc: f32| {
+        let c: usize = shape.iter().product();
+        let v: Vec<f32> = (0..c).map(|j| sc * ((j as f32) * 1.3).sin()).collect();
+        Array::from_slice(&g, &v, shape).unwrap()
+    };
+    let (mut wq, mut wk, mut wv) = (
+        init(&[d, dh], 0.2),
+        init(&[d, dh], 0.2),
+        init(&[d, dh], 0.2),
+    );
+    let inv_sqrt_d = 1.0 / (dh as f32).sqrt();
+
+    let mut opt = Adam::new(0.02);
+    opt.register(&wq).unwrap();
+    opt.register(&wk).unwrap();
+    opt.register(&wv).unwrap();
+
+    let mut final_loss = 1.0f32;
+    for _ in 0..50 {
+        opt.advance();
+        let tape = Tape::<f32>::new();
+        let xv = tape.var(x.shallow_clone());
+        let wqv = tape.var(wq.shallow_clone());
+        let wkv = tape.var(wk.shallow_clone());
+        let wvv = tape.var(wv.shallow_clone());
+        let scale = tape.var(
+            Array::full(&g, inv_sqrt_d, &[1])
+                .unwrap()
+                .broadcast_to(&[s, s])
+                .unwrap()
+                .contiguous()
+                .unwrap(),
+        );
+
+        // out = softmax((X·Wq)(X·Wk)ᵀ / √d)·(X·Wv)
+        let q = xv.matmul(&wqv).unwrap();
+        let k = xv.matmul(&wkv).unwrap();
+        let v = xv.matmul(&wvv).unwrap();
+        let scores = q
+            .matmul(&k.transpose(0, 1).unwrap())
+            .unwrap()
+            .mul(&scale)
+            .unwrap();
+        let out = scores.softmax().unwrap().matmul(&v).unwrap();
+        let loss = out.mse_loss(&tgt).unwrap();
+
+        let gq = loss.grad(&wqv).unwrap();
+        let gk = loss.grad(&wkv).unwrap();
+        let gv = loss.grad(&wvv).unwrap();
+        wq = opt.step(0, &wq, &gq).unwrap();
+        wk = opt.step(1, &wk, &gk).unwrap();
+        wv = opt.step(2, &wv, &gv).unwrap();
+        final_loss = loss.value().to_vec().unwrap()[0];
+    }
+
+    assert!(
+        final_loss < 0.02,
+        "self-attention didn't learn the shift: final loss {final_loss}"
+    );
+}

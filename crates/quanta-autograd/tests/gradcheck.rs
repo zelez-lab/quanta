@@ -1255,3 +1255,33 @@ fn grad_embedding_is_sparse_scatter() {
         assert!(gt[2 * e + c].abs() < 1e-6, "row 2 should be 0");
     }
 }
+
+#[test]
+fn grad_transpose_routes_back() {
+    // out = xᵀ; L = sum(out · W) with W a constant. ∂L/∂x = Wᵀ (the grad of a
+    // transpose is the transpose of the upstream grad).
+    let g = gpu();
+    let x_data: Vec<f32> = (0..6).map(|i| i as f32).collect(); // [2, 3]
+    let w_data: Vec<f32> = (0..6).map(|i| (i as f32) * 0.5 - 1.0).collect(); // [3, 2]
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x_data, &[2, 3]).unwrap());
+    let wv = tape.var(Array::from_slice(&g, &w_data, &[3, 2]).unwrap());
+    let xt = xv.transpose(0, 1).unwrap();
+    assert_eq!(xt.value().shape(), &[3, 2]);
+    // value: xᵀ
+    assert_eq!(
+        xt.value().to_vec().unwrap(),
+        vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0]
+    );
+    // L = sum(xᵀ ⊙ W)  → ∂L/∂xᵀ = W → ∂L/∂x = Wᵀ
+    let loss = xt.mul(&wv).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    // Wᵀ as a [2,3] flat vector.
+    let mut want = vec![0.0f32; 6];
+    for i in 0..3 {
+        for j in 0..2 {
+            want[j * 3 + i] = w_data[i * 2 + j]; // Wᵀ[j,i] = W[i,j]
+        }
+    }
+    assert_close(&gx, &want, 1e-4, "transpose grad");
+}

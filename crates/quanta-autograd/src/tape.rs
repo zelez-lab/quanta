@@ -72,6 +72,9 @@ pub(crate) enum Op<T: DiffScalar> {
     /// shape; the gradient just reshapes the upstream grad back to it (reshape
     /// is linear and element-preserving — the VJP is its own inverse reshape).
     Reshape(usize, Vec<usize>),
+    /// transpose(x, d0, d1): swap two axes (a view). Captures the axis pair; the
+    /// gradient transposes back over the same pair (transpose is self-inverse).
+    Transpose(usize, usize, usize),
     /// gather_rows(x, idx): pick one column per row of a [N, C] table by the
     /// (non-differentiable) label array `idx`. Captures `idx` and the column
     /// count `C`; the gradient scatters back with `scatter_rows_add` (the
@@ -297,6 +300,11 @@ impl<T: DiffScalar> Var<T> {
                     // reshape is shape-only: pass g through, reshaped back to the
                     // input shape (contiguous first, since g may be a view).
                     let gx = g.contiguous()?.reshape(in_shape)?;
+                    accum(&mut grads[*a], gx)?;
+                }
+                Op::Transpose(a, d0, d1) => {
+                    // transpose is self-inverse: send g back over the same axes.
+                    let gx = g.transpose(*d0, *d1)?;
                     accum(&mut grads[*a], gx)?;
                 }
                 Op::GatherRows(a, idx, c) => {
