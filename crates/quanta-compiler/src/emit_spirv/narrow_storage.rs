@@ -460,4 +460,79 @@ impl SpvEmitter {
         // big ? 0 : r0
         self.spv_select(u, big, zero, r0)
     }
+
+    // ── int4 PackedU32 nibble access (8 signed nibbles per u32 word) ──────
+    //
+    // Element `idx` lives in word `idx/8`, nibble `idx%8`. Ported from the
+    // JIT emitter (`quanta-ir/src/emit_spirv/ops.rs`) so both SPIR-V
+    // emitters share one packing contract; mirrors `dtype::int4_{unpack,
+    // pack}`. Single-quark in the op-matrix; a packed multi-quark store
+    // would need per-word ownership or atomics.
+
+    /// Access-chain pointer to word `idx/8` of an int4 (u32-storage) field.
+    fn i4_word_ptr(&mut self, var_id: u32, idx: u32) -> u32 {
+        let u = self.spv_u32();
+        let eight = self.spv_const(8);
+        let word_idx = self.spv_bin(OP_UDIV, u, idx, eight);
+        let zero = self.spv_const(0);
+        let ptr_u32 = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, u);
+        let chain = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_ACCESS_CHAIN,
+            &[ptr_u32, chain, var_id, zero, word_idx],
+        );
+        chain
+    }
+
+    /// `(idx % 8) * 4` — the bit shift of nibble `idx%8`.
+    fn i4_nibble_shift(&mut self, idx: u32) -> u32 {
+        let eight = self.spv_const(8);
+        let four = self.spv_const(4);
+        let u = self.spv_u32();
+        let nib = self.spv_bin(OP_UMOD, u, idx, eight);
+        self.spv_mul(nib, four)
+    }
+
+    /// Load + sign-extend the int4 at element `idx`. Same bit math as the
+    /// JIT (`(nib ^ 8) - 8`), but the result stays `%uint` — this emitter's
+    /// canonical SSA type for ALL 32-bit ints (signed ops bitcast locally),
+    /// and demoted-register slots OpStore with exact `%uint` typing. The
+    /// bit pattern is the two's-complement i32 either way.
+    pub(crate) fn i4_load_nibble(&mut self, var_id: u32, idx: u32) -> u32 {
+        let u = self.spv_u32();
+        let chain = self.i4_word_ptr(var_id, idx);
+        let word = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_LOAD, &[u, word, chain, 0x2, 4]);
+        let shift = self.i4_nibble_shift(idx);
+        let shifted = self.spv_shr(word, shift);
+        let mask = self.spv_const(0xF);
+        let nib = self.spv_and(shifted, mask);
+        // sign-extend 4-bit: (nib ^ 8) - 8
+        let eight = self.spv_const(8);
+        let xored = self.spv_bin(OP_BITWISE_XOR, u, nib, eight);
+        self.spv_sub(xored, eight)
+    }
+
+    /// Read-modify-write the int4 nibble at element `idx` with the 32-bit
+    /// int value id `val`. SPIR-V bitwise ops are sign-agnostic (width-
+    /// checked only), so no normalizing bitcast is needed — masking to the
+    /// low nibble keeps just the two's-complement bits that fit.
+    pub(crate) fn i4_store_nibble(&mut self, var_id: u32, idx: u32, val: u32) {
+        let u = self.spv_u32();
+        let chain = self.i4_word_ptr(var_id, idx);
+        let word = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_LOAD, &[u, word, chain, 0x2, 4]);
+        let shift = self.i4_nibble_shift(idx);
+        let mask4 = self.spv_const(0xF);
+        let nib = self.spv_and(val, mask4);
+        let nib_sh = self.spv_shl(nib, shift);
+        // clear the target nibble: word & ~(0xF << shift). OpNot is unary.
+        let lane_mask = self.spv_shl(mask4, shift);
+        let not_mask = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_NOT, &[u, not_mask, lane_mask]);
+        let cleared = self.spv_and(word, not_mask);
+        let merged = self.spv_or(cleared, nib_sh);
+        Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, merged, 0x2, 4]);
+    }
 }

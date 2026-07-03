@@ -66,6 +66,13 @@ impl SpvEmitter {
                 loaded
             };
             self.set_reg(dst, val, result_ty);
+        } else if matches!(ty, ScalarType::I4) {
+            // int4 PackedU32: word = idx/8, nibble = idx%8. Load the word,
+            // extract and sign-extend the nibble (canonical `%uint` SSA
+            // value carrying the i32 bit pattern).
+            let idx = self.reg_value_id(index)?;
+            let val = self.i4_load_nibble(var_id, idx);
+            self.set_reg(dst, val, result_ty);
         } else {
             // Array access: struct member 0, then index into runtime array
             let idx = self.reg_value_id(index)?;
@@ -123,6 +130,12 @@ impl SpvEmitter {
             let as_uint = self.bool_to_int(val);
             let uint_ty = self.ensure_type_u32();
             val = self.coerce_to(as_uint, uint_ty, elem_ty);
+        }
+        // int4 PackedU32: write nibble idx%8 of word idx/8 via
+        // read-modify-write (single-quark in the op-matrix).
+        if matches!(ty, ScalarType::I4) {
+            self.i4_store_nibble(var_id, idx, val);
+            return Ok(());
         }
         // bf16/fp8: pack the f32 body value into its narrow storage bits.
         let val = if matches!(ty, ScalarType::BF16) {
