@@ -96,6 +96,11 @@ pub(crate) enum Op<T: DiffScalar> {
     /// routes to `a` where the mask is 1 (`mask·g`) and to `b` where it's 0
     /// (`(1−mask)·g`).
     Where(usize, usize, Array<T>),
+    /// embedding(table, ids): select whole rows of a `[V, E]` table by the
+    /// (non-differentiable) `[B]` id array → `[B, E]`. Captures `ids` and the
+    /// table's row count `V`; the gradient scatter-adds each output row back to
+    /// the table row it came from (repeats accumulate — the sparse update).
+    Embedding(usize, Array<u32>, usize),
 }
 
 pub(crate) struct Node<T: DiffScalar> {
@@ -327,6 +332,11 @@ impl<T: DiffScalar> Var<T> {
                     let gb = g.mul(&one.sub(mask)?)?;
                     accum(&mut grads[*a], ga)?;
                     accum(&mut grads[*b], gb)?;
+                }
+                Op::Embedding(a, ids, v) => {
+                    // ∂/∂table = scatter each row's grad back to its source row.
+                    let gt = g.contiguous()?.scatter_rows_into(ids, *v)?;
+                    accum(&mut grads[*a], gt)?;
                 }
             }
         }

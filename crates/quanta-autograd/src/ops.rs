@@ -204,6 +204,25 @@ impl<T: DiffScalar> Var<T> {
             .push(Op::Where(self.id, other.id, mask.shallow_clone()), y))
     }
 
+    /// Embedding lookup: select whole rows of this `[V, E]` table by `ids`
+    /// `[B]` → `[B, E]` where `out[b] = self[ids[b], :]`. `ids` isn't
+    /// differentiated; the gradient scatter-adds each row back to its source
+    /// row (repeated ids accumulate) — the sparse embedding update.
+    pub fn embedding(&self, ids: &Array<u32>) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let d = x.shape();
+        if d.len() != 2 {
+            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("embedding: table must be 2-D [V, E]"),
+            )));
+        }
+        let v = d[0];
+        let y = x.select_rows(ids)?;
+        Ok(self
+            .tape_handle()
+            .push(Op::Embedding(self.id, ids.shallow_clone(), v), y))
+    }
+
     /// Gather along the last axis: `self [L…, D]`, `idx [L…, K]` → `[L…, K]`
     /// where `out[l…, j] = self[l…, idx[l…, j]]`. The general data-dependent
     /// lookup (embeddings, top-k, attention) — `idx` isn't differentiated; the

@@ -144,3 +144,65 @@ fn softmax_regression_separates_three_classes() {
         "softmax regression only got {correct}/{n}"
     );
 }
+
+/// Word2vec-style skip-gram: a single embedding table trained so co-occurring
+/// token pairs have a high dot-product and cross-topic pairs low. The parity
+/// example for PyTorch `nn.Embedding` + a dot-product objective — proves the
+/// differentiable embedding lookup and its sparse gradient train end to end.
+#[test]
+fn word2vec_embeddings_separate_topics() {
+    use quanta_autograd::optim::Adam;
+
+    let g = gpu();
+    let (vocab, e) = (6usize, 4usize);
+    // tokens 0,1,2 = topic A; 3,4,5 = topic B. positives within, negatives across.
+    let centers: Vec<u32> = vec![0, 1, 2, 0, 3, 4, 5, 3, 0, 1, 3, 4];
+    let contexts: Vec<u32> = vec![1, 2, 0, 2, 4, 5, 3, 5, 3, 4, 0, 1];
+    let labels: Vec<f32> = vec![1., 1., 1., 1., 1., 1., 1., 1., 0., 0., 0., 0.];
+    let b = centers.len();
+
+    let cen = Array::from_slice(&g, &centers, &[b]).unwrap();
+    let ctx = Array::from_slice(&g, &contexts, &[b]).unwrap();
+    let lab = Array::from_slice(&g, &labels, &[b, 1]).unwrap();
+    let init: Vec<f32> = (0..vocab * e)
+        .map(|i| 0.1 * (i as f32 * 1.7).sin())
+        .collect();
+    let mut emb = Array::from_slice(&g, &init, &[vocab, e]).unwrap();
+
+    let mut opt = Adam::new(0.1);
+    opt.register(&emb).unwrap();
+
+    for _ in 0..60 {
+        opt.advance();
+        let tape = Tape::<f32>::new();
+        let ev = tape.var(emb.shallow_clone());
+        let ce = ev.embedding(&cen).unwrap();
+        let co = ev.embedding(&ctx).unwrap();
+        let dot = ce.mul(&co).unwrap().sum_axis(1).unwrap();
+        let loss = dot.sigmoid().unwrap().mse_loss(&lab).unwrap();
+        let ge = loss.grad(&ev).unwrap();
+        emb = opt.step(0, &emb, &ge).unwrap();
+    }
+
+    let tape = Tape::<f32>::new();
+    let ev = tape.var(emb.shallow_clone());
+    let score = ev
+        .embedding(&cen)
+        .unwrap()
+        .mul(&ev.embedding(&ctx).unwrap())
+        .unwrap()
+        .sum_axis(1)
+        .unwrap()
+        .sigmoid()
+        .unwrap()
+        .value()
+        .to_vec()
+        .unwrap();
+    let correct = (0..b)
+        .filter(|&i| ((if score[i] > 0.5 { 1.0 } else { 0.0 }) - labels[i]).abs() < 0.5)
+        .count();
+    assert!(
+        correct >= b - 1,
+        "embeddings didn't separate topics: {correct}/{b}"
+    );
+}

@@ -1222,3 +1222,36 @@ fn mse_loss_and_grad() {
     let want_g: Vec<f32> = x.iter().zip(&t).map(|(a, b)| 2.0 * (a - b) / 4.0).collect();
     assert_close(&gx, &want_g, 1e-3, "mse grad");
 }
+
+#[test]
+fn grad_embedding_is_sparse_scatter() {
+    // out = embedding(table, ids); L = sum(out²).
+    // ∂L/∂table[r,:] = Σ_b 2·out[b,:]·[ids[b]==r] — sparse: only looked-up rows,
+    // and a row looked up twice gets both contributions.
+    let g = gpu();
+    let (v, e) = (4usize, 2usize);
+    let table_data: Vec<f32> = (0..v * e).map(|i| (i as f32) - 3.0).collect();
+    let ids_data = vec![1u32, 3, 1]; // row 1 looked up twice, row 3 once, rows 0/2 never
+    let tape = Tape::<f32>::new();
+    let tv = tape.var(Array::from_slice(&g, &table_data, &[v, e]).unwrap());
+    let ids = Array::from_slice(&g, &ids_data, &[3]).unwrap();
+    let out = tv.embedding(&ids).unwrap();
+    let loss = out.mul(&out).unwrap().sum().unwrap();
+    let gt = loss.grad(&tv).unwrap().to_vec().unwrap();
+
+    // host: scatter-add 2·(gathered value) back through ids.
+    let mut want = vec![0.0f32; v * e];
+    for (b, &r) in ids_data.iter().enumerate() {
+        let r = r as usize;
+        for c in 0..e {
+            let ov = table_data[r * e + c]; // out[b,c] = table[r,c]
+            want[r * e + c] += 2.0 * ov;
+        }
+    }
+    assert_close(&gt, &want, 1e-2, "embedding grad");
+    // rows never looked up (0 and 2) must be exactly zero.
+    for c in 0..e {
+        assert!(gt[0 * e + c].abs() < 1e-6, "row 0 should be 0");
+        assert!(gt[2 * e + c].abs() < 1e-6, "row 2 should be 0");
+    }
+}

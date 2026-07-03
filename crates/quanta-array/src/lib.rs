@@ -49,6 +49,7 @@ mod concat;
 mod construct;
 mod conv;
 mod distance;
+mod embedding;
 mod error;
 mod gather;
 mod gather_dim;
