@@ -4,8 +4,17 @@
 
 use quanta_array::Array;
 
+/// The device these tests run on: the real GPU under a hardware backend
+/// feature (metal / vulkan), else the CPU JIT (portable, no GPU needed).
 fn gpu() -> quanta::Gpu {
-    quanta::init_cpu()
+    #[cfg(any(feature = "metal", feature = "vulkan"))]
+    {
+        quanta::init().expect("a GPU device")
+    }
+    #[cfg(not(any(feature = "metal", feature = "vulkan")))]
+    {
+        quanta::init_cpu()
+    }
 }
 
 #[test]

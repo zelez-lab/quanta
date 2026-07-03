@@ -5,8 +5,17 @@
 
 use quanta_blas::reference;
 
+/// The device these tests run on: the real GPU under a hardware backend
+/// feature (gpu-metal / gpu-vulkan), else the CPU JIT (portable, no GPU needed).
 fn gpu() -> quanta::Gpu {
-    quanta::init_cpu()
+    #[cfg(any(feature = "gpu-metal", feature = "gpu-vulkan"))]
+    {
+        quanta::init().expect("a GPU device")
+    }
+    #[cfg(not(any(feature = "gpu-metal", feature = "gpu-vulkan")))]
+    {
+        quanta::init_cpu()
+    }
 }
 
 const SIZES: [usize; 5] = [1, 7, 256, 257, 1000];

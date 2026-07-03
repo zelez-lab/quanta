@@ -6,6 +6,9 @@
 use quanta_fft::reference;
 
 fn gpu() -> quanta::Gpu {
+    // Pinned to the CPU JIT: this kernel trips a mutable-register scope bug in
+    // the MSL emitter on real Metal (register redefinition / use-before-decl).
+    // Runs on the software backend until that emitter bug is fixed.
     quanta::init_cpu()
 }
 
