@@ -13,7 +13,8 @@
 #![cfg(feature = "jit")]
 
 use quanta_ir::{
-    BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType, emit_spirv,
+    BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, MathFn, QuantScheme, QuantValue,
+    Reg, ScalarType, emit_spirv,
 };
 
 fn assert_spirv_val(spirv: &[u8]) {
@@ -470,6 +471,71 @@ fn f64_transcendental_kernel() -> KernelDef {
         subgroup_size: None,
         dynamic_shared_bytes: 0,
     }
+}
+
+/// `out[i] = quantize(x)` into an int buffer. The symmetric quantize clamps
+/// on `%int` (signed SMax/SMin), but int SSA is canonically `%uint` and the
+/// Store's pointer is `%uint` — so the clamp result must be cast back before
+/// the store, or `spirv-val` rejects the `OpStore %uint_ptr %int` mismatch.
+/// This is the op-matrix `quantize_i32` shape.
+fn quantize_store_kernel() -> KernelDef {
+    let scheme = QuantScheme::per_tensor_symmetric(QuantValue::Q8S);
+    let body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        KernelOp::Load {
+            dst: Reg(1),
+            field: 0,
+            index: Reg(0),
+            ty: ScalarType::F32,
+        },
+        KernelOp::Const {
+            dst: Reg(2),
+            value: ConstValue::F32(0.5),
+        },
+        KernelOp::Quantize {
+            dst: Reg(3),
+            src: Reg(1),
+            scale: Reg(2),
+            zero_point: Reg(2),
+            scheme,
+        },
+        KernelOp::Store {
+            field: 1,
+            index: Reg(0),
+            src: Reg(3),
+            ty: ScalarType::I32,
+        },
+    ];
+    KernelDef {
+        name: "quantize_store".into(),
+        params: vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: ScalarType::F32,
+            },
+            KernelParam::FieldWrite {
+                name: "o".into(),
+                slot: 1,
+                scalar_type: ScalarType::I32,
+            },
+        ],
+        body,
+        body_source: None,
+        next_reg: 4,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+#[test]
+fn quantize_store_is_valid_spirv() {
+    let spirv = emit_spirv::emit(&quantize_store_kernel()).expect("emit");
+    assert_spirv_val(&spirv);
 }
 
 #[test]

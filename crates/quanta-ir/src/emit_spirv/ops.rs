@@ -828,7 +828,12 @@ impl SpvEmitter {
                     OP_EXT_INST,
                     &[i32_ty, cmin, ext, GLSL_SMIN, cmax, hi_c],
                 );
-                self.set_reg(*dst, cmin, i32_ty);
+                // The clamp runs on `%int` (SMax/SMin are signed), but int SSA
+                // values are canonically `%uint` — the Store expects that. Cast
+                // the result back so the store's pointer/object types agree.
+                let uint_ty = self.ensure_type_u32();
+                let q_canon = self.coerce_to(cmin, i32_ty, uint_ty);
+                self.set_reg(*dst, q_canon, uint_ty);
             }
             // Per-tensor symmetric dequantize: dq = scale * f32(q).
             KernelOp::Dequantize {
