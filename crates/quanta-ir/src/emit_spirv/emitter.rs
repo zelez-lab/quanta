@@ -246,6 +246,24 @@ impl SpvEmitter {
         }
     }
 
+    /// Typed `(zero, one)` constants for a known *float* type id, or
+    /// `None` if the id isn't one of the cached float types. Same
+    /// no-new-types discipline as `int_zero_one_of`.
+    fn float_zero_one_of(&mut self, ty: u32) -> Option<(u32, u32)> {
+        if self.type_f32 == Some(ty) {
+            Some((self.emit_constant_f32(0.0), self.emit_constant_f32(1.0)))
+        } else if self.type_f64 == Some(ty) {
+            Some((self.emit_constant_f64(0.0), self.emit_constant_f64(1.0)))
+        } else if self.type_f16 == Some(ty) {
+            Some((
+                self.emit_constant_f16(0x0000),
+                self.emit_constant_f16(0x3C00),
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Typed `(zero, one)` constants for a known *integer* type id, or
     /// `None` if the id isn't one of the cached int types. Reads the type
     /// caches without materializing new types (calling `ensure_type_u64`
@@ -284,30 +302,45 @@ impl SpvEmitter {
             return val;
         }
         // `%bool` has no bit representation in SPIR-V, so OpBitcast to or
-        // from it is invalid. Bridge with a semantic conversion instead:
-        // int → bool is a truthiness test (`val != 0`), bool → int
-        // materializes 0/1 with OpSelect.
-        if self.type_bool == Some(to_ty)
-            && let Some((zero, _)) = self.int_zero_one_of(from_ty)
-        {
-            let out = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_INOT_EQUAL,
-                &[to_ty, out, val, zero],
-            );
-            return out;
+        // from it is invalid (and the OpConvert* family doesn't take %bool
+        // either). Bridge with a semantic conversion instead: numeric →
+        // bool is a truthiness test (`val != 0`), bool → numeric
+        // materializes 0/1 with OpSelect — for float targets too, so a
+        // mask never round-trips through a driver's native bool encoding
+        // (V3D uses all-ones, which read back as 2^32 in f32).
+        if self.type_bool == Some(to_ty) {
+            if let Some((zero, _)) = self.int_zero_one_of(from_ty) {
+                let out = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_INOT_EQUAL,
+                    &[to_ty, out, val, zero],
+                );
+                return out;
+            }
+            if let Some((zero, _)) = self.float_zero_one_of(from_ty) {
+                let out = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_FORD_NOT_EQUAL,
+                    &[to_ty, out, val, zero],
+                );
+                return out;
+            }
         }
-        if self.type_bool == Some(from_ty)
-            && let Some((zero, one)) = self.int_zero_one_of(to_ty)
-        {
-            let out = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_SELECT,
-                &[to_ty, out, val, one, zero],
-            );
-            return out;
+        if self.type_bool == Some(from_ty) {
+            let zero_one = self
+                .int_zero_one_of(to_ty)
+                .or_else(|| self.float_zero_one_of(to_ty));
+            if let Some((zero, one)) = zero_one {
+                let out = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_SELECT,
+                    &[to_ty, out, val, one, zero],
+                );
+                return out;
+            }
         }
         // Int↔int across widths: OpBitcast requires equal total bit width,
         // so bridge with OpUConvert (zero-extend / truncate) instead. This

@@ -648,25 +648,18 @@ impl SpvEmitter {
                 let src_val = self.reg_value_id(*src)?;
                 let result_ty = self.scalar_type_id(*to);
 
-                // Bool→int: a boolean has no bit representation in SPIR-V,
-                // so OpBitcast is illegal here (it produced an invalid
-                // module that drivers reject at pipeline creation with
-                // VK_ERROR_UNKNOWN). Materialize 0/1 of the target type
-                // with OpSelect instead. This is the Cmp→Cast(Bool,U32)
-                // path that every comparison kernel takes.
-                if matches!(from, ScalarType::Bool)
-                    && matches!(
-                        to,
-                        ScalarType::U8
-                            | ScalarType::U16
-                            | ScalarType::U32
-                            | ScalarType::U64
-                            | ScalarType::I8
-                            | ScalarType::I16
-                            | ScalarType::I32
-                            | ScalarType::I64
-                    )
-                {
+                // Bool→numeric: a boolean has no bit representation in
+                // SPIR-V, so OpBitcast is illegal here (it produced an
+                // invalid module that drivers reject at pipeline creation
+                // with VK_ERROR_UNKNOWN), and the OpConvert*ToF family
+                // doesn't take %bool operands either — feeding one through
+                // OpConvertUToF made V3D materialize `true` as its native
+                // all-ones mask (~0u), yielding masks of 2^32 instead of
+                // 1.0 while other drivers happened to zero-extend to 1.
+                // Materialize 0/1 of the target type with OpSelect instead.
+                // This is the Cmp→Cast(Bool, ty) path that every comparison
+                // kernel takes, for both int and float mask types.
+                if matches!(from, ScalarType::Bool) && !matches!(to, ScalarType::Bool) {
                     let one = self.emit_constant_typed_one(*to);
                     let zero = self.emit_constant_typed_zero(*to);
                     let result = self.alloc_id();

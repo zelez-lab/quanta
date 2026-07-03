@@ -494,14 +494,20 @@ impl SpvEmitter {
         id
     }
 
-    /// Emit a `0` constant of the integer type `ty` lowers to. Used by
-    /// the Bool→int cast (OpSelect). Mirrors `scalar_type_id`'s widths.
+    /// Emit a `0` constant of the type `ty` lowers to. Used by the
+    /// Bool→numeric cast (OpSelect). Mirrors `scalar_type_id`'s widths —
+    /// including the float lanes (bf16/fp8 compute in f32).
     pub(crate) fn emit_constant_typed_zero(&mut self, ty: ScalarType) -> u32 {
         // Constants must match the CANONICAL SSA type of `ty` (unsigned —
         // see `scalar_type_id`): an `%int_0` feeding an OpSelect whose
         // result type is `%uint` is invalid SPIR-V.
         match ty {
             ScalarType::U64 | ScalarType::I64 => self.emit_constant_u64(0),
+            ScalarType::F32 | ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => {
+                self.emit_constant_f32(0.0)
+            }
+            ScalarType::F64 => self.emit_constant_f64(0.0),
+            ScalarType::F16 => self.emit_constant_f16(0x0000),
             _ => self.emit_constant_u32(0),
         }
     }
@@ -516,11 +522,16 @@ impl SpvEmitter {
         }
     }
 
-    /// Emit a `1` constant of the integer type `ty` lowers to. See
+    /// Emit a `1` constant of the type `ty` lowers to. See
     /// `emit_constant_typed_zero`.
     pub(crate) fn emit_constant_typed_one(&mut self, ty: ScalarType) -> u32 {
         match ty {
             ScalarType::U64 | ScalarType::I64 => self.emit_constant_u64(1),
+            ScalarType::F32 | ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => {
+                self.emit_constant_f32(1.0)
+            }
+            ScalarType::F64 => self.emit_constant_f64(1.0),
+            ScalarType::F16 => self.emit_constant_f16(0x3C00),
             _ => self.emit_constant_u32(1),
         }
     }
