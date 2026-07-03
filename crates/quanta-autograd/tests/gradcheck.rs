@@ -1340,3 +1340,34 @@ fn layer_norm_affine_and_grad() {
         assert!(grad.iter().any(|&v| v.abs() > 1e-6), "{name} grad all ~0");
     }
 }
+
+#[test]
+fn grad_upsample2d() {
+    // out = upsample2d(x, 2); L = sum(out · W). ∂L/∂x[p] = sum of W over the 2×2
+    // block p maps to (upsample's adjoint is a block-sum).
+    let g = gpu();
+    let x_data = vec![1.0f32, 2.0, 3.0, 4.0]; // [1,1,2,2]
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x_data, &[1, 1, 2, 2]).unwrap());
+    let up = xv.upsample2d(2).unwrap();
+    assert_eq!(up.value().shape(), &[1, 1, 4, 4]);
+    // weight the 4×4 output by a fixed pattern, sum → scalar loss
+    let w: Vec<f32> = (0..16).map(|i| (i as f32) * 0.1).collect();
+    let wv = tape.var(Array::from_slice(&g, &w, &[1, 1, 4, 4]).unwrap());
+    let loss = up.mul(&wv).unwrap().sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    // ∂L/∂x[i,j] = sum of w over the 2×2 block rows [2i,2i+2) cols [2j,2j+2)
+    let mut want = vec![0.0f32; 4];
+    for ii in 0..2 {
+        for jj in 0..2 {
+            let mut s = 0.0;
+            for ki in 0..2 {
+                for kj in 0..2 {
+                    s += w[(2 * ii + ki) * 4 + (2 * jj + kj)];
+                }
+            }
+            want[ii * 2 + jj] = s;
+        }
+    }
+    assert_close(&gx, &want, 1e-4, "upsample2d grad");
+}

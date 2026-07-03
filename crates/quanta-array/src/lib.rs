@@ -64,6 +64,7 @@ mod reduce_axis;
 mod scalar;
 mod scan;
 mod ufunc;
+mod upsample;
 
 pub use array::Array;
 pub use conv::conv_out;

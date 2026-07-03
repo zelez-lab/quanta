@@ -52,6 +52,23 @@ impl<T: DiffScalar> Var<T> {
         Ok(self.tape_handle().push(Op::AvgPool2d(self.id, p), y))
     }
 
+    /// Nearest-neighbour spatial upsample by factor `k` (NCHW): grow
+    /// `[N, C, H, W]` to `[N, C, H·k, W·k]`, each pixel replicated over a k×k
+    /// block. The decoder counterpart to pooling; the gradient sums each k×k
+    /// output block back to its source pixel.
+    pub fn upsample2d(&self, k: usize) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let d = x.shape();
+        if d.len() != 4 {
+            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("upsample2d: input must be 4-D NCHW"),
+            )));
+        }
+        let (h, w) = (d[2], d[3]);
+        let y = x.upsample2d(k)?;
+        Ok(self.tape_handle().push(Op::Upsample2d(self.id, k, h, w), y))
+    }
+
     /// Max pooling over `kh×kw` windows (NCHW). The forward also produces an
     /// argmax index array (captured on the tape) so the backward routes each
     /// output's gradient to exactly the input pixel that won its window.

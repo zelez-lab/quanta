@@ -293,3 +293,73 @@ fn self_attention_learns_an_induction_shift() {
         "self-attention didn't learn the shift: final loss {final_loss}"
     );
 }
+
+/// Convolutional autoencoder — encode an image to a spatial bottleneck, decode
+/// it back with the new upsample path, and train to reconstruct. Exercises
+/// upsample2d in a real decoder with gradients flowing through it.
+///
+/// `#[ignore]`: conv2d over 70 epochs is minutes on the CPU-interpreter lane.
+/// Run it explicitly (`cargo test conv_autoencoder -- --ignored`) or on a real
+/// GPU (`--features metal`), where it finishes in seconds. The upsample op
+/// itself is covered fast by `gradcheck::grad_upsample2d` and the array tests.
+#[test]
+#[ignore = "slow on the CPU interpreter; run with --ignored or --features metal"]
+fn conv_autoencoder_reconstructs() {
+    use quanta_autograd::optim::Adam;
+
+    let g = gpu();
+    let (n, h, w) = (4usize, 8usize, 8usize);
+    let mut imgs = vec![0.0f32; n * h * w];
+    for b in 0..n {
+        for i in 0..h {
+            for j in 0..w {
+                imgs[(b * h + i) * w + j] = ((i + j + b) as f32 * 0.3).sin() * 0.5 + 0.5;
+            }
+        }
+    }
+    let x = Array::from_slice(&g, &imgs, &[n, 1, h, w]).unwrap();
+
+    let init = |shape: &[usize], s: f32| {
+        let c: usize = shape.iter().product();
+        let v: Vec<f32> = (0..c).map(|i| s * ((i as f32) * 1.7).sin()).collect();
+        Array::from_slice(&g, &v, shape).unwrap()
+    };
+    let mut we = init(&[4, 1, 3, 3], 0.3); // encoder conv
+    let mut wd = init(&[1, 4, 3, 3], 0.2); // decoder conv
+
+    let mut opt = Adam::new(0.01);
+    opt.register(&we).unwrap();
+    opt.register(&wd).unwrap();
+
+    let mut final_loss = 1.0f32;
+    for _ in 0..70 {
+        opt.advance();
+        let tape = Tape::<f32>::new();
+        let xv = tape.var(x.shallow_clone());
+        let wev = tape.var(we.shallow_clone());
+        let wdv = tape.var(wd.shallow_clone());
+
+        // encode → [n,4,4,4] bottleneck ; decode → [n,1,8,8]
+        let z = xv
+            .conv2d(&wev, 1, 1)
+            .unwrap()
+            .relu()
+            .unwrap()
+            .maxpool2d(2, 2, 2, 0)
+            .unwrap();
+        let recon = z.upsample2d(2).unwrap().conv2d(&wdv, 1, 1).unwrap();
+        let loss = recon.mse_loss(&x).unwrap();
+
+        we = opt.step(0, &we, &loss.grad(&wev).unwrap()).unwrap();
+        wd = opt.step(1, &wd, &loss.grad(&wdv).unwrap()).unwrap();
+        final_loss = loss.value().to_vec().unwrap()[0];
+    }
+
+    // reconstruct far better than predicting the per-image mean.
+    let mean: f32 = imgs.iter().sum::<f32>() / imgs.len() as f32;
+    let baseline: f32 = imgs.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / imgs.len() as f32;
+    assert!(
+        final_loss < baseline * 0.3,
+        "autoencoder didn't reconstruct: {final_loss} vs baseline {baseline}"
+    );
+}
