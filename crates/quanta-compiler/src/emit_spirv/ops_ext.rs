@@ -269,6 +269,12 @@ impl SpvEmitter {
             OP_CAPABILITY,
             &[CAPABILITY_GROUP_NON_UNIFORM],
         );
+        // OpGroupNonUniformAny additionally requires GroupNonUniformVote.
+        Self::emit_op(
+            &mut self.sec_capability,
+            OP_CAPABILITY,
+            &[CAPABILITY_GROUP_NON_UNIFORM_VOTE],
+        );
         let pred_val = self.reg_value_id(predicate)?;
         let bool_ty = self.ensure_type_bool();
         let scope = self.emit_constant_u32(SCOPE_SUBGROUP);
@@ -296,6 +302,12 @@ impl SpvEmitter {
             &mut self.sec_capability,
             OP_CAPABILITY,
             &[CAPABILITY_GROUP_NON_UNIFORM],
+        );
+        // OpGroupNonUniformAll additionally requires GroupNonUniformVote.
+        Self::emit_op(
+            &mut self.sec_capability,
+            OP_CAPABILITY,
+            &[CAPABILITY_GROUP_NON_UNIFORM_VOTE],
         );
         let pred_val = self.reg_value_id(predicate)?;
         let bool_ty = self.ensure_type_bool();
@@ -414,10 +426,26 @@ impl SpvEmitter {
         if let Some(&(var_id, type_id)) = self.texture_samplers.get(&texture) {
             let loaded = self.alloc_id();
             Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+            // Read slots are declared as OpTypeSampledImage, but
+            // OpImageFetch takes a plain OpTypeImage — unwrap with OpImage.
+            let image = if let Some(&image_ty) = self.texture_image_types.get(&texture) {
+                let image = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_IMAGE, &[image_ty, image, loaded]);
+                image
+            } else {
+                loaded
+            };
             let int_ty = self.ensure_type_i32();
             let vec2_int = self.ensure_type_vector(int_ty, 2);
+            // Coordinates typically arrive as %uint (quark_id arithmetic);
+            // OpCompositeConstruct requires constituents to match the result
+            // vector's component type exactly, so bitcast to %int first.
             let x_val = self.reg_value_id(x)?;
+            let x_ty = self.reg_type_id(x)?;
+            let x_val = self.coerce_to(x_val, x_ty, int_ty);
             let y_val = self.reg_value_id(y)?;
+            let y_ty = self.reg_type_id(y)?;
+            let y_val = self.coerce_to(y_val, y_ty, int_ty);
             let coord = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
@@ -430,7 +458,7 @@ impl SpvEmitter {
             Self::emit_op(
                 &mut self.sec_function,
                 OP_IMAGE_FETCH,
-                &[vec4_ty, fetch_result, loaded, coord],
+                &[vec4_ty, fetch_result, image, coord],
             );
             let result_ty = self.scalar_type_id(ty);
             let result = self.alloc_id();

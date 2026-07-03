@@ -157,6 +157,7 @@ impl SpvEmitter {
         self.decorate(var_id, DECORATION_BINDING, &[slot]);
         self.texture_samplers
             .insert(slot, (var_id, sampled_image_ty));
+        self.texture_image_types.insert(slot, image_ty);
     }
 
     pub(crate) fn emit_texture_2d_write(&mut self, name: &str, slot: u32) {
@@ -209,5 +210,6 @@ impl SpvEmitter {
         self.decorate(var_id, DECORATION_BINDING, &[slot]);
         self.texture_samplers
             .insert(slot, (var_id, sampled_image_ty));
+        self.texture_image_types.insert(slot, image_ty);
     }
 }

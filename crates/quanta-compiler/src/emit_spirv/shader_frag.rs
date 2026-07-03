@@ -62,6 +62,7 @@ impl SpvEmitter {
             .unwrap_or(0);
 
         self.texture_samplers.clear();
+        self.texture_image_types.clear();
         if max_tex_slot > 0 {
             let image_ty = self.alloc_id();
             Self::emit_op(

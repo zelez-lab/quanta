@@ -77,3 +77,41 @@ fn compute_reads_texture() {
         );
     }
 }
+
+// ── Emitted-SPIR-V validity gate ────────────────────────────────────────
+//
+// The build-time `spirv-val` gate in the compiler only *logs* invalid
+// modules; this assertion makes invalid texture-read SPIR-V (e.g. an
+// OpCompositeConstruct whose constituents don't match the coordinate
+// vector's component type) a hard test failure. Skips silently when
+// spirv-val isn't installed, like the build-time gate.
+
+fn assert_spirv_val_clean(name: &str, spirv: &[u8]) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let child = Command::new("spirv-val")
+        .args(["--target-env", "vulkan1.3", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(_) => return, // spirv-val not on PATH
+    };
+    child.stdin.as_mut().unwrap().write_all(spirv).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{name}: emitted SPIR-V is invalid (spirv-val):\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn texture_read_spirv_module_validates() {
+    let spirv = READ_TEXTURE_BINARY
+        .spirv
+        .expect("read_texture: no SPIR-V embedded");
+    assert_spirv_val_clean("read_texture", spirv);
+}

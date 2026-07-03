@@ -50,6 +50,7 @@ pub const OP_TRANSPOSE: u16 = 84;
 pub const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
 pub const OP_IMAGE_FETCH: u16 = 95;
 pub const OP_IMAGE_WRITE: u16 = 99;
+pub const OP_IMAGE: u16 = 100;
 // SPIR-V §3.42 numeric conversions — corrected from a prior mis-numbering
 // that emitted OpFConvert/OpSConvert (reinterpret) for f↔int casts.
 pub const OP_CONVERT_F_TO_U: u16 = 109;
@@ -213,6 +214,7 @@ pub const CAPABILITY_STORAGE_BUFFER_8BIT_ACCESS: u32 = 4448;
 // SPIR-V §3.31 capabilities: NonUniform=61, Vote=62, Arithmetic=63,
 // Ballot=64, Shuffle=65. Ballot and Shuffle were each one too low.
 pub const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
+pub const CAPABILITY_GROUP_NON_UNIFORM_VOTE: u32 = 62;
 pub const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
 pub const CAPABILITY_GROUP_NON_UNIFORM_BALLOT: u32 = 64;
 pub const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 65;
