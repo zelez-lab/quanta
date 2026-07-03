@@ -144,6 +144,17 @@ impl Gpu {
         self.inner.supports_subgroups()
     }
 
+    /// Whether narrow-float buffers (bf16 / fp8) on the active backend
+    /// use the portable u32-slot layout (one element per 32-bit word)
+    /// instead of native stride. Only WebGPU: WGSL storage buffers
+    /// cannot hold 16-/8-bit array elements. Hosts holding tight
+    /// bf16/fp8 data (one element per 2/1 bytes — the layout Metal,
+    /// Vulkan and the CPU consume directly) must expand it
+    /// one-element-per-word before binding on such a backend.
+    pub fn narrow_storage_u32_slot(&self) -> bool {
+        self.inner.narrow_storage_u32_slot()
+    }
+
     /// Hardware-supported VRS shading rates as `(width, height)`
     /// pairs. Empty when VRS isn't supported.
     pub fn supported_shading_rates(&self) -> Vec<(u32, u32)> {

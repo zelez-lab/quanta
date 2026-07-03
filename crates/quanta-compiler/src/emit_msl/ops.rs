@@ -9,6 +9,15 @@ use quanta_ir::*;
 
 use super::helpers::{atomic_fn_str, binop_str, cmpop_str, const_msl, math_fn_str};
 
+/// `(exp_bits, mant_bits)` for an fp8 scalar type, else `None`.
+fn fp8_dims(ty: &ScalarType) -> Option<(u32, u32)> {
+    match ty {
+        ScalarType::FP8E5M2 => Some((5, 2)),
+        ScalarType::FP8E4M3 => Some((4, 3)),
+        _ => None,
+    }
+}
+
 /// Destination lvalue for a register write.
 ///
 /// The KernelOp contract is mutable-register semantics: a register may be
@@ -77,28 +86,102 @@ pub(crate) fn emit_op(
             ty,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
-            if index.0 == u32::MAX {
+            let elem = if index.0 == u32::MAX {
+                n.to_string()
+            } else {
+                format!("{}[r{}]", n, index.0)
+            };
+            if matches!(ty, ScalarType::BF16) {
+                // bf16 storage is `ushort` (native 2-byte stride, matching
+                // the host's tight upload); widen and shift into an f32.
+                out.push_str(&format!(
+                    "{}{} = as_type<float>(uint({}) << 16);\n",
+                    pad,
+                    dst_lv(mutable, "float", dst.0),
+                    elem
+                ));
+            } else if let Some((eb, mb)) = fp8_dims(ty) {
+                // fp8 storage is `uchar` (native 1-byte stride); the byte
+                // promotes to the helper's `uint` parameter.
+                let tag = quanta_ir::dtype_codegen::fp8_tag(eb, mb);
+                out.push_str(&format!(
+                    "{}{} = qa_fp8_{}_unpack(uint({}));\n",
+                    pad,
+                    dst_lv(mutable, "float", dst.0),
+                    tag,
+                    elem
+                ));
+            } else if matches!(ty, ScalarType::I4) {
+                // int4 PackedU32: element i lives in word i/8, nibble i%8;
+                // load sign-extends the 4-bit value: ((n ^ 8) - 8).
+                // Brace-scope the `_sh`/`_n` temps when the destination is a
+                // hoisted mutable register so a re-load of the same register
+                // does not redefine them.
+                let (open, close) = if mutable.contains_key(&dst.0) {
+                    ("{ ", " }")
+                } else {
+                    ("", "")
+                };
+                out.push_str(&format!(
+                    "{pad}{open}uint r{d}_sh = (r{i} % 8u) * 4u; \
+                     uint r{d}_n = ({n}[r{i} / 8u] >> r{d}_sh) & 0xFu; \
+                     {lv} = int((r{d}_n ^ 0x8u) - 0x8u);{close}\n",
+                    pad = pad,
+                    open = open,
+                    close = close,
+                    d = dst.0,
+                    i = index.0,
+                    n = n,
+                    lv = dst_lv(mutable, "int", dst.0)
+                ));
+            } else {
                 out.push_str(&format!(
                     "{}{} = {};\n",
                     pad,
                     dst_lv(mutable, ty.msl_name(), dst.0),
-                    n
-                ));
-            } else {
-                out.push_str(&format!(
-                    "{}{} = {}[r{}];\n",
-                    pad,
-                    dst_lv(mutable, ty.msl_name(), dst.0),
-                    n,
-                    index.0
+                    elem
                 ));
             }
         }
         KernelOp::Store {
-            field, index, src, ..
+            field,
+            index,
+            src,
+            ty,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
-            out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
+            if matches!(ty, ScalarType::BF16) {
+                // Pack float → bf16 (round-to-nearest-even), store the low
+                // 16 bits into the `ushort` slot (native 2-byte stride).
+                out.push_str(&format!(
+                    "{}uint r{}_b = as_type<uint>(r{}); \
+                     {}[r{}] = ushort((r{}_b + 0x7fffu + ((r{}_b >> 16) & 1u)) >> 16);\n",
+                    pad, src.0, src.0, n, index.0, src.0, src.0
+                ));
+            } else if let Some((eb, mb)) = fp8_dims(ty) {
+                // Pack float → fp8 (round-to-nearest-even), store the packed
+                // byte into the `uchar` slot (native 1-byte stride).
+                let tag = quanta_ir::dtype_codegen::fp8_tag(eb, mb);
+                out.push_str(&format!(
+                    "{}{}[r{}] = uchar(qa_fp8_{}_pack(r{}));\n",
+                    pad, n, index.0, tag, src.0
+                ));
+            } else if matches!(ty, ScalarType::I4) {
+                // int4 PackedU32: write nibble i%8 of word i/8 (read-modify-
+                // write; single-quark in the op-matrix).
+                out.push_str(&format!(
+                    "{pad}uint r{s}_w = r{i} / 8u; \
+                     uint r{s}_sh = (r{i} % 8u) * 4u; \
+                     {n}[r{s}_w] = ({n}[r{s}_w] & ~(0xFu << r{s}_sh)) \
+                     | ((uint(r{s}) & 0xFu) << r{s}_sh);\n",
+                    pad = pad,
+                    s = src.0,
+                    i = index.0,
+                    n = n
+                ));
+            } else {
+                out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
+            }
         }
         KernelOp::BinOp { dst, a, b, op, ty } => {
             if matches!(op, BinOp::SatAdd | BinOp::SatSub) {

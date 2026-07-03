@@ -6,10 +6,12 @@
 //! three must agree bit-for-bit with `dtype::{fp8_to_f32, f32_to_fp8}` —
 //! the op-matrix differential harness enforces this on real hardware.
 //!
-//! The conversions are pure integer bit-twiddling on a `u32` slot (the
-//! portable fallback storage: one fp8 byte per 32-bit word), so they need
-//! no extension and run on every backend. `eb`/`mb` are the exponent and
-//! mantissa bit widths (e5m2 = 5,2 — e4m3 = 4,3).
+//! The conversions are pure integer bit-twiddling in `u32` registers, so
+//! they need no extension and run on every backend. Storage stride is the
+//! caller's concern: MSL passes the byte from a `uchar` buffer element
+//! (native 1-byte stride), WGSL passes the whole `u32` slot word (its only
+//! legal narrow layout). `eb`/`mb` are the exponent and mantissa bit
+//! widths (e5m2 = 5,2 — e4m3 = 4,3).
 
 /// Function-name suffix for a given (eb, mb): `e5m2` / `e4m3`.
 pub fn fp8_tag(eb: u32, mb: u32) -> String {

@@ -377,6 +377,9 @@ pub type PfnVkGetPhysicalDeviceFragmentShadingRatesKHR = unsafe extern "C" fn(
 
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2: u32 = 1000059001;
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: u32 = 1000094001;
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: u32 = 1000059000;
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: u32 = 1000083000;
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES: u32 = 1000177000;
 
 /// `VkSubgroupFeatureFlagBits` — the operation classes a device's
 /// subgroups support. We gate the prims subgroup-reduce path on
@@ -392,6 +395,15 @@ pub const VK_SUBGROUP_FEATURE_ARITHMETIC_BIT: u32 = 0x00000008;
 pub type PfnVkGetPhysicalDeviceProperties2 = unsafe extern "C" fn(
     physical_device: VkPhysicalDevice,
     p_properties: *mut super::device::VkPhysicalDeviceProperties2,
+);
+
+/// Function-pointer type for `vkGetPhysicalDeviceFeatures2`
+/// (core since Vulkan 1.1). Resolved once via `vkGetInstanceProcAddr`
+/// after instance creation; used during device discovery to chain the
+/// 16-/8-bit storage feature queries onto the base features query.
+pub type PfnVkGetPhysicalDeviceFeatures2 = unsafe extern "C" fn(
+    physical_device: VkPhysicalDevice,
+    p_features: *mut super::device::VkPhysicalDeviceFeatures2,
 );
 
 // ─── Folded 1D dispatch (vkCmdDispatchBase, Vulkan 1.1 core) ────────────────

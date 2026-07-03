@@ -109,13 +109,15 @@ fn dispatch_pair_typed(
         (RawValues::I32(a), RawValues::I32(b), RawValues::F32(_)) => {
             dispatch_pair::<i32, f32>(gpu, wave, a, b, RawValues::F32)
         }
-        // bf16: storage is the portable u32-slot (one bf16 per 32-bit
-        // word), so the host fields are `Field<u32>` carrying the bf16
-        // bits zero-extended; readback narrows back to u16.
+        // bf16: single-element fields uploaded as `Field<u32>` with the
+        // bits zero-extended. Layout-agnostic for element 0: the native
+        // 16-bit stride (Metal/Vulkan/CPU) reads the word's low half and
+        // the WGSL u32-slot reads the whole word — same value either way;
+        // readback narrows back to u16.
         (RawValues::BF16(a), RawValues::BF16(b), RawValues::BF16(_)) => {
             dispatch_bf16(gpu, wave, a, b)
         }
-        // fp8: same portable u32-slot storage as bf16, one byte per word.
+        // fp8: same element-0 layout-agnostic `Field<u32>` upload as bf16.
         (RawValues::FP8E5M2(a), RawValues::FP8E5M2(b), RawValues::FP8E5M2(_)) => {
             dispatch_fp8(gpu, wave, a, b, RawValues::FP8E5M2)
         }
@@ -171,9 +173,10 @@ fn dispatch_pair<TIn: Copy + 'static, TOut: Copy + 'static>(
     wrap(fout.read().unwrap())
 }
 
-/// bf16 dispatch over the portable u32-slot storage: each bf16 value is a
-/// `u32` carrying its bits in the low 16. Uploads bf16-bits-as-u32, reads
-/// back, and narrows to `u16` for the `RawValues::BF16` result.
+/// bf16 dispatch over a single-element `Field<u32>` carrying the bits in
+/// the low 16 — element 0 reads identically under the native 16-bit stride
+/// (Metal/Vulkan/CPU) and the WGSL u32-slot. Uploads bf16-bits-as-u32,
+/// reads back, and narrows to `u16` for the `RawValues::BF16` result.
 #[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
 fn dispatch_bf16(gpu: &quanta::Gpu, wave: &mut quanta::Wave, a: &[u16], b: &[u16]) -> RawValues {
     let a32: Vec<u32> = a.iter().map(|&x| x as u32).collect();
@@ -192,9 +195,10 @@ fn dispatch_bf16(gpu: &quanta::Gpu, wave: &mut quanta::Wave, a: &[u16], b: &[u16
     RawValues::BF16(out)
 }
 
-/// fp8 dispatch over the portable u32-slot storage: each fp8 byte is a
-/// `u32` carrying its bits in the low 8. Uploads fp8-bits-as-u32, reads
-/// back, and narrows to `u8` for the `RawValues::FP8*` result.
+/// fp8 dispatch over a single-element `Field<u32>` carrying the byte in
+/// the low 8 bits — element 0 reads identically under the native 1-byte
+/// stride (Metal/Vulkan/CPU) and the WGSL u32-slot. Uploads
+/// fp8-bits-as-u32, reads back, and narrows to `u8`.
 #[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
 fn dispatch_fp8(
     gpu: &quanta::Gpu,

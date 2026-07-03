@@ -730,13 +730,16 @@ impl ScalarType {
         }
     }
 
-    /// MSL *buffer storage* element type. Differs from `msl_name` only for
-    /// bf16/fp8 (one per `uint` word) and int4 (8 nibbles per `uint` word):
-    /// pack/unpack happens at load/store.
+    /// MSL *buffer storage* element type. Differs from `msl_name` for
+    /// bf16 (`ushort`, native 2-byte stride), fp8 (`uchar`, native 1-byte
+    /// stride) and int4 (8 nibbles per `uint` word): pack/unpack happens at
+    /// load/store. The narrow-float strides match the host upload layout
+    /// (tight `Field<u16>` / `Field<u8>`) and the CPU executor; only WGSL
+    /// keeps the u32-slot fallback (see `wgsl_storage_name`).
     pub fn msl_storage_name(&self) -> &'static str {
         match self {
-            Self::BF16 => "uint",
-            Self::FP8E5M2 | Self::FP8E4M3 => "uint",
+            Self::BF16 => "ushort",
+            Self::FP8E5M2 | Self::FP8E4M3 => "uchar",
             Self::I4 => "uint",
             _ => self.msl_name(),
         }
@@ -765,6 +768,12 @@ impl ScalarType {
     /// WGSL *buffer storage* element type. Differs from `wgsl_name` for
     /// bf16/fp8 (one per `u32` word) and int4 (8 nibbles per `u32` word):
     /// pack/unpack at load/store.
+    ///
+    /// WGSL storage buffers cannot hold 16-/8-bit array elements, so bf16
+    /// and fp8 keep the u32-slot layout here even though MSL/SPIR-V (and
+    /// the host/CPU) use native stride. Hosts feeding the WebGPU backend
+    /// must expand tight narrow data one-element-per-word (see
+    /// `Gpu::narrow_storage_u32_slot`).
     pub fn wgsl_storage_name(&self) -> &'static str {
         match self {
             Self::BF16 => "u32",

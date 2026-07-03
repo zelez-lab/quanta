@@ -7,6 +7,7 @@
 // ── SPIR-V opcodes ──────────────────────────────────────────────────────────
 
 pub(crate) const OP_NAME: u16 = 5;
+pub(crate) const OP_EXTENSION: u16 = 10;
 pub(crate) const OP_EXT_INST_IMPORT: u16 = 11;
 pub(crate) const OP_EXT_INST: u16 = 12;
 pub(crate) const OP_MEMORY_MODEL: u16 = 14;
@@ -194,9 +195,13 @@ pub(crate) const CAPABILITY_FLOAT16: u32 = 9;
 pub(crate) const CAPABILITY_FLOAT64: u32 = 10;
 pub(crate) const CAPABILITY_INT64: u32 = 11;
 pub(crate) const CAPABILITY_INT16: u32 = 22;
-// 16-bit storage-buffer access (SPV_KHR_16bit_storage). Used for native
-// bf16 buffers when the device advertises `storageBuffer16BitAccess`.
+// 16-bit storage-buffer access (SPV_KHR_16bit_storage, core in SPIR-V 1.3).
+// Declared for the native bf16 storage element (`ushort` per element).
 pub(crate) const CAPABILITY_STORAGE_BUFFER_16BIT_ACCESS: u32 = 4433;
+// 8-bit storage-buffer access (SPV_KHR_8bit_storage; the capability is only
+// core from SPIR-V 1.5, so modules also declare the OpExtension). Declared
+// for the native fp8 storage element (`uchar` per element).
+pub(crate) const CAPABILITY_STORAGE_BUFFER_8BIT_ACCESS: u32 = 4448;
 pub(crate) const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
 pub(crate) const CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC: u32 = 63;
 pub(crate) const CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE: u32 = 65;

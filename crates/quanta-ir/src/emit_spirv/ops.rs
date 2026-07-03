@@ -179,11 +179,13 @@ impl SpvEmitter {
                     .ok_or_else(|| format!("field {} not declared", field))?;
 
                 let result_ty = self.scalar_type_id(*ty);
-                let alignment = Self::scalar_byte_size(*ty);
 
                 if index.0 == u32::MAX {
                     // Push constant: access this slot's member of the
-                    // shared block
+                    // shared block. Narrow floats (bf16/fp8) ride a u32
+                    // member (see `push_constant_type_id`), so the unpack
+                    // widens from the declared element type, not the
+                    // buffer-storage type.
                     let member_idx = self.push_constant_member.get(field).copied().unwrap_or(0);
                     let member = self.emit_constant_u32(member_idx);
                     let sc = if self.is_push_constant_field(*field) {
@@ -198,17 +200,17 @@ impl SpvEmitter {
                         OP_ACCESS_CHAIN,
                         &[ptr_elem, chain, var_id, member],
                     );
+                    let alignment = self.elem_type_alignment(elem_ty);
                     let loaded = self.alloc_id();
-                    let storage_ty = self.storage_scalar_type_id(*ty);
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_LOAD,
-                        &[storage_ty, loaded, chain, 0x2, alignment],
+                        &[elem_ty, loaded, chain, 0x2, alignment],
                     );
                     let val = if matches!(ty, ScalarType::BF16) {
-                        self.bf16_unpack_to_f32(loaded)
+                        self.bf16_unpack_to_f32(loaded, elem_ty)
                     } else if let Some((eb, mb)) = fp8_dims(ty) {
-                        self.fp8_unpack_to_f32(loaded, eb, mb)
+                        self.fp8_unpack_to_f32(loaded, elem_ty, eb, mb)
                     } else {
                         loaded
                     };
@@ -231,18 +233,19 @@ impl SpvEmitter {
                         &[ptr_elem, chain, var_id, zero, idx],
                     );
                     let loaded = self.alloc_id();
-                    // Load with the *storage* element type, then unpack to
-                    // the body type for bf16 (storage u16/u32 → f32).
-                    let storage_ty = self.storage_scalar_type_id(*ty);
+                    // Load with the *storage* element type at its native
+                    // alignment (2 for bf16, 1 for fp8), then unpack to the
+                    // body type (u16/u8 → f32).
+                    let alignment = self.storage_byte_size(*ty);
                     Self::emit_op(
                         &mut self.sec_function,
                         OP_LOAD,
-                        &[storage_ty, loaded, chain, 0x2, alignment],
+                        &[elem_ty, loaded, chain, 0x2, alignment],
                     );
                     let val = if matches!(ty, ScalarType::BF16) {
-                        self.bf16_unpack_to_f32(loaded)
+                        self.bf16_unpack_to_f32(loaded, elem_ty)
                     } else if let Some((eb, mb)) = fp8_dims(ty) {
-                        self.fp8_unpack_to_f32(loaded, eb, mb)
+                        self.fp8_unpack_to_f32(loaded, elem_ty, eb, mb)
                     } else {
                         loaded
                     };
@@ -1882,14 +1885,15 @@ impl SpvEmitter {
     // packing rounds to nearest-even and must match the CPU executor's
     // `f32_to_bf16` bit-for-bit (the differential oracle).
 
-    /// Convert a loaded bf16 storage value (`u16` native, or `u32` carrying
-    /// the bits in its low half) into an f32 register: `f32 = bitcast(bits
-    /// << 16)`. Returns the f32 value id.
-    pub(crate) fn bf16_unpack_to_f32(&mut self, loaded: u32) -> u32 {
+    /// Convert a loaded bf16 storage value (`u16` buffer element, or a
+    /// `u32` push-constant member carrying the bits in its low half) into
+    /// an f32 register: `f32 = bitcast(bits << 16)`. `loaded_ty` is the
+    /// SPIR-V type the value was loaded as. Returns the f32 value id.
+    pub(crate) fn bf16_unpack_to_f32(&mut self, loaded: u32, loaded_ty: u32) -> u32 {
         let u32_ty = self.ensure_type_u32();
         let f32_ty = self.ensure_type_f32();
-        // Widen to u32 if the storage element was u16 (native path).
-        let bits32 = if self.caps.bf16_native_storage {
+        // Widen to u32 if the storage element was narrow.
+        let bits32 = if loaded_ty != u32_ty {
             let w = self.alloc_id();
             Self::emit_op(&mut self.sec_function, OP_U_CONVERT, &[u32_ty, w, loaded]);
             w
@@ -1908,14 +1912,14 @@ impl SpvEmitter {
         f
     }
 
-    /// Pack an f32 register into a bf16 storage value (`u16` native / `u32`
-    /// fallback), round-to-nearest-even:
+    /// Pack an f32 register into a bf16 storage value (`u16`),
+    /// round-to-nearest-even:
     ///   bits = bitcast<u32>(f); bias = 0x7fff + ((bits >> 16) & 1);
     ///   out  = (bits + bias) >> 16
     /// (NaN handling: a NaN's exponent is all-ones so the bias never
     /// overflows it into ±inf, matching the CPU path for finite values; the
     /// op-matrix oracle uses the same formula and skips NaN cases.)
-    /// Returns the storage value id (u16 or u32 per caps).
+    /// Returns the u16-typed storage value id.
     pub(crate) fn bf16_pack_from_f32(&mut self, f32_val: u32) -> u32 {
         let u32_ty = self.ensure_type_u32();
         let bits = self.alloc_id();
@@ -1957,27 +1961,24 @@ impl SpvEmitter {
             &[u32_ty, rounded, summed, sixteen],
         );
         // Narrow to u16 for the native storage element.
-        if self.caps.bf16_native_storage {
-            let u16_ty = self.ensure_type_u16();
-            let narrowed = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_U_CONVERT,
-                &[u16_ty, narrowed, rounded],
-            );
-            narrowed
-        } else {
-            rounded
-        }
+        let u16_ty = self.ensure_type_u16();
+        let narrowed = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_U_CONVERT,
+            &[u16_ty, narrowed, rounded],
+        );
+        narrowed
     }
 
     // ── fp8 storage conversions ──────────────────────────────────────────
     //
     // The branchless reference is `crate::dtype::{fp8_to_f32, f32_to_fp8}`;
-    // these emit the identical arithmetic op-by-op. Storage is the portable
-    // u32-slot (one fp8 byte per word). `eb`/`mb` are the exponent/mantissa
-    // widths. Helpers below are thin one-op wrappers so the conversion reads
-    // close to the Rust source.
+    // these emit the identical arithmetic op-by-op. Storage is a `u8`
+    // buffer element (native 1-byte stride; push-constant members stay
+    // u32-slot). The conversion math itself runs in u32. `eb`/`mb` are the
+    // exponent/mantissa widths. Helpers below are thin one-op wrappers so
+    // the conversion reads close to the Rust source.
 
     fn spv_u32(&mut self) -> u32 {
         self.ensure_type_u32()
@@ -2061,11 +2062,27 @@ impl SpvEmitter {
         self.spv_add(kept, inc)
     }
 
-    /// Unpack a loaded fp8 u32-slot value into an f32 register.
+    /// Unpack a loaded fp8 value (`u8` buffer element, or a `u32`
+    /// push-constant member carrying the byte in its low bits) into an f32
+    /// register. `loaded_ty` is the SPIR-V type the value was loaded as.
     /// Mirrors `dtype::fp8_to_f32`.
-    pub(crate) fn fp8_unpack_to_f32(&mut self, loaded: u32, eb: u32, mb: u32) -> u32 {
+    pub(crate) fn fp8_unpack_to_f32(
+        &mut self,
+        loaded: u32,
+        loaded_ty: u32,
+        eb: u32,
+        mb: u32,
+    ) -> u32 {
         let u = self.spv_u32();
         let f32_ty = self.ensure_type_f32();
+        // Widen the byte to u32 before the bit math.
+        let loaded = if loaded_ty != u {
+            let w = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_U_CONVERT, &[u, w, loaded]);
+            w
+        } else {
+            loaded
+        };
         let bias = (1u32 << (eb - 1)) - 1;
         let exp_mask = (1u32 << eb) - 1;
         let mant_mask = (1u32 << mb) - 1;
@@ -2163,8 +2180,8 @@ impl SpvEmitter {
         f
     }
 
-    /// Pack an f32 register into an fp8 u32-slot value. Mirrors
-    /// `dtype::f32_to_fp8`.
+    /// Pack an f32 register into an fp8 storage value, narrowed to the
+    /// `u8` buffer element type. Mirrors `dtype::f32_to_fp8`.
     pub(crate) fn fp8_pack_from_f32(&mut self, f32_val: u32, eb: u32, mb: u32) -> u32 {
         let u = self.spv_u32();
         let bias = (1u32 << (eb - 1)) - 1;
@@ -2268,7 +2285,15 @@ impl SpvEmitter {
         out = self.spv_select(u, is_ovf, ovf, out);
         out = self.spv_select(u, is_zero, sign_slot, out);
         out = self.spv_select(u, is_infnan, infnan, out);
-        out
+        // Narrow to the u8 storage element.
+        let u8_ty = self.ensure_type_u8();
+        let narrowed = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_U_CONVERT,
+            &[u8_ty, narrowed, out],
+        );
+        narrowed
     }
 
     /// Round-to-nearest-even right shift by a *runtime* shift amount,

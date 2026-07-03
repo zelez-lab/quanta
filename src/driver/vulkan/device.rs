@@ -705,6 +705,29 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         }
     };
 
+    // Resolve `vkGetPhysicalDeviceFeatures2` (core 1.1) once. Used
+    // below to chain the 16-/8-bit storage feature queries onto each
+    // physical device — those features gate the native-stride bf16 /
+    // fp8 buffer contract. Null on 1.0-only loaders — narrow storage
+    // then conservatively stays disabled.
+    let get_features2_fn: Option<ffi::PfnVkGetPhysicalDeviceFeatures2> = {
+        let name = b"vkGetPhysicalDeviceFeatures2\0";
+        let p = unsafe {
+            ffi::vkGetInstanceProcAddr(instance, name.as_ptr() as *const core::ffi::c_char)
+        };
+        if p.is_null() {
+            None
+        } else {
+            // SAFETY: vkGetInstanceProcAddr returns a valid function
+            // pointer of the documented signature when non-null.
+            Some(unsafe {
+                core::mem::transmute::<*const core::ffi::c_void, ffi::PfnVkGetPhysicalDeviceFeatures2>(
+                    p,
+                )
+            })
+        }
+    };
+
     let mut count = 0u32;
     let result =
         unsafe { ffi::vkEnumeratePhysicalDevices(instance, &mut count, core::ptr::null_mut()) };
@@ -747,6 +770,46 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         let tessellation_feature = device_features.tessellation_shader != 0;
         let shader_float64_supported = device_features.shader_float64 != 0;
         let shader_int64_supported = device_features.shader_int64 != 0;
+
+        // 16-/8-bit storage-buffer access — gates the native-stride bf16
+        // (16-bit elements) / fp8 (8-bit elements) buffer contract shared
+        // with the host upload and the CPU executor. Both feature structs
+        // are core-defined from Vulkan 1.2 (16-bit storage is 1.1 core,
+        // 8-bit was promoted in 1.2), so the chained query is only issued
+        // on 1.2+ devices; older devices conservatively report false and
+        // bf16/fp8 pipelines fail creation with the capability named.
+        const VK_API_VERSION_1_2: u32 = (1 << 22) | (2 << 12);
+        let api_12 = props.api_version >= VK_API_VERSION_1_2;
+        let (storage16_supported, storage8_supported) = match get_features2_fn {
+            Some(get_features2) if api_12 => {
+                let mut storage8_query = ffi::VkPhysicalDevice8BitStorageFeatures {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
+                    p_next: core::ptr::null_mut(),
+                    storage_buffer_8bit_access: 0,
+                    uniform_and_storage_buffer_8bit_access: 0,
+                    storage_push_constant8: 0,
+                };
+                let mut storage16_query = ffi::VkPhysicalDevice16BitStorageFeatures {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+                    p_next: &mut storage8_query as *mut _ as *mut core::ffi::c_void,
+                    storage_buffer_16bit_access: 0,
+                    uniform_and_storage_buffer_16bit_access: 0,
+                    storage_push_constant16: 0,
+                    storage_input_output16: 0,
+                };
+                let mut features2 = ffi::VkPhysicalDeviceFeatures2 {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                    p_next: &mut storage16_query as *mut _ as *mut core::ffi::c_void,
+                    features: unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() },
+                };
+                unsafe { get_features2(pd, &mut features2) };
+                (
+                    storage16_query.storage_buffer_16bit_access != 0,
+                    storage8_query.storage_buffer_8bit_access != 0,
+                )
+            }
+            _ => (false, false),
+        };
 
         // TASK 37 — subgroup arithmetic capability. Chain
         // VkPhysicalDeviceSubgroupProperties onto a properties2 query;
@@ -859,6 +922,34 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             synchronization2: 1, // VK_TRUE
         };
 
+        // Enable 16-/8-bit storage-buffer access when the device
+        // advertises it (queried above), so bf16 / fp8 kernels — whose
+        // SPIR-V declares StorageBuffer16BitAccess / StorageBuffer8BitAccess
+        // for native-stride narrow buffers — can create pipelines. The
+        // structs are only chained on 1.2+ devices (where both are
+        // core-defined); each bit is set exactly to the queried support,
+        // since enabling an unadvertised feature fails vkCreateDevice.
+        let storage8_enable = ffi::VkPhysicalDevice8BitStorageFeatures {
+            s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
+            p_next: &sync2_features as *const _ as *mut core::ffi::c_void,
+            storage_buffer_8bit_access: if storage8_supported { 1 } else { 0 },
+            uniform_and_storage_buffer_8bit_access: 0,
+            storage_push_constant8: 0,
+        };
+        let storage16_enable = ffi::VkPhysicalDevice16BitStorageFeatures {
+            s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+            p_next: &storage8_enable as *const _ as *mut core::ffi::c_void,
+            storage_buffer_16bit_access: if storage16_supported { 1 } else { 0 },
+            uniform_and_storage_buffer_16bit_access: 0,
+            storage_push_constant16: 0,
+            storage_input_output16: 0,
+        };
+        let device_p_next: *const core::ffi::c_void = if api_12 {
+            &storage16_enable as *const _ as *const core::ffi::c_void
+        } else {
+            &sync2_features as *const _ as *const core::ffi::c_void
+        };
+
         let mut enabled_extensions: Vec<*const core::ffi::c_char> = Vec::new();
         if has_vrs_ext {
             enabled_extensions
@@ -910,7 +1001,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
 
         let device_create = ffi::VkDeviceCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            p_next: &sync2_features as *const _ as *const core::ffi::c_void,
+            p_next: device_p_next,
             flags: 0,
             queue_create_info_count: 1,
             p_queue_create_infos: &queue_create,

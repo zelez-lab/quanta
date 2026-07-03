@@ -10,16 +10,20 @@
 use quanta_blas::{GemmInputType, reference};
 use quanta_ir::dtype::{f32_to_bf16, f32_to_f16};
 
+/// The device these tests run on: the real GPU under a hardware backend
+/// feature (gpu-metal / gpu-vulkan), else the CPU JIT (portable, no GPU
+/// needed). bf16/fp8 buffers share one storage contract on all of them —
+/// native stride (2-byte bf16 / 1-byte fp8), matching the tightly packed
+/// `Field<u16>` / `Field<u8>` these tests upload.
 fn gpu() -> quanta::Gpu {
-    // Pinned to the CPU JIT: bf16/fp8 storage layout diverges between the CPU
-    // backend (native stride: 2-byte bf16 / 1-byte fp8, matching the tightly
-    // packed `Field<u16>` this test uploads) and the GPU emitters (portable
-    // u32-slot: one element per 32-bit word, as used by the op-matrix diff
-    // tests). The bf16/fp8 lanes therefore read garbage past element 0 on
-    // Metal/Vulkan until the storage contract is unified. (The former blocker
-    // — the MSL mutable-register scope bug — is fixed; f16 lanes pass on
-    // Metal.)
-    quanta::init_cpu()
+    #[cfg(any(feature = "gpu-metal", feature = "gpu-vulkan"))]
+    {
+        quanta::init().expect("a GPU device")
+    }
+    #[cfg(not(any(feature = "gpu-metal", feature = "gpu-vulkan")))]
+    {
+        quanta::init_cpu()
+    }
 }
 
 /// f32→narrow encode for a 2-byte dtype (which u16 bit pattern the kernel

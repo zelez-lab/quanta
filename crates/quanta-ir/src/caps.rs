@@ -169,9 +169,14 @@ pub const METAL: BackendCaps = BackendCaps {
 pub const VULKAN: BackendCaps = BackendCaps {
     backend: Backend::Vulkan,
     f16: TypeSupport::RequiresFeature("shaderFloat16"),
-    bf16: TypeSupport::Native, // always available via f32-emulated path
-    fp8_e5m2: TypeSupport::Native,
-    fp8_e4m3: TypeSupport::Native,
+    // bf16/fp8 compute in f32 (emulated path) but their buffers use
+    // native stride — 16-/8-bit storage elements — so the module
+    // declares StorageBuffer16BitAccess / StorageBuffer8BitAccess and
+    // needs the matching device feature (enabled by the driver when
+    // advertised; universal on Vulkan 1.2+ desktop drivers + lavapipe).
+    bf16: TypeSupport::RequiresFeature("storageBuffer16BitAccess"),
+    fp8_e5m2: TypeSupport::RequiresFeature("storageBuffer8BitAccess"),
+    fp8_e4m3: TypeSupport::RequiresFeature("storageBuffer8BitAccess"),
     f32: TypeSupport::Native,
     f64: TypeSupport::RequiresFeature("shaderFloat64"),
     u8_: TypeSupport::Native,

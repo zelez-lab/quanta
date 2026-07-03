@@ -7,6 +7,15 @@ use quanta_ir::*;
 use super::constants::*;
 use super::emitter::SpvEmitter;
 
+/// `(exp_bits, mant_bits)` for an fp8 scalar type, else `None`.
+fn fp8_dims(ty: ScalarType) -> Option<(u32, u32)> {
+    match ty {
+        ScalarType::FP8E5M2 => Some((5, 2)),
+        ScalarType::FP8E4M3 => Some((4, 3)),
+        _ => None,
+    }
+}
+
 impl SpvEmitter {
     pub(crate) fn emit_op_load(
         &mut self,
@@ -22,10 +31,11 @@ impl SpvEmitter {
 
         let result_ty = self.scalar_type_id(ty);
 
-        let alignment = Self::scalar_byte_size(ty);
-
         if index.0 == u32::MAX {
-            // Push constant: access this slot's member of the shared block
+            // Push constant: access this slot's member of the shared block.
+            // Narrow floats (bf16/fp8) ride a u32 member (see
+            // `push_constant_type_id`), so the unpack widens from the
+            // declared element type, not the buffer-storage type.
             let member_idx = self.push_constant_member.get(&field).copied().unwrap_or(0);
             let member = self.emit_constant_u32(member_idx);
             let sc = if self.is_push_constant_field(field) {
@@ -40,14 +50,22 @@ impl SpvEmitter {
                 OP_ACCESS_CHAIN,
                 &[ptr_elem, chain, var_id, member],
             );
+            let alignment = self.elem_type_alignment(elem_ty);
             let loaded = self.alloc_id();
             // Memory operand 0x2 = Aligned, followed by alignment value
             Self::emit_op(
                 &mut self.sec_function,
                 OP_LOAD,
-                &[result_ty, loaded, chain, 0x2, alignment],
+                &[elem_ty, loaded, chain, 0x2, alignment],
             );
-            self.set_reg(dst, loaded, result_ty);
+            let val = if matches!(ty, ScalarType::BF16) {
+                self.bf16_unpack_to_f32(loaded, elem_ty)
+            } else if let Some((eb, mb)) = fp8_dims(ty) {
+                self.fp8_unpack_to_f32(loaded, elem_ty, eb, mb)
+            } else {
+                loaded
+            };
+            self.set_reg(dst, val, result_ty);
         } else {
             // Array access: struct member 0, then index into runtime array
             let idx = self.reg_value_id(index)?;
@@ -60,13 +78,23 @@ impl SpvEmitter {
                 &[ptr_elem, chain, var_id, zero, idx],
             );
             let loaded = self.alloc_id();
-            // Memory operand 0x2 = Aligned, followed by alignment value
+            // Load with the *storage* element type at its native alignment
+            // (2 for bf16, 1 for fp8), then unpack to the body type
+            // (u16/u8 → f32). Memory operand 0x2 = Aligned.
+            let alignment = self.storage_byte_size(ty);
             Self::emit_op(
                 &mut self.sec_function,
                 OP_LOAD,
-                &[result_ty, loaded, chain, 0x2, alignment],
+                &[elem_ty, loaded, chain, 0x2, alignment],
             );
-            self.set_reg(dst, loaded, result_ty);
+            let val = if matches!(ty, ScalarType::BF16) {
+                self.bf16_unpack_to_f32(loaded, elem_ty)
+            } else if let Some((eb, mb)) = fp8_dims(ty) {
+                self.fp8_unpack_to_f32(loaded, elem_ty, eb, mb)
+            } else {
+                loaded
+            };
+            self.set_reg(dst, val, result_ty);
         }
         Ok(())
     }
@@ -96,6 +124,14 @@ impl SpvEmitter {
             let uint_ty = self.ensure_type_u32();
             val = self.coerce_to(as_uint, uint_ty, elem_ty);
         }
+        // bf16/fp8: pack the f32 body value into its narrow storage bits.
+        let val = if matches!(ty, ScalarType::BF16) {
+            self.bf16_pack_from_f32(val)
+        } else if let Some((eb, mb)) = fp8_dims(ty) {
+            self.fp8_pack_from_f32(val, eb, mb)
+        } else {
+            val
+        };
         let zero = self.emit_constant_u32(0);
         let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, elem_ty);
         let chain = self.alloc_id();
@@ -104,7 +140,7 @@ impl SpvEmitter {
             OP_ACCESS_CHAIN,
             &[ptr_elem, chain, var_id, zero, idx],
         );
-        let alignment = Self::scalar_byte_size(ty);
+        let alignment = self.storage_byte_size(ty);
         // Memory operand 0x2 = Aligned, followed by alignment value
         Self::emit_op(
             &mut self.sec_function,

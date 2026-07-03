@@ -10,9 +10,6 @@ use super::constants::*;
 pub(crate) struct SpvEmitter {
     pub(crate) next_id: u32,
 
-    /// Device capabilities steering emission (e.g. native bf16 storage).
-    pub(crate) caps: crate::emit_caps::EmitCaps,
-
     // Section buffers (in required order)
     pub(crate) sec_capability: Vec<u32>,
     pub(crate) sec_extension: Vec<u32>,
@@ -31,6 +28,7 @@ pub(crate) struct SpvEmitter {
     pub(crate) type_bool: Option<u32>,
     pub(crate) type_u32: Option<u32>,
     pub(crate) type_u16: Option<u32>,
+    pub(crate) type_u8: Option<u32>,
     pub(crate) type_i32: Option<u32>,
     pub(crate) type_u64: Option<u32>,
     pub(crate) type_i64: Option<u32>,
@@ -106,7 +104,6 @@ impl SpvEmitter {
     pub(crate) fn new() -> Self {
         Self {
             next_id: 1,
-            caps: crate::emit_caps::EmitCaps::portable(),
             sec_capability: Vec::new(),
             sec_extension: Vec::new(),
             sec_ext_inst_import: Vec::new(),
@@ -122,6 +119,7 @@ impl SpvEmitter {
             type_bool: None,
             type_u32: None,
             type_u16: None,
+            type_u8: None,
             type_i32: None,
             type_u64: None,
             type_i64: None,

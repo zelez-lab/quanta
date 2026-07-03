@@ -30,8 +30,8 @@ impl SpvEmitter {
                     scalar_type,
                 } => {
                     let is_writable = matches!(param, KernelParam::FieldWrite { .. });
-                    let elem_ty = self.scalar_type_id(*scalar_type);
-                    let stride = Self::scalar_byte_size(*scalar_type);
+                    let elem_ty = self.storage_scalar_type_id(*scalar_type);
+                    let stride = self.storage_byte_size(*scalar_type);
 
                     let rt_arr = self.ensure_type_runtime_array(elem_ty);
                     if self.decorated_stride.insert(rt_arr) {
@@ -99,7 +99,7 @@ impl SpvEmitter {
 
         let member_tys: Vec<u32> = constants
             .iter()
-            .map(|&(_, _, sty)| self.scalar_type_id(sty))
+            .map(|&(_, _, sty)| self.push_constant_type_id(sty))
             .collect();
         let struct_ty = self.ensure_type_struct(&member_tys);
         if self.decorated_block.insert(struct_ty) {
@@ -119,7 +119,7 @@ impl SpvEmitter {
         self.emit_name(var_id, "push_constants");
 
         for (i, &(_, slot, sty)) in constants.iter().enumerate() {
-            let elem_ty = self.scalar_type_id(sty);
+            let elem_ty = self.push_constant_type_id(sty);
             self.field_vars.insert(slot, (var_id, elem_ty, false));
             self.push_constant_slots.insert(slot);
             self.push_constant_member.insert(slot, i as u32);

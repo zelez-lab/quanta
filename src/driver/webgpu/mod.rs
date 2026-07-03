@@ -500,6 +500,14 @@ impl QGpuDevice for WebgpuDevice {
         &self.caps
     }
 
+    /// WGSL storage buffers cannot hold 16-/8-bit array elements, so the
+    /// WGSL emitter keeps bf16/fp8 on the portable u32-slot layout (one
+    /// element per 32-bit word). Hosts must expand tight narrow data
+    /// one-element-per-word before binding it here.
+    fn narrow_storage_u32_slot(&self) -> bool {
+        true
+    }
+
     // ── Buffers ────────────────────────────────────────────────────────────
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {

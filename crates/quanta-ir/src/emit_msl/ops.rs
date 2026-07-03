@@ -88,18 +88,20 @@ pub(super) fn emit_op(
                 format!("{}[r{}]", n, index.0)
             };
             if matches!(ty, ScalarType::BF16) {
-                // bf16 storage is `uint` (one per word); unpack to float.
+                // bf16 storage is `ushort` (native 2-byte stride, matching
+                // the host's tight upload); widen and shift into an f32.
                 out.push_str(&format!(
-                    "{}{} = as_type<float>({} << 16);\n",
+                    "{}{} = as_type<float>(uint({}) << 16);\n",
                     pad,
                     dst_lv(mutable, "float", dst.0),
                     elem
                 ));
             } else if let Some((eb, mb)) = fp8_dims(ty) {
-                // fp8 storage is `uint` (one byte per word); unpack to float.
+                // fp8 storage is `uchar` (native 1-byte stride); the byte
+                // promotes to the helper's `uint` parameter.
                 let tag = crate::dtype_codegen::fp8_tag(eb, mb);
                 out.push_str(&format!(
-                    "{}{} = qa_fp8_{}_unpack({});\n",
+                    "{}{} = qa_fp8_{}_unpack(uint({}));\n",
                     pad,
                     dst_lv(mutable, "float", dst.0),
                     tag,
@@ -145,17 +147,19 @@ pub(super) fn emit_op(
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             if matches!(ty, ScalarType::BF16) {
-                // Pack float → bf16 (round-to-nearest-even), store as uint.
+                // Pack float → bf16 (round-to-nearest-even), store the low
+                // 16 bits into the `ushort` slot (native 2-byte stride).
                 out.push_str(&format!(
                     "{}uint r{}_b = as_type<uint>(r{}); \
-                     {}[r{}] = (r{}_b + 0x7fffu + ((r{}_b >> 16) & 1u)) >> 16;\n",
+                     {}[r{}] = ushort((r{}_b + 0x7fffu + ((r{}_b >> 16) & 1u)) >> 16);\n",
                     pad, src.0, src.0, n, index.0, src.0, src.0
                 ));
             } else if let Some((eb, mb)) = fp8_dims(ty) {
-                // Pack float → fp8 (round-to-nearest-even), store as uint.
+                // Pack float → fp8 (round-to-nearest-even), store the packed
+                // byte into the `uchar` slot (native 1-byte stride).
                 let tag = crate::dtype_codegen::fp8_tag(eb, mb);
                 out.push_str(&format!(
-                    "{}{}[r{}] = qa_fp8_{}_pack(r{});\n",
+                    "{}{}[r{}] = uchar(qa_fp8_{}_pack(r{}));\n",
                     pad, n, index.0, tag, src.0
                 ));
             } else if matches!(ty, ScalarType::I4) {

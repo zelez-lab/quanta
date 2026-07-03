@@ -13,6 +13,7 @@ mod expr;
 mod expr_atom;
 mod kernel;
 mod kernel_params;
+mod narrow_storage;
 mod ops;
 mod ops_ext;
 mod ops_flow;

@@ -316,7 +316,7 @@ impl SpvEmitter {
 
         let member_tys: Vec<u32> = constants
             .iter()
-            .map(|&(_, _, sty)| self.storage_scalar_type_id(sty))
+            .map(|&(_, _, sty)| self.push_constant_type_id(sty))
             .collect();
         let struct_ty = self.ensure_type_struct(&member_tys);
         if self.decorated_block.insert(struct_ty) {
@@ -338,7 +338,7 @@ impl SpvEmitter {
         // via the push constant range in the pipeline layout.
 
         for (i, &(_, slot, sty)) in constants.iter().enumerate() {
-            let elem_ty = self.storage_scalar_type_id(sty);
+            let elem_ty = self.push_constant_type_id(sty);
             // Store as field_vars — Load with index=MAX accesses this
             // slot's member of the shared block.
             self.field_vars.insert(slot, (var_id, elem_ty, false));

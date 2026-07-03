@@ -41,6 +41,49 @@ impl SpvEmitter {
         id
     }
 
+    /// 16-bit unsigned int — the native bf16 storage element. Only used at
+    /// the Load/Store boundary (widen/narrow via OpUConvert), so the
+    /// `StorageBuffer16BitAccess` capability suffices — it permits 16-bit
+    /// types in SSBOs plus conversions without requiring the full Int16
+    /// (`shaderInt16`) arithmetic capability. Core in SPIR-V 1.3, no
+    /// OpExtension needed.
+    pub(crate) fn ensure_type_u16(&mut self) -> u32 {
+        if let Some(id) = self.type_u16 {
+            return id;
+        }
+        Self::emit_op(
+            &mut self.sec_capability,
+            OP_CAPABILITY,
+            &[CAPABILITY_STORAGE_BUFFER_16BIT_ACCESS],
+        );
+        let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_TYPE_INT, &[id, 16, 0]);
+        self.type_u16 = Some(id);
+        id
+    }
+
+    /// 8-bit unsigned int — the native fp8 storage element. Same
+    /// storage-boundary-only contract as `ensure_type_u16`, via
+    /// `StorageBuffer8BitAccess`. The capability is only core from SPIR-V
+    /// 1.5, so the module also declares `OpExtension "SPV_KHR_8bit_storage"`
+    /// (the header pins SPIR-V 1.3).
+    pub(crate) fn ensure_type_u8(&mut self) -> u32 {
+        if let Some(id) = self.type_u8 {
+            return id;
+        }
+        Self::emit_op(
+            &mut self.sec_capability,
+            OP_CAPABILITY,
+            &[CAPABILITY_STORAGE_BUFFER_8BIT_ACCESS],
+        );
+        let name_words = Self::string_words("SPV_KHR_8bit_storage");
+        Self::emit_op(&mut self.sec_extension, OP_EXTENSION, &name_words);
+        let id = self.alloc_id();
+        Self::emit_op(&mut self.sec_type_const, OP_TYPE_INT, &[id, 8, 0]);
+        self.type_u8 = Some(id);
+        id
+    }
+
     pub(crate) fn ensure_type_i32(&mut self) -> u32 {
         if let Some(id) = self.type_i32 {
             return id;
@@ -299,19 +342,83 @@ impl SpvEmitter {
         }
     }
 
+    /// Get byte size of a scalar type (for ArrayStride decoration). This is
+    /// the *body* size; storage uses `storage_byte_size`.
     pub(crate) fn scalar_byte_size(ty: ScalarType) -> u32 {
         match ty {
             ScalarType::F16 => 2,
-            ScalarType::BF16 => 2,
-            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => 1,
+            // Body alignment for bf16 is its f32 register (4); storage
+            // stride is computed by `storage_byte_size`.
+            ScalarType::BF16 => 4,
+            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => 4, // body is f32
             ScalarType::F32 => 4,
             ScalarType::F64 => 8,
             ScalarType::U8 | ScalarType::I8 => 1,
             ScalarType::U16 | ScalarType::I16 => 2,
             ScalarType::U32 | ScalarType::I32 => 4,
             ScalarType::U64 | ScalarType::I64 => 8,
-            ScalarType::I4 => 1, // logical nibble; PackedU32 at I/O
+            ScalarType::I4 => 4, // body is i32
             ScalarType::Bool => 4,
+        }
+    }
+
+    /// The SPIR-V type of a field's *buffer storage* element (which can
+    /// differ from the in-register body type). bf16 stores as a 16-bit int
+    /// and fp8 as an 8-bit int — native stride, matching the host's tight
+    /// upload (`Field<u16>` / `Field<u8>`) and the CPU executor. int4 packs
+    /// 8 nibbles into a u32 word (PackedU32); everything else stores as its
+    /// body type.
+    pub(crate) fn storage_scalar_type_id(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::BF16 => self.ensure_type_u16(),
+            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_u8(),
+            // int4 packs into u32 words (8 nibbles/word, PackedU32).
+            ScalarType::I4 => self.ensure_type_u32(),
+            _ => self.scalar_type_id(ty),
+        }
+    }
+
+    /// The SPIR-V type of a *push-constant block member*. Push constants
+    /// are pushed as 4-byte little-endian words by the runtime
+    /// (`Wave::set_value`), and narrow member types would drag in the
+    /// separate `storagePushConstant16/8` features — so bf16/fp8/int4
+    /// members stay u32-slot (the value in the low bits) and the Load
+    /// unpack widens from there.
+    pub(crate) fn push_constant_type_id(&mut self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 | ScalarType::I4 => {
+                self.ensure_type_u32()
+            }
+            _ => self.scalar_type_id(ty),
+        }
+    }
+
+    /// Storage stride for a field element, in bytes. Matches
+    /// `storage_scalar_type_id`: native stride for the narrow floats.
+    pub(crate) fn storage_byte_size(&self, ty: ScalarType) -> u32 {
+        match ty {
+            ScalarType::BF16 => 2,
+            ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => 1,
+            ScalarType::I4 => 4, // u32-slot (PackedU32)
+            _ => Self::scalar_byte_size(ty),
+        }
+    }
+
+    /// Byte width of a known scalar *type id* (for OpLoad/OpStore Aligned
+    /// operands when only the element type id is at hand, e.g. push-constant
+    /// members). Falls back to 4 for anything not in the narrow/wide caches.
+    pub(crate) fn elem_type_alignment(&self, elem_ty: u32) -> u32 {
+        if self.type_u8 == Some(elem_ty) {
+            1
+        } else if self.type_u16 == Some(elem_ty) || self.type_f16 == Some(elem_ty) {
+            2
+        } else if self.type_u64 == Some(elem_ty)
+            || self.type_i64 == Some(elem_ty)
+            || self.type_f64 == Some(elem_ty)
+        {
+            8
+        } else {
+            4
         }
     }
 

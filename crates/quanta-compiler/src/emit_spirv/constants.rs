@@ -9,6 +9,7 @@
 // ── SPIR-V opcodes ──────────────────────────────────────────────────────────
 
 pub const OP_NAME: u16 = 5;
+pub const OP_EXTENSION: u16 = 10;
 pub const OP_EXT_INST_IMPORT: u16 = 11;
 pub const OP_EXT_INST: u16 = 12;
 pub const OP_MEMORY_MODEL: u16 = 14;
@@ -82,6 +83,8 @@ pub const OP_MATRIX_TIMES_VECTOR: u16 = 145;
 pub const OP_VECTOR_TIMES_MATRIX: u16 = 144;
 pub const OP_MATRIX_TIMES_MATRIX: u16 = 146;
 pub const OP_DOT: u16 = 148;
+pub const OP_LOGICAL_OR: u16 = 166;
+pub const OP_LOGICAL_AND: u16 = 167;
 pub const OP_LOGICAL_NOT: u16 = 168;
 pub const OP_SELECT: u16 = 169;
 pub const OP_IEQUAL: u16 = 170;
@@ -200,6 +203,13 @@ pub const CAPABILITY_SHADER: u32 = 1;
 pub const CAPABILITY_FLOAT16: u32 = 9;
 pub const CAPABILITY_FLOAT64: u32 = 10;
 pub const CAPABILITY_INT64: u32 = 11;
+// 16-bit storage-buffer access (SPV_KHR_16bit_storage, core in SPIR-V 1.3).
+// Declared for the native bf16 storage element (`ushort` per element).
+pub const CAPABILITY_STORAGE_BUFFER_16BIT_ACCESS: u32 = 4433;
+// 8-bit storage-buffer access (SPV_KHR_8bit_storage; the capability is only
+// core from SPIR-V 1.5, so modules also declare the OpExtension). Declared
+// for the native fp8 storage element (`uchar` per element).
+pub const CAPABILITY_STORAGE_BUFFER_8BIT_ACCESS: u32 = 4448;
 // SPIR-V §3.31 capabilities: NonUniform=61, Vote=62, Arithmetic=63,
 // Ballot=64, Shuffle=65. Ballot and Shuffle were each one too low.
 pub const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;

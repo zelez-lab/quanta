@@ -207,12 +207,42 @@ pub(crate) fn build_def(
     }
 }
 
+/// Narrow storage elements that can be widened into the WGSL u32-slot
+/// layout (one element per 32-bit word, raw bits zero-extended into the
+/// low bits). Implemented for every `T` that rides `dispatch`; only the
+/// genuinely narrow dtypes (bf16 / fp8) ever get widened.
+pub(crate) trait NarrowStorageBits: quanta::GpuType + Copy {
+    fn widen_to_word(self) -> u32;
+}
+impl NarrowStorageBits for u16 {
+    fn widen_to_word(self) -> u32 {
+        self as u32
+    }
+}
+impl NarrowStorageBits for u8 {
+    fn widen_to_word(self) -> u32 {
+        self as u32
+    }
+}
+impl NarrowStorageBits for i32 {
+    // int8 codes ride a Field<i32> (word-sized already); never widened.
+    fn widen_to_word(self) -> u32 {
+        self as u32
+    }
+}
+
 /// Shared dispatch for any narrow input storage type `T`. Validates shapes,
 /// builds the per-dtype `KernelDef`, binds and dispatches `m·n` threads. The
 /// kernel reads A/B at the dtype's native stride (`scalar_size`), so `T` must
 /// match `in_ty`'s storage width — the public wrappers enforce that.
+///
+/// WGSL exception: WebGPU cannot hold 16-/8-bit storage elements, so its
+/// kernels read bf16/fp8 one-element-per-u32-word. When the active backend
+/// reports that layout (`Gpu::narrow_storage_u32_slot`), the tight A/B data
+/// is re-uploaded expanded before binding — a documented host-side repack
+/// that keeps the public tight-`Field` contract identical on every backend.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn dispatch<T: quanta::GpuType>(
+pub(crate) fn dispatch<T: NarrowStorageBits>(
     gpu: &Gpu,
     in_ty: ScalarType,
     tag: &str,
@@ -247,6 +277,33 @@ pub(crate) fn dispatch<T: quanta::GpuType>(
     let def = build_def(in_ty, tag, n, k, alpha, beta);
     let bytes = serialize_kernel(&def);
     let mut wave = gpu.wave_jit(&bytes)?;
+
+    // WGSL u32-slot repack (WebGPU only): expand tight narrow input to
+    // one element per word. C is f32 and needs no repack.
+    let is_narrow_float = matches!(
+        in_ty,
+        ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3
+    );
+    if is_narrow_float && gpu.narrow_storage_u32_slot() {
+        let widen = |f: &Field<T>| -> Result<Field<u32>, QuantaError> {
+            let words: Vec<u32> = f
+                .read()?
+                .into_iter()
+                .map(NarrowStorageBits::widen_to_word)
+                .collect();
+            let wf = gpu.field::<u32>(words.len())?;
+            wf.write(&words)?;
+            Ok(wf)
+        };
+        let aw = widen(a)?;
+        let bw = widen(b)?;
+        wave.bind(0, &aw);
+        wave.bind(1, &bw);
+        wave.bind(2, c);
+        gpu.dispatch(&wave, m * n)?.wait()?;
+        return Ok(());
+    }
+
     wave.bind(0, a);
     wave.bind(1, b);
     wave.bind(2, c); // in place: C is read (β·C) and written

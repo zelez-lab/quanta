@@ -124,6 +124,43 @@ pub struct VkPhysicalDeviceProperties2 {
     pub properties: VkPhysicalDeviceProperties,
 }
 
+/// `VkPhysicalDeviceFeatures2` (core Vulkan 1.1) — the base features
+/// plus an extensible `p_next` chain. Used at device discovery to hang
+/// the 16-/8-bit storage feature queries off it; the base `features`
+/// are read through the existing v1.0 call.
+#[repr(C)]
+pub struct VkPhysicalDeviceFeatures2 {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub features: VkPhysicalDeviceFeatures,
+}
+
+/// `VkPhysicalDevice16BitStorageFeatures` (core Vulkan 1.1). The
+/// `storage_buffer_16bit_access` bit gates the native bf16 storage
+/// contract: kernels touching bf16 buffers declare the SPIR-V
+/// `StorageBuffer16BitAccess` capability and load/store 16-bit elements.
+#[repr(C)]
+pub struct VkPhysicalDevice16BitStorageFeatures {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub storage_buffer_16bit_access: u32,
+    pub uniform_and_storage_buffer_16bit_access: u32,
+    pub storage_push_constant16: u32,
+    pub storage_input_output16: u32,
+}
+
+/// `VkPhysicalDevice8BitStorageFeatures` (core Vulkan 1.2). The
+/// `storage_buffer_8bit_access` bit gates the native fp8 storage
+/// contract (SPIR-V `StorageBuffer8BitAccess`, 8-bit buffer elements).
+#[repr(C)]
+pub struct VkPhysicalDevice8BitStorageFeatures {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub storage_buffer_8bit_access: u32,
+    pub uniform_and_storage_buffer_8bit_access: u32,
+    pub storage_push_constant8: u32,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct VkQueueFamilyProperties {

@@ -110,6 +110,18 @@ pub trait GpuDevice: Send + Sync {
         false
     }
 
+    /// Whether narrow-float buffers (bf16 / fp8) on this backend use the
+    /// portable u32-slot layout — one element per 32-bit word — instead of
+    /// native stride (16-/8-bit elements, the contract shared by the host
+    /// upload, the CPU executor and the MSL/SPIR-V emitters). WGSL has no
+    /// 16-/8-bit storage types, so only the WebGPU backend returns `true`;
+    /// hosts feeding it tight bf16/fp8 data must expand it
+    /// one-element-per-word before binding (see `quanta-blas`'s mixed GEMM
+    /// dispatch for the reference repack).
+    fn narrow_storage_u32_slot(&self) -> bool {
+        false
+    }
+
     /// Hardware-supported shading rates as `(width, height)` pairs.
     /// Empty when VRS isn't supported. The render encoder validates
     /// requested rates against this list before submission.
