@@ -419,7 +419,7 @@ fn host_normal_pair_f64(id: u32, lo: u32, hi: u32) -> (f64, f64) {
     let u1 = u64_to_open_unit_f64(packed0);
     let u2 = u64_to_open_unit_f64(packed1);
     let r = (-2.0f64 * u1.ln()).sqrt();
-    let two_pi = 6.283_185_307_179_586f64;
+    let two_pi = std::f64::consts::TAU;
     let theta = two_pi * u2;
     (r * theta.cos(), r * theta.sin())
 }

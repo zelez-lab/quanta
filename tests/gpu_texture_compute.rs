@@ -64,9 +64,8 @@ fn compute_reads_texture() {
     let result = output.read().unwrap();
 
     // Check first row: R channel should be 0/255, 64/255, 128/255, 192/255
-    for x in 0..w as usize {
+    for (x, &actual) in result.iter().enumerate().take(w as usize) {
         let expected_r = (x as f32 * 64.0) / 255.0;
-        let actual = result[x];
         let err = (actual - expected_r).abs();
         eprintln!(
             "  pixel ({x},0): R = {:.3} (expected {:.3}, err {:.3})",

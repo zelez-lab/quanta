@@ -360,26 +360,27 @@ impl VulkanDevice {
         for slot in 0..wave.binding_count as usize {
             let handle = wave.bindings[slot];
             if handle != 0
-                && let Some(buf) = buffers_guard.get(&handle) {
-                    buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
-                        buffer: buf.buffer,
-                        offset: 0,
-                        range: ffi::VK_WHOLE_SIZE,
-                    };
-                    writes[write_count] = ffi::VkWriteDescriptorSet {
-                        s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                        p_next: core::ptr::null(),
-                        dst_set: ds,
-                        dst_binding: slot as u32,
-                        dst_array_element: 0,
-                        descriptor_count: 1,
-                        descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                        p_image_info: core::ptr::null(),
-                        p_buffer_info: &buffer_infos[write_count],
-                        p_texel_buffer_view: core::ptr::null(),
-                    };
-                    write_count += 1;
-                }
+                && let Some(buf) = buffers_guard.get(&handle)
+            {
+                buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
+                    buffer: buf.buffer,
+                    offset: 0,
+                    range: ffi::VK_WHOLE_SIZE,
+                };
+                writes[write_count] = ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: ds,
+                    dst_binding: slot as u32,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    p_image_info: core::ptr::null(),
+                    p_buffer_info: &buffer_infos[write_count],
+                    p_texel_buffer_view: core::ptr::null(),
+                };
+                write_count += 1;
+            }
         }
 
         if write_count > 0 {
@@ -506,26 +507,27 @@ impl VulkanDevice {
         for slot in 0..wave.binding_count as usize {
             let handle = wave.bindings[slot];
             if handle != 0
-                && let Some(buf) = buffers_guard.get(&handle) {
-                    buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
-                        buffer: buf.buffer,
-                        offset: 0,
-                        range: ffi::VK_WHOLE_SIZE,
-                    };
-                    writes[write_count] = ffi::VkWriteDescriptorSet {
-                        s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                        p_next: core::ptr::null(),
-                        dst_set: ds,
-                        dst_binding: slot as u32,
-                        dst_array_element: 0,
-                        descriptor_count: 1,
-                        descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                        p_image_info: core::ptr::null(),
-                        p_buffer_info: &buffer_infos[write_count],
-                        p_texel_buffer_view: core::ptr::null(),
-                    };
-                    write_count += 1;
-                }
+                && let Some(buf) = buffers_guard.get(&handle)
+            {
+                buffer_infos[write_count] = ffi::VkDescriptorBufferInfo {
+                    buffer: buf.buffer,
+                    offset: 0,
+                    range: ffi::VK_WHOLE_SIZE,
+                };
+                writes[write_count] = ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: ds,
+                    dst_binding: slot as u32,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    p_image_info: core::ptr::null(),
+                    p_buffer_info: &buffer_infos[write_count],
+                    p_texel_buffer_view: core::ptr::null(),
+                };
+                write_count += 1;
+            }
         }
         if write_count > 0 {
             unsafe {

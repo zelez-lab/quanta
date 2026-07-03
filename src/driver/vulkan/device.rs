@@ -514,9 +514,10 @@ impl VulkanDevice {
     ) -> Result<(ffi::VkBuffer, ffi::VkDeviceMemory, usize), QuantaError> {
         // Try to find a suitable buffer in the pool.
         if let Ok(mut pool) = self.staging_pool.lock()
-            && let Some(idx) = pool.iter().position(|&(_, _, cap)| cap >= min_size) {
-                return Ok(pool.swap_remove(idx));
-            }
+            && let Some(idx) = pool.iter().position(|&(_, _, cap)| cap >= min_size)
+        {
+            return Ok(pool.swap_remove(idx));
+        }
         // Pool miss — allocate a new staging buffer (both SRC and DST for read-back reuse).
         let staging_info = ffi::VkBufferCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -955,23 +956,18 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
 
         let mut enabled_extensions: Vec<*const core::ffi::c_char> = Vec::new();
         if has_vrs_ext {
-            enabled_extensions
-                .push(c"VK_KHR_fragment_shading_rate".as_ptr());
+            enabled_extensions.push(c"VK_KHR_fragment_shading_rate".as_ptr());
         }
         if has_mesh_ext {
             enabled_extensions.push(c"VK_EXT_mesh_shader".as_ptr());
         }
         if has_rt {
-            enabled_extensions
-                .push(c"VK_KHR_acceleration_structure".as_ptr());
-            enabled_extensions
-                .push(c"VK_KHR_ray_tracing_pipeline".as_ptr());
+            enabled_extensions.push(c"VK_KHR_acceleration_structure".as_ptr());
+            enabled_extensions.push(c"VK_KHR_ray_tracing_pipeline".as_ptr());
             // Both ray-tracing extensions require deferred-host-ops.
-            enabled_extensions
-                .push(c"VK_KHR_deferred_host_operations".as_ptr());
+            enabled_extensions.push(c"VK_KHR_deferred_host_operations".as_ptr());
             // VK_KHR_acceleration_structure requires VK_KHR_buffer_device_address.
-            enabled_extensions
-                .push(c"VK_KHR_buffer_device_address".as_ptr());
+            enabled_extensions.push(c"VK_KHR_buffer_device_address".as_ptr());
         }
         let (enabled_ext_count, enabled_ext_ptr) = if enabled_extensions.is_empty() {
             (0u32, core::ptr::null())

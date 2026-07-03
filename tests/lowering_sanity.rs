@@ -69,6 +69,9 @@ fn sanity1_loop_early_break_runs() {
 // Shorter shapes (no device fn, single-level if) compile fine under
 // either path.
 
+// Not called from host code: registered for the WASM-route device-fn
+// registry, which only sees it through the `#[quanta::device]` attribute.
+#[allow(dead_code)]
 #[quanta::device]
 fn sanity2_envelope(z_in: f32) -> f32 {
     let z: f32 = if z_in < 1.0f32 { 1.0f32 } else { z_in };

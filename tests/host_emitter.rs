@@ -83,6 +83,9 @@ fn branch_kernel_compiles() {
 // Device function kernel
 // ===========================================================================
 
+// Not called from host code: registered for the WASM-route device-fn
+// registry, which only sees it through the `#[quanta::device]` attribute.
+#[allow(dead_code)]
 #[quanta::device]
 fn relu(x: f32) -> f32 {
     if x > 0.0 { x } else { 0.0 }

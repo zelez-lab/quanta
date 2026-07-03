@@ -42,19 +42,19 @@ fn mapped_as_slice() {
 
     // Write via mutable slice
     let slice = mapped.as_mut_slice();
-    for i in 0..64 {
-        slice[i] = i as f32;
+    for (i, v) in slice.iter_mut().enumerate().take(64) {
+        *v = i as f32;
     }
 
     // Read via immutable slice
     let view = mapped.as_slice();
-    for i in 0..64 {
+    for (i, &v) in view.iter().enumerate().take(64) {
         assert!(
-            (view[i] - i as f32).abs() < 0.001,
+            (v - i as f32).abs() < 0.001,
             "mapped slice at {}: expected {}, got {}",
             i,
             i,
-            view[i]
+            v
         );
     }
 }

@@ -178,15 +178,13 @@ pub struct VkImageViewCreateInfo {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
-#[derive(Default)]
+#[derive(Copy, Clone, Default)]
 pub struct VkComponentMapping {
     pub r: u32,
     pub g: u32,
     pub b: u32,
     pub a: u32,
 }
-
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -425,8 +423,7 @@ pub struct VkExtent3D {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
-#[derive(Default)]
+#[derive(Copy, Clone, Default)]
 pub struct VkExtent2D {
     pub width: u32,
     pub height: u32,
@@ -448,7 +445,6 @@ pub struct VkPhysicalDeviceFragmentShadingRateKHR {
 
 /// `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR`.
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR: u32 = 1000226001;
-
 
 #[repr(C)]
 #[derive(Copy, Clone)]

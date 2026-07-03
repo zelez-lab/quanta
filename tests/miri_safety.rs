@@ -594,7 +594,7 @@ fn wave_push_constant_safety() {
     let mut wave = gpu.wave_jit(&kernel_bytes).unwrap();
     wave.bind(0, &field);
     // Exercise set_value with different types
-    wave.set_value(0, 3.14f32);
+    wave.set_value(0, 3.25f32);
     wave.set_value(1, 42u32);
     wave.set_value(2, 100i64);
 

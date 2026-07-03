@@ -91,7 +91,7 @@ fn indirect_dispatch_zero_groups_no_crash() {
     arg_field.write(&args).unwrap();
 
     let result_field = gpu.field::<f32>(16).unwrap();
-    result_field.write(&vec![0.0f32; 16]).unwrap();
+    result_field.write(&[0.0f32; 16]).unwrap();
 
     let mut wave = fill_values(&gpu).unwrap();
     wave.bind(0, &result_field);

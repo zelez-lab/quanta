@@ -9,6 +9,9 @@
 use super::lane::Lane;
 use super::output::{RawOutput, RawValues};
 
+// `cases` is consumed by the `op_matrix` test binary; the `differential`
+// binary compiles this shared module too but only touches `OpCase`.
+#[allow(unused_imports)]
 pub use quanta_ir::op_matrix_cases::{OpCase, cases};
 
 /// Wrap a dispatched buffer as a lane `RawOutput`. (Was `OpCase::output`

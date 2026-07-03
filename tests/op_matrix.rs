@@ -126,10 +126,9 @@ fn op_matrix_metal_matches_reference() {
             return;
         }
         Err(e) => {
-            assert!(
-                !cfg!(target_os = "macos"),
-                "metal lane: no device found on macOS: {e}"
-            );
+            if cfg!(target_os = "macos") {
+                panic!("metal lane: no device found on macOS: {e}");
+            }
             eprintln!("op_matrix metal lane: no device on this host — skipping");
             return;
         }

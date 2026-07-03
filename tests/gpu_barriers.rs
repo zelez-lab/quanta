@@ -47,14 +47,14 @@ fn barrier_full_pipeline() {
 
     // Read back should see updated data
     let result = field.read().unwrap();
-    for i in 0..count {
+    for (i, &got) in result.iter().enumerate().take(count) {
         let expected = (i + 1) as f32;
         assert!(
-            (result[i] - expected).abs() < 0.001,
+            (got - expected).abs() < 0.001,
             "barrier_full at {}: expected {}, got {}",
             i,
             expected,
-            result[i]
+            got
         );
     }
 }
@@ -94,14 +94,14 @@ fn barrier_compute_write_then_read() {
     pulse2.wait().unwrap();
 
     let result = field_b.read().unwrap();
-    for i in 0..count {
+    for (i, &got) in result.iter().enumerate().take(count) {
         let expected = (i + 1) as f32 * 2.0;
         assert!(
-            (result[i] - expected).abs() < 0.01,
+            (got - expected).abs() < 0.01,
             "barrier_compute at {}: expected {}, got {}",
             i,
             expected,
-            result[i]
+            got
         );
     }
 }

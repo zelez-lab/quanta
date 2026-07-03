@@ -101,12 +101,8 @@ fn queue_signal_returns_result() {
     };
 
     // queue_signal/queue_wait with dummy handles should return an error,
-    // not panic.
-    let result = gpu.queue_signal(0, 0);
-    match result {
-        Ok(()) => {}
-        Err(_) => {} // expected "not supported"
-    }
+    // not panic. Ok or Err ("not supported") are both acceptable.
+    let _ = gpu.queue_signal(0, 0);
 }
 
 #[test]
@@ -116,9 +112,6 @@ fn queue_wait_returns_result() {
         return;
     };
 
-    let result = gpu.queue_wait(0, 0);
-    match result {
-        Ok(()) => {}
-        Err(_) => {} // expected "not supported"
-    }
+    // Ok or Err ("not supported") are both acceptable; must not panic.
+    let _ = gpu.queue_wait(0, 0);
 }

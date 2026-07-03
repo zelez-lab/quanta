@@ -48,9 +48,9 @@ fn icb_metal_record_two_dispatches_matches_direct() {
         }
     };
     wave_a.bind(0, &field_a);
-    let mut p1 = gpu.dispatch(&wave_a, count as u32).unwrap();
+    let mut p1 = gpu.dispatch(&wave_a, count).unwrap();
     p1.wait().unwrap();
-    let mut p2 = gpu.dispatch(&wave_a, count as u32).unwrap();
+    let mut p2 = gpu.dispatch(&wave_a, count).unwrap();
     p2.wait().unwrap();
     let direct = field_a.read().unwrap();
 
@@ -66,7 +66,7 @@ fn icb_metal_record_two_dispatches_matches_direct() {
             return;
         }
     };
-    let groups = [count as u32 / wave_b.workgroup_size[0], 1, 1];
+    let groups = [count / wave_b.workgroup_size[0], 1, 1];
     if let Err(e) = icb.record_dispatch(&wave_b, groups) {
         eprintln!("skipping: ICB record not supported: {e}");
         return;

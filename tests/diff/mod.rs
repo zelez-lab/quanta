@@ -8,7 +8,7 @@
 //! - float kernels:   ≤ 1 ULP versus the reference
 //! - atomic kernels:  trace membership in the 055 / 056 memory model
 //! - op-matrix:       bit-exact per (op, type, edge-input) — see
-//!                    `op_matrix` module (step 082 Layer 1).
+//!   `op_matrix` module (step 082 Layer 1).
 //!
 //! Each top-level test binary (`tests/differential.rs`,
 //! `tests/op_matrix.rs`) imports the parts of this module it

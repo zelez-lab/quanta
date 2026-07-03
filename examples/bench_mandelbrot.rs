@@ -46,7 +46,7 @@ fn main() {
     // CPU
     let start = Instant::now();
     let mut cpu_out = vec![0u32; count];
-    for idx in 0..count {
+    for (idx, out) in cpu_out.iter_mut().enumerate().take(count) {
         let px = idx % width as usize;
         let py = idx / width as usize;
         let x0 = (px as f32 / width as f32) * 3.5 - 2.5;
@@ -59,7 +59,7 @@ fn main() {
             x = tmp;
             iter += 1;
         }
-        cpu_out[idx] = iter;
+        *out = iter;
     }
     black_box(&cpu_out);
     let cpu_time = start.elapsed();

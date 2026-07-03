@@ -77,7 +77,7 @@ fn texture_r32float_round_trip() {
 
     assert_eq!(bytes.len(), result.len(), "R32Float size mismatch");
     // Compare as floats for tolerance
-    for i in 0..float_data.len() {
+    for (i, &expected) in float_data.iter().enumerate() {
         let offset = i * 4;
         let got = f32::from_le_bytes([
             result[offset],
@@ -86,10 +86,10 @@ fn texture_r32float_round_trip() {
             result[offset + 3],
         ]);
         assert!(
-            (got - float_data[i]).abs() < 0.001,
+            (got - expected).abs() < 0.001,
             "R32Float mismatch at pixel {}: expected {}, got {}",
             i,
-            float_data[i],
+            expected,
             got
         );
     }

@@ -96,9 +96,12 @@ fn mutable_accumulator_still_works() {
 
 // ── Test 3: nested if/else merge ─────────────────────────────────
 
+// The dead `100u32` initial value is the point: the local must be
+// renamed across the if/else merge even though both arms overwrite it.
 #[quanta::kernel(workgroup = [64])]
 fn nested_if(out: &mut [u32], flags: &[u32]) {
     let i = quark_id();
+    #[allow(unused_assignments)]
     let mut v: u32 = 100u32;
     if flags[i as usize] != 0u32 {
         v = 200u32;

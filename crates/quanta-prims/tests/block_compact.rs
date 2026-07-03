@@ -57,9 +57,9 @@ fn check_compact(predicates: &[u32], data: &[u32], got_out: &[u32], got_counts: 
         &expected_counts[..],
         "per-block kept counts disagree"
     );
-    for b in 0..num_blocks {
+    for (b, &count) in expected_counts.iter().enumerate().take(num_blocks) {
         let start = b * BLOCK;
-        let kept = expected_counts[b] as usize;
+        let kept = count as usize;
         assert_eq!(
             &got_out[start..start + kept],
             &expected_out[start..start + kept],

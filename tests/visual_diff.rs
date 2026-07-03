@@ -517,7 +517,7 @@ fn multi_format_clear_r32float() {
     let h = 16u32;
     let target = gpu.render_target(w, h, Format::R32Float).unwrap();
 
-    let clear_value = 3.14f32;
+    let clear_value = 3.25f32;
     let mut pulse = gpu
         .render(&target)
         .unwrap()
