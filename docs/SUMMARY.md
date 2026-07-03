@@ -29,6 +29,7 @@
 - [Project: recognize digits (MNIST)](computation/tutorials/project-mnist.md)
 - [Project: softmax regression](computation/tutorials/project-softmax-regression.md)
 - [Project: cluster points (k-means)](computation/tutorials/project-kmeans.md)
+- [Project: word embeddings (word2vec)](computation/tutorials/project-word2vec.md)
 - [Compute Basics](computation/tutorials/compute-basics.md)
 - [Fields and Types](computation/tutorials/fields-and-types.md)
 - [Shared Memory](computation/tutorials/shared-memory.md)
