@@ -47,6 +47,50 @@ impl<T: DiffScalar> Var<T> {
         self.log_softmax()?.exp()
     }
 
+    /// Layer normalization over the **last axis** of a `[N, C]` matrix:
+    /// normalize each row to zero mean and unit variance, then scale and shift
+    /// by the learnable `gamma` / `beta` (each `[C]`, broadcast over the rows):
+    /// `out = (x − μ) / √(σ² + eps) · γ + β`. The normalization every
+    /// transformer and deep net uses to keep activations well-scaled — composed
+    /// from the reduction + elementwise ops, so the tape backprops it directly.
+    pub fn layer_norm(
+        &self,
+        gamma: &Var<T>,
+        beta: &Var<T>,
+        eps: f64,
+    ) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        if x.shape().len() != 2 {
+            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("layer_norm: input must be 2-D [N, C]"),
+            )));
+        }
+        let (n, c) = (x.shape()[0], x.shape()[1]);
+        let g = x.gpu();
+
+        // μ = mean over C (keepdims [N,1]); centered = x − μ (broadcasts)
+        let mean = self.mean_axis(1)?; // [N, 1]
+        let centered = self.sub(&mean)?; // [N, C]
+        // σ² = mean(centered²) over C ; std = √(σ² + eps)
+        let var = centered.mul(&centered)?.mean_axis(1)?; // [N, 1]
+        let eps_v = {
+            let tape = Tape::from_inner(std::rc::Rc::clone(&self.tape));
+            tape.var(
+                Array::full(&g, T::from_f64(eps), &[1])?
+                    .broadcast_to(&[n, 1])?
+                    .contiguous()?,
+            )
+        };
+        let std = var.add(&eps_v)?.sqrt()?; // [N, 1]
+        let normed = centered.div(&std)?; // [N, C], broadcasts [N,1] over C
+
+        // scale + shift: γ and β are [C]; reshape to [1, C] and let Var::mul /
+        // Var::add broadcast them over the N rows.
+        let g2 = gamma.reshape(&[1, c])?;
+        let b2 = beta.reshape(&[1, c])?;
+        normed.mul(&g2)?.add(&b2)
+    }
+
     /// Mean of all elements → a scalar `Var`. `sum / n`, with `n` a detached
     /// constant. The reduction for an average loss or a batch mean.
     pub fn mean(&self) -> Result<Var<T>, AutogradError> {

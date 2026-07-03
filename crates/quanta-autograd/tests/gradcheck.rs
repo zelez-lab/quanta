@@ -1285,3 +1285,58 @@ fn grad_transpose_routes_back() {
     }
     assert_close(&gx, &want, 1e-4, "transpose grad");
 }
+
+#[test]
+fn layer_norm_normalizes_rows() {
+    // With γ=1, β=0, each row of the output should be ~zero-mean, unit-var.
+    let g = gpu();
+    let (n, c) = (3usize, 5usize);
+    let x: Vec<f32> = (0..n * c).map(|i| (i as f32) * 0.7 - 4.0).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let gamma = tape.var(Array::from_slice(&g, &vec![1.0f32; c], &[c]).unwrap());
+    let beta = tape.var(Array::from_slice(&g, &vec![0.0f32; c], &[c]).unwrap());
+    let out = xv
+        .layer_norm(&gamma, &beta, 1e-5)
+        .unwrap()
+        .value()
+        .to_vec()
+        .unwrap();
+    for i in 0..n {
+        let row = &out[i * c..(i + 1) * c];
+        let mean: f32 = row.iter().sum::<f32>() / c as f32;
+        let var: f32 = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / c as f32;
+        assert!(mean.abs() < 1e-3, "row {i} mean {mean} not ~0");
+        assert!((var - 1.0).abs() < 1e-2, "row {i} var {var} not ~1");
+    }
+}
+
+#[test]
+fn layer_norm_affine_and_grad() {
+    // γ scales, β shifts; check the gradient flows to all three (x, γ, β).
+    let g = gpu();
+    let (n, c) = (2usize, 4usize);
+    let x: Vec<f32> = (0..n * c).map(|i| (i as f32) - 3.0).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let gamma = tape.var(Array::from_slice(&g, &[2.0f32, 2.0, 2.0, 2.0], &[c]).unwrap());
+    let beta = tape.var(Array::from_slice(&g, &[0.5f32, 0.5, 0.5, 0.5], &[c]).unwrap());
+    let out = xv.layer_norm(&gamma, &beta, 1e-5).unwrap();
+    // rows still standardized then ·2 +0.5 → mean ≈ 0.5, var ≈ 4.
+    let ov = out.value().to_vec().unwrap();
+    for i in 0..n {
+        let row = &ov[i * c..(i + 1) * c];
+        let mean: f32 = row.iter().sum::<f32>() / c as f32;
+        assert!((mean - 0.5).abs() < 1e-2, "row {i} mean {mean} != 0.5");
+    }
+    // gradients exist and are finite for all three parameters.
+    let loss = out.mul(&out).unwrap().sum().unwrap();
+    for (name, var) in [("x", &xv), ("gamma", &gamma), ("beta", &beta)] {
+        let grad = loss.grad(var).unwrap().to_vec().unwrap();
+        assert!(
+            grad.iter().all(|v| v.is_finite()),
+            "{name} grad has non-finite"
+        );
+        assert!(grad.iter().any(|&v| v.abs() > 1e-6), "{name} grad all ~0");
+    }
+}
