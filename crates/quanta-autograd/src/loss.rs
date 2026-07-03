@@ -40,6 +40,33 @@ impl<T: DiffScalar> Var<T> {
         shifted.sub(&log_sum)
     }
 
+    /// Softmax over the class axis of a `[N, C]` matrix: `exp(log_softmax(x))`,
+    /// so it inherits the numerically-stable shift. Rows sum to 1 — the
+    /// probability form for inference and attention.
+    pub fn softmax(&self) -> Result<Var<T>, AutogradError> {
+        self.log_softmax()?.exp()
+    }
+
+    /// Mean of all elements → a scalar `Var`. `sum / n`, with `n` a detached
+    /// constant. The reduction for an average loss or a batch mean.
+    pub fn mean(&self) -> Result<Var<T>, AutogradError> {
+        let n = self.value().len();
+        let s = self.sum()?;
+        let inv = Array::full(self.value().gpu(), T::from_f64(1.0 / n as f64), &[1])?;
+        let tape = Tape::from_inner(std::rc::Rc::clone(&self.tape));
+        s.mul(&tape.var(inv))
+    }
+
+    /// Mean squared error against a (non-differentiable) target:
+    /// `mean((self − target)²)`. The standard regression loss. `target` must
+    /// match `self`'s shape.
+    pub fn mse_loss(&self, target: &Array<T>) -> Result<Var<T>, AutogradError> {
+        let tape = Tape::from_inner(std::rc::Rc::clone(&self.tape));
+        let t = tape.var(target.shallow_clone());
+        let diff = self.sub(&t)?;
+        diff.mul(&diff)?.mean()
+    }
+
     /// Cross-entropy loss for classification: mean over the batch of
     /// `−log_softmax(logits)[i, label[i]]`. `self` is the `[N, C]` logits;
     /// `labels` is a `[N]` `u32` array of true classes (not differentiated).

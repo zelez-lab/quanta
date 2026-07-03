@@ -1167,3 +1167,58 @@ fn grad_where_routes_by_mask() {
     assert_close(&ga, &wa, 1e-2, "where grad a");
     assert_close(&gb, &wb, 1e-2, "where grad b");
 }
+
+#[test]
+fn softmax_rows_sum_to_one() {
+    let g = gpu();
+    let (n, c) = (3usize, 4usize);
+    let x: Vec<f32> = (0..n * c).map(|i| (i as f32) * 0.5 - 2.0).collect();
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let p = xv.softmax().unwrap().value().to_vec().unwrap();
+    for i in 0..n {
+        let s: f32 = (0..c).map(|j| p[i * c + j]).sum();
+        assert!((s - 1.0).abs() <= 1e-5, "row {i} sums to {s}");
+        assert!(
+            (0..c).all(|j| p[i * c + j] > 0.0),
+            "row {i} has non-positive prob"
+        );
+    }
+}
+
+#[test]
+fn mean_matches_host() {
+    let g = gpu();
+    let x = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[5]).unwrap());
+    let m = xv.mean().unwrap().value().to_vec().unwrap()[0];
+    assert!((m - 3.0).abs() <= 1e-5, "mean {m} != 3.0");
+    // ∂mean/∂xᵢ = 1/n
+    let gx = xv.mean().unwrap().grad(&xv).unwrap().to_vec().unwrap();
+    assert_close(&gx, &vec![0.2f32; 5], 1e-4, "mean grad");
+}
+
+#[test]
+fn mse_loss_and_grad() {
+    // L = mean((x - t)²); ∂L/∂x = 2(x - t)/n.
+    let g = gpu();
+    let x = vec![1.0f32, 2.0, 3.0, 4.0];
+    let t = vec![1.5f32, 1.0, 3.0, 5.0];
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[4]).unwrap());
+    let target = Array::from_slice(&g, &t, &[4]).unwrap();
+    let loss = xv.mse_loss(&target).unwrap();
+    let lv = loss.value().to_vec().unwrap()[0];
+    let want_l: f32 = x.iter().zip(&t).map(|(a, b)| (a - b).powi(2)).sum::<f32>() / 4.0;
+    assert!((lv - want_l).abs() <= 1e-4, "mse {lv} vs {want_l}");
+    let gx = xv
+        .mse_loss(&target)
+        .unwrap()
+        .grad(&xv)
+        .unwrap()
+        .to_vec()
+        .unwrap();
+    let want_g: Vec<f32> = x.iter().zip(&t).map(|(a, b)| 2.0 * (a - b) / 4.0).collect();
+    assert_close(&gx, &want_g, 1e-3, "mse grad");
+}
