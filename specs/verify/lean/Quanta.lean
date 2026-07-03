@@ -121,6 +121,7 @@ import Quanta.Fft.Recursion
 import Quanta.Dtype.Bf16
 import Quanta.Dtype.Fp8
 import Quanta.Dtype.Quant
+import Quanta.Dtype.StorageAddressing
 
 -- Conditional-correctness theorems
 import Quanta.Theorems.WebGpu
