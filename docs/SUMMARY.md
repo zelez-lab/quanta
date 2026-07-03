@@ -26,6 +26,7 @@
 - [Convolution and pooling](computation/tutorials/convolution-and-pooling.md)
 - [Training a CNN](computation/tutorials/training-a-cnn.md)
 - [Self-attention](computation/tutorials/attention.md)
+- [Layer normalization](computation/tutorials/layer-norm.md)
 - [Project: linear regression](computation/tutorials/project-linear-regression.md)
 - [Project: recognize digits (MNIST)](computation/tutorials/project-mnist.md)
 - [Project: softmax regression](computation/tutorials/project-softmax-regression.md)
