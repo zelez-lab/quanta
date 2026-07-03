@@ -43,6 +43,7 @@
 //! ```
 
 mod array;
+mod astype;
 mod broadcast;
 mod concat;
 mod construct;
