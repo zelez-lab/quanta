@@ -64,7 +64,7 @@ fn roundtrip_kernel_ops() {
         KernelOp::QuarkId { dst: Reg(0) },
         KernelOp::Const {
             dst: Reg(1),
-            value: ConstValue::F32(3.14),
+            value: ConstValue::F32(3.25),
         },
         KernelOp::Load {
             dst: Reg(2),

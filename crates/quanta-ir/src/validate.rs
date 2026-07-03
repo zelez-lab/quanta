@@ -488,7 +488,7 @@ mod tests {
             "f64_const",
             vec![KernelOp::Const {
                 dst: Reg(0),
-                value: ConstValue::F64(3.14),
+                value: ConstValue::F64(3.25),
             }],
         );
         let report = validate_for(&METAL, &k);

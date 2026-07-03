@@ -63,8 +63,8 @@ fn compare_case(
 /// can't take them from `supports_f64()` / `supports_i64()` — see
 /// the comment there.
 fn device_supports_case(case: &OpCase, f64_ok: bool, i64_ok: bool) -> bool {
-    let needs_f64 = matches!(case.input_a, RawValues::F64(_))
-        || matches!(case.expected, RawValues::F64(_));
+    let needs_f64 =
+        matches!(case.input_a, RawValues::F64(_)) || matches!(case.expected, RawValues::F64(_));
     let needs_i64 = matches!(case.input_a, RawValues::U64(_) | RawValues::I64(_))
         || matches!(case.expected, RawValues::U64(_) | RawValues::I64(_));
     (!needs_f64 || f64_ok) && (!needs_i64 || i64_ok)

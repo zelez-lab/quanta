@@ -131,7 +131,7 @@ mod tests {
         let body = vec![
             KernelOp::Const {
                 dst: Reg(0),
-                value: ConstValue::F32(3.14),
+                value: ConstValue::F32(3.25),
             },
             KernelOp::Const {
                 dst: Reg(1),

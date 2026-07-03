@@ -31,10 +31,6 @@ pub mod emit_msl;
 #[cfg(feature = "jit")]
 pub mod emit_wgsl;
 
-/// Device capabilities that steer emitter code paths (e.g. native bf16
-/// storage vs. the portable u32-word fallback). Enabled by `jit`.
-#[cfg(feature = "jit")]
-
 /// Per-op differential matrix case generator. Shared source of truth for
 /// the `op_matrix` test harness and the WGSL browser audit. Enabled by
 /// the `op-matrix-cases` feature.

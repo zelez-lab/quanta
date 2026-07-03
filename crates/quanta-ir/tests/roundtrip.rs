@@ -140,7 +140,7 @@ fn roundtrip_all_ops() {
         body: vec![
             KernelOp::Const {
                 dst: Reg(0),
-                value: ConstValue::F32(3.14),
+                value: ConstValue::F32(3.25),
             },
             KernelOp::QuarkId { dst: Reg(1) },
             KernelOp::ProtonId { dst: Reg(2) },

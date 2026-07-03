@@ -78,6 +78,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // deliberate compile-time invariant checks
     fn row_width_fits_v3d_and_lavapipe_limits() {
         // maxComputeWorkGroupCount[0] is 65535 on both targets.
         assert!(FOLD_ROW_GROUPS <= 65535);
@@ -94,7 +95,7 @@ mod tests {
         // (LocalSize [1,1,1] → groups == thread count).
         for n in [401_408u32, 451_584] {
             let (rows, rem) = fold_groups(n);
-            assert!(rows >= 1 && rows <= 65535);
+            assert!((1..=65535).contains(&rows));
             assert!(rem <= 65535);
         }
     }
