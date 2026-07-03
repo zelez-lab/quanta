@@ -8,11 +8,17 @@
 use quanta_blas::{GemmQuantType, reference};
 use quanta_ir::dtype::{dequantize_sym, int4_pack, quantize_sym};
 
+/// The device these tests run on: the real GPU under a hardware backend
+/// feature (gpu-metal / gpu-vulkan), else the CPU JIT (portable, no GPU needed).
 fn gpu() -> quanta::Gpu {
-    // Pinned to the CPU JIT: this kernel trips a mutable-register scope bug in
-    // the MSL emitter on real Metal (register redefinition / use-before-decl).
-    // Runs on the software backend until that emitter bug is fixed.
-    quanta::init_cpu()
+    #[cfg(any(feature = "gpu-metal", feature = "gpu-vulkan"))]
+    {
+        quanta::init().expect("a GPU device")
+    }
+    #[cfg(not(any(feature = "gpu-metal", feature = "gpu-vulkan")))]
+    {
+        quanta::init_cpu()
+    }
 }
 
 /// Deterministic f32 matrix, quantized to int8 with the given scale. Returns

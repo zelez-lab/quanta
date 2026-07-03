@@ -121,12 +121,57 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     // apply `#pragma clang loop unroll(full)` when count ∈ 1..=8.
     let int_consts = quanta_ir::const_analysis::collect_int_consts(&kernel.body);
 
+    // Mutable registers (written more than once, or written in a Branch
+    // arm / Loop body and read past the merge) cannot take the pure-SSA
+    // `<type> rN = <expr>;` per-write declaration: MSL is C++, so a second
+    // typed declaration is a redefinition, and a declaration inside an
+    // `if`/`for` block is scoped to that block. Declare them once here at
+    // function entry; every write becomes a plain assignment (see `dst_lv`
+    // in ops.rs). simdgroup_matrix registers are excluded — they aren't
+    // scalar slots, and the CooperativeMMA arm already updates the
+    // loop-carried accumulator fragment in place.
+    let mut mutable = quanta_ir::reg_mutability::collect_mutable_regs(&[], &kernel.body);
+    let matrix_regs = collect_matrix_regs(&kernel.body);
+    mutable.retain(|reg, _| !matrix_regs.contains(reg));
+    for (reg, ty) in &mutable {
+        let t = ty.msl_name();
+        out.push_str(&format!("    {} r{} = ({})0;\n", t, reg, t));
+    }
+
     for op in &kernel.body {
-        emit_op(&mut out, op, 1, &slot_names, &int_consts);
+        emit_op(&mut out, op, 1, &slot_names, &int_consts, &mutable);
     }
 
     out.push_str("}\n");
     Ok(out)
+}
+
+/// Registers holding `simdgroup_matrix` values (CooperativeMatrixLoad /
+/// CooperativeMMA destinations). The reg_mutability pre-pass records them
+/// with their scalar element type, but their MSL declaration is
+/// `simdgroup_matrix<..>`, so they must not get a scalar entry declaration.
+fn collect_matrix_regs(ops: &[KernelOp]) -> std::collections::HashSet<u32> {
+    fn walk(ops: &[KernelOp], out: &mut std::collections::HashSet<u32>) {
+        for op in ops {
+            match op {
+                KernelOp::CooperativeMatrixLoad { dst, .. }
+                | KernelOp::CooperativeMMA { dst, .. } => {
+                    out.insert(dst.0);
+                }
+                KernelOp::Branch {
+                    then_ops, else_ops, ..
+                } => {
+                    walk(then_ops, out);
+                    walk(else_ops, out);
+                }
+                KernelOp::Loop { body, .. } => walk(body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut set = std::collections::HashSet::new();
+    walk(ops, &mut set);
+    set
 }
 
 /// Translate a Rust device function source to MSL.

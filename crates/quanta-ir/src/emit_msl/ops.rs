@@ -1,7 +1,7 @@
 //! emit_op() — match dispatcher over KernelOp variants.
 
 use crate::*;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::helpers::*;
 
@@ -14,34 +14,66 @@ fn fp8_dims(ty: &ScalarType) -> Option<(u32, u32)> {
     }
 }
 
+/// Destination lvalue for a register write.
+///
+/// The KernelOp contract is mutable-register semantics: a register may be
+/// written more than once (loop-carried accumulators, `Copy` reassignment)
+/// or written inside a Branch arm / Loop body and read after the merge.
+/// Registers flagged by the `reg_mutability` pre-pass are declared once at
+/// function entry (see `kernel::emit`), so every write is a plain
+/// assignment; re-emitting `<type> rN = ...` would be a C++ redefinition.
+/// Single-def registers keep the inline typed declaration — pure SSA.
+fn dst_lv(mutable: &BTreeMap<u32, ScalarType>, ty: &str, reg: u32) -> String {
+    if mutable.contains_key(&reg) {
+        format!("r{}", reg)
+    } else {
+        format!("{} r{}", ty, reg)
+    }
+}
+
 pub(super) fn emit_op(
     out: &mut String,
     op: &KernelOp,
     indent: usize,
     names: &HashMap<u32, String>,
     int_consts: &HashMap<u32, i64>,
+    mutable: &BTreeMap<u32, ScalarType>,
 ) {
     let pad = "    ".repeat(indent);
     match op {
         KernelOp::Const { dst, value } => {
             let (ty, val) = const_msl(value);
-            out.push_str(&format!("{}{} r{} = {};\n", pad, ty, dst.0, val));
+            out.push_str(&format!(
+                "{}{} = {};\n",
+                pad,
+                dst_lv(mutable, ty, dst.0),
+                val
+            ));
         }
-        KernelOp::QuarkId { dst } => {
-            out.push_str(&format!("{}uint r{} = _quark_id;\n", pad, dst.0))
-        }
-        KernelOp::ProtonId { dst } => {
-            out.push_str(&format!("{}uint r{} = _proton_id;\n", pad, dst.0))
-        }
-        KernelOp::NucleusId { dst } => {
-            out.push_str(&format!("{}uint r{} = _nucleus_id;\n", pad, dst.0))
-        }
-        KernelOp::ProtonSize { dst } => {
-            out.push_str(&format!("{}uint r{} = _proton_size;\n", pad, dst.0))
-        }
+        KernelOp::QuarkId { dst } => out.push_str(&format!(
+            "{}{} = _quark_id;\n",
+            pad,
+            dst_lv(mutable, "uint", dst.0)
+        )),
+        KernelOp::ProtonId { dst } => out.push_str(&format!(
+            "{}{} = _proton_id;\n",
+            pad,
+            dst_lv(mutable, "uint", dst.0)
+        )),
+        KernelOp::NucleusId { dst } => out.push_str(&format!(
+            "{}{} = _nucleus_id;\n",
+            pad,
+            dst_lv(mutable, "uint", dst.0)
+        )),
+        KernelOp::ProtonSize { dst } => out.push_str(&format!(
+            "{}{} = _proton_size;\n",
+            pad,
+            dst_lv(mutable, "uint", dst.0)
+        )),
         KernelOp::QuarkCount { dst } => out.push_str(&format!(
-            "{}uint r{} = _nucleus_id * _proton_size + _proton_size;\n",
-            pad, dst.0
+            "{}{} = _nucleus_id * _proton_size + _proton_size;\n",
+            pad,
+            dst_lv(mutable, "uint", dst.0)
         )),
         KernelOp::Load {
             dst,
@@ -58,34 +90,49 @@ pub(super) fn emit_op(
             if matches!(ty, ScalarType::BF16) {
                 // bf16 storage is `uint` (one per word); unpack to float.
                 out.push_str(&format!(
-                    "{}float r{} = as_type<float>({} << 16);\n",
-                    pad, dst.0, elem
+                    "{}{} = as_type<float>({} << 16);\n",
+                    pad,
+                    dst_lv(mutable, "float", dst.0),
+                    elem
                 ));
             } else if let Some((eb, mb)) = fp8_dims(ty) {
                 // fp8 storage is `uint` (one byte per word); unpack to float.
                 let tag = crate::dtype_codegen::fp8_tag(eb, mb);
                 out.push_str(&format!(
-                    "{}float r{} = qa_fp8_{}_unpack({});\n",
-                    pad, dst.0, tag, elem
+                    "{}{} = qa_fp8_{}_unpack({});\n",
+                    pad,
+                    dst_lv(mutable, "float", dst.0),
+                    tag,
+                    elem
                 ));
             } else if matches!(ty, ScalarType::I4) {
                 // int4 PackedU32: element i lives in word i/8, nibble i%8;
                 // load sign-extends the 4-bit value: ((n ^ 8) - 8).
+                // Brace-scope the `_sh`/`_n` temps when the destination is a
+                // hoisted mutable register so a re-load of the same register
+                // does not redefine them.
+                let (open, close) = if mutable.contains_key(&dst.0) {
+                    ("{ ", " }")
+                } else {
+                    ("", "")
+                };
                 out.push_str(&format!(
-                    "{pad}uint r{d}_sh = (r{i} % 8u) * 4u; \
+                    "{pad}{open}uint r{d}_sh = (r{i} % 8u) * 4u; \
                      uint r{d}_n = ({n}[r{i} / 8u] >> r{d}_sh) & 0xFu; \
-                     int r{d} = int((r{d}_n ^ 0x8u) - 0x8u);\n",
+                     {lv} = int((r{d}_n ^ 0x8u) - 0x8u);{close}\n",
                     pad = pad,
+                    open = open,
+                    close = close,
                     d = dst.0,
                     i = index.0,
-                    n = n
+                    n = n,
+                    lv = dst_lv(mutable, "int", dst.0)
                 ));
             } else {
                 out.push_str(&format!(
-                    "{}{} r{} = {};\n",
+                    "{}{} = {};\n",
                     pad,
-                    ty.msl_name(),
-                    dst.0,
+                    dst_lv(mutable, ty.msl_name(), dst.0),
                     elem
                 ));
             }
@@ -133,10 +180,9 @@ pub(super) fn emit_op(
                 BinOp::Rotl => {
                     // MSL: `rotate(x, k)` rotates left by k positions.
                     out.push_str(&format!(
-                        "{}{} r{} = rotate(r{}, r{});\n",
+                        "{}{} = rotate(r{}, r{});\n",
                         pad,
-                        ty.msl_name(),
-                        dst.0,
+                        dst_lv(mutable, ty.msl_name(), dst.0),
                         a.0,
                         b.0
                     ));
@@ -158,10 +204,9 @@ pub(super) fn emit_op(
                         ScalarType::Bool => 1,
                     };
                     out.push_str(&format!(
-                        "{}{} r{} = rotate(r{}, ({}) - (r{} % {}));\n",
+                        "{}{} = rotate(r{}, ({}) - (r{} % {}));\n",
                         pad,
-                        ty.msl_name(),
-                        dst.0,
+                        dst_lv(mutable, ty.msl_name(), dst.0),
                         a.0,
                         width,
                         b.0,
@@ -182,8 +227,14 @@ pub(super) fn emit_op(
                     let o = binop_str(op);
                     let t = ty.msl_name();
                     out.push_str(&format!(
-                        "{}{} r{} = ({})r{} {} ({})r{};\n",
-                        pad, t, dst.0, t, a.0, o, t, b.0
+                        "{}{} = ({})r{} {} ({})r{};\n",
+                        pad,
+                        dst_lv(mutable, t, dst.0),
+                        t,
+                        a.0,
+                        o,
+                        t,
+                        b.0
                     ));
                 }
                 BinOp::SatAdd => {
@@ -192,11 +243,31 @@ pub(super) fn emit_op(
                     // via `_sum < a` (unsigned). Saturation literal must
                     // match the operand width — u32 saturates to
                     // 0xFFFFFFFFu, u64 to 0xFFFFFFFFFFFFFFFFul, etc.
+                    // Brace-scope the `_sum` temp when the destination is
+                    // a hoisted mutable register so a re-write of the same
+                    // register does not redefine it.
                     let t = ty.msl_name();
                     let max_lit = unsigned_max_lit_msl(ty);
+                    let (open, close) = if mutable.contains_key(&dst.0) {
+                        ("{ ", " }")
+                    } else {
+                        ("", "")
+                    };
                     out.push_str(&format!(
-                        "{}{} _sum_{} = r{} + r{}; {} r{} = (_sum_{} < r{}) ? ({}){} : _sum_{};\n",
-                        pad, t, dst.0, a.0, b.0, t, dst.0, dst.0, a.0, t, max_lit, dst.0,
+                        "{}{}{} _sum_{} = r{} + r{}; {} = (_sum_{} < r{}) ? ({}){} : _sum_{};{}\n",
+                        pad,
+                        open,
+                        t,
+                        dst.0,
+                        a.0,
+                        b.0,
+                        dst_lv(mutable, t, dst.0),
+                        dst.0,
+                        a.0,
+                        t,
+                        max_lit,
+                        dst.0,
+                        close,
                     ));
                 }
                 BinOp::SatSub => {
@@ -204,17 +275,22 @@ pub(super) fn emit_op(
                     // underflow (unsigned semantics). Mirrors AOT path.
                     let t = ty.msl_name();
                     out.push_str(&format!(
-                        "{}{} r{} = (r{} < r{}) ? ({})0 : r{} - r{};\n",
-                        pad, t, dst.0, a.0, b.0, t, a.0, b.0,
+                        "{}{} = (r{} < r{}) ? ({})0 : r{} - r{};\n",
+                        pad,
+                        dst_lv(mutable, t, dst.0),
+                        a.0,
+                        b.0,
+                        t,
+                        a.0,
+                        b.0,
                     ));
                 }
                 _ => {
                     let o = binop_str(op);
                     out.push_str(&format!(
-                        "{}{} r{} = r{} {} r{};\n",
+                        "{}{} = r{} {} r{};\n",
                         pad,
-                        ty.msl_name(),
-                        dst.0,
+                        dst_lv(mutable, ty.msl_name(), dst.0),
                         a.0,
                         o,
                         b.0
@@ -244,14 +320,24 @@ pub(super) fn emit_op(
                 | ScalarType::U64 => {
                     let c = ty.msl_name();
                     out.push_str(&format!(
-                        "{}bool r{} = (({})r{} {} ({})r{});\n",
-                        pad, dst.0, c, a.0, o, c, b.0
+                        "{}{} = (({})r{} {} ({})r{});\n",
+                        pad,
+                        dst_lv(mutable, "bool", dst.0),
+                        c,
+                        a.0,
+                        o,
+                        c,
+                        b.0
                     ));
                 }
                 _ => {
                     out.push_str(&format!(
-                        "{}bool r{} = (r{} {} r{});\n",
-                        pad, dst.0, a.0, o, b.0
+                        "{}{} = (r{} {} r{});\n",
+                        pad,
+                        dst_lv(mutable, "bool", dst.0),
+                        a.0,
+                        o,
+                        b.0
                     ));
                 }
             }
@@ -263,20 +349,18 @@ pub(super) fn emit_op(
                 UnaryOp::LogicalNot => "!",
             };
             out.push_str(&format!(
-                "{}{} r{} = {}r{};\n",
+                "{}{} = {}r{};\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 o,
                 a.0
             ));
         }
         KernelOp::Cast { dst, src, to, .. } => {
             out.push_str(&format!(
-                "{}{} r{} = ({})r{};\n",
+                "{}{} = ({})r{};\n",
                 pad,
-                to.msl_name(),
-                dst.0,
+                dst_lv(mutable, to.msl_name(), dst.0),
                 to.msl_name(),
                 src.0
             ));
@@ -290,10 +374,9 @@ pub(super) fn emit_op(
             let f = math_fn_str(func);
             let a: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
             out.push_str(&format!(
-                "{}{} r{} = {}({});\n",
+                "{}{} = {}({});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 f,
                 a.join(", ")
             ));
@@ -305,12 +388,12 @@ pub(super) fn emit_op(
         } => {
             out.push_str(&format!("{}if (r{}) {{\n", pad, cond.0));
             for op in then_ops {
-                emit_op(out, op, indent + 1, names, int_consts);
+                emit_op(out, op, indent + 1, names, int_consts, mutable);
             }
             if !else_ops.is_empty() {
                 out.push_str(&format!("{}}} else {{\n", pad));
                 for op in else_ops {
-                    emit_op(out, op, indent + 1, names, int_consts);
+                    emit_op(out, op, indent + 1, names, int_consts, mutable);
                 }
             }
             out.push_str(&format!("{}}}\n", pad));
@@ -329,17 +412,36 @@ pub(super) fn emit_op(
             if crate::const_analysis::should_unroll_loop_count(count_val) {
                 out.push_str(&format!("{}#pragma clang loop unroll(full)\n", pad));
             }
-            out.push_str(&format!(
-                "{}for (uint r{} = 0; r{} < r{}; r{}++) {{\n",
-                pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0
-            ));
+            // A mutable iter_reg (e.g. re-written in the body) was hoisted
+            // to a function-entry declaration; don't re-declare it in the
+            // `for` header.
+            if mutable.contains_key(&iter_reg.0) {
+                out.push_str(&format!(
+                    "{}for (r{} = 0u; r{} < r{}; r{}++) {{\n",
+                    pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}for (uint r{} = 0; r{} < r{}; r{}++) {{\n",
+                    pad, iter_reg.0, iter_reg.0, count.0, iter_reg.0
+                ));
+            }
             for op in body {
-                emit_op(out, op, indent + 1, names, int_consts);
+                emit_op(out, op, indent + 1, names, int_consts, mutable);
             }
             out.push_str(&format!("{}}}\n", pad));
         }
-        KernelOp::Copy { dst, src, .. } => {
-            out.push_str(&format!("{}r{} = r{};\n", pad, dst.0, src.0));
+        KernelOp::Copy { dst, src, ty } => {
+            // Copy is the canonical reassignment op (the wasm-route
+            // lowering's local.set): its dst is usually a hoisted mutable
+            // register (plain assignment). A single-def Copy dst still
+            // needs its typed declaration.
+            out.push_str(&format!(
+                "{}{} = r{};\n",
+                pad,
+                dst_lv(mutable, ty.msl_name(), dst.0),
+                src.0
+            ));
         }
         // Per-tensor symmetric quantize: q = clamp(int(rint(x/scale)), lo, hi).
         // MSL `rint` is round-half-to-even (MSL `round` is half-away-from-
@@ -353,8 +455,13 @@ pub(super) fn emit_op(
         } => {
             let (lo, hi) = scheme.value.range();
             out.push_str(&format!(
-                "{}int r{} = clamp(int(rint(r{} / r{})), {}, {});\n",
-                pad, dst.0, src.0, scale.0, lo, hi
+                "{}{} = clamp(int(rint(r{} / r{})), {}, {});\n",
+                pad,
+                dst_lv(mutable, "int", dst.0),
+                src.0,
+                scale.0,
+                lo,
+                hi
             ));
         }
         // Per-tensor symmetric dequantize: dq = scale * float(q).
@@ -362,8 +469,11 @@ pub(super) fn emit_op(
             dst, src, scale, ..
         } => {
             out.push_str(&format!(
-                "{}float r{} = r{} * float(r{});\n",
-                pad, dst.0, scale.0, src.0
+                "{}{} = r{} * float(r{});\n",
+                pad,
+                dst_lv(mutable, "float", dst.0),
+                scale.0,
+                src.0
             ));
         }
         KernelOp::Break => out.push_str(&format!("{}break;\n", pad)),
@@ -396,10 +506,9 @@ pub(super) fn emit_op(
         }
         KernelOp::SharedLoad { dst, id, index, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = shared_{}[r{}];\n",
+                "{}{} = shared_{}[r{}];\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 id,
                 index.0
             ));
@@ -429,10 +538,9 @@ pub(super) fn emit_op(
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
             let f = atomic_fn_str(op);
             out.push_str(&format!(
-                "{}{} r{} = {}((device atomic_{}*)&{}[r{}], r{}, memory_order_relaxed);\n",
+                "{}{} = {}((device atomic_{}*)&{}[r{}], r{}, memory_order_relaxed);\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 f,
                 ty.msl_name(),
                 n,
@@ -461,10 +569,9 @@ pub(super) fn emit_op(
         } => {
             let f = atomic_fn_str(op);
             out.push_str(&format!(
-                "{}{} r{} = {}((threadgroup atomic_{}*)&shared_{}[r{}], r{}, memory_order_relaxed);\n",
+                "{}{} = {}((threadgroup atomic_{}*)&shared_{}[r{}], r{}, memory_order_relaxed);\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 f,
                 ty.msl_name(),
                 slot,
@@ -479,10 +586,9 @@ pub(super) fn emit_op(
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = simd_shuffle_xor(r{}, r{});\n",
+                "{}{} = simd_shuffle_xor(r{}, r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0,
                 lane_delta.0
             ));
@@ -493,20 +599,26 @@ pub(super) fn emit_op(
             // We take the low 32 bits — Quanta's subgroups never
             // exceed 64 lanes, and the wire format is u32.
             out.push_str(&format!(
-                "{}uint r{} = (uint)((uint64_t)simd_ballot(r{} != 0));\n",
-                pad, dst.0, predicate.0
+                "{}{} = (uint)((uint64_t)simd_ballot(r{} != 0));\n",
+                pad,
+                dst_lv(mutable, "uint", dst.0),
+                predicate.0
             ));
         }
         KernelOp::WaveAny { dst, predicate } => {
             out.push_str(&format!(
-                "{}uint r{} = uint(simd_any(r{} != 0));\n",
-                pad, dst.0, predicate.0
+                "{}{} = uint(simd_any(r{} != 0));\n",
+                pad,
+                dst_lv(mutable, "uint", dst.0),
+                predicate.0
             ));
         }
         KernelOp::WaveAll { dst, predicate } => {
             out.push_str(&format!(
-                "{}uint r{} = uint(simd_all(r{} != 0));\n",
-                pad, dst.0, predicate.0
+                "{}{} = uint(simd_all(r{} != 0));\n",
+                pad,
+                dst_lv(mutable, "uint", dst.0),
+                predicate.0
             ));
         }
         KernelOp::DeviceCall {
@@ -517,10 +629,9 @@ pub(super) fn emit_op(
         } => {
             let a: Vec<String> = args.iter().map(|r| format!("r{}", r.0)).collect();
             out.push_str(&format!(
-                "{}{} r{} = {}({});\n",
+                "{}{} = {}({});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 func_name,
                 a.join(", ")
             ));
@@ -533,10 +644,9 @@ pub(super) fn emit_op(
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.sample(samp_{}, float2(r{}, r{}));\n",
+                "{}{} = tex_{}.sample(samp_{}, float2(r{}, r{}));\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 texture,
                 texture,
                 x.0,
@@ -552,10 +662,9 @@ pub(super) fn emit_op(
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.sample(samp_{}, float3(r{}, r{}, r{}));\n",
+                "{}{} = tex_{}.sample(samp_{}, float3(r{}, r{}, r{}));\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 texture,
                 texture,
                 x.0,
@@ -581,14 +690,20 @@ pub(super) fn emit_op(
             texture,
         } => {
             out.push_str(&format!(
-                "{}uint r{} = tex_{}.get_width();\n",
-                pad, dst_w.0, texture
+                "{}{} = tex_{}.get_width();\n",
+                pad,
+                dst_lv(mutable, "uint", dst_w.0),
+                texture
             ));
             out.push_str(&format!(
-                "{}uint r{} = tex_{}.get_height();\n",
-                pad, dst_h.0, texture
+                "{}{} = tex_{}.get_height();\n",
+                pad,
+                dst_lv(mutable, "uint", dst_h.0),
+                texture
             ));
         }
+        // Vector-typed registers are never demoted by the pre-pass (no
+        // scalar slot type), so the inline declaration is always correct.
         KernelOp::VecConstruct {
             dst,
             components,
@@ -620,113 +735,101 @@ pub(super) fn emit_op(
                 _ => "w",
             };
             out.push_str(&format!(
-                "{}{} r{} = r{}.{};\n",
+                "{}{} = r{}.{};\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 vec.0,
                 swizzle
             ));
         }
         KernelOp::MatMul { dst, a, b, ty, .. } => {
             out.push_str(&format!(
-                "{}{} r{} = r{} * r{};\n",
+                "{}{} = r{} * r{};\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 a.0,
                 b.0
             ));
         }
         KernelOp::Bitcast { dst, src, to, .. } => {
             out.push_str(&format!(
-                "{}{} r{} = as_type<{}>(r{});\n",
+                "{}{} = as_type<{}>(r{});\n",
                 pad,
-                to.msl_name(),
-                dst.0,
+                dst_lv(mutable, to.msl_name(), dst.0),
                 to.msl_name(),
                 src.0
             ));
         }
         KernelOp::CountTrailingZeros { dst, src, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = ctz(r{});\n",
+                "{}{} = ctz(r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0
             ));
         }
         KernelOp::CountLeadingZeros { dst, src, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = clz(r{});\n",
+                "{}{} = clz(r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0
             ));
         }
         KernelOp::PopCount { dst, src, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = popcount(r{});\n",
+                "{}{} = popcount(r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0
             ));
         }
         KernelOp::Dot { dst, a, b, ty, .. } => {
             out.push_str(&format!(
-                "{}{} r{} = dot(r{}, r{});\n",
+                "{}{} = dot(r{}, r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 a.0,
                 b.0
             ));
         }
         KernelOp::SubgroupReduceAdd { dst, src, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = simd_sum(r{});\n",
+                "{}{} = simd_sum(r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0
             ));
         }
         KernelOp::SubgroupReduceMin { dst, src, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = simd_min(r{});\n",
+                "{}{} = simd_min(r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0
             ));
         }
         KernelOp::SubgroupReduceMax { dst, src, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = simd_max(r{});\n",
+                "{}{} = simd_max(r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0
             ));
         }
         KernelOp::SubgroupExclusiveAdd { dst, src, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = simd_prefix_exclusive_sum(r{});\n",
+                "{}{} = simd_prefix_exclusive_sum(r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0
             ));
         }
         KernelOp::SubgroupInclusiveAdd { dst, src, ty } => {
             out.push_str(&format!(
-                "{}{} r{} = simd_prefix_inclusive_sum(r{});\n",
+                "{}{} = simd_prefix_inclusive_sum(r{});\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 src.0
             ));
         }
@@ -738,17 +841,20 @@ pub(super) fn emit_op(
             ty,
         } => {
             out.push_str(&format!(
-                "{}{} r{} = tex_{}.read(uint2(r{}, r{}));\n",
+                "{}{} = tex_{}.read(uint2(r{}, r{}));\n",
                 pad,
-                ty.msl_name(),
-                dst.0,
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 texture,
                 x.0,
                 y.0
             ));
         }
         KernelOp::SubgroupSize { dst } => {
-            out.push_str(&format!("{}uint r{} = _simd_width;\n", pad, dst.0));
+            out.push_str(&format!(
+                "{}{} = _simd_width;\n",
+                pad,
+                dst_lv(mutable, "uint", dst.0)
+            ));
         }
         KernelOp::SharedDeclDyn { id, ty } => {
             out.push_str(&format!(
@@ -801,9 +907,18 @@ pub(super) fn emit_op(
             failure_order: _,
         } => {
             let n = names.get(field).map(|s| s.as_str()).unwrap_or("field");
+            // Brace-scope the `_expected` temp when the destination is a
+            // hoisted mutable register so a re-CAS into the same register
+            // does not redefine it.
+            let (open, close) = if mutable.contains_key(&dst.0) {
+                ("{ ", " }")
+            } else {
+                ("", "")
+            };
             out.push_str(&format!(
-                "{}{} r{}_expected = r{};\n",
+                "{}{}{} r{}_expected = r{};\n",
                 pad,
+                open,
                 ty.msl_name(),
                 dst.0,
                 expected.0
@@ -813,13 +928,17 @@ pub(super) fn emit_op(
                 pad, ty.msl_name(), n, index.0, dst.0, desired.0
             ));
             out.push_str(&format!(
-                "{}{} r{} = r{}_expected;\n",
+                "{}{} = r{}_expected;{}\n",
                 pad,
-                ty.msl_name(),
+                dst_lv(mutable, ty.msl_name(), dst.0),
                 dst.0,
-                dst.0
+                close
             ));
         }
+        // simdgroup_matrix registers are excluded from the mutable-register
+        // hoist in kernel::emit (their MSL type isn't a scalar slot); the
+        // dst == c in-place arm below already handles the loop-carried
+        // accumulate case.
         KernelOp::CooperativeMMA {
             dst,
             a,

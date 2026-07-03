@@ -11,9 +11,14 @@ use quanta_blas::{GemmInputType, reference};
 use quanta_ir::dtype::{f32_to_bf16, f32_to_f16};
 
 fn gpu() -> quanta::Gpu {
-    // Pinned to the CPU JIT: this kernel trips a mutable-register scope bug in
-    // the MSL emitter on real Metal (register redefinition / use-before-decl).
-    // Runs on the software backend until that emitter bug is fixed.
+    // Pinned to the CPU JIT: bf16/fp8 storage layout diverges between the CPU
+    // backend (native stride: 2-byte bf16 / 1-byte fp8, matching the tightly
+    // packed `Field<u16>` this test uploads) and the GPU emitters (portable
+    // u32-slot: one element per 32-bit word, as used by the op-matrix diff
+    // tests). The bf16/fp8 lanes therefore read garbage past element 0 on
+    // Metal/Vulkan until the storage contract is unified. (The former blocker
+    // — the MSL mutable-register scope bug — is fixed; f16 lanes pass on
+    // Metal.)
     quanta::init_cpu()
 }
 
