@@ -771,4 +771,452 @@ theorem t8052_compose1n_assoc_with_rank1_lhs
     rw [h2] at e2
     exact e1.trans e2.symm
 
+-- ─────────────────────────────────────────────────────────────────
+-- Reshape + coalesce. Mirrors the production ops added in
+-- `crates/quanta-tensor/src/layout/ops.rs`:
+--
+-- - `reshape` models the SUCCESS path of `Layout::reshape` (the
+--   production op guards with `is_contiguous` + size-match and
+--   refuses otherwise; the theorems below take those guards as
+--   hypotheses).
+-- - `coalesce` models `Layout::coalesce` exactly: one right-to-left
+--   pass that drops extent-1 modes and fuses a mode into the group
+--   on its right when its stride continues the group's progression.
+--   The Rust loop's `acc.last_mut()` corresponds to the head of the
+--   recursive result here (Rust builds innermost-first and
+--   reverses; the fold below combines from the right directly).
+-- ─────────────────────────────────────────────────────────────────
+
+namespace Layout
+
+/-- Unflatten a row-major linear index into a coordinate vector
+    over `dims`: outer coordinate is `k / ∏ dims[1..]`, and the
+    remainder recurses. Inner axes vary fastest, matching
+    `rowMajorStrides`. -/
+def unflatten : List Nat → Nat → List Nat
+  | [], _ => []
+  | _ :: ds, k =>
+    (k / ds.foldr (· * ·) 1) :: unflatten ds (k % ds.foldr (· * ·) 1)
+
+/-- A layout is (row-major) **contiguous** when its strides are
+    exactly the dense row-major strides of its dims. Mirrors the
+    production `Layout::is_contiguous`; `baseOffset` is
+    deliberately not part of the definition (a leading-axis slice
+    is still one dense block, just shifted). -/
+def IsContiguous (l : Layout) : Prop :=
+  l.strides = rowMajorStrides l.shape.dims
+
+/-- Spec-level model of the success path of `Layout::reshape`:
+    swap in the new dims with dense row-major strides, keep
+    `baseOffset`. -/
+def reshape (l : Layout) (newDims : List Nat) : Layout :=
+  { shape := { dims := newDims }
+    strides := rowMajorStrides newDims
+    baseOffset := l.baseOffset }
+
+/-- One step of the coalesce fold: `p` is the next (extent, stride)
+    mode moving right-to-left, `r` is the already-coalesced suffix.
+    Drop extent-1 modes; fuse `p` into the suffix's outermost group
+    when `p`'s stride continues the group's progression
+    (`s = s' * d'`); otherwise start a new group. -/
+def coalesceStep (p : Nat × Int) (r : List (Nat × Int)) : List (Nat × Int) :=
+  if p.1 = 1 then r
+  else
+    match r with
+    | [] => [p]
+    | (d', s') :: tail =>
+      if p.2 = s' * (Int.ofNat d') then (p.1 * d', s') :: tail
+      else p :: (d', s') :: tail
+
+/-- CuTe coalesce over an (extent, stride) pair list: fold the
+    step right-to-left. -/
+def coalescePairs (ps : List (Nat × Int)) : List (Nat × Int) :=
+  ps.foldr coalesceStep []
+
+/-- Spec-level model of `Layout::coalesce`. -/
+def coalesce (l : Layout) : Layout :=
+  { shape := { dims := (coalescePairs (l.shape.dims.zip l.strides)).map Prod.fst }
+    strides := (coalescePairs (l.shape.dims.zip l.strides)).map Prod.snd
+    baseOffset := l.baseOffset }
+
+/-- Product of the extents of a pair list — the pair-level view of
+    `linearSize`. -/
+def pairsProd (ps : List (Nat × Int)) : Nat :=
+  (ps.map Prod.fst).foldr (· * ·) 1
+
+/-- Offset of row-major linear index `k` through a pair list — the
+    pair-level view of `dot ∘ unflatten` (no base offset). -/
+def pairsOffset (ps : List (Nat × Int)) (k : Nat) : Int :=
+  dot (unflatten (ps.map Prod.fst) k) (ps.map Prod.snd)
+
+end Layout
+
+-- ─────────────────────────────────────────────────────────────────
+-- Reshape theorems.
+-- ─────────────────────────────────────────────────────────────────
+
+/-- T8053 — `reshape` installs exactly the requested dims. -/
+theorem t8053_reshape_dims (l : Layout) (newDims : List Nat) :
+    (l.reshape newDims).shape.dims = newDims := rfl
+
+/-- T8054 — `reshape`'s rank is the length of the requested dims. -/
+theorem t8054_reshape_rank (l : Layout) (newDims : List Nat) :
+    (l.reshape newDims).rank = newDims.length := rfl
+
+/-- T8055 — `reshape` preserves `baseOffset`: a contiguous reshape
+    is a pure reindexing of the same shifted block. -/
+theorem t8055_reshape_preserves_base_offset (l : Layout) (newDims : List Nat) :
+    (l.reshape newDims).baseOffset = l.baseOffset := rfl
+
+/-- T8056 — `reshape` installs dense row-major strides. -/
+theorem t8056_reshape_strides_row_major (l : Layout) (newDims : List Nat) :
+    (l.reshape newDims).strides = rowMajorStrides newDims := rfl
+
+/-- T8057 — the result of a `reshape` is itself contiguous, so
+    reshapes chain (the Rust round-trip test relies on this). -/
+theorem t8057_reshape_is_contiguous (l : Layout) (newDims : List Nat) :
+    IsContiguous (l.reshape newDims) := rfl
+
+/-- T8058 — under the production op's size guard, `reshape`
+    preserves `linearSize`. -/
+theorem t8058_reshape_preserves_linear_size (l : Layout) (newDims : List Nat)
+    (h : newDims.foldr (· * ·) 1 = l.linearSize) :
+    (l.reshape newDims).linearSize = l.linearSize := h
+
+/-- T8059 — `unflatten` produces a coordinate of the right rank. -/
+theorem t8059_unflatten_length (dims : List Nat) (k : Nat) :
+    (unflatten dims k).length = dims.length := by
+  induction dims generalizing k with
+  | nil => rfl
+  | cons d ds ih => simp [unflatten, ih]
+
+/-- T8060 — the flatten/unflatten round trip: dotting the
+    unflattened coordinate of `k` against the row-major strides
+    recovers `k` exactly, for any in-range `k`. This is the heart
+    of "contiguous reshape is a pure reindexing". -/
+theorem t8060_unflatten_row_major_dot (dims : List Nat) (k : Nat)
+    (h : k < dims.foldr (· * ·) 1) :
+    dot (unflatten dims k) (rowMajorStrides dims) = Int.ofNat k := by
+  induction dims generalizing k with
+  | nil =>
+    have hk0 : k = 0 := Nat.lt_one_iff.mp h
+    subst hk0
+    rfl
+  | cons d ds ih =>
+    have hP : 0 < ds.foldr (· * ·) 1 := by
+      rcases Nat.eq_zero_or_pos (ds.foldr (· * ·) 1) with h0 | hpos
+      · rw [List.foldr_cons, h0, Nat.mul_zero] at h
+        exact absurd h (Nat.not_lt_zero k)
+      · exact hpos
+    simp only [unflatten, rowMajorStrides, dot]
+    rw [ih (k % ds.foldr (· * ·) 1) (Nat.mod_lt k hP)]
+    -- `Int.ofNat` distributes over `*` and `+` definitionally, so
+    -- the goal is `Int.ofNat (k/P * P + k%P) = Int.ofNat k` up to
+    -- defeq — one `congrArg` over the Nat div/mod identity.
+    exact congrArg Int.ofNat (Nat.div_add_mod' k (ds.foldr (· * ·) 1))
+
+/-- T8061 — closed form for contiguous offsets: on a contiguous
+    layout, the offset of the unflattened linear index `k` is
+    `baseOffset + k`. -/
+theorem t8061_contiguous_offset_linear (l : Layout) (k : Nat)
+    (hc : IsContiguous l) (hk : k < l.linearSize) :
+    l.offset (unflatten l.shape.dims k) = l.baseOffset + Int.ofNat k := by
+  have hc' : l.strides = rowMajorStrides l.shape.dims := hc
+  unfold Layout.offset
+  rw [hc', t8060_unflatten_row_major_dot l.shape.dims k hk]
+
+/-- T8062 — **reshape offset equivalence.** On a contiguous layout,
+    reshaping to any same-size dims leaves the offset of every
+    linear index unchanged: both sides land at `baseOffset + k`.
+    Reshape is a pure reindexing of the contiguous domain. -/
+theorem t8062_reshape_offset_equiv (l : Layout) (newDims : List Nat) (k : Nat)
+    (hc : IsContiguous l)
+    (hsize : newDims.foldr (· * ·) 1 = l.linearSize)
+    (hk : k < l.linearSize) :
+    (l.reshape newDims).offset (unflatten newDims k)
+      = l.offset (unflatten l.shape.dims k) := by
+  have hk' : k < (l.reshape newDims).linearSize := by
+    rw [t8058_reshape_preserves_linear_size l newDims hsize]
+    exact hk
+  calc (l.reshape newDims).offset (unflatten newDims k)
+      = (l.reshape newDims).baseOffset + Int.ofNat k :=
+        t8061_contiguous_offset_linear (l.reshape newDims) k rfl hk'
+    _ = l.baseOffset + Int.ofNat k := rfl
+    _ = l.offset (unflatten l.shape.dims k) :=
+        (t8061_contiguous_offset_linear l k hc hk).symm
+
+-- ─────────────────────────────────────────────────────────────────
+-- Coalesce theorems. First the four step-shape lemmas (the case
+-- split every later proof rewrites with), then the structural
+-- invariants, then the offset-equivalence chain.
+-- ─────────────────────────────────────────────────────────────────
+
+/-- T8063 — `coalescePairs` unfolds one cons at a time through
+    `coalesceStep`. -/
+theorem t8063_coalescePairs_cons (p : Nat × Int) (rest : List (Nat × Int)) :
+    coalescePairs (p :: rest) = coalesceStep p (coalescePairs rest) := rfl
+
+/-- T8064 — an extent-1 mode is dropped: its coordinate is always
+    0, so its stride can never contribute to an offset. -/
+theorem t8064_coalesceStep_drops_unit (d : Nat) (s : Int)
+    (r : List (Nat × Int)) (h : d = 1) :
+    coalesceStep (d, s) r = r := by
+  simp [coalesceStep, h]
+
+/-- T8065 — a non-unit mode arriving at an empty suffix starts the
+    first group. -/
+theorem t8065_coalesceStep_starts_group (d : Nat) (s : Int) (h : d ≠ 1) :
+    coalesceStep (d, s) [] = [(d, s)] := by
+  simp [coalesceStep, h]
+
+/-- T8066 — the fuse case: when the incoming stride continues the
+    outermost group's progression (`s = s' * d'`), the extents
+    multiply and the group's stride survives. -/
+theorem t8066_coalesceStep_fuses (d d' : Nat) (s s' : Int)
+    (tail : List (Nat × Int)) (hd : d ≠ 1) (hs : s = s' * Int.ofNat d') :
+    coalesceStep (d, s) ((d', s') :: tail) = (d * d', s') :: tail := by
+  simp [coalesceStep, hd, hs]
+
+/-- T8067 — the push case: a non-unit, non-fusable mode starts a
+    new group in front. -/
+theorem t8067_coalesceStep_pushes (d d' : Nat) (s s' : Int)
+    (tail : List (Nat × Int)) (hd : d ≠ 1) (hs : s ≠ s' * Int.ofNat d') :
+    coalesceStep (d, s) ((d', s') :: tail) = (d, s) :: (d', s') :: tail := by
+  simp [coalesceStep, hd, hs]
+  exact hs
+
+/-- T8068 — every step multiplies the running extent product by the
+    incoming extent, whatever branch fires. -/
+theorem t8068_coalesceStep_prod (d : Nat) (s : Int) (r : List (Nat × Int)) :
+    pairsProd (coalesceStep (d, s) r) = d * pairsProd r := by
+  by_cases hd1 : d = 1
+  · rw [t8064_coalesceStep_drops_unit d s r hd1, hd1, Nat.one_mul]
+  · cases r with
+    | nil =>
+      rw [t8065_coalesceStep_starts_group d s hd1]
+      rfl
+    | cons p tail =>
+      obtain ⟨d', s'⟩ := p
+      by_cases hf : s = s' * Int.ofNat d'
+      · rw [t8066_coalesceStep_fuses d d' s s' tail hd1 hf]
+        show (d * d') * pairsProd tail = d * (d' * pairsProd tail)
+        rw [Nat.mul_assoc]
+      · rw [t8067_coalesceStep_pushes d d' s s' tail hd1 hf]
+        rfl
+
+/-- T8069 — `coalescePairs` preserves the extent product. -/
+theorem t8069_coalescePairs_prod (ps : List (Nat × Int)) :
+    pairsProd (coalescePairs ps) = pairsProd ps := by
+  induction ps with
+  | nil => rfl
+  | cons p rest ih =>
+    obtain ⟨d, s⟩ := p
+    rw [t8063_coalescePairs_cons, t8068_coalesceStep_prod, ih]
+    rfl
+
+/-- T8070 — `coalesce` preserves `baseOffset`. -/
+theorem t8070_coalesce_preserves_base_offset (l : Layout) :
+    (l.coalesce).baseOffset = l.baseOffset := rfl
+
+/-- T8071 — zip/fst projection: with enough strides, projecting
+    the first components of `dims.zip strides` recovers `dims`. -/
+theorem t8071_zip_map_fst {α β : Type} (as : List α) (bs : List β)
+    (h : as.length ≤ bs.length) : (as.zip bs).map Prod.fst = as := by
+  induction as generalizing bs with
+  | nil => rfl
+  | cons a as ih =>
+    cases bs with
+    | nil => simp at h
+    | cons b bs =>
+      simp only [List.zip_cons_cons, List.map_cons]
+      rw [ih bs (by simpa using h)]
+
+/-- T8072 — zip/snd projection, symmetric to T8071. -/
+theorem t8072_zip_map_snd {α β : Type} (as : List α) (bs : List β)
+    (h : bs.length ≤ as.length) : (as.zip bs).map Prod.snd = bs := by
+  induction as generalizing bs with
+  | nil =>
+    cases bs with
+    | nil => rfl
+    | cons b bs => simp at h
+  | cons a as ih =>
+    cases bs with
+    | nil => rfl
+    | cons b bs =>
+      simp only [List.zip_cons_cons, List.map_cons]
+      rw [ih bs (by simpa using h)]
+
+/-- T8073 — `coalesce` preserves `linearSize` (for well-formed
+    layouts, where the stride list covers every axis). -/
+theorem t8073_coalesce_preserves_linear_size (l : Layout)
+    (hlen : l.shape.dims.length ≤ l.strides.length) :
+    (l.coalesce).linearSize = l.linearSize := by
+  show pairsProd (coalescePairs (l.shape.dims.zip l.strides))
+      = l.shape.dims.foldr (· * ·) 1
+  rw [t8069_coalescePairs_prod]
+  show ((l.shape.dims.zip l.strides).map Prod.fst).foldr (· * ·) 1 = _
+  rw [t8071_zip_map_fst l.shape.dims l.strides hlen]
+
+/-- T8074 — `coalesce` is structurally well-formed: its stride list
+    and dims list have equal length (both project the same pair
+    list). -/
+theorem t8074_coalesce_wellformed (l : Layout) :
+    (l.coalesce).strides.length = (l.coalesce).shape.dims.length := by
+  simp [Layout.coalesce]
+
+/-- T8075 — `coalesce` output is compact: no extent-1 mode
+    survives. (A fused extent `d * d'` cannot be 1 because `d ≠ 1`.) -/
+theorem t8075_coalescePairs_no_unit_extents (ps : List (Nat × Int)) :
+    ∀ p ∈ coalescePairs ps, p.1 ≠ 1 := by
+  induction ps with
+  | nil => simp [coalescePairs]
+  | cons q rest ih =>
+    obtain ⟨d, s⟩ := q
+    rw [t8063_coalescePairs_cons]
+    by_cases hd1 : d = 1
+    · rw [t8064_coalesceStep_drops_unit d s _ hd1]
+      exact ih
+    · cases hr : coalescePairs rest with
+      | nil =>
+        rw [t8065_coalesceStep_starts_group d s hd1]
+        intro p hp
+        rw [List.mem_singleton] at hp
+        subst hp
+        exact hd1
+      | cons p' tail =>
+        obtain ⟨d', s'⟩ := p'
+        by_cases hf : s = s' * Int.ofNat d'
+        · rw [t8066_coalesceStep_fuses d d' s s' tail hd1 hf]
+          intro p hp
+          rcases List.mem_cons.mp hp with heq | hmem
+          · subst heq
+            intro hcon
+            exact hd1 (Nat.dvd_one.mp ⟨d', hcon.symm⟩)
+          · exact ih p (by rw [hr]; exact List.mem_cons_of_mem _ hmem)
+        · rw [t8067_coalesceStep_pushes d d' s s' tail hd1 hf]
+          intro p hp
+          rcases List.mem_cons.mp hp with heq | hmem
+          · subst heq
+            exact hd1
+          · exact ih p (by rw [hr]; exact hmem)
+
+/-- T8076 — `pairsOffset` peels one mode: the outer coordinate is
+    `k / pairsProd ps` and the remainder recurses. Definitional. -/
+theorem t8076_pairsOffset_cons (d : Nat) (s : Int)
+    (ps : List (Nat × Int)) (k : Nat) :
+    pairsOffset ((d, s) :: ps) k
+      = Int.ofNat (k / pairsProd ps) * s + pairsOffset ps (k % pairsProd ps) :=
+  rfl
+
+/-- T8077 — **coalesce offset equivalence** at the pair level. For
+    every in-range linear index, walking the coalesced modes
+    reaches exactly the same offset as walking the originals.
+    The fuse case is the interesting one: with `s = s' * d'` and
+    `P = d' * Q`, the identities `k % P % Q = k % Q` and
+    `k / Q = d' * (k / P) + (k % P) / Q` recombine the split
+    coordinate into the fused one. -/
+theorem t8077_coalescePairs_offset (ps : List (Nat × Int)) (k : Nat)
+    (hk : k < pairsProd ps) :
+    pairsOffset (coalescePairs ps) k = pairsOffset ps k := by
+  induction ps generalizing k with
+  | nil => rfl
+  | cons q rest ih =>
+    obtain ⟨d, s⟩ := q
+    have hkP : k < d * pairsProd rest := hk
+    have hPpos : 0 < pairsProd rest := by
+      rcases Nat.eq_zero_or_pos (pairsProd rest) with h0 | hpos
+      · rw [h0, Nat.mul_zero] at hkP
+        exact absurd hkP (Nat.not_lt_zero k)
+      · exact hpos
+    rw [t8063_coalescePairs_cons, t8076_pairsOffset_cons,
+        ← ih (k % pairsProd rest) (Nat.mod_lt k hPpos)]
+    by_cases hd1 : d = 1
+    · rw [t8064_coalesceStep_drops_unit d s _ hd1]
+      have hkP' : k < pairsProd rest := by
+        rw [hd1, Nat.one_mul] at hkP
+        exact hkP
+      rw [Nat.div_eq_of_lt hkP', Nat.mod_eq_of_lt hkP']
+      simp
+    · cases hr : coalescePairs rest with
+      | nil =>
+        have hP1 : pairsProd rest = 1 := by
+          have h := t8069_coalescePairs_prod rest
+          rw [hr] at h
+          simpa [pairsProd] using h.symm
+        rw [t8065_coalesceStep_starts_group d s hd1, hP1,
+            t8076_pairsOffset_cons]
+        rfl
+      | cons p' tail =>
+        obtain ⟨d', s'⟩ := p'
+        have hPr : d' * pairsProd tail = pairsProd rest := by
+          have h := t8069_coalescePairs_prod rest
+          rw [hr] at h
+          exact h
+        have hQpos : 0 < pairsProd tail := by
+          rcases Nat.eq_zero_or_pos (pairsProd tail) with h0 | hpos
+          · rw [h0, Nat.mul_zero] at hPr
+            rw [← hPr] at hPpos
+            exact absurd hPpos (lt_irrefl 0)
+          · exact hpos
+        by_cases hf : s = s' * Int.ofNat d'
+        · rw [t8066_coalesceStep_fuses d d' s s' tail hd1 hf,
+              t8076_pairsOffset_cons, t8076_pairsOffset_cons]
+          have hdvd : pairsProd tail ∣ pairsProd rest :=
+            ⟨d', by rw [← hPr]; exact Nat.mul_comm d' (pairsProd tail)⟩
+          have hmm : k % pairsProd rest % pairsProd tail = k % pairsProd tail :=
+            Nat.mod_mod_of_dvd k hdvd
+          have hk_eq : k = pairsProd tail * (d' * (k / pairsProd rest))
+              + k % pairsProd rest := by
+            conv_lhs => rw [← Nat.div_add_mod k (pairsProd rest)]
+            rw [← hPr]
+            ring
+          have hdiv : k / pairsProd tail
+              = d' * (k / pairsProd rest)
+                + (k % pairsProd rest) / pairsProd tail := by
+            conv_lhs => rw [hk_eq]
+            rw [Nat.mul_add_div hQpos]
+          rw [hmm, hf, hdiv]
+          -- Split the composite cast by definitional equality
+          -- (`Int.ofNat` commutes with `+` and `*` by `rfl`), then
+          -- close by commutative-ring normalisation.
+          have hsplit : Int.ofNat (d' * (k / pairsProd rest)
+                + k % pairsProd rest / pairsProd tail)
+              = Int.ofNat d' * Int.ofNat (k / pairsProd rest)
+                + Int.ofNat (k % pairsProd rest / pairsProd tail) := rfl
+          rw [hsplit]
+          ring
+        · rw [t8067_coalesceStep_pushes d d' s s' tail hd1 hf,
+              t8076_pairsOffset_cons]
+          have hP' : pairsProd ((d', s') :: tail) = pairsProd rest := hPr
+          rw [hP']
+
+/-- T8078 — **coalesce offset equivalence** at the layout level.
+    For a well-formed layout (strides cover the axes) and every
+    in-range linear index `k`, the coalesced layout's offset of
+    `k`'s coordinate equals the original layout's. Combined with
+    T8069/T8073 (size preserved) and T8070 (base preserved), the
+    coalesced layout indexes identically over the flattened
+    domain. -/
+theorem t8078_coalesce_offset_equiv (l : Layout) (k : Nat)
+    (hlen : l.strides.length = l.shape.dims.length)
+    (hk : k < l.linearSize) :
+    (l.coalesce).offset (unflatten (l.coalesce).shape.dims k)
+      = l.offset (unflatten l.shape.dims k) := by
+  have hfst : (l.shape.dims.zip l.strides).map Prod.fst = l.shape.dims :=
+    t8071_zip_map_fst l.shape.dims l.strides (le_of_eq hlen.symm)
+  have hsnd : (l.shape.dims.zip l.strides).map Prod.snd = l.strides :=
+    t8072_zip_map_snd l.shape.dims l.strides (le_of_eq hlen)
+  have hk' : k < pairsProd (l.shape.dims.zip l.strides) := by
+    show k < ((l.shape.dims.zip l.strides).map Prod.fst).foldr (· * ·) 1
+    rw [hfst]
+    exact hk
+  calc (l.coalesce).offset (unflatten (l.coalesce).shape.dims k)
+      = l.baseOffset + pairsOffset (coalescePairs (l.shape.dims.zip l.strides)) k :=
+        rfl
+    _ = l.baseOffset + pairsOffset (l.shape.dims.zip l.strides) k := by
+        rw [t8077_coalescePairs_offset _ k hk']
+    _ = l.offset (unflatten l.shape.dims k) := by
+        unfold Layout.offset pairsOffset
+        rw [hfst, hsnd]
+
 end Quanta.Tensor

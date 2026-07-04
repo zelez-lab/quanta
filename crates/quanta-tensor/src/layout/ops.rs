@@ -5,6 +5,7 @@
 
 use crate::shape::Shape;
 
+use super::strides::compute_row_major_strides;
 use super::{Layout, LayoutError};
 
 impl Layout {
@@ -139,5 +140,82 @@ impl Layout {
             new_strides,
             self.base_offset(),
         ))
+    }
+
+    /// Reinterpret the layout under a new shape — the O(1) rank
+    /// fold/unfold every downstream rank-collapsing consumer
+    /// (GEMM's `M×K` flattening, FFT's radix splits) needs.
+    ///
+    /// Preconditions:
+    /// - `self.is_contiguous()` — the strides must be row-major
+    ///   dense. For general strided layouts a reshape is not
+    ///   always expressible as a view (CuTe-inherited fact), so we
+    ///   refuse with [`LayoutError::NonContiguousReshape`] instead
+    ///   of guessing.
+    /// - `new_shape` must have the same element count as `self`
+    ///   ([`LayoutError::ReshapeSizeMismatch`] otherwise) and no
+    ///   zero extents (`LayoutError::Shape`).
+    ///
+    /// On success the result is `Layout::row_major(new_shape)`
+    /// with `self`'s `base_offset` carried over: the offset of
+    /// linear index `k` is `base_offset + k` before and after, so
+    /// reshape is a pure reindexing of the same flat block.
+    pub fn reshape(&self, new_shape: &[usize]) -> Result<Self, LayoutError> {
+        if !self.is_contiguous() {
+            return Err(LayoutError::NonContiguousReshape {
+                strides: self.strides().to_vec(),
+            });
+        }
+        let shape = Shape::new(new_shape)?;
+        if shape.linear_size() != self.linear_size() {
+            return Err(LayoutError::ReshapeSizeMismatch {
+                from_size: self.linear_size(),
+                to_size: shape.linear_size(),
+            });
+        }
+        let new_strides = compute_row_major_strides(shape.dims());
+        Ok(Layout::from_parts(shape, new_strides, self.base_offset()))
+    }
+
+    /// CuTe-style `coalesce`: the most compact layout that indexes
+    /// identically over the row-major-flattened domain.
+    ///
+    /// Two simplifications, applied right-to-left in one pass:
+    /// - **drop** every extent-1 axis (its coordinate is always 0,
+    ///   so its stride never contributes to an offset);
+    /// - **fuse** an axis into the group on its right when
+    ///   `stride[i] == stride[i+1] * extent[i+1]` — the axis just
+    ///   continues the same arithmetic progression.
+    ///
+    /// `linear_size` and `base_offset` are preserved, and for every
+    /// linear index `k` the offset through the coalesced layout
+    /// equals the offset through `self` (both walk coordinates in
+    /// row-major order). Coalescing everything away (all extents 1)
+    /// yields the rank-0 layout. Infallible — the identity layout
+    /// is always a valid result.
+    pub fn coalesce(&self) -> Self {
+        let dims = self.shape().dims();
+        let strides = self.strides();
+        // Built innermost-first: `acc.last()` is the outermost
+        // mode of the already-processed suffix.
+        let mut acc: Vec<(usize, isize)> = Vec::new();
+        for (&d, &s) in dims.iter().zip(strides.iter()).rev() {
+            if d == 1 {
+                continue;
+            }
+            match acc.last_mut() {
+                Some((group_d, group_s)) if s == *group_s * (*group_d as isize) => {
+                    *group_d *= d;
+                }
+                _ => acc.push((d, s)),
+            }
+        }
+        acc.reverse();
+        let (new_dims, new_strides): (Vec<usize>, Vec<isize>) = acc.into_iter().unzip();
+        Layout::from_parts(
+            Shape::from_dims_unchecked(new_dims),
+            new_strides,
+            self.base_offset(),
+        )
     }
 }

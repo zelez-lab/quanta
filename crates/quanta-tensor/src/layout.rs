@@ -115,6 +115,23 @@ pub enum LayoutError {
         /// Short reason string.
         reason: &'static str,
     },
+    /// `reshape` was called on a non-contiguous layout. A reshape
+    /// is only guaranteed to be an O(1) view when the source
+    /// strides are row-major dense; for general strided layouts
+    /// the CuTe algebra says the result is not always expressible
+    /// as a view, so we refuse rather than silently copy.
+    NonContiguousReshape {
+        /// Strides of the layout the reshape was attempted on.
+        strides: Vec<isize>,
+    },
+    /// `reshape` was given a target shape whose element count
+    /// differs from the source layout's `linear_size`.
+    ReshapeSizeMismatch {
+        /// `linear_size` of the source layout.
+        from_size: usize,
+        /// Product of the requested target extents.
+        to_size: usize,
+    },
 }
 
 impl From<ShapeError> for LayoutError {
@@ -179,6 +196,16 @@ impl fmt::Display for LayoutError {
             LayoutError::ComplementInfeasible { reason } => {
                 write!(f, "complement is undefined: {}", reason)
             }
+            LayoutError::NonContiguousReshape { strides } => write!(
+                f,
+                "reshape requires a contiguous (row-major dense) layout; got strides {:?}",
+                strides
+            ),
+            LayoutError::ReshapeSizeMismatch { from_size, to_size } => write!(
+                f,
+                "reshape size mismatch: source has {} elements, target shape has {}",
+                from_size, to_size
+            ),
         }
     }
 }
@@ -272,6 +299,25 @@ impl Layout {
     /// `shape.linear_size()`.
     pub fn linear_size(&self) -> usize {
         self.shape.linear_size()
+    }
+
+    /// Whether the layout is **row-major dense (contiguous)**: its
+    /// strides equal `compute_row_major_strides(shape)`. This is
+    /// the precondition for [`Layout::reshape`].
+    ///
+    /// `base_offset` is deliberately *not* part of the definition:
+    /// a leading-axis `slice` of a row-major layout is still one
+    /// contiguous block, just shifted, and `reshape` preserves the
+    /// shift.
+    ///
+    /// The check is deliberately strict: an extent-1 axis whose
+    /// stride deviates from the dense value (e.g. the 0-stride
+    /// axes `broadcast` pads in) makes the layout non-contiguous
+    /// even though such a stride can never contribute to an
+    /// offset. Run [`Layout::coalesce`] first to drop those axes
+    /// if you need to reshape through them.
+    pub fn is_contiguous(&self) -> bool {
+        self.strides == compute_row_major_strides(self.shape.dims())
     }
 
     /// Map an N-coordinate to a flat-buffer offset.
