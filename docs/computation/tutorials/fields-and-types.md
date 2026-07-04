@@ -70,6 +70,16 @@ quantization scheme) are emulated in f32 where the backend lacks native
 support — the conversions live in `quanta-ir`'s `dtype` module and are
 proven bit-exact across all backends.
 
+Narrow-float buffers are stored at their **native stride** — 2 bytes per
+`bf16`, 1 byte per `fp8` element — on the host, the CPU executor, Metal
+(`ushort`/`uchar` slots) and Vulkan alike, so a tight host array binds
+directly. The one exception is WebGPU: WGSL storage buffers cannot hold
+16-/8-bit array elements, so that backend keeps one element per 32-bit word
+and the host repacks before binding. Query `gpu.narrow_storage_u32_slot()`
+to detect it. The addressing contract (every backend's element `i` reads
+source element `i`) is proven in Lean
+(`specs/verify/lean/Quanta/Dtype/StorageAddressing.lean`).
+
 ## Field operations (resource-owned)
 
 Fields own their operations. Write, read, and copy are methods on the

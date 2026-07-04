@@ -7,52 +7,59 @@ Wave intrinsics let quarks within a proton exchange data and evaluate conditions
 collectively -- without shared memory or atomics. They compile to single hardware
 instructions.
 
-## wave_shuffle
+The intrinsics live in the kernel-only `quanta` import namespace — the
+`#[quanta::kernel]` macro injects their declarations, and calls are wrapped in
+`unsafe` (they are `extern "C"` imports from the kernel's point of view). Two
+lane-identity helpers come with them: `subgroup_size()` (proton width) and
+`subgroup_id()` (this quark's lane within its proton).
 
-Read a value from another quark in the same proton:
+## shuffle
+
+Exchange values across lanes with an XOR (butterfly) pattern:
 
 ```rust
 #[quanta::kernel]
 fn shuffle_example(data: &mut [f32]) {
     let i = quark_id();
-    let my_val = data[i];
+    let my_val = data[i as usize];
 
-    // Read the value from the quark `delta` positions away
-    let neighbor = wave_shuffle(my_val, 1);  // get value from quark i+1
+    // Read the value held by lane (my_lane ^ 1) — adjacent pairs swap
+    let neighbor = unsafe { shuffle_f32(my_val, 1u32) };
 
-    data[i] = my_val + neighbor;
+    data[i as usize] = my_val + neighbor;
 }
 ```
 
-`wave_shuffle(value, delta)` returns the `value` held by the quark at relative
-offset `delta` within the proton. The lane index wraps within the proton width.
+`shuffle_u32` / `shuffle_i32` / `shuffle_f32(value, lane_mask)` return the
+`value` held by lane `my_lane ^ lane_mask` — the standard butterfly pattern
+used by tree reductions (`lane_mask = 1` swaps adjacent lanes, `2` swaps pairs
+of pairs, and so on). It mirrors Metal's `simd_shuffle_xor` and WGSL's
+`subgroupShuffleXor`.
 
 No memory access occurs. Data moves through register lanes.
 
-## wave_ballot
+## ballot_u32
 
 Ask "which quarks in my proton satisfy a condition?"
 
 ```rust
 #[quanta::kernel]
-fn ballot_example(data: &[f32], count: &mut [u32]) {
+fn ballot_example(data: &[f32], masks: &mut [u32]) {
     let i = quark_id();
-    let active = data[i] > 0.0;
+    let active = if data[i as usize] > 0.0 { 1u32 } else { 0u32 };
 
-    // Returns a bitmask: bit N is set if quark N has active == true
-    let mask = wave_ballot(active);
+    // Returns a bitmask: bit N is set if lane N passed a non-zero predicate
+    let mask = unsafe { ballot_u32(active) };
 
-    // Count bits to find how many quarks passed
-    if local_id() == 0 {
-        atomic_add(&mut count[0], popcount(mask));
-    }
+    masks[i as usize] = mask;
 }
 ```
 
-`wave_ballot(predicate)` returns a bitmask where bit N is set if quark N in the
-proton has `predicate == true`.
+`ballot_u32(predicate)` takes a `u32` predicate (any non-zero value counts as
+true) and returns a bitmask where bit N is set if lane N's predicate was
+non-zero.
 
-## wave_any / wave_all
+## any_u32 / all_u32
 
 Collective boolean tests:
 
@@ -60,58 +67,60 @@ Collective boolean tests:
 #[quanta::kernel]
 fn early_exit(data: &[f32], output: &mut [f32]) {
     let i = quark_id();
-    let val = data[i];
+    let val = data[i as usize];
 
-    // True if ANY quark in the proton has val > threshold
-    if wave_any(val > 100.0) {
+    // 1 for every lane if ANY lane's predicate is non-zero
+    let big = if val > 100.0 { 1u32 } else { 0u32 };
+    if unsafe { any_u32(big) } != 0u32 {
         // At least one quark found a large value
-        output[i] = val;
+        output[i as usize] = val;
     }
 
-    // True only if ALL quarks satisfy the condition
-    if wave_all(val >= 0.0) {
+    // 1 for every lane only if ALL lanes' predicates are non-zero
+    let nonneg = if val >= 0.0 { 1u32 } else { 0u32 };
+    if unsafe { all_u32(nonneg) } != 0u32 {
         // Every quark in the proton has non-negative data
-        output[i] = val;
+        output[i as usize] = val;
     }
 }
 ```
 
-- `wave_any(pred)` -- returns `true` for **all** quarks if at least one quark
-  has `pred == true`.
-- `wave_all(pred)` -- returns `true` for **all** quarks only if every quark
-  has `pred == true`.
+- `any_u32(pred)` -- returns `1` for **all** quarks if at least one quark
+  passed a non-zero `pred`, else `0`.
+- `all_u32(pred)` -- returns `1` for **all** quarks only if every quark
+  passed a non-zero `pred`, else `0`.
 
 These are uniform within a proton: every quark gets the same answer.
 
-## Example: warp-level reduction
+## Reductions and scans
 
-Sum all values in a proton without shared memory (assuming 32-quark proton):
+The most common cross-lane patterns ship as single intrinsics — no manual
+shuffle tree needed:
+
+- `reduce_add_{u32,i32,f32}(value)` — every lane gets the proton-wide sum.
+- `reduce_min_*` / `reduce_max_*` — proton-wide minimum / maximum.
+- `scan_add_{u32,i32,f32}(value)` — inclusive prefix sum (lanes `0..=self`).
+- `scan_add_exclusive_*` — exclusive prefix sum (lane 0 receives 0).
 
 ```rust
 #[quanta::kernel]
 fn warp_reduce(input: &[f32], output: &mut [f32]) {
     let i = quark_id();
-    let lid = local_id();
-    let mut val = input[i];
+    let lane = unsafe { subgroup_id() };
+    let width = unsafe { subgroup_size() };
+    let val = unsafe { reduce_add_f32(input[i as usize]) };
 
-    // Tree reduction using shuffle
-    val = val + wave_shuffle(val, 16);
-    val = val + wave_shuffle(val, 8);
-    val = val + wave_shuffle(val, 4);
-    val = val + wave_shuffle(val, 2);
-    val = val + wave_shuffle(val, 1);
-
-    // Lane 0 has the sum of all 32 values
-    if lid % 32 == 0 {
-        output[i / 32] = val;
+    // Lane 0 of each proton writes the proton's sum
+    if lane == 0u32 {
+        output[(i / width) as usize] = val;
     }
 }
 ```
 
-This is faster than a shared memory reduction because:
+This is faster than a shared-memory reduction because:
 - No memory writes/reads (registers only)
 - No barriers needed
-- Compiles to 5 hardware instructions
+- Compiles to a single hardware instruction sequence
 
 The downside: it only works within a single proton (32 or 64 quarks). For larger
 reductions, combine with [shared memory](shared-memory.md):
@@ -119,28 +128,55 @@ reductions, combine with [shared memory](shared-memory.md):
 2. Write proton results to shared memory
 3. Final reduction in shared memory (one proton's worth of data)
 
+`quanta-prims` packages exactly this recipe as
+[block primitives](block-primitives.md).
+
+## Backend support
+
+Not every device implements the whole family. The vote/ballot group and the
+arithmetic group are separate hardware feature classes, and they diverge on
+real devices:
+
+| Intrinsics | Requirement | Where it holds |
+|------------|-------------|----------------|
+| `any_u32` / `all_u32` / `ballot_u32` | SPIR-V `GroupNonUniformVote` / `GroupNonUniformBallot` (emitted automatically) | CPU, Metal, and every Vulkan device Quanta targets — **including Broadcom V3D** (Raspberry Pi 5) |
+| `reduce_*` / `scan_add_*` | Subgroup **ARITHMETIC** feature class | CPU, Metal, llvmpipe, desktop Vulkan. **Not V3D** — its Mesa driver advertises only BASIC/VOTE/BALLOT and aborts at pipeline creation |
+| `shuffle_*` | Subgroup **SHUFFLE** feature class | Same as arithmetic: everywhere except V3D |
+
+Query `gpu.supports_subgroups()` before building a wave that uses the
+arithmetic or shuffle intrinsics — it reports whether the device advertises
+the subgroup ARITHMETIC class (always true on Metal and the CPU backend).
+Kernels with a subgroup-free fallback (shared memory + barriers) should select
+on it at dispatch-build time; `quanta-prims` does exactly that for its
+device-wide reductions.
+
+On WebGPU, all of these lower to the WGSL `subgroup*` builtins behind an
+`enable subgroups;` directive — availability depends on the browser exposing
+the `subgroups` feature.
+
 ## When to use wave intrinsics
 
 | Pattern             | Intrinsic     | Why                                    |
 |---------------------|---------------|----------------------------------------|
-| Small reduction     | `wave_shuffle`| Fastest possible sum/min/max for <=64 elements |
-| Prefix sum (scan)   | `wave_shuffle`| Build inclusive scan with log2(N) shuffles |
-| Early termination   | `wave_all`    | Skip work when all lanes are done      |
-| Sparse processing   | `wave_ballot` | Count active lanes, compute offsets    |
-| Broadcast           | `wave_shuffle`| Share one quark's value with all others |
+| Small reduction     | `reduce_add_*`| Fastest possible sum/min/max for <=64 elements |
+| Prefix sum (scan)   | `scan_add_*`  | Single-instruction inclusive/exclusive scan |
+| Early termination   | `all_u32`     | Skip work when all lanes are done      |
+| Sparse processing   | `ballot_u32`  | Count active lanes, compute offsets    |
+| Butterfly exchange  | `shuffle_*`   | Pairwise swap steps for custom tree patterns |
 
 ## Hardware differences
 
 | GPU       | Proton width | Implication                          |
 |-----------|-------------|---------------------------------------|
-| NVIDIA    | 32          | 5 shuffle steps for full reduction    |
-| AMD       | 64          | 6 shuffle steps for full reduction    |
+| NVIDIA    | 32          | 5 butterfly steps for a manual reduction |
+| AMD       | 64          | 6 butterfly steps for a manual reduction |
 | Apple     | 32          | Same as NVIDIA                        |
 
-Write kernels that work for both widths. Use `quark_per_proton()` or compile
-two variants if you need maximum performance on both.
+Write kernels that work for both widths. Use `subgroup_size()` at runtime
+rather than hard-coding 32.
 
 ## Next
 
+- [Block Primitives](block-primitives.md) -- the packaged block-wide reduce/scan family
 - [Textures](../../rendering/tutorials/textures.md) -- image data and sampling
 - [Rendering](../../rendering/tutorials/rendering.md) -- the graphics pipeline

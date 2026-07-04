@@ -36,6 +36,11 @@ path without throwing.
 | `supports_mesh_shaders()` | `bool` | Mesh + task shader stages available |
 | `supports_tessellation()` | `bool` | Tessellation control / evaluation stages |
 | `supports_sparse_residency()` | `bool` | Sparse textures (`vkQueueBindSparse` / `MTLHeap` placement) |
+| `supports_f64()` | `bool` | Kernels may use 64-bit floats. True on the software lane and llvmpipe; false on Metal (MSL has no `double`) and Broadcom V3D |
+| `supports_i64()` | `bool` | Kernels may use 64-bit integers (`shaderInt64` on Vulkan). True on the software lane and llvmpipe; false on Metal and Broadcom V3D |
+| `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
+| `supports_cooperative_matrix()` | `bool` | Cooperative-matrix / `simdgroup_matrix` support |
+| `narrow_storage_u32_slot()` | `bool` | Whether bf16/fp8 buffers use the portable u32-slot layout (one element per 32-bit word) instead of native 2-/1-byte stride. True only on WebGPU — WGSL storage buffers cannot hold 16-/8-bit array elements; the host must repack tight data one-element-per-word before binding |
 | `supported_shading_rates()` | `Vec<(u32, u32)>` | Concrete (x,y) shading rates the device exposes (e.g. `[(1,1), (2,2), (4,4)]`). Empty when VRS is not supported. |
 
 ### Fields (typed GPU memory)

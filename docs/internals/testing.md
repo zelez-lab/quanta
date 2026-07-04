@@ -138,6 +138,15 @@ Validates SPIR-V binaries produced by the compiler:
 quanta-compiler --test-spirv | spirv-val
 ```
 
+Beyond the manual pipe, validity is asserted in the test suites: the
+`quanta-ir` `emit_spirv_*` tests (bool-mask, narrow-storage, bool-cast,
+signedness, …), `tests/validate_spirv.rs` / `tests/validate_compiler_output.rs`,
+and the subgroup / texture-compute GPU tests all run the emitted module
+through `spirv-val` and **fail** on an invalid module. (The build-time gate
+inside the compiler only logs; the tests are the hard check.) They skip the
+validation silently when `spirv-val` isn't installed, so SPIRV-Tools is a
+soft dependency of the dev loop.
+
 ### ptxas
 
 NVIDIA's PTX assembler validates PTX text:

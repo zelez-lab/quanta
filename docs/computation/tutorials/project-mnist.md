@@ -45,14 +45,14 @@ flate2 = "1"   # gunzip the .gz files
 > MNIST is a real GPU workload — train it on hardware (`metal` / `vulkan`), not
 > the software backend, or it will be slow.
 
-> **Vulkan note:** this model runs fully on Vulkan (the weights below use an
-> `f32` deterministic init, and every op is `f32`). If you later swap in random
-> weight init from `quanta-rand`, use the **`f32`** distributions
-> (`fill_normal_f32`, …). The **`f64`** distributions are *not supported on
-> Vulkan* — SPIR-V's GLSL.std.450 has no 64-bit `ln`/`cos`/`exp`, so an `f64`
-> normal/exponential/lognormal draw returns `NotSupported` on a Vulkan device
-> (it works on the CPU backend, which has native `f64`). `f32` and Metal are
-> unaffected.
+> **Backend note:** this model runs fully on Vulkan and Metal (the weights
+> below use an `f32` deterministic init, and every op is `f32`). If you later
+> swap in random weight init from `quanta-rand`, use the **`f32`**
+> distributions (`fill_normal_f32_gpu`, …) — they run bit-exact on every
+> backend, including devices without 64-bit support. The **`f64`** twins need
+> real 64-bit device support (`gpu.supports_i64()` + `gpu.supports_f64()`)
+> and return `NotSupported` where it's missing — Metal (no `double` in MSL)
+> and the Raspberry Pi's V3D. The CPU backend and llvmpipe run them natively.
 
 ## 3. Get the data
 

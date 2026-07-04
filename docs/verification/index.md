@@ -44,7 +44,14 @@ The math companion crates carry their own proof obligations, in the same
 * **`quanta-blas`** — every op ships a mechanically-proven Higham `(1+δ)`
   forward-error bound (`specs/verify/lean/Quanta/Blas/`), and the
   mixed-precision GEMM splits the entry error into the proven f32 bound plus a
-  per-dtype input-quantisation term (`gemmEntry_narrow_error_split`).
+  per-dtype input-quantisation term (`gemmEntry_narrow_error_split`). The
+  numeric bound abstracts away *where* element `i` lives, so
+  `Quanta.Dtype.StorageAddressing` closes that gap separately: it models the
+  bf16/fp8 addressing of each carrier (host upload, CPU executor, MSL and
+  SPIR-V emitters at native 2-/1-byte stride; WGSL at its u32-slot layout
+  with host repack) and proves every backend's element `i` reads source
+  element `i` — plus a negative theorem pinning the old cross-stride bug,
+  which agreed at element 0 and diverged from element 1 on.
 * **`quanta-autograd`** — every reverse-mode VJP multiplier is proven *equal to
   the analytic derivative* via Mathlib's `HasDerivAt`
   (`specs/verify/lean/Quanta/Autograd/`): elementwise + activations
@@ -389,6 +396,15 @@ Closed in this v0.1 cycle:
   full memory-order primitive set wired across all 5 emitters.
 * ✅ **Golden-image SHA** — vendored framebuffer canaries on
   `web_triangle` + `web_textured`, asserted per-PR.
+* ✅ **Narrow-dtype storage addressing** —
+  `Quanta.Dtype.StorageAddressing` proves the bf16/fp8 addressing contract
+  across host / CPU / MSL / SPIR-V (native stride) and WGSL (u32-slot):
+  every backend's element `i` denotes source element `i`.
+* ✅ **spirv-val as a test assertion** — the SPIR-V emitter test suites
+  (bool-mask, narrow-storage, subgroup, texture-compute, plus the
+  compiler-output validators) now *assert* `spirv-val` cleanliness when the
+  tool is installed, instead of only logging invalid modules at build time.
+  The tests skip the check silently on machines without SPIRV-Tools.
 
 Still open, by priority:
 

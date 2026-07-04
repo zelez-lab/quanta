@@ -237,6 +237,10 @@ plus 8 in `crates/quanta-ir/src/wire/kani_proofs.rs`
 - Blelloch scan: 46 theorems proving exclusive prefix sum correctness (`Scan.lean`)
 - Varying coordination: vertex out[k] = fragment in[k] (`VaryingCoord.lean`)
 - Wire format: serialize/deserialize identity (`WireFormat.lean`)
+- Narrow-dtype storage addressing: bf16/fp8 element `i` resolves to source
+  element `i` on every carrier — host upload, CPU executor, MSL/SPIR-V
+  emitters (native 2-/1-byte stride) and WGSL (u32-slot + host repack)
+  (`Dtype/StorageAddressing.lean`)
 - End-to-end: user `a + b` -> QBinOp.Add -> SpvOp.IAdd(128) -> wrapping addition (`Axioms/Gpu.lean`, `user_add_is_wrapping_add` etc.)
 
 ---

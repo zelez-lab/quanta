@@ -98,10 +98,10 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `__syncthreads()` | `barrier()` |
 | `atomicAdd(&x, val)` | `atomic_add(&mut x, val)` |
 | `atomicCAS(&x, expected, desired)` | `atomic_cas(&mut x, expected, desired)` |
-| `__shfl_xor_sync(mask, val, delta)` | `wave_shuffle(val, delta)` |
-| `__ballot_sync(mask, pred)` | `wave_ballot(pred)` |
-| `__any_sync(mask, pred)` | `wave_any(pred)` |
-| `__all_sync(mask, pred)` | `wave_all(pred)` |
+| `__shfl_xor_sync(mask, val, delta)` | `shuffle_f32(val, delta)` (and `_u32` / `_i32`) |
+| `__ballot_sync(mask, pred)` | `ballot_u32(pred)` |
+| `__any_sync(mask, pred)` | `any_u32(pred)` |
+| `__all_sync(mask, pred)` | `all_u32(pred)` |
 | `cudaMalloc` + `cudaMemcpy` | `gpu.compute_field::<T>(n)` + `field.write(&data)` |
 | `cudaMallocManaged` | `gpu.field_mapped::<T>(n)` |
 | `kernel<<<blocks, threads>>>(...)` | `gpu.dispatch(&wave, n)` |
@@ -153,18 +153,27 @@ CUDA warp intrinsics map directly to Quanta wave/subgroup operations:
 
 | CUDA | Quanta | Description |
 |------|--------|-------------|
-| `__shfl_xor_sync(mask, val, delta)` | `wave_shuffle(val, delta)` | Cross-lane exchange |
-| `__ballot_sync(mask, pred)` | `wave_ballot(pred)` | Lane predicate bitmask |
-| `__any_sync(mask, pred)` | `wave_any(pred)` | Any lane satisfies predicate |
-| `__all_sync(mask, pred)` | `wave_all(pred)` | All lanes satisfy predicate |
-| `__reduce_add_sync(mask, val)` | `wave_reduce_add(val)` | Sum across warp |
-| `__reduce_min_sync(mask, val)` | `wave_reduce_min(val)` | Min across warp |
-| `__reduce_max_sync(mask, val)` | `wave_reduce_max(val)` | Max across warp |
-| (manual scan loop) | `wave_exclusive_add(val)` | Exclusive prefix sum |
-| (manual scan loop) | `wave_inclusive_add(val)` | Inclusive prefix sum |
+| `__shfl_xor_sync(mask, val, delta)` | `shuffle_u32/i32/f32(val, delta)` | Cross-lane XOR (butterfly) exchange |
+| `__ballot_sync(mask, pred)` | `ballot_u32(pred)` | Lane predicate bitmask |
+| `__any_sync(mask, pred)` | `any_u32(pred)` | Any lane satisfies predicate |
+| `__all_sync(mask, pred)` | `all_u32(pred)` | All lanes satisfy predicate |
+| `__reduce_add_sync(mask, val)` | `reduce_add_u32/i32/f32(val)` | Sum across warp |
+| `__reduce_min_sync(mask, val)` | `reduce_min_u32/i32/f32(val)` | Min across warp |
+| `__reduce_max_sync(mask, val)` | `reduce_max_u32/i32/f32(val)` | Max across warp |
+| (manual scan loop) | `scan_add_exclusive_u32/i32/f32(val)` | Exclusive prefix sum |
+| (manual scan loop) | `scan_add_u32/i32/f32(val)` | Inclusive prefix sum |
 
-Quanta does not require an explicit `mask` parameter -- all active lanes
-participate. This matches the SPIR-V and Metal subgroup model.
+The intrinsics are `unsafe extern` imports inside a `#[quanta::kernel]` body
+(wrap calls in `unsafe {}`). Quanta does not require an explicit `mask`
+parameter -- all active lanes participate. This matches the SPIR-V and Metal
+subgroup model.
+
+Backend note: `any` / `all` / `ballot` run on every backend, including
+Broadcom V3D (Raspberry Pi 5). The reduce / scan / shuffle intrinsics need
+the subgroup ARITHMETIC / SHUFFLE feature classes, which V3D does not
+advertise -- gate on `gpu.supports_subgroups()` or provide a shared-memory
+fallback (see the [wave intrinsics
+tutorial](../computation/tutorials/wave-intrinsics.md#backend-support)).
 
 ## Shared memory
 

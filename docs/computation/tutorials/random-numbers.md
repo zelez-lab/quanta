@@ -5,8 +5,11 @@
 
 Randomness shows up everywhere in numerical work — initializing weights, dropout,
 Monte-Carlo integration, sampling. `quanta-rand` gives you **counter-based**
-generators whose output is *bit-exact across every backend* for a given seed, so
-a run is reproducible whether it lands on Metal, Vulkan, or the CPU.
+generators whose `u32`/`f32` output is *bit-exact across every backend* for a
+given seed, so a run is reproducible whether it lands on Metal, Vulkan (real
+hardware or lavapipe, including the Raspberry Pi's V3D), or the CPU. The
+64-bit variants (`u64` fill, `f64` distributions) are the one exception — see
+the note below.
 
 ```toml
 quanta-rand = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan / gpu
@@ -14,13 +17,12 @@ quanta-rand = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan / gp
 
 ## Filling a buffer
 
-The GPU generators fill a `Field` (a device buffer) in one launch. Uniform
-values in `[0, 1)`:
+The GPU generators produce a whole buffer in one kernel launch and return it
+as a `Vec`. Uniform values in `[0, 1)`:
 
 ```rust,ignore
 let n = 1024;
-let out = gpu.field::<f32>(n)?;
-quanta_rand::fill_uniform_f32_gpu(&gpu, &out, /* seed */ 42)?;
+let vals = quanta_rand::fill_uniform_f32_gpu(&gpu, n, /* seed */ 42)?; // Vec<f32>
 ```
 
 Same seed → same bytes, every time, on every backend. That determinism is the
@@ -31,22 +33,27 @@ whole point: a bug reproduces, a paper's result reproduces.
 Beyond uniform, there are six distributions ready to fill:
 
 ```rust,ignore
-quanta_rand::fill_normal_f32_gpu(&gpu, &out, seed)?;      // N(0, 1)
-quanta_rand::fill_exponential_f32_gpu(&gpu, &out, seed)?; // Exp(1)
-quanta_rand::fill_lognormal_f32_gpu(&gpu, &out, seed)?;   // exp(N(μ,σ))
-quanta_rand::fill_bernoulli_u32_gpu(&gpu, &out_u32, seed, 0.3)?; // 1 w.p. 0.3
-quanta_rand::fill_poisson_u32_gpu(&gpu, &out_u32, seed, 4.0)?;   // Poisson(λ=4)
+quanta_rand::fill_normal_f32_gpu(&gpu, n, seed)?;              // N(0, 1)
+quanta_rand::fill_exponential_f32_gpu(&gpu, n, seed, 1.0)?;    // Exp(λ=1)
+quanta_rand::fill_lognormal_f32_gpu(&gpu, n, seed, 0.0, 1.0)?; // exp(N(μ,σ))
+quanta_rand::fill_bernoulli_u32_gpu(&gpu, n, seed, 0.3)?;      // 1 w.p. 0.3
+quanta_rand::fill_poisson_u32_gpu(&gpu, n, seed, 4.0)?;        // Poisson(λ=4)
 ```
 
 Normal weights for a layer, a Bernoulli dropout mask, Poisson event counts — the
 building blocks are one call each.
 
-> Each distribution also has an `f64` twin (`fill_normal_f64_gpu`, …). The
-> `f64` normal / exponential / lognormal draws use transcendentals (`ln`,
-> `cos`, `exp`) that SPIR-V provides only at 16/32-bit, so on a **Vulkan**
-> device they return `NotSupported` instead of lossy values — prefer the
-> `f32` variants there, or run them on the CPU backend (native `f64`).
-> Metal and the `f32` distributions work everywhere.
+> The Philox core is pure 32-bit arithmetic, so the `u32`/`f32` fill and every
+> `f32` distribution run — bit-exact against the CPU oracle — on every
+> backend, including devices without 64-bit support (Metal, the Pi's V3D).
+> The 64-bit *outputs* are gated on real device capability instead: the `u64`
+> fill needs `gpu.supports_i64()` (its `(hi << 32) | lo` pack), and each
+> `f64` twin (`fill_normal_f64_gpu`, …) additionally needs
+> `gpu.supports_f64()`. On a device without those features — Metal has no
+> `double`, V3D has neither `shaderInt64` nor `shaderFloat64` — the call
+> returns `NotSupported` rather than crashing the driver or silently
+> truncating bits. The CPU backend and llvmpipe run the 64-bit variants
+> natively.
 
 ## Host-side streaming
 

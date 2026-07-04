@@ -67,6 +67,12 @@ Lockstep matters because of branching. If quark 0 takes the `if` branch and
 quark 1 takes the `else` branch, both paths run sequentially. See
 [Execution Model](execution-model.md) for details.
 
+Quarks in a proton can also exchange data directly through
+[wave intrinsics](../computation/tutorials/wave-intrinsics.md). Note that the
+cross-lane *arithmetic* intrinsics (reduce/scan/shuffle) are a separate
+hardware feature class from vote/ballot — some Vulkan devices (Broadcom V3D)
+have only the latter. Query `gpu.supports_subgroups()` before relying on them.
+
 ### Nuclei (compute units / SMs / CUs)
 
 A nucleus contains multiple protons and a block of fast shared memory (~48KB).

@@ -255,11 +255,12 @@ If `*addr == expected`, set `*addr = desired`. Returns old value in `dst`.
 ## Wave (Warp/Subgroup) Operations
 
 ### `WaveShuffle`
-Exchange data between lanes within a wave.
+Exchange data between lanes within a wave (XOR / butterfly pattern).
 ```
 WaveShuffle { dst: Reg, src: Reg, lane_delta: Reg, ty: ScalarType }
 ```
-`dst = src` from lane `(current_lane + lane_delta)`.
+`dst = src` from lane `(current_lane ^ lane_delta)` — mirrors Metal's
+`simd_shuffle_xor` and WGSL's `subgroupShuffleXor`.
 
 ### `WaveBallot`
 Bit mask of which lanes satisfy a predicate.

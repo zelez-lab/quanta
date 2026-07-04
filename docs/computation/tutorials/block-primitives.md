@@ -100,6 +100,16 @@ on-device validation pends the lavapipe and browser lanes. The CPU
 backend refuses: its shared memory is per-thread scratch, so
 atomics alone can't make the kernel cooperative.
 
+One Vulkan caveat: the `block_*` device functions and kernels use subgroup
+arithmetic (`reduce_add_*` and friends), which needs the subgroup ARITHMETIC
+feature class. Broadcom V3D (Raspberry Pi 5) advertises only
+BASIC/VOTE/BALLOT and aborts at pipeline creation on those kernels. The
+`device_wide` host wrappers handle this for you — they check
+`gpu.supports_subgroups()` and fall back to a subgroup-free shared-memory
+tree-reduce family on such devices (same dispatch contract, tree order
+differs so f32 sums agree only within a few ULP). If you call the subgroup
+`block_*` kernels directly, gate on `gpu.supports_subgroups()` yourself.
+
 ## Next
 
 - [Shared Memory](shared-memory.md) — the `#[quanta::shared]` scratch the primitives rely on
