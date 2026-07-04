@@ -55,6 +55,59 @@ fn dft_signed(re: &[f32], im: &[f32], sign: f64, scale: f64) -> (Vec<f32>, Vec<f
     (out_re, out_im)
 }
 
+/// Direct real-input DFT: real signal of length N → the first `N/2 + 1`
+/// complex bins `(re, im)`. The remaining bins of a real signal's spectrum
+/// are conjugates of these (`X[N−k] = conj(X[k])`), so nothing is lost.
+/// f64 accumulation, any N — the `rfft` ground truth.
+pub fn rdft(x: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let n = x.len();
+    if n == 0 {
+        return (vec![], vec![]);
+    }
+    let bins = n / 2 + 1;
+    let mut out_re = Vec::with_capacity(bins);
+    let mut out_im = Vec::with_capacity(bins);
+    for k in 0..bins {
+        let mut acc_re = 0.0f64;
+        let mut acc_im = 0.0f64;
+        for (j, &xj) in x.iter().enumerate() {
+            let theta = -2.0 * PI * (j as f64) * (k as f64) / (n as f64);
+            let (s, c) = theta.sin_cos();
+            acc_re += xj as f64 * c;
+            acc_im += xj as f64 * s;
+        }
+        out_re.push(acc_re as f32);
+        out_im.push(acc_im as f32);
+    }
+    (out_re, out_im)
+}
+
+/// Direct inverse of [`rdft`]: half-spectrum (`n/2 + 1` bins) → the real
+/// signal of length `n`. Reconstructs the full spectrum by conjugate
+/// symmetry and runs the direct inverse DFT, keeping the real part —
+/// `irdft(rdft(x), N) ≈ x`. The `irfft` ground truth.
+pub fn irdft(re: &[f32], im: &[f32], n: usize) -> Vec<f32> {
+    assert_eq!(re.len(), im.len(), "irdft: re/im length mismatch");
+    if n == 0 {
+        return vec![];
+    }
+    assert_eq!(
+        re.len(),
+        n / 2 + 1,
+        "irdft: half-spectrum must be n/2+1 bins"
+    );
+    let mut full_re = vec![0.0f32; n];
+    let mut full_im = vec![0.0f32; n];
+    full_re[..re.len()].copy_from_slice(re);
+    full_im[..im.len()].copy_from_slice(im);
+    for k in 1..n.div_ceil(2) {
+        full_re[n - k] = re[k];
+        full_im[n - k] = -im[k];
+    }
+    let (x, _) = idft(&full_re, &full_im);
+    x
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +136,35 @@ mod tests {
         let (r, _) = dft(&re, &im);
         assert!((r[1] - (n as f32 / 2.0)).abs() < 1e-3);
         assert!((r[n - 1] - (n as f32 / 2.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn rdft_matches_dft_half() {
+        // rdft(x) must equal the first N/2+1 bins of dft(x, 0) — same math,
+        // same f64 accumulation, so bit-for-bit.
+        for n in [1usize, 2, 5, 8, 16] {
+            let x: Vec<f32> = (0..n).map(|j| (j as f32 * 0.7).sin() * 3.0).collect();
+            let zeros = vec![0.0f32; n];
+            let (fr, fi) = dft(&x, &zeros);
+            let (rr, ri) = rdft(&x);
+            assert_eq!(rr.len(), n / 2 + 1);
+            for k in 0..rr.len() {
+                assert_eq!(rr[k], fr[k], "re[{k}] n={n}");
+                assert_eq!(ri[k], fi[k], "im[{k}] n={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn irdft_round_trip() {
+        for n in [1usize, 2, 4, 8, 12] {
+            let x: Vec<f32> = (0..n).map(|j| (j as f32 * 1.3).cos() * 2.0 - 0.5).collect();
+            let (hr, hi) = rdft(&x);
+            let back = irdft(&hr, &hi, n);
+            for j in 0..n {
+                assert!((back[j] - x[j]).abs() < 1e-3, "x[{j}] n={n}");
+            }
+        }
     }
 
     #[test]

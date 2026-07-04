@@ -52,6 +52,25 @@ let (fr, _) = quanta_fft::fft(&gpu, &re, &im)?;
 // |fr[1]| and |fr[n-1]| carry the tone; the rest are ≈ 0.
 ```
 
+## Real signals: rfft
+
+Most signals you'll transform are real — audio, sensor data, image rows. For
+those, the negative-frequency half of the spectrum is redundant (bins `k` and
+`N−k` are conjugates), and `rfft` exploits that: it takes the real slice
+directly and returns just the first `N/2 + 1` bins, computed with a **half-size**
+complex FFT under the hood (the packed method — about 2× the throughput and
+half the device memory). `irfft` goes back to the real signal:
+
+```rust,ignore
+// np.fft.rfft / np.fft.irfft
+let x: Vec<f32> = samples();                       // real, N a power of 2
+let (hr, hi) = quanta_fft::rfft(&gpu, &x)?;        // N/2 + 1 bins
+let back = quanta_fft::irfft(&gpu, &hr, &hi, x.len())?;  // back ≈ x
+```
+
+Bin 0 (DC) and bin `N/2` (Nyquist) of a real signal are themselves real —
+`hi[0]` and `hi[N/2]` come back as exactly `0.0`.
+
 ## Repeated transforms: build a plan
 
 `fft`/`ifft` are one-shot: each call compiles the kernels and runs once.

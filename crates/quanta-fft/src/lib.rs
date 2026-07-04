@@ -13,8 +13,13 @@
 //!   the twiddle table into a device buffer, then
 //!   [`execute`](plan::FftPlan::execute)s any number of same-size transforms
 //!   without rebuilds or per-butterfly `sin`/`cos`.
-//! - [`reference`] — the pure-Rust direct DFT (always available, no `gpu`
-//!   feature needed); the differential-test oracle.
+//! - [`rfft`](rfft::rfft) / [`irfft`](rfft::irfft) — real-input FFT: real
+//!   signal of length N → the `N/2 + 1` half-spectrum (and back), via the
+//!   packed method — one half-size complex plan on the device plus an O(N)
+//!   split pass, ~2× the throughput and half the memory of transforming the
+//!   real signal as complex-with-zero-imag.
+//! - [`reference`] — the pure-Rust direct DFT + real DFT (always available,
+//!   no `gpu` feature needed); the differential-test oracles.
 //!
 //! Off by default the crate is the reference library; enable `gpu` (+ a backend
 //! like `gpu-metal`) for the device FFT. Correctness is established by the
@@ -31,8 +36,12 @@ pub mod reference;
 pub mod fft;
 #[cfg(feature = "gpu")]
 pub mod plan;
+#[cfg(feature = "gpu")]
+pub mod rfft;
 
 #[cfg(feature = "gpu")]
 pub use fft::{fft, ifft};
 #[cfg(feature = "gpu")]
 pub use plan::FftPlan;
+#[cfg(feature = "gpu")]
+pub use rfft::{irfft, rfft};

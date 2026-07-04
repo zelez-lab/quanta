@@ -58,6 +58,26 @@ let (fr, _) = quanta_fft::fft(&gpu, &re, &im)?;
 // fr[0] ≈ 0 (no DC); fr[1] ≈ fr[n-1] ≈ N/2.
 ```
 
+## Real signals: `rfft` / `irfft`
+
+A real signal's spectrum is conjugate-symmetric (`X[N−k] = conj(X[k])`), so
+the first `N/2 + 1` bins carry everything. `rfft` takes the real slice
+directly — no zero imaginary part to allocate — and returns just those bins;
+`irfft` goes back:
+
+```rust,ignore
+// np.fft.rfft(x) / np.fft.irfft(spectrum, n)
+let x = vec![1.0f32, 2.0, 3.0, 4.0, 2.0, 1.0, 0.0, -1.0]; // real, N = 8
+let (hr, hi) = quanta_fft::rfft(&gpu, &x)?;               // 5 bins (N/2 + 1)
+let back = quanta_fft::irfft(&gpu, &hr, &hi, 8)?;         // back ≈ x
+```
+
+Under the hood this is the packed real-FFT: one half-size complex transform
+on the device plus an O(N) split pass — about twice the throughput and half
+the device memory of `fft(&x, &zeros)`. `hi[0]` and `hi[N/2]` (DC, Nyquist)
+are exactly `0.0`. Length must be a power of 2 (`NotSupported` otherwise);
+`irfft` checks that the half-spectrum holds exactly `n/2 + 1` bins.
+
 ## Repeated same-size transforms
 
 `fft`/`ifft` build and run a plan per call. For many transforms of one size,
@@ -81,12 +101,13 @@ doesn't take yet:
 ```rust,ignore
 use quanta_fft::reference;
 let (wr, wi) = reference::dft(&re, &im);   // direct O(N²) DFT, any N
+let (hr, hi) = reference::rdft(&x);        // direct real DFT, N/2+1 bins
 ```
 
 ## Notes
 
-- **f32, split re/im, power-of-2** today. Mixed-radix / arbitrary-N and a
-  real-input `rfft` are later increments.
+- **f32, split re/im, power-of-2** today. Mixed-radix / arbitrary-N is a
+  later increment.
 - The reference module is always available (no `gpu` feature); the GPU `fft` /
   `ifft` need a backend feature.
 - All backends are equivalent — `init_cpu()` runs the software lane (used by the
