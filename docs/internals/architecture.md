@@ -46,7 +46,7 @@ crates/quanta-ir/               Shared IR definition (zero external deps)
 |       +-- decode.rs           bytes -> KernelDef
 |       +-- tests.rs            Roundtrip tests
 
-crates/quanta-macros/           Proc macros (depends on syn + quote)
+crates/quanta-dsl/           Proc macros (depends on syn + quote)
 +-- src/
 |   +-- lib.rs                  #[kernel], #[device], #[shared],
 |   |                           #[vertex], #[fragment],
@@ -121,14 +121,14 @@ Source:
         output[i] = input[i] * 2.0;
     }
 
-Step 1: Parse (quanta-macros/parse.rs)
+Step 1: Parse (quanta-dsl/parse.rs)
     Rust AST (syn) -> KernelDef {
         name: "my_kernel",
         params: [FieldRead("input", slot=0), FieldWrite("output", slot=1)],
         body: [QuarkId{r0}, Load{r1,field=0,r0}, Const{r2,2.0}, BinOp{r3,r1*r2}, Store{field=1,r0,r3}],
     }
 
-Step 2: Serialize + invoke compiler (quanta-macros/compiler.rs)
+Step 2: Serialize + invoke compiler (quanta-dsl/compiler.rs)
     KernelDef -> quanta_ir::serialize_kernel() -> [u8]
     Pipe bytes to `quanta-compiler` binary via stdin
 
@@ -140,7 +140,7 @@ Step 3: Compile to all targets (quanta-compiler) — binary-only
     No text output (MSL/WGSL) in the build path.
     Text emitters (emit_msl.rs, emit_wgsl.rs) are reserved for the JIT path.
 
-Step 4: Embed (quanta-macros/lib.rs)
+Step 4: Embed (quanta-dsl/lib.rs)
     CompilerOutput -> proc_macro TokenStream:
 
     pub static MY_KERNEL_BINARY: KernelBinary = KernelBinary {
@@ -224,7 +224,7 @@ vulkan = ["std"]                   # Linux/Android/Windows
 software = ["std", "jit"]          # CPU software executor (IR interpreter)
 jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]  # runtime JIT via wave_jit()
 webgpu = ["std", "jit"]            # browser (wasm32)
-render = ["quanta-macros/render"]  # the rendering face (see compute/render split)
+render = ["quanta-dsl/render"]  # the rendering face (see compute/render split)
 ```
 
 Without `std`, only types and the kernel language are available (for `no_std` environments).
@@ -238,7 +238,7 @@ for runtime compilation of serialized KernelDef IR.
 ## Dependency philosophy
 
 The `quanta` runtime crate has **zero external dependencies** (aside from its own
-workspace crates `quanta-macros` and `quanta-ir`). GPU drivers use raw FFI:
+workspace crates `quanta-dsl` and `quanta-ir`). GPU drivers use raw FFI:
 
 - **Metal**: `objc_msgSend` / `sel_registerName` / `objc_getClass` via `extern "C"`
 - **Vulkan**: `vkCreateInstance` / `vkCreateBuffer` / etc. via `#[link(name = "vulkan")]`
@@ -246,7 +246,7 @@ workspace crates `quanta-macros` and `quanta-ir`). GPU drivers use raw FFI:
 No `metal-rs`, no `ash`, no `objc` crate. Raw FFI gives minimal binary size,
 fast builds, and total ABI control.
 
-Only `quanta-macros` depends on `syn` + `quote` (proc-macro requirements), and
+Only `quanta-dsl` depends on `syn` + `quote` (proc-macro requirements), and
 `quanta-compiler` depends on `inkwell` / LLVM 22 (build-time only).
 
 ## Math-first internals

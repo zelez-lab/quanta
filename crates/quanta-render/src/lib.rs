@@ -40,7 +40,7 @@
 
 // Re-export the render-stage shader macros so a render consumer pulls them
 // from `quanta_render` rather than reaching into `quanta`.
-pub use quanta_macros::{
+pub use quanta_dsl::{
     Vertex, closest_hit, fragment, mesh, miss, ray_gen, task, tess_control, tess_eval, vertex,
 };
 

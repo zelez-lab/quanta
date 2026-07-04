@@ -1,8 +1,8 @@
-//! Verus mirror of `quanta-macros::validate` — kernel validation rules.
+//! Verus mirror of `quanta-dsl::validate` — kernel validation rules.
 //!
 //! Mirrors:
-//!   crates/quanta-macros/src/validate.rs  — validate_kernel, validate_param_type
-//!   crates/quanta-macros/src/kernel_macro.rs — parse_opt_str, KernelAttrs defaults
+//!   crates/quanta-dsl/src/validate.rs  — validate_kernel, validate_param_type
+//!   crates/quanta-dsl/src/kernel_macro.rs — parse_opt_str, KernelAttrs defaults
 //!
 //! Proves:
 //!   T820: Validation rules are sound — valid kernels satisfy all constraints

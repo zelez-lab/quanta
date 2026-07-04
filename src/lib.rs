@@ -81,38 +81,38 @@ pub use api::*;
 pub use kernel::{GpuType, KernelBinary, ScalarType, ShaderBinary, ShaderStage};
 
 // Re-export proc macros (compute — always available)
-pub use quanta_macros::__kernel_inner;
-pub use quanta_macros::device;
-pub use quanta_macros::gpu_type;
-pub use quanta_macros::import_devices;
-pub use quanta_macros::kernel;
+pub use quanta_dsl::__kernel_inner;
+pub use quanta_dsl::device;
+pub use quanta_dsl::gpu_type;
+pub use quanta_dsl::import_devices;
+pub use quanta_dsl::kernel;
 
 // Derive macros (compute / shared)
-pub use quanta_macros::Fields;
-pub use quanta_macros::Uniforms;
+pub use quanta_dsl::Fields;
+pub use quanta_dsl::Uniforms;
 
 // Render-stage shader macros — only when the `render` feature is on.
 // (`quanta-render` enables it; a headless build omits them entirely.)
 #[cfg(feature = "render")]
-pub use quanta_macros::Vertex;
+pub use quanta_dsl::Vertex;
 #[cfg(feature = "render")]
-pub use quanta_macros::closest_hit;
+pub use quanta_dsl::closest_hit;
 #[cfg(feature = "render")]
-pub use quanta_macros::fragment;
+pub use quanta_dsl::fragment;
 #[cfg(feature = "render")]
-pub use quanta_macros::mesh;
+pub use quanta_dsl::mesh;
 #[cfg(feature = "render")]
-pub use quanta_macros::miss;
+pub use quanta_dsl::miss;
 #[cfg(feature = "render")]
-pub use quanta_macros::ray_gen;
+pub use quanta_dsl::ray_gen;
 #[cfg(feature = "render")]
-pub use quanta_macros::task;
+pub use quanta_dsl::task;
 #[cfg(feature = "render")]
-pub use quanta_macros::tess_control;
+pub use quanta_dsl::tess_control;
 #[cfg(feature = "render")]
-pub use quanta_macros::tess_eval;
+pub use quanta_dsl::tess_eval;
 #[cfg(feature = "render")]
-pub use quanta_macros::vertex;
+pub use quanta_dsl::vertex;
 
 /// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
 #[cfg(feature = "std")]

@@ -2,7 +2,7 @@
 members = [
     ".",
     "crates/quanta-ir",
-    "crates/quanta-macros",
+    "crates/quanta-dsl",
     "crates/quanta-compiler",
     "crates/quanta-bench",
     "crates/quanta-cli",
@@ -58,7 +58,7 @@ vulkan = ["std"]
 ## `default-features = false` to compile zero render code and expose a
 ## render-free surface. The `quanta-render` crate enables this and adds
 ## the `RenderGpu` ergonomic extension trait. (Step 085.)
-render = ["quanta-macros/render"]
+render = ["quanta-dsl/render"]
 ## CPU software driver: execute KernelDef IR without GPU hardware.
 software = ["std", "jit"]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
@@ -75,7 +75,7 @@ jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]
 webgpu = ["std", "jit"]
 
 [dependencies]
-quanta-macros = { path = "crates/quanta-macros", version = "0.1.0-alpha.2", default-features = false }
+quanta-dsl = { path = "crates/quanta-dsl", version = "0.1.0-alpha.2", default-features = false }
 quanta-ir.workspace = true
 
 [dev-dependencies]

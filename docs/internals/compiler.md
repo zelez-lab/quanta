@@ -179,7 +179,7 @@ Key passes that run:
 
 Translates `KernelOp` directly to Metal Shading Language text. Used by both
 the JIT path **and** the standard build pipeline — the build-time path
-goes through `crates/quanta-macros/src/compiler/metallib.rs::compile_msl_to_metallib`,
+goes through `crates/quanta-dsl/src/compiler/metallib.rs::compile_msl_to_metallib`,
 which writes the emitted MSL to a temp `.metal` file and shells out to
 `xcrun metal` + `xcrun metallib` to produce the metallib that ships in
 the binary. (SPIR-V is also emitted, but the Metal backend prefers the
@@ -225,7 +225,7 @@ shipped Quanta kernel.
 ## WGSL emitter (`emit_wgsl.rs`)
 
 Direct text generation from `KernelOp`, same shape as the MSL emitter.
-Used by the WebGPU backend on every platform — `quanta-macros` embeds
+Used by the WebGPU backend on every platform — `quanta-dsl` embeds
 the WGSL string in the binary via `embed_wgsl`, and the runtime hands
 it to `device.createShaderModule({ code })` at pipeline-build time.
 
@@ -288,5 +288,5 @@ applies before Metal's optimizer runs.
 3. Add LLVM emission in `quanta-compiler/src/to_llvm/emit.rs`.
 4. Add MSL emission in `emit_msl.rs`.
 5. Add WGSL emission in `emit_wgsl.rs`.
-6. Add parsing in `quanta-macros/src/parse/expr.rs` or `parse/stmt.rs`.
+6. Add parsing in `quanta-dsl/src/parse/expr.rs` or `parse/stmt.rs`.
 7. Add roundtrip test in `quanta-ir/tests/roundtrip.rs`.

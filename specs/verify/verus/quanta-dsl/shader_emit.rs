@@ -1,6 +1,6 @@
-//! Verus mirror of `quanta-macros::compiler::shader_emit` — MSL/WGSL text emitters.
+//! Verus mirror of `quanta-dsl::compiler::shader_emit` — MSL/WGSL text emitters.
 //!
-//! Mirrors: crates/quanta-macros/src/compiler/shader_emit.rs
+//! Mirrors: crates/quanta-dsl/src/compiler/shader_emit.rs
 //!
 //! The shader_emit module generates Metal Shading Language (MSL) and WebGPU
 //! Shading Language (WGSL) source text for vertex and fragment shaders.

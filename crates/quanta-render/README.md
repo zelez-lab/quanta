@@ -43,7 +43,7 @@ and all four backends execute render ops).
 
 ## What it re-exports
 
-**Shader-stage macros** (from `quanta-macros`) — write render shaders in Rust:
+**Shader-stage macros** (from `quanta-dsl`) — write render shaders in Rust:
 `vertex`, `fragment`, `Vertex` (attribute derive), `tess_control`, `tess_eval`,
 `mesh`, `task`, `ray_gen`, `closest_hit`, `miss`.
 
