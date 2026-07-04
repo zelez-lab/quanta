@@ -3,9 +3,11 @@
 > **You'll learn:** how to take a Fourier transform on the GPU and read the
 > spectrum. Builds on [Linear algebra](linear-algebra.md).
 
-The Fast Fourier Transform turns a signal into its frequency components. `quanta-fft`
-implements the radix-2 Cooley-Tukey FFT — forward and inverse — for power-of-2
-sizes, and it's **proven equal to the direct DFT** in Lean.
+The Fast Fourier Transform turns a signal into its frequency components.
+`quanta-fft` transforms any length — power-of-2 sizes run the radix-2
+Cooley-Tukey kernels, which are **proven equal to the direct DFT** in Lean;
+other sizes run Bluestein's chirp-z algorithm on top of the same radix-2
+machinery, differential-tested against the direct-DFT oracle.
 
 ```toml
 quanta-fft = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan / gpu
@@ -24,7 +26,9 @@ let im = vec![0.0f32; 4];                        // real input → zero imaginar
 let (fr, fi) = quanta_fft::fft(&gpu, &re, &im)?; // fr, fi: real/imag spectrum
 ```
 
-The length must be a power of 2; other sizes return `NotSupported`.
+Any length works. A power of 2 is the fastest shape (straight radix-2);
+anything else — 1000 samples, a prime bin count — goes through the Bluestein
+convolution, which costs about three power-of-2 transforms.
 
 ## The inverse round-trips
 
@@ -89,7 +93,9 @@ for frame in frames {
 
 The size and direction are fixed at `new` (inverse plans pass `true` and fold
 in the `1/N` scale); `execute` rejects inputs of any other length. A one-shot
-`fft()` and a plan `execute` produce identical results.
+`fft()` and a plan `execute` produce identical results. Plans are the radix-2
+engine, so they take power-of-2 sizes only — the arbitrary-N support lives in
+`fft`/`ifft`, which build the Bluestein convolution out of these same plans.
 
 ## Where it fits
 

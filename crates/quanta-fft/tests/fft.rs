@@ -1,5 +1,6 @@
-//! GPU FFT differential tests: the radix-2 kernel vs the direct-DFT oracle
-//! (software lane), plus the inverse round trip.
+//! GPU FFT differential tests: the radix-2 kernel and the Bluestein chirp-z
+//! path vs the direct-DFT oracle (software lane), plus the inverse round
+//! trips.
 
 #![cfg(feature = "gpu")]
 
@@ -77,11 +78,53 @@ fn ifft_matches_idft() {
     close(&gi, &wi, "ifft im");
 }
 
+// === Bluestein (non-power-of-2 sizes) ===
+
+/// Every non-power-of-2 size the sweep exercises: small primes, composites,
+/// a large prime, and a large composite. N = 127 and N = 1000 are the phase
+/// canaries — a chirp built from an unreduced n² phase drifts visibly there,
+/// so passing at crate tolerance demonstrates the mod-2N reduction holds.
+const NON_POW2_SIZES: &[usize] = &[3, 5, 7, 11, 13, 6, 9, 10, 12, 15, 100, 127, 1000];
+
+/// The Bluestein forward path must match the direct DFT for every
+/// non-power-of-2 size in the sweep, at the same tolerance as the radix-2
+/// differential test.
 #[test]
-fn fft_non_power_of_two_errors() {
+fn bluestein_fft_matches_dft() {
     let g = gpu();
-    let (re, im) = signal(6, 0);
-    assert!(quanta_fft::fft(&g, &re, &im).is_err());
+    for &n in NON_POW2_SIZES {
+        let (re, im) = signal(n, n as u32);
+        let (gr, gi) = quanta_fft::fft(&g, &re, &im).unwrap();
+        let (wr, wi) = reference::dft(&re, &im);
+        close(&gr, &wr, &format!("bluestein fft re n={n}"));
+        close(&gi, &wi, &format!("bluestein fft im n={n}"));
+    }
+}
+
+/// The Bluestein inverse path must match the direct inverse DFT.
+#[test]
+fn bluestein_ifft_matches_idft() {
+    let g = gpu();
+    for &n in &[7usize, 12, 100, 1000] {
+        let (re, im) = signal(n, 31 + n as u32);
+        let (gr, gi) = quanta_fft::ifft(&g, &re, &im).unwrap();
+        let (wr, wi) = reference::idft(&re, &im);
+        close(&gr, &wr, &format!("bluestein ifft re n={n}"));
+        close(&gi, &wi, &format!("bluestein ifft im n={n}"));
+    }
+}
+
+/// ifft(fft(x)) == x through the chirp-z path, for every sweep size.
+#[test]
+fn bluestein_round_trip() {
+    let g = gpu();
+    for &n in NON_POW2_SIZES {
+        let (re, im) = signal(n, 4321 + n as u32);
+        let (fr, fi) = quanta_fft::fft(&g, &re, &im).unwrap();
+        let (rr, ri) = quanta_fft::ifft(&g, &fr, &fi).unwrap();
+        close(&rr, &re, &format!("bluestein round-trip re n={n}"));
+        close(&ri, &im, &format!("bluestein round-trip im n={n}"));
+    }
 }
 
 #[test]

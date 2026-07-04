@@ -1,21 +1,25 @@
 # quanta-fft
 
-GPU fast Fourier transform for Quanta. Radix-2 Cooley-Tukey, forward and
-inverse, complex data split into real/imag `f32` arrays, sizes a power of 2.
-One kernel, every backend (Metal / Vulkan / CPU).
+GPU fast Fourier transform for Quanta. Forward and inverse, complex data
+split into real/imag `f32` arrays, **any length N ≥ 1**: radix-2 Cooley-Tukey
+for power-of-2 sizes, Bluestein's chirp-z algorithm (built on the same
+radix-2 plans) for everything else. One kernel, every backend
+(Metal / Vulkan / CPU).
 
 The headline claim: **Cooley-Tukey correctness is mechanically proven** — the
 radix-2 decomposition equals the direct DFT, end to end, in Lean
 (`specs/verify/lean/Quanta/Fft/`), on top of being differential-tested against
-a direct-DFT oracle and validated on real Metal.
+a direct-DFT oracle and validated on real Metal. The Bluestein path's bar is
+the same differential oracle (the Lean proof models the radix-2 recursion
+only).
 
-## Status — radix-2 (split re/im, power-of-2, forward + inverse)
+## Status — 1-D complex, any N (split re/im, forward + inverse)
 
 | op | signature | notes |
 |----|-----------|-------|
-| `fft`  | `fft(gpu, &re, &im) -> (Vec<f32>, Vec<f32>)`  | forward DFT, N a power of 2 (one-shot plan) |
-| `ifft` | `ifft(gpu, &re, &im) -> (Vec<f32>, Vec<f32>)` | inverse (÷N); `ifft(fft(x)) == x` |
-| `rfft` | `rfft(gpu, &x) -> (Vec<f32>, Vec<f32>)` | real input → the `N/2 + 1` half-spectrum (packed method: one half-size complex FFT + O(N) split — ~2× the throughput, half the device memory) |
+| `fft`  | `fft(gpu, &re, &im) -> (Vec<f32>, Vec<f32>)`  | forward DFT, any N (radix-2 for 2^k, Bluestein otherwise) |
+| `ifft` | `ifft(gpu, &re, &im) -> (Vec<f32>, Vec<f32>)` | inverse (÷N); `ifft(fft(x)) == x`, any N |
+| `rfft` | `rfft(gpu, &x) -> (Vec<f32>, Vec<f32>)` | real input → the `N/2 + 1` half-spectrum (packed method: one half-size complex FFT + O(N) split — ~2× the throughput, half the device memory); power-of-2 N |
 | `irfft` | `irfft(gpu, &re, &im, n) -> Vec<f32>` | half-spectrum → real signal; `irfft(rfft(x), N) ≈ x` |
 | `fft2`  | `fft2(gpu, &re, &im, h, w) -> (Vec<f32>, Vec<f32>)`  | 2-D forward, row-major H×W, both dims powers of 2 (row-column decomposition over `FftPlan`) |
 | `ifft2` | `ifft2(gpu, &re, &im, h, w) -> (Vec<f32>, Vec<f32>)` | 2-D inverse (÷(H·W)); `ifft2(fft2(x)) == x` |
@@ -45,7 +49,8 @@ for (re, im) in frames {
 ```
 
 The plan owns the twiddle table and the compiled waves; I/O buffers are
-allocated per `execute`, so executes stay independent.
+allocated per `execute`, so executes stay independent. `FftPlan` itself is
+power-of-2 only — it IS the radix-2 engine Bluestein builds on.
 
 ### Real-input FFT (`rfft` / `irfft`)
 
@@ -70,10 +75,26 @@ real signal are real. The split/merge pass runs on the host in `f64` (the
 transform I/O is host vectors anyway; O(N) is negligible next to the
 O(N log N) device work), so `rfft` matches the oracle at the same tolerance
 as the complex path but is not bit-identical to slicing `fft([x, zeros])` —
-packing reorders the f32 summations.
+packing reorders the f32 summations. `rfft` takes a power-of-2 length.
 
-Sizes must be a power of 2; others return `NotSupported` (mixed-radix is a later
-increment).
+### Non-power-of-2 sizes: Bluestein's chirp-z
+
+`fft`/`ifft` accept any N. Non-power-of-2 sizes are rewritten as a
+power-of-2 convolution via `nk = (n² + k² − (k−n)²)/2`:
+
+```text
+X[k] = exp(−πi·k²/N) · Σₙ [x[n]·exp(−πi·n²/N)] · exp(+πi·(k−n)²/N)
+```
+
+The chirped input `a[n] = x[n]·exp(−πi·n²/N)` is convolved with the chirp
+kernel `b[m] = exp(+πi·m²/N)` at `M = next_pow2(2N−1)` using the radix-2
+plans (forward-FFT both, pointwise-multiply, inverse-FFT), then the output
+chirp is applied. The inverse conjugates the chirps and scales by `1/N`.
+Chirps are host-computed in f64 with the `n²` phase reduced `mod 2N` in exact
+integer arithmetic before the trig — that reduction is what keeps the phase
+accurate at large N (N = 1000 lands ~160× inside the crate tolerance;
+unreduced `n²` phases would drift there). Cost is three length-M transforms,
+so a power-of-2 N is always the faster shape.
 
 **2-D**: `fft2`/`ifft2` transform a row-major H×W grid (both dims powers of 2)
 by the separable row-column method — a W-point row pass (one reused `FftPlan`,
@@ -112,15 +133,18 @@ enable `gpu` (+ a backend) for the device FFT.
   iteration to the full DFT (`fftRec_eq_dftN`), built from scratch over an
   ℕ-indexed DFT (Mathlib has the DFT but no radix-2 decomposition).
 - **Differential** — the GPU FFT matches the direct DFT for every power-of-2
-  size up to 256, `ifft` matches the direct inverse DFT, and `ifft(fft(x)) == x`
-  round-trips. `rfft` matches the direct real-DFT oracle and the first
-  `N/2+1` bins of the full complex FFT; `irfft(rfft(x), N) ≈ x` round-trips;
-  reconstructing the full spectrum from the half by conjugate symmetry
-  matches `fft([x, zeros])`. The 2-D `fft2` matches the direct 2-D double-sum
-  DFT (2×2 through 16×16, square and rectangular), round-trips through
-  `ifft2`, and passes the separability outer-product check. All validated on
-  the software lane **and real Metal**.
+  size up to 256 AND for the Bluestein sweep (primes 3/5/7/11/13/127,
+  composites 6/9/10/12/15/100/1000); `ifft` matches the direct inverse DFT and
+  `ifft(fft(x)) == x` round-trips for all of them. `rfft` matches the direct
+  real-DFT oracle and the first `N/2+1` bins of the full complex FFT;
+  `irfft(rfft(x), N) ≈ x` round-trips; reconstructing the full spectrum from
+  the half by conjugate symmetry matches `fft([x, zeros])`. The 2-D `fft2`
+  matches the direct 2-D double-sum DFT (2×2 through 16×16, square and
+  rectangular), round-trips through `ifft2`, and passes the separability
+  outer-product check. All validated on the software lane **and real Metal**.
+  The Lean proof covers the radix-2 recursion only; Bluestein's correctness
+  claim rests on the differential oracle.
 
 ## Coming next
 
-Mixed-radix / arbitrary-N (Bluestein for primes) and batched / 3-D transforms.
+Batched / multi-dimensional (3-D) transforms.

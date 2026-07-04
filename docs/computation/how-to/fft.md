@@ -1,10 +1,13 @@
 # FFT (Fourier transforms on the GPU)
 
-`quanta-fft` is a radix-2 Cooley-Tukey FFT — forward and inverse, complex data
-as split real/imag `f32` arrays, sizes a power of 2 — on whatever backend you
-compiled for. Cooley-Tukey is mechanically proven equal to the direct DFT (see
-the [verification page](../../verification/index.md)). This page is a task-by-task
-recipe.
+`quanta-fft` is a GPU FFT — forward and inverse, complex data as split
+real/imag `f32` arrays, **any length** — on whatever backend you compiled
+for. Power-of-2 sizes run the radix-2 Cooley-Tukey kernels (mechanically
+proven equal to the direct DFT — see the
+[verification page](../../verification/index.md)); other sizes run
+Bluestein's chirp-z algorithm on top of the same radix-2 plans,
+differential-tested against the direct-DFT oracle. This page is a
+task-by-task recipe.
 
 ```toml
 [dependencies]
@@ -29,7 +32,10 @@ let im = vec![0.0f32; 4];                 // real input
 let (fr, fi) = quanta_fft::fft(&gpu, &re, &im)?;   // fr/fi: real/imag spectrum
 ```
 
-Length must be a power of 2 — other sizes return `NotSupported`.
+Any length works. Powers of 2 go straight to the radix-2 kernels;
+non-power-of-2 sizes (e.g. 1000 samples, or a prime bin count) go through
+Bluestein's chirp-z convolution at `next_pow2(2N−1)` — about three power-of-2
+transforms, so a power-of-2 N is the faster shape when you can choose.
 
 ## Inverse transform
 
@@ -104,7 +110,8 @@ conjugates. The reference oracle is `reference::dft2` / `idft2` — the direct
 `fft`/`ifft` build and run a plan per call. For many transforms of one size,
 hold an `FftPlan`: kernels are JIT-compiled once and the twiddle table is
 precomputed into a device buffer at `new`; `execute` only binds and
-dispatches:
+dispatches. (`FftPlan` is the radix-2 engine, so it takes power-of-2 sizes
+only — Bluestein builds on it internally.)
 
 ```rust,ignore
 let mut plan = quanta_fft::FftPlan::new(&gpu, 1024, false)?; // inverse: true
@@ -116,8 +123,7 @@ for (re, im) in frames {
 ## Checking against the reference
 
 The crate ships a pure-Rust direct DFT (the differential-test oracle) — handy
-to sanity-check a result or to transform a non-power-of-2 size the GPU path
-doesn't take yet:
+to sanity-check any result without a GPU in the loop:
 
 ```rust,ignore
 use quanta_fft::reference;
@@ -127,8 +133,11 @@ let (hr, hi) = reference::rdft(&x);        // direct real DFT, N/2+1 bins
 
 ## Notes
 
-- **f32, split re/im, power-of-2** today (1-D, 2-D, and real-input `rfft`).
-  Mixed-radix / arbitrary-N is a later increment.
+- **f32, split re/im.** `fft`/`ifft` take **any N** (radix-2 for powers of 2,
+  Bluestein chirp-z otherwise; the chirp phases are computed in f64 with the
+  `n²` argument reduced mod 2N before the trig, so large non-power-of-2 N —
+  e.g. 1000 — stays well inside tolerance). `rfft` and 2-D `fft2` are
+  power-of-2 today.
 - The reference module is always available (no `gpu` feature); the GPU `fft` /
   `ifft` need a backend feature.
 - All backends are equivalent — `init_cpu()` runs the software lane (used by the

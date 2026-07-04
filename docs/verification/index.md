@@ -75,7 +75,9 @@ The math companion crates carry their own proof obligations, in the same
   the full transform (`fftRec_eq_dftN`), built from scratch over an ℕ-indexed
   DFT (Mathlib has the DFT but no radix-2 decomposition). The Rust crate is
   differential-tested against the direct DFT on the software lane and real
-  Metal. 0 sorry, rests on Mathlib.
+  Metal. 0 sorry, rests on Mathlib. The arbitrary-N Bluestein path is
+  **differential-tested only** (primes and composites up to N = 1000) — the
+  Lean proof models the radix-2 recursion, not the chirp-z reformulation.
 
 ## Verification chain
 

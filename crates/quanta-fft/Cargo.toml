@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GPU FFT for Quanta — radix-2 Cooley-Tukey (split re/im, power-of-2), forward + inverse. Differential-tested against a direct-DFT oracle; Cooley-Tukey = DFT proof is a parallel Lean track."
+description = "GPU FFT for Quanta — any-N forward + inverse (split re/im): radix-2 Cooley-Tukey for powers of 2, Bluestein chirp-z otherwise. Differential-tested against a direct-DFT oracle; Cooley-Tukey = DFT proof is a parallel Lean track."
 keywords = ["gpu", "fft", "dft", "fourier", "signal"]
 categories = ["mathematics", "science"]
 
