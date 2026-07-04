@@ -1,12 +1,23 @@
 //! Loop-entry `ScaledIdx` snapshot — refinement (V8-#4).
 //!
-//! Production's `force_locals_to_stable` (lower.rs), at **loop entry**, now
-//! snapshots any loop-invariant `ScaledIdx`-valued local: it commits
+//! Production's `force_locals_to_stable` (lower.rs), at **loop entry**,
+//! snapshots a loop-invariant `ScaledIdx`-valued local: it commits
 //! `base << log2(scale)` to a fresh register and copies that into the local's
 //! stable register, so the index is not re-materialized from a base register
 //! the loop body clobbers on a later iteration. (This is the tiled-GEMM
 //! correctness fix: the p=0 shared-tile index `tr<<4` was recomputed each
 //! iteration from the K-tile induction register, reading out of bounds.)
+//!
+//! The snapshot is GATED on the loop body being able to observe the local
+//! stale: the body READS the local (`loop_body_reads`), or the `ScaledIdx`
+//! base is some local's stable register (which in-body `local.set`s may
+//! clobber). A `ScaledIdx` local the loop neither reads nor can clobber
+//! keeps its symbolic binding and the entry emits nothing — committing it
+//! would erase the `base`/`scale` split, and a post-loop
+//! `BufferPtr + <this>` add would no longer fold into a `BufferAccess`
+//! (the bench_nbody `v[idx] += a*dt` epilogue, where rustc CSEs `idx<<2`
+//! into a local that survives the tile loops). The gate is modeled below
+//! as `loop_entry_gate`.
 //!
 //! This file closes the divergence **at the refinement layer**, following the
 //! V8-#1 placement-residual pattern (`local_arms_refine.rs`): the spec models
@@ -80,19 +91,39 @@ pub open spec fn snapshot_scaled(
     (s2, ops)
 }
 
+// ── The snapshot gate ──────────────────────────────────────────────
+//
+// Production commits a loop-invariant ScaledIdx local at loop entry only
+// when the loop body can observe it stale: the body reads the local, or the
+// ScaledIdx base is some local's stable register (clobberable by in-body
+// sets). Otherwise the local keeps its symbolic ScaledIdx binding and the
+// entry emits nothing (post-loop buffer-pattern folds depend on this).
+// Mirrors the `body_reads.contains(i) || locals.any(stable_reg == base)`
+// condition in `force_locals_to_stable`.
+
+pub open spec fn loop_entry_gate(read_in_body: bool, base_is_stable_reg: bool) -> bool {
+    read_in_body || base_is_stable_reg
+}
+
 // ── Spec loop-entry snapshot (mirrors production) ──────────────────
 //
-// The spec's `wloop` arm now models the same loop-entry ScaledIdx snapshot
-// production performs (rather than emitting nothing). On a non-ScaledIdx
-// local it emits nothing; on a ScaledIdx local it emits the shared snapshot.
+// The spec's `wloop` arm models the same gated loop-entry ScaledIdx
+// snapshot production performs. On a non-ScaledIdx local it emits nothing;
+// on a ScaledIdx local it emits the shared snapshot iff the gate holds.
 
 pub open spec fn spec_loop_entry_scaled(
     s: LowerState,
     base: Reg,
     scale: nat,
     stable: Reg,
+    read_in_body: bool,
+    base_is_stable_reg: bool,
 ) -> (LowerState, Seq<KernelOp>) {
-    snapshot_scaled(s, base, scale, stable)
+    if loop_entry_gate(read_in_body, base_is_stable_reg) {
+        snapshot_scaled(s, base, scale, stable)
+    } else {
+        (s, Seq::empty())
+    }
 }
 
 pub open spec fn spec_loop_entry_nonscaled(s: LowerState) -> (LowerState, Seq<KernelOp>) {
@@ -106,8 +137,14 @@ pub open spec fn prod_loop_entry_scaled(
     base: Reg,
     scale: nat,
     stable: Reg,
+    read_in_body: bool,
+    base_is_stable_reg: bool,
 ) -> (LowerState, Seq<KernelOp>) {
-    snapshot_scaled(s, base, scale, stable)
+    if loop_entry_gate(read_in_body, base_is_stable_reg) {
+        snapshot_scaled(s, base, scale, stable)
+    } else {
+        (s, Seq::empty())
+    }
 }
 
 pub open spec fn prod_loop_entry_nonscaled(s: LowerState) -> (LowerState, Seq<KernelOp>) {
@@ -116,14 +153,21 @@ pub open spec fn prod_loop_entry_nonscaled(s: LowerState) -> (LowerState, Seq<Ke
 
 // ── Refinement: production == spec ─────────────────────────────────
 
-/// The ScaledIdx loop-entry snapshot REFINES: production and spec emit the
-/// identical op sequence and reach the identical state. (Both are
-/// `snapshot_scaled`.) This closes V8-#4 at the refinement layer — the spec
-/// now models the snapshot, so there is no production-does-more gap.
-proof fn refine_loop_entry_scaled(s: LowerState, base: Reg, scale: nat, stable: Reg)
+/// The gated ScaledIdx loop-entry snapshot REFINES: production and spec emit
+/// the identical op sequence and reach the identical state in both gate
+/// branches. This closes V8-#4 at the refinement layer — the spec models the
+/// gated snapshot, so there is no production-does-more gap.
+proof fn refine_loop_entry_scaled(
+    s: LowerState,
+    base: Reg,
+    scale: nat,
+    stable: Reg,
+    read_in_body: bool,
+    base_is_stable_reg: bool,
+)
     ensures
-        prod_loop_entry_scaled(s, base, scale, stable)
-            == spec_loop_entry_scaled(s, base, scale, stable),
+        prod_loop_entry_scaled(s, base, scale, stable, read_in_body, base_is_stable_reg)
+            == spec_loop_entry_scaled(s, base, scale, stable, read_in_body, base_is_stable_reg),
 {}
 
 /// On a value-typed (non-ScaledIdx) local, both emit nothing and leave state
@@ -132,27 +176,45 @@ proof fn loop_entry_nonscaled_agrees(s: LowerState)
     ensures prod_loop_entry_nonscaled(s) == spec_loop_entry_nonscaled(s),
 {}
 
+/// When the gate does NOT hold (the loop body neither reads the local nor
+/// can clobber its base), the entry is fully inert: no ops, state unchanged.
+/// The local's symbolic ScaledIdx binding survives for post-loop
+/// buffer-pattern folds, and the in-subset preservation proofs see an empty
+/// emission.
+proof fn loop_entry_ungated_is_inert(s: LowerState, base: Reg, scale: nat, stable: Reg)
+    ensures
+        ({
+            let (s2, ops) = prod_loop_entry_scaled(s, base, scale, stable, false, false);
+            &&& s2 == s
+            &&& ops == Seq::<KernelOp>::empty()
+        }),
+{}
+
 // ── Shape + inertness (what the refinement rests on) ───────────────
 
-/// The snapshot's exact shape: `Const(c,0) ; Shl(t,base,log2 scale) ;
+/// The gated snapshot's exact shape: `Const(c,0) ; Shl(t,base,log2 scale) ;
 /// Copy(stable,t)`, `next_reg + 2`. Pins the emission for the framework
-/// write-up (and the Lean `wloop` arm to mirror).
+/// write-up (and the Lean `wloop` arm to mirror). Stated for the
+/// read-in-body gate arm; the base-is-stable arm is identical by
+/// `loop_entry_gate`'s disjunction.
 proof fn loop_entry_scaled_snapshot_shape(s: LowerState, base: Reg, scale: nat, stable: Reg)
     ensures
         ({
-            let (_, ops) = prod_loop_entry_scaled(s, base, scale, stable);
+            let (_, ops) = prod_loop_entry_scaled(s, base, scale, stable, true, false);
             &&& ops.len() == 3
             &&& ops[0] == KernelOp::Const(Reg(s.next_reg), ConstValue::U32(0))
             &&& ops[1] == KernelOp::Shl(Reg(s.next_reg + 1), base, log2(scale))
             &&& ops[2] == KernelOp::Copy(stable, Reg(s.next_reg + 1))
         }),
-        prod_loop_entry_scaled(s, base, scale, stable).0.next_reg == s.next_reg + 2,
+        prod_loop_entry_scaled(s, base, scale, stable, true, false).0.next_reg == s.next_reg + 2,
 {}
 
-/// The snapshot writes only freshly-allocated registers (`c = next_reg`,
-/// `t = next_reg + 1`) and the ScaledIdx local's OWN stable register — never
-/// a value-typed local's register. This is why the in-subset preservation
-/// proofs are undisturbed: no register they reason about is overwritten.
+/// The gated snapshot writes only freshly-allocated registers (`c =
+/// next_reg`, `t = next_reg + 1`) and the ScaledIdx local's OWN stable
+/// register — never a value-typed local's register. This is why the
+/// in-subset preservation proofs are undisturbed: no register they reason
+/// about is overwritten. (The ungated arm writes nothing at all — see
+/// `loop_entry_ungated_is_inert`.)
 proof fn loop_entry_scaled_writes_only_fresh_or_own_stable(
     s: LowerState,
     base: Reg,
@@ -161,7 +223,7 @@ proof fn loop_entry_scaled_writes_only_fresh_or_own_stable(
 )
     ensures
         ({
-            let (_, ops) = prod_loop_entry_scaled(s, base, scale, stable);
+            let (_, ops) = prod_loop_entry_scaled(s, base, scale, stable, true, false);
             &&& ops[0] == KernelOp::Const(Reg(s.next_reg), ConstValue::U32(0))
             &&& ops[1] == KernelOp::Shl(Reg(s.next_reg + 1), base, log2(scale))
             &&& ops[2] == KernelOp::Copy(stable, Reg(s.next_reg + 1))

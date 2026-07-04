@@ -29,7 +29,7 @@ the project `CLAUDE.md`.)
 | `commit_refine.rs` | V6 + **V8-#2 closed** | `commit` refinement: Reg case full equality, BufferPtr both-refuse, and — after V8-#2 — **const case FULL equality** (`commit_const_full_refine`): production and spec both emit `Const(dst, I32 n)`. `commit_const_tag_agrees` pins the now-matching tag (formerly a recorded divergence). Remaining gap is **domain only**: production materializes `ScaledIdx`/`BufferAccess`/`I64Const` that the Lean spec refuses (rustc-optimizer pointer-arith shapes outside the slice-1 Lean subset). |
 | `lower_instructions_refine.rs` | **V7 — closes the arm** | **Top-level composition.** The production list fold `lower_instructions` (folding the per-instruction `step` over a `Seq<WasmInstr>`, threading `ProdCtx`, concatenating ops) refines the Lean `lowerInstrs` straight-line layer (`spec_lower_instrs`). The theorem `refine_lower_instructions` — `view ∘ lower_instructions == spec_lower_instrs ∘ view`, on state and ops, lifted through `Option` (refuse-iff-refuse) — is proved by **induction on the list**: the inductive step is `refine_step` (the head, the V5 per-op refinement lifted to the uniform `step`) composed with the IH (the tail). `view`/`unview` are mutual inverses (`reverse_reverse`), so the threaded production state slots back through `view` cleanly at each position. Two corollaries (`_refuse_iff`, `_ops`) specialize the closer for the framework-claim write-up. **Scope: the slice-1 straight-line subset** — every instruction the V5 per-op refinements cover, over arbitrary-length lists. The structured-control layer (block/wloop/wif/br/brIf/wreturn; fuel + frames + `splitAtEnd`) is mechanized in `structured_refine.rs` (below); on the straight-line subset, fuel/frames are inert and `lowerInstrs` reduces definitionally to this fold (proved there as `straightline_agrees`). |
 | `structured_refine.rs` | **V7-structured** | The structured-control layer of `lowerInstrs` (`block`/`wloop`/`wif`/`br`/`brIf`/`wreturn`; Translate.lean:555-728). Mechanizes: the **splitters** (`split_at_end`/`split_at_else_or_end`/`closer_index`, mirrors of `Quanta.Wasm.Structured`) with the **progress lemma** `split_at_end_shrinks` (body + post-suffix strictly shorter than input — what makes the fuel-bounded fold well-founded); the **frame predicates** `has_loop_above`/`loops_above`; the full fuel-bounded fold `lower_instrs` with every arm transcribed; **conservativity** `straightline_agrees` (on a list with no structured openers/branches, the structured fold equals the V7 straight-line fold — V7-structured is a conservative *extension*); and **per-arm shape lemmas** — `block_splices` (body splices, no wrapper), `loop_wraps` (`[LoopOp body_ops]`), `br_loop0_no_ir`, `br_cross_loop_breaks`, plus the **not-yet-modeled refusals** `br_exitflag_refuses` (the `emit_loop_crossing_exit` shape) / `br_record_refuses` (`record_br_at`) / `br_oob_refuses`. The per-arm *production* refinement (streaming-`Vec<Frame>` ↔ recursive-descent equivalence at the body boundary) is **mechanized** in `streaming_equiv.rs` (below) for the wrapper-assembly shape — the one place the two strategies could diverge. |
-| `loop_scaledidx_snapshot_refine.rs` | **V8-#4 (refinement-closed)** | The loop-entry `ScaledIdx` snapshot that `force_locals_to_stable` now performs (the tiled-GEMM correctness fix). Proves production's snapshot (commit `base << log2(scale)` + stable-reg Copy) REFINES the spec snapshot — same ops, same state — plus value-typed-local agreement and write-only-fresh-or-own-stable inertness (4 verified). Residual = the pre-existing `ScaledIdx` domain gap (Lean locals are `Reg` not `SymVal`), see the V8 section below. |
+| `loop_scaledidx_snapshot_refine.rs` | **V8-#4 (refinement-closed)** | The **gated** loop-entry `ScaledIdx` snapshot that `force_locals_to_stable` performs (the tiled-GEMM correctness fix). The gate (`loop_entry_gate`): snapshot only when the loop body reads the local or its base is a clobberable stable register; otherwise the entry is inert and the local keeps its symbolic binding (post-loop `BufferPtr + ScaledIdx` folds — the bench_nbody epilogue). Proves production's gated snapshot REFINES the spec — same ops, same state, both gate arms — plus value-typed-local agreement, ungated inertness, and write-only-fresh-or-own-stable inertness (5 verified). Residual = the pre-existing `ScaledIdx` domain gap (Lean locals are `Reg` not `SymVal`), see the V8 section below. |
 | `streaming_equiv.rs` | **hardening** | The streaming-`Vec<Frame>` ↔ recursive-descent equivalence — the largest trust step under V7-structured, formerly a prose note in `Quanta.Wasm.Structured`. Models op-assembly on both sides (`step_stream`/`run_stream` = production's push-frame/accumulate/pop-and-fold walk; `descend` = the `split_at_end` recursive descent) routed through a single `wrap` (Block→splice, Loop→`[LoopOp]`, If→`[Branch cond · []]`). Proves: the three **close lemmas** (`close_block_splices`/`close_loop_wraps`/`close_if_branches` — a `wend` close folds exactly `wrap(kind, body)` into the parent), plain-accumulation + height preservation, and the concrete **`stream_equiv_recursive_flat`** (`run_stream` from a Function frame == `descend`, by induction, on flat streams). **Honest scope:** the full *nested* `run_stream == descend` (arbitrary depth) is not driven end-to-end here; what's proved is (1) flat-stream equality and (2) per-`wend` `wrap`-agreement — the only divergence point — so the nested composition is mechanical but un-driven. Shrinks, does not fully retire, the body-boundary obligation. |
 
 ### Production↔spec divergences (V8)
@@ -45,20 +45,30 @@ production effect modeled and its shape pinned), then closed.
 | V8-#3 | `i32add_chained_refine.rs` | closed | `i32.add` chained-address folds |
 | **V8-#4** | **`loop_scaledidx_snapshot_refine.rs`** | **closed at the refinement layer** | **loop-entry `ScaledIdx` snapshot** |
 
-**V8-#4 — loop-entry `ScaledIdx` snapshot (refinement-closed 2026-06-25).**
-Production's `force_locals_to_stable` now commits a loop-invariant
+**V8-#4 — loop-entry `ScaledIdx` snapshot (refinement-closed 2026-06-25;
+gate added 2026-07-04).**
+Production's `force_locals_to_stable` commits a loop-invariant
 `ScaledIdx` local at loop entry (`Const(c,0) ; Shl(t,base,log2 scale) ;
 Copy(stable,t)`) so its in-loop reads aren't re-materialized from a base
-register the loop body clobbers (the tiled-GEMM correctness fix).
+register the loop body clobbers (the tiled-GEMM correctness fix). The
+commit is **gated** (`loop_entry_gate`): it fires only when the loop body
+READS the local (per-loop `loop_body_reads` pre-pass) or the `ScaledIdx`
+base is some local's stable register (clobberable by in-body sets). A
+local the loop neither reads nor can clobber keeps its symbolic
+`ScaledIdx` binding — committing it would erase the `base`/`scale` split
+and post-loop `BufferPtr + <this>` adds would hard-fail in `commit()`
+(the bench_nbody `v[idx] += a*dt` epilogue, where rustc CSEs `idx<<2`
+into a local that survives the tile loops).
 
 This **breaks no proven theorem** — all refinement crates re-verify
 (commit 4 / local_arms 9 / structured 15 / lower_instructions 9, 0 errors).
-`loop_scaledidx_snapshot_refine.rs` (4 verified) **proves the refinement**:
-the spec snapshot equals production's (`refine_loop_entry_scaled`), value-typed
-locals emit nothing on both sides, and the snapshot writes only fresh
-registers + the `ScaledIdx` local's own stable reg (so the in-subset
-preservation proofs are provably undisturbed). At the refinement layer there
-is no production-does-more gap.
+`loop_scaledidx_snapshot_refine.rs` (5 verified) **proves the refinement**:
+the gated spec snapshot equals production's in both gate arms
+(`refine_loop_entry_scaled`), value-typed locals emit nothing on both
+sides, the ungated arm is fully inert (`loop_entry_ungated_is_inert`),
+and the gated snapshot writes only fresh registers + the `ScaledIdx`
+local's own stable reg (so the in-subset preservation proofs are provably
+undisturbed). At the refinement layer there is no production-does-more gap.
 
 **The one residual** — the same pre-existing `ScaledIdx` domain gap, NOT
 opened by this change: the Lean `LowerState` models locals as `Reg` bindings,

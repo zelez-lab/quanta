@@ -171,7 +171,17 @@ struct LowerCtx<'a> {
     /// loop-VARIANT ones alone — fixes the tiled-GEMM in-loop ScaledIdx
     /// re-materialized-from-a-clobbered-base bug.
     loop_body_writes: Vec<std::collections::BTreeSet<u32>>,
-    /// Cursor into `loop_body_writes`, advanced at each Loop open.
+    /// Precomputed per-loop "locals READ inside the loop body" sets,
+    /// parallel to `loop_body_writes`. Used by `force_locals_to_stable`
+    /// to skip the loop-entry snapshot for a `ScaledIdx` local the loop
+    /// never reads: committing such a local would destroy its symbolic
+    /// structure for nothing, breaking post-loop `BufferPtr + ScaledIdx`
+    /// buffer-pattern folds (bench_nbody's `v[idx] += a*dt` epilogue,
+    /// where rustc CSEs the `idx<<2` byte offset into a local across
+    /// the tile loops).
+    loop_body_reads: Vec<std::collections::BTreeSet<u32>>,
+    /// Cursor into `loop_body_writes` / `loop_body_reads`, advanced at
+    /// each Loop open.
     loop_body_writes_cursor: usize,
 }
 
@@ -370,21 +380,27 @@ impl<'a> LowerCtx<'a> {
             local_debug: std::env::var("QUANTA_LOWER_DEBUG")
                 .is_ok_and(|v| v == side_table.kernel_name || v == "*"),
             loop_body_writes: Vec::new(),
+            loop_body_reads: Vec::new(),
             loop_body_writes_cursor: 0,
         }
     }
 
     /// Pre-pass: for each `Loop` instruction (source order), compute the set
-    /// of wasm locals written (`LocalSet`/`LocalTee`) anywhere in its body
-    /// (to the matching `End`, nested constructs included). Used by
-    /// `force_locals_to_stable` to tell loop-invariant indices (snapshot)
-    /// from loop-variant ones (leave symbolic).
-    fn precompute_loop_body_writes(&mut self, instrs: &[RawInstr]) {
-        let mut result: Vec<std::collections::BTreeSet<u32>> = Vec::new();
+    /// of wasm locals written (`LocalSet`/`LocalTee`) and the set of locals
+    /// read (`LocalGet`) anywhere in its body (to the matching `End`, nested
+    /// constructs included). Used by `force_locals_to_stable` to tell
+    /// loop-invariant indices that need a loop-entry snapshot (read but not
+    /// written in the body) from loop-variant ones (written — leave
+    /// symbolic) and untouched ones (neither — keep the symbolic structure
+    /// so post-loop buffer-pattern folds still recognize them).
+    fn precompute_loop_body_accesses(&mut self, instrs: &[RawInstr]) {
+        let mut writes_result: Vec<std::collections::BTreeSet<u32>> = Vec::new();
+        let mut reads_result: Vec<std::collections::BTreeSet<u32>> = Vec::new();
         for (i, instr) in instrs.iter().enumerate() {
             if matches!(instr, RawInstr::Loop { .. }) {
                 let mut depth = 0i32;
                 let mut writes = std::collections::BTreeSet::new();
+                let mut reads = std::collections::BTreeSet::new();
                 for nested in &instrs[i + 1..] {
                     match nested {
                         RawInstr::Loop { .. } | RawInstr::Block { .. } | RawInstr::If { .. } => {
@@ -399,24 +415,41 @@ impl<'a> LowerCtx<'a> {
                         RawInstr::LocalSet(idx) | RawInstr::LocalTee(idx) => {
                             writes.insert(*idx);
                         }
+                        RawInstr::LocalGet(idx) => {
+                            reads.insert(*idx);
+                        }
                         _ => {}
                     }
                 }
-                result.push(writes);
+                writes_result.push(writes);
+                reads_result.push(reads);
             }
         }
-        self.loop_body_writes = result;
+        self.loop_body_writes = writes_result;
+        self.loop_body_reads = reads_result;
     }
 
-    /// The "locals written in body" set for the Loop currently being opened.
-    fn next_loop_writes(&mut self) -> std::collections::BTreeSet<u32> {
-        let set = self
+    /// The "locals written in body" / "locals read in body" sets for the
+    /// Loop currently being opened.
+    #[allow(clippy::type_complexity)]
+    fn next_loop_accesses(
+        &mut self,
+    ) -> (
+        std::collections::BTreeSet<u32>,
+        std::collections::BTreeSet<u32>,
+    ) {
+        let writes = self
             .loop_body_writes
             .get(self.loop_body_writes_cursor)
             .cloned()
             .unwrap_or_default();
+        let reads = self
+            .loop_body_reads
+            .get(self.loop_body_writes_cursor)
+            .cloned()
+            .unwrap_or_default();
         self.loop_body_writes_cursor += 1;
-        set
+        (writes, reads)
     }
 
     /// Record a local get/set event (no-op unless local-debug is on for
@@ -907,7 +940,7 @@ impl<'a> LowerCtx<'a> {
         }
 
         let instrs = self.body.instructions.clone();
-        self.precompute_loop_body_writes(&instrs);
+        self.precompute_loop_body_accesses(&instrs);
         for instr in &instrs {
             self.lower_instr(instr)?;
         }
@@ -995,7 +1028,11 @@ impl<'a> LowerCtx<'a> {
     /// stable_reg instead of any fresh-reg binding. Called at
     /// Loop entry so accumulators work across iterations — see
     /// the Loop case in `lower_instr` for the full rationale.
-    fn force_locals_to_stable(&mut self, body_writes: &std::collections::BTreeSet<u32>) {
+    fn force_locals_to_stable(
+        &mut self,
+        body_writes: &std::collections::BTreeSet<u32>,
+        body_reads: &std::collections::BTreeSet<u32>,
+    ) {
         // Snapshot loop-INVARIANT `ScaledIdx` indices at loop entry. A
         // `ScaledIdx` (`base << log2(scale)`) is kept symbolic for the
         // buffer-addressing recognizer and re-materialized at each USE. If
@@ -1011,6 +1048,19 @@ impl<'a> LowerCtx<'a> {
         // Only snapshot a local NOT written inside the loop body — a
         // `ScaledIdx` local written in the loop is a genuine per-iteration
         // index that must advance. `body_writes` is that set (precomputed).
+        //
+        // And only snapshot a local the loop can actually observe stale:
+        // one READ inside the body, or one whose `base` is some local's
+        // stable register (which in-body `local.set`s may clobber — the
+        // post-loop reads would then re-materialize from the clobbered
+        // base). A `ScaledIdx` the loop neither reads nor can clobber
+        // (base is a plain SSA register, written exactly once) keeps its
+        // symbolic structure: committing it would erase the
+        // `base`/`scale` split and post-loop `BufferPtr + <this>` adds
+        // would no longer fold into a BufferAccess, hard-failing in
+        // `commit()` (bench_nbody: rustc keeps `idx<<2` in a local across
+        // the tile loops and re-uses it for the `v[idx] += a*dt`
+        // read-modify-write epilogue).
         let to_commit: Vec<usize> = self
             .locals
             .iter()
@@ -1021,7 +1071,13 @@ impl<'a> LowerCtx<'a> {
                 // re-materialize `base << scale` from a clobbered base. (A
                 // ScaledIdx written in the loop is a genuine per-iteration
                 // index and must keep advancing — excluded via body_writes.)
-                Some(SymVal::ScaledIdx { .. }) if !body_writes.contains(&(i as u32)) => Some(i),
+                Some(SymVal::ScaledIdx { base, .. })
+                    if !body_writes.contains(&(i as u32))
+                        && (body_reads.contains(&(i as u32))
+                            || self.locals.iter().any(|l| l.stable_reg == Some(base))) =>
+                {
+                    Some(i)
+                }
                 _ => None,
             })
             .collect();
@@ -2245,8 +2301,8 @@ impl<'a> LowerCtx<'a> {
                 //
                 // Straight-line code with no loop is unaffected
                 // (no frame entry → no force).
-                let body_writes = self.next_loop_writes();
-                self.force_locals_to_stable(&body_writes);
+                let (body_writes, body_reads) = self.next_loop_accesses();
+                self.force_locals_to_stable(&body_writes, &body_reads);
                 self.loop_reads.push(std::collections::BTreeSet::new());
                 let parent_brifs = self.frames.last().map(|f| f.brifs.len()).unwrap_or(0);
                 self.frames.push(Frame {
