@@ -56,13 +56,21 @@ fn bool_to_u32_scan_cpu() {
     gpu.dispatch(&wave, 64).unwrap().wait().unwrap();
 
     let result = out.read().unwrap();
-    // CPU executor is single-lane, so each "scan" runs in isolation
-    // — the inclusive scan of a single value is just that value, so
-    // result[k] == predicates[k] (0 or 1).
-    let expected: Vec<u32> = predicates.clone();
+    // The CPU executor resolves subgroup ops cooperatively across a
+    // 32-wide warp (see `cpu::exec::SUBGROUP_SIZE`), so this is an
+    // inclusive prefix-count of set predicates within each 32-lane
+    // subgroup: it runs 0,1,1,2,2,… up to lane 31, then restarts at
+    // the next subgroup boundary.
+    const SUBGROUP: usize = 32;
+    let expected: Vec<u32> = (0..64usize)
+        .map(|k| {
+            let base = (k / SUBGROUP) * SUBGROUP;
+            (base..=k).map(|j| predicates[j]).sum()
+        })
+        .collect();
     assert_eq!(
         result, expected,
-        "CPU single-lane scan of bool should equal the bool itself"
+        "CPU cooperative 32-wide subgroup scan of the bool predicate"
     );
 }
 
