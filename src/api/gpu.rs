@@ -161,6 +161,23 @@ impl Gpu {
         self.inner.supported_shading_rates()
     }
 
+    /// Whether [`Texture::native_handle`](crate::Texture::native_handle)
+    /// exports a real backend object on the active backend. `false`
+    /// on the CPU software driver (no native object exists) and on
+    /// backends whose export path isn't wired yet; those return
+    /// `NotSupported` from `native_handle`.
+    pub fn supports_native_handle_export(&self) -> bool {
+        self.inner.supports_native_handle_export()
+    }
+
+    /// Whether the active backend can create presentation surfaces
+    /// (`Gpu::create_surface` under the `render` feature). Backends
+    /// without a present path return `NotSupported` at
+    /// `create_surface` time.
+    pub fn supports_surface_present(&self) -> bool {
+        self.inner.supports_surface_present()
+    }
+
     pub fn name(&self) -> &str {
         &self.caps().name
     }

@@ -57,6 +57,82 @@ impl Texture {
             Err(QuantaError::invalid_param("texture has no device"))
         }
     }
+
+    /// Export the backend-native handle behind this texture, for
+    /// zero-copy interop with an external consumer (compositor, OS,
+    /// another graphics runtime).
+    ///
+    /// The exported handle is a **borrow**: it stays valid exactly as
+    /// long as this `Texture` (and the `Gpu` it came from) are alive,
+    /// and ownership is **not** transferred. An importer that needs
+    /// the native object to outlive the `Texture` must take its own
+    /// reference through the native API (e.g. ObjC `retain` on the
+    /// `MTLTexture`) before the `Texture` is dropped. Quanta never
+    /// observes or releases importer-held references.
+    ///
+    /// The GPU work that produced the texture's contents must be
+    /// complete (`Pulse::wait`) — or ordered against the importer's
+    /// reads by native means — before the importer samples it.
+    ///
+    /// Backends without an exportable native object (the CPU software
+    /// driver) return a `NotSupported` error
+    /// ([`QuantaErrorKind::NotSupported`](crate::QuantaErrorKind)); query
+    /// `Gpu::supports_native_handle_export` to branch ahead of time.
+    pub fn native_handle(&self) -> Result<NativeTextureHandle, QuantaError> {
+        if let Some(ref dev) = self.device {
+            dev.texture_native_handle(self)
+        } else {
+            Err(QuantaError::invalid_param("texture has no device"))
+        }
+    }
+}
+
+/// A backend-native texture handle exported from a [`Texture`] for
+/// zero-copy interop. See [`Texture::native_handle`] for the
+/// ownership/lifetime contract (borrow, valid for the `Texture`'s
+/// lifetime; no ownership transfer).
+///
+/// Marked `#[non_exhaustive]`: new backend variants (and additional
+/// per-backend import metadata) can be added without a breaking
+/// change — always match with a wildcard arm.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub enum NativeTextureHandle {
+    /// Metal: the raw `id<MTLTexture>` pointer. Non-null. The importer
+    /// may message it directly (bind, blit, `retain` for extended
+    /// lifetime).
+    Metal {
+        /// `id<MTLTexture>` as a raw pointer.
+        texture: *mut core::ffi::c_void,
+    },
+    /// Vulkan: the `VkImage` plus what an importer needs to bind or
+    /// re-describe it. The image was created by Quanta's `VkDevice`;
+    /// cross-device / cross-process import additionally requires the
+    /// external-memory extensions, which are not wired yet (the
+    /// fields for them will be added — this variant is
+    /// non-exhaustive by way of the enum).
+    Vulkan {
+        /// The raw `VkImage`.
+        image: *mut core::ffi::c_void,
+        /// The `VkDeviceMemory` backing the image (dedicated
+        /// allocation, offset 0).
+        memory: *mut core::ffi::c_void,
+        /// The native `VkFormat` value the image was created with.
+        vk_format: u32,
+        /// The image's `VkImageLayout` at export time. The importer
+        /// must transition from exactly this layout.
+        layout: u32,
+    },
+    /// WebGPU: the id of the `GPUTexture` in the JS-side registry
+    /// (`web/src/quanta.ts`). Only meaningful to code running in the
+    /// same browsing context that can reach that registry; there is
+    /// no cross-context export in WebGPU. Reserved — the export path
+    /// is not implemented yet and the WebGPU backend currently
+    /// returns `NotSupported`.
+    WebGpu {
+        /// Registry id of the `GPUTexture`.
+        texture: u64,
+    },
 }
 
 impl Drop for Texture {

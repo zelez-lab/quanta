@@ -36,6 +36,11 @@ pub enum QuantaErrorKind {
     /// means the wrapping typed handle was double-freed or never
     /// allocated by this device.
     NotFound(&'static str),
+    /// The presentation surface no longer matches its target (the
+    /// window / layer was resized or its properties changed since the
+    /// last `configure`). Recoverable: call `Surface::configure` with
+    /// the new extent, then acquire again.
+    SurfaceOutdated(&'static str),
     /// Internal error (e.g. poisoned mutex).
     Internal(&'static str),
 }
@@ -116,6 +121,16 @@ impl QuantaError {
         }
     }
 
+    /// Construct a `SurfaceOutdated` error — the presentation surface
+    /// no longer matches its target and must be reconfigured before
+    /// the next acquire.
+    pub fn surface_outdated(msg: &'static str) -> Self {
+        Self {
+            kind: QuantaErrorKind::SurfaceOutdated(msg),
+            context: None,
+        }
+    }
+
     pub fn internal(msg: &'static str) -> Self {
         Self {
             kind: QuantaErrorKind::Internal(msg),
@@ -144,6 +159,7 @@ impl core::fmt::Display for QuantaError {
             QuantaErrorKind::InvalidParam(msg) => format!("invalid parameter: {msg}"),
             QuantaErrorKind::NotSupported(msg) => format!("not supported on this backend: {msg}"),
             QuantaErrorKind::NotFound(msg) => format!("not found: {msg}"),
+            QuantaErrorKind::SurfaceOutdated(msg) => format!("surface outdated: {msg}"),
             QuantaErrorKind::Internal(msg) => format!("internal error: {msg}"),
         };
         if let Some(ctx) = &self.context {

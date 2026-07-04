@@ -118,6 +118,37 @@ pub(crate) struct MetalSparseTexture {
     pub(crate) tile_h: u64,
 }
 
+/// State for one Metal presentation surface: a `CAMetalLayer` the
+/// device presents drawables to. The layer is either caller-provided
+/// (windowed — we retain it for the surface's lifetime) or created by
+/// the driver (headless target). Present path: `nextDrawable` →
+/// render into the drawable's texture via the ordinary render pass →
+/// `presentDrawable:` on a fresh command buffer (queue order places
+/// it after the submitted pass; no CPU stall).
+// Only read by the render-gated surface path.
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
+pub(crate) struct MetalSurface {
+    /// The `CAMetalLayer` (retained; released on surface destroy).
+    pub(crate) layer: ffi::Id,
+    /// Configured extent — checked against the layer's drawable size
+    /// at acquire to surface `SurfaceOutdated`.
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// Configured format (the layer's pixelFormat mirrors it).
+    pub(crate) format: crate::Format,
+}
+
+/// One acquired, not-yet-presented drawable of a `MetalSurface`.
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
+pub(crate) struct MetalSurfaceFrame {
+    /// The `CAMetalDrawable` (retained; released on present/discard).
+    pub(crate) drawable: ffi::Id,
+    /// Registry handle under which the drawable's texture was
+    /// inserted into `MetalDevice::textures` (removed on
+    /// present/discard).
+    pub(crate) texture_handle: u64,
+}
+
 /// Metal-backed GPU device.
 pub struct MetalDevice {
     pub(crate) device: ffi::Id,
@@ -141,6 +172,10 @@ pub struct MetalDevice {
     pub(crate) vrs_states: RwLock<HashMap<u64, MetalVrsState>>,
     /// Sparse-texture native state (handle → heap + tile size).
     pub(crate) sparse_textures: RwLock<HashMap<u64, MetalSparseTexture>>,
+    /// Presentation surfaces (handle → CAMetalLayer state).
+    pub(crate) surfaces: RwLock<HashMap<u64, MetalSurface>>,
+    /// In-flight acquired surface frames (frame handle → drawable).
+    pub(crate) surface_frames: RwLock<HashMap<u64, MetalSurfaceFrame>>,
     pub(crate) next_handle: AtomicU64,
     /// Whether the device supports MTLSparseTexture
     /// (`supportsFamily:MTLGPUFamilyApple7` = 1007). Cached at
@@ -241,6 +276,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         mesh_pipelines: RwLock::new(HashMap::new()),
         vrs_states: RwLock::new(HashMap::new()),
         sparse_textures: RwLock::new(HashMap::new()),
+        surfaces: RwLock::new(HashMap::new()),
+        surface_frames: RwLock::new(HashMap::new()),
         next_handle: AtomicU64::new(0),
         sparse_supported,
         tessellation_supported,

@@ -1700,4 +1700,42 @@ impl GpuDevice for VulkanDevice {
             .remove(&handle);
         Ok(())
     }
+
+    // ╭──────────────────────────────────────────────────────────────╮
+    // │ Presentation & interop block (native-handle export + Surface)│
+    // ╰──────────────────────────────────────────────────────────────╯
+    //
+    // Native-handle export is live (the registry already holds the
+    // VkImage + VkDeviceMemory). The Surface/swapchain family stays
+    // on the trait defaults (NotSupported) until the VkSwapchainKHR
+    // path is wired.
+
+    fn supports_native_handle_export(&self) -> bool {
+        true
+    }
+
+    fn texture_native_handle(
+        &self,
+        texture: &Texture,
+    ) -> Result<crate::NativeTextureHandle, QuantaError> {
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let tex = textures
+            .get(&texture.handle())
+            .ok_or_else(|| QuantaError::not_found("texture handle not found"))?;
+        Ok(crate::NativeTextureHandle::Vulkan {
+            image: tex.image,
+            memory: tex.memory,
+            vk_format: tex.format,
+            layout: tex
+                .current_layout
+                .load(core::sync::atomic::Ordering::Acquire),
+        })
+    }
+
+    // ╭──────────────────────────────────────────────────────────────╮
+    // │ End presentation & interop block                             │
+    // ╰──────────────────────────────────────────────────────────────╯
 }

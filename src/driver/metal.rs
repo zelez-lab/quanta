@@ -12,6 +12,8 @@ mod memory;
 #[cfg(feature = "render")]
 mod render;
 mod sparse;
+#[cfg(feature = "render")]
+mod surface;
 mod texture;
 
 // Re-export public API from submodules.

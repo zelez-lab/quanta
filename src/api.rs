@@ -26,6 +26,8 @@ pub mod render_builder;
 #[cfg(feature = "render")]
 pub mod render_pass;
 #[cfg(feature = "render")]
+pub mod surface;
+#[cfg(feature = "render")]
 pub mod tessellation;
 #[cfg(feature = "render")]
 pub mod vrs;
@@ -62,6 +64,8 @@ pub use ray_tracing::*;
 pub use render_builder::RenderBuilder;
 #[cfg(feature = "render")]
 pub use render_pass::*;
+#[cfg(feature = "render")]
+pub use surface::{PresentMode, Surface, SurfaceConfig, SurfaceFrame, SurfaceTarget};
 #[cfg(feature = "render")]
 pub use tessellation::{MAX_PATCH_SIZE, MAX_TESS_LEVEL, TessTopology, TessellationPipeline};
 #[cfg(feature = "render")]

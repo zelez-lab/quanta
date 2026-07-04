@@ -509,4 +509,59 @@ impl GpuDevice for ValidationDevice {
     fn debug_pop(&self) {
         self.inner.debug_pop();
     }
+
+    // === Presentation & interop (forwarded) ===
+
+    fn supports_native_handle_export(&self) -> bool {
+        self.inner.supports_native_handle_export()
+    }
+
+    fn texture_native_handle(
+        &self,
+        texture: &Texture,
+    ) -> Result<crate::NativeTextureHandle, QuantaError> {
+        self.inner.texture_native_handle(texture)
+    }
+
+    fn supports_surface_present(&self) -> bool {
+        self.inner.supports_surface_present()
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_create(
+        &self,
+        target: &crate::surface::SurfaceTarget,
+        config: &crate::surface::SurfaceConfig,
+    ) -> Result<u64, QuantaError> {
+        self.inner.surface_create(target, config)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_configure(
+        &self,
+        surface: u64,
+        config: &crate::surface::SurfaceConfig,
+    ) -> Result<(), QuantaError> {
+        self.inner.surface_configure(surface, config)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
+        self.inner.surface_acquire(surface)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_present(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
+        self.inner.surface_present(surface, frame)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_discard(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
+        self.inner.surface_discard(surface, frame)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_destroy(&self, surface: u64) -> Result<(), QuantaError> {
+        self.inner.surface_destroy(surface)
+    }
 }

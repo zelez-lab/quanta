@@ -1387,6 +1387,74 @@ impl GpuDevice for MetalDevice {
             .remove(&handle);
         Ok(())
     }
+
+    // ╭──────────────────────────────────────────────────────────────╮
+    // │ Presentation & interop block (native-handle export + Surface)│
+    // ╰──────────────────────────────────────────────────────────────╯
+
+    fn supports_native_handle_export(&self) -> bool {
+        true
+    }
+
+    fn texture_native_handle(
+        &self,
+        texture: &Texture,
+    ) -> Result<crate::NativeTextureHandle, QuantaError> {
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let tex = textures
+            .get(&texture.handle())
+            .ok_or_else(|| QuantaError::not_found("texture handle not found"))?;
+        Ok(crate::NativeTextureHandle::Metal { texture: *tex })
+    }
+
+    fn supports_surface_present(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_create(
+        &self,
+        target: &crate::surface::SurfaceTarget,
+        config: &crate::surface::SurfaceConfig,
+    ) -> Result<u64, QuantaError> {
+        self.surface_create_impl(target, config)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_configure(
+        &self,
+        surface: u64,
+        config: &crate::surface::SurfaceConfig,
+    ) -> Result<(), QuantaError> {
+        self.surface_configure_impl(surface, config)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
+        self.surface_acquire_impl(surface)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_present(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
+        self.surface_present_impl(surface, frame)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_discard(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
+        self.surface_discard_impl(surface, frame)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_destroy(&self, surface: u64) -> Result<(), QuantaError> {
+        self.surface_destroy_impl(surface)
+    }
+
+    // ╭──────────────────────────────────────────────────────────────╮
+    // │ End presentation & interop block                             │
+    // ╰──────────────────────────────────────────────────────────────╯
 }
 
 // ============================================================================

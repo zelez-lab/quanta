@@ -143,6 +143,35 @@ impl Gpu {
         Ok(RenderBuilder::new(self.inner.clone(), pass))
     }
 
+    // === Presentation surfaces ===
+
+    /// Create a presentation surface ([`Surface`](crate::Surface))
+    /// over `target`, configured with `config`.
+    ///
+    /// This is the "Quanta owns present" model: run the
+    /// acquire → render → present frame loop documented on
+    /// [`crate::surface`]. Backends without a present path return
+    /// `NotSupported`; query
+    /// [`supports_surface_present`](Gpu::supports_surface_present)
+    /// to branch ahead of time.
+    pub fn create_surface(
+        &self,
+        target: &crate::SurfaceTarget,
+        config: &crate::SurfaceConfig,
+    ) -> Result<crate::Surface, QuantaError> {
+        if config.width == 0 || config.height == 0 {
+            return Err(QuantaError::invalid_param(
+                "surface extent must be non-zero",
+            ));
+        }
+        let handle = self.inner.surface_create(target, config)?;
+        Ok(crate::Surface {
+            handle,
+            config: *config,
+            device: self.inner.clone(),
+        })
+    }
+
     // === M3.3: Occlusion queries ===
 
     /// Create an occlusion query set with `count` slots.

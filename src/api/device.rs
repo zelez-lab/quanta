@@ -2,12 +2,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
-    Caps, FieldUsage, Format, FormatCaps, Pulse, QuantaError, QueueFamily, QueueType,
-    ResourceState, Texture, TextureDesc, TextureViewDesc, Timeline, Wave,
+    Caps, FieldUsage, Format, FormatCaps, NativeTextureHandle, Pulse, QuantaError, QueueFamily,
+    QueueType, ResourceState, Texture, TextureDesc, TextureViewDesc, Timeline, Wave,
 };
 // Render types used only by the render-gated trait methods (step 085).
 #[cfg(feature = "render")]
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
+#[cfg(feature = "render")]
+use crate::surface::{SurfaceConfig, SurfaceTarget};
 #[cfg(feature = "render")]
 use crate::{Pipeline, RenderPass};
 
@@ -864,4 +866,109 @@ pub trait GpuDevice: Send + Sync {
 
     /// Pop a debug group label.
     fn debug_pop(&self) {}
+
+    // ╭──────────────────────────────────────────────────────────────╮
+    // │ Presentation & interop block (native-handle export + Surface)│
+    // ╰──────────────────────────────────────────────────────────────╯
+    //
+    // Two presentation models, two consumers:
+    //  1. native-handle export — an external compositor (the OS)
+    //     imports Quanta's rendered texture directly; the importer
+    //     owns present.
+    //  2. Surface/swapchain — Quanta owns present; apps run the
+    //     acquire → render → present frame loop (`crate::Surface`).
+    //
+    // Defaults return `NotSupported` so the typed wrappers surface a
+    // clear error on backends that haven't wired these paths yet.
+
+    /// Whether `texture_native_handle` returns a real backend object
+    /// on this device. `false` on the CPU software driver (no native
+    /// object exists) and on backends that haven't wired export yet.
+    fn supports_native_handle_export(&self) -> bool {
+        false
+    }
+
+    /// Export the backend-native handle behind `texture`. The handle
+    /// is a borrow valid for the `Texture`'s lifetime — see
+    /// [`Texture::native_handle`] for the full contract.
+    fn texture_native_handle(
+        &self,
+        _texture: &Texture,
+    ) -> Result<NativeTextureHandle, QuantaError> {
+        Err(QuantaError::not_supported(
+            "native texture handle export not supported on this backend",
+        ))
+    }
+
+    /// Whether this device can create presentation surfaces
+    /// (`surface_create` and the acquire/present family below).
+    fn supports_surface_present(&self) -> bool {
+        false
+    }
+
+    /// Create a presentation surface for `target`, configured with
+    /// `config`. Returns the surface handle.
+    #[cfg(feature = "render")]
+    fn surface_create(
+        &self,
+        _target: &SurfaceTarget,
+        _config: &SurfaceConfig,
+    ) -> Result<u64, QuantaError> {
+        Err(QuantaError::not_supported(
+            "surface presentation not yet implemented on this backend",
+        ))
+    }
+
+    /// Reconfigure a surface (resize, format or present-mode change).
+    /// Frames acquired before the reconfigure must be presented or
+    /// dropped first.
+    #[cfg(feature = "render")]
+    fn surface_configure(&self, _surface: u64, _config: &SurfaceConfig) -> Result<(), QuantaError> {
+        Err(QuantaError::not_supported(
+            "surface presentation not yet implemented on this backend",
+        ))
+    }
+
+    /// Acquire the next presentable frame from a surface. Returns the
+    /// frame id and a `Texture` aliasing the frame's target image
+    /// (registered in the device's texture registry until the frame
+    /// is presented or discarded). Errors: `Timeout` when no frame
+    /// became available, `SurfaceOutdated` when the surface must be
+    /// reconfigured before acquiring.
+    #[cfg(feature = "render")]
+    fn surface_acquire(&self, _surface: u64) -> Result<(u64, Texture), QuantaError> {
+        Err(QuantaError::not_supported(
+            "surface presentation not yet implemented on this backend",
+        ))
+    }
+
+    /// Present an acquired frame. Presentation is ordered after all
+    /// GPU work already submitted against the frame's texture; the
+    /// call schedules the present and returns without blocking on
+    /// the GPU.
+    #[cfg(feature = "render")]
+    fn surface_present(&self, _surface: u64, _frame: u64) -> Result<(), QuantaError> {
+        Err(QuantaError::not_supported(
+            "surface presentation not yet implemented on this backend",
+        ))
+    }
+
+    /// Discard an acquired frame without presenting (releases the
+    /// backing image back to the swapchain). Default no-ops so
+    /// backends without an implementation don't error on `Drop`.
+    #[cfg(feature = "render")]
+    fn surface_discard(&self, _surface: u64, _frame: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    /// Destroy a surface. Default no-ops so backends without an
+    /// implementation don't error on `Drop`.
+    #[cfg(feature = "render")]
+    fn surface_destroy(&self, _surface: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    // ╭──────────────────────────────────────────────────────────────╮
+    // │ End presentation & interop block                             │
+    // ╰──────────────────────────────────────────────────────────────╯
 }

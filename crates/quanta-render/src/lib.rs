@@ -49,8 +49,9 @@ pub use quanta_dsl::{
 // them through `quanta_render::*`.
 pub use quanta::{
     AttributeFormat, BlendFactor, BlendOp, ColorTarget, CompareFunc, CullMode, DepthTarget,
-    IndirectRenderBundle, MeshPipeline, MeshPipelineDesc, Pipeline, PipelineDesc, Primitive,
-    RenderBuilder, RenderPass, ShadingRate, StepMode, TessTopology, TessellationPipeline, VrsState,
+    IndirectRenderBundle, MeshPipeline, MeshPipelineDesc, Pipeline, PipelineDesc, PresentMode,
+    Primitive, RenderBuilder, RenderPass, ShadingRate, StepMode, Surface, SurfaceConfig,
+    SurfaceFrame, SurfaceTarget, TessTopology, TessellationPipeline, VrsState,
 };
 
 mod gpu_ext;
