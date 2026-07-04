@@ -16,7 +16,7 @@
 
 /// Tiled N-body with SoA layout and 4x unrolled inner loop —
 /// verbatim from examples/bench_nbody.rs.
-#[quanta::kernel(workgroup = [512, 1, 1])]
+#[quanta::kernel(workgroup = [256, 1, 1])]
 fn nbody_soa_diff(
     px: &[f32],
     py: &[f32],
@@ -28,13 +28,13 @@ fn nbody_soa_diff(
     count: u32,
 ) {
     #[quanta::shared]
-    let sx: [f32; 512];
+    let sx: [f32; 256];
     #[quanta::shared]
-    let sy: [f32; 512];
+    let sy: [f32; 256];
     #[quanta::shared]
-    let sz: [f32; 512];
+    let sz: [f32; 256];
     #[quanta::shared]
-    let sm: [f32; 512];
+    let sm: [f32; 256];
 
     let idx = quark_id();
     let lid = proton_id();
@@ -48,16 +48,16 @@ fn nbody_soa_diff(
     let mut az = 0.0f32;
     let eps = 0.01f32;
 
-    let num_tiles = (count + 511u32) / 512u32;
+    let num_tiles = (count + 255u32) / 256u32;
     for t in 0..num_tiles {
-        let src = t * 512u32 + lid;
+        let src = t * 256u32 + lid;
         sx[lid] = px[src];
         sy[lid] = py[src];
         sz[lid] = pz[src];
         sm[lid] = pm[src];
         barrier();
 
-        let iters = 512u32 / 4u32;
+        let iters = 256u32 / 4u32;
         for j in 0..iters {
             let j0 = j * 4u32;
 
@@ -192,7 +192,7 @@ fn assert_close(got: &[f32], want: &[f32], what: &str) {
 }
 
 fn run_differential(gpu: &quanta::Gpu) {
-    const N: usize = 1024; // two full 512-tiles
+    const N: usize = 1024; // four full 256-tiles
 
     let inp = make_inputs(N);
     let (rvx, rvy, rvz) = reference(&inp);

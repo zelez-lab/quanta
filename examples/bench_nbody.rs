@@ -2,7 +2,8 @@
 //!
 //! Optimized tiled kernel:
 //! - SoA data layout for coalesced global reads
-//! - Tile size 512 with shared memory
+//! - Tile size 256 with shared memory (256 is the V3D max workgroup size,
+//!   so the same kernel dispatches on Raspberry Pi as well as Metal/desktop)
 //! - Inner loop unrolled 4x for better ILP
 //! - addCompletedHandler for async GPU notification
 //!
@@ -11,10 +12,10 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-const TILE: usize = 512;
+const TILE: usize = 256;
 
 /// Tiled N-body with SoA layout and 4x unrolled inner loop.
-#[quanta::kernel(workgroup = [512, 1, 1])]
+#[quanta::kernel(workgroup = [256, 1, 1])]
 fn nbody_soa(
     px: &[f32],
     py: &[f32],
@@ -26,13 +27,13 @@ fn nbody_soa(
     count: u32,
 ) {
     #[quanta::shared]
-    let sx: [f32; 512];
+    let sx: [f32; 256];
     #[quanta::shared]
-    let sy: [f32; 512];
+    let sy: [f32; 256];
     #[quanta::shared]
-    let sz: [f32; 512];
+    let sz: [f32; 256];
     #[quanta::shared]
-    let sm: [f32; 512];
+    let sm: [f32; 256];
 
     let idx = quark_id();
     let lid = proton_id();
@@ -46,9 +47,9 @@ fn nbody_soa(
     let mut az = 0.0f32;
     let eps = 0.01f32;
 
-    let num_tiles = (count + 511u32) / 512u32;
+    let num_tiles = (count + 255u32) / 256u32;
     for t in 0..num_tiles {
-        let src = t * 512u32 + lid;
+        let src = t * 256u32 + lid;
         sx[lid] = px[src];
         sy[lid] = py[src];
         sz[lid] = pz[src];
@@ -56,7 +57,7 @@ fn nbody_soa(
         barrier();
 
         // Unrolled 4x: process 4 particles per iteration
-        let iters = 512u32 / 4u32;
+        let iters = 256u32 / 4u32;
         for j in 0..iters {
             let j0 = j * 4u32;
 
@@ -117,8 +118,8 @@ fn main() {
     let gpu = quanta::init().expect("no GPU found");
     println!("GPU: {}\n", gpu.name());
 
-    for &count in &[1024, 4096, 16384, 65536] {
-        let padded = ((count + TILE - 1) / TILE) * TILE;
+    for &count in &[1024usize, 4096, 16384, 65536] {
+        let padded = count.div_ceil(TILE) * TILE;
 
         let mut pos_x = vec![0.0f32; padded];
         let mut pos_y = vec![0.0f32; padded];
