@@ -9,10 +9,17 @@ Mirrors the Rust substrate at `crates/quanta-tensor/src/`:
 - The indexer `Layout.offset` maps a coordinate vector to a flat
   buffer offset (modelled as `Int` to match Rust's `isize` strides).
 
-This first commit establishes the substrate and the easy structural
-theorems. Harder algebraic theorems (composition associativity,
-permutation bijectivity, tile-offset bounds) land in a follow-up
-when their proof obligations are stable.
+The file covers the substrate and structural theorems, permutation
+bijectivity, tile-offset bounds, reshape + coalesce offset
+equivalence, and composition. The multi-rank `compose` is modelled
+faithfully after the production right-distributive fold
+(`composeFold` / `composeIntPairs` / `composeN` below), and
+composition associativity is proven whenever the leftmost layout
+has rank 1 — arbitrary ranks (and a divisibility-fold-shaped
+result) on the middle and right (t8094), plus the rank-0-middle
+case (t8096). The remaining open composition theorem is
+associativity with a rank ≥ 2 leftmost layout; see the section
+comment above `composeFold`.
 -/
 
 import Mathlib.Tactic.Linarith
@@ -497,15 +504,13 @@ theorem t8034_permute_is_bijection {α : Type} [Inhabited α]
   exact hmap
 
 -- ─────────────────────────────────────────────────────────────────
--- Composition of rank-1 layouts. The full multi-rank `compose`
--- requires the divisibility-checking fold from CuTe; modelling
--- that operationally in Lean and proving associativity over it
--- is multi-session work. As a foundation we ship the rank-1×
--- rank-1 closed form — the simplest case CuTe handles as a
--- special shortcut — together with the identity-composition
--- and rank-1 associativity theorems. These cover the most
--- common downstream usage and give a hook the full theorem can
--- build on later.
+-- Composition of rank-1 layouts. As a foundation we ship the
+-- rank-1×rank-1 closed form — the simplest case CuTe handles as a
+-- special shortcut — together with the identity-composition and
+-- rank-1 associativity theorems. The full multi-rank `compose`
+-- (the divisibility-checking fold from CuTe) is modelled further
+-- below (`composeFold` / `composeIntPairs` / `composeN`), with
+-- associativity proven for a rank-1 leftmost layout (t8094).
 -- ─────────────────────────────────────────────────────────────────
 
 namespace Layout
@@ -658,14 +663,13 @@ theorem t8047_compose1n_strides_assoc
   ring
 
 -- ─────────────────────────────────────────────────────────────────
--- Full-rank composition associativity. T8048 lifts T8047 from the
--- stride-list level to a layout-level equality, then T8049-T8053
--- extend the result outward to the rank-1 × rank-N × rank-1 case
--- and the symmetric forms downstream tiling needs. The full
--- rank-M × rank-N × rank-K case requires the divisibility-checking
--- fold over LHS modes — modelled in
--- `complement_general` on the Verus side but not yet lifted to
--- Lean. Deferred to its own session.
+-- Full-rank composition associativity, `compose1n` tier. T8048
+-- lifts T8047 from the stride-list level to a layout-level
+-- equality, then T8049-T8052 extend the result outward to the
+-- rank-1 × rank-N cases and the symmetric forms downstream tiling
+-- needs. (`compose1n` is the head-stride shortcut; the faithful
+-- divisibility-checking fold and its associativity theorem t8094
+-- live in the `composeN` section at the end of the file.)
 -- ─────────────────────────────────────────────────────────────────
 
 /-- T8048 — Associativity for rank-1 × rank-1 × rank-N.
@@ -1218,5 +1222,420 @@ theorem t8078_coalesce_offset_equiv (l : Layout) (k : Nat)
     _ = l.offset (unflatten l.shape.dims k) := by
         unfold Layout.offset pairsOffset
         rw [hfst, hsnd]
+
+-- ─────────────────────────────────────────────────────────────────
+-- The full multi-rank `compose`. Faithful success-path model of
+-- `Layout::compose` in `crates/quanta-tensor/src/layout/algebra.rs`:
+--
+-- - `composeFold` is `compose_lhs_with_int`'s LHS fold: walk the
+--   LHS modes left-to-right carrying the unconsumed RHS extent and
+--   stride, emitting `(min-clamped extent, rest_stride * lhs_stride)`
+--   modes as the RHS mode is spread across the LHS modes.
+-- - `composeIntPairs` is the dispatch layer (stride-0 RHS and
+--   rank-0 LHS short-circuit; the Rust rank-1 shortcut coincides
+--   with the fold's tail arm, so it needs no separate case).
+-- - `composeN` right-distributes over the RHS modes and
+--   concatenates the partial results — the exact loop in
+--   `Layout::compose`. Base offsets add.
+--
+-- Like `reshape` above, this models the SUCCESS path: the
+-- production op refuses on divisibility failure, so every theorem
+-- below also covers the composable (non-refused) inputs.
+--
+-- The load-bearing structural fact (t8081/t8082): the fold's
+-- control flow — which modes are emitted, their extents, the
+-- carried rest extent/stride — depends only on the LHS extents and
+-- the RHS (extent, stride) pair; the LHS strides enter only as the
+-- multiplicative factor of each emitted stride. Composing on the
+-- left with a rank-1 layout therefore scales every stride and
+-- changes nothing else, which reduces rank-1 × rank-N × rank-K
+-- associativity (t8094) to stride-scaling commutation through the
+-- fold. RESIDUAL (open): associativity with a rank ≥ 2 LEFTMOST
+-- layout, whose core obligation is a two-stage/one-stage fold
+-- exchange over the leftmost mode list
+-- (`composeIntPairs (composeIntPairs a nb db ...) nc dc =
+--   composeIntPairs a nc (dc * db)`-shaped, requiring ceil-division
+-- composition arithmetic). t8038/t8094 cover every rank-1-leftmost
+-- instance; the rank ≥ 2 leftmost case is deferred.
+-- ─────────────────────────────────────────────────────────────────
+
+namespace Layout
+
+/-- Ceiling division on `Nat`. Callers clamp the divisor with
+    `max · 1`, mirroring the production `div_ceil` call sites. -/
+def ceilDiv (a b : Nat) : Nat := (a + b - 1) / b
+
+/-- The LHS fold of `compose_lhs_with_int` (success path): walk the
+    LHS `(extent, stride)` modes left-to-right; `restS` / `restD`
+    carry the unconsumed RHS extent and stride, and `emitted`
+    records whether a mode has been produced (the Rust tail checks
+    `result_shape.is_empty()`). The skip arm fires when the current
+    LHS mode is fully consumed by the carried stride
+    (`next_shape == 1`) or the RHS extent is exhausted
+    (`rest_shape == 1`). -/
+def composeFold : List (Nat × Int) → Nat → Int → Bool → List (Nat × Int)
+  | [], _, _, _ => []
+  | [x], restS, restD, emitted =>
+      if emitted ∧ restS = 1 then [] else [(restS, restD * x.2)]
+  | x :: y :: rest, restS, restD, emitted =>
+      if ceilDiv x.1 (max restD.natAbs 1) = 1 ∨ restS = 1 then
+        composeFold (y :: rest) restS
+          (Int.ofNat (ceilDiv restD.natAbs (max x.1 1)) * restD.sign) emitted
+      else
+        (min (ceilDiv x.1 (max restD.natAbs 1)) restS, restD * x.2) ::
+          composeFold (y :: rest)
+            (restS / min (ceilDiv x.1 (max restD.natAbs 1)) restS)
+            (Int.ofNat (ceilDiv restD.natAbs (max x.1 1)) * restD.sign) true
+
+/-- Compose an LHS pair list with ONE RHS mode `(s, d)` — the
+    dispatch layer of `compose_lhs_with_int`. Stride-0 RHS reads a
+    single element repeatedly; rank-0 LHS passes the RHS mode
+    through; everything else runs the fold. -/
+def composeIntPairs (ps : List (Nat × Int)) (s : Nat) (d : Int) : List (Nat × Int) :=
+  if d = 0 then [(s, 0)]
+  else
+    match ps with
+    | [] => [(s, d)]
+    | x :: rest => composeFold (x :: rest) s d false
+
+/-- Scale every stride in a pair list by `k`. This is what
+    left-composition with a rank-1 layout of stride `k` does. -/
+def scalePairs (ps : List (Nat × Int)) (k : Int) : List (Nat × Int) :=
+  ps.map (fun q => (q.1, q.2 * k))
+
+/-- The `(extent, stride)` pair list of a layout. -/
+def pairsOf (l : Layout) : List (Nat × Int) :=
+  l.shape.dims.zip l.strides
+
+/-- Spec-level model of the full multi-rank `Layout::compose`
+    (success path): right-distribute over the RHS modes — each RHS
+    mode composes against the whole LHS via `composeIntPairs` —
+    and concatenate. Rank-0 RHS returns the LHS unchanged, exactly
+    as the production op does. -/
+def composeN (a b : Layout) : Layout :=
+  if b.shape.dims.isEmpty then a
+  else
+    { shape := { dims := ((pairsOf b).flatMap
+        (fun q => composeIntPairs (pairsOf a) q.1 q.2)).map Prod.fst }
+      strides := ((pairsOf b).flatMap
+        (fun q => composeIntPairs (pairsOf a) q.1 q.2)).map Prod.snd
+      baseOffset := a.baseOffset + b.baseOffset }
+
+end Layout
+
+/-- T8079 — with `emitted = false` the fold never returns the empty
+    list: either some step emits (a cons), or the tail arm fires
+    with nothing emitted yet and produces its mode. -/
+theorem t8079_composeFold_unemitted_ne_nil
+    (x : Nat × Int) (ps : List (Nat × Int)) (s : Nat) (d : Int) :
+    composeFold (x :: ps) s d false ≠ [] := by
+  induction ps generalizing x s d with
+  | nil => simp [composeFold]
+  | cons y rest ih =>
+    simp only [composeFold]
+    split
+    · exact ih y s _
+    · simp
+
+/-- T8080 — `composeIntPairs` never returns the empty list: every
+    dispatch arm produces at least one mode. (The production op
+    keeps at least one output mode per RHS mode; this is what makes
+    the composed layout non-degenerate below.) -/
+theorem t8080_composeIntPairs_ne_nil (ps : List (Nat × Int)) (s : Nat) (d : Int) :
+    composeIntPairs ps s d ≠ [] := by
+  by_cases hd : d = 0
+  · simp [composeIntPairs, hd]
+  · cases ps with
+    | nil => simp [composeIntPairs, hd]
+    | cons x rest =>
+      simpa [composeIntPairs, hd] using
+        t8079_composeFold_unemitted_ne_nil x rest s d
+
+/-- T8081 — the load-bearing structural lemma: the fold's control
+    flow (which modes are emitted, their extents, the carried rest
+    extent/stride) depends only on the LHS EXTENTS and the RHS
+    (extent, stride) pair; the LHS strides enter only as the
+    multiplicative factor of each emitted stride. Scaling every LHS
+    stride by `k` therefore scales every output stride by `k` and
+    changes nothing else. -/
+theorem t8081_composeFold_scale
+    (x : Nat × Int) (ps : List (Nat × Int)) (k : Int)
+    (s : Nat) (d : Int) (em : Bool) :
+    composeFold (scalePairs (x :: ps) k) s d em
+      = scalePairs (composeFold (x :: ps) s d em) k := by
+  induction ps generalizing x s d em with
+  | nil =>
+    obtain ⟨x1, x2⟩ := x
+    by_cases h : em = true ∧ s = 1
+    · simp [composeFold, scalePairs, h]
+    · simp [composeFold, scalePairs, h, mul_assoc]
+  | cons y rest ih =>
+    obtain ⟨x1, x2⟩ := x
+    obtain ⟨y1, y2⟩ := y
+    have ihy := ih (y1, y2)
+    simp only [scalePairs, List.map_cons] at ihy ⊢
+    by_cases hcond : ceilDiv x1 (max d.natAbs 1) = 1 ∨ s = 1
+    · simp [composeFold, hcond, ihy]
+    · simp [composeFold, hcond, ihy, mul_assoc]
+
+/-- T8082 — scale commutation lifted through the dispatch layer:
+    composing a stride-scaled LHS with one RHS mode is the scaled
+    composition. (Stride-0 RHS scales trivially: `0 * k = 0`.) -/
+theorem t8082_composeIntPairs_scale
+    (x : Nat × Int) (ps : List (Nat × Int)) (k : Int) (s : Nat) (d : Int) :
+    composeIntPairs (scalePairs (x :: ps) k) s d
+      = scalePairs (composeIntPairs (x :: ps) s d) k := by
+  obtain ⟨x1, x2⟩ := x
+  by_cases hd : d = 0
+  · simp [composeIntPairs, scalePairs, hd]
+  · simpa [composeIntPairs, scalePairs, hd] using
+      t8081_composeFold_scale (x1, x2) ps k s d false
+
+/-- T8083 — rank-1 LHS closed form: one LHS mode `(n, s0)` composed
+    with one RHS mode `(s, d)` is `[(s, d * s0)]` — exactly the
+    `compose11` stride product. (The stride-0 arm agrees because
+    `0 * s0 = 0`.) -/
+theorem t8083_composeIntPairs_rank1 (n : Nat) (s0 : Int) (s : Nat) (d : Int) :
+    composeIntPairs [(n, s0)] s d = [(s, d * s0)] := by
+  by_cases hd : d = 0
+  · simp [composeIntPairs, hd]
+  · simp [composeIntPairs, composeFold, hd]
+
+/-- T8084 — rank-0 RHS: the composition is the LHS unchanged,
+    matching the production early return. -/
+theorem t8084_composeN_rank0_rhs (a b : Layout) (h : b.shape.dims = []) :
+    composeN a b = a := by
+  simp [composeN, h]
+
+/-- T8085 — the non-rank-0 unfolding of `composeN` as an explicit
+    record: the right-distributive flatMap over the RHS modes. -/
+theorem t8085_composeN_unfold (a b : Layout) (h : b.shape.dims ≠ []) :
+    composeN a b
+      = { shape := { dims := ((pairsOf b).flatMap
+            (fun q => composeIntPairs (pairsOf a) q.1 q.2)).map Prod.fst }
+          strides := ((pairsOf b).flatMap
+            (fun q => composeIntPairs (pairsOf a) q.1 q.2)).map Prod.snd
+          baseOffset := a.baseOffset + b.baseOffset } := by
+  have hne : b.shape.dims.isEmpty = false := by
+    cases hd : b.shape.dims with
+    | nil => exact absurd hd h
+    | cons _ _ => rfl
+  simp [composeN, hne]
+
+/-- T8086 — `composeN` output is structurally well-formed: dims and
+    strides project the same pair list, so their lengths agree. -/
+theorem t8086_composeN_wellformed (a b : Layout) (h : b.shape.dims ≠ []) :
+    (composeN a b).strides.length = (composeN a b).shape.dims.length := by
+  rw [t8085_composeN_unfold a b h]
+  simp
+
+/-- T8087 — scaling strides leaves the extents untouched. -/
+theorem t8087_scalePairs_map_fst (ps : List (Nat × Int)) (k : Int) :
+    (scalePairs ps k).map Prod.fst = ps.map Prod.fst := by
+  simp [scalePairs]
+
+/-- T8088 — the strides of a scaled pair list are the mapped
+    original strides. -/
+theorem t8088_scalePairs_map_snd (ps : List (Nat × Int)) (k : Int) :
+    (scalePairs ps k).map Prod.snd = (ps.map Prod.snd).map (· * k) := by
+  simp [scalePairs]
+
+/-- T8089 — scaling distributes over the per-RHS-mode
+    concatenation. -/
+theorem t8089_scalePairs_flatMap (qs : List (Nat × Int))
+    (g : Nat × Int → List (Nat × Int)) (k : Int) :
+    scalePairs (qs.flatMap g) k = qs.flatMap (fun q => scalePairs (g q) k) := by
+  induction qs with
+  | nil => rfl
+  | cons q rest ih =>
+    simp only [scalePairs] at ih ⊢
+    simp [List.map_append, ih]
+
+/-- T8090 — a flatMap of per-mode singletons `(q.1, q.2 * k)` is
+    exactly `scalePairs`. Bridges the rank-1-LHS composition
+    (T8083 mode-wise) to the scaled-layout view. -/
+theorem t8090_flatMap_mode_scale (qs : List (Nat × Int)) (k : Int) :
+    qs.flatMap (fun q => [((q.1 : Nat), q.2 * k)]) = scalePairs qs k := by
+  induction qs with
+  | nil => rfl
+  | cons q rest ih => simp [scalePairs, ih]
+
+/-- T8091 — closed form for a rank-1 LHS: composing `(na, sa)` on
+    the left of any well-formed layout keeps the shape and scales
+    every stride by `sa`; base offsets add. This is the faithful
+    (`composeN`) counterpart of `compose1n`. -/
+theorem t8091_composeN_rank1_lhs (a b : Layout) (na : Nat) (sa : Int)
+    (had : a.shape.dims = [na]) (has : a.strides = [sa])
+    (hb : b.strides.length = b.shape.dims.length)
+    (hbr : b.shape.dims ≠ []) :
+    composeN a b
+      = { shape := b.shape
+          strides := b.strides.map (· * sa)
+          baseOffset := a.baseOffset + b.baseOffset } := by
+  have hpa : pairsOf a = [(na, sa)] := by simp [pairsOf, had, has]
+  have h1 : (pairsOf b).map Prod.fst = b.shape.dims :=
+    t8071_zip_map_fst b.shape.dims b.strides (le_of_eq hb.symm)
+  have h2 : (pairsOf b).map Prod.snd = b.strides :=
+    t8072_zip_map_snd b.shape.dims b.strides (le_of_eq hb)
+  rw [t8085_composeN_unfold a b hbr, hpa]
+  simp only [t8083_composeIntPairs_rank1, t8090_flatMap_mode_scale,
+    t8087_scalePairs_map_fst, t8088_scalePairs_map_snd, h1, h2]
+
+/-- T8092 — `composeN` agrees with the rank-1×rank-1 shortcut
+    `compose11` on rank-1 inputs. -/
+theorem t8092_composeN_matches_compose11 (na nb : Nat) (sa db : Int) :
+    composeN (rank1 na sa) (rank1 nb db)
+      = compose11 (rank1 na sa) (rank1 nb db) := by
+  rw [t8091_composeN_rank1_lhs (rank1 na sa) (rank1 nb db) na sa rfl rfl rfl
+    (by simp [rank1])]
+  simp [rank1, compose11]
+
+/-- T8093 — `composeN` agrees with the rank-1-LHS shortcut
+    `compose1n` whenever the RHS has base offset 0 (`compose1n`
+    zeroes the base; the faithful op adds them). -/
+theorem t8093_composeN_matches_compose1n (na : Nat) (sa : Int) (b : Layout)
+    (hb : b.strides.length = b.shape.dims.length)
+    (hbr : b.shape.dims ≠ []) (hb0 : b.baseOffset = 0) :
+    composeN (rank1 na sa) b = compose1n (rank1 na sa) b := by
+  rw [t8091_composeN_rank1_lhs (rank1 na sa) b na sa rfl rfl hb hbr]
+  simp [compose1n, rank1, hb0]
+
+/-- T8094 — **multi-rank composition associativity, rank-1 leftmost.**
+    For a rank-1 layout `a` (any base offset) and well-formed
+    layouts `b`, `c` of ARBITRARY rank,
+
+      `composeN (composeN a b) c = composeN a (composeN b c)`.
+
+    This is the faithful-fold statement: the outer-left composition
+    genuinely runs the multi-mode divisibility fold over the
+    multi-mode result of `composeN a b`. The proof reduces it to
+    T8081/T8082 (stride scaling commutes through the fold) plus
+    T8089 (scaling distributes over the RHS-mode concatenation) —
+    no structure of the fold's arithmetic is needed beyond "LHS
+    strides are a multiplicative factor".
+
+    `b` must have rank ≥ 1: the production rank-0-RHS early return
+    (`self.clone()`) drops the RHS base offset, so a rank-0 middle
+    with non-zero base genuinely breaks base-offset associativity
+    (T8096 proves the base-0 rank-0-middle case). `c` may be
+    rank 0. The rank ≥ 2 LEFTMOST case remains open — see the
+    section comment above `composeFold`. -/
+theorem t8094_composeN_assoc_rank1_lhs
+    (a b c : Layout) (na : Nat) (sa : Int)
+    (had : a.shape.dims = [na]) (has : a.strides = [sa])
+    (hb : b.strides.length = b.shape.dims.length)
+    (hbr : b.shape.dims ≠ [])
+    (hc : c.strides.length = c.shape.dims.length) :
+    composeN (composeN a b) c = composeN a (composeN b c) := by
+  cases hcd : c.shape.dims with
+  | nil =>
+    rw [t8084_composeN_rank0_rhs (composeN a b) c hcd,
+        t8084_composeN_rank0_rhs b c hcd]
+  | cons c0 crest =>
+    have hcr : c.shape.dims ≠ [] := by
+      rw [hcd]; exact List.cons_ne_nil _ _
+    obtain ⟨d0, ds, hbd⟩ : ∃ d0 ds, b.shape.dims = d0 :: ds := by
+      cases hd : b.shape.dims with
+      | nil => exact absurd hd hbr
+      | cons d0 ds => exact ⟨d0, ds, rfl⟩
+    obtain ⟨s0, ss, hbs⟩ : ∃ s0 ss, b.strides = s0 :: ss := by
+      cases hs : b.strides with
+      | nil => rw [hs, hbd] at hb; simp at hb
+      | cons s0 ss => exact ⟨s0, ss, rfl⟩
+    have hzip : pairsOf b = (d0, s0) :: ds.zip ss := by
+      simp [pairsOf, hbd, hbs]
+    obtain ⟨t0, ts, hcs⟩ : ∃ t0 ts, c.strides = t0 :: ts := by
+      cases hs : c.strides with
+      | nil => rw [hs, hcd] at hc; simp at hc
+      | cons t0 ts => exact ⟨t0, ts, rfl⟩
+    have hcp : pairsOf c = (c0, t0) :: crest.zip ts := by
+      simp [pairsOf, hcd, hcs]
+    -- the middle composition's mode list is non-empty
+    have hPne : (pairsOf c).flatMap
+        (fun q => composeIntPairs ((d0, s0) :: ds.zip ss) q.1 q.2) ≠ [] := by
+      rw [hcp, List.flatMap_cons]
+      intro hnil
+      exact t8080_composeIntPairs_ne_nil ((d0, s0) :: ds.zip ss) c0 t0
+        ((List.append_eq_nil.mp hnil).1)
+    -- LEFT: inner compose = b with strides scaled by sa; unfold outer
+    rw [t8091_composeN_rank1_lhs a b na sa had has hb hbr]
+    rw [t8085_composeN_unfold _ c hcr]
+    rw [t8085_composeN_unfold b c hcr]
+    have hpr : pairsOf { shape := b.shape
+                         strides := b.strides.map (· * sa)
+                         baseOffset := a.baseOffset + b.baseOffset }
+        = scalePairs (pairsOf b) sa := by
+      show b.shape.dims.zip (b.strides.map (· * sa)) = _
+      rw [List.zip_map_right]
+      rfl
+    rw [hpr, hzip]
+    -- push the scaling out of the per-RHS-mode fold
+    have hcomm : (pairsOf c).flatMap (fun q =>
+          composeIntPairs (scalePairs ((d0, s0) :: ds.zip ss) sa) q.1 q.2)
+        = scalePairs ((pairsOf c).flatMap (fun q =>
+            composeIntPairs ((d0, s0) :: ds.zip ss) q.1 q.2)) sa := by
+      rw [t8089_scalePairs_flatMap]
+      simp only [t8082_composeIntPairs_scale]
+    rw [hcomm]
+    -- RIGHT: apply the rank-1 closed form to the composed middle
+    set M : Layout :=
+      { shape := { dims := ((pairsOf c).flatMap
+          (fun q => composeIntPairs ((d0, s0) :: ds.zip ss) q.1 q.2)).map Prod.fst }
+        strides := ((pairsOf c).flatMap
+          (fun q => composeIntPairs ((d0, s0) :: ds.zip ss) q.1 q.2)).map Prod.snd
+        baseOffset := b.baseOffset + c.baseOffset } with hM
+    have hMwf : M.strides.length = M.shape.dims.length := by
+      simp [hM]
+    have hMne : M.shape.dims ≠ [] := by
+      simp only [hM]
+      intro h
+      exact hPne (List.map_eq_nil_iff.mp h)
+    rw [t8091_composeN_rank1_lhs a M na sa had has hMwf hMne]
+    simp [hM, t8087_scalePairs_map_fst, t8088_scalePairs_map_snd, add_assoc]
+
+/-- T8095 — rank-0 LHS: each RHS mode passes through unchanged. -/
+theorem t8095_composeIntPairs_rank0 (s : Nat) (d : Int) :
+    composeIntPairs [] s d = [(s, d)] := by
+  by_cases hd : d = 0
+  · simp [composeIntPairs, hd]
+  · simp [composeIntPairs, hd]
+
+/-- T8096 — associativity with a rank-0 MIDDLE layout of base
+    offset 0 (the base-0 restriction is essential: the production
+    rank-0-RHS early return drops the RHS base, so a non-zero
+    rank-0 middle base breaks the equation — see T8094's docstring).
+    Together with T8094 this covers every rank-1-or-less leftmost /
+    middle combination. -/
+theorem t8096_composeN_assoc_rank0_mid
+    (a b c : Layout)
+    (hbd : b.shape.dims = []) (hbs : b.strides = []) (hb0 : b.baseOffset = 0)
+    (hc : c.strides.length = c.shape.dims.length) :
+    composeN (composeN a b) c = composeN a (composeN b c) := by
+  rw [t8084_composeN_rank0_rhs a b hbd]
+  cases hcd : c.shape.dims with
+  | nil => rw [t8084_composeN_rank0_rhs a c hcd, t8084_composeN_rank0_rhs b c hcd,
+               t8084_composeN_rank0_rhs a b hbd]
+  | cons c0 crest =>
+    have hcr : c.shape.dims ≠ [] := by
+      rw [hcd]; exact List.cons_ne_nil _ _
+    -- composeN b c = c (rank-0 pass-through, base 0 + c.base)
+    have hbc : composeN b c = c := by
+      rw [t8085_composeN_unfold b c hcr]
+      have hpb : pairsOf b = [] := by simp [pairsOf, hbd, hbs]
+      have hid : (pairsOf c).flatMap
+          (fun q => composeIntPairs (pairsOf b) q.1 q.2) = pairsOf c := by
+        rw [hpb]
+        simp only [t8095_composeIntPairs_rank0]
+        induction pairsOf c with
+        | nil => rfl
+        | cons q rest ih => simp [ih]
+      rw [hid]
+      have h1 : (pairsOf c).map Prod.fst = c.shape.dims :=
+        t8071_zip_map_fst c.shape.dims c.strides (le_of_eq hc.symm)
+      have h2 : (pairsOf c).map Prod.snd = c.strides :=
+        t8072_zip_map_snd c.shape.dims c.strides (le_of_eq hc)
+      rw [h1, h2, hb0]
+      simp
+    rw [hbc]
 
 end Quanta.Tensor
