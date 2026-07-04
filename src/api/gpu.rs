@@ -48,6 +48,14 @@ impl Gpu {
         &self.inner
     }
 
+    /// Test-support: snapshot of the driver's resource-registry sizes.
+    /// Lifecycle tests compare snapshots around create+drop cycles to
+    /// prove destroy paths free their registry entries.
+    #[doc(hidden)]
+    pub fn debug_registry_counts(&self) -> crate::RegistryCounts {
+        self.inner.debug_registry_counts()
+    }
+
     // === Device info ===
 
     pub fn caps(&self) -> &Caps {
@@ -288,7 +296,9 @@ impl Gpu {
         &self,
         desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
-        self.inner.sampler_create(desc)
+        let mut sampler = self.inner.sampler_create(desc)?;
+        sampler.device = Some(self.inner.clone());
+        Ok(sampler)
     }
 
     /// Resolve an MSAA texture to a single-sample texture.
@@ -439,12 +449,18 @@ impl Gpu {
         let handle = self.inner.texture_view_create(texture.handle(), desc)?;
         Ok(TextureView {
             handle,
-            drop_fn: None,
+            device: self.inner.clone(),
+            live: true,
         })
     }
 
     /// Destroy a texture view.
-    pub fn texture_view_destroy(&self, view: TextureView) -> Result<(), QuantaError> {
+    ///
+    /// Equivalent to dropping the view; kept for explicit error
+    /// propagation. Disarms the view's Drop so the handle is
+    /// destroyed exactly once.
+    pub fn texture_view_destroy(&self, mut view: TextureView) -> Result<(), QuantaError> {
+        view.live = false;
         self.inner.texture_view_destroy(view.handle())
     }
 

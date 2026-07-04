@@ -769,7 +769,20 @@ impl QGpuDevice for WebgpuDevice {
             height: desc.height,
             format: desc.format,
             device: None,
+            live: true,
         })
+    }
+
+    fn texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        if let Some(entry) = self.state.textures.0.borrow_mut().remove(&handle) {
+            unsafe {
+                // Drop the default view's JS handle, then destroy the
+                // texture and release its JS handle.
+                ffi::quanta_release(entry.view);
+                ffi::quanta_destroy_texture(entry.texture);
+            }
+        }
+        Ok(())
     }
 
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
@@ -827,8 +840,35 @@ impl QGpuDevice for WebgpuDevice {
         self.state.samplers.0.borrow_mut().insert(handle, sampler);
         Ok(crate::Sampler {
             handle,
-            drop_fn: None,
+            device: None,
+            live: true,
         })
+    }
+
+    fn sampler_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        if let Some(sampler) = self.state.samplers.0.borrow_mut().remove(&handle) {
+            // GPUSampler has no destroy(); releasing the JS handle
+            // lets the GC collect it.
+            unsafe { ffi::quanta_release(sampler) };
+        }
+        Ok(())
+    }
+
+    fn occlusion_query_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        if let Some((query_set, _count)) = self.state.query_sets.0.borrow_mut().remove(&handle) {
+            unsafe { ffi::quanta_release(query_set) };
+        }
+        Ok(())
+    }
+
+    fn debug_registry_counts(&self) -> crate::RegistryCounts {
+        crate::RegistryCounts {
+            buffers: self.state.buffers.0.borrow().len(),
+            textures: self.state.textures.0.borrow().len(),
+            samplers: self.state.samplers.0.borrow().len(),
+            render_pipelines: self.state.pipelines.0.borrow().len(),
+            query_sets: self.state.query_sets.0.borrow().len(),
+        }
     }
 
     fn generate_mipmaps(&self, _texture: &Texture) -> Result<(), QuantaError> {
@@ -982,8 +1022,22 @@ impl QGpuDevice for WebgpuDevice {
 
         Ok(Pipeline {
             handle,
-            drop_fn: None,
+            device: None,
+            live: true,
         })
+    }
+
+    #[cfg(feature = "render")]
+    fn pipeline_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        if let Some(entry) = self.state.pipelines.0.borrow_mut().remove(&handle) {
+            // GPURenderPipeline / GPUBindGroupLayout have no destroy();
+            // releasing the JS handles lets the GC collect them.
+            unsafe {
+                ffi::quanta_release(entry.layout);
+                ffi::quanta_release(entry.pipeline);
+            }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "render")]
@@ -1629,7 +1683,6 @@ impl QGpuDevice for WebgpuDevice {
                         push_len: 0,
                         push_mask: 0,
                         workgroup_size: *workgroup_size,
-                        drop_fn: None,
                     };
                     self.wave_dispatch(&wave, *groups)?;
                 }
@@ -1806,7 +1859,6 @@ fn make_wave(handle: u64, workgroup_size: [u32; 3]) -> Wave {
         push_len: 0,
         push_mask: 0,
         workgroup_size,
-        drop_fn: None,
     }
 }
 

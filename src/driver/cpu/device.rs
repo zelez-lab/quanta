@@ -381,7 +381,21 @@ impl GpuDevice for CpuDevice {
             height: desc.height,
             format: desc.format,
             device: None,
+            live: true,
         })
+    }
+
+    fn texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        // CPU textures are plain byte buffers in the buffer registry.
+        self.buffers.lock().unwrap().remove(&handle);
+        Ok(())
+    }
+
+    fn debug_registry_counts(&self) -> crate::RegistryCounts {
+        crate::RegistryCounts {
+            buffers: self.buffers.lock().unwrap().len(),
+            ..Default::default()
+        }
     }
 
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
@@ -398,9 +412,12 @@ impl GpuDevice for CpuDevice {
         &self,
         _desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
+        // No CPU-side sampler state — the handle is a pure token, so
+        // there is nothing to destroy (sampler_destroy default no-op).
         Ok(crate::Sampler {
             handle: self.alloc_handle(),
-            drop_fn: None,
+            device: None,
+            live: true,
         })
     }
 
@@ -444,7 +461,6 @@ impl GpuDevice for CpuDevice {
             push_len: 0,
             push_mask: 0,
             workgroup_size,
-            drop_fn: None,
         })
     }
 
@@ -751,9 +767,12 @@ impl GpuDevice for CpuDevice {
                 "CPU pipelines: conservative rasterization is not supported (CPU has no rasterizer)",
             ));
         }
+        // No CPU-side pipeline state — the handle is a pure token, so
+        // there is nothing to destroy (pipeline_destroy default no-op).
         Ok(Pipeline {
             handle: self.alloc_handle(),
-            drop_fn: None,
+            device: None,
+            live: true,
         })
     }
 
@@ -1228,8 +1247,8 @@ impl GpuDevice for CpuDevice {
                     groups,
                 } => {
                     // Reconstruct a transient Wave from the snapshot.
-                    // Drop is a no-op (drop_fn = None), so this does
-                    // not double-free any underlying kernel handle.
+                    // Wave has no Drop, so this does not double-free
+                    // any underlying kernel handle.
                     let wave = Wave {
                         handle: *wave_handle,
                         bindings: *bindings,
@@ -1240,7 +1259,6 @@ impl GpuDevice for CpuDevice {
                         push_len: *push_len,
                         push_mask: *push_mask,
                         workgroup_size: *workgroup_size,
-                        drop_fn: None,
                     };
                     let mut pulse = self.wave_dispatch(&wave, *groups)?;
                     pulse.wait()?;

@@ -156,6 +156,33 @@ impl GpuDevice for ValidationDevice {
         self.inner.generate_mipmaps(texture)
     }
 
+    // === Render-resource lifecycle (destroy forwards) ===
+    //
+    // Must forward explicitly: the trait defaults are no-ops, so
+    // relying on them here would leak the inner driver's entries.
+
+    fn texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.live_textures.lock().unwrap().remove(&handle);
+        self.inner.texture_destroy(handle)
+    }
+
+    fn sampler_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.sampler_destroy(handle)
+    }
+
+    #[cfg(feature = "render")]
+    fn pipeline_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.pipeline_destroy(handle)
+    }
+
+    fn occlusion_query_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.occlusion_query_destroy(handle)
+    }
+
+    fn debug_registry_counts(&self) -> crate::RegistryCounts {
+        self.inner.debug_registry_counts()
+    }
+
     // === Compute ===
 
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {

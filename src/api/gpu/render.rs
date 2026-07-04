@@ -12,7 +12,9 @@ impl Gpu {
 
     /// Create a render pipeline from a descriptor.
     pub fn pipeline(&self, desc: &PipelineDesc) -> Result<Pipeline, QuantaError> {
-        self.inner.pipeline_create(desc)
+        let mut pipeline = self.inner.pipeline_create(desc)?;
+        pipeline.device = Some(self.inner.clone());
+        Ok(pipeline)
     }
 
     /// Allocate a render-path Indirect Command Buffer
@@ -177,7 +179,12 @@ impl Gpu {
     /// Create an occlusion query set with `count` slots.
     pub fn occlusion_query_create(&self, count: u32) -> Result<OcclusionQuery, QuantaError> {
         let handle = self.inner.occlusion_query_create(count)?;
-        Ok(OcclusionQuery { handle, count })
+        Ok(OcclusionQuery {
+            handle,
+            count,
+            device: self.inner.clone(),
+            live: true,
+        })
     }
 
     /// Read results from an occlusion query set (fragment counts per slot).

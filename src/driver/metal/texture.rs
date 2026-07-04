@@ -106,6 +106,7 @@ impl MetalDevice {
                 height: desc.height,
                 format: desc.format,
                 device: None,
+                live: true,
             })
         }
     }
@@ -188,7 +189,8 @@ impl MetalDevice {
                 .insert(handle, sampler);
             Ok(crate::Sampler {
                 handle,
-                drop_fn: None,
+                device: None,
+                live: true,
             })
         }
     }

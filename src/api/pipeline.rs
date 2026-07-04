@@ -1,14 +1,19 @@
-use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::Format;
+use crate::{Format, GpuDevice};
 
 /// Compiled render pipeline (vertex + fragment shaders + state).
+///
+/// Dropping a pipeline calls `GpuDevice::pipeline_destroy` exactly once.
 pub struct Pipeline {
     pub(crate) handle: u64,
-    pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
+    /// Drivers construct pipelines with `device: None`; the `Gpu`
+    /// wrapper attaches the device Arc so Drop can release the handle.
+    pub(crate) device: Option<Arc<dyn GpuDevice>>,
+    pub(crate) live: bool,
 }
 
 impl Pipeline {
@@ -19,8 +24,11 @@ impl Pipeline {
 
 impl Drop for Pipeline {
     fn drop(&mut self) {
-        if let Some(f) = self.drop_fn.take() {
-            f(self.handle);
+        if self.live {
+            self.live = false;
+            if let Some(ref dev) = self.device {
+                let _ = dev.pipeline_destroy(self.handle);
+            }
         }
     }
 }

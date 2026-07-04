@@ -1,5 +1,3 @@
-use alloc::boxed::Box;
-
 use crate::{Field, Texture};
 
 /// Maximum buffer binding slots per wave.
@@ -29,7 +27,6 @@ pub struct Wave {
     /// Workgroup (threadgroup) size [x, y, z]. Default: [64, 1, 1].
     /// Set by the proc macro from `#[quanta::kernel(workgroup = [...])]`.
     pub workgroup_size: [u32; 3],
-    pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
 }
 
 impl Wave {
@@ -100,13 +97,5 @@ impl Wave {
 
     pub fn handle(&self) -> u64 {
         self.handle
-    }
-}
-
-impl Drop for Wave {
-    fn drop(&mut self) {
-        if let Some(f) = self.drop_fn.take() {
-            f(self.handle);
-        }
     }
 }

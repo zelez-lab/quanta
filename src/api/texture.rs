@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -9,12 +8,21 @@ use crate::{CompareOp, Format, GpuDevice, QuantaError};
 ///
 /// Resources own their operations — write, read, and mipmap generation
 /// are methods on Texture itself, not on Gpu.
+///
+/// Dropping a `Texture` releases the underlying driver resource
+/// (`GpuDevice::texture_destroy`), guarded by the `live` flag so the
+/// handle is destroyed exactly once.
 pub struct Texture {
     pub(crate) handle: u64,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) format: Format,
+    /// Drivers construct textures with `device: None`; the `Gpu`
+    /// wrapper attaches the device Arc so Drop can release the handle.
     pub(crate) device: Option<Arc<dyn GpuDevice>>,
+    /// True while this wrapper owns the driver-side resource. Cleared
+    /// on destroy so Drop is idempotent-safe (no double-free).
+    pub(crate) live: bool,
 }
 
 impl Texture {
@@ -137,9 +145,15 @@ pub enum NativeTextureHandle {
 
 impl Drop for Texture {
     fn drop(&mut self) {
-        // Texture cleanup is handled by the driver when the device is dropped.
-        // The device ref is held to keep the driver alive while textures exist
-        // and to enable operations (write, read, mipmaps).
+        // Real release: remove the registry entry and free the native
+        // object. The `live` flag guarantees at-most-once destruction;
+        // driver-internal wrappers (device: None) drop silently.
+        if self.live {
+            self.live = false;
+            if let Some(ref dev) = self.device {
+                let _ = dev.texture_destroy(self.handle);
+            }
+        }
     }
 }
 
@@ -231,9 +245,12 @@ pub struct TextureViewDesc {
 ///
 /// Texture views allow shaders to access a portion of a texture array or mip chain
 /// without creating a separate allocation.
+///
+/// Dropping a view calls `GpuDevice::texture_view_destroy` exactly once.
 pub struct TextureView {
     pub(crate) handle: u64,
-    pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
+    pub(crate) device: Arc<dyn GpuDevice>,
+    pub(crate) live: bool,
 }
 
 impl TextureView {
@@ -244,16 +261,22 @@ impl TextureView {
 
 impl Drop for TextureView {
     fn drop(&mut self) {
-        if let Some(f) = self.drop_fn.take() {
-            f(self.handle);
+        if self.live {
+            self.live = false;
+            let _ = self.device.texture_view_destroy(self.handle);
         }
     }
 }
 
 /// A reusable texture sampler.
+///
+/// Dropping a sampler calls `GpuDevice::sampler_destroy` exactly once.
 pub struct Sampler {
     pub(crate) handle: u64,
-    pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>,
+    /// Drivers construct samplers with `device: None`; the `Gpu`
+    /// wrapper attaches the device Arc so Drop can release the handle.
+    pub(crate) device: Option<Arc<dyn GpuDevice>>,
+    pub(crate) live: bool,
 }
 
 impl Sampler {
@@ -264,8 +287,11 @@ impl Sampler {
 
 impl Drop for Sampler {
     fn drop(&mut self) {
-        if let Some(f) = self.drop_fn.take() {
-            f(self.handle);
+        if self.live {
+            self.live = false;
+            if let Some(ref dev) = self.device {
+                let _ = dev.sampler_destroy(self.handle);
+            }
         }
     }
 }

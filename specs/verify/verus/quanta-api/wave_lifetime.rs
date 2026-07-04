@@ -32,9 +32,9 @@ pub open spec fn unbound() -> u64 { 0 }
 
 // ── Ghost state ─────────────────────────────────────────────────────────────
 
-/// Mirror of `Wave`. We model only the binding-relevant fields; the
-/// drop_fn closure is consumed by Drop just like Pulse — see T722
-/// in pulse_lifetime.rs for the parallel argument.
+/// Mirror of `Wave`. We model only the binding-relevant fields; Wave
+/// itself has no Drop (the compute pipeline is owned by the driver
+/// registry, freed when the device drops).
 pub struct Wave {
     pub handle: u64,
     pub bindings: Seq<u64>,    // length = max_bindings()

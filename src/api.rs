@@ -35,7 +35,7 @@ pub mod vrs;
 pub use async_copy::AsyncCopyQueue;
 pub use batch::Batch;
 pub use bindless::{BindlessBufferArray, BindlessTextureArray};
-pub use device::GpuDevice;
+pub use device::{GpuDevice, RegistryCounts};
 pub use error::{QuantaError, QuantaErrorKind};
 pub use field::{Field, MappedField};
 pub use gpu::Gpu;

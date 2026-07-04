@@ -71,5 +71,6 @@ fn reload_wave_changes_behavior() {
         );
     }
 
-    drop(add_two_wave);
+    // add_two_wave is released when it goes out of scope here.
+    let _ = &add_two_wave;
 }

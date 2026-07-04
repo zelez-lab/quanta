@@ -362,7 +362,8 @@ impl MetalDevice {
                 .insert(handle, ds_state);
             Ok(Pipeline {
                 handle,
-                drop_fn: None,
+                device: None,
+                live: true,
             })
         }
     }

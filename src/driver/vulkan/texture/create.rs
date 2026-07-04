@@ -136,6 +136,7 @@ impl VulkanDevice {
             height: desc.height,
             format: desc.format,
             device: None,
+            live: true,
         })
     }
 
@@ -250,6 +251,7 @@ impl VulkanDevice {
             height: desc.height,
             format: desc.format,
             device: None,
+            live: true,
         })
     }
 
@@ -299,7 +301,8 @@ impl VulkanDevice {
             .insert(handle, sampler);
         Ok(crate::Sampler {
             handle,
-            drop_fn: None,
+            device: None,
+            live: true,
         })
     }
 }

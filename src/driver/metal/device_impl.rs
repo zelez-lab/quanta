@@ -353,11 +353,95 @@ impl GpuDevice for MetalDevice {
     }
 
     fn texture_view_destroy(&self, handle: u64) -> Result<(), QuantaError> {
-        self.textures
+        // Views live in the texture registry (they are MTLTextures).
+        let view = self
+            .textures
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
+        if let Some(v) = view {
+            // newTextureViewWithPixelFormat:… returns +1 retained.
+            unsafe { ffi::msg_void(v, b"release\0") };
+        }
         Ok(())
+    }
+
+    // === Render-resource lifecycle (destroy methods) ===
+    //
+    // Dispatch/render submission is synchronous (submit-and-wait), so
+    // nothing is in flight when a wrapper Drop reaches these; releasing
+    // the +1-retained ObjC objects here is safe.
+
+    fn texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let tex = self
+            .textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(t) = tex {
+            // newTextureWithDescriptor: returns +1 retained.
+            unsafe { ffi::msg_void(t, b"release\0") };
+        }
+        Ok(())
+    }
+
+    fn sampler_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let sampler = self
+            .samplers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(s) = sampler {
+            // newSamplerStateWithDescriptor: returns +1 retained.
+            unsafe { ffi::msg_void(s, b"release\0") };
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "render")]
+    fn pipeline_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let pipeline = self
+            .render_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(p) = pipeline {
+            unsafe { ffi::msg_void(p, b"release\0") };
+        }
+        // The paired depth/stencil state shares the pipeline handle.
+        let ds = self
+            .depth_stencil_states
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(d) = ds {
+            unsafe { ffi::msg_void(d, b"release\0") };
+        }
+        Ok(())
+    }
+
+    fn occlusion_query_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        // Occlusion query sets are shared MTLBuffers in the buffer
+        // registry (see occlusion_query_create).
+        let buf = self
+            .buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(b) = buf {
+            unsafe { ffi::msg_void(b, b"release\0") };
+        }
+        Ok(())
+    }
+
+    fn debug_registry_counts(&self) -> crate::RegistryCounts {
+        crate::RegistryCounts {
+            buffers: self.buffers.read().map(|m| m.len()).unwrap_or(0),
+            textures: self.textures.read().map(|m| m.len()).unwrap_or(0),
+            samplers: self.samplers.read().map(|m| m.len()).unwrap_or(0),
+            render_pipelines: self.render_pipelines.read().map(|m| m.len()).unwrap_or(0),
+            query_sets: 0,
+        }
     }
 
     // === MSAA Resolve ===

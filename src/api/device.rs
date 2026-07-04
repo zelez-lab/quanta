@@ -971,4 +971,59 @@ pub trait GpuDevice: Send + Sync {
     // ╭──────────────────────────────────────────────────────────────╮
     // │ End presentation & interop block                             │
     // ╰──────────────────────────────────────────────────────────────╯
+    // ─────────────────────────────────────────────────────────────────
+    // Render-resource lifecycle (destroy methods).
+    //
+    // Each destroy removes the handle from the driver registry and
+    // frees the native object. The typed wrappers (`Texture`,
+    // `Sampler`, `Pipeline`, `TextureView`, `OcclusionQuery`) call
+    // these from `Drop`, guarded by their `live` flag, so each handle
+    // is destroyed exactly once. Defaults are `Ok(())` no-ops so
+    // registry-less backends stay silent on Drop.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Destroy a texture: remove it from the registry and free the
+    /// native object. Destroying an unknown handle is a no-op.
+    fn texture_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    /// Destroy a sampler.
+    fn sampler_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    /// Destroy a render pipeline (and its associated per-pipeline
+    /// state — depth/stencil objects, layouts, render passes).
+    #[cfg(feature = "render")]
+    fn pipeline_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    /// Destroy an occlusion query set.
+    fn occlusion_query_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
+    /// Test-support hook: current sizes of the driver's resource
+    /// registries. Lifecycle tests assert entries are freed on Drop.
+    #[doc(hidden)]
+    fn debug_registry_counts(&self) -> RegistryCounts {
+        RegistryCounts::default()
+    }
+}
+
+/// Snapshot of a driver's resource-registry sizes (test support).
+///
+/// Backends map their internal registries onto these fields as
+/// applicable; unused fields stay 0. Compare full snapshots taken
+/// before/after a create+drop cycle to prove the entry was freed.
+#[doc(hidden)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RegistryCounts {
+    pub buffers: usize,
+    pub textures: usize,
+    pub samplers: usize,
+    pub render_pipelines: usize,
+    pub query_sets: usize,
 }

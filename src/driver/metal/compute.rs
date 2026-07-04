@@ -143,7 +143,6 @@ impl MetalDevice {
             // kernel uses [2,1,1]) and caused dispatchThreadgroups to
             // either clip silently or no-op.
             workgroup_size: kernel.workgroup_size,
-            drop_fn: None,
         })
     }
 
@@ -224,7 +223,6 @@ impl MetalDevice {
             push_len: 0,
             push_mask: 0,
             workgroup_size: [64, 1, 1],
-            drop_fn: None,
         })
     }
 

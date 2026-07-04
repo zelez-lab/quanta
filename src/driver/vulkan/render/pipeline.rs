@@ -519,7 +519,8 @@ impl VulkanDevice {
             );
         Ok(Pipeline {
             handle,
-            drop_fn: None,
+            device: None,
+            live: true,
         })
     }
 }

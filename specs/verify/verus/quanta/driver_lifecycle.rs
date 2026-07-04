@@ -5,7 +5,7 @@
 //!   - `src/driver/vulkan/texture/transfer.rs` (image transitions)
 //!   - `src/driver/vulkan/memory.rs` (buffer allocation)
 //!   - `src/driver/vulkan/compute.rs` (command buffer + dispatch)
-//!   - `src/api/wave.rs`, `src/api/field.rs`, `src/api/pulse.rs` (drop_fn)
+//!   - `src/api/texture.rs`, `src/api/field.rs`, `src/api/pulse.rs` (Drop / live flag)
 //!
 //! Verified properties:
 //!
@@ -20,7 +20,7 @@
 //! | T1201 alloc_size_from_requirements | allocation_size comes from VkMemoryRequirements.size (>= alignment). |
 //! | T1202 cmd_buffer_begin_end_submit  | Command buffers follow Idle -> Recording -> Executable -> Pending -> Idle. |
 //! | T1203 dispatch_groups_nonzero      | wave_dispatch passes groups directly to vkCmdDispatch (flag: no zero-check). |
-//! | T1204 drop_fn_at_most_once         | Option::take ensures drop_fn called at most once. |
+//! | T1204 drop_fn_at_most_once         | The one-way armed flag (`live`) ensures destroy runs at most once. |
 //! | T1204 handle_not_reusable          | After Drop, the handle is removed from the driver's map. |
 
 use vstd::prelude::*;
@@ -515,18 +515,27 @@ proof fn t1203_dispatch_three_dimensions(groups: Seq<u32>)
 // T1204 — Resource Drop: GPU handles freed exactly once
 // ============================================================================
 
-/// Ghost model of a droppable resource (Wave, Field, Texture, Pulse, etc.).
+/// Ghost model of a droppable resource (Field, Texture, Pipeline,
+/// Sampler, Pulse, etc.).
 ///
-/// All Quanta API types share the same drop pattern:
-///   pub(crate) drop_fn: Option<Box<dyn FnOnce(u64)>>
+/// Quanta API types share the same at-most-once drop pattern, today
+/// expressed with a `live: bool` flag (formerly a consumed `drop_fn`
+/// Option — same one-way transition):
+///   pub(crate) device: Option<Arc<dyn GpuDevice>>,
+///   pub(crate) live: bool,
 ///
 ///   impl Drop {
 ///       fn drop(&mut self) {
-///           if let Some(f) = self.drop_fn.take() {
-///               f(self.handle);
+///           if self.live {
+///               self.live = false;
+///               if let Some(ref dev) = self.device {
+///                   let _ = dev.texture_destroy(self.handle);
+///               }
 ///           }
 ///       }
 ///   }
+///
+/// `has_drop_fn` below models the armed state (`live == true`).
 pub struct DroppableResource {
     pub handle: u64,
     pub has_drop_fn: bool,

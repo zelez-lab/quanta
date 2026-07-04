@@ -1,5 +1,6 @@
-use crate::QuantaError;
+use crate::{GpuDevice, QuantaError};
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 /// GPU completion signal. Returned by dispatch/render operations.
 ///
@@ -76,9 +77,14 @@ impl TimestampQuery {
 /// Records how many fragments pass the depth/stencil test within a
 /// begin/end bracket during a render pass. Used for visibility culling:
 /// if zero fragments passed, the object is fully occluded.
+///
+/// Dropping the query set calls `GpuDevice::occlusion_query_destroy`
+/// exactly once.
 pub struct OcclusionQuery {
     pub(crate) handle: u64,
     pub(crate) count: u32,
+    pub(crate) device: Arc<dyn GpuDevice>,
+    pub(crate) live: bool,
 }
 
 impl OcclusionQuery {
@@ -90,5 +96,14 @@ impl OcclusionQuery {
     /// Number of occlusion query slots.
     pub fn count(&self) -> u32 {
         self.count
+    }
+}
+
+impl Drop for OcclusionQuery {
+    fn drop(&mut self) {
+        if self.live {
+            self.live = false;
+            let _ = self.device.occlusion_query_destroy(self.handle);
+        }
     }
 }

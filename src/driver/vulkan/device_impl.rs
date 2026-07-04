@@ -291,6 +291,90 @@ impl GpuDevice for VulkanDevice {
         Ok(())
     }
 
+    // === Render-resource lifecycle (destroy methods) ===
+    //
+    // Submission is synchronous (submit-and-wait), so nothing is in
+    // flight when a wrapper Drop reaches these. Each mirrors the
+    // corresponding drain arm of `impl Drop for VulkanDevice`.
+
+    fn texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let tex = self
+            .textures
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(t) = tex {
+            unsafe {
+                ffi::vkDestroyImageView(self.device, t.view, core::ptr::null());
+                ffi::vkDestroyImage(self.device, t.image, core::ptr::null());
+                ffi::vkFreeMemory(self.device, t.memory, core::ptr::null());
+            }
+        }
+        Ok(())
+    }
+
+    fn sampler_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let sampler = self
+            .samplers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(s) = sampler {
+            unsafe {
+                ffi::vkDestroySampler(self.device, s, core::ptr::null());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "render")]
+    fn pipeline_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let pipeline = self
+            .render_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(rp) = pipeline {
+            unsafe {
+                ffi::vkDestroyPipeline(self.device, rp.pipeline, core::ptr::null());
+                ffi::vkDestroyPipelineLayout(self.device, rp.layout, core::ptr::null());
+                ffi::vkDestroyRenderPass(self.device, rp.render_pass, core::ptr::null());
+                // Render pipelines own their descriptor-set layout
+                // (unlike compute, whose layouts live in layout_cache).
+                ffi::vkDestroyDescriptorSetLayout(
+                    self.device,
+                    rp.descriptor_set_layout,
+                    core::ptr::null(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn occlusion_query_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let pool = self
+            .query_pools
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(qp) = pool {
+            unsafe {
+                ffi::vkDestroyQueryPool(self.device, qp.pool, core::ptr::null());
+            }
+        }
+        Ok(())
+    }
+
+    fn debug_registry_counts(&self) -> crate::RegistryCounts {
+        crate::RegistryCounts {
+            buffers: self.buffers.read().map(|m| m.len()).unwrap_or(0),
+            textures: self.textures.read().map(|m| m.len()).unwrap_or(0),
+            samplers: self.samplers.read().map(|m| m.len()).unwrap_or(0),
+            render_pipelines: self.render_pipelines.read().map(|m| m.len()).unwrap_or(0),
+            query_sets: self.query_pools.read().map(|m| m.len()).unwrap_or(0),
+        }
+    }
+
     // === Barriers ===
 
     fn barrier(&self) -> Result<(), QuantaError> {
