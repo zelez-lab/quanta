@@ -78,6 +78,27 @@ the device memory of `fft(&x, &zeros)`. `hi[0]` and `hi[N/2]` (DC, Nyquist)
 are exactly `0.0`. Length must be a power of 2 (`NotSupported` otherwise);
 `irfft` checks that the half-spectrum holds exactly `n/2 + 1` bins.
 
+## 2-D transforms (images, grids)
+
+`fft2`/`ifft2` transform a row-major `H×W` grid — both dimensions powers of 2
+(others return `NotSupported`), split re/im of length `H·W`. Internally it is
+the separable row-column method: a length-`W` FFT of every row, a transpose,
+a length-`H` FFT of every (former) column, and a transpose back; each pass
+reuses one `FftPlan`.
+
+```rust,ignore
+// np.fft.fft2(img)
+let (h, w) = (256, 512);                      // powers of 2
+let (sr, si) = quanta_fft::fft2(&gpu, &re, &im, h, w)?;  // 2-D spectrum, same layout
+// np.fft.ifft2(spectrum) — divides by H·W, so the round trip recovers the input
+let (rr, ri) = quanta_fft::ifft2(&gpu, &sr, &si, h, w)?; // rr ≈ re, ri ≈ im
+```
+
+Bin `(ky, kx)` holds the component at `ky/H` cycles per row-step and `kx/W`
+cycles per column-step; for real input, `(ky, kx)` and `(H−ky, W−kx)` are
+conjugates. The reference oracle is `reference::dft2` / `idft2` — the direct
+2-D double sum, any sizes.
+
 ## Repeated same-size transforms
 
 `fft`/`ifft` build and run a plan per call. For many transforms of one size,
@@ -106,8 +127,8 @@ let (hr, hi) = reference::rdft(&x);        // direct real DFT, N/2+1 bins
 
 ## Notes
 
-- **f32, split re/im, power-of-2** today. Mixed-radix / arbitrary-N is a
-  later increment.
+- **f32, split re/im, power-of-2** today (1-D, 2-D, and real-input `rfft`).
+  Mixed-radix / arbitrary-N is a later increment.
 - The reference module is always available (no `gpu` feature); the GPU `fft` /
   `ifft` need a backend feature.
 - All backends are equivalent — `init_cpu()` runs the software lane (used by the

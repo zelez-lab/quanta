@@ -8,6 +8,10 @@
 //!
 //! - [`fft`](fft::fft) / [`ifft`](fft::ifft) — radix-2, N a power of 2
 //!   (one-shot: plan + execute in a single call).
+//! - [`fft2`](fft2::fft2) / [`ifft2`](fft2::ifft2) — 2-D transform of a
+//!   row-major H×W grid (both dims powers of 2) by row-column decomposition:
+//!   row pass → transpose → column-as-row pass → transpose back, each pass
+//!   reusing one [`FftPlan`](plan::FftPlan).
 //! - [`FftPlan`](plan::FftPlan) — plan-based dispatch (the VkFFT pattern):
 //!   fixes size + direction once, JIT-compiles the kernels once, precomputes
 //!   the twiddle table into a device buffer, then
@@ -35,12 +39,16 @@ pub mod reference;
 #[cfg(feature = "gpu")]
 pub mod fft;
 #[cfg(feature = "gpu")]
+pub mod fft2;
+#[cfg(feature = "gpu")]
 pub mod plan;
 #[cfg(feature = "gpu")]
 pub mod rfft;
 
 #[cfg(feature = "gpu")]
 pub use fft::{fft, ifft};
+#[cfg(feature = "gpu")]
+pub use fft2::{fft2, ifft2};
 #[cfg(feature = "gpu")]
 pub use plan::FftPlan;
 #[cfg(feature = "gpu")]

@@ -17,9 +17,12 @@ a direct-DFT oracle and validated on real Metal.
 | `ifft` | `ifft(gpu, &re, &im) -> (Vec<f32>, Vec<f32>)` | inverse (÷N); `ifft(fft(x)) == x` |
 | `rfft` | `rfft(gpu, &x) -> (Vec<f32>, Vec<f32>)` | real input → the `N/2 + 1` half-spectrum (packed method: one half-size complex FFT + O(N) split — ~2× the throughput, half the device memory) |
 | `irfft` | `irfft(gpu, &re, &im, n) -> Vec<f32>` | half-spectrum → real signal; `irfft(rfft(x), N) ≈ x` |
+| `fft2`  | `fft2(gpu, &re, &im, h, w) -> (Vec<f32>, Vec<f32>)`  | 2-D forward, row-major H×W, both dims powers of 2 (row-column decomposition over `FftPlan`) |
+| `ifft2` | `ifft2(gpu, &re, &im, h, w) -> (Vec<f32>, Vec<f32>)` | 2-D inverse (÷(H·W)); `ifft2(fft2(x)) == x` |
 | `FftPlan` | `FftPlan::new(gpu, n, inverse)` → `plan.execute(&re, &im)` | plan-based dispatch (VkFFT pattern): kernels JIT-compiled once, twiddle table precomputed into a device buffer, reusable across executes |
 | `reference::dft` / `idft` | `dft(&re, &im) -> (Vec<f32>, Vec<f32>)` | pure-Rust direct O(N²) DFT — the oracle (always available, no `gpu` feature) |
 | `reference::rdft` / `irdft` | `rdft(&x) -> (Vec<f32>, Vec<f32>)` | direct real DFT (half-spectrum) + inverse — the `rfft`/`irfft` oracle |
+| `reference::dft2` / `idft2` | `dft2(&re, &im, h, w) -> (Vec<f32>, Vec<f32>)` | direct O((HW)²) 2-D DFT double sum (NOT row-column composed) — the independent 2-D oracle |
 
 Complex data is **split**: a real-part slice and an imag-part slice of equal
 length. The GPU transform runs a bit-reversal kernel (in-kernel `log₂N`-bit
@@ -72,6 +75,20 @@ packing reorders the f32 summations.
 Sizes must be a power of 2; others return `NotSupported` (mixed-radix is a later
 increment).
 
+**2-D**: `fft2`/`ifft2` transform a row-major H×W grid (both dims powers of 2)
+by the separable row-column method — a W-point row pass (one reused `FftPlan`,
+H executes), a transpose so columns become rows, an H-point pass (W executes),
+and a transpose back. The inverse folds `1/W`·`1/H` = `1/(H·W)` into the two
+passes. Differential-tested against a direct 2-D DFT double sum (an oracle that
+does **not** share the row-column decomposition) plus a separability check:
+`fft2` of `f(y)·g(x)` equals the complex outer product of the 1-D spectra.
+
+```rust,ignore
+let (h, w) = (8, 16);
+let (sr, si) = quanta_fft::fft2(&gpu, &re, &im, h, w)?;   // 2-D spectrum, H×W row-major
+let (rr, ri) = quanta_fft::ifft2(&gpu, &sr, &si, h, w)?;  // rr ≈ re, ri ≈ im
+```
+
 ```rust,no_run
 let gpu = quanta::init_cpu();
 let re = vec![1.0f32, 2.0, 3.0, 4.0];
@@ -99,10 +116,11 @@ enable `gpu` (+ a backend) for the device FFT.
   round-trips. `rfft` matches the direct real-DFT oracle and the first
   `N/2+1` bins of the full complex FFT; `irfft(rfft(x), N) ≈ x` round-trips;
   reconstructing the full spectrum from the half by conjugate symmetry
-  matches `fft([x, zeros])`. All validated on the software lane **and real
-  Metal**.
+  matches `fft([x, zeros])`. The 2-D `fft2` matches the direct 2-D double-sum
+  DFT (2×2 through 16×16, square and rectangular), round-trips through
+  `ifft2`, and passes the separability outer-product check. All validated on
+  the software lane **and real Metal**.
 
 ## Coming next
 
-Mixed-radix / arbitrary-N (Bluestein for primes) and batched/multi-dimensional
-transforms.
+Mixed-radix / arbitrary-N (Bluestein for primes) and batched / 3-D transforms.
