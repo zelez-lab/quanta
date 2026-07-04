@@ -13,15 +13,33 @@ a direct-DFT oracle and validated on real Metal.
 
 | op | signature | notes |
 |----|-----------|-------|
-| `fft`  | `fft(gpu, &re, &im) -> (Vec<f32>, Vec<f32>)`  | forward DFT, N a power of 2 |
+| `fft`  | `fft(gpu, &re, &im) -> (Vec<f32>, Vec<f32>)`  | forward DFT, N a power of 2 (one-shot plan) |
 | `ifft` | `ifft(gpu, &re, &im) -> (Vec<f32>, Vec<f32>)` | inverse (÷N); `ifft(fft(x)) == x` |
+| `FftPlan` | `FftPlan::new(gpu, n, inverse)` → `plan.execute(&re, &im)` | plan-based dispatch (VkFFT pattern): kernels JIT-compiled once, twiddle table precomputed into a device buffer, reusable across executes |
 | `reference::dft` / `idft` | `dft(&re, &im) -> (Vec<f32>, Vec<f32>)` | pure-Rust direct O(N²) DFT — the oracle (always available, no `gpu` feature) |
 
 Complex data is **split**: a real-part slice and an imag-part slice of equal
 length. The GPU transform runs a bit-reversal kernel (in-kernel `log₂N`-bit
-reversal) then `log₂N` butterfly stages — `N/2` threads each, twiddles computed
-in-kernel via `sin`/`cos`, in place (each butterfly owns a disjoint index pair).
+reversal) then `log₂N` butterfly stages — `N/2` threads each, twiddles loaded
+from a precomputed table `tw[k] = exp(sign·2πi·k/N)` (`k < N/2`; stage `m`
+reads `tw[j·N/m]`), in place (each butterfly owns a disjoint index pair).
 Inverse flips the twiddle sign and scales by `1/N`.
+
+`fft`/`ifft` are one-shot plans. Transforming many same-size signals? Build
+the plan once — repeated `execute`s skip the kernel rebuild + re-JIT and the
+per-butterfly `sin`/`cos`:
+
+```rust,ignore
+let gpu = quanta::init_cpu();
+let mut plan = quanta_fft::FftPlan::new(&gpu, 1024, false).unwrap(); // forward
+for (re, im) in frames {
+    let (fr, fi) = plan.execute(&re, &im).unwrap();
+    // ...
+}
+```
+
+The plan owns the twiddle table and the compiled waves; I/O buffers are
+allocated per `execute`, so executes stay independent.
 
 Sizes must be a power of 2; others return `NotSupported` (mixed-radix is a later
 increment).
@@ -55,5 +73,4 @@ enable `gpu` (+ a backend) for the device FFT.
 ## Coming next
 
 Mixed-radix / arbitrary-N (Bluestein for primes), a real-input `rfft`
-(half-spectrum), a precomputed `Plan` that caches twiddles (the VkFFT pattern),
-and batched/multi-dimensional transforms.
+(half-spectrum), and batched/multi-dimensional transforms.

@@ -52,6 +52,26 @@ let (fr, _) = quanta_fft::fft(&gpu, &re, &im)?;
 // |fr[1]| and |fr[n-1]| carry the tone; the rest are ≈ 0.
 ```
 
+## Repeated transforms: build a plan
+
+`fft`/`ifft` are one-shot: each call compiles the kernels and runs once.
+Transforming many signals of the same size — audio frames, rows of an image —
+build an `FftPlan` instead. The plan JIT-compiles the kernels once and
+precomputes the twiddle factors into a device buffer (the VkFFT pattern);
+every `execute` after that just binds and dispatches:
+
+```rust,ignore
+let mut plan = quanta_fft::FftPlan::new(&gpu, 1024, false)?; // forward, N=1024
+for frame in frames {
+    let (fr, fi) = plan.execute(&frame.re, &frame.im)?;      // no re-JIT
+    // ...
+}
+```
+
+The size and direction are fixed at `new` (inverse plans pass `true` and fold
+in the `1/N` scale); `execute` rejects inputs of any other length. A one-shot
+`fft()` and a plan `execute` produce identical results.
+
 ## Where it fits
 
 The FFT is the bridge to signal processing, spectral methods, and convolution-by-

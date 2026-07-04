@@ -58,6 +58,20 @@ let (fr, _) = quanta_fft::fft(&gpu, &re, &im)?;
 // fr[0] ≈ 0 (no DC); fr[1] ≈ fr[n-1] ≈ N/2.
 ```
 
+## Repeated same-size transforms
+
+`fft`/`ifft` build and run a plan per call. For many transforms of one size,
+hold an `FftPlan`: kernels are JIT-compiled once and the twiddle table is
+precomputed into a device buffer at `new`; `execute` only binds and
+dispatches:
+
+```rust,ignore
+let mut plan = quanta_fft::FftPlan::new(&gpu, 1024, false)?; // inverse: true
+for (re, im) in frames {
+    let (fr, fi) = plan.execute(&re, &im)?;
+}
+```
+
 ## Checking against the reference
 
 The crate ships a pure-Rust direct DFT (the differential-test oracle) — handy
@@ -71,8 +85,8 @@ let (wr, wi) = reference::dft(&re, &im);   // direct O(N²) DFT, any N
 
 ## Notes
 
-- **f32, split re/im, power-of-2** today. Mixed-radix / arbitrary-N, real-input
-  `rfft`, and a twiddle-caching `Plan` are later increments.
+- **f32, split re/im, power-of-2** today. Mixed-radix / arbitrary-N and a
+  real-input `rfft` are later increments.
 - The reference module is always available (no `gpu` feature); the GPU `fft` /
   `ifft` need a backend feature.
 - All backends are equivalent — `init_cpu()` runs the software lane (used by the
