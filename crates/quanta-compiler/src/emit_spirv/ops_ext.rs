@@ -385,19 +385,39 @@ impl SpvEmitter {
         if let Some(&(var_id, type_id)) = self.texture_samplers.get(&texture) {
             let loaded = self.alloc_id();
             Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
-            let uint_ty = self.ensure_type_u32();
-            let vec2_uint = self.ensure_type_vector(uint_ty, 2);
+            // If the slot was declared OpTypeSampledImage, unwrap to the plain
+            // OpTypeImage that OpImageWrite requires (mirrors the read path).
+            let image = if let Some(&image_ty) = self.texture_image_types.get(&texture) {
+                let image = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_IMAGE, &[image_ty, image, loaded]);
+                image
+            } else {
+                loaded
+            };
+            let int_ty = self.ensure_type_i32();
+            let vec2_int = self.ensure_type_vector(int_ty, 2);
+            // Coords arrive as %uint (quark_id arithmetic); OpCompositeConstruct
+            // requires constituents to match the result vector's component type,
+            // so coerce to %int first (same as emit_op_texture_load_2d).
             let x_val = self.reg_value_id(x)?;
+            let x_ty = self.reg_type_id(x)?;
+            let x_val = self.coerce_to(x_val, x_ty, int_ty);
             let y_val = self.reg_value_id(y)?;
+            let y_ty = self.reg_type_id(y)?;
+            let y_val = self.coerce_to(y_val, y_ty, int_ty);
             let coord = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
                 OP_COMPOSITE_CONSTRUCT,
-                &[vec2_uint, coord, x_val, y_val],
+                &[vec2_int, coord, x_val, y_val],
             );
-            let val = self.reg_value_id(value)?;
             let f32_ty = self.ensure_type_f32();
             let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+            // The texel must be a vec4<f32>; coerce the scalar value to f32 so
+            // its constituent type matches the vector's components.
+            let val = self.reg_value_id(value)?;
+            let val_ty = self.reg_type_id(value)?;
+            let val = self.coerce_to(val, val_ty, f32_ty);
             let zero = self.emit_constant_f32(0.0);
             let one = self.emit_constant_f32(1.0);
             let texel = self.alloc_id();
@@ -409,7 +429,7 @@ impl SpvEmitter {
             Self::emit_op(
                 &mut self.sec_function,
                 OP_IMAGE_WRITE,
-                &[loaded, coord, texel],
+                &[image, coord, texel],
             );
         }
         Ok(())

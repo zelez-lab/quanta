@@ -101,6 +101,11 @@ fn subgroup_id_compiles_and_runs() {
 #[test]
 fn reduce_add_compiles_and_runs() {
     let Some(gpu) = try_gpu() else { return };
+    // Subgroup reduce needs the ARITHMETIC feature class; V3D (Broadcom)
+    // advertises only BASIC/VOTE/BALLOT and aborts at pipeline creation.
+    if !gpu.supports_subgroups() {
+        return;
+    }
     let out = gpu.field::<u32>(4).unwrap();
     let values = gpu.field::<u32>(4).unwrap();
     values.write(&[1u32, 2, 3, 4]).unwrap();
@@ -116,6 +121,10 @@ fn reduce_add_compiles_and_runs() {
 #[test]
 fn scan_add_compiles_and_runs() {
     let Some(gpu) = try_gpu() else { return };
+    // Subgroup scan needs the ARITHMETIC feature class (see reduce_add).
+    if !gpu.supports_subgroups() {
+        return;
+    }
     let out = gpu.field::<u32>(4).unwrap();
     let values = gpu.field::<u32>(4).unwrap();
     values.write(&[1u32, 2, 3, 4]).unwrap();
@@ -131,6 +140,11 @@ fn scan_add_compiles_and_runs() {
 #[test]
 fn shuffle_compiles_and_runs() {
     let Some(gpu) = try_gpu() else { return };
+    // Subgroup shuffle is likewise gated behind the advanced-subgroup
+    // capability class that V3D does not advertise.
+    if !gpu.supports_subgroups() {
+        return;
+    }
     let out = gpu.field::<u32>(4).unwrap();
     let values = gpu.field::<u32>(4).unwrap();
     values.write(&[10u32, 20, 30, 40]).unwrap();

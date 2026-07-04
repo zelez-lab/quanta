@@ -21,6 +21,12 @@ fn compute_reads_texture() {
     let Some(gpu) = try_gpu() else {
         return;
     };
+    // The Broadcom V3D Mesa driver faults on image-in-compute dispatch
+    // (the emitted SPIR-V is valid — see texture_read_spirv_module_validates —
+    // but V3DV's texture path segfaults). Skip the live dispatch there.
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return;
+    }
 
     let w = 4u32;
     let h = 4u32;
@@ -114,4 +120,24 @@ fn texture_read_spirv_module_validates() {
         .spirv
         .expect("read_texture: no SPIR-V embedded");
     assert_spirv_val_clean("read_texture", spirv);
+}
+
+/// Write a per-quark value into a storage texture. Exercises
+/// `emit_op_texture_write_2d` — coords must coerce to i32 and the scalar
+/// value to f32 before the vec4 texel, else the OpCompositeConstruct is
+/// invalid (the same constituent-type class as the read path).
+#[quanta::kernel]
+fn write_texture(tex: &mut Texture2D<f32>, values: &[f32], width: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    texture_write_2d(tex, x, y, values[i]);
+}
+
+#[test]
+fn texture_write_spirv_module_validates() {
+    let spirv = WRITE_TEXTURE_BINARY
+        .spirv
+        .expect("write_texture: no SPIR-V embedded");
+    assert_spirv_val_clean("write_texture", spirv);
 }
