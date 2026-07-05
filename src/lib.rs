@@ -39,6 +39,17 @@
 //! - Browser: generates WGSL source string
 //!
 //! No SPIR-V. No intermediate representation. Direct to target.
+//!
+//! ## Crate layout
+//!
+//! This crate is the facade over the split substrate:
+//!
+//! - `quanta-core` — the shared device line (sealed `GpuDevice`,
+//!   drivers, fields/textures/sync). Re-exported wholesale here.
+//! - the compute face — `#[quanta::kernel]` / waves / the scan
+//!   library, compiled in behind the `compute` feature.
+//! - the render face — the render data model and typed wrappers from
+//!   `quanta-core`, compiled in behind the `render` feature.
 
 #![no_std]
 
@@ -47,8 +58,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-mod api;
-mod driver;
 #[cfg(feature = "compute")]
 pub mod kernel;
 #[cfg(feature = "compute")]
@@ -78,12 +87,14 @@ pub mod __device_host_stubs;
 /// `cargo test` runs the subset check without needing a wasm32 build.
 pub mod webgpu_generated_codes;
 
-// Re-export API types at crate root
-pub use api::*;
+// The shared substrate: device discovery (`init` / `devices` /
+// `init_cpu`), the `Gpu` handle, fields, textures, sync, and — under
+// the matching features — the compute / render data models.
+pub use quanta_core::*;
 
 // Re-export kernel types. (`ShaderBinary` / `ShaderStage` are *render*
-// types — they live on the render surface: `quanta::api::shader`,
-// re-exported at the root only when the `render` feature is on.)
+// types — they live on the render surface, re-exported at the root
+// only when the `render` feature is on.)
 //
 // `ScalarType` is a `quanta-ir` kernel-language type (the scalar tag
 // carried by `GpuType::scalar_type()`); it is re-exported at the root
@@ -133,93 +144,3 @@ pub use quanta_dsl::tess_control;
 pub use quanta_dsl::tess_eval;
 #[cfg(feature = "render")]
 pub use quanta_dsl::vertex;
-
-/// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
-#[cfg(feature = "std")]
-fn validation_enabled() -> bool {
-    std::env::var("QUANTA_VALIDATE")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-}
-
-/// Optionally wrap a device in the validation layer.
-#[cfg(feature = "std")]
-fn maybe_validate(dev: alloc::boxed::Box<dyn GpuDevice>) -> alloc::sync::Arc<dyn GpuDevice> {
-    if validation_enabled() {
-        alloc::sync::Arc::from(driver::validation::ValidationDevice::wrap(dev))
-    } else {
-        alloc::sync::Arc::from(dev)
-    }
-}
-
-/// Discover available GPU devices.
-#[cfg(feature = "std")]
-pub fn devices() -> alloc::vec::Vec<Gpu> {
-    // `mut` is conditional: only the metal/vulkan/software cfgs below mutate
-    // the vector, and feature combinations may disable all of them (e.g.
-    // wasm32 + webgpu).
-    #[allow(unused_mut)]
-    let mut devs: alloc::vec::Vec<alloc::boxed::Box<dyn GpuDevice>> = alloc::vec::Vec::new();
-
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    devs.extend(driver::metal::discover());
-
-    #[cfg(feature = "vulkan")]
-    devs.extend(driver::vulkan::discover());
-
-    // Include CPU device if QUANTA_CPU=1 env var is set
-    #[cfg(feature = "software")]
-    {
-        if std::env::var("QUANTA_CPU")
-            .map(|v| v == "1")
-            .unwrap_or(false)
-        {
-            devs.extend(driver::cpu::discover());
-        }
-    }
-
-    devs.into_iter().map(maybe_validate).map(Gpu::new).collect()
-}
-
-/// Initialize the first available GPU device.
-#[cfg(feature = "std")]
-pub fn init() -> Result<Gpu, QuantaError> {
-    let mut devs = devices();
-    if devs.is_empty() {
-        Err(QuantaError::no_device())
-    } else {
-        Ok(devs.remove(0))
-    }
-}
-
-/// Initialize a CPU software device for testing without GPU hardware.
-///
-/// The CPU device executes kernel IR (KernelDef) sequentially on CPU.
-/// Only supports the JIT path (`wave_jit`). Pre-compiled binaries
-/// (SPIR-V, metallib) are not supported.
-#[cfg(feature = "software")]
-pub fn init_cpu() -> Gpu {
-    let dev: alloc::boxed::Box<dyn GpuDevice> =
-        alloc::boxed::Box::new(driver::cpu::CpuDevice::new());
-    Gpu::new(maybe_validate(dev))
-}
-
-/// Initialize a WebGPU device. Browser-only. Async because the WebGPU
-/// device is acquired through Promises (`navigator.gpu.requestAdapter`,
-/// `adapter.requestDevice`).
-///
-/// This is the only entry point for the WebGPU driver — sync `init()`
-/// can never return a WebGPU device because the platform requires an
-/// async handshake.
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-pub async fn init_webgpu_async() -> Result<Gpu, QuantaError> {
-    driver::webgpu::init_async().await
-}
-
-/// Re-export of the WebGPU driver module for callers that need direct
-/// access to `WebgpuDevice` (and its async extensions like
-/// `field_read_bytes_async`).
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-pub mod webgpu {
-    pub use crate::driver::webgpu::*;
-}

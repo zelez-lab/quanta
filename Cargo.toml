@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "crates/quanta-core",
     "crates/quanta-ir",
     "crates/quanta-dsl",
     "crates/quanta-compiler",
@@ -32,6 +33,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/zelez-lab/quanta"
 
 [workspace.dependencies]
+quanta-core = { path = "crates/quanta-core", version = "0.1.0-alpha.2", default-features = false }
 quanta-ir = { path = "crates/quanta-ir", version = "0.1.0-alpha.2" }
 quanta-tensor = { path = "crates/quanta-tensor", version = "0.1.0-alpha.2" }
 quanta-wasm-lowering = { path = "crates/quanta-wasm-lowering", version = "0.1.0-alpha.2" }
@@ -49,9 +51,9 @@ readme = "README.md"
 
 [features]
 default = ["metal", "render", "compute"]
-std = []
-metal = ["std"]
-vulkan = ["std"]
+std = ["quanta-core/std"]
+metal = ["std", "quanta-core/metal"]
+vulkan = ["std", "quanta-core/vulkan"]
 ## Rendering face: render passes, graphics pipelines, mesh/tessellation/
 ## ray-tracing, VRS, render-bundle ICB, and texture-as-render-target
 ## helpers. On by default. A headless compute consumer builds with
@@ -59,20 +61,20 @@ vulkan = ["std"]
 ## render code and expose a render-free surface. The `quanta-render`
 ## crate enables this and adds the `RenderGpu` ergonomic extension
 ## trait. (Step 085.)
-render = ["quanta-dsl/render"]
+render = ["quanta-core/render", "quanta-dsl/render"]
 ## Compute face: `#[quanta::kernel]` / `#[quanta::device]` macros, `Wave`
 ## dispatch, batches, compute ICBs, queue dispatch, the scan library and
 ## the kernel-language types. On by default, symmetric to `render`. A
 ## render-only consumer (e.g. `quanta-render`'s lib build) omits it to
 ## compile zero kernel machinery and drop the wasm-lowering dependency
 ## from the graph.
-compute = ["quanta-dsl/compute"]
+compute = ["quanta-core/compute", "quanta-dsl/compute"]
 ## CPU software driver: execute KernelDef IR without GPU hardware.
 ## Implies `compute` — the driver's whole job is executing kernels.
-software = ["std", "jit", "compute"]
+software = ["std", "jit", "compute", "quanta-core/software"]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
 ## Also exposes the op-matrix case generator shared with the test harness.
-jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]
+jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases", "quanta-core/jit"]
 ## WebGPU driver, browser-only (target_arch = "wasm32"). Wired to the
 ## browser via Quanta's own ABI (bare `extern "C"` blocks under
 ## `src/driver/webgpu/ffi.rs` plus a TypeScript-authored
@@ -82,9 +84,10 @@ jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]
 ## zero npm dependencies — `quanta.js` (+ sibling helper modules) is
 ## the only JS the browser loads. Implies `compute` (the driver
 ## dispatches waves; compute-free WebGPU builds are a Phase-2b concern).
-webgpu = ["std", "jit", "compute"]
+webgpu = ["std", "jit", "compute", "quanta-core/webgpu"]
 
 [dependencies]
+quanta-core.workspace = true
 quanta-dsl = { path = "crates/quanta-dsl", version = "0.1.0-alpha.2", default-features = false }
 quanta-ir.workspace = true
 

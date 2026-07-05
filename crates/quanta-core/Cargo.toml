@@ -1,0 +1,41 @@
+[package]
+name = "quanta-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared GPU substrate of Quanta — device trait, drivers, fields, textures, sync"
+keywords = ["gpu", "compute", "shader", "metal", "vulkan"]
+categories = ["graphics", "hardware-support"]
+
+[features]
+# Mirrors the facade's feature axes. The `quanta` facade and
+# `quanta-render` both depend on this crate with
+# `default-features = false` and forward explicitly; the defaults here
+# only serve a bare `cargo build -p quanta-core`.
+default = ["metal", "render", "compute"]
+std = []
+metal = ["std"]
+vulkan = ["std"]
+## Render half of the device trait + drivers, plus the render data
+## model they speak (PipelineDesc / RenderPass / RenderOp / shader
+## binaries / surface configuration). `quanta-render` builds on this.
+render = []
+## Compute half of the device trait + drivers, plus the compute data
+## model (Wave / Batch / Queue / compute ICB).
+compute = []
+## CPU software driver: execute KernelDef IR without GPU hardware.
+## Implies `compute` — the driver's whole job is executing kernels.
+software = ["std", "jit", "compute"]
+## Enable JIT compilation: runtime shader emission from embedded
+## KernelDef IR.
+jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]
+## WebGPU driver, browser-only (target_arch = "wasm32"). See the
+## facade's feature docs for the no-wrapper-crate policy.
+webgpu = ["std", "jit", "compute"]
+
+[dependencies]
+quanta-ir.workspace = true
+
+[dev-dependencies]
+proptest = "1"
