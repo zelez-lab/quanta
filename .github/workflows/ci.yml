@@ -427,7 +427,7 @@ jobs:
       # `jit` is required: op_matrix + differential build KernelDef IR at
       # runtime and feed it through wave_jit (the SPIR-V emitter path).
       - name: Op-matrix tests (vulkan lane via lavapipe)
-        run: cargo test --test op_matrix --no-default-features --features vulkan,jit
+        run: cargo test --test op_matrix --no-default-features --features vulkan,jit,compute
 
       - name: Differential tests (vulkan lane via lavapipe)
-        run: cargo test --test differential --no-default-features --features vulkan,jit
+        run: cargo test --test differential --no-default-features --features vulkan,jit,compute

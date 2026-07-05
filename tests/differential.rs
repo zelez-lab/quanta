@@ -16,7 +16,7 @@
 //! Run locally:
 //!   cargo test --test differential --features software --no-default-features
 //!   cargo test --test differential --features software,metal           # macOS
-//!   cargo test --test differential --no-default-features --features vulkan  # Linux + libvulkan-dev
+//!   cargo test --test differential --no-default-features --features vulkan,jit,compute  # Linux + libvulkan-dev
 
 #![cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
 
