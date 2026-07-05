@@ -56,11 +56,21 @@ else
   echo "  ok: no quanta -> quanta-render edge"
 fi
 
-# And the converse must hold: quanta-render DOES depend on quanta.
-if cargo tree -p quanta-render -e normal 2>/dev/null | grep -q "quanta v"; then
-  echo "  ok: quanta-render -> quanta edge present"
+# The substrate edge must hold: quanta-render sits on quanta-core (the
+# shared substrate), NOT on the top-level `quanta` facade — depending on
+# the facade would be the cycle check 2 forbids.
+if cargo tree -p quanta-render -e normal 2>/dev/null | grep -q "quanta-core v"; then
+  echo "  ok: quanta-render -> quanta-core edge present"
 else
-  echo "  ERROR: quanta-render does not depend on quanta"; fail=1
+  echo "  ERROR: quanta-render does not depend on quanta-core"; fail=1
+fi
+
+# And quanta-render must NOT reach the `quanta` facade (that would cycle).
+if cargo tree -p quanta-render -e normal 2>/dev/null \
+  | grep -qE '^[^a-z]*quanta v'; then
+  echo "  CYCLE: quanta-render depends on the quanta facade"; fail=1
+else
+  echo "  ok: no quanta-render -> quanta facade edge"
 fi
 
 if [[ $fail -ne 0 ]]; then

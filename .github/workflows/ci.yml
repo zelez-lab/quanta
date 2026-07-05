@@ -58,8 +58,13 @@ jobs:
       # wasmparser, the quanta-ir JIT). A render-only consumer that
       # depends on quanta-render structurally cannot pull it.
       - name: Render dependency-graph guard (no compute stack)
+        shell: bash
         run: |
-          ! cargo tree -p quanta-render -e normal | grep -iE 'wasm|jit'
+          if cargo tree -p quanta-render -e normal | grep -iE 'wasm|jit'; then
+            echo "ERROR: quanta-render pulled the compute stack (wasm/jit)" >&2
+            exit 1
+          fi
+          echo "ok: quanta-render tree is free of the compute stack"
 
       - name: Host tests (wire, types, shader, emitter, gpu_type, wave)
         run: |
