@@ -1250,13 +1250,18 @@ theorem t8078_coalesce_offset_equiv (l : Layout) (k : Nat)
 -- left with a rank-1 layout therefore scales every stride and
 -- changes nothing else, which reduces rank-1 × rank-N × rank-K
 -- associativity (t8094) to stride-scaling commutation through the
--- fold. RESIDUAL (open): associativity with a rank ≥ 2 LEFTMOST
--- layout, whose core obligation is a two-stage/one-stage fold
--- exchange over the leftmost mode list
+-- fold. For a rank ≥ 2 LEFTMOST layout this shortcut is gone: the
+-- fold genuinely branches on its divisibility gate, and the naive
+-- statement (carrying only t8094's well-formedness premises) is
+-- FALSE — t8097 proves a concrete rank-2 counterexample. The true
+-- theorem carries a composability (divisibility) precondition, whose
+-- core obligation is a two-stage/one-stage fold exchange over the
+-- leftmost mode list
 -- (`composeIntPairs (composeIntPairs a nb db ...) nc dc =
 --   composeIntPairs a nc (dc * db)`-shaped, requiring ceil-division
--- composition arithmetic). t8038/t8094 cover every rank-1-leftmost
--- instance; the rank ≥ 2 leftmost case is deferred.
+-- composition arithmetic under the divisibility invariant). t8094
+-- covers every rank-1-leftmost instance unconditionally; the guarded
+-- rank ≥ 2 form is a follow-up.
 -- ─────────────────────────────────────────────────────────────────
 
 namespace Layout
@@ -1637,5 +1642,44 @@ theorem t8096_composeN_assoc_rank0_mid
       rw [h1, h2, hb0]
       simp
     rw [hbc]
+
+/-- T8097 — **multi-rank composition associativity FAILS for a rank ≥ 2
+    leftmost layout without a composability hypothesis.** The general
+    statement (carrying only t8094's well-formedness premises, no
+    divisibility precondition) is genuinely false: a concrete witness
+    with a rank-2 leftmost layout gives two different results depending
+    on the grouping.
+
+    Witness: `a = ⟨[4,3],[10,100]⟩` (rank 2), `b = ⟨[2],[1]⟩`,
+    `c = ⟨[6],[1]⟩`. Left grouping yields shape `[6]`, right grouping
+    shape `[4]` — the two disagree.
+
+    Root cause: `composeFold` faithfully models the SUCCESS path of the
+    production `Layout::compose`, which refuses (`DivisibilityFailed`)
+    exactly the mode arrangements where the fold's divisibility branch
+    would produce this divergence. On such refused inputs the model
+    still computes a (production-unreachable) value, and the two
+    groupings need not agree. t8094's rank-1-leftmost proof escapes this
+    because a single LHS mode never enters the fold's divisibility
+    branch — composition is pure stride-scaling there. Making the
+    general rank ≥ 2 statement TRUE requires threading the composability
+    (divisibility) precondition through both groupings (follow-up). -/
+theorem t8097_composeN_assoc_rank2_lhs_fails :
+    ∃ a b c : Layout,
+      a.strides.length = a.shape.dims.length ∧
+      b.strides.length = b.shape.dims.length ∧
+      c.strides.length = c.shape.dims.length ∧
+      composeN (composeN a b) c ≠ composeN a (composeN b c) := by
+  refine ⟨{ shape := { dims := [4, 3] }, strides := [10, 100], baseOffset := 0 },
+          { shape := { dims := [2] }, strides := [1], baseOffset := 0 },
+          { shape := { dims := [6] }, strides := [1], baseOffset := 0 },
+          rfl, rfl, rfl, ?_⟩
+  -- The two groupings disagree already at the shape: left gives [6],
+  -- right gives [4]. Layout has no DecidableEq, so witness the
+  -- inequality through the `.shape.dims` projection.
+  intro h
+  have hdims := congrArg (fun l => l.shape.dims) h
+  simp only [] at hdims
+  exact absurd hdims (by decide)
 
 end Quanta.Tensor
