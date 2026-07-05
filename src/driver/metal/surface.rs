@@ -253,6 +253,9 @@ impl MetalDevice {
                     height: s.height,
                     format: s.format,
                     device: None,
+                    // The swapchain owns the drawable; it is recycled on
+                    // present, so this wrapper must not destroy it.
+                    live: false,
                 },
             ))
         }
