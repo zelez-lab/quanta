@@ -185,6 +185,13 @@ impl GpuDevice for ValidationDevice {
         self.inner.occlusion_query_destroy(handle)
     }
 
+    // Compute-resource lifecycle: same rule — forward explicitly so
+    // the inner driver's wave registry entry is actually freed.
+    #[cfg(feature = "compute")]
+    fn wave_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.inner.wave_destroy(handle)
+    }
+
     fn debug_registry_counts(&self) -> crate::RegistryCounts {
         self.inner.debug_registry_counts()
     }

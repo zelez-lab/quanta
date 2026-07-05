@@ -1,10 +1,16 @@
+use alloc::sync::Arc;
+
 use crate::api::types::{MAX_BINDINGS, MAX_TEXTURES, PUSH_DATA_CAP};
-use crate::{Field, Texture};
+use crate::{Field, GpuDevice, Texture};
 
 /// A compute dispatch binding — kernel + fields, ready to dispatch.
 ///
 /// Reusable: rebind fields and dispatch again with different data.
 /// All binding state is inline — no heap allocation on the hot path.
+///
+/// Dropping a `Wave` releases the underlying driver resource
+/// (`GpuDevice::wave_destroy`), guarded by the `live` flag so the
+/// handle is destroyed exactly once.
 pub struct Wave {
     pub(crate) handle: u64,
     /// Field handles by slot index. 0 = unbound.
@@ -21,6 +27,12 @@ pub struct Wave {
     /// Workgroup (threadgroup) size [x, y, z]. Default: [64, 1, 1].
     /// Set by the proc macro from `#[quanta::kernel(workgroup = [...])]`.
     pub workgroup_size: [u32; 3],
+    /// Drivers construct waves with `device: None`; the `Gpu`
+    /// wrapper attaches the device Arc so Drop can release the handle.
+    pub(crate) device: Option<Arc<dyn GpuDevice>>,
+    /// True while this wrapper owns the driver-side resource. Cleared
+    /// on destroy so Drop is idempotent-safe (no double-free).
+    pub(crate) live: bool,
 }
 
 impl Wave {
@@ -91,5 +103,19 @@ impl Wave {
 
     pub fn handle(&self) -> u64 {
         self.handle
+    }
+}
+
+impl Drop for Wave {
+    fn drop(&mut self) {
+        // Real release: remove the registry entry and free the native
+        // object. The `live` flag guarantees at-most-once destruction;
+        // driver-internal transients (device: None) drop silently.
+        if self.live {
+            self.live = false;
+            if let Some(ref dev) = self.device {
+                let _ = dev.wave_destroy(self.handle);
+            }
+        }
     }
 }

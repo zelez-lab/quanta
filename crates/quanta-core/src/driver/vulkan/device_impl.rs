@@ -374,6 +374,29 @@ impl GpuDevice for VulkanDevice {
         Ok(())
     }
 
+    // === Compute-resource lifecycle ===
+
+    /// Destroy a wave: drop its compute pipeline + pipeline layout.
+    /// The descriptor-set layout is owned by `layout_cache` and shared
+    /// across pipelines — it is destroyed with the device, not here.
+    /// Dispatch is submit-and-wait, so nothing is in flight when
+    /// `Wave::drop` reaches this.
+    #[cfg(feature = "compute")]
+    fn wave_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let cp = self
+            .compute_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(cp) = cp {
+            unsafe {
+                ffi::vkDestroyPipeline(self.device, cp.pipeline, core::ptr::null());
+                ffi::vkDestroyPipelineLayout(self.device, cp.layout, core::ptr::null());
+            }
+        }
+        Ok(())
+    }
+
     fn debug_registry_counts(&self) -> crate::RegistryCounts {
         crate::RegistryCounts {
             buffers: self.buffers.read().map(|m| m.len()).unwrap_or(0),
@@ -381,6 +404,7 @@ impl GpuDevice for VulkanDevice {
             samplers: self.samplers.read().map(|m| m.len()).unwrap_or(0),
             render_pipelines: self.render_pipelines.read().map(|m| m.len()).unwrap_or(0),
             query_sets: self.query_pools.read().map(|m| m.len()).unwrap_or(0),
+            waves: self.compute_pipelines.read().map(|m| m.len()).unwrap_or(0),
         }
     }
 

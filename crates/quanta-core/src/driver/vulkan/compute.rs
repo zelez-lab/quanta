@@ -244,6 +244,8 @@ impl VulkanDevice {
             push_len: 0,
             push_mask: 0,
             workgroup_size,
+            device: None,
+            live: true,
         })
     }
 

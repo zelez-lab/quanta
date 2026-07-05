@@ -444,6 +444,25 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
+    // === Compute-resource lifecycle ===
+
+    /// Destroy a wave: drop its compute pipeline state. Dispatch
+    /// submission is synchronous (submit-and-wait), so nothing is in
+    /// flight when `Wave::drop` reaches this.
+    #[cfg(feature = "compute")]
+    fn wave_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        let pipeline = self
+            .compute_pipelines
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle);
+        if let Some(p) = pipeline {
+            // newComputePipelineStateWithFunction: returns +1 retained.
+            unsafe { ffi::msg_void(p, b"release\0") };
+        }
+        Ok(())
+    }
+
     fn debug_registry_counts(&self) -> crate::RegistryCounts {
         crate::RegistryCounts {
             buffers: self.buffers.read().map(|m| m.len()).unwrap_or(0),
@@ -451,6 +470,7 @@ impl GpuDevice for MetalDevice {
             samplers: self.samplers.read().map(|m| m.len()).unwrap_or(0),
             render_pipelines: self.render_pipelines.read().map(|m| m.len()).unwrap_or(0),
             query_sets: 0,
+            waves: self.compute_pipelines.read().map(|m| m.len()).unwrap_or(0),
         }
     }
 

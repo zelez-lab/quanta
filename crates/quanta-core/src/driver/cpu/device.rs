@@ -396,8 +396,18 @@ impl GpuDevice for CpuDevice {
     fn debug_registry_counts(&self) -> crate::RegistryCounts {
         crate::RegistryCounts {
             buffers: self.buffers.lock().unwrap().len(),
+            waves: self.kernels.lock().unwrap().len(),
             ..Default::default()
         }
+    }
+
+    // === Compute-resource lifecycle ===
+
+    /// Destroy a wave: drop its deserialized kernel definition.
+    #[cfg(feature = "compute")]
+    fn wave_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        self.kernels.lock().unwrap().remove(&handle);
+        Ok(())
     }
 
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
@@ -463,6 +473,8 @@ impl GpuDevice for CpuDevice {
             push_len: 0,
             push_mask: 0,
             workgroup_size,
+            device: None,
+            live: true,
         })
     }
 
@@ -1249,8 +1261,9 @@ impl GpuDevice for CpuDevice {
                     groups,
                 } => {
                     // Reconstruct a transient Wave from the snapshot.
-                    // Wave has no Drop, so this does not double-free
-                    // any underlying kernel handle.
+                    // `live: false` + `device: None` disarm its Drop,
+                    // so replay does not destroy the real wave's
+                    // registry entry.
                     let wave = Wave {
                         handle: *wave_handle,
                         bindings: *bindings,
@@ -1261,6 +1274,8 @@ impl GpuDevice for CpuDevice {
                         push_len: *push_len,
                         push_mask: *push_mask,
                         workgroup_size: *workgroup_size,
+                        device: None,
+                        live: false,
                     };
                     let mut pulse = self.wave_dispatch(&wave, *groups)?;
                     pulse.wait()?;

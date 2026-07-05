@@ -10,7 +10,9 @@ impl Gpu {
     // === Compute ===
 
     pub fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
-        self.inner.wave(kernel)
+        let mut wave = self.inner.wave(kernel)?;
+        wave.device = Some(self.inner.clone());
+        Ok(wave)
     }
 
     /// JIT-compile a kernel from its serialized KernelDef at runtime.
@@ -18,7 +20,9 @@ impl Gpu {
     /// Used by `#[quanta::kernel(jit)]` — the kernel IR is embedded in the
     /// binary and compiled to the appropriate GPU shader format at first use.
     pub fn wave_jit(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
-        self.inner.wave_jit(kernel_def_bytes)
+        let mut wave = self.inner.wave_jit(kernel_def_bytes)?;
+        wave.device = Some(self.inner.clone());
+        Ok(wave)
     }
 
     pub fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
@@ -135,6 +139,7 @@ impl Gpu {
     /// from `wave` to the new wave, then replaces `wave`'s handle.
     pub fn reload_wave(&self, wave: &mut Wave, kernel: &[u8]) -> Result<(), QuantaError> {
         let mut new_wave = self.inner.wave(kernel)?;
+        new_wave.device = Some(self.inner.clone());
         new_wave.bindings = wave.bindings;
         new_wave.binding_count = wave.binding_count;
         new_wave.texture_bindings = wave.texture_bindings;
@@ -142,7 +147,9 @@ impl Gpu {
         new_wave.push_data = wave.push_data;
         new_wave.push_len = wave.push_len;
         new_wave.push_mask = wave.push_mask;
-        // Swap: the old handle gets dropped via new_wave's eventual drop
+        // Swap: the caller's wave takes the new handle (device attached
+        // above); new_wave walks away with the OLD handle + device +
+        // live flag, so its drop below releases the old registry entry.
         core::mem::swap(wave, &mut new_wave);
         Ok(())
     }

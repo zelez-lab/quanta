@@ -1018,6 +1018,24 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         Ok(())
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // Compute-resource lifecycle (destroy methods).
+    //
+    // Same shape as the render-resource destroys above: remove the
+    // handle from the driver registry and free the native object
+    // (compute pipeline state / compiled kernel). `Wave::drop` calls
+    // this guarded by its `live` flag, so each handle is destroyed
+    // exactly once. Default is an `Ok(())` no-op so registry-less
+    // backends stay silent on Drop.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Destroy a wave: remove it from the registry and free the
+    /// native object. Destroying an unknown handle is a no-op.
+    #[cfg(feature = "compute")]
+    fn wave_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
+        Ok(())
+    }
+
     /// Test-support hook: current sizes of the driver's resource
     /// registries. Lifecycle tests assert entries are freed on Drop.
     #[doc(hidden)]
@@ -1039,4 +1057,6 @@ pub struct RegistryCounts {
     pub samplers: usize,
     pub render_pipelines: usize,
     pub query_sets: usize,
+    /// Compute waves (compiled kernel pipelines / kernel defs).
+    pub waves: usize,
 }

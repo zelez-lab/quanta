@@ -849,6 +849,24 @@ impl QGpuDevice for WebgpuDevice {
         Ok(())
     }
 
+    // === Compute-resource lifecycle ===
+
+    /// Destroy a wave: drop its registry entry and release the JS
+    /// handles. GPUComputePipeline / GPUShaderModule /
+    /// GPUBindGroupLayout have no destroy(); releasing the handles
+    /// lets the GC collect them.
+    #[cfg(feature = "compute")]
+    fn wave_destroy(&self, handle: u64) -> Result<(), QuantaError> {
+        if let Some(entry) = self.state.waves.0.borrow_mut().remove(&handle) {
+            unsafe {
+                ffi::quanta_release(entry.layout);
+                ffi::quanta_release(entry._shader);
+                ffi::quanta_release(entry.pipeline);
+            }
+        }
+        Ok(())
+    }
+
     fn debug_registry_counts(&self) -> crate::RegistryCounts {
         crate::RegistryCounts {
             buffers: self.state.buffers.0.borrow().len(),
@@ -856,6 +874,7 @@ impl QGpuDevice for WebgpuDevice {
             samplers: self.state.samplers.0.borrow().len(),
             render_pipelines: self.state.pipelines.0.borrow().len(),
             query_sets: self.state.query_sets.0.borrow().len(),
+            waves: self.state.waves.0.borrow().len(),
         }
     }
 
@@ -1662,6 +1681,9 @@ impl QGpuDevice for WebgpuDevice {
                     workgroup_size,
                     groups,
                 } => {
+                    // Transient replay Wave: `live: false` + `device:
+                    // None` disarm its Drop, so replay does not
+                    // destroy the real wave's registry entry.
                     let wave = Wave {
                         handle: *wave_handle,
                         bindings: *bindings,
@@ -1672,6 +1694,8 @@ impl QGpuDevice for WebgpuDevice {
                         push_len: 0,
                         push_mask: 0,
                         workgroup_size: *workgroup_size,
+                        device: None,
+                        live: false,
                     };
                     self.wave_dispatch(&wave, *groups)?;
                 }
@@ -1841,6 +1865,8 @@ fn make_wave(handle: u64, workgroup_size: [u32; 3]) -> Wave {
         push_len: 0,
         push_mask: 0,
         workgroup_size,
+        device: None,
+        live: true,
     }
 }
 
