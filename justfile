@@ -14,14 +14,21 @@ build-vulkan:
     cargo build --features vulkan --no-default-features
 
 # Feature-combo matrix: the compute/render boundary must hold in every
-# quadrant (core-only / render / compute / both). This is the gate that
-# keeps the two faces decoupled ahead of the crate split — run it after
-# touching anything on the Gpu/GpuDevice surface or the driver layer.
+# quadrant (core-only / render / compute / both). Now that the split is
+# a crate boundary (quanta-core / quanta-render / the facade), this
+# gate proves each quadrant still builds — run it after touching
+# anything on the Gpu/GpuDevice surface or the driver layer.
 check-combos:
     cargo build -p quanta --no-default-features --features metal
     cargo build -p quanta --no-default-features --features "metal render"
     cargo build -p quanta --no-default-features --features "metal compute jit"
     cargo build -p quanta --no-default-features --features "metal render compute jit"
+
+# The crate-split graph guarantee: quanta-render's dependency tree must
+# never contain the compute stack (kernel lowering, wasmparser, the
+# quanta-ir JIT).
+check-render-graph:
+    ! cargo tree -p quanta-render -e normal | grep -iE 'wasm|jit'
 
 # Test
 test:

@@ -9,13 +9,14 @@
 //!
 //! Run on Vulkan host:
 //!     VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
-//!     cargo test --no-default-features --features vulkan \
+//!     cargo test --no-default-features --features "vulkan render" \
 //!         --test ray_tracing_vulkan -- --nocapture
 
 #![cfg(feature = "vulkan")]
 #![cfg(not(feature = "metal"))]
 
 use quanta::QuantaErrorKind;
+use quanta::RenderGpu;
 
 fn try_vulkan() -> Option<quanta::Gpu> {
     quanta::init().ok()

@@ -53,6 +53,14 @@ jobs:
           cargo build -p quanta --no-default-features --features "metal compute jit"
           cargo build -p quanta --no-default-features --features "metal render compute jit"
 
+      # The crate-split graph guarantee: quanta-render's dependency
+      # tree must never contain the compute stack (kernel lowering,
+      # wasmparser, the quanta-ir JIT). A render-only consumer that
+      # depends on quanta-render structurally cannot pull it.
+      - name: Render dependency-graph guard (no compute stack)
+        run: |
+          ! cargo tree -p quanta-render -e normal | grep -iE 'wasm|jit'
+
       - name: Host tests (wire, types, shader, emitter, gpu_type, wave)
         run: |
           cargo test --test host_wire
