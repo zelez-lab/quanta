@@ -120,6 +120,7 @@ import Quanta.Autograd.PoolVjp
 -- FFT: Cooley-Tukey radix-2 butterfly identity (companion crate quanta-fft)
 import Quanta.Fft.Dft
 import Quanta.Fft.Recursion
+import Quanta.Fft.Bluestein
 
 -- Numeric dtype conversions (step 084.1 — bf16 / fp8 round-trip)
 import Quanta.Dtype.Bf16
