@@ -4132,6 +4132,23 @@ theorem castBranch_scopeValid
       intro x hx
       simp [extendEnv, KernelOp.definedReg]; right; exact hx
 
+/-- `backedgeEndBreak` is scope-valid against any env: it is either
+    `[]` or `[.breakOp]`, and `.breakOp` uses no registers. -/
+theorem backedgeEndBreak_scopeValid
+    (env : List Reg) (b : Bool) (ops : List KernelOp) :
+    scopeValidOps env (backedgeEndBreak b ops) := by
+  cases b with
+  | true => exact trivial
+  | false =>
+    unfold backedgeEndBreak
+    split
+    · exact trivial
+    · split
+      · exact trivial
+      · refine ⟨?_, trivial⟩
+        intro r hr
+        simp [KernelOp.usedRegs] at hr
+
 /-- For `postOps` to remain scope-valid after a `[.cast _ _ _ _,
     .branch _ _ _]` prefix: the cast adds one reg (dst) to env; the
     branch adds nothing (definedReg = none). Lift postOps through
@@ -4532,7 +4549,9 @@ theorem lowerInstrs_scopeValid_ops :
     | loopK =>
       simp at h
       by_cases h0 : depth = 0
-      · -- emit opsCommit ++ [.cast s1.nr cond .u32 .bool, .branch s1.nr [] [.breakOp]] ++ postOps
+      · -- emit opsCommit ++ [.cast s1.nr cond .u32 .bool,
+        --                    .branch s1.nr [] (postOps ++ endBreak)]
+        -- (post-fix nested shape: the tail sits INSIDE the else arm).
         simp [h0, LowerState.alloc] at h
         have hws_cast :
             LowerState.wellScoped { s1 with nextReg := s1.nextReg + 1 } :=
@@ -4546,8 +4565,9 @@ theorem lowerInstrs_scopeValid_ops :
         have hs : s2 = s' := (Prod.mk.inj hpair).1
         have hopsEq :
             opsCommit ++
-              (KernelOp.cast s1.nextReg cond .u32 .bool ::
-                KernelOp.branch s1.nextReg [] [KernelOp.breakOp] :: postOps) = ops :=
+              [KernelOp.cast s1.nextReg cond .u32 .bool,
+               KernelOp.branch s1.nextReg []
+                 (postOps ++ backedgeEndBreak (tailReenters 0 rest) postOps)] = ops :=
           (Prod.mk.inj hpair).2
         subst hs; subst hopsEq
         have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws_cast hr
@@ -4563,49 +4583,33 @@ theorem lowerInstrs_scopeValid_ops :
           have hsuper : s2.scopeEnv ⊆ extendEnvOps s2.scopeEnv opsCommit :=
             Quanta.KOps.KernelOp.extendEnvOps_super _ _
           exact hsuper hcond_s2
-        -- Trailing [cast, branch] at env after opsCommit.
+        -- The else arm (postOps ++ endBreak) at env after opsCommit:
+        -- postOps lifts from s2.scopeEnv via extendEnvOps_super, the
+        -- endBreak suffix is env-independent.
+        have helse : scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
+            (postOps ++ backedgeEndBreak (tailReenters 0 rest) postOps) := by
+          apply Quanta.KOps.KernelOp.scopeValidOps_append
+          · apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
+            exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
+          · exact backedgeEndBreak_scopeValid _ _ _
+        -- Trailing [cast, branch (postOps ++ endBreak)] at env after
+        -- opsCommit — castBranch_scopeValid lifts the else arm past
+        -- the cast's env extension.
         have htrail : scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
             [KernelOp.cast s1.nextReg cond .u32 .bool,
-             KernelOp.branch s1.nextReg [] [KernelOp.breakOp]] := by
+             KernelOp.branch s1.nextReg []
+               (postOps ++ backedgeEndBreak (tailReenters 0 rest) postOps)] := by
           apply castBranch_scopeValid
           · exact hcond_ext
           · exact trivial
-          · refine ⟨?_, trivial⟩
-            intro r hr'; simp [KernelOp.usedRegs] at hr'
-        -- postOps at env after [opsCommit ++ cast + branch].
-        have hpost_lift : scopeValidOps
-            (extendEnv (extendEnv (extendEnvOps s2.scopeEnv opsCommit)
-              (.cast s1.nextReg cond .u32 .bool))
-              (.branch s1.nextReg [] [KernelOp.breakOp]))
-            postOps := by
-          apply postOps_after_castBranch_scopeValid
-            (extendEnvOps s2.scopeEnv opsCommit)
-          apply Quanta.KOps.KernelOp.scopeValidOps_mono postOps _ hpost
-          exact Quanta.KOps.KernelOp.extendEnvOps_super _ _
-        -- Now combine: opsCommit ++ [cast, branch] ++ postOps
+          · exact helse
+        -- Combine: opsCommit ++ [cast, branch] (nothing follows the
+        -- branch anymore — the tail lives inside it).
         have hopsCommit_any : scopeValidOps s2.scopeEnv opsCommit :=
           LowerState.commit_ops_scopeValid s2.scopeEnv hc
-        -- Use scopeValidOps_append twice. The shape is
-        -- (opsCommit ++ [cast, branch]) ++ postOps.
-        -- But h_ops gave us opsCommit ++ [cast, branch] ++ postOps which
-        -- is right-associative; reassociate via List.append_assoc.
-        -- Goal: scopeValidOps s2.scopeEnv
-        --   (opsCommit ++ (cast :: branch :: postOps)).
         apply Quanta.KOps.KernelOp.scopeValidOps_append
         · exact hopsCommit_any
-        · -- (cast :: branch :: postOps) = [cast, branch] ++ postOps.
-          show scopeValidOps (extendEnvOps s2.scopeEnv opsCommit)
-            ([KernelOp.cast s1.nextReg cond .u32 .bool,
-              KernelOp.branch s1.nextReg [] [KernelOp.breakOp]] ++ postOps)
-          apply Quanta.KOps.KernelOp.scopeValidOps_append
-          · exact htrail
-          · show scopeValidOps
-              (extendEnvOps (extendEnvOps s2.scopeEnv opsCommit)
-                [KernelOp.cast s1.nextReg cond .u32 .bool,
-                 KernelOp.branch s1.nextReg [] [KernelOp.breakOp]])
-              postOps
-            simp only [extendEnvOps]
-            exact hpost_lift
+        · exact htrail
       · -- depth > 0
         simp [h0] at h
         by_cases hla : hasLoopAbove frames depth

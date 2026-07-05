@@ -242,13 +242,15 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
           | none => none
           | some .loopK =>
               if depth = 0 then do
+                -- Tail nests into the else arm + end-of-body Break
+                -- rule — see the Stage-A arm in `lowerInstrs`.
                 let (cond_bool, s_cast) := s1.alloc
                 let (s2, postOps) ← lowerInstrsP fuel frames ⟨s_cast, s.pending⟩ rest
                 pure (s2,
                   opsCommit
                   ++ [.cast cond_bool cond .u32 .bool,
-                      .branch cond_bool [] [.breakOp]]
-                  ++ postOps)
+                      .branch cond_bool []
+                        (postOps ++ backedgeEndBreak (tailReenters 0 rest) postOps)])
               else if hasLoopAbove frames depth then do
                 let (cond_bool, s_cast) := s1.alloc
                 let (s2, postOps) ← lowerInstrsP fuel frames ⟨s_cast, s.pending⟩ rest

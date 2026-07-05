@@ -637,6 +637,67 @@ def hasLoopAbove (frames : List FrameKind) (depth : Nat) : Bool :=
 def loopsAbove (frames : List FrameKind) (depth : Nat) : Nat :=
   ((frames.take depth).filter (· = .loopK)).length
 
+/-- Does an op list end in an unconditional `.breakOp`? Mirrors the
+    `matches!(else_ops.last(), Some(KernelOp::Break))` half of
+    `tail_exits_or_continues` in `reconstruct_loop_backedges`
+    (lower.rs): a backedge wrap whose lowered tail already exits
+    must not append a second exit `Break`. -/
+def endsInBreak : List KernelOp → Bool
+  | [] => false
+  | [.breakOp] => true
+  | [_] => false
+  | _ :: op :: rest => endsInBreak (op :: rest)
+
+/-- Scan the instruction tail after a depth-0 loop backedge for a
+    same-level branch back to the enclosing loop: an explicit
+    continue (`br 0` — production's `continue_pos` recording in the
+    `RawInstr::Br` loop-target arm) or a LATER backedge record
+    (`br_if 0` — production's reverse `last_record` walk in
+    `reconstruct_loop_backedges` appends the exit `Break` only to the
+    last record's tail; every earlier record's tail terminates in the
+    later record's composite). Either way the wrap for THIS backedge
+    must not append its exit `Break`: the tail's fall-through is the
+    loop's continue path, not the wasm loop-end exit.
+
+    `d` tracks the nesting depth of structured openers within the
+    tail — only same-level (`d = 0`) branches at label depth 0 target
+    the enclosing loop; a `br 0`/`br_if 0` inside a nested frame
+    targets that frame, and deeper-label branches to the loop are not
+    recorded by production either (they keep the historical eager
+    emission). -/
+def tailReenters (d : Nat) : List WasmInstr → Bool
+  | [] => false
+  | i :: rest =>
+    match i with
+    | .block _ | .wloop _ | .wif _ => tailReenters (d + 1) rest
+    | .wend =>
+        match d with
+        | 0 => false          -- current frame closed; nothing later
+        | d' + 1 => tailReenters d' rest
+    | .br 0 => if d = 0 then true else tailReenters d rest
+    | .brIf 0 => if d = 0 then true else tailReenters d rest
+    | _ => tailReenters d rest
+
+/-- The exit-`Break` suffix a depth-0 loop-backedge wrap appends to
+    its else arm. Mirrors the `last_record && !tail_exits_or_continues`
+    append in `reconstruct_loop_backedges` (lower.rs): the wrapped
+    tail runs on the `!cond` exit path, and falling off the wasm loop
+    end exits — but Quanta's structured Loop auto-continues on body
+    fall-through, so an explicit `Break` seals the exit. Skipped when
+    the tail re-enters the loop (`reenters` — explicit continue or a
+    later backedge record) or already exits (`endsInBreak`). -/
+def backedgeEndBreak (reenters : Bool) (postOps : List KernelOp) : List KernelOp :=
+  match reenters with
+  | true  => []
+  | false => if endsInBreak postOps then [] else [.breakOp]
+
+@[simp] theorem tailReenters_nil (d : Nat) : tailReenters d [] = false := rfl
+
+@[simp] theorem endsInBreak_nil : endsInBreak [] = false := rfl
+
+@[simp] theorem backedgeEndBreak_false_nil :
+    backedgeEndBreak false [] = [.breakOp] := rfl
+
 /-- Lower a list of WASM instructions, threading state. Concatenates
     the per-instr op lists. `none` if any single op refuses or stack
     underflows.
@@ -668,9 +729,18 @@ def loopsAbove (frames : List FrameKind) (depth : Nat) : Nat :=
       slice).
 
     `brIf depth` lowering:
-    * target is Loop, `depth = 0`: emit
-      `[.branch cond [] [.breakOp]]` — break on `!cond`. The cond
-      register is committed beforehand. Continues with `rest`.
+    * target is Loop, `depth = 0`: the lowered rest-of-body nests
+      INTO the branch's else arm —
+      `[.branch cond [] (postOps ++ backedgeEndBreak …)]` — so the
+      tail runs exactly when the backedge does not fire (mirrors
+      `reconstruct_loop_backedges` in lower.rs). On `cond` the empty
+      then-arm falls through the loop end and auto-continues; on
+      `!cond` the else arm runs the tail and then Breaks out, unless
+      the tail already exits or re-enters the loop. The cond register
+      is committed beforehand. With an empty tail this reduces
+      byte-for-byte to the historical eager
+      `[.branch cond [] [.breakOp]]` (see
+      `lowerInstrs_brIf0_loop_empty_tail`).
     * target is non-Loop with Loop between: emit
       `[.branch cond [.breakOp] []]` — break on `cond`. Continues.
     * else: refuse with `none`.
@@ -800,17 +870,24 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
           | none => none
           | some .loopK =>
               if depth = 0 then do
-                -- br_if 0 to Loop: continue if cond, break if !cond.
-                -- Cast cond from u32 to bool before .branch reads it
-                -- (the WASM-route cmp pipeline emits u32 results;
-                -- `.branch`'s evalOp expects vBool).
+                -- br_if 0 to Loop: continue if cond, run the rest of
+                -- the body on the exit path if !cond. The lowered
+                -- tail nests INTO the branch's else arm (mirrors
+                -- `reconstruct_loop_backedges` in lower.rs): emitting
+                -- it after the branch would run it unconditionally on
+                -- every iteration. The else arm gains a trailing exit
+                -- `Break` unless the tail already exits or re-enters
+                -- the loop (`backedgeEndBreak`). Cast cond from u32
+                -- to bool before .branch reads it (the WASM-route cmp
+                -- pipeline emits u32 results; `.branch`'s evalOp
+                -- expects vBool).
                 let (cond_bool, s_cast) := s1.alloc
                 let (s2, postOps) ← lowerInstrs fuel frames s_cast rest
                 pure (s2,
                   opsCommit
                   ++ [.cast cond_bool cond .u32 .bool,
-                      .branch cond_bool [] [.breakOp]]
-                  ++ postOps)
+                      .branch cond_bool []
+                        (postOps ++ backedgeEndBreak (tailReenters 0 rest) postOps)])
               else if hasLoopAbove frames depth then do
                 -- br_if to outer Loop with another Loop between:
                 -- break the inner loop on cond.
@@ -860,5 +937,115 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
           let (s1, ops1) ← lowerInstr s i
           let (s2, ops2) ← lowerInstrs fuel frames s1 rest
           pure (s2, ops1 ++ ops2)
+
+/-- Empty-tail reduction: when the backedge `br_if 0` is the loop
+    body's last instruction (the ubiquitous rustc `while`-loop shape
+    — every previously-modeled kernel), the nested emission reduces
+    byte-for-byte to the historical eager shape
+    `opsCommit ++ [.cast …, .branch cond_bool [] [.breakOp]]`:
+    the tail lowers to no ops, `tailReenters`/`endsInBreak` are both
+    false, and `backedgeEndBreak` supplies exactly the old `[.breakOp]`
+    else arm. Previously-proven kernels are therefore unaffected by
+    the tail-nesting re-sync. -/
+theorem lowerInstrs_brIf0_loop_empty_tail
+    (fuel : Nat) (frames : List FrameKind) (s : LowerState)
+    (h_target : frames.get? 0 = some .loopK) :
+    lowerInstrs fuel frames s [.brIf 0] =
+      (do
+        let (svCond, s0) ← s.popSym
+        let (cond, s1, opsCommit) ← s0.commit svCond
+        let (cond_bool, s_cast) := s1.alloc
+        pure (s_cast,
+          opsCommit ++ [.cast cond_bool cond .u32 .bool,
+                        .branch cond_bool [] [.breakOp]])) := by
+  simp only [lowerInstrs]
+  rcases hpop : s.popSym with _ | ⟨svCond, s0⟩
+  · rfl
+  simp only [Option.bind_eq_bind, Option.some_bind]
+  rcases hcommit : s0.commit svCond with _ | ⟨cond, s1, opsCommit⟩
+  · rfl
+  simp only [Option.some_bind]
+  rw [h_target]
+  simp [lowerInstrs, LowerState.alloc, backedgeEndBreak, endsInBreak]
+
+-- ════════════════════════════════════════════════════════════════════
+-- Backedge tail-nesting pins
+--
+-- Behavioral pins for the depth-0 loop-backedge arm's nested emission
+-- (the `reconstruct_loop_backedges` re-sync). One pin per facet of
+-- the end-of-body Break rule; all decided by evaluation.
+-- ════════════════════════════════════════════════════════════════════
+
+section BackedgePins
+
+/-- `KernelOp` is a nested inductive, so `DecidableEq` cannot derive;
+    compare through `Repr` (injective on these first-order values). -/
+private def pinEq {α : Type} [Repr α] (a b : α) : Bool :=
+  toString (repr a) == toString (repr b)
+
+/-- Fall-through tail: the lowered rest-of-body (`localSet`'s
+    zero-init + dual-Copy) nests INTO the else arm, and the exit
+    `Break` is appended after it (the tail would otherwise fall off
+    the wasm loop end into the structured Loop's auto-continue). -/
+example :
+    pinEq
+      (lowerInstrs 4 [.loopK] LowerState.empty
+        [.i32Const 1, .brIf 0, .i32Const 5, .localSet 0])
+      (some ({ LowerState.empty with
+                nextReg := 5,
+                localReg := [(0, 4)], localTy := [(0, .i32)],
+                currentReg := [(0, 3)] },
+        [.const 0 (.i32 1),
+         .cast 1 0 .u32 .bool,
+         .branch 1 []
+           [.const 2 (.i32 5), .const 3 (.i32 0), .copy 3 2, .copy 4 3,
+            .breakOp]])) = true := by native_decide
+
+/-- Explicit continue: the tail ends in `br 0` (production records
+    `continue_pos`), so its fall-through re-enters the loop — no exit
+    `Break` is appended. -/
+example :
+    pinEq
+      (lowerInstrs 4 [.loopK] LowerState.empty
+        [.i32Const 1, .brIf 0, .i32Const 5, .localSet 0, .br 0])
+      (some ({ LowerState.empty with
+                nextReg := 5,
+                localReg := [(0, 4)], localTy := [(0, .i32)],
+                currentReg := [(0, 3)] },
+        [.const 0 (.i32 1),
+         .cast 1 0 .u32 .bool,
+         .branch 1 []
+           [.const 2 (.i32 5), .const 3 (.i32 0), .copy 3 2, .copy 4 3]]))
+      = true := by native_decide
+
+/-- Later backedge: a second `br_if 0` in the tail makes the FIRST
+    record non-last (production's reverse `last_record` walk) — the
+    outer else arm terminates in the inner composite and gets no
+    `Break` of its own; the inner (last) record gets the usual one. -/
+example :
+    pinEq
+      (lowerInstrs 4 [.loopK] LowerState.empty
+        [.i32Const 1, .brIf 0, .i32Const 1, .brIf 0])
+      (some ({ LowerState.empty with nextReg := 4 },
+        [.const 0 (.i32 1),
+         .cast 1 0 .u32 .bool,
+         .branch 1 []
+           [.const 2 (.i32 1),
+            .cast 3 2 .u32 .bool,
+            .branch 3 [] [.breakOp]]])) = true := by native_decide
+
+/-- Tail already exits: a multi-loop-crossing `br` lowers to
+    `[.breakOp]`, so the wrapped tail ends in an unconditional Break
+    (`endsInBreak`) and no second exit `Break` is appended. -/
+example :
+    pinEq
+      (lowerInstrs 4 [.loopK, .loopK, .block] LowerState.empty
+        [.i32Const 1, .brIf 0, .br 2])
+      (some ({ LowerState.empty with nextReg := 2 },
+        [.const 0 (.i32 1),
+         .cast 1 0 .u32 .bool,
+         .branch 1 [] [.breakOp]])) = true := by native_decide
+
+end BackedgePins
 
 end Quanta.Wasm
