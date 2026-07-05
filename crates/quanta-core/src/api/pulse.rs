@@ -88,6 +88,20 @@ pub struct OcclusionQuery {
 }
 
 impl OcclusionQuery {
+    /// Construct a live query set over a driver handle. Internal hook
+    /// for the `quanta-render` sibling crate
+    /// (`RenderGpu::occlusion_query_create`); not part of the stable
+    /// public surface.
+    #[doc(hidden)]
+    pub fn __new(handle: u64, count: u32, device: Arc<dyn GpuDevice>) -> Self {
+        Self {
+            handle,
+            count,
+            device,
+            live: true,
+        }
+    }
+
     /// The underlying query set handle.
     pub fn handle(&self) -> u64 {
         self.handle

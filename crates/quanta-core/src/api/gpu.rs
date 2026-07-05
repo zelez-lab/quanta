@@ -6,14 +6,8 @@ use crate::{
     Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, QuantaError,
     ResourceState, Texture, TextureDesc, TextureView, TextureViewDesc, TimestampQuery,
 };
-// Used only by the render-gated render_target / msaa_target helpers (085).
-#[cfg(feature = "render")]
-use crate::TextureUsage;
-
 #[cfg(feature = "compute")]
 mod compute;
-#[cfg(feature = "render")]
-mod render;
 
 /// A GPU device handle. The main entry point for Quanta.
 ///
@@ -254,44 +248,6 @@ impl Gpu {
         })
     }
 
-    /// Create a render target texture (can be drawn to and read from shaders).
-    /// Render-only (step 085): also offered via `quanta_render::RenderGpu`.
-    #[cfg(feature = "render")]
-    pub fn render_target(
-        &self,
-        width: u32,
-        height: u32,
-        format: Format,
-    ) -> Result<Texture, QuantaError> {
-        self.create_texture(&TextureDesc {
-            width,
-            height,
-            format,
-            usage: TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
-            ..TextureDesc::default()
-        })
-    }
-
-    /// Create an MSAA render target.
-    /// Render-only (step 085).
-    #[cfg(feature = "render")]
-    pub fn msaa_target(
-        &self,
-        width: u32,
-        height: u32,
-        format: Format,
-        samples: u32,
-    ) -> Result<Texture, QuantaError> {
-        self.create_texture(&TextureDesc {
-            width,
-            height,
-            format,
-            sample_count: samples,
-            usage: TextureUsage::RENDER_TARGET,
-            ..TextureDesc::default()
-        })
-    }
-
     /// Create a reusable sampler.
     pub fn sampler(
         &self,
@@ -300,21 +256,6 @@ impl Gpu {
         let mut sampler = self.inner.sampler_create(desc)?;
         sampler.device = Some(self.inner.clone());
         Ok(sampler)
-    }
-
-    /// Resolve an MSAA texture to a single-sample texture.
-    ///
-    /// The source must be a multi-sampled render target, and the destination
-    /// must be a single-sample texture of the same dimensions and format.
-    /// Render-only (step 085).
-    #[cfg(feature = "render")]
-    pub fn resolve_texture(
-        &self,
-        msaa_src: &Texture,
-        resolve_dst: &Texture,
-    ) -> Result<(), QuantaError> {
-        self.inner
-            .resolve_texture(msaa_src.handle(), resolve_dst.handle())
     }
 
     // === Sync ===
@@ -436,15 +377,6 @@ impl Gpu {
     pub fn texture_view_destroy(&self, mut view: TextureView) -> Result<(), QuantaError> {
         view.live = false;
         self.inner.texture_view_destroy(view.handle())
-    }
-
-    // === M2.6: Stencil read-back ===
-
-    /// Read stencil buffer contents from a depth/stencil texture.
-    /// Render-only (step 085).
-    #[cfg(feature = "render")]
-    pub fn stencil_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
-        self.inner.stencil_read(texture.handle())
     }
 
     // === M5.1: Sparse textures ===

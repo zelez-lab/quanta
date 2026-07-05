@@ -28,7 +28,7 @@
 
 use alloc::sync::Arc;
 
-use crate::{GpuDevice, QuantaError};
+use quanta_core::{GpuDevice, QuantaError};
 
 /// Maximum vertices per meshlet — Vulkan EXT minimum + Metal 3 cap.
 pub const MAX_MESH_VERTICES: u32 = 256;

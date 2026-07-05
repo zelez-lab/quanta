@@ -6,6 +6,8 @@
 //! Part B: `Gpu::create_surface` → acquire → render → present.
 //! Requires a GPU; skips gracefully if none available.
 
+use quanta::RenderGpu;
+
 use quanta::{Format, NativeTextureHandle, QuantaErrorKind, SurfaceConfig, SurfaceTarget};
 
 fn try_gpu() -> Option<quanta::Gpu> {

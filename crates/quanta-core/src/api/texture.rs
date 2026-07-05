@@ -26,6 +26,16 @@ pub struct Texture {
 }
 
 impl Texture {
+    /// Attach the owning device Arc so Drop can release the handle
+    /// (and `write`/`read` can reach the driver). Internal hook for
+    /// the `quanta-render` sibling crate, which receives detached
+    /// `Texture`s from `GpuDevice::surface_acquire`; not part of the
+    /// stable public surface.
+    #[doc(hidden)]
+    pub fn __attach_device(&mut self, device: Arc<dyn GpuDevice>) {
+        self.device = Some(device);
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }

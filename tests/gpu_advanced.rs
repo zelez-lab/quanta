@@ -5,6 +5,8 @@
 //! Tests: ray tracing, mesh shaders, sparse textures, indirect buffers, bindless.
 //! Requires a GPU; skips gracefully if none available.
 
+use quanta::RenderGpu;
+
 use quanta::ray_tracing::RayTracingPipelineDesc;
 use quanta::{Format, TextureDesc, TextureUsage};
 

@@ -9,6 +9,8 @@
 
 #![cfg(feature = "software")]
 
+use quanta::RenderGpu;
+
 use quanta::{MAX_PATCH_SIZE, MAX_TESS_LEVEL, TessTopology};
 
 #[test]

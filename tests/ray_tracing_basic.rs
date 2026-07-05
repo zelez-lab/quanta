@@ -10,6 +10,8 @@
 
 #![cfg(feature = "software")]
 
+use quanta::RenderGpu;
+
 use quanta::{AsKind, GeometryDesc, MAX_DISPATCH_DIM, MAX_RECURSION_DEPTH, RayTracingPipelineDesc};
 
 fn dummy_geom(gpu: &quanta::Gpu) -> GeometryDesc {

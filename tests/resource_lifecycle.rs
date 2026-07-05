@@ -10,6 +10,8 @@
 //!
 //! Requires a GPU; skips gracefully if none available.
 
+use quanta::RenderGpu;
+
 use quanta::{Color, Format, SamplerDesc, TextureDesc, TextureUsage, TextureViewDesc};
 
 fn try_gpu() -> Option<quanta::Gpu> {

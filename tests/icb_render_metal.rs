@@ -14,6 +14,8 @@
 //! appends one entry) is satisfied at the recording level
 //! regardless of whether a render pass is later actually run.
 
+use quanta::RenderGpu;
+
 fn try_apple_gpu() -> Option<quanta::Gpu> {
     quanta::init()
         .ok()

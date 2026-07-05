@@ -9,6 +9,8 @@
 //!
 //! All tests verify pixel output mathematically — no golden images.
 
+use quanta::RenderGpu;
+
 use quanta::render_pass::ColorTarget;
 use quanta::{Color, FieldUsage, Format, LoadOp, StoreOp};
 

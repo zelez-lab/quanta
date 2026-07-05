@@ -15,16 +15,16 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::render_pass::{ColorTarget, DepthTarget};
-use crate::texture::SamplerDesc;
-use crate::{
+use quanta_core::render_pass::{ColorTarget, DepthTarget};
+use quanta_core::texture::SamplerDesc;
+use quanta_core::{
     Color, Field, GpuDevice, OcclusionQuery, Pipeline, Pulse, QuantaError, RenderPass, ShadingRate,
     Texture,
 };
 
 /// A chainable render pass builder.
 ///
-/// Created by [`Gpu::render()`]. Every method consumes and returns `self`,
+/// Created by [`RenderGpu::render`](crate::RenderGpu::render). Every method consumes and returns `self`,
 /// so the entire pass can be expressed as a single expression ending in
 /// `.pulse()`.
 pub struct RenderBuilder {

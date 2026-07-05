@@ -2,58 +2,82 @@
 //!
 //! The graphics half of Quanta: render passes, graphics pipelines,
 //! textures-as-render-targets, tessellation, mesh shaders, ray tracing,
-//! and variable-rate shading. Depends on the compute substrate crate
-//! [`quanta`]; the dependency is one-directional (`quanta-render → quanta`,
-//! never the reverse — step 085).
+//! and variable-rate shading. Builds on the shared substrate crate
+//! `quanta-core` (with its `render` feature on) — never on the compute
+//! stack. The dependency is one-directional and the graph proves it: a
+//! render-only consumer's tree contains no kernel lowering, no JIT, no
+//! WASM machinery.
 //!
-//! A headless compute consumer depends on `quanta` alone and never
-//! compiles or sees a single rendering type. A graphical consumer adds
-//! this crate and brings the render surface into scope:
+//! A headless compute consumer depends on the `quanta` facade with the
+//! `compute` feature and never compiles or sees a single rendering
+//! type. A graphical consumer depends on this crate (directly, or via
+//! the facade's `render` feature) and brings the render surface into
+//! scope:
 //!
 //! ```ignore
 //! use quanta_render::{vertex, fragment}; // render-stage shader macros
-//! use quanta_render::PipelineDesc;       // render types, re-exported
+//! use quanta_render::{PipelineDesc, RenderGpu};
 //!
-//! let gpu = quanta::init()?;
-//! let pipeline = gpu.pipeline(&desc)?;   // inherent on Gpu under `render`
+//! let gpu = quanta_render::init()?;      // device line, re-exported
+//! let pipeline = gpu.pipeline(&desc)?;   // RenderGpu extension method
 //! ```
 //!
 //! ## How the split works
 //!
-//! Quanta has one device handle (`quanta::Gpu`, wrapping one
-//! `Arc<dyn GpuDevice>`). The compute/render boundary is the **`render`
-//! Cargo feature**, not a separate crate, because the boundary cuts
-//! *through* the driver line: the `GpuDevice` trait itself speaks
-//! `PipelineDesc`/`RenderPass` and all four backends execute render ops, so
-//! the render code physically lives in `quanta` behind `#[cfg(feature =
-//! "render")]`. A headless consumer depends on `quanta` with
-//! `default-features = false` and compiles zero render code — no render
-//! module, type, or `Gpu` method exists on its surface.
+//! Quanta has one device handle ([`Gpu`], from `quanta-core`) wrapping
+//! one `Arc<dyn GpuDevice>`. The `GpuDevice` trait itself speaks the
+//! render *data model* (`PipelineDesc` / `RenderPass` / `RenderOp`) and
+//! all four backends execute render ops, so that data model lives in
+//! `quanta-core` behind its `render` feature. This crate adds
+//! everything a render consumer touches on top of it:
 //!
-//! `quanta-render` is the **front door** for graphical consumers: it builds
-//! `quanta` with `render` on, re-exports the render types and shader macros,
-//! and offers the [`RenderGpu`] marker (see its docs) so render intent can
-//! be named and bounded. The render methods themselves are inherent on
-//! `quanta::Gpu` and become callable once `render` is on. See roadmap 085.
+//! - the [`RenderGpu`] extension trait — the render methods that used
+//!   to be inherent on `Gpu` (`pipeline`, `render`, `render_target`,
+//!   `mesh_pipeline`, …). Sealed; implemented for `quanta_core::Gpu`.
+//! - the typed wrappers whose lifecycles are proven in Lean/Verus:
+//!   [`MeshPipeline`], [`TessellationPipeline`], [`VrsState`],
+//!   [`AccelerationStructure`], [`RayTracingPipeline`], [`Surface`].
+//! - the chainable [`RenderBuilder`].
+//! - the render-stage shader macros, re-exported from `quanta-dsl`.
+//!
+//! The whole `quanta-core` surface is re-exported so this crate is
+//! self-sufficient for a render-only consumer (`init`, fields for
+//! vertex data, textures, sync — all reachable as `quanta_render::…`).
 
 #![no_std]
 
-// Re-export the render-stage shader macros so a render consumer pulls them
-// from `quanta_render` rather than reaching into `quanta`.
+extern crate alloc;
+
+// Re-export the render-stage shader macros so a render consumer pulls
+// them from `quanta_render` rather than reaching into the facade.
 pub use quanta_dsl::{
     Vertex, closest_hit, fragment, mesh, miss, ray_gen, task, tess_control, tess_eval, vertex,
 };
 
-// Re-export the render types from `quanta` (visible because this crate
-// builds `quanta` with the `render` feature on). A render consumer names
-// them through `quanta_render::*`.
-pub use quanta::{
-    AttributeFormat, BlendFactor, BlendOp, ColorTarget, CompareOp, CullMode, DepthTarget,
-    IndirectRenderBundle, MeshPipeline, MeshPipelineDesc, Pipeline, PipelineDesc, PresentMode,
-    Primitive, RenderBuilder, RenderPass, ShaderBinary, ShaderSource, ShaderStage, ShadingRate,
-    StepMode, Surface, SurfaceConfig, SurfaceFrame, SurfaceTarget, TessTopology,
-    TessellationPipeline, VrsState,
-};
+// The shared substrate, wholesale: the device line (`init`, `devices`,
+// `Gpu`, `GpuDevice`), resources (fields, textures, samplers, sync),
+// and — because this crate turns `quanta-core/render` on — the render
+// data model (`PipelineDesc`, `RenderPass`, `ColorTarget`, shader
+// binaries, surface configuration, `IndirectRenderBundle`, …).
+pub use quanta_core::*;
 
 mod gpu_ext;
+mod mesh_shader;
+mod ray_tracing_wrap;
+mod render_builder;
+mod surface_wrap;
+mod tessellation;
+mod vrs_wrap;
+
 pub use gpu_ext::RenderGpu;
+pub use mesh_shader::{
+    MAX_GROUP_COUNT, MAX_MESH_PRIMITIVES, MAX_MESH_VERTICES, MAX_TASK_THREADS, MeshPipeline,
+    MeshPipelineDesc,
+};
+pub use ray_tracing_wrap::{
+    AccelerationStructure, AsKind, MAX_DISPATCH_DIM, MAX_RECURSION_DEPTH, RayTracingPipeline,
+};
+pub use render_builder::RenderBuilder;
+pub use surface_wrap::{Surface, SurfaceFrame};
+pub use tessellation::{MAX_PATCH_SIZE, MAX_TESS_LEVEL, TessTopology, TessellationPipeline};
+pub use vrs_wrap::VrsState;

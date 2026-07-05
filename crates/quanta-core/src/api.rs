@@ -28,23 +28,22 @@ pub mod wave;
 #[cfg(any(feature = "compute", feature = "render"))]
 pub mod icb;
 
-// Render face — only when the `render` feature is on (step 085).
-#[cfg(feature = "render")]
-pub mod mesh_shader;
+// Render data model — only when the `render` feature is on. This is
+// the render surface the `GpuDevice` trait and the drivers speak
+// (pipeline descriptors, the render-pass op stream, shader binaries,
+// surface configuration, shading rates, ray-tracing descriptors).
+// The typed wrappers and the `RenderGpu` extension trait live in the
+// `quanta-render` crate.
 #[cfg(feature = "render")]
 pub mod pipeline;
 #[cfg(feature = "render")]
 pub mod ray_tracing;
-#[cfg(feature = "render")]
-pub mod render_builder;
 #[cfg(feature = "render")]
 pub mod render_pass;
 #[cfg(feature = "render")]
 pub mod shader;
 #[cfg(feature = "render")]
 pub mod surface;
-#[cfg(feature = "render")]
-pub mod tessellation;
 #[cfg(feature = "render")]
 pub mod vrs;
 
@@ -70,27 +69,18 @@ pub use multi_queue::Queue;
 #[cfg(feature = "compute")]
 pub use wave::Wave;
 
-// Render-face re-exports — gated with the `render` feature.
+// Render data-model re-exports — gated with the `render` feature.
 #[cfg(feature = "render")]
 pub use icb::IndirectRenderBundle;
-#[cfg(feature = "render")]
-pub use mesh_shader::{
-    MAX_GROUP_COUNT, MAX_MESH_PRIMITIVES, MAX_MESH_VERTICES, MAX_TASK_THREADS, MeshPipeline,
-    MeshPipelineDesc,
-};
 #[cfg(feature = "render")]
 pub use pipeline::*;
 #[cfg(feature = "render")]
 pub use ray_tracing::*;
 #[cfg(feature = "render")]
-pub use render_builder::RenderBuilder;
-#[cfg(feature = "render")]
 pub use render_pass::*;
 #[cfg(feature = "render")]
 pub use shader::{ShaderBinary, ShaderStage};
 #[cfg(feature = "render")]
-pub use surface::{PresentMode, Surface, SurfaceConfig, SurfaceFrame, SurfaceTarget};
+pub use surface::{PresentMode, SurfaceConfig, SurfaceTarget};
 #[cfg(feature = "render")]
-pub use tessellation::{MAX_PATCH_SIZE, MAX_TESS_LEVEL, TessTopology, TessellationPipeline};
-#[cfg(feature = "render")]
-pub use vrs::{ShadingRate, VrsState};
+pub use vrs::ShadingRate;

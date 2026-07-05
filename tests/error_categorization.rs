@@ -10,6 +10,8 @@
 
 #![cfg(feature = "software")]
 
+use quanta::RenderGpu;
+
 use quanta::{QuantaError, QuantaErrorKind};
 
 #[test]

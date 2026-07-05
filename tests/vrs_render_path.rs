@@ -13,6 +13,8 @@
 //! Skips quietly when no GPU is available (per the gpu_render.rs
 //! convention).
 
+use quanta::RenderGpu;
+
 use quanta::{Format, QuantaErrorKind, ShadingRate};
 
 fn try_gpu() -> Option<quanta::Gpu> {

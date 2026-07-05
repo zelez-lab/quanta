@@ -9,6 +9,8 @@
 
 #![cfg(feature = "software")]
 
+use quanta::RenderGpu;
+
 use quanta::ShadingRate;
 
 #[test]

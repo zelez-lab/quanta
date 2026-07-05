@@ -198,6 +198,21 @@ pub struct IndirectRenderBundle {
 
 #[cfg(feature = "render")]
 impl IndirectRenderBundle {
+    /// Construct an empty live bundle over a driver handle. Internal
+    /// hook for the `quanta-render` sibling crate
+    /// (`RenderGpu::render_bundle`); not part of the stable public
+    /// surface.
+    #[doc(hidden)]
+    pub fn __new(handle: u64, cap: u32, device: Arc<dyn GpuDevice>) -> Self {
+        Self {
+            handle,
+            cap,
+            recorded: 0,
+            device,
+            live: true,
+        }
+    }
+
     /// Underlying device handle.
     pub fn handle(&self) -> u64 {
         self.handle

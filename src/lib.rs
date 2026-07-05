@@ -48,8 +48,11 @@
 //!   drivers, fields/textures/sync). Re-exported wholesale here.
 //! - the compute face — `#[quanta::kernel]` / waves / the scan
 //!   library, compiled in behind the `compute` feature.
-//! - the render face — the render data model and typed wrappers from
-//!   `quanta-core`, compiled in behind the `render` feature.
+//! - `quanta-render` — the render face (`RenderGpu`, typed wrappers,
+//!   render-stage macros), re-exported here behind the `render`
+//!   feature. Render-only consumers (e.g. a UI toolkit) can depend on
+//!   `quanta-render` directly and never pull the compute stack into
+//!   their dependency graph.
 
 #![no_std]
 
@@ -122,25 +125,10 @@ pub use quanta_dsl::Fields;
 #[cfg(feature = "compute")]
 pub use quanta_dsl::Uniforms;
 
-// Render-stage shader macros — only when the `render` feature is on.
-// (`quanta-render` enables it; a headless build omits them entirely.)
+// Render face — the `quanta-render` crate, re-exported wholesale so
+// `use quanta::*` covers render consumers that come through the
+// facade. This brings in the render-stage shader macros, the typed
+// render wrappers, and the `RenderGpu` extension trait alongside the
+// render data model re-exported from `quanta-core` above.
 #[cfg(feature = "render")]
-pub use quanta_dsl::Vertex;
-#[cfg(feature = "render")]
-pub use quanta_dsl::closest_hit;
-#[cfg(feature = "render")]
-pub use quanta_dsl::fragment;
-#[cfg(feature = "render")]
-pub use quanta_dsl::mesh;
-#[cfg(feature = "render")]
-pub use quanta_dsl::miss;
-#[cfg(feature = "render")]
-pub use quanta_dsl::ray_gen;
-#[cfg(feature = "render")]
-pub use quanta_dsl::task;
-#[cfg(feature = "render")]
-pub use quanta_dsl::tess_control;
-#[cfg(feature = "render")]
-pub use quanta_dsl::tess_eval;
-#[cfg(feature = "render")]
-pub use quanta_dsl::vertex;
+pub use quanta_render::*;

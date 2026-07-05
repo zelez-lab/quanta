@@ -4,6 +4,8 @@
 //! Verifies sampler_create with various configurations.
 //! Requires a GPU; skips gracefully if none available.
 
+use quanta::RenderGpu;
+
 use quanta::{AddressMode, CompareOp, Filter, Format, SamplerDesc};
 
 fn try_gpu() -> Option<quanta::Gpu> {

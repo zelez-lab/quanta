@@ -9,6 +9,8 @@
 
 #![cfg(feature = "software")]
 
+use quanta::RenderGpu;
+
 use quanta::{MAX_GROUP_COUNT, MAX_MESH_PRIMITIVES, MAX_MESH_VERTICES, MeshPipelineDesc};
 
 #[test]

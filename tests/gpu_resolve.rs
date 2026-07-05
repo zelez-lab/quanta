@@ -4,6 +4,8 @@
 //! Verifies resolve_texture between MSAA and single-sample textures.
 //! Requires a GPU; skips gracefully if none available.
 
+use quanta::RenderGpu;
+
 use quanta::Format;
 
 fn try_gpu() -> Option<quanta::Gpu> {

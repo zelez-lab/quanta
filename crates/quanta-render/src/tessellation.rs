@@ -26,7 +26,7 @@
 
 use alloc::sync::Arc;
 
-use crate::{GpuDevice, QuantaError};
+use quanta_core::{GpuDevice, QuantaError};
 
 /// Maximum tessellation factor any axis can request. Matches Vulkan
 /// `maxTessellationGenerationLevel` and Metal `maxTessellationFactor`.

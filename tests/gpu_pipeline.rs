@@ -5,6 +5,8 @@
 //! Uses macro-compiled shaders (SPIR-V + metallib) for cross-platform support.
 //! Requires a GPU; skips gracefully if none available.
 
+use quanta::RenderGpu;
+
 use quanta::{
     BlendState, CullMode, DepthStencilState, Format, PipelineDesc, Primitive, ShaderSource,
 };

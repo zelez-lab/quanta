@@ -20,6 +20,15 @@ impl Pipeline {
     pub fn handle(&self) -> u64 {
         self.handle
     }
+
+    /// Attach the owning device Arc so Drop can release the handle.
+    /// Internal hook for the `quanta-render` sibling crate (drivers
+    /// construct pipelines with `device: None`); not part of the
+    /// stable public surface.
+    #[doc(hidden)]
+    pub fn __attach_device(&mut self, device: Arc<dyn GpuDevice>) {
+        self.device = Some(device);
+    }
 }
 
 impl Drop for Pipeline {

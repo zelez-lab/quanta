@@ -15,6 +15,8 @@
 
 #![cfg(feature = "software")]
 
+use quanta::RenderGpu;
+
 use quanta::{
     PipelineDesc, QuantaErrorKind, ShaderSource, TessSpacing, TessWinding, TessellationDesc,
 };

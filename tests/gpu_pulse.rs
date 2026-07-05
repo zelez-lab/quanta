@@ -4,6 +4,8 @@
 //! Verifies pulse_poll, pulse_wait, and reset behavior.
 //! Requires a GPU; skips gracefully if none available.
 
+use quanta::RenderGpu;
+
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
 }

@@ -1,11 +1,13 @@
-//! Smoke: the render surface is reachable through quanta-render — render
-//! types re-exported, the RenderGpu marker bounds quanta::Gpu, and the
-//! inherent render methods are callable (compile-only).
-use quanta_render::{PipelineDesc, RenderGpu};
+//! Smoke: the render surface is reachable through quanta-render — the
+//! device line and render types re-exported, and the render methods
+//! callable through the sealed `RenderGpu` extension trait
+//! (compile-only).
+use quanta_render::{Gpu, PipelineDesc, RenderGpu};
 
 #[allow(dead_code)]
-fn uses_render_surface(gpu: &quanta::Gpu, desc: &PipelineDesc) {
+fn uses_render_surface(gpu: &Gpu, desc: &PipelineDesc) {
     fn bound<T: RenderGpu>(_: &T) {}
     bound(gpu);
-    let _ = gpu.pipeline(desc); // inherent render method, present under `render`
+    let _ = gpu.pipeline(desc); // RenderGpu extension method
+    let _ = gpu.render_target(4, 4, quanta_render::Format::RGBA8);
 }

@@ -16,6 +16,8 @@
 
 #![cfg(feature = "software")]
 
+use quanta::RenderGpu;
+
 use quanta::kernel::*;
 
 fn build_add_one_kernel() -> Vec<u8> {

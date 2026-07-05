@@ -4,6 +4,8 @@
 //! Verifies rendering to multiple color targets simultaneously.
 //! Requires a GPU; skips gracefully if none available.
 
+use quanta::RenderGpu;
+
 use quanta::render_pass::{ColorTarget, DepthTarget};
 use quanta::{Color, Format, LoadOp, StoreOp, TextureDesc, TextureUsage};
 

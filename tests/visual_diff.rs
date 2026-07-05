@@ -7,6 +7,8 @@
 //!
 //! Requires a GPU; all tests skip gracefully if none available.
 
+use quanta::RenderGpu;
+
 use quanta::render_pass::ColorTarget;
 use quanta::{Color, Format, LoadOp, StoreOp};
 

@@ -1,4 +1,4 @@
-//! Variable rate shading typed API (steps 028 + 029).
+//! Variable rate shading data model (steps 028 + 029).
 //!
 //! VRS lets the renderer reduce shading rate per region. A
 //! `ShadingRate` of `2x2` means one fragment-shader invocation
@@ -10,15 +10,11 @@
 //! - WebGPU: not in W3C — `NotSupported`.
 //! - CPU: software lifecycle only.
 //!
-//! The wrapper enforces the lifecycle proven in `Quanta.Vrs.State`
-//! (Lean) and `quanta-api/vrs_safety.rs` (Verus):
-//!
-//! - `set_rate(rate)` fails if the state is destroyed.
-//! - `Drop` calls `vrs_destroy` exactly once.
-
-use alloc::sync::Arc;
-
-use crate::{GpuDevice, QuantaError};
+//! [`ShadingRate`] lives here because the render-pass op stream
+//! (`RenderOp::SetShadingRate`) the drivers execute carries it. The
+//! typed `VrsState` wrapper — lifecycle proven in `Quanta.Vrs.State`
+//! (Lean) and `quanta-api/vrs_safety.rs` (Verus) — lives in the
+//! `quanta-render` crate.
 
 /// Cross-vendor shading rate. The 7 entries match Vulkan
 /// `VK_KHR_fragment_shading_rate` Tier 1 + Metal Apple Silicon
@@ -68,51 +64,6 @@ impl ShadingRate {
             Self::R2x4 => 4,
             Self::R4x2 => 5,
             Self::R4x4 => 6,
-        }
-    }
-}
-
-/// A typed VRS state — Drop releases the backend handle.
-///
-/// Refines `Quanta.Vrs.State`.
-pub struct VrsState {
-    pub(crate) handle: u64,
-    pub(crate) current: ShadingRate,
-    pub(crate) device: Arc<dyn GpuDevice>,
-    pub(crate) live: bool,
-}
-
-impl VrsState {
-    /// Underlying device handle.
-    pub fn handle(&self) -> u64 {
-        self.handle
-    }
-
-    /// The currently bound shading rate.
-    pub fn current(&self) -> ShadingRate {
-        self.current
-    }
-
-    /// Set the shading rate the next draw will use.
-    ///
-    /// Returns `Err(InvalidParam)` if the state has been destroyed.
-    /// Refines `Quanta.Vrs.State.setRate` and the Verus theorem
-    /// `t7551_set_rate_writes`.
-    pub fn set_rate(&mut self, rate: ShadingRate) -> Result<(), QuantaError> {
-        if !self.live {
-            return Err(QuantaError::invalid_param("VRS state is not live"));
-        }
-        self.device.vrs_set_rate(self.handle, rate.code())?;
-        self.current = rate;
-        Ok(())
-    }
-}
-
-impl Drop for VrsState {
-    fn drop(&mut self) {
-        if self.live {
-            let _ = self.device.vrs_destroy(self.handle);
-            self.live = false;
         }
     }
 }
