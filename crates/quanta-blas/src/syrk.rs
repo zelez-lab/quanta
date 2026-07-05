@@ -52,13 +52,8 @@ mod kernel {
         let gid = quark_id();
         let total = n * n;
         let idx = if gid < total { gid } else { 0u32 };
-        // Divisor provably nonzero (n = 0 never dispatches): without
-        // this, rustc's div-by-zero panic path adds a multi-level `br`
-        // after the K-loop's backedge `br_if` — a structured-control
-        // shape the lowering mishandles. `%` is avoided the same way.
-        let nz = if n == 0u32 { 1u32 } else { n };
-        let row = idx / nz;
-        let col = idx - row * nz;
+        let row = idx / n;
+        let col = idx - row * n;
 
         // Triangle membership as 0/1 masks (no nested ifs, no &&).
         let le = if col <= row { 1u32 } else { 0u32 };
