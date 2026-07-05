@@ -10,7 +10,7 @@ multi-draw instancing, and frame-graph replay.
 a single submit:
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 let mut icb = gpu.indirect_command_buffer(64)?; // capacity = 64 commands
 
@@ -43,13 +43,12 @@ that uses the same color/depth format.
 let mut bundle = gpu.render_bundle(32)?;
 bundle.record_draw(&pipeline, /*vertex_count=*/3, /*instance_count=*/1)?;
 bundle.record_draw(&pipeline, 6, 1)?;
-
-gpu.render(&target)?
-    .clear(Color::BLACK)
-    .execute_bundle(&bundle, /*count=*/2)
-    .pulse()?
-    .wait()?;
 ```
+
+Replay happens inside a render pass via `RenderPass::execute_bundle(&bundle,
+count)`. The chainable `RenderBuilder` does not expose a bundle-replay method
+yet, so today the bundle surface covers recording, capacity bookkeeping, and
+`Drop`-based release; pass-level replay lands with the builder hook.
 
 ## Indirect draws (GPU-written args)
 

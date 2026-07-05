@@ -43,7 +43,7 @@ Not every backend supports the full set — check `supported_shading_rates()`.
 Create a `VrsState` once and update it as you traverse the scene:
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 let mut vrs = gpu.vrs_state()?;  // starts at R1x1
 vrs.set_rate(ShadingRate::R2x2)?;
@@ -61,9 +61,9 @@ gpu.render(&target)?
     .clear(Color::BLACK)
     .pipeline(&pipeline)
     .vertices(0, &vb)
-    .set_shading_rate(ShadingRate::R2x2) // pipeline-rate before this draw
+    .shading_rate(ShadingRate::R2x2) // pipeline-rate before this draw
     .draw(3)
-    .set_shading_rate(ShadingRate::R1x1)
+    .shading_rate(ShadingRate::R1x1)
     .draw(3)
     .pulse()?
     .wait()?;
@@ -73,7 +73,8 @@ For per-tile rates (e.g. lower rate at the edges of a foveated render), upload
 a one-byte-per-tile texture and bind it:
 
 ```rust
-pass.set_shading_rate_image(&rate_texture);
+// in the builder chain:
+.shading_rate_image(&rate_texture)
 ```
 
 The texture format and tile size are backend-specific — see the per-backend

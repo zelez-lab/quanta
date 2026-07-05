@@ -114,10 +114,13 @@ fn lighting_fragment(
 
 ## Host code
 
+The render methods (`gpu.render_target`, `gpu.pipeline`, `gpu.render`) live
+on the `RenderGpu` extension trait — bring it into scope (or `use quanta::*;`).
+
 ```rust
 use quanta::{
-    Color, ColorTarget, DepthStencilState, Format, LoadOp, PipelineDesc, StoreOp,
-    TextureDesc, TextureUsage,
+    Color, ColorTarget, DepthStencilState, DepthTarget, Format, PipelineDesc,
+    RenderGpu, ShaderSource, TextureDesc, TextureUsage,
 };
 
 fn main() {
@@ -130,58 +133,59 @@ fn main() {
     let gbuf_albedo = gpu.render_target(w, h, Format::RGBA8).unwrap();
     let gbuf_normal = gpu.render_target(w, h, Format::RGBA16Float).unwrap();
     let gbuf_position = gpu.render_target(w, h, Format::RGBA32Float).unwrap();
-    let gbuf_depth = gpu.create_texture(&TextureDesc {
-        width: w,
-        height: h,
-        format: Format::Depth32Float,
-        usage: TextureUsage::RENDER_TARGET,
-        ..TextureDesc::default()
-    }).unwrap();
+    let gbuf_depth = gpu.create_texture(
+        &TextureDesc::new(w, h, Format::Depth32Float)
+            .with_usage(TextureUsage::RENDER_TARGET),
+    ).unwrap();
 
     // --- G-buffer pipeline: 3 color attachments + depth ---
-    let gbuf_pipeline = gpu.pipeline(&PipelineDesc {
-        vertex: gbuffer_vertex().for_vendor(gpu.caps().vendor).unwrap(),
-        fragment: gbuffer_fragment().for_vendor(gpu.caps().vendor).unwrap(),
-        vertex_entry: "gbuffer_vertex",
-        fragment_entry: "gbuffer_fragment",
-        color_formats: vec![Format::RGBA8, Format::RGBA16Float, Format::RGBA32Float],
-        depth_format: Some(Format::Depth32Float),
-        depth_stencil: DepthStencilState::DEPTH_LESS,
-        ..PipelineDesc::default()
-    }).unwrap();
+    // #[quanta::vertex] fn gbuffer_vertex generates the
+    // GBUFFER_VERTEX_SHADER static (a multi-vendor ShaderBinary).
+    let gbuf_pipeline = gpu.pipeline(
+        &PipelineDesc::new(ShaderSource::Binaries {
+            vertex: &GBUFFER_VERTEX_SHADER,
+            fragment: &GBUFFER_FRAGMENT_SHADER,
+        })
+        .with_entries("gbuffer_vertex", "gbuffer_fragment")
+        .with_color_formats(vec![Format::RGBA8, Format::RGBA16Float, Format::RGBA32Float])
+        .with_depth_format(Format::Depth32Float)
+        .with_depth_stencil(DepthStencilState::DEPTH_LESS),
+    ).unwrap();
 
     // --- G-buffer pass: render geometry into 3 targets ---
-    let mut pass = gpu.render_begin(&gbuf_albedo).unwrap();
-    pass.set_color_targets(vec![
-        ColorTarget { texture: gbuf_albedo.handle(), load_op: LoadOp::Clear(Color::BLACK), store_op: StoreOp::Store },
-        ColorTarget { texture: gbuf_normal.handle(), load_op: LoadOp::Clear(Color::BLACK), store_op: StoreOp::Store },
-        ColorTarget { texture: gbuf_position.handle(), load_op: LoadOp::Clear(Color::BLACK), store_op: StoreOp::Store },
-    ]);
-    pass.clear_depth(1.0);
-    pass.set_pipeline(&gbuf_pipeline);
-    // ... bind vertex buffers, uniforms, draw geometry ...
-    pass.draw(vertex_count);
-    let mut pulse = gpu.render_end(pass).unwrap();
+    // ColorTarget::new defaults to LoadOp::Clear(Color::BLACK) + StoreOp::Store.
+    let mut pulse = gpu.render(&gbuf_albedo).unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&gbuf_albedo),
+            ColorTarget::new(&gbuf_normal),
+            ColorTarget::new(&gbuf_position),
+        ])
+        .depth_target(DepthTarget::new(&gbuf_depth))
+        .clear_depth(1.0)
+        .pipeline(&gbuf_pipeline)
+        // ... bind vertex buffers, uniforms ...
+        .draw(vertex_count)
+        .pulse().unwrap();
     pulse.wait().unwrap();
 
     // --- Lighting pipeline: fullscreen, reads G-buffer textures ---
-    let light_pipeline = gpu.pipeline(&PipelineDesc {
-        vertex: fullscreen_vertex().for_vendor(gpu.caps().vendor).unwrap(),
-        fragment: lighting_fragment().for_vendor(gpu.caps().vendor).unwrap(),
-        vertex_entry: "fullscreen_vertex",
-        fragment_entry: "lighting_fragment",
-        ..PipelineDesc::default()
-    }).unwrap();
+    let light_pipeline = gpu.pipeline(
+        &PipelineDesc::new(ShaderSource::Binaries {
+            vertex: &FULLSCREEN_VERTEX_SHADER,
+            fragment: &LIGHTING_FRAGMENT_SHADER,
+        })
+        .with_entries("fullscreen_vertex", "lighting_fragment"),
+    ).unwrap();
 
     let final_target = gpu.render_target(w, h, Format::BGRA8).unwrap();
-    let mut pass = gpu.render_begin(&final_target).unwrap();
-    pass.set_pipeline(&light_pipeline);
-    pass.set_texture(0, &gbuf_albedo);
-    pass.set_texture(1, &gbuf_normal);
-    pass.set_texture(2, &gbuf_position);
-    // ... bind light uniforms ...
-    pass.draw(3); // Fullscreen triangle
-    let mut pulse = gpu.render_end(pass).unwrap();
+    let mut pulse = gpu.render(&final_target).unwrap()
+        .pipeline(&light_pipeline)
+        .texture(0, &gbuf_albedo)
+        .texture(1, &gbuf_normal)
+        .texture(2, &gbuf_position)
+        // ... bind light uniforms ...
+        .draw(3) // Fullscreen triangle
+        .pulse().unwrap();
     pulse.wait().unwrap();
 }
 ```

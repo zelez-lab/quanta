@@ -109,8 +109,8 @@ fn double(input: &[f32], output: &mut [f32]) {
 
 fn main() -> Result<(), quanta::QuantaError> {
     let gpu = quanta::init()?;                      // 1. init
-    let input = gpu.compute_field::<f32>(1024)?;    // 2. allocate
-    let output = gpu.compute_field::<f32>(1024)?;
+    let input = gpu.field::<f32>(1024)?;            // 2. allocate
+    let output = gpu.field::<f32>(1024)?;
     input.write(&data)?;                            // 3. upload
 
     let mut wave = double(&gpu)?;                   // 4. compile
@@ -141,8 +141,8 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `wgpu::Instance::new(Backends::all())` | `quanta::init()` |
 | `instance.request_adapter()` | `quanta::init()` (automatic) |
 | `adapter.request_device()` | `quanta::init()` (automatic) |
-| `device.create_buffer(...)` | `gpu.compute_field::<T>(n)` |
-| `device.create_buffer_init(...)` | `gpu.compute_field(n)` + `field.write(&data)` |
+| `device.create_buffer(...)` | `gpu.field::<T>(n)` |
+| `device.create_buffer_init(...)` | `gpu.field(n)` + `field.write(&data)` |
 | `device.create_shader_module(wgsl)` | `#[quanta::kernel]` (compile-time) |
 | `device.create_compute_pipeline(...)` | automatic (inside `#[quanta::kernel]`) |
 | `device.create_bind_group_layout(...)` | not needed |
@@ -202,6 +202,8 @@ let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescrip
 
 ### Quanta
 ```rust
+use quanta::RenderGpu; // render methods on Gpu come from this trait
+
 #[quanta::vertex]
 fn vs_main(pos: Vec3, mvp: &Mat4) -> Vec4 {
     mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
@@ -212,11 +214,10 @@ fn fs_main(color: Vec4) -> Vec4 {
     color
 }
 
-let pipeline = gpu.pipeline(&PipelineDesc {
+let pipeline = gpu.pipeline(&PipelineDesc::new(ShaderSource::Binaries {
     vertex: vs_main(),
     fragment: fs_main(),
-    ..Default::default()
-})?;
+}))?;
 ```
 
 ### Render pass: wgpu vs Quanta
@@ -243,6 +244,26 @@ let mut pulse = gpu.render(&target)?
     .pulse()?;
 pulse.wait()?;
 ```
+
+### Presentation: wgpu vs Quanta
+
+wgpu's surface loop maps directly onto Quanta's `Surface` (Metal in
+v0.1; other backends return `NotSupported` — query
+`gpu.supports_surface_present()`):
+
+| wgpu | Quanta |
+|------|--------|
+| `instance.create_surface(window)` | `gpu.create_surface(&SurfaceTarget::MetalLayer { layer }, &config)` |
+| `surface.configure(&device, &config)` | `surface.configure(SurfaceConfig::new(w, h))` |
+| `surface.get_current_texture()` | `surface.acquire()` |
+| `SurfaceError::Outdated` | `QuantaErrorKind::SurfaceOutdated(_)` — reconfigure, retry |
+| `frame.texture` + `create_view()` | `frame.texture()` (render into it directly) |
+| `frame.present()` | `frame.present()` |
+| `PresentMode::{Fifo, Immediate, Mailbox}` | `PresentMode::{Fifo, Immediate, Mailbox}` |
+
+Alternatively, export the rendered texture to an external compositor
+with `texture.native_handle()` (zero-copy; Metal + Vulkan) and let it
+own present.
 
 ## v0.1 advanced features
 
@@ -272,7 +293,8 @@ web target.
 
 ## When to stay with wgpu
 
-- You need WebGPU-specific features (surface/swapchain management for browsers).
+- You need browser surface/swapchain management (Quanta's `Surface` is
+  Metal-only in v0.1; there is no canvas presentation path yet).
 - You are building a rendering engine that needs fine-grained control over every descriptor.
 - You need the wgpu ecosystem (winit integration, egui backends, etc.).
 

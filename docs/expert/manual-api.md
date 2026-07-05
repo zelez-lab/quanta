@@ -22,12 +22,15 @@ use quanta::*;
 let gpu = init()?;
 
 // Full control: specify element count and usage flags
-let field = gpu.field::<f32>(1024, FieldUsage::READ | FieldUsage::WRITE | FieldUsage::COMPUTE)?;
+let field = gpu.field_with_usage::<f32>(
+    1024,
+    FieldUsage::READ.union(FieldUsage::WRITE).union(FieldUsage::COMPUTE),
+)?;
 
-// Or use convenience constructors
-let compute = gpu.compute_field::<f32>(1024)?;   // READ | WRITE | COMPUTE | TRANSFER
-let render  = gpu.render_field::<f32>(1024)?;    // READ | RENDER | TRANSFER
-let uniform = gpu.uniform_field::<f32>(1)?;      // READ | UNIFORM | TRANSFER
+// Or use the preset usage profiles
+let compute = gpu.field::<f32>(1024)?; // default_compute(): READ | WRITE | COMPUTE | TRANSFER
+let render  = gpu.field_with_usage::<f32>(1024, FieldUsage::default_render())?;  // READ | RENDER | TRANSFER
+let uniform = gpu.field_with_usage::<f32>(1, FieldUsage::default_uniform())?;    // READ | UNIFORM | TRANSFER
 ```
 
 ### FieldUsage flags
@@ -58,9 +61,9 @@ fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
 fn main() -> Result<(), QuantaError> {
     let gpu = init()?;
 
-    let a = gpu.compute_field::<f32>(1024)?;
-    let b = gpu.compute_field::<f32>(1024)?;
-    let result = gpu.compute_field::<f32>(1024)?;
+    let a = gpu.field::<f32>(1024)?;
+    let b = gpu.field::<f32>(1024)?;
+    let result = gpu.field::<f32>(1024)?;
 
     a.write(&vec![1.0f32; 1024])?;
     b.write(&vec![2.0f32; 1024])?;
@@ -92,32 +95,38 @@ wave.bind(0, &data_field);
 wave.set_value(1, 0.5f32);  // push constant at slot 1
 ```
 
-## Manual render pass
+## Render passes with conditional logic
 
-The imperative render pass API (before the builder existed):
+Render passes are recorded through the chainable `RenderBuilder`
+(`gpu.render(&target)?` — a `RenderGpu` extension-trait method, in scope
+via `use quanta::*;`). Every builder method consumes and returns `self`,
+so a pass does not have to be one expression: hold the builder in a
+variable and reassign it for conditional logic between draw calls or
+dynamic pipeline switching.
 
 ```rust
 let target = gpu.render_target(800, 600, Format::BGRA8)?;
-let mut pass = gpu.render_begin(&target)?;
 
-pass.clear(Color::BLACK);
-pass.set_pipeline(&pipeline);
-pass.bind_vertices(0, &vertex_buffer);
-pass.bind_indices(&index_buffer);
-pass.set_uniform(0, &mvp_buffer);
-pass.set_texture(0, &albedo_texture);
-pass.set_sampler(0, SamplerDesc::default());
-pass.set_viewport(0.0, 0.0, 800.0, 600.0);
-pass.set_scissor(100, 100, 600, 400);
-pass.draw_indexed(36);
+let mut pass = gpu.render(&target)?
+    .clear(Color::BLACK)
+    .pipeline(&pipeline)
+    .vertices(0, &vertex_buffer)
+    .indices(&index_buffer)
+    .uniform(0, &mvp_buffer)
+    .texture(0, &albedo_texture)
+    .sampler(0, SamplerDesc::default())
+    .viewport(0.0, 0.0, 800.0, 600.0)
+    .scissor(100, 100, 600, 400);
 
-let mut pulse = gpu.render_end(pass)?;
+if draw_indexed_geometry {
+    pass = pass.draw_indexed(36);
+} else {
+    pass = pass.pipeline(&fallback_pipeline).draw(3);
+}
+
+let mut pulse = pass.pulse()?;
 pulse.wait()?;
 ```
-
-This is equivalent to the builder API but allows conditional logic between
-draw calls, dynamic pipeline switching, and other patterns that do not fit
-a single builder chain.
 
 ### Manual VertexLayout construction
 
@@ -158,7 +167,10 @@ loop {
     // Swap
     core::mem::swap(&mut front, &mut back);
 
-    // Present `front` to the display...
+    // Present `front`: export it to a compositor with
+    // `front.native_handle()`, or — when rendering to a window —
+    // use a `Surface` (`gpu.create_surface`) and render into
+    // acquired frames instead of your own targets.
 }
 ```
 
@@ -167,8 +179,8 @@ loop {
 Process data back and forth between two fields:
 
 ```rust
-let mut src = gpu.compute_field::<f32>(n)?;
-let mut dst = gpu.compute_field::<f32>(n)?;
+let mut src = gpu.field::<f32>(n)?;
+let mut dst = gpu.field::<f32>(n)?;
 src.write(&initial_data)?;
 
 for _step in 0..iterations {
@@ -203,19 +215,28 @@ let raw_pipe: u64 = pipeline.handle();
 These handles are driver-specific. Use them only when integrating with
 code that operates at the Metal/Vulkan level directly.
 
+For texture interop, prefer `texture.native_handle()` — it returns a typed
+`NativeTextureHandle` (the actual `id<MTLTexture>` / `VkImage` plus import
+metadata) instead of an opaque registry id, with a documented
+borrow/lifetime contract. Query `gpu.supports_native_handle_export()`
+first; the CPU software driver has no native object to export.
+
 ## Custom memory layouts
 
 Control exactly how GPU memory is organized:
 
 ```rust
 // Read-only field (driver can place in faster read-optimized memory)
-let weights = gpu.field::<f32>(n, FieldUsage::READ | FieldUsage::COMPUTE)?;
+let weights = gpu.field_with_usage::<f32>(n, FieldUsage::READ.union(FieldUsage::COMPUTE))?;
 
 // Write-only output (driver can skip read caches)
-let output = gpu.field::<f32>(n, FieldUsage::WRITE | FieldUsage::COMPUTE | FieldUsage::TRANSFER)?;
+let output = gpu.field_with_usage::<f32>(
+    n,
+    FieldUsage::WRITE.union(FieldUsage::COMPUTE).union(FieldUsage::TRANSFER),
+)?;
 
 // Staging buffer (CPU-accessible, used for transfer only)
-let staging = gpu.field::<f32>(n, FieldUsage::TRANSFER)?;
+let staging = gpu.field_with_usage::<f32>(n, FieldUsage::TRANSFER)?;
 ```
 
 ## Mapped buffers (zero-copy)
@@ -244,7 +265,7 @@ another reads it, you must insert a barrier:
 gpu.barrier()?;
 
 // Fine-grained: after compute writes, before render reads
-gpu.barrier_buffer(&field, ResourceState::ComputeWrite, ResourceState::ShaderRead)?;
+gpu.barrier_field(&field, ResourceState::ComputeWrite, ResourceState::ShaderRead)?;
 
 // After rendering to texture, before sampling it
 gpu.barrier_texture(&texture, ResourceState::RenderTarget, ResourceState::ShaderRead)?;
@@ -273,7 +294,7 @@ Let the GPU decide how much work to launch:
 
 ```rust
 // A field containing [group_x: u32, group_y: u32, group_z: u32]
-let indirect_args = gpu.compute_field::<u32>(3)?;
+let indirect_args = gpu.field::<u32>(3)?;
 
 // First pass: a kernel writes the dispatch dimensions
 gpu.dispatch(&setup_wave, 1)?.wait()?;

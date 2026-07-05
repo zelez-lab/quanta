@@ -20,7 +20,7 @@ if !gpu.supports_tessellation() {
 ## Creating a tessellation pipeline
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 let pipe = gpu.tessellation_pipeline(TessTopology::Triangle, 3)?;
 ```

@@ -57,9 +57,9 @@ fn vector_add(a: &[f32], b: &[f32], result: &mut [f32]) {
 
 fn main() -> Result<(), quanta::QuantaError> {
     let gpu = quanta::init()?;
-    let a = gpu.compute_field::<f32>(N)?;          // allocate
-    let b = gpu.compute_field::<f32>(N)?;
-    let result = gpu.compute_field::<f32>(N)?;
+    let a = gpu.field::<f32>(N)?;          // allocate
+    let b = gpu.field::<f32>(N)?;
+    let result = gpu.field::<f32>(N)?;
     a.write(&h_a)?;                                // upload
     b.write(&h_b)?;
 
@@ -102,7 +102,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `__ballot_sync(mask, pred)` | `ballot_u32(pred)` |
 | `__any_sync(mask, pred)` | `any_u32(pred)` |
 | `__all_sync(mask, pred)` | `all_u32(pred)` |
-| `cudaMalloc` + `cudaMemcpy` | `gpu.compute_field::<T>(n)` + `field.write(&data)` |
+| `cudaMalloc` + `cudaMemcpy` | `gpu.field::<T>(n)` + `field.write(&data)` |
 | `cudaMallocManaged` | `gpu.field_mapped::<T>(n)` |
 | `kernel<<<blocks, threads>>>(...)` | `gpu.dispatch(&wave, n)` |
 | `cudaDeviceSynchronize()` | `pulse.wait()` |
@@ -249,7 +249,7 @@ struct Particle {
     mass: f32,
 }
 
-let particles = gpu.compute_field::<Particle>(n)?;
+let particles = gpu.field::<Particle>(n)?;
 ```
 
 `#[quanta::gpu_type]` is the Quanta equivalent of a CUDA `struct` used in device
@@ -277,7 +277,11 @@ dispatches the exact number of quarks needed.
 ## v0.1 advanced features
 
 CUDA developers reaching for OptiX, mesh shaders, or multi-stream work will
-find typed wrappers in Quanta:
+find typed wrappers in Quanta. The render-side constructors
+(`acceleration_structure_blas`, `ray_tracing_pipeline`, `mesh_pipeline`,
+`tessellation_pipeline`) are `RenderGpu` extension-trait methods — add
+`use quanta::RenderGpu;` (or `use quanta::*;`) and build with the
+`render` feature on:
 
 | CUDA / NVIDIA            | Quanta                                                       |
 |--------------------------|--------------------------------------------------------------|

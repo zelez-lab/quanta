@@ -178,16 +178,17 @@ All GPU operations return `Result<T, QuantaError>`. Error kinds:
 | `InvalidParam`      | Bad parameter (with message) -- caller passed an OOB value    |
 | `NotSupported`      | Feature not implemented on this backend -- branch to fallback |
 | `NotFound`          | Handle does not refer to a live resource -- usually a double-free |
+| `SurfaceOutdated`   | Presentation surface no longer matches its target -- reconfigure and retry |
 | `Internal`          | Internal invariant violation (poisoned mutex, etc.)           |
 
-The three `&'static str` variants (`InvalidParam`, `NotSupported`, `NotFound`)
+The message-carrying variants (`InvalidParam`, `NotSupported`, `NotFound`, …)
 are deliberately distinct so callers can branch:
 
 ```rust
-match gpu.mesh_pipeline(desc) {
-    Ok(pipe) => /* use mesh shaders */,
+match gpu.sparse_texture(&desc) {
+    Ok(tex) => /* use sparse residency */,
     Err(e) if matches!(e.kind, QuantaErrorKind::NotSupported(_)) => {
-        // backend doesn't support mesh shaders -- fall back
+        // backend doesn't support sparse textures -- fall back
     }
     Err(e) => return Err(e),
 }

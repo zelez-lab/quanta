@@ -73,10 +73,13 @@ fn scene_fragment(
 
 ## Host code
 
+The render methods (`gpu.render_target`, `gpu.pipeline`, `gpu.render`) live
+on the `RenderGpu` extension trait — bring it into scope (or `use quanta::*;`).
+
 ```rust
 use quanta::{
-    Color, CompareOp, DepthStencilState, Format, LoadOp, PipelineDesc, SamplerDesc, StoreOp,
-    TextureDesc, TextureUsage,
+    Color, CompareOp, DepthStencilState, Format, PipelineDesc, RenderGpu,
+    SamplerDesc, ShaderSource, TextureDesc, TextureUsage,
 };
 
 fn main() {
@@ -87,75 +90,66 @@ fn main() {
     let screen_height = 1080;
 
     // --- Create shadow map (depth-only texture) ---
-    let shadow_map = gpu.create_texture(&TextureDesc {
-        width: shadow_size,
-        height: shadow_size,
-        format: Format::Depth32Float,
-        usage: TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
-        ..TextureDesc::default()
-    }).unwrap();
+    let shadow_map = gpu.create_texture(
+        &TextureDesc::new(shadow_size, shadow_size, Format::Depth32Float)
+            .with_usage(TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ)),
+    ).unwrap();
 
     // --- Shadow pass pipeline (depth only, no color) ---
-    let shadow_pipeline = gpu.pipeline(&PipelineDesc {
-        vertex: shadow_vertex().for_vendor(gpu.caps().vendor).unwrap(),
-        fragment: &[], // No fragment shader for depth-only
-        vertex_entry: "shadow_vertex",
-        fragment_entry: "",
-        color_formats: vec![],
-        depth_format: Some(Format::Depth32Float),
-        depth_stencil: DepthStencilState::DEPTH_LESS,
-        ..PipelineDesc::default()
-    }).unwrap();
+    // #[quanta::vertex] fn shadow_vertex generates the
+    // SHADOW_VERTEX_SHADER static (a multi-vendor ShaderBinary).
+    let shadow_pipeline = gpu.pipeline(
+        &PipelineDesc::new(ShaderSource::Stages {
+            vertex: SHADOW_VERTEX_SHADER.for_vendor(gpu.caps().vendor).unwrap(),
+            fragment: &[], // No fragment shader for depth-only
+        })
+        .with_entries("shadow_vertex", "")
+        .with_color_formats(vec![])
+        .with_depth_format(Format::Depth32Float)
+        .with_depth_stencil(DepthStencilState::DEPTH_LESS),
+    ).unwrap();
 
     // --- Create render targets for the scene ---
     let color_target = gpu.render_target(screen_width, screen_height, Format::BGRA8).unwrap();
-    let depth_target = gpu.create_texture(&TextureDesc {
-        width: screen_width,
-        height: screen_height,
-        format: Format::Depth32Float,
-        usage: TextureUsage::RENDER_TARGET,
-        ..TextureDesc::default()
-    }).unwrap();
+    let depth_target = gpu.create_texture(
+        &TextureDesc::new(screen_width, screen_height, Format::Depth32Float)
+            .with_usage(TextureUsage::RENDER_TARGET),
+    ).unwrap();
 
     // --- Scene pipeline with shadow sampling ---
-    let scene_pipeline = gpu.pipeline(&PipelineDesc {
-        vertex: scene_vertex().for_vendor(gpu.caps().vendor).unwrap(),
-        fragment: scene_fragment().for_vendor(gpu.caps().vendor).unwrap(),
-        vertex_entry: "scene_vertex",
-        fragment_entry: "scene_fragment",
-        depth_format: Some(Format::Depth32Float),
-        depth_stencil: DepthStencilState::DEPTH_LESS,
-        ..PipelineDesc::default()
-    }).unwrap();
+    let scene_pipeline = gpu.pipeline(
+        &PipelineDesc::new(ShaderSource::Binaries {
+            vertex: &SCENE_VERTEX_SHADER,
+            fragment: &SCENE_FRAGMENT_SHADER,
+        })
+        .with_entries("scene_vertex", "scene_fragment")
+        .with_depth_format(Format::Depth32Float)
+        .with_depth_stencil(DepthStencilState::DEPTH_LESS),
+    ).unwrap();
 
     // --- Comparison sampler for shadow lookups ---
-    let shadow_sampler = gpu.sampler(&SamplerDesc {
-        compare: Some(CompareOp::LessEqual),
-        ..SamplerDesc::default()
-    }).unwrap();
+    let shadow_sampler_desc = SamplerDesc::default()
+        .with_compare(CompareOp::LessEqual);
 
     // --- Pass 1: Render shadow map ---
-    let mut pass = gpu.render_begin(&shadow_map).unwrap();
-    pass.clear_depth(1.0);
-    pass.set_pipeline(&shadow_pipeline);
-    // ... bind vertex buffers, uniforms, draw scene geometry ...
-    pass.draw(scene_vertex_count);
-    let mut pulse = gpu.render_end(pass).unwrap();
+    let mut pulse = gpu.render(&shadow_map).unwrap()
+        .clear_depth(1.0)
+        .pipeline(&shadow_pipeline)
+        // ... bind vertex buffers, uniforms ...
+        .draw(scene_vertex_count)
+        .pulse().unwrap();
     pulse.wait().unwrap();
 
     // --- Pass 2: Render scene with shadows ---
-    let mut pass = gpu.render_begin(&color_target).unwrap();
-    pass.clear(Color::rgb(0.1, 0.1, 0.15));
-    pass.clear_depth(1.0);
-    pass.set_pipeline(&scene_pipeline);
-    pass.set_texture(0, &shadow_map);
-    pass.set_sampler(0, SamplerDesc {
-        compare: Some(CompareOp::LessEqual),
-        ..SamplerDesc::default()
-    });
-    // ... bind vertex buffers, camera uniforms, draw scene ...
-    pass.draw(scene_vertex_count);
-    let mut pulse = gpu.render_end(pass).unwrap();
+    let mut pulse = gpu.render(&color_target).unwrap()
+        .clear(Color::rgb(0.1, 0.1, 0.15))
+        .clear_depth(1.0)
+        .pipeline(&scene_pipeline)
+        .texture(0, &shadow_map)
+        .sampler(0, shadow_sampler_desc)
+        // ... bind vertex buffers, camera uniforms ...
+        .draw(scene_vertex_count)
+        .pulse().unwrap();
     pulse.wait().unwrap();
 }
 ```
@@ -165,11 +159,8 @@ fn main() {
 A comparison sampler does not return the texture value. Instead, it compares the
 sampled depth against a reference value and returns 0.0 or 1.0.
 
-```
-SamplerDesc {
-    compare: Some(CompareOp::LessEqual),
-    ..SamplerDesc::default()
-}
+```rust
+SamplerDesc::default().with_compare(CompareOp::LessEqual)
 ```
 
 With hardware PCF (percentage-closer filtering), the `Linear` filter mode

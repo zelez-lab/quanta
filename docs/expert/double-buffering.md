@@ -27,8 +27,11 @@ fn render_loop(gpu: &Gpu, pipeline: &Pipeline, vb: &Field<f32>, vertex_count: u3
         // Swap front and back
         core::mem::swap(&mut front, &mut back);
 
-        // Present `front` to display (platform-specific)
-        // present(front);
+        // Present `front`: export it with `front.native_handle()` so a
+        // compositor can consume it zero-copy — or, when rendering to a
+        // window, skip manual double-buffering entirely and use a
+        // `Surface` (`gpu.create_surface`): the swapchain owns the
+        // buffers and `acquire`/`present` do the rotation for you.
     }
 }
 ```
@@ -65,8 +68,8 @@ loop {
 Process data back and forth between two fields without CPU roundtrips:
 
 ```rust
-let mut src = gpu.compute_field::<f32>(n)?;
-let mut dst = gpu.compute_field::<f32>(n)?;
+let mut src = gpu.field::<f32>(n)?;
+let mut dst = gpu.field::<f32>(n)?;
 src.write(&initial_data)?;
 
 for _iteration in 0..num_iterations {
@@ -107,27 +110,30 @@ for frame in 0u64.. {
 }
 ```
 
-## Per-frame uniform updates with mapped buffers
+## Per-frame uniform updates
 
-Avoid upload overhead for data that changes every frame:
+For data that changes every frame, keep one uniform field alive and
+rewrite it each iteration — no reallocation:
 
 ```rust
-let mut mvp_buf = gpu.field_mapped::<[f32; 16]>(1)?;
+let mvp_buf = gpu.field_with_usage::<[f32; 16]>(1, FieldUsage::default_uniform())?;
 
 loop {
     let mvp = compute_mvp_matrix(time);
-    mvp_buf.as_mut_slice()[0] = mvp;
-    // No write() call needed -- GPU reads directly from mapped memory
+    mvp_buf.write(&[mvp])?;
 
     gpu.render(target)?
         .pipeline(pipeline)
         .vertices(0, &vb)
-        .uniform(0, &mvp_buf)  // bind the mapped buffer as a uniform
+        .uniform(0, &mvp_buf)
         .draw(vertex_count)
         .pulse()?
         .wait()?;
 }
 ```
 
-On Apple Silicon (unified memory), the write is immediate. On discrete GPUs,
-the driver synchronizes automatically on command buffer submission.
+For compute-side data, `gpu.field_mapped` offers zero-copy CPU writes
+(`as_mut_slice()` — no `write()` call at all); render binding slots take
+regular `Field`s, so uniforms go through `write()` as above. On Apple
+Silicon (unified memory) mapped writes are immediate; on discrete GPUs the
+driver synchronizes on the next command buffer submission.

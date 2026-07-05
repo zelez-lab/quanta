@@ -2,6 +2,21 @@
 
 All public types in the Quanta GPU framework.
 
+Quanta is split into three consumable surfaces: **`quanta-core`** (the
+shared substrate — `Gpu`, drivers, fields, textures, errors, capability
+queries), the **compute face** of the `quanta` facade (kernels, `Wave`
+dispatch, the scan library — behind the `compute` feature), and
+**`quanta-render`** (render passes, pipelines, typed
+mesh/tessellation/RT/VRS wrappers, `Surface` — pulled in by the facade's
+`render` feature). The facade re-exports everything, so `use quanta::*;`
+covers the whole surface listed here.
+
+> **Render methods live on the `RenderGpu` extension trait.** The
+> render methods below (`gpu.pipeline()`, `gpu.render()`, …) are not
+> inherent on `Gpu` — they come from the sealed `RenderGpu` trait in
+> `quanta-render`. Bring it into scope with `use quanta::RenderGpu;`
+> (or `use quanta::*;`).
+
 ## `Gpu`
 
 The main entry point. All GPU operations go through this type.
@@ -40,6 +55,8 @@ path without throwing.
 | `supports_i64()` | `bool` | Kernels may use 64-bit integers (`shaderInt64` on Vulkan). True on the software lane and llvmpipe; false on Metal and Broadcom V3D |
 | `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
 | `supports_cooperative_matrix()` | `bool` | Cooperative-matrix / `simdgroup_matrix` support |
+| `supports_native_handle_export()` | `bool` | `Texture::native_handle()` returns a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
+| `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal; other backends not wired yet |
 | `narrow_storage_u32_slot()` | `bool` | Whether bf16/fp8 buffers use the portable u32-slot layout (one element per 32-bit word) instead of native 2-/1-byte stride. True only on WebGPU — WGSL storage buffers cannot hold 16-/8-bit array elements; the host must repack tight data one-element-per-word before binding |
 | `supported_shading_rates()` | `Vec<(u32, u32)>` | Concrete (x,y) shading rates the device exposes (e.g. `[(1,1), (2,2), (4,4)]`). Empty when VRS is not supported. |
 
@@ -47,10 +64,8 @@ path without throwing.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `field::<T>(count, usage)` | `Result<Field<T>>` | Allocate with explicit usage flags |
-| `compute_field::<T>(count)` | `Result<Field<T>>` | Storage + transfer (compute workloads) |
-| `render_field::<T>(count)` | `Result<Field<T>>` | Vertex + transfer (render workloads) |
-| `uniform_field::<T>(count)` | `Result<Field<T>>` | Uniform + transfer (constant data) |
+| `field::<T>(count)` | `Result<Field<T>>` | Allocate with default compute usage (storage + transfer) |
+| `field_with_usage::<T>(count, usage)` | `Result<Field<T>>` | Allocate with explicit `FieldUsage` flags (`default_compute()` / `default_render()` / `default_uniform()` or a custom union) |
 | `field_mapped::<T>(count)` | `Result<MappedField<T>>` | CPU-mapped buffer (zero-copy) |
 
 ### Textures
@@ -58,13 +73,15 @@ path without throwing.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `texture(width, height)` | `Result<Texture>` | Simple RGBA8 texture |
-| `create_texture(desc)` | `Result<Texture>` | Full-control creation |
-| `render_target(w, h, fmt)` | `Result<Texture>` | Can be drawn to + sampled |
-| `msaa_target(w, h, fmt, samples)` | `Result<Texture>` | Multi-sampled render target |
-| `sampler(desc)` | `Result<Sampler>` | Create reusable sampler |
-| `resolve_texture(msaa, dst)` | `Result<()>` | Resolve MSAA to single-sample |
+| `create_texture(&desc)` | `Result<Texture>` | Full-control creation (`TextureDesc::new(w, h, fmt).with_*(…)`) |
+| `sampler(&desc)` | `Result<Sampler>` | Create reusable sampler (`SamplerDesc::default().with_*(…)`) |
 | `texture_view_create(tex, desc)` | `Result<TextureView>` | Sub-range view |
 | `format_caps(format)` | `FormatCaps` | Query format capabilities |
+| `sparse_texture(&desc)` | `Result<SparseTexture>` | Virtual texture with on-demand tile residency (2D, single-mip in v0.1) |
+
+Render targets (`render_target`, `msaa_target`, `resolve_texture`) moved
+to the [`RenderGpu`](#render-the-rendergpu-extension-trait) extension
+trait below.
 
 ### Compute
 
@@ -81,21 +98,37 @@ path without throwing.
 | `async_copy_queue()` | `Result<AsyncCopyQueue>` | Transfer queue concurrent with compute / graphics |
 | `printf_buffer(cap)` | `Result<PrintfBuffer>` | Capacity-bounded shader printf ring |
 | `queue(QueueType)` | `Result<Queue>` | Typed queue wrapper (graphics / compute / transfer) |
-| `create_queue(QueueType)` | `Result<u64>` | Raw queue handle (escape hatch — prefer `queue`) |
 
-### Render
+### Render (the `RenderGpu` extension trait)
+
+The render methods are a **sealed extension trait** implemented for
+`Gpu` by the `quanta-render` crate — bring it into scope with
+`use quanta::RenderGpu;` (or `use quanta::*;`):
+
+```rust
+use quanta::RenderGpu;
+
+let target = gpu.render_target(640, 480, Format::RGBA8)?;
+let pipe = gpu.pipeline(&desc)?;
+```
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `pipeline(desc)` | `Result<Pipeline>` | Create render pipeline |
-| `render(target)` | `Result<RenderBuilder>` | Begin render pass (builder chain) |
-| `dispatch_mesh(pipeline, groups)` | `Result<()>` | Mesh shader dispatch |
-| `mesh_pipeline(desc)` | `Result<Pipeline>` | Create a mesh-shader pipeline (gated on `supports_mesh_shaders`) |
-| `tessellation_pipeline(desc)` | `Result<Pipeline>` | Create a tessellation pipeline (gated on `supports_tessellation`) |
-| `sparse_texture(desc)` | `Result<SparseTexture>` | Virtual texture with on-demand tile residency (2D, single-mip in v0.1) |
+| `pipeline(&desc)` | `Result<Pipeline>` | Create render pipeline (`PipelineDesc::new(shader).with_*(…)`) |
+| `render(&target)` | `Result<RenderBuilder>` | Begin render pass (builder chain) |
+| `render_target(w, h, fmt)` | `Result<Texture>` | Can be drawn to + sampled |
+| `msaa_target(w, h, fmt, samples)` | `Result<Texture>` | Multi-sampled render target |
+| `resolve_texture(&msaa, &dst)` | `Result<()>` | Resolve MSAA to single-sample |
+| `stencil_read(&tex)` | `Result<Vec<u8>>` | Read stencil buffer contents |
+| `render_bundle(max_commands)` | `Result<IndirectRenderBundle>` | Render-path indirect command bundle |
+| `mesh_pipeline(desc)` | `Result<MeshPipeline>` | Create a mesh-shader pipeline (gated on `supports_mesh_shaders`); `dispatch(groups)` on the wrapper dispatches |
+| `tessellation_pipeline(topology, control_points)` | `Result<TessellationPipeline>` | Create a tessellation pipeline (gated on `supports_tessellation`) |
+| `create_surface(&target, &config)` | `Result<Surface>` | Presentation surface — see [`Surface`](#surface) below |
 | `acceleration_structure_blas(geoms)` | `Result<AccelerationStructure>` | Build a bottom-level BVH (foundation only in v0.1 — build dispatch returns `NotSupported`) |
-| `ray_tracing_pipeline(desc)` | `Result<RayTracingPipeline>` | Construct a ray-tracing pipeline; `dispatch_rays(w, h)` traces |
+| `ray_tracing_pipeline(&desc)` | `Result<RayTracingPipeline>` | Construct a ray-tracing pipeline; `dispatch_rays(w, h)` traces |
 | `vrs_state()` | `Result<VrsState>` | Variable rate shading handle — `set_rate(ShadingRate)` to switch |
+| `occlusion_query_create(count)` | `Result<OcclusionQuery>` | Create occlusion query |
+| `occlusion_query_read(&query)` | `Result<Vec<u64>>` | Read fragment counts (synchronous, native backends only) |
 
 ### Sync
 
@@ -121,8 +154,9 @@ path without throwing.
 | `write_timestamp(query, idx)` | `Result<()>` | Record timestamp |
 | `read_timestamps(query)` | `Result<Vec<u64>>` | Read all timestamps |
 | `timestamp_to_ns(ticks)` | `u64` | Convert ticks to nanoseconds |
-| `occlusion_query_create(count)` | `Result<OcclusionQuery>` | Create occlusion query |
-| `occlusion_query_read(query)` | `Result<Vec<u64>>` | Read fragment counts (synchronous, native backends only) |
+
+Occlusion queries (`occlusion_query_create` / `occlusion_query_read`)
+are render-path methods on the `RenderGpu` trait above.
 
 > **WebGPU note.** WebGPU has no synchronous readback of query results.
 > On the WebGPU backend, `occlusion_query_read` returns
@@ -134,10 +168,11 @@ path without throwing.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `queue_families()` | `Vec<QueueFamily>` | Available queue families |
-| `create_queue(type)` | `Result<u64>` | Create queue |
-| `queue_dispatch(q, wave, groups)` | `Result<()>` | Submit to specific queue |
-| `queue_signal(q, sem)` | `Result<()>` | Signal from queue |
-| `queue_wait(q, sem)` | `Result<()>` | Wait on queue |
+| `queue(QueueType)` | `Result<Queue>` | Typed queue wrapper — submit/signal/wait via [`Queue`](#queue) methods |
+
+The raw-handle variants (`create_queue`, `queue_dispatch`,
+`queue_signal`, `queue_wait`) were removed in the v0.1 API scrub — use
+the typed [`Queue`](#queue) wrapper.
 
 ### Debug
 
@@ -146,16 +181,20 @@ path without throwing.
 | `debug_push(label)` | `()` | Push debug group |
 | `debug_pop()` | `()` | Pop debug group |
 
-### Deprecated methods
+### Removed methods
 
-These methods still work but have preferred alternatives:
+These duplicate / raw-handle methods were removed in the v0.1 API
+scrub. The replacements:
 
-| Deprecated | Use instead |
-|------------|-------------|
+| Removed | Use instead |
+|---------|-------------|
 | `gpu.write_field(&field, &data)` | `field.write(&data)` |
 | `gpu.read_field(&field)` | `field.read()` |
 | `gpu.copy_field(&dst, &src)` | `dst.copy_from(&src)` |
 | `gpu.resize_field(&old, n, usage)` | Allocate new field + `dst.copy_from(&old)` |
+| `gpu.compute_field::<T>(n)` | `gpu.field::<T>(n)` (same default usage) |
+| `gpu.render_field::<T>(n)` | `gpu.field_with_usage::<T>(n, FieldUsage::default_render())` |
+| `gpu.uniform_field::<T>(n)` | `gpu.field_with_usage::<T>(n, FieldUsage::default_uniform())` |
 | `gpu.texture_write(&tex, &data)` | `texture.write(&data)` |
 | `gpu.texture_read(&tex)` | `texture.read()` |
 | `gpu.generate_mipmaps(&tex)` | `texture.generate_mipmaps()` |
@@ -163,17 +202,18 @@ These methods still work but have preferred alternatives:
 | `gpu.wait_and_reset(&mut pulse)` | `pulse.wait()` + `pulse.reset()` |
 | `gpu.poll(&pulse)` | `pulse.is_done()` |
 | `gpu.begin_batch()` | `gpu.batch()` |
-| `gpu.render_begin(&target)` | `gpu.render(&target)` (builder) |
+| `gpu.render_begin(&target)` | `gpu.render(&target)` (builder, via `RenderGpu`) |
 | `gpu.render_end(pass)` | `.pulse()` on `RenderBuilder` |
 | `gpu.barrier_buffer(field, from, to)` | `gpu.barrier_field(field, from, to)` |
-| `gpu.compute_field::<T>(n)` | Still valid (not deprecated) |
+| `gpu.create_queue(type)` / `queue_dispatch` / `queue_signal` / `queue_wait` | `gpu.queue(QueueType)` + `Queue::submit` / `signal` / `wait` |
+| `gpu.dispatch_mesh(pipeline, groups)` | `MeshPipeline::dispatch(groups)` |
 
 ---
 
 ## `Field<T>`
 
-GPU-resident typed buffer (storage buffer). Created via `gpu.compute_field()`
-or `gpu.field()`. Freed automatically when dropped (RAII).
+GPU-resident typed buffer (storage buffer). Created via `gpu.field()`
+or `gpu.field_with_usage()`. Freed automatically when dropped (RAII).
 
 | Method | Returns | Description |
 |--------|---------|-------------|
@@ -205,17 +245,44 @@ CPU-mapped GPU buffer for zero-copy writes. Created via `gpu.field_mapped()`.
 
 ## `Texture`
 
-GPU-resident 2D image. Created via `gpu.texture()` or `gpu.create_texture()`.
+GPU-resident 2D image. Created via `gpu.texture()` or
+`gpu.create_texture()`. Dropping a `Texture` releases the underlying
+driver resource (exactly once) — the same holds for `TextureView`,
+`Sampler`, and `Pipeline`.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `write(&data)` | `Result<()>` | Upload pixel data |
 | `read()` | `Result<Vec<u8>>` | Download pixel data |
 | `generate_mipmaps()` | `Result<()>` | Auto-generate mip chain |
+| `native_handle()` | `Result<NativeTextureHandle>` | Export the backend-native object for zero-copy interop (see below) |
 | `width()` | `u32` | Width in pixels |
 | `height()` | `u32` | Height in pixels |
 | `format()` | `Format` | Pixel format |
 | `handle()` | `u64` | Raw GPU handle |
+
+### `NativeTextureHandle`
+
+Backend-native handle exported from a `Texture` for zero-copy interop —
+a compositor, the OS, or another graphics runtime imports the rendered
+texture directly. The exported handle is a **borrow**: valid exactly as
+long as the `Texture` (and its `Gpu`) are alive; ownership is not
+transferred. An importer that needs it longer must take its own native
+reference (e.g. ObjC `retain`) before the `Texture` drops.
+
+```rust
+match texture.native_handle()? {
+    NativeTextureHandle::Metal { texture } => { /* id<MTLTexture> pointer */ }
+    NativeTextureHandle::Vulkan { image, memory, vk_format, layout } => { /* VkImage + backing */ }
+    _ => { /* non-exhaustive — new variants can be added */ }
+}
+```
+
+Supported on **Metal and Vulkan**; the CPU software driver has no
+native object and WebGPU export is reserved (both return
+`NotSupported`). Query `gpu.supports_native_handle_export()` to branch
+ahead of time. GPU work producing the texture's contents must be
+complete (`pulse.wait()`) before the importer samples it.
 
 ---
 
@@ -356,13 +423,96 @@ pulse.wait()?;
 
 ## `Pipeline`
 
-Compiled render pipeline (vertex + fragment + state).
+Compiled render pipeline (vertex + fragment + state). Dropping a
+pipeline releases the driver resource exactly once.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `handle()` | `u64` | Raw GPU handle |
 
-Created via `gpu.pipeline(&PipelineDesc { ... })`.
+Created via `RenderGpu::pipeline`. `PipelineDesc` is
+`#[non_exhaustive]` — construct it with the builder, not a struct
+literal:
+
+```rust
+let desc = PipelineDesc::new(ShaderSource::Binaries {
+        vertex: &VERTEX_SHADER,     // &ShaderBinary from #[quanta::vertex]
+        fragment: &FRAGMENT_SHADER, // &ShaderBinary from #[quanta::fragment]
+    })
+    .with_color_formats(vec![Format::RGBA8])
+    .with_cull_mode(CullMode::Back);
+let pipeline = gpu.pipeline(&desc)?;
+```
+
+`ShaderSource` supplies the shader payloads:
+`Stages { vertex, fragment }` (raw per-stage bytes in the backend's
+native format), `Combined(&[u8])` (one payload, both entry points), or
+`Binaries { vertex, fragment }` (`&ShaderBinary` pairs — the driver
+picks the right per-vendor format).
+
+---
+
+## `Surface`
+
+A swapchain over a platform presentation target — the "Quanta owns
+present" model. Created via `RenderGpu::create_surface(&SurfaceTarget,
+&SurfaceConfig)`. Dropping the `Surface` releases the swapchain.
+
+Supported on **Metal**; other backends return `NotSupported`. Query
+`gpu.supports_surface_present()` to branch ahead of time.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `acquire()` | `Result<SurfaceFrame>` | Next presentable frame. `Timeout` if none free; `SurfaceOutdated` if the target was resized |
+| `configure(config)` | `Result<()>` | Reconfigure — resize, format, or present-mode change |
+| `config()` | `&SurfaceConfig` | Active configuration |
+| `width()` / `height()` | `u32` | Current frame extent |
+
+### `SurfaceFrame`
+
+One acquired, presentable frame. `texture()` aliases the swapchain's
+backing image — a borrow valid only until the frame is presented or
+dropped; do not store it (or its `native_handle`) beyond the frame.
+Dropping an unpresented frame discards it.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `texture()` | `&Texture` | The frame's target — render into it with `gpu.render(frame.texture())` |
+| `present()` | `Result<()>` | Present, consuming the frame. Call after `.pulse()` returned — no CPU wait needed between submit and present |
+
+### Configuration types
+
+- `SurfaceConfig::new(width, height)` — portable defaults: `BGRA8`,
+  `PresentMode::Fifo`, `RENDER_TARGET` usage. `#[non_exhaustive]`;
+  adjust fields by assignment.
+- `SurfaceTarget::MetalLayer { layer }` — an existing `CAMetalLayer*`
+  provided by the windowing environment. `SurfaceTarget::Headless` —
+  no window attached; full acquire/present machinery for tests and
+  compositor-fed consumers.
+- `PresentMode::{Fifo, Immediate, Mailbox}` — vsync (default; always
+  supported where presenting works at all), lowest-latency tearing,
+  triple-buffered. Unsupported modes are rejected at create/configure
+  time.
+
+The frame loop:
+
+```rust
+use quanta::RenderGpu;
+
+let mut surface = gpu.create_surface(&target, &SurfaceConfig::new(1280, 720))?;
+loop {
+    let frame = match surface.acquire() {
+        Ok(frame) => frame,
+        Err(e) if matches!(e.kind, QuantaErrorKind::SurfaceOutdated(_)) => {
+            surface.configure(new_config)?; // window resized
+            continue;
+        }
+        Err(e) => return Err(e),
+    };
+    let mut pulse = gpu.render(frame.texture())?.clear(color).pulse()?;
+    frame.present()?; // ordered after the submitted GPU work
+}
+```
 
 ---
 
@@ -531,8 +681,14 @@ Contains native binaries (SPIR-V + metallib), not text sources.
 |-------|------|-------------|
 | `spirv` | `Option<&'static [u8]>` | SPIR-V binary |
 | `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib |
+| `wgsl` | `Option<&'static str>` | WGSL source (WebGPU) |
 | `entry_point` | `&'static str` | Shader entry point name |
 | `stage` | `ShaderStage` | Pipeline stage |
+
+Pass shader binaries to a pipeline through
+`ShaderSource::Binaries { vertex, fragment }` in `PipelineDesc::new` —
+the driver selects the right per-vendor payload
+(`ShaderBinary::for_vendor`).
 
 ---
 
@@ -600,7 +756,7 @@ Features Quanta deliberately does not include:
 
 | Feature | Rationale |
 |---------|-----------|
-| **Swapchain / window management** | Quanta renders to textures. The host application owns the window, surface, and presentation. |
+| **Window management** | Quanta never creates windows. Presentation is supported two ways: a `Surface` over a platform target the host hands in (`SurfaceTarget::MetalLayer`), or exporting the rendered texture via `Texture::native_handle()` so an external compositor owns present. |
 | **Geometry shaders** | Deprecated in Metal and Vulkan best practices. Mesh shaders (`#[quanta::mesh]`) are the replacement. |
 | **HLSL / GLSL input** | Rust is the shader language. One language for CPU and GPU. |
 | **Dynamic parallelism** | Not supported by Metal or Vulkan compute. Use multiple `gpu.dispatch()` calls or `gpu.batch()`. |

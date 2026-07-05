@@ -202,7 +202,7 @@ preservation pending.
 |----------|------:|------|
 | `tests/proptest_wire.rs` | 12 | Tag roundtrip for all enum types, full KernelDef/ShaderDef roundtrip, arbitrary bytes don't panic on any deserializer |
 | `crates/quanta-ir/tests/proptest_ir.rs` | 10 | IR-level roundtrip (ScalarType, BinOp, KernelDef, CompilerOutput, ShaderDef), arbitrary bytes don't panic |
-| `src/driver/cpu/eval.rs` | 30 | BinOp no-panic for all types (u32, i32, u64, i64, f32, f64, bool), div-by-zero safety, CmpOp no-panic, UnaryOp no-panic, Cast no-panic for all type pairs, MathFn no-panic for all 22 functions, f16 normal roundtrip |
+| `crates/quanta-core/src/driver/cpu/eval.rs` | 30 | BinOp no-panic for all types (u32, i32, u64, i64, f32, f64, bool), div-by-zero safety, CmpOp no-panic, UnaryOp no-panic, Cast no-panic for all type pairs, MathFn no-panic for all 22 functions, f16 normal roundtrip |
 
 **Property:** No proptest has ever found a panic in the CPU executor or wire
 format. All edge cases (NaN, infinity, signed zero, div-by-zero, max-value

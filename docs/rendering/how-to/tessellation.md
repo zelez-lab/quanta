@@ -16,7 +16,7 @@ if !gpu.supports_tessellation() {
 ## Pipeline + factors
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 // Triangle patches with 3 control points each.
 let pipe = gpu.tessellation_pipeline(TessTopology::Triangle, 3)?;

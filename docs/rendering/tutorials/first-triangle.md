@@ -13,6 +13,9 @@ quanta = { version = "0.1", features = ["metal"] } # or vulkan / webgpu
 ```
 
 Rendering is on by default, so everything here works through `quanta` directly.
+The render methods on `Gpu` (`gpu.pipeline`, `gpu.render`, `gpu.render_target`,
+…) come from the sealed `RenderGpu` extension trait; `use quanta::*;` brings it
+into scope (or import it explicitly: `use quanta::RenderGpu;`).
 
 ## Define the geometry
 
@@ -38,27 +41,45 @@ let vertices = [
 Upload them to a vertex buffer:
 
 ```rust,ignore
-let vb = gpu.render_field::<PosVertex>(3)?;
+let vb = gpu.field_with_usage::<PosVertex>(3, FieldUsage::default_render())?;
 vb.write(&vertices)?;
 ```
 
 ## Build a pipeline
 
 A pipeline pairs a vertex shader (positions) with a fragment shader (colors) plus
-the fixed-function state. We'll use the built-in passthrough + solid-color shaders
-so this lesson stays about the *flow*; the [next lesson](vertex-fragment.md)
-writes your own:
+the fixed-function state. The two shaders here are the smallest possible pair —
+pass the position through, paint a solid color; the
+[next lesson](vertex-fragment.md) goes deep on shader authoring:
 
 ```rust,ignore
-let pipeline = gpu.pipeline(&PipelineDesc {
-    vertex:   PASSTHROUGH_SHADER.for_vendor(gpu.caps().vendor).unwrap(),
-    fragment: SOLID_COLOR_SHADER.for_vendor(gpu.caps().vendor).unwrap(),
-    vertex_entry: "passthrough",
-    fragment_entry: "solid_color",
-    vertex_layouts: &[PosVertex::vertex_layout()],
-    color_formats: vec![Format::BGRA8],
-    ..PipelineDesc::default()
-})?;
+#[quanta::vertex]
+fn passthrough(pos: Vec3) -> Vec4 {
+    Vec4::new(pos.x, pos.y, pos.z, 1.0)
+}
+
+#[quanta::fragment]
+fn solid_color() -> Vec4 {
+    Vec4::new(1.0, 0.3, 0.2, 1.0)
+}
+```
+
+Each macro emits a `ShaderBinary` static (`PASSTHROUGH_SHADER`,
+`SOLID_COLOR_SHADER`) with per-vendor payloads; the driver picks the right
+one. Descriptors are built with `PipelineDesc::new` plus `with_*` methods
+(they are `#[non_exhaustive]`, so there is no struct-literal form):
+
+```rust,ignore
+let layouts = [PosVertex::vertex_layout()];
+let pipeline = gpu.pipeline(
+    &PipelineDesc::new(ShaderSource::Binaries {
+        vertex: &PASSTHROUGH_SHADER,
+        fragment: &SOLID_COLOR_SHADER,
+    })
+    .with_entries("passthrough", "solid_color")
+    .with_vertex_layouts(&layouts)
+    .with_color_formats(vec![Format::BGRA8]),
+)?;
 ```
 
 ## Draw
@@ -78,9 +99,9 @@ gpu.render(&target)?
     .wait()?;                 // block until the GPU finishes
 ```
 
-That's a rendered triangle sitting in `target`. From here you'd read it back,
-present it to a window, or blit it to the screen — platform details the examples
-cover.
+That's a rendered triangle sitting in `target`. From here you'd read it back
+(`target.read()?`), present it through a [surface](presentation.md), or export
+it to a compositor via `target.native_handle()`.
 
 ## The shape of every frame
 

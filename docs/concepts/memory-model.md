@@ -31,16 +31,16 @@ on the GPU -- the equivalent of a `Vec<T>` but on the graphics card.
 
 ```rust
 // Allocate 1 million floats on the GPU
-let data = gpu.compute_field::<f32>(1_000_000)?;
+let data = gpu.field::<f32>(1_000_000)?;
 
 // Upload from CPU to GPU
-gpu.write_field(&data, &cpu_vec)?;
+data.write(&cpu_vec)?;
 
 // Run a kernel that reads/writes the field
 gpu.dispatch(&wave, 1_000_000)?;
 
 // Download results back to CPU
-let result = gpu.read_field(&data)?;
+let result = data.read()?;
 ```
 
 Fields are the primary bridge between CPU and GPU. Your kernel parameters
@@ -58,7 +58,7 @@ struct Particle {
     mass: f32,
 }
 
-let particles = gpu.compute_field::<Particle>(100_000)?;
+let particles = gpu.field::<Particle>(100_000)?;
 ```
 
 The `#[quanta::gpu_type]` macro ensures the struct layout matches what the GPU
@@ -166,7 +166,7 @@ CPU and GPU. Minimize transfers by keeping data on the GPU between dispatches.
 
 ```
 Is it a large array processed by the kernel?
-  YES --> Field (gpu.compute_field / gpu.render_field)
+  YES --> Field (gpu.field / gpu.field_with_usage)
 
 Is it a small value that changes per dispatch? (dt, frame, resolution)
   YES --> Push constant (scalar parameter in your kernel)

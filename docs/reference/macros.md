@@ -140,16 +140,19 @@ struct Vertex {
     color: [f32; 4],
 }
 
-// Use in a pipeline:
-let pipeline = gpu.pipeline(&PipelineDesc {
-    vertex: vs_main(),
-    fragment: fs_main(),
-    vertex_layouts: vec![Vertex::vertex_layout()],
-    ..Default::default()
-})?;
+// Use in a pipeline (gpu.pipeline is a RenderGpu method —
+// `use quanta::RenderGpu;` or `use quanta::*;`):
+let layouts = [Vertex::vertex_layout()];
+let pipeline = gpu.pipeline(
+    &PipelineDesc::new(ShaderSource::Binaries {
+        vertex: vs_main(),
+        fragment: fs_main(),
+    })
+    .with_vertex_layouts(&layouts),
+)?;
 
 // Bind vertex data:
-let verts = gpu.render_field::<Vertex>(3)?;
+let verts = gpu.field_with_usage::<Vertex>(3, FieldUsage::default_render())?;
 verts.write(&[
     Vertex { position: [0.0, 0.5, 0.0], color: [1.0, 0.0, 0.0, 1.0] },
     Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0, 1.0] },
@@ -185,7 +188,7 @@ struct Camera {
 |----------------|------|-------------|
 | `GPU_SIZE` | `usize` | Byte size (`size_of::<Self>()`) |
 | `GPU_FIELDS` | `&[(&str, &str, usize)]` | (name, type_string, byte_offset) per field |
-| `impl GpuType` | trait impl | Enables `gpu.uniform_field::<Self>(n)` |
+| `impl GpuType` | trait impl | Enables `gpu.field_with_usage::<Self>(n, FieldUsage::default_uniform())` |
 | `__QUANTA_UNIFORMS_*` | `&str` | MSL struct declaration (hidden) |
 | `__QUANTA_UNIFORMS_*_WGSL` | `&str` | WGSL struct declaration (hidden) |
 
@@ -219,14 +222,14 @@ struct Light {
 }
 
 // Allocate and write:
-let light_buf = gpu.uniform_field::<Light>(1)?;
+let light_buf = gpu.field_with_usage::<Light>(1, FieldUsage::default_uniform())?;
 light_buf.write(&[Light {
     position: [10.0, 20.0, 5.0],
     intensity: 1.5,
     color: [1.0, 0.95, 0.9, 1.0],
 }])?;
 
-// Bind to a render pass:
+// Bind to a render pass (gpu.render is a RenderGpu method):
 gpu.render(&target)?
     .pipeline(&pipeline)
     .uniform(0, &light_buf)
@@ -330,8 +333,8 @@ fn saxpy(x: &[f32], y: &mut [f32], a: f32) {
 
 fn main() -> Result<(), quanta::QuantaError> {
     let gpu = quanta::init()?;
-    let x_field = gpu.compute_field::<f32>(n)?;
-    let y_field = gpu.compute_field::<f32>(n)?;
+    let x_field = gpu.field::<f32>(n)?;
+    let y_field = gpu.field::<f32>(n)?;
     x_field.write(&x_data)?;
     y_field.write(&y_data)?;
 
@@ -438,7 +441,7 @@ fn name(attributes..., uniforms: &T) -> OutputType { body }
 
 #### Produces
 
-- `static NAME_SHADER: ShaderBinary` -- compiled SPIR-V + metallib binaries
+- `static NAME_SHADER: ShaderBinary` -- compiled SPIR-V + metallib (+ WGSL) payloads
 - `fn name() -> &'static ShaderBinary` -- accessor
 
 #### Example
@@ -471,7 +474,7 @@ fn name(varyings..., textures: &Texture2D, uniforms: &T) -> Vec4 { body }
 
 #### Produces
 
-- `static NAME_SHADER: ShaderBinary` -- compiled SPIR-V + metallib binaries
+- `static NAME_SHADER: ShaderBinary` -- compiled SPIR-V + metallib (+ WGSL) payloads
 - `fn name() -> &'static ShaderBinary` -- accessor
 
 #### Example
@@ -640,7 +643,7 @@ struct Name {
 
 - `#[repr(C)]` attribute (if not already present)
 - `#[derive(Copy, Clone)]` (if not already present)
-- `impl GpuType for Name` -- enables `gpu.compute_field::<Name>(n)`
+- `impl GpuType for Name` -- enables `gpu.field::<Name>(n)`
 - `Name::GPU_SIZE: usize` -- compile-time struct size
 - `Name::GPU_FIELDS: &[(&str, &str, usize)]` -- (name, type, byte_offset) tuples
 - `const __QUANTA_GPU_TYPE_NAME: &str` -- MSL struct declaration
@@ -682,7 +685,7 @@ struct Body {
     mass: f32,
 }
 
-let bodies = gpu.compute_field::<Body>(65536)?;
+let bodies = gpu.field::<Body>(65536)?;
 assert_eq!(Body::GPU_SIZE, 28);
 assert_eq!(Body::GPU_FIELDS[0], ("pos", "[f32; 3]", 0));
 ```

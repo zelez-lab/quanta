@@ -49,21 +49,15 @@ fn main() {
     let pixel_count = (width * height) as usize;
 
     // Create input/output textures
-    let input_tex = gpu.create_texture(&TextureDesc {
-        width,
-        height,
-        format: Format::RGBA32Float,
-        usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-        ..TextureDesc::default()
-    }).unwrap();
+    let input_tex = gpu.create_texture(
+        &TextureDesc::new(width, height, Format::RGBA32Float)
+            .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+    ).unwrap();
 
-    let output_tex = gpu.create_texture(&TextureDesc {
-        width,
-        height,
-        format: Format::RGBA32Float,
-        usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-        ..TextureDesc::default()
-    }).unwrap();
+    let output_tex = gpu.create_texture(
+        &TextureDesc::new(width, height, Format::RGBA32Float)
+            .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+    ).unwrap();
 
     // Generate gradient test image (RGBA f32)
     let mut pixels = vec![0.0f32; pixel_count * 4];
@@ -81,7 +75,7 @@ fn main() {
     let bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4)
     };
-    gpu.texture_write(&input_tex, bytes).unwrap();
+    input_tex.write(bytes).unwrap();
 
     // Create and dispatch the blur kernel
     let mut wave = box_blur(&gpu).unwrap();
@@ -93,7 +87,7 @@ fn main() {
     pulse.wait().unwrap();
 
     // Read blurred result
-    let result = gpu.texture_read(&output_tex).unwrap();
+    let result = output_tex.read().unwrap();
     println!("Blur complete, {} bytes output", result.len());
 }
 ```

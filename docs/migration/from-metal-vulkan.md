@@ -15,7 +15,7 @@ while maintaining the same performance (it generates the same API calls under th
 | Memory type selection (Vulkan) | Automatic (driver picks optimal) |
 | `MTLLibrary` / `VkShaderModule` | Embedded in binary as `KernelBinary` |
 | Fence/semaphore creation | `Pulse` returned from dispatch |
-| Buffer/image layout transitions (Vulkan) | `gpu.barrier_texture()` / `gpu.barrier_buffer()` |
+| Buffer/image layout transitions (Vulkan) | `gpu.barrier_texture()` / `gpu.barrier_field()` |
 
 ## Example: buffer creation + compute dispatch
 
@@ -79,13 +79,13 @@ fn my_kernel(data: &mut [f32]) {
 }
 
 let gpu = quanta::init()?;
-let field = gpu.compute_field::<f32>(N)?;
-gpu.write_field(&field, &data)?;
+let field = gpu.field::<f32>(N)?;
+field.write(&data)?;
 
 let mut wave = my_kernel(&gpu)?;
 wave.bind(0, &field);
 let mut pulse = gpu.dispatch(&wave, N as u32)?;
-gpu.wait(&mut pulse)?;
+pulse.wait()?;
 ```
 
 ## Performance
@@ -104,7 +104,7 @@ creation is faster than Metal's `newLibraryWithSource:` or Vulkan's
 - Full GPU performance (no abstraction overhead).
 - Explicit resource management (Fields are RAII, but you control lifetime).
 - Multi-queue support (`gpu.async_compute_dispatch()`).
-- Resource state transitions (`gpu.barrier_texture()`, `gpu.barrier_buffer()`).
+- Resource state transitions (`gpu.barrier_texture()`, `gpu.barrier_field()`).
 - Timestamp queries for profiling (`gpu.timestamp_query()`).
 - Debug labels for GPU capture tools (`gpu.debug_push()` / `gpu.debug_pop()`).
 
@@ -112,7 +112,12 @@ creation is faster than Metal's `newLibraryWithSource:` or Vulkan's
 
 - Per-call control over command buffer submission order.
 - Custom memory allocators (Quanta picks optimal memory types automatically).
-- Swapchain management (Quanta is compute/render-to-texture focused, not windowing).
+- Window creation (Quanta never creates windows — you hand it a
+  presentation target). Presentation itself is covered: a `Surface`
+  over a `CAMetalLayer` you provide (`gpu.create_surface`, Metal in
+  v0.1 — the Vulkan swapchain path is not wired yet), or exporting the
+  rendered texture to your own compositor via `texture.native_handle()`
+  (Metal + Vulkan).
 
 ## Migrating incrementally
 
@@ -121,10 +126,16 @@ Quanta's `Field` exposes a raw `handle() -> u64` which is the underlying
 existing Metal/Vulkan code during migration:
 
 ```rust
-let field = gpu.compute_field::<f32>(1024)?;
+let field = gpu.field::<f32>(1024)?;
 let raw_handle = field.handle();
 // Pass raw_handle to your existing Metal/Vulkan code
 ```
+
+For textures, prefer the typed export: `texture.native_handle()`
+returns `NativeTextureHandle::Metal { texture }` (an `id<MTLTexture>`
+pointer) or `NativeTextureHandle::Vulkan { image, memory, vk_format,
+layout }`. The handle is a borrow — valid while the `Texture` lives;
+`retain` it natively if your code needs it longer.
 
 ## Platform-specific notes
 
@@ -143,7 +154,9 @@ let raw_handle = field.handle();
 
 Quanta wraps the modern advanced surface as typed handles. Each is gated by a
 capability query and returns `QuantaErrorKind::NotSupported` on backends that
-don't implement it.
+don't implement it. The render-side methods (`gpu.mesh_pipeline`,
+`gpu.render_bundle`, …) come from the `RenderGpu` extension trait —
+`use quanta::RenderGpu;` (or `use quanta::*;`).
 
 | Vulkan / Metal extension                                  | Quanta                                                           |
 |-----------------------------------------------------------|------------------------------------------------------------------|
@@ -153,7 +166,7 @@ don't implement it.
 | `VK_EXT_mesh_shader` / `MTLMeshRenderPipelineDescriptor`  | `gpu.mesh_pipeline(MeshPipelineDesc { .. })`                     |
 | `vkCmdDrawMeshTasksEXT` / `drawMeshThreadgroups:`         | `pipeline.dispatch([gx, gy, gz])`                                |
 | Tessellation control / evaluation stages                  | `gpu.tessellation_pipeline(TessTopology::Triangle, control_pts)` |
-| `VK_KHR_fragment_shading_rate` / `MTLRasterizationRateMap`| `gpu.vrs_state()` + `set_shading_rate(ShadingRate::R2x2)`        |
+| `VK_KHR_fragment_shading_rate` / `MTLRasterizationRateMap`| `gpu.vrs_state()` + `set_rate(ShadingRate::R2x2)`                |
 | `VK_EXT_sparse_binding` / `MTLHeap`                       | `gpu.sparse_texture(&desc)` + `map_tile` / `unmap_tile`          |
 | `vkQueueBindSparse`                                       | (transparent — `map_tile` does the bind)                          |
 | Multi-queue (graphics / compute / transfer)               | `gpu.queue(QueueType::Compute)`, `gpu.queue_families()`          |
@@ -161,6 +174,8 @@ don't implement it.
 | Secondary command buffers / `MTLIndirectCommandBuffer`    | `gpu.render_bundle(cap)`, `gpu.indirect_command_buffer(cap)`     |
 | `vkCmdDrawIndirect` / `drawPrimitives:indirectBuffer:`    | `render_pass.draw_indirect(&buffer, offset)`                     |
 | `VK_EXT_debug_printf`                                     | `gpu.printf_buffer(cap)?.drain()?`                               |
+| `CAMetalLayer` + `nextDrawable` / `VkSwapchainKHR` + `vkAcquireNextImageKHR` | `gpu.create_surface(&SurfaceTarget::MetalLayer { layer }, &config)` + `surface.acquire()` → `frame.present()` (Metal in v0.1; Vulkan swapchain not wired yet) |
+| `MTLTexture` / `VkImage` handed to external code           | `texture.native_handle()` → `NativeTextureHandle::{Metal, Vulkan}` |
 
 The argument layout for indirect draws follows the Vulkan / Metal convention
 exactly — see [Guide: Indirect commands](../rendering/tutorials/indirect-commands.md).

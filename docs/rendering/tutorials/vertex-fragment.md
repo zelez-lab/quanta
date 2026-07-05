@@ -139,7 +139,7 @@ The derive generates:
 Bind uniforms through the render builder:
 
 ```rust
-let camera_buf = gpu.uniform_field::<Camera>(1)?;
+let camera_buf = gpu.field_with_usage::<Camera>(1, FieldUsage::default_uniform())?;
 camera_buf.write(&[camera_data])?;
 
 gpu.render(&target)?
@@ -202,7 +202,7 @@ fn render_frame(gpu: &Gpu, angle: f32) -> Result<(), QuantaError> {
         ColorVertex { pos: [ 0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0] },  // blue
     ];
 
-    let vb = gpu.render_field::<ColorVertex>(3)?;
+    let vb = gpu.field_with_usage::<ColorVertex>(3, FieldUsage::default_render())?;
     vb.write(&vertices)?;
 
     // Build MVP matrix (rotation around Z axis)
@@ -215,18 +215,21 @@ fn render_frame(gpu: &Gpu, angle: f32) -> Result<(), QuantaError> {
         0.0, 0.0, 0.0, 1.0,
     ];
 
-    let mvp_buf = gpu.uniform_field::<[f32; 16]>(1)?;
+    let mvp_buf = gpu.field_with_usage::<[f32; 16]>(1, FieldUsage::default_uniform())?;
     mvp_buf.write(&[mvp])?;
 
-    let pipeline = gpu.pipeline(&PipelineDesc {
-        vertex: vertex_main().for_vendor(gpu.caps().vendor).unwrap(),
-        fragment: fragment_main().for_vendor(gpu.caps().vendor).unwrap(),
-        vertex_entry: "vertex_main",
-        fragment_entry: "fragment_main",
-        vertex_layouts: &[ColorVertex::vertex_layout()],
-        color_formats: vec![Format::BGRA8],
-        ..PipelineDesc::default()
-    })?;
+    // ShaderSource::Binaries hands the driver the multi-vendor statics
+    // the macros generated; it picks the right payload per backend.
+    let layouts = [ColorVertex::vertex_layout()];
+    let pipeline = gpu.pipeline(
+        &PipelineDesc::new(ShaderSource::Binaries {
+            vertex: &VERTEX_MAIN_SHADER,
+            fragment: &FRAGMENT_MAIN_SHADER,
+        })
+        .with_entries("vertex_main", "fragment_main")
+        .with_vertex_layouts(&layouts)
+        .with_color_formats(vec![Format::BGRA8]),
+    )?;
 
     let target = gpu.render_target(800, 600, Format::BGRA8)?;
 
@@ -299,11 +302,7 @@ gpu.render(&target)?
     .pipeline(&pipeline)
     .vertices(0, &vb)
     .texture(0, &albedo_texture)
-    .sampler(0, SamplerDesc {
-        min_filter: Filter::Linear,
-        mag_filter: Filter::Linear,
-        ..SamplerDesc::default()
-    })
+    .sampler(0, SamplerDesc::default().with_filters(Filter::Linear, Filter::Linear))
     .draw(6)
     .pulse()?
     .wait()?;

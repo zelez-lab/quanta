@@ -17,7 +17,7 @@ if !gpu.supports_mesh_shaders() {
 ## Pipeline
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 // 64-vertex / 124-primitive meshlets, 32 task threads per group.
 let pipe = gpu.mesh_pipeline(MeshPipelineDesc {

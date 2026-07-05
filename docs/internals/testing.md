@@ -263,17 +263,17 @@ fn test_atomic_add() {
     let gpu = quanta::init().unwrap();
 
     // Create field initialized to zero
-    let counter = gpu.compute_field::<u32>(1).unwrap();
-    gpu.write_field(&counter, &[0u32]).unwrap();
+    let counter = gpu.field::<u32>(1).unwrap();
+    counter.write(&[0u32]).unwrap();
 
     // Kernel: 1024 quarks each add 1
     let mut wave = atomic_increment(&gpu).unwrap();
     wave.bind(0, &counter);
     let mut pulse = gpu.dispatch(&wave, 1024).unwrap();
-    gpu.wait(&mut pulse).unwrap();
+    pulse.wait().unwrap();
 
     // Verify: counter should be exactly 1024
-    let result = gpu.read_field(&counter).unwrap();
+    let result = counter.read().unwrap();
     assert_eq!(result[0], 1024);
 }
 ```

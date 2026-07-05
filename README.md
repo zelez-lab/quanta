@@ -80,14 +80,26 @@ Quanta is not on crates.io yet — add it from the git repository:
 cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
 
-**Compute-only or compute + rendering?** Quanta's rendering face lives
-behind a default-on `render` feature. A headless GPGPU app (database, ML
-runtime) turns it off — `quanta = { ..., default-features = false,
-features = ["metal"] }` — and compiles **zero rendering code** with no
-render type on its surface. A graphical app keeps the default and adds the
-`quanta-render` crate for render passes, pipelines, and the
-`#[quanta::vertex]` / `#[quanta::fragment]` shader macros. See
-[Getting Started](docs/getting-started.md#compute-only-or-compute--rendering).
+**Compute, rendering, or both?** Quanta is split into three crates —
+`quanta-core` (the shared device substrate), `quanta-render` (the render
+face), and the `quanta` facade — and the two faces are Cargo features,
+both on by default (`default = ["metal", "render", "compute"]`). A
+consumer pulls in only what it uses:
+
+- **Compute only** (database, ML runtime): `quanta = { ...,
+  default-features = false, features = ["metal", "compute", "jit"] }` —
+  compiles **zero rendering code**, no render type on the surface.
+- **Render only** (UI toolkit, compositor): `quanta = { ...,
+  default-features = false, features = ["metal", "render"] }` — compiles
+  **zero kernel machinery**; the kernel-lowering/JIT crates never enter
+  the dependency graph. (Equivalently, depend on `quanta-render`
+  directly.)
+- **Both**: keep the defaults. The `render` feature pulls in
+  `quanta-render` and re-exports it — render passes, pipelines, the
+  `#[quanta::vertex]` / `#[quanta::fragment]` shader macros, and the
+  `RenderGpu` extension trait that carries the render methods on `Gpu`.
+
+See [Getting Started](docs/getting-started.md#compute-rendering-or-both).
 
 ### System requirements
 
@@ -132,7 +144,7 @@ vulkaninfo --summary
 
 # Then:
 cargo add quanta --git https://github.com/zelez-lab/quanta \
-  --no-default-features --features vulkan,jit
+  --no-default-features --features vulkan,render,compute,jit
 ```
 
 `mesa-vulkan-drivers` includes lavapipe, a software Vulkan ICD that
@@ -155,7 +167,7 @@ sudo apt update && sudo apt install -y llvm-22-dev libpolly-22-dev
 # AMD, or Intel). The Vulkan loader (`vulkan-1.dll`) ships with the
 # driver. No separate Vulkan SDK needed for runtime.
 cargo add quanta --git https://github.com/zelez-lab/quanta `
-  --no-default-features --features vulkan,jit
+  --no-default-features --features vulkan,render,compute,jit
 ```
 
 Live GPU execution on Windows is untested in v0.1-alpha — the build
@@ -328,6 +340,9 @@ NVIDIA and AMD targets do not need a separate backend feature — they consume t
 - Multi-queue (`gpu.queue_families()`, `Queue`, signal/wait across queues)
 - Instanced draw, index buffers, depth testing, texture sampling
 - `draw_indirect` / `draw_indexed_indirect` / `execute_bundle`
+- Presentation: `Surface` frame loop (acquire → render → present, Metal today)
+  and `Texture::native_handle()` zero-copy export for external compositors
+  (Metal + Vulkan)
 
 ---
 

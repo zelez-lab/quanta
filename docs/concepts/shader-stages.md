@@ -112,6 +112,8 @@ and sampling.
 ## Quanta render code
 
 ```rust
+use quanta::RenderGpu; // render methods on Gpu come from this trait
+
 // 1. Define vertex and fragment shaders
 #[quanta::vertex]
 fn transform(pos: Vec3, mvp: &Mat4) -> Vec4 {
@@ -125,16 +127,16 @@ fn shade(normal: Vec3, light_dir: &Vec3) -> Vec4 {
 }
 
 // 2. Create a pipeline (vertex + fragment bound together)
-let pipeline = gpu.pipeline(&PipelineDesc {
+let pipeline = gpu.pipeline(&PipelineDesc::new(ShaderSource::Binaries {
     vertex: transform(),
     fragment: shade(),
-    ..Default::default()
-})?;
+}))?;
 
-// 3. Render
-let pass = gpu.render_begin(&target)?;
-// draw commands...
-gpu.render_end(pass)?;
+// 3. Render (builder chain — submit with .pulse())
+let mut pulse = gpu.render(&target)?
+    .pipeline(&pipeline)
+    // draw commands...
+    .pulse()?;
 ```
 
 See [Guide: Vertex and Fragment Shaders](../rendering/tutorials/vertex-fragment.md) for a

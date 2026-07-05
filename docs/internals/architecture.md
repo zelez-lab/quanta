@@ -2,111 +2,128 @@
 
 ## Crate structure
 
+Quanta ships as **three consumable surfaces over one shared substrate**:
+`quanta-core` (the device line), `quanta-render` (the render face), and
+the `quanta` facade (which adds the compute face and re-exports the
+other two behind features).
+
 ```
-quanta/                         Main library (no_std, zero external deps)
+crates/quanta-core/             Shared GPU substrate (no_std, zero external deps)
 +-- src/
-|   +-- lib.rs                  Entry points: init(), devices()
+|   +-- lib.rs                  Entry points: init(), devices(), init_cpu()
 |   +-- api/
-|   |   +-- gpu.rs              Gpu struct — all user-facing operations
+|   |   +-- gpu.rs              Gpu handle — shared operations + capability queries
+|   |   +-- gpu/compute.rs      Compute-face Gpu methods (feature = "compute")
 |   |   +-- field.rs            Field<T>, MappedField<T>
 |   |   +-- wave.rs             Wave (bound kernel + bindings)
 |   |   +-- pulse.rs            Pulse (GPU completion signal)
-|   |   +-- texture.rs          Texture, TextureDesc, TextureView
-|   |   +-- pipeline.rs         Pipeline, PipelineDesc
-|   |   +-- render_pass.rs      RenderPass, draw commands
-|   |   +-- ray_tracing.rs      Acceleration structures, RT pipelines
+|   |   +-- texture.rs          Texture, TextureDesc, TextureView, Sampler,
+|   |   |                       NativeTextureHandle (zero-copy export)
+|   |   +-- pipeline.rs         Pipeline, PipelineDesc, ShaderSource
+|   |   +-- render_pass.rs      RenderPass, ColorTarget, DepthTarget
+|   |   +-- surface.rs          SurfaceConfig, SurfaceTarget, PresentMode
+|   |   +-- ray_tracing.rs      GeometryDesc, RayTracingPipelineDesc
 |   |   +-- device.rs           GpuDevice trait (driver interface)
-|   |   +-- types.rs            Caps, Vendor, Format, FieldUsage, etc.
-|   |   +-- error.rs            QuantaError
+|   |   +-- types.rs            Caps, Vendor, Format, CompareOp, FieldUsage, …
+|   |   +-- error.rs            QuantaError (implements core::error::Error)
 |   +-- driver/
-|   |   +-- metal/              Metal backend (macOS/iOS)
-|   |   |   +-- mod.rs          MetalDevice (implements GpuDevice)
-|   |   |   +-- ffi.rs          Raw ObjC FFI bindings
-|   |   |   +-- compute.rs      Compute dispatch implementation
-|   |   |   +-- memory.rs       Buffer/field allocation
-|   |   |   +-- render.rs       Render pass encoding
-|   |   |   +-- texture.rs      Texture creation and operations
-|   |   +-- vulkan/             Vulkan backend (Linux/Android/Windows)
-|   |   |   +-- mod.rs          VulkanDevice (implements GpuDevice)
-|   |   |   +-- ffi.rs          Raw Vulkan FFI bindings
-|   |   |   +-- compute.rs      Compute dispatch implementation
-|   |   |   +-- memory.rs       Buffer allocation + memory management
-|   |   |   +-- render.rs       Render pass encoding
-|   |   |   +-- texture.rs      Image creation and transitions
-|   |   |   +-- sync.rs         Fences, semaphores, barriers
-|   |   +-- validation.rs       Debug validation layer (wraps any driver)
-|   +-- kernel.rs               KernelBinary, ShaderBinary, GpuType trait
-|   +-- gpu_type.rs             #[quanta::gpu_type] runtime support
+|       +-- metal/              Metal backend (macOS/iOS) — raw ObjC FFI
+|       +-- vulkan/             Vulkan backend (Linux/Windows) — raw Vulkan FFI
+|       +-- cpu/                CPU software executor (feature = "software")
+|       +-- webgpu/             WebGPU backend (wasm32, feature = "webgpu")
+|       +-- validation.rs       Debug validation layer (wraps any driver)
+
+quanta/                         The facade (root crate)
++-- src/
+|   +-- lib.rs                  Re-exports quanta-core wholesale; gates the
+|   |                           compute face behind `compute` and re-exports
+|   |                           quanta-render behind `render`
+|   +-- kernel.rs               KernelBinary, GpuType (compute face)
+|   +-- scan.rs                 Scan library (compute face)
+|   +-- intrinsics.rs           GPU intrinsics for the wasm32 kernel route
+
+crates/quanta-render/           The render face — a real crate. Depends on
++-- src/                        quanta-core (+ the render DSL macros) ONLY;
+|   +-- lib.rs                  never on the compute / IR-JIT / wasm-lowering
+|   |                           stack. Re-exports quanta-core wholesale.
+|   +-- gpu_ext.rs              RenderGpu — sealed extension trait on Gpu
+|   |                           (pipeline, render, render_target, create_surface, …)
+|   +-- render_builder.rs       Chainable RenderBuilder (draw recording + pulse)
+|   +-- surface_wrap.rs         Surface / SurfaceFrame (acquire → render → present)
+|   +-- mesh_shader.rs          MeshPipeline (typed wrapper)
+|   +-- tessellation.rs         TessellationPipeline (typed wrapper)
+|   +-- ray_tracing_wrap.rs     AccelerationStructure, RayTracingPipeline
+|   +-- vrs_wrap.rs             VrsState
 
 crates/quanta-ir/               Shared IR definition (zero external deps)
 +-- src/
-|   +-- lib.rs                  KernelOp (51 variants), KernelDef, CompilerOutput
+|   +-- lib.rs                  KernelOp, KernelDef, CompilerOutput
 |   +-- wire/                   Binary serialization (custom format, no serde)
-|       +-- encode.rs           KernelDef -> bytes
-|       +-- decode.rs           bytes -> KernelDef
-|       +-- tests.rs            Roundtrip tests
 
-crates/quanta-dsl/           Proc macros (depends on syn + quote)
+crates/quanta-dsl/              Proc macros (depends on syn + quote)
 +-- src/
-|   +-- lib.rs                  #[kernel], #[device], #[shared],
-|   |                           #[vertex], #[fragment],
-|   |                           #[tess_control], #[tess_eval],
-|   |                           #[task], #[mesh],
-|   |                           #[ray_gen], #[closest_hit], #[miss],
-|   |                           #[gpu_type]
-|   +-- gpu_type.rs             #[gpu_type] expansion (repr(C), GpuType impl, MSL/WGSL)
-|   +-- parse.rs                Rust AST -> KernelDef (with parse/expr.rs, parse/stmt.rs)
-|   +-- compiler.rs             Orchestrates compilation, shader emitters
-|   +-- validate.rs             Pre-parse validation rules
+|   +-- lib.rs                  #[kernel], #[device], #[gpu_type],
+|   |                           #[vertex], #[fragment], #[tess_control],
+|   |                           #[tess_eval], #[task], #[mesh],
+|   |                           #[ray_gen], #[closest_hit], #[miss]
+|   +-- kernel_macro.rs         #[kernel] expansion + auto-dispatch wrapper
+|   +-- compile_via_wasm.rs     Kernel body → rustc → wasm32 → KernelDef
+|   +-- kernel_type_inference.rs  Per-field scalar-type inference
+|   +-- shader_macro.rs         Render-stage macros (feature = "render")
 
-crates/quanta-compiler/         LLVM compiler binary (depends on inkwell/LLVM 22)
+crates/quanta-wasm-lowering/    WASM → KernelOps translator (kernel route)
+
+crates/quanta-compiler/         LLVM compiler binary (inkwell / LLVM 22)
 +-- src/
 |   +-- main.rs                 CLI entry: stdin KernelDef -> stdout CompilerOutput
 |   +-- to_llvm.rs              KernelOp -> LLVM IR module builder
-|   +-- to_llvm/emit.rs         Per-op LLVM IR emission
-|   +-- to_llvm/metadata.rs     GPU-specific metadata (nvvm annotations, etc.)
-|   +-- targets.rs              GpuTarget enum, GpuIntrinsics trait
-|   +-- targets/nvptx.rs        NVIDIA: thread IDs, barriers, atomics
-|   +-- targets/amdgpu.rs       AMD: workitem IDs, barriers, atomics
-|   +-- targets/spirv.rs        SPIR-V: OpAccessChain, OpControlBarrier
+|   +-- targets/…               NVPTX / AMDGPU / SPIR-V intrinsics
 |   +-- emit_msl.rs             KernelOp -> MSL source text
 |   +-- emit_wgsl.rs            KernelOp -> WGSL source text
-|   +-- rustc_compile.rs        Alternative path: Rust source -> rustc -> LLVM IR
-+-- build.rs                    LLVM detection and linking
-
-crates/quanta-render/            Rendering front door (depends on quanta)
-+-- src/
-|   +-- lib.rs                  Re-exports render types + shader macros
-|   +-- gpu_ext.rs              RenderGpu marker trait over quanta::Gpu
 ```
 
-## Compute / render split (the `render` feature)
+## The crate split (`quanta-core` / `quanta-render` / the facade)
 
 Quanta has two faces — GPU **compute** (CUDA-like) and **rendering**
-(Metal/Vulkan/WGSL-like) — that share the `#[quanta::kernel]` family, the
-IR, and the LLVM backend. They are separated by the **`render` Cargo
-feature** on the root `quanta` crate, not by splitting the crate.
+(Metal/Vulkan/WGSL-like). Each face is a Cargo feature on the facade
+(`compute` and `render`, both default-on), and a consumer pulls in only
+what it uses:
 
-Why a feature and not a separate compute crate: the compute/render boundary
-cuts *through* the driver line, not above it. The `GpuDevice` trait speaks
-render types (`pipeline_create(&PipelineDesc) -> Pipeline`,
-`render_begin -> RenderPass`, …) and all four backend drivers execute
-render ops, so the render code can't live in a sibling crate without a
-dependency cycle. Instead the render API modules, the render `GpuDevice`
-methods, the render driver code, and the render `Gpu` methods all carry
-`#[cfg(feature = "render")]` in `quanta`.
+- **`quanta-core`** is the substrate both faces share: the `Gpu` handle,
+  the sealed `GpuDevice` trait, the four drivers, fields, textures,
+  errors, and capability queries. The compute/render boundary cuts
+  *through* the driver line — the `GpuDevice` trait itself speaks the
+  render data model (`PipelineDesc`, `RenderPass`, `RenderOp`) and the
+  compute data model (`Wave`, `Batch`, queues) — so both data models
+  live in `quanta-core`, each behind the matching feature
+  (`quanta-core/render`, `quanta-core/compute`).
+- **`quanta-render`** is the render face: the `RenderGpu` extension
+  trait, the chainable `RenderBuilder`, the typed
+  mesh/tessellation/VRS/ray-tracing wrappers, and `Surface`
+  presentation. It depends on `quanta-core` (render feature on) plus
+  the render-stage DSL macros — **never** on the compute stack: a
+  render-only consumer's dependency graph contains no kernel lowering,
+  no JIT, no WASM machinery.
+- **The `quanta` facade** re-exports `quanta-core` wholesale, compiles
+  the compute face (`#[quanta::kernel]`, waves, the scan library) in
+  behind `compute`, and re-exports `quanta-render` behind `render`.
 
-- **Headless compute** (Thiaba, `ai_project`, any GPGPU app) depends on
-  `quanta` with `default-features = false`: zero render code compiled, no
-  render type on the surface (~37% less of the `quanta` crate to build).
-- **Graphical** consumers add `crates/quanta-render`, which turns the
-  feature on, re-exports the render types + shader macros, and offers the
-  `RenderGpu` marker. The render methods stay inherent on `quanta::Gpu`.
+Because `quanta-render` is a foreign crate to `quanta-core`, the render
+methods that were historically inherent on `Gpu` are now a **sealed
+extension trait**, `RenderGpu` (a foreign crate cannot add inherent
+methods across a crate boundary). It is implemented only for
+`quanta_core::Gpu` through a `#[doc(hidden)]` device-handle hook, so
+methods can still be added without a breaking change — same policy as
+the sealed `GpuDevice`. Callers write `use quanta::RenderGpu;` (or the
+`use quanta::*;` glob, which covers it).
 
-Two CI invariants keep the boundary from regressing (step 085):
+Two CI invariants keep the boundary from regressing:
 surface-disjointness (render-off `quanta` exposes no render type name,
 checked from rustdoc JSON) and dependency-acyclicity (no
-`quanta -> quanta-render` edge). See `scripts/check-render-boundary.sh`.
+`quanta -> quanta-render` edge in a render-off build; render builds on
+the substrate, never the reverse). See
+`scripts/check-render-boundary.sh` and the four-combo build matrix in
+CI (core-only / render / compute / both).
 
 ## Build-time compilation flow
 
@@ -121,8 +138,11 @@ Source:
         output[i] = input[i] * 2.0;
     }
 
-Step 1: Parse (quanta-dsl/parse.rs)
-    Rust AST (syn) -> KernelDef {
+Step 1: Kernel body -> IR (quanta-dsl/compile_via_wasm.rs)
+    The macro renders the body as a wasm32 `extern "C"` function,
+    compiles it with `rustc --target wasm32-unknown-unknown`, and
+    lowers the WASM to KernelOps via `quanta-wasm-lowering`:
+    KernelDef {
         name: "my_kernel",
         params: [FieldRead("input", slot=0), FieldWrite("output", slot=1)],
         body: [QuarkId{r0}, Load{r1,field=0,r0}, Const{r2,2.0}, BinOp{r3,r1*r2}, Store{field=1,r0,r3}],
@@ -140,7 +160,7 @@ Step 3: Compile to all targets (quanta-compiler) — binary-only
     No text output (MSL/WGSL) in the build path.
     Text emitters (emit_msl.rs, emit_wgsl.rs) are reserved for the JIT path.
 
-Step 4: Embed (quanta-dsl/lib.rs)
+Step 4: Embed (quanta-dsl)
     CompilerOutput -> proc_macro TokenStream:
 
     pub static MY_KERNEL_BINARY: KernelBinary = KernelBinary {
@@ -195,7 +215,8 @@ Step 4: Embed (quanta-dsl/lib.rs)
 
 ## Driver interface
 
-All backend operations go through the `GpuDevice` trait:
+All backend operations go through the `GpuDevice` trait (in
+`quanta-core`):
 
 ```rust
 pub trait GpuDevice {
@@ -210,35 +231,56 @@ pub trait GpuDevice {
 }
 ```
 
-The `Gpu` struct wraps a `Box<dyn GpuDevice>`. Metal and Vulkan each implement this trait.
-The validation layer wraps any `GpuDevice` and adds runtime checks.
+The `Gpu` struct wraps an `Arc<dyn GpuDevice>`. Metal, Vulkan, CPU, and
+WebGPU each implement this trait. The validation layer wraps any
+`GpuDevice` and adds runtime checks. Typed wrappers (textures,
+pipelines, samplers, views, the render wrappers) hold a clone of the
+device `Arc` and release their driver resource on `Drop`, exactly once
+(guarded by a `live` flag).
 
-## Feature flags
+## Feature flags (the `quanta` facade)
 
 ```toml
 [features]
-default = ["metal", "render"]
-std = []
-metal = ["std"]                    # macOS/iOS only
-vulkan = ["std"]                   # Linux/Android/Windows
-software = ["std", "jit"]          # CPU software executor (IR interpreter)
-jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]  # runtime JIT via wave_jit()
-webgpu = ["std", "jit"]            # browser (wasm32)
-render = ["quanta-dsl/render"]  # the rendering face (see compute/render split)
+default = ["metal", "render", "compute"]
+std = ["quanta-core/std", "quanta-render?/std"]
+metal = ["std", "quanta-core/metal", "quanta-render?/metal"]
+vulkan = ["std", "quanta-core/vulkan", "quanta-render?/vulkan"]
+render = ["quanta-core/render", "quanta-dsl/render", "dep:quanta-render"]
+compute = ["quanta-core/compute", "quanta-dsl/compute"]
+software = ["std", "jit", "compute", "quanta-core/software", "quanta-render?/software"]
+jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases", "quanta-core/jit"]
+webgpu = ["std", "jit", "compute", "quanta-core/webgpu", "quanta-render?/webgpu"]
 ```
 
-Without `std`, only types and the kernel language are available (for `no_std` environments).
-A **headless compute** consumer builds with `default-features = false` to drop the
-`render` (and `metal`) defaults — see the compute/render split above.
+- `render` — the render face. Pulls in `quanta-render` and re-exports
+  it (the `RenderGpu` trait, builders, typed wrappers, render-stage
+  macros).
+- `compute` — the compute face: the `#[quanta::kernel]` /
+  `#[quanta::device]` macros, `Wave` dispatch, batches, queues, the
+  scan library. Symmetric to `render`.
+- `software` and `webgpu` imply `compute` (those drivers' whole job is
+  executing kernels).
+- A **headless compute** consumer builds with
+  `default-features = false, features = ["metal", "compute", "jit"]`
+  (or `vulkan`): zero render code compiled, no render type on the
+  surface.
+- A **render-only** consumer builds with
+  `default-features = false, features = ["metal", "render"]` — or
+  depends on `quanta-render` directly — and compiles zero kernel
+  machinery.
 
-The `software` feature adds a full CPU executor that interprets kernel IR with
-barrier-correct workgroup execution. The `jit` feature enables `gpu.wave_jit()`
-for runtime compilation of serialized KernelDef IR.
+Without `std`, only types and the kernel language are available (for
+`no_std` environments). The `software` feature adds a full CPU executor
+that interprets kernel IR with barrier-correct workgroup execution. The
+`jit` feature enables `gpu.wave_jit()` for runtime compilation of
+serialized KernelDef IR.
 
 ## Dependency philosophy
 
-The `quanta` runtime crate has **zero external dependencies** (aside from its own
-workspace crates `quanta-dsl` and `quanta-ir`). GPU drivers use raw FFI:
+The runtime crates (`quanta-core`, `quanta`, `quanta-render`) have
+**zero external dependencies** (aside from the workspace crates
+`quanta-dsl` and `quanta-ir`). GPU drivers use raw FFI:
 
 - **Metal**: `objc_msgSend` / `sel_registerName` / `objc_getClass` via `extern "C"`
 - **Vulkan**: `vkCreateInstance` / `vkCreateBuffer` / etc. via `#[link(name = "vulkan")]`

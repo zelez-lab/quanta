@@ -5,6 +5,7 @@ All `QuantaError` types, their causes, and how to handle them.
 ## Error structure
 
 ```rust
+#[non_exhaustive]
 pub struct QuantaError {
     pub kind: QuantaErrorKind,
     pub context: Option<String>,
@@ -13,6 +14,11 @@ pub struct QuantaError {
 
 Every error has a `kind` (the category) and an optional `context` string
 describing which operation produced it.
+
+`QuantaError` implements `core::error::Error`, so it composes with `?`,
+`Box<dyn Error>`, and error-reporting frameworks. Both the struct and
+`QuantaErrorKind` are `#[non_exhaustive]` — match kinds with a wildcard
+arm.
 
 ```rust
 match err.kind {
@@ -64,7 +70,7 @@ GPU memory allocation failed.
 - Check `gpu.caps().memory_bytes` for total available memory
 
 ```rust
-let field = gpu.compute_field::<f32>(count).map_err(|e| {
+let field = gpu.field::<f32>(count).map_err(|e| {
     if e.kind == QuantaErrorKind::OutOfMemory {
         let mb = count * 4 / 1_000_000;
         eprintln!("Cannot allocate {mb} MB on GPU");
@@ -142,7 +148,7 @@ The GPU device was lost and can no longer be used.
 - All existing `Field`, `Texture`, `Wave`, and `Pipeline` objects are invalid
 - Application must recreate all GPU resources
 
-### `InvalidParam(&'static str)`
+### `InvalidParam(String)`
 
 An API function was called with invalid arguments **the caller could
 have caught**. Distinct from `NotSupported` (feature is genuinely
@@ -159,10 +165,10 @@ unavailable on this backend) and `NotFound` (handle does not exist).
 - Check that array sizes and counts are positive and within limits
 
 ```rust
-let field = gpu.compute_field::<f32>(0); // Error: zero count
+let field = gpu.field::<f32>(0); // Error: zero count
 ```
 
-### `NotSupported(&'static str)`
+### `NotSupported(String)`
 
 The requested feature is not implemented on this backend or hardware.
 This is an *expected* return value, not a bug — callers should branch on
@@ -196,7 +202,7 @@ The error message identifies *which* feature and *why* (backend gap vs.
 hardware gap vs. v0.1 limit), so it's safe to log and surface to the
 end user.
 
-### `NotFound(&'static str)`
+### `NotFound(String)`
 
 The given handle does not refer to a live resource on this device.
 
@@ -217,7 +223,32 @@ The given handle does not refer to a live resource on this device.
   owning typed wrapper drop while the handle is still in flight.
 - Don't pass handles from one `Gpu` to another.
 
-### `Internal(&'static str)`
+### `SurfaceOutdated(String)`
+
+The presentation surface no longer matches its target — the window /
+layer was resized or its properties changed since the last
+`configure`. Returned by `Surface::acquire` (and configure-time
+validation). **Recoverable**: this is the surface's resize signal, not
+a failure.
+
+**Resolution:**
+- Call `Surface::configure` with the new extent, then acquire again:
+
+```rust
+let frame = match surface.acquire() {
+    Ok(frame) => frame,
+    Err(e) if matches!(e.kind, QuantaErrorKind::SurfaceOutdated(_)) => {
+        surface.configure(SurfaceConfig::new(new_w, new_h))?;
+        continue; // retry next loop iteration
+    }
+    Err(e) => return Err(e),
+};
+```
+
+- Frames acquired before the reconfigure must be presented or dropped
+  first.
+
+### `Internal(String)`
 
 Something inside Quanta went wrong that the caller cannot fix. Lock
 poisoning, broken invariants, "this code path was supposed to be
@@ -230,7 +261,7 @@ unreachable." File a bug.
 Use `.with_context()` to annotate errors with the operation that produced them:
 
 ```rust
-let field = gpu.compute_field::<f32>(n)
+let field = gpu.field::<f32>(n)
     .map_err(|e| e.with_context("allocating particle positions"))?;
 ```
 
@@ -252,6 +283,7 @@ QuantaError::device_lost()
 QuantaError::invalid_param("field count must be > 0")
 QuantaError::not_supported("ray tracing requires Apple GPU family 6+")
 QuantaError::not_found("field handle not found")
+QuantaError::surface_outdated("drawable size changed")
 QuantaError::internal("lock poisoned")
 ```
 
@@ -271,6 +303,7 @@ lets you grep for an error category without inspecting the kind:
 | `InvalidParam(m)`      | `invalid parameter: {m}`  |
 | `NotSupported(m)`      | `not supported on this backend: {m}` |
 | `NotFound(m)`          | `not found: {m}`          |
+| `SurfaceOutdated(m)`   | `surface outdated: {m}`   |
 | `Internal(m)`          | `internal error: {m}`     |
 
 When `with_context()` has been applied, the suffix `[ctx]` is appended.

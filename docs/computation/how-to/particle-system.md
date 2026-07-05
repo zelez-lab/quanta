@@ -22,7 +22,6 @@ struct Particle {
 `#[quanta::gpu_type]` replaces the manual `#[repr(C)]` + `#[derive(Copy, Clone)]`.
 It also generates MSL/WGSL struct declarations and implements `GpuType`, so the
 struct can be used directly with `gpu.field::<Particle>(n)`.
-```
 
 ## Compute kernel (update physics)
 
@@ -120,7 +119,7 @@ fn particle_fragment(varying: ParticleVarying) -> Vec4 {
 ```rust
 use quanta::{
     AttributeFormat, BlendState, Color, FieldUsage, Format, PipelineDesc, Primitive,
-    ResourceState, StepMode, VertexAttribute, VertexLayout,
+    RenderGpu, ResourceState, ShaderSource, StepMode, VertexAttribute, VertexLayout,
 };
 
 fn main() {
@@ -144,7 +143,7 @@ fn main() {
     }
 
     // Field used for both compute and vertex data
-    let particles = gpu.field::<f32>(
+    let particles = gpu.field_with_usage::<f32>(
         particle_count as usize * floats_per_particle,
         FieldUsage::default_compute().union(FieldUsage::RENDER),
     ).unwrap();
@@ -158,31 +157,40 @@ fn main() {
     update_wave.set_value(3, -9.8f32);  // gravity
 
     // --- Render pipeline (point sprites) ---
+    // Render methods live on the RenderGpu extension trait (imported above).
     let render_target = gpu.render_target(1920, 1080, Format::BGRA8).unwrap();
 
-    let pipeline = gpu.pipeline(&PipelineDesc {
-        vertex: particle_vertex().for_vendor(gpu.caps().vendor).unwrap(),
-        fragment: particle_fragment().for_vendor(gpu.caps().vendor).unwrap(),
-        vertex_entry: "particle_vertex",
-        fragment_entry: "particle_fragment",
-        vertex_layouts: &[VertexLayout {
-            stride: 32, // 8 floats x 4 bytes
-            step: StepMode::Vertex,
-            attributes: vec![
-                VertexAttribute { location: 0, offset: 0,  format: AttributeFormat::Float },  // x
-                VertexAttribute { location: 1, offset: 4,  format: AttributeFormat::Float },  // y
-                VertexAttribute { location: 2, offset: 8,  format: AttributeFormat::Float },  // z
-                VertexAttribute { location: 3, offset: 12, format: AttributeFormat::Float },  // vx
-                VertexAttribute { location: 4, offset: 16, format: AttributeFormat::Float },  // vy
-                VertexAttribute { location: 5, offset: 20, format: AttributeFormat::Float },  // vz
-                VertexAttribute { location: 6, offset: 24, format: AttributeFormat::Float },  // life
-                VertexAttribute { location: 7, offset: 28, format: AttributeFormat::Float },  // pad
-            ],
-        }],
-        primitive: Primitive::Point,
-        blend: BlendState::ADDITIVE,
-        ..PipelineDesc::default()
-    }).unwrap();
+    let layouts = [VertexLayout {
+        stride: 32, // 8 floats x 4 bytes
+        step: StepMode::Vertex,
+        attributes: vec![
+            VertexAttribute { location: 0, offset: 0,  format: AttributeFormat::Float },  // x
+            VertexAttribute { location: 1, offset: 4,  format: AttributeFormat::Float },  // y
+            VertexAttribute { location: 2, offset: 8,  format: AttributeFormat::Float },  // z
+            VertexAttribute { location: 3, offset: 12, format: AttributeFormat::Float },  // vx
+            VertexAttribute { location: 4, offset: 16, format: AttributeFormat::Float },  // vy
+            VertexAttribute { location: 5, offset: 20, format: AttributeFormat::Float },  // vz
+            VertexAttribute { location: 6, offset: 24, format: AttributeFormat::Float },  // life
+            VertexAttribute { location: 7, offset: 28, format: AttributeFormat::Float },  // pad
+        ],
+    }];
+
+    // The driver picks the right per-vendor payload from the embedded
+    // multi-target binaries — no for_vendor() by hand.
+    let pipeline = gpu.pipeline(
+        &PipelineDesc::new(ShaderSource::Binaries {
+            vertex: &PARTICLE_VERTEX_SHADER,
+            fragment: &PARTICLE_FRAGMENT_SHADER,
+        })
+        .with_entries(
+            PARTICLE_VERTEX_SHADER.entry_point,
+            PARTICLE_FRAGMENT_SHADER.entry_point,
+        )
+        .with_vertex_layouts(&layouts)
+        .with_color_formats(vec![Format::BGRA8])
+        .with_primitive(Primitive::Point)
+        .with_blend(BlendState::ADDITIVE),
+    ).unwrap();
 
     // --- Simulation loop ---
     for _frame in 0..300 {
@@ -191,15 +199,15 @@ fn main() {
         pulse.wait().unwrap();
 
         // Step 2: Barrier — transition from compute write to vertex read
-        gpu.barrier_buffer(&particles, ResourceState::ComputeWrite, ResourceState::ShaderRead).unwrap();
+        gpu.barrier_field(&particles, ResourceState::ComputeWrite, ResourceState::ShaderRead).unwrap();
 
         // Step 3: Render — draw particles as points
-        let mut pass = gpu.render_begin(&render_target).unwrap();
-        pass.clear(Color::BLACK);
-        pass.set_pipeline(&pipeline);
-        pass.bind_vertices(0, &particles);
-        pass.draw(particle_count);
-        let mut pulse = gpu.render_end(pass).unwrap();
+        let mut pulse = gpu.render(&render_target).unwrap()
+            .clear(Color::BLACK)
+            .pipeline(&pipeline)
+            .vertices(0, &particles)
+            .draw(particle_count)
+            .pulse().unwrap();
         pulse.wait().unwrap();
     }
 }
@@ -208,7 +216,7 @@ fn main() {
 ## Compute-to-render barrier
 
 The same field (`particles`) is written by the compute kernel and read by the
-vertex shader. The `barrier_buffer` call between dispatch and render ensures:
+vertex shader. The `barrier_field` call between dispatch and render ensures:
 
 1. All compute writes are visible
 2. The GPU transitions the resource from compute to render usage

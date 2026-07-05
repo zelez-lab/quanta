@@ -10,7 +10,7 @@ dispatch require IR-side work and are deferred to v0.2.x.
 
 | Surface | State |
 |---------|-------|
-| `gpu.build_acceleration_structure(&[GeometryDesc])` typed wrapper | ✅ exists |
+| `gpu.acceleration_structure_blas(&[GeometryDesc])` typed wrapper (a `RenderGpu` extension method) | ✅ exists |
 | Vulkan: extension detect + enable for `VK_KHR_ray_tracing_pipeline` + `VK_KHR_acceleration_structure` + `VK_KHR_buffer_device_address` + `VK_KHR_deferred_host_operations` | ✅ at device discovery |
 | Vulkan: proc-addr resolution for `vkCreateAccelerationStructureKHR`, `vkDestroyAccelerationStructureKHR`, `vkGetAccelerationStructureBuildSizesKHR`, `vkCmdBuildAccelerationStructuresKHR`, `vkCmdTraceRaysKHR`, `vkGetBufferDeviceAddress` | ✅ cached on `VulkanDevice` |
 | Vulkan: `bufferDeviceAddress` + `accelerationStructure` features chained at `vkCreateDevice` | ✅ slice 18 + 23 |
@@ -25,7 +25,7 @@ dispatch require IR-side work and are deferred to v0.2.x.
 ## Available API today
 
 ```rust
-use quanta::{Gpu, GeometryDesc};
+use quanta::{GeometryDesc, Gpu, RenderGpu};
 
 let gpu: Gpu = quanta::init()?;
 
@@ -51,9 +51,9 @@ let blas = gpu.acceleration_structure_blas(&[GeometryDesc {
 }])?;
 ```
 
-The returned `AccelerationStructure` is `Drop`-safe — it walks any
-remaining tile bindings (no-op for AS) and tears down the AS handle +
-storage buffer + storage memory.
+The returned `AccelerationStructure` is `Drop`-safe — dropping it calls
+the backend destroy exactly once (guarded by a `live` flag), tearing down
+the AS handle + storage buffer + storage memory.
 
 ## Capability matrix at v0.1
 
@@ -73,9 +73,10 @@ storage buffer + storage memory.
   Requires raygen / closest-hit / miss / any-hit / intersection shader
   stages in `quanta-ir` and matching MSL / SPIR-V emitters. Multi-week
   IR work.
-- Quanta proc-macros: `#[quanta::ray_gen]`, `#[quanta::closest_hit]`,
-  `#[quanta::miss]`, etc. Currently the `ShaderStage` enum already
-  includes these as variants but no emitter wiring exists.
+- Emitter wiring for the RT stages: the `#[quanta::ray_gen]`,
+  `#[quanta::closest_hit]`, `#[quanta::miss]` proc-macros exist (in
+  `quanta-dsl`, re-exported by `quanta-render`) and the `ShaderStage`
+  enum carries the variants, but no backend emitter consumes them yet.
 
 ## How to validate against real hardware
 

@@ -48,15 +48,22 @@ that uses the same color/depth format. WebGPU calls these "render bundles";
 Vulkan calls them secondary command buffers.
 
 ```rust
+// gpu.render_bundle comes from the RenderGpu extension trait,
+// in scope via `use quanta::*;` (or `use quanta::RenderGpu;`).
 let mut bundle = gpu.render_bundle(32)?;
 bundle.record_draw(&pipeline, /*vertex_count=*/3, /*instance_count=*/1)?;
 bundle.record_draw(&pipeline, 6, 1)?;
+```
 
-gpu.render(&target)?
-    .clear(Color::BLACK)
-    .execute_bundle(&bundle, /*count=*/2)
-    .pulse()?
-    .wait()?;
+Replay goes through the manual render-pass API
+(`RenderPass::execute_bundle` — the chainable builder does not expose it):
+
+```rust
+let mut pass = gpu.device_handle().render_begin(&target)?;
+pass.clear(Color::BLACK);
+pass.execute_bundle(&bundle, /*count=*/2);
+let mut pulse = gpu.device_handle().render_end(pass)?;
+pulse.wait()?;
 ```
 
 ## Indirect draws (`draw_indirect`)

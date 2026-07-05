@@ -99,19 +99,26 @@ pub struct FormatCaps {
 
 ## TextureDesc defaults
 
+`TextureDesc` is `#[non_exhaustive]` — construct it with
+`TextureDesc::new(width, height, format)` (or `Default::default()`)
+and adjust settings through the `with_*` builder methods:
+
 ```rust
-TextureDesc {
-    width: 1,
-    height: 1,
-    depth: 1,
-    format: Format::RGBA8,
-    kind: TextureKind::D2,
-    sample_count: 1,
-    mip_levels: 1,
-    array_length: 1,
-    usage: TextureUsage::SHADER_READ,
-}
+let desc = TextureDesc::new(1024, 1024, Format::RGBA8)
+    .with_mip_levels(0) // 0 = auto-calculate
+    .with_usage(TextureUsage::SHADER_READ);
 ```
+
+Defaults (what `new` leaves untouched):
+
+| Field | Default | Builder |
+|-------|---------|---------|
+| `depth` | `1` (2D) | `.with_depth(n)` |
+| `kind` | `TextureKind::D2` | `.with_kind(k)` |
+| `sample_count` | `1` (no MSAA) | `.with_sample_count(n)` |
+| `mip_levels` | `1` (no mipmaps; `0` = auto) | `.with_mip_levels(n)` |
+| `array_length` | `1` | `.with_array_length(n)` |
+| `usage` | `TextureUsage::SHADER_READ` | `.with_usage(u)` |
 
 ## TextureUsage flags
 

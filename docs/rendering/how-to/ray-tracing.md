@@ -18,7 +18,7 @@ A BLAS (bottom-level acceleration structure) is the BVH built over your
 geometry.
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 // 12 vertices = 4 triangles, 3 floats per vertex.
 let vertices = gpu.field::<f32>(36)?;
@@ -92,7 +92,7 @@ Width and height each clamp to `MAX_DISPATCH_DIM` (65535).
 
 | Backend | Status |
 |---------|--------|
-| Vulkan  | Pipeline create + dispatch live; AS build path gated `NotSupported` pending hardware validation |
+| Vulkan  | Pipeline create is lifecycle-level (extension-gated); `dispatch_rays` and the AS build execution return `NotSupported` pending shader-binding-table work + hardware validation |
 | Metal   | Pending intersector tables (Apple family 6+) |
 | WebGPU  | `NotSupported` (not in spec) |
 

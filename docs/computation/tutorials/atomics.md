@@ -36,21 +36,21 @@ fn histogram(data: &[u32], bins: &mut [u32]) {
 Usage:
 
 ```rust
-let data = gpu.compute_field::<u32>(1_000_000)?;
-let bins = gpu.compute_field::<u32>(256)?;
+let data = gpu.field::<u32>(1_000_000)?;
+let bins = gpu.field::<u32>(256)?;
 
 // Zero the bins
-gpu.write_field(&bins, &vec![0u32; 256])?;
-gpu.write_field(&data, &input_data)?;
+bins.write(&vec![0u32; 256])?;
+data.write(&input_data)?;
 
 let mut wave = histogram(&gpu)?;
 wave.bind(0, &data);
 wave.bind(1, &bins);
 
 let mut pulse = gpu.dispatch(&wave, 1_000_000)?;
-gpu.wait(&mut pulse)?;
+pulse.wait()?;
 
-let counts = gpu.read_field::<u32>(&bins)?;
+let counts = bins.read()?;
 ```
 
 ## Example: global counter

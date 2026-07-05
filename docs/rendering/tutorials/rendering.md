@@ -5,13 +5,15 @@ fragment shading, blending, and render targets. This page covers the pipeline
 from a high level. See [vertex and fragment shaders](vertex-fragment.md)
 for shader authoring.
 
-> **Enabling rendering.** The render face is behind the default-on `render`
-> feature. With default features, everything on this page works through
-> `quanta` directly (`use quanta::*`). If you build `quanta` with
-> `default-features = false` (the headless-compute setup), add the
-> `quanta-render` crate to bring back the render types, the
-> `#[quanta::vertex]` / `#[quanta::fragment]` macros, and the render
-> methods on `Gpu`. See
+> **Enabling rendering.** The render face lives in the `quanta-render`
+> crate, pulled in by the facade's default-on `render` feature. With
+> default features, everything on this page works through `quanta`
+> directly (`use quanta::*`). The render methods on `Gpu` (`gpu.render`,
+> `gpu.pipeline`, `gpu.render_target`, …) come from the sealed
+> `RenderGpu` extension trait — the glob import brings it into scope,
+> or add `use quanta::RenderGpu;` explicitly. A render-only consumer
+> can depend on `quanta-render` directly (no compute stack in its
+> graph). See
 > [Getting Started](../../getting-started.md#compute-only-or-compute--rendering).
 
 ## The render pipeline
@@ -72,18 +74,21 @@ fn render_triangle(gpu: &Gpu) -> Result<(), QuantaError> {
         PosVertex { pos: [ 0.5, -0.5, 0.0] },
     ];
 
-    let vb = gpu.render_field::<PosVertex>(3)?;
+    let vb = gpu.field_with_usage::<PosVertex>(3, FieldUsage::default_render())?;
     vb.write(&vertices)?;
 
-    let pipeline = gpu.pipeline(&PipelineDesc {
-        vertex: PASSTHROUGH_SHADER.for_vendor(gpu.caps().vendor).unwrap(),
-        fragment: SOLID_COLOR_SHADER.for_vendor(gpu.caps().vendor).unwrap(),
-        vertex_entry: "passthrough",
-        fragment_entry: "solid_color",
-        vertex_layouts: &[PosVertex::vertex_layout()],
-        color_formats: vec![Format::BGRA8],
-        ..PipelineDesc::default()
-    })?;
+    // `passthrough` / `solid_color` are #[quanta::vertex] / #[quanta::fragment]
+    // functions — see "Your first triangle" for their bodies.
+    let layouts = [PosVertex::vertex_layout()];
+    let pipeline = gpu.pipeline(
+        &PipelineDesc::new(ShaderSource::Binaries {
+            vertex: &PASSTHROUGH_SHADER,
+            fragment: &SOLID_COLOR_SHADER,
+        })
+        .with_entries("passthrough", "solid_color")
+        .with_vertex_layouts(&layouts)
+        .with_color_formats(vec![Format::BGRA8]),
+    )?;
 
     let target = gpu.render_target(800, 600, Format::BGRA8)?;
 
@@ -109,25 +114,32 @@ The builder chain:
 
 ## PipelineDesc
 
-A render pipeline bundles vertex + fragment shaders with rasterization state:
+A render pipeline bundles vertex + fragment shaders with rasterization state.
+`PipelineDesc` is `#[non_exhaustive]` — construct it with `PipelineDesc::new`
+and the `with_*` builder methods:
 
 ```rust
-let pipeline = gpu.pipeline(&PipelineDesc {
-    vertex: vertex_shader_bytes,
-    fragment: fragment_shader_bytes,
-    vertex_entry: "vertex_main",
-    fragment_entry: "fragment_main",
-    vertex_layouts: &[MyVertex::vertex_layout()],
-    color_formats: vec![Format::BGRA8],
-    depth_format: None,
-    sample_count: 1,
-    blend: BlendState::NONE,
-    cull_mode: CullMode::Back,
-    primitive: Primitive::Triangle,
-    depth_stencil: DepthStencilState::NONE,
-    ..PipelineDesc::default()
-})?;
+let layouts = [MyVertex::vertex_layout()];
+let pipeline = gpu.pipeline(
+    &PipelineDesc::new(ShaderSource::Stages {
+        vertex: vertex_shader_bytes,     // native payload (or use
+        fragment: fragment_shader_bytes, // ShaderSource::Binaries for
+    })                                   // the macro-generated statics)
+    .with_entries("vertex_main", "fragment_main")
+    .with_vertex_layouts(&layouts)
+    .with_color_formats(vec![Format::BGRA8])
+    .with_blend(BlendState::NONE)
+    .with_cull_mode(CullMode::Back)
+    .with_primitive(Primitive::Triangle),
+)?;
 ```
+
+The shader input is a `ShaderSource`: `Stages { vertex, fragment }` for
+per-stage payloads already in the backend's native format,
+`Combined(&[u8])` for one payload holding both entry points, or
+`Binaries { vertex, fragment }` referencing the multi-vendor
+`ShaderBinary` statics that `#[quanta::vertex]` / `#[quanta::fragment]`
+generate (the driver picks the right format per vendor).
 
 ### Blend modes
 
@@ -168,7 +180,9 @@ All available via the render builder:
 | `.draw_indexed_instanced(idx, inst)`                | Indexed + instanced                  |
 | `.draw_indirect(&buffer, offset)`                   | GPU-driven non-indexed draw          |
 | `.draw_indexed_indirect(&buffer, offset, &indices)` | GPU-driven indexed draw              |
-| `.execute_bundle(&bundle, count)`                   | Replay a pre-recorded render bundle  |
+
+Render-bundle replay (`RenderPass::execute_bundle`) goes through the manual
+render-pass API — see [Indirect commands](indirect-commands.md).
 
 For indirect draws the GPU reads the draw arguments (vertex count, instance
 count, etc.) out of a buffer the GPU itself wrote — useful for compute-driven
@@ -180,11 +194,11 @@ argument layout and `IndirectRenderBundle`.
 Enable depth testing for 3D scenes where closer objects occlude farther ones:
 
 ```rust
-let pipeline = gpu.pipeline(&PipelineDesc {
-    depth_format: Some(Format::Depth32Float),
-    depth_stencil: DepthStencilState::DEPTH_LESS,
-    ..PipelineDesc::default()
-})?;
+let pipeline = gpu.pipeline(
+    &PipelineDesc::new(shaders)
+        .with_depth_format(Format::Depth32Float)
+        .with_depth_stencil(DepthStencilState::DEPTH_LESS),
+)?;
 ```
 
 | Constant                              | Behavior                          |
@@ -197,27 +211,20 @@ With a depth target:
 
 ```rust
 let color = gpu.render_target(800, 600, Format::RGBA8)?;
-let depth = gpu.create_texture(&TextureDesc {
-    width: 800,
-    height: 600,
-    format: Format::Depth32Float,
-    usage: TextureUsage::RENDER_TARGET,
-    ..TextureDesc::default()
-})?;
+let depth = gpu.create_texture(
+    &TextureDesc::new(800, 600, Format::Depth32Float)
+        .with_usage(TextureUsage::RENDER_TARGET),
+)?;
 
+// Attachments are built from typed textures — ColorTarget::new /
+// DepthTarget::new plus with_* overrides; no raw handles.
 gpu.render(&color)?
-    .color_targets(vec![ColorTarget {
-        texture: color.handle(),
-        load_op: LoadOp::Clear(Color::BLACK),
-        store_op: StoreOp::Store,
-    }])
-    .depth_target(DepthTarget {
-        texture: depth.handle(),
-        load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)),
-        store_op: StoreOp::DontCare,
-        stencil_load_op: LoadOp::DontCare,
-        stencil_store_op: StoreOp::DontCare,
-    })
+    .color_targets(vec![ColorTarget::new(&color)]) // Clear(BLACK) + Store
+    .depth_target(
+        DepthTarget::new(&depth)
+            .with_load_op(LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)))
+            .with_store_op(StoreOp::DontCare),
+    )
     .viewport(0.0, 0.0, 800.0, 600.0)
     .pipeline(&pipeline)
     .vertices(0, &vb)
@@ -277,4 +284,5 @@ error to fall back to the classic vertex/fragment path.
 ## Next
 
 - [Vertex and fragment shaders](vertex-fragment.md) -- writing shader code
+- [Presenting to the screen](presentation.md) -- surfaces and native-handle interop
 - [Device functions](../../computation/tutorials/device-functions.md) -- reusable GPU helpers

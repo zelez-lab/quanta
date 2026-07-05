@@ -42,10 +42,10 @@ for fam in &families {
 }
 
 // Create a dedicated compute queue
-let compute_queue = gpu.create_queue(QueueType::Compute)?;
+let compute_queue = gpu.queue(QueueType::Compute)?;
 
 // Dispatch work on the dedicated queue
-gpu.queue_dispatch(compute_queue, &wave, [256, 1, 1])?;
+compute_queue.submit(&wave, [256, 1, 1])?;
 ```
 
 ## Compute-render overlap pattern
@@ -76,7 +76,7 @@ barriers:
 
 ```rust
 // After compute writes to a field on the async queue
-gpu.barrier_buffer(&field, ResourceState::ComputeWrite, ResourceState::ShaderRead)?;
+gpu.barrier_field(&field, ResourceState::ComputeWrite, ResourceState::ShaderRead)?;
 
 // Now safe to read in a render pass on the main queue
 ```

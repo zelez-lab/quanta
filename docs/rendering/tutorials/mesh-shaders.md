@@ -19,7 +19,7 @@ if !gpu.supports_mesh_shaders() {
 ## Creating a mesh pipeline
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 let pipe = gpu.mesh_pipeline(MeshPipelineDesc {
     max_vertices_per_meshlet: 64,

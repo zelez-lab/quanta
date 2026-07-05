@@ -14,7 +14,7 @@ System calls go through hand-written `extern "C"` blocks with `#[repr(C)]`
 struct layouts.
 The driver code is the thinnest possible translation layer.
 
-## Metal driver (`src/driver/metal/`)
+## Metal driver (`crates/quanta-core/src/driver/metal/`)
 
 ### FFI pattern
 
@@ -107,7 +107,7 @@ fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaEr
 }
 ```
 
-## Vulkan driver (`src/driver/vulkan/`)
+## Vulkan driver (`crates/quanta-core/src/driver/vulkan/`)
 
 ### FFI pattern
 
@@ -213,7 +213,7 @@ fn barrier_texture(&self, image: VkImage, old_layout: u32, new_layout: u32) {
 }
 ```
 
-## WebGPU driver (`src/driver/webgpu/`)
+## WebGPU driver (`crates/quanta-core/src/driver/webgpu/`)
 
 Browser-only (`target_arch = "wasm32"` + `webgpu` feature). Same
 no-wrapper-crate rule as Metal/Vulkan, applied to wasm32: no
@@ -225,8 +225,8 @@ Step `1d2fc65` (2026-04-28). Replaces `wasm-bindgen` (~30-60 KB
 third-party runtime) with hand-authored boundaries on both sides:
 
 ```
-Rust side                     JS side
-─────────                     ──────
+Rust side (quanta-core)       JS side
+─────────────────────────     ──────
 src/driver/webgpu/ffi.rs      web/src/quanta.ts (entry)
   unsafe extern "C" {           + handles.ts (handle table)
     fn quanta_*(...);           + tasks.ts (Promise → wasm callback)
@@ -421,7 +421,7 @@ the `RenderPassDescriptor.occlusionQuerySet` field before
 `beginRenderPass`, since WebGPU validates the attachment up front
 rather than letting `begin_occlusion_query` discover the missing set.
 
-## Validation layer (`src/driver/validation.rs`)
+## Validation layer (`crates/quanta-core/src/driver/validation.rs`)
 
 Wraps any `GpuDevice` and adds runtime checks:
 
@@ -442,26 +442,33 @@ Enabled with `QUANTA_VALIDATE=1`:
 
 ## Adding a new driver operation
 
-1. Add the method to the `GpuDevice` trait in `src/api/device.rs`.
+1. Add the method to the `GpuDevice` trait in
+   `crates/quanta-core/src/api/device.rs`.
 2. Add a default implementation (or make it required).
-3. Add the public API method on `Gpu` in `src/api/gpu.rs`.
-4. Implement in `src/driver/metal/` (Metal version).
-5. Implement in `src/driver/vulkan/` (Vulkan version).
-6. Implement in `src/driver/webgpu/` if it's exposable to the browser
+3. Add the public API method on `Gpu` in
+   `crates/quanta-core/src/api/gpu.rs` (render-face methods go on the
+   sealed `RenderGpu` trait in `crates/quanta-render/src/gpu_ext.rs`
+   instead).
+4. Implement in `crates/quanta-core/src/driver/metal/` (Metal version).
+5. Implement in `crates/quanta-core/src/driver/vulkan/` (Vulkan version).
+6. Implement in `crates/quanta-core/src/driver/webgpu/` if it's exposable to the browser
    (and add the corresponding TS plumbing in `web/src/webgpu.ts`).
    If a new WebGPU IDL enum is touched, add it to
    `crates/quanta-codegen/src/parse.rs`'s `PROJECT_RELEVANT_ENUMS`
    and re-run `quanta codegen webgpu`.
-7. Add validation checks in `src/driver/validation.rs`.
-8. Add a conformance test in `tests/conformance/`.
+7. Add validation checks in `crates/quanta-core/src/driver/validation.rs`.
+8. Add an integration test under `tests/` (see `tests/gpu_compute.rs`
+   and friends for the pattern).
 
 ## Adding a new driver (e.g., DirectX 12)
 
-1. Create `src/driver/dx12/` with `mod.rs`, `ffi.rs`, etc.
+1. Create `crates/quanta-core/src/driver/dx12/` with `mod.rs`, `ffi.rs`, etc.
 2. Implement `GpuDevice` for `Dx12Device`.
 3. Add `pub fn discover() -> Vec<Box<dyn GpuDevice>>`.
-4. Add a feature flag in `Cargo.toml`: `dx12 = ["std"]`.
-5. Wire into `lib.rs`:
+4. Add a feature flag in `crates/quanta-core/Cargo.toml`: `dx12 = ["std"]`
+   (and forward it from the facade's and `quanta-render`'s `Cargo.toml`,
+   like the existing backend features).
+5. Wire into `crates/quanta-core/src/lib.rs`:
    ```rust
    #[cfg(feature = "dx12")]
    devs.extend(driver::dx12::discover());

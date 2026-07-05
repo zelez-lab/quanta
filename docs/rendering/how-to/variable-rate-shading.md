@@ -22,7 +22,7 @@ unavailable, so it's safe to use as the source of truth.
 ## Pipeline-level rate
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 let mut vrs = gpu.vrs_state()?;       // starts at R1x1
 vrs.set_rate(ShadingRate::R2x2)?;     // 4 pixels per shaded fragment
@@ -49,9 +49,9 @@ gpu.render(&target)?
     .clear(Color::BLACK)
     .pipeline(&pipeline)
     .vertices(0, &vb)
-    .set_shading_rate(ShadingRate::R1x1) // full rate for the foreground
+    .shading_rate(ShadingRate::R1x1) // full rate for the foreground
     .draw(3)
-    .set_shading_rate(ShadingRate::R2x2) // half rate for the background
+    .shading_rate(ShadingRate::R2x2) // half rate for the background
     .draw(3)
     .pulse()?
     .wait()?;
@@ -63,7 +63,10 @@ For per-tile rates (e.g. lower rate at the edges of a foveated render),
 upload a one-byte-per-tile texture and bind it:
 
 ```rust
-pass.set_shading_rate_image(&rate_texture);
+gpu.render(&target)?
+    .shading_rate_image(&rate_texture)
+    // ... draws ...
+    .pulse()?;
 ```
 
 The texture format and tile size are backend-specific — see

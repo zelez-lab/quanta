@@ -25,7 +25,7 @@ if !gpu.supports_ray_tracing() {
 ## Building a BLAS
 
 ```rust
-use quanta::*;
+use quanta::*; // brings the RenderGpu extension trait into scope
 
 let vertices = gpu.field::<f32>(36)?;
 vertices.write(&[/* 12 positions × 3 floats */])?;

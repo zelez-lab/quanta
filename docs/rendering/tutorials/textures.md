@@ -5,25 +5,25 @@ sampling (bilinear, trilinear, anisotropic), which buffers do not.
 
 ## TextureDesc
 
-Every texture is created from a descriptor:
+Every texture is created from a descriptor. `TextureDesc` is
+`#[non_exhaustive]` — construct it with `TextureDesc::new(width, height,
+format)` (2D, single-sample, one mip, `SHADER_READ`) and adjust through the
+`with_*` builder methods:
 
 ```rust
 use quanta::*;
 
-let desc = TextureDesc {
-    width: 512,
-    height: 512,
-    depth: 1,
-    format: Format::RGBA8,
-    kind: TextureKind::D2,
-    sample_count: 1,
-    mip_levels: 1,
-    array_length: 1,
-    usage: TextureUsage::SHADER_READ,
-};
+let desc = TextureDesc::new(512, 512, Format::RGBA8)
+    .with_kind(TextureKind::D2)      // default; also D3 / Cube / Array2D
+    .with_sample_count(1)
+    .with_mip_levels(1)
+    .with_usage(TextureUsage::SHADER_READ);
 
 let tex = gpu.create_texture(&desc)?;
 ```
+
+Dropping a `Texture` releases the underlying driver resource — no manual
+destroy call, no leak if it just falls out of scope.
 
 ### Formats
 
@@ -71,13 +71,10 @@ let usage = TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ);
 ### Full control
 
 ```rust
-let tex = gpu.create_texture(&TextureDesc {
-    width: 1024,
-    height: 1024,
-    format: Format::RGBA16Float,
-    usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-    ..TextureDesc::default()
-})?;
+let tex = gpu.create_texture(
+    &TextureDesc::new(1024, 1024, Format::RGBA16Float)
+        .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+)?;
 ```
 
 ### Convenience (RGBA8)
@@ -94,6 +91,9 @@ let target = gpu.render_target(1920, 1080, Format::RGBA8)?;
 // Usage: RENDER_TARGET | SHADER_READ
 ```
 
+`render_target`, `msaa_target`, and `resolve_texture` come from the
+`RenderGpu` extension trait (`use quanta::*;` brings it into scope).
+
 ### MSAA target
 
 ```rust
@@ -107,8 +107,11 @@ Upload pixel data as raw bytes (row-major, tightly packed):
 
 ```rust
 let pixels: Vec<u8> = vec![255; 256 * 256 * 4]; // white RGBA8
-gpu.texture_write(&tex, &pixels)?;
+tex.write(&pixels)?;
 ```
+
+Write, read, and mipmap generation are methods on `Texture` itself —
+resources own their operations.
 
 The byte layout must match the format. For `RGBA8`, each pixel is 4 bytes:
 `[R, G, B, A]`.
@@ -116,7 +119,7 @@ The byte layout must match the format. For `RGBA8`, each pixel is 4 bytes:
 ## Reading pixels
 
 ```rust
-let pixels = gpu.texture_read(&tex)?;
+let pixels = tex.read()?;
 // pixels: Vec<u8>, length = width * height * format.bytes_per_pixel()
 ```
 
@@ -129,15 +132,11 @@ Mipmaps are pre-filtered downscaled versions of a texture. They improve quality
 and performance when textures are viewed at reduced size.
 
 ```rust
-let desc = TextureDesc {
-    width: 1024,
-    height: 1024,
-    mip_levels: 0,  // 0 = auto-calculate (log2(max(w,h)) + 1)
-    ..TextureDesc::default()
-};
+let desc = TextureDesc::new(1024, 1024, Format::RGBA8)
+    .with_mip_levels(0); // 0 = auto-calculate (log2(max(w,h)) + 1)
 let tex = gpu.create_texture(&desc)?;
-gpu.texture_write(&tex, &base_pixels)?;
-gpu.generate_mipmaps(&tex)?;
+tex.write(&base_pixels)?;
+tex.generate_mipmaps()?;
 ```
 
 ## Texture views
@@ -213,19 +212,25 @@ free bilinear filtering and edge clamping.
 
 Control how texture reads interpolate and handle edges:
 
+`SamplerDesc` is `#[non_exhaustive]` — start from `SamplerDesc::default()`
+(linear min/mag, nearest mip, clamp-to-edge) and adjust with the `with_*`
+methods:
+
 ```rust
 use quanta::{SamplerDesc, Filter, AddressMode};
 
-let sampler = gpu.sampler(&SamplerDesc {
-    min_filter: Filter::Linear,
-    mag_filter: Filter::Linear,
-    mip_filter: Filter::Linear,
-    address_u: AddressMode::Repeat,
-    address_v: AddressMode::Repeat,
-    max_anisotropy: 8,
-    compare: None,
-})?;
+let sampler = gpu.sampler(
+    &SamplerDesc::default()
+        .with_filters(Filter::Linear, Filter::Linear)
+        .with_mip_filter(Filter::Linear)
+        .with_address_modes(AddressMode::Repeat, AddressMode::Repeat)
+        .with_max_anisotropy(8),
+)?;
 ```
+
+For depth/shadow comparison samplers, add `.with_compare(CompareOp::Less)`
+(or any other `CompareOp` variant). Dropping a `Sampler` releases the
+driver resource.
 
 | Filter           | Behavior                                |
 |------------------|-----------------------------------------|
@@ -250,15 +255,10 @@ if !gpu.supports_sparse_residency() {
     // fall back to a regular texture
 }
 
-let tex = gpu.sparse_texture(&TextureDesc {
-    width: 16384,
-    height: 16384,
-    format: Format::RGBA8,
-    ..TextureDesc::default()
-})?;
+let tex = gpu.sparse_texture(&TextureDesc::new(16384, 16384, Format::RGBA8))?;
 
 // Allocate one 256x256 backing tile and map it at (mip=0, x=0, y=0).
-let backing = gpu.field::<u8>(256 * 256 * 4, FieldUsage::default_compute())?;
+let backing = gpu.field::<u8>(256 * 256 * 4)?;
 tex.map_tile(0, 0, 0, backing.handle())?;
 
 // Later, when the tile leaves the working set:
@@ -295,7 +295,14 @@ let resolved = gpu.render_target(1920, 1080, Format::RGBA8)?;
 gpu.resolve_texture(&msaa, &resolved)?;
 ```
 
+## Zero-copy export
+
+A rendered texture can be handed to an external compositor without a
+copy via `tex.native_handle()` — see
+[Presenting to the screen](presentation.md#compositor-owns-present).
+
 ## Next
 
+- [Presenting to the screen](presentation.md) -- surfaces and native-handle interop
 - [Rendering](rendering.md) -- the graphics pipeline
 - [Vertex and fragment shaders](vertex-fragment.md)

@@ -20,37 +20,53 @@ quanta = { git = "https://github.com/zelez-lab/quanta" }
 Pin to a specific revision with `--rev <sha>` (or `--tag <tag>` once
 tagged releases exist) for reproducible builds.
 
-### Compute only, or compute + rendering?
+### Compute, rendering, or both?
 
 Quanta has two faces: **GPU compute** (the CUDA-like side — kernels,
 fields, dispatch) and **rendering** (render passes, graphics pipelines,
-mesh/tessellation/ray-tracing). They live behind a Cargo feature so a
-headless consumer never compiles a line of rendering code.
+mesh/tessellation/ray-tracing, presentation). Each face is a Cargo
+feature — `compute` and `render`, both on by default
+(`default = ["metal", "render", "compute"]`) — so a consumer pulls in
+only what it uses.
 
-- **Compute only** (a database, an ML runtime, any GPGPU app) — depend on
-  `quanta` with the default `render` feature turned off:
+- **Compute only** (a database, an ML runtime, any GPGPU app) — turn the
+  defaults off and pick the compute face:
 
   ```toml
   [dependencies]
-  quanta = { git = "...", default-features = false, features = ["metal"] }
+  quanta = { git = "...", default-features = false, features = ["metal", "compute", "jit"] }
   # or "vulkan" / "software" instead of "metal"
   ```
 
-  Your build has **no rendering types on its surface** and skips compiling
-  the render code entirely (~37% less of the `quanta` crate to compile).
+  Your build has **no rendering types on its surface** and skips
+  compiling the render stack entirely.
 
-- **Compute + rendering** (a graphical app, a UI) — keep the default
-  feature on, and add the `quanta-render` crate for the render surface:
+- **Render only** (a UI toolkit, a compositor) — pick the render face:
 
   ```toml
   [dependencies]
-  quanta = { git = "..." }                       # render on by default
-  quanta-render = { git = "...", features = ["metal"] }
+  quanta = { git = "...", default-features = false, features = ["metal", "render"] }
   ```
 
-  `quanta-render` brings render types (`RenderPass`, `Pipeline`, …), the
-  shader-stage macros (`#[quanta::vertex]`, `#[quanta::fragment]`, …), and
-  the render methods on `Gpu` (`gpu.render_target(...)`, `gpu.render(...)`).
+  This compiles **zero kernel machinery**: no compute face, and the
+  kernel-lowering/JIT crates never enter your dependency graph. (A
+  render-only consumer can equivalently depend on the `quanta-render`
+  crate directly.)
+
+- **Compute + rendering** (a graphical app) — keep the defaults:
+
+  ```toml
+  [dependencies]
+  quanta = { git = "..." }    # render + compute + metal on by default
+  ```
+
+The `render` feature pulls in the `quanta-render` crate and re-exports
+it: render types (`RenderBuilder`, `Pipeline`, `Surface`, …), the
+shader-stage macros (`#[quanta::vertex]`, `#[quanta::fragment]`, …), and
+the **`RenderGpu` extension trait** that carries the render methods on
+`Gpu` (`gpu.render_target(...)`, `gpu.render(...)`,
+`gpu.create_surface(...)`). Bring it into scope with
+`use quanta::RenderGpu;` — or `use quanta::*;`, which covers it.
 
 The rest of this guide is pure compute and works either way.
 
@@ -272,4 +288,5 @@ and [Reference: Errors](reference/errors.md) for the full kind list.
 - [Multi-queue](rendering/tutorials/multi-queue.md), [Indirect commands](rendering/tutorials/indirect-commands.md),
   [Tessellation](rendering/tutorials/tessellation.md), [Mesh shaders](rendering/tutorials/mesh-shaders.md),
   [Ray tracing](rendering/tutorials/ray-tracing.md), [VRS](rendering/tutorials/variable-rate-shading.md),
+  [Presentation](rendering/tutorials/presentation.md),
   [Async copy + printf](computation/tutorials/async-copy-and-printf.md) -- v0.1 advanced surface

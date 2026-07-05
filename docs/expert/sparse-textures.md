@@ -22,17 +22,14 @@ actually visible.
 ## Creating a sparse texture
 
 ```rust
-use quanta::{Gpu, TextureDesc, TextureKind, Format};
+use quanta::{Format, Gpu, TextureDesc, TextureKind};
 
 let gpu: Gpu = quanta::init()?;
-let sparse_tex = gpu.sparse_texture(&TextureDesc {
-    width: 16_384,
-    height: 16_384,
-    format: Format::RGBA8,
-    kind: TextureKind::D2,
-    mip_levels: 1,
-    ..TextureDesc::default()
-})?;
+let sparse_tex = gpu.sparse_texture(
+    &TextureDesc::new(16_384, 16_384, Format::RGBA8)
+        .with_kind(TextureKind::D2)
+        .with_mip_levels(1),
+)?;
 ```
 
 The returned value is a typed `SparseTexture`. It owns the backend handle

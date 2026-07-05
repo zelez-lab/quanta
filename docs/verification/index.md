@@ -165,7 +165,7 @@ cargo test --test differential --features software --no-default-features
 # software + metal (macOS, nightly slice)
 cargo test --test differential --features software,metal
 # vulkan via lavapipe (Linux, nightly slice; needs libvulkan-dev + mesa-vulkan-drivers)
-cargo test --test differential --no-default-features --features vulkan
+cargo test --test differential --no-default-features --features vulkan,jit,compute
 # WGSL lane (browser)
 cd web && npm run smoke    # exercises web_diff page
 ```
@@ -352,7 +352,7 @@ Stated explicitly so reviewers know what is trusted vs proven:
 | A8    | Metal Shading Language §6.13               | Apple         |
 | A9    | AMD RDNA ISA Reference                     | AMD           |
 | **A10** | **W3C WebGPU spec, §6 Devices + §10 Queue** | **WebGPU**    |
-| **A11** | **Quanta wasm ↔ JS ABI** (`src/driver/webgpu/ffi.rs` + `web/src/quanta.ts`, B⁰; enum strings codegen'd from `web/webgpu.idl`, B′; enum-string + method-presence + call-arity + param-type conformance proven against `Quanta.Idl.WebGpuSpec` as T1710 + T1711 + T1712 + T1713, B″ complete; residue = `extern "C"` linker faithfulness + typedef stability) | **wasm32**    |
+| **A11** | **Quanta wasm ↔ JS ABI** (`crates/quanta-core/src/driver/webgpu/ffi.rs` + `web/src/quanta.ts`, B⁰; enum strings codegen'd from `web/webgpu.idl`, B′; enum-string + method-presence + call-arity + param-type conformance proven against `Quanta.Idl.WebGpuSpec` as T1710 + T1711 + T1712 + T1713, B″ complete; residue = `extern "C"` linker faithfulness + typedef stability) | **wasm32**    |
 
 If a hardware/driver/browser violates these, the bug is upstream of
 Quanta. The proof boundary is named explicitly.

@@ -88,8 +88,8 @@ field itself, not on the GPU handle:
 ```rust
 let gpu = quanta::init()?;
 
-// Allocate
-let field = gpu.field::<f32>(1024, FieldUsage::default_compute())?;
+// Allocate (gpu.field_with_usage to pick non-default usage flags)
+let field = gpu.field::<f32>(1024)?;
 
 // Write CPU data to GPU
 field.write(&data)?;
@@ -101,12 +101,14 @@ let result: Vec<f32> = field.read()?;
 dst.copy_from(&src)?;
 ```
 
-Convenience constructors for common usage patterns:
+`gpu.field::<T>(n)` allocates with the default compute usage
+(`READ | WRITE | COMPUTE | TRANSFER`). For other usage patterns, pass a
+`FieldUsage` to `gpu.field_with_usage`:
 
 ```rust
-let compute = gpu.compute_field::<f32>(n)?;   // READ | WRITE | COMPUTE | TRANSFER
-let render  = gpu.render_field::<f32>(n)?;    // READ | RENDER | TRANSFER
-let uniform = gpu.uniform_field::<f32>(n)?;   // READ | UNIFORM | TRANSFER
+let compute = gpu.field::<f32>(n)?;                                       // READ | WRITE | COMPUTE | TRANSFER
+let render  = gpu.field_with_usage::<f32>(n, FieldUsage::default_render())?;   // READ | RENDER | TRANSFER
+let uniform = gpu.field_with_usage::<f32>(n, FieldUsage::default_uniform())?;  // READ | UNIFORM | TRANSFER
 ```
 
 When using `#[derive(quanta::Fields)]`, you do not call these directly --
@@ -115,7 +117,7 @@ the generated dispatch code allocates, writes, and reads for you.
 ## Field properties
 
 ```rust
-let field = gpu.compute_field::<f32>(1024)?;
+let field = gpu.field::<f32>(1024)?;
 assert_eq!(field.len(), 1024);           // element count
 assert_eq!(field.byte_size(), 4096);     // total bytes (1024 * 4)
 assert!(!field.is_empty());
