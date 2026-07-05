@@ -262,6 +262,149 @@ pub fn gemm_q4_sym(
     }
 }
 
+use crate::params::{Diag, Side, Trans, Uplo, trsm_plan};
+
+/// Solve one substitution lane in `f64`: the effective triangular matrix is
+/// `M[i,p] = a[i·rs + p·cs]` (see [`trsm_plan`]); `forward` picks the sweep
+/// direction; `unit` skips the diagonal divide. `lane` holds the RHS values
+/// and is overwritten with the solution; `alpha` scales each RHS entry as it
+/// is first touched — the same order the GPU kernel uses.
+#[allow(clippy::too_many_arguments)]
+fn tri_lane_solve_f64(
+    nt: usize,
+    rs: usize,
+    cs: usize,
+    forward: bool,
+    unit: bool,
+    alpha: f64,
+    a: &[f32],
+    lane: &mut [f64],
+) {
+    let step = |i: usize, lane: &mut [f64]| {
+        let mut acc = alpha * lane[i];
+        let (lo, hi) = if forward { (0, i) } else { (i + 1, nt) };
+        for (p, xp) in lane.iter().enumerate().take(hi).skip(lo) {
+            acc -= (a[i * rs + p * cs] as f64) * xp;
+        }
+        lane[i] = if unit {
+            acc
+        } else {
+            acc / (a[i * (rs + cs)] as f64)
+        };
+    };
+    if forward {
+        for i in 0..nt {
+            step(i, lane);
+        }
+    } else {
+        for i in (0..nt).rev() {
+            step(i, lane);
+        }
+    }
+}
+
+/// `trsm`: solve `op(A)·X = α·B` (`side = Left`) or `X·op(A) = α·B`
+/// (`side = Right`) for `X`, in place on `b`. `A` is triangular (`na×na`
+/// with `na = m` for Left, `na = n` for Right, row-major, only the `uplo`
+/// triangle referenced — and for `Diag::Unit`, the diagonal is not read
+/// either); `b` is `m×n` row-major. Substitution runs in `f64` per lane
+/// (column for Left, row for Right) — the differential oracle for the GPU
+/// `trsm`. All `side`/`uplo`/`trans`/`diag` combinations are supported.
+#[allow(clippy::too_many_arguments)]
+pub fn trsm(
+    side: Side,
+    uplo: Uplo,
+    trans: Trans,
+    diag: Diag,
+    m: usize,
+    n: usize,
+    alpha: f32,
+    a: &[f32],
+    b: &mut [f32],
+) {
+    let na = match side {
+        Side::Left => m,
+        Side::Right => n,
+    };
+    assert_eq!(a.len(), na * na, "trsm: A must be na×na");
+    assert_eq!(b.len(), m * n, "trsm: B must be m×n");
+    let (rs, cs, forward) = trsm_plan(side, uplo, trans, na);
+    let unit = diag == Diag::Unit;
+    match side {
+        Side::Left => {
+            // Each RHS column is an independent solve of length m.
+            for j in 0..n {
+                let mut lane: Vec<f64> = (0..m).map(|t| b[t * n + j] as f64).collect();
+                tri_lane_solve_f64(m, rs, cs, forward, unit, alpha as f64, a, &mut lane);
+                for (t, v) in lane.iter().enumerate() {
+                    b[t * n + j] = *v as f32;
+                }
+            }
+        }
+        Side::Right => {
+            // Each RHS row is an independent solve of length n.
+            for i in 0..m {
+                let mut lane: Vec<f64> = (0..n).map(|t| b[i * n + t] as f64).collect();
+                tri_lane_solve_f64(n, rs, cs, forward, unit, alpha as f64, a, &mut lane);
+                for (t, v) in lane.iter().enumerate() {
+                    b[i * n + t] = *v as f32;
+                }
+            }
+        }
+    }
+}
+
+/// `trsv`: solve `op(A)·x = b` for `x`, in place on `x` (which starts as
+/// `b`). `A` is `n×n` triangular, row-major. Exactly `trsm` with a single
+/// RHS column — the differential oracle for the GPU `trsv`.
+pub fn trsv(uplo: Uplo, trans: Trans, diag: Diag, n: usize, a: &[f32], x: &mut [f32]) {
+    assert_eq!(x.len(), n, "trsv: x must be length n");
+    trsm(Side::Left, uplo, trans, diag, n, 1, 1.0, a, x);
+}
+
+/// `syrk`: symmetric rank-k update `C ← α·op(A)·op(A)ᵀ + β·C`, updating
+/// **only** the `uplo` triangle of `C` (the opposite triangle is untouched).
+/// `Trans::NoTrans` takes `A` as `n×k` (`C = α·A·Aᵀ + β·C`);
+/// `Trans::Trans` takes `A` as `k×n` (`C = α·Aᵀ·A + β·C`). `C` is `n×n`
+/// row-major. The inner product accumulates in `f64` — the differential
+/// oracle for the GPU `syrk`.
+#[allow(clippy::too_many_arguments)]
+pub fn syrk(
+    uplo: Uplo,
+    trans: Trans,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a: &[f32],
+    beta: f32,
+    c: &mut [f32],
+) {
+    assert_eq!(a.len(), n * k, "syrk: A must be n×k (or k×n for Trans)");
+    assert_eq!(c.len(), n * n, "syrk: C must be n×n");
+    // op(A)[r,p] = a[r·ars + p·acs] for r in 0..n, p in 0..k.
+    let (ars, acs) = match trans {
+        Trans::NoTrans => (k, 1),
+        Trans::Trans => (1, n),
+    };
+    for i in 0..n {
+        for j in 0..n {
+            let in_tri = match uplo {
+                Uplo::Lower => j <= i,
+                Uplo::Upper => j >= i,
+            };
+            if !in_tri {
+                continue;
+            }
+            let mut acc = 0.0f64;
+            for p in 0..k {
+                acc += (a[i * ars + p * acs] as f64) * (a[j * ars + p * acs] as f64);
+            }
+            let cval = c[i * n + j];
+            c[i * n + j] = (alpha as f64 * acc + beta as f64 * cval as f64) as f32;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +561,123 @@ mod tests {
         gemm_q4_sym(2, 2, 2, 1.0, 1.0, 2.0, &a, &b, 0.0, &mut c);
         // dequant A=[[1,2],[3,-1]], B scaled by 2 → A·(2I) = 2A = [[2,4],[6,-2]]
         assert_eq!(c, vec![2.0, 4.0, 6.0, -2.0]);
+    }
+
+    #[test]
+    fn trsv_lower_basic() {
+        // L = [[2,0],[3,4]], b = [4, 22] → x = [2, 4]  (3·2 + 4·4 = 22).
+        // Upper-triangle slot holds garbage — must never be read.
+        let a = vec![2.0f32, 99.0, 3.0, 4.0];
+        let mut x = vec![4.0f32, 22.0];
+        trsv(Uplo::Lower, Trans::NoTrans, Diag::NonUnit, 2, &a, &mut x);
+        assert_eq!(x, vec![2.0, 4.0]);
+    }
+
+    #[test]
+    fn trsv_upper_basic() {
+        // U = [[2,3],[0,4]], b = [16, 8] → x₁ = 2, x₀ = (16−3·2)/2 = 5.
+        let a = vec![2.0f32, 3.0, 99.0, 4.0];
+        let mut x = vec![16.0f32, 8.0];
+        trsv(Uplo::Upper, Trans::NoTrans, Diag::NonUnit, 2, &a, &mut x);
+        assert_eq!(x, vec![5.0, 2.0]);
+    }
+
+    #[test]
+    fn trsv_lower_transpose() {
+        // Lᵀ·x = b with L = [[2,0],[3,4]] ⇒ [[2,3],[0,4]]·x = [16,8] → [5,2].
+        let a = vec![2.0f32, 99.0, 3.0, 4.0];
+        let mut x = vec![16.0f32, 8.0];
+        trsv(Uplo::Lower, Trans::Trans, Diag::NonUnit, 2, &a, &mut x);
+        assert_eq!(x, vec![5.0, 2.0]);
+    }
+
+    #[test]
+    fn trsv_unit_diag_ignores_diagonal() {
+        // Unit lower: implicit 1s on the diagonal; stored diagonal is trash.
+        // [[1,0],[3,1]]·x = [2, 10] → x = [2, 4].
+        let a = vec![777.0f32, 99.0, 3.0, 555.0];
+        let mut x = vec![2.0f32, 10.0];
+        trsv(Uplo::Lower, Trans::NoTrans, Diag::Unit, 2, &a, &mut x);
+        assert_eq!(x, vec![2.0, 4.0]);
+    }
+
+    #[test]
+    fn trsm_left_lower_multi_rhs() {
+        // L = [[2,0],[3,4]], B = [[4,2],[22,7]], α = 1 → each column solved
+        // independently: col₀ [4,22] → [2,4]; col₁ [2,7] → [1,(7−3)/4 = 1].
+        let a = vec![2.0f32, 99.0, 3.0, 4.0];
+        let mut b = vec![4.0f32, 2.0, 22.0, 7.0];
+        trsm(
+            Side::Left,
+            Uplo::Lower,
+            Trans::NoTrans,
+            Diag::NonUnit,
+            2,
+            2,
+            1.0,
+            &a,
+            &mut b,
+        );
+        assert_eq!(b, vec![2.0, 1.0, 4.0, 1.0]);
+    }
+
+    #[test]
+    fn trsm_right_upper_rows() {
+        // X·U = B with U = [[2,3],[0,4]], B = [[2,7]] (1×2).
+        // x₀·2 = 2 → x₀ = 1; x₀·3 + x₁·4 = 7 → x₁ = 1.
+        let a = vec![2.0f32, 3.0, 99.0, 4.0];
+        let mut b = vec![2.0f32, 7.0];
+        trsm(
+            Side::Right,
+            Uplo::Upper,
+            Trans::NoTrans,
+            Diag::NonUnit,
+            1,
+            2,
+            1.0,
+            &a,
+            &mut b,
+        );
+        assert_eq!(b, vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn trsm_alpha_scales_rhs() {
+        // A = 2·I, B = [[4],[8]], α = 0.5 → X = 0.5·B / 2 = [[1],[2]].
+        let a = vec![2.0f32, 99.0, 0.0, 2.0];
+        let mut b = vec![4.0f32, 8.0];
+        trsm(
+            Side::Left,
+            Uplo::Lower,
+            Trans::NoTrans,
+            Diag::NonUnit,
+            2,
+            1,
+            0.5,
+            &a,
+            &mut b,
+        );
+        assert_eq!(b, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn syrk_lower_basic() {
+        // A = [[1,2],[3,4]] → A·Aᵀ = [[5,11],[11,25]]. Lower only: the upper
+        // slot of C keeps its initial value.
+        let a = vec![1.0f32, 2.0, 3.0, 4.0];
+        let mut c = vec![7.0f32; 4];
+        syrk(Uplo::Lower, Trans::NoTrans, 2, 2, 1.0, &a, 0.0, &mut c);
+        assert_eq!(c, vec![5.0, 7.0, 11.0, 25.0]);
+    }
+
+    #[test]
+    fn syrk_upper_transposed() {
+        // Same A read as Trans (A is k×n = 2×2 here): C = AᵀA = [[10,14],[14,20]].
+        // Upper only; β = 1 keeps and adds to the initial C.
+        let a = vec![1.0f32, 2.0, 3.0, 4.0];
+        let mut c = vec![1.0f32; 4];
+        syrk(Uplo::Upper, Trans::Trans, 2, 2, 1.0, &a, 1.0, &mut c);
+        assert_eq!(c, vec![11.0, 15.0, 1.0, 21.0]);
     }
 
     #[test]

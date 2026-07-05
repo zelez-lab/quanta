@@ -104,6 +104,10 @@ import Quanta.Blas.Gemm
 import Quanta.Blas.Gemv
 -- Mixed-precision GEMM forward-error bound (bf16 inputs, f32 accumulate)
 import Quanta.Blas.GemmMixed
+-- Level-3 BLAS SYRK per-entry bound + exact symmetry (reuses the GEMM entry contract)
+import Quanta.Blas.Syrk
+-- Triangular-solve (trsv/trsm) substitution-step contract: exact residual + rounding decomposition
+import Quanta.Blas.Triangular
 
 -- Reverse-mode autodiff VJP correctness (companion crate quanta-autograd)
 import Quanta.Autograd.Vjp

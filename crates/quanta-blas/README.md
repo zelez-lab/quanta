@@ -26,6 +26,21 @@ reductions).
 | `gemm_quant` | `gemm_quant(gpu, qty, …, sa, sb, &a: Field<i32>, …)` | int8 (Q8 symmetric) codes + per-tensor scales, C f32 |
 | `gemm_quant4` | `gemm_quant4(gpu, qty, …, sa, sb, &a: Field<u32>, …)` | int4 (Q4 symmetric), 8 codes packed per word, C f32 |
 | `gemv_quant` / `gemv_quant4` | `gemv_quant(gpu, qty, m, n, α, sa, sx, &a, &x, β, &y)` | quantized GEMV (via `gemm_quant*` N=1) |
+| `trsv` | `trsv(gpu, uplo, trans, diag, n, &a, &x)` | solve `op(A)·x = b`, A `n×n` triangular, in place on x (all uplo/trans/diag variants) |
+| `trsm` | `trsm(gpu, side, uplo, trans, diag, m, n, α, &a, &b)` | solve `op(A)·X = α·B` / `X·op(A) = α·B`, A triangular, in place on B (all side/uplo/trans/diag variants) |
+| `syrk` | `syrk(gpu, uplo, trans, n, k, α, &a, β, &c)` | `C ← α·op(A)·op(A)ᵀ + β·C`, C symmetric, only the `uplo` triangle updated (both forms) |
+
+The triangular solves and `syrk` are the LU/Cholesky building blocks. `trsm`
+runs one thread per independent RHS lane (column for `Side::Left`, row for
+`Side::Right`) — no barriers, no cross-thread communication; all 16
+side/uplo/trans/diag variants reduce host-side to a forward or backward
+substitution over stride-mapped storage. `trsv` is `trsm` with a single RHS
+column. `syrk` computes one `gemm` entry per triangle slot with both operands
+drawn from A (the opposite triangle is never written); its per-entry bound is
+the GEMM bound plus a proven exact-symmetry theorem
+(`Quanta.Blas.syrkEntry_symm`). The trsv/trsm per-step contract (exact
+residual + rounding decomposition) is `Quanta.Blas.Triangular`; the
+whole-solve Higham Thm 8.5 backward-error chain is flagged follow-up there.
 
 `scal`/`axpy` mutate in place (these ops are memory-bandwidth-bound;
 avoiding a second buffer is the win). `dot`/`nrm2` multiply into a temp

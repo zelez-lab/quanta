@@ -23,6 +23,12 @@
 //! - [`gemm_quant`](mixed_quant::gemm_quant) /
 //!   [`gemm_quant4`](mixed_quant::gemm_quant4) (+ `gemv_*`) — int8 (Q8) and
 //!   int4 (Q4) symmetric codes + per-tensor scales, f32 accumulate
+//! - [`trsv`](triangular::trsv) — solve `op(A)·x = b`, A triangular
+//!   (Level-2, in place on x; all uplo/trans/diag variants)
+//! - [`trsm`](triangular::trsm) — solve `op(A)·X = α·B` / `X·op(A) = α·B`,
+//!   A triangular (Level-3, in place on B; all side/uplo/trans/diag variants)
+//! - [`syrk`](syrk::syrk) — `C ← α·op(A)·op(A)ᵀ + β·C`, C symmetric,
+//!   only the selected triangle updated (Level-3, both NoTrans/Trans forms)
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -49,6 +55,7 @@
 
 #![cfg_attr(not(feature = "gpu"), allow(dead_code))]
 
+pub mod params;
 pub mod reference;
 
 #[cfg(feature = "gpu")]
@@ -73,6 +80,14 @@ pub mod mixed_quant;
 pub mod mixed_tc;
 
 #[cfg(feature = "gpu")]
+pub mod syrk;
+
+#[cfg(feature = "gpu")]
+pub mod triangular;
+
+pub use params::{Diag, Side, Trans, Uplo};
+
+#[cfg(feature = "gpu")]
 pub use gemm::gemm;
 #[cfg(feature = "gpu")]
 pub use level1::{axpy, dot, nrm2, scal};
@@ -84,3 +99,7 @@ pub use mixed::{GemmInputType, gemm_mixed, gemm_mixed8, gemv_mixed, gemv_mixed8}
 pub use mixed_quant::{GemmQuantType, gemm_quant, gemm_quant4, gemv_quant, gemv_quant4};
 #[cfg(feature = "gpu")]
 pub use mixed_tc::gemm_f32_tc;
+#[cfg(feature = "gpu")]
+pub use syrk::syrk;
+#[cfg(feature = "gpu")]
+pub use triangular::{trsm, trsv};
