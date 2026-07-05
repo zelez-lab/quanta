@@ -2743,24 +2743,32 @@ impl<'a> LowerCtx<'a> {
                     // the tail via `reconstruct_loop_backedges` so it
                     // runs exactly when the backedge does not fire.
                     //
-                    // MODEL DIVERGENCE (059): the Lean translator
+                    // MODEL (059, re-synced): the Lean translator
                     // model's brIf-to-Loop depth-0 arm
                     // (specs/verify/lean/Quanta/Wasm/Translate.lean,
                     // `.brIf` / `some .loopK`) and its Verus
                     // transcription (specs/verify/verus/
                     // quanta-wasm-lowering/structured_refine.rs)
-                    // still emit `.branch cond [] [.breakOp]` with
-                    // the lowered rest-of-body sequenced AFTER the
-                    // branch — the pre-fix eager shape. Model and
-                    // production agree only when the backedge is the
-                    // loop body's last instruction (empty tail, the
-                    // shape every previously-modeled kernel has); the
-                    // record-and-wrap tail nesting below is not yet
-                    // modeled. Bringing the model back in step means
-                    // lowering the rest-of-body INTO the branch's
-                    // else arm (with the end-of-body Break rule of
-                    // `reconstruct_loop_backedges`) and re-proving
-                    // the affected preservation theorems.
+                    // emit the nested shape this record-and-wrap
+                    // produces: `.branch cond [] (postOps ++
+                    // backedgeEndBreak …)`, with `backedgeEndBreak` /
+                    // `tailReenters` mirroring the
+                    // `tail_exits_or_continues` + `last_record` rule
+                    // of `reconstruct_loop_backedges` (exit Break
+                    // skipped when the tail ends in Break, records a
+                    // continue, or a later backedge follows).
+                    // `lowerInstrs_brIf0_loop_empty_tail` proves the
+                    // empty-tail case reduces byte-for-byte to the
+                    // historical eager emission. Residual scope note
+                    // (pre-existing L6 restriction, not an emission
+                    // divergence): the end-to-end semantic
+                    // preservation theorems for this arm still assume
+                    // the backedge is the loop body's last
+                    // instruction (`rest = []`) — a live nonempty
+                    // tail is modeled, shape-pinned, and
+                    // scope-validity-proven, but its WASM-side
+                    // short-circuit bookkeeping is not yet threaded
+                    // through the preservation induction.
                     if *depth == 0 {
                         let top = self
                             .frames

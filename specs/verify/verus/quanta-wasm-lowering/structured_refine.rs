@@ -30,8 +30,13 @@
 //! 4. **Per-arm shape lemmas** pinning each structured arm's output:
 //!    block-splice (`block_splices`), loop-wrap (`loop_wraps`),
 //!    if-branch (`wif_branches`), the br/brIf break-emission cases
-//!    (`br_loop0_no_ir`, `br_cross_loop_breaks`, `brif_loop0_branches`),
-//!    and the **not-yet-modeled refusals** (`br_record_refuses`,
+//!    (`br_loop0_no_ir`, `br_cross_loop_breaks`), the backedge
+//!    tail-nesting arm (`brif_loop0_nests_tail` — the lowered tail
+//!    becomes the Branch's else arm with the end-of-body Break rule,
+//!    mirroring `reconstruct_loop_backedges`; plus
+//!    `brif_loop0_empty_tail_reduces`, the byte-for-byte reduction to
+//!    the historical eager shape when the backedge is last), and the
+//!    **not-yet-modeled refusals** (`br_record_refuses`,
 //!    `br_exitflag_refuses`) — the production shapes the Lean spec
 //!    deliberately refuses rather than mislower (the exit-flag record
 //!    and the record-and-wrap, see [[redirect-chain-v2-closed-2026-06-12]]).
@@ -108,6 +113,66 @@ pub enum WasmInstr {
 
 /// Static kind of an open structured frame (mirror of Lean `FrameKind`).
 pub enum FrameKind { Block, LoopK, Wif }
+
+// ── Backedge tail-nesting helpers (mirror Translate.lean) ──────────
+//
+// The depth-0 `br_if`-to-Loop arm nests the lowered rest-of-body into
+// the backedge Branch's ELSE arm (production
+// `reconstruct_loop_backedges`), with an end-of-body exit `Break`
+// appended only when the tail can fall off the wasm loop end. The
+// three helpers below transcribe the Lean model's
+// `endsInBreak` / `tailReenters` / `backedgeEndBreak`.
+
+/// Mirror of Lean `endsInBreak`: does the op list end in an
+/// unconditional `BreakOp`? (The `matches!(else_ops.last(),
+/// Some(KernelOp::Break))` half of production's
+/// `tail_exits_or_continues`.)
+pub open spec fn ends_in_break(ops: Seq<KernelOp>) -> bool
+    decreases ops.len()
+{
+    if ops.len() == 0 { false }
+    else if ops.len() == 1 { ops[0] is BreakOp }
+    else { ends_in_break(ops.subrange(1, ops.len() as int)) }
+}
+
+/// Mirror of Lean `tailReenters`: scan the instruction tail after a
+/// depth-0 loop backedge for a same-level branch back to the loop —
+/// an explicit continue (`br 0`, production's `continue_pos`) or a
+/// LATER backedge record (`br_if 0`; production's reverse
+/// `last_record` walk appends the exit Break only to the last
+/// record's tail). `d` tracks the nesting depth of structured openers
+/// within the tail: only same-level (`d == 0`) label-0 branches
+/// target the enclosing loop.
+pub open spec fn tail_reenters(d: nat, is: Seq<WasmInstr>) -> bool
+    decreases is.len()
+{
+    if is.len() == 0 { false }
+    else {
+        let rest = is.subrange(1, is.len() as int);
+        match is[0] {
+            WasmInstr::Block(_) => tail_reenters(d + 1, rest),
+            WasmInstr::WLoop(_) => tail_reenters(d + 1, rest),
+            WasmInstr::WIf(_)   => tail_reenters(d + 1, rest),
+            WasmInstr::WEnd     =>
+                if d == 0 { false } else { tail_reenters((d - 1) as nat, rest) },
+            WasmInstr::Br(dep)  =>
+                if dep == 0 && d == 0 { true } else { tail_reenters(d, rest) },
+            WasmInstr::BrIf(dep) =>
+                if dep == 0 && d == 0 { true } else { tail_reenters(d, rest) },
+            _ => tail_reenters(d, rest),
+        }
+    }
+}
+
+/// Mirror of Lean `backedgeEndBreak`: the exit-`Break` suffix a
+/// depth-0 loop-backedge wrap appends to its else arm (production's
+/// `last_record && !tail_exits_or_continues` append). Skipped when
+/// the tail re-enters the loop or already exits.
+pub open spec fn backedge_end_break(reenters: bool, post_ops: Seq<KernelOp>) -> Seq<KernelOp> {
+    if reenters { Seq::empty() }
+    else if ends_in_break(post_ops) { Seq::empty() }
+    else { seq![KernelOp::BreakOp] }
+}
 
 // ── State primitives (mirror V3) ───────────────────────────────────
 
@@ -490,14 +555,20 @@ pub open spec fn lower_instrs(fuel: nat, frames: Seq<FrameKind>, s: LowerState, 
                             if (depth as int) >= frames.len() { None }
                             else if frames[depth as int] is LoopK {
                                 if depth == 0 {
+                                    // Backedge to the enclosing loop: the
+                                    // lowered tail nests INTO the else arm,
+                                    // plus the end-of-body Break rule
+                                    // (mirrors `reconstruct_loop_backedges`;
+                                    // Lean Translate.lean brIf/loopK/depth-0).
                                     let (cond_bool, s_cast) = alloc(s1);
                                     match lower_instrs(fuel, frames, s_cast, rest) {
                                         None => None,
                                         Some((s2, post_ops)) => Some((s2,
                                             ops_commit.add(seq![
                                                 KernelOp::Cast(cond_bool, cond, Scalar::U32, Scalar::Bool),
-                                                KernelOp::Branch(cond_bool, Seq::empty(), seq![KernelOp::BreakOp])])
-                                            .add(post_ops))),
+                                                KernelOp::Branch(cond_bool, Seq::empty(),
+                                                    post_ops.add(backedge_end_break(
+                                                        tail_reenters(0, rest), post_ops)))]))),
                                     }
                                 } else if has_loop_above(frames, depth) {
                                     let (cond_bool, s_cast) = alloc(s1);
@@ -757,6 +828,99 @@ proof fn br_oob_refuses(fuel: nat, frames: Seq<FrameKind>, s: LowerState,
 {
     let is = seq![WasmInstr::Br(depth)].add(rest);
     assert(is[0] == WasmInstr::Br(depth));
+}
+
+/// **brIf depth-0 to Loop: the tail nests into the else arm.** The
+/// lowered rest-of-body becomes the backedge Branch's else arm —
+/// running exactly when the backedge does not fire — with the
+/// end-of-body Break rule appending the exit `BreakOp` unless the
+/// tail re-enters the loop or already exits. Mirrors production
+/// `reconstruct_loop_backedges` and the Lean brIf/loopK/depth-0 arm.
+proof fn brif_loop0_nests_tail(fuel: nat, frames: Seq<FrameKind>, s: LowerState,
+                               rest: Seq<WasmInstr>)
+    requires
+        frames.len() > 0,
+        frames[0] is LoopK,
+    ensures ({
+        let is = seq![WasmInstr::BrIf(0)].add(rest);
+        match pop_sym(s) {
+            None => lower_instrs(fuel, frames, s, is).is_none(),
+            Some((sv_cond, s0)) => match commit(s0, sv_cond) {
+                None => lower_instrs(fuel, frames, s, is).is_none(),
+                Some((cond, s1, ops_commit)) => {
+                    let (cond_bool, s_cast) = alloc(s1);
+                    match lower_instrs(fuel, frames, s_cast, rest) {
+                        None => lower_instrs(fuel, frames, s, is).is_none(),
+                        Some((s2, post_ops)) =>
+                            lower_instrs(fuel, frames, s, is) == Some((s2,
+                                ops_commit.add(seq![
+                                    KernelOp::Cast(cond_bool, cond, Scalar::U32, Scalar::Bool),
+                                    KernelOp::Branch(cond_bool, Seq::empty(),
+                                        post_ops.add(backedge_end_break(
+                                            tail_reenters(0, rest), post_ops)))]))),
+                    }
+                },
+            },
+        }
+    }),
+{
+    let is = seq![WasmInstr::BrIf(0)].add(rest);
+    assert(is[0] == WasmInstr::BrIf(0));
+    assert(is.subrange(1, is.len() as int) =~= rest);
+}
+
+/// **Empty-tail reduction.** When the backedge `br_if 0` is the loop
+/// body's last instruction (the ubiquitous rustc `while`-loop shape —
+/// every previously-modeled kernel), the nested emission reduces
+/// byte-for-byte to the historical eager shape: the tail lowers to no
+/// ops, `tail_reenters`/`ends_in_break` are both false, and the else
+/// arm is exactly `[BreakOp]`. Mirror of the Lean
+/// `lowerInstrs_brIf0_loop_empty_tail`.
+proof fn brif_loop0_empty_tail_reduces(fuel: nat, frames: Seq<FrameKind>, s: LowerState)
+    requires
+        frames.len() > 0,
+        frames[0] is LoopK,
+    ensures ({
+        let is = seq![WasmInstr::BrIf(0)];
+        match pop_sym(s) {
+            None => lower_instrs(fuel, frames, s, is).is_none(),
+            Some((sv_cond, s0)) => match commit(s0, sv_cond) {
+                None => lower_instrs(fuel, frames, s, is).is_none(),
+                Some((cond, s1, ops_commit)) => {
+                    let (cond_bool, s_cast) = alloc(s1);
+                    lower_instrs(fuel, frames, s, is) == Some((s_cast,
+                        ops_commit.add(seq![
+                            KernelOp::Cast(cond_bool, cond, Scalar::U32, Scalar::Bool),
+                            KernelOp::Branch(cond_bool, Seq::empty(),
+                                seq![KernelOp::BreakOp])])))
+                },
+            },
+        }
+    }),
+{
+    let is = seq![WasmInstr::BrIf(0)];
+    assert(is[0] == WasmInstr::BrIf(0));
+    let rest = is.subrange(1, is.len() as int);
+    assert(rest =~= Seq::<WasmInstr>::empty());
+    // The recursion on the empty tail returns (s_cast, []) …
+    match pop_sym(s) {
+        None => {},
+        Some((sv_cond, s0)) => match commit(s0, sv_cond) {
+            None => {},
+            Some((cond, s1, ops_commit)) => {
+                let (cond_bool, s_cast) = alloc(s1);
+                assert(lower_instrs(fuel, frames, s_cast, rest)
+                    == Some((s_cast, Seq::<KernelOp>::empty())));
+                // … and the end-break rule supplies exactly the old
+                // [BreakOp] else arm.
+                assert(!tail_reenters(0, rest));
+                assert(!ends_in_break(Seq::<KernelOp>::empty()));
+                assert(Seq::<KernelOp>::empty()
+                        .add(backedge_end_break(false, Seq::<KernelOp>::empty()))
+                    =~= seq![KernelOp::BreakOp]);
+            },
+        },
+    }
 }
 
 } // verus!
