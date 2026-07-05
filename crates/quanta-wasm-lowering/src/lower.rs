@@ -224,6 +224,27 @@ struct BrIfRecord {
     is_unconditional: bool,
 }
 
+/// One loop-backedge `br_if` (a `br_if` whose target is the
+/// immediately-enclosing Loop frame) recorded on that Loop frame.
+///
+/// Like `BrIfRecord`, nothing is materialised eagerly: the backedge's
+/// fall-through path is everything the loop frame collects AFTER
+/// `sink_position` (rustc places multi-level `br` exit tails, unroll
+/// epilogues, and unswitch cross-jumps there), and only the loop's
+/// End knows where that tail ends. `reconstruct_loop_backedges` wraps
+/// `ops[sink_position..]` in `Branch{cond, then=[], else=tail}` so
+/// the tail runs exactly when the backedge does NOT fire — emitting
+/// the Branch eagerly with a bare `else=[Break]` left the tail
+/// sequenced after it, running unconditionally on every iteration
+/// (the one-iteration silent-miscompile + invalid-SPIR-V shape).
+#[derive(Clone, Copy, Debug)]
+struct BackedgeRecord {
+    /// Index into the Loop frame's `ops` where the backedge fired.
+    sink_position: usize,
+    /// The backedge condition: loop continues when true.
+    cond: Reg,
+}
+
 /// One control-flow frame on the lowering stack.
 struct Frame {
     kind: FrameKind,
@@ -244,6 +265,18 @@ struct Frame {
     /// br/br_if records targeting this frame. See `BrIfRecord`
     /// for the wrap-at-end-of-frame semantics.
     brifs: Vec<BrIfRecord>,
+    /// Backedge `br_if` records — only ever populated on Loop
+    /// frames (a `br_if 0` whose target IS the current frame).
+    /// See `BackedgeRecord`.
+    backedges: Vec<BackedgeRecord>,
+    /// Position of an unconditional `br` to this frame (`br 0` on a
+    /// Loop frame = explicit continue) — only meaningful on Loop
+    /// frames. The continue itself lowers to nothing (Quanta's
+    /// structured Loop auto-continues on body fall-through), but
+    /// `reconstruct_loop_backedges` must know the tail re-enters the
+    /// loop rather than falling off the wasm loop end (= exit), so
+    /// it can skip the exit `Break` it would otherwise append.
+    continue_pos: Option<usize>,
     /// Snapshot of parent.brifs.len() at the moment THIS
     /// frame opened. Used at this frame's close to bump every parent
     /// brif appended during this frame's lifetime by `self.ops.len()`.
@@ -371,6 +404,8 @@ impl<'a> LowerCtx<'a> {
                 ops: Vec::new(),
                 local_snapshot: Vec::new(),
                 brifs: Vec::new(),
+                backedges: Vec::new(),
+                continue_pos: None,
                 parent_brifs_at_open: 0,
             }],
             next_reg: 0,
@@ -712,6 +747,82 @@ impl<'a> LowerCtx<'a> {
             }
         }
         ops
+    }
+
+    /// At end-of-Loop-frame, wrap each recorded backedge `br_if`'s
+    /// fall-through tail into `Branch{cond, then=[], else=tail}`.
+    ///
+    /// Semantics being encoded: a wasm `br_if $loop` continues the
+    /// loop when cond is true and FALLS THROUGH to the rest of the
+    /// body when false; reaching the end of a wasm loop body exits
+    /// (wasm loops only repeat via explicit branches). Quanta's
+    /// structured Loop inverts the last part — body fall-through
+    /// auto-continues — so:
+    ///
+    /// - cond=true  → empty then-arm → fall through the (wrapped)
+    ///   body end → auto-continue. ✓
+    /// - cond=false → else runs the tail; if the wasm tail could
+    ///   fall off the loop end, an exit `Break` is appended so the
+    ///   auto-continue can't resurrect the iteration. The append is
+    ///   skipped when the tail already ends in an unconditional
+    ///   `Break` (e.g. the exit-flag tail of a multi-level `br`
+    ///   crossing exit) or when the body's last reachable
+    ///   instruction was an explicit continue (`br $loop`,
+    ///   `continue_pos`).
+    ///
+    /// Records are walked in reverse position order, mirroring
+    /// `reconstruct_block_brifs`: each earlier wrap engulfs the later
+    /// composite as its tail's last op. Those inner composites'
+    /// fall-through is the continue path, so the exit-Break append
+    /// only applies to the LAST record's tail — for every earlier
+    /// record the tail already terminates in the inner composite.
+    ///
+    /// The empty-tail case (backedge br_if as the last instruction —
+    /// the ubiquitous rustc `while`-loop shape) reduces to
+    /// `Branch{cond, then=[], else=[Break]}`, byte-identical to the
+    /// historical eager emission.
+    fn reconstruct_loop_backedges(
+        &self,
+        mut ops: Vec<KernelOp>,
+        backedges: &[BackedgeRecord],
+        continue_pos: Option<usize>,
+    ) -> Result<Vec<KernelOp>, LoweringError> {
+        if backedges.is_empty() {
+            return Ok(ops);
+        }
+        // An explicit continue must be the body's last reachable
+        // instruction: wasm makes everything after an unconditional
+        // br dead, but the wrap below would resurrect trailing ops as
+        // live exit-path code. rustc never emits live code there;
+        // refuse loudly rather than guess.
+        if let Some(cp) = continue_pos
+            && cp != ops.len()
+        {
+            return Err(LoweringError::UnsupportedOp {
+                op: format!(
+                    "ops at positions {cp}..{} after an unconditional continue \
+                     (`br` to loop) in a loop body with a recorded br_if backedge",
+                    ops.len()
+                ),
+                at: self.body.body_offset,
+            });
+        }
+        let mut last_record = true;
+        for record in backedges.iter().rev() {
+            let mut else_ops = ops.split_off(record.sink_position);
+            let tail_exits_or_continues =
+                continue_pos.is_some() || matches!(else_ops.last(), Some(KernelOp::Break));
+            if last_record && !tail_exits_or_continues {
+                else_ops.push(KernelOp::Break);
+            }
+            ops.push(KernelOp::Branch {
+                cond: record.cond,
+                then_ops: Vec::new(),
+                else_ops,
+            });
+            last_record = false;
+        }
+        Ok(ops)
     }
 
     /// Materialize the br_if cond into a fresh
@@ -2266,6 +2377,8 @@ impl<'a> LowerCtx<'a> {
                     ops: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
+                    backedges: Vec::new(),
+                    continue_pos: None,
                     parent_brifs_at_open: parent_brifs,
                 });
             }
@@ -2313,6 +2426,8 @@ impl<'a> LowerCtx<'a> {
                     ops: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
+                    backedges: Vec::new(),
+                    continue_pos: None,
                     parent_brifs_at_open: parent_brifs,
                 });
             }
@@ -2327,6 +2442,8 @@ impl<'a> LowerCtx<'a> {
                     ops: Vec::new(),
                     local_snapshot: snapshot,
                     brifs: Vec::new(),
+                    backedges: Vec::new(),
+                    continue_pos: None,
                     parent_brifs_at_open: parent_brifs,
                 });
             }
@@ -2360,6 +2477,8 @@ impl<'a> LowerCtx<'a> {
                     ops: Vec::new(),
                     local_snapshot: frame.local_snapshot,
                     brifs: Vec::new(),
+                    backedges: Vec::new(),
+                    continue_pos: None,
                     // Else inherits the If's parent snapshot.
                     parent_brifs_at_open: frame.parent_brifs_at_open,
                 });
@@ -2386,6 +2505,8 @@ impl<'a> LowerCtx<'a> {
                             ops,
                             local_snapshot: Vec::new(),
                             brifs: Vec::new(),
+                            backedges: Vec::new(),
+                            continue_pos: None,
                             parent_brifs_at_open: 0,
                         });
                     }
@@ -2428,10 +2549,15 @@ impl<'a> LowerCtx<'a> {
                         // already wrote to every open set) — just drop
                         // this loop's own set.
                         self.loop_reads.pop();
+                        let body = self.reconstruct_loop_backedges(
+                            frame.ops,
+                            &frame.backedges,
+                            frame.continue_pos,
+                        )?;
                         self.emit(KernelOp::Loop {
                             count: count_reg,
                             iter_reg,
-                            body: frame.ops,
+                            body,
                         });
                         // Records made on the parent during this
                         // loop's lifetime (loop-crossing exit flags)
@@ -2486,7 +2612,19 @@ impl<'a> LowerCtx<'a> {
                     })?
                     .kind_discriminant();
                 if matches!(target_kind, FrameKindTag::Loop) {
-                    // Continue; no-op for structured Loop.
+                    // Continue; no-op for structured Loop (its body
+                    // auto-continues on fall-through). When the
+                    // continue targets the current Loop frame, record
+                    // its position: if a backedge br_if was recorded
+                    // earlier in this body, the end-of-loop wrap must
+                    // know the fall-through tail re-enters the loop
+                    // instead of falling off the wasm loop end (exit),
+                    // so it must not append its exit Break.
+                    if *depth == 0
+                        && let Some(top) = self.frames.last_mut()
+                    {
+                        top.continue_pos = Some(top.ops.len());
+                    }
                     return Ok(());
                 }
                 if self.has_loop_between_top_and_depth(*depth) {
@@ -2585,12 +2723,62 @@ impl<'a> LowerCtx<'a> {
                     // the bottom of `for`/`while` loops as the
                     // iteration check. Quanta's structured Loop has no
                     // explicit continue, but its body wrapper auto-
-                    // continues on natural fall-through. So we model
-                    // the inverse: Break when cond is false. The
-                    // emitted `Branch { cond, then_ops: [], else_ops:
-                    // [Break] }` runs Break only on the !cond path,
-                    // letting the cond=true path fall through to the
-                    // loop wrap-around.
+                    // continues on natural fall-through — and a wasm
+                    // loop only repeats via an explicit branch, so the
+                    // wasm fall-through path must NOT wrap around.
+                    //
+                    // The fall-through path is everything the loop
+                    // body still emits after this br_if: usually
+                    // nothing (the br_if is the last instruction, and
+                    // falling off the wasm loop end = exit), but rustc
+                    // places live exit tails there — a multi-level
+                    // `br` cross-jump from loop-unswitching, unroll
+                    // epilogues, the div-by-zero panic-guard exit.
+                    // Emitting `Branch{cond, then:[], else:[Break]}`
+                    // eagerly would leave that tail sequenced AFTER
+                    // the Branch, running unconditionally on every
+                    // iteration (one-iteration silent miscompile +
+                    // spirv-val-invalid output). Record the backedge
+                    // on the Loop frame instead; the loop's End wraps
+                    // the tail via `reconstruct_loop_backedges` so it
+                    // runs exactly when the backedge does not fire.
+                    //
+                    // MODEL DIVERGENCE (059): the Lean translator
+                    // model's brIf-to-Loop depth-0 arm
+                    // (specs/verify/lean/Quanta/Wasm/Translate.lean,
+                    // `.brIf` / `some .loopK`) and its Verus
+                    // transcription (specs/verify/verus/
+                    // quanta-wasm-lowering/structured_refine.rs)
+                    // still emit `.branch cond [] [.breakOp]` with
+                    // the lowered rest-of-body sequenced AFTER the
+                    // branch — the pre-fix eager shape. Model and
+                    // production agree only when the backedge is the
+                    // loop body's last instruction (empty tail, the
+                    // shape every previously-modeled kernel has); the
+                    // record-and-wrap tail nesting below is not yet
+                    // modeled. Bringing the model back in step means
+                    // lowering the rest-of-body INTO the branch's
+                    // else arm (with the end-of-body Break rule of
+                    // `reconstruct_loop_backedges`) and re-proving
+                    // the affected preservation theorems.
+                    if *depth == 0 {
+                        let top = self
+                            .frames
+                            .last_mut()
+                            .expect("frame stack cannot be empty at br_if");
+                        let sink_position = top.ops.len();
+                        top.backedges.push(BackedgeRecord {
+                            sink_position,
+                            cond,
+                        });
+                        return Ok(());
+                    }
+                    // Backedge from inside a nested frame (br_if N>0
+                    // to the enclosing loop): keep the historical
+                    // conditional-Break emission. It is correct when
+                    // nothing live follows up to the loop end —
+                    // audited 2026-06-12: the only shapes on the
+                    // kernel surface.
                     self.emit(KernelOp::Branch {
                         cond,
                         then_ops: Vec::new(),
@@ -3645,6 +3833,8 @@ impl<'a> LowerCtx<'a> {
             ops: Vec::new(),
             local_snapshot: Vec::new(),
             brifs: Vec::new(),
+            backedges: Vec::new(),
+            continue_pos: None,
             parent_brifs_at_open: parent_brifs,
         });
 
