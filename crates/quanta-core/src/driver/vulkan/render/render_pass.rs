@@ -1,6 +1,6 @@
 //! Render pass begin/end and draw command recording.
 
-use alloc::{format, vec, vec::Vec};
+use alloc::{boxed::Box, format, vec, vec::Vec};
 use core::ffi::c_void;
 
 use crate::render_pass::RenderOp;
@@ -257,6 +257,16 @@ impl VulkanDevice {
         let descriptor_set;
 
         if let Some(rp) = pipeline_ref {
+            // NOTE(descriptor-pool churn): this creates a fresh
+            // VkDescriptorPool per pass. The device's
+            // `descriptor_pool_cache` cannot be reused here as-is: its
+            // pools are compute-shaped (16 storage-buffer descriptors,
+            // no samplers) while render passes need 8 storage + 8
+            // combined-image-sampler, and the cache field is a plain
+            // `Mutex` (not `Arc`), so a pool can't be returned from the
+            // 'static completion closure once render_end is async.
+            // Proper reuse needs a render-shaped, Arc-backed cache —
+            // deferred to a dedicated change.
             let pool_sizes = [
                 ffi::VkDescriptorPoolSize {
                     ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -902,22 +912,90 @@ impl VulkanDevice {
         drop(textures);
         drop(render_pipelines);
 
-        self.submit_and_wait(cmd)?.wait()?;
+        // Submit WITHOUT blocking. `submit_and_wait` only records the
+        // queue submission and hands back a Pulse whose wait_fn blocks
+        // on the fence — the same async machinery the compute path
+        // rides. The CPU is free to encode the next frame while the
+        // GPU executes this pass; the caller waits when it needs the
+        // results.
+        let submit_pulse = match self.submit_and_wait(cmd) {
+            Ok(p) => p,
+            Err(e) => {
+                // The submission never reached the queue, so the GPU
+                // holds no reference to the per-pass objects — destroy
+                // them immediately.
+                unsafe {
+                    ffi::vkDestroyFramebuffer(self.device, framebuffer, core::ptr::null());
+                    if let Some(rp) = transient_rp {
+                        ffi::vkDestroyRenderPass(self.device, rp, core::ptr::null());
+                    }
+                    if let Some(pool) = descriptor_pool {
+                        ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
+                    }
+                }
+                return Err(e);
+            }
+        };
 
-        unsafe {
-            ffi::vkDestroyFramebuffer(self.device, framebuffer, core::ptr::null());
-            if let Some(rp) = transient_rp {
-                ffi::vkDestroyRenderPass(self.device, rp, core::ptr::null());
-            }
-            if let Some(pool) = descriptor_pool {
-                ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
-            }
-        }
+        // Per-pass objects (framebuffer, clear-only/MRT transient
+        // render pass, descriptor pool + its set) are referenced by
+        // the command buffer now executing on the GPU. Their
+        // destruction is deferred to `RenderPassCleanup::drop`, which
+        // waits the submission fence FIRST — whether the caller waits
+        // the pulse or drops it unwaited.
+        let cleanup = RenderPassCleanup {
+            submit_pulse,
+            device: self.device,
+            framebuffer,
+            transient_rp,
+            descriptor_pool,
+        };
 
         Ok(Pulse {
             handle: self.alloc_handle(),
-            completed: true,
-            wait_fn: None,
+            completed: false,
+            wait_fn: Some(Box::new(move || drop(cleanup))),
         })
+    }
+}
+
+/// Defers destruction of per-pass Vulkan objects until the GPU has
+/// finished executing the submitted render pass.
+///
+/// Owns the fence-backed `Pulse` from `submit_and_wait` together with
+/// the transient objects the in-flight command buffer references. The
+/// `Drop` impl waits the fence BEFORE destroying anything, so the
+/// destroy calls can never race GPU execution. The guard is captured
+/// by the returned pulse's `wait_fn` closure, so cleanup runs exactly
+/// once on either path:
+/// - the caller calls `Pulse::wait()` → the closure runs, dropping the
+///   guard (fence wait, then destroy);
+/// - the caller drops the pulse unwaited → the boxed closure is
+///   dropped, dropping its capture (same fence wait + destroy — i.e.
+///   the old synchronous behavior, never a leak or use-after-free).
+struct RenderPassCleanup {
+    submit_pulse: Pulse,
+    device: ffi::VkDevice,
+    framebuffer: ffi::VkFramebuffer,
+    transient_rp: Option<ffi::VkRenderPass>,
+    descriptor_pool: Option<ffi::VkDescriptorPool>,
+}
+
+impl Drop for RenderPassCleanup {
+    fn drop(&mut self) {
+        // Block until the GPU signals the submission fence. This also
+        // returns the command buffer to the device's pool (the inner
+        // wait_fn does both), so the command buffer cannot be recycled
+        // while still executing.
+        let _ = self.submit_pulse.wait();
+        unsafe {
+            ffi::vkDestroyFramebuffer(self.device, self.framebuffer, core::ptr::null());
+            if let Some(rp) = self.transient_rp {
+                ffi::vkDestroyRenderPass(self.device, rp, core::ptr::null());
+            }
+            if let Some(pool) = self.descriptor_pool {
+                ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
+            }
+        }
     }
 }

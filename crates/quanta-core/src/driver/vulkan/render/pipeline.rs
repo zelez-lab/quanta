@@ -14,6 +14,77 @@ use super::super::{
 };
 use super::queries::attr_format_to_vulkan;
 
+/// Tracks the Vulkan objects created while building a graphics
+/// pipeline so that EVERY early error return destroys them instead of
+/// leaking (e.g. a bad shader during hot-reload used to leak the
+/// render pass, descriptor-set layout, and pipeline layout on each
+/// failed `vkCreateGraphicsPipelines`).
+///
+/// Fields start null and are set right after the corresponding
+/// vkCreate* succeeds. On the success path the long-lived handles are
+/// taken out (reset to null) before the guard drops, so the drop then
+/// only destroys the shader modules — which are transient on success
+/// too (previously destroyed inline).
+struct PendingPipeline {
+    device: ffi::VkDevice,
+    vert_module: ffi::VkShaderModule,
+    frag_module: ffi::VkShaderModule,
+    render_pass: ffi::VkRenderPass,
+    descriptor_set_layout: ffi::VkDescriptorSetLayout,
+    pipeline_layout: ffi::VkPipelineLayout,
+    pipeline: ffi::VkPipeline,
+}
+
+impl PendingPipeline {
+    fn new(device: ffi::VkDevice) -> Self {
+        Self {
+            device,
+            vert_module: ffi::null_handle(),
+            frag_module: ffi::null_handle(),
+            render_pass: ffi::null_handle(),
+            descriptor_set_layout: ffi::null_handle(),
+            pipeline_layout: ffi::null_handle(),
+            pipeline: ffi::null_handle(),
+        }
+    }
+
+    /// Hand a handle off to its long-lived owner: returns the current
+    /// value and clears the field so `drop` won't destroy it.
+    fn take(slot: &mut *mut c_void) -> *mut c_void {
+        core::mem::replace(slot, ffi::null_handle())
+    }
+}
+
+impl Drop for PendingPipeline {
+    fn drop(&mut self) {
+        // Reverse creation order.
+        unsafe {
+            if !self.pipeline.is_null() {
+                ffi::vkDestroyPipeline(self.device, self.pipeline, core::ptr::null());
+            }
+            if !self.pipeline_layout.is_null() {
+                ffi::vkDestroyPipelineLayout(self.device, self.pipeline_layout, core::ptr::null());
+            }
+            if !self.descriptor_set_layout.is_null() {
+                ffi::vkDestroyDescriptorSetLayout(
+                    self.device,
+                    self.descriptor_set_layout,
+                    core::ptr::null(),
+                );
+            }
+            if !self.render_pass.is_null() {
+                ffi::vkDestroyRenderPass(self.device, self.render_pass, core::ptr::null());
+            }
+            if !self.frag_module.is_null() {
+                ffi::vkDestroyShaderModule(self.device, self.frag_module, core::ptr::null());
+            }
+            if !self.vert_module.is_null() {
+                ffi::vkDestroyShaderModule(self.device, self.vert_module, core::ptr::null());
+            }
+        }
+    }
+}
+
 impl VulkanDevice {
     pub(crate) fn pipeline_create_impl(
         &self,
@@ -93,6 +164,11 @@ impl VulkanDevice {
             p_code: frag_spirv.as_ptr(),
         };
 
+        // From here on, every vkCreate* success is recorded in `guard`
+        // so any early error return destroys the objects created so
+        // far (see `PendingPipeline`).
+        let mut guard = PendingPipeline::new(self.device);
+
         let mut vert_module = ffi::null_handle();
         let result = unsafe {
             ffi::vkCreateShaderModule(
@@ -108,6 +184,7 @@ impl VulkanDevice {
                 result
             )));
         }
+        guard.vert_module = vert_module;
 
         let mut frag_module = ffi::null_handle();
         let result = unsafe {
@@ -124,6 +201,7 @@ impl VulkanDevice {
                 result
             )));
         }
+        guard.frag_module = frag_module;
 
         // Create VkRenderPass
         let color_format = desc
@@ -188,6 +266,7 @@ impl VulkanDevice {
                 result
             )));
         }
+        guard.render_pass = render_pass;
 
         // Descriptor set layout: 8 storage buffers (0-7) + 8 combined image samplers (8-15)
         let mut ds_bindings = Vec::new();
@@ -231,6 +310,7 @@ impl VulkanDevice {
                 result
             )));
         }
+        guard.descriptor_set_layout = descriptor_set_layout;
 
         let pipeline_layout_info = ffi::VkPipelineLayoutCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -256,6 +336,7 @@ impl VulkanDevice {
                 result
             )));
         }
+        guard.pipeline_layout = pipeline_layout;
 
         // Build specialization info if constants are present.
         // Pack values into a contiguous byte buffer with map entries describing layout.
@@ -502,25 +583,30 @@ impl VulkanDevice {
                 result
             )));
         }
+        guard.pipeline = pipeline;
 
-        unsafe {
-            ffi::vkDestroyShaderModule(self.device, vert_module, core::ptr::null());
-            ffi::vkDestroyShaderModule(self.device, frag_module, core::ptr::null());
-        }
-
-        let handle = self.alloc_handle();
-        self.render_pipelines
+        // Acquire the registry lock BEFORE taking the handles out of
+        // the guard — if the lock is poisoned, the guard still owns
+        // everything (pipeline included) and destroys it on return.
+        let mut pipelines = self
+            .render_pipelines
             .write()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(
-                handle,
-                VkRenderPipeline {
-                    pipeline,
-                    layout: pipeline_layout,
-                    render_pass,
-                    descriptor_set_layout,
-                },
-            );
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let handle = self.alloc_handle();
+        pipelines.insert(
+            handle,
+            VkRenderPipeline {
+                pipeline: PendingPipeline::take(&mut guard.pipeline),
+                layout: PendingPipeline::take(&mut guard.pipeline_layout),
+                render_pass: PendingPipeline::take(&mut guard.render_pass),
+                descriptor_set_layout: PendingPipeline::take(&mut guard.descriptor_set_layout),
+            },
+        );
+        drop(pipelines);
+        // The guard still owns the two shader modules; its drop
+        // destroys them — they are transient on success as well.
+        drop(guard);
+
         Ok(Pipeline {
             handle,
             device: None,
