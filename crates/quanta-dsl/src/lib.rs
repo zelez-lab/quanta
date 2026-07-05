@@ -2,24 +2,41 @@
 
 extern crate proc_macro;
 
+#[cfg(feature = "compute")]
 mod auto_dispatch;
+#[cfg(feature = "compute")]
 mod compile_via_wasm;
+// Shared shader-compile plumbing: the render-stage macros drive it for
+// MSL/WGSL emission and the kernel macro reuses its struct-decl helpers.
+#[cfg(any(feature = "render", feature = "compute"))]
 mod compiler;
+#[cfg(feature = "compute")]
 mod device_macro;
+#[cfg(feature = "compute")]
 mod fields_derive;
+#[cfg(feature = "compute")]
 mod gpu_type;
+#[cfg(feature = "compute")]
 mod kernel_macro;
+#[cfg(feature = "compute")]
 mod kernel_signature;
+#[cfg(feature = "compute")]
 mod kernel_type_inference;
+#[cfg(feature = "compute")]
 mod parse;
 #[cfg(feature = "render")]
 mod shader_macro;
+#[cfg(feature = "compute")]
 mod uniforms_derive;
+#[cfg(feature = "compute")]
 mod validate;
 #[cfg(feature = "render")]
 mod vertex_derive;
+#[cfg(feature = "compute")]
 mod wasm_compile;
+#[cfg(any(feature = "render", feature = "compute"))]
 use proc_macro::TokenStream;
+#[cfg(any(feature = "render", feature = "compute"))]
 use syn::{ItemFn, parse_macro_input};
 
 /// Mark a function as a GPU kernel.
@@ -56,6 +73,7 @@ use syn::{ItemFn, parse_macro_input};
 ///   `let a = if pred_a { 1u32 } else { 0u32 }; ... if a == b
 ///   { ... }`. The bug surfaced in quanta-prims's bitonic sort;
 ///   the u32 encoding is the defensive pattern there.
+#[cfg(feature = "compute")]
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -66,6 +84,7 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// expansion after the qualified-call body rewriter and the sibling
 /// `_src!()` invocations have run. NOT a public API — `quanta::kernel`
 /// emits this on its rewritten output.
+#[cfg(feature = "compute")]
 #[proc_macro_attribute]
 #[doc(hidden)]
 pub fn __kernel_inner(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -103,6 +122,7 @@ pub fn __kernel_inner(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// them in source order. Device functions may transitively call
 /// other device functions; the kernel macro discovers them
 /// recursively.
+#[cfg(feature = "compute")]
 #[proc_macro_attribute]
 pub fn device(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -127,6 +147,7 @@ pub fn device(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// The proc macro itself is a no-op pass-through; the real work happens
 /// in the kernel parser which inspects `let` attributes.
+#[cfg(feature = "compute")]
 #[proc_macro_attribute]
 pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
@@ -342,6 +363,7 @@ pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - `impl GpuType for Particle`
 /// - `__QUANTA_GPU_TYPE_PARTICLE` — MSL struct declaration string
 /// - `__QUANTA_GPU_TYPE_PARTICLE_WGSL` — WGSL struct declaration string
+#[cfg(feature = "compute")]
 #[proc_macro_attribute]
 pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as syn::ItemStruct);
@@ -402,6 +424,7 @@ pub fn derive_vertex(input: TokenStream) -> TokenStream {
 /// // __QUANTA_UNIFORMS_CAMERA (MSL)
 /// // __QUANTA_UNIFORMS_CAMERA_WGSL (WGSL)
 /// ```
+#[cfg(feature = "compute")]
 #[proc_macro_derive(Uniforms)]
 pub fn derive_uniforms(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
@@ -434,6 +457,7 @@ pub fn derive_uniforms(input: TokenStream) -> TokenStream {
 /// // Particles::push_constant_names() -> &["count", "dt"]
 /// // Particles::push_constant_types() -> &["u32", "f32"]
 /// ```
+#[cfg(feature = "compute")]
 #[proc_macro_derive(Fields)]
 pub fn derive_fields(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
@@ -463,6 +487,7 @@ pub fn derive_fields(input: TokenStream) -> TokenStream {
 /// emitted as `<path>_src!();`. The `_src!` macro is auto-generated
 /// by `#[quanta::device]` on the library side — see that attribute's
 /// documentation for the mechanism.
+#[cfg(feature = "compute")]
 #[proc_macro]
 pub fn import_devices(input: TokenStream) -> TokenStream {
     use proc_macro2::TokenStream as TokenStream2;

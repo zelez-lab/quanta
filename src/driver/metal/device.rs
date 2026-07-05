@@ -12,6 +12,7 @@ use std::sync::RwLock;
 use super::ffi;
 
 /// State for one Metal MTLIndirectCommandBuffer.
+#[cfg_attr(not(feature = "compute"), allow(dead_code))]
 pub(crate) struct MetalIcb {
     /// The MTLIndirectCommandBuffer object.
     pub(crate) icb: ffi::Id,
@@ -158,6 +159,8 @@ pub struct MetalDevice {
     // RwLock: dispatch/render paths take read locks; alloc/free take write locks.
     pub(crate) buffers: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) textures: RwLock<HashMap<u64, ffi::Id>>,
+    // Only populated/read by the compute-gated dispatch path.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(crate) compute_pipelines: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) render_pipelines: RwLock<HashMap<u64, ffi::Id>>,
     // Only populated/read by the render-gated pipeline path (step 085).
@@ -165,6 +168,8 @@ pub struct MetalDevice {
     pub(crate) depth_stencil_states: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) samplers: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) queues: RwLock<HashMap<u64, ffi::Id>>,
+    // Compute ICBs — populated/read by the compute-gated ICB path.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(crate) icbs: RwLock<HashMap<u64, MetalIcb>>,
     pub(crate) render_bundles: RwLock<HashMap<u64, MetalRenderBundle>>,
     pub(crate) tess_pipelines: RwLock<HashMap<u64, MetalTessPipeline>>,
@@ -173,8 +178,10 @@ pub struct MetalDevice {
     /// Sparse-texture native state (handle → heap + tile size).
     pub(crate) sparse_textures: RwLock<HashMap<u64, MetalSparseTexture>>,
     /// Presentation surfaces (handle → CAMetalLayer state).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
     pub(crate) surfaces: RwLock<HashMap<u64, MetalSurface>>,
     /// In-flight acquired surface frames (frame handle → drawable).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
     pub(crate) surface_frames: RwLock<HashMap<u64, MetalSurfaceFrame>>,
     pub(crate) next_handle: AtomicU64,
     /// Whether the device supports MTLSparseTexture
@@ -208,6 +215,35 @@ unsafe impl Sync for MetalDevice {}
 impl MetalDevice {
     pub(crate) fn alloc_handle(&self) -> u64 {
         self.next_handle.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
+
+/// Create a Pulse backed by a dispatch_semaphore + addCompletedHandler.
+/// The GPU signals the semaphore when the command buffer completes.
+/// Pulse.wait() waits on the semaphore — no busy-polling, no thread parking.
+///
+/// Shared compute/render plumbing: compute dispatch, batch submit and
+/// the render-pass end all wrap their command buffer in one of these
+/// (which is why it lives here and not in the compute-gated module).
+#[cfg(any(feature = "compute", feature = "render"))]
+pub(crate) fn make_async_pulse(device: &MetalDevice, cmd: ffi::Id) -> crate::Pulse {
+    unsafe {
+        let sem = ffi::dispatch_semaphore_create(0);
+        let block = ffi::make_completion_block(sem);
+        ffi::msg_add_completed_handler(cmd, block);
+        ffi::msg_void(cmd, b"commit\0");
+
+        let handle = device.alloc_handle();
+        crate::Pulse {
+            handle,
+            completed: false,
+            wait_fn: Some(Box::new(move || {
+                ffi::dispatch_semaphore_wait(sem, ffi::DISPATCH_TIME_FOREVER);
+                ffi::dispatch_release(sem);
+                // Free the heap-allocated block
+                drop(Box::from_raw(block));
+            })),
+        }
     }
 }
 

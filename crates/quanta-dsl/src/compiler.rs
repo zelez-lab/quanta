@@ -9,6 +9,7 @@ mod emit_wgsl;
 pub(crate) mod shader_emit;
 pub(crate) mod shader_types;
 
+#[cfg(feature = "compute")]
 pub use binary::compile_kernel;
 #[cfg(feature = "render")]
 #[allow(unused_imports)]

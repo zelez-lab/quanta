@@ -360,3 +360,22 @@ pub struct QueueFamily {
     /// Number of queues available in this family.
     pub count: u32,
 }
+
+// ── Binding-model capacity constants ────────────────────────────────────
+//
+// Shared compute/render plumbing: `Wave` (compute face) sizes its inline
+// binding/push-constant state with these, and the drivers' indirect
+// command buffers (including the render-path bundles) allocate their
+// per-command binding tables from the same caps. They live here — not in
+// the compute-gated `wave` module — so a render-only build still sees
+// the device binding model.
+
+/// Maximum buffer binding slots per dispatch/draw command.
+#[allow(dead_code)] // read by the compute face and the metal/vulkan ICB paths
+pub(crate) const MAX_BINDINGS: usize = 16;
+/// Maximum texture binding slots per dispatch command.
+#[allow(dead_code)] // read by the compute face and the webgpu driver only
+pub(crate) const MAX_TEXTURES: usize = 16;
+/// Inline push constant buffer size in bytes.
+#[allow(dead_code)] // read by the compute face and the cpu/webgpu drivers only
+pub(crate) const PUSH_DATA_CAP: usize = 256;

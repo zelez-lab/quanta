@@ -3,8 +3,12 @@ use alloc::vec::Vec;
 
 use crate::{
     Caps, FieldUsage, Format, FormatCaps, NativeTextureHandle, Pulse, QuantaError, QueueFamily,
-    QueueType, ResourceState, Texture, TextureDesc, TextureViewDesc, Timeline, Wave,
+    QueueType, ResourceState, Texture, TextureDesc, TextureViewDesc, Timeline,
 };
+// `Wave` is a compute type; only the compute-gated trait methods
+// (wave / dispatch / batch / queue-dispatch / compute ICB) reference it.
+#[cfg(feature = "compute")]
+use crate::Wave;
 // Render types used only by the render-gated trait methods (step 085).
 #[cfg(feature = "render")]
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
@@ -207,8 +211,10 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     ) -> Result<crate::Sampler, QuantaError>;
     fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError>;
 
-    // === Compute ===
+    // === Compute === (compute-typed; gated with the `compute` feature,
+    // mirroring the render-gated methods below)
 
+    #[cfg(feature = "compute")]
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError>;
 
     /// JIT-compile a kernel from its serialized KernelDef at runtime.
@@ -216,6 +222,7 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     /// Deserializes the IR, emits the appropriate shader format (MSL text for
     /// Metal, SPIR-V binary for Vulkan), and compiles it. Requires the `jit`
     /// feature on quanta-ir.
+    #[cfg(feature = "compute")]
     fn wave_jit(&self, _kernel_def: &[u8]) -> Result<Wave, QuantaError> {
         Err(QuantaError::compilation_failed(
             "JIT compilation not supported by this driver",
@@ -223,13 +230,16 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     }
 
     /// Dispatch by threadgroup count (e.g., [4, 1, 1] = 4 groups of workgroup_size threads).
+    #[cfg(feature = "compute")]
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError>;
     /// Dispatch by total thread count (Metal clips, Vulkan computes groups).
+    #[cfg(feature = "compute")]
     fn wave_dispatch_threads(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
         let groups = quarks.div_ceil(wave.workgroup_size[0]);
         self.wave_dispatch(wave, [groups, 1, 1])
     }
     /// Dispatch with group counts from a GPU buffer (GPU decides grid size).
+    #[cfg(feature = "compute")]
     fn wave_dispatch_indirect(
         &self,
         wave: &Wave,
@@ -239,6 +249,7 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
 
     // === Batch ===
 
+    #[cfg(feature = "compute")]
     fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
         Err(QuantaError::not_supported("batch dispatch not supported"))
     }
@@ -288,6 +299,7 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
 
     /// Dispatch a compute wave on the async compute queue.
     /// Returns immediately; the returned Pulse signals completion.
+    #[cfg(feature = "compute")]
     fn async_compute_dispatch(
         &self,
         _wave: &Wave,
@@ -419,6 +431,7 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     }
 
     /// Submit a compute dispatch to a specific queue.
+    #[cfg(feature = "compute")]
     fn queue_dispatch(
         &self,
         _queue: u64,
@@ -623,8 +636,16 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     }
 
     // === M5.2: Indirect command buffers (steps 032 + 033) ===
+    //
+    // The compute-ICB family (create / record / execute / destroy) is
+    // gated with the `compute` feature: the only caller is the
+    // compute-gated `IndirectCommandBuffer` wrapper, and per-backend
+    // record/execute paths lean on the compute dispatch machinery.
+    // The render bundle (`render_bundle_*`) family below stays
+    // independent — it serves the render-gated `IndirectRenderBundle`.
 
     /// Create an indirect command buffer (GPU-driven draw/dispatch).
+    #[cfg(feature = "compute")]
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError>;
 
     /// Record a single dispatch command at `index` in the ICB.
@@ -633,6 +654,7 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     /// `index` is the command position assigned by
     /// [`IndirectCommandBuffer::record_dispatch`](crate::IndirectCommandBuffer::record_dispatch);
     /// the typed wrapper enforces `index < max_commands`.
+    #[cfg(feature = "compute")]
     fn icb_record_dispatch(
         &self,
         handle: u64,
@@ -649,6 +671,7 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     /// Refines the `Quanta.Icb.Command.draw` constructor; the proof
     /// contract (T7000 / T7006) holds for any backend that respects
     /// the recorded order on execute.
+    #[cfg(feature = "compute")]
     fn icb_record_draw(
         &self,
         _handle: u64,
@@ -701,9 +724,11 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     }
 
     /// Execute commands from an indirect command buffer.
+    #[cfg(feature = "compute")]
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError>;
 
     /// Destroy an indirect command buffer.
+    #[cfg(feature = "compute")]
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError>;
 
     // === M5.3: Bindless resources (steps 034 + 035) ===

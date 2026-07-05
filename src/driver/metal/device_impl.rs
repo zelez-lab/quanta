@@ -1,20 +1,23 @@
 //! GpuDevice trait implementation for MetalDevice, type conversions, and batch dispatch.
 
+#[cfg(feature = "compute")]
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
     Caps, FieldUsage, Format, GpuDevice, Pulse, QuantaError, QueueFamily, QueueType, ResourceState,
-    Texture, TextureDesc, TextureViewDesc, Wave,
+    Texture, TextureDesc, TextureViewDesc,
 };
+// `Wave` and the batch plumbing exist only on the compute face.
+#[cfg(feature = "compute")]
+use crate::Wave;
 // Render types used only by the render-gated impl methods (step 085).
 #[cfg(feature = "render")]
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 #[cfg(feature = "render")]
 use crate::{Pipeline, RenderPass};
 
-use super::compute;
 use super::device::MetalDevice;
 use super::ffi;
 
@@ -140,23 +143,27 @@ impl GpuDevice for MetalDevice {
 
     // === Compute ===
 
+    #[cfg(feature = "compute")]
     fn wave(&self, kernel_source: &[u8]) -> Result<Wave, QuantaError> {
         self.wave_impl(kernel_source)
     }
 
-    #[cfg(feature = "jit")]
+    #[cfg(all(feature = "compute", feature = "jit"))]
     fn wave_jit(&self, kernel_def: &[u8]) -> Result<Wave, QuantaError> {
         self.wave_jit_impl(kernel_def)
     }
 
+    #[cfg(feature = "compute")]
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
         self.wave_dispatch_impl(wave, groups)
     }
 
+    #[cfg(feature = "compute")]
     fn wave_dispatch_threads(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
         self.wave_dispatch_threads_impl(wave, quarks)
     }
 
+    #[cfg(feature = "compute")]
     fn wave_dispatch_indirect(
         &self,
         wave: &Wave,
@@ -168,6 +175,7 @@ impl GpuDevice for MetalDevice {
 
     // === Batch ===
 
+    #[cfg(feature = "compute")]
     fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
@@ -741,6 +749,7 @@ impl GpuDevice for MetalDevice {
     //   - Texture bindings are not yet recorded into ICB commands;
     //     recording rejects waves with bound textures.
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
         // MTLIndirectCommandBuffer is available on all Apple GPUs.
         // Set commandTypes to ConcurrentDispatch so the slots accept
@@ -748,7 +757,7 @@ impl GpuDevice for MetalDevice {
         let icb = unsafe {
             let desc = ffi::msg_new_icb_descriptor(
                 ffi::MTL_INDIRECT_COMMAND_TYPE_CONCURRENT_DISPATCH,
-                crate::api::wave::MAX_BINDINGS as ffi::NSUInteger,
+                crate::api::types::MAX_BINDINGS as ffi::NSUInteger,
             );
             ffi::msg_new_icb(
                 self.device,
@@ -778,6 +787,7 @@ impl GpuDevice for MetalDevice {
         Ok(handle)
     }
 
+    #[cfg(feature = "compute")]
     fn icb_record_dispatch(
         &self,
         handle: u64,
@@ -873,6 +883,7 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
         // Snapshot the ICB Id + used_buffers under the lock, then
         // drop it before issuing the command buffer (which may
@@ -930,6 +941,7 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
+    #[cfg(feature = "compute")]
     fn icb_record_draw(
         &self,
         _handle: u64,
@@ -952,7 +964,7 @@ impl GpuDevice for MetalDevice {
         let icb = unsafe {
             let desc = ffi::msg_new_icb_descriptor(
                 ffi::MTL_INDIRECT_COMMAND_TYPE_DRAW,
-                crate::api::wave::MAX_BINDINGS as ffi::NSUInteger,
+                crate::api::types::MAX_BINDINGS as ffi::NSUInteger,
             );
             ffi::msg_new_icb(
                 self.device,
@@ -1046,6 +1058,7 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         let removed = self
             .icbs
@@ -1590,12 +1603,14 @@ pub(crate) fn blend_op_to_metal(op: crate::BlendOp) -> ffi::NSUInteger {
 
 // ── Batched dispatch ────────────────────────────────────────────────────────
 
+#[cfg(feature = "compute")]
 struct MetalBatch {
     device: *const MetalDevice,
     cmd: ffi::Id,
     encoder: ffi::Id,
 }
 
+#[cfg(feature = "compute")]
 impl crate::batch::BatchInner for MetalBatch {
     fn encode_dispatch(&mut self, wave: &Wave, quarks: u32) -> Result<(), QuantaError> {
         let device = unsafe { &*self.device };
@@ -1669,6 +1684,6 @@ impl crate::batch::BatchInner for MetalBatch {
             ffi::msg_void(self.encoder, b"endEncoding\0");
         }
         let device = unsafe { &*self.device };
-        Ok(compute::make_async_pulse(device, self.cmd))
+        Ok(super::device::make_async_pulse(device, self.cmd))
     }
 }

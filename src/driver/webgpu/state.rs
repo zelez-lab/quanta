@@ -58,7 +58,7 @@ pub(super) struct PipelineEntry {
 pub(super) enum WebgpuIcbCommand {
     Dispatch {
         wave_handle: u64,
-        bindings: [u64; crate::api::wave::MAX_BINDINGS],
+        bindings: [u64; crate::api::types::MAX_BINDINGS],
         binding_count: u8,
         workgroup_size: [u32; 3],
         groups: [u32; 3],

@@ -49,13 +49,16 @@ extern crate std;
 
 mod api;
 mod driver;
+#[cfg(feature = "compute")]
 pub mod kernel;
+#[cfg(feature = "compute")]
 pub mod scan;
 
 /// GPU intrinsics — `extern "C"` imports surfaced as
 /// `import "quanta" "<name>"` in the WASM emitted by
 /// `#[quanta::kernel]`. cfg-gated to wasm32; the lowering pass on the
 /// host side resolves them. See roadmap step 058.
+#[cfg(feature = "compute")]
 pub mod intrinsics;
 
 /// Host-side stubs for every GPU intrinsic, used by `_src!()` macros
@@ -64,6 +67,7 @@ pub mod intrinsics;
 /// its `const _: () = { ... }` block so spliced device-fn bodies
 /// name-resolve in any downstream crate without the user importing
 /// anything.
+#[cfg(feature = "compute")]
 #[doc(hidden)]
 pub mod __device_host_stubs;
 
@@ -83,20 +87,28 @@ pub use api::*;
 //
 // `ScalarType` is a `quanta-ir` kernel-language type (the scalar tag
 // carried by `GpuType::scalar_type()`); it is re-exported at the root
-// because the compute kernel language is always compiled in — even on
-// render-focused builds — and `#[quanta::kernel]`-generated code names
-// it through `quanta::ScalarType`.
+// under the `compute` feature because `#[quanta::kernel]`-generated
+// code names it through `quanta::ScalarType`.
+#[cfg(feature = "compute")]
 pub use kernel::{GpuType, KernelBinary, ScalarType};
 
-// Re-export proc macros (compute — always available)
+// Compute-face proc macros — only when the `compute` feature is on
+// (symmetric to the render-stage macros below).
+#[cfg(feature = "compute")]
 pub use quanta_dsl::__kernel_inner;
+#[cfg(feature = "compute")]
 pub use quanta_dsl::device;
+#[cfg(feature = "compute")]
 pub use quanta_dsl::gpu_type;
+#[cfg(feature = "compute")]
 pub use quanta_dsl::import_devices;
+#[cfg(feature = "compute")]
 pub use quanta_dsl::kernel;
 
-// Derive macros (compute / shared)
+// Derive macros (compute face)
+#[cfg(feature = "compute")]
 pub use quanta_dsl::Fields;
+#[cfg(feature = "compute")]
 pub use quanta_dsl::Uniforms;
 
 // Render-stage shader macros — only when the `render` feature is on.

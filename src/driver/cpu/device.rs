@@ -45,11 +45,11 @@ struct CpuKernel {
 enum RecordedCommand {
     Dispatch {
         wave_handle: u64,
-        bindings: [u64; crate::api::wave::MAX_BINDINGS],
+        bindings: [u64; crate::api::types::MAX_BINDINGS],
         binding_count: u8,
-        texture_bindings: [u64; crate::api::wave::MAX_TEXTURES],
+        texture_bindings: [u64; crate::api::types::MAX_TEXTURES],
         texture_count: u8,
-        push_data: [u8; crate::api::wave::PUSH_DATA_CAP],
+        push_data: [u8; crate::api::types::PUSH_DATA_CAP],
         push_len: u16,
         push_mask: u16,
         workgroup_size: [u32; 3],

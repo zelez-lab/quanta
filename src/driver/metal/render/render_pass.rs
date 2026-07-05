@@ -663,7 +663,7 @@ impl MetalDevice {
 
             ffi::msg_void(encoder, b"endEncoding\0");
 
-            Ok(super::super::compute::make_async_pulse(self, cmd))
+            Ok(super::super::device::make_async_pulse(self, cmd))
         }
     }
 }

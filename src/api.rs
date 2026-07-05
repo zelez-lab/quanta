@@ -1,18 +1,32 @@
 pub mod async_copy;
-pub mod batch;
 pub mod bindless;
 pub mod device;
 pub mod error;
 pub mod field;
 pub mod gpu;
-pub mod icb;
-pub mod multi_queue;
 pub mod printf;
 pub mod pulse;
 pub mod sparse_texture;
 pub mod texture;
 pub mod types;
+
+// Compute face — only when the `compute` feature is on (symmetric to
+// the render face below). `Wave` is the compute dispatch handle;
+// `Batch` records wave dispatches; `Queue` submits wave dispatches on
+// explicit queue handles.
+#[cfg(feature = "compute")]
+pub mod batch;
+#[cfg(feature = "compute")]
+pub mod multi_queue;
+#[cfg(feature = "compute")]
 pub mod wave;
+
+// Indirect command buffers are a split surface: the compute ICB
+// (`IndirectCommandBuffer`, records wave dispatches) needs `compute`;
+// the render bundle (`IndirectRenderBundle`) needs `render`. The
+// module gates its two halves internally.
+#[cfg(any(feature = "compute", feature = "render"))]
+pub mod icb;
 
 // Render face — only when the `render` feature is on (step 085).
 #[cfg(feature = "render")]
@@ -35,19 +49,25 @@ pub mod tessellation;
 pub mod vrs;
 
 pub use async_copy::AsyncCopyQueue;
-pub use batch::Batch;
 pub use bindless::{BindlessBufferArray, BindlessTextureArray};
 pub use device::{GpuDevice, RegistryCounts};
 pub use error::{QuantaError, QuantaErrorKind};
 pub use field::{Field, MappedField};
 pub use gpu::Gpu;
-pub use icb::IndirectCommandBuffer;
-pub use multi_queue::Queue;
 pub use printf::PrintfBuffer;
 pub use pulse::{OcclusionQuery, Pulse, Timeline, TimestampQuery};
 pub use sparse_texture::SparseTexture;
 pub use texture::*;
 pub use types::*;
+
+// Compute-face re-exports — gated with the `compute` feature.
+#[cfg(feature = "compute")]
+pub use batch::Batch;
+#[cfg(feature = "compute")]
+pub use icb::IndirectCommandBuffer;
+#[cfg(feature = "compute")]
+pub use multi_queue::Queue;
+#[cfg(feature = "compute")]
 pub use wave::Wave;
 
 // Render-face re-exports — gated with the `render` feature.

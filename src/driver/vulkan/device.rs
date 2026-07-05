@@ -23,6 +23,8 @@ pub struct VulkanDevice {
     pub(super) command_pool: ffi::VkCommandPool,
     pub(super) pipeline_cache: ffi::VkPipelineCache,
     pub(super) caps: Caps,
+    // Read by the compute-gated dispatch path only.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) max_push_constants_size: u32,
     // Resource storage — RwLock: dispatch/render paths take read locks; alloc/free take write locks.
     pub(super) buffers: RwLock<HashMap<u64, VkBuffer>>,
@@ -49,6 +51,7 @@ pub struct VulkanDevice {
     /// `T7000` equivalence theorem is parametric in the per-command
     /// transformer, so this list-of-dispatches refinement satisfies
     /// the proof contract on every Vulkan implementation.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) icbs: RwLock<HashMap<u64, VkIcb>>,
     /// Render-path Indirect Command Buffers (steps 032 + 033). One
     /// pre-allocated secondary VkCommandBuffer per command slot,
@@ -152,6 +155,7 @@ pub struct VulkanDevice {
     /// the remainder row at a non-zero base workgroup so oversized
     /// thread-count dispatches can exceed
     /// `maxComputeWorkGroupCount[0]` without waste threads.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) dispatch_base_fn: Option<ffi::PfnVkCmdDispatchBase>,
     /// Per-tile memory bindings for sparse textures. Key is
     /// `(texture_handle, mip, tile_x, tile_y)`; value is the
@@ -235,6 +239,7 @@ pub(super) struct VulkanRenderBundle {
 /// and submits once. The replay path (commands fold) is no longer
 /// used for execute; we keep `commands` only as a Vec<VkIcbCommand>
 /// counter / discriminator for record-time state.
+#[cfg_attr(not(feature = "compute"), allow(dead_code))]
 pub(super) struct VkIcb {
     pub(super) cap: u32,
     pub(super) commands: Vec<VkIcbCommand>,
@@ -258,9 +263,9 @@ pub(super) struct VkIcb {
 pub(super) enum VkIcbCommand {
     Dispatch {
         wave_handle: u64,
-        bindings: [u64; crate::api::wave::MAX_BINDINGS],
+        bindings: [u64; crate::api::types::MAX_BINDINGS],
         binding_count: u8,
-        push_data: [u8; crate::api::wave::PUSH_DATA_CAP],
+        push_data: [u8; crate::api::types::PUSH_DATA_CAP],
         push_len: u16,
         push_mask: u16,
         workgroup_size: [u32; 3],
@@ -314,6 +319,8 @@ pub(super) struct VkTexture {
     pub(super) current_layout: std::sync::atomic::AtomicU32,
 }
 
+// Fields are read by the compute-gated dispatch path only.
+#[cfg_attr(not(feature = "compute"), allow(dead_code))]
 pub(super) struct VkComputePipeline {
     pub(super) pipeline: ffi::VkPipeline,
     pub(super) layout: ffi::VkPipelineLayout,
@@ -403,6 +410,7 @@ impl VulkanDevice {
     }
 
     /// Acquire a descriptor pool — pop from cache or create new.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) fn acquire_descriptor_pool(&self) -> Result<ffi::VkDescriptorPool, QuantaError> {
         if let Some(pool) = self
             .descriptor_pool_cache
@@ -443,6 +451,7 @@ impl VulkanDevice {
     }
 
     /// Acquire a descriptor set layout for compute (storage buffers only), cached by binding count.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) fn acquire_descriptor_set_layout(
         &self,
         binding_count: u32,
@@ -496,6 +505,7 @@ impl VulkanDevice {
     }
 
     /// Return a descriptor pool to the cache for reuse.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) fn return_descriptor_pool(&self, pool: ffi::VkDescriptorPool) {
         if let Ok(mut cache) = self.descriptor_pool_cache.lock() {
             cache.push(pool);

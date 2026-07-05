@@ -5,8 +5,11 @@ use alloc::vec::Vec;
 
 use crate::{
     Caps, FieldUsage, GpuDevice, Pulse, QuantaError, QueueFamily, QueueType, ResourceState,
-    Texture, TextureDesc, TextureViewDesc, Wave,
+    Texture, TextureDesc, TextureViewDesc,
 };
+// `Wave` exists only on the compute face.
+#[cfg(feature = "compute")]
+use crate::Wave;
 // Render types used only by the render-gated impl methods (step 085).
 #[cfg(feature = "render")]
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
@@ -122,6 +125,7 @@ impl GpuDevice for VulkanDevice {
 
     // === Compute ===
 
+    #[cfg(feature = "compute")]
     fn wave_dispatch_threads(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
         // Folds oversized 1D dispatches (groups >
         // maxComputeWorkGroupCount[0]) into a 2D grid — see
@@ -129,19 +133,22 @@ impl GpuDevice for VulkanDevice {
         self.wave_dispatch_threads_impl(wave, quarks)
     }
 
+    #[cfg(feature = "compute")]
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
         self.wave_impl(kernel)
     }
 
-    #[cfg(feature = "jit")]
+    #[cfg(all(feature = "compute", feature = "jit"))]
     fn wave_jit(&self, kernel_def: &[u8]) -> Result<Wave, QuantaError> {
         self.wave_jit_impl(kernel_def)
     }
 
+    #[cfg(feature = "compute")]
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
         self.wave_dispatch_impl(wave, groups)
     }
 
+    #[cfg(feature = "compute")]
     fn wave_dispatch_indirect(
         &self,
         wave: &Wave,
@@ -972,6 +979,7 @@ impl GpuDevice for VulkanDevice {
     // vkCmdExecuteCommands) is a perf optimization and a future
     // commit; the proof contract is satisfied by either form.
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
         // Native lowering: allocate `max_commands` secondary command
         // buffers up front, plus a dedicated descriptor pool sized
@@ -997,7 +1005,7 @@ impl GpuDevice for VulkanDevice {
         // sets, MAX_BINDINGS descriptors per set.
         let pool_size = ffi::VkDescriptorPoolSize {
             ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            descriptor_count: max_commands * crate::api::wave::MAX_BINDINGS as u32,
+            descriptor_count: max_commands * crate::api::types::MAX_BINDINGS as u32,
         };
         let pool_info = ffi::VkDescriptorPoolCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -1046,6 +1054,7 @@ impl GpuDevice for VulkanDevice {
         Ok(handle)
     }
 
+    #[cfg(feature = "compute")]
     fn icb_record_dispatch(
         &self,
         handle: u64,
@@ -1219,6 +1228,7 @@ impl GpuDevice for VulkanDevice {
         Ok(())
     }
 
+    #[cfg(feature = "compute")]
     fn icb_record_draw(
         &self,
         handle: u64,
@@ -1250,6 +1260,7 @@ impl GpuDevice for VulkanDevice {
         Ok(())
     }
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
         // Native lowering: collect the first `count` secondary CBs,
         // submit a single primary CB that calls
@@ -1439,6 +1450,7 @@ impl GpuDevice for VulkanDevice {
         Ok(())
     }
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         let removed = self
             .icbs

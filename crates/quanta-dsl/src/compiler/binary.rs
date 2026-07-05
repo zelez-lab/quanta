@@ -9,6 +9,7 @@ use super::shader_types::{ShaderParam, ShaderType};
 /// Strategy:
 /// 1. Try quanta-compiler binary (local dev, PATH, cached download, or auto-download)
 /// 2. If not found, return empty output with warning
+#[cfg(feature = "compute")]
 pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
     // Try calling the compiler binary for full output.
     // find_compiler_binary() handles the full search chain including
@@ -29,6 +30,7 @@ pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
 }
 
 /// Try to find and call the quanta-compiler binary.
+#[cfg(feature = "compute")]
 fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
     let binary = find_compiler_binary()?;
 

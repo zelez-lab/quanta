@@ -1,36 +1,12 @@
 //! Compute dispatch operations for Metal.
 
-use alloc::boxed::Box;
 use alloc::format;
 
 use crate::{Pulse, QuantaError, Wave};
 
 use super::MetalDevice;
+use super::device::make_async_pulse;
 use super::ffi;
-
-/// Create a Pulse backed by a dispatch_semaphore + addCompletedHandler.
-/// The GPU signals the semaphore when the command buffer completes.
-/// Pulse.wait() waits on the semaphore — no busy-polling, no thread parking.
-pub(crate) fn make_async_pulse(device: &MetalDevice, cmd: ffi::Id) -> Pulse {
-    unsafe {
-        let sem = ffi::dispatch_semaphore_create(0);
-        let block = ffi::make_completion_block(sem);
-        ffi::msg_add_completed_handler(cmd, block);
-        ffi::msg_void(cmd, b"commit\0");
-
-        let handle = device.alloc_handle();
-        Pulse {
-            handle,
-            completed: false,
-            wait_fn: Some(Box::new(move || {
-                ffi::dispatch_semaphore_wait(sem, ffi::DISPATCH_TIME_FOREVER);
-                ffi::dispatch_release(sem);
-                // Free the heap-allocated block
-                drop(Box::from_raw(block));
-            })),
-        }
-    }
-}
 
 impl MetalDevice {
     /// JIT-compile a kernel from serialized KernelDef IR.

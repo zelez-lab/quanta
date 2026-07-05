@@ -24,7 +24,7 @@ webgpu = ["std", "quanta/webgpu"]
 quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
     "render",
 ] }
-quanta-dsl = { path = "../quanta-dsl", version = "0.1.0-alpha.2", features = [
+quanta-dsl = { path = "../quanta-dsl", version = "0.1.0-alpha.2", default-features = false, features = [
     "render",
 ] }
 

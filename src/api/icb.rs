@@ -16,7 +16,11 @@
 
 use alloc::sync::Arc;
 
-use crate::{GpuDevice, QuantaError, Wave};
+use crate::{GpuDevice, QuantaError};
+// `Wave` is a compute type; only the compute-gated `IndirectCommandBuffer`
+// half of this module references it.
+#[cfg(feature = "compute")]
+use crate::Wave;
 // `Pipeline` is a render type; only the render-gated `record_draw` paths
 // (compute ICB draw + the render bundle) reference it.
 #[cfg(feature = "render")]
@@ -32,6 +36,10 @@ use crate::Pipeline;
 ///
 /// Destruction is automatic on `Drop` — the underlying handle is
 /// released once.
+///
+/// Compute-only (records `Wave` dispatches); gated with the `compute`
+/// feature. The render-path sibling is [`IndirectRenderBundle`].
+#[cfg(feature = "compute")]
 pub struct IndirectCommandBuffer {
     pub(crate) handle: u64,
     pub(crate) cap: u32,
@@ -40,6 +48,7 @@ pub struct IndirectCommandBuffer {
     pub(crate) live: bool,
 }
 
+#[cfg(feature = "compute")]
 impl IndirectCommandBuffer {
     /// Underlying device handle.
     pub fn handle(&self) -> u64 {
@@ -153,6 +162,7 @@ impl IndirectCommandBuffer {
     }
 }
 
+#[cfg(feature = "compute")]
 impl Drop for IndirectCommandBuffer {
     fn drop(&mut self) {
         if self.live {

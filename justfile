@@ -13,6 +13,16 @@ build-compiler:
 build-vulkan:
     cargo build --features vulkan --no-default-features
 
+# Feature-combo matrix: the compute/render boundary must hold in every
+# quadrant (core-only / render / compute / both). This is the gate that
+# keeps the two faces decoupled ahead of the crate split — run it after
+# touching anything on the Gpu/GpuDevice surface or the driver layer.
+check-combos:
+    cargo build -p quanta --no-default-features --features metal
+    cargo build -p quanta --no-default-features --features "metal render"
+    cargo build -p quanta --no-default-features --features "metal compute jit"
+    cargo build -p quanta --no-default-features --features "metal render compute jit"
+
 # Test
 test:
     cargo test --all
@@ -111,7 +121,7 @@ clippy-vulkan:
 
 quality: fmt clippy test-conformance
 
-verify: quality clippy-vulkan test
+verify: quality clippy-vulkan check-combos test
 
 # Wire up the tracked git hooks (.githooks/pre-commit runs fmt + clippy).
 # Run once after cloning — git does not pick up .githooks automatically.

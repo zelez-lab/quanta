@@ -6,6 +6,7 @@
 
 #[cfg(feature = "render")]
 mod accel;
+#[cfg(feature = "compute")]
 mod compute;
 mod device;
 mod device_impl;
@@ -23,9 +24,11 @@ mod texture;
 pub use device::{VulkanDevice, discover};
 
 // Re-export internal types used by submodules via `super::`.
+#[cfg(feature = "compute")]
+use device::VkComputePipeline;
 #[cfg(feature = "render")]
 use device::VkRenderPipeline;
-use device::{VkBuffer, VkComputePipeline, VkQueryPool, VkTexture};
+use device::{VkBuffer, VkQueryPool, VkTexture};
 use helpers::{
     address_to_vk, compare_op_to_vk, filter_to_vk, format_bytes_per_pixel_vk, format_to_vulkan,
     sample_count_to_vk,

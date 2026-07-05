@@ -113,6 +113,7 @@ impl VulkanDevice {
 
     // === MSAA Resolve (Step 012) ===
 
+    #[cfg(feature = "render")]
     pub(crate) fn resolve_texture_impl(
         &self,
         src_handle: u64,

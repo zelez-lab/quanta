@@ -97,7 +97,7 @@ pub(super) struct ExecCtx<'a> {
     /// see it: slot `s` reads from bytes `[s*16 .. s*16+size_of::<T>()]`.
     /// A `KernelOp::Load` with `index = Reg(u32::MAX)` is the
     /// sentinel for a push-constant read.
-    pub(super) push_data: &'a [u8; crate::api::wave::PUSH_DATA_CAP],
+    pub(super) push_data: &'a [u8; crate::api::types::PUSH_DATA_CAP],
     /// Subgroup-op resolution mode for the current segment pass.
     pub(super) subgroup: SubgroupMode<'a>,
 }
@@ -126,7 +126,7 @@ pub(super) struct CoopGroup<'a> {
     pub(super) group_size: u32,
     pub(super) quark_count: u32,
     pub(super) fields: &'a [Option<Mutex<Vec<u8>>>; 16],
-    pub(super) push_data: &'a [u8; crate::api::wave::PUSH_DATA_CAP],
+    pub(super) push_data: &'a [u8; crate::api::types::PUSH_DATA_CAP],
 }
 
 impl CoopGroup<'_> {

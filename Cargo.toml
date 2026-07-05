@@ -48,19 +48,28 @@ categories = ["graphics", "hardware-support"]
 readme = "README.md"
 
 [features]
-default = ["metal", "render"]
+default = ["metal", "render", "compute"]
 std = []
 metal = ["std"]
 vulkan = ["std"]
 ## Rendering face: render passes, graphics pipelines, mesh/tessellation/
 ## ray-tracing, VRS, render-bundle ICB, and texture-as-render-target
 ## helpers. On by default. A headless compute consumer builds with
-## `default-features = false` to compile zero render code and expose a
-## render-free surface. The `quanta-render` crate enables this and adds
-## the `RenderGpu` ergonomic extension trait. (Step 085.)
+## `--no-default-features --features "metal compute jit"` to compile zero
+## render code and expose a render-free surface. The `quanta-render`
+## crate enables this and adds the `RenderGpu` ergonomic extension
+## trait. (Step 085.)
 render = ["quanta-dsl/render"]
+## Compute face: `#[quanta::kernel]` / `#[quanta::device]` macros, `Wave`
+## dispatch, batches, compute ICBs, queue dispatch, the scan library and
+## the kernel-language types. On by default, symmetric to `render`. A
+## render-only consumer (e.g. `quanta-render`'s lib build) omits it to
+## compile zero kernel machinery and drop the wasm-lowering dependency
+## from the graph.
+compute = ["quanta-dsl/compute"]
 ## CPU software driver: execute KernelDef IR without GPU hardware.
-software = ["std", "jit"]
+## Implies `compute` — the driver's whole job is executing kernels.
+software = ["std", "jit", "compute"]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
 ## Also exposes the op-matrix case generator shared with the test harness.
 jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]
@@ -71,8 +80,9 @@ jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases"]
 ## no external wrapper crate is permitted (no `ash`, `metal-rs`, `objc`,
 ## `web-sys`, `wgpu`, `wasm-bindgen` runtime). The wasm output ships
 ## zero npm dependencies — `quanta.js` (+ sibling helper modules) is
-## the only JS the browser loads.
-webgpu = ["std", "jit"]
+## the only JS the browser loads. Implies `compute` (the driver
+## dispatches waves; compute-free WebGPU builds are a Phase-2b concern).
+webgpu = ["std", "jit", "compute"]
 
 [dependencies]
 quanta-dsl = { path = "crates/quanta-dsl", version = "0.1.0-alpha.2", default-features = false }

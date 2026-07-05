@@ -10,6 +10,7 @@ use crate::{
 #[cfg(feature = "render")]
 use crate::TextureUsage;
 
+#[cfg(feature = "compute")]
 mod compute;
 #[cfg(feature = "render")]
 mod render;

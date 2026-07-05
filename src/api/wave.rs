@@ -1,11 +1,5 @@
+use crate::api::types::{MAX_BINDINGS, MAX_TEXTURES, PUSH_DATA_CAP};
 use crate::{Field, Texture};
-
-/// Maximum buffer binding slots per wave.
-pub(crate) const MAX_BINDINGS: usize = 16;
-/// Maximum texture binding slots per wave.
-pub(crate) const MAX_TEXTURES: usize = 16;
-/// Inline push constant buffer size in bytes.
-pub(crate) const PUSH_DATA_CAP: usize = 256;
 
 /// A compute dispatch binding — kernel + fields, ready to dispatch.
 ///

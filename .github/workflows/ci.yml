@@ -42,6 +42,17 @@ jobs:
       - name: Build
         run: cargo build
 
+      # Compute/render boundary: all four feature quadrants must build
+      # in isolation (core-only / render / compute / both). Guards the
+      # crate-split boundary — a render file reaching for a compute
+      # type (or vice versa) fails here, not during the extraction.
+      - name: Feature-combo matrix (core / render / compute / both)
+        run: |
+          cargo build -p quanta --no-default-features --features metal
+          cargo build -p quanta --no-default-features --features "metal render"
+          cargo build -p quanta --no-default-features --features "metal compute jit"
+          cargo build -p quanta --no-default-features --features "metal render compute jit"
+
       - name: Host tests (wire, types, shader, emitter, gpu_type, wave)
         run: |
           cargo test --test host_wire

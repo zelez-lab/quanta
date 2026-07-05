@@ -8,12 +8,16 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+#[cfg(feature = "compute")]
 use std::eprintln;
 
 use crate::{
     Caps, FieldUsage, GpuDevice, Pulse, QuantaError, Texture, TextureDesc, TextureViewDesc,
-    Timeline, Wave,
+    Timeline,
 };
+// `Wave` exists only on the compute face.
+#[cfg(feature = "compute")]
+use crate::Wave;
 // Render types used only by the render-gated forwards (step 085).
 #[cfg(feature = "render")]
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
@@ -187,10 +191,12 @@ impl GpuDevice for ValidationDevice {
 
     // === Compute ===
 
+    #[cfg(feature = "compute")]
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
         self.inner.wave(kernel)
     }
 
+    #[cfg(feature = "compute")]
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
         if wave.binding_count == 0 {
             eprintln!(
@@ -202,6 +208,7 @@ impl GpuDevice for ValidationDevice {
         self.inner.wave_dispatch(wave, groups)
     }
 
+    #[cfg(feature = "compute")]
     fn wave_dispatch_indirect(
         &self,
         wave: &Wave,
@@ -279,6 +286,7 @@ impl GpuDevice for ValidationDevice {
         self.inner.supports_async_compute()
     }
 
+    #[cfg(feature = "compute")]
     fn async_compute_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
         self.inner.async_compute_dispatch(wave, groups)
     }
@@ -352,6 +360,7 @@ impl GpuDevice for ValidationDevice {
         self.inner.create_queue(queue_type)
     }
 
+    #[cfg(feature = "compute")]
     fn queue_dispatch(&self, queue: u64, wave: &Wave, groups: [u32; 3]) -> Result<(), QuantaError> {
         self.inner.queue_dispatch(queue, wave, groups)
     }
@@ -426,10 +435,12 @@ impl GpuDevice for ValidationDevice {
 
     // === Indirect command buffers ===
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
         self.inner.indirect_buffer_create(max_commands)
     }
 
+    #[cfg(feature = "compute")]
     fn icb_record_dispatch(
         &self,
         handle: u64,
@@ -440,6 +451,7 @@ impl GpuDevice for ValidationDevice {
         self.inner.icb_record_dispatch(handle, index, wave, groups)
     }
 
+    #[cfg(feature = "compute")]
     fn icb_record_draw(
         &self,
         handle: u64,
@@ -472,10 +484,12 @@ impl GpuDevice for ValidationDevice {
         self.inner.render_bundle_destroy(handle)
     }
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
         self.inner.indirect_buffer_execute(handle, count)
     }
 
+    #[cfg(feature = "compute")]
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.inner.indirect_buffer_destroy(handle)
     }
