@@ -18,6 +18,8 @@ use super::compute;
 use super::device::MetalDevice;
 use super::ffi;
 
+impl crate::api::device::sealed::Sealed for MetalDevice {}
+
 impl GpuDevice for MetalDevice {
     fn caps(&self) -> &Caps {
         &self.caps
@@ -1058,75 +1060,6 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
-    // === Bindless resources (M5.3) ===
-
-    fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
-        // Metal argument buffers enable bindless access to texture arrays.
-        // Available on all Apple GPUs (Tier 2 argument buffers on M1+).
-        // Create an argument buffer containing pointers to all textures.
-        let tex_map = self
-            .textures
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-
-        // Validate all texture handles exist.
-        for &tex_handle in textures {
-            if !tex_map.contains_key(&tex_handle) {
-                return Err(QuantaError::invalid_param("bad texture handle in array"));
-            }
-        }
-
-        // Allocate a shared buffer to hold texture resource IDs (8 bytes each).
-        let size = (textures.len().max(1) * 8) as u64;
-        let buf = unsafe {
-            ffi::msg_new_buffer(self.device, size, ffi::MTL_RESOURCE_STORAGE_MODE_SHARED)
-        };
-        if buf.is_null() {
-            return Err(QuantaError::internal(
-                "failed to create argument buffer for texture array",
-            ));
-        }
-        let handle = self.alloc_handle();
-        drop(tex_map);
-        self.buffers
-            .write()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(handle, buf);
-        Ok(handle)
-    }
-
-    fn bind_buffer_array(&self, buffers: &[u64]) -> Result<u64, QuantaError> {
-        // Metal argument buffers for buffer arrays.
-        let buf_map = self
-            .buffers
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-
-        // Validate all buffer handles exist.
-        for &buf_handle in buffers {
-            if !buf_map.contains_key(&buf_handle) {
-                return Err(QuantaError::invalid_param("bad buffer handle in array"));
-            }
-        }
-
-        let size = (buffers.len().max(1) * 8) as u64;
-        let arg_buf = unsafe {
-            ffi::msg_new_buffer(self.device, size, ffi::MTL_RESOURCE_STORAGE_MODE_SHARED)
-        };
-        if arg_buf.is_null() {
-            return Err(QuantaError::internal(
-                "failed to create argument buffer for buffer array",
-            ));
-        }
-        let handle = self.alloc_handle();
-        drop(buf_map);
-        self.buffers
-            .write()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(handle, arg_buf);
-        Ok(handle)
-    }
-
     // === Bindless typed wrappers (steps 034 + 035) ===
     //
     // Metal argument buffers (Tier 2 on M1+) hold an array of
@@ -1594,21 +1527,6 @@ pub(crate) fn address_to_metal(a: crate::texture::AddressMode) -> ffi::NSUIntege
         crate::texture::AddressMode::ClampToEdge => ffi::MTL_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         crate::texture::AddressMode::Repeat => ffi::MTL_SAMPLER_ADDRESS_MODE_REPEAT,
         crate::texture::AddressMode::MirrorRepeat => ffi::MTL_SAMPLER_ADDRESS_MODE_MIRROR_REPEAT,
-    }
-}
-
-#[cfg(feature = "render")]
-pub(crate) fn compare_to_metal(f: crate::CompareFunc) -> ffi::NSUInteger {
-    use crate::CompareFunc::*;
-    match f {
-        Never => ffi::MTL_COMPARE_NEVER,
-        Less => ffi::MTL_COMPARE_LESS,
-        Equal => ffi::MTL_COMPARE_EQUAL,
-        LessEqual => ffi::MTL_COMPARE_LESS_EQUAL,
-        Greater => ffi::MTL_COMPARE_GREATER,
-        NotEqual => ffi::MTL_COMPARE_NOT_EQUAL,
-        GreaterEqual => ffi::MTL_COMPARE_GREATER_EQUAL,
-        Always => ffi::MTL_COMPARE_ALWAYS,
     }
 }
 

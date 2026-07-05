@@ -17,6 +17,8 @@ use super::device::{VkQueryPool, VulkanDevice};
 use super::ffi;
 use super::helpers::format_to_vulkan;
 
+impl crate::api::device::sealed::Sealed for VulkanDevice {}
+
 impl GpuDevice for VulkanDevice {
     fn caps(&self) -> &Caps {
         &self.caps
@@ -1553,44 +1555,6 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
         Ok(())
-    }
-
-    fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
-        // Vulkan descriptor indexing (VK_EXT_descriptor_indexing) is core in Vulkan 1.2+.
-        // Validate texture handles.
-        let tex_map = self
-            .textures
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        for &tex_handle in textures {
-            if !tex_map.contains_key(&tex_handle) {
-                return Err(QuantaError::invalid_param("bad texture handle in array"));
-            }
-        }
-        drop(tex_map);
-
-        // Allocate a buffer to track the array binding. Full implementation would create
-        // a descriptor set with variable descriptor count.
-        let size = textures.len().max(1) * 8;
-        let handle = self.field_alloc_impl(size, FieldUsage::READ.union(FieldUsage::TRANSFER))?;
-        Ok(handle)
-    }
-
-    fn bind_buffer_array(&self, buffers: &[u64]) -> Result<u64, QuantaError> {
-        let buf_map = self
-            .buffers
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        for &buf_handle in buffers {
-            if !buf_map.contains_key(&buf_handle) {
-                return Err(QuantaError::invalid_param("bad buffer handle in array"));
-            }
-        }
-        drop(buf_map);
-
-        let size = buffers.len().max(1) * 8;
-        let handle = self.field_alloc_impl(size, FieldUsage::READ.union(FieldUsage::TRANSFER))?;
-        Ok(handle)
     }
 
     // === Tessellation pipelines (steps 022 + 023) ===

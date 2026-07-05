@@ -8,14 +8,10 @@
 
 #![cfg(feature = "software")]
 
-use quanta::TextureDesc;
+use quanta::{Format, TextureDesc};
 
 fn desc(w: u32, h: u32) -> TextureDesc {
-    TextureDesc {
-        width: w,
-        height: h,
-        ..TextureDesc::default()
-    }
+    TextureDesc::new(w, h, Format::RGBA8)
 }
 
 #[test]

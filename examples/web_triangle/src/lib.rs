@@ -16,7 +16,7 @@
 
 use quanta::webgpu::spawn_local;
 use quanta::{
-    AddressMode, Color, Filter, Format, GpuDevice as _, PipelineDesc, RenderPass, SamplerDesc,
+    Color, Format, GpuDevice as _, PipelineDesc, RenderPass, SamplerDesc, ShaderSource,
     TextureDesc, TextureUsage,
 };
 
@@ -55,35 +55,22 @@ async fn run() -> Result<Vec<u8>, String> {
         .map_err(|e| format!("new_async: {:?}", e))?;
 
     let target = dev
-        .texture_create(&TextureDesc {
-            width: 16,
-            height: 16,
-            format: Format::RGBA8,
-            usage: TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
-            ..TextureDesc::default()
-        })
+        .texture_create(
+            &TextureDesc::new(16, 16, Format::RGBA8)
+                .with_usage(TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ)),
+        )
         .map_err(|e| format!("texture_create: {:?}", e))?;
 
     let _sampler = dev
-        .sampler_create(&SamplerDesc {
-            min_filter: Filter::Linear,
-            mag_filter: Filter::Linear,
-            mip_filter: Filter::Nearest,
-            address_u: AddressMode::ClampToEdge,
-            address_v: AddressMode::ClampToEdge,
-            max_anisotropy: 1,
-            compare: None,
-        })
+        .sampler_create(&SamplerDesc::default())
         .map_err(|e| format!("sampler_create: {:?}", e))?;
 
     let pipeline = dev
-        .pipeline_create(&PipelineDesc {
-            source: Some(TRIANGLE_WGSL.as_bytes()),
-            vertex_entry: "vertex_main",
-            fragment_entry: "fragment_main",
-            color_formats: vec![Format::RGBA8],
-            ..PipelineDesc::default()
-        })
+        .pipeline_create(
+            &PipelineDesc::new(ShaderSource::Combined(TRIANGLE_WGSL.as_bytes()))
+                .with_entries("vertex_main", "fragment_main")
+                .with_color_formats(vec![Format::RGBA8]),
+        )
         .map_err(|e| format!("pipeline_create: {:?}", e))?;
 
     let mut pass: RenderPass = dev

@@ -96,27 +96,20 @@ fn make_pipeline(
     layouts: &[quanta::VertexLayout],
     depth: bool,
 ) -> quanta::Pipeline {
-    gpu.pipeline(&quanta::PipelineDesc {
-        vertex: vert.for_vendor(gpu.caps().vendor).unwrap(),
-        fragment: frag.for_vendor(gpu.caps().vendor).unwrap(),
-        vertex_entry: vert.entry_point,
-        fragment_entry: frag.entry_point,
-        color_formats: vec![Format::RGBA8],
-        vertex_layouts: layouts,
-        blend: quanta::BlendState::NONE,
-        depth_format: if depth {
-            Some(Format::Depth32Float)
-        } else {
-            None
-        },
-        depth_stencil: if depth {
-            quanta::DepthStencilState::DEPTH_LESS
-        } else {
-            quanta::DepthStencilState::NONE
-        },
-        ..quanta::PipelineDesc::default()
+    let mut desc = quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+        vertex: vert,
+        fragment: frag,
     })
-    .expect("pipeline creation")
+    .with_entries(vert.entry_point, frag.entry_point)
+    .with_color_formats(vec![Format::RGBA8])
+    .with_vertex_layouts(layouts)
+    .with_blend(quanta::BlendState::NONE);
+    if depth {
+        desc = desc
+            .with_depth_format(Format::Depth32Float)
+            .with_depth_stencil(quanta::DepthStencilState::DEPTH_LESS);
+    }
+    gpu.pipeline(&desc).expect("pipeline creation")
 }
 
 // ─── Test 1: Basic triangle (sanity) ────────────────────────────────────────
@@ -183,11 +176,11 @@ fn render_triangle() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
         .viewport(0.0, 0.0, w as f32, h as f32)
         .pipeline(&pipeline)
         .vertices(0, &vb)
@@ -268,13 +261,10 @@ fn depth_test_near_wins() {
     let h = 64u32;
     let color_target = gpu.render_target(w, h, Format::RGBA8).unwrap();
     let depth_target = gpu
-        .create_texture(&quanta::TextureDesc {
-            width: w,
-            height: h,
-            format: Format::Depth32Float,
-            usage: quanta::TextureUsage::RENDER_TARGET,
-            ..quanta::TextureDesc::default()
-        })
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, Format::Depth32Float)
+                .with_usage(quanta::TextureUsage::RENDER_TARGET),
+        )
         .unwrap();
 
     // Draw order: green (far) FIRST, then red (near) SECOND.
@@ -282,18 +272,18 @@ fn depth_test_near_wins() {
     let mut pulse = gpu
         .render(&color_target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: color_target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-            store_op: StoreOp::Store,
-        }])
-        .depth_target(quanta::render_pass::DepthTarget {
-            texture: depth_target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)), // clear depth to 1.0
-            store_op: StoreOp::DontCare,
-            stencil_load_op: LoadOp::DontCare,
-            stencil_store_op: StoreOp::DontCare,
-        })
+        .color_targets(vec![
+            ColorTarget::new(&color_target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .depth_target(
+            quanta::render_pass::DepthTarget::new(&depth_target)
+                .with_load_op(LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0))) // depth = 1.0
+                .with_store_op(StoreOp::DontCare)
+                .with_stencil_load_op(LoadOp::DontCare)
+                .with_stencil_store_op(StoreOp::DontCare),
+        )
         .viewport(0.0, 0.0, w as f32, h as f32)
         .pipeline(&green_pipe)
         .vertices(0, &far_vb)
@@ -402,30 +392,27 @@ fn indexed_draw_cube() {
     let h = 64u32;
     let color_target = gpu.render_target(w, h, Format::RGBA8).unwrap();
     let depth_target = gpu
-        .create_texture(&quanta::TextureDesc {
-            width: w,
-            height: h,
-            format: Format::Depth32Float,
-            usage: quanta::TextureUsage::RENDER_TARGET,
-            ..quanta::TextureDesc::default()
-        })
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, Format::Depth32Float)
+                .with_usage(quanta::TextureUsage::RENDER_TARGET),
+        )
         .unwrap();
 
     let mut pulse = gpu
         .render(&color_target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: color_target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-            store_op: StoreOp::Store,
-        }])
-        .depth_target(quanta::render_pass::DepthTarget {
-            texture: depth_target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)),
-            store_op: StoreOp::DontCare,
-            stencil_load_op: LoadOp::DontCare,
-            stencil_store_op: StoreOp::DontCare,
-        })
+        .color_targets(vec![
+            ColorTarget::new(&color_target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .depth_target(
+            quanta::render_pass::DepthTarget::new(&depth_target)
+                .with_load_op(LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)))
+                .with_store_op(StoreOp::DontCare)
+                .with_stencil_load_op(LoadOp::DontCare)
+                .with_stencil_store_op(StoreOp::DontCare),
+        )
         .viewport(0.0, 0.0, w as f32, h as f32)
         .pipeline(&pipeline)
         .vertices(0, &vb)
@@ -526,11 +513,11 @@ fn instanced_draw() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
         .viewport(0.0, 0.0, w as f32, h as f32)
         .pipeline(&pipeline)
         .vertices(0, &vb)
@@ -620,16 +607,19 @@ fn textured_quad() {
 
     let layouts = pos_uv_layout();
     let pipeline = gpu
-        .pipeline(&quanta::PipelineDesc {
-            vertex: UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).unwrap(),
-            fragment: TEXTURED_FRAG_SHADER.for_vendor(gpu.caps().vendor).unwrap(),
-            vertex_entry: UV_VERTEX_SHADER.entry_point,
-            fragment_entry: TEXTURED_FRAG_SHADER.entry_point,
-            color_formats: vec![Format::RGBA8],
-            vertex_layouts: &layouts,
-            blend: quanta::BlendState::NONE,
-            ..quanta::PipelineDesc::default()
-        })
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &UV_VERTEX_SHADER,
+                fragment: &TEXTURED_FRAG_SHADER,
+            })
+            .with_entries(
+                UV_VERTEX_SHADER.entry_point,
+                TEXTURED_FRAG_SHADER.entry_point,
+            )
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
         .expect("pipeline creation");
 
     // 2×2 checkerboard texture: red, green, blue, white
@@ -640,13 +630,10 @@ fn textured_quad() {
         255, 255, 255, 255, // (1,1) white
     ];
     let tex = gpu
-        .create_texture(&quanta::TextureDesc {
-            width: 2,
-            height: 2,
-            format: Format::RGBA8,
-            usage: quanta::TextureUsage::SHADER_READ,
-            ..quanta::TextureDesc::default()
-        })
+        .create_texture(
+            &quanta::TextureDesc::new(2, 2, Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ),
+        )
         .expect("texture");
     tex.write(&tex_data).expect("tex write");
 
@@ -673,22 +660,19 @@ fn textured_quad() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
         .viewport(0.0, 0.0, w as f32, h as f32)
         .pipeline(&pipeline)
         .vertices(0, &vb)
         .texture(0, &tex)
         .sampler(
             0,
-            quanta::SamplerDesc {
-                min_filter: quanta::Filter::Nearest,
-                mag_filter: quanta::Filter::Nearest,
-                ..quanta::SamplerDesc::default()
-            },
+            quanta::SamplerDesc::default()
+                .with_filters(quanta::Filter::Nearest, quanta::Filter::Nearest),
         )
         .draw(6)
         .pulse()

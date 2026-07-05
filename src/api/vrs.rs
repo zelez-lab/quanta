@@ -23,6 +23,10 @@ use crate::{GpuDevice, QuantaError};
 /// Cross-vendor shading rate. The 7 entries match Vulkan
 /// `VK_KHR_fragment_shading_rate` Tier 1 + Metal Apple Silicon
 /// rate maps.
+///
+/// Marked `#[non_exhaustive]`: rates can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ShadingRate {
     R1x1,

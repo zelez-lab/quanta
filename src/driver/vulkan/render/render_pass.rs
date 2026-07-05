@@ -102,7 +102,7 @@ impl VulkanDevice {
                 });
                 if let Some(rh) = resolve_handle {
                     has_resolve = true;
-                    let resolve_tex = textures.get(&rh).ok_or_else(|| {
+                    let resolve_tex = textures.get(&rh.0).ok_or_else(|| {
                         QuantaError::not_found("resolve target texture not found")
                             .with_context(&format!("render_end: resolve target for attachment {i}"))
                     })?;
@@ -224,7 +224,7 @@ impl VulkanDevice {
                 }
                 // If this target has a resolve attachment, add the resolve view too.
                 if let StoreOp::Resolve(rh) = ct.store_op
-                    && let Some(tex) = textures.get(&rh)
+                    && let Some(tex) = textures.get(&rh.0)
                 {
                     views.push(tex.view);
                 }

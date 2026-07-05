@@ -33,8 +33,8 @@ fn main() -> Result<(), quanta::QuantaError> {
     // First 8 entries: 1, 2, 4, 8, 16, 32, 64, 128. Geometric
     // so prefix sums are easy to recognise: 1, 3, 7, 15, 31,
     // 63, 127, 255.
-    for k in 0..8 {
-        data[k] = 1u32 << k;
+    for (k, slot) in data.iter_mut().enumerate().take(8) {
+        *slot = 1u32 << k;
     }
 
     let input = gpu.field::<u32>(n)?;

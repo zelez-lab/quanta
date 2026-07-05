@@ -77,8 +77,16 @@ pub mod webgpu_generated_codes;
 // Re-export API types at crate root
 pub use api::*;
 
-// Re-export kernel types
-pub use kernel::{GpuType, KernelBinary, ScalarType, ShaderBinary, ShaderStage};
+// Re-export kernel types. (`ShaderBinary` / `ShaderStage` are *render*
+// types — they live on the render surface: `quanta::api::shader`,
+// re-exported at the root only when the `render` feature is on.)
+//
+// `ScalarType` is a `quanta-ir` kernel-language type (the scalar tag
+// carried by `GpuType::scalar_type()`); it is re-exported at the root
+// because the compute kernel language is always compiled in — even on
+// render-focused builds — and `#[quanta::kernel]`-generated code names
+// it through `quanta::ScalarType`.
+pub use kernel::{GpuType, KernelBinary, ScalarType};
 
 // Re-export proc macros (compute — always available)
 pub use quanta_dsl::__kernel_inner;

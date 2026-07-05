@@ -401,20 +401,6 @@ fn compare_op_code(c: crate::CompareOp) -> u32 {
 }
 
 #[cfg(feature = "render")]
-fn compare_func_code(c: crate::pipeline::CompareFunc) -> u32 {
-    match c {
-        crate::pipeline::CompareFunc::Never => ffi::compare::NEVER,
-        crate::pipeline::CompareFunc::Less => ffi::compare::LESS,
-        crate::pipeline::CompareFunc::Equal => ffi::compare::EQUAL,
-        crate::pipeline::CompareFunc::LessEqual => ffi::compare::LESS_EQUAL,
-        crate::pipeline::CompareFunc::Greater => ffi::compare::GREATER,
-        crate::pipeline::CompareFunc::NotEqual => ffi::compare::NOT_EQUAL,
-        crate::pipeline::CompareFunc::GreaterEqual => ffi::compare::GREATER_EQUAL,
-        crate::pipeline::CompareFunc::Always => ffi::compare::ALWAYS,
-    }
-}
-
-#[cfg(feature = "render")]
 fn attribute_format_code(f: crate::pipeline::AttributeFormat) -> u32 {
     use crate::pipeline::AttributeFormat as A;
     match f {
@@ -494,6 +480,8 @@ fn step_mode_code(s: crate::pipeline::StepMode) -> u32 {
 }
 
 // ── GpuDevice impl ──────────────────────────────────────────────────────────
+
+impl crate::api::device::sealed::Sealed for WebgpuDevice {}
 
 impl QGpuDevice for WebgpuDevice {
     fn caps(&self) -> &Caps {
@@ -902,9 +890,10 @@ impl QGpuDevice for WebgpuDevice {
         }
         let device = self.dev()?;
 
-        let combined = desc.source;
-        let vs_src = combined.unwrap_or(desc.vertex);
-        let fs_src = combined.unwrap_or(desc.fragment);
+        let combined = desc.shader.combined();
+        let (vs_src, fs_src) = desc.shader.stage_wgsl_bytes().ok_or_else(|| {
+            Self::err("pipeline shader binaries carry no WGSL payload for WebGPU")
+        })?;
         let vs_text = core::str::from_utf8(vs_src)
             .map_err(|_| Self::err("vertex shader is not valid UTF-8 WGSL"))?;
         let fs_text = core::str::from_utf8(fs_src)
@@ -998,7 +987,7 @@ impl QGpuDevice for WebgpuDevice {
                     rp_desc,
                     format_code(depth_fmt)?,
                     if desc.depth_stencil.depth_write { 1 } else { 0 },
-                    compare_func_code(desc.depth_stencil.depth_compare),
+                    compare_op_code(desc.depth_stencil.depth_compare),
                 );
             }
         }
@@ -1825,13 +1814,6 @@ impl QGpuDevice for WebgpuDevice {
     fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.state.bindless_buffers.0.borrow_mut().remove(&handle);
         Ok(())
-    }
-
-    fn bind_texture_array(&self, _textures: &[u64]) -> Result<u64, QuantaError> {
-        Err(Self::err("WebGPU bindless pending"))
-    }
-    fn bind_buffer_array(&self, _buffers: &[u64]) -> Result<u64, QuantaError> {
-        Err(Self::err("WebGPU bindless pending"))
     }
 
     fn format_caps(&self, _format: Format) -> FormatCaps {

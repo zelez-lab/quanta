@@ -30,12 +30,9 @@ fn sampler_nearest_filter() {
         return;
     };
 
-    let desc = SamplerDesc {
-        min_filter: Filter::Nearest,
-        mag_filter: Filter::Nearest,
-        mip_filter: Filter::Nearest,
-        ..SamplerDesc::default()
-    };
+    let desc = SamplerDesc::default()
+        .with_filters(Filter::Nearest, Filter::Nearest)
+        .with_mip_filter(Filter::Nearest);
     let sampler = gpu.sampler(&desc).unwrap();
     assert!(sampler.handle() != 0);
 }
@@ -47,12 +44,9 @@ fn sampler_linear_filter() {
         return;
     };
 
-    let desc = SamplerDesc {
-        min_filter: Filter::Linear,
-        mag_filter: Filter::Linear,
-        mip_filter: Filter::Linear,
-        ..SamplerDesc::default()
-    };
+    let desc = SamplerDesc::default()
+        .with_filters(Filter::Linear, Filter::Linear)
+        .with_mip_filter(Filter::Linear);
     let sampler = gpu.sampler(&desc).unwrap();
     assert!(sampler.handle() != 0);
 }
@@ -64,11 +58,7 @@ fn sampler_repeat_address_mode() {
         return;
     };
 
-    let desc = SamplerDesc {
-        address_u: AddressMode::Repeat,
-        address_v: AddressMode::Repeat,
-        ..SamplerDesc::default()
-    };
+    let desc = SamplerDesc::default().with_address_modes(AddressMode::Repeat, AddressMode::Repeat);
     let sampler = gpu.sampler(&desc).unwrap();
     assert!(sampler.handle() != 0);
 }
@@ -80,11 +70,8 @@ fn sampler_mirror_repeat_address_mode() {
         return;
     };
 
-    let desc = SamplerDesc {
-        address_u: AddressMode::MirrorRepeat,
-        address_v: AddressMode::MirrorRepeat,
-        ..SamplerDesc::default()
-    };
+    let desc = SamplerDesc::default()
+        .with_address_modes(AddressMode::MirrorRepeat, AddressMode::MirrorRepeat);
     let sampler = gpu.sampler(&desc).unwrap();
     assert!(sampler.handle() != 0);
 }
@@ -96,10 +83,7 @@ fn sampler_anisotropy() {
         return;
     };
 
-    let desc = SamplerDesc {
-        max_anisotropy: 16,
-        ..SamplerDesc::default()
-    };
+    let desc = SamplerDesc::default().with_max_anisotropy(16);
     let sampler = gpu.sampler(&desc).unwrap();
     assert!(sampler.handle() != 0);
 }
@@ -112,12 +96,9 @@ fn sampler_comparison_for_shadow() {
     };
 
     // Comparison sampler for shadow mapping.
-    let desc = SamplerDesc {
-        min_filter: Filter::Linear,
-        mag_filter: Filter::Linear,
-        compare: Some(CompareOp::LessEqual),
-        ..SamplerDesc::default()
-    };
+    let desc = SamplerDesc::default()
+        .with_filters(Filter::Linear, Filter::Linear)
+        .with_compare(CompareOp::LessEqual);
     let sampler = gpu.sampler(&desc).unwrap();
     assert!(sampler.handle() != 0);
 }

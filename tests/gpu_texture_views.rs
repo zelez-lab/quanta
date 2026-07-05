@@ -18,14 +18,11 @@ fn texture_view_create_basic() {
     };
 
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: 64,
-            height: 64,
-            format: Format::RGBA8,
-            mip_levels: 4,
-            usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(64, 64, Format::RGBA8)
+                .with_mip_levels(4)
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+        )
         .unwrap();
 
     let desc = TextureViewDesc {
@@ -54,16 +51,15 @@ fn texture_view_single_mip() {
     };
 
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: 128,
-            height: 128,
-            format: Format::RGBA8,
-            mip_levels: 0, // auto-calculate
-            usage: TextureUsage::SHADER_READ
-                .union(TextureUsage::SHADER_WRITE)
-                .union(TextureUsage::RENDER_TARGET),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(128, 128, Format::RGBA8)
+                .with_mip_levels(0) // auto-calculate
+                .with_usage(
+                    TextureUsage::SHADER_READ
+                        .union(TextureUsage::SHADER_WRITE)
+                        .union(TextureUsage::RENDER_TARGET),
+                ),
+        )
         .unwrap();
 
     // View only mip level 1.
@@ -91,13 +87,10 @@ fn texture_view_format_reinterpret() {
     };
 
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: 32,
-            height: 32,
-            format: Format::RGBA8,
-            usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(32, 32, Format::RGBA8)
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+        )
         .unwrap();
 
     // Attempt to reinterpret as BGRA8 (same size, different channel order).
@@ -126,13 +119,9 @@ fn texture_view_destroy_does_not_panic() {
     };
 
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: 16,
-            height: 16,
-            format: Format::RGBA8,
-            usage: TextureUsage::SHADER_READ,
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(16, 16, Format::RGBA8).with_usage(TextureUsage::SHADER_READ),
+        )
         .unwrap();
 
     let desc = TextureViewDesc {

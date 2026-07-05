@@ -8,7 +8,7 @@ use crate::{Pipeline, QuantaError, SpecValue};
 
 use super::super::ffi;
 use super::super::{
-    MetalDevice, blend_factor_to_metal, blend_op_to_metal, compare_to_metal, format_to_metal,
+    MetalDevice, blend_factor_to_metal, blend_op_to_metal, compare_op_to_metal, format_to_metal,
     stencil_op_to_metal,
 };
 
@@ -91,7 +91,7 @@ impl MetalDevice {
 
         // Compile shader source(s) into Metal library/libraries.
         let (vert_fn, frag_fn) = unsafe {
-            if let Some(combined) = desc.source {
+            if let Some(combined) = desc.shader.combined() {
                 let src = std::str::from_utf8(combined).map_err(|_| {
                     QuantaError::compilation_failed("invalid UTF-8 in shader source")
                 })?;
@@ -107,12 +107,20 @@ impl MetalDevice {
                 let ff = get_function_maybe_specialized(lib, desc.fragment_entry, fcv)?;
                 (vf, ff)
             } else {
+                let (vertex_bytes, fragment_bytes) = desc
+                    .shader
+                    .stage_bytes(crate::Vendor::Apple)
+                    .ok_or_else(|| {
+                        QuantaError::invalid_param(
+                            "pipeline shader binaries carry no Metal-compatible payload",
+                        )
+                    })?;
                 // Load vertex shader: metallib binary (MTLB) or MSL text
-                let vert_lib = if desc.vertex.len() >= 4 && &desc.vertex[..4] == b"MTLB" {
+                let vert_lib = if vertex_bytes.len() >= 4 && &vertex_bytes[..4] == b"MTLB" {
                     let (lib, error) = ffi::msg_new_library_with_data(
                         self.device,
-                        desc.vertex.as_ptr() as *const _,
-                        desc.vertex.len() as u64,
+                        vertex_bytes.as_ptr() as *const _,
+                        vertex_bytes.len() as u64,
                     );
                     if lib.is_null() {
                         let msg = error_string(error);
@@ -122,7 +130,7 @@ impl MetalDevice {
                     }
                     lib
                 } else {
-                    let src = std::str::from_utf8(desc.vertex).map_err(|_| {
+                    let src = std::str::from_utf8(vertex_bytes).map_err(|_| {
                         QuantaError::compilation_failed("invalid UTF-8 in vertex shader")
                     })?;
                     let mut vb: Vec<u8> = src.bytes().collect();
@@ -138,11 +146,11 @@ impl MetalDevice {
                 };
 
                 // Load fragment shader: metallib binary (MTLB) or MSL text
-                let frag_lib = if desc.fragment.len() >= 4 && &desc.fragment[..4] == b"MTLB" {
+                let frag_lib = if fragment_bytes.len() >= 4 && &fragment_bytes[..4] == b"MTLB" {
                     let (lib, error) = ffi::msg_new_library_with_data(
                         self.device,
-                        desc.fragment.as_ptr() as *const _,
-                        desc.fragment.len() as u64,
+                        fragment_bytes.as_ptr() as *const _,
+                        fragment_bytes.len() as u64,
                     );
                     if lib.is_null() {
                         let msg = error_string(error);
@@ -152,7 +160,7 @@ impl MetalDevice {
                     }
                     lib
                 } else {
-                    let src = std::str::from_utf8(desc.fragment).map_err(|_| {
+                    let src = std::str::from_utf8(fragment_bytes).map_err(|_| {
                         QuantaError::compilation_failed("invalid UTF-8 in fragment shader")
                     })?;
                     let mut fb: Vec<u8> = src.bytes().collect();
@@ -285,7 +293,7 @@ impl MetalDevice {
                 ffi::msg_void_u64(
                     ds_desc,
                     b"setDepthCompareFunction:\0",
-                    compare_to_metal(desc.depth_stencil.depth_compare),
+                    compare_op_to_metal(desc.depth_stencil.depth_compare),
                 );
                 ffi::msg_void_bool(
                     ds_desc,
@@ -313,7 +321,7 @@ impl MetalDevice {
                 ffi::msg_void_u64(
                     s,
                     b"setStencilCompareFunction:\0",
-                    compare_to_metal(front.compare),
+                    compare_op_to_metal(front.compare),
                 );
                 ffi::msg_void_u32(s, b"setReadMask:\0", front.read_mask);
                 ffi::msg_void_u32(s, b"setWriteMask:\0", front.write_mask);
@@ -339,7 +347,7 @@ impl MetalDevice {
                 ffi::msg_void_u64(
                     s,
                     b"setStencilCompareFunction:\0",
-                    compare_to_metal(back.compare),
+                    compare_op_to_metal(back.compare),
                 );
                 ffi::msg_void_u32(s, b"setReadMask:\0", back.read_mask);
                 ffi::msg_void_u32(s, b"setWriteMask:\0", back.write_mask);

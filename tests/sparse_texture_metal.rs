@@ -9,7 +9,7 @@
 
 #![cfg(feature = "metal")]
 
-use quanta::{QuantaErrorKind, TextureDesc};
+use quanta::{Format, QuantaErrorKind, TextureDesc};
 
 fn try_metal() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -27,11 +27,7 @@ fn sparse_create_either_succeeds_or_surfaces_capability_error() {
         gpu.supports_sparse_residency()
     );
 
-    let r = gpu.sparse_texture(&TextureDesc {
-        width: 256,
-        height: 256,
-        ..TextureDesc::default()
-    });
+    let r = gpu.sparse_texture(&TextureDesc::new(256, 256, Format::RGBA8));
 
     match r {
         Ok(st) => {
@@ -66,11 +62,7 @@ fn sparse_map_unmap_tile_native() {
     }
 
     let st = gpu
-        .sparse_texture(&TextureDesc {
-            width: 1024,
-            height: 1024,
-            ..TextureDesc::default()
-        })
+        .sparse_texture(&TextureDesc::new(1024, 1024, Format::RGBA8))
         .expect("Metal sparse_texture create");
 
     // Backing field is unused on Metal (placement heap supplies

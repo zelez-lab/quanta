@@ -42,6 +42,8 @@ impl ValidationDevice {
     }
 }
 
+impl crate::api::device::sealed::Sealed for ValidationDevice {}
+
 impl GpuDevice for ValidationDevice {
     fn caps(&self) -> &Caps {
         self.inner.caps()
@@ -241,16 +243,6 @@ impl GpuDevice for ValidationDevice {
 
     fn pulse_poll(&self, pulse: &Pulse) -> bool {
         self.inner.pulse_poll(pulse)
-    }
-
-    // === Queries ===
-
-    fn query_set_create(&self, count: u32) -> Result<u64, QuantaError> {
-        self.inner.query_set_create(count)
-    }
-
-    fn query_set_read(&self, handle: u64, first: u32, count: u32) -> Result<Vec<u64>, QuantaError> {
-        self.inner.query_set_read(handle, first, count)
     }
 
     // === Timestamps ===
@@ -517,14 +509,6 @@ impl GpuDevice for ValidationDevice {
 
     fn bindless_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.inner.bindless_buffer_destroy(handle)
-    }
-
-    fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
-        self.inner.bind_texture_array(textures)
-    }
-
-    fn bind_buffer_array(&self, buffers: &[u64]) -> Result<u64, QuantaError> {
-        self.inner.bind_buffer_array(buffers)
     }
 
     // === Debug ===

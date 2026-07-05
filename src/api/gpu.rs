@@ -375,34 +375,7 @@ impl Gpu {
         self.inner.barrier_texture(texture, from, to)
     }
 
-    // === Queries ===
-
-    /// Create a timestamp query set.
-    pub fn query_set(&self, count: u32) -> Result<u64, QuantaError> {
-        self.inner.query_set_create(count)
-    }
-
-    /// Read query results.
-    pub fn read_queries(
-        &self,
-        handle: u64,
-        first: u32,
-        count: u32,
-    ) -> Result<Vec<u64>, QuantaError> {
-        self.inner.query_set_read(handle, first, count)
-    }
-
     // === Timestamps ===
-
-    /// Create a timestamp query set with `count` slots.
-    pub fn timestamp_query_create(&self, count: u32) -> Result<u64, QuantaError> {
-        self.inner.timestamp_query_create(count)
-    }
-
-    /// Read timestamp values from a query set.
-    pub fn timestamp_query_read(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
-        self.inner.timestamp_query_read(handle)
-    }
 
     /// Create a `TimestampQuery` object wrapping a query set handle.
     pub fn timestamp_query(&self, count: u32) -> Result<TimestampQuery, QuantaError> {
@@ -475,11 +448,6 @@ impl Gpu {
 
     // === M5.1: Sparse textures ===
 
-    /// Create a sparse (virtual) texture.
-    pub fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError> {
-        self.inner.sparse_texture_create(desc)
-    }
-
     /// Allocate a typed [`SparseTexture`](crate::SparseTexture) (virtual
     /// texture whose physical memory is allocated lazily per tile).
     /// Steps 030 + 031.
@@ -498,29 +466,6 @@ impl Gpu {
             device: self.inner.clone(),
             live: true,
         })
-    }
-
-    /// Map a physical backing page to a sparse texture tile.
-    pub fn sparse_map_tile(
-        &self,
-        texture: u64,
-        mip: u32,
-        x: u32,
-        y: u32,
-        backing: u64,
-    ) -> Result<(), QuantaError> {
-        self.inner.sparse_map_tile(texture, mip, x, y, backing)
-    }
-
-    /// Unmap a sparse texture tile (release backing memory).
-    pub fn sparse_unmap_tile(
-        &self,
-        texture: u64,
-        mip: u32,
-        x: u32,
-        y: u32,
-    ) -> Result<(), QuantaError> {
-        self.inner.sparse_unmap_tile(texture, mip, x, y)
     }
 
     // === Debug ===

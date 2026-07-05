@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::{Format, GpuDevice};
+use crate::{CompareOp, Format, GpuDevice, ShaderBinary, Vendor};
 
 /// Compiled render pipeline (vertex + fragment shaders + state).
 ///
@@ -33,18 +33,100 @@ impl Drop for Pipeline {
     }
 }
 
+/// Shader input for a render pipeline.
+///
+/// Replaces the historical `vertex`/`fragment`/`source` tri-state: the
+/// enum makes the three supply modes mutually exclusive, and the
+/// [`Binaries`](ShaderSource::Binaries) arm lets the driver pick the
+/// right per-vendor format so callers never call
+/// [`ShaderBinary::for_vendor`] by hand.
+///
+/// Marked `#[non_exhaustive]`: supply modes can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
+#[derive(Clone, Copy)]
+pub enum ShaderSource<'a> {
+    /// Separate per-stage payloads, already in the active backend's
+    /// native format: MSL source or metallib on Metal, SPIR-V on
+    /// Vulkan, WGSL text on WebGPU.
+    Stages {
+        /// Vertex shader payload.
+        vertex: &'a [u8],
+        /// Fragment shader payload.
+        fragment: &'a [u8],
+    },
+    /// One combined payload containing both entry points; the driver
+    /// finds them by `vertex_entry` / `fragment_entry`. Metal and
+    /// WebGPU accept this; Vulkan (SPIR-V modules are per-stage here)
+    /// rejects it at create time.
+    Combined(&'a [u8]),
+    /// Pre-compiled multi-vendor shader binaries — the output of
+    /// `#[quanta::vertex]` / `#[quanta::fragment]`. The driver selects
+    /// the right format for its vendor (metallib on Apple, SPIR-V on
+    /// Vulkan, WGSL on WebGPU).
+    Binaries {
+        /// Vertex-stage binary.
+        vertex: &'a ShaderBinary,
+        /// Fragment-stage binary.
+        fragment: &'a ShaderBinary,
+    },
+}
+
+impl<'a> ShaderSource<'a> {
+    /// The combined payload, when this source is [`Combined`](Self::Combined).
+    pub fn combined(&self) -> Option<&'a [u8]> {
+        match self {
+            Self::Combined(src) => Some(src),
+            _ => None,
+        }
+    }
+
+    /// Resolve per-stage `(vertex, fragment)` payloads for `vendor`.
+    ///
+    /// [`Combined`](Self::Combined) yields the same payload for both
+    /// stages. [`Binaries`](Self::Binaries) picks the vendor format via
+    /// [`ShaderBinary::for_vendor`]; `None` when a stage has no payload
+    /// for that vendor.
+    pub fn stage_bytes(&self, vendor: Vendor) -> Option<(&'a [u8], &'a [u8])> {
+        match self {
+            Self::Stages { vertex, fragment } => Some((vertex, fragment)),
+            Self::Combined(src) => Some((src, src)),
+            Self::Binaries { vertex, fragment } => {
+                Some((vertex.for_vendor(vendor)?, fragment.for_vendor(vendor)?))
+            }
+        }
+    }
+
+    /// Resolve per-stage `(vertex, fragment)` WGSL payloads (WebGPU).
+    /// `None` when a [`Binaries`](Self::Binaries) stage carries no WGSL.
+    pub fn stage_wgsl_bytes(&self) -> Option<(&'a [u8], &'a [u8])> {
+        match self {
+            Self::Stages { vertex, fragment } => Some((vertex, fragment)),
+            Self::Combined(src) => Some((src, src)),
+            Self::Binaries { vertex, fragment } => Some((
+                vertex.wgsl.map(str::as_bytes)?,
+                fragment.wgsl.map(str::as_bytes)?,
+            )),
+        }
+    }
+}
+
 /// Describes how to create a render pipeline.
+///
+/// Marked `#[non_exhaustive]`: fields will be added without a breaking
+/// change. Construct with [`PipelineDesc::new`] (or `Default::default()`
+/// plus field assignment) and adjust settings through the `with_*`
+/// builder methods:
+///
+/// ```ignore
+/// let desc = PipelineDesc::new(ShaderSource::Combined(MSL.as_bytes()))
+///     .with_color_formats(vec![Format::RGBA8])
+///     .with_cull_mode(CullMode::Back);
+/// ```
+#[non_exhaustive]
 pub struct PipelineDesc<'a> {
-    /// Vertex shader source (MSL, WGSL, or compiled binary).
-    /// If `source` is set, this is ignored.
-    pub vertex: &'a [u8],
-    /// Fragment shader source.
-    /// If `source` is set, this is ignored.
-    pub fragment: &'a [u8],
-    /// Combined shader source containing both vertex and fragment functions.
-    /// When set, `vertex` and `fragment` fields are ignored.
-    /// The driver finds functions by `vertex_entry` and `fragment_entry` names.
-    pub source: Option<&'a [u8]>,
+    /// Shader payloads (per-stage, combined, or multi-vendor binaries).
+    pub shader: ShaderSource<'a>,
     /// Vertex shader entry point name.
     pub vertex_entry: &'a str,
     /// Fragment shader entry point name.
@@ -85,9 +167,10 @@ pub struct PipelineDesc<'a> {
 impl<'a> Default for PipelineDesc<'a> {
     fn default() -> Self {
         Self {
-            vertex: &[],
-            fragment: &[],
-            source: None,
+            shader: ShaderSource::Stages {
+                vertex: &[],
+                fragment: &[],
+            },
             vertex_entry: "vertex_main",
             fragment_entry: "fragment_main",
             vertex_layouts: &[],
@@ -107,7 +190,110 @@ impl<'a> Default for PipelineDesc<'a> {
     }
 }
 
+impl<'a> PipelineDesc<'a> {
+    /// A descriptor with the given shader source and portable defaults
+    /// (single `BGRA8` color target, no depth, no blending surprises —
+    /// the same defaults as `Default::default()`).
+    pub fn new(shader: ShaderSource<'a>) -> Self {
+        Self {
+            shader,
+            ..Default::default()
+        }
+    }
+
+    /// Set the vertex / fragment entry point names.
+    pub fn with_entries(mut self, vertex_entry: &'a str, fragment_entry: &'a str) -> Self {
+        self.vertex_entry = vertex_entry;
+        self.fragment_entry = fragment_entry;
+        self
+    }
+
+    /// Set the vertex buffer layouts.
+    pub fn with_vertex_layouts(mut self, layouts: &'a [VertexLayout]) -> Self {
+        self.vertex_layouts = layouts;
+        self
+    }
+
+    /// Set the color attachment formats (MRT).
+    pub fn with_color_formats(mut self, formats: Vec<Format>) -> Self {
+        self.color_formats = formats;
+        self
+    }
+
+    /// Set the depth attachment format.
+    pub fn with_depth_format(mut self, format: Format) -> Self {
+        self.depth_format = Some(format);
+        self
+    }
+
+    /// Set the MSAA sample count.
+    pub fn with_sample_count(mut self, samples: u32) -> Self {
+        self.sample_count = samples;
+        self
+    }
+
+    /// Set the blend state applied to all color attachments.
+    pub fn with_blend(mut self, blend: BlendState) -> Self {
+        self.blend = blend;
+        self
+    }
+
+    /// Set per-attachment blend states.
+    pub fn with_blend_states(mut self, states: Vec<BlendState>) -> Self {
+        self.blend_states = states;
+        self
+    }
+
+    /// Set the face culling mode.
+    pub fn with_cull_mode(mut self, cull_mode: CullMode) -> Self {
+        self.cull_mode = cull_mode;
+        self
+    }
+
+    /// Set the primitive topology.
+    pub fn with_primitive(mut self, primitive: Primitive) -> Self {
+        self.primitive = primitive;
+        self
+    }
+
+    /// Set the depth/stencil state.
+    pub fn with_depth_stencil(mut self, state: DepthStencilState) -> Self {
+        self.depth_stencil = state;
+        self
+    }
+
+    /// Set the specialization constants.
+    pub fn with_specialization(mut self, constants: Vec<SpecConstant>) -> Self {
+        self.specialization = constants;
+        self
+    }
+
+    /// Enable tessellation with the given configuration.
+    pub fn with_tessellation(mut self, tessellation: TessellationDesc) -> Self {
+        self.tessellation = Some(tessellation);
+        self
+    }
+
+    /// Use a mesh-shader pipeline instead of the vertex stage.
+    pub fn with_mesh_shader(mut self, mesh_shader: MeshShaderDesc<'a>) -> Self {
+        self.mesh_shader = Some(mesh_shader);
+        self
+    }
+
+    /// Enable or disable conservative rasterization.
+    pub fn with_conservative_rasterization(mut self, enabled: bool) -> Self {
+        self.conservative_rasterization = enabled;
+        self
+    }
+}
+
 /// Depth and stencil testing configuration.
+///
+/// Marked `#[non_exhaustive]`: fields will be added. Start from one of
+/// the presets ([`NONE`](Self::NONE), [`DEPTH_LESS`](Self::DEPTH_LESS),
+/// [`DEPTH_READ_ONLY`](Self::DEPTH_READ_ONLY)) and adjust fields by
+/// assignment.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct DepthStencilState {
     /// Enable depth testing.
@@ -115,7 +301,7 @@ pub struct DepthStencilState {
     /// Enable depth writing.
     pub depth_write: bool,
     /// Depth comparison function.
-    pub depth_compare: CompareFunc,
+    pub depth_compare: CompareOp,
     /// Front face stencil operations.
     pub stencil_front: Option<StencilState>,
     /// Back face stencil operations.
@@ -127,7 +313,7 @@ impl DepthStencilState {
     pub const NONE: Self = Self {
         depth_test: false,
         depth_write: false,
-        depth_compare: CompareFunc::Always,
+        depth_compare: CompareOp::Always,
         stencil_front: None,
         stencil_back: None,
     };
@@ -136,7 +322,7 @@ impl DepthStencilState {
     pub const DEPTH_LESS: Self = Self {
         depth_test: true,
         depth_write: true,
-        depth_compare: CompareFunc::Less,
+        depth_compare: CompareOp::Less,
         stencil_front: None,
         stencil_back: None,
     };
@@ -145,7 +331,7 @@ impl DepthStencilState {
     pub const DEPTH_READ_ONLY: Self = Self {
         depth_test: true,
         depth_write: false,
-        depth_compare: CompareFunc::Less,
+        depth_compare: CompareOp::Less,
         stencil_front: None,
         stencil_back: None,
     };
@@ -161,7 +347,7 @@ pub struct StencilState {
     /// What to do when both stencil and depth pass.
     pub pass: StencilOp,
     /// Stencil comparison function.
-    pub compare: CompareFunc,
+    pub compare: CompareOp,
     /// Read mask for stencil value.
     pub read_mask: u32,
     /// Write mask for stencil value.
@@ -174,24 +360,11 @@ impl Default for StencilState {
             fail: StencilOp::Keep,
             depth_fail: StencilOp::Keep,
             pass: StencilOp::Keep,
-            compare: CompareFunc::Always,
+            compare: CompareOp::Always,
             read_mask: 0xFF,
             write_mask: 0xFF,
         }
     }
-}
-
-/// Comparison function for depth and stencil tests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompareFunc {
-    Never,
-    Less,
-    Equal,
-    LessEqual,
-    Greater,
-    NotEqual,
-    GreaterEqual,
-    Always,
 }
 
 /// Stencil operations.
@@ -235,6 +408,10 @@ pub struct VertexAttribute {
 }
 
 /// Vertex attribute data formats.
+///
+/// Marked `#[non_exhaustive]`: formats can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttributeFormat {
     Float,
@@ -253,6 +430,12 @@ pub enum AttributeFormat {
 }
 
 /// Blend state for a color attachment.
+///
+/// Marked `#[non_exhaustive]`: fields will be added. Start from one of
+/// the presets ([`NONE`](Self::NONE), [`PREMULTIPLIED_ALPHA`](Self::PREMULTIPLIED_ALPHA),
+/// [`ALPHA`](Self::ALPHA), [`ADDITIVE`](Self::ADDITIVE)) and adjust
+/// fields by assignment.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct BlendState {
     pub enabled: bool,
@@ -310,6 +493,11 @@ impl BlendState {
     };
 }
 
+/// Blend factor — scales source or destination color/alpha.
+///
+/// Marked `#[non_exhaustive]`: factors can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendFactor {
     Zero,
@@ -324,6 +512,11 @@ pub enum BlendFactor {
     OneMinusDstColor,
 }
 
+/// Blend operation — combines the scaled source and destination.
+///
+/// Marked `#[non_exhaustive]`: operations can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendOp {
     Add,
@@ -334,6 +527,10 @@ pub enum BlendOp {
 }
 
 /// Face culling mode.
+///
+/// Marked `#[non_exhaustive]`: modes can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CullMode {
     None,
@@ -342,6 +539,10 @@ pub enum CullMode {
 }
 
 /// Primitive topology.
+///
+/// Marked `#[non_exhaustive]`: topologies can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Primitive {
     Point,

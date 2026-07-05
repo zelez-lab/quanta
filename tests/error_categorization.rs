@@ -60,9 +60,11 @@ fn typed_wrapper_oob_arg_returns_invalid_param() {
 #[test]
 fn unknown_queue_handle_returns_not_found() {
     // Unknown handle path: queue_signal on a never-allocated handle.
-    // After 070 migration, "queue not found" returns NotFound.
+    // After 070 migration, "queue not found" returns NotFound. (The
+    // raw-handle API is gone from `Gpu`; reach through the device
+    // handle for the driver-level check.)
     let gpu = quanta::init_cpu();
-    let r = gpu.queue_signal(99_999_999, 0);
+    let r = gpu.device_handle().queue_signal(99_999_999, 0);
     match r {
         Err(e) => assert!(
             matches!(e.kind, QuantaErrorKind::NotFound(_)),

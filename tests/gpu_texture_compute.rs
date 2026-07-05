@@ -45,13 +45,10 @@ fn compute_reads_texture() {
     }
 
     let tex = gpu
-        .create_texture(&quanta::TextureDesc {
-            width: w,
-            height: h,
-            format: quanta::Format::RGBA8,
-            usage: quanta::TextureUsage::SHADER_READ,
-            ..quanta::TextureDesc::default()
-        })
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ),
+        )
         .unwrap();
     tex.write(&tex_data).unwrap();
 

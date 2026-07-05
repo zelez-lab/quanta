@@ -100,7 +100,7 @@ impl MetalDevice {
                                 b"setStoreAction:\0",
                                 ffi::MTL_STORE_ACTION_MULTISAMPLE_RESOLVE,
                             );
-                            if let Some(resolve_tex) = textures.get(&resolve_handle) {
+                            if let Some(resolve_tex) = textures.get(&resolve_handle.0) {
                                 ffi::msg_void_id(ca, b"setResolveTexture:\0", *resolve_tex);
                             }
                         }
@@ -164,7 +164,7 @@ impl MetalDevice {
                             b"setStoreAction:\0",
                             ffi::MTL_STORE_ACTION_MULTISAMPLE_RESOLVE,
                         );
-                        if let Some(resolve_tex) = textures.get(&resolve_handle) {
+                        if let Some(resolve_tex) = textures.get(&resolve_handle.0) {
                             ffi::msg_void_id(depth_attach, b"setResolveTexture:\0", *resolve_tex);
                         }
                     }

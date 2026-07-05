@@ -28,10 +28,15 @@ fn lifecycle_fragment() -> Vec4 {
     Vec4::new(0.0, 0.0, 1.0, 1.0)
 }
 
-fn shader_pair(gpu: &quanta::Gpu) -> Option<(&'static [u8], &'static [u8])> {
-    let v = LIFECYCLE_VERTEX_SHADER.for_vendor(gpu.caps().vendor)?;
-    let f = LIFECYCLE_FRAGMENT_SHADER.for_vendor(gpu.caps().vendor)?;
-    Some((v, f))
+fn have_shaders(gpu: &quanta::Gpu) -> bool {
+    // The driver picks the payload from the binaries; skip when this
+    // vendor has none compiled in.
+    LIFECYCLE_VERTEX_SHADER
+        .for_vendor(gpu.caps().vendor)
+        .is_some()
+        && LIFECYCLE_FRAGMENT_SHADER
+            .for_vendor(gpu.caps().vendor)
+            .is_some()
 }
 
 fn vertex_layout() -> Vec<quanta::VertexLayout> {
@@ -46,31 +51,23 @@ fn vertex_layout() -> Vec<quanta::VertexLayout> {
     }]
 }
 
-fn pipeline_desc<'a>(
-    vert: &'a [u8],
-    frag: &'a [u8],
-    layouts: &'a [quanta::VertexLayout],
-) -> quanta::PipelineDesc<'a> {
-    quanta::PipelineDesc {
-        vertex: vert,
-        fragment: frag,
-        vertex_entry: LIFECYCLE_VERTEX_SHADER.entry_point,
-        fragment_entry: LIFECYCLE_FRAGMENT_SHADER.entry_point,
-        vertex_layouts: layouts,
-        color_formats: vec![Format::RGBA8],
-        blend: quanta::BlendState::NONE,
-        ..quanta::PipelineDesc::default()
-    }
+fn pipeline_desc<'a>(layouts: &'a [quanta::VertexLayout]) -> quanta::PipelineDesc<'a> {
+    quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+        vertex: &LIFECYCLE_VERTEX_SHADER,
+        fragment: &LIFECYCLE_FRAGMENT_SHADER,
+    })
+    .with_entries(
+        LIFECYCLE_VERTEX_SHADER.entry_point,
+        LIFECYCLE_FRAGMENT_SHADER.entry_point,
+    )
+    .with_vertex_layouts(layouts)
+    .with_color_formats(vec![Format::RGBA8])
+    .with_blend(quanta::BlendState::NONE)
 }
 
 fn small_texture_desc() -> TextureDesc {
-    TextureDesc {
-        width: 16,
-        height: 16,
-        format: Format::RGBA8,
-        usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-        ..TextureDesc::default()
-    }
+    TextureDesc::new(16, 16, Format::RGBA8)
+        .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE))
 }
 
 // ─── Single-resource lifecycle ──────────────────────────────────────────────
@@ -135,14 +132,14 @@ fn pipeline_drop_frees_registry_entry() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let Some((v, f)) = shader_pair(&gpu) else {
+    if !have_shaders(&gpu) {
         eprintln!("skipping: no shader for this vendor");
         return;
-    };
+    }
 
     let layouts = vertex_layout();
     let before = gpu.debug_registry_counts();
-    let pipeline = gpu.pipeline(&pipeline_desc(v, f, &layouts)).unwrap();
+    let pipeline = gpu.pipeline(&pipeline_desc(&layouts)).unwrap();
     let during = gpu.debug_registry_counts();
     assert_ne!(
         before, during,
@@ -161,10 +158,7 @@ fn texture_view_drop_frees_registry_entry() {
     };
 
     let tex = gpu
-        .create_texture(&TextureDesc {
-            mip_levels: 4,
-            ..small_texture_desc()
-        })
+        .create_texture(&small_texture_desc().with_mip_levels(4))
         .unwrap();
 
     let with_texture = gpu.debug_registry_counts();
@@ -233,10 +227,7 @@ fn explicit_view_destroy_does_not_double_free() {
     };
 
     let tex = gpu
-        .create_texture(&TextureDesc {
-            mip_levels: 2,
-            ..small_texture_desc()
-        })
+        .create_texture(&small_texture_desc().with_mip_levels(2))
         .unwrap();
     let with_texture = gpu.debug_registry_counts();
 
@@ -309,7 +300,7 @@ fn hundred_frame_reuse_does_not_grow_registries() {
     };
 
     let before = gpu.debug_registry_counts();
-    let shaders = shader_pair(&gpu);
+    let shaders = have_shaders(&gpu);
     let layouts = vertex_layout();
 
     for _frame in 0..120 {
@@ -318,10 +309,7 @@ fn hundred_frame_reuse_does_not_grow_registries() {
             .render_target(64, 64, Format::RGBA8)
             .expect("render target");
         let _sampler = gpu.sampler(&SamplerDesc::default()).expect("sampler");
-        let _pipeline = shaders.map(|(v, f)| {
-            gpu.pipeline(&pipeline_desc(v, f, &layouts))
-                .expect("pipeline")
-        });
+        let _pipeline = shaders.then(|| gpu.pipeline(&pipeline_desc(&layouts)).expect("pipeline"));
 
         // Render a real frame into the target so the resources are used.
         let mut pulse = gpu

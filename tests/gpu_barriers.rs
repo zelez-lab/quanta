@@ -154,15 +154,13 @@ fn barrier_texture_transition() {
     };
 
     let tex = gpu
-        .create_texture(&quanta::TextureDesc {
-            width: 16,
-            height: 16,
-            format: quanta::Format::RGBA8,
-            usage: quanta::TextureUsage::SHADER_READ
-                .union(quanta::TextureUsage::SHADER_WRITE)
-                .union(quanta::TextureUsage::RENDER_TARGET),
-            ..quanta::TextureDesc::default()
-        })
+        .create_texture(
+            &quanta::TextureDesc::new(16, 16, quanta::Format::RGBA8).with_usage(
+                quanta::TextureUsage::SHADER_READ
+                    .union(quanta::TextureUsage::SHADER_WRITE)
+                    .union(quanta::TextureUsage::RENDER_TARGET),
+            ),
+        )
         .unwrap();
 
     // Write pixel data

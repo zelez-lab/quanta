@@ -1,6 +1,6 @@
 //! Tier 2 -- Multi-queue operations.
 //!
-//! Verifies queue_families, create_queue, and queue dispatch.
+//! Verifies queue_families and typed Queue creation.
 //! Features may return "not supported" -- that is acceptable.
 //! Requires a GPU; skips gracefully if none available.
 
@@ -46,13 +46,14 @@ fn create_graphics_queue_returns_result() {
     };
 
     // May return not supported -- that is OK.
-    let result = gpu.create_queue(QueueType::Graphics);
+    let result = gpu.queue(QueueType::Graphics);
     match result {
-        Ok(handle) => {
-            assert!(handle != 0, "queue handle should be nonzero");
+        Ok(queue) => {
+            assert!(queue.handle() != 0, "queue handle should be nonzero");
+            assert_eq!(queue.kind(), QueueType::Graphics);
         }
         Err(e) => {
-            eprintln!("create_queue(Graphics) not supported: {}", e);
+            eprintln!("queue(Graphics) not supported: {}", e);
         }
     }
 }
@@ -64,13 +65,13 @@ fn create_compute_queue_returns_result() {
         return;
     };
 
-    let result = gpu.create_queue(QueueType::Compute);
+    let result = gpu.queue(QueueType::Compute);
     match result {
-        Ok(handle) => {
-            assert!(handle != 0);
+        Ok(queue) => {
+            assert!(queue.handle() != 0);
         }
         Err(e) => {
-            eprintln!("create_queue(Compute) not supported: {}", e);
+            eprintln!("queue(Compute) not supported: {}", e);
         }
     }
 }
@@ -82,13 +83,13 @@ fn create_transfer_queue_returns_result() {
         return;
     };
 
-    let result = gpu.create_queue(QueueType::Transfer);
+    let result = gpu.queue(QueueType::Transfer);
     match result {
-        Ok(handle) => {
-            assert!(handle != 0);
+        Ok(queue) => {
+            assert!(queue.handle() != 0);
         }
         Err(e) => {
-            eprintln!("create_queue(Transfer) not supported: {}", e);
+            eprintln!("queue(Transfer) not supported: {}", e);
         }
     }
 }
@@ -100,9 +101,11 @@ fn queue_signal_returns_result() {
         return;
     };
 
-    // queue_signal/queue_wait with dummy handles should return an error,
+    // signal/wait with dummy semaphore handles should return an error,
     // not panic. Ok or Err ("not supported") are both acceptable.
-    let _ = gpu.queue_signal(0, 0);
+    if let Ok(queue) = gpu.queue(QueueType::Graphics) {
+        let _ = queue.signal(0);
+    }
 }
 
 #[test]
@@ -113,5 +116,7 @@ fn queue_wait_returns_result() {
     };
 
     // Ok or Err ("not supported") are both acceptable; must not panic.
-    let _ = gpu.queue_wait(0, 0);
+    if let Ok(queue) = gpu.queue(QueueType::Graphics) {
+        let _ = queue.wait(0);
+    }
 }

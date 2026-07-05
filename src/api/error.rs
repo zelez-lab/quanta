@@ -2,6 +2,14 @@ use alloc::format;
 use alloc::string::String;
 
 /// Errors returned by Quanta operations.
+///
+/// Implements [`core::error::Error`], so it composes with `?` and
+/// error-reporting frameworks.
+///
+/// Marked `#[non_exhaustive]`: fields can be added without a breaking
+/// change. Construct through the convenience constructors
+/// ([`QuantaError::not_supported`], [`QuantaError::invalid_param`], …).
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct QuantaError {
     pub kind: QuantaErrorKind,
@@ -9,6 +17,14 @@ pub struct QuantaError {
 }
 
 /// The category of error.
+///
+/// Every message-carrying variant holds a `String`, so drivers can
+/// report both static category messages and dynamic detail (compiler
+/// logs, handle values) uniformly.
+///
+/// Marked `#[non_exhaustive]`: categories can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuantaErrorKind {
     /// No GPU device found at the given index.
@@ -26,23 +42,23 @@ pub enum QuantaErrorKind {
     /// Invalid parameter — caller passed a value outside the
     /// documented range. Distinct from `NotSupported` (feature is
     /// genuinely unavailable) and `NotFound` (handle does not exist).
-    InvalidParam(&'static str),
+    InvalidParam(String),
     /// The requested feature is not implemented on this backend
     /// (e.g. mesh shaders on a software CPU device, ray tracing on
     /// pre-Apple-family-6 Metal). Callers should branch on this to
     /// fall back to a non-accelerated path.
-    NotSupported(&'static str),
+    NotSupported(String),
     /// The given handle does not refer to a live resource. Usually
     /// means the wrapping typed handle was double-freed or never
     /// allocated by this device.
-    NotFound(&'static str),
+    NotFound(String),
     /// The presentation surface no longer matches its target (the
     /// window / layer was resized or its properties changed since the
     /// last `configure`). Recoverable: call `Surface::configure` with
     /// the new extent, then acquire again.
-    SurfaceOutdated(&'static str),
+    SurfaceOutdated(String),
     /// Internal error (e.g. poisoned mutex).
-    Internal(&'static str),
+    Internal(String),
 }
 
 impl QuantaError {
@@ -96,27 +112,27 @@ impl QuantaError {
         }
     }
 
-    pub fn invalid_param(msg: &'static str) -> Self {
+    pub fn invalid_param(msg: impl Into<String>) -> Self {
         Self {
-            kind: QuantaErrorKind::InvalidParam(msg),
+            kind: QuantaErrorKind::InvalidParam(msg.into()),
             context: None,
         }
     }
 
     /// Construct a `NotSupported` error — the feature is genuinely
     /// unavailable on this backend / device.
-    pub fn not_supported(msg: &'static str) -> Self {
+    pub fn not_supported(msg: impl Into<String>) -> Self {
         Self {
-            kind: QuantaErrorKind::NotSupported(msg),
+            kind: QuantaErrorKind::NotSupported(msg.into()),
             context: None,
         }
     }
 
     /// Construct a `NotFound` error — the given handle does not
     /// refer to a live resource.
-    pub fn not_found(msg: &'static str) -> Self {
+    pub fn not_found(msg: impl Into<String>) -> Self {
         Self {
-            kind: QuantaErrorKind::NotFound(msg),
+            kind: QuantaErrorKind::NotFound(msg.into()),
             context: None,
         }
     }
@@ -124,16 +140,16 @@ impl QuantaError {
     /// Construct a `SurfaceOutdated` error — the presentation surface
     /// no longer matches its target and must be reconfigured before
     /// the next acquire.
-    pub fn surface_outdated(msg: &'static str) -> Self {
+    pub fn surface_outdated(msg: impl Into<String>) -> Self {
         Self {
-            kind: QuantaErrorKind::SurfaceOutdated(msg),
+            kind: QuantaErrorKind::SurfaceOutdated(msg.into()),
             context: None,
         }
     }
 
-    pub fn internal(msg: &'static str) -> Self {
+    pub fn internal(msg: impl Into<String>) -> Self {
         Self {
-            kind: QuantaErrorKind::Internal(msg),
+            kind: QuantaErrorKind::Internal(msg.into()),
             context: None,
         }
     }
@@ -169,3 +185,5 @@ impl core::fmt::Display for QuantaError {
         }
     }
 }
+
+impl core::error::Error for QuantaError {}

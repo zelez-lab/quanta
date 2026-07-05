@@ -3,10 +3,6 @@
 use alloc::vec::Vec;
 
 use crate::{Batch, Field, Pulse, QuantaError, QueueFamily, QueueType, Wave};
-// `Pipeline` is a render type; only the render-gated `dispatch_mesh`
-// wrapper (which takes a graphics pipeline) references it.
-#[cfg(feature = "render")]
-use crate::Pipeline;
 
 use super::Gpu;
 
@@ -79,17 +75,6 @@ impl Gpu {
         self.inner.queue_families()
     }
 
-    /// Create a queue of the given type.
-    pub fn create_queue(&self, queue_type: QueueType) -> Result<u64, QuantaError> {
-        self.inner.create_queue(queue_type)
-    }
-
-    /// Allocate a typed [`Queue`](crate::Queue) for the given
-    /// capability tier. Steps 018 + 019.
-    ///
-    /// Backends that don't expose multi-queue (single-queue
-    /// software fallbacks, WebGPU global queue) return
-    /// `NotSupported` here so user code can branch.
     /// Allocate a typed [`PrintfBuffer`](crate::PrintfBuffer)
     /// with the given message capacity. Step 049.
     ///
@@ -126,6 +111,12 @@ impl Gpu {
         })
     }
 
+    /// Allocate a typed [`Queue`](crate::Queue) for the given
+    /// capability tier. Steps 018 + 019.
+    ///
+    /// Backends that don't expose multi-queue (single-queue
+    /// software fallbacks, WebGPU global queue) return
+    /// `NotSupported` here so user code can branch.
     pub fn queue(&self, queue_type: QueueType) -> Result<crate::Queue, QuantaError> {
         let handle = self.inner.create_queue(queue_type)?;
         Ok(crate::Queue {
@@ -134,26 +125,6 @@ impl Gpu {
             device: self.inner.clone(),
             live: true,
         })
-    }
-
-    /// Submit a compute dispatch to a specific queue.
-    pub fn queue_dispatch(
-        &self,
-        queue: u64,
-        wave: &Wave,
-        groups: [u32; 3],
-    ) -> Result<(), QuantaError> {
-        self.inner.queue_dispatch(queue, wave, groups)
-    }
-
-    /// Signal a semaphore from a queue.
-    pub fn queue_signal(&self, queue: u64, semaphore: u64) -> Result<(), QuantaError> {
-        self.inner.queue_signal(queue, semaphore)
-    }
-
-    /// Wait on a semaphore before executing more work on a queue.
-    pub fn queue_wait(&self, queue: u64, semaphore: u64) -> Result<(), QuantaError> {
-        self.inner.queue_wait(queue, semaphore)
     }
 
     // === Hot reload ===
@@ -174,15 +145,6 @@ impl Gpu {
         // Swap: the old handle gets dropped via new_wave's eventual drop
         core::mem::swap(wave, &mut new_wave);
         Ok(())
-    }
-
-    // === M4.2: Mesh shaders ===
-
-    /// Dispatch a mesh shader pipeline.
-    /// Render-typed (`&Pipeline`); gated with the `render` feature (step 085).
-    #[cfg(feature = "render")]
-    pub fn dispatch_mesh(&self, pipeline: &Pipeline, groups: [u32; 3]) -> Result<(), QuantaError> {
-        self.inner.dispatch_mesh(pipeline.handle(), groups)
     }
 
     // === M5.2: Indirect command buffers (steps 032 + 033) ===
@@ -209,29 +171,8 @@ impl Gpu {
         })
     }
 
-    // ── Raw handle API (legacy / unsafe — prefer indirect_command_buffer) ──
-
-    /// Create an indirect command buffer (GPU-driven draw/dispatch),
-    /// returning a raw handle. Prefer
-    /// [`indirect_command_buffer`](Self::indirect_command_buffer) for
-    /// the typed wrapper with automatic destroy on drop.
-    pub fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
-        self.inner.indirect_buffer_create(max_commands)
-    }
-
-    /// Execute commands from an indirect command buffer (raw-handle API).
-    pub fn indirect_buffer_execute(&self, handle: u64, count: u32) -> Result<(), QuantaError> {
-        self.inner.indirect_buffer_execute(handle, count)
-    }
-
-    /// Destroy an indirect command buffer (raw-handle API).
-    pub fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
-        self.inner.indirect_buffer_destroy(handle)
-    }
-
     // === M5.3: Bindless resources ===
 
-    /// Create a bindless texture array (all textures accessible by index in shaders).
     /// Allocate a typed
     /// [`BindlessTextureArray`](crate::BindlessTextureArray) with
     /// the given capacity. Steps 034 + 035.
@@ -256,14 +197,5 @@ impl Gpu {
             device: self.inner.clone(),
             live: true,
         })
-    }
-
-    pub fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError> {
-        self.inner.bind_texture_array(textures)
-    }
-
-    /// Create a bindless buffer array (all buffers accessible by index in shaders).
-    pub fn bind_buffer_array(&self, buffers: &[u64]) -> Result<u64, QuantaError> {
-        self.inner.bind_buffer_array(buffers)
     }
 }

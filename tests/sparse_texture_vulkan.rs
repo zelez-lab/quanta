@@ -42,11 +42,7 @@ fn sparse_create_either_succeeds_or_surfaces_capability_error() {
         gpu.supports_ray_tracing(),
     );
 
-    let r = gpu.sparse_texture(&TextureDesc {
-        width: 256,
-        height: 256,
-        ..TextureDesc::default()
-    });
+    let r = gpu.sparse_texture(&TextureDesc::new(256, 256, Format::RGBA8));
 
     match r {
         Ok(st) => {
@@ -93,11 +89,7 @@ fn sparse_map_unmap_tile_native() {
     }
 
     let st = gpu
-        .sparse_texture(&TextureDesc {
-            width: 1024,
-            height: 1024,
-            ..TextureDesc::default()
-        })
+        .sparse_texture(&TextureDesc::new(1024, 1024, Format::RGBA8))
         .expect("sparse_texture create");
 
     let backing = gpu.field::<u32>(64).expect("backing alloc");

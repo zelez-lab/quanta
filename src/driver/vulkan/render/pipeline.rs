@@ -20,22 +20,28 @@ impl VulkanDevice {
         desc: &crate::PipelineDesc,
     ) -> Result<Pipeline, QuantaError> {
         // Vulkan requires SPIR-V binaries — MSL/WGSL text source is not supported
-        if desc.source.is_some() {
+        if desc.shader.combined().is_some() {
             return Err(QuantaError::compilation_failed(
-                "Vulkan backend requires SPIR-V binaries (vertex/fragment), not text source",
+                "Vulkan backend requires per-stage SPIR-V binaries, not combined text source",
             ));
         }
-        if desc.vertex.is_empty() || desc.fragment.is_empty() {
+        let (vertex_bytes, fragment_bytes) =
+            desc.shader.stage_bytes(self.caps.vendor).ok_or_else(|| {
+                QuantaError::compilation_failed(
+                    "pipeline shader binaries carry no SPIR-V payload for this vendor",
+                )
+            })?;
+        if vertex_bytes.is_empty() || fragment_bytes.is_empty() {
             return Err(QuantaError::compilation_failed(
                 "vertex and fragment SPIR-V binaries must be non-empty",
             ));
         }
-        if !desc.vertex.len().is_multiple_of(4) {
+        if !vertex_bytes.len().is_multiple_of(4) {
             return Err(QuantaError::compilation_failed(
                 "vertex SPIR-V binary length must be a multiple of 4",
             ));
         }
-        if !desc.fragment.len().is_multiple_of(4) {
+        if !fragment_bytes.len().is_multiple_of(4) {
             return Err(QuantaError::compilation_failed(
                 "fragment SPIR-V binary length must be a multiple of 4",
             ));
@@ -63,13 +69,11 @@ impl VulkanDevice {
                 "Vulkan render pipelines: conservative rasterization (VK_EXT_conservative_rasterization) pending",
             ));
         }
-        let vert_spirv: Vec<u32> = desc
-            .vertex
+        let vert_spirv: Vec<u32> = vertex_bytes
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let frag_spirv: Vec<u32> = desc
-            .fragment
+        let frag_spirv: Vec<u32> = fragment_bytes
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
@@ -78,14 +82,14 @@ impl VulkanDevice {
             s_type: ffi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
-            code_size: desc.vertex.len(),
+            code_size: vertex_bytes.len(),
             p_code: vert_spirv.as_ptr(),
         };
         let frag_module_info = ffi::VkShaderModuleCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
-            code_size: desc.fragment.len(),
+            code_size: fragment_bytes.len(),
             p_code: frag_spirv.as_ptr(),
         };
 

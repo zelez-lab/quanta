@@ -13,11 +13,24 @@ use crate::surface::{SurfaceConfig, SurfaceTarget};
 #[cfg(feature = "render")]
 use crate::{Pipeline, RenderPass};
 
+/// Sealed-trait guard for [`GpuDevice`]. Private module, private
+/// trait: only this crate can name it, so only this crate's drivers
+/// can implement `GpuDevice`.
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
 /// Core trait — every GPU driver implements this.
 ///
 /// Methods use raw bytes and handles to keep the trait dyn-compatible.
 /// Users interact with the `Gpu` wrapper which provides typed, ergonomic methods.
-pub trait GpuDevice: Send + Sync {
+///
+/// **Sealed**: this trait can only be implemented inside the `quanta`
+/// crate (drivers are in-tree). Consumers hold it as `Arc<dyn
+/// GpuDevice>` through [`Gpu`](crate::Gpu); because no external impls
+/// exist, new trait methods with default bodies can be added after the
+/// API freeze without a breaking change.
+pub trait GpuDevice: sealed::Sealed + Send + Sync {
     // === Device info ===
 
     fn caps(&self) -> &Caps;
@@ -243,23 +256,6 @@ pub trait GpuDevice: Send + Sync {
 
     fn pulse_wait(&self, pulse: &mut Pulse) -> Result<(), QuantaError>;
     fn pulse_poll(&self, pulse: &Pulse) -> bool;
-
-    // === Queries ===
-
-    /// Create a timestamp query set.
-    fn query_set_create(&self, _count: u32) -> Result<u64, QuantaError> {
-        Err(QuantaError::not_supported("queries not supported"))
-    }
-
-    /// Read query results.
-    fn query_set_read(
-        &self,
-        _handle: u64,
-        _first: u32,
-        _count: u32,
-    ) -> Result<Vec<u64>, QuantaError> {
-        Err(QuantaError::not_supported("queries not supported"))
-    }
 
     // === Timestamps ===
 
@@ -850,14 +846,6 @@ pub trait GpuDevice: Send + Sync {
     fn vrs_destroy(&self, _handle: u64) -> Result<(), QuantaError> {
         Ok(())
     }
-
-    // ── Legacy bind-array creation (one-shot, no update path) ──────
-
-    /// Create a bindless texture array (all textures accessible by index in shaders).
-    fn bind_texture_array(&self, textures: &[u64]) -> Result<u64, QuantaError>;
-
-    /// Create a bindless buffer array (all buffers accessible by index in shaders).
-    fn bind_buffer_array(&self, buffers: &[u64]) -> Result<u64, QuantaError>;
 
     // === Debug ===
 

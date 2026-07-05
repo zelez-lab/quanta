@@ -6,7 +6,7 @@
 //! Requires a GPU; skips gracefully if none available.
 
 use quanta::ray_tracing::RayTracingPipelineDesc;
-use quanta::{Format, PipelineDesc, TextureDesc, TextureUsage};
+use quanta::{Format, TextureDesc, TextureUsage};
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -21,12 +21,12 @@ fn build_acceleration_structure_returns_result() {
         return;
     };
 
-    let result = gpu.build_acceleration_structure(&[]);
+    let result = gpu.acceleration_structure_blas(&[]);
     // Empty geometry should either succeed or return Err -- never panic.
     match result {
-        Ok(handle) => {
-            // Clean up.
-            let _ = gpu.destroy_acceleration_structure(handle);
+        Ok(blas) => {
+            // Drop cleans up.
+            drop(blas);
         }
         Err(e) => {
             eprintln!("ray tracing not supported (expected): {}", e);
@@ -48,7 +48,7 @@ fn create_ray_tracing_pipeline_returns_result() {
         max_recursion: 1,
     };
 
-    let result = gpu.create_ray_tracing_pipeline(&desc);
+    let result = gpu.ray_tracing_pipeline(&desc);
     match result {
         Ok(_) => {}
         Err(e) => {
@@ -64,31 +64,38 @@ fn dispatch_rays_returns_result() {
         return;
     };
 
-    // Dummy pipeline handle.
-    let result = gpu.dispatch_rays(0, 64, 64);
-    match result {
-        Ok(()) => {}
+    let desc = RayTracingPipelineDesc {
+        ray_gen: &[],
+        closest_hit: &[],
+        miss: &[],
+        max_recursion: 1,
+    };
+    match gpu.ray_tracing_pipeline(&desc) {
+        Ok(pipeline) => match pipeline.dispatch_rays(64, 64) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("dispatch_rays not supported (expected): {}", e);
+            }
+        },
         Err(e) => {
-            eprintln!("dispatch_rays not supported (expected): {}", e);
+            eprintln!("ray tracing pipeline not supported (expected): {}", e);
         }
     }
 }
 
 #[test]
-fn destroy_acceleration_structure_returns_result() {
+fn acceleration_structure_drop_never_panics() {
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
 
-    let result = gpu.destroy_acceleration_structure(0);
-    match result {
-        Ok(()) => {}
+    // Dropping a typed acceleration structure releases the handle
+    // exactly once and must never panic.
+    match gpu.acceleration_structure_blas(&[]) {
+        Ok(blas) => drop(blas),
         Err(e) => {
-            eprintln!(
-                "destroy_acceleration_structure not supported (expected): {}",
-                e
-            );
+            eprintln!("acceleration structure not supported (expected): {}", e);
         }
     }
 }
@@ -102,26 +109,20 @@ fn dispatch_mesh_returns_result() {
         return;
     };
 
-    // Create a minimal pipeline for mesh dispatch.
-    let desc = PipelineDesc {
-        color_formats: vec![Format::RGBA8],
-        ..PipelineDesc::default()
-    };
-
-    // Try creating a pipeline -- if it fails, test dispatch_mesh with dummy handle.
-    match gpu.pipeline(&desc) {
+    // Try creating a typed mesh pipeline -- backends without mesh
+    // shaders surface NotSupported at create time.
+    match gpu.mesh_pipeline(quanta::MeshPipelineDesc::default()) {
         Ok(pipeline) => {
-            let result = gpu.dispatch_mesh(&pipeline, [1, 1, 1]);
+            let result = pipeline.dispatch([1, 1, 1]);
             match result {
                 Ok(()) => {}
                 Err(e) => {
-                    eprintln!("dispatch_mesh not supported (expected): {}", e);
+                    eprintln!("mesh dispatch not supported (expected): {}", e);
                 }
             }
         }
-        Err(_) => {
-            // Pipeline creation failed -- skip.
-            eprintln!("skipping dispatch_mesh: pipeline creation failed");
+        Err(e) => {
+            eprintln!("mesh pipeline not supported (expected): {}", e);
         }
     }
 }
@@ -135,17 +136,11 @@ fn sparse_texture_create_returns_result() {
         return;
     };
 
-    let desc = TextureDesc {
-        width: 256,
-        height: 256,
-        format: Format::RGBA8,
-        usage: TextureUsage::SHADER_READ,
-        ..TextureDesc::default()
-    };
+    let desc = TextureDesc::new(256, 256, Format::RGBA8).with_usage(TextureUsage::SHADER_READ);
 
-    let result = gpu.sparse_texture_create(&desc);
+    let result = gpu.sparse_texture(&desc);
     match result {
-        Ok(_handle) => {}
+        Ok(_tex) => {}
         Err(e) => {
             eprintln!("sparse textures not supported (expected): {}", e);
         }
@@ -159,11 +154,16 @@ fn sparse_map_tile_returns_result() {
         return;
     };
 
-    let result = gpu.sparse_map_tile(0, 0, 0, 0, 0);
-    match result {
-        Ok(()) => {}
+    let desc = TextureDesc::new(256, 256, Format::RGBA8).with_usage(TextureUsage::SHADER_READ);
+    match gpu.sparse_texture(&desc) {
+        Ok(tex) => match tex.map_tile(0, 0, 0, 0) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("map_tile not supported (expected): {}", e);
+            }
+        },
         Err(e) => {
-            eprintln!("sparse_map_tile not supported (expected): {}", e);
+            eprintln!("sparse textures not supported (expected): {}", e);
         }
     }
 }
@@ -175,11 +175,16 @@ fn sparse_unmap_tile_returns_result() {
         return;
     };
 
-    let result = gpu.sparse_unmap_tile(0, 0, 0, 0);
-    match result {
-        Ok(()) => {}
+    let desc = TextureDesc::new(256, 256, Format::RGBA8).with_usage(TextureUsage::SHADER_READ);
+    match gpu.sparse_texture(&desc) {
+        Ok(tex) => match tex.unmap_tile(0, 0, 0) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("unmap_tile not supported (expected): {}", e);
+            }
+        },
         Err(e) => {
-            eprintln!("sparse_unmap_tile not supported (expected): {}", e);
+            eprintln!("sparse textures not supported (expected): {}", e);
         }
     }
 }
@@ -193,11 +198,11 @@ fn indirect_buffer_create_returns_result() {
         return;
     };
 
-    let result = gpu.indirect_buffer_create(16);
+    let result = gpu.indirect_command_buffer(16);
     match result {
-        Ok(handle) => {
-            // Clean up.
-            let _ = gpu.indirect_buffer_destroy(handle);
+        Ok(icb) => {
+            // Drop cleans up.
+            drop(icb);
         }
         Err(e) => {
             eprintln!("indirect buffers not supported (expected): {}", e);
@@ -212,27 +217,32 @@ fn indirect_buffer_execute_returns_result() {
         return;
     };
 
-    let result = gpu.indirect_buffer_execute(0, 0);
-    match result {
-        Ok(()) => {}
+    match gpu.indirect_command_buffer(4) {
+        Ok(icb) => match icb.execute_all() {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("icb execute not supported (expected): {}", e);
+            }
+        },
         Err(e) => {
-            eprintln!("indirect_buffer_execute not supported (expected): {}", e);
+            eprintln!("indirect buffers not supported (expected): {}", e);
         }
     }
 }
 
 #[test]
-fn indirect_buffer_destroy_returns_result() {
+fn indirect_buffer_drop_never_panics() {
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
 
-    let result = gpu.indirect_buffer_destroy(0);
-    match result {
-        Ok(()) => {}
+    // Dropping the typed wrapper releases the handle exactly once and
+    // must never panic.
+    match gpu.indirect_command_buffer(4) {
+        Ok(icb) => drop(icb),
         Err(e) => {
-            eprintln!("indirect_buffer_destroy not supported (expected): {}", e);
+            eprintln!("indirect buffers not supported (expected): {}", e);
         }
     }
 }
@@ -240,15 +250,15 @@ fn indirect_buffer_destroy_returns_result() {
 // === Bindless Resources ===
 
 #[test]
-fn bind_texture_array_returns_result() {
+fn bindless_texture_array_returns_result() {
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
 
-    let result = gpu.bind_texture_array(&[]);
+    let result = gpu.bindless_textures(4);
     match result {
-        Ok(_handle) => {}
+        Ok(_arr) => {}
         Err(e) => {
             eprintln!("bindless textures not supported (expected): {}", e);
         }
@@ -256,15 +266,15 @@ fn bind_texture_array_returns_result() {
 }
 
 #[test]
-fn bind_buffer_array_returns_result() {
+fn bindless_buffer_array_returns_result() {
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
 
-    let result = gpu.bind_buffer_array(&[]);
+    let result = gpu.bindless_buffers(4);
     match result {
-        Ok(_handle) => {}
+        Ok(_arr) => {}
         Err(e) => {
             eprintln!("bindless buffers not supported (expected): {}", e);
         }
@@ -281,13 +291,10 @@ fn stencil_read_returns_result() {
     };
 
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: 16,
-            height: 16,
-            format: Format::Depth32Float,
-            usage: TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(16, 16, Format::Depth32Float)
+                .with_usage(TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ)),
+        )
         .unwrap();
 
     let result = gpu.stencil_read(&tex);
@@ -345,47 +352,47 @@ fn async_compute_dispatch_returns_result() {
     }
 }
 
-// === Query Sets (generic) ===
+// === Timestamp query sets (typed) ===
 
 #[test]
-fn query_set_create_returns_result() {
+fn timestamp_query_create_returns_result() {
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
 
-    let result = gpu.query_set(4);
+    let result = gpu.timestamp_query(4);
     match result {
-        Ok(handle) => {
-            assert!(handle != 0);
+        Ok(query) => {
+            assert_eq!(query.count(), 4);
         }
         Err(e) => {
-            eprintln!("query_set_create not supported: {}", e);
+            eprintln!("timestamp queries not supported: {}", e);
         }
     }
 }
 
 #[test]
-fn query_set_read_returns_result() {
+fn timestamp_query_read_returns_result() {
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
 
-    match gpu.query_set(2) {
-        Ok(handle) => {
-            let result = gpu.read_queries(handle, 0, 2);
+    match gpu.timestamp_query(2) {
+        Ok(query) => {
+            let result = gpu.read_timestamps(&query);
             match result {
                 Ok(values) => {
                     assert_eq!(values.len(), 2);
                 }
                 Err(e) => {
-                    eprintln!("query_set_read failed: {}", e);
+                    eprintln!("timestamp read failed: {}", e);
                 }
             }
         }
         Err(_) => {
-            eprintln!("skipping: query sets not supported");
+            eprintln!("skipping: timestamp queries not supported");
         }
     }
 }

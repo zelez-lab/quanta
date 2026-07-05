@@ -111,7 +111,8 @@ fn load_op_variants() {
 fn store_op_variants() {
     let _store = StoreOp::Store;
     let _dont_care = StoreOp::DontCare;
-    let _resolve = StoreOp::Resolve(0xDEAD);
+    // StoreOp::Resolve is constructed through StoreOp::resolve(&Texture)
+    // — covered by the gpu_resolve integration tests.
 }
 
 // ===========================================================================
@@ -199,9 +200,14 @@ fn sampler_desc_defaults() {
 #[test]
 fn pipeline_desc_defaults() {
     let pd = PipelineDesc::default();
-    assert_eq!(pd.vertex, &[] as &[u8]);
-    assert_eq!(pd.fragment, &[] as &[u8]);
-    assert!(pd.source.is_none());
+    assert!(matches!(
+        pd.shader,
+        ShaderSource::Stages {
+            vertex: &[],
+            fragment: &[]
+        }
+    ));
+    assert!(pd.shader.combined().is_none());
     assert_eq!(pd.vertex_entry, "vertex_main");
     assert_eq!(pd.fragment_entry, "fragment_main");
     assert!(pd.vertex_layouts.is_empty());
@@ -440,15 +446,15 @@ fn depth_stencil_state_presets() {
     let none = DepthStencilState::NONE;
     assert!(!none.depth_test);
     assert!(!none.depth_write);
-    assert_eq!(none.depth_compare, CompareFunc::Always);
+    assert_eq!(none.depth_compare, CompareOp::Always);
 
     let less = DepthStencilState::DEPTH_LESS;
     assert!(less.depth_test);
     assert!(less.depth_write);
-    assert_eq!(less.depth_compare, CompareFunc::Less);
+    assert_eq!(less.depth_compare, CompareOp::Less);
 
     let read_only = DepthStencilState::DEPTH_READ_ONLY;
     assert!(read_only.depth_test);
     assert!(!read_only.depth_write);
-    assert_eq!(read_only.depth_compare, CompareFunc::Less);
+    assert_eq!(read_only.depth_compare, CompareOp::Less);
 }

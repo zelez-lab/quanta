@@ -240,6 +240,8 @@ impl Default for CpuDevice {
     }
 }
 
+impl crate::api::device::sealed::Sealed for CpuDevice {}
+
 impl GpuDevice for CpuDevice {
     fn caps(&self) -> &Caps {
         &self.caps
@@ -1282,20 +1284,6 @@ impl GpuDevice for CpuDevice {
     fn indirect_buffer_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.icbs.lock().unwrap().remove(&handle);
         Ok(())
-    }
-
-    // === M5.3: Bindless resources ===
-
-    fn bind_texture_array(&self, _textures: &[u64]) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "bindless resources not supported on CPU device",
-        ))
-    }
-
-    fn bind_buffer_array(&self, _buffers: &[u64]) -> Result<u64, QuantaError> {
-        Err(QuantaError::invalid_param(
-            "bindless resources not supported on CPU device",
-        ))
     }
 
     // === Bindless typed wrappers (steps 034 + 035) ===

@@ -131,11 +131,11 @@ fn clear_red_exact() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 1.0)),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
         .pulse()
         .unwrap();
     pulse.wait().unwrap();
@@ -194,11 +194,11 @@ fn clear_arbitrary_color() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(color),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(color))
+                .with_store_op(StoreOp::Store),
+        ])
         .pulse()
         .unwrap();
     pulse.wait().unwrap();
@@ -472,11 +472,11 @@ fn multi_format_clear_rgba8() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(0.5, 0.5, 0.5, 1.0)),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.5, 0.5, 0.5, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
         .pulse()
         .unwrap();
     pulse.wait().unwrap();
@@ -521,11 +521,11 @@ fn multi_format_clear_r32float() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(clear_value, 0.0, 0.0, 0.0)),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(clear_value, 0.0, 0.0, 0.0)))
+                .with_store_op(StoreOp::Store),
+        ])
         .pulse()
         .unwrap();
     pulse.wait().unwrap();
@@ -576,11 +576,13 @@ fn multi_format_clear_rgba16float() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::rgba(clear_r, clear_g, clear_b, clear_a)),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(
+                    clear_r, clear_g, clear_b, clear_a,
+                )))
+                .with_store_op(StoreOp::Store),
+        ])
         .pulse()
         .unwrap();
     pulse.wait().unwrap();
@@ -683,11 +685,11 @@ fn clear_channel_isolation() {
         let mut pulse = gpu
             .render(&target)
             .unwrap()
-            .color_targets(vec![ColorTarget {
-                texture: target.handle(),
-                load_op: LoadOp::Clear(*color),
-                store_op: StoreOp::Store,
-            }])
+            .color_targets(vec![
+                ColorTarget::new(&target)
+                    .with_load_op(LoadOp::Clear(*color))
+                    .with_store_op(StoreOp::Store),
+            ])
             .pulse()
             .unwrap();
         pulse.wait().unwrap();

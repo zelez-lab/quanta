@@ -15,7 +15,9 @@
 
 #![cfg(feature = "software")]
 
-use quanta::{PipelineDesc, QuantaErrorKind, TessSpacing, TessWinding, TessellationDesc};
+use quanta::{
+    PipelineDesc, QuantaErrorKind, ShaderSource, TessSpacing, TessWinding, TessellationDesc,
+};
 
 fn ensure_not_supported(label: &str, r: Result<quanta::Pipeline, quanta::QuantaError>) {
     match r {
@@ -31,28 +33,26 @@ fn ensure_not_supported(label: &str, r: Result<quanta::Pipeline, quanta::QuantaE
 #[test]
 fn cpu_pipeline_with_tessellation_is_not_supported() {
     let gpu = quanta::init_cpu();
-    let desc = PipelineDesc {
+    let desc = PipelineDesc::new(ShaderSource::Stages {
         vertex: b"vert",
         fragment: b"frag",
-        tessellation: Some(TessellationDesc {
-            patch_size: 3,
-            spacing: TessSpacing::Equal,
-            winding: TessWinding::Ccw,
-        }),
-        ..PipelineDesc::default()
-    };
+    })
+    .with_tessellation(TessellationDesc {
+        patch_size: 3,
+        spacing: TessSpacing::Equal,
+        winding: TessWinding::Ccw,
+    });
     ensure_not_supported("CPU + tessellation", gpu.pipeline(&desc));
 }
 
 #[test]
 fn cpu_pipeline_with_conservative_rasterization_is_not_supported() {
     let gpu = quanta::init_cpu();
-    let desc = PipelineDesc {
+    let desc = PipelineDesc::new(ShaderSource::Stages {
         vertex: b"vert",
         fragment: b"frag",
-        conservative_rasterization: true,
-        ..PipelineDesc::default()
-    };
+    })
+    .with_conservative_rasterization(true);
     ensure_not_supported("CPU + conservative", gpu.pipeline(&desc));
 }
 
@@ -61,11 +61,10 @@ fn cpu_pipeline_baseline_succeeds() {
     // Sanity check: a default PipelineDesc still builds on CPU
     // (fake handle) — the gate only fires on the deferred fields.
     let gpu = quanta::init_cpu();
-    let desc = PipelineDesc {
+    let desc = PipelineDesc::new(ShaderSource::Stages {
         vertex: b"vert",
         fragment: b"frag",
-        ..PipelineDesc::default()
-    };
+    });
     let r = gpu.pipeline(&desc);
     assert!(
         r.is_ok(),

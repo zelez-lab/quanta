@@ -27,7 +27,7 @@
 
 use quanta::webgpu::spawn_local;
 use quanta::{
-    AddressMode, Color, Filter, Format, GpuDevice as _, PipelineDesc, RenderPass, SamplerDesc,
+    Color, Filter, Format, GpuDevice as _, PipelineDesc, RenderPass, SamplerDesc, ShaderSource,
     TextureDesc, TextureUsage,
 };
 
@@ -78,36 +78,27 @@ async fn run() -> Result<Vec<u8>, String> {
 
     // Source texture: 1×1, sampled in the fragment shader.
     let source = dev
-        .texture_create(&TextureDesc {
-            width: 1,
-            height: 1,
-            format: Format::RGBA8,
-            usage: TextureUsage::SHADER_READ,
-            ..TextureDesc::default()
-        })
+        .texture_create(
+            &TextureDesc::new(1, 1, Format::RGBA8).with_usage(TextureUsage::SHADER_READ),
+        )
         .map_err(|e| format!("source texture_create: {:?}", e))?;
     dev.texture_write(&source, &SOURCE_PIXEL)
         .map_err(|e| format!("source texture_write: {:?}", e))?;
 
     // Render target: 4×4 RGBA8.
     let target = dev
-        .texture_create(&TextureDesc {
-            width: 4,
-            height: 4,
-            format: Format::RGBA8,
-            usage: TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
-            ..TextureDesc::default()
-        })
+        .texture_create(
+            &TextureDesc::new(4, 4, Format::RGBA8)
+                .with_usage(TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ)),
+        )
         .map_err(|e| format!("target texture_create: {:?}", e))?;
 
     let pipeline = dev
-        .pipeline_create(&PipelineDesc {
-            source: Some(TEXTURED_WGSL.as_bytes()),
-            vertex_entry: "vertex_main",
-            fragment_entry: "fragment_main",
-            color_formats: vec![Format::RGBA8],
-            ..PipelineDesc::default()
-        })
+        .pipeline_create(
+            &PipelineDesc::new(ShaderSource::Combined(TEXTURED_WGSL.as_bytes()))
+                .with_entries("vertex_main", "fragment_main")
+                .with_color_formats(vec![Format::RGBA8]),
+        )
         .map_err(|e| format!("pipeline_create: {:?}", e))?;
 
     // Render pass that exercises SetSampler + SetTexture.
@@ -118,15 +109,9 @@ async fn run() -> Result<Vec<u8>, String> {
     pass.set_pipeline(&pipeline);
     pass.set_sampler(
         0,
-        SamplerDesc {
-            min_filter: Filter::Nearest,
-            mag_filter: Filter::Nearest,
-            mip_filter: Filter::Nearest,
-            address_u: AddressMode::ClampToEdge,
-            address_v: AddressMode::ClampToEdge,
-            max_anisotropy: 1,
-            compare: None,
-        },
+        SamplerDesc::default()
+            .with_filters(Filter::Nearest, Filter::Nearest)
+            .with_mip_filter(Filter::Nearest),
     );
     pass.set_texture(1, &source);
     pass.draw(3);

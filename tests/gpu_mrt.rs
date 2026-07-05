@@ -29,16 +29,12 @@ fn mrt_two_color_targets() {
         .render(&target0)
         .unwrap()
         .color_targets(vec![
-            ColorTarget {
-                texture: target0.handle(),
-                load_op: LoadOp::Clear(Color::rgb(1.0, 0.0, 0.0)),
-                store_op: StoreOp::Store,
-            },
-            ColorTarget {
-                texture: target1.handle(),
-                load_op: LoadOp::Clear(Color::rgb(0.0, 1.0, 0.0)),
-                store_op: StoreOp::Store,
-            },
+            ColorTarget::new(&target0)
+                .with_load_op(LoadOp::Clear(Color::rgb(1.0, 0.0, 0.0)))
+                .with_store_op(StoreOp::Store),
+            ColorTarget::new(&target1)
+                .with_load_op(LoadOp::Clear(Color::rgb(0.0, 1.0, 0.0)))
+                .with_store_op(StoreOp::Store),
         ])
         .pulse()
         .unwrap();
@@ -69,16 +65,12 @@ fn mrt_clear_different_colors() {
         .render(&target0)
         .unwrap()
         .color_targets(vec![
-            ColorTarget {
-                texture: target0.handle(),
-                load_op: LoadOp::Clear(Color::rgb(0.0, 0.0, 1.0)), // blue
-                store_op: StoreOp::Store,
-            },
-            ColorTarget {
-                texture: target1.handle(),
-                load_op: LoadOp::Clear(Color::rgb(1.0, 1.0, 0.0)), // yellow
-                store_op: StoreOp::Store,
-            },
+            ColorTarget::new(&target0)
+                .with_load_op(LoadOp::Clear(Color::rgb(0.0, 0.0, 1.0))) // blue
+                .with_store_op(StoreOp::Store),
+            ColorTarget::new(&target1)
+                .with_load_op(LoadOp::Clear(Color::rgb(1.0, 1.0, 0.0))) // yellow
+                .with_store_op(StoreOp::Store),
         ])
         .pulse()
         .unwrap();
@@ -101,11 +93,11 @@ fn mrt_store_op_dont_care() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::WHITE),
-            store_op: StoreOp::DontCare,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::WHITE))
+                .with_store_op(StoreOp::DontCare),
+        ])
         .pulse()
         .unwrap();
     pulse.wait().unwrap();
@@ -127,11 +119,11 @@ fn mrt_load_op_load() {
     let mut pulse1 = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Clear(Color::WHITE),
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::WHITE))
+                .with_store_op(StoreOp::Store),
+        ])
         .pulse()
         .unwrap();
     pulse1.wait().unwrap();
@@ -140,11 +132,11 @@ fn mrt_load_op_load() {
     let mut pulse2 = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::Load,
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Load)
+                .with_store_op(StoreOp::Store),
+        ])
         .pulse()
         .unwrap();
     pulse2.wait().unwrap();
@@ -168,11 +160,11 @@ fn mrt_load_op_dont_care() {
     let mut pulse = gpu
         .render(&target)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: target.handle(),
-            load_op: LoadOp::DontCare,
-            store_op: StoreOp::Store,
-        }])
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::DontCare)
+                .with_store_op(StoreOp::Store),
+        ])
         .pulse()
         .unwrap();
     pulse.wait().unwrap();
@@ -190,30 +182,27 @@ fn mrt_with_depth_target() {
 
     let color = gpu.render_target(w, h, Format::RGBA8).unwrap();
     let depth = gpu
-        .create_texture(&TextureDesc {
-            width: w,
-            height: h,
-            format: Format::Depth32Float,
-            usage: TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(w, h, Format::Depth32Float)
+                .with_usage(TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ)),
+        )
         .unwrap();
 
     let mut pulse = gpu
         .render(&color)
         .unwrap()
-        .color_targets(vec![ColorTarget {
-            texture: color.handle(),
-            load_op: LoadOp::Clear(Color::BLACK),
-            store_op: StoreOp::Store,
-        }])
-        .depth_target(DepthTarget {
-            texture: depth.handle(),
-            load_op: LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)),
-            store_op: StoreOp::Store,
-            stencil_load_op: LoadOp::DontCare,
-            stencil_store_op: StoreOp::DontCare,
-        })
+        .color_targets(vec![
+            ColorTarget::new(&color)
+                .with_load_op(LoadOp::Clear(Color::BLACK))
+                .with_store_op(StoreOp::Store),
+        ])
+        .depth_target(
+            DepthTarget::new(&depth)
+                .with_load_op(LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)))
+                .with_store_op(StoreOp::Store)
+                .with_stencil_load_op(LoadOp::DontCare)
+                .with_stencil_store_op(StoreOp::DontCare),
+        )
         .pulse()
         .unwrap();
     pulse.wait().unwrap();

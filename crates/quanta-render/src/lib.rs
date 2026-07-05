@@ -48,10 +48,11 @@ pub use quanta_dsl::{
 // builds `quanta` with the `render` feature on). A render consumer names
 // them through `quanta_render::*`.
 pub use quanta::{
-    AttributeFormat, BlendFactor, BlendOp, ColorTarget, CompareFunc, CullMode, DepthTarget,
+    AttributeFormat, BlendFactor, BlendOp, ColorTarget, CompareOp, CullMode, DepthTarget,
     IndirectRenderBundle, MeshPipeline, MeshPipelineDesc, Pipeline, PipelineDesc, PresentMode,
-    Primitive, RenderBuilder, RenderPass, ShadingRate, StepMode, Surface, SurfaceConfig,
-    SurfaceFrame, SurfaceTarget, TessTopology, TessellationPipeline, VrsState,
+    Primitive, RenderBuilder, RenderPass, ShaderBinary, ShaderSource, ShaderStage, ShadingRate,
+    StepMode, Surface, SurfaceConfig, SurfaceFrame, SurfaceTarget, TessTopology,
+    TessellationPipeline, VrsState,
 };
 
 mod gpu_ext;

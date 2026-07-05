@@ -21,13 +21,10 @@ fn texture_rgba8_round_trip() {
     let w = 32;
     let h = 32;
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: w,
-            height: h,
-            format: Format::RGBA8,
-            usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(w, h, Format::RGBA8)
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+        )
         .unwrap();
 
     // Gradient pattern
@@ -59,13 +56,10 @@ fn texture_r32float_round_trip() {
     let w = 16;
     let h = 16;
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: w,
-            height: h,
-            format: Format::R32Float,
-            usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(w, h, Format::R32Float)
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+        )
         .unwrap();
 
     // Write float values as raw bytes
@@ -105,13 +99,10 @@ fn texture_depth32float_create() {
     // Depth textures can be created but may not support read-back on all platforms.
     // Verify creation succeeds.
     let _tex = gpu
-        .create_texture(&TextureDesc {
-            width: 64,
-            height: 64,
-            format: Format::Depth32Float,
-            usage: TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(64, 64, Format::Depth32Float)
+                .with_usage(TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ)),
+        )
         .unwrap();
 }
 
@@ -125,13 +116,10 @@ fn texture_partial_write() {
     let w = 16;
     let h = 16;
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: w,
-            height: h,
-            format: Format::RGBA8,
-            usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(w, h, Format::RGBA8)
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+        )
         .unwrap();
 
     // Write full texture with black
@@ -161,16 +149,15 @@ fn texture_mipmap_generation() {
     };
 
     let tex = gpu
-        .create_texture(&TextureDesc {
-            width: 64,
-            height: 64,
-            format: Format::RGBA8,
-            mip_levels: 0, // auto-calculate
-            usage: TextureUsage::SHADER_READ
-                .union(TextureUsage::SHADER_WRITE)
-                .union(TextureUsage::RENDER_TARGET),
-            ..TextureDesc::default()
-        })
+        .create_texture(
+            &TextureDesc::new(64, 64, Format::RGBA8)
+                .with_mip_levels(0) // auto-calculate
+                .with_usage(
+                    TextureUsage::SHADER_READ
+                        .union(TextureUsage::SHADER_WRITE)
+                        .union(TextureUsage::RENDER_TARGET),
+                ),
+        )
         .unwrap();
 
     // Write solid red to base level
@@ -200,13 +187,10 @@ fn texture_multiple_formats_create() {
     ];
 
     for fmt in &formats {
-        let result = gpu.create_texture(&TextureDesc {
-            width: 8,
-            height: 8,
-            format: *fmt,
-            usage: TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE),
-            ..TextureDesc::default()
-        });
+        let result = gpu.create_texture(
+            &TextureDesc::new(8, 8, *fmt)
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+        );
         assert!(
             result.is_ok(),
             "failed to create texture with format {:?}",

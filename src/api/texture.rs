@@ -158,6 +158,17 @@ impl Drop for Texture {
 }
 
 /// Describes how to create a texture.
+///
+/// Marked `#[non_exhaustive]`: fields will be added without a breaking
+/// change. Construct with [`TextureDesc::new`] (or `Default::default()`)
+/// and adjust settings through the `with_*` builder methods:
+///
+/// ```ignore
+/// let desc = TextureDesc::new(1024, 1024, Format::RGBA8)
+///     .with_mip_levels(0) // auto
+///     .with_usage(TextureUsage::SHADER_READ);
+/// ```
+#[non_exhaustive]
 pub struct TextureDesc {
     pub width: u32,
     pub height: u32,
@@ -192,7 +203,60 @@ impl Default for TextureDesc {
     }
 }
 
+impl TextureDesc {
+    /// A 2D texture descriptor with the given extent and format;
+    /// single-sample, one mip level, `SHADER_READ` usage.
+    pub fn new(width: u32, height: u32, format: Format) -> Self {
+        Self {
+            width,
+            height,
+            format,
+            ..Default::default()
+        }
+    }
+
+    /// Set the depth (3D textures).
+    pub fn with_depth(mut self, depth: u32) -> Self {
+        self.depth = depth;
+        self
+    }
+
+    /// Set the texture kind (2D, 3D, cube, array).
+    pub fn with_kind(mut self, kind: TextureKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Set the MSAA sample count.
+    pub fn with_sample_count(mut self, samples: u32) -> Self {
+        self.sample_count = samples;
+        self
+    }
+
+    /// Set the number of mip levels (`0` = auto-calculate).
+    pub fn with_mip_levels(mut self, levels: u32) -> Self {
+        self.mip_levels = levels;
+        self
+    }
+
+    /// Set the array length (array textures).
+    pub fn with_array_length(mut self, length: u32) -> Self {
+        self.array_length = length;
+        self
+    }
+
+    /// Set the usage flags.
+    pub fn with_usage(mut self, usage: TextureUsage) -> Self {
+        self.usage = usage;
+        self
+    }
+}
+
 /// Texture dimensionality.
+///
+/// Marked `#[non_exhaustive]`: kinds can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureKind {
     /// Standard 2D texture.
@@ -303,6 +367,17 @@ impl Drop for Sampler {
 // textures too, so these live with `Sampler` here, not in the render face.
 
 /// Texture sampling configuration.
+///
+/// Marked `#[non_exhaustive]`: fields will be added without a breaking
+/// change. Construct with `SamplerDesc::default()` and adjust settings
+/// through the `with_*` builder methods:
+///
+/// ```ignore
+/// let desc = SamplerDesc::default()
+///     .with_filters(Filter::Nearest, Filter::Nearest)
+///     .with_address_modes(AddressMode::Repeat, AddressMode::Repeat);
+/// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct SamplerDesc {
     pub min_filter: Filter,
@@ -326,6 +401,40 @@ impl Default for SamplerDesc {
             max_anisotropy: 1,
             compare: None,
         }
+    }
+}
+
+impl SamplerDesc {
+    /// Set the minification and magnification filters.
+    pub fn with_filters(mut self, min: Filter, mag: Filter) -> Self {
+        self.min_filter = min;
+        self.mag_filter = mag;
+        self
+    }
+
+    /// Set the mipmap filter.
+    pub fn with_mip_filter(mut self, mip: Filter) -> Self {
+        self.mip_filter = mip;
+        self
+    }
+
+    /// Set the U/V address (wrap) modes.
+    pub fn with_address_modes(mut self, u: AddressMode, v: AddressMode) -> Self {
+        self.address_u = u;
+        self.address_v = v;
+        self
+    }
+
+    /// Set the maximum anisotropy (1 = disabled).
+    pub fn with_max_anisotropy(mut self, max_anisotropy: u8) -> Self {
+        self.max_anisotropy = max_anisotropy;
+        self
+    }
+
+    /// Make this a comparison (depth/shadow) sampler.
+    pub fn with_compare(mut self, compare: CompareOp) -> Self {
+        self.compare = Some(compare);
+        self
     }
 }
 

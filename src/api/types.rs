@@ -1,6 +1,10 @@
 use alloc::string::String;
 
 /// Pixel/data format for textures.
+///
+/// Marked `#[non_exhaustive]`: formats will be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     RGBA8,
@@ -148,6 +152,10 @@ impl Color {
 }
 
 /// GPU device capabilities.
+///
+/// Marked `#[non_exhaustive]`: capability fields will be added without a
+/// breaking change. Constructed by drivers; consumers read the fields.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Caps {
     /// Number of compute units (SM on NVIDIA, CU on AMD).
@@ -176,6 +184,10 @@ impl Caps {
 }
 
 /// GPU vendor — determines which kernel binary format to use.
+///
+/// Marked `#[non_exhaustive]`: vendors can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vendor {
     Amd,
@@ -191,6 +203,10 @@ pub enum Vendor {
 ///
 /// Tracks how a resource is being used so the driver can insert
 /// the correct synchronization between pipeline stages.
+///
+/// Marked `#[non_exhaustive]`: states can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceState {
     /// General-purpose layout (suboptimal but always valid).
@@ -214,6 +230,10 @@ pub enum ResourceState {
 }
 
 /// Load operation for a render target attachment.
+///
+/// Marked `#[non_exhaustive]`: operations can be added — match with a
+/// wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum LoadOp {
     /// Clear the attachment to a specific color at the start.
@@ -225,14 +245,44 @@ pub enum LoadOp {
 }
 
 /// Store operation for a render target attachment.
+///
+/// Marked `#[non_exhaustive]`: operations can be added — match with a
+/// wildcard arm. Construct the MSAA-resolve variant with
+/// [`StoreOp::resolve`], which derives the target from a typed
+/// [`Texture`](crate::Texture) instead of a raw handle.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum StoreOp {
     /// Write results back to memory.
     Store,
     /// Results are not needed — driver may discard.
     DontCare,
-    /// Resolve MSAA samples to the given texture handle.
-    Resolve(u64),
+    /// Resolve MSAA samples to the target texture. Construct with
+    /// [`StoreOp::resolve`].
+    Resolve(ResolveTarget),
+}
+
+impl StoreOp {
+    /// Resolve MSAA samples into `target` at the end of the pass.
+    ///
+    /// `target` must be a single-sample texture with the same
+    /// dimensions and format as the MSAA attachment.
+    pub fn resolve(target: &crate::Texture) -> Self {
+        Self::Resolve(ResolveTarget(target.handle()))
+    }
+}
+
+/// Opaque MSAA-resolve destination carried by [`StoreOp::Resolve`].
+/// Obtained through [`StoreOp::resolve`]; wraps the driver handle so
+/// callers never pass raw `u64`s.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolveTarget(pub(crate) u64);
+
+impl ResolveTarget {
+    /// The driver handle of the resolve destination (read-only).
+    pub fn handle(&self) -> u64 {
+        self.0
+    }
 }
 
 /// Comparison operation for depth/stencil testing and comparison samplers.
@@ -266,6 +316,10 @@ pub enum KernelFormat {
 // === M2.2: Format Capability Queries ===
 
 /// What a given format supports on this device.
+///
+/// Marked `#[non_exhaustive]`: capability fields will be added.
+/// Constructed by drivers; consumers read the fields.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct FormatCaps {
     /// Can be used with a filtering sampler (linear/mip).
@@ -296,36 +350,13 @@ pub enum QueueType {
 }
 
 /// Describes one family of queues on the device.
+///
+/// Marked `#[non_exhaustive]`: fields will be added. Constructed by
+/// drivers; consumers read the fields.
+#[non_exhaustive]
 pub struct QueueFamily {
     /// What kind of work this family can execute.
     pub queue_type: QueueType,
     /// Number of queues available in this family.
     pub count: u32,
-}
-
-// === M4.4: Variable Rate Shading ===
-
-/// Shading rate — controls how many pixels share a single fragment invocation.
-///
-/// Lower rates (e.g. 4x4) reduce shading cost for areas that don't need
-/// per-pixel detail (distant geometry, motion-blurred regions).
-///
-/// Render-only (step 085): gated with the `render` feature.
-#[cfg(feature = "render")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShadingRate {
-    /// One fragment invocation per pixel (full rate).
-    Rate1x1,
-    /// 1x2 coarse pixels.
-    Rate1x2,
-    /// 2x1 coarse pixels.
-    Rate2x1,
-    /// 2x2 coarse pixels.
-    Rate2x2,
-    /// 2x4 coarse pixels.
-    Rate2x4,
-    /// 4x2 coarse pixels.
-    Rate4x2,
-    /// 4x4 coarse pixels (maximum coarseness).
-    Rate4x4,
 }

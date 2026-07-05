@@ -194,16 +194,6 @@ impl Gpu {
 
     // === M4.3: Ray tracing ===
 
-    /// Build a bottom-level acceleration structure from geometry.
-    /// Raw-handle API; prefer `acceleration_structure_blas` for the
-    /// Drop-safe typed wrapper.
-    pub fn build_acceleration_structure(
-        &self,
-        geometry: &[GeometryDesc],
-    ) -> Result<u64, QuantaError> {
-        self.inner.build_acceleration_structure(geometry)
-    }
-
     /// Build a typed bottom-level
     /// [`AccelerationStructure`](crate::AccelerationStructure)
     /// (BLAS) from geometry. Steps 026 + 027.
@@ -230,16 +220,6 @@ impl Gpu {
         })
     }
 
-    /// Create a ray tracing pipeline from shader stages. Raw-handle
-    /// API; prefer `ray_tracing_pipeline` for the Drop-safe typed
-    /// wrapper.
-    pub fn create_ray_tracing_pipeline(
-        &self,
-        desc: &RayTracingPipelineDesc,
-    ) -> Result<u64, QuantaError> {
-        self.inner.create_ray_tracing_pipeline(desc)
-    }
-
     /// Allocate a typed
     /// [`RayTracingPipeline`](crate::RayTracingPipeline) from the
     /// given descriptor. Steps 026 + 027.
@@ -262,15 +242,5 @@ impl Gpu {
             device: self.inner.clone(),
             live: true,
         })
-    }
-
-    /// Dispatch rays through a ray tracing pipeline (raw-handle API).
-    pub fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError> {
-        self.inner.dispatch_rays(pipeline, width, height)
-    }
-
-    /// Destroy an acceleration structure (raw-handle API).
-    pub fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {
-        self.inner.destroy_acceleration_structure(handle)
     }
 }

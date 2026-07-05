@@ -7,19 +7,58 @@ use crate::{
 };
 
 /// A color attachment target with load/store operations.
+///
+/// Construct with [`ColorTarget::new`] from a typed [`Texture`] —
+/// the attachment handle is derived from the texture, never passed as
+/// a raw `u64`.
 pub struct ColorTarget {
-    /// Texture handle for this color attachment.
-    pub texture: u64,
+    /// Driver handle of the attachment texture (derived from the
+    /// `Texture` passed to [`ColorTarget::new`]).
+    pub(crate) texture: u64,
     /// What to do with existing contents at pass start.
     pub load_op: LoadOp,
     /// What to do with results at pass end.
     pub store_op: StoreOp,
 }
 
+impl ColorTarget {
+    /// A color attachment over `texture`, defaulting to
+    /// `LoadOp::Clear(Color::BLACK)` + `StoreOp::Store`.
+    pub fn new(texture: &Texture) -> Self {
+        Self {
+            texture: texture.handle(),
+            load_op: LoadOp::Clear(Color::BLACK),
+            store_op: StoreOp::Store,
+        }
+    }
+
+    /// Set the load operation.
+    pub fn with_load_op(mut self, load_op: LoadOp) -> Self {
+        self.load_op = load_op;
+        self
+    }
+
+    /// Set the store operation.
+    pub fn with_store_op(mut self, store_op: StoreOp) -> Self {
+        self.store_op = store_op;
+        self
+    }
+
+    /// The driver handle of the attachment texture (read-only).
+    pub fn texture_handle(&self) -> u64 {
+        self.texture
+    }
+}
+
 /// A depth/stencil attachment target with load/store operations.
+///
+/// Construct with [`DepthTarget::new`] from a typed [`Texture`] —
+/// the attachment handle is derived from the texture, never passed as
+/// a raw `u64`.
 pub struct DepthTarget {
-    /// Texture handle for the depth/stencil attachment.
-    pub texture: u64,
+    /// Driver handle of the depth/stencil texture (derived from the
+    /// `Texture` passed to [`DepthTarget::new`]).
+    pub(crate) texture: u64,
     /// Depth load operation.
     pub load_op: LoadOp,
     /// Depth store operation.
@@ -28,6 +67,49 @@ pub struct DepthTarget {
     pub stencil_load_op: LoadOp,
     /// Stencil store operation.
     pub stencil_store_op: StoreOp,
+}
+
+impl DepthTarget {
+    /// A depth/stencil attachment over `texture`, defaulting to
+    /// clear-to-1.0 depth, `StoreOp::DontCare`, and don't-care stencil.
+    pub fn new(texture: &Texture) -> Self {
+        Self {
+            texture: texture.handle(),
+            load_op: LoadOp::Clear(Color::WHITE),
+            store_op: StoreOp::DontCare,
+            stencil_load_op: LoadOp::DontCare,
+            stencil_store_op: StoreOp::DontCare,
+        }
+    }
+
+    /// Set the depth load operation.
+    pub fn with_load_op(mut self, load_op: LoadOp) -> Self {
+        self.load_op = load_op;
+        self
+    }
+
+    /// Set the depth store operation.
+    pub fn with_store_op(mut self, store_op: StoreOp) -> Self {
+        self.store_op = store_op;
+        self
+    }
+
+    /// Set the stencil load operation.
+    pub fn with_stencil_load_op(mut self, load_op: LoadOp) -> Self {
+        self.stencil_load_op = load_op;
+        self
+    }
+
+    /// Set the stencil store operation.
+    pub fn with_stencil_store_op(mut self, store_op: StoreOp) -> Self {
+        self.stencil_store_op = store_op;
+        self
+    }
+
+    /// The driver handle of the depth/stencil texture (read-only).
+    pub fn texture_handle(&self) -> u64 {
+        self.texture
+    }
 }
 
 /// An active render pass — record draw commands, then submit.

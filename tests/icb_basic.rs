@@ -249,8 +249,12 @@ fn icb_drop_destroys_handle() {
         icb.handle()
         // icb dropped here
     };
-    // The raw-handle execute path should now fail because the
-    // handle was destroyed.
-    let err = gpu.indirect_buffer_execute(handle, 0).unwrap_err();
+    // The driver-level execute path should now fail because the
+    // handle was destroyed. (The raw-handle API is gone from `Gpu`;
+    // reach through the device handle for the regression check.)
+    let err = gpu
+        .device_handle()
+        .indirect_buffer_execute(handle, 0)
+        .unwrap_err();
     assert!(err.to_string().contains("not found"), "got: {err}");
 }
