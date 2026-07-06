@@ -148,3 +148,213 @@ fn norm_l2() {
     let m = Array::from_slice(&g, &[1.0f32, 2.0, 2.0, 4.0], &[2, 2]).unwrap();
     assert!((m.norm().unwrap() - 5.0).abs() <= 1e-4); // sqrt(1+4+4+16)=5
 }
+
+// ── Factorization-backed solves ─────────────────────────────────────────
+
+/// Host matmul helper reused below (row-major, f64 accumulate) is `host_matmul`.
+
+#[test]
+fn solve_square() {
+    let g = gpu();
+    // A·x = b with A = [[3,1],[1,2]], b = [9,8] → x = [2,3].
+    let a = Array::from_slice(&g, &[3.0f32, 1.0, 1.0, 2.0], &[2, 2]).unwrap();
+    let b = Array::from_slice(&g, &[9.0f32, 8.0], &[2]).unwrap();
+    let x = a.solve(&b).unwrap();
+    assert_eq!(x.shape(), &[2, 1]);
+    approx(&x.to_vec().unwrap(), &[2.0, 3.0], "solve_square");
+    // round-trip: A·x ≈ b
+    let bb = a.matmul(&x).unwrap();
+    approx(&bb.to_vec().unwrap(), &[9.0, 8.0], "solve_roundtrip");
+}
+
+#[test]
+fn solve_multi_rhs() {
+    let g = gpu();
+    let n = 4usize;
+    // Diagonally dominant A for conditioning.
+    let mut ah = vec![0.0f32; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            ah[i * n + j] = if i == j { (n + 2) as f32 } else { 0.5 };
+        }
+    }
+    let a = Array::from_slice(&g, &ah, &[n, n]).unwrap();
+    let nrhs = 3usize;
+    let bh: Vec<f32> = (0..n * nrhs).map(|i| (i % 7) as f32 - 3.0).collect();
+    let b = Array::from_slice(&g, &bh, &[n, nrhs]).unwrap();
+    let x = a.solve(&b).unwrap();
+    assert_eq!(x.shape(), &[n, nrhs]);
+    // round-trip A·X ≈ B
+    let bb = a.matmul(&x).unwrap();
+    approx(&bb.to_vec().unwrap(), &bh, "solve_multi_rhs");
+}
+
+#[test]
+fn lstsq_overdetermined_recovers_solution() {
+    let g = gpu();
+    // Overdetermined m×n, m>n; consistent system b = A·x with known x.
+    let (m, n, nrhs) = (5usize, 3usize, 2usize);
+    let ah: Vec<f32> = (0..m * n)
+        .map(|i| ((i * 7 + 3) % 11) as f32 - 5.0)
+        .collect();
+    let a = Array::from_slice(&g, &ah, &[m, n]).unwrap();
+    let xh: Vec<f32> = (0..n * nrhs).map(|i| (i % 5) as f32 - 2.0).collect();
+    let x_known = Array::from_slice(&g, &xh, &[n, nrhs]).unwrap();
+    // b = A·x  (m×nrhs), so the least-squares solution is exactly x.
+    let b = a.matmul(&x_known).unwrap();
+    let x = a.lstsq(&b).unwrap();
+    assert_eq!(x.shape(), &[n, nrhs]);
+    approx(&x.to_vec().unwrap(), &xh, "lstsq_recovers");
+    // and the residual is minimized: A·x ≈ b
+    let bb = a.matmul(&x).unwrap();
+    approx(
+        &bb.to_vec().unwrap(),
+        &b.to_vec().unwrap(),
+        "lstsq_residual",
+    );
+}
+
+#[test]
+fn lstsq_square_matches_solve() {
+    let g = gpu();
+    // Square case: lstsq should agree with solve.
+    let a = Array::from_slice(&g, &[3.0f32, 1.0, 1.0, 2.0], &[2, 2]).unwrap();
+    let b = Array::from_slice(&g, &[9.0f32, 8.0], &[2, 1]).unwrap();
+    let x = a.lstsq(&b).unwrap();
+    approx(&x.to_vec().unwrap(), &[2.0, 3.0], "lstsq_square");
+}
+
+#[test]
+fn inv_roundtrip() {
+    let g = gpu();
+    let n = 3usize;
+    let ah = [4.0f32, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0];
+    let a = Array::from_slice(&g, &ah, &[n, n]).unwrap();
+    let ainv = a.inv().unwrap();
+    assert_eq!(ainv.shape(), &[n, n]);
+    // A·A⁻¹ ≈ I
+    let prod = a.matmul(&ainv).unwrap();
+    let mut ident = vec![0.0f32; n * n];
+    for i in 0..n {
+        ident[i * n + i] = 1.0;
+    }
+    approx(&prod.to_vec().unwrap(), &ident, "inv_roundtrip");
+}
+
+#[test]
+fn cholesky_spd() {
+    let g = gpu();
+    let n = 3usize;
+    // SPD A = MᵀM + n·I, with M arbitrary.
+    let mh = [1.0f32, 2.0, 0.0, 0.0, 1.0, 3.0, 2.0, 0.0, 1.0];
+    let m_arr = Array::from_slice(&g, &mh, &[n, n]).unwrap();
+    let mt = m_arr.transpose(0, 1).unwrap();
+    let mut a = mt.matmul(&m_arr).unwrap().to_vec().unwrap();
+    for i in 0..n {
+        a[i * n + i] += n as f32;
+    }
+    let a_arr = Array::from_slice(&g, &a, &[n, n]).unwrap();
+    let l = a_arr.cholesky().unwrap();
+    assert_eq!(l.shape(), &[n, n]);
+    // Upper triangle of L must be zero.
+    let lh = l.to_vec().unwrap();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            assert!(lh[i * n + j].abs() <= 1e-5, "L not lower-triangular");
+        }
+    }
+    // L·Lᵀ ≈ A
+    let lt = l.transpose(0, 1).unwrap();
+    let recon = l.matmul(&lt).unwrap();
+    approx(&recon.to_vec().unwrap(), &a, "cholesky_spd");
+}
+
+#[test]
+fn qr_reconstruction() {
+    let g = gpu();
+    let (m, n) = (4usize, 3usize);
+    let ah: Vec<f32> = (0..m * n)
+        .map(|i| ((i * 7 + 1) % 11) as f32 - 5.0)
+        .collect();
+    let a = Array::from_slice(&g, &ah, &[m, n]).unwrap();
+    let (q, r) = a.qr().unwrap();
+    assert_eq!(q.shape(), &[m, n]);
+    assert_eq!(r.shape(), &[n, n]);
+    // Q·R ≈ A
+    let recon = q.matmul(&r).unwrap();
+    approx(&recon.to_vec().unwrap(), &ah, "qr_reconstruction");
+    // QᵀQ ≈ I (orthonormal columns)
+    let qt = q.transpose(0, 1).unwrap();
+    let qtq = qt.matmul(&q).unwrap();
+    let mut ident = vec![0.0f32; n * n];
+    for i in 0..n {
+        ident[i * n + i] = 1.0;
+    }
+    approx(&qtq.to_vec().unwrap(), &ident, "qr_orthonormal");
+    // R upper-triangular
+    let rh = r.to_vec().unwrap();
+    for i in 0..n {
+        for j in 0..i {
+            assert!(rh[i * n + j].abs() <= 1e-4, "R not upper-triangular");
+        }
+    }
+}
+
+#[test]
+fn eigh_symmetric_gpu() {
+    let g = gpu();
+    let n = 3usize;
+    // Symmetric A.
+    let ah = [2.0f32, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0];
+    let a = Array::from_slice(&g, &ah, &[n, n]).unwrap();
+    let (w, v) = a.eigh().unwrap();
+    assert_eq!(w.shape(), &[n]);
+    assert_eq!(v.shape(), &[n, n]);
+    // eigenvalues ascending
+    let wh = w.to_vec().unwrap();
+    for i in 1..n {
+        assert!(wh[i] >= wh[i - 1] - 1e-4, "eigenvalues not ascending");
+    }
+    // A·V ≈ V·diag(w): compare column by column.
+    let av = a.matmul(&v).unwrap().to_vec().unwrap();
+    let vh = v.to_vec().unwrap();
+    let mut vw = vec![0.0f32; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            vw[i * n + j] = vh[i * n + j] * wh[j];
+        }
+    }
+    approx(&av, &vw, "eigh_gpu");
+}
+
+#[test]
+fn svd_reconstruction() {
+    let g = gpu();
+    let (m, n) = (4usize, 3usize);
+    let ah: Vec<f32> = (0..m * n).map(|i| ((i * 5 + 2) % 9) as f32 - 4.0).collect();
+    let a = Array::from_slice(&g, &ah, &[m, n]).unwrap();
+    let (u, s, v) = a.svd().unwrap();
+    assert_eq!(u.shape(), &[m, n]);
+    assert_eq!(s.shape(), &[n]);
+    assert_eq!(v.shape(), &[n, n]);
+    // singular values descending, non-negative
+    let sh = s.to_vec().unwrap();
+    for i in 0..n {
+        assert!(sh[i] >= -1e-5, "negative singular value");
+        if i > 0 {
+            assert!(sh[i] <= sh[i - 1] + 1e-4, "singular values not descending");
+        }
+    }
+    // U·diag(s)·Vᵀ ≈ A
+    let uh = u.to_vec().unwrap();
+    let mut us = vec![0.0f32; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            us[i * n + j] = uh[i * n + j] * sh[j];
+        }
+    }
+    let us_arr = Array::from_slice(&g, &us, &[m, n]).unwrap();
+    let vt = v.transpose(0, 1).unwrap();
+    let recon = us_arr.matmul(&vt).unwrap();
+    approx(&recon.to_vec().unwrap(), &ah, "svd_reconstruction");
+}
