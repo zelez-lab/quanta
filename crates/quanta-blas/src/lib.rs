@@ -50,6 +50,8 @@
 //!   Level-3, in place on B, all side/uplo/trans/diag variants
 //! - [`eigh`](eigh::eigh) — symmetric eigendecomposition `A = V·Λ·Vᵀ`
 //!   (eigenvalues ascending, orthonormal eigenvectors) via cyclic Jacobi
+//! - [`svd`](svd::svd) — economy singular value decomposition `A = U·Σ·Vᵀ`
+//!   (`m ≥ n`; singular values descending) via one-sided Jacobi
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -115,6 +117,8 @@ pub mod lu;
 #[cfg(feature = "gpu")]
 pub mod qr;
 #[cfg(feature = "gpu")]
+pub mod svd;
+#[cfg(feature = "gpu")]
 pub mod symm;
 #[cfg(feature = "gpu")]
 pub mod syr2k;
@@ -143,6 +147,8 @@ pub use mixed_quant::{GemmQuantType, gemm_quant, gemm_quant4, gemv_quant, gemv_q
 pub use mixed_tc::gemm_f32_tc;
 #[cfg(feature = "gpu")]
 pub use qr::{lstsq, qr};
+#[cfg(feature = "gpu")]
+pub use svd::svd;
 #[cfg(feature = "gpu")]
 pub use symm::symm;
 #[cfg(feature = "gpu")]

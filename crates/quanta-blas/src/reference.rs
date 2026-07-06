@@ -891,6 +891,104 @@ pub fn syev(uplo: Uplo, n: usize, a: &[f32], w: &mut [f32]) -> Vec<f32> {
     vout
 }
 
+/// `gesvd`: economy singular value decomposition of an `m×n` (`m ≥ n`)
+/// row-major matrix via one-sided Jacobi, in f64. Orthogonalises the
+/// columns of `A` by right Givens rotations (`A ← A·J`), accumulating the
+/// right factor `V`; on convergence the column norms are the singular
+/// values and the normalised columns are `U`. Returns `(U, s, V)`:
+/// `U` is `m×n` (orthonormal columns), `s` the `n` singular values
+/// (descending), `V` the `n×n` right-singular matrix (orthonormal). The
+/// differential-test ground truth for [`crate::svd`]. Iterative: cyclic
+/// sweeps until every column pair is orthogonal to tolerance.
+pub fn gesvd(m: usize, n: usize, a: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    assert_eq!(a.len(), m * n, "gesvd: A must be m×n");
+    assert!(m >= n, "gesvd: requires m >= n (economy SVD)");
+    // Working column-orthogonalisation target `w = A` (m×n) and `V = I` (n×n),
+    // both in f64.
+    let mut w: Vec<f64> = a.iter().map(|&x| x as f64).collect();
+    let mut vv = vec![0.0f64; n * n];
+    for i in 0..n {
+        vv[i * n + i] = 1.0;
+    }
+    const MAX_SWEEPS: usize = 60;
+    const TOL: f64 = 1e-14;
+    for _ in 0..MAX_SWEEPS {
+        let mut off = 0.0f64;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                // Column inner products of the current w.
+                let mut alpha = 0.0; // ⟨w_p, w_p⟩
+                let mut beta = 0.0; // ⟨w_q, w_q⟩
+                let mut gamma = 0.0; // ⟨w_p, w_q⟩
+                for i in 0..m {
+                    let wip = w[i * n + p];
+                    let wiq = w[i * n + q];
+                    alpha += wip * wip;
+                    beta += wiq * wiq;
+                    gamma += wip * wiq;
+                }
+                if gamma.abs() > off {
+                    off = gamma.abs();
+                }
+                if gamma.abs() <= TOL * (alpha * beta).sqrt().max(f64::MIN_POSITIVE) {
+                    continue;
+                }
+                // One-sided Jacobi angle orthogonalising columns (p, q).
+                let zeta = (beta - alpha) / (2.0 * gamma);
+                let t = zeta.signum() / (zeta.abs() + (zeta * zeta + 1.0).sqrt());
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                // Apply the right rotation to w columns (p, q) and to V columns.
+                for i in 0..m {
+                    let wip = w[i * n + p];
+                    let wiq = w[i * n + q];
+                    w[i * n + p] = c * wip - s * wiq;
+                    w[i * n + q] = s * wip + c * wiq;
+                }
+                for i in 0..n {
+                    let vip = vv[i * n + p];
+                    let viq = vv[i * n + q];
+                    vv[i * n + p] = c * vip - s * viq;
+                    vv[i * n + q] = s * vip + c * viq;
+                }
+            }
+        }
+        if off <= TOL {
+            break;
+        }
+    }
+    // Column norms of w are the singular values; normalise to get U columns.
+    let mut sig = vec![0.0f64; n];
+    for j in 0..n {
+        let mut nrm = 0.0;
+        for i in 0..m {
+            nrm += w[i * n + j] * w[i * n + j];
+        }
+        sig[j] = nrm.sqrt();
+    }
+    // Sort descending; permute U columns and V columns to match.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| {
+        sig[j]
+            .partial_cmp(&sig[i])
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    let mut u_out = vec![0.0f32; m * n];
+    let mut s_out = vec![0.0f32; n];
+    let mut v_out = vec![0.0f32; n * n];
+    for (newc, &oldc) in order.iter().enumerate() {
+        s_out[newc] = sig[oldc] as f32;
+        let denom = if sig[oldc] > 1e-300 { sig[oldc] } else { 1.0 };
+        for i in 0..m {
+            u_out[i * n + newc] = (w[i * n + oldc] / denom) as f32;
+        }
+        for i in 0..n {
+            v_out[i * n + newc] = vv[i * n + oldc] as f32;
+        }
+    }
+    (u_out, s_out, v_out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
