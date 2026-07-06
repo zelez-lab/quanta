@@ -112,6 +112,8 @@ import Quanta.Blas.Triangular
 import Quanta.Blas.Cholesky
 -- LU (getrf) per-step contract: U-row + L-column exact residual + rounding decomposition
 import Quanta.Blas.Lu
+-- Householder QR (geqrf) per-step contract: reflector norm-preservation + trailing-update rounding decomposition
+import Quanta.Blas.Qr
 
 -- Reverse-mode autodiff VJP correctness (companion crate quanta-autograd)
 import Quanta.Autograd.Vjp

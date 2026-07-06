@@ -38,6 +38,10 @@
 //! - [`lu_solve`](lu::lu_solve) — solve `A·X = B` for general `A` via LU +
 //!   pivot permutation + two triangular solves
 //! - [`lu_inv`](lu::lu_inv) — `A⁻¹` for general `A` via LU + solve against `I`
+//! - [`qr`](qr::qr) — `A = Q·R` Householder factorisation of an `m×n`
+//!   (`m ≥ n`) matrix, in-place (`R` upper, reflector tails lower, `tau` out)
+//! - [`lstsq`](qr::lstsq) — least-squares `min‖A·X − B‖` via QR (`Qᵀ` applied
+//!   to `B`, then a back-substitution with `R`)
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -98,6 +102,8 @@ pub mod triangular;
 pub mod cholesky;
 #[cfg(feature = "gpu")]
 pub mod lu;
+#[cfg(feature = "gpu")]
+pub mod qr;
 
 pub use params::{Diag, Side, Trans, Uplo};
 
@@ -117,6 +123,8 @@ pub use mixed::{GemmInputType, gemm_mixed, gemm_mixed8, gemv_mixed, gemv_mixed8}
 pub use mixed_quant::{GemmQuantType, gemm_quant, gemm_quant4, gemv_quant, gemv_quant4};
 #[cfg(feature = "gpu")]
 pub use mixed_tc::gemm_f32_tc;
+#[cfg(feature = "gpu")]
+pub use qr::{lstsq, qr};
 #[cfg(feature = "gpu")]
 pub use syrk::syrk;
 #[cfg(feature = "gpu")]

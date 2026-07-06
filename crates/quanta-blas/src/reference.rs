@@ -505,6 +505,133 @@ pub fn getrf(n: usize, a: &mut [f32], ipiv: &mut [usize]) {
     }
 }
 
+/// `geqrf`: Householder QR of an `m×n` (`m ≥ n`) row-major matrix, in f64.
+/// On return the upper triangle of `a` holds `R`, the strict lower part the
+/// essential reflector tails (`v_i`, `i > k`, with implicit `v_k = 1` under
+/// the LAPACK scaling — here we store the *un-normalised* `v` so it matches
+/// the GPU kernel's scratch layout: `v_k = x_k − α`), and `tau[k] = 2/(vᵀv)`.
+pub fn geqrf(m: usize, n: usize, a: &mut [f32], tau: &mut [f32]) {
+    assert_eq!(a.len(), m * n, "geqrf: A must be m×n");
+    assert_eq!(tau.len(), n, "geqrf: tau must have length n");
+    assert!(m >= n, "geqrf: requires m >= n");
+    // Work in f64; keep a full reflector buffer V (m×n) as the GPU path does.
+    let mut af: Vec<f64> = a.iter().map(|&x| x as f64).collect();
+    let mut vv: Vec<f64> = vec![0.0; m * n];
+    for k in 0..n {
+        // ‖x‖² over rows i in [k, m).
+        let mut nrm2 = 0.0f64;
+        for i in k..m {
+            let xi = af[i * n + k];
+            nrm2 += xi * xi;
+        }
+        let xnorm = nrm2.sqrt();
+        let xk = af[k * n + k];
+        let sgn = if xk < 0.0 { -1.0 } else { 1.0 };
+        let alpha = -sgn * xnorm;
+        let vk = xk - alpha;
+        let tail = nrm2 - xk * xk;
+        let vtv = vk * vk + tail;
+        let tau_k = if vtv > 0.0 { 2.0 / vtv } else { 0.0 };
+        // Store v into the scratch column and reflector tail below R.
+        for i in k..m {
+            let vi = if i == k { vk } else { af[i * n + k] };
+            vv[i * n + k] = vi;
+        }
+        af[k * n + k] = alpha;
+        for i in (k + 1)..m {
+            af[i * n + k] = vv[i * n + k];
+        }
+        tau[k] = tau_k as f32;
+        // Apply H = I − τ·v·vᵀ to the trailing columns j > k.
+        for j in (k + 1)..n {
+            let mut dot = 0.0f64;
+            for p in k..m {
+                dot += vv[p * n + k] * af[p * n + j];
+            }
+            let scale = tau_k * dot;
+            for i in k..m {
+                af[i * n + j] -= scale * vv[i * n + k];
+            }
+        }
+    }
+    for (dst, &src) in a.iter_mut().zip(af.iter()) {
+        *dst = src as f32;
+    }
+}
+
+/// Reconstruct the explicit `m×m` orthogonal factor `Q = H_0·H_1···H_{n-1}`
+/// from the reflectors that [`geqrf`] left in `a` (below-diagonal tails, with
+/// `v_k = a[k,k]_pre` recovered as `x_k − α`) and `tau`. Returned row-major
+/// `m×m`. Used by the differential test to check `Q·R ≈ A`.
+///
+/// The reflector `v` for column `k` is recomputed the same way `geqrf`
+/// stored it. `v_k` is not recoverable from the packed `a` alone (its
+/// diagonal now holds `α`), so this helper takes the **original** matrix
+/// `a0` and re-runs the factorisation to rebuild each `v`, exactly mirroring
+/// `geqrf`. It is a test oracle, not a production routine.
+pub fn form_q(m: usize, n: usize, a0: &[f32]) -> Vec<f32> {
+    assert_eq!(a0.len(), m * n);
+    // Re-run the factorisation to recover the reflector vectors, then
+    // accumulate Q = H_0···H_{n-1} applied to the identity.
+    let mut af: Vec<f64> = a0.iter().map(|&x| x as f64).collect();
+    let mut vs: Vec<Vec<f64>> = Vec::with_capacity(n); // v[k] full length m
+    let mut taus: Vec<f64> = Vec::with_capacity(n);
+    for k in 0..n {
+        let mut nrm2 = 0.0f64;
+        for i in k..m {
+            let xi = af[i * n + k];
+            nrm2 += xi * xi;
+        }
+        let xnorm = nrm2.sqrt();
+        let xk = af[k * n + k];
+        let sgn = if xk < 0.0 { -1.0 } else { 1.0 };
+        let alpha = -sgn * xnorm;
+        let vk = xk - alpha;
+        let tail = nrm2 - xk * xk;
+        let vtv = vk * vk + tail;
+        let tau_k = if vtv > 0.0 { 2.0 / vtv } else { 0.0 };
+        let mut v = vec![0.0f64; m];
+        for i in k..m {
+            v[i] = if i == k { vk } else { af[i * n + k] };
+        }
+        // Apply to trailing columns to advance af (so column k+1 sees the update).
+        for j in (k + 1)..n {
+            let mut dot = 0.0f64;
+            for p in k..m {
+                dot += v[p] * af[p * n + j];
+            }
+            let scale = tau_k * dot;
+            for i in k..m {
+                af[i * n + j] -= scale * v[i];
+            }
+        }
+        af[k * n + k] = alpha;
+        vs.push(v);
+        taus.push(tau_k);
+    }
+    // Q = H_0·(H_1·(···)). Build by applying H_k (k = n-1 … 0) to identity.
+    let mut q = vec![0.0f64; m * m];
+    for i in 0..m {
+        q[i * m + i] = 1.0;
+    }
+    for k in (0..n).rev() {
+        let v = &vs[k];
+        let tau_k = taus[k];
+        // Q ← H_k · Q : for each column j, Q[:,j] −= τ·v·(vᵀ Q[:,j]).
+        for j in 0..m {
+            let mut dot = 0.0f64;
+            for p in k..m {
+                dot += v[p] * q[p * m + j];
+            }
+            let scale = tau_k * dot;
+            for i in k..m {
+                q[i * m + j] -= scale * v[i];
+            }
+        }
+    }
+    q.iter().map(|&x| x as f32).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
