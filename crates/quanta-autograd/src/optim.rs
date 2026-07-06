@@ -1,10 +1,12 @@
-//! Optimizers — SGD and Adam.
+//! Optimizers — SGD, Adam, and AdamW.
 //!
 //! An optimizer updates parameters from their gradients. This is plain array
 //! math *outside* the tape (no autodiff, no new kernels) — the tape produces the
 //! gradients; the optimizer consumes them. `Sgd` is the one-liner `p ← p − lr·g`;
 //! `Adam` keeps per-parameter first/second moment buffers for the adaptive,
-//! momentum-based update that converges fast in practice.
+//! momentum-based update that converges fast in practice. `AdamW` is `Adam` with
+//! **decoupled** weight decay (the transformer-training default) — the decay is
+//! applied to the parameter directly, not folded into the gradient/moments.
 
 use quanta_array::{Array, ArrayError};
 
@@ -41,20 +43,35 @@ pub struct Adam {
     pub beta1: f32,
     pub beta2: f32,
     pub eps: f32,
+    /// Decoupled weight decay (AdamW). `0.0` = plain Adam. Applied as
+    /// `p ← p·(1 − lr·wd)` *before* the adaptive update, so it never enters the
+    /// moment estimates (that decoupling is what distinguishes AdamW from
+    /// L2-regularized Adam).
+    pub weight_decay: f32,
     t: i32,
     state: Vec<(Array<f32>, Array<f32>)>, // (m, v) per parameter slot
 }
 
 impl Adam {
-    /// Adam with the usual defaults (β1=0.9, β2=0.999, ε=1e-8).
+    /// Adam with the usual defaults (β1=0.9, β2=0.999, ε=1e-8), no weight decay.
     pub fn new(lr: f32) -> Self {
         Adam {
             lr,
             beta1: 0.9,
             beta2: 0.999,
             eps: 1e-8,
+            weight_decay: 0.0,
             t: 0,
             state: Vec::new(),
+        }
+    }
+
+    /// AdamW: Adam with decoupled weight decay `wd` (the transformer-training
+    /// default). Same defaults otherwise.
+    pub fn adamw(lr: f32, weight_decay: f32) -> Self {
+        Adam {
+            weight_decay,
+            ..Adam::new(lr)
         }
     }
 
@@ -100,10 +117,17 @@ impl Adam {
         let mhat = m.mul(&scalar(&m, 1.0 / bc1)?)?;
         let vhat = v.mul(&scalar(&v, 1.0 / bc2)?)?;
 
-        // p ← p − lr · m̂ / (√v̂ + ε)
+        // p ← p·(1 − lr·wd) − lr · m̂ / (√v̂ + ε).
+        // Decoupled weight decay (AdamW): shrink p directly, outside the moments.
+        // wd = 0 leaves this a no-op (plain Adam).
+        let decayed = if self.weight_decay != 0.0 {
+            p.mul(&scalar(p, 1.0 - lr * self.weight_decay)?)?
+        } else {
+            p.shallow_clone()
+        };
         let denom = vhat.sqrt()?.add(&scalar(&vhat, eps)?)?;
         let update = mhat.div(&denom)?.mul(&scalar(&mhat, lr)?)?;
-        let new_p = p.sub(&update)?;
+        let new_p = decayed.sub(&update)?;
 
         self.state[slot] = (m, v);
         Ok(new_p)
