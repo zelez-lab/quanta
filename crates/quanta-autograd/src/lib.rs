@@ -46,10 +46,12 @@ pub mod loss;
 pub mod ops;
 pub mod optim;
 pub mod pool;
+pub mod rope;
 pub mod scalar;
 pub mod tape;
 pub mod vjp;
 
 pub use error::AutogradError;
+pub use rope::RopeCache;
 pub use scalar::DiffScalar;
 pub use tape::{Tape, Var};

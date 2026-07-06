@@ -1625,3 +1625,128 @@ fn grad_multi_head_attention() {
     }
     assert_close(&gx, &numeric, 2e-2, "multi_head_attention grad x");
 }
+
+// ── RoPE (rotary position embeddings) ───────────────────────────────────────
+
+/// Host reference for the rope caches: cos/sin `[t, d]` and the loss of
+/// `rope(x)` (sum of squares) for a `[t, d]` input laid out row-major.
+fn rope_caches(t: usize, d: usize, base: f64) -> (Vec<f32>, Vec<f32>) {
+    let half = d / 2;
+    let mut cos = vec![0.0f32; t * d];
+    let mut sin = vec![0.0f32; t * d];
+    for p in 0..t {
+        for i in 0..half {
+            let theta = (p as f64) * base.powf(-2.0 * (i as f64) / (d as f64));
+            let (c, s) = (theta.cos() as f32, theta.sin() as f32);
+            cos[p * d + i] = c;
+            cos[p * d + i + half] = c;
+            sin[p * d + i] = s;
+            sin[p * d + i + half] = s;
+        }
+    }
+    (cos, sin)
+}
+
+/// Host `rope(x)` for a `[t, d]` row-major input: `x⊙cos + rotate_half(x)⊙sin`,
+/// `rotate_half([a,b]) = [−b, a]`.
+fn host_rope(x: &[f32], t: usize, d: usize, cos: &[f32], sin: &[f32]) -> Vec<f32> {
+    let half = d / 2;
+    let mut out = vec![0.0f32; t * d];
+    for p in 0..t {
+        for j in 0..d {
+            let rh = if j < half {
+                -x[p * d + j + half]
+            } else {
+                x[p * d + j - half]
+            };
+            out[p * d + j] = x[p * d + j] * cos[p * d + j] + rh * sin[p * d + j];
+        }
+    }
+    out
+}
+
+#[test]
+fn grad_rope() {
+    use quanta_autograd::{RopeCache, Var};
+    let g = gpu();
+    let (t, d) = (3usize, 4usize);
+    let base = 10000.0f64;
+    let xh: Vec<f32> = (0..t * d).map(|i| ((i as f32) * 0.7).sin() * 0.5).collect();
+    let (cos, sin) = rope_caches(t, d, base);
+
+    // Analytic gradient via the tape (loss = sum(rope(x)²)).
+    let cache = RopeCache::<f32>::new(&g, t, d, base).unwrap();
+    let tape = Tape::<f32>::new();
+    let x = tape.var(Array::from_slice(&g, &xh, &[t, d]).unwrap());
+    let out: Var<f32> = x.rope(&cache).unwrap();
+    let loss = out.mul(&out).unwrap().sum().unwrap();
+    let gx = loss.grad(&x).unwrap().to_vec().unwrap();
+
+    // Numeric gradient via central difference on the host rope.
+    let host_loss =
+        |xin: &[f32]| -> f32 { host_rope(xin, t, d, &cos, &sin).iter().map(|v| v * v).sum() };
+    let h = 1e-3f32;
+    let mut numeric = vec![0.0f32; t * d];
+    for j in 0..t * d {
+        let mut xp = xh.clone();
+        let mut xm = xh.clone();
+        xp[j] += h;
+        xm[j] -= h;
+        numeric[j] = (host_loss(&xp) - host_loss(&xm)) / (2.0 * h);
+    }
+    assert_close(&gx, &numeric, 2e-2, "rope grad x");
+}
+
+#[test]
+fn rope_preserves_norm_and_relative_position() {
+    use quanta_autograd::{RopeCache, Var};
+    let g = gpu();
+    let (t, d) = (4usize, 4usize);
+    let base = 10000.0f64;
+    let cache = RopeCache::<f32>::new(&g, t, d, base).unwrap();
+
+    // A single [t, d] "query" set; check ‖rope(x)_p‖ = ‖x_p‖ per position
+    // (RoPE is an orthogonal rotation per position).
+    let xh: Vec<f32> = (0..t * d).map(|i| ((i as f32) * 1.3 + 0.4).cos()).collect();
+    let tape = Tape::<f32>::new();
+    let x = tape.var(Array::from_slice(&g, &xh, &[t, d]).unwrap());
+    let out: Var<f32> = x.rope(&cache).unwrap();
+    let ov = out.value().to_vec().unwrap();
+    for p in 0..t {
+        let nin: f32 = xh[p * d..(p + 1) * d]
+            .iter()
+            .map(|v| v * v)
+            .sum::<f32>()
+            .sqrt();
+        let nout: f32 = ov[p * d..(p + 1) * d]
+            .iter()
+            .map(|v| v * v)
+            .sum::<f32>()
+            .sqrt();
+        assert!(
+            (nin - nout).abs() < 1e-3,
+            "pos {p}: ‖rope(x)‖ {nout} != ‖x‖ {nin}"
+        );
+    }
+
+    // Relative-position property: ⟨rope(q,m), rope(k,n)⟩ depends only on m−n.
+    // Take the SAME underlying q, k at two pairs with equal offset (m−n = 1):
+    // (m,n) = (1,0) and (3,2). The dot products must match.
+    let (cos, sin) = rope_caches(t, d, base);
+    let q: Vec<f32> = (0..d).map(|i| ((i as f32) + 0.2).sin()).collect();
+    let k: Vec<f32> = (0..d).map(|i| ((i as f32) * 0.9 + 1.1).cos()).collect();
+    let rope_at = |v: &[f32], pos: usize| -> Vec<f32> {
+        // reuse host_rope by placing v at row `pos` of a [t,d] buffer
+        let mut buf = vec![0.0f32; t * d];
+        buf[pos * d..(pos + 1) * d].copy_from_slice(v);
+        let r = host_rope(&buf, t, d, &cos, &sin);
+        r[pos * d..(pos + 1) * d].to_vec()
+    };
+    let dot = |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
+    let d10 = dot(&rope_at(&q, 1), &rope_at(&k, 0));
+    let d32 = dot(&rope_at(&q, 3), &rope_at(&k, 2));
+    assert!(
+        (d10 - d32).abs() < 1e-3,
+        "relative-position broken: ⟨m=1,n=0⟩={d10} vs ⟨m=3,n=2⟩={d32}"
+    );
+}
