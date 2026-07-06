@@ -1343,6 +1343,66 @@ fn layer_norm_affine_and_grad() {
 }
 
 #[test]
+fn rms_norm_and_grad() {
+    // rmsnorm(x)·γ, no mean-subtraction. Each row has unit RMS before scaling.
+    let g = gpu();
+    let (n, c) = (2usize, 4usize);
+    let x: Vec<f32> = (0..n * c).map(|i| (i as f32) - 3.0 + 0.5).collect();
+    let eps = 1e-5f64;
+
+    // Forward: check each row's RMS is ≈ 1 with γ = 1.
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let gamma1 = tape.var(Array::from_slice(&g, &vec![1.0f32; c], &[c]).unwrap());
+    let out = xv.rms_norm(&gamma1, eps).unwrap();
+    let ov = out.value().to_vec().unwrap();
+    for i in 0..n {
+        let row = &ov[i * c..(i + 1) * c];
+        let ms: f32 = row.iter().map(|v| v * v).sum::<f32>() / c as f32;
+        assert!(
+            (ms.sqrt() - 1.0).abs() < 1e-2,
+            "row {i} rms {} != 1",
+            ms.sqrt()
+        );
+    }
+
+    // Finite-difference gradient check on x (loss = sum(out²), γ = 1).
+    let host_loss = |xin: &[f32]| -> f32 {
+        let mut l = 0.0f32;
+        for i in 0..n {
+            let row = &xin[i * c..(i + 1) * c];
+            let ms = row.iter().map(|v| v * v).sum::<f32>() / c as f32 + eps as f32;
+            let rms = ms.sqrt();
+            for &v in row {
+                let o = v / rms;
+                l += o * o;
+            }
+        }
+        l
+    };
+    let mut numeric = vec![0.0f32; n * c];
+    let h = 1e-3f32;
+    for j in 0..n * c {
+        let mut xp = x.clone();
+        let mut xm = x.clone();
+        xp[j] += h;
+        xm[j] -= h;
+        numeric[j] = (host_loss(&xp) - host_loss(&xm)) / (2.0 * h);
+    }
+    let tape2 = Tape::<f32>::new();
+    let xv2 = tape2.var(Array::from_slice(&g, &x, &[n, c]).unwrap());
+    let gamma2 = tape2.var(Array::from_slice(&g, &vec![1.0f32; c], &[c]).unwrap());
+    let out2 = xv2.rms_norm(&gamma2, eps).unwrap();
+    let loss2 = out2.mul(&out2).unwrap().sum().unwrap();
+    let gx = loss2.grad(&xv2).unwrap().to_vec().unwrap();
+    assert_close(&gx, &numeric, 3e-2, "rms_norm grad x");
+
+    // γ gradient exists and is finite.
+    let ggamma = loss2.grad(&gamma2).unwrap().to_vec().unwrap();
+    assert!(ggamma.iter().all(|v| v.is_finite()) && ggamma.iter().any(|&v| v.abs() > 1e-6));
+}
+
+#[test]
 fn grad_upsample2d() {
     // out = upsample2d(x, 2); L = sum(out · W). ∂L/∂x[p] = sum of W over the 2×2
     // block p maps to (upsample's adjoint is a block-sum).

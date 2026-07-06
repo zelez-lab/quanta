@@ -91,6 +91,38 @@ impl<T: DiffScalar> Var<T> {
         normed.mul(&g2)?.add(&b2)
     }
 
+    /// Root-mean-square layer norm (the LLaMA / T5 normalizer): no mean
+    /// subtraction, no bias. `rmsnorm(x) = x / √(mean(x²) + eps) · γ`, over the
+    /// last dimension of a 2-D `[N, C]` input; `γ` is `[C]`. Composed from ops
+    /// that already carry VJP, so the backward flows through the tape.
+    pub fn rms_norm(&self, gamma: &Var<T>, eps: f64) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        if x.shape().len() != 2 {
+            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("rms_norm: input must be 2-D [N, C]"),
+            )));
+        }
+        let (n, c) = (x.shape()[0], x.shape()[1]);
+        let g = x.gpu();
+
+        // ms = mean(x²) over C (keepdims [N,1]); rms = √(ms + eps)
+        let ms = self.mul(self)?.mean_axis(1)?; // [N, 1]
+        let eps_v = {
+            let tape = Tape::from_inner(std::rc::Rc::clone(&self.tape));
+            tape.var(
+                Array::full(g, T::from_f64(eps), &[1])?
+                    .broadcast_to(&[n, 1])?
+                    .contiguous()?,
+            )
+        };
+        let rms = ms.add(&eps_v)?.sqrt()?; // [N, 1]
+        let normed = self.div(&rms)?; // [N, C], broadcasts [N,1] over C
+
+        // scale by γ ([C] → [1, C], broadcast over the N rows).
+        let g2 = gamma.reshape(&[1, c])?;
+        normed.mul(&g2)
+    }
+
     /// Mean of all elements → a scalar `Var`. `sum / n`, with `n` a detached
     /// constant. The reduction for an average loss or a batch mean.
     pub fn mean(&self) -> Result<Var<T>, AutogradError> {
