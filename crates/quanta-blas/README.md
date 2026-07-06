@@ -29,6 +29,31 @@ reductions).
 | `trsv` | `trsv(gpu, uplo, trans, diag, n, &a, &x)` | solve `op(A)·x = b`, A `n×n` triangular, in place on x (all uplo/trans/diag variants) |
 | `trsm` | `trsm(gpu, side, uplo, trans, diag, m, n, α, &a, &b)` | solve `op(A)·X = α·B` / `X·op(A) = α·B`, A triangular, in place on B (all side/uplo/trans/diag variants) |
 | `syrk` | `syrk(gpu, uplo, trans, n, k, α, &a, β, &c)` | `C ← α·op(A)·op(A)ᵀ + β·C`, C symmetric, only the `uplo` triangle updated (both forms) |
+| `symm` | `symm(gpu, side, uplo, m, n, α, &a, &b, β, &c)` | `C ← α·A·B + β·C` (or `B·A`), A symmetric (only `uplo` read); both side forms |
+| `syr2k` | `syr2k(gpu, uplo, trans, n, k, α, &a, &b, β, &c)` | `C ← α·(A·Bᵀ + B·Aᵀ) + β·C`, C symmetric, only `uplo` updated (both forms) |
+| `trmm` | `trmm(gpu, side, uplo, trans, diag, m, n, α, &a, &b)` | `B ← α·op(A)·B` (or `B·op(A)`), A triangular, in place on B (all variants) |
+| `cholesky` | `cholesky(gpu, uplo, n, &a)` | `A = L·Lᵀ` / `Uᵀ·U`, in-place SPD factorisation |
+| `chol_solve` | `chol_solve(gpu, uplo, n, nrhs, &a, &b)` | solve `A·X = B` for SPD A (potrf + two trsm) |
+| `lu` | `lu(gpu, n, &a, &ipiv)` | `P·A = L·U`, in-place, partial pivoting |
+| `lu_solve` / `lu_inv` | `lu_solve(gpu, n, nrhs, &a, &ipiv, &b)` | general solve / inverse via LU |
+| `qr` | `qr(gpu, m, n, &a, &tau)` | `A = Q·R` Householder (m≥n), in place |
+| `lstsq` | `lstsq(gpu, m, n, nrhs, &a, &tau, &b)` | least-squares `min‖A·X − B‖` via QR |
+| `eigh` | `eigh(gpu, uplo, n, &a, &w, &v)` | symmetric eigendecomposition `A = V·Λ·Vᵀ` (cyclic Jacobi) |
+| `svd` | `svd(gpu, m, n, &a, &u, &s, &v)` | economy SVD `A = U·Σ·Vᵀ` (m≥n) via one-sided Jacobi |
+
+### Scope
+
+The surface is **correctness-complete for the practical set**: full L1/L2/L3
+BLAS, the exact factorisations (`cholesky`/`lu`/`qr`) with their solves,
+inverse, and least-squares, and the iterative symmetric decompositions
+(`eigh`/`svd`) — everything the array/ML layers and common `numpy.linalg`
+need. **The one deferred op is the general (non-symmetric) eigendecomposition**
+(`np.linalg.eig` on an arbitrary matrix): a deliberate gap, since it needs
+complex eigenvalues (a departure from the real-`f32` surface) and a
+Hessenberg → Francis-QR iteration that is research-grade to make robust, for a
+low-demand op (consumers want the symmetric case, which `eigh` covers). The
+remaining non-correctness work is performance (blocked-panel factorisations,
+tensor-core tuning), tracked separately.
 
 The triangular solves and `syrk` are the LU/Cholesky building blocks. `trsm`
 runs one thread per independent RHS lane (column for `Side::Left`, row for

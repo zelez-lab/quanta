@@ -67,6 +67,26 @@
 //! differential-test oracle in [`reference`]). Enable `gpu` (plus a backend
 //! feature like `gpu-metal`) for the JIT ops in [`level1`].
 //!
+//! ## Scope (what's complete, what's deferred)
+//!
+//! The linear-algebra surface is **correctness-complete for the practical
+//! set**: Level-1/2/3 BLAS (including `symm`/`syr2k`/`trmm`), the exact
+//! factorisations (`cholesky`, `lu`, `qr`) with their solves/inverse/
+//! least-squares, and the iterative symmetric decompositions (`eigh`, `svd`).
+//! Together these cover everything the array/ML layers and the common
+//! `numpy.linalg` surface need.
+//!
+//! **The one deferred op is the general (non-symmetric) eigendecomposition**
+//! (`np.linalg.eig` on an arbitrary matrix). It is a deliberate gap, not an
+//! oversight: it requires complex eigenvalues (a departure from this crate's
+//! real-`f32` surface) and a Hessenberg-reduction → Francis double-shift QR
+//! iteration whose robust implementation is research-grade, for a
+//! comparatively low-demand op (the ML/array consumers want the *symmetric*
+//! case, which `eigh` covers). It is documented here rather than shipped as a
+//! fragile approximation. The remaining non-correctness work is performance
+//! (blocked-panel factorisations, per-backend tensor-core tuning), tracked
+//! separately.
+//!
 //! ## Performance framing (honest)
 //!
 //! quanta-blas v0.1 targets ~50% of vendor BLAS on tier-1 datacentre GPUs,
