@@ -48,6 +48,8 @@
 //!   only the selected triangle updated; Level-3, both NoTrans/Trans forms
 //! - [`trmm`](trmm::trmm) — `B ← α·op(A)·B` (or `B·op(A)`), `A` triangular;
 //!   Level-3, in place on B, all side/uplo/trans/diag variants
+//! - [`eigh`](eigh::eigh) — symmetric eigendecomposition `A = V·Λ·Vᵀ`
+//!   (eigenvalues ascending, orthonormal eigenvectors) via cyclic Jacobi
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -107,6 +109,8 @@ pub mod triangular;
 #[cfg(feature = "gpu")]
 pub mod cholesky;
 #[cfg(feature = "gpu")]
+pub mod eigh;
+#[cfg(feature = "gpu")]
 pub mod lu;
 #[cfg(feature = "gpu")]
 pub mod qr;
@@ -121,6 +125,8 @@ pub use params::{Diag, Side, Trans, Uplo};
 
 #[cfg(feature = "gpu")]
 pub use cholesky::{chol_solve, cholesky};
+#[cfg(feature = "gpu")]
+pub use eigh::eigh;
 #[cfg(feature = "gpu")]
 pub use gemm::gemm;
 #[cfg(feature = "gpu")]

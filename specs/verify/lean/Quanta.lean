@@ -118,6 +118,8 @@ import Quanta.Blas.Qr
 import Quanta.Blas.Symm
 import Quanta.Blas.Syr2k
 import Quanta.Blas.Trmm
+-- Symmetric eigendecomposition (eigh): Jacobi-rotation orthogonality + norm-preservation + annihilation
+import Quanta.Blas.Eigh
 
 -- Reverse-mode autodiff VJP correctness (companion crate quanta-autograd)
 import Quanta.Autograd.Vjp

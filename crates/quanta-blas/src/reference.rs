@@ -780,6 +780,117 @@ pub fn trmm(
     b.copy_from_slice(&out);
 }
 
+/// `syev`: symmetric eigendecomposition reference via cyclic Jacobi, in f64.
+/// Reads the `uplo` triangle of the `n×n` row-major `a`, reconstructs the
+/// full symmetric matrix, and rotates it to diagonal form. Returns the
+/// eigenvalues (ascending) in `w` and the orthonormal eigenvectors as the
+/// columns of the returned `n×n` row-major matrix (column `j` ↔ `w[j]`).
+///
+/// The differential-test ground truth for [`crate::eigh`]. Iterative: it
+/// runs cyclic sweeps until the off-diagonal norm falls below `tol` or a
+/// sweep cap is hit — the same algorithm the GPU path uses, in f64.
+pub fn syev(uplo: Uplo, n: usize, a: &[f32], w: &mut [f32]) -> Vec<f32> {
+    assert_eq!(a.len(), n * n, "syev: A must be n×n");
+    assert_eq!(w.len(), n, "syev: w must have length n");
+
+    // Reconstruct the full symmetric matrix in f64.
+    let mut m = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            let src = match uplo {
+                Uplo::Lower => {
+                    if j <= i {
+                        a[i * n + j]
+                    } else {
+                        a[j * n + i]
+                    }
+                }
+                Uplo::Upper => {
+                    if j >= i {
+                        a[i * n + j]
+                    } else {
+                        a[j * n + i]
+                    }
+                }
+            };
+            m[i * n + j] = src as f64;
+        }
+    }
+    // Eigenvector accumulator V = I.
+    let mut v = vec![0.0f64; n * n];
+    for i in 0..n {
+        v[i * n + i] = 1.0;
+    }
+    if n <= 1 {
+        for i in 0..n {
+            w[i] = m[i * n + i] as f32;
+        }
+        return v.iter().map(|&x| x as f32).collect();
+    }
+
+    let tol = 1e-14;
+    for _ in 0..100 {
+        let mut off = 0.0f64;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                let apq = m[p * n + q];
+                if apq.abs() > off {
+                    off = apq.abs();
+                }
+                if apq.abs() <= tol {
+                    continue;
+                }
+                let app = m[p * n + p];
+                let aqq = m[q * n + q];
+                let theta = (aqq - app) / (2.0 * apq);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                // Row pass: rows p,q ← Jᵀ·rows.
+                for k in 0..n {
+                    let mpk = m[p * n + k];
+                    let mqk = m[q * n + k];
+                    m[p * n + k] = c * mpk - s * mqk;
+                    m[q * n + k] = s * mpk + c * mqk;
+                }
+                // Column pass: cols p,q ← cols·J.
+                for k in 0..n {
+                    let mkp = m[k * n + p];
+                    let mkq = m[k * n + q];
+                    m[k * n + p] = c * mkp - s * mkq;
+                    m[k * n + q] = s * mkp + c * mkq;
+                }
+                // Accumulate V ← V·J.
+                for k in 0..n {
+                    let vkp = v[k * n + p];
+                    let vkq = v[k * n + q];
+                    v[k * n + p] = c * vkp - s * vkq;
+                    v[k * n + q] = s * vkp + c * vkq;
+                }
+            }
+        }
+        if off <= tol {
+            break;
+        }
+    }
+
+    // Sort eigenvalues ascending; permute eigenvector columns.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| {
+        m[i * n + i]
+            .partial_cmp(&m[j * n + j])
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    let mut vout = vec![0.0f32; n * n];
+    for (new_col, &old_col) in order.iter().enumerate() {
+        w[new_col] = m[old_col * n + old_col] as f32;
+        for row in 0..n {
+            vout[row * n + new_col] = v[row * n + old_col] as f32;
+        }
+    }
+    vout
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
