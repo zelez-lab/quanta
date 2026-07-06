@@ -1750,3 +1750,54 @@ fn rope_preserves_norm_and_relative_position() {
         "relative-position broken: ⟨m=1,n=0⟩={d10} vs ⟨m=3,n=2⟩={d32}"
     );
 }
+
+#[test]
+fn dropout_masks_scales_and_grads() {
+    let g = gpu();
+    let n = 2000usize;
+    let x_host = vec![1.0f32; n];
+    let p = 0.3f64;
+
+    // p = 0 is a no-op: output equals input.
+    {
+        let tape = Tape::<f32>::new();
+        let xv = tape.var(Array::from_slice(&g, &x_host, &[n]).unwrap());
+        let out = xv.dropout(0.0, 7).unwrap().value().to_vec().unwrap();
+        assert!(
+            out.iter().all(|&v| (v - 1.0).abs() < 1e-6),
+            "p=0 must be identity"
+        );
+    }
+
+    // p = 0.3: survivors are exactly 1/(1−p), the rest are 0; the kept
+    // fraction is ≈ 1−p, and the mean is preserved in expectation (≈ 1).
+    let tape = Tape::<f32>::new();
+    let xv = tape.var(Array::from_slice(&g, &x_host, &[n]).unwrap());
+    let dropped = xv.dropout(p, 12345).unwrap();
+    let ov = dropped.value().to_vec().unwrap();
+    let scale = (1.0 / (1.0 - p)) as f32;
+    let kept = ov.iter().filter(|&&v| v != 0.0).count();
+    // each nonzero equals the scale exactly (input was all 1.0)
+    assert!(
+        ov.iter().all(|&v| v == 0.0 || (v - scale).abs() < 1e-4),
+        "survivors must equal 1/(1−p)"
+    );
+    // kept fraction ≈ 1−p (loose statistical bound over 2000 draws)
+    let frac = kept as f64 / n as f64;
+    assert!(
+        (frac - (1.0 - p)).abs() < 0.05,
+        "kept fraction {frac} vs {}",
+        1.0 - p
+    );
+    // mean preserved ≈ 1
+    let mean: f32 = ov.iter().sum::<f32>() / n as f32;
+    assert!((mean - 1.0).abs() < 0.05, "dropout mean {mean} should ≈ 1");
+
+    // Gradient flows through the same mask: dropped → 0 grad, kept → scale.
+    let loss = dropped.sum().unwrap();
+    let gx = loss.grad(&xv).unwrap().to_vec().unwrap();
+    for (i, &gi) in gx.iter().enumerate() {
+        let want = if ov[i] == 0.0 { 0.0 } else { scale };
+        assert!((gi - want).abs() < 1e-4, "grad[{i}] {gi} vs {want}");
+    }
+}

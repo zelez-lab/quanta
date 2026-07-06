@@ -26,6 +26,51 @@ impl<T: DiffScalar> Var<T> {
         Tape::from_inner(Rc::clone(&self.tape))
     }
 
+    /// Inverted dropout: zero each element independently with probability `p`
+    /// and scale the survivors by `1/(1−p)`, so the expected value (and hence
+    /// the inference-time forward, which just skips dropout) is preserved. The
+    /// mask is a fixed constant for this call, built deterministically from
+    /// `seed` — so training is reproducible and the op is testable. The
+    /// gradient flows through the elementwise multiply: dropped elements get
+    /// zero gradient, survivors get their gradient scaled by `1/(1−p)`.
+    ///
+    /// `p` must be in `[0, 1)`. `p == 0` is a no-op (mask of all ones). At
+    /// inference, don't call `dropout` — the scaling here is exactly what makes
+    /// the two regimes match in expectation.
+    pub fn dropout(&self, p: f64, seed: u64) -> Result<Var<T>, AutogradError> {
+        if !(0.0..1.0).contains(&p) {
+            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+                quanta::QuantaError::invalid_param("dropout: p must be in [0, 1)"),
+            )));
+        }
+        let x = self.value();
+        let n: usize = x.shape().iter().product();
+        // Deterministic per-element Bernoulli mask from `seed` (splitmix64 — a
+        // self-contained host RNG, no crate dependency for a train-time mask).
+        let keep = 1.0 - p;
+        let scale = 1.0 / keep;
+        let mut mask_host = Vec::<T>::with_capacity(n);
+        let mut s = seed;
+        for _ in 0..n {
+            // splitmix64 step
+            s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = s;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            // uniform in [0,1)
+            let u = (z >> 11) as f64 / (1u64 << 53) as f64;
+            mask_host.push(if u < keep {
+                T::from_f64(scale)
+            } else {
+                T::ZERO
+            });
+        }
+        let mask = Array::from_slice(x.gpu(), &mask_host, x.shape())?;
+        let mask_v = self.tape_handle().var(mask);
+        self.mul(&mask_v)
+    }
+
     /// Elementwise negation.
     pub fn neg(&self) -> Result<Var<T>, AutogradError> {
         let y = self.value().neg()?;
