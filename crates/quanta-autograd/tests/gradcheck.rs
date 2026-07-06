@@ -1537,3 +1537,91 @@ fn grad_matmul_broadcast_rhs() {
     // (B,m,k)·(k,n): ∂B must be summed back over the broadcast batch.
     matmul_gradcheck(&[3, 2, 4], &[4, 2], 13);
 }
+
+// ── Multi-head self-attention ───────────────────────────────────────────────
+
+/// Deterministic small init in [-0.1, 0.1].
+fn mha_init(n: usize, seed: f32) -> Vec<f32> {
+    (0..n)
+        .map(|i| (((i as f32) * 12.9898 + seed).sin() * 43758.547).fract() * 0.2 - 0.1)
+        .collect()
+}
+
+/// Build multi-head attention and return `L = sum(out²)`, on a fresh tape from
+/// the given host tensors. `xh` is the perturbable input [B,T,D]; the weights
+/// are fixed. Used both for the analytic (tape) and numeric (host-rebuild) grad.
+#[allow(clippy::too_many_arguments)]
+fn mha_loss(
+    g: &quanta::Gpu,
+    xh: &[f32],
+    b: usize,
+    t: usize,
+    d: usize,
+    heads: usize,
+    wqh: &[f32],
+    wkh: &[f32],
+    wvh: &[f32],
+    woh: &[f32],
+) -> f32 {
+    let tape = Tape::<f32>::new();
+    let x = tape.var(Array::from_slice(g, xh, &[b, t, d]).unwrap());
+    let wq = tape.var(Array::from_slice(g, wqh, &[d, d]).unwrap());
+    let wk = tape.var(Array::from_slice(g, wkh, &[d, d]).unwrap());
+    let wv = tape.var(Array::from_slice(g, wvh, &[d, d]).unwrap());
+    let wo = tape.var(Array::from_slice(g, woh, &[d, d]).unwrap());
+    let out = x
+        .multi_head_attention(&wq, &wk, &wv, &wo, heads, None)
+        .unwrap();
+    out.mul(&out)
+        .unwrap()
+        .sum()
+        .unwrap()
+        .value()
+        .to_vec()
+        .unwrap()[0]
+}
+
+#[test]
+fn grad_multi_head_attention() {
+    use quanta_autograd::Var;
+    let g = gpu();
+    let (b, t, d, heads) = (1usize, 3usize, 4usize, 2usize);
+    let xh = mha_init(b * t * d, 1.0);
+    let wqh = mha_init(d * d, 2.0);
+    let wkh = mha_init(d * d, 3.0);
+    let wvh = mha_init(d * d, 4.0);
+    let woh = mha_init(d * d, 5.0);
+
+    // Analytic gradient on x via the tape.
+    let tape = Tape::<f32>::new();
+    let x = tape.var(Array::from_slice(&g, &xh, &[b, t, d]).unwrap());
+    let wq = tape.var(Array::from_slice(&g, &wqh, &[d, d]).unwrap());
+    let wk = tape.var(Array::from_slice(&g, &wkh, &[d, d]).unwrap());
+    let wv = tape.var(Array::from_slice(&g, &wvh, &[d, d]).unwrap());
+    let wo = tape.var(Array::from_slice(&g, &woh, &[d, d]).unwrap());
+    let out: Var<f32> = x
+        .multi_head_attention(&wq, &wk, &wv, &wo, heads, None)
+        .unwrap();
+    let loss = out.mul(&out).unwrap().sum().unwrap();
+    let gx = loss.grad(&x).unwrap().to_vec().unwrap();
+    // also confirm a weight gradient is finite & non-trivial
+    let gwq = loss.grad(&wq).unwrap().to_vec().unwrap();
+    assert!(
+        gwq.iter().all(|v| v.is_finite()) && gwq.iter().any(|&v| v.abs() > 1e-6),
+        "wq grad degenerate"
+    );
+
+    // Numeric gradient on x via central difference.
+    let h = 1e-3f32;
+    let mut numeric = vec![0.0f32; xh.len()];
+    for j in 0..xh.len() {
+        let mut xp = xh.clone();
+        let mut xm = xh.clone();
+        xp[j] += h;
+        xm[j] -= h;
+        let lp = mha_loss(&g, &xp, b, t, d, heads, &wqh, &wkh, &wvh, &woh);
+        let lm = mha_loss(&g, &xm, b, t, d, heads, &wqh, &wkh, &wvh, &woh);
+        numeric[j] = (lp - lm) / (2.0 * h);
+    }
+    assert_close(&gx, &numeric, 2e-2, "multi_head_attention grad x");
+}

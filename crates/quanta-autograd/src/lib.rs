@@ -39,6 +39,7 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod attention;
 pub mod conv;
 pub mod error;
 pub mod loss;
