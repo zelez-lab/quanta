@@ -134,22 +134,64 @@ pub fn tanh<T: FloatScalar + ReduceScalar>(g: &Array<T>, y: &Array<T>) -> R<T> {
     g.mul(&one_minus_y2)
 }
 
-/// `matmul`: Y = A·B (A is m×k, B is k×n) ⇒
-///   ∂L/∂A = G·Bᵀ   (m×n · n×k → m×k)
-///   ∂L/∂B = Aᵀ·G   (k×m · m×n → k×n)
+/// `matmul`: Y = A·B (A is …m×k, B is …k×n) ⇒
+///   ∂L/∂A = G·Bᵀ   (…m×n · …n×k → …m×k)
+///   ∂L/∂B = Aᵀ·G   (…k×m · …m×n → …k×n)
 /// where G = ∂L/∂Y. Both VJPs are themselves matmuls (reusing the proven
-/// quanta-blas gemm); the transposes are zero-copy views materialized by
-/// matmul's contiguous-gather.
+/// quanta-blas gemm), applied per batch; the transpose is over the last two
+/// axes.
+///
+/// **Broadcasting**: when the forward matmul broadcast the operands' batch
+/// dims, `G·Bᵀ` / `Aᵀ·G` come out at the *broadcast* batch shape, so each
+/// gradient is summed back down to its operand's original shape (the standard
+/// broadcast-VJP reduction). Same-shape (incl. plain 2-D) is a no-op.
 pub fn matmul<T: crate::scalar::DiffScalar>(
     g: &Array<T>,
     a: &Array<T>,
     b: &Array<T>,
 ) -> Result<(Array<T>, Array<T>), ArrayError> {
-    let bt = b.transpose(0, 1)?;
-    let at = a.transpose(0, 1)?;
-    let ga = T::array_matmul(g, &bt)?; // G·Bᵀ
-    let gb = T::array_matmul(&at, g)?; // Aᵀ·G
+    let ra = a.rank();
+    let rb = b.rank();
+    // Transpose the trailing two axes (2-D → (0,1); N-D → (r-2, r-1)).
+    let bt = b.transpose(rb - 2, rb - 1)?;
+    let at = a.transpose(ra - 2, ra - 1)?;
+    let ga_full = T::array_matmul(g, &bt)?; // G·Bᵀ at the broadcast batch shape
+    let gb_full = T::array_matmul(&at, g)?; // Aᵀ·G at the broadcast batch shape
+    let ga = reduce_to_shape(&ga_full, a.shape())?;
+    let gb = reduce_to_shape(&gb_full, b.shape())?;
     Ok((ga, gb))
+}
+
+/// Sum `grad` (at a broadcast batch shape `[…broadcastBatch, r, c]`) back down
+/// to `target` (the operand's own shape `[…operandBatch, r, c]`): sum over every
+/// leading batch axis the operand lacks, and over every target batch axis whose
+/// operand extent is 1 while grad's is larger, then reshape to `target`. A
+/// no-op when the shapes already match (plain 2-D, or matching batch dims).
+fn reduce_to_shape<T: crate::scalar::DiffScalar>(
+    grad: &Array<T>,
+    target: &[usize],
+) -> Result<Array<T>, ArrayError> {
+    if grad.shape() == target {
+        return Ok(grad.shallow_clone());
+    }
+    let extra = grad.rank() - target.len(); // leading axes absent on the operand
+    let mut cur = grad.shallow_clone();
+    // Leading axes the operand doesn't have: sum them away (keepdims → size 1).
+    for axis in 0..extra {
+        if cur.shape()[axis] != 1 {
+            cur = cur.sum_axis(axis)?;
+        }
+    }
+    // Target batch axes reduced where the operand extent is 1 but grad's larger.
+    let tb = target.len().saturating_sub(2);
+    for (j, &tdim) in target[..tb].iter().enumerate() {
+        let axis = extra + j;
+        if tdim == 1 && cur.shape()[axis] != 1 {
+            cur = cur.sum_axis(axis)?;
+        }
+    }
+    // Element count now equals target's (reduced dims are size 1); reshape.
+    cur.contiguous()?.reshape(target)
 }
 
 /// `conv2d`: Y = conv(X, W) via cols·wm. With G = ∂L/∂Y at [N,Cout,OH,OW]:

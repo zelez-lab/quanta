@@ -1399,3 +1399,81 @@ fn grad_gelu() {
     });
     assert_close(&an, &num, 2e-2, "gelu");
 }
+
+/// operand `which` ("a" or "b"), evaluated purely on the host via the batched
+/// matmul forward — the reference the tape must match.
+fn numeric_matmul_grad(
+    g: &quanta::Gpu,
+    ash: &[usize],
+    bsh: &[usize],
+    a: &[f32],
+    b: &[f32],
+    which: &str,
+) -> Vec<f32> {
+    use quanta_array::Array;
+    let loss = |a: &[f32], b: &[f32]| -> f32 {
+        let av = Array::from_slice(g, a, ash).unwrap();
+        let bv = Array::from_slice(g, b, bsh).unwrap();
+        av.matmul(&bv).unwrap().to_vec().unwrap().iter().sum()
+    };
+    let h = 1e-3f32;
+    let target = if which == "a" { a } else { b };
+    (0..target.len())
+        .map(|i| {
+            let mut pp = target.to_vec();
+            let mut pm = target.to_vec();
+            pp[i] += h;
+            pm[i] -= h;
+            let (lp, lm) = if which == "a" {
+                (loss(&pp, b), loss(&pm, b))
+            } else {
+                (loss(a, &pp), loss(a, &pm))
+            };
+            (lp - lm) / (2.0 * h)
+        })
+        .collect()
+}
+
+fn matmul_gradcheck(ash: &[usize], bsh: &[usize], seed: u32) {
+    use quanta_array::Array;
+    let g = gpu();
+    let asz: usize = ash.iter().product();
+    let bsz: usize = bsh.iter().product();
+    let a: Vec<f32> = (0..asz)
+        .map(|i| (((i as u32 + seed) % 7) as f32 - 3.0) * 0.5)
+        .collect();
+    let b: Vec<f32> = (0..bsz)
+        .map(|i| (((i as u32 + seed * 3) % 5) as f32 - 2.0) * 0.5)
+        .collect();
+
+    let tape = Tape::<f32>::new();
+    let av = tape.var(Array::from_slice(&g, &a, ash).unwrap());
+    let bv = tape.var(Array::from_slice(&g, &b, bsh).unwrap());
+    let loss = av.matmul(&bv).unwrap().sum().unwrap();
+    let ga = loss.grad(&av).unwrap().to_vec().unwrap();
+    let gb = loss.grad(&bv).unwrap().to_vec().unwrap();
+
+    let na = numeric_matmul_grad(&g, ash, bsh, &a, &b, "a");
+    let nb = numeric_matmul_grad(&g, ash, bsh, &a, &b, "b");
+    // gradient shapes must match the operands (broadcast reduction applied)
+    assert_eq!(ga.len(), asz, "∂A shape");
+    assert_eq!(gb.len(), bsz, "∂B shape");
+    assert_close(&ga, &na, 2e-2, "matmul ∂A");
+    assert_close(&gb, &nb, 2e-2, "matmul ∂B");
+}
+
+#[test]
+fn grad_matmul_2d() {
+    matmul_gradcheck(&[3, 4], &[4, 2], 1);
+}
+
+#[test]
+fn grad_matmul_batched() {
+    matmul_gradcheck(&[2, 3, 4], &[2, 4, 5], 7);
+}
+
+#[test]
+fn grad_matmul_broadcast_rhs() {
+    // (B,m,k)·(k,n): ∂B must be summed back over the broadcast batch.
+    matmul_gradcheck(&[3, 2, 4], &[4, 2], 13);
+}

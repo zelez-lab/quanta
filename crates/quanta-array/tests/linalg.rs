@@ -358,3 +358,124 @@ fn svd_reconstruction() {
     let recon = us_arr.matmul(&vt).unwrap();
     approx(&recon.to_vec().unwrap(), &ah, "svd_reconstruction");
 }
+
+// ── Batched / N-D matmul ────────────────────────────────────────────────
+
+/// Host batched matmul with numpy broadcasting on the leading dims.
+/// `a` is `[..ab, m, k]`, `b` is `[..bb, k, n]` → `[..batch, m, n]`.
+fn host_batched(
+    ab: &[usize],
+    bb: &[usize],
+    m: usize,
+    k: usize,
+    n: usize,
+    a: &[f32],
+    b: &[f32],
+) -> (Vec<usize>, Vec<f32>) {
+    let rank = ab.len().max(bb.len());
+    let mut batch = vec![0usize; rank];
+    for i in 0..rank {
+        let da = if i < rank - ab.len() {
+            1
+        } else {
+            ab[i - (rank - ab.len())]
+        };
+        let db = if i < rank - bb.len() {
+            1
+        } else {
+            bb[i - (rank - bb.len())]
+        };
+        batch[i] = da.max(db);
+    }
+    let bcount: usize = batch.iter().product();
+    // Row-major strides (matrix units) over each operand's own batch dims.
+    let stride = |own: &[usize]| -> Vec<usize> {
+        let off = rank - own.len();
+        let mut s = vec![0usize; own.len()];
+        let mut acc = 1usize;
+        for i in (0..own.len()).rev() {
+            s[i] = acc;
+            acc *= own[i];
+        }
+        let mut out = vec![0usize; rank];
+        for i in 0..rank {
+            if i >= off {
+                let j = i - off;
+                out[i] = if own[j] == 1 { 0 } else { s[j] };
+            }
+        }
+        out
+    };
+    let (asr, bsr) = (stride(ab), stride(bb));
+    let mut out = vec![0.0f32; bcount * m * n];
+    for f in 0..bcount {
+        // unravel f over `batch`
+        let mut coord = vec![0usize; rank];
+        let mut t = f;
+        for i in (0..rank).rev() {
+            coord[i] = t % batch[i];
+            t /= batch[i];
+        }
+        let ai: usize = coord.iter().zip(&asr).map(|(c, s)| c * s).sum();
+        let bi: usize = coord.iter().zip(&bsr).map(|(c, s)| c * s).sum();
+        let c = host_matmul(
+            m,
+            n,
+            k,
+            &a[ai * m * k..ai * m * k + m * k],
+            &b[bi * k * n..bi * k * n + k * n],
+        );
+        out[f * m * n..f * m * n + m * n].copy_from_slice(&c);
+    }
+    let mut shape = batch;
+    shape.push(m);
+    shape.push(n);
+    (shape, out)
+}
+
+#[test]
+fn matmul_batched_3d() {
+    let g = gpu();
+    let (btch, m, k, n) = (2usize, 3usize, 4usize, 2usize);
+    let ah: Vec<f32> = (0..btch * m * k).map(|i| (i % 7) as f32 - 3.0).collect();
+    let bh: Vec<f32> = (0..btch * k * n).map(|i| (i % 5) as f32 - 2.0).collect();
+    let a = Array::from_slice(&g, &ah, &[btch, m, k]).unwrap();
+    let b = Array::from_slice(&g, &bh, &[btch, k, n]).unwrap();
+    let c = a.matmul(&b).unwrap();
+    let (want_shape, want) = host_batched(&[btch], &[btch], m, k, n, &ah, &bh);
+    assert_eq!(c.shape(), want_shape.as_slice());
+    approx(&c.to_vec().unwrap(), &want, "matmul_batched_3d");
+}
+
+#[test]
+fn matmul_batched_4d() {
+    let g = gpu();
+    let (bb, hh, m, k, n) = (2usize, 3usize, 2usize, 3usize, 2usize);
+    let ah: Vec<f32> = (0..bb * hh * m * k)
+        .map(|i| ((i * 3) % 11) as f32 - 5.0)
+        .collect();
+    let bh: Vec<f32> = (0..bb * hh * k * n)
+        .map(|i| ((i * 5) % 9) as f32 - 4.0)
+        .collect();
+    let a = Array::from_slice(&g, &ah, &[bb, hh, m, k]).unwrap();
+    let b = Array::from_slice(&g, &bh, &[bb, hh, k, n]).unwrap();
+    let c = a.matmul(&b).unwrap();
+    let (want_shape, want) = host_batched(&[bb, hh], &[bb, hh], m, k, n, &ah, &bh);
+    assert_eq!(c.shape(), want_shape.as_slice());
+    approx(&c.to_vec().unwrap(), &want, "matmul_batched_4d");
+}
+
+#[test]
+fn matmul_batched_broadcast_rhs2d() {
+    // (B,m,k) · (k,n) → (B,m,n): the 2-D rhs broadcasts across the batch.
+    let g = gpu();
+    let (btch, m, k, n) = (3usize, 2usize, 3usize, 4usize);
+    let ah: Vec<f32> = (0..btch * m * k).map(|i| (i % 6) as f32 - 2.0).collect();
+    let bh: Vec<f32> = (0..k * n).map(|i| (i % 4) as f32 - 1.0).collect();
+    let a = Array::from_slice(&g, &ah, &[btch, m, k]).unwrap();
+    let b = Array::from_slice(&g, &bh, &[k, n]).unwrap();
+    let c = a.matmul(&b).unwrap();
+    let (want_shape, want) = host_batched(&[btch], &[], m, k, n, &ah, &bh);
+    assert_eq!(c.shape(), want_shape.as_slice());
+    approx(&c.to_vec().unwrap(), &want, "matmul_batched_broadcast");
+}

@@ -31,6 +31,73 @@ fn owned_copy(src: &Array<f32>) -> Result<Array<f32>, ArrayError> {
     Array::<f32>::from_slice(src.gpu(), &host, src.shape())
 }
 
+/// Broadcast two batch-dim lists (numpy rules: right-aligned, each pair must be
+/// equal or one of them 1). Returns the broadcast batch shape.
+fn broadcast_batch(a: &[usize], b: &[usize]) -> Result<Vec<usize>, ArrayError> {
+    let rank = a.len().max(b.len());
+    let mut out = vec![0usize; rank];
+    for i in 0..rank {
+        let da = if i < rank - a.len() {
+            1
+        } else {
+            a[i - (rank - a.len())]
+        };
+        let db = if i < rank - b.len() {
+            1
+        } else {
+            b[i - (rank - b.len())]
+        };
+        if da == db || da == 1 || db == 1 {
+            out[i] = da.max(db);
+        } else {
+            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+                "matmul: batch dimensions are not broadcast-compatible",
+            )));
+        }
+    }
+    Ok(out)
+}
+
+/// Per-batch-dim stride (in matrix-slice units) for indexing an operand's flat
+/// slices from an output-batch coordinate: the operand's own row-major batch
+/// strides, right-aligned into the output batch rank, with a 0 wherever the
+/// operand's extent is 1 (broadcast) so that dim is held at slice 0.
+fn broadcast_batch_strides(operand_batch: &[usize], out_batch: &[usize]) -> Vec<usize> {
+    let rank = out_batch.len();
+    let off = rank - operand_batch.len();
+    // Row-major strides over the operand's own batch dims.
+    let mut own = vec![0usize; operand_batch.len()];
+    let mut acc = 1usize;
+    for i in (0..operand_batch.len()).rev() {
+        own[i] = acc;
+        acc *= operand_batch[i];
+    }
+    let mut out = vec![0usize; rank];
+    for (i, slot) in out.iter_mut().enumerate() {
+        if i >= off {
+            let j = i - off;
+            // dim absent (i < off) or extent 1 → broadcast, stride 0.
+            *slot = if operand_batch[j] == 1 { 0 } else { own[j] };
+        }
+    }
+    out
+}
+
+/// Row-major unravel of a flat index into a coordinate over `dims`.
+fn unravel(mut flat: usize, dims: &[usize]) -> Vec<usize> {
+    let mut coord = vec![0usize; dims.len()];
+    for i in (0..dims.len()).rev() {
+        coord[i] = flat % dims[i];
+        flat /= dims[i];
+    }
+    coord
+}
+
+/// Dot product of a coordinate with a stride list.
+fn dot_usize(coord: &[usize], stride: &[usize]) -> usize {
+    coord.iter().zip(stride).map(|(c, s)| c * s).sum()
+}
+
 /// Validate that `a` is a square 2-D matrix and return its dimension.
 fn square_dim(a: &Array<f32>, ctx: &str) -> Result<usize, ArrayError> {
     if a.rank() != 2 || a.shape()[0] != a.shape()[1] {
@@ -48,15 +115,32 @@ fn square_dim(a: &Array<f32>, ctx: &str) -> Result<usize, ArrayError> {
 }
 
 impl Array<f32> {
-    /// Matrix multiply: `self (m×k) · rhs (k×n) → (m×n)`. Both operands must
-    /// be 2-D with a matching inner dimension. Returns a fresh contiguous
-    /// row-major `Array`. (numpy `a @ b` for 2-D arrays.)
+    /// Matrix multiply (numpy `a @ b` / `np.matmul`).
+    ///
+    /// - **2-D × 2-D**: `self (m×k) · rhs (k×n) → (m×n)`, the plain matrix
+    ///   product.
+    /// - **Batched (rank ≥ 2)**: the last two dims are the matrix; the leading
+    ///   dims are batch dims, **broadcast** between the two operands per numpy
+    ///   rules. `A (…batchA, m, k) · B (…batchB, k, n) → (…batch, m, n)` with
+    ///   `…batch = broadcast(…batchA, …batchB)`. E.g. `(B,m,k)·(k,n) → (B,m,n)`
+    ///   and `(B,H,m,k)·(B,H,k,n) → (B,H,m,n)`.
+    ///
+    /// Returns a fresh contiguous row-major `Array`.
     pub fn matmul(&self, rhs: &Array<f32>) -> Result<Array<f32>, ArrayError> {
-        if self.rank() != 2 || rhs.rank() != 2 {
+        if self.rank() < 2 || rhs.rank() < 2 {
             return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
-                "matmul: both operands must be 2-D",
+                "matmul: both operands must be at least 2-D",
             )));
         }
+        // Plain 2-D product — the fast path (single gemm, no host round-trip).
+        if self.rank() == 2 && rhs.rank() == 2 {
+            return self.matmul_2d(rhs);
+        }
+        self.matmul_batched(rhs)
+    }
+
+    /// The 2-D matrix product `self (m×k) · rhs (k×n) → (m×n)` via one gemm.
+    fn matmul_2d(&self, rhs: &Array<f32>) -> Result<Array<f32>, ArrayError> {
         let m = self.shape()[0];
         let k = self.shape()[1];
         let k2 = rhs.shape()[0];
@@ -66,13 +150,9 @@ impl Array<f32> {
                 "matmul: inner dimensions disagree (A is m×k, B must be k×n)",
             )));
         }
-
-        // Materialize both operands contiguous row-major (on-device gather
-        // for strided/transposed views), then run C ← 1·A·B + 0·C.
         let a = self.contiguous_or_self()?;
         let b = rhs.contiguous_or_self()?;
         let c = Array::<f32>::zeros(self.gpu(), &[m, n])?;
-
         blas_gemm(
             self.gpu(),
             m as u32,
@@ -85,6 +165,70 @@ impl Array<f32> {
             c.field_ref(),
         )?;
         Ok(c)
+    }
+
+    /// Batched matmul: broadcast the leading (batch) dims, multiply the trailing
+    /// 2-D matrices. Runs one gemm per output batch slice (correctness-first; a
+    /// single strided/batched dispatch is a perf follow-up).
+    fn matmul_batched(&self, rhs: &Array<f32>) -> Result<Array<f32>, ArrayError> {
+        let ash = self.shape();
+        let bsh = rhs.shape();
+        let (m, ka) = (ash[ash.len() - 2], ash[ash.len() - 1]);
+        let (kb, n) = (bsh[bsh.len() - 2], bsh[bsh.len() - 1]);
+        if ka != kb {
+            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+                "matmul: inner dimensions disagree (A is …m×k, B must be …k×n)",
+            )));
+        }
+        let k = ka;
+        let a_batch = &ash[..ash.len() - 2];
+        let b_batch = &bsh[..bsh.len() - 2];
+        let out_batch = broadcast_batch(a_batch, b_batch)?;
+
+        // Host-side batch orchestration over device gemms. Materialize both
+        // operands to contiguous host data, gemm each broadcast slice, collect
+        // the result, upload once.
+        let a_host = self.contiguous_or_self()?.to_vec()?;
+        let b_host = rhs.contiguous_or_self()?.to_vec()?;
+        let batch_count: usize = out_batch.iter().product();
+        let (a_mat, b_mat) = (m * k, k * n);
+        let out_mat = m * n;
+        let mut out_host = vec![0.0f32; batch_count * out_mat];
+
+        // Strides (in matrix units) over each operand's own batch dims, with a
+        // 0 stride wherever that operand's dim was broadcast (extent 1).
+        let a_bstride = broadcast_batch_strides(a_batch, &out_batch);
+        let b_bstride = broadcast_batch_strides(b_batch, &out_batch);
+
+        let g = self.gpu();
+        for flat in 0..batch_count {
+            let coord = unravel(flat, &out_batch);
+            let ai = dot_usize(&coord, &a_bstride);
+            let bi = dot_usize(&coord, &b_bstride);
+            let a_slice = &a_host[ai * a_mat..ai * a_mat + a_mat];
+            let b_slice = &b_host[bi * b_mat..bi * b_mat + b_mat];
+            let af = Array::<f32>::from_slice(g, a_slice, &[m, k])?;
+            let bf = Array::<f32>::from_slice(g, b_slice, &[k, n])?;
+            let cf = Array::<f32>::zeros(g, &[m, n])?;
+            blas_gemm(
+                g,
+                m as u32,
+                n as u32,
+                k as u32,
+                1.0,
+                af.field_ref(),
+                bf.field_ref(),
+                0.0,
+                cf.field_ref(),
+            )?;
+            let c_slice = cf.to_vec()?;
+            out_host[flat * out_mat..flat * out_mat + out_mat].copy_from_slice(&c_slice);
+        }
+
+        let mut out_shape = out_batch;
+        out_shape.push(m);
+        out_shape.push(n);
+        Array::<f32>::from_slice(g, &out_host, &out_shape)
     }
 
     /// Inner product of two 1-D arrays of equal length (numpy `np.dot` /
