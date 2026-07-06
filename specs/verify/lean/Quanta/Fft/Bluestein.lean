@@ -108,4 +108,53 @@ theorem bluestein_eq_dftN (N : ℕ) (x : ℕ → ℂ) (k : ℕ) :
   rw [tw_eq_chirp_factor N n k]
   ring
 
+/-- Un-normalized inverse DFT: `x̌[k] = Σ_{j<N} ω_N^{-jk}·x[j]` — the conjugate
+    twiddle `(tw N (j*k))⁻¹`. The `1/N` normalization of the true inverse is a
+    scalar convention applied separately (exactly as the forward `bluestein`
+    proof left the pow2 convolution length `M` out of scope); this file proves
+    the transform identity, not the normalization. -/
+noncomputable def idftN (N : ℕ) (x : ℕ → ℂ) (k : ℕ) : ℂ :=
+  ∑ j ∈ Finset.range N, (tw N (j * k))⁻¹ * x j
+
+/-- **Inverse chirp factorisation.** Taking `⁻¹` of `tw_eq_chirp_factor`: since
+    each chirp is a unit (`chirp_ne_zero`), inversion distributes and flips every
+    factor —
+
+      (tw N (n·k))⁻¹ = (chirp N k)⁻¹ · (chirp N n)⁻¹ · chirp N (k − n).
+
+    This is the mirror identity the inverse Bluestein form rests on. -/
+theorem tw_inv_eq_chirp_factor (N n k : ℕ) :
+    (tw N (n * k))⁻¹
+      = (chirp N k)⁻¹ * (chirp N n)⁻¹ * chirp N ((k : ℤ) - (n : ℤ)) := by
+  rw [tw_eq_chirp_factor N n k]
+  rw [mul_inv, mul_inv, inv_inv]
+
+/-- The inverse Bluestein expression: the inverse output chirp times the
+    inverse-chirp convolution of the input.
+
+      B̌[k] = (chirp N k)⁻¹ · Σ_{n<N} ((chirp N n)⁻¹ · x n) · chirp N (k − n).
+
+    Every chirp of the forward `bluestein` is replaced by its inverse (and the
+    kernel chirp, formerly inverted, is now upright) — the exact conjugate mirror. -/
+noncomputable def ibluestein (N : ℕ) (x : ℕ → ℂ) (k : ℕ) : ℂ :=
+  (chirp N k)⁻¹
+    * ∑ n ∈ Finset.range N,
+        ((chirp N n)⁻¹ * x n) * chirp N ((k : ℤ) - (n : ℤ))
+
+/-- **Inverse Bluestein computes the inverse DFT.** The conjugate chirp-z
+    expression equals the (un-normalized) inverse DFT for every `k`:
+
+      ibluestein N x k = idftN N x k.
+
+    Proof mirrors `bluestein_eq_dftN`: distribute the inverse output chirp into
+    the sum and match summands via `tw_inv_eq_chirp_factor`. -/
+theorem ibluestein_eq_idftN (N : ℕ) (x : ℕ → ℂ) (k : ℕ) :
+    ibluestein N x k = idftN N x k := by
+  unfold ibluestein idftN
+  rw [Finset.mul_sum]
+  apply Finset.sum_congr rfl
+  intro n _
+  rw [tw_inv_eq_chirp_factor N n k]
+  ring
+
 end Quanta.Fft
