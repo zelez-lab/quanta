@@ -632,6 +632,154 @@ pub fn form_q(m: usize, n: usize, a0: &[f32]) -> Vec<f32> {
     q.iter().map(|&x| x as f32).collect()
 }
 
+/// `symm`: symmetric matrix-multiply reference. `side = Left`:
+/// `C ← α·A·B + β·C` with `A` a `d×d` (`d = m`) symmetric matrix whose full
+/// value is reconstructed from its `uplo` triangle. `side = Right`:
+/// `C ← α·B·A + β·C` (`d = n`). `B`, `C` are `m×n` row-major. f64 accumulate.
+#[allow(clippy::too_many_arguments)]
+pub fn symm(
+    side: Side,
+    uplo: Uplo,
+    m: usize,
+    n: usize,
+    alpha: f32,
+    a: &[f32],
+    b: &[f32],
+    beta: f32,
+    c: &mut [f32],
+) {
+    let d = match side {
+        Side::Left => m,
+        Side::Right => n,
+    };
+    assert_eq!(a.len(), d * d, "symm: A must be d×d");
+    assert_eq!(b.len(), m * n, "symm: B must be m×n");
+    assert_eq!(c.len(), m * n, "symm: C must be m×n");
+    // Asym[r,cc] from the stored triangle.
+    let asym = |r: usize, cc: usize| -> f64 {
+        let in_tri = match uplo {
+            Uplo::Lower => cc <= r,
+            Uplo::Upper => cc >= r,
+        };
+        let (rr, kk) = if in_tri { (r, cc) } else { (cc, r) };
+        a[rr * d + kk] as f64
+    };
+    for i in 0..m {
+        for j in 0..n {
+            let mut acc = 0.0f64;
+            for p in 0..d {
+                let (av, bv) = match side {
+                    Side::Left => (asym(i, p), b[p * n + j] as f64),
+                    Side::Right => (b[i * d + p] as f64, asym(p, j)),
+                };
+                acc += av * bv;
+            }
+            let cval = c[i * n + j];
+            c[i * n + j] = (alpha as f64 * acc + beta as f64 * cval as f64) as f32;
+        }
+    }
+}
+
+/// `syr2k`: symmetric rank-2k update reference
+/// `C ← α·(op(A)·op(B)ᵀ + op(B)·op(A)ᵀ) + β·C`, `C` symmetric, only the
+/// `uplo` triangle written. `op(X)[r,p] = x[r·rs + p·cs]` with the same
+/// stride convention as `syrk`. f64 accumulate.
+#[allow(clippy::too_many_arguments)]
+pub fn syr2k(
+    uplo: Uplo,
+    trans: Trans,
+    n: usize,
+    k: usize,
+    alpha: f32,
+    a: &[f32],
+    b: &[f32],
+    beta: f32,
+    c: &mut [f32],
+) {
+    assert_eq!(a.len(), n * k, "syr2k: A must be n×k (or k×n for Trans)");
+    assert_eq!(b.len(), n * k, "syr2k: B must be n×k (or k×n for Trans)");
+    assert_eq!(c.len(), n * n, "syr2k: C must be n×n");
+    let (rs, cs) = match trans {
+        Trans::NoTrans => (k, 1),
+        Trans::Trans => (1, n),
+    };
+    for i in 0..n {
+        for j in 0..n {
+            let in_tri = match uplo {
+                Uplo::Lower => j <= i,
+                Uplo::Upper => j >= i,
+            };
+            if !in_tri {
+                continue;
+            }
+            let mut acc = 0.0f64;
+            for p in 0..k {
+                let ai = a[i * rs + p * cs] as f64;
+                let bj = b[j * rs + p * cs] as f64;
+                let bi = b[i * rs + p * cs] as f64;
+                let aj = a[j * rs + p * cs] as f64;
+                acc += ai * bj + bi * aj;
+            }
+            let cval = c[i * n + j];
+            c[i * n + j] = (alpha as f64 * acc + beta as f64 * cval as f64) as f32;
+        }
+    }
+}
+
+/// `trmm`: triangular matrix-multiply reference. `side = Left`:
+/// `B ← α·op(A)·B` (`A` is `m×m`); `side = Right`: `B ← α·B·op(A)` (`A` is
+/// `n×n`). `A` triangular; only the `uplo` triangle read, diagonal implicit
+/// 1 under `Diag::Unit`. `B` is `m×n` row-major, overwritten. f64 accumulate.
+#[allow(clippy::too_many_arguments)]
+pub fn trmm(
+    side: Side,
+    uplo: Uplo,
+    trans: Trans,
+    diag: Diag,
+    m: usize,
+    n: usize,
+    alpha: f32,
+    a: &[f32],
+    b: &mut [f32],
+) {
+    let na = match side {
+        Side::Left => m,
+        Side::Right => n,
+    };
+    assert_eq!(a.len(), na * na, "trmm: A must be na×na");
+    assert_eq!(b.len(), m * n, "trmm: B must be m×n");
+    let (rs, cs, forward) = trsm_plan(side, uplo, trans, na);
+    // M[i,p] = a[i·rs + p·cs]; M is lower-triangular iff `forward`.
+    let mval = |i: usize, p: usize| -> f64 {
+        if diag == Diag::Unit && i == p {
+            1.0
+        } else {
+            a[i * rs + p * cs] as f64
+        }
+    };
+    // Compute into a fresh buffer, then copy back (reference clarity; the GPU
+    // kernel does it in place with a direction-ordered walk).
+    let mut out = vec![0.0f32; m * n];
+    let nt = na;
+    let (nlanes, lb, ts) = match side {
+        Side::Left => (n, 1usize, n),
+        Side::Right => (m, n, 1usize),
+    };
+    for lane in 0..nlanes {
+        let base = lane * lb;
+        for i in 0..nt {
+            // triangle of i: lower M -> p in [0, i]; upper M -> p in [i, nt).
+            let (lo, hi) = if forward { (0, i + 1) } else { (i, nt) };
+            let mut acc = 0.0f64;
+            for p in lo..hi {
+                acc += mval(i, p) * (b[base + p * ts] as f64);
+            }
+            out[base + i * ts] = (alpha as f64 * acc) as f32;
+        }
+    }
+    b.copy_from_slice(&out);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

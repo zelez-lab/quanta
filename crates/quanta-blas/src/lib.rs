@@ -42,6 +42,12 @@
 //!   (`m ≥ n`) matrix, in-place (`R` upper, reflector tails lower, `tau` out)
 //! - [`lstsq`](qr::lstsq) — least-squares `min‖A·X − B‖` via QR (`Qᵀ` applied
 //!   to `B`, then a back-substitution with `R`)
+//! - [`symm`](symm::symm) — `C ← α·A·B + β·C` (or `B·A`), `A` symmetric
+//!   (only its `uplo` triangle read); Level-3, both side forms
+//! - [`syr2k`](syr2k::syr2k) — `C ← α·(A·Bᵀ + B·Aᵀ) + β·C`, C symmetric,
+//!   only the selected triangle updated; Level-3, both NoTrans/Trans forms
+//! - [`trmm`](trmm::trmm) — `B ← α·op(A)·B` (or `B·op(A)`), `A` triangular;
+//!   Level-3, in place on B, all side/uplo/trans/diag variants
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -104,6 +110,12 @@ pub mod cholesky;
 pub mod lu;
 #[cfg(feature = "gpu")]
 pub mod qr;
+#[cfg(feature = "gpu")]
+pub mod symm;
+#[cfg(feature = "gpu")]
+pub mod syr2k;
+#[cfg(feature = "gpu")]
+pub mod trmm;
 
 pub use params::{Diag, Side, Trans, Uplo};
 
@@ -126,6 +138,12 @@ pub use mixed_tc::gemm_f32_tc;
 #[cfg(feature = "gpu")]
 pub use qr::{lstsq, qr};
 #[cfg(feature = "gpu")]
+pub use symm::symm;
+#[cfg(feature = "gpu")]
+pub use syr2k::syr2k;
+#[cfg(feature = "gpu")]
 pub use syrk::syrk;
 #[cfg(feature = "gpu")]
 pub use triangular::{trsm, trsv};
+#[cfg(feature = "gpu")]
+pub use trmm::trmm;

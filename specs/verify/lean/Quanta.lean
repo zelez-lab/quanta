@@ -114,6 +114,10 @@ import Quanta.Blas.Cholesky
 import Quanta.Blas.Lu
 -- Householder QR (geqrf) per-step contract: reflector norm-preservation + trailing-update rounding decomposition
 import Quanta.Blas.Qr
+-- Level-3 symm / syr2k / trmm per-entry forward-error decompositions
+import Quanta.Blas.Symm
+import Quanta.Blas.Syr2k
+import Quanta.Blas.Trmm
 
 -- Reverse-mode autodiff VJP correctness (companion crate quanta-autograd)
 import Quanta.Autograd.Vjp
