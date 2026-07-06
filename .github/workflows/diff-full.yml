@@ -137,16 +137,18 @@ jobs:
           VK_ICD_FILENAMES="$ICD" vulkaninfo --summary
 
       - name: Differential tests (vulkan lane via lavapipe)
-        # `jit` is required: differential tests + op_matrix build
-        # KernelDef IR at runtime and feed it through wave_jit. The
-        # `vulkan` feature alone leaves wave_jit returning the
-        # default trait error "JIT compilation not supported by
-        # this driver" (same constraint as the metal lane above).
-        run: cargo test --test differential --no-default-features --features vulkan,jit
+        # `compute` + `jit` are BOTH required post crate-split. The tests
+        # import `quanta::kernel` and call `wave_jit`/`dispatch`, which live
+        # behind the `compute` feature — without it this is a *compile*
+        # error (`unresolved import quanta::kernel`), not a runtime
+        # NotSupported. `jit` then enables the runtime KernelDef→SPIR-V
+        # path. The metal lane gets `compute` transitively via `software`;
+        # the vulkan/amdgpu/nvidia lanes must name it explicitly.
+        run: cargo test --test differential --no-default-features --features vulkan,jit,compute
 
       - name: Op-matrix tests (vulkan lane via lavapipe)
         # Step 082 Layer 1 on the SPIR-V emitter path.
-        run: cargo test --test op_matrix --no-default-features --features vulkan,jit
+        run: cargo test --test op_matrix --no-default-features --features vulkan,jit,compute
 
   # ─── AMDGPU lane (real-hardware Vulkan via Mesa radv) ────────────────
   #
@@ -212,12 +214,12 @@ jobs:
           # Pin to RADV so we don't accidentally fall back to
           # lavapipe if the runner has both ICDs registered.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
-        run: cargo test --test differential --no-default-features --features vulkan,jit
+        run: cargo test --test differential --no-default-features --features vulkan,jit,compute
 
       - name: Op-matrix tests (vulkan lane on real AMDGPU)
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
-        run: cargo test --test op_matrix --no-default-features --features vulkan,jit
+        run: cargo test --test op_matrix --no-default-features --features vulkan,jit,compute
 
   # ─── NVIDIA lane (real-hardware Vulkan via NVIDIA proprietary driver) ───
   #
@@ -296,9 +298,9 @@ jobs:
           # Pin to NVIDIA's ICD so we don't accidentally fall back
           # to lavapipe if the runner has both ICDs registered.
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/nvidia_icd.json
-        run: cargo test --test differential --no-default-features --features vulkan,jit
+        run: cargo test --test differential --no-default-features --features vulkan,jit,compute
 
       - name: Op-matrix tests (vulkan lane on real NVIDIA)
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/nvidia_icd.json
-        run: cargo test --test op_matrix --no-default-features --features vulkan,jit
+        run: cargo test --test op_matrix --no-default-features --features vulkan,jit,compute
