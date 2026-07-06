@@ -128,3 +128,37 @@ fn step_positive_mask() {
     // > 0 → 1, else 0 (0 and -0 are not > 0).
     approx(&r.to_vec().unwrap(), &[0.0, 0.0, 0.0, 1.0, 1.0]);
 }
+
+#[test]
+fn activation_sigmoid_silu_gelu() {
+    let g = gpu();
+    let xs = [-2.0f32, -0.5, 0.0, 0.5, 1.0, 3.0];
+    let a = Array::from_slice(&g, &xs, &[xs.len()]).unwrap();
+
+    // sigmoid
+    let sig_ref: Vec<f32> = xs.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect();
+    approx(&a.sigmoid().unwrap().to_vec().unwrap(), &sig_ref);
+
+    // silu = x·σ(x)
+    let silu_ref: Vec<f32> = xs.iter().map(|&x| x / (1.0 + (-x).exp())).collect();
+    approx(&a.silu().unwrap().to_vec().unwrap(), &silu_ref);
+
+    // gelu (tanh approximation) — reference matches the composed formula
+    let c = (2.0f32 / std::f32::consts::PI).sqrt();
+    let gelu_ref: Vec<f32> = xs
+        .iter()
+        .map(|&x| {
+            let inner = c * (x + 0.044715 * x * x * x);
+            0.5 * x * (1.0 + inner.tanh())
+        })
+        .collect();
+    // slightly looser: the composed exp-based tanh differs from libm tanh in
+    // the last f32 ulps.
+    let got = a.gelu().unwrap().to_vec().unwrap();
+    for (i, (&gv, &rv)) in got.iter().zip(gelu_ref.iter()).enumerate() {
+        assert!(
+            (gv - rv).abs() <= 1e-4 * (1.0 + rv.abs()),
+            "gelu elem {i}: {gv} vs {rv}"
+        );
+    }
+}

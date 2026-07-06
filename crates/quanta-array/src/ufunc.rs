@@ -510,6 +510,40 @@ impl<T: FloatScalar> Array<T> {
         self.math2(rhs, MathFn::Pow)
     }
 
+    /// A scalar constant broadcast to this array's shape (helper for the
+    /// composed activations below).
+    fn scalar_like(&self, v: f64) -> Result<Array<T>, ArrayError> {
+        Array::full(self.gpu(), T::from_f64(v), &[1])?.broadcast_to(self.shape())
+    }
+
+    /// Sigmoid `σ(x) = 1 / (1 + e⁻ˣ)`. (Composed from `exp`/`add`/`div`; the
+    /// array layer has no dedicated sigmoid primitive.)
+    pub fn sigmoid(&self) -> Result<Array<T>, ArrayError> {
+        let one = self.scalar_like(1.0)?;
+        one.div(&one.add(&self.neg()?.exp()?)?)
+    }
+
+    /// SiLU / swish `x · σ(x)`. The FFN activation used by LLaMA / Mistral.
+    pub fn silu(&self) -> Result<Array<T>, ArrayError> {
+        self.mul(&self.sigmoid()?)
+    }
+
+    /// GELU (tanh approximation, the GPT-2 form):
+    /// `0.5·x·(1 + tanh( √(2/π)·(x + 0.044715·x³) ))`.
+    pub fn gelu(&self) -> Result<Array<T>, ArrayError> {
+        // c = √(2/π)
+        const C: f64 = 0.797_884_560_802_865_4;
+        let x3 = self.mul(self)?.mul(self)?;
+        let inner = self.add(&x3.mul(&self.scalar_like(0.044715)?)?)?;
+        // tanh(z) = (e^z − e⁻ᶻ)/(e^z + e⁻ᶻ), composed from exp.
+        let z = inner.mul(&self.scalar_like(C)?)?;
+        let ez = z.exp()?;
+        let enz = z.neg()?.exp()?;
+        let tanh = ez.sub(&enz)?.div(&ez.add(&enz)?)?;
+        let half_x = self.mul(&self.scalar_like(0.5)?)?;
+        half_x.mul(&self.scalar_like(1.0)?.add(&tanh)?)
+    }
+
     /// Positive-step indicator: `1.0` where `x > 0`, else `0.0`. This is the
     /// derivative mask of `relu` (`max(x,0)`) — `quanta-autograd` uses it for
     /// the relu VJP. Kernel: `Cast(Cmp(x > 0))`.

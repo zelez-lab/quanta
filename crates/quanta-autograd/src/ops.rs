@@ -126,6 +126,35 @@ impl<T: DiffScalar> Var<T> {
             .push(Op::Tanh(self.id, y.shallow_clone()), y))
     }
 
+    /// A constant `Var` (no upstream gradient) holding `v` broadcast to this
+    /// var's shape — used to fold scalar coefficients into a composed op.
+    fn scalar_const(&self, v: f64) -> Result<Var<T>, AutogradError> {
+        let x = self.value();
+        let arr = Array::full(x.gpu(), T::from_f64(v), &[1])?.broadcast_to(x.shape())?;
+        Ok(self.tape_handle().var(arr))
+    }
+
+    /// SiLU / swish `x · σ(x)`. Composed from `sigmoid`/`mul`, so the VJP flows
+    /// through the tape automatically.
+    pub fn silu(&self) -> Result<Var<T>, AutogradError> {
+        self.mul(&self.sigmoid()?)
+    }
+
+    /// GELU (tanh approximation, GPT-2 form):
+    /// `0.5·x·(1 + tanh( √(2/π)·(x + 0.044715·x³) ))`. Composed from
+    /// `mul`/`add`/`tanh` — no dedicated `Op` variant, VJP is automatic.
+    pub fn gelu(&self) -> Result<Var<T>, AutogradError> {
+        // c = √(2/π)
+        let c = self.scalar_const(0.797_884_560_802_865_4)?;
+        let half = self.scalar_const(0.5)?;
+        let k = self.scalar_const(0.044715)?;
+        let one = self.scalar_const(1.0)?;
+        let x3 = self.mul(self)?.mul(self)?;
+        let inner = self.add(&x3.mul(&k)?)?;
+        let tanh = inner.mul(&c)?.tanh()?;
+        self.mul(&half)?.mul(&one.add(&tanh)?)
+    }
+
     /// Reshape to `shape` (same element count) — a zero-copy view. The gradient
     /// passes straight through, reshaped back to this var's shape. Errors if the
     /// element counts don't match (delegated to `Array::reshape`).

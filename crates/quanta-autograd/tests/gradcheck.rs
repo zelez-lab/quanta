@@ -1372,3 +1372,30 @@ fn grad_upsample2d() {
     }
     assert_close(&gx, &want, 1e-4, "upsample2d grad");
 }
+
+#[test]
+fn grad_silu() {
+    // f(x) = x·σ(x) ⇒ f'(x) = σ(x)·(1 + x·(1 − σ(x)))
+    let g = gpu();
+    let x = vec![-2.0f32, -0.5, 0.0, 0.5, 1.0, 3.0];
+    let an = analytic_grad(&g, &x, |v| v.silu().unwrap());
+    let num = numeric_grad(&x, |x| {
+        let s = 1.0 / (1.0 + (-x).exp());
+        x * s
+    });
+    assert_close(&an, &num, 2e-2, "silu");
+}
+
+#[test]
+fn grad_gelu() {
+    // f(x) = 0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³)))  (tanh approximation).
+    let g = gpu();
+    let x = vec![-2.0f32, -0.5, 0.0, 0.5, 1.0, 3.0];
+    let an = analytic_grad(&g, &x, |v| v.gelu().unwrap());
+    let num = numeric_grad(&x, |x| {
+        let c = (2.0f32 / std::f32::consts::PI).sqrt();
+        let inner = c * (x + 0.044715 * x * x * x);
+        0.5 * x * (1.0 + inner.tanh())
+    });
+    assert_close(&an, &num, 2e-2, "gelu");
+}
