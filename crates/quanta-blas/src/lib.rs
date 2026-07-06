@@ -33,6 +33,11 @@
 //!   factorisation (the first factorisation; both uplo forms)
 //! - [`chol_solve`](cholesky::chol_solve) — solve `A·X = B` for SPD `A` via
 //!   the factorisation + two triangular solves
+//! - [`lu`](lu::lu) — `P·A = L·U`, in-place LU factorisation with partial
+//!   pivoting (the general non-symmetric factorisation)
+//! - [`lu_solve`](lu::lu_solve) — solve `A·X = B` for general `A` via LU +
+//!   pivot permutation + two triangular solves
+//! - [`lu_inv`](lu::lu_inv) — `A⁻¹` for general `A` via LU + solve against `I`
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -91,6 +96,8 @@ pub mod triangular;
 
 #[cfg(feature = "gpu")]
 pub mod cholesky;
+#[cfg(feature = "gpu")]
+pub mod lu;
 
 pub use params::{Diag, Side, Trans, Uplo};
 
@@ -102,6 +109,8 @@ pub use gemm::gemm;
 pub use level1::{axpy, dot, nrm2, scal};
 #[cfg(feature = "gpu")]
 pub use level2::gemv;
+#[cfg(feature = "gpu")]
+pub use lu::{lu, lu_inv, lu_solve};
 #[cfg(feature = "gpu")]
 pub use mixed::{GemmInputType, gemm_mixed, gemm_mixed8, gemv_mixed, gemv_mixed8};
 #[cfg(feature = "gpu")]

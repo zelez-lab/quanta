@@ -463,6 +463,48 @@ pub fn potrf(uplo: Uplo, n: usize, a: &mut [f32]) {
     }
 }
 
+/// `getrf`: LU factorisation with partial (row) pivoting of an `n×n`
+/// row-major matrix `a`, in place. On return the strict lower triangle holds
+/// the unit-lower multipliers `L` (implicit unit diagonal) and the upper
+/// triangle (with diagonal) holds `U`, such that `P·A = L·U`. `ipiv[k]` is
+/// the row swapped with row `k` at step `k` (LAPACK convention). Works in
+/// f64 internally — the differential oracle for the GPU `lu`.
+pub fn getrf(n: usize, a: &mut [f32], ipiv: &mut [usize]) {
+    assert_eq!(a.len(), n * n, "getrf: A must be n×n");
+    assert_eq!(ipiv.len(), n, "getrf: ipiv must have length n");
+    // Work in an f64 scratch, then write back.
+    let mut w: Vec<f64> = a.iter().map(|&v| v as f64).collect();
+    for k in 0..n {
+        // Partial pivot: row r ≥ k with the largest |w[r,k]|.
+        let mut best_row = k;
+        let mut best_abs = w[k * n + k].abs();
+        for r in (k + 1)..n {
+            let v = w[r * n + k].abs();
+            if v > best_abs {
+                best_abs = v;
+                best_row = r;
+            }
+        }
+        ipiv[k] = best_row;
+        if best_row != k {
+            for j in 0..n {
+                w.swap(k * n + j, best_row * n + j);
+            }
+        }
+        let akk = w[k * n + k];
+        for i in (k + 1)..n {
+            let m = w[i * n + k] / akk;
+            w[i * n + k] = m;
+            for j in (k + 1)..n {
+                w[i * n + j] -= m * w[k * n + j];
+            }
+        }
+    }
+    for (dst, &v) in a.iter_mut().zip(w.iter()) {
+        *dst = v as f32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

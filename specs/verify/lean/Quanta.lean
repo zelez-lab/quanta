@@ -110,6 +110,8 @@ import Quanta.Blas.Syrk
 import Quanta.Blas.Triangular
 -- Cholesky (potrf) per-entry contract: diagonal + off-diagonal exact residual + rounding decomposition
 import Quanta.Blas.Cholesky
+-- LU (getrf) per-step contract: U-row + L-column exact residual + rounding decomposition
+import Quanta.Blas.Lu
 
 -- Reverse-mode autodiff VJP correctness (companion crate quanta-autograd)
 import Quanta.Autograd.Vjp
