@@ -405,6 +405,64 @@ pub fn syrk(
     }
 }
 
+/// `potrf`: Cholesky factorisation of a symmetric positive-definite `n×n`
+/// row-major matrix `a`, **in place**. With `uplo = Lower` it computes the
+/// lower factor `L` (so `A = L·Lᵀ`) into `a`'s lower triangle; with
+/// `uplo = Upper` the upper factor `U` (so `A = Uᵀ·U`) into the upper
+/// triangle. The opposite (unreferenced) triangle is left untouched — the
+/// caller's original entries survive there, exactly as LAPACK leaves them.
+///
+/// The right-looking column algorithm, accumulated in `f64` — the
+/// differential oracle for the GPU `cholesky`. No positive-definiteness
+/// check (as in LAPACK's error path): a non-SPD input yields a `nan` from
+/// the diagonal `sqrt`, which propagates.
+pub fn potrf(uplo: Uplo, n: usize, a: &mut [f32]) {
+    assert_eq!(a.len(), n * n, "potrf: A must be n×n");
+    // Work in f64 over the referenced triangle, then write back.
+    match uplo {
+        Uplo::Lower => {
+            // L[j][j] = sqrt(A[j][j] − Σ_{p<j} L[j][p]²)
+            // L[i][j] = (A[i][j] − Σ_{p<j} L[i][p]·L[j][p]) / L[j][j], i>j
+            for j in 0..n {
+                let mut d = a[j * n + j] as f64;
+                for p in 0..j {
+                    let ljp = a[j * n + p] as f64;
+                    d -= ljp * ljp;
+                }
+                let ljj = d.sqrt();
+                a[j * n + j] = ljj as f32;
+                for i in (j + 1)..n {
+                    let mut s = a[i * n + j] as f64;
+                    for p in 0..j {
+                        s -= (a[i * n + p] as f64) * (a[j * n + p] as f64);
+                    }
+                    a[i * n + j] = (s / ljj) as f32;
+                }
+            }
+        }
+        Uplo::Upper => {
+            // U[j][j] = sqrt(A[j][j] − Σ_{p<j} U[p][j]²)
+            // U[j][i] = (A[j][i] − Σ_{p<j} U[p][j]·U[p][i]) / U[j][j], i>j
+            for j in 0..n {
+                let mut d = a[j * n + j] as f64;
+                for p in 0..j {
+                    let upj = a[p * n + j] as f64;
+                    d -= upj * upj;
+                }
+                let ujj = d.sqrt();
+                a[j * n + j] = ujj as f32;
+                for i in (j + 1)..n {
+                    let mut s = a[j * n + i] as f64;
+                    for p in 0..j {
+                        s -= (a[p * n + j] as f64) * (a[p * n + i] as f64);
+                    }
+                    a[j * n + i] = (s / ujj) as f32;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

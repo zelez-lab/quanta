@@ -29,6 +29,10 @@
 //!   A triangular (Level-3, in place on B; all side/uplo/trans/diag variants)
 //! - [`syrk`](syrk::syrk) — `C ← α·op(A)·op(A)ᵀ + β·C`, C symmetric,
 //!   only the selected triangle updated (Level-3, both NoTrans/Trans forms)
+//! - [`cholesky`](cholesky::cholesky) — `A = L·Lᵀ` / `Uᵀ·U`, in-place SPD
+//!   factorisation (the first factorisation; both uplo forms)
+//! - [`chol_solve`](cholesky::chol_solve) — solve `A·X = B` for SPD `A` via
+//!   the factorisation + two triangular solves
 //!
 //! `scal`/`axpy` mutate their target buffer in place (these ops are
 //! memory-bandwidth-bound, so avoiding a second buffer is the win); `dot`/
@@ -85,8 +89,13 @@ pub mod syrk;
 #[cfg(feature = "gpu")]
 pub mod triangular;
 
+#[cfg(feature = "gpu")]
+pub mod cholesky;
+
 pub use params::{Diag, Side, Trans, Uplo};
 
+#[cfg(feature = "gpu")]
+pub use cholesky::{chol_solve, cholesky};
 #[cfg(feature = "gpu")]
 pub use gemm::gemm;
 #[cfg(feature = "gpu")]

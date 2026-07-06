@@ -108,6 +108,8 @@ import Quanta.Blas.GemmMixed
 import Quanta.Blas.Syrk
 -- Triangular-solve (trsv/trsm) substitution-step contract: exact residual + rounding decomposition
 import Quanta.Blas.Triangular
+-- Cholesky (potrf) per-entry contract: diagonal + off-diagonal exact residual + rounding decomposition
+import Quanta.Blas.Cholesky
 
 -- Reverse-mode autodiff VJP correctness (companion crate quanta-autograd)
 import Quanta.Autograd.Vjp
