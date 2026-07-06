@@ -92,12 +92,21 @@ right value through. That's attention learning *where to look*.
 
 ## Where this goes
 
-- **Multi-head** attention runs several of these in parallel on slices of the
-  feature dim (`narrow` the head, attend, `concat` back).
-- A **transformer block** wraps attention with a residual add, a feed-forward
-  `matmul → relu → matmul`, and normalization — all ops you have (see
-  [layer normalization](layer-norm.md)).
-- **Causal** attention masks out future positions before the softmax with
-  `where_mask` — a lower-triangular keep-mask on `scores`.
+The single head above is the core; a full transformer block adds a few pieces,
+all of which the stack has:
+
+- **Multi-head** attention runs several heads in parallel on slices of the
+  feature dim — `Var::multi_head_attention(wq, wk, wv, wo, heads, mask)` does the
+  split → per-head attention (batched matmul over the heads) → merge for you.
+- A **transformer block** wraps attention with a residual add, a GELU
+  feed-forward `matmul → gelu → matmul`, and normalization
+  (`rms_norm` / [layer_norm](layer-norm.md)).
+- **Causal** attention masks out future positions before the softmax — an
+  additive lower-triangular mask (`0` allowed, a large negative blocked) added to
+  `scores`.
+
+The **[Project: train a GPT decoder block](project-transformer.md)** assembles
+all of these into a real decoder block and trains it end to end — the natural
+next step from here.
 
 You now have the piece every transformer is built from.

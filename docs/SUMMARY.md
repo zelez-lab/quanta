@@ -32,6 +32,7 @@
 - [Project: softmax regression](computation/tutorials/project-softmax-regression.md)
 - [Project: cluster points (k-means)](computation/tutorials/project-kmeans.md)
 - [Project: word embeddings (word2vec)](computation/tutorials/project-word2vec.md)
+- [Project: train a GPT decoder block](computation/tutorials/project-transformer.md)
 - [Project: denoise a signal (FFT)](computation/tutorials/project-fft-denoise.md)
 - [Project: price an option (Monte-Carlo)](computation/tutorials/project-monte-carlo.md)
 - [Project: principal components (PCA)](computation/tutorials/project-pca.md)
