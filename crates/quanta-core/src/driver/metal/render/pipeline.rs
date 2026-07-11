@@ -244,10 +244,11 @@ impl MetalDevice {
                 let attrs_array = ffi::msg_id(vtx_desc, b"attributes\0");
 
                 for (buf_idx, layout) in desc.vertex_layouts.iter().enumerate() {
+                    let buffer_index = super::VERTEX_ATTRIBUTE_BUFFER_BASE + buf_idx as u64;
                     let layout_obj = ffi::msg_id_u64(
                         layouts_array,
                         b"objectAtIndexedSubscript:\0",
-                        buf_idx as u64,
+                        buffer_index,
                     );
                     ffi::msg_void_u64(layout_obj, b"setStride:\0", layout.stride as u64);
                     let step_fn = match layout.step {
@@ -268,7 +269,7 @@ impl MetalDevice {
                             attr_format_to_metal(attr.format),
                         );
                         ffi::msg_void_u64(attr_obj, b"setOffset:\0", attr.offset as u64);
-                        ffi::msg_void_u64(attr_obj, b"setBufferIndex:\0", buf_idx as u64);
+                        ffi::msg_void_u64(attr_obj, b"setBufferIndex:\0", buffer_index);
                     }
                 }
                 ffi::msg_void_id(pipe_desc, b"setVertexDescriptor:\0", vtx_desc);

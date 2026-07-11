@@ -387,7 +387,7 @@ impl MetalDevice {
                                 b"setVertexBuffer:offset:atIndex:\0",
                                 *buf,
                                 *offset,
-                                *slot as u64,
+                                super::VERTEX_ATTRIBUTE_BUFFER_BASE + *slot as u64,
                             );
                         }
                     }
@@ -397,9 +397,20 @@ impl MetalDevice {
                     }
                     RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
                         if let Some(buf) = buffers.get(handle) {
+                            // Bind to BOTH stages, matching Vulkan's
+                            // descriptor visibility (VERTEX | FRAGMENT):
+                            // a fragment shader reading a uniform/field
+                            // sees the same slot the vertex stage does.
                             ffi::msg_set_buffer(
                                 encoder,
                                 b"setVertexBuffer:offset:atIndex:\0",
+                                *buf,
+                                0,
+                                *slot as u64,
+                            );
+                            ffi::msg_set_buffer(
+                                encoder,
+                                b"setFragmentBuffer:offset:atIndex:\0",
                                 *buf,
                                 0,
                                 *slot as u64,
@@ -417,9 +428,17 @@ impl MetalDevice {
                         }
                     }
                     RenderOp::SetValue { slot, data } => {
+                        // Both stages — see SetField above.
                         ffi::msg_set_bytes(
                             encoder,
                             b"setVertexBytes:length:atIndex:\0",
+                            data.as_ptr() as *const _,
+                            data.len() as u64,
+                            *slot as u64,
+                        );
+                        ffi::msg_set_bytes(
+                            encoder,
+                            b"setFragmentBytes:length:atIndex:\0",
                             data.as_ptr() as *const _,
                             data.len() as u64,
                             *slot as u64,
