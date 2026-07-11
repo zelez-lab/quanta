@@ -17,4 +17,5 @@ pub(crate) use binary::{ShaderCompileOutput, compile_shader};
 #[allow(unused_imports)]
 pub(crate) use shader_types::{
     ShaderParam, ShaderType, extract_body_source, parse_return_type, parse_shader_params,
+    rewrite_texture_names,
 };

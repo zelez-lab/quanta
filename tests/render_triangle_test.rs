@@ -1144,3 +1144,194 @@ fn draw_indexed_without_indices_is_rejected() {
         "expected InvalidParam for draw_indexed without indices, got: {err}"
     );
 }
+
+// ─── Test: name-based texture params (`&Texture2D` + sample(name, uv)) ──────
+
+#[quanta::fragment]
+fn atlas_frag(uv: Vec2, atlas: &Texture2D) -> Vec4 {
+    sample(atlas, uv)
+}
+
+#[test]
+fn texture_param_by_name_samples_exactly() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || ATLAS_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_uv_layout();
+    let pipeline = gpu
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &UV_VERTEX_SHADER,
+                fragment: &ATLAS_FRAG_SHADER,
+            })
+            .with_entries(UV_VERTEX_SHADER.entry_point, ATLAS_FRAG_SHADER.entry_point)
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
+        .expect("pipeline creation");
+
+    // 2×2 texture: red, green, blue, white
+    let tex_data: [u8; 16] = [
+        255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+    ];
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(2, 2, Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ),
+        )
+        .expect("texture");
+    tex.write(&tex_data).expect("tex write");
+
+    #[rustfmt::skip]
+    let verts: [f32; 30] = [
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0, -1.0, 0.0,  1.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0,  1.0, 0.0,  0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+
+    let w = 4u32;
+    let h = 4u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .texture(0, &tex)
+        .sampler(
+            0,
+            quanta::SamplerDesc::default()
+                .with_filters(quanta::Filter::Nearest, quanta::Filter::Nearest),
+        )
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = target.read().unwrap();
+
+    // Nearest sampling of a 2×2 texture over a 4×4 target: each texel
+    // covers one quadrant exactly. v=0 is the texture's first row; the
+    // framebuffer's y=0 row is the quad's uv v≈0 edge after the y-flip,
+    // so probe all four quadrants by their known texel colors.
+    let expect = |x: u32, y: u32, want: (u8, u8, u8), which: &str| {
+        let (r, g, b, _) = pixel_at(&pixels, w, x, y);
+        assert!(
+            r.abs_diff(want.0) <= 2 && g.abs_diff(want.1) <= 2 && b.abs_diff(want.2) <= 2,
+            "{which} quadrant at ({x},{y}): expected {want:?}, got ({r},{g},{b})"
+        );
+    };
+    // uv (0,0)→red, (1,0)→green, (0,1)→blue, (1,1)→white. With
+    // OriginUpperLeft framebuffers, uv v=1 lands on LOW y rows.
+    expect(0, 3, (255, 0, 0), "uv(0,0) red");
+    expect(3, 3, (0, 255, 0), "uv(1,0) green");
+    expect(0, 0, (0, 0, 255), "uv(0,1) blue");
+    expect(3, 0, (255, 255, 255), "uv(1,1) white");
+}
+
+// ─── Test: fragment uniform param (Metal fragment-stage buffer bind) ────────
+
+#[quanta::fragment]
+fn tinted_frag(uv: Vec2, tint: &Vec4) -> Vec4 {
+    Vec4::new(tint.x, tint.y, tint.z, 1.0)
+}
+
+#[test]
+fn fragment_uniform_is_visible_to_fragment_stage() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || TINTED_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_uv_layout();
+    let pipeline = gpu
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &UV_VERTEX_SHADER,
+                fragment: &TINTED_FRAG_SHADER,
+            })
+            .with_entries(UV_VERTEX_SHADER.entry_point, TINTED_FRAG_SHADER.entry_point)
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
+        .expect("pipeline creation");
+
+    #[rustfmt::skip]
+    let verts: [f32; 30] = [
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0, -1.0, 0.0,  1.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0,  1.0, 0.0,  0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+
+    // The tint uniform: fragment uniforms number [[buffer(i)]] by
+    // declaration order among uniform params — `tint` is uniform 0,
+    // so it binds at slot 0. Geometry lives in the remapped attribute
+    // index space, so slot 0 is free for user buffers on both stages.
+    let tint: quanta::Field<f32> = gpu
+        .field_with_usage(4, FieldUsage::default_render())
+        .unwrap();
+    tint.write(&[0.25f32, 0.5, 0.75, 1.0]).unwrap();
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .uniform(0, &tint)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = target.read().unwrap();
+    let (r, g, b, _) = pixel_at(&pixels, w, w / 2, h / 2);
+    assert!(
+        r.abs_diff(64) <= 2 && g.abs_diff(128) <= 2 && b.abs_diff(191) <= 2,
+        "tint uniform must reach the fragment stage: expected ~(64,128,191), got ({r},{g},{b})"
+    );
+}

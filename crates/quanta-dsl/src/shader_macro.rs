@@ -26,10 +26,18 @@ pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
     );
 
     // Parse shader params and body, then compile via the compiler binary.
-    let params = match compiler::parse_shader_params(&func) {
+    let (params, textures) = match compiler::parse_shader_params(&func) {
         Ok(p) => p,
         Err(e) => return e.to_compile_error().into(),
     };
+    if !textures.is_empty() {
+        return syn::Error::new_spanned(
+            &func.sig.ident,
+            "texture parameters are only supported in fragment shaders",
+        )
+        .to_compile_error()
+        .into();
+    }
     let return_ty = match compiler::parse_return_type(&func) {
         Ok(t) => t,
         Err(e) => return e.to_compile_error().into(),
@@ -112,7 +120,7 @@ pub(crate) fn expand_fragment(func: ItemFn) -> TokenStream {
     );
 
     // Parse shader params and body, then compile via the compiler binary.
-    let params = match compiler::parse_shader_params(&func) {
+    let (params, textures) = match compiler::parse_shader_params(&func) {
         Ok(p) => p,
         Err(e) => return e.to_compile_error().into(),
     };
@@ -121,7 +129,10 @@ pub(crate) fn expand_fragment(func: ItemFn) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let body_source = func.block.to_token_stream().to_string();
+    // `&Texture2D` params resolve to slots by declaration order; the
+    // emitters consume the slot form (`sample(N, uv)`).
+    let body_source =
+        compiler::rewrite_texture_names(&func.block.to_token_stream().to_string(), &textures);
 
     let (spirv_expr, metallib_expr, wgsl_expr) = match compiler::compile_shader(
         &func_name_str,

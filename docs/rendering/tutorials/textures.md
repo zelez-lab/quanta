@@ -131,6 +131,23 @@ are rejected with `InvalidParam`. Backends that can't do sub-region uploads
 return `NotSupported` — check `gpu.supports_texture_write_region()` and fall
 back to a whole-texture `write`.
 
+## Sampling in shaders
+
+A DSL fragment samples a texture through a `&Texture2D` parameter:
+
+```rust
+#[quanta::fragment]
+fn shade(uv: Vec2, image: &Texture2D) -> Vec4 {
+    sample(image, uv)
+}
+```
+
+Bind the texture and its sampler at the matching slot (declaration order
+among texture params) in the render pass:
+`.texture(0, &tex).sampler(0, SamplerDesc::default())`. See the
+[vertex & fragment shaders tutorial](vertex-fragment.md) for the full
+parameter rules.
+
 ## Reading pixels
 
 ```rust

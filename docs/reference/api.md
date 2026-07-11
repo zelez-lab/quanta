@@ -366,6 +366,15 @@ pulse.wait()?;
 | `.sampler(slot, desc)` | Set sampler state |
 | `.value(slot, &val)` | Set push constant |
 
+Buffers and values are visible to **both stages**: a fragment shader reading a
+uniform sees the same slot the vertex stage does (Metal binds both stages;
+Vulkan descriptors are vertex+fragment visible). Slots 0-15 are user space —
+vertex-attribute buffers live in a separate internal index space and never
+collide. For a DSL fragment, `&Texture2D` params take texture slots in
+declaration order (first texture param ↔ `.texture(0, …)`/`.sampler(0, …)`),
+and uniform params take buffer slots in declaration order among uniforms
+(first uniform ↔ `.uniform(0, …)`).
+
 ### Draw commands
 
 | Method | Description |

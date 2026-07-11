@@ -483,3 +483,21 @@ fn spirv_val_identity() {
     }
     compile_and_validate(&identity_kernel(), "identity_copy");
 }
+
+#[quanta::fragment]
+fn val_sample_frag(uv: Vec2, tex: &Texture2D) -> Vec4 {
+    sample(tex, uv)
+}
+
+#[test]
+fn spirv_val_fragment_sampled_texture() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_sample_frag();
+    let spirv = shader
+        .spirv
+        .expect("sampled fragment shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "fragment_sampled_texture");
+}

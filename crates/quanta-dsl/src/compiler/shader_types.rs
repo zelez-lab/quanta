@@ -55,12 +55,20 @@ pub(crate) fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
     }
 }
 
-/// Parse function parameters into shader params.
+/// Parse function parameters into shader params plus texture params.
 ///
 /// Value params (Vec2, Vec3, Vec4, f32) become attributes/inputs.
 /// Reference params (&T) become uniform buffer bindings.
-pub(crate) fn parse_shader_params(func: &syn::ItemFn) -> Result<Vec<ShaderParam>, syn::Error> {
+/// `&Texture2D` params become sampled textures: their slot is their
+/// declaration order among texture params, and the macro rewrites
+/// `sample(name, uv)` in the body to the slot form the emitters bind
+/// (`[[texture(slot)]]`/`[[sampler(slot)]]` on Metal, descriptor
+/// binding `slot + 8` on Vulkan).
+pub(crate) fn parse_shader_params(
+    func: &syn::ItemFn,
+) -> Result<(Vec<ShaderParam>, Vec<String>), syn::Error> {
     let mut params = Vec::new();
+    let mut textures = Vec::new();
 
     for arg in &func.sig.inputs {
         if let syn::FnArg::Typed(pat_type) = arg {
@@ -74,6 +82,26 @@ pub(crate) fn parse_shader_params(func: &syn::ItemFn) -> Result<Vec<ShaderParam>
                 }
             };
 
+            if is_texture_type(&pat_type.ty) {
+                match pat_type.ty.as_ref() {
+                    syn::Type::Reference(_) => {}
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            &pat_type.ty,
+                            "texture parameters must be references: `&Texture2D`",
+                        ));
+                    }
+                }
+                if textures.len() >= 8 {
+                    return Err(syn::Error::new_spanned(
+                        &pat_type.pat,
+                        "at most 8 texture parameters are supported (slots 0-7)",
+                    ));
+                }
+                textures.push(name);
+                continue;
+            }
+
             let (ty, is_uniform) = parse_shader_type(&pat_type.ty)?;
             params.push(ShaderParam {
                 name,
@@ -83,7 +111,41 @@ pub(crate) fn parse_shader_params(func: &syn::ItemFn) -> Result<Vec<ShaderParam>
         }
     }
 
-    Ok(params)
+    Ok((params, textures))
+}
+
+/// Whether the (possibly referenced) type is the `Texture2D` marker.
+fn is_texture_type(ty: &syn::Type) -> bool {
+    let inner = match ty {
+        syn::Type::Reference(r) => r.elem.as_ref(),
+        other => other,
+    };
+    if let syn::Type::Path(path) = inner
+        && let Some(seg) = path.path.segments.last()
+    {
+        return seg.ident == "Texture2D";
+    }
+    false
+}
+
+/// Rewrite `sample(param_name, ...)` calls to the canonical slot form
+/// `sample(N, ...)` the emitters recognize. The body arrives as a
+/// proc-macro token string, so spacing around `(` and `,` varies —
+/// all four combinations are normalized to the compact form.
+pub(crate) fn rewrite_texture_names(body: &str, textures: &[String]) -> String {
+    let mut s = body.to_string();
+    for (slot, name) in textures.iter().enumerate() {
+        let canonical = format!("sample({slot},");
+        for pat in [
+            format!("sample ({name} ,"),
+            format!("sample({name} ,"),
+            format!("sample ({name},"),
+            format!("sample({name},"),
+        ] {
+            s = s.replace(&pat, &canonical);
+        }
+    }
+    s
 }
 
 /// Parse a type into (ShaderType, is_uniform).

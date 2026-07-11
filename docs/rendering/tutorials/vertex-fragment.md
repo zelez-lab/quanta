@@ -114,6 +114,29 @@ Convention:
 - Vertex param 2 = fragment input at Location 1
 - ...
 
+## Texture parameters
+
+A fragment shader samples textures through `&Texture2D` parameters and the
+`sample` intrinsic:
+
+```rust
+#[quanta::fragment]
+fn glyph(uv: Vec2, atlas: &Texture2D) -> Vec4 {
+    let texel = sample(atlas, uv);
+    Vec4::new(1.0, 1.0, 1.0, texel.x)
+}
+```
+
+- Texture slots follow declaration order among texture params: the first
+  `&Texture2D` is slot 0, the second slot 1, and so on (at most 8).
+- Bind at draw time with the matching slot:
+  `.texture(0, &atlas).sampler(0, SamplerDesc::default())`. Every texture
+  gets its own sampler at the same slot number.
+- `sample(param, uv)` returns `Vec4`; for single-channel formats (`R8`
+  glyph atlases) read `.x`.
+- Texture params are fragment-only; a `&Texture2D` in a vertex shader is a
+  compile error.
+
 ## Uniforms derive
 
 For uniform data shared across all vertices/fragments, use
@@ -172,6 +195,7 @@ fn animated(pos: Vec3, normal: Vec3, mvp: &Mat4, time: &f32) -> Vec4 {
 | `Mat4` | 16        | 4x4 matrix (column-major)     |
 | `u32`  | 1         | Unsigned integer               |
 | `i32`  | 1         | Signed integer                 |
+| `&Texture2D` | -   | Sampled texture (fragment param only) |
 
 ## Example: rotating triangle with MVP
 

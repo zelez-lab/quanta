@@ -145,14 +145,27 @@ impl SpvEmitter {
         let saved_next = self.next_id;
 
         let result_id = match self.eval_shader_body(&shader.body_source, &param_info) {
-            Ok((id, ty)) => self
-                .promote_to_vec4(id, ty, f32_ty, vec4_ty)
-                .unwrap_or_else(|| {
+            Ok((id, ty)) => match self.promote_to_vec4(id, ty, f32_ty, vec4_ty) {
+                Some(id) => id,
+                None => {
+                    eprintln!(
+                        "[quanta] warning: fragment shader `{}` body result could not be promoted to Vec4; \
+                     emitting a passthrough SPIR-V shader — it will MISRENDER \
+                     on Vulkan (Metal/metallib is unaffected)",
+                        shader.name
+                    );
                     self.sec_function = saved_func.clone();
                     self.next_id = saved_next;
                     self.passthrough_first_input(&stage_in_params, &input_vars, f32_ty, vec4_ty)
-                }),
-            Err(_) => {
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "[quanta] warning: fragment shader `{}` body failed SPIR-V translation ({e}); \
+                     emitting a passthrough SPIR-V shader — it will MISRENDER \
+                     on Vulkan (Metal/metallib is unaffected)",
+                    shader.name
+                );
                 self.sec_function = saved_func;
                 self.next_id = saved_next;
                 self.passthrough_first_input(&stage_in_params, &input_vars, f32_ty, vec4_ty)

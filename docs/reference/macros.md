@@ -468,9 +468,16 @@ fn name(varyings..., textures: &Texture2D, uniforms: &T) -> Vec4 { body }
 
 #### Parameters
 
-- Value params: interpolated varyings from vertex shader
-- `&Texture2D` reference params: texture bindings
-- `&T` reference params: uniform buffer bindings
+- Value params: interpolated varyings from the vertex shader (matched by name)
+- `&Texture2D` reference params: sampled textures. Slots follow declaration
+  order among texture params -- the first texture param is slot 0, bound at
+  draw time with `.texture(0, &tex).sampler(0, desc)`. Sample with the
+  `sample(param_name, uv)` intrinsic (returns `Vec4`).
+- Other `&T` reference params (`&Vec4`, `&Mat4`, ...): uniform buffer
+  bindings. Fragment uniforms number their slots by declaration order among
+  uniform params -- the first uniform binds with `.uniform(0, &field)`.
+  Fragment-stage uniforms currently reach Metal only (the SPIR-V fragment
+  emitter does not declare them yet); texture sampling works on both.
 
 #### Produces
 
@@ -481,10 +488,13 @@ fn name(varyings..., textures: &Texture2D, uniforms: &T) -> Vec4 { body }
 
 ```rust
 #[quanta::fragment]
-fn shade(uv: Vec2, albedo: &Texture2D<f32>) -> Vec4 {
-    texture_sample(albedo, uv.x, uv.y)
+fn shade(uv: Vec2, albedo: &Texture2D) -> Vec4 {
+    sample(albedo, uv)
 }
 ```
+
+Textured fragments emit metallib and SPIR-V; the WGSL payload does not
+support texture sampling yet.
 
 ---
 
