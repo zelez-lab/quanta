@@ -822,3 +822,74 @@ fn two_indexed_draws_use_their_own_index_buffers() {
         "background between the triangles should be clear, got ({r},{g},{b})"
     );
 }
+
+// ─── Test: wait_idle syncs an unwaited render for CPU readback ──────────────
+//
+// The render pulse is async: dropping it without wait() and reading the
+// target races the GPU (observed in the wild as an all-black readback).
+// Gpu::wait_idle must drain the queue so the read sees the finished frame.
+
+#[test]
+fn wait_idle_syncs_readback_without_pulse_wait() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if PASSTHROUGH_VERTEX_SHADER
+        .for_vendor(gpu.caps().vendor)
+        .is_none()
+        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_color_layout();
+    let pipeline = make_pipeline(
+        &gpu,
+        &PASSTHROUGH_VERTEX_SHADER,
+        &SOLID_RED_SHADER,
+        &layouts,
+        false,
+    );
+
+    #[rustfmt::skip]
+    let verts: [f32; 18] = [
+         0.0, -0.5, 0.0,   1.0, 0.0, 0.0,
+        -0.5,  0.5, 0.0,   0.0, 1.0, 0.0,
+         0.5,  0.5, 0.0,   0.0, 0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .expect("vb");
+    vb.write(&verts).expect("write vb");
+
+    let w = 64u32;
+    let h = 64u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    // Deliberately drop the pulse without waiting on it.
+    let _ = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse()
+        .unwrap();
+
+    gpu.wait_idle().unwrap();
+
+    let pixels = target.read().unwrap();
+    let (r, g, b, _) = pixel_at(&pixels, w, w / 2, h / 2);
+    assert!(
+        r > 200 && g < 50 && b < 50,
+        "triangle must be visible after wait_idle with an unwaited pulse, \
+         got ({r},{g},{b})"
+    );
+}

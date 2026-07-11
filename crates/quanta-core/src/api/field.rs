@@ -136,6 +136,10 @@ impl<T: Copy> Field<T> {
     }
 
     /// Read data from this GPU field back to CPU.
+    ///
+    /// No implicit GPU sync: if a dispatch writing this field is still
+    /// in flight, wait on its [`Pulse`](crate::Pulse) (or call
+    /// `Gpu::wait_idle`) first — otherwise the read races the GPU.
     pub fn read(&self) -> Result<Vec<T>, QuantaError> {
         let bytes = self
             .device

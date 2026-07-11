@@ -367,6 +367,20 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         Ok(())
     }
 
+    // === Host synchronization ===
+
+    /// Block the CPU until every operation submitted to this device has
+    /// completed on the GPU. Dispatch and render submissions are
+    /// asynchronous — the returned `Pulse` is still in flight — so a
+    /// CPU-side read of a GPU-written target needs `Pulse::wait` or this
+    /// drain first. Unlike `barrier` (GPU-side ordering), this is a
+    /// host-blocking wait.
+    fn wait_idle(&self) -> Result<(), QuantaError> {
+        Err(QuantaError::not_supported(
+            "wait_idle not implemented on this backend",
+        ))
+    }
+
     // === MSAA Resolve ===
 
     /// Resolve an MSAA texture to a single-sample texture.

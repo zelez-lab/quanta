@@ -317,6 +317,22 @@ impl Gpu {
         self.inner.barrier_texture(texture, from, to)
     }
 
+    // === Host synchronization ===
+
+    /// Block until every operation submitted to this device has completed
+    /// on the GPU.
+    ///
+    /// Dispatch and render submissions are asynchronous: the returned
+    /// [`Pulse`](crate::Pulse) is still in flight when the call returns.
+    /// Waiting on the pulse syncs that one submission; `wait_idle` drains
+    /// everything submitted so far. Use one of the two before any CPU-side
+    /// read of a GPU-written target — `Texture::read` and `Field::read` do
+    /// no implicit sync. Presenting an acquired surface frame needs no
+    /// wait: same-queue ordering covers it.
+    pub fn wait_idle(&self) -> Result<(), QuantaError> {
+        self.inner.wait_idle()
+    }
+
     // === Timestamps ===
 
     /// Create a `TimestampQuery` object wrapping a query set handle.

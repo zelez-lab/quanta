@@ -815,6 +815,10 @@ impl GpuDevice for CpuDevice {
         true // CPU execution is synchronous
     }
 
+    fn wait_idle(&self) -> Result<(), QuantaError> {
+        Ok(()) // CPU execution is synchronous
+    }
+
     // === M4.2: Mesh shaders ===
 
     fn dispatch_mesh(&self, _pipeline: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {

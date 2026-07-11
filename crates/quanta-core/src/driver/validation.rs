@@ -332,6 +332,10 @@ impl GpuDevice for ValidationDevice {
         self.inner.barrier()
     }
 
+    fn wait_idle(&self) -> Result<(), QuantaError> {
+        self.inner.wait_idle()
+    }
+
     fn barrier_buffer(
         &self,
         handle: u64,

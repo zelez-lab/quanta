@@ -661,6 +661,12 @@ impl QGpuDevice for WebgpuDevice {
         ))
     }
 
+    fn wait_idle(&self) -> Result<(), QuantaError> {
+        Err(Self::err(
+            "wait_idle is async-only on WebGPU; drive pulses via pulse_wait_async",
+        ))
+    }
+
     fn pulse_poll(&self, _pulse: &Pulse) -> bool {
         false
     }

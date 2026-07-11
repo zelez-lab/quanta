@@ -5,10 +5,15 @@ use alloc::sync::Arc;
 /// GPU completion signal. Returned by dispatch/render operations.
 ///
 /// Named after quantum pulse — a discrete packet of energy.
-/// A Pulse represents one completed GPU operation.
+/// A Pulse represents one submitted GPU operation.
 ///
-/// Both Metal and Vulkan drivers submit-and-wait synchronously, so the
-/// pulse is already completed when returned. No boxed closure needed.
+/// Submission is asynchronous on the GPU backends: the command buffer is
+/// committed without blocking, so the operation is generally still in
+/// flight when the pulse is returned. Call [`Pulse::wait`] before any
+/// CPU-side read of a target the operation writes (`Texture::read`,
+/// `Field::read`), or drain the whole queue with `Gpu::wait_idle`.
+/// Presenting an acquired surface frame needs no wait — same-queue
+/// ordering covers it.
 pub struct Pulse {
     pub(crate) handle: u64,
     pub(crate) completed: bool,
@@ -26,7 +31,9 @@ impl Pulse {
         Ok(())
     }
 
-    /// Check if GPU has completed (non-blocking).
+    /// Check if `wait()` has already observed completion (non-blocking).
+    /// This reflects the pulse's local state, not live GPU progress: an
+    /// in-flight pulse reports `false` until `wait()` runs.
     pub fn is_done(&self) -> bool {
         self.completed
     }

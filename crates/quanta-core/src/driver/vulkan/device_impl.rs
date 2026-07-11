@@ -414,6 +414,14 @@ impl GpuDevice for VulkanDevice {
         self.barrier_impl()
     }
 
+    fn wait_idle(&self) -> Result<(), QuantaError> {
+        let r = unsafe { ffi::vkDeviceWaitIdle(self.device) };
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::internal("vkDeviceWaitIdle failed"));
+        }
+        Ok(())
+    }
+
     fn barrier_buffer(
         &self,
         handle: u64,

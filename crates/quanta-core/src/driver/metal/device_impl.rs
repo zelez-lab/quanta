@@ -231,6 +231,18 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
+    fn wait_idle(&self) -> Result<(), QuantaError> {
+        // Same-queue command buffers complete in commit order, so an
+        // empty buffer committed now finishes only after everything
+        // already submitted — a host-blocking queue drain.
+        unsafe {
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
+        }
+        Ok(())
+    }
+
     fn barrier_buffer(
         &self,
         _handle: u64,

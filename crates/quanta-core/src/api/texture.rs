@@ -59,6 +59,11 @@ impl Texture {
     }
 
     /// Read pixel data from this texture.
+    ///
+    /// No implicit GPU sync: if a dispatch or render targeting this
+    /// texture is still in flight, wait on its [`Pulse`](crate::Pulse)
+    /// (or call `Gpu::wait_idle`) first — otherwise the read races the
+    /// GPU and can return stale or blank contents.
     pub fn read(&self) -> Result<Vec<u8>, QuantaError> {
         if let Some(ref dev) = self.device {
             dev.texture_read(self)
