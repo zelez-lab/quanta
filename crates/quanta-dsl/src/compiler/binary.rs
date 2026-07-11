@@ -33,6 +33,9 @@ pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
 #[cfg(feature = "compute")]
 fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
     let binary = find_compiler_binary()?;
+    if !compiler_is_loadable(&binary) {
+        return None;
+    }
 
     // Serialize KernelDef to bincode
     let input = quanta_ir::serialize_kernel(kernel);
@@ -347,6 +350,14 @@ pub(crate) fn compile_shader(
     let Some(binary) = find_compiler_binary() else {
         return Ok(None);
     };
+    // A binary the dynamic loader kills (downloaded release build whose
+    // libLLVM isn't installed) dies before reading stdin — writing the
+    // shader into its pipe would race the death and can SIGPIPE the
+    // rustc process hosting this macro. Preflight once per path so the
+    // piped spawn only ever happens against a binary that can run.
+    if !compiler_is_loadable(&binary) {
+        return Ok(None);
+    }
 
     // Build ShaderDef from the parsed macro arguments
     let shader_def = quanta_ir::ShaderDef {
@@ -386,7 +397,19 @@ pub(crate) fn compile_shader(
             .take()
             .ok_or_else(|| "failed to open shader compiler stdin".to_string())?;
         if let Err(e) = stdin.write_all(&input) {
-            let _ = child.kill();
+            // The child died before reading its input — collect its
+            // status and classify: a loader kill means "no usable
+            // compiler here" (soft), anything else is a real failure.
+            drop(stdin);
+            if let Ok(output) = child.wait_with_output() {
+                if is_loader_failure(&output) {
+                    eprintln!(
+                        "[quanta] note: shader compiler at {binary} cannot run                          here ({}); shaders will have no precompiled binaries",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                    return Ok(None);
+                }
+            }
             return Err(format!("failed to write shader to compiler stdin: {e}"));
         }
     }
@@ -428,12 +451,57 @@ pub(crate) fn compile_shader(
     }))
 }
 
+/// Preflight: can the resolved compiler binary EXECUTE in this
+/// environment? A downloaded release build dynamically linked against
+/// a libLLVM that isn't installed is killed by the loader before
+/// main() — spawning it with piped stdin then races its death (a
+/// broken-pipe write can SIGPIPE the host rustc process on macOS).
+/// Run it once with null stdin and classify; the verdict is cached
+/// per path for the life of the process.
+#[cfg(any(feature = "compute", feature = "render"))]
+fn compiler_is_loadable(binary: &str) -> bool {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(String, bool)>> = Mutex::new(None);
+    if let Ok(guard) = CACHE.lock()
+        && let Some((path, verdict)) = guard.as_ref()
+        && path == binary
+    {
+        return *verdict;
+    }
+    // Null stdin: a healthy compiler reads EOF and exits with its own
+    // error (it executed — loadable); a loader-killed one exits 127 /
+    // dyld-abort / DLL-not-found before main.
+    let verdict = match std::process::Command::new(binary)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(output) => {
+            if is_loader_failure(&output) {
+                eprintln!(
+                    "[quanta] note: compiler at {binary} cannot run here ({});                      kernels will JIT at runtime and shaders will have no                      precompiled binaries",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+                false
+            } else {
+                true
+            }
+        }
+        Err(_) => false,
+    };
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((binary.to_string(), verdict));
+    }
+    verdict
+}
+
 /// Whether a child failure is the binary failing to LOAD in this
 /// environment rather than the compiler rejecting its input.
 /// Linux ld.so exits 127 with "error while loading shared libraries";
 /// macOS dyld aborts with "Library not loaded"; Windows exits with
 /// STATUS_DLL_NOT_FOUND (0xC0000135).
-#[cfg(feature = "render")]
+#[cfg(any(feature = "compute", feature = "render"))]
 fn is_loader_failure(output: &std::process::Output) -> bool {
     let stderr = String::from_utf8_lossy(&output.stderr);
     output.status.code() == Some(127)
