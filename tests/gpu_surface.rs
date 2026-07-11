@@ -241,3 +241,135 @@ mod cpu_not_supported {
         assert!(matches!(err.kind, QuantaErrorKind::NotSupported(_)));
     }
 }
+
+// --- Part C: demand-driven pacing ---
+
+/// One acquire→render→present frame.
+fn drive_frame(gpu: &quanta::Gpu, surface: &mut quanta::Surface) {
+    let frame = surface.acquire().unwrap();
+    let mut pulse = gpu.render(frame.texture()).unwrap().pulse().unwrap();
+    pulse.wait().unwrap();
+    frame.present().unwrap();
+}
+
+/// The pacing contract from the `Surface` docs: the frame loop may run
+/// at ANY cadence — long idle gaps, bursts deeper than the swapchain,
+/// then idle again — without leaking frame textures or stalling.
+fn assert_demand_driven_cadence(gpu: &quanta::Gpu, surface: &mut quanta::Surface) {
+    let baseline = gpu.debug_registry_counts();
+
+    // Sparse: frames separated by real idle gaps (an idle UI waking
+    // on a dirty flag).
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        drive_frame(gpu, surface);
+    }
+
+    // Burst: back-to-back frames, deeper than the drawable pool (3),
+    // throttled only by acquire's back-pressure.
+    for _ in 0..8 {
+        drive_frame(gpu, surface);
+    }
+
+    // Idle again, then one more frame — the cadence changes both ways.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    drive_frame(gpu, surface);
+
+    assert_eq!(
+        gpu.debug_registry_counts(),
+        baseline,
+        "cadence changes must not leak registry entries"
+    );
+}
+
+#[test]
+fn surface_sparse_then_burst_cadence() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let config = SurfaceConfig::new(32, 32);
+    let mut surface = gpu
+        .create_surface(&SurfaceTarget::Headless, &config)
+        .unwrap();
+    assert_demand_driven_cadence(&gpu, &mut surface);
+}
+
+/// Minimal ObjC FFI to create a standalone `CAMetalLayer` — no window
+/// needed; the driver configures the layer (device/format/size) itself.
+#[cfg(target_os = "macos")]
+mod layer_ffi {
+    use core::ffi::{c_char, c_void};
+
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+    // Linking QuartzCore registers the CAMetalLayer class with the
+    // ObjC runtime.
+    #[link(name = "QuartzCore", kind = "framework")]
+    unsafe extern "C" {}
+
+    /// `[CAMetalLayer new]`
+    pub fn new_metal_layer() -> *mut c_void {
+        unsafe {
+            let cls = objc_getClass(c"CAMetalLayer".as_ptr());
+            assert!(!cls.is_null(), "CAMetalLayer class not found");
+            let sel = sel_registerName(c"new".as_ptr());
+            let send: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+                core::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            send(cls, sel)
+        }
+    }
+
+    /// `[layer release]` — balance the +1 from `new`.
+    pub fn release(layer: *mut c_void) {
+        unsafe {
+            let sel = sel_registerName(c"release".as_ptr());
+            let send: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+                core::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            send(layer, sel);
+        }
+    }
+}
+
+/// Same contract over a caller-provided `CAMetalLayer` — the real
+/// windowing-integration path (`SurfaceTarget::MetalLayer`).
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_layer_demand_driven_cadence() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let layer = layer_ffi::new_metal_layer();
+    assert!(!layer.is_null());
+
+    let config = SurfaceConfig::new(64, 64);
+    match gpu.create_surface(&SurfaceTarget::MetalLayer { layer }, &config) {
+        Ok(mut surface) => {
+            assert_demand_driven_cadence(&gpu, &mut surface);
+            drop(surface);
+            layer_ffi::release(layer);
+        }
+        Err(e) if matches!(e.kind, QuantaErrorKind::NotSupported(_)) => {
+            // A non-Metal backend on macOS (forced Vulkan) has no
+            // CAMetalLayer path — the Headless variant covers it.
+            eprintln!("skipping: MetalLayer target not supported: {e}");
+            layer_ffi::release(layer);
+        }
+        Err(e) => panic!("create_surface(MetalLayer) failed: {e}"),
+    }
+}

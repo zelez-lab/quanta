@@ -23,6 +23,22 @@
 //! }
 //! ```
 //!
+//! ## Pacing: fully demand-driven
+//!
+//! Quanta never renders or presents on its own — a frame happens only
+//! when the caller runs acquire → render → present. There is no
+//! internal timer, display link, or frame scheduler, so the loop above
+//! may run at ANY cadence: seconds between frames (an idle UI waiting
+//! on a dirty flag), a burst at input rate, or a steady animation
+//! clock. An idle surface holds no acquired frame and costs zero GPU
+//! or CPU work; nothing leaks or stalls across idle gaps. The only
+//! back-pressure is [`acquire`](Surface::acquire) itself: when every
+//! swapchain image is still in flight (a burst faster than the display
+//! consumes), it blocks briefly — which throttles the loop to the
+//! present rate. Pinned by `tests/gpu_surface.rs`
+//! (`surface_sparse_then_burst_cadence`,
+//! `metal_layer_demand_driven_cadence`).
+//!
 //! The configuration types the drivers speak ([`SurfaceConfig`],
 //! [`SurfaceTarget`](quanta_core::SurfaceTarget), `PresentMode`) live in `quanta-core`.
 //!
