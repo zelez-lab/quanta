@@ -396,6 +396,21 @@ pub(crate) fn compile_shader(
         .map_err(|e| format!("failed to read shader compiler output: {e}"))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
+        // A binary that cannot EXECUTE in this environment (a downloaded
+        // release build whose dynamic libraries aren't installed — the
+        // loader kills it before main) means "no usable compiler here",
+        // same as binary-not-found: stay soft so builds without a
+        // toolchain still compile with empty shader binaries. Only a
+        // compiler that actually ran gets to fail the build.
+        if is_loader_failure(&output) {
+            eprintln!(
+                "[quanta] note: shader compiler at {} cannot run here \
+                 ({}); shaders will have no precompiled binaries",
+                binary,
+                stderr.trim()
+            );
+            return Ok(None);
+        }
         return Err(format!("shader compiler failed: {}", stderr.trim()));
     }
     if !stderr.trim().is_empty() {
@@ -411,6 +426,20 @@ pub(crate) fn compile_shader(
         metallib: shader_output.metallib,
         wgsl: shader_output.wgsl,
     }))
+}
+
+/// Whether a child failure is the binary failing to LOAD in this
+/// environment rather than the compiler rejecting its input.
+/// Linux ld.so exits 127 with "error while loading shared libraries";
+/// macOS dyld aborts with "Library not loaded"; Windows exits with
+/// STATUS_DLL_NOT_FOUND (0xC0000135).
+#[cfg(feature = "render")]
+fn is_loader_failure(output: &std::process::Output) -> bool {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    output.status.code() == Some(127)
+        || output.status.code() == Some(0xC0000135u32 as i32)
+        || stderr.contains("error while loading shared libraries")
+        || stderr.contains("Library not loaded")
 }
 
 #[cfg(feature = "render")]
