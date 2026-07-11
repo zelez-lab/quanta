@@ -213,7 +213,12 @@ fn surface_rejects_null_layer() {
             &SurfaceConfig::new(32, 32),
         )
         .unwrap_err();
-    assert!(matches!(err.kind, QuantaErrorKind::InvalidParam(_)));
+    // Metal rejects the null pointer (InvalidParam); backends without
+    // a MetalLayer target reject the target itself (NotSupported).
+    assert!(matches!(
+        err.kind,
+        QuantaErrorKind::InvalidParam(_) | QuantaErrorKind::NotSupported(_)
+    ));
 }
 
 // --- Reserved-but-NotSupported backends (CPU software driver) ---

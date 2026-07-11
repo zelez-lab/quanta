@@ -129,6 +129,11 @@ pub(super) struct VkSurfaceEntry {
     pub height: u32,
     pub format: crate::Format,
     pub vk_format: u32,
+    pub present_mode: PresentMode,
+    /// Set when a frame was discarded un-presented: Vulkan has no
+    /// un-present, so the image only returns through a swapchain
+    /// rebuild — done lazily on the next acquire.
+    pub needs_rebuild: bool,
     /// Reused for every acquire (one frame in flight at a time per
     /// surface, matching the Metal drawable model).
     pub acquire_fence: ffi::VkFence,
@@ -296,6 +301,8 @@ impl VulkanDevice {
                     height: extent.1,
                     format: config.format,
                     vk_format,
+                    present_mode: config.present_mode,
+                    needs_rebuild: false,
                     acquire_fence,
                     present_sem,
                     present_cb,
@@ -519,11 +526,38 @@ impl VulkanDevice {
         entry.width = extent.0;
         entry.height = extent.1;
         entry.format = config.format;
+        entry.present_mode = config.present_mode;
+        entry.needs_rebuild = false;
         Ok(())
     }
 
     pub(crate) fn surface_acquire_impl(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
         let procs = self.procs()?;
+
+        // A discarded frame's image only returns through a swapchain
+        // rebuild (Vulkan has no un-present) — do it lazily here so the
+        // recycling contract holds; a skipped frame costs one rebuild.
+        let rebuild_config = {
+            let surfaces = self
+                .vk_surfaces
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let entry = surfaces
+                .get(&surface)
+                .ok_or_else(|| QuantaError::not_found("surface handle not found"))?;
+            if entry.needs_rebuild {
+                let mut config = SurfaceConfig::new(entry.width, entry.height);
+                config.format = entry.format;
+                config.present_mode = entry.present_mode;
+                Some(config)
+            } else {
+                None
+            }
+        };
+        if let Some(config) = rebuild_config {
+            self.surface_configure_impl(surface, &config)?;
+        }
+
         let surfaces = self
             .vk_surfaces
             .read()
@@ -557,7 +591,11 @@ impl VulkanDevice {
                     "swapchain out of date — reconfigure the surface with the new extent",
                 ));
             }
-            _ => return Err(QuantaError::internal("vkAcquireNextImageKHR failed")),
+            other => {
+                return Err(QuantaError::internal(format!(
+                    "vkAcquireNextImageKHR failed (VkResult {other})"
+                )));
+            }
         }
         unsafe {
             ffi::vkWaitForFences(self.device, 1, &entry.acquire_fence, 1, u64::MAX);
@@ -740,10 +778,11 @@ impl VulkanDevice {
         _surface: u64,
         frame: u64,
     ) -> Result<(), QuantaError> {
-        // Vulkan has no un-present: the acquired image stays checked out
-        // until a present or a swapchain rebuild. Dropping a frame is
-        // still safe — the swapchain simply runs with one fewer image
-        // until the next reconfigure.
+        // Vulkan has no un-present: the acquired image stays checked
+        // out until a present or a swapchain rebuild. Mark the surface
+        // so the NEXT acquire rebuilds and every image returns — the
+        // recycling contract holds at the cost of one rebuild per
+        // skipped frame.
         if let Some(frame_entry) = self
             .vk_surface_frames
             .write()
@@ -754,6 +793,11 @@ impl VulkanDevice {
                 .write()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .remove(&frame_entry.texture_handle);
+            if let Ok(mut surfaces) = self.vk_surfaces.write()
+                && let Some(entry) = surfaces.get_mut(&frame_entry.surface)
+            {
+                entry.needs_rebuild = true;
+            }
         }
         Ok(())
     }
