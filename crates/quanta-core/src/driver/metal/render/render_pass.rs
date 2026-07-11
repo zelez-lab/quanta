@@ -337,6 +337,13 @@ impl MetalDevice {
                 .read()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
 
+            // Metal has no encoder-level index-buffer bind — the buffer is
+            // passed per draw call — so the replay tracks the most recent
+            // BindIndices as the walk advances. Scanning the whole op list
+            // instead would make every DrawIndexed use the pass's LAST
+            // index buffer.
+            let mut bound_indices: Option<(u64, u64)> = None;
+
             for op in &pass.ops {
                 match op {
                     RenderOp::SetPipeline(handle) => {
@@ -366,8 +373,9 @@ impl MetalDevice {
                             );
                         }
                     }
-                    RenderOp::BindIndices { .. } => {
-                        // Index buffer is bound at draw_indexed time in Metal
+                    RenderOp::BindIndices { handle, offset } => {
+                        // Consumed by the next DrawIndexed ops (see above).
+                        bound_indices = Some((*handle, *offset));
                     }
                     RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
                         if let Some(buf) = buffers.get(handle) {
@@ -424,14 +432,7 @@ impl MetalDevice {
                         index_count,
                         instance_count,
                     } => {
-                        let idx_handle = pass.ops.iter().rev().find_map(|op| {
-                            if let RenderOp::BindIndices { handle, .. } = op {
-                                Some(*handle)
-                            } else {
-                                None
-                            }
-                        });
-                        if let Some(ih) = idx_handle
+                        if let Some((ih, ioff)) = bound_indices
                             && let Some(idx_buf) = buffers.get(&ih)
                         {
                             if *instance_count <= 1 {
@@ -441,7 +442,7 @@ impl MetalDevice {
                                     *index_count as u64,
                                     ffi::MTL_INDEX_TYPE_UINT32,
                                     *idx_buf,
-                                    0,
+                                    ioff,
                                 );
                             } else {
                                 ffi::msg_draw_indexed_instanced(
@@ -450,7 +451,7 @@ impl MetalDevice {
                                     *index_count as u64,
                                     ffi::MTL_INDEX_TYPE_UINT32,
                                     *idx_buf,
-                                    0,
+                                    ioff,
                                     *instance_count as u64,
                                 );
                             }

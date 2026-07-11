@@ -706,3 +706,119 @@ fn textured_quad() {
     assert!(total_color > 0, "textured quad should not be all black");
     eprintln!("textured quad: total R channel sum = {total_color}");
 }
+
+// ─── Test: two indexed draws, two index buffers ─────────────────────────────
+//
+// Regression: the Metal replay resolved DrawIndexed by scanning the whole
+// op list for the last BindIndices, so every indexed draw in a pass used
+// the FINAL index buffer — N meshes per pass all rendered the Nth topology.
+// One pass, two draws, two index buffers over disjoint triangles: each
+// draw must render its OWN triangle.
+
+#[test]
+fn two_indexed_draws_use_their_own_index_buffers() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if PASSTHROUGH_VERTEX_SHADER
+        .for_vendor(gpu.caps().vendor)
+        .is_none()
+        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_color_layout();
+    let pipeline = make_pipeline(
+        &gpu,
+        &PASSTHROUGH_VERTEX_SHADER,
+        &SOLID_RED_SHADER,
+        &layouts,
+        true,
+    );
+
+    // Six vertices: a left triangle (0-2) and a disjoint right one (3-5).
+    #[rustfmt::skip]
+    let verts: [f32; 36] = [
+        -0.9, -0.9, 0.5,  0.0, 0.0, 0.0,
+        -0.1, -0.9, 0.5,  0.0, 0.0, 0.0,
+        -0.5,  0.7, 0.5,  0.0, 0.0, 0.0,
+         0.1, -0.9, 0.5,  0.0, 0.0, 0.0,
+         0.9, -0.9, 0.5,  0.0, 0.0, 0.0,
+         0.5,  0.7, 0.5,  0.0, 0.0, 0.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+
+    let left: [u32; 3] = [0, 1, 2];
+    let right: [u32; 3] = [3, 4, 5];
+    let ib_left: quanta::Field<u32> = gpu
+        .field_with_usage(left.len(), FieldUsage::default_render())
+        .unwrap();
+    ib_left.write(&left).unwrap();
+    let ib_right: quanta::Field<u32> = gpu
+        .field_with_usage(right.len(), FieldUsage::default_render())
+        .unwrap();
+    ib_right.write(&right).unwrap();
+
+    let w = 64u32;
+    let h = 64u32;
+    let color_target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+    let depth_target = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, Format::Depth32Float)
+                .with_usage(quanta::TextureUsage::RENDER_TARGET),
+        )
+        .unwrap();
+
+    let mut pulse = gpu
+        .render(&color_target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&color_target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .depth_target(
+            quanta::render_pass::DepthTarget::new(&depth_target)
+                .with_load_op(LoadOp::Clear(Color::rgba(1.0, 0.0, 0.0, 0.0)))
+                .with_store_op(StoreOp::DontCare)
+                .with_stencil_load_op(LoadOp::DontCare)
+                .with_stencil_store_op(StoreOp::DontCare),
+        )
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .indices(&ib_left)
+        .draw_indexed(3)
+        .indices(&ib_right)
+        .draw_indexed(3)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = color_target.read().unwrap();
+
+    // Inside the left triangle — drawn only by the FIRST index buffer.
+    let (r, g, b, _) = pixel_at(&pixels, w, 16, 48);
+    assert!(
+        r > 200 && g < 50 && b < 50,
+        "left triangle missing: the first indexed draw did not use its own \
+         index buffer, got ({r},{g},{b})"
+    );
+    // Inside the right triangle — drawn by the SECOND index buffer.
+    let (r, g, b, _) = pixel_at(&pixels, w, 48, 48);
+    assert!(
+        r > 200 && g < 50 && b < 50,
+        "right triangle missing, got ({r},{g},{b})"
+    );
+    // Between the triangles the background must stay clear.
+    let (r, g, b, _) = pixel_at(&pixels, w, 32, 48);
+    assert!(
+        r < 50 && g < 50 && b < 50,
+        "background between the triangles should be clear, got ({r},{g},{b})"
+    );
+}
