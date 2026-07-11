@@ -41,7 +41,7 @@ pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
     let (spirv_expr, metallib_expr, wgsl_expr) =
         match compiler::compile_shader(&func_name_str, "vertex", &params, &return_ty, &body_source)
         {
-            Some(output) => {
+            Ok(Some(output)) => {
                 let spirv = match &output.spirv {
                     Some(bytes) => {
                         let lit = proc_macro2::Literal::byte_string(bytes);
@@ -62,7 +62,19 @@ pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
                 };
                 (spirv, metallib, wgsl)
             }
-            None => (quote! { None }, quote! { None }, quote! { None }),
+            // No compiler binary found — ship empty binaries so `cargo
+            // check` works in fresh clones; the runtime reports the gap.
+            Ok(None) => (quote! { None }, quote! { None }, quote! { None }),
+            // Compiler found but failed — a shader with missing binaries
+            // panics at pipeline creation, so fail the build here instead.
+            Err(msg) => {
+                return syn::Error::new_spanned(
+                    &func.sig.ident,
+                    format!("vertex shader `{func_name_str}` failed to compile: {msg}"),
+                )
+                .to_compile_error()
+                .into();
+            }
         };
 
     let expanded = quote! {
@@ -118,7 +130,7 @@ pub(crate) fn expand_fragment(func: ItemFn) -> TokenStream {
         &return_ty,
         &body_source,
     ) {
-        Some(output) => {
+        Ok(Some(output)) => {
             let spirv = match &output.spirv {
                 Some(bytes) => {
                     let lit = proc_macro2::Literal::byte_string(bytes);
@@ -139,7 +151,19 @@ pub(crate) fn expand_fragment(func: ItemFn) -> TokenStream {
             };
             (spirv, metallib, wgsl)
         }
-        None => (quote! { None }, quote! { None }, quote! { None }),
+        // No compiler binary found — ship empty binaries so `cargo
+        // check` works in fresh clones; the runtime reports the gap.
+        Ok(None) => (quote! { None }, quote! { None }, quote! { None }),
+        // Compiler found but failed — a shader with missing binaries
+        // panics at pipeline creation, so fail the build here instead.
+        Err(msg) => {
+            return syn::Error::new_spanned(
+                &func.sig.ident,
+                format!("fragment shader `{func_name_str}` failed to compile: {msg}"),
+            )
+            .to_compile_error()
+            .into();
+        }
     };
 
     let expanded = quote! {

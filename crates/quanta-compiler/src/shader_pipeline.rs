@@ -36,9 +36,16 @@ pub fn compile_shader(stage: &str) {
             std::process::exit(1);
         }
     };
+    // Unlike compute kernels, render shaders have no JIT fallback at
+    // dispatch time — a missing binary means the shader can never run
+    // on that backend. Fail the build instead of shipping a partial
+    // artifact that panics at pipeline creation.
     match spirv_result {
         Ok(spirv) => output.spirv = Some(spirv),
-        Err(e) => eprintln!("[quanta] SPIR-V shader emitter error: {}", e),
+        Err(e) => {
+            eprintln!("[quanta] SPIR-V shader emitter error: {}", e);
+            std::process::exit(1);
+        }
     }
 
     // Emit MSL and compile to metallib
@@ -47,21 +54,31 @@ pub fn compile_shader(stage: &str) {
         "fragment" => emit_msl::emit_fragment_shader(&shader),
         _ => unreachable!(),
     };
-    if let Ok(msl) = msl_result {
-        match metallib::compile_msl_to_metallib(&msl) {
-            Ok(bytes) => output.metallib = bytes,
-            Err(e) => eprintln!("[quanta] metallib error: {}", e),
+    let msl = match msl_result {
+        Ok(msl) => msl,
+        Err(e) => {
+            eprintln!("[quanta] MSL shader emitter error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    match metallib::compile_msl_to_metallib(&msl) {
+        Ok(bytes) => output.metallib = bytes,
+        Err(e) => {
+            eprintln!("[quanta] metallib error: {}", e);
+            std::process::exit(1);
         }
     }
 
-    // Emit WGSL
+    // Emit WGSL — soft failure: WebGPU is not a supported render
+    // target yet, so a WGSL gap must not block Metal/Vulkan shaders.
     let wgsl_result = match stage {
         "vertex" => emit_wgsl::emit_vertex_shader(&shader),
         "fragment" => emit_wgsl::emit_fragment_shader(&shader),
         _ => unreachable!(),
     };
-    if let Ok(wgsl) = wgsl_result {
-        output.wgsl = Some(wgsl);
+    match wgsl_result {
+        Ok(wgsl) => output.wgsl = Some(wgsl),
+        Err(e) => eprintln!("[quanta] WGSL shader emitter warning: {}", e),
     }
 
     let out_bytes = quanta_ir::serialize_shader_output(&output);

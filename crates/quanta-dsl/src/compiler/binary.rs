@@ -332,7 +332,10 @@ pub(crate) struct ShaderCompileOutput {
 /// Compile a vertex or fragment shader via the quanta-compiler binary.
 ///
 /// Serializes the ShaderDef to the compiler's stdin, reads ShaderOutput
-/// from stdout. Returns None if the compiler binary is not found.
+/// from stdout. Returns `Ok(None)` if the compiler binary is not found
+/// (find_compiler_binary already printed its notice), and `Err` if the
+/// compiler was found but failed — the macro turns that into a compile
+/// error so a broken shader can never ship silently.
 #[cfg(feature = "render")]
 pub(crate) fn compile_shader(
     name: &str,
@@ -340,8 +343,10 @@ pub(crate) fn compile_shader(
     params: &[ShaderParam],
     return_type: &ShaderType,
     body_source: &str,
-) -> Option<ShaderCompileOutput> {
-    let binary = find_compiler_binary()?;
+) -> Result<Option<ShaderCompileOutput>, String> {
+    let Some(binary) = find_compiler_binary() else {
+        return Ok(None);
+    };
 
     // Build ShaderDef from the parsed macro arguments
     let shader_def = quanta_ir::ShaderDef {
@@ -349,7 +354,7 @@ pub(crate) fn compile_shader(
         stage: match stage {
             "vertex" => quanta_ir::ShaderStage::Vertex,
             "fragment" => quanta_ir::ShaderStage::Fragment,
-            _ => return None,
+            other => return Err(format!("unknown shader stage `{other}`")),
         },
         params: params
             .iter()
@@ -365,38 +370,47 @@ pub(crate) fn compile_shader(
 
     let input = quanta_ir::serialize_shader(&shader_def);
 
-    let result = std::process::Command::new(&binary)
+    let mut child = std::process::Command::new(&binary)
         .arg("--shader-type")
         .arg(stage)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    let mut child = result.ok()?;
+        .spawn()
+        .map_err(|e| format!("failed to spawn shader compiler `{binary}`: {e}"))?;
 
     use std::io::Write;
     {
-        let mut stdin = child.stdin.take()?;
-        if stdin.write_all(&input).is_err() {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "failed to open shader compiler stdin".to_string())?;
+        if let Err(e) = stdin.write_all(&input) {
             let _ = child.kill();
-            return None;
+            return Err(format!("failed to write shader to compiler stdin: {e}"));
         }
     }
 
-    let output = child.wait_with_output().ok()?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to read shader compiler output: {e}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("[quanta] shader compiler failed: {}", stderr);
-        return None;
+        return Err(format!("shader compiler failed: {}", stderr.trim()));
+    }
+    if !stderr.trim().is_empty() {
+        // Surface compiler-side warnings (WGSL emitter gaps, etc.) so
+        // build authors see why an optional target is missing.
+        eprintln!("{}", stderr.trim());
     }
 
-    let shader_output = quanta_ir::deserialize_shader_output(&output.stdout).ok()?;
-    Some(ShaderCompileOutput {
+    let shader_output = quanta_ir::deserialize_shader_output(&output.stdout)
+        .map_err(|e| format!("failed to deserialize shader compiler output: {e}"))?;
+    Ok(Some(ShaderCompileOutput {
         spirv: shader_output.spirv,
         metallib: shader_output.metallib,
         wgsl: shader_output.wgsl,
-    })
+    }))
 }
 
 #[cfg(feature = "render")]
