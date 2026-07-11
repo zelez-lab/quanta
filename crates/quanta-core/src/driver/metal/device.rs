@@ -233,11 +233,30 @@ pub(crate) fn make_async_pulse(device: &MetalDevice, cmd: ffi::Id) -> crate::Pul
         ffi::msg_add_completed_handler(cmd, block);
         ffi::msg_void(cmd, b"commit\0");
 
+        // libdispatch semaphores may be waited/released from any thread,
+        // and the heap block is freed only after its handler ran — safe
+        // to move the deferred wait onto Pulse::on_complete's waiter
+        // thread.
+        struct Waiter {
+            sem: *mut core::ffi::c_void,
+            block: *mut ffi::CompletionBlock,
+        }
+        unsafe impl Send for Waiter {}
+        impl Waiter {
+            // By-value method: the closure must capture the whole
+            // (Send-asserted) struct, not its raw-pointer fields.
+            fn take(self) -> (*mut core::ffi::c_void, *mut ffi::CompletionBlock) {
+                (self.sem, self.block)
+            }
+        }
+        let waiter = Waiter { sem, block };
+
         let handle = device.alloc_handle();
         crate::Pulse {
             handle,
             completed: false,
             wait_fn: Some(Box::new(move || {
+                let (sem, block) = waiter.take();
                 ffi::dispatch_semaphore_wait(sem, ffi::DISPATCH_TIME_FOREVER);
                 ffi::dispatch_release(sem);
                 // Free the heap-allocated block

@@ -981,6 +981,11 @@ struct RenderPassCleanup {
     descriptor_pool: Option<ffi::VkDescriptorPool>,
 }
 
+// Drop only waits the submission fence (legal from any thread) and
+// destroys objects this struct exclusively owns — safe to run from
+// Pulse::on_complete's waiter thread.
+unsafe impl Send for RenderPassCleanup {}
+
 impl Drop for RenderPassCleanup {
     fn drop(&mut self) {
         // Block until the GPU signals the submission fence. This also

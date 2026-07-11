@@ -893,3 +893,144 @@ fn wait_idle_syncs_readback_without_pulse_wait() {
          got ({r},{g},{b})"
     );
 }
+
+// ─── Test: on_complete fires from a waiter thread after completion ──────────
+
+#[test]
+fn on_complete_notifies_after_render() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if PASSTHROUGH_VERTEX_SHADER
+        .for_vendor(gpu.caps().vendor)
+        .is_none()
+        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_color_layout();
+    let pipeline = make_pipeline(
+        &gpu,
+        &PASSTHROUGH_VERTEX_SHADER,
+        &SOLID_RED_SHADER,
+        &layouts,
+        false,
+    );
+
+    #[rustfmt::skip]
+    let verts: [f32; 18] = [
+         0.0, -0.5, 0.0,   1.0, 0.0, 0.0,
+        -0.5,  0.5, 0.0,   0.0, 1.0, 0.0,
+         0.5,  0.5, 0.0,   0.0, 0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .expect("vb");
+    vb.write(&verts).expect("write vb");
+
+    let w = 64u32;
+    let h = 64u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse()
+        .unwrap();
+
+    // Park nothing: register the wake-up instead of blocking on wait().
+    let (tx, rx) = std::sync::mpsc::channel();
+    pulse
+        .on_complete(move || {
+            let _ = tx.send(());
+        })
+        .unwrap();
+
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("on_complete callback did not fire");
+
+    // The callback fires only after GPU completion, so the readback
+    // must see the finished frame without any further sync.
+    let pixels = target.read().unwrap();
+    let (r, g, b, _) = pixel_at(&pixels, w, w / 2, h / 2);
+    assert!(
+        r > 200 && g < 50 && b < 50,
+        "triangle must be visible after on_complete, got ({r},{g},{b})"
+    );
+}
+
+#[test]
+fn on_complete_fires_for_already_completed_pulse() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if PASSTHROUGH_VERTEX_SHADER
+        .for_vendor(gpu.caps().vendor)
+        .is_none()
+        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_color_layout();
+    let pipeline = make_pipeline(
+        &gpu,
+        &PASSTHROUGH_VERTEX_SHADER,
+        &SOLID_RED_SHADER,
+        &layouts,
+        false,
+    );
+
+    #[rustfmt::skip]
+    let verts: [f32; 18] = [
+         0.0, -0.5, 0.0,   1.0, 0.0, 0.0,
+        -0.5,  0.5, 0.0,   0.0, 1.0, 0.0,
+         0.5,  0.5, 0.0,   0.0, 0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .expect("vb");
+    vb.write(&verts).expect("write vb");
+
+    let target = gpu.render_target(16, 16, Format::RGBA8).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, 16.0, 16.0)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    // Registering after completion must still fire, from the waiter
+    // thread (uniform execution context).
+    let (tx, rx) = std::sync::mpsc::channel();
+    pulse
+        .on_complete(move || {
+            let _ = tx.send(std::thread::current().name().map(String::from));
+        })
+        .unwrap();
+    let thread_name = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("on_complete callback did not fire for a completed pulse");
+    assert_eq!(thread_name.as_deref(), Some("quanta-pulse-waiter"));
+}

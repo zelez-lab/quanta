@@ -17,8 +17,10 @@ use alloc::sync::Arc;
 pub struct Pulse {
     pub(crate) handle: u64,
     pub(crate) completed: bool,
-    /// Deferred GPU wait: called once by wait() to block until completion.
-    pub(crate) wait_fn: Option<Box<dyn FnOnce()>>,
+    /// Deferred GPU wait: called once by wait() to block until
+    /// completion. `Send` so `on_complete` can move the wait onto a
+    /// background waiter thread.
+    pub(crate) wait_fn: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl Pulse {
@@ -41,6 +43,39 @@ impl Pulse {
     /// Reset the pulse so it can be reused for another operation.
     pub fn reset(&mut self) {
         self.completed = false;
+    }
+
+    /// Run `f` on a background waiter thread once the GPU completes
+    /// this operation, instead of blocking the caller in [`Pulse::wait`].
+    ///
+    /// This is the integration point for event-driven runtimes (actor
+    /// mailboxes, ports, event loops): submit work, register the
+    /// wake-up, and return to the scheduler — no caller thread parks on
+    /// the GPU. `f` always runs on the waiter thread, even when the
+    /// operation has already completed, so callers get one consistent
+    /// execution context.
+    ///
+    /// Consumes the pulse: the notification replaces `wait()`.
+    #[cfg(feature = "std")]
+    pub fn on_complete<F>(mut self, f: F) -> Result<(), QuantaError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let wait_fn = self.wait_fn.take();
+        self.completed = true;
+        std::thread::Builder::new()
+            .name("quanta-pulse-waiter".into())
+            .spawn(move || {
+                if let Some(wait) = wait_fn {
+                    wait();
+                }
+                f();
+            })
+            .map_err(|e| {
+                QuantaError::internal("failed to spawn pulse waiter thread")
+                    .with_context(&alloc::format!("on_complete: {e}"))
+            })?;
+        Ok(())
     }
 
     pub fn handle(&self) -> u64 {

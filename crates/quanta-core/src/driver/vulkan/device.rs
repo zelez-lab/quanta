@@ -626,13 +626,43 @@ impl VulkanDevice {
             }
         }
 
-        let device = self.device;
-        let pool = self.cmd_buffer_pool.clone();
+        // vkWaitForFences/vkDestroyFence are legal from any thread (this
+        // pulse is the fence's sole owner), and the pooled command buffer
+        // is only touched under the pool mutex — safe to move the wait
+        // onto Pulse::on_complete's waiter thread.
+        struct FenceWaiter {
+            device: ffi::VkDevice,
+            fence: ffi::VkFence,
+            cmd: ffi::VkCommandBuffer,
+            pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+        }
+        unsafe impl Send for FenceWaiter {}
+        type FenceParts = (
+            ffi::VkDevice,
+            ffi::VkFence,
+            ffi::VkCommandBuffer,
+            std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+        );
+        impl FenceWaiter {
+            // By-value method: the closure must capture the whole
+            // (Send-asserted) struct, not its raw-pointer fields.
+            fn take(self) -> FenceParts {
+                (self.device, self.fence, self.cmd, self.pool)
+            }
+        }
+        let waiter = FenceWaiter {
+            device: self.device,
+            fence,
+            cmd,
+            pool: self.cmd_buffer_pool.clone(),
+        };
+
         let handle = self.alloc_handle();
         Ok(Pulse {
             handle,
             completed: false,
             wait_fn: Some(Box::new(move || unsafe {
+                let (device, fence, cmd, pool) = waiter.take();
                 ffi::vkWaitForFences(device, 1, &fence, 1, u64::MAX);
                 ffi::vkDestroyFence(device, fence, core::ptr::null());
                 if let Ok(mut p) = pool.lock() {
