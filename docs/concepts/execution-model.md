@@ -177,7 +177,9 @@ GPU-to-CPU visibility is a separate concern from queue ordering: dispatch and
 render submissions are **asynchronous**, so the returned `Pulse` is still in
 flight when you get it back. A CPU-side read (`field.read()`, `texture.read()`)
 must `pulse.wait()` first — or call `gpu.wait_idle()`, which blocks until
-everything submitted so far has completed. Presenting a surface frame needs no
+everything submitted so far has completed. Event-driven runtimes that must not
+block a thread use `pulse.on_complete(f)` instead: the callback fires from a
+background waiter thread at completion. Presenting a surface frame needs no
 wait; same-queue ordering covers it.
 
 ## Queues

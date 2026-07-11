@@ -314,7 +314,8 @@ GPU completion signal returned by dispatch/render operations.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `wait()` | `Result<()>` | Block until GPU completes this operation |
-| `is_done()` | `bool` | Non-blocking completion check |
+| `on_complete(f)` | `Result<()>` | Consume the pulse; run `f` on a background waiter thread at completion — the event-driven alternative to `wait()` for actor mailboxes / ports / event loops |
+| `is_done()` | `bool` | Non-blocking check: has `wait()` already observed completion (local state, not live GPU progress) |
 | `reset()` | `()` | Reset for reuse |
 | `handle()` | `u64` | Raw GPU handle |
 

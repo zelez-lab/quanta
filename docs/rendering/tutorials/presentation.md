@@ -80,6 +80,28 @@ Rules of the loop:
 - Dropping the `Surface` releases the swapchain (and, for
   `SurfaceTarget::Headless`, the backend-created target).
 
+### Pacing: fully demand-driven
+
+Quanta never renders or presents on its own — a frame happens only when you
+run the loop body. There is no internal timer, display link, or frame
+scheduler, so the loop may run at **any cadence**: seconds between frames (an
+idle UI waiting on a dirty flag), a burst at input rate, or a steady animation
+clock. An idle surface holds no acquired frame and costs zero GPU or CPU work;
+nothing leaks or stalls across idle gaps. The only back-pressure is
+`acquire()` itself: when every swapchain image is still in flight, it blocks
+briefly, throttling a burst to the present rate.
+
+`examples/native_window.rs` demonstrates all three cadences through one loop
+on a real window (bare Cocoa FFI, no windowing crates):
+
+```text
+cargo run --example native_window
+phase 1: sparse — 4 frames, 500 ms apart
+phase 2: burst — 120 frames, no sleep
+  120 frames in 1.96s = 61 fps (acquire back-pressure)
+phase 3: animated — 3 s (pass --stay to keep it open)
+```
+
 ### Present modes
 
 | Mode                     | Behavior                                              |
