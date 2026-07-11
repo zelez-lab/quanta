@@ -1819,10 +1819,12 @@ impl GpuDevice for VulkanDevice {
         true
     }
 
+    #[cfg(feature = "render")]
     fn supports_surface_present(&self) -> bool {
         self.surface_procs.is_some()
     }
 
+    #[cfg(feature = "render")]
     fn surface_create(
         &self,
         target: &crate::SurfaceTarget,
@@ -1831,6 +1833,7 @@ impl GpuDevice for VulkanDevice {
         self.surface_create_impl(target, config)
     }
 
+    #[cfg(feature = "render")]
     fn surface_configure(
         &self,
         surface: u64,
@@ -1839,18 +1842,22 @@ impl GpuDevice for VulkanDevice {
         self.surface_configure_impl(surface, config)
     }
 
+    #[cfg(feature = "render")]
     fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
         self.surface_acquire_impl(surface)
     }
 
+    #[cfg(feature = "render")]
     fn surface_present(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
         self.surface_present_impl(surface, frame)
     }
 
+    #[cfg(feature = "render")]
     fn surface_discard(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
         self.surface_discard_impl(surface, frame)
     }
 
+    #[cfg(feature = "render")]
     fn surface_destroy(&self, surface: u64) -> Result<(), QuantaError> {
         self.surface_destroy_impl(surface)
     }

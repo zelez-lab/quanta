@@ -1100,6 +1100,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
 
         // WSI proc resolution — None (→ NotSupported) when the loader
         // or driver lacks the surface/swapchain extensions.
+        #[cfg(not(feature = "render"))]
+        let _ = (has_headless_ext, has_xlib_ext);
         #[cfg(feature = "render")]
         let surface_procs = if has_swapchain_ext {
             super::surface::SurfaceProcs::resolve(instance, device, has_headless_ext, has_xlib_ext)
