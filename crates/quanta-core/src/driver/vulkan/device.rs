@@ -36,6 +36,13 @@ pub struct VulkanDevice {
     pub(super) image_views: RwLock<HashMap<u64, ffi::VkImageView>>,
     pub(super) query_pools: RwLock<HashMap<u64, VkQueryPool>>,
     pub(super) queues: RwLock<HashMap<u64, ffi::VkQueue>>,
+    /// WSI extension procs; `None` means no present support here.
+    #[cfg(feature = "render")]
+    pub(super) surface_procs: Option<super::surface::SurfaceProcs>,
+    #[cfg(feature = "render")]
+    pub(super) vk_surfaces: RwLock<HashMap<u64, super::surface::VkSurfaceEntry>>,
+    #[cfg(feature = "render")]
+    pub(super) vk_surface_frames: RwLock<HashMap<u64, super::surface::VkSurfaceFrame>>,
     pub(super) next_handle: AtomicU64,
     /// Pool of reusable command buffers — Arc<Mutex> for sharing with Pulse closures.
     pub(super) cmd_buffer_pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
@@ -685,6 +692,30 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         api_version: ffi::make_api_version(0, 1, 3, 0),
     };
 
+    // WSI instance extensions — enabled only when the loader offers
+    // them; their absence just means supports_surface_present() stays
+    // false on the resulting device.
+    let has_surface_ext = instance_has_extension(b"VK_KHR_surface\0");
+    let has_headless_ext = has_surface_ext && instance_has_extension(b"VK_EXT_headless_surface\0");
+    let has_xlib_ext = cfg!(target_os = "linux")
+        && has_surface_ext
+        && instance_has_extension(b"VK_KHR_xlib_surface\0");
+    let mut instance_exts: Vec<*const core::ffi::c_char> = Vec::new();
+    if has_surface_ext {
+        instance_exts.push(c"VK_KHR_surface".as_ptr());
+    }
+    if has_headless_ext {
+        instance_exts.push(c"VK_EXT_headless_surface".as_ptr());
+    }
+    if has_xlib_ext {
+        instance_exts.push(c"VK_KHR_xlib_surface".as_ptr());
+    }
+    let (instance_ext_count, instance_ext_ptr) = if instance_exts.is_empty() {
+        (0u32, core::ptr::null())
+    } else {
+        (instance_exts.len() as u32, instance_exts.as_ptr())
+    };
+
     let create_info = ffi::VkInstanceCreateInfo {
         s_type: ffi::VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         p_next: core::ptr::null(),
@@ -692,8 +723,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         p_application_info: &app_info,
         enabled_layer_count: 0,
         pp_enabled_layer_names: core::ptr::null(),
-        enabled_extension_count: 0,
-        pp_enabled_extension_names: core::ptr::null(),
+        enabled_extension_count: instance_ext_count,
+        pp_enabled_extension_names: instance_ext_ptr,
     };
 
     let mut instance = ffi::null_handle();
@@ -994,7 +1025,13 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             &sync2_features as *const _ as *const core::ffi::c_void
         };
 
+        let has_swapchain_ext =
+            has_surface_ext && physical_device_has_extension(pd, b"VK_KHR_swapchain\0");
+
         let mut enabled_extensions: Vec<*const core::ffi::c_char> = Vec::new();
+        if has_swapchain_ext {
+            enabled_extensions.push(c"VK_KHR_swapchain".as_ptr());
+        }
         if has_vrs_ext {
             enabled_extensions.push(c"VK_KHR_fragment_shading_rate".as_ptr());
         }
@@ -1060,6 +1097,15 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
 
         let mut queue = ffi::null_handle();
         unsafe { ffi::vkGetDeviceQueue(device, qf_index as u32, 0, &mut queue) };
+
+        // WSI proc resolution — None (→ NotSupported) when the loader
+        // or driver lacks the surface/swapchain extensions.
+        #[cfg(feature = "render")]
+        let surface_procs = if has_swapchain_ext {
+            super::surface::SurfaceProcs::resolve(instance, device, has_headless_ext, has_xlib_ext)
+        } else {
+            None
+        };
 
         // Resolve extension proc addresses. Even with an extension
         // enabled at vkCreateDevice, the driver can return null
@@ -1289,6 +1335,12 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             image_views: RwLock::new(HashMap::new()),
             query_pools: RwLock::new(HashMap::new()),
             queues: RwLock::new(HashMap::new()),
+            #[cfg(feature = "render")]
+            surface_procs,
+            #[cfg(feature = "render")]
+            vk_surfaces: RwLock::new(HashMap::new()),
+            #[cfg(feature = "render")]
+            vk_surface_frames: RwLock::new(HashMap::new()),
             next_handle: AtomicU64::new(0),
             // The pool handle is genuinely shared (cloned out at dispatch time),
             // so Arc is intended; VkCommandBuffer is a raw FFI pointer that can't
@@ -1328,6 +1380,41 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
     }
 
     devices
+}
+
+/// Whether the Vulkan loader offers an instance-level extension.
+fn instance_has_extension(ext_name: &[u8]) -> bool {
+    let mut count = 0u32;
+    let result = unsafe {
+        ffi::vkEnumerateInstanceExtensionProperties(
+            core::ptr::null(),
+            &mut count,
+            core::ptr::null_mut(),
+        )
+    };
+    if result != ffi::VK_SUCCESS || count == 0 {
+        return false;
+    }
+    let mut props = vec![ffi::VkExtensionProperties::default(); count as usize];
+    let result = unsafe {
+        ffi::vkEnumerateInstanceExtensionProperties(
+            core::ptr::null(),
+            &mut count,
+            props.as_mut_ptr(),
+        )
+    };
+    if result != ffi::VK_SUCCESS {
+        return false;
+    }
+    let target = &ext_name[..ext_name.len() - 1];
+    props.iter().take(count as usize).any(|p| {
+        let name_bytes = &p.extension_name;
+        let len = name_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(name_bytes.len());
+        &name_bytes[..len] == target
+    })
 }
 
 /// Pre-create-time variant of `VulkanDevice::has_device_extension`.
@@ -1374,6 +1461,24 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         unsafe {
             ffi::vkDeviceWaitIdle(self.device);
+
+            // Surfaces first: swapchains and VkSurfaceKHR must go
+            // before the device/instance they were created from.
+            #[cfg(feature = "render")]
+            if let Some(procs) = self.surface_procs.as_ref()
+                && let Ok(mut surfaces) = self.vk_surfaces.write()
+            {
+                for (_, entry) in surfaces.drain() {
+                    for &view in &entry.views {
+                        ffi::vkDestroyImageView(self.device, view, core::ptr::null());
+                    }
+                    (procs.destroy_swapchain)(self.device, entry.swapchain, core::ptr::null());
+                    (procs.destroy_surface)(self.instance, entry.surface, core::ptr::null());
+                    ffi::vkDestroyFence(self.device, entry.acquire_fence, core::ptr::null());
+                    ffi::vkDestroyFence(self.device, entry.present_fence, core::ptr::null());
+                    ffi::vkDestroySemaphore(self.device, entry.present_sem, core::ptr::null());
+                }
+            }
 
             // Clean up resources — write locks since we're draining.
             if let Ok(mut buffers) = self.buffers.write() {

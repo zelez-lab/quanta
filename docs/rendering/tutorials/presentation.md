@@ -147,7 +147,7 @@ the importer's reads by native means — before the importer samples it.
 | Backend | Surface present (`Surface`)        | Native-handle export               |
 |---------|------------------------------------|------------------------------------|
 | Metal   | ✅ `CAMetalLayer` drawables         | ✅ `id<MTLTexture>`                 |
-| Vulkan  | `NotSupported` (swapchain pending) | ✅ `VkImage` + memory/format/layout |
+| Vulkan  | ✅ `VkSwapchainKHR` (Headless via `VK_EXT_headless_surface`, X11 via `SurfaceTarget::VulkanXlib`; needs loader WSI support — query `supports_surface_present`) | ✅ `VkImage` + memory/format/layout |
 | WebGPU  | `NotSupported` (reserved variant)  | `NotSupported` (reserved variant)  |
 | CPU     | `NotSupported`                     | `NotSupported` (no native object)  |
 

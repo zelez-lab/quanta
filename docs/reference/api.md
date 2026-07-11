@@ -56,7 +56,7 @@ path without throwing.
 | `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
 | `supports_cooperative_matrix()` | `bool` | Cooperative-matrix / `simdgroup_matrix` support |
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` returns a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
-| `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal; other backends not wired yet |
+| `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal, and on Vulkan when the loader offers VK_KHR_surface + VK_KHR_swapchain |
 | `supports_texture_write_region()` | `bool` | Sub-region texture uploads (`Texture::write_region`). True on Metal, Vulkan, and the software driver; false on WebGPU |
 | `narrow_storage_u32_slot()` | `bool` | Whether bf16/fp8 buffers use the portable u32-slot layout (one element per 32-bit word) instead of native 2-/1-byte stride. True only on WebGPU — WGSL storage buffers cannot hold 16-/8-bit array elements; the host must repack tight data one-element-per-word before binding |
 | `supported_shading_rates()` | `Vec<(u32, u32)>` | Concrete (x,y) shading rates the device exposes (e.g. `[(1,1), (2,2), (4,4)]`). Empty when VRS is not supported. |

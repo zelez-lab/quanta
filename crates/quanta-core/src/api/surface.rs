@@ -101,10 +101,20 @@ pub enum SurfaceTarget {
         /// `CAMetalLayer*` as a raw pointer.
         layer: *mut core::ffi::c_void,
     },
+    /// Vulkan on X11: create the surface from an Xlib display +
+    /// window (`VK_KHR_xlib_surface`). The display connection and
+    /// window must outlive the surface.
+    VulkanXlib {
+        /// `Display*` as a raw pointer.
+        display: *mut core::ffi::c_void,
+        /// The X11 `Window` id.
+        window: u64,
+    },
     /// A presentation target with no window attached: the backend
     /// creates and owns its native target (Metal: an off-screen
-    /// `CAMetalLayer`). The full acquire/present machinery runs —
-    /// frames just aren't composited anywhere. For tests, warm-up,
-    /// and consumers that composite through another channel.
+    /// `CAMetalLayer`; Vulkan: `VK_EXT_headless_surface`). The full
+    /// acquire/present machinery runs — frames just aren't composited
+    /// anywhere. For tests, warm-up, and consumers that composite
+    /// through another channel.
     Headless,
 }

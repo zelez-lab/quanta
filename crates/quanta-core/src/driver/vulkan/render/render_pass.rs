@@ -926,6 +926,24 @@ impl VulkanDevice {
         };
         drop(samplers);
         drop(buffers);
+        // The render pass's attachments end in COLOR_ATTACHMENT_OPTIMAL
+        // (the hardcoded final layout); record that so a later
+        // transition (pre-present, sub-region upload) starts from the
+        // right layout.
+        if let Some(t) = textures.get(&pass.handle) {
+            t.current_layout.store(
+                ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        for ct in &pass.color_targets {
+            if let Some(tex) = textures.get(&ct.texture) {
+                tex.current_layout.store(
+                    ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+        }
         drop(textures);
         drop(render_pipelines);
 

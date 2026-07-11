@@ -436,3 +436,11 @@ jobs:
 
       - name: Differential tests (vulkan lane via lavapipe)
         run: cargo test --test differential --no-default-features --features vulkan,jit,compute
+
+      # The swapchain path: VK_EXT_headless_surface gives lavapipe a real
+      # VkSurfaceKHR + VkSwapchainKHR without a window system, so the
+      # whole acquire→render→present suite (incl. the demand-driven
+      # pacing contract) runs here. Skips gracefully if the loader
+      # lacks the WSI extensions.
+      - name: Surface tests (vulkan lane via lavapipe headless swapchain)
+        run: cargo test --test gpu_surface --no-default-features --features vulkan,render

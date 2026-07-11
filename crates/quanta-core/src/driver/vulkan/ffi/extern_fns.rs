@@ -281,6 +281,22 @@ macro_rules! vk_extern_fns {
                 timeout: u64,
             ) -> VkResult;
             pub fn vkResetFences(device: VkDevice, count: u32, fences: *const VkFence) -> VkResult;
+            pub fn vkCreateSemaphore(
+                device: VkDevice,
+                create_info: *const VkSemaphoreCreateInfo,
+                allocator: *const c_void,
+                semaphore: *mut VkSemaphore,
+            ) -> VkResult;
+            pub fn vkDestroySemaphore(
+                device: VkDevice,
+                semaphore: VkSemaphore,
+                allocator: *const c_void,
+            );
+            pub fn vkEnumerateInstanceExtensionProperties(
+                layer_name: *const u8,
+                count: *mut u32,
+                properties: *mut VkExtensionProperties,
+            ) -> VkResult;
             pub fn vkQueueSubmit(
                 queue: VkQueue,
                 count: u32,

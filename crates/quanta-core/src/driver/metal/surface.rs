@@ -138,6 +138,11 @@ impl MetalDevice {
                     // Owned (+1) — released on destroy.
                     ffi::msg_id(cls as ffi::Id, b"new\0")
                 }
+                _ => {
+                    return Err(QuantaError::not_supported(
+                        "this surface target is not available on the Metal backend",
+                    ));
+                }
             }
         };
         if layer.is_null() {

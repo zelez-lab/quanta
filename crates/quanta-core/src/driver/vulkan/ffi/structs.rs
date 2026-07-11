@@ -830,3 +830,83 @@ pub struct VkQueryPoolCreateInfo {
     pub query_count: u32,
     pub pipeline_statistics: u32,
 }
+
+// ── WSI (VK_KHR_surface / VK_KHR_swapchain) ────────────────────────────
+
+#[repr(C)]
+pub struct VkHeadlessSurfaceCreateInfoEXT {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+}
+
+#[repr(C)]
+pub struct VkXlibSurfaceCreateInfoKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub dpy: *mut c_void,
+    pub window: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct VkSurfaceFormatKHR {
+    pub format: u32,
+    pub color_space: u32,
+}
+
+#[repr(C)]
+pub struct VkSurfaceCapabilitiesKHR {
+    pub min_image_count: u32,
+    pub max_image_count: u32,
+    pub current_extent: VkExtent2D,
+    pub min_image_extent: VkExtent2D,
+    pub max_image_extent: VkExtent2D,
+    pub max_image_array_layers: u32,
+    pub supported_transforms: u32,
+    pub current_transform: u32,
+    pub supported_composite_alpha: u32,
+    pub supported_usage_flags: u32,
+}
+
+#[repr(C)]
+pub struct VkSwapchainCreateInfoKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub surface: super::constants::VkSurfaceKHR,
+    pub min_image_count: u32,
+    pub image_format: u32,
+    pub image_color_space: u32,
+    pub image_extent: VkExtent2D,
+    pub image_array_layers: u32,
+    pub image_usage: u32,
+    pub image_sharing_mode: u32,
+    pub queue_family_index_count: u32,
+    pub p_queue_family_indices: *const u32,
+    pub pre_transform: u32,
+    pub composite_alpha: u32,
+    pub present_mode: u32,
+    pub clipped: u32,
+    pub old_swapchain: super::constants::VkSwapchainKHR,
+}
+
+#[repr(C)]
+pub struct VkPresentInfoKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub wait_semaphore_count: u32,
+    pub p_wait_semaphores: *const VkSemaphore,
+    pub swapchain_count: u32,
+    pub p_swapchains: *const super::constants::VkSwapchainKHR,
+    pub p_image_indices: *const u32,
+    pub p_results: *mut i32,
+}
+
+#[repr(C)]
+pub struct VkSemaphoreCreateInfo {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+}

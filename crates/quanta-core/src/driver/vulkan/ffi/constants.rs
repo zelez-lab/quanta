@@ -551,6 +551,72 @@ pub type PfnVkCmdBuildAccelerationStructuresKHR = unsafe extern "C" fn(
 
 // ─── Vulkan API version helper ──────────────────────────────────────────────
 
+// ── WSI (VK_KHR_surface / VK_KHR_swapchain) ────────────────────────────
+
+/// Non-dispatchable `VkSurfaceKHR` handle.
+pub type VkSurfaceKHR = *mut c_void;
+/// Non-dispatchable `VkSwapchainKHR` handle.
+pub type VkSwapchainKHR = *mut c_void;
+
+pub const VK_TIMEOUT: VkResult = 2;
+pub const VK_SUBOPTIMAL_KHR: VkResult = 1000001003;
+pub const VK_ERROR_OUT_OF_DATE_KHR: VkResult = -1000001004;
+
+pub const VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR: u32 = 1000001000;
+pub const VK_STRUCTURE_TYPE_PRESENT_INFO_KHR: u32 = 1000001001;
+pub const VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR: u32 = 1000004000;
+pub const VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT: u32 = 1000256000;
+
+pub const VK_PRESENT_MODE_IMMEDIATE_KHR: u32 = 0;
+pub const VK_PRESENT_MODE_MAILBOX_KHR: u32 = 1;
+pub const VK_PRESENT_MODE_FIFO_KHR: u32 = 2;
+
+pub const VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: u32 = 0;
+pub const VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR: u32 = 0x00000001;
+pub const VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR: u32 = 0x00000001;
+
+pub type PfnVkDestroySurfaceKHR = unsafe extern "C" fn(VkInstance, VkSurfaceKHR, *const c_void);
+pub type PfnVkCreateHeadlessSurfaceEXT = unsafe extern "C" fn(
+    VkInstance,
+    *const super::structs::VkHeadlessSurfaceCreateInfoEXT,
+    *const c_void,
+    *mut VkSurfaceKHR,
+) -> VkResult;
+pub type PfnVkCreateXlibSurfaceKHR = unsafe extern "C" fn(
+    VkInstance,
+    *const super::structs::VkXlibSurfaceCreateInfoKHR,
+    *const c_void,
+    *mut VkSurfaceKHR,
+) -> VkResult;
+pub type PfnVkGetPhysicalDeviceSurfaceSupportKHR =
+    unsafe extern "C" fn(VkPhysicalDevice, u32, VkSurfaceKHR, *mut u32) -> VkResult;
+pub type PfnVkGetPhysicalDeviceSurfaceCapabilitiesKHR = unsafe extern "C" fn(
+    VkPhysicalDevice,
+    VkSurfaceKHR,
+    *mut super::structs::VkSurfaceCapabilitiesKHR,
+) -> VkResult;
+pub type PfnVkGetPhysicalDeviceSurfaceFormatsKHR = unsafe extern "C" fn(
+    VkPhysicalDevice,
+    VkSurfaceKHR,
+    *mut u32,
+    *mut super::structs::VkSurfaceFormatKHR,
+) -> VkResult;
+pub type PfnVkGetPhysicalDeviceSurfacePresentModesKHR =
+    unsafe extern "C" fn(VkPhysicalDevice, VkSurfaceKHR, *mut u32, *mut u32) -> VkResult;
+pub type PfnVkCreateSwapchainKHR = unsafe extern "C" fn(
+    VkDevice,
+    *const super::structs::VkSwapchainCreateInfoKHR,
+    *const c_void,
+    *mut VkSwapchainKHR,
+) -> VkResult;
+pub type PfnVkDestroySwapchainKHR = unsafe extern "C" fn(VkDevice, VkSwapchainKHR, *const c_void);
+pub type PfnVkGetSwapchainImagesKHR =
+    unsafe extern "C" fn(VkDevice, VkSwapchainKHR, *mut u32, *mut VkImage) -> VkResult;
+pub type PfnVkAcquireNextImageKHR =
+    unsafe extern "C" fn(VkDevice, VkSwapchainKHR, u64, VkSemaphore, VkFence, *mut u32) -> VkResult;
+pub type PfnVkQueuePresentKHR =
+    unsafe extern "C" fn(VkQueue, *const super::structs::VkPresentInfoKHR) -> VkResult;
+
 #[inline]
 pub const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u32 {
     (variant << 29) | (major << 22) | (minor << 12) | patch

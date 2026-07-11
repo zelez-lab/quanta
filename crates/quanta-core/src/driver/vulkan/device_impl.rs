@@ -1812,12 +1812,47 @@ impl GpuDevice for VulkanDevice {
     // ╰──────────────────────────────────────────────────────────────╯
     //
     // Native-handle export is live (the registry already holds the
-    // VkImage + VkDeviceMemory). The Surface/swapchain family stays
-    // on the trait defaults (NotSupported) until the VkSwapchainKHR
-    // path is wired.
+    // VkImage + VkDeviceMemory), and the Surface family runs on the
+    // VkSwapchainKHR path when the loader offers the WSI extensions.
 
     fn supports_native_handle_export(&self) -> bool {
         true
+    }
+
+    fn supports_surface_present(&self) -> bool {
+        self.surface_procs.is_some()
+    }
+
+    fn surface_create(
+        &self,
+        target: &crate::SurfaceTarget,
+        config: &crate::SurfaceConfig,
+    ) -> Result<u64, QuantaError> {
+        self.surface_create_impl(target, config)
+    }
+
+    fn surface_configure(
+        &self,
+        surface: u64,
+        config: &crate::SurfaceConfig,
+    ) -> Result<(), QuantaError> {
+        self.surface_configure_impl(surface, config)
+    }
+
+    fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
+        self.surface_acquire_impl(surface)
+    }
+
+    fn surface_present(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
+        self.surface_present_impl(surface, frame)
+    }
+
+    fn surface_discard(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
+        self.surface_discard_impl(surface, frame)
+    }
+
+    fn surface_destroy(&self, surface: u64) -> Result<(), QuantaError> {
+        self.surface_destroy_impl(surface)
     }
 
     fn texture_native_handle(
