@@ -57,6 +57,7 @@ path without throwing.
 | `supports_cooperative_matrix()` | `bool` | Cooperative-matrix / `simdgroup_matrix` support |
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` returns a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
 | `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal; other backends not wired yet |
+| `supports_texture_write_region()` | `bool` | Sub-region texture uploads (`Texture::write_region`). True on Metal, Vulkan, and the software driver; false on WebGPU |
 | `narrow_storage_u32_slot()` | `bool` | Whether bf16/fp8 buffers use the portable u32-slot layout (one element per 32-bit word) instead of native 2-/1-byte stride. True only on WebGPU — WGSL storage buffers cannot hold 16-/8-bit array elements; the host must repack tight data one-element-per-word before binding |
 | `supported_shading_rates()` | `Vec<(u32, u32)>` | Concrete (x,y) shading rates the device exposes (e.g. `[(1,1), (2,2), (4,4)]`). Empty when VRS is not supported. |
 
@@ -137,6 +138,7 @@ let pipe = gpu.pipeline(&desc)?;
 | `barrier()` | `Result<()>` | Full pipeline barrier |
 | `barrier_field(field, from, to)` | `Result<()>` | Field state transition |
 | `barrier_texture(tex, from, to)` | `Result<()>` | Texture state transition |
+| `wait_idle()` | `Result<()>` | Host-blocking drain: waits until every submitted operation completes. Use before CPU-side reads when the pulse wasn't kept |
 
 ### Timeline semaphores
 
@@ -253,6 +255,7 @@ driver resource (exactly once) — the same holds for `TextureView`,
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `write(&data)` | `Result<()>` | Upload pixel data |
+| `write_region(origin, size, &data)` | `Result<()>` | Upload a sub-region: `origin`/`size` in texels, `data` tightly packed region rows (gated on `supports_texture_write_region`) |
 | `read()` | `Result<Vec<u8>>` | Download pixel data |
 | `generate_mipmaps()` | `Result<()>` | Auto-generate mip chain |
 | `native_handle()` | `Result<NativeTextureHandle>` | Export the backend-native object for zero-copy interop (see below) |

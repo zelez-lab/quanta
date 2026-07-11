@@ -116,6 +116,21 @@ resources own their operations.
 The byte layout must match the format. For `RGBA8`, each pixel is 4 bytes:
 `[R, G, B, A]`.
 
+For incremental updates — a glyph atlas gaining a few glyphs per frame, a
+minimap tile refresh — upload only the changed rectangle instead of the whole
+texture:
+
+```rust
+// 3 new 8x8 glyphs land at (x, y) in a 1024x1024 R8 atlas
+tex.write_region((x, y), (8, 8), &glyph_bytes)?;
+```
+
+`origin` and `size` are in texels; `data` holds exactly `size.0 * size.1`
+texels, tightly packed row-major. Out-of-bounds regions and mis-sized data
+are rejected with `InvalidParam`. Backends that can't do sub-region uploads
+return `NotSupported` — check `gpu.supports_texture_write_region()` and fall
+back to a whole-texture `write`.
+
 ## Reading pixels
 
 ```rust

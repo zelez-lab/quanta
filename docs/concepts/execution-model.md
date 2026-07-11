@@ -173,6 +173,13 @@ The only way to enforce ordering is explicit synchronization: `barrier()` within
 a workgroup, `pulse.wait()` between dispatches on the same queue, and
 queue-level signal/wait semaphores between dispatches on different queues.
 
+GPU-to-CPU visibility is a separate concern from queue ordering: dispatch and
+render submissions are **asynchronous**, so the returned `Pulse` is still in
+flight when you get it back. A CPU-side read (`field.read()`, `texture.read()`)
+must `pulse.wait()` first — or call `gpu.wait_idle()`, which blocks until
+everything submitted so far has completed. Presenting a surface frame needs no
+wait; same-queue ordering covers it.
+
 ## Queues
 
 Most desktop GPUs expose three hardware queue families that can run in

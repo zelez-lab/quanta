@@ -155,7 +155,8 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `encoder.copy_buffer_to_buffer(...)` | `dst.copy_from(&src)` |
 | `queue.submit(...)` | automatic (dispatch submits) |
 | `buffer.slice(..).map_async(...)` | `field.read()` |
-| `device.poll(Maintain::Wait)` | `pulse.wait()` |
+| `device.poll(Maintain::Wait)` | `pulse.wait()` / `gpu.wait_idle()` |
+| `queue.write_texture(origin, data, layout, size)` | `texture.write(&data)` / `texture.write_region(origin, size, &data)` |
 
 ## Key differences
 

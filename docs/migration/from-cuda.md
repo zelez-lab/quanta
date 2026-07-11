@@ -105,7 +105,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `cudaMalloc` + `cudaMemcpy` | `gpu.field::<T>(n)` + `field.write(&data)` |
 | `cudaMallocManaged` | `gpu.field_mapped::<T>(n)` |
 | `kernel<<<blocks, threads>>>(...)` | `gpu.dispatch(&wave, n)` |
-| `cudaDeviceSynchronize()` | `pulse.wait()` |
+| `cudaDeviceSynchronize()` | `pulse.wait()` / `gpu.wait_idle()` |
 | `cudaGetDeviceProperties` | `gpu.caps()` |
 | `cudaFree` | automatic (Field drops when it goes out of scope) |
 

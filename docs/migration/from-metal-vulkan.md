@@ -16,6 +16,8 @@ while maintaining the same performance (it generates the same API calls under th
 | `MTLLibrary` / `VkShaderModule` | Embedded in binary as `KernelBinary` |
 | Fence/semaphore creation | `Pulse` returned from dispatch |
 | Buffer/image layout transitions (Vulkan) | `gpu.barrier_texture()` / `gpu.barrier_field()` |
+| `replaceRegion:` / staging + `vkCmdCopyBufferToImage` | `texture.write(&data)` / `texture.write_region(origin, size, &data)` |
+| `waitUntilCompleted` / `vkDeviceWaitIdle` | `pulse.wait()` / `gpu.wait_idle()` |
 
 ## Example: buffer creation + compute dispatch
 
