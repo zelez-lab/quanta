@@ -327,6 +327,11 @@ Chainable render pass builder. Created by `gpu.render(&target)`. Every method
 consumes and returns `self`, so the entire pass is a single expression ending
 in `.pulse()`.
 
+Bindings record the resource's handle, not ownership: everything bound to the
+pass (`Field`, `Texture`, `Pipeline`) must outlive `pulse()`. Dropping a bound
+resource early makes `pulse()` fail with `NotFound` (dead handles are detected
+before encoding; nothing is silently skipped).
+
 ```rust
 let mut pulse = gpu.render(&target)?
     .clear(Color::BLACK)

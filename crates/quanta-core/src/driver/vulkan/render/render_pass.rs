@@ -45,6 +45,23 @@ impl VulkanDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
 
+        // Fail loudly on any dead handle BEFORE recording starts — a
+        // silently skipped bind renders wrong (classic cause: a Field
+        // dropped before pulse()).
+        {
+            use crate::render_pass::HandleKind;
+            pass.validate_handles(|kind, h| match kind {
+                HandleKind::Buffer => buffers.contains_key(&h),
+                HandleKind::Texture => textures.contains_key(&h),
+                HandleKind::Pipeline => render_pipelines.contains_key(&h),
+                HandleKind::OcclusionQuery => self
+                    .query_pools
+                    .read()
+                    .map(|p| p.contains_key(&h))
+                    .unwrap_or(false),
+            })?;
+        }
+
         let target_tex = textures.get(&pass.handle).ok_or_else(|| {
             QuantaError::not_found("render target not found")
                 .with_context(&format!("render_end: target handle {}", pass.handle))

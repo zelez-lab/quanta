@@ -27,6 +27,15 @@ use quanta_core::{
 /// Created by [`RenderGpu::render`](crate::RenderGpu::render). Every method consumes and returns `self`,
 /// so the entire pass can be expressed as a single expression ending in
 /// `.pulse()`.
+///
+/// ## Resource lifetimes
+///
+/// Binding methods record the resource's **handle**, not ownership:
+/// every `Field`, `Texture`, and `Pipeline` bound to the pass must stay
+/// alive until `pulse()` has submitted it (and, for CPU-side readback,
+/// until the GPU finished — see `Pulse`). Dropping a bound resource
+/// early makes `pulse()` fail with `NotFound` instead of silently
+/// skipping the bind.
 pub struct RenderBuilder {
     device: Arc<dyn GpuDevice>,
     pass: RenderPass,

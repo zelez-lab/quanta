@@ -1034,3 +1034,113 @@ fn on_complete_fires_for_already_completed_pulse() {
         .expect("on_complete callback did not fire for a completed pulse");
     assert_eq!(thread_name.as_deref(), Some("quanta-pulse-waiter"));
 }
+
+// ─── Test: dead-handle validation at pulse() ────────────────────────────────
+//
+// Bound resources are recorded as bare handles; a Field dropped before
+// pulse() used to make the replay silently skip the bind (wrong render,
+// no error). pulse() must fail loudly instead.
+
+#[test]
+fn pulse_fails_loudly_on_dropped_field() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if PASSTHROUGH_VERTEX_SHADER
+        .for_vendor(gpu.caps().vendor)
+        .is_none()
+        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_color_layout();
+    let pipeline = make_pipeline(
+        &gpu,
+        &PASSTHROUGH_VERTEX_SHADER,
+        &SOLID_RED_SHADER,
+        &layouts,
+        false,
+    );
+
+    let target = gpu.render_target(16, 16, Format::RGBA8).unwrap();
+    let mut builder = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, 16.0, 16.0)
+        .pipeline(&pipeline);
+    {
+        let doomed: quanta::Field<f32> = gpu
+            .field_with_usage(18, FieldUsage::default_render())
+            .unwrap();
+        builder = builder.vertices(0, &doomed);
+    } // dropped before pulse() — its handle is now dead
+
+    let err = match builder.draw(3).pulse() {
+        Ok(_) => panic!("pulse() must fail for a dropped bound Field"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err.kind, quanta::QuantaErrorKind::NotFound(_)),
+        "expected NotFound for a dropped bound Field, got: {err}"
+    );
+}
+
+#[test]
+fn draw_indexed_without_indices_is_rejected() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if PASSTHROUGH_VERTEX_SHADER
+        .for_vendor(gpu.caps().vendor)
+        .is_none()
+        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_color_layout();
+    let pipeline = make_pipeline(
+        &gpu,
+        &PASSTHROUGH_VERTEX_SHADER,
+        &SOLID_RED_SHADER,
+        &layouts,
+        false,
+    );
+
+    let verts = [0.0f32; 18];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+
+    let target = gpu.render_target(16, 16, Format::RGBA8).unwrap();
+    let result = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, 16.0, 16.0)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw_indexed(3) // no .indices() bind — must be rejected
+        .pulse();
+    let err = match result {
+        Ok(_) => panic!("pulse() must reject draw_indexed without indices"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err.kind, quanta::QuantaErrorKind::InvalidParam(_)),
+        "expected InvalidParam for draw_indexed without indices, got: {err}"
+    );
+}

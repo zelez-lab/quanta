@@ -228,6 +228,24 @@ impl MetalDevice {
                 .buffers
                 .read()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
+
+            // Fail loudly on any dead handle BEFORE encoding starts —
+            // a silently skipped bind renders wrong (classic cause: a
+            // Field dropped before pulse()).
+            {
+                use crate::render_pass::HandleKind;
+                let pipelines = self
+                    .render_pipelines
+                    .read()
+                    .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                pass.validate_handles(|kind, h| match kind {
+                    // Metal's occlusion queries are visibility buffers.
+                    HandleKind::Buffer | HandleKind::OcclusionQuery => buffers.contains_key(&h),
+                    HandleKind::Texture => textures.contains_key(&h),
+                    HandleKind::Pipeline => pipelines.contains_key(&h),
+                })?;
+            }
+
             for op in &pass.ops {
                 if let RenderOp::BeginOcclusionQuery { handle, .. } = op
                     && let Some(vis_buf) = buffers.get(handle)

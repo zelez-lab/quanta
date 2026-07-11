@@ -235,7 +235,107 @@ pub(crate) enum RenderOp {
     },
 }
 
+/// Which driver registry a recorded handle points into. Drivers map
+/// each kind onto their own registry in [`RenderPass::validate_handles`]
+/// (occlusion queries live in different registries per backend).
+pub(crate) enum HandleKind {
+    Buffer,
+    Texture,
+    Pipeline,
+    OcclusionQuery,
+}
+
 impl RenderPass {
+    /// Pre-encode validation: walk the recorded ops, check every
+    /// registry handle they reference via `lookup`, and enforce the
+    /// ordering rules a replay depends on (`draw_indexed` needs a
+    /// prior `indices` bind). Drivers call this before encoding so a
+    /// dead handle fails the submission loudly instead of silently
+    /// skipping the bind — the classic cause is a `Field` dropped
+    /// before `pulse()`; bound resources must outlive the submission.
+    /// (Handles are never reused, so a dead handle can only be
+    /// missing, never rebound to another resource.)
+    pub(crate) fn validate_handles(
+        &self,
+        mut lookup: impl FnMut(HandleKind, u64) -> bool,
+    ) -> Result<(), crate::QuantaError> {
+        let mut check = |kind: HandleKind, handle: u64, what: &str, i: usize| {
+            if lookup(kind, handle) {
+                Ok(())
+            } else {
+                Err(
+                    crate::QuantaError::not_found("render pass references a dead handle")
+                        .with_context(&alloc::format!(
+                            "op {i}: {what} handle {handle} is not registered — was the \
+                     resource dropped before pulse()? Everything bound to a \
+                     render pass must outlive the submission"
+                        )),
+                )
+            }
+        };
+        let mut indices_bound = false;
+        for (i, op) in self.ops.iter().enumerate() {
+            match op {
+                RenderOp::SetPipeline(h) => check(HandleKind::Pipeline, *h, "pipeline", i)?,
+                RenderOp::BindVertices { handle, .. } => {
+                    check(HandleKind::Buffer, *handle, "vertex buffer", i)?
+                }
+                RenderOp::BindIndices { handle, .. } => {
+                    indices_bound = true;
+                    check(HandleKind::Buffer, *handle, "index buffer", i)?
+                }
+                RenderOp::SetField { handle, .. } => {
+                    check(HandleKind::Buffer, *handle, "field", i)?
+                }
+                RenderOp::SetUniform { handle, .. } => {
+                    check(HandleKind::Buffer, *handle, "uniform field", i)?
+                }
+                RenderOp::SetTexture { handle, .. } => {
+                    check(HandleKind::Texture, *handle, "texture", i)?
+                }
+                RenderOp::DrawIndexed { .. } if !indices_bound => {
+                    return Err(crate::QuantaError::invalid_param(
+                        "draw_indexed with no index buffer bound",
+                    )
+                    .with_context(&alloc::format!(
+                        "op {i}: call .indices(&field) before .draw_indexed(n)"
+                    )));
+                }
+                RenderOp::DrawIndirect { buffer_handle, .. } => check(
+                    HandleKind::Buffer,
+                    *buffer_handle,
+                    "indirect argument buffer",
+                    i,
+                )?,
+                RenderOp::DrawIndexedIndirect {
+                    buffer_handle,
+                    index_handle,
+                    ..
+                } => {
+                    check(
+                        HandleKind::Buffer,
+                        *buffer_handle,
+                        "indirect argument buffer",
+                        i,
+                    )?;
+                    check(HandleKind::Buffer, *index_handle, "index buffer", i)?
+                }
+                RenderOp::BeginOcclusionQuery { handle, .. }
+                | RenderOp::EndOcclusionQuery { handle, .. } => {
+                    check(HandleKind::OcclusionQuery, *handle, "occlusion query", i)?
+                }
+                RenderOp::SetShadingRateImage { texture_handle } => check(
+                    HandleKind::Texture,
+                    *texture_handle,
+                    "shading-rate image",
+                    i,
+                )?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     // === Pipeline ===
 
     /// Bind a render pipeline.
