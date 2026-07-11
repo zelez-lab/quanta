@@ -401,14 +401,14 @@ pub(crate) fn compile_shader(
             // status and classify: a loader kill means "no usable
             // compiler here" (soft), anything else is a real failure.
             drop(stdin);
-            if let Ok(output) = child.wait_with_output() {
-                if is_loader_failure(&output) {
-                    eprintln!(
-                        "[quanta] note: shader compiler at {binary} cannot run                          here ({}); shaders will have no precompiled binaries",
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    );
-                    return Ok(None);
-                }
+            if let Ok(output) = child.wait_with_output()
+                && is_loader_failure(&output)
+            {
+                eprintln!(
+                    "[quanta] note: shader compiler at {binary} cannot run                          here ({}); shaders will have no precompiled binaries",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+                return Ok(None);
             }
             return Err(format!("failed to write shader to compiler stdin: {e}"));
         }
