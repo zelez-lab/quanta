@@ -205,6 +205,28 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError>;
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError>;
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError>;
+
+    /// Whether `texture_write_region` is implemented on this backend.
+    fn supports_texture_write_region(&self) -> bool {
+        false
+    }
+
+    /// Write pixel data into a sub-region of `texture` at mip level 0.
+    /// `origin` is the (x, y) texel offset of the region's top-left
+    /// corner, `size` its (width, height) in texels; `data` holds
+    /// exactly `size.0 * size.1` texels in the texture's format,
+    /// tightly packed row-major (no row padding).
+    fn texture_write_region(
+        &self,
+        _texture: &Texture,
+        _origin: (u32, u32),
+        _size: (u32, u32),
+        _data: &[u8],
+    ) -> Result<(), QuantaError> {
+        Err(QuantaError::not_supported(
+            "sub-region texture writes not supported on this backend",
+        ))
+    }
     fn sampler_create(
         &self,
         desc: &crate::texture::SamplerDesc,

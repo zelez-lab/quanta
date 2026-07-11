@@ -16,6 +16,16 @@ impl VulkanDevice {
         texture: &Texture,
         data: &[u8],
     ) -> Result<(), QuantaError> {
+        self.texture_write_region_impl(texture, (0, 0), (texture.width(), texture.height()), data)
+    }
+
+    pub(crate) fn texture_write_region_impl(
+        &self,
+        texture: &Texture,
+        origin: (u32, u32),
+        size: (u32, u32),
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
         let textures = self
             .textures
             .read()
@@ -52,13 +62,32 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
 
-            // Transition: UNDEFINED -> TRANSFER_DST
+            // Transition to TRANSFER_DST. A whole-texture write may
+            // discard prior contents (UNDEFINED); a sub-region write
+            // must preserve the rest of the image, so it transitions
+            // from the tracked layout and orders against any prior
+            // reads still in flight on the queue.
+            let full_cover = origin == (0, 0) && size == (texture.width(), texture.height());
+            let old_layout = if full_cover {
+                ffi::VK_IMAGE_LAYOUT_UNDEFINED
+            } else {
+                tex.current_layout
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            };
+            let (src_access, src_stage) = if old_layout == ffi::VK_IMAGE_LAYOUT_UNDEFINED {
+                (0, ffi::VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
+            } else {
+                (
+                    ffi::VK_ACCESS_SHADER_READ_BIT,
+                    ffi::VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                )
+            };
             let barrier = ffi::VkImageMemoryBarrier {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 p_next: core::ptr::null(),
-                src_access_mask: 0,
+                src_access_mask: src_access,
                 dst_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
-                old_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                old_layout,
                 new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
@@ -73,7 +102,7 @@ impl VulkanDevice {
             };
             ffi::vkCmdPipelineBarrier(
                 cmd,
-                ffi::VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                src_stage,
                 ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0,
                 0,
@@ -95,10 +124,14 @@ impl VulkanDevice {
                     base_array_layer: 0,
                     layer_count: 1,
                 },
-                image_offset: ffi::VkOffset3D { x: 0, y: 0, z: 0 },
+                image_offset: ffi::VkOffset3D {
+                    x: origin.0 as i32,
+                    y: origin.1 as i32,
+                    z: 0,
+                },
                 image_extent: ffi::VkExtent3D {
-                    width: tex.width,
-                    height: tex.height,
+                    width: size.0,
+                    height: size.1,
                     depth: 1,
                 },
             };

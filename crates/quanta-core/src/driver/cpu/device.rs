@@ -414,6 +414,30 @@ impl GpuDevice for CpuDevice {
         self.field_write_bytes(texture.handle(), data)
     }
 
+    fn supports_texture_write_region(&self) -> bool {
+        true
+    }
+
+    fn texture_write_region(
+        &self,
+        texture: &Texture,
+        origin: (u32, u32),
+        size: (u32, u32),
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        // The texture is field-backed: copy the region row by row into
+        // the tightly packed backing store.
+        let bpp = texture.format().bytes_per_pixel();
+        let row_bytes = size.0 as usize * bpp;
+        for row in 0..size.1 as usize {
+            let src = &data[row * row_bytes..(row + 1) * row_bytes];
+            let dst =
+                ((origin.1 as usize + row) * texture.width() as usize + origin.0 as usize) * bpp;
+            self.field_write_bytes_at(texture.handle(), dst, src)?;
+        }
+        Ok(())
+    }
+
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
         let size =
             (texture.width() * texture.height()) as usize * texture.format().bytes_per_pixel();

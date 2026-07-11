@@ -126,6 +126,20 @@ impl GpuDevice for MetalDevice {
         self.texture_write_impl(texture, data)
     }
 
+    fn supports_texture_write_region(&self) -> bool {
+        true
+    }
+
+    fn texture_write_region(
+        &self,
+        texture: &Texture,
+        origin: (u32, u32),
+        size: (u32, u32),
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        self.texture_write_region_impl(texture, origin, size, data)
+    }
+
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
         self.texture_read_impl(texture)
     }

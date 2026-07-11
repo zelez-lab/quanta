@@ -121,6 +121,31 @@ impl GpuDevice for ValidationDevice {
         Ok(tex)
     }
 
+    fn supports_texture_write_region(&self) -> bool {
+        self.inner.supports_texture_write_region()
+    }
+
+    fn texture_write_region(
+        &self,
+        texture: &Texture,
+        origin: (u32, u32),
+        size: (u32, u32),
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        if !self
+            .live_textures
+            .lock()
+            .unwrap()
+            .contains(&texture.handle())
+        {
+            panic!(
+                "QUANTA_VALIDATE: texture_write_region to freed texture handle {}.",
+                texture.handle()
+            );
+        }
+        self.inner.texture_write_region(texture, origin, size, data)
+    }
+
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
         if !self
             .live_textures

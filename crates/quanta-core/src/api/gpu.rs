@@ -181,6 +181,14 @@ impl Gpu {
         self.inner.supports_surface_present()
     }
 
+    /// Whether the active backend implements sub-region texture uploads
+    /// (`Texture::write_region`). Backends without support return
+    /// `NotSupported` from `write_region`; callers can fall back to a
+    /// whole-texture `Texture::write`.
+    pub fn supports_texture_write_region(&self) -> bool {
+        self.inner.supports_texture_write_region()
+    }
+
     pub fn name(&self) -> &str {
         &self.caps().name
     }

@@ -58,6 +58,42 @@ impl Texture {
         }
     }
 
+    /// Write pixel data into a sub-region of this texture (mip level 0).
+    ///
+    /// `origin` is the (x, y) texel offset of the region's top-left corner
+    /// and `size` its (width, height) in texels; `data` holds exactly
+    /// `size.0 * size.1` texels in the texture's format, tightly packed
+    /// row-major. Incremental uploads (e.g. a growing glyph atlas) avoid
+    /// re-sending the whole texture. Backends without support return
+    /// `NotSupported` — query `Gpu::supports_texture_write_region`.
+    pub fn write_region(
+        &self,
+        origin: (u32, u32),
+        size: (u32, u32),
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
+        let Some(ref dev) = self.device else {
+            return Err(QuantaError::invalid_param("texture has no device"));
+        };
+        if size.0 == 0 || size.1 == 0 {
+            return Ok(());
+        }
+        if origin.0 as u64 + size.0 as u64 > self.width as u64
+            || origin.1 as u64 + size.1 as u64 > self.height as u64
+        {
+            return Err(QuantaError::invalid_param(
+                "write_region exceeds texture bounds",
+            ));
+        }
+        let expected = size.0 as usize * size.1 as usize * self.format.bytes_per_pixel();
+        if data.len() != expected {
+            return Err(QuantaError::invalid_param(
+                "write_region data length does not match region size",
+            ));
+        }
+        dev.texture_write_region(self, origin, size, data)
+    }
+
     /// Read pixel data from this texture.
     ///
     /// No implicit GPU sync: if a dispatch or render targeting this

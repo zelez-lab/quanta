@@ -116,6 +116,16 @@ impl MetalDevice {
         texture: &Texture,
         data: &[u8],
     ) -> Result<(), QuantaError> {
+        self.texture_write_region_impl(texture, (0, 0), (texture.width(), texture.height()), data)
+    }
+
+    pub(crate) fn texture_write_region_impl(
+        &self,
+        texture: &Texture,
+        origin: (u32, u32),
+        size: (u32, u32),
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
         let textures = self
             .textures
             .read()
@@ -125,8 +135,15 @@ impl MetalDevice {
                 .with_context(&format!("texture_write: handle {}", texture.handle()))
         })?;
         let bytes_per_pixel = format_bytes_per_pixel(texture.format());
-        let region = ffi::MTLRegion::new_2d(0, 0, texture.width() as u64, texture.height() as u64);
-        let bytes_per_row = texture.width() as u64 * bytes_per_pixel as u64;
+        let region = ffi::MTLRegion::new_2d(
+            origin.0 as u64,
+            origin.1 as u64,
+            size.0 as u64,
+            size.1 as u64,
+        );
+        // bytesPerRow describes the SOURCE data: one tightly packed
+        // region row, not a full texture row.
+        let bytes_per_row = size.0 as u64 * bytes_per_pixel as u64;
         unsafe {
             ffi::msg_replace_region(*tex, region, 0, data.as_ptr() as *const _, bytes_per_row);
         }
