@@ -114,6 +114,14 @@ Convention:
 - Vertex param 2 = fragment input at Location 1
 - ...
 
+## Coordinate conventions
+
+Clip-space y points UP on Metal and DOWN on Vulkan, so vertically
+asymmetric output (a textured quad, a gradient) renders flipped between
+the two backends. Quanta does not currently normalize this — the
+convention is the app's (flip `uv.y` or your projection on one backend
+if you need identical output). Horizontally the backends agree.
+
 ## Texture parameters
 
 A fragment shader samples textures through `&Texture2D` parameters and the
