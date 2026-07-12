@@ -284,6 +284,7 @@ impl SpvEmitter {
         );
         let entry_label = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[entry_label]);
+        self.current_block = entry_label;
 
         // Build param_info
         let mut param_info: Vec<(String, u32, u32, quanta_ir::ShaderType)> = attr_params

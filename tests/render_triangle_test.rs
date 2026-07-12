@@ -1335,3 +1335,106 @@ fn fragment_uniform_is_visible_to_fragment_stage() {
         "tint uniform must reach the fragment stage: expected ~(64,128,191), got ({r},{g},{b})"
     );
 }
+
+// ─── Test: statement-if + fragment uniform, drawn exactly ───────────────────
+//
+// The branch-and-assign fragment shape (the one real UI shaders use):
+// a `let mut`, a statement-if choosing per-pixel, and a `&Vec2` uniform
+// read in the fragment stage. Exercises the OpPhi lowering on SPIR-V,
+// the AST-emitted MSL, and the both-stage uniform bind — with exact
+// per-half color assertions.
+
+#[quanta::fragment]
+fn branchy_frag(uv: Vec2, split: &Vec2) -> Vec4 {
+    let mut r = 0.0;
+    let mut g = 0.0;
+    if uv.x > (*split).x {
+        r = 1.0;
+    } else {
+        g = 1.0;
+    }
+    Vec4::new(r, g, 0.0, 1.0)
+}
+
+#[test]
+fn statement_if_and_fragment_uniform_render_exactly() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || BRANCHY_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_uv_layout();
+    let pipeline = gpu
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &UV_VERTEX_SHADER,
+                fragment: &BRANCHY_FRAG_SHADER,
+            })
+            .with_entries(
+                UV_VERTEX_SHADER.entry_point,
+                BRANCHY_FRAG_SHADER.entry_point,
+            )
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
+        .expect("pipeline creation");
+
+    #[rustfmt::skip]
+    let verts: [f32; 30] = [
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0, -1.0, 0.0,  1.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0,  1.0, 0.0,  0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+
+    let split: quanta::Field<f32> = gpu
+        .field_with_usage(2, FieldUsage::default_render())
+        .unwrap();
+    split.write(&[0.5f32, 0.0]).unwrap();
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .uniform(0, &split)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = target.read().unwrap();
+    // uv.x < 0.5 → else branch → green; uv.x > 0.5 → then branch → red.
+    let (r, g, b, _) = pixel_at(&pixels, w, 1, 4);
+    assert!(
+        g > 200 && r < 50 && b < 50,
+        "left half must take the else branch (green), got ({r},{g},{b})"
+    );
+    let (r, g, b, _) = pixel_at(&pixels, w, 6, 4);
+    assert!(
+        r > 200 && g < 50 && b < 50,
+        "right half must take the then branch (red), got ({r},{g},{b})"
+    );
+}

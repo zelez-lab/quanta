@@ -94,6 +94,45 @@ impl SpvEmitter {
             }
         }
 
+        // 2c. Fragment uniforms: one storage-buffer block per uniform
+        // at binding = its declaration index among uniform params —
+        // matching the runtime contract: `.uniform(slot, …)` binds a
+        // STORAGE_BUFFER descriptor at binding=slot (vertex+fragment
+        // visible). Push constants (the vertex emitter's choice) would
+        // NOT match what the render runtime actually binds.
+        let uniform_params: Vec<&quanta_ir::ShaderParam> =
+            shader.params.iter().filter(|p| p.is_uniform).collect();
+        let mut uniform_vars: Vec<(String, u32, u32, quanta_ir::ShaderType)> = Vec::new();
+        for (i, p) in uniform_params.iter().enumerate() {
+            let member_ty = self.shader_type_id(p.ty);
+            let struct_ty = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_type_const,
+                OP_TYPE_STRUCT,
+                &[struct_ty, member_ty],
+            );
+            self.decorate(struct_ty, DECORATION_BLOCK, &[]);
+            self.member_decorate(struct_ty, 0, DECORATION_OFFSET, &[0]);
+            if matches!(
+                p.ty,
+                quanta_ir::ShaderType::Mat4 | quanta_ir::ShaderType::Mat3
+            ) {
+                self.member_decorate(struct_ty, 0, 5 /* ColMajor */, &[]);
+                self.member_decorate(struct_ty, 0, 7 /* MatrixStride */, &[16]);
+            }
+            let ptr_ssbo = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, struct_ty);
+            let var_id = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_ssbo, var_id, STORAGE_CLASS_STORAGE_BUFFER],
+            );
+            self.emit_name(var_id, &p.name);
+            self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+            self.decorate(var_id, DECORATION_BINDING, &[i as u32]);
+            uniform_vars.push((p.name.clone(), var_id, member_ty, p.ty));
+        }
+
         // 3. Declare Output variable: fragment color at Location(0)
         let ptr_output_vec4 = self.ensure_type_pointer(STORAGE_CLASS_OUTPUT, vec4_ty);
         let color_var = self.alloc_id();
@@ -134,12 +173,27 @@ impl SpvEmitter {
         );
         let entry_label = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[entry_label]);
+        self.current_block = entry_label;
 
-        let param_info: Vec<(String, u32, u32, quanta_ir::ShaderType)> = stage_in_params
+        let mut param_info: Vec<(String, u32, u32, quanta_ir::ShaderType)> = stage_in_params
             .iter()
             .zip(input_vars.iter())
             .map(|((_, p), (var_id, type_id))| (p.name.clone(), *var_id, *type_id, p.ty))
             .collect();
+
+        // Uniforms: pointer to member 0 of each block; the expression
+        // parser loads through it at use, exactly like an Input var.
+        for (name, var_id, member_ty, sty) in &uniform_vars {
+            let ptr_member = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, *member_ty);
+            let zero = self.emit_constant_u32(0);
+            let access = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_ACCESS_CHAIN,
+                &[ptr_member, access, *var_id, zero],
+            );
+            param_info.push((name.clone(), access, *member_ty, *sty));
+        }
 
         let saved_func = self.sec_function.clone();
         let saved_next = self.next_id;

@@ -29,6 +29,15 @@ impl SpvEmitter {
                 if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
                     *pos += 1;
                 }
+                // `(expr).x` — component access on a parenthesized
+                // value (the `(*uniform).x` shape).
+                if tokens.get(*pos) == Some(&ShaderToken::Dot)
+                    && let Some(ShaderToken::Ident(field)) = tokens.get(*pos + 1)
+                {
+                    let field = field.clone();
+                    *pos += 2;
+                    return self.extract_component(result.0, &field);
+                }
                 Ok(result)
             }
             ShaderToken::Ident(name) => {
@@ -50,6 +59,27 @@ impl SpvEmitter {
                 // Texture sampling: sample(slot, uv)
                 if name == "sample" && *pos < tokens.len() && tokens[*pos] == ShaderToken::Open {
                     return self.parse_texture_sample(tokens, pos, params, locals);
+                }
+
+                // Screen-space derivatives — core fragment-stage ops.
+                if matches!(name.as_str(), "fwidth" | "dpdx" | "dpdy")
+                    && *pos < tokens.len()
+                    && tokens[*pos] == ShaderToken::Open
+                {
+                    *pos += 1; // '('
+                    let (arg, ty) = self.parse_conditional(tokens, pos, params, locals)?;
+                    if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
+                        *pos += 1;
+                    }
+                    let opcode = match name.as_str() {
+                        "fwidth" => OP_FWIDTH,
+                        "dpdx" => OP_DPDX,
+                        _ => OP_DPDY,
+                    };
+                    let result = self.alloc_id();
+                    let ty_id = self.shader_type_id(ty);
+                    Self::emit_op(&mut self.sec_function, opcode, &[ty_id, result, arg]);
+                    return Ok((result, ty));
                 }
 
                 // Math function calls: sin(x), sqrt(x), clamp(x, a, b), etc.
@@ -232,6 +262,30 @@ impl SpvEmitter {
         Ok((result, quanta_ir::ShaderType::F32))
     }
 
+    /// Extract a single component (`.x`/`.r`, …) from a composite
+    /// VALUE id.
+    fn extract_component(
+        &mut self,
+        value: u32,
+        field: &str,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let index = match field {
+            "x" | "r" => 0u32,
+            "y" | "g" => 1,
+            "z" | "b" => 2,
+            "w" | "a" => 3,
+            _ => return Err(format!("unknown field: {field}")),
+        };
+        let f32_ty = self.ensure_type_f32();
+        let result = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_COMPOSITE_EXTRACT,
+            &[f32_ty, result, value, index],
+        );
+        Ok((result, quanta_ir::ShaderType::F32))
+    }
+
     fn parse_field_access(
         &mut self,
         name: &str,
@@ -243,14 +297,6 @@ impl SpvEmitter {
         let field = field.to_string();
         *pos += 2;
 
-        let index = match field.as_str() {
-            "x" | "r" => 0u32,
-            "y" | "g" => 1,
-            "z" | "b" => 2,
-            "w" | "a" => 3,
-            _ => return Err(format!("unknown field: {field}")),
-        };
-
         if let Some((_, var_id, type_id, _)) = params.iter().find(|(n, _, _, _)| *n == name) {
             let loaded = self.alloc_id();
             Self::emit_op(
@@ -258,24 +304,11 @@ impl SpvEmitter {
                 OP_LOAD,
                 &[*type_id, loaded, *var_id],
             );
-            let f32_ty = self.ensure_type_f32();
-            let result = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_COMPOSITE_EXTRACT,
-                &[f32_ty, result, loaded, index],
-            );
-            return Ok((result, quanta_ir::ShaderType::F32));
+            return self.extract_component(loaded, &field);
         }
         if let Some((_, val_id, _)) = locals.iter().find(|(n, _, _)| *n == name) {
-            let f32_ty = self.ensure_type_f32();
-            let result = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_COMPOSITE_EXTRACT,
-                &[f32_ty, result, *val_id, index],
-            );
-            return Ok((result, quanta_ir::ShaderType::F32));
+            let val_id = *val_id;
+            return self.extract_component(val_id, &field);
         }
         Err(format!("unknown variable: {name}"))
     }

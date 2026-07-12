@@ -501,3 +501,52 @@ fn spirv_val_fragment_sampled_texture() {
         .expect("sampled fragment shader must produce SPIR-V binary");
     validate_shader_spirv(spirv, "fragment_sampled_texture");
 }
+
+#[quanta::fragment]
+fn val_branchy_frag(uv: Vec2, half_size: &Vec2) -> Vec4 {
+    let dx = abs(uv.x) - (*half_size).x;
+    let dy = abs(uv.y) - (*half_size).y;
+    let mut dist = 0.0;
+    if dx > dy {
+        dist = dx;
+    } else {
+        dist = dy;
+    }
+    let aa = smoothstep(-0.75, 0.75, -dist);
+    Vec4::new(1.0, 0.42, 0.21, aa)
+}
+
+/// Statement-if with branch assignments (OpPhi merge), unary deref,
+/// unary minus, and a fragment uniform declared as a storage-buffer
+/// descriptor — the exact body shape that used to fail translation.
+#[test]
+fn spirv_val_fragment_branch_and_uniform() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_branchy_frag();
+    let spirv = shader
+        .spirv
+        .expect("branchy fragment shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "fragment_branch_and_uniform");
+}
+
+#[quanta::fragment]
+fn val_deriv_frag(uv: Vec2) -> Vec4 {
+    let w = fwidth(uv.x);
+    Vec4::new(w, dpdx(uv.y), dpdy(uv.x), 1.0)
+}
+
+#[test]
+fn spirv_val_fragment_derivatives() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_deriv_frag();
+    let spirv = shader
+        .spirv
+        .expect("derivative fragment shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "fragment_derivatives");
+}

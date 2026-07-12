@@ -10,6 +10,11 @@ use super::constants::*;
 pub(crate) struct SpvEmitter {
     pub(crate) next_id: u32,
 
+    /// Label of the basic block instructions are currently appended
+    /// to — OpPhi operands must name the IMMEDIATE predecessor block,
+    /// which is not the branch's entry label once branches nest.
+    pub(crate) current_block: u32,
+
     // Section buffers (in required order)
     pub(crate) sec_capability: Vec<u32>,
     pub(crate) sec_extension: Vec<u32>,
@@ -112,6 +117,7 @@ impl SpvEmitter {
     pub(crate) fn new() -> Self {
         Self {
             next_id: 1,
+            current_block: 0,
             sec_capability: Vec::new(),
             sec_extension: Vec::new(),
             sec_ext_inst_import: Vec::new(),

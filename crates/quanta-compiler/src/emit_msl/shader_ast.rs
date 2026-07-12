@@ -108,6 +108,10 @@ fn intrinsic_msl_name(name: &str) -> Option<&'static str> {
         "cross" => "cross",
         "fma" => "fma",
         "dot" => "dot",
+        // Screen-space derivatives — fragment-stage builtins.
+        "fwidth" => "fwidth",
+        "dpdx" => "dfdx",
+        "dpdy" => "dfdy",
         _ => return None,
     })
 }
@@ -140,7 +144,13 @@ pub(crate) fn emit_body(
         .map_err(|e| format!("failed to parse shader body as a Rust block: {e}"))?;
     let mut env: TypeEnv = params.iter().cloned().collect();
     let mut out = String::new();
-    emit_stmts(&block.stmts, assign_result_to, 1, &mut env, &mut out)?;
+    emit_stmts(
+        &block.stmts,
+        TailMode::Route(assign_result_to),
+        1,
+        &mut env,
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -148,7 +158,7 @@ pub(crate) fn emit_body(
 /// is the block's value and is routed through `tail`.
 fn emit_stmts(
     stmts: &[Stmt],
-    tail: Option<&str>,
+    mode: TailMode,
     indent: usize,
     env: &mut TypeEnv,
     out: &mut String,
@@ -160,12 +170,25 @@ fn emit_stmts(
             Stmt::Local(local) => emit_local(local, indent, env, out)?,
             Stmt::Expr(expr, semi) => {
                 if is_last && semi.is_none() {
-                    emit_tail(expr, tail, indent, env, out)?;
+                    emit_tail(expr, mode, indent, env, out)?;
                 } else {
-                    // A non-tail expression statement: only assignments carry
-                    // meaning in a shader body (locals are the primary form).
-                    let code = emit_expr(expr)?;
-                    writeln!(out, "{pad}{code};").unwrap();
+                    match expr {
+                        // Statement-position `if`: no value, branches hold
+                        // assignments/lets (the branch-and-assign shape).
+                        Expr::If(if_expr) => {
+                            emit_if(if_expr, TailMode::Statement, indent, env, out)?
+                        }
+                        // `name = expr;` — assignment to a `let mut` local.
+                        Expr::Assign(assign) => emit_assign(assign, indent, env, out)?,
+                        // Any other non-tail expression statement has no
+                        // effect in a shader body.
+                        other => {
+                            return Err(format!(
+                                "expression statement with unused value in shader body: {}",
+                                expr_kind(other)
+                            ));
+                        }
+                    }
                 }
             }
             other => {
@@ -179,26 +202,72 @@ fn emit_stmts(
     Ok(())
 }
 
+/// Emit `name = expr;` — the target must be a plain identifier already
+/// bound by a `let mut`.
+fn emit_assign(
+    assign: &syn::ExprAssign,
+    indent: usize,
+    env: &mut TypeEnv,
+    out: &mut String,
+) -> Result<(), String> {
+    let pad = "    ".repeat(indent);
+    let name = match assign.left.as_ref() {
+        Expr::Path(path) => path
+            .path
+            .get_ident()
+            .map(|i| i.to_string())
+            .ok_or_else(|| "assignment target must be a plain identifier".to_string())?,
+        other => {
+            return Err(format!(
+                "unsupported assignment target in shader body: {}",
+                expr_kind(other)
+            ));
+        }
+    };
+    if !env.contains_key(&name) {
+        return Err(format!("assignment to unknown local `{name}`"));
+    }
+    let ty = infer_type(&assign.right, env);
+    let code = emit_expr(&assign.right)?;
+    env.insert(name.clone(), ty);
+    writeln!(out, "{pad}{name} = {code};").unwrap();
+    Ok(())
+}
+
 /// Emit the block's tail expression, routed to a return or an assignment.
 ///
 /// A tail `if/else` is lowered structurally: each arm emits its own
 /// return/assignment, so no MSL ternary or phi temp is needed.
 fn emit_tail(
     expr: &Expr,
-    tail: Option<&str>,
+    mode: TailMode,
     indent: usize,
     env: &mut TypeEnv,
     out: &mut String,
 ) -> Result<(), String> {
     let pad = "    ".repeat(indent);
     if let Expr::If(if_expr) = expr {
-        emit_if(if_expr, TailMode::Route(tail), indent, env, out)?;
+        // The nested if inherits the mode: value-routing stays
+        // value-routing, statement position stays statement position.
+        emit_if(if_expr, mode, indent, env, out)?;
         return Ok(());
     }
+    if let Expr::Assign(assign) = expr {
+        // A trailing assignment (no `;` on the last statement) still
+        // yields no value — treat as a statement.
+        return emit_assign(assign, indent, env, out);
+    }
     let code = emit_expr(expr)?;
-    match tail {
-        Some(var) => writeln!(out, "{pad}{var} = {code};").unwrap(),
-        None => writeln!(out, "{pad}return {code};").unwrap(),
+    match mode {
+        TailMode::Assign(var) | TailMode::Route(Some(var)) => {
+            writeln!(out, "{pad}{var} = {code};").unwrap()
+        }
+        TailMode::Route(None) => writeln!(out, "{pad}return {code};").unwrap(),
+        TailMode::Statement => {
+            return Err(
+                "a statement-position `if` branch cannot end with a value expression".to_string(),
+            );
+        }
     }
     Ok(())
 }
@@ -259,6 +328,9 @@ enum TailMode<'a> {
     Assign(&'a str),
     /// Route each branch's value to the block tail (`return` or outer assign).
     Route(Option<&'a str>),
+    /// Statement position: the `if` yields no value; branches contain
+    /// statements (assignments to `let mut` locals) only.
+    Statement,
 }
 
 /// Emit an `if/else` as an MSL statement.
@@ -314,11 +386,7 @@ fn emit_branch_block(
     env: &mut TypeEnv,
     out: &mut String,
 ) -> Result<(), String> {
-    let tail = match mode {
-        TailMode::Assign(v) => Some(v),
-        TailMode::Route(t) => t,
-    };
-    emit_stmts(stmts, tail, indent, env, out)
+    emit_stmts(stmts, mode, indent, env, out)
 }
 
 /// Infer the MSL type an `if/else` evaluates to, from its then-branch tail.

@@ -476,8 +476,21 @@ fn name(varyings..., textures: &Texture2D, uniforms: &T) -> Vec4 { body }
 - Other `&T` reference params (`&Vec4`, `&Mat4`, ...): uniform buffer
   bindings. Fragment uniforms number their slots by declaration order among
   uniform params -- the first uniform binds with `.uniform(0, &field)`.
-  Fragment-stage uniforms currently reach Metal only (the SPIR-V fragment
-  emitter does not declare them yet); texture sampling works on both.
+  On Vulkan they are declared as storage-buffer descriptors at the same
+  binding the runtime uses, so fragment uniforms work on both backends.
+
+#### Body language
+
+Shader bodies are a Rust subset compiled by quanta's own emitters (SPIR-V
+and MSL from one grammar): `let` / `let mut` bindings, assignments to
+mutable locals, statement and expression `if`/`else` (both branches
+required), arithmetic and comparisons, `VecN::new`, swizzle field access
+(`.x`/`.rgba`, incl. on parenthesized expressions), uniform deref
+(`*viewport`, `(*viewport).x`), `sample(texture_param, uv)`, the GLSL-style
+math intrinsics (`sin`, `mix`, `smoothstep`, `clamp`, ...), and the
+fragment-stage derivatives `fwidth` / `dpdx` / `dpdy`. Anything outside
+this surface is a compile error naming the construct -- nothing silently
+miscompiles.
 
 #### Produces
 
