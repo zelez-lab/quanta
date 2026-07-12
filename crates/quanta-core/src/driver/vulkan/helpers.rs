@@ -111,3 +111,42 @@ pub(super) fn address_to_vk(a: crate::texture::AddressMode) -> u32 {
         crate::texture::AddressMode::MirrorRepeat => ffi::VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
     }
 }
+
+/// Build a `VkSamplerCreateInfo` from a `SamplerDesc`.
+///
+/// The single source of truth for translating a descriptor to sampler
+/// create-info, shared by the named-sampler path (`sampler_create_impl`)
+/// and the render-path sampler cache — so a given `SamplerDesc` always
+/// maps to the same VkSampler state regardless of which path created it.
+/// `address_mode_w` is fixed to CLAMP_TO_EDGE (2D sampling only) and mip
+/// LOD is left unclamped, matching the descriptor's 2D-texture contract.
+#[cfg(feature = "render")]
+pub(super) fn sampler_create_info(desc: &crate::texture::SamplerDesc) -> ffi::VkSamplerCreateInfo {
+    let (compare_enable, compare_op) = match desc.compare {
+        Some(cmp) => (1u32, compare_op_to_vk(cmp)),
+        None => (0u32, 0u32),
+    };
+    ffi::VkSamplerCreateInfo {
+        s_type: ffi::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        p_next: core::ptr::null(),
+        flags: 0,
+        mag_filter: filter_to_vk(desc.mag_filter),
+        min_filter: filter_to_vk(desc.min_filter),
+        mipmap_mode: match desc.mip_filter {
+            crate::texture::Filter::Nearest => ffi::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            crate::texture::Filter::Linear => ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        },
+        address_mode_u: address_to_vk(desc.address_u),
+        address_mode_v: address_to_vk(desc.address_v),
+        address_mode_w: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        mip_lod_bias: 0.0,
+        anisotropy_enable: if desc.max_anisotropy > 1 { 1 } else { 0 },
+        max_anisotropy: desc.max_anisotropy as f32,
+        compare_enable,
+        compare_op,
+        min_lod: 0.0,
+        max_lod: ffi::VK_LOD_CLAMP_NONE,
+        border_color: 0,
+        unnormalized_coordinates: 0,
+    }
+}

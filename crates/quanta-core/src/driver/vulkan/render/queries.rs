@@ -132,6 +132,31 @@ impl VulkanDevice {
                 .with_context(&format!("resolve_texture: dst handle {dst_handle}"))
         })?;
 
+        // Route both transitions through the TRACKED layout rather than
+        // assuming the source is always in COLOR_ATTACHMENT_OPTIMAL — a
+        // resolve source that was previously sampled (SHADER_READ_ONLY) or
+        // written by compute (GENERAL) would otherwise mismatch and trip
+        // VUID-VkImageMemoryBarrier-oldLayout-01197/01211. The destination
+        // is fully overwritten by the resolve, so it discards from
+        // UNDEFINED. Every render target is created with TRANSFER_DST usage
+        // (see texture_create_impl), so the resolve dst always satisfies
+        // VUID-vkCmdResolveImage-dstImage-06764.
+        let src_old = src
+            .current_layout
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // Access/stage that must complete before the transfer read. From
+        // UNDEFINED there is nothing to wait on; from a real layout, wait
+        // on all prior commands (the source may have been produced by a
+        // render pass or a shader read still draining the queue).
+        let (src_access, src_stage) = if src_old == ffi::VK_IMAGE_LAYOUT_UNDEFINED {
+            (0u32, ffi::VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
+        } else {
+            (
+                ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | ffi::VK_ACCESS_SHADER_READ_BIT,
+                ffi::VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            )
+        };
+
         let cmd = self.alloc_command_buffer()?;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -145,13 +170,13 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
 
-            // Transition src to TRANSFER_SRC
+            // Transition src to TRANSFER_SRC from its tracked layout.
             let barrier_src = ffi::VkImageMemoryBarrier {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 p_next: core::ptr::null(),
-                src_access_mask: ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                src_access_mask: src_access,
                 dst_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
-                old_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                old_layout: src_old,
                 new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
@@ -164,7 +189,9 @@ impl VulkanDevice {
                     layer_count: 1,
                 },
             };
-            // Transition dst to TRANSFER_DST
+            // Transition dst to TRANSFER_DST. The resolve overwrites the
+            // whole image, so discarding from UNDEFINED is correct and
+            // valid regardless of the dst's prior contents.
             let barrier_dst = ffi::VkImageMemoryBarrier {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 p_next: core::ptr::null(),
@@ -186,7 +213,10 @@ impl VulkanDevice {
             let barriers = [barrier_src, barrier_dst];
             ffi::vkCmdPipelineBarrier(
                 cmd,
-                ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                // srcStageMask must cover whatever produced the source in
+                // its tracked layout (all-commands from a real layout,
+                // top-of-pipe when discarding from UNDEFINED).
+                src_stage,
                 ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0,
                 0,
@@ -285,6 +315,18 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
+        // Both images end in SHADER_READ_ONLY_OPTIMAL (the final barrier
+        // above). Record that so the NEXT transition on either texture —
+        // a later resolve, a sub-region upload, a present — starts from the
+        // correct oldLayout instead of a stale assumption.
+        src.current_layout.store(
+            ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        dst.current_layout.store(
+            ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         drop(textures);
         self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }

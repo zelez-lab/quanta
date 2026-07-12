@@ -428,8 +428,14 @@ impl Drop for Sampler {
 ///     .with_filters(Filter::Nearest, Filter::Nearest)
 ///     .with_address_modes(AddressMode::Repeat, AddressMode::Repeat);
 /// ```
+// `Eq` + `Hash` make the whole descriptor a cache key: the Vulkan
+// render path dedupes VkSampler creation by the full `SamplerDesc`, so
+// two descriptors that differ in ANY field (filters, address modes,
+// mip, anisotropy, compare) must hash and compare distinctly. Every
+// field is plain `Copy` data with a total equality, so the derives are
+// exact — no float fields to spoil `Eq`.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SamplerDesc {
     pub min_filter: Filter,
     pub mag_filter: Filter,
@@ -489,13 +495,13 @@ impl SamplerDesc {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Filter {
     Nearest,
     Linear,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AddressMode {
     ClampToEdge,
     Repeat,

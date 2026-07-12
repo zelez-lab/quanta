@@ -1103,4 +1103,10 @@ pub struct RegistryCounts {
     pub query_sets: usize,
     /// Compute waves (compiled kernel pipelines / kernel defs).
     pub waves: usize,
+    /// Distinct entries in the render-path sampler cache (Vulkan). One
+    /// entry per unique `SamplerDesc`, shared across draws/frames — a
+    /// leak-regression net: this must stay bounded by distinct
+    /// descriptors, never grow with draw count. 0 on backends without a
+    /// render sampler cache.
+    pub render_samplers: usize,
 }

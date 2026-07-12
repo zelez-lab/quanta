@@ -11,6 +11,18 @@ use super::shader_types::{ShaderParam, ShaderType};
 /// 2. If not found, return empty output with warning
 #[cfg(feature = "compute")]
 pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
+    // A resolvable compiler whose rev provably differs from this build is
+    // a HARD error (unless QUANTA_ACCEPT_STALE_COMPILER=1): a stale
+    // compiler has emitted invalid SPIR-V that segfaults some drivers, so
+    // it must stop the build, not silently JIT/fall back. Checked before
+    // invocation so the diagnosis is the rev mismatch, not a downstream
+    // symptom. A missing / unloadable / pre-stamp compiler stays soft.
+    if let Some(binary) = find_compiler_binary()
+        && let CompilerVerdict::RevMismatch(bin_rev) = probe_compiler(&binary)
+    {
+        return Err(rev_mismatch_error(&binary, &bin_rev));
+    }
+
     // Try calling the compiler binary for full output.
     // find_compiler_binary() handles the full search chain including
     // auto-download from GitHub Releases for crates.io users.
@@ -354,9 +366,17 @@ pub(crate) fn compile_shader(
     // libLLVM isn't installed) dies before reading stdin — writing the
     // shader into its pipe would race the death and can SIGPIPE the
     // rustc process hosting this macro. Preflight once per path so the
-    // piped spawn only ever happens against a binary that can run.
-    if !compiler_is_loadable(&binary) {
-        return Ok(None);
+    // piped spawn only ever happens against a binary that can run. The
+    // same probe reads the build rev: a PROVEN rev mismatch is fatal here
+    // (a stale compiler's invalid SPIR-V segfaults some drivers) unless
+    // QUANTA_ACCEPT_STALE_COMPILER=1; the error becomes a compile_error!
+    // through the macro path. Unloadable / pre-stamp stays soft.
+    match probe_compiler(&binary) {
+        CompilerVerdict::RevMismatch(bin_rev) => {
+            return Err(rev_mismatch_error(&binary, &bin_rev));
+        }
+        CompilerVerdict::NotLoadable => return Ok(None),
+        CompilerVerdict::Usable => {}
     }
 
     // Build ShaderDef from the parsed macro arguments
@@ -451,29 +471,50 @@ pub(crate) fn compile_shader(
     }))
 }
 
-/// Preflight: can the resolved compiler binary EXECUTE in this
-/// environment? A downloaded release build dynamically linked against
-/// a libLLVM that isn't installed is killed by the loader before
-/// main() — spawning it with piped stdin then races its death (a
-/// broken-pipe write can SIGPIPE the host rustc process on macOS).
-/// Run it once with null stdin and classify; the verdict is cached
-/// per path for the life of the process.
+/// Outcome of probing a resolved compiler binary once with `--rev`.
 #[cfg(any(feature = "compute", feature = "render"))]
-fn compiler_is_loadable(binary: &str) -> bool {
+#[derive(Clone, Debug, PartialEq)]
+enum CompilerVerdict {
+    /// Loadable and safe to use: rev matches this build, OR the binary
+    /// predates rev stamping (a WARN was already emitted), OR a rev
+    /// mismatch was explicitly accepted via `QUANTA_ACCEPT_STALE_COMPILER`.
+    Usable,
+    /// Loadable but its rev DIFFERS from this build's rev. Fatal: an
+    /// invalid-SPIR-V module from a stale compiler segfaults some drivers
+    /// (v3dv), so a mismatch must stop the build rather than warn. Carries
+    /// the probed rev for the error message.
+    RevMismatch(String),
+    /// Cannot run here (loader kill / spawn failure). Soft: kernels JIT at
+    /// runtime, shaders ship with no precompiled binaries.
+    NotLoadable,
+}
+
+/// Preflight: probe the resolved compiler binary ONCE and classify it.
+///
+/// A downloaded release build dynamically linked against a libLLVM that
+/// isn't installed is killed by the loader before main() — spawning it
+/// with piped stdin then races its death (a broken-pipe write can SIGPIPE
+/// the host rustc process on macOS). Running it with null stdin and
+/// `--rev` both preflights loadability AND reads the build rev. The
+/// verdict is cached per path for the life of the process, so the WARN
+/// (pre-stamp case) prints at most once per binary.
+///
+/// `--rev` with null stdin distinguishes three cases:
+/// - a CURRENT binary prints its build rev and exits 0;
+/// - an OLD binary (no `--rev` flag) falls through to its stdin loop, sees
+///   EOF, and exits non-zero fast — it executed, so it's loadable, but its
+///   rev is unknown (predates rev stamping);
+/// - a loader-killed binary dies before main.
+#[cfg(any(feature = "compute", feature = "render"))]
+fn probe_compiler(binary: &str) -> CompilerVerdict {
     use std::sync::Mutex;
-    static CACHE: Mutex<Option<(String, bool)>> = Mutex::new(None);
+    static CACHE: Mutex<Option<(String, CompilerVerdict)>> = Mutex::new(None);
     if let Ok(guard) = CACHE.lock()
         && let Some((path, verdict)) = guard.as_ref()
         && path == binary
     {
-        return *verdict;
+        return verdict.clone();
     }
-    // One probe, two jobs. `--rev` with null stdin:
-    // - a CURRENT binary prints its build rev and exits 0;
-    // - an OLD binary (no --rev flag) falls through to its stdin loop,
-    //   sees EOF, and exits non-zero fast — it executed, so it's
-    //   loadable, but its rev is unknown (predates rev stamping);
-    // - a loader-killed binary dies before main (classified below).
     let verdict = match std::process::Command::new(binary)
         .arg("--rev")
         .stdin(std::process::Stdio::null())
@@ -491,7 +532,7 @@ fn compiler_is_loadable(binary: &str) -> bool {
                         .trim()
                         .replace('\n', " ")
                 );
-                false
+                CompilerVerdict::NotLoadable
             } else {
                 let own_rev = env!("QUANTA_BUILD_REV");
                 let bin_rev = if output.status.success() {
@@ -500,29 +541,88 @@ fn compiler_is_loadable(binary: &str) -> bool {
                     None
                 };
                 match bin_rev.as_deref() {
-                    Some(r) if r == own_rev => {}
-                    Some(r) => eprintln!(
-                        "[quanta] WARNING: quanta-compiler at {binary} was built from \
-                         rev {r} but this quanta build is rev {own_rev} — kernels and \
-                         shaders may get STALE codegen. Reinstall it from the matching \
-                         checkout: cargo install --path crates/quanta-compiler --locked --force"
-                    ),
-                    None => eprintln!(
-                        "[quanta] WARNING: quanta-compiler at {binary} predates rev \
-                         stamping (older than this quanta build, rev {own_rev}) — \
-                         kernels and shaders may get STALE codegen. Reinstall it from \
-                         the matching checkout."
-                    ),
+                    Some(r) if r == own_rev => CompilerVerdict::Usable,
+                    Some(r) => {
+                        // Provable mismatch. FATAL by default — a stale
+                        // compiler has shipped spirv-val-INVALID modules
+                        // that segfault v3dv. The escape hatch is for rigs
+                        // deliberately pinning a known-compatible compiler.
+                        if accept_stale_compiler() {
+                            eprintln!(
+                                "[quanta] note: quanta-compiler at {binary} is rev {r} but \
+                                 this quanta build is rev {own_rev}; proceeding because \
+                                 QUANTA_ACCEPT_STALE_COMPILER is set."
+                            );
+                            CompilerVerdict::Usable
+                        } else {
+                            CompilerVerdict::RevMismatch(r.to_string())
+                        }
+                    }
+                    None => {
+                        // Pre-stamp binary: it ran but doesn't support
+                        // `--rev`, so a mismatch CANNOT be proven — stay a
+                        // loud warning (not fatal), unlike the provable
+                        // mismatch above.
+                        eprintln!(
+                            "[quanta] WARNING: quanta-compiler at {binary} predates rev \
+                             stamping (older than this quanta build, rev {own_rev}) — \
+                             kernels and shaders may get STALE codegen. Reinstall it from \
+                             the matching checkout."
+                        );
+                        CompilerVerdict::Usable
+                    }
                 }
-                true
             }
         }
-        Err(_) => false,
+        Err(_) => CompilerVerdict::NotLoadable,
     };
     if let Ok(mut guard) = CACHE.lock() {
-        *guard = Some((binary.to_string(), verdict));
+        *guard = Some((binary.to_string(), verdict.clone()));
     }
     verdict
+}
+
+/// Whether `QUANTA_ACCEPT_STALE_COMPILER` is set to a non-empty value —
+/// the operator's opt-out that downgrades a provable rev mismatch from
+/// fatal to a note. Documented for rigs that intentionally pin a
+/// compatible compiler.
+#[cfg(any(feature = "compute", feature = "render"))]
+fn accept_stale_compiler() -> bool {
+    std::env::var("QUANTA_ACCEPT_STALE_COMPILER")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// The fatal error text for a rev mismatch, naming both revs, the escape
+/// hatch, and the pre-stamp asymmetry.
+#[cfg(any(feature = "compute", feature = "render"))]
+fn rev_mismatch_error(binary: &str, bin_rev: &str) -> String {
+    let own_rev = env!("QUANTA_BUILD_REV");
+    format!(
+        "quanta-compiler at {binary} was built from rev {bin_rev} but this quanta build \
+         is rev {own_rev}. A mismatched compiler can emit invalid SPIR-V that crashes \
+         some drivers, so this is a hard error. Reinstall the matching compiler: \
+         cargo install --path crates/quanta-compiler --locked --force. To proceed anyway \
+         (e.g. a rig pinning a known-compatible compiler), set \
+         QUANTA_ACCEPT_STALE_COMPILER=1. (A pre-stamp compiler that lacks --rev can't be \
+         proven mismatched and only WARNs — this fatal path fires only on a proven \
+         difference.)"
+    )
+}
+
+/// Preflight loadability only — a thin wrapper over [`probe_compiler`]
+/// used where a rev mismatch is surfaced separately. `Usable` and a rev
+/// MISMATCH both mean the binary LOADS (mismatch is handled by the
+/// caller); only `NotLoadable` means it can't run here.
+///
+/// Used by the compute compile path (`try_compiler_binary`) and the probe
+/// tests; the render (`compile_shader`) path matches on `probe_compiler`
+/// directly so it can surface a mismatch as a hard error. Gated to
+/// `compute`-or-`test` so a render-only non-test build (which never calls
+/// it) doesn't flag it unused.
+#[cfg(any(feature = "compute", test))]
+fn compiler_is_loadable(binary: &str) -> bool {
+    !matches!(probe_compiler(binary), CompilerVerdict::NotLoadable)
 }
 
 /// Whether a child failure is the binary failing to LOAD in this
@@ -571,14 +671,17 @@ mod probe_tests {
             &format!("#!/bin/sh\nif [ \"$1\" = \"--rev\" ]; then echo {own}; exit 0; fi\nexit 1\n"),
         );
         assert!(compiler_is_loadable(&path));
+        assert_eq!(probe_compiler(&path), CompilerVerdict::Usable);
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn probe_accepts_prestamp_binary_as_loadable() {
         // No --rev support: exits non-zero fast — loadable, rev unknown.
+        // Stays Usable (loud WARN only) — a mismatch can't be proven.
         let path = fake_compiler("old", "#!/bin/sh\nexit 1\n");
         assert!(compiler_is_loadable(&path));
+        assert_eq!(probe_compiler(&path), CompilerVerdict::Usable);
         std::fs::remove_file(&path).ok();
     }
 
@@ -589,6 +692,33 @@ mod probe_tests {
             "#!/bin/sh\necho 'error while loading shared libraries: libLLVM.so.22' >&2\nexit 127\n",
         );
         assert!(!compiler_is_loadable(&path));
+        assert_eq!(probe_compiler(&path), CompilerVerdict::NotLoadable);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn probe_flags_rev_mismatch_as_fatal() {
+        // A binary that prints a DIFFERENT rev than this build must
+        // classify as a fatal RevMismatch — the signal that makes
+        // compile_kernel / compile_shader return a compile error.
+        //
+        // Env-gated so the suite can opt out: if a rig runs the tests with
+        // QUANTA_ACCEPT_STALE_COMPILER set, the mismatch is downgraded to
+        // Usable by design, so this assertion would not hold — skip it.
+        if accept_stale_compiler() {
+            return;
+        }
+        let path = fake_compiler(
+            "mismatch",
+            "#!/bin/sh\nif [ \"$1\" = \"--rev\" ]; then echo deadbeefdeadbeef; exit 0; fi\nexit 1\n",
+        );
+        // Still LOADABLE (it ran) — the mismatch is surfaced by the caller,
+        // not by the loadability wrapper.
+        assert!(compiler_is_loadable(&path));
+        assert_eq!(
+            probe_compiler(&path),
+            CompilerVerdict::RevMismatch("deadbeefdeadbeef".to_string())
+        );
         std::fs::remove_file(&path).ok();
     }
 }

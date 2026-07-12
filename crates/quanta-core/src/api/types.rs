@@ -286,7 +286,7 @@ impl ResolveTarget {
 }
 
 /// Comparison operation for depth/stencil testing and comparison samplers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompareOp {
     Never,
     Less,

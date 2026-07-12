@@ -490,3 +490,7 @@ jobs:
           cargo test --test texture_write_region --no-default-features --features vulkan,render
           cargo test --test shader_parity_draw --no-default-features --features vulkan,render
           cargo test --test gpu_texture_compute --no-default-features --features vulkan,jit,compute
+          cargo test --test vulkan_sampler_cache --no-default-features --features vulkan,render
+          cargo test --test vulkan_scissor_clamp --no-default-features --features vulkan,render
+          cargo test --test vulkan_failed_pipeline --no-default-features --features vulkan,render
+          cargo test --test vulkan_msaa_resolve_sample --no-default-features --features vulkan,render

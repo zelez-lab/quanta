@@ -504,6 +504,9 @@ impl GpuDevice for MetalDevice {
             render_pipelines: self.render_pipelines.read().map(|m| m.len()).unwrap_or(0),
             query_sets: 0,
             waves: self.compute_pipelines.read().map(|m| m.len()).unwrap_or(0),
+            // Metal caches samplers by handle in `samplers`; there is no
+            // separate render sampler cache to report.
+            render_samplers: 0,
         }
     }
 

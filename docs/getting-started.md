@@ -100,13 +100,61 @@ Two things to know:
   pipeline creation. Watch for the `[quanta] note: … compiler not
   present` line in the build log.
 
-For an offline machine (a test rig that can't reach the git remote),
-override the git dependency with a synced local checkout instead:
+### Offline rigs (no network, no git-remote SSH key)
+
+For a machine that can't reach the git remote at all (a test rig with
+no network, or no SSH key provisioned for a private remote), point the
+`quanta` dependency at a local checkout instead. Edit the consuming
+crate's `Cargo.toml` directly and replace the `git` dep with a `path`
+dep:
 
 ```toml
-# .cargo/config.toml on the rig
-[patch."https://github.com/zelez-lab/quanta"]
+# Cargo.toml on the rig, BEFORE
+[dependencies]
+quanta = { git = "https://github.com/zelez-lab/quanta" }
+
+# Cargo.toml on the rig, AFTER
+[dependencies]
 quanta = { path = "/home/rig/quanta" }
+```
+
+If the crate also pulls `quanta` in under a
+`[target.'cfg(...)'.dependencies]` table (common for platform-specific
+consumers), repeat the same edit there — every family that names
+`quanta` as a git dep needs the path swap, not just the default one:
+
+```toml
+[target.'cfg(target_os = "linux")'.dependencies]
+quanta = { path = "/home/rig/quanta" }
+```
+
+`/home/rig/quanta` is a checkout kept in sync with the rev your build
+expects (same rule as the compiler binary above). The other fully
+offline option is `cargo vendor`, which snapshots the whole dependency
+graph, including `quanta`, into a local directory and repoints
+`.cargo/config.toml` at it — heavier to set up but doesn't require
+hand-editing every consumer's `Cargo.toml`.
+
+> **Don't use a `[patch]` section for this.** A workspace-root
+> `[patch]` override looks like it should replace the git dependency
+> before cargo ever touches the network, but under cargo 1.97 it
+> doesn't: cargo still resolves (and therefore fetches) the original
+> `git` dependency during dependency resolution, `[patch]` or not. On a
+> keyless rig that fetch fails outright —
+> `ssh://git@github.com/zelez-lab/quanta.git?branch=main: no
+> authentication methods succeeded` — before the build even starts.
+> This was verified on a Raspberry Pi in two separate workspaces. The
+> direct path-dependency edit above is what actually gets an offline
+> rig building.
+
+**PATH footnote for scripted/rig builds:** a non-interactive `ssh`
+session does not source the shell profile that puts `~/.cargo/bin` on
+`PATH`, so a bare `cargo` or `quanta-compiler` invocation in a script
+or `nohup` job fails with "command not found" before anything else
+runs. Call them by absolute path instead:
+
+```sh
+nohup ~/.cargo/bin/cargo build --release > build.log 2>&1 &
 ```
 
 ## Write a kernel

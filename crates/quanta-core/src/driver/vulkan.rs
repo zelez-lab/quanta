@@ -36,4 +36,4 @@ use helpers::{
     sample_count_to_vk,
 };
 #[cfg(feature = "render")]
-use helpers::{blend_factor_to_vk, blend_op_to_vk};
+use helpers::{blend_factor_to_vk, blend_op_to_vk, sampler_create_info};

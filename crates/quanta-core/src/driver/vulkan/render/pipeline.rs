@@ -14,6 +14,47 @@ use super::super::{
 };
 use super::queries::attr_format_to_vulkan;
 
+/// True when a `Binaries` shader carries a payload for SOME backend but
+/// no SPIR-V for EITHER stage — the signature of a DSL shader whose
+/// build-time compile emitted no SPIR-V (compiler missing/failed/stale)
+/// while still yielding, say, MSL or WGSL. Distinguishes that specific,
+/// diagnosable case from a genuinely empty shader.
+fn missing_spirv_with_other_payload(
+    vertex: &crate::ShaderBinary,
+    fragment: &crate::ShaderBinary,
+) -> bool {
+    let no_spirv = vertex.spirv.is_none() || fragment.spirv.is_none();
+    let has_other = vertex.metallib.is_some()
+        || fragment.metallib.is_some()
+        || vertex.wgsl.is_some()
+        || fragment.wgsl.is_some();
+    no_spirv && has_other
+}
+
+/// Build the diagnosis for a SPIR-V-less shader pair, naming the shader
+/// (by entry point) and pointing at the reinstall command — same wording
+/// family as the compiler rev-handshake warning.
+fn missing_spirv_message(
+    vertex: &crate::ShaderBinary,
+    fragment: &crate::ShaderBinary,
+) -> alloc::string::String {
+    // Name whichever stage is missing SPIR-V for the operator's log.
+    let which = match (vertex.spirv.is_none(), fragment.spirv.is_none()) {
+        (true, true) => "vertex+fragment",
+        (true, false) => "vertex",
+        (false, true) => "fragment",
+        (false, false) => "vertex+fragment",
+    };
+    format!(
+        "Vulkan render pipeline: shader `{}`/`{}` has no SPIR-V for its {which} stage \
+         (a binary is present for another backend, so its build-time compile produced \
+         no SPIR-V — quanta-compiler was missing, failed, or stale when this crate was \
+         built). Reinstall the matching compiler and rebuild: \
+         cargo install --path crates/quanta-compiler --locked --force",
+        vertex.entry_point, fragment.entry_point
+    )
+}
+
 /// Tracks the Vulkan objects created while building a graphics
 /// pipeline so that EVERY early error return destroys them instead of
 /// leaking (e.g. a bad shader during hot-reload used to leak the
@@ -90,16 +131,39 @@ impl VulkanDevice {
         &self,
         desc: &crate::PipelineDesc,
     ) -> Result<Pipeline, QuantaError> {
-        // Vulkan requires SPIR-V binaries — MSL/WGSL text source is not supported
+        // Vulkan requires per-stage SPIR-V. Two failure shapes reach here
+        // when the DSL macro built without a usable quanta-compiler:
+        //   1. `Binaries` whose SPIR-V payload is `None` (the shader
+        //      carries metallib/WGSL for another backend but no SPIR-V) —
+        //      the build-time compile produced no SPIR-V.
+        //   2. `Combined` MSL/WGSL text (e.g. a caller's text fallback
+        //      after the DSL shader came back unusable).
+        // Both used to surface as a generic "requires per-stage SPIR-V"
+        // message that HID the real cause. Name the shader and point at
+        // the fix instead — diagnosis only, behavior unchanged.
+        if let crate::ShaderSource::Binaries { vertex, fragment } = desc.shader
+            && missing_spirv_with_other_payload(vertex, fragment)
+        {
+            return Err(QuantaError::compilation_failed(missing_spirv_message(
+                vertex, fragment,
+            )));
+        }
         if desc.shader.combined().is_some() {
             return Err(QuantaError::compilation_failed(
-                "Vulkan backend requires per-stage SPIR-V binaries, not combined text source",
+                "Vulkan render pipeline: got combined text shader source, but Vulkan \
+                 needs per-stage SPIR-V. This usually means the DSL shader compiled to \
+                 no SPIR-V at build time (quanta-compiler missing, failed, or stale) and \
+                 a text fallback was substituted. Reinstall the matching compiler: \
+                 cargo install --path crates/quanta-compiler --locked --force",
             ));
         }
         let (vertex_bytes, fragment_bytes) =
             desc.shader.stage_bytes(self.caps.vendor).ok_or_else(|| {
                 QuantaError::compilation_failed(
-                    "pipeline shader binaries carry no SPIR-V payload for this vendor",
+                    "pipeline shader binaries carry no SPIR-V payload for this vendor \
+                     — the shader's build-time compile produced no SPIR-V \
+                     (quanta-compiler missing, failed, or stale). Reinstall it: \
+                     cargo install --path crates/quanta-compiler --locked --force",
                 )
             })?;
         if vertex_bytes.is_empty() || fragment_bytes.is_empty() {
@@ -140,6 +204,49 @@ impl VulkanDevice {
                 "Vulkan render pipelines: conservative rasterization (VK_EXT_conservative_rasterization) pending",
             ));
         }
+
+        // Pre-validate the vertex attribute budget against the device
+        // limit BEFORE touching the driver. A descriptor that declares
+        // more attributes — or a higher attribute LOCATION — than
+        // `maxVertexInputAttributes` is invalid, and on some drivers
+        // (Broadcom V3D, limit 16) the failing `vkCreateGraphicsPipelines`
+        // has been seen to corrupt the process heap rather than return a
+        // clean error. Desktop drivers (limit 32) mask this. Rejecting the
+        // over-limit descriptor here turns an undefined-behavior driver
+        // call into a named, recoverable error. Both the total count and
+        // the max location matter: locations index the attribute array, so
+        // a single attribute at location 20 still overflows a 16-slot
+        // device.
+        let limit = self.max_vertex_input_attributes;
+        let attr_count: u32 = desc
+            .vertex_layouts
+            .iter()
+            .map(|l| l.attributes.len() as u32)
+            .sum();
+        let max_location = desc
+            .vertex_layouts
+            .iter()
+            .flat_map(|l| l.attributes.iter())
+            .map(|a| a.location)
+            .max();
+        if attr_count > limit {
+            return Err(QuantaError::compilation_failed(format!(
+                "vertex pipeline declares {attr_count} vertex attributes but this \
+                 device supports at most {limit} (maxVertexInputAttributes) — reduce \
+                 the vertex layout (e.g. pack stops into a uniform array or fetch them \
+                 from a texture instead of one attribute per stop)"
+            )));
+        }
+        if let Some(loc) = max_location
+            && loc >= limit
+        {
+            return Err(QuantaError::compilation_failed(format!(
+                "vertex pipeline uses attribute location {loc} but this device's \
+                 maxVertexInputAttributes is {limit} (valid locations are 0..{limit}) — \
+                 lower the highest attribute location"
+            )));
+        }
+
         let vert_spirv: Vec<u32> = vertex_bytes
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))

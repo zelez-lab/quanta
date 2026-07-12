@@ -500,6 +500,15 @@ impl MetalDevice {
                         width,
                         height,
                     } => {
+                        // Scissor-clamp parity: `set_scissor`'s contract is
+                        // that offsets are clamped to the render area on every
+                        // backend. Metal already delivers that — a rectangle
+                        // reaching past the drawable (including a negative
+                        // offset arriving as a wrapped-in `u32`, here widened
+                        // to a large `u64`) is clamped to the drawable by
+                        // `setScissorRect`, no error. The Vulkan backend
+                        // clamps explicitly (`clamp_scissor`) to reach the same
+                        // result; nothing extra is needed here.
                         ffi::msg_set_scissor_rect(
                             encoder,
                             ffi::MTLScissorRect {

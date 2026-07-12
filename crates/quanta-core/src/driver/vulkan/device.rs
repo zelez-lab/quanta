@@ -16,7 +16,12 @@ use super::ffi;
 /// binding (0 = storage buffer, 1 = storage image, 2 = sampled image). Two
 /// layouts with the same length but different kinds get distinct keys, so a
 /// buffer-only layout never aliases a mixed one.
-#[cfg_attr(not(feature = "compute"), allow(dead_code))]
+///
+/// Compute-only: `spirv_meta` (the descriptor-kind reflection this keys
+/// on) is gated on `compute`, and only the compute pipeline path builds
+/// mixed layouts. A `vulkan,render`-without-`compute` build carries no
+/// descriptor reflection, so this and the pieces below are gated to match.
+#[cfg(feature = "compute")]
 pub(super) fn layout_signature(kinds: &[crate::driver::spirv_meta::DescriptorKind]) -> u64 {
     use crate::driver::spirv_meta::DescriptorKind;
     // 32 bindings × 2 bits fit in a u64; our layouts use ≤ 16.
@@ -48,12 +53,35 @@ pub struct VulkanDevice {
     // Read by the compute-gated dispatch path only.
     #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) max_push_constants_size: u32,
+    /// `VkPhysicalDeviceLimits.maxVertexInputAttributes` — the device's
+    /// hard cap on vertex attribute locations. Cached at discovery so
+    /// `pipeline_create` can reject an over-limit descriptor with a NAMED
+    /// error BEFORE calling `vkCreateGraphicsPipelines`. Desktop drivers
+    /// report 32 and mask the problem; Broadcom V3D reports 16, where a
+    /// failing pipeline build has been observed to corrupt the process
+    /// heap — so the cheap pre-check is the real defense (step 085).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
+    pub(super) max_vertex_input_attributes: u32,
     // Resource storage — RwLock: dispatch/render paths take read locks; alloc/free take write locks.
     pub(super) buffers: RwLock<HashMap<u64, VkBuffer>>,
     pub(super) textures: RwLock<HashMap<u64, VkTexture>>,
     pub(super) compute_pipelines: RwLock<HashMap<u64, VkComputePipeline>>,
     pub(super) render_pipelines: RwLock<HashMap<u64, VkRenderPipeline>>,
     pub(super) samplers: RwLock<HashMap<u64, ffi::VkSampler>>,
+    /// Render-path sampler cache keyed by the FULL `SamplerDesc`.
+    ///
+    /// The render encoder used to create a fresh VkSampler for every
+    /// `SetSampler` op on every `render_end` — one per textured draw per
+    /// frame, never destroyed — which exhausts the device's
+    /// `maxSamplerAllocationCount` pool within minutes (65,536 on v3dv)
+    /// and then every glyph/textured draw fails. Sampler state is a pure
+    /// function of the descriptor, so a distinct-desc-keyed cache creates
+    /// each sampler exactly once and reuses it across draws and frames;
+    /// the cache is bounded by the number of DISTINCT descriptors, not by
+    /// draw count. Populated lazily under a read-then-upgrade path and
+    /// drained at device teardown.
+    #[cfg(feature = "render")]
+    pub(super) render_sampler_cache: RwLock<HashMap<crate::texture::SamplerDesc, ffi::VkSampler>>,
     /// Standalone image views created via texture_view_create (not tied to a full VkTexture).
     pub(super) image_views: RwLock<HashMap<u64, ffi::VkImageView>>,
     pub(super) query_pools: RwLock<HashMap<u64, VkQueryPool>>,
@@ -359,6 +387,13 @@ pub(super) struct VkComputePipeline {
     /// Per-binding descriptor kind reflected from the SPIR-V. Dispatch uses
     /// this to write STORAGE_IMAGE / COMBINED_IMAGE_SAMPLER descriptors for
     /// texture slots; buffer slots stay STORAGE_BUFFER. Ordered by binding.
+    ///
+    /// Compute-gated: its type (`spirv_meta::DescriptorKind`) lives behind
+    /// the same `compute` gate, and only the compute dispatch path reads
+    /// it — a `vulkan,render`-without-`compute` build keeps the pipeline
+    /// registry (for its lifecycle drain and `waves` count) but carries no
+    /// descriptor reflection.
+    #[cfg(feature = "compute")]
     pub(super) descriptor_kinds: Vec<crate::driver::spirv_meta::DescriptorKind>,
 }
 
@@ -503,7 +538,11 @@ impl VulkanDevice {
     /// 99% path) maps every binding to `STORAGE_BUFFER`, preserving prior
     /// behavior; image bindings emit `STORAGE_IMAGE` /
     /// `COMBINED_IMAGE_SAMPLER` so the layout matches the reflected SPIR-V.
-    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
+    ///
+    /// Compute-only, for the same reason as `layout_signature`: it keys on
+    /// `spirv_meta::DescriptorKind` (compute-gated) and only the compute
+    /// dispatch path builds these layouts.
+    #[cfg(feature = "compute")]
     pub(super) fn acquire_descriptor_set_layout(
         &self,
         kinds: &[crate::driver::spirv_meta::DescriptorKind],
@@ -1381,11 +1420,14 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             pipeline_cache,
             caps,
             max_push_constants_size: props.limits.max_push_constants_size,
+            max_vertex_input_attributes: props.limits.max_vertex_input_attributes,
             buffers: RwLock::new(HashMap::new()),
             textures: RwLock::new(HashMap::new()),
             compute_pipelines: RwLock::new(HashMap::new()),
             render_pipelines: RwLock::new(HashMap::new()),
             samplers: RwLock::new(HashMap::new()),
+            #[cfg(feature = "render")]
+            render_sampler_cache: RwLock::new(HashMap::new()),
             image_views: RwLock::new(HashMap::new()),
             query_pools: RwLock::new(HashMap::new()),
             queues: RwLock::new(HashMap::new()),
@@ -1594,6 +1636,16 @@ impl Drop for VulkanDevice {
             }
             if let Ok(mut samplers) = self.samplers.write() {
                 for (_, sampler) in samplers.drain() {
+                    ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
+                }
+            }
+            // Render-path sampler cache: one VkSampler per distinct desc,
+            // shared across every draw/frame. Destroyed here at teardown —
+            // the only place these are released (they intentionally
+            // outlive individual passes).
+            #[cfg(feature = "render")]
+            if let Ok(mut cache) = self.render_sampler_cache.write() {
+                for (_, sampler) in cache.drain() {
                     ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
                 }
             }

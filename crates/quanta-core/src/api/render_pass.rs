@@ -469,6 +469,16 @@ impl RenderPass {
     }
 
     /// Set scissor rectangle (pixel coordinates).
+    ///
+    /// Offsets are clamped to the render area on every backend: an offset
+    /// that would fall outside the target (including a negative offset
+    /// passed as a wrapped-in `u32` — the common "clip a child scrolled
+    /// past its parent" case) is pulled to the render-area edge and the
+    /// extent shrinks to match; a rectangle that clamps entirely away
+    /// disables drawing for that pass without raising an error. This gives
+    /// identical results across Metal (which tolerates such rectangles
+    /// natively) and Vulkan (which would otherwise reject a negative
+    /// offset), so the same app code behaves the same everywhere.
     pub fn set_scissor(&mut self, x: u32, y: u32, width: u32, height: u32) {
         self.ops.push(RenderOp::SetScissor {
             x,

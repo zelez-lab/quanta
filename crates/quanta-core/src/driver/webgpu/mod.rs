@@ -889,6 +889,7 @@ impl QGpuDevice for WebgpuDevice {
             render_pipelines: self.state.pipelines.0.borrow().len(),
             query_sets: self.state.query_sets.0.borrow().len(),
             waves: self.state.waves.0.borrow().len(),
+            render_samplers: 0,
         }
     }
 

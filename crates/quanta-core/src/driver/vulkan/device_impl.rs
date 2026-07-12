@@ -427,6 +427,14 @@ impl GpuDevice for VulkanDevice {
             render_pipelines: self.render_pipelines.read().map(|m| m.len()).unwrap_or(0),
             query_sets: self.query_pools.read().map(|m| m.len()).unwrap_or(0),
             waves: self.compute_pipelines.read().map(|m| m.len()).unwrap_or(0),
+            #[cfg(feature = "render")]
+            render_samplers: self
+                .render_sampler_cache
+                .read()
+                .map(|m| m.len())
+                .unwrap_or(0),
+            #[cfg(not(feature = "render"))]
+            render_samplers: 0,
         }
     }
 

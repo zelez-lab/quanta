@@ -9,7 +9,112 @@ use crate::{LoadOp, Pulse, QuantaError, RenderPass, StoreOp, Texture};
 use super::super::VulkanDevice;
 use super::super::ffi;
 
+/// Clamp a scissor rectangle to the render area, yielding a valid
+/// `VkRect2D` for `vkCmdSetScissor`.
+///
+/// Contract (matches the API-level `set_scissor` doc): the offset is
+/// clamped to ≥ 0 and the extent shrinks by the clamped-away amount, then
+/// the extent is clamped so `offset + extent` never exceeds the render
+/// area. A scissor that clamps entirely away becomes `(0, 0, 0, 0)` —
+/// nothing draws, and no validation error fires.
+///
+/// Why this lives on the Vulkan side: `RenderOp::SetScissor` carries
+/// `x`/`y` as `u32`, but callers routinely compute a NEGATIVE offset
+/// (e.g. a scrolled child clipped above its parent) and cast it in, which
+/// arrives here as a large `u32` that `as i32` reads back as negative.
+/// Metal's `setScissorRect` silently clamps such a rect to the drawable;
+/// Vulkan instead REJECTS a negative offset (VUID-vkCmdSetScissor-x-00595),
+/// so identical app code diverged per backend. Clamping here restores
+/// parity: the tolerated input becomes a clipped rect on both backends
+/// rather than a flood of validation errors on one.
+fn clamp_scissor(
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    area_w: u32,
+    area_h: u32,
+) -> ffi::VkRect2D {
+    // Read the offset as a signed value: a wrapped-in negative offset
+    // (u32 >= 2^31) reads back negative, exactly as it did before the
+    // driver saw it.
+    let sx = x as i32;
+    let sy = y as i32;
+
+    // Per axis: push the offset up to 0, taking the overhang out of the
+    // extent. `saturating_sub` on the overhang collapses a fully-off
+    // axis to 0.
+    let clamp_axis = |off: i32, ext: u32, bound: u32| -> (u32, u32) {
+        if off >= 0 {
+            let off = off as u32;
+            // Trim the extent so off + ext <= bound (a rect starting past
+            // the bound yields 0 extent).
+            let ext = ext.min(bound.saturating_sub(off));
+            (off, ext)
+        } else {
+            // Negative offset: origin goes to 0, extent loses |off|.
+            let overhang = off.unsigned_abs();
+            let ext = ext.saturating_sub(overhang).min(bound);
+            (0, ext)
+        }
+    };
+    let (ox, ew) = clamp_axis(sx, width, area_w);
+    let (oy, eh) = clamp_axis(sy, height, area_h);
+
+    ffi::VkRect2D {
+        offset: ffi::VkOffset2D {
+            x: ox as i32,
+            y: oy as i32,
+        },
+        extent: ffi::VkExtent2D {
+            width: ew,
+            height: eh,
+        },
+    }
+}
+
 impl VulkanDevice {
+    /// Return the cached VkSampler for `desc`, creating it on first use.
+    ///
+    /// The cache key is the WHOLE `SamplerDesc`, so distinct descriptors
+    /// get distinct samplers and identical descriptors share one — the
+    /// pool grows with the number of distinct descriptors, never with
+    /// draw or frame count. This replaces the old per-`SetSampler`
+    /// `vkCreateSampler` that leaked a sampler on every textured draw and
+    /// exhausted the device allocation pool. Samplers live until device
+    /// teardown, which drains the cache. A creation failure falls back to
+    /// a null handle (the render path substitutes the default sampler),
+    /// so a transient failure never poisons the cache with a bad entry.
+    #[cfg(feature = "render")]
+    pub(super) fn get_or_create_render_sampler(
+        &self,
+        desc: &crate::texture::SamplerDesc,
+    ) -> ffi::VkSampler {
+        // Fast path: shared read lock, hit the existing entry.
+        if let Ok(cache) = self.render_sampler_cache.read()
+            && let Some(s) = cache.get(desc)
+        {
+            return *s;
+        }
+        // Miss: take the write lock and re-check (another thread may have
+        // filled it between the read unlock and here), then create once.
+        let Ok(mut cache) = self.render_sampler_cache.write() else {
+            return ffi::null_handle();
+        };
+        if let Some(s) = cache.get(desc) {
+            return *s;
+        }
+        let info = super::super::sampler_create_info(desc);
+        let mut s = ffi::null_handle();
+        let r = unsafe { ffi::vkCreateSampler(self.device, &info, core::ptr::null(), &mut s) };
+        if r == ffi::VK_SUCCESS {
+            cache.insert(*desc, s);
+            s
+        } else {
+            ffi::null_handle()
+        }
+    }
+
     pub(crate) fn render_begin_impl(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
         Ok(RenderPass {
             handle: target.handle(),
@@ -331,74 +436,33 @@ impl VulkanDevice {
             let mut image_infos: Vec<(u32, ffi::VkDescriptorImageInfo)> = Vec::new();
             let mut sampler_for_slot: [Option<ffi::VkSampler>; 8] = [None; 8];
 
-            // Default sampler
-            let default_sampler_info = ffi::VkSamplerCreateInfo {
-                s_type: ffi::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                p_next: core::ptr::null(),
-                flags: 0,
-                mag_filter: ffi::VK_FILTER_LINEAR,
-                min_filter: ffi::VK_FILTER_LINEAR,
-                mipmap_mode: ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR,
-                address_mode_u: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                address_mode_v: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                address_mode_w: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                mip_lod_bias: 0.0,
-                anisotropy_enable: 0,
-                max_anisotropy: 1.0,
-                compare_enable: 0,
-                compare_op: 0,
-                min_lod: 0.0,
-                max_lod: ffi::VK_LOD_CLAMP_NONE,
-                border_color: 0,
-                unnormalized_coordinates: 0,
+            // Default sampler — LINEAR min/mag/mip, CLAMP_TO_EDGE, no
+            // anisotropy. Resolved through the per-device cache like every
+            // other sampler, so it is created at most once for the whole
+            // device instead of once per pass. `mip_filter: Linear` here
+            // reproduces the historical hardcoded default (which used
+            // MIPMAP_MODE_LINEAR), NOT `SamplerDesc::default()` — the
+            // latter maps mip to NEAREST.
+            let default_desc = crate::texture::SamplerDesc {
+                min_filter: crate::texture::Filter::Linear,
+                mag_filter: crate::texture::Filter::Linear,
+                mip_filter: crate::texture::Filter::Linear,
+                address_u: crate::texture::AddressMode::ClampToEdge,
+                address_v: crate::texture::AddressMode::ClampToEdge,
+                max_anisotropy: 1,
+                compare: None,
             };
-            let mut default_sampler = ffi::null_handle();
-            unsafe {
-                ffi::vkCreateSampler(
-                    self.device,
-                    &default_sampler_info,
-                    core::ptr::null(),
-                    &mut default_sampler,
-                );
-            }
+            let default_sampler = self.get_or_create_render_sampler(&default_desc);
 
-            // First pass: collect sampler assignments
+            // First pass: resolve each SetSampler slot through the cache.
+            // Identical descriptors across draws/frames reuse one sampler,
+            // so the sampler pool is bounded by distinct descriptors.
             for op in &pass.ops {
                 if let RenderOp::SetSampler { slot, sampler } = op {
                     let idx = *slot as usize;
                     if idx < 8 {
-                        let info = ffi::VkSamplerCreateInfo {
-                            s_type: ffi::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                            p_next: core::ptr::null(),
-                            flags: 0,
-                            mag_filter: super::super::filter_to_vk(sampler.mag_filter),
-                            min_filter: super::super::filter_to_vk(sampler.min_filter),
-                            mipmap_mode: match sampler.mip_filter {
-                                crate::texture::Filter::Nearest => {
-                                    ffi::VK_SAMPLER_MIPMAP_MODE_NEAREST
-                                }
-                                crate::texture::Filter::Linear => {
-                                    ffi::VK_SAMPLER_MIPMAP_MODE_LINEAR
-                                }
-                            },
-                            address_mode_u: super::super::address_to_vk(sampler.address_u),
-                            address_mode_v: super::super::address_to_vk(sampler.address_v),
-                            address_mode_w: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                            mip_lod_bias: 0.0,
-                            anisotropy_enable: if sampler.max_anisotropy > 1 { 1 } else { 0 },
-                            max_anisotropy: sampler.max_anisotropy as f32,
-                            compare_enable: 0,
-                            compare_op: 0,
-                            min_lod: 0.0,
-                            max_lod: ffi::VK_LOD_CLAMP_NONE,
-                            border_color: 0,
-                            unnormalized_coordinates: 0,
-                        };
-                        let mut s = ffi::null_handle();
-                        let r = unsafe {
-                            ffi::vkCreateSampler(self.device, &info, core::ptr::null(), &mut s)
-                        };
-                        if r == ffi::VK_SUCCESS {
+                        let s = self.get_or_create_render_sampler(sampler);
+                        if !s.is_null() {
                             sampler_for_slot[idx] = Some(s);
                         }
                     }
@@ -757,17 +821,21 @@ impl VulkanDevice {
                             max_depth: *max_depth,
                         };
                         ffi::vkCmdSetViewport(cmd, 0, 1, &viewport);
-                        // Set default scissor to match viewport (required for dynamic state)
-                        let scissor = ffi::VkRect2D {
-                            offset: ffi::VkOffset2D {
-                                x: *x as i32,
-                                y: *y as i32,
-                            },
-                            extent: ffi::VkExtent2D {
-                                width: *width as u32,
-                                height: *height as u32,
-                            },
-                        };
+                        // Set default scissor to match viewport (required for
+                        // dynamic state). Route it through the same clamp so a
+                        // viewport placed with a negative origin can't emit a
+                        // negative scissor offset. `f32 as i32 as u32`
+                        // preserves a negative origin as the wrapped-in u32 the
+                        // clamp decodes (a bare `f32 as u32` would saturate the
+                        // sign away).
+                        let scissor = clamp_scissor(
+                            *x as i32 as u32,
+                            *y as i32 as u32,
+                            *width as u32,
+                            *height as u32,
+                            target_tex.width,
+                            target_tex.height,
+                        );
                         ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
                     }
 
@@ -777,16 +845,18 @@ impl VulkanDevice {
                         width,
                         height,
                     } => {
-                        let scissor = ffi::VkRect2D {
-                            offset: ffi::VkOffset2D {
-                                x: *x as i32,
-                                y: *y as i32,
-                            },
-                            extent: ffi::VkExtent2D {
-                                width: *width,
-                                height: *height,
-                            },
-                        };
+                        // Clamp to the render area: a negative (wrapped-in)
+                        // offset or an oversized rect becomes a valid clipped
+                        // rect, matching Metal's tolerated behavior instead of
+                        // tripping VUID-vkCmdSetScissor-x-00595.
+                        let scissor = clamp_scissor(
+                            *x,
+                            *y,
+                            *width,
+                            *height,
+                            target_tex.width,
+                            target_tex.height,
+                        );
                         ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
                     }
 

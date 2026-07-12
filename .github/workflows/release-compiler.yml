@@ -181,13 +181,20 @@ jobs:
       # system-installed LLVM. Asset NAMES are unchanged — only the
       # internal layout grows — so published download URLs stay stable.
 
-      # Linux: rpath is already baked in ($ORIGIN/lib). Resolve the
-      # libLLVM the binary actually loaded via ldd and copy it into
-      # stage/lib/. We also log libLLVM's own shared-library deps: the
-      # runner images (and any glibc desktop/Pi) ship the C/C++ runtime
-      # baseline (glibc, libgcc, libstdc++, zlib, zstd, tinfo, xml2), so
-      # we don't bundle those yet — the verify job on a clean runner is
-      # the check on whether the baseline assumption holds.
+      # Linux: rpath is already baked in ($ORIGIN/lib). A Raspberry Pi
+      # validation run proved that bundling libLLVM alone is NOT enough:
+      # llvm-sys links libLLVM against libz3, and a minimal Pi image
+      # doesn't have it, so the loader kills the binary looking for
+      # libz3.so.4 even though libLLVM itself resolved fine. libLLVM's
+      # transitive closure (z3, zstd, tinfo/ncurses, xml2, ffi, and
+      # whatever else the distro's LLVM package pulled in) is exactly as
+      # load-bearing as libLLVM itself, so we bundle the ENTIRE
+      # dependency closure of the binary — everything ldd reports —
+      # except a small baseline we can assume every glibc target already
+      # has: glibc itself (libc/libm/libpthread/libdl/librt/libresolv),
+      # the dynamic loader/vDSO (ld-linux*, linux-vdso), and the
+      # compiler runtime (libgcc_s, libstdc++). Disk is cheap; a
+      # loader-kill on a user's machine is not.
       - name: Stage archive with bundled libLLVM (Linux)
         if: startsWith(matrix.os, 'ubuntu')
         shell: bash
@@ -203,34 +210,83 @@ jobs:
           fi
           mkdir -p stage/lib
           cp "$BIN" stage/quanta-compiler
-          # ldd prints "libLLVM-22.so.1 => /usr/lib/llvm-22/lib/libLLVM.so.22.1 (0x...)".
-          # Take the resolved path (field 3) of the LLVM entry and copy
-          # it under the SONAME the binary asks for (field 1), so the
-          # loader finds it by name inside lib/.
+          # Baseline: soname PREFIXES assumed present on every glibc
+          # target, so we do NOT bundle them (bundling glibc itself would
+          # be actively wrong — it must match the kernel/loader on the
+          # target machine, not ours). Matched against the basename
+          # prefix so both dev-symlink-style and versioned sonames hit
+          # (e.g. "libc.so.6" starts with "libc.").
+          BASELINE_PREFIXES=(
+            'libc.' 'libc-'
+            'libm.' 'libm-'
+            'libpthread.' 'libpthread-'
+            'libdl.' 'libdl-'
+            'librt.' 'librt-'
+            'libresolv.' 'libresolv-'
+            'libgcc_s.'
+            'libstdc++.'
+            'ld-linux'
+            'linux-vdso'
+          )
+          is_baseline() {
+            local name="$1"
+            for prefix in "${BASELINE_PREFIXES[@]}"; do
+              case "$name" in
+                "$prefix"*) return 0 ;;
+              esac
+            done
+            return 1
+          }
+          # ldd on Linux already prints the FULL transitive closure (not
+          # just direct deps), so walking its output surfaces libz3 and
+          # friends without needing to recurse ourselves — simpler than
+          # the macOS otool case, which only reports one level.
           ldd "$BIN" | grep -i 'llvm' || { echo "ERROR: binary does not link libLLVM"; exit 1; }
+          ALL_LINES=$(ldd "$BIN")
           # Feed the loop from a here-string, not a pipe, so the copies
           # happen in THIS shell (a `... | while` runs in a subshell and
           # its failures/results wouldn't be visible to the assertion).
-          LLVM_LINES=$(ldd "$BIN" | grep -i 'llvm')
           while read -r soname _arrow resolved _rest; do
             [ -n "$soname" ] || continue
-            if [ -f "$resolved" ]; then
-              # Follow symlinks so we copy the real object, then place it
-              # under the exact SONAME the binary records.
-              cp -L "$resolved" "stage/lib/$soname"
-              echo "bundled $soname  <=  $resolved"
+            # Entries with no resolved path (linux-vdso.so.1, or a bare
+            # "not found") have nothing to copy — skip safely. vdso is
+            # also caught by the baseline check above, so this mainly
+            # guards against a genuinely missing library, which is a
+            # build-environment problem, not something to paper over here.
+            [ -n "$resolved" ] && [ -f "$resolved" ] || continue
+            if is_baseline "$soname"; then
+              echo "skipping $soname (baseline glibc/loader/compiler-runtime)"
+              continue
             fi
-          done <<< "$LLVM_LINES"
-          # Refuse to ship if nothing landed in lib/ — a broken glob or an
-          # unresolved ldd line would otherwise produce a lib-less archive
-          # that only runs where LLVM is already installed.
+            # Follow symlinks so we copy the real object, then place it
+            # under the exact SONAME the binary records.
+            cp -L "$resolved" "stage/lib/$soname"
+            echo "bundled $soname  <=  $resolved"
+          done <<< "$ALL_LINES"
+          # Refuse to ship if libLLVM specifically didn't land in lib/ —
+          # a broken glob or an unresolved ldd line would otherwise
+          # produce a lib-less archive that only runs where LLVM is
+          # already installed.
           ls stage/lib/*[Ll][Ll][Vv][Mm]* >/dev/null 2>&1 || {
             echo "ERROR: no libLLVM copied into stage/lib/"; exit 1; }
-          echo "--- libLLVM's own dependencies (baseline expected on target; not bundled) ---"
+          echo "--- libLLVM's own dependencies (now bundled above unless baseline) ---"
           LIBLLVM=$(ls stage/lib/*[Ll][Ll][Vv][Mm]* | head -1)
           ldd "$LIBLLVM" || true
           echo "--- staged layout ---"
           find stage -maxdepth 2 -type f | sort
+          # Smoke test only: the build runner still HAS system LLVM
+          # installed (and every other package on the runner image), so
+          # this does not prove the archive is self-contained — it only
+          # catches a staging bug (wrong SONAME, truncated copy) before
+          # the archive is even uploaded. The real gate is the `verify`
+          # job below, which runs the extracted archive on a CLEAN
+          # runner with no LLVM and no build toolchain at all.
+          echo "--- smoke test: staged binary runs on the build runner ---"
+          STAGE_OUT=$(./stage/quanta-compiler --rev)
+          echo "stage/quanta-compiler --rev => $STAGE_OUT"
+          if [ -z "$STAGE_OUT" ]; then
+            echo "ERROR: staged binary produced empty --rev output"; exit 1
+          fi
 
       # macOS: rpath alone does nothing here — the binary records the
       # ABSOLUTE path of every non-system dylib it links (otool -L), and
