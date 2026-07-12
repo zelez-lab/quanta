@@ -70,6 +70,43 @@ the **`RenderGpu` extension trait** that carries the render methods on
 
 The rest of this guide is pure compute and works either way.
 
+## The ahead-of-time compiler (git-dependency consumers)
+
+The `#[quanta::kernel]` / `#[quanta::vertex]` / `#[quanta::fragment]`
+macros shell out to the **`quanta-compiler`** binary at build time to
+embed GPU binaries (SPIR-V, metallib, PTX). Inside the quanta workspace
+the freshly built `target/release/quanta-compiler` is found
+automatically — but a project consuming quanta as a **git dependency**
+builds from a pristine checkout with no `target/`, so the macros search
+`$QUANTA_COMPILER`, then `PATH`, then a cached download. Install it
+once, from the SAME rev your dependency pins:
+
+```sh
+cargo install --git https://github.com/zelez-lab/quanta quanta-compiler --locked
+```
+
+(Building it needs LLVM installed — on macOS `brew install llvm`;
+point `LLVM_PREFIX` at it if it isn't in a default location.)
+
+Two things to know:
+
+- **Keep it in sync.** The binary carries no rev check: a stale
+  `quanta-compiler` on `PATH` silently emits stale codegen. Re-run the
+  install whenever you bump the quanta git rev.
+- **Without it**, the build still succeeds: compute kernels JIT at
+  runtime, but render shaders ship with **no binaries** and fail at
+  pipeline creation. Watch for the `[quanta] note: … compiler not
+  present` line in the build log.
+
+For an offline machine (a test rig that can't reach the git remote),
+override the git dependency with a synced local checkout instead:
+
+```toml
+# .cargo/config.toml on the rig
+[patch."https://github.com/zelez-lab/quanta"]
+quanta = { path = "/home/rig/quanta" }
+```
+
 ## Write a kernel
 
 A kernel is a function that runs on the GPU. Thousands of copies run in parallel,
