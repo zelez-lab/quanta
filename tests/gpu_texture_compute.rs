@@ -56,7 +56,19 @@ fn compute_reads_texture() {
 
     eprintln!("metallib: {}", READ_TEXTURE_BINARY.metallib.is_some());
     eprintln!("spirv: {}", READ_TEXTURE_BINARY.spirv.is_some());
-    let mut wave = read_texture(&gpu).unwrap();
+    // Sampled-image reads in compute are wired on Metal and the CPU
+    // executor; the Vulkan path supports storage images only and rejects a
+    // kernel whose reflection carries a sampled-image binding. Skip where
+    // the backend says so — storage load/write coverage lives in the
+    // *_storage_texture tests below, which run everywhere.
+    let mut wave = match read_texture(&gpu) {
+        Ok(wave) => wave,
+        Err(e) if matches!(e.kind, quanta::QuantaErrorKind::NotSupported(_)) => {
+            eprintln!("SKIP: sampled-image compute read not supported here: {e}");
+            return;
+        }
+        Err(e) => panic!("read_texture wave build failed: {e}"),
+    };
     wave.bind_texture(0, &tex);
     wave.bind(1, &output);
     wave.set_value(2, w);
