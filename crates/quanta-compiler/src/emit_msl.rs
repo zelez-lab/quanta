@@ -7,6 +7,7 @@ mod helpers;
 mod kernel;
 mod ops;
 mod shader;
+mod shader_ast;
 
 pub use kernel::emit;
 pub use shader::{emit_fragment_shader, emit_vertex_shader};

@@ -11,6 +11,11 @@ categories = ["compilers", "command-line-utilities"]
 [dependencies]
 quanta-ir = { workspace = true, features = ["jit"] }
 
+# Re-parse the shader `body_source` (a token-stringified Rust block) into a
+# real AST so the MSL body emitter walks structure, not text. `full` is needed
+# for statement/block/if parsing; no proc-macro features required here.
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+
 # Dynamic link to libLLVM on every platform. Static linking was
 # attempted (commit 386befd → 9e4a562) but each platform fights the
 # LLVM packaging ecosystem at a different step:

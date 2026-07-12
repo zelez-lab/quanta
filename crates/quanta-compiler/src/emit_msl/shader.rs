@@ -2,6 +2,28 @@
 //!
 //! These operate on `ShaderDef` (not `KernelDef`) and produce complete
 //! MSL source files for the Metal render pipeline.
+//!
+//! The signature/struct/binding shell (vertex-in / vertex-out structs,
+//! `[[stage_in]]`, `constant T& [[buffer(n)]]` uniforms, `[[texture(n)]]` /
+//! `[[sampler(n)]]` for sampled slots) is emitted here; the function BODY is
+//! lowered by the AST walker in [`super::shader_ast`], which re-parses the
+//! token-stringified Rust body and walks the real `syn` AST — so path
+//! line-wraps (`Vec4 :: new`), statement-position `if`, and `&T` uniform
+//! derefs all translate correctly. The old string-replace path miscompiled
+//! all three.
+
+use super::shader_ast;
+use super::shader_ast::MslType;
+
+/// Seed the body emitter's type environment with each param's MSL type, so a
+/// `let x = if ...` whose value flows from a param can name its declared type.
+fn shader_param_types(shader: &quanta_ir::ShaderDef) -> Vec<(String, MslType)> {
+    shader
+        .params
+        .iter()
+        .map(|p| (p.name.clone(), MslType::from_shader_type(p.ty)))
+        .collect()
+}
 
 fn shader_type_msl(ty: quanta_ir::ShaderType) -> &'static str {
     match ty {
@@ -12,82 +34,6 @@ fn shader_type_msl(ty: quanta_ir::ShaderType) -> &'static str {
         quanta_ir::ShaderType::Mat4 => "float4x4",
         quanta_ir::ShaderType::Mat3 => "float3x3",
     }
-}
-
-/// Translate a Rust-like shader body to MSL (basic string substitutions).
-///
-/// Handles both hand-written source and tokenized source (proc_macro2
-/// tokenizes `Vec4::new` as `Vec4 :: new` with spaces around `::`) .
-fn translate_shader_body(src: &str) -> String {
-    let mut s = src.to_string();
-    // Strip outer braces from block expression
-    let trimmed = s.trim();
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        s = trimmed[1..trimmed.len() - 1].to_string();
-    }
-    // Handle tokenized form (spaces around ::)
-    s = s.replace("Vec4 :: new(", "float4(");
-    s = s.replace("Vec3 :: new(", "float3(");
-    s = s.replace("Vec2 :: new(", "float2(");
-    // Handle direct source form
-    s = s.replace("Vec4::new(", "float4(");
-    s = s.replace("Vec3::new(", "float3(");
-    s = s.replace("Vec2::new(", "float2(");
-    s = s.replace("let mut ", "auto ");
-    s = s.replace("let ", "auto ");
-    s
-}
-
-/// Wrap the last expression as an assignment to a variable (for vertex output struct).
-fn indent_and_return_to_var(body: &str, var_name: &str) -> String {
-    let lines: Vec<&str> = body.trim().lines().collect();
-    if lines.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if i == lines.len() - 1 && !trimmed.is_empty() {
-            let expr = trimmed
-                .trim_end_matches(';')
-                .trim()
-                .trim_start_matches("return ")
-                .trim();
-            out.push_str(&format!("    auto {} = {};\n", var_name, expr));
-        } else {
-            out.push_str(&format!("    {}\n", trimmed));
-        }
-    }
-    out
-}
-
-/// Wrap the last expression of a body as a return statement.
-fn indent_and_return(body: &str) -> String {
-    let lines: Vec<&str> = body.trim().lines().collect();
-    if lines.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if i == lines.len() - 1 && !trimmed.is_empty() {
-            if !trimmed.ends_with(';') && !trimmed.starts_with("return") {
-                out.push_str(&format!("    return {};\n", trimmed));
-            } else if !trimmed.contains("return") {
-                let without_semi = trimmed.trim_end_matches(';').trim();
-                if !without_semi.contains('=') {
-                    out.push_str(&format!("    return {};\n", without_semi));
-                } else {
-                    out.push_str(&format!("    {}\n", trimmed));
-                }
-            } else {
-                out.push_str(&format!("    {}\n", trimmed));
-            }
-        } else {
-            out.push_str(&format!("    {}\n", trimmed));
-        }
-    }
-    out
 }
 
 /// Emit MSL for a vertex shader.
@@ -168,9 +114,15 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
         ));
     }
 
-    // Evaluate body for position
-    let body = translate_shader_body(&shader.body_source);
-    let body = indent_and_return_to_var(&body, "pos_result");
+    // Declare the position result, then lower the body to assign it. The
+    // vertex tail is the clip-space position; varyings are forwarded raw from
+    // the inputs (below), matching the SPIR-V vertex path's varying model.
+    out.push_str(&format!(
+        "    {} pos_result;\n",
+        shader_type_msl(shader.return_type),
+    ));
+    let param_types = shader_param_types(shader);
+    let body = shader_ast::emit_body(&shader.body_source, Some("pos_result"), &param_types)?;
     out.push_str(&body);
 
     // Build output struct
@@ -253,21 +205,24 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         ));
     }
 
-    // Translate body, replacing sample(N, uv) with tex_N.sample(smp_N, uv)
-    let mut body = translate_shader_body(&shader.body_source);
+    // Lower the body: the fragment tail is the output color, so route it
+    // through `return`. `sample(slot, uv)` is emitted verbatim by the AST
+    // walker, then rewritten to `tex_N.sample(smp_N, uv)` here — a targeted
+    // rewrite on the already-structured MSL (the slot is a literal, the
+    // spacing is fixed), not a translation of the raw Rust source.
+    let param_types = shader_param_types(shader);
+    let mut body = shader_ast::emit_body(&shader.body_source, None, &param_types)?;
     for slot in 0..max_tex_slot {
-        // Handle both spaced and compact forms
-        let patterns = [
-            format!("sample({} ,", slot),
-            format!("sample({},", slot),
-            format!("sample ({} ,", slot),
-            format!("sample ({},", slot),
-        ];
-        for pat in &patterns {
-            body = body.replace(pat, &format!("tex_{}.sample(smp_{},", slot, slot));
-        }
+        body = body.replace(
+            &format!("sample({}.0,", slot),
+            &format!("tex_{}.sample(smp_{},", slot, slot),
+        );
     }
-    out.push_str(&indent_and_return(&body));
+    out.push_str(&body);
     out.push_str("}\n");
     Ok(out)
 }
+
+#[cfg(test)]
+#[path = "shader_tests.rs"]
+mod tests;
