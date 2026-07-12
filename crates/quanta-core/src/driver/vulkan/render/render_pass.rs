@@ -438,9 +438,11 @@ impl VulkanDevice {
 
             // Default sampler — LINEAR min/mag/mip, CLAMP_TO_EDGE, no
             // anisotropy. Resolved through the per-device cache like every
-            // other sampler, so it is created at most once for the whole
-            // device instead of once per pass. `mip_filter: Linear` here
-            // reproduces the historical hardcoded default (which used
+            // other sampler, and only when a texture slot actually lacks an
+            // explicit SetSampler — a pass that samples nothing (or sets a
+            // sampler on every textured slot) must not grow the cache with
+            // an entry it never binds. `mip_filter: Linear` here reproduces
+            // the historical hardcoded default (which used
             // MIPMAP_MODE_LINEAR), NOT `SamplerDesc::default()` — the
             // latter maps mip to NEAREST.
             let default_desc = crate::texture::SamplerDesc {
@@ -452,7 +454,7 @@ impl VulkanDevice {
                 max_anisotropy: 1,
                 compare: None,
             };
-            let default_sampler = self.get_or_create_render_sampler(&default_desc);
+            let default_sampler = || self.get_or_create_render_sampler(&default_desc);
 
             // First pass: resolve each SetSampler slot through the cache.
             // Identical descriptors across draws/frames reuse one sampler,
@@ -488,9 +490,9 @@ impl VulkanDevice {
                         if let Some(tex) = textures.get(handle) {
                             let idx = *slot as usize;
                             let sampler = if idx < 8 {
-                                sampler_for_slot[idx].unwrap_or(default_sampler)
+                                sampler_for_slot[idx].unwrap_or_else(|| default_sampler())
                             } else {
-                                default_sampler
+                                default_sampler()
                             };
                             image_infos.push((
                                 *slot,
