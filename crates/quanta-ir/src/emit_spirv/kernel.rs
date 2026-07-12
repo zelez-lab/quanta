@@ -57,6 +57,10 @@ impl SpvEmitter {
     }
 
     pub(crate) fn emit_kernel(&mut self, kernel: &KernelDef) -> Result<(), String> {
+        // A storage image (write-declared slot) cannot be sampled — reject
+        // before emitting anything so the error matches the other backends.
+        crate::types::reject_sample_on_write(kernel)?;
+
         // Record wg_x for the folded-dispatch linearization constant
         // in QuarkId (see load_linear_thread_id).
         self.wg_x = kernel.workgroup_size[0].max(1);
@@ -295,13 +299,136 @@ impl SpvEmitter {
                 } => {
                     constants.push((name.clone(), *slot, *scalar_type));
                 }
-                _ => {
-                    // Texture params — not yet supported in SPIR-V emitter
+                KernelParam::Texture2DRead { name, slot, .. } => {
+                    self.emit_texture_2d_read(name, *slot);
+                }
+                KernelParam::Texture2DWrite {
+                    name,
+                    slot,
+                    scalar_type,
+                } => {
+                    self.emit_texture_2d_write(name, *slot, *scalar_type)?;
+                }
+                KernelParam::Texture3DRead { name, slot, .. } => {
+                    self.emit_texture_3d_read(name, *slot);
                 }
             }
         }
         self.emit_push_constant_block(&constants);
         Ok(())
+    }
+
+    /// Sampled 2D image (`&Texture2D`): OpTypeSampledImage over a float
+    /// OpTypeImage. Reads unwrap to the plain image with OpImage before
+    /// OpImageFetch (see `emit_op` TextureLoad2D).
+    pub(crate) fn emit_texture_2d_read(&mut self, name: &str, slot: u32) {
+        let f32_ty = self.ensure_type_f32();
+        let image_ty = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_type_const,
+            OP_TYPE_IMAGE,
+            &[
+                image_ty, f32_ty, 1, /*Dim2D*/
+                0, 0, 0, 1, /*sampled=1*/
+                0, /*ImageFormat Unknown*/
+            ],
+        );
+        let sampled_image_ty = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_type_const,
+            OP_TYPE_SAMPLED_IMAGE,
+            &[sampled_image_ty, image_ty],
+        );
+        let ptr_si = self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, sampled_image_ty);
+        let var_id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_global_var,
+            OP_VARIABLE,
+            &[ptr_si, var_id, STORAGE_CLASS_UNIFORM_CONSTANT],
+        );
+        self.emit_name(var_id, name);
+        self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+        self.decorate(var_id, DECORATION_BINDING, &[slot]);
+        self.texture_samplers
+            .insert(slot, (var_id, sampled_image_ty));
+        self.texture_image_types.insert(slot, image_ty);
+    }
+
+    /// Storage 2D image (`&mut Texture2D`): plain OpTypeImage, sampled=2, with
+    /// a scalar-driven ImageFormat. The format contract is `Texture2D<f32>` ⇔
+    /// R32Float; only f32 is wired today (other scalars error). Writes emit
+    /// OpImageWrite; loads emit OpImageRead (a storage image is not sampled).
+    pub(crate) fn emit_texture_2d_write(
+        &mut self,
+        name: &str,
+        slot: u32,
+        scalar_type: ScalarType,
+    ) -> Result<(), String> {
+        let f32_ty = self.ensure_type_f32();
+        let image_format = scalar_type.spirv_storage_image_format().ok_or_else(|| {
+            format!(
+                "storage texture slot {slot} has scalar type {scalar_type:?}; only \
+                 Texture2D<f32> (R32Float) storage images are supported"
+            )
+        })?;
+        let image_ty = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_type_const,
+            OP_TYPE_IMAGE,
+            &[
+                image_ty,
+                f32_ty,
+                1, /*Dim2D*/
+                0,
+                0,
+                0,
+                2, /*sampled=2: storage image, read_write*/
+                image_format,
+            ],
+        );
+        let ptr_img = self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, image_ty);
+        let var_id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_global_var,
+            OP_VARIABLE,
+            &[ptr_img, var_id, STORAGE_CLASS_UNIFORM_CONSTANT],
+        );
+        self.emit_name(var_id, name);
+        self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+        self.decorate(var_id, DECORATION_BINDING, &[slot]);
+        self.texture_samplers.insert(slot, (var_id, image_ty));
+        self.texture_storage_slots.insert(slot);
+        Ok(())
+    }
+
+    /// Sampled 3D image (`&Texture3D`): read-only/sampled, unchanged semantics.
+    pub(crate) fn emit_texture_3d_read(&mut self, name: &str, slot: u32) {
+        let f32_ty = self.ensure_type_f32();
+        let image_ty = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_type_const,
+            OP_TYPE_IMAGE,
+            &[image_ty, f32_ty, 2 /*Dim3D*/, 0, 0, 0, 1, 0],
+        );
+        let sampled_image_ty = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_type_const,
+            OP_TYPE_SAMPLED_IMAGE,
+            &[sampled_image_ty, image_ty],
+        );
+        let ptr_si = self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, sampled_image_ty);
+        let var_id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_global_var,
+            OP_VARIABLE,
+            &[ptr_si, var_id, STORAGE_CLASS_UNIFORM_CONSTANT],
+        );
+        self.emit_name(var_id, name);
+        self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+        self.decorate(var_id, DECORATION_BINDING, &[slot]);
+        self.texture_samplers
+            .insert(slot, (var_id, sampled_image_ty));
+        self.texture_image_types.insert(slot, image_ty);
     }
 
     /// Emit the single push-constant Block for all scalar `Constant` params.

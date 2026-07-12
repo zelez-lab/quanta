@@ -10,6 +10,7 @@ use quanta_ir::*;
 use super::ops::emit_op;
 
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
+    quanta_ir::types::reject_sample_on_write(kernel)?;
     let mut out = String::new();
     out.push_str(
         "#pragma clang fp contract(fast)\n\
@@ -91,8 +92,12 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                 param_lines.push(format!("    sampler samp_{} [[sampler({})]]", slot, slot));
             }
             KernelParam::Texture2DWrite { slot, .. } => {
+                // read_write, not write: the DSL admits texture_load_2d against a
+                // `&mut Texture2D` slot, so the storage image must be readable as
+                // well as writable. R32Float read_write is MTLReadWriteTextureTier 1
+                // — available on every device this path runs on.
                 param_lines.push(format!(
-                    "    texture2d<float, access::write> tex_{} [[texture({})]]",
+                    "    texture2d<float, access::read_write> tex_{} [[texture({})]]",
                     slot, slot
                 ));
             }

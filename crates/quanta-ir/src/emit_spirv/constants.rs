@@ -136,11 +136,17 @@ pub(crate) const OP_GROUP_NON_UNIFORM_SMAX: u16 = 356;
 pub(crate) const OP_GROUP_NON_UNIFORM_UMAX: u16 = 357;
 pub(crate) const OP_GROUP_NON_UNIFORM_FMAX: u16 = 358;
 
-#[allow(dead_code)]
+pub(crate) const OP_TYPE_IMAGE: u16 = 25;
+pub(crate) const OP_TYPE_SAMPLED_IMAGE: u16 = 27;
+pub(crate) const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
 pub(crate) const OP_IMAGE_FETCH: u16 = 95;
+pub(crate) const OP_IMAGE_READ: u16 = 98;
+pub(crate) const OP_IMAGE_WRITE: u16 = 99;
+pub(crate) const OP_IMAGE: u16 = 100;
 
 // ── Storage classes ─────────────────────────────────────────────────────────
 
+pub(crate) const STORAGE_CLASS_UNIFORM_CONSTANT: u32 = 0;
 pub(crate) const STORAGE_CLASS_INPUT: u32 = 1;
 pub(crate) const STORAGE_CLASS_OUTPUT: u32 = 3;
 pub(crate) const STORAGE_CLASS_WORKGROUP: u32 = 4;

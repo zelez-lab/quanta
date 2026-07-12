@@ -29,6 +29,16 @@ struct CpuBuffer {
     data: Vec<u8>,
 }
 
+/// Texel metadata for a compute-bound texture. The pixel bytes live in
+/// `buffers` under the same handle (textures are byte buffers); this records
+/// the geometry/format the executor needs to index and decode a texel.
+#[derive(Clone, Copy)]
+struct CpuTextureMeta {
+    width: u32,
+    height: u32,
+    format: crate::api::types::Format,
+}
+
 /// Stored kernel ready for dispatch.
 struct CpuKernel {
     def: KernelDef,
@@ -167,6 +177,8 @@ pub struct CpuDevice {
     caps: Caps,
     next_handle: Mutex<u64>,
     buffers: Mutex<HashMap<u64, CpuBuffer>>,
+    /// Geometry/format for each texture handle (pixel bytes stay in `buffers`).
+    texture_meta: Mutex<HashMap<u64, CpuTextureMeta>>,
     kernels: Mutex<HashMap<u64, CpuKernel>>,
     /// Indirect command buffers indexed by handle.
     icbs: Mutex<HashMap<u64, CpuIcb>>,
@@ -210,6 +222,7 @@ impl CpuDevice {
             },
             next_handle: Mutex::new(1),
             buffers: Mutex::new(HashMap::new()),
+            texture_meta: Mutex::new(HashMap::new()),
             kernels: Mutex::new(HashMap::new()),
             icbs: Mutex::new(HashMap::new()),
             bindless_textures: Mutex::new(HashMap::new()),
@@ -377,6 +390,14 @@ impl GpuDevice for CpuDevice {
                 data: vec![0u8; size],
             },
         );
+        self.texture_meta.lock().unwrap().insert(
+            handle,
+            CpuTextureMeta {
+                width: desc.width,
+                height: desc.height,
+                format: desc.format,
+            },
+        );
         Ok(Texture {
             handle,
             width: desc.width,
@@ -390,6 +411,7 @@ impl GpuDevice for CpuDevice {
     fn texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         // CPU textures are plain byte buffers in the buffer registry.
         self.buffers.lock().unwrap().remove(&handle);
+        self.texture_meta.lock().unwrap().remove(&handle);
         Ok(())
     }
 
@@ -415,6 +437,10 @@ impl GpuDevice for CpuDevice {
     }
 
     fn supports_texture_write_region(&self) -> bool {
+        true
+    }
+
+    fn supports_compute_textures(&self) -> bool {
         true
     }
 
@@ -493,6 +519,7 @@ impl GpuDevice for CpuDevice {
             binding_count: 0,
             texture_bindings: [0u64; 16],
             texture_count: 0,
+            f32_storage_texture_mask: 0,
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -532,6 +559,48 @@ impl GpuDevice for CpuDevice {
                 {
                     *slot = Some(Mutex::new(buf.data.clone()));
                 }
+            }
+        }
+
+        // Snapshot bound textures the same way: pixel bytes into a per-slot
+        // Mutex, plus the geometry/format the executor needs to index a texel.
+        // The scalar-driven format contract (Texture2D<f32> ⇔ R32Float) is
+        // validated up front — an RGBA8 texture bound to an f32 storage slot
+        // is InvalidParam, matching Metal/Vulkan.
+        let mut tex_data: [Option<super::exec::CpuTexSlot>; 16] = Default::default();
+        {
+            let write_slots = quanta_ir::types::write_texture_slots(&kernel.def);
+            let bufs = self.buffers.lock().unwrap();
+            let metas = self.texture_meta.lock().unwrap();
+            for (i, slot) in tex_data
+                .iter_mut()
+                .enumerate()
+                .take(wave.texture_count as usize)
+            {
+                let handle = wave.texture_bindings[i];
+                if handle == 0 {
+                    continue;
+                }
+                let (Some(buf), Some(meta)) = (bufs.get(&handle), metas.get(&handle)) else {
+                    continue;
+                };
+                if write_slots.contains(&(i as u32))
+                    && meta.format != crate::api::types::Format::R32Float
+                {
+                    return Err(QuantaError::invalid_param(
+                        "compute storage texture format mismatch",
+                    )
+                    .with_context(&format!(
+                        "slot {i}: expected R32Float, got {:?}",
+                        meta.format
+                    )));
+                }
+                *slot = Some(super::exec::CpuTexSlot {
+                    data: Mutex::new(buf.data.clone()),
+                    width: meta.width,
+                    height: meta.height,
+                    format: meta.format,
+                });
             }
         }
 
@@ -579,6 +648,7 @@ impl GpuDevice for CpuDevice {
                     (worker_idx + 1) * total_groups / worker_count
                 };
                 let field_data = &field_data;
+                let tex_data = &tex_data;
                 let first_err = &first_err;
                 scope.spawn(move || {
                     let mut shared: HashMap<u32, Vec<u8>> = HashMap::new();
@@ -616,6 +686,7 @@ impl GpuDevice for CpuDevice {
                                     quark_count: total_threads as u32,
                                     regs,
                                     fields: field_data,
+                                    textures: tex_data,
                                     shared,
                                     push_data,
                                     subgroup: mode,
@@ -649,6 +720,7 @@ impl GpuDevice for CpuDevice {
                                     group_size: group_size_x,
                                     quark_count: total_threads as u32,
                                     fields: field_data,
+                                    textures: tex_data,
                                     push_data,
                                 };
                                 if let Err(e) =
@@ -756,6 +828,25 @@ impl GpuDevice for CpuDevice {
                     && let Some(buf) = bufs.get_mut(&handle)
                 {
                     buf.data = modified.into_inner().unwrap();
+                }
+            }
+        }
+
+        // Write back modified texture pixels (a TextureWrite2D kernel mutates
+        // its snapshot; persist so texture.read() sees the result).
+        {
+            let mut bufs = self.buffers.lock().unwrap();
+            for (i, slot) in tex_data
+                .iter_mut()
+                .enumerate()
+                .take(wave.texture_count as usize)
+            {
+                let handle = wave.texture_bindings[i];
+                if handle != 0
+                    && let Some(tex) = slot.take()
+                    && let Some(buf) = bufs.get_mut(&handle)
+                {
+                    buf.data = tex.data.into_inner().unwrap();
                 }
             }
         }
@@ -1298,6 +1389,9 @@ impl GpuDevice for CpuDevice {
                         binding_count: *binding_count,
                         texture_bindings: *texture_bindings,
                         texture_count: *texture_count,
+                        // ICB replay does not carry the storage-texture mask;
+                        // format validation runs on the direct dispatch path.
+                        f32_storage_texture_mask: 0,
                         push_data: *push_data,
                         push_len: *push_len,
                         push_mask: *push_mask,

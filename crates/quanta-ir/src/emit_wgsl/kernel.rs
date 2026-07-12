@@ -114,11 +114,19 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
             KernelParam::Texture2DWrite {
                 name,
                 slot,
-                scalar_type: _,
+                scalar_type,
             } => {
+                // Format contract is scalar-driven: `Texture2D<f32>` ⇔ r32float
+                // (matching the SPIR-V R32f / Metal R32Float storage image).
+                // WebGPU compute-texture dispatch is NotSupported (the driver
+                // rejects it), so this declaration exists only for parity.
+                let fmt = match scalar_type {
+                    ScalarType::F32 => "r32float",
+                    _ => "rgba8unorm",
+                };
                 out.push_str(&format!(
-                    "@group(0) @binding({}) var {}: texture_storage_2d<rgba8unorm, write>;\n",
-                    slot, name,
+                    "@group(0) @binding({}) var {}: texture_storage_2d<{}, write>;\n",
+                    slot, name, fmt,
                 ));
                 slot_names.insert(*slot, name.clone());
             }

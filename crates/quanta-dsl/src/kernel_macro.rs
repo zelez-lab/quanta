@@ -225,6 +225,11 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         wave_fn_name.span(),
     );
 
+    // Bit `i` set = slot `i` is a `&mut Texture2D<f32>` storage image. Drivers
+    // that can't reflect the per-slot kind at dispatch (Metal's AOT path) use
+    // this to enforce the R32Float format contract.
+    let f32_storage_texture_mask = f32_storage_texture_mask(&kernel_def);
+
     let wave_fn = quote! {
         pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
             amd: #amd_expr,
@@ -247,6 +252,7 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
                 None => device.wave_jit(#ir_static_name)?,
             };
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
+            wave.set_f32_storage_texture_mask(#f32_storage_texture_mask);
             #const_generic_setters
             Ok(wave)
         }
@@ -366,6 +372,7 @@ fn emit_jit_kernel(func: &ItemFn, kernel_def: &quanta_ir::KernelDef) -> TokenStr
     let wg_x = kernel_def.workgroup_size[0];
     let wg_y = kernel_def.workgroup_size[1];
     let wg_z = kernel_def.workgroup_size[2];
+    let mask = f32_storage_texture_mask(kernel_def);
 
     let expanded = quote! {
         pub static #def_name: &[u8] = #def_lit;
@@ -373,11 +380,32 @@ fn emit_jit_kernel(func: &ItemFn, kernel_def: &quanta_ir::KernelDef) -> TokenStr
         pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
             let mut wave = device.wave_jit(#def_name)?;
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
+            wave.set_f32_storage_texture_mask(#mask);
             Ok(wave)
         }
     };
 
     expanded.into()
+}
+
+/// Bitmask of slots declared `&mut Texture2D<f32>` (R32Float storage images).
+/// Threaded onto the Wave so drivers enforce the format contract at dispatch
+/// even on paths (Metal AOT) that can't reflect the per-slot kind.
+fn f32_storage_texture_mask(kernel_def: &quanta_ir::KernelDef) -> u16 {
+    use quanta_ir::{KernelParam, ScalarType};
+    let mut mask = 0u16;
+    for p in &kernel_def.params {
+        if let KernelParam::Texture2DWrite {
+            slot,
+            scalar_type: ScalarType::F32,
+            ..
+        } = p
+            && *slot < 16
+        {
+            mask |= 1 << slot;
+        }
+    }
+    mask
 }
 
 /// Parsed kernel attributes from `#[quanta::kernel(...)]`.

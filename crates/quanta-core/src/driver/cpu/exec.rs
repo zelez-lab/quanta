@@ -83,6 +83,17 @@ pub(super) enum SubgroupKind {
 /// disjoint races-OK model for non-atomic `Load`/`Store`. Most kernel
 /// ops are compute (no lock), so the per-op overhead is bounded by
 /// field-op density rather than total op count.
+/// A texture bound to a compute dispatch. The pixel bytes are snapshotted
+/// into a per-slot `Mutex<Vec<u8>>` (mirroring `fields`) so `TextureWrite2D`
+/// from parallel groups serialises at the texture; `width`/`height`/`format`
+/// drive texel indexing and decode.
+pub(super) struct CpuTexSlot {
+    pub(super) data: Mutex<Vec<u8>>,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) format: crate::api::types::Format,
+}
+
 pub(super) struct ExecCtx<'a> {
     pub(super) quark_id: u32,
     pub(super) local_id: u32,
@@ -91,6 +102,8 @@ pub(super) struct ExecCtx<'a> {
     pub(super) quark_count: u32,
     pub(super) regs: HashMap<u32, Value>,
     pub(super) fields: &'a [Option<Mutex<Vec<u8>>>; 16],
+    /// Textures bound by slot (parallel to `Wave::texture_bindings`).
+    pub(super) textures: &'a [Option<CpuTexSlot>; 16],
     /// Shared memory per workgroup, keyed by declaration id.
     pub(super) shared: &'a mut HashMap<u32, Vec<u8>>,
     /// Push-constant payload, packed as the SPIR-V / MSL emitters
@@ -106,6 +119,67 @@ impl ExecCtx<'_> {
     /// Whether memory writes should be suppressed (the `Collect` dry run).
     fn writes_suppressed(&self) -> bool {
         matches!(self.subgroup, SubgroupMode::Collect { .. })
+    }
+
+    /// Read the x-channel (`.x`) of a texel at integer `(x, y)` with
+    /// clamp-to-edge addressing. R32Float returns the raw f32; RGBA8 returns
+    /// the R channel as unorm (byte/255) — matching the GPU op contract where
+    /// `texture_load_2d`/`texture_sample_2d` return the first channel (the
+    /// existing RGBA8 read test extracts `.x` on Metal identically). Returns
+    /// 0.0 for an unbound slot.
+    fn texel_x(&self, slot: u32, x: i64, y: i64) -> f32 {
+        let Some(Some(tex)) = self.textures.get(slot as usize) else {
+            return 0.0;
+        };
+        if tex.width == 0 || tex.height == 0 {
+            return 0.0;
+        }
+        let cx = x.clamp(0, tex.width as i64 - 1) as usize;
+        let cy = y.clamp(0, tex.height as i64 - 1) as usize;
+        let data = tex.data.lock().unwrap();
+        let bpp = tex.format.bytes_per_pixel();
+        let base = (cy * tex.width as usize + cx) * bpp;
+        match tex.format {
+            crate::api::types::Format::R32Float => {
+                if base + 4 > data.len() {
+                    return 0.0;
+                }
+                f32::from_le_bytes([data[base], data[base + 1], data[base + 2], data[base + 3]])
+            }
+            _ => {
+                // RGBA8 / BGRA8 and other 8-bit-channel formats: R channel as
+                // unorm. (Only R32Float write slots and RGBA8 read slots are
+                // exercised; other formats fall through to the first byte.)
+                if base >= data.len() {
+                    return 0.0;
+                }
+                data[base] as f32 / 255.0
+            }
+        }
+    }
+
+    /// Write `value` into the x-channel of the R32Float texel at `(x, y)`.
+    /// Suppressed during the subgroup `Collect` dry run. Out-of-bounds or
+    /// non-R32Float writes are dropped (the format contract restricts writes
+    /// to R32Float storage textures, enforced at dispatch).
+    fn write_texel_x(&self, slot: u32, x: i64, y: i64, value: f32) {
+        if self.writes_suppressed() {
+            return;
+        }
+        let Some(Some(tex)) = self.textures.get(slot as usize) else {
+            return;
+        };
+        if !matches!(tex.format, crate::api::types::Format::R32Float) {
+            return;
+        }
+        if x < 0 || y < 0 || x >= tex.width as i64 || y >= tex.height as i64 {
+            return;
+        }
+        let base = (y as usize * tex.width as usize + x as usize) * 4;
+        let mut data = tex.data.lock().unwrap();
+        if base + 4 <= data.len() {
+            data[base..base + 4].copy_from_slice(&value.to_le_bytes());
+        }
     }
 }
 
@@ -126,6 +200,7 @@ pub(super) struct CoopGroup<'a> {
     pub(super) group_size: u32,
     pub(super) quark_count: u32,
     pub(super) fields: &'a [Option<Mutex<Vec<u8>>>; 16],
+    pub(super) textures: &'a [Option<CpuTexSlot>; 16],
     pub(super) push_data: &'a [u8; crate::api::types::PUSH_DATA_CAP],
 }
 
@@ -152,6 +227,7 @@ impl CoopGroup<'_> {
             quark_count: self.quark_count,
             regs: core::mem::take(regs),
             fields: self.fields,
+            textures: self.textures,
             shared,
             push_data: self.push_data,
             subgroup: SubgroupMode::None,
@@ -668,18 +744,48 @@ pub(super) fn execute_ops(
                 let _ = width;
                 ctx.regs.insert(dst.0, eval_binop(va, vb, &BinOp::Mul, ty));
             }
-            // Texture ops: return zero with no-op
-            KernelOp::TextureSample2D { dst, .. }
-            | KernelOp::TextureSample3D { dst, .. }
-            | KernelOp::TextureLoad2D { dst, .. } => {
+            // Texture load/sample: nearest texel, clamp-to-edge, `.x` channel.
+            // The GPU compute samplers default to nearest for the existing read
+            // test, so sample and load resolve identically on integer coords.
+            KernelOp::TextureLoad2D {
+                dst, texture, x, y, ..
+            }
+            | KernelOp::TextureSample2D {
+                dst, texture, x, y, ..
+            } => {
+                let xi = reg(ctx, x)?.as_u32() as i64;
+                let yi = reg(ctx, y)?.as_u32() as i64;
+                let v = ctx.texel_x(*texture, xi, yi);
+                ctx.regs.insert(dst.0, Value::F32(v));
+            }
+            // 3D sampling is not implemented on the CPU executor (no compute
+            // kernel exercises it); keep the zero contract.
+            KernelOp::TextureSample3D { dst, .. } => {
                 ctx.regs.insert(dst.0, Value::F32(0.0));
             }
-            KernelOp::TextureWrite2D { .. } => {
-                // no-op
+            KernelOp::TextureWrite2D {
+                texture,
+                x,
+                y,
+                value,
+                ..
+            } => {
+                let xi = reg(ctx, x)?.as_u32() as i64;
+                let yi = reg(ctx, y)?.as_u32() as i64;
+                let v = reg(ctx, value)?.as_f32();
+                ctx.write_texel_x(*texture, xi, yi, v);
             }
-            KernelOp::TextureSize { dst_w, dst_h, .. } => {
-                ctx.regs.insert(dst_w.0, Value::U32(0));
-                ctx.regs.insert(dst_h.0, Value::U32(0));
+            KernelOp::TextureSize {
+                dst_w,
+                dst_h,
+                texture,
+            } => {
+                let (w, h) = match ctx.textures.get(*texture as usize) {
+                    Some(Some(tex)) => (tex.width, tex.height),
+                    _ => (0, 0),
+                };
+                ctx.regs.insert(dst_w.0, Value::U32(w));
+                ctx.regs.insert(dst_h.0, Value::U32(h));
             }
             // Bit manipulation
             KernelOp::Bitcast { dst, src, .. } => {

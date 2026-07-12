@@ -99,6 +99,10 @@ impl MetalDevice {
                 .write()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .insert(handle, tex);
+            self.texture_formats
+                .write()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?
+                .insert(handle, desc.format);
 
             Ok(Texture {
                 handle,

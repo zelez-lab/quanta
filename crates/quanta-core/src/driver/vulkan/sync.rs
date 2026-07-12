@@ -212,6 +212,97 @@ impl VulkanDevice {
         drop(textures);
         self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }
+
+    /// Transition a storage texture (by raw handle) into `VK_IMAGE_LAYOUT_GENERAL`
+    /// for a compute dispatch, from whatever layout the atomic tracker last
+    /// recorded. GENERAL is the only layout a STORAGE_IMAGE descriptor accepts;
+    /// leaving the tracked layout GENERAL afterwards lets later render-side
+    /// transitions (same as `write_region`) pick up from there. No-op if the
+    /// image is already GENERAL. Records + submits + waits on its own command
+    /// buffer, so the layout is settled before the dispatch runs.
+    #[cfg(feature = "compute")]
+    pub(crate) fn transition_texture_handle_general(&self, handle: u64) -> Result<(), QuantaError> {
+        let (image, current) = {
+            let textures = self
+                .textures
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let tex = textures
+                .get(&handle)
+                .ok_or_else(|| QuantaError::not_found("texture not found"))?;
+            (
+                tex.image,
+                tex.current_layout
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
+        if current == ffi::VK_IMAGE_LAYOUT_GENERAL {
+            return Ok(());
+        }
+
+        let cmd = self.alloc_command_buffer()?;
+        let begin_info = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
+        unsafe {
+            if ffi::vkBeginCommandBuffer(cmd, &begin_info) != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        let image_barrier = ffi::VkImageMemoryBarrier2 {
+            s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            p_next: core::ptr::null(),
+            src_stage_mask: state_to_stage(ResourceState::General),
+            src_access_mask: state_to_access_write(ResourceState::General),
+            dst_stage_mask: state_to_stage(ResourceState::ComputeWrite),
+            dst_access_mask: state_to_access_read(ResourceState::ComputeWrite),
+            old_layout: current,
+            new_layout: ffi::VK_IMAGE_LAYOUT_GENERAL,
+            src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+            image,
+            subresource_range: ffi::VkImageSubresourceRange {
+                aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                base_mip_level: 0,
+                level_count: ffi::VK_REMAINING_MIP_LEVELS,
+                base_array_layer: 0,
+                layer_count: ffi::VK_REMAINING_ARRAY_LAYERS,
+            },
+        };
+        let dep_info = ffi::VkDependencyInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            p_next: core::ptr::null(),
+            dependency_flags: 0,
+            memory_barrier_count: 0,
+            p_memory_barriers: core::ptr::null(),
+            buffer_memory_barrier_count: 0,
+            p_buffer_memory_barriers: core::ptr::null(),
+            image_memory_barrier_count: 1,
+            p_image_memory_barriers: &image_barrier,
+        };
+        unsafe {
+            ffi::vkCmdPipelineBarrier2(cmd, &dep_info);
+            if ffi::vkEndCommandBuffer(cmd) != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        {
+            let textures = self
+                .textures
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            if let Some(tex) = textures.get(&handle) {
+                tex.current_layout.store(
+                    ffi::VK_IMAGE_LAYOUT_GENERAL,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+        }
+        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+    }
 }
 
 // ============================================================================

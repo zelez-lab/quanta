@@ -472,3 +472,4 @@ jobs:
           cargo test --test render_triangle_test --no-default-features --features vulkan,render
           cargo test --test texture_write_region --no-default-features --features vulkan,render
           cargo test --test shader_parity_draw --no-default-features --features vulkan,render
+          cargo test --test gpu_texture_compute --no-default-features --features vulkan,jit,compute

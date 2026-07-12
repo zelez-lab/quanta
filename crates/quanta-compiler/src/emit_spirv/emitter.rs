@@ -57,6 +57,11 @@ pub(crate) struct SpvEmitter {
     // unwrap the combined sampled image with OpImage first.
     pub(crate) texture_image_types: HashMap<u32, u32>,
 
+    // Slots declared `&mut Texture2D` — emitted as read_write storage images
+    // (OpTypeImage sampled=2). A `texture_load_2d` against such a slot lowers
+    // to OpImageRead, not OpImageFetch (which is sampled-image only).
+    pub(crate) texture_storage_slots: std::collections::HashSet<u32>,
+
     // Stack of loop merge labels for Break support
     pub(crate) loop_merge_stack: Vec<u32>,
 
@@ -146,6 +151,7 @@ impl SpvEmitter {
             glsl_ext_id: None,
             texture_samplers: HashMap::new(),
             texture_image_types: HashMap::new(),
+            texture_storage_slots: std::collections::HashSet::new(),
             loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),

@@ -12,6 +12,28 @@ use std::sync::{Mutex, RwLock};
 
 use super::ffi;
 
+/// Pack a per-binding descriptor-kind list into a cache key: 2 bits per
+/// binding (0 = storage buffer, 1 = storage image, 2 = sampled image). Two
+/// layouts with the same length but different kinds get distinct keys, so a
+/// buffer-only layout never aliases a mixed one.
+#[cfg_attr(not(feature = "compute"), allow(dead_code))]
+pub(super) fn layout_signature(kinds: &[crate::driver::spirv_meta::DescriptorKind]) -> u64 {
+    use crate::driver::spirv_meta::DescriptorKind;
+    // 32 bindings × 2 bits fit in a u64; our layouts use ≤ 16.
+    let mut sig: u64 = 0;
+    for (i, kind) in kinds.iter().take(32).enumerate() {
+        let bits: u64 = match kind {
+            DescriptorKind::StorageBuffer => 0,
+            DescriptorKind::StorageImage => 1,
+            DescriptorKind::SampledImage => 2,
+        };
+        sig |= bits << (i * 2);
+    }
+    // Fold in the length so a trailing run of storage buffers (bits 0) is not
+    // confused with a shorter list.
+    sig | ((kinds.len() as u64) << 40)
+}
+
 /// Vulkan-backed GPU device.
 pub struct VulkanDevice {
     pub(super) instance: ffi::VkInstance,
@@ -50,8 +72,10 @@ pub struct VulkanDevice {
     pub(super) descriptor_pool_cache: Mutex<Vec<ffi::VkDescriptorPool>>,
     /// Pool of reusable staging buffers — avoids alloc/free per texture upload.
     pub(super) staging_pool: Mutex<Vec<(ffi::VkBuffer, ffi::VkDeviceMemory, usize)>>,
-    /// Cache of descriptor set layouts keyed by binding count — avoids re-creation.
-    pub(super) layout_cache: Mutex<HashMap<u32, ffi::VkDescriptorSetLayout>>,
+    /// Cache of descriptor set layouts keyed by a per-binding descriptor-kind
+    /// signature (2 bits per binding) — a buffer-only layout and a mixed
+    /// buffer+image layout of the same length must not collide.
+    pub(super) layout_cache: Mutex<HashMap<u64, ffi::VkDescriptorSetLayout>>,
     /// Indirect command buffers (steps 032 + 033). Stores recorded
     /// dispatches that `indirect_buffer_execute` replays sequentially
     /// on the same compute path used by `wave_dispatch`. The Lean
@@ -332,6 +356,10 @@ pub(super) struct VkComputePipeline {
     pub(super) pipeline: ffi::VkPipeline,
     pub(super) layout: ffi::VkPipelineLayout,
     pub(super) descriptor_set_layout: ffi::VkDescriptorSetLayout,
+    /// Per-binding descriptor kind reflected from the SPIR-V. Dispatch uses
+    /// this to write STORAGE_IMAGE / COMBINED_IMAGE_SAMPLER descriptors for
+    /// texture slots; buffer slots stay STORAGE_BUFFER. Ordered by binding.
+    pub(super) descriptor_kinds: Vec<crate::driver::spirv_meta::DescriptorKind>,
 }
 
 pub(super) struct VkRenderPipeline {
@@ -435,17 +463,30 @@ impl VulkanDevice {
                 return Ok(pool);
             }
         }
-        let pool_size = ffi::VkDescriptorPoolSize {
-            ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            descriptor_count: 16,
-        };
+        // Sized for the worst case a single set can need: up to 16 storage
+        // buffers plus up to 16 storage/sampled images. A compute dispatch
+        // allocates one set from this pool, so over-provisioning is cheap.
+        let pool_sizes = [
+            ffi::VkDescriptorPoolSize {
+                ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptor_count: 16,
+            },
+            ffi::VkDescriptorPoolSize {
+                ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                descriptor_count: 16,
+            },
+            ffi::VkDescriptorPoolSize {
+                ty: ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                descriptor_count: 16,
+            },
+        ];
         let pool_info = ffi::VkDescriptorPoolCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
             max_sets: 1,
-            pool_size_count: 1,
-            p_pool_sizes: &pool_size,
+            pool_size_count: pool_sizes.len() as u32,
+            p_pool_sizes: pool_sizes.as_ptr(),
         };
         let mut pool = ffi::null_handle();
         let result = unsafe {
@@ -457,27 +498,38 @@ impl VulkanDevice {
         Ok(pool)
     }
 
-    /// Acquire a descriptor set layout for compute (storage buffers only), cached by binding count.
+    /// Acquire a compute descriptor-set layout for a per-binding kind list,
+    /// cached by a 2-bits-per-binding signature. The buffer-only case (the
+    /// 99% path) maps every binding to `STORAGE_BUFFER`, preserving prior
+    /// behavior; image bindings emit `STORAGE_IMAGE` /
+    /// `COMBINED_IMAGE_SAMPLER` so the layout matches the reflected SPIR-V.
     #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) fn acquire_descriptor_set_layout(
         &self,
-        binding_count: u32,
+        kinds: &[crate::driver::spirv_meta::DescriptorKind],
     ) -> Result<ffi::VkDescriptorSetLayout, QuantaError> {
+        use crate::driver::spirv_meta::DescriptorKind;
+        let signature = layout_signature(kinds);
         {
             let cache = self
                 .layout_cache
                 .lock()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?;
-            if let Some(&layout) = cache.get(&binding_count) {
+            if let Some(&layout) = cache.get(&signature) {
                 return Ok(layout);
             }
         }
         // Cache miss — create a new layout.
         let mut bindings = alloc::vec::Vec::new();
-        for i in 0..binding_count {
+        for (i, kind) in kinds.iter().enumerate() {
+            let descriptor_type = match kind {
+                DescriptorKind::StorageBuffer => ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                DescriptorKind::StorageImage => ffi::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                DescriptorKind::SampledImage => ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            };
             bindings.push(ffi::VkDescriptorSetLayoutBinding {
-                binding: i,
-                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                binding: i as u32,
+                descriptor_type,
                 descriptor_count: 1,
                 stage_flags: ffi::VK_SHADER_STAGE_COMPUTE_BIT,
                 p_immutable_samplers: core::ptr::null(),
@@ -507,7 +559,7 @@ impl VulkanDevice {
         self.layout_cache
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(binding_count, layout);
+            .insert(signature, layout);
         Ok(layout)
     }
 

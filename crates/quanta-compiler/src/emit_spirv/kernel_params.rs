@@ -75,8 +75,12 @@ impl SpvEmitter {
                 KernelParam::Texture2DRead { name, slot, .. } => {
                     self.emit_texture_2d_read(name, *slot);
                 }
-                KernelParam::Texture2DWrite { name, slot, .. } => {
-                    self.emit_texture_2d_write(name, *slot);
+                KernelParam::Texture2DWrite {
+                    name,
+                    slot,
+                    scalar_type,
+                } => {
+                    self.emit_texture_2d_write(name, *slot, *scalar_type)?;
                 }
                 KernelParam::Texture3DRead { name, slot, .. } => {
                     self.emit_texture_3d_read(name, *slot);
@@ -160,15 +164,37 @@ impl SpvEmitter {
         self.texture_image_types.insert(slot, image_ty);
     }
 
-    pub(crate) fn emit_texture_2d_write(&mut self, name: &str, slot: u32) {
+    pub(crate) fn emit_texture_2d_write(
+        &mut self,
+        name: &str,
+        slot: u32,
+        scalar_type: quanta_ir::ScalarType,
+    ) -> Result<(), String> {
         let f32_ty = self.ensure_type_f32();
+        // Format contract is scalar-driven: `Texture2D<f32>` ⇔ R32Float
+        // (ImageFormat = 3 per the SPIR-V spec — R32f, which the plain
+        // `Shader` capability already covers). Only f32 storage images are
+        // wired today; anything else is a hard emit error rather than a
+        // silently wrong format word.
+        let image_format = scalar_type.spirv_storage_image_format().ok_or_else(|| {
+            format!(
+                "storage texture slot {slot} has scalar type {scalar_type:?}; only \
+                 Texture2D<f32> (R32Float) storage images are supported"
+            )
+        })?;
         let image_ty = self.alloc_id();
         Self::emit_op(
             &mut self.sec_type_const,
             OP_TYPE_IMAGE,
             &[
-                image_ty, f32_ty, 1, 0, 0, 0, 2, /*storage*/
-                3, /*Rgba32f*/
+                image_ty,
+                f32_ty,
+                1, /*Dim2D*/
+                0,
+                0,
+                0,
+                2, /*sampled=2: storage image, read_write*/
+                image_format,
             ],
         );
         let ptr_img = self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, image_ty);
@@ -182,6 +208,10 @@ impl SpvEmitter {
         self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
         self.decorate(var_id, DECORATION_BINDING, &[slot]);
         self.texture_samplers.insert(slot, (var_id, image_ty));
+        // Mark the slot storage so texture_load_2d against it emits OpImageRead
+        // (a storage image cannot be OpImageFetch'd).
+        self.texture_storage_slots.insert(slot);
+        Ok(())
     }
 
     pub(crate) fn emit_texture_3d_read(&mut self, name: &str, slot: u32) {

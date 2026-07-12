@@ -9,6 +9,41 @@ use super::device::make_async_pulse;
 use super::ffi;
 
 impl MetalDevice {
+    /// Enforce the scalar-driven format contract: every texture bound to a
+    /// slot the kernel declares `&mut Texture2D<f32>` (bit set in
+    /// `wave.f32_storage_texture_mask`) must be R32Float. Metal's AOT dispatch
+    /// can't reflect the per-slot kind from the metallib, so the mask stamped
+    /// by the proc macro is the source of truth. Read (sampled) slots are not
+    /// in the mask and keep working for any format (e.g. RGBA8 reads).
+    #[cfg(feature = "compute")]
+    fn validate_compute_texture_formats(&self, wave: &Wave) -> Result<(), QuantaError> {
+        if wave.f32_storage_texture_mask == 0 {
+            return Ok(());
+        }
+        let fmts = self
+            .texture_formats
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        for slot in 0..wave.texture_count as usize {
+            if wave.f32_storage_texture_mask & (1 << slot) == 0 {
+                continue;
+            }
+            let handle = wave.texture_bindings[slot];
+            if handle == 0 {
+                continue;
+            }
+            if let Some(&fmt) = fmts.get(&handle)
+                && fmt != crate::api::types::Format::R32Float
+            {
+                return Err(
+                    QuantaError::invalid_param("compute storage texture format mismatch")
+                        .with_context(&format!("slot {slot}: expected R32Float, got {fmt:?}")),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// JIT-compile a kernel from serialized KernelDef IR.
     ///
     /// Deserializes the IR, emits MSL text, compiles via Metal runtime,
@@ -109,6 +144,7 @@ impl MetalDevice {
             binding_count: 0,
             texture_bindings: [0u64; 16],
             texture_count: 0,
+            f32_storage_texture_mask: 0,
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -197,6 +233,7 @@ impl MetalDevice {
             binding_count: 0,
             texture_bindings: [0u64; 16],
             texture_count: 0,
+            f32_storage_texture_mask: 0,
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -211,6 +248,9 @@ impl MetalDevice {
         wave: &Wave,
         groups: [u32; 3],
     ) -> Result<Pulse, QuantaError> {
+        // Validate the storage-texture format contract before creating any
+        // Metal encoder, so an early error never leaks an un-ended encoder.
+        self.validate_compute_texture_formats(wave)?;
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
 
@@ -305,6 +345,8 @@ impl MetalDevice {
         wave: &Wave,
         quarks: u32,
     ) -> Result<Pulse, QuantaError> {
+        // Validate before creating the encoder (see wave_dispatch_impl).
+        self.validate_compute_texture_formats(wave)?;
         // Reuse the same binding/setup as wave_dispatch_impl, but use dispatchThreads
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };

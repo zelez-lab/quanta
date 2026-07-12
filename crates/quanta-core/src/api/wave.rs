@@ -19,6 +19,11 @@ pub struct Wave {
     /// Texture handles by slot index. 0 = unbound.
     pub(crate) texture_bindings: [u64; MAX_TEXTURES],
     pub(crate) texture_count: u8,
+    /// Bit `i` set = slot `i` is a `&mut Texture2D<f32>` storage image
+    /// expecting the R32Float format. The proc macro stamps this from the
+    /// kernel signature; drivers that can't otherwise see the per-slot kind
+    /// (Metal's AOT path) use it to enforce the format contract at dispatch.
+    pub(crate) f32_storage_texture_mask: u16,
     /// Inline push constant data — 16-byte aligned slots.
     pub(crate) push_data: [u8; PUSH_DATA_CAP],
     pub(crate) push_len: u16,
@@ -103,6 +108,13 @@ impl Wave {
 
     pub fn handle(&self) -> u64 {
         self.handle
+    }
+
+    /// Stamp which texture slots are `&mut Texture2D<f32>` storage images
+    /// (R32Float expected). Called by the generated kernel wrapper; drivers
+    /// use it to enforce the scalar-driven format contract at dispatch.
+    pub fn set_f32_storage_texture_mask(&mut self, mask: u16) {
+        self.f32_storage_texture_mask = mask;
     }
 }
 

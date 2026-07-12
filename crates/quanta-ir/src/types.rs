@@ -702,7 +702,82 @@ pub struct KernelDef {
     pub dynamic_shared_bytes: u32,
 }
 
+/// Slots declared as `Texture2DWrite`. These become read_write storage images
+/// (MSL `access::read_write`, SPIR-V `sampled=2`) so that `texture_load_2d`
+/// against a `&mut Texture2D` slot lowers to a storage read rather than an
+/// invalid sampled fetch. The slot number is the positional param index shared
+/// across the buffer/texture/constant namespace.
+pub fn write_texture_slots(kernel: &KernelDef) -> std::collections::BTreeSet<u32> {
+    let mut set = std::collections::BTreeSet::new();
+    for p in &kernel.params {
+        if let KernelParam::Texture2DWrite { slot, .. } = p {
+            set.insert(*slot);
+        }
+    }
+    set
+}
+
+/// Reject `texture_sample_2d`/`texture_sample_3d` against a write-declared
+/// slot. Sampling needs a sampled image with a bound sampler; a storage image
+/// (which is what a `&mut Texture2D` slot becomes) cannot be sampled — reading
+/// it is `texture_load_2d`. Every emitter calls this so all backends agree
+/// instead of failing later as undeclared-identifier MSL / invalid SPIR-V.
+pub fn reject_sample_on_write(kernel: &KernelDef) -> Result<(), String> {
+    let writes = write_texture_slots(kernel);
+    if writes.is_empty() {
+        return Ok(());
+    }
+    fn walk(ops: &[KernelOp], writes: &std::collections::BTreeSet<u32>) -> Result<(), u32> {
+        for op in ops {
+            match op {
+                KernelOp::TextureSample2D { texture, .. }
+                | KernelOp::TextureSample3D { texture, .. }
+                    if writes.contains(texture) =>
+                {
+                    return Err(*texture);
+                }
+                KernelOp::Branch {
+                    then_ops, else_ops, ..
+                } => {
+                    walk(then_ops, writes)?;
+                    walk(else_ops, writes)?;
+                }
+                KernelOp::Loop { body, .. } => walk(body, writes)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let mut bodies = vec![&kernel.body];
+    for f in &kernel.device_functions {
+        bodies.push(&f.body);
+    }
+    for body in bodies {
+        if let Err(slot) = walk(body, &writes) {
+            return Err(format!(
+                "texture slot {slot} is declared `&mut Texture2D` (write/storage) but is \
+                 sampled: a storage image cannot be sampled. Use texture_load_2d to read it, \
+                 or declare the parameter `&Texture2D` for sampling."
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl ScalarType {
+    /// SPIR-V `ImageFormat` operand for a storage image whose texel is this
+    /// scalar. The format contract is scalar-driven: `Texture2D<f32>` ⇔
+    /// R32Float, encoded as `ImageFormat = 3` (per the SPIR-V spec enum —
+    /// R32f is 3, not the whole-vector Rgba32f which is 1). R32f needs no
+    /// capability beyond `Shader`. Only f32 storage images are wired today;
+    /// other scalars are refused at the call site.
+    pub fn spirv_storage_image_format(&self) -> Option<u32> {
+        match self {
+            Self::F32 => Some(3), // R32f
+            _ => None,
+        }
+    }
+
     /// Metal Shading Language type name.
     pub fn msl_name(&self) -> &'static str {
         match self {

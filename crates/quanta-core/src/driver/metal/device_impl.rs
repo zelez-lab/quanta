@@ -130,6 +130,10 @@ impl GpuDevice for MetalDevice {
         true
     }
 
+    fn supports_compute_textures(&self) -> bool {
+        true
+    }
+
     fn texture_write_region(
         &self,
         texture: &Texture,
@@ -414,6 +418,9 @@ impl GpuDevice for MetalDevice {
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
+        if let Ok(mut fmts) = self.texture_formats.write() {
+            fmts.remove(&handle);
+        }
         if let Some(t) = tex {
             // newTextureWithDescriptor: returns +1 retained.
             unsafe { ffi::msg_void(t, b"release\0") };

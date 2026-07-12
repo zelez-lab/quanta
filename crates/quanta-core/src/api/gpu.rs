@@ -189,6 +189,14 @@ impl Gpu {
         self.inner.supports_texture_write_region()
     }
 
+    /// Whether compute kernels can bind textures on the active backend
+    /// (`&Texture2D` sampled reads / `&mut Texture2D<f32>` storage writes).
+    /// True on Metal, CPU, and native Vulkan; false on WebGPU. Tests skip the
+    /// live-dispatch path when this is false.
+    pub fn supports_compute_textures(&self) -> bool {
+        self.inner.supports_compute_textures()
+    }
+
     pub fn name(&self) -> &str {
         &self.caps().name
     }

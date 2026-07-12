@@ -1576,19 +1576,47 @@ impl SpvEmitter {
                 self.set_reg(*dst, zero, uint_ty);
             }
 
-            KernelOp::TextureSample2D { dst, ty, .. }
-            | KernelOp::TextureSample3D { dst, ty, .. } => {
-                // Texture sampling not yet supported
+            KernelOp::TextureSample2D {
+                dst,
+                texture,
+                x,
+                y,
+                ty,
+            } => {
+                self.emit_op_texture_sample_2d(*dst, *texture, *x, *y, *ty)?;
+            }
+
+            KernelOp::TextureSample3D { dst, ty, .. } => {
+                // 3D sampling not yet wired on the JIT SPIR-V path.
                 let result_ty = self.scalar_type_id(*ty);
                 let zero = self.emit_constant_f32(0.0);
                 self.set_reg(*dst, zero, result_ty);
             }
 
-            KernelOp::TextureWrite2D { .. } => {
-                // Texture writes not yet supported
+            KernelOp::TextureLoad2D {
+                dst,
+                texture,
+                x,
+                y,
+                ty,
+            } => {
+                self.emit_op_texture_load_2d(*dst, *texture, *x, *y, *ty)?;
+            }
+
+            KernelOp::TextureWrite2D {
+                texture,
+                x,
+                y,
+                value,
+                ..
+            } => {
+                self.emit_op_texture_write_2d(*texture, *x, *y, *value)?;
             }
 
             KernelOp::TextureSize { dst_w, dst_h, .. } => {
+                // OpImageQuerySize needs the ImageQuery capability; the AOT
+                // path also returns zero here. TextureSize is honoured on the
+                // CPU executor only.
                 let uint_ty = self.ensure_type_u32();
                 let zero = self.emit_constant_u32(0);
                 self.set_reg(*dst_w, zero, uint_ty);
@@ -1822,13 +1850,6 @@ impl SpvEmitter {
                     ],
                 );
                 self.set_reg(*dst, result, result_ty);
-            }
-
-            KernelOp::TextureLoad2D { dst, ty, .. } => {
-                // Texture load not yet wired to image variables; placeholder zero.
-                let result_ty = self.scalar_type_id(*ty);
-                let zero = self.emit_constant_f32(0.0);
-                self.set_reg(*dst, zero, result_ty);
             }
 
             KernelOp::SubgroupSize { dst } => {
@@ -2396,5 +2417,174 @@ impl SpvEmitter {
         let cleared = self.spv_and(word, not_mask);
         let merged = self.spv_or(cleared, nib_sh);
         Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, merged, 0x2, 4]);
+    }
+
+    /// Load a texel from a texture slot. A sampled (`&Texture2D`) slot uses
+    /// OpImageFetch after unwrapping the sampled image with OpImage; a storage
+    /// (`&mut Texture2D`) slot uses OpImageRead on the plain image.
+    pub(crate) fn emit_op_texture_load_2d(
+        &mut self,
+        dst: Reg,
+        texture: u32,
+        x: Reg,
+        y: Reg,
+        ty: ScalarType,
+    ) -> Result<(), String> {
+        if let Some(&(var_id, type_id)) = self.texture_samplers.get(&texture) {
+            let loaded = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+            let image = if let Some(&image_ty) = self.texture_image_types.get(&texture) {
+                let image = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_IMAGE, &[image_ty, image, loaded]);
+                image
+            } else {
+                loaded
+            };
+            let int_ty = self.ensure_type_i32();
+            let vec2_int = self.ensure_type_vector(int_ty, 2);
+            // Coords arrive as %uint (quark_id arithmetic); OpCompositeConstruct
+            // requires constituents to match the result vector's component type.
+            let x_val = self.reg_value_id(x)?;
+            let x_ty = self.reg_type_id(x)?;
+            let x_val = self.coerce_to(x_val, x_ty, int_ty);
+            let y_val = self.reg_value_id(y)?;
+            let y_ty = self.reg_type_id(y)?;
+            let y_val = self.coerce_to(y_val, y_ty, int_ty);
+            let coord = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_COMPOSITE_CONSTRUCT,
+                &[vec2_int, coord, x_val, y_val],
+            );
+            let f32_ty = self.ensure_type_f32();
+            let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+            let fetch_result = self.alloc_id();
+            let read_op = if self.texture_storage_slots.contains(&texture) {
+                OP_IMAGE_READ
+            } else {
+                OP_IMAGE_FETCH
+            };
+            Self::emit_op(
+                &mut self.sec_function,
+                read_op,
+                &[vec4_ty, fetch_result, image, coord],
+            );
+            let result_ty = self.scalar_type_id(ty);
+            let result = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_COMPOSITE_EXTRACT,
+                &[result_ty, result, fetch_result, 0],
+            );
+            self.set_reg(dst, result, result_ty);
+        } else {
+            let result_ty = self.scalar_type_id(ty);
+            let zero = self.emit_constant_f32(0.0);
+            self.set_reg(dst, zero, result_ty);
+        }
+        Ok(())
+    }
+
+    /// Write a scalar texel to a storage image slot (OpImageWrite). The value
+    /// is broadcast into a vec4 (x, 0, 0, 1) to match a 4-component texel; the
+    /// R32Float image keeps only the x channel.
+    pub(crate) fn emit_op_texture_write_2d(
+        &mut self,
+        texture: u32,
+        x: Reg,
+        y: Reg,
+        value: Reg,
+    ) -> Result<(), String> {
+        if let Some(&(var_id, type_id)) = self.texture_samplers.get(&texture) {
+            let loaded = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+            let image = if let Some(&image_ty) = self.texture_image_types.get(&texture) {
+                let image = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_IMAGE, &[image_ty, image, loaded]);
+                image
+            } else {
+                loaded
+            };
+            let int_ty = self.ensure_type_i32();
+            let vec2_int = self.ensure_type_vector(int_ty, 2);
+            let x_val = self.reg_value_id(x)?;
+            let x_ty = self.reg_type_id(x)?;
+            let x_val = self.coerce_to(x_val, x_ty, int_ty);
+            let y_val = self.reg_value_id(y)?;
+            let y_ty = self.reg_type_id(y)?;
+            let y_val = self.coerce_to(y_val, y_ty, int_ty);
+            let coord = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_COMPOSITE_CONSTRUCT,
+                &[vec2_int, coord, x_val, y_val],
+            );
+            let f32_ty = self.ensure_type_f32();
+            let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+            let val = self.reg_value_id(value)?;
+            let val_ty = self.reg_type_id(value)?;
+            let val = self.coerce_to(val, val_ty, f32_ty);
+            let zero = self.emit_constant_f32(0.0);
+            let one = self.emit_constant_f32(1.0);
+            let texel = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_COMPOSITE_CONSTRUCT,
+                &[vec4_ty, texel, val, zero, zero, one],
+            );
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_IMAGE_WRITE,
+                &[image, coord, texel],
+            );
+        }
+        Ok(())
+    }
+
+    /// Sample a texel from a sampled 2D image slot (OpImageSampleImplicitLod).
+    /// Only valid on `&Texture2D` (sampled) slots — a storage slot is rejected
+    /// earlier by `reject_sample_on_write`.
+    pub(crate) fn emit_op_texture_sample_2d(
+        &mut self,
+        dst: Reg,
+        texture: u32,
+        x: Reg,
+        y: Reg,
+        ty: ScalarType,
+    ) -> Result<(), String> {
+        if let Some(&(var_id, type_id)) = self.texture_samplers.get(&texture) {
+            let loaded = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+            let f32_ty = self.ensure_type_f32();
+            let vec2_ty = self.ensure_type_vector(f32_ty, 2);
+            let x_val = self.reg_value_id(x)?;
+            let y_val = self.reg_value_id(y)?;
+            let coord = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_COMPOSITE_CONSTRUCT,
+                &[vec2_ty, coord, x_val, y_val],
+            );
+            let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+            let sample_result = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_IMAGE_SAMPLE_IMPLICIT_LOD,
+                &[vec4_ty, sample_result, loaded, coord],
+            );
+            let result_ty = self.scalar_type_id(ty);
+            let result = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_COMPOSITE_EXTRACT,
+                &[result_ty, result, sample_result, 0],
+            );
+            self.set_reg(dst, result, result_ty);
+        } else {
+            let result_ty = self.scalar_type_id(ty);
+            let zero = self.emit_constant_f32(0.0);
+            self.set_reg(dst, zero, result_ty);
+        }
+        Ok(())
     }
 }

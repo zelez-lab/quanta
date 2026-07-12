@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use super::ops::emit_op;
 
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
+    crate::types::reject_sample_on_write(kernel)?;
     let mut out = String::new();
     out.push_str(
         "#pragma clang fp contract(fast)\n#include <metal_stdlib>\n#include <metal_simdgroup_matrix>\nusing namespace metal;\n\n",
@@ -75,7 +76,30 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                 ));
                 slot_names.insert(*slot, name.clone());
             }
-            _ => {}
+            KernelParam::Texture2DRead { slot, .. } => {
+                param_lines.push(format!(
+                    "    texture2d<float, access::sample> tex_{} [[texture({})]]",
+                    slot, slot
+                ));
+                param_lines.push(format!("    sampler samp_{} [[sampler({})]]", slot, slot));
+            }
+            KernelParam::Texture2DWrite { slot, .. } => {
+                // read_write, not write: the DSL admits texture_load_2d against a
+                // `&mut Texture2D` slot, so the storage image must be readable as
+                // well as writable. R32Float read_write is MTLReadWriteTextureTier 1
+                // — available on every device this path runs on.
+                param_lines.push(format!(
+                    "    texture2d<float, access::read_write> tex_{} [[texture({})]]",
+                    slot, slot
+                ));
+            }
+            KernelParam::Texture3DRead { slot, .. } => {
+                param_lines.push(format!(
+                    "    texture3d<float, access::sample> tex_{} [[texture({})]]",
+                    slot, slot
+                ));
+                param_lines.push(format!("    sampler samp_{} [[sampler({})]]", slot, slot));
+            }
         }
     }
     // Check if kernel uses debug print — if so, add a debug buffer parameter

@@ -102,6 +102,9 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `__ballot_sync(mask, pred)` | `ballot_u32(pred)` |
 | `__any_sync(mask, pred)` | `any_u32(pred)` |
 | `__all_sync(mask, pred)` | `all_u32(pred)` |
+| `surf2Dwrite(v, surf, x, y)` | `texture_write_2d(tex, x, y, v)` (param `&mut Texture2D<f32>`, R32Float) |
+| `surf2Dread(&v, surf, x, y)` | `texture_load_2d(tex, x, y)` (storage read on a `&mut Texture2D` slot) |
+| `tex2D(tex, u, v)` | `texture_sample_2d(tex, x, y)` / `texture_load_2d` (param `&Texture2D<f32>`) |
 | `cudaMalloc` + `cudaMemcpy` | `gpu.field::<T>(n)` + `field.write(&data)` |
 | `cudaMallocManaged` | `gpu.field_mapped::<T>(n)` |
 | `kernel<<<blocks, threads>>>(...)` | `gpu.dispatch(&wave, n)` |

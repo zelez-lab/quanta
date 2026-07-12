@@ -113,10 +113,148 @@ mod tests {
 
     const OP_CAPABILITY: u16 = 17;
     const OP_TYPE_INT: u16 = 21;
+    const OP_TYPE_IMAGE: u16 = 25;
+    const OP_IMAGE_READ: u16 = 98;
+    const OP_IMAGE_WRITE: u16 = 99;
+    const OP_IMAGE_FETCH: u16 = 95;
     const OP_SHIFT_RIGHT_LOGICAL: u16 = 194;
     const OP_SHIFT_LEFT_LOGICAL: u16 = 196;
     const OP_BITWISE_OR: u16 = 197;
     const CAPABILITY_INT64: u32 = 11;
+
+    /// `texture_write_2d(tex, x, y, v)` into a `&mut Texture2D<f32>` storage
+    /// image — the pure write path. Coords/x-value coercion must be valid or
+    /// the OpCompositeConstruct fails; the image format word must be R32f.
+    fn write_storage_kernel() -> KernelDef {
+        KernelDef {
+            name: "write_storage".into(),
+            params: vec![
+                KernelParam::Texture2DWrite {
+                    name: "tex".into(),
+                    slot: 0,
+                    scalar_type: ScalarType::F32,
+                },
+                KernelParam::FieldRead {
+                    name: "values".into(),
+                    slot: 1,
+                    scalar_type: ScalarType::F32,
+                },
+            ],
+            body: vec![
+                KernelOp::QuarkId { dst: Reg(0) },
+                KernelOp::Load {
+                    dst: Reg(1),
+                    field: 1,
+                    index: Reg(0),
+                    ty: ScalarType::F32,
+                },
+                KernelOp::TextureWrite2D {
+                    texture: 0,
+                    x: Reg(0),
+                    y: Reg(0),
+                    value: Reg(1),
+                    ty: ScalarType::F32,
+                },
+            ],
+            body_source: None,
+            next_reg: 2,
+            opt_level: 0,
+            device_sources: vec![],
+            device_functions: vec![],
+            workgroup_size: [1, 1, 1],
+            subgroup_size: None,
+            dynamic_shared_bytes: 0,
+        }
+    }
+
+    /// Read-modify-write the same storage texture: the load against a write
+    /// slot must emit OpImageRead (a storage image cannot be OpImageFetch'd).
+    fn rmw_storage_kernel() -> KernelDef {
+        KernelDef {
+            name: "rmw_storage".into(),
+            params: vec![KernelParam::Texture2DWrite {
+                name: "tex".into(),
+                slot: 0,
+                scalar_type: ScalarType::F32,
+            }],
+            body: vec![
+                KernelOp::QuarkId { dst: Reg(0) },
+                KernelOp::TextureLoad2D {
+                    dst: Reg(1),
+                    texture: 0,
+                    x: Reg(0),
+                    y: Reg(0),
+                    ty: ScalarType::F32,
+                },
+                KernelOp::TextureWrite2D {
+                    texture: 0,
+                    x: Reg(0),
+                    y: Reg(0),
+                    value: Reg(1),
+                    ty: ScalarType::F32,
+                },
+            ],
+            body_source: None,
+            next_reg: 2,
+            opt_level: 0,
+            device_sources: vec![],
+            device_functions: vec![],
+            workgroup_size: [1, 1, 1],
+            subgroup_size: None,
+            dynamic_shared_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn storage_texture_write_is_valid_and_r32f() {
+        let spirv = super::emit(&write_storage_kernel()).expect("emit");
+        assert_spirv_val(&spirv);
+        let instrs = decode(&spirv);
+        // OpTypeImage %result %SampledType Dim Depth Arrayed MS Sampled Format
+        let img = instrs
+            .iter()
+            .find(|(op, _)| *op == OP_TYPE_IMAGE)
+            .map(|(_, args)| args.clone())
+            .expect("module must declare an OpTypeImage");
+        // args[0]=result, [1]=sampled_type, [2]=Dim, .., [6]=Sampled, [7]=Format
+        assert_eq!(args_sampled(&img), 2, "storage image must be sampled=2");
+        assert_eq!(
+            args_format(&img),
+            3,
+            "Texture2D<f32> storage image must be R32f (3), not Rgba32f (1)"
+        );
+        assert!(
+            instrs.iter().any(|(op, _)| *op == OP_IMAGE_WRITE),
+            "write kernel must emit OpImageWrite"
+        );
+    }
+
+    #[test]
+    fn storage_texture_load_emits_image_read() {
+        let spirv = super::emit(&rmw_storage_kernel()).expect("emit");
+        assert_spirv_val(&spirv);
+        let instrs = decode(&spirv);
+        assert!(
+            instrs.iter().any(|(op, _)| *op == OP_IMAGE_READ),
+            "load against a storage slot must emit OpImageRead"
+        );
+        assert!(
+            !instrs.iter().any(|(op, _)| *op == OP_IMAGE_FETCH),
+            "a storage image must not be OpImageFetch'd"
+        );
+        assert!(
+            instrs.iter().any(|(op, _)| *op == OP_IMAGE_WRITE),
+            "rmw kernel must still emit OpImageWrite"
+        );
+    }
+
+    // OpTypeImage operand accessors (result id is args[0]).
+    fn args_sampled(args: &[u32]) -> u32 {
+        args[6]
+    }
+    fn args_format(args: &[u32]) -> u32 {
+        args[7]
+    }
 
     /// The `fill_uniform_f64` pack shape:
     /// `out[i] = ((((hi as u64) << 32) | (lo as u64)) >> 11) as f64 * 2^-53`.

@@ -211,6 +211,14 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         false
     }
 
+    /// Whether compute kernels can bind textures (`&Texture2D` /
+    /// `&mut Texture2D` params) on this backend. True on Metal, CPU, and
+    /// native Vulkan (storage load/write; sampling in compute is not yet
+    /// wired on Vulkan); false on WebGPU.
+    fn supports_compute_textures(&self) -> bool {
+        false
+    }
+
     /// Write pixel data into a sub-region of `texture` at mip level 0.
     /// `origin` is the (x, y) texel offset of the region's top-left
     /// corner, `size` its (width, height) in texels; `data` holds

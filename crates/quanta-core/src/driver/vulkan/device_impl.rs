@@ -112,6 +112,14 @@ impl GpuDevice for VulkanDevice {
         true
     }
 
+    /// Storage textures in compute (R32Float load/write) are supported: the
+    /// emitter bakes a concrete R32f image format, so no
+    /// shaderStorageImageWriteWithoutFormat feature is required. Sampling in
+    /// compute is a separate, not-yet-wired path (rejected at pipeline build).
+    fn supports_compute_textures(&self) -> bool {
+        true
+    }
+
     fn texture_write_region(
         &self,
         texture: &Texture,

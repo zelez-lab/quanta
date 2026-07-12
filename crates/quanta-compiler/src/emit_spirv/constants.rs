@@ -50,6 +50,7 @@ pub const OP_COPY_OBJECT: u16 = 83;
 pub const OP_TRANSPOSE: u16 = 84;
 pub const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
 pub const OP_IMAGE_FETCH: u16 = 95;
+pub const OP_IMAGE_READ: u16 = 98;
 pub const OP_IMAGE_WRITE: u16 = 99;
 pub const OP_IMAGE: u16 = 100;
 // SPIR-V §3.42 numeric conversions — corrected from a prior mis-numbering

@@ -34,6 +34,10 @@ impl SpvEmitter {
     }
 
     pub(crate) fn emit_kernel(&mut self, kernel: &KernelDef) -> Result<(), String> {
+        // A storage image (write-declared slot) cannot be sampled — reject
+        // before emitting anything so the error is the same on every backend.
+        quanta_ir::types::reject_sample_on_write(kernel)?;
+
         // Record wg_x for the folded-dispatch linearization constant
         // in QuarkId (see load_linear builtin helper).
         self.wg_x = kernel.workgroup_size[0].max(1);

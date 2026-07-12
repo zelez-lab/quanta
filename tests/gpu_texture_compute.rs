@@ -138,3 +138,183 @@ fn texture_write_spirv_module_validates() {
         .expect("write_texture: no SPIR-V embedded");
     assert_spirv_val_clean("write_texture", spirv);
 }
+
+// ── Live storage-image dispatch (write / read-modify-write / format guard) ──
+//
+// These run on whichever device `init()` selects (Metal here, CPU under
+// QUANTA_CPU=1) plus an explicit CPU pass, and skip when the backend reports
+// no compute-texture support. Vulkan live dispatch runs only in CI (lavapipe).
+
+/// Write f(x,y) = x*10 + y into an R32Float storage texture. Pure write path.
+#[quanta::kernel]
+fn write_pattern(tex: &mut Texture2D<f32>, width: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    let v = (x * 10 + y) as f32;
+    texture_write_2d(tex, x, y, v);
+}
+
+/// Read-modify-write the SAME R32Float storage texture: v ← v*2 + 1. Exercises
+/// decision 1's read_write semantics — `texture_load_2d` against a `&mut`
+/// storage slot lowers to a storage read (OpImageRead / .read()), not a
+/// sampled fetch. Each thread owns one texel, so there is no cross-thread
+/// hazard within the dispatch.
+#[quanta::kernel]
+fn rmw_texture(tex: &mut Texture2D<f32>, width: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    let cur = texture_load_2d(tex, x, y);
+    texture_write_2d(tex, x, y, cur * 2.0 + 1.0);
+}
+
+fn r32f_bytes(vals: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vals.len() * 4);
+    for v in vals {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+fn r32f_read(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+fn run_write_pattern(gpu: &quanta::Gpu) {
+    let (w, h) = (4u32, 4u32);
+    let n = (w * h) as usize;
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float).with_usage(
+                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+            ),
+        )
+        .unwrap();
+
+    let mut wave = write_pattern(gpu).unwrap();
+    wave.bind_texture(0, &tex);
+    wave.set_value(1, w);
+    gpu.dispatch(&wave, n as u32).unwrap().wait().unwrap();
+
+    let got = r32f_read(&tex.read().unwrap());
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) as usize;
+            let expected = (x * 10 + y) as f32;
+            assert_eq!(
+                got[idx], expected,
+                "write_pattern texel ({x},{y}) = {} (expected {expected})",
+                got[idx]
+            );
+        }
+    }
+}
+
+fn run_rmw(gpu: &quanta::Gpu) {
+    let (w, h) = (4u32, 4u32);
+    let n = (w * h) as usize;
+    let seed: Vec<f32> = (0..n).map(|i| i as f32).collect();
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float).with_usage(
+                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+            ),
+        )
+        .unwrap();
+    tex.write(&r32f_bytes(&seed)).unwrap();
+
+    let mut wave = rmw_texture(gpu).unwrap();
+    wave.bind_texture(0, &tex);
+    wave.set_value(1, w);
+    gpu.dispatch(&wave, n as u32).unwrap().wait().unwrap();
+
+    let got = r32f_read(&tex.read().unwrap());
+    for i in 0..n {
+        let expected = seed[i] * 2.0 + 1.0;
+        assert_eq!(
+            got[i], expected,
+            "rmw texel {i} = {} (expected {expected})",
+            got[i]
+        );
+    }
+}
+
+#[test]
+fn compute_writes_storage_texture() {
+    let Some(gpu) = try_gpu() else { return };
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return; // V3DV image-in-compute path faults; SPIR-V is valid.
+    }
+    run_write_pattern(&gpu);
+}
+
+#[test]
+fn compute_read_modify_writes_storage_texture() {
+    let Some(gpu) = try_gpu() else { return };
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return;
+    }
+    run_rmw(&gpu);
+}
+
+/// The CPU software executor must produce identical texels (validates W6
+/// independently of the default device).
+#[test]
+fn cpu_writes_and_rmw_storage_texture() {
+    let gpu = quanta::init_cpu();
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    run_write_pattern(&gpu);
+    run_rmw(&gpu);
+}
+
+/// The scalar-driven format contract: binding an RGBA8 texture to an
+/// `&mut Texture2D<f32>` (R32Float) storage slot is InvalidParam, on every
+/// backend that can see both the registry and the reflected/param kinds.
+#[test]
+fn format_mismatch_is_invalid_param() {
+    fn check(gpu: &quanta::Gpu) {
+        if !gpu.supports_compute_textures() {
+            return;
+        }
+        if gpu.caps().vendor == quanta::Vendor::Broadcom {
+            return;
+        }
+        let (w, h) = (4u32, 4u32);
+        let n = (w * h) as usize;
+        let tex = gpu
+            .create_texture(
+                &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
+                    quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+                ),
+            )
+            .unwrap();
+        let mut wave = write_pattern(gpu).unwrap();
+        wave.bind_texture(0, &tex);
+        wave.set_value(1, w);
+        let e = gpu
+            .dispatch(&wave, n as u32)
+            .err()
+            .expect("binding RGBA8 to an f32 storage slot must fail");
+        assert!(
+            matches!(e.kind, quanta::QuantaErrorKind::InvalidParam(_)),
+            "expected InvalidParam, got {:?}",
+            e.kind
+        );
+    }
+    if let Some(gpu) = try_gpu() {
+        check(&gpu);
+    }
+    check(&quanta::init_cpu());
+}

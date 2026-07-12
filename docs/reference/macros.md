@@ -278,7 +278,17 @@ fn name(params...) { body }
 
 - `&[T]` -- read-only GPU buffer (bound at slot by declaration order)
 - `&mut [T]` -- read-write GPU buffer
+- `&Texture2D<f32>` -- sampled texture (read via `texture_sample_2d` / `texture_load_2d`; bound with `wave.bind_texture`)
+- `&mut Texture2D<f32>` -- **read-write storage image**, R32Float format. Write with `texture_write_2d`; read the same slot with `texture_load_2d` (a storage read, not a sampled fetch). Sampling a storage image is rejected at compile time. Slot = positional across the buffer/texture/constant namespace; bound with `wave.bind_texture`.
 - Scalar values (`u32`, `f32`, etc.) -- push constants (set via `wave.set_value`)
+
+The texture format contract is scalar-driven and enforced at dispatch:
+`Texture2D<f32>` storage images must be bound to an `R32Float` texture (the
+texture must be created with `SHADER_WRITE` usage). A format mismatch returns
+`QuantaErrorKind::InvalidParam`. Storage compute textures are supported on
+Metal, the CPU reference device, and native Vulkan (load/write); sampling in
+compute is Metal/CPU-only for now, and WebGPU returns `NotSupported` for any
+compute texture binding. Query support with `gpu.supports_compute_textures()`.
 
 #### Produces
 
@@ -318,6 +328,10 @@ With `jit`:
 | `clamp(x, lo, hi)` | `f32` | Clamp to range |
 | `floor(x)`, `ceil(x)`, `round(x)` | `f32` | Rounding |
 | `fma(a, b, c)` | `f32` | Fused multiply-add |
+| `texture_load_2d(tex, x, y)` | `f32` | Read texel `(x, y)` (`.x` channel); storage read on a `&mut Texture2D`, texel fetch on a `&Texture2D` |
+| `texture_sample_2d(tex, x, y)` | `f32` | Sample a `&Texture2D` at integer coords (nearest); rejected on a storage slot |
+| `texture_write_2d(tex, x, y, v)` | `()` | Write `v` into texel `(x, y)` of a `&mut Texture2D<f32>` storage image |
+| `texture_size(tex)` | `(u32, u32)` | Texture `(width, height)` (CPU device) |
 
 #### Example
 

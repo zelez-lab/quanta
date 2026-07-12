@@ -129,10 +129,34 @@ impl VulkanDevice {
             )));
         }
 
-        // Descriptor set layout -- one storage buffer per binding.
-        // Limit to 8 to stay within maxPerStageDescriptorStorageBuffers on mobile GPUs.
-        let binding_count = 8u32;
-        let descriptor_set_layout = self.acquire_descriptor_set_layout(binding_count)?;
+        // Descriptor set layout. Default: 8 storage buffers (stays within
+        // maxPerStageDescriptorStorageBuffers on mobile GPUs) — the buffer-only
+        // fast path, unchanged. Reflection then overrides/extends slots the
+        // kernel binds as textures (storage or sampled images), so the layout
+        // matches the module's actual descriptors for AOT and JIT SPIR-V.
+        use crate::driver::spirv_meta::DescriptorKind;
+        let reflected = crate::driver::spirv_meta::binding_kinds(&spirv_words);
+        let max_binding = reflected.iter().map(|&(b, _)| b).max().unwrap_or(0);
+        let mut descriptor_kinds =
+            alloc::vec![DescriptorKind::StorageBuffer; (max_binding as usize + 1).max(8)];
+        for &(binding, kind) in &reflected {
+            descriptor_kinds[binding as usize] = kind;
+        }
+        // Sampled images in compute need a plumbed sampler object (the render
+        // path binds COMBINED_IMAGE_SAMPLER). That is not wired for compute
+        // yet — reject a sample-in-compute kernel with a clear error rather
+        // than build a layout the dispatch path can't populate. Storage
+        // (load/write) texture kernels are fully supported.
+        if descriptor_kinds.contains(&DescriptorKind::SampledImage) {
+            unsafe {
+                ffi::vkDestroyShaderModule(self.device, shader_module, core::ptr::null());
+            }
+            return Err(QuantaError::not_supported(
+                "sampled textures (texture_sample_2d) in compute are not supported on Vulkan \
+                 yet; use texture_load_2d against a storage texture (&mut Texture2D)",
+            ));
+        }
+        let descriptor_set_layout = self.acquire_descriptor_set_layout(&descriptor_kinds)?;
 
         // Declare a push constant range. Clamp to device limit (128 on mobile, 256 on desktop).
         let push_size = self.max_push_constants_size.min(256);
@@ -231,6 +255,7 @@ impl VulkanDevice {
                     pipeline,
                     layout: pipeline_layout,
                     descriptor_set_layout,
+                    descriptor_kinds,
                 },
             );
 
@@ -240,6 +265,7 @@ impl VulkanDevice {
             binding_count: 0,
             texture_bindings: [0u64; 16],
             texture_count: 0,
+            f32_storage_texture_mask: 0,
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -319,6 +345,63 @@ impl VulkanDevice {
     /// otherwise — into a single command buffer / submission. Entries
     /// of a folded dispatch cover disjoint linear ranges, so no
     /// barrier is needed between them.
+    /// Validate and prepare each bound texture slot for a compute dispatch.
+    ///
+    /// Format contract (decision 2): a slot the kernel declares
+    /// `&mut Texture2D<f32>` (reflected as a storage image) must be bound to an
+    /// `R32Float` texture — a mismatch (e.g. an RGBA8 texture) returns
+    /// `InvalidParam` naming the slot, expected, and got. Each valid storage
+    /// texture is then transitioned into `VK_IMAGE_LAYOUT_GENERAL` so its
+    /// STORAGE_IMAGE descriptor is legal at dispatch time.
+    #[cfg(feature = "compute")]
+    fn prepare_compute_textures(
+        &self,
+        wave: &Wave,
+        descriptor_kinds: &[crate::driver::spirv_meta::DescriptorKind],
+    ) -> Result<(), QuantaError> {
+        use crate::driver::spirv_meta::DescriptorKind;
+        for slot in 0..wave.texture_count as usize {
+            let handle = wave.texture_bindings[slot];
+            if handle == 0 {
+                continue;
+            }
+            // Only storage-image slots are populated by the dispatch loop; a
+            // texture bound to a non-image slot is a caller error.
+            match descriptor_kinds.get(slot) {
+                Some(DescriptorKind::StorageImage) => {}
+                _ => {
+                    return Err(QuantaError::invalid_param(
+                        "texture bound to a slot the kernel does not use as a storage image",
+                    )
+                    .with_context(&format!("compute texture: slot {slot}")));
+                }
+            }
+            let format = {
+                let textures = self
+                    .textures
+                    .read()
+                    .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                let tex = textures.get(&handle).ok_or_else(|| {
+                    QuantaError::not_found("bound compute texture not found")
+                        .with_context(&format!("compute texture: slot {slot}"))
+                })?;
+                tex.format
+            };
+            // The scalar-driven format contract: Texture2D<f32> ⇔ R32Float.
+            if format != ffi::VK_FORMAT_R32_SFLOAT {
+                return Err(
+                    QuantaError::invalid_param("compute storage texture format mismatch")
+                        .with_context(&format!(
+                            "slot {slot}: expected R32Float (VkFormat {}), got VkFormat {format}",
+                            ffi::VK_FORMAT_R32_SFLOAT
+                        )),
+                );
+            }
+            self.transition_texture_handle_general(handle)?;
+        }
+        Ok(())
+    }
+
     fn wave_dispatch_records_impl(
         &self,
         wave: &Wave,
@@ -349,12 +432,26 @@ impl VulkanDevice {
             return Err(QuantaError::submit_failed());
         }
 
+        // Before touching descriptors, transition every bound storage texture
+        // into GENERAL (the only layout a STORAGE_IMAGE descriptor accepts) and
+        // validate its format against the param's R32Float expectation. This
+        // is a self-contained submit+wait, so the layout is settled before the
+        // dispatch command buffer runs.
+        self.prepare_compute_textures(wave, &cp.descriptor_kinds)?;
+
         // Update descriptor set with buffer bindings (inline arrays)
         let buffers_guard = self
             .buffers
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let textures_guard = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let mut buffer_infos: [ffi::VkDescriptorBufferInfo; 16] = unsafe { core::mem::zeroed() };
+        // Image infos must outlive vkUpdateDescriptorSets — keep them alongside
+        // buffer_infos so the pointers in `writes` stay valid until the update.
+        let mut image_infos: [ffi::VkDescriptorImageInfo; 16] = unsafe { core::mem::zeroed() };
         let mut writes: [ffi::VkWriteDescriptorSet; 16] = unsafe { core::mem::zeroed() };
         let mut write_count = 0usize;
 
@@ -382,6 +479,37 @@ impl VulkanDevice {
                 };
                 write_count += 1;
             }
+        }
+
+        // Storage-image (texture) bindings: one STORAGE_IMAGE descriptor per
+        // bound texture slot, pointing at the texture's identity view in the
+        // GENERAL layout established above.
+        for slot in 0..wave.texture_count as usize {
+            let handle = wave.texture_bindings[slot];
+            if handle == 0 {
+                continue;
+            }
+            let Some(tex) = textures_guard.get(&handle) else {
+                continue;
+            };
+            image_infos[write_count] = ffi::VkDescriptorImageInfo {
+                sampler: ffi::null_handle(),
+                image_view: tex.view,
+                image_layout: ffi::VK_IMAGE_LAYOUT_GENERAL,
+            };
+            writes[write_count] = ffi::VkWriteDescriptorSet {
+                s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                p_next: core::ptr::null(),
+                dst_set: ds,
+                dst_binding: slot as u32,
+                dst_array_element: 0,
+                descriptor_count: 1,
+                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                p_image_info: &image_infos[write_count],
+                p_buffer_info: core::ptr::null(),
+                p_texel_buffer_view: core::ptr::null(),
+            };
+            write_count += 1;
         }
 
         if write_count > 0 {
@@ -453,6 +581,7 @@ impl VulkanDevice {
             }
         }
         drop(buffers_guard);
+        drop(textures_guard);
         drop(compute_pipelines);
         self.submit_and_wait(cmd)?.wait()?;
 
@@ -497,11 +626,18 @@ impl VulkanDevice {
             return Err(QuantaError::submit_failed());
         }
 
+        self.prepare_compute_textures(wave, &cp.descriptor_kinds)?;
+
         let buffers_guard = self
             .buffers
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let textures_guard = self
+            .textures
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let mut buffer_infos: [ffi::VkDescriptorBufferInfo; 16] = unsafe { core::mem::zeroed() };
+        let mut image_infos: [ffi::VkDescriptorImageInfo; 16] = unsafe { core::mem::zeroed() };
         let mut writes: [ffi::VkWriteDescriptorSet; 16] = unsafe { core::mem::zeroed() };
         let mut write_count = 0usize;
 
@@ -529,6 +665,33 @@ impl VulkanDevice {
                 };
                 write_count += 1;
             }
+        }
+        for slot in 0..wave.texture_count as usize {
+            let handle = wave.texture_bindings[slot];
+            if handle == 0 {
+                continue;
+            }
+            let Some(tex) = textures_guard.get(&handle) else {
+                continue;
+            };
+            image_infos[write_count] = ffi::VkDescriptorImageInfo {
+                sampler: ffi::null_handle(),
+                image_view: tex.view,
+                image_layout: ffi::VK_IMAGE_LAYOUT_GENERAL,
+            };
+            writes[write_count] = ffi::VkWriteDescriptorSet {
+                s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                p_next: core::ptr::null(),
+                dst_set: ds,
+                dst_binding: slot as u32,
+                dst_array_element: 0,
+                descriptor_count: 1,
+                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                p_image_info: &image_infos[write_count],
+                p_buffer_info: core::ptr::null(),
+                p_texel_buffer_view: core::ptr::null(),
+            };
+            write_count += 1;
         }
         if write_count > 0 {
             unsafe {
@@ -577,6 +740,7 @@ impl VulkanDevice {
             }
         }
         drop(buffers_guard);
+        drop(textures_guard);
         drop(compute_pipelines);
         self.submit_and_wait(cmd)?.wait()?;
 

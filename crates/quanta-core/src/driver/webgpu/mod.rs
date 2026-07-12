@@ -605,6 +605,14 @@ impl QGpuDevice for WebgpuDevice {
     }
 
     fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
+        // Compute texture bindings (storage/sampled images) are not wired on
+        // the WebGPU backend; fail loudly rather than silently ignore them
+        // (mirrors the ICB path). `supports_compute_textures()` returns false.
+        if wave.texture_count != 0 {
+            return Err(Self::err(
+                "WebGPU does not support compute texture bindings",
+            ));
+        }
         let device = self.dev()?;
         let mut waves = self.state.waves.0.borrow_mut();
         let entry = waves
@@ -1696,6 +1704,7 @@ impl QGpuDevice for WebgpuDevice {
                         binding_count: *binding_count,
                         texture_bindings: [0; crate::api::types::MAX_TEXTURES],
                         texture_count: 0,
+                        f32_storage_texture_mask: 0,
                         push_data: [0; crate::api::types::PUSH_DATA_CAP],
                         push_len: 0,
                         push_mask: 0,
@@ -1867,6 +1876,7 @@ fn make_wave(handle: u64, workgroup_size: [u32; 3]) -> Wave {
         binding_count: 0,
         texture_bindings: [0; crate::api::types::MAX_TEXTURES],
         texture_count: 0,
+        f32_storage_texture_mask: 0,
         push_data: [0; crate::api::types::PUSH_DATA_CAP],
         push_len: 0,
         push_mask: 0,

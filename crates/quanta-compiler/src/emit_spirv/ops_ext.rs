@@ -448,6 +448,7 @@ impl SpvEmitter {
             Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
             // Read slots are declared as OpTypeSampledImage, but
             // OpImageFetch takes a plain OpTypeImage — unwrap with OpImage.
+            // Storage (write-declared) slots are already a plain OpTypeImage.
             let image = if let Some(&image_ty) = self.texture_image_types.get(&texture) {
                 let image = self.alloc_id();
                 Self::emit_op(&mut self.sec_function, OP_IMAGE, &[image_ty, image, loaded]);
@@ -475,9 +476,16 @@ impl SpvEmitter {
             let f32_ty = self.ensure_type_f32();
             let vec4_ty = self.ensure_type_vector(f32_ty, 4);
             let fetch_result = self.alloc_id();
+            // A `&mut Texture2D` slot is a storage image: read it with
+            // OpImageRead. A sampled `&Texture2D` slot uses OpImageFetch.
+            let read_op = if self.texture_storage_slots.contains(&texture) {
+                OP_IMAGE_READ
+            } else {
+                OP_IMAGE_FETCH
+            };
             Self::emit_op(
                 &mut self.sec_function,
-                OP_IMAGE_FETCH,
+                read_op,
                 &[vec4_ty, fetch_result, image, coord],
             );
             let result_ty = self.scalar_type_id(ty);
