@@ -269,6 +269,7 @@ fn compute_read_modify_writes_storage_texture() {
 
 /// The CPU software executor must produce identical texels (validates W6
 /// independently of the default device).
+#[cfg(feature = "software")]
 #[test]
 fn cpu_writes_and_rmw_storage_texture() {
     let gpu = quanta::init_cpu();
@@ -316,5 +317,6 @@ fn format_mismatch_is_invalid_param() {
     if let Some(gpu) = try_gpu() {
         check(&gpu);
     }
+    #[cfg(feature = "software")]
     check(&quanta::init_cpu());
 }

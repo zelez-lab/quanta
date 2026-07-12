@@ -3564,7 +3564,7 @@ impl<'a> LowerCtx<'a> {
         if !scale.is_power_of_two() || !width.is_power_of_two() {
             return None;
         }
-        if byte_offset % (width as u64) != 0 {
+        if !byte_offset.is_multiple_of(width as u64) {
             return None;
         }
         let shift = (scale.trailing_zeros() as i32) - (width.trailing_zeros() as i32);
