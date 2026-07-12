@@ -12,6 +12,9 @@ mod emit_wgsl;
 mod metallib;
 mod pipeline;
 mod rustc_compile;
+#[cfg(test)]
+#[path = "shader_parity_tests.rs"]
+mod shader_parity_tests;
 mod shader_pipeline;
 mod targets;
 

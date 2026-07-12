@@ -139,6 +139,9 @@ jobs:
       - name: GPU advanced tests
         run: cargo test --test gpu_advanced --test gpu_queue --test gpu_timeline --test gpu_texture_views --test gpu_occlusion --test gpu_indirect_dispatch --test gpu_debug --test gpu_reload -- --test-threads=1
 
+      - name: DSL shader parity draw tests
+        run: cargo test --test shader_parity_draw --features metal,render -- --test-threads=1
+
   # ─── Metal validation layer ──────────────────────────────────────────
   # Same gate as gpu-tests-metal — needs real Metal hardware.
   metal-validation:
@@ -468,3 +471,4 @@ jobs:
         run: |
           cargo test --test render_triangle_test --no-default-features --features vulkan,render
           cargo test --test texture_write_region --no-default-features --features vulkan,render
+          cargo test --test shader_parity_draw --no-default-features --features vulkan,render
