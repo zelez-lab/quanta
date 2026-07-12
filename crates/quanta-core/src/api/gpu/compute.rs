@@ -144,7 +144,7 @@ impl Gpu {
         new_wave.binding_count = wave.binding_count;
         new_wave.texture_bindings = wave.texture_bindings;
         new_wave.texture_count = wave.texture_count;
-        new_wave.f32_storage_texture_mask = wave.f32_storage_texture_mask;
+        new_wave.storage_texture_kinds = wave.storage_texture_kinds;
         new_wave.push_data = wave.push_data;
         new_wave.push_len = wave.push_len;
         new_wave.push_mask = wave.push_mask;

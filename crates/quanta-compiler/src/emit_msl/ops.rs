@@ -638,12 +638,23 @@ pub(crate) fn emit_op(
             x,
             y,
             value,
-            ..
+            ty,
         } => {
-            out.push_str(&format!(
-                "{}tex_{}.write(r{}, uint2(r{}, r{}));\n",
-                pad, texture, value.0, x.0, y.0
-            ));
+            // R32Float writes the scalar directly (MSL broadcasts it into the
+            // float4 texel). A packed-RGBA8 `Texture2D<u32>` slot carries a
+            // `0xAABBGGRR` u32; unpack_unorm4x8_to_float splits it into the
+            // float4 unorm texel the read_write texture stores.
+            if *ty == ScalarType::U32 {
+                out.push_str(&format!(
+                    "{}tex_{}.write(unpack_unorm4x8_to_float(r{}), uint2(r{}, r{}));\n",
+                    pad, texture, value.0, x.0, y.0
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}tex_{}.write(r{}, uint2(r{}, r{}));\n",
+                    pad, texture, value.0, x.0, y.0
+                ));
+            }
         }
         KernelOp::TextureSize {
             dst_w,
@@ -801,14 +812,29 @@ pub(crate) fn emit_op(
             y,
             ty,
         } => {
-            out.push_str(&format!(
-                "{}{} = tex_{}.read(uint2(r{}, r{})).x;\n",
-                pad,
-                dst_lv(mutable, ty.msl_name(), dst.0),
-                texture,
-                x.0,
-                y.0
-            ));
+            // R32Float returns the x channel of the float4. A packed-RGBA8
+            // `Texture2D<u32>` slot folds the whole float4 texel back into one
+            // `0xAABBGGRR` u32 with pack_float_to_unorm4x8 (inverse of the
+            // write path's unpack_unorm4x8_to_float).
+            if *ty == ScalarType::U32 {
+                out.push_str(&format!(
+                    "{}{} = pack_float_to_unorm4x8(tex_{}.read(uint2(r{}, r{})));\n",
+                    pad,
+                    dst_lv(mutable, ty.msl_name(), dst.0),
+                    texture,
+                    x.0,
+                    y.0
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}{} = tex_{}.read(uint2(r{}, r{})).x;\n",
+                    pad,
+                    dst_lv(mutable, ty.msl_name(), dst.0),
+                    texture,
+                    x.0,
+                    y.0
+                ));
+            }
         }
         KernelOp::SubgroupSize { dst } => {
             out.push_str(&format!(

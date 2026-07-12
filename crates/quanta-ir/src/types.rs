@@ -764,16 +764,56 @@ pub fn reject_sample_on_write(kernel: &KernelDef) -> Result<(), String> {
     Ok(())
 }
 
+/// Reject a read-only, sampled `&Texture2D<u32>` param. In storage-texture
+/// position `u32` means the packed RGBA8-unorm image (`&mut Texture2D<u32>`,
+/// wired by Arc B); a *sampled* u32 texture would mean something else — an
+/// unsigned-integer sampled image (R32Uint / RGBA8Uint) — which is not wired.
+/// Rather than silently emit it as a float sampled image (`emit_texture_2d_read`
+/// ignores the scalar), refuse it at emit so the meaning of sampled u32 stays
+/// free for a future arc. Every SPIR-V emitter calls this so both backends
+/// agree. (A `&mut Texture2D<u32>` storage image is fine and is not matched.)
+pub fn reject_sampled_u32_texture(kernel: &KernelDef) -> Result<(), String> {
+    for p in &kernel.params {
+        if let KernelParam::Texture2DRead {
+            slot,
+            scalar_type: ScalarType::U32,
+            ..
+        } = p
+        {
+            return Err(format!(
+                "texture slot {slot} is a sampled `&Texture2D<u32>`, which is not supported: \
+                 in storage-texture position `u32` means the packed RGBA8 image \
+                 (`&mut Texture2D<u32>`). A sampled unsigned-integer texture is a distinct, \
+                 unwired meaning. Use `&Texture2D<f32>` to sample, or `&mut Texture2D<u32>` \
+                 for a packed-RGBA8 storage image."
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl ScalarType {
     /// SPIR-V `ImageFormat` operand for a storage image whose texel is this
-    /// scalar. The format contract is scalar-driven: `Texture2D<f32>` ⇔
-    /// R32Float, encoded as `ImageFormat = 3` (per the SPIR-V spec enum —
-    /// R32f is 3, not the whole-vector Rgba32f which is 1). R32f needs no
-    /// capability beyond `Shader`. Only f32 storage images are wired today;
-    /// other scalars are refused at the call site.
+    /// scalar. The format contract is scalar-driven:
+    ///
+    /// - `Texture2D<f32>` ⇔ R32Float, `ImageFormat = 3` (per the SPIR-V spec
+    ///   enum — R32f is 3, not the whole-vector Rgba32f which is 1). R32f needs
+    ///   no capability beyond `Shader`.
+    /// - `Texture2D<u32>` ⇔ **RGBA8-unorm packed-u32**, `ImageFormat = 4`
+    ///   (Rgba8, one past R32f in the enum). In storage-texture position `u32`
+    ///   deliberately means the packed RGBA8 image, *not* R32Uint: the texel
+    ///   crosses the kernel boundary as a `0xAABBGGRR` u32, packed/unpacked to
+    ///   a `vec4<f32>` at the OpImageRead/OpImageWrite via
+    ///   Pack/UnpackUnorm4x8. The image's SPIR-V sampled type is therefore
+    ///   still f32 for both — only this format word differs. Rgba8 storage
+    ///   is a mandatory format, so it also needs no capability beyond `Shader`.
+    ///
+    /// Any other scalar has no wired storage format and is refused at the call
+    /// site.
     pub fn spirv_storage_image_format(&self) -> Option<u32> {
         match self {
             Self::F32 => Some(3), // R32f
+            Self::U32 => Some(4), // Rgba8 (packed-u32 RGBA8-unorm)
             _ => None,
         }
     }

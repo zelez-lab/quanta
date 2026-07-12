@@ -2502,6 +2502,13 @@ impl<'a> LowerCtx<'a> {
                     Some("texture_sample_2d_f32") => self.texture_sample_2d(ScalarType::F32)?,
                     Some("texture_load_3d_f32") => self.texture_load_3d(ScalarType::F32)?,
                     Some("texture_write_2d_f32") => self.texture_write_2d(ScalarType::F32)?,
+                    // Packed-u32 (RGBA8-unorm) storage-image family: same
+                    // TextureLoad2D/TextureWrite2D KernelOps as the f32 family,
+                    // only ty=U32. The emitters read the ty to pack/unpack the
+                    // four unorm channels at the op boundary — no new KernelOp,
+                    // no new KernelParam, no wire change.
+                    Some("texture_load_2d_u32") => self.texture_load_2d(ScalarType::U32)?,
+                    Some("texture_write_2d_u32") => self.texture_write_2d(ScalarType::U32)?,
 
                     Some(other) => {
                         return Err(LoweringError::UnsupportedOp {

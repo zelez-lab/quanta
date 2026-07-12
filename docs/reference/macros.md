@@ -280,15 +280,41 @@ fn name(params...) { body }
 - `&mut [T]` -- read-write GPU buffer
 - `&Texture2D<f32>` -- sampled texture (read via `texture_sample_2d` / `texture_load_2d`; bound with `wave.bind_texture`)
 - `&mut Texture2D<f32>` -- **read-write storage image**, R32Float format. Write with `texture_write_2d`; read the same slot with `texture_load_2d` (a storage read, not a sampled fetch). Sampling a storage image is rejected at compile time. Slot = positional across the buffer/texture/constant namespace; bound with `wave.bind_texture`.
+- `&mut Texture2D<u32>` -- **read-write storage image**, RGBA8-unorm format, with the texel packed into one `u32`. Each texel crosses the kernel boundary as a `0xAABBGGRR` u32 (little-endian byte order R,G,B,A); build/split it with bit math (see the example below). A read-only, sampled `&Texture2D<u32>` is a different, unwired meaning and is **rejected at compile time** -- use `&Texture2D<f32>` to sample. **BGRA8 is not supported**: effect layers must be RGBA8 (there is no SPIR-V storage format for BGRA8; an in-kernel byte-shuffle is the escape hatch). User-facing channel pack/unpack intrinsics are deferred -- kernels use bit math today.
 - Scalar values (`u32`, `f32`, etc.) -- push constants (set via `wave.set_value`)
 
-The texture format contract is scalar-driven and enforced at dispatch:
-`Texture2D<f32>` storage images must be bound to an `R32Float` texture (the
-texture must be created with `SHADER_WRITE` usage). A format mismatch returns
+The texture format contract is scalar-driven and enforced per storage-slot kind
+at dispatch: a `&mut Texture2D<f32>` slot must be bound to an `R32Float`
+texture, and a `&mut Texture2D<u32>` slot to an `RGBA8` texture (both created
+with `SHADER_WRITE` usage). A format mismatch -- either direction -- returns
 `QuantaErrorKind::InvalidParam`. Storage compute textures are supported on
 Metal, the CPU reference device, and native Vulkan (load/write); sampling in
 compute is Metal/CPU-only for now, and WebGPU returns `NotSupported` for any
 compute texture binding. Query support with `gpu.supports_compute_textures()`.
+RGBA8 (`&mut Texture2D<u32>`) storage additionally needs
+`MTLReadWriteTextureTier2` on Metal; a device below tier 2 returns
+`QuantaErrorKind::NotSupported` at dispatch (RGBA8 storage is a mandatory format
+on Vulkan, so there is no equivalent gate there). This tier nuance surfaces as
+the `NotSupported` error, not as a separate capability query.
+
+Packing a texel with bit math (the deferred pack-intrinsic pattern):
+
+```rust
+#[quanta::kernel]
+fn tint(image: &mut Texture2D<u32>, width: u32) {
+    let i = quark_id();
+    let (x, y) = (i % width, i / width);
+    // Read the packed texel and split it into channels.
+    let v = texture_load_2d(image, x, y);
+    let r = v & 0xFF;
+    let g = (v >> 8) & 0xFF;
+    let b = (v >> 16) & 0xFF;
+    let a = (v >> 24) & 0xFF;
+    // ... operate on channels (here: swap R and B) ...
+    let out = b | (g << 8) | (r << 16) | (a << 24);
+    texture_write_2d(image, x, y, out);
+}
+```
 
 #### Produces
 
@@ -328,9 +354,9 @@ With `jit`:
 | `clamp(x, lo, hi)` | `f32` | Clamp to range |
 | `floor(x)`, `ceil(x)`, `round(x)` | `f32` | Rounding |
 | `fma(a, b, c)` | `f32` | Fused multiply-add |
-| `texture_load_2d(tex, x, y)` | `f32` | Read texel `(x, y)` (`.x` channel); storage read on a `&mut Texture2D`, texel fetch on a `&Texture2D` |
+| `texture_load_2d(tex, x, y)` | `f32` / `u32` | Read texel `(x, y)`. On `&mut/&Texture2D<f32>`: the `.x` channel as `f32` (storage read on `&mut`, texel fetch on `&`). On `&mut Texture2D<u32>`: the whole RGBA8 texel as a packed `0xAABBGGRR` u32 |
 | `texture_sample_2d(tex, x, y)` | `f32` | Sample a `&Texture2D` at integer coords (nearest); rejected on a storage slot |
-| `texture_write_2d(tex, x, y, v)` | `()` | Write `v` into texel `(x, y)` of a `&mut Texture2D<f32>` storage image |
+| `texture_write_2d(tex, x, y, v)` | `()` | Write `v` into texel `(x, y)`. On `&mut Texture2D<f32>`: `v: f32` into the R channel. On `&mut Texture2D<u32>`: `v: u32` as a packed `0xAABBGGRR` RGBA8 texel |
 | `texture_size(tex)` | `(u32, u32)` | Texture `(width, height)` (CPU device) |
 
 The kernel (compute) intrinsic surface above is a **different set** from

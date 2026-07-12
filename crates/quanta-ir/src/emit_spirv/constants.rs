@@ -278,5 +278,11 @@ pub(crate) const GLSL_FCLAMP: u32 = 43;
 pub(crate) const GLSL_UCLAMP: u32 = 44;
 pub(crate) const GLSL_SCLAMP: u32 = 45;
 pub(crate) const GLSL_FMA: u32 = 50;
+/// Pack a `vec4<f32>` of unorm channels into one `0xAABBGGRR` u32 (RGBA8-unorm
+/// storage-image read boundary — clamps each component to [0,1] × 255).
+pub(crate) const GLSL_PACK_UNORM_4X8: u32 = 55;
+/// Unpack a `0xAABBGGRR` u32 into a `vec4<f32>` of unorm channels (RGBA8-unorm
+/// storage-image write boundary — the inverse of `GLSL_PACK_UNORM_4X8`).
+pub(crate) const GLSL_UNPACK_UNORM_4X8: u32 = 64;
 pub(crate) const GLSL_FIND_I_LSB: u32 = 73;
 pub(crate) const GLSL_FIND_U_MSB: u32 = 75;

@@ -11,6 +11,7 @@ use super::ops::emit_op;
 
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     quanta_ir::types::reject_sample_on_write(kernel)?;
+    quanta_ir::types::reject_sampled_u32_texture(kernel)?;
     let mut out = String::new();
     out.push_str(
         "#pragma clang fp contract(fast)\n\
@@ -94,8 +95,14 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
             KernelParam::Texture2DWrite { slot, .. } => {
                 // read_write, not write: the DSL admits texture_load_2d against a
                 // `&mut Texture2D` slot, so the storage image must be readable as
-                // well as writable. R32Float read_write is MTLReadWriteTextureTier 1
-                // — available on every device this path runs on.
+                // well as writable. The MSL texture type is `float` for both the
+                // R32Float and the packed-RGBA8 (`Texture2D<u32>`) slot — the
+                // pixel format is host-side, and the u32 pack/unpack happens at
+                // the read/write op. R32Float read_write is only
+                // MTLReadWriteTextureTier1 (available everywhere this path
+                // runs); RGBA8 read_write needs MTLReadWriteTextureTier2, which
+                // the driver gates at dispatch (see the Metal compute-texture
+                // format validation).
                 param_lines.push(format!(
                     "    texture2d<float, access::read_write> tex_{} [[texture({})]]",
                     slot, slot

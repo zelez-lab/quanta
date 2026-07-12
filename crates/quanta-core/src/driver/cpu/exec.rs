@@ -181,6 +181,54 @@ impl ExecCtx<'_> {
             data[base..base + 4].copy_from_slice(&value.to_le_bytes());
         }
     }
+
+    /// Read an RGBA8 texel at integer `(x, y)` (clamp-to-edge) as a packed
+    /// `0xAABBGGRR` u32 — the four unorm bytes in little-endian R,G,B,A order,
+    /// matching the packed-u32 contract of `texture_load_2d_u32` and the SPIR-V
+    /// PackUnorm4x8 / MSL pack_float_to_unorm4x8 boundary on the GPU. Returns 0
+    /// for an unbound slot. (This is the whole-texel twin of `texel_x`, which
+    /// returns only the R channel as an f32 unorm for the sampled read path.)
+    fn texel_packed_u32(&self, slot: u32, x: i64, y: i64) -> u32 {
+        let Some(Some(tex)) = self.textures.get(slot as usize) else {
+            return 0;
+        };
+        if tex.width == 0 || tex.height == 0 {
+            return 0;
+        }
+        let cx = x.clamp(0, tex.width as i64 - 1) as usize;
+        let cy = y.clamp(0, tex.height as i64 - 1) as usize;
+        let data = tex.data.lock().unwrap();
+        let base = (cy * tex.width as usize + cx) * 4;
+        if base + 4 > data.len() {
+            return 0;
+        }
+        u32::from_le_bytes([data[base], data[base + 1], data[base + 2], data[base + 3]])
+    }
+
+    /// Write a packed `0xAABBGGRR` u32 into the RGBA8 texel at `(x, y)`,
+    /// splitting it into the four little-endian R,G,B,A bytes — the inverse of
+    /// `texel_packed_u32`. Suppressed during the subgroup `Collect` dry run;
+    /// out-of-bounds or non-RGBA8 writes are dropped (the packed-u32 storage
+    /// contract restricts writes to RGBA8 textures, enforced at dispatch).
+    fn write_texel_rgba8(&self, slot: u32, x: i64, y: i64, value: u32) {
+        if self.writes_suppressed() {
+            return;
+        }
+        let Some(Some(tex)) = self.textures.get(slot as usize) else {
+            return;
+        };
+        if !matches!(tex.format, crate::api::types::Format::RGBA8) {
+            return;
+        }
+        if x < 0 || y < 0 || x >= tex.width as i64 || y >= tex.height as i64 {
+            return;
+        }
+        let base = (y as usize * tex.width as usize + x as usize) * 4;
+        let mut data = tex.data.lock().unwrap();
+        if base + 4 <= data.len() {
+            data[base..base + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
 }
 
 /// Per-workgroup invariant context for cooperative segment execution.
@@ -744,19 +792,34 @@ pub(super) fn execute_ops(
                 let _ = width;
                 ctx.regs.insert(dst.0, eval_binop(va, vb, &BinOp::Mul, ty));
             }
-            // Texture load/sample: nearest texel, clamp-to-edge, `.x` channel.
-            // The GPU compute samplers default to nearest for the existing read
-            // test, so sample and load resolve identically on integer coords.
+            // Texture load/sample: nearest texel, clamp-to-edge. The GPU compute
+            // samplers default to nearest for the existing read test, so sample
+            // and load resolve identically on integer coords. R32Float / sampled
+            // reads take the `.x` channel as f32; a packed-RGBA8 load (ty=U32)
+            // returns the whole texel as a `0xAABBGGRR` u32.
             KernelOp::TextureLoad2D {
-                dst, texture, x, y, ..
+                dst,
+                texture,
+                x,
+                y,
+                ty,
             }
             | KernelOp::TextureSample2D {
-                dst, texture, x, y, ..
+                dst,
+                texture,
+                x,
+                y,
+                ty,
             } => {
                 let xi = reg(ctx, x)?.as_u32() as i64;
                 let yi = reg(ctx, y)?.as_u32() as i64;
-                let v = ctx.texel_x(*texture, xi, yi);
-                ctx.regs.insert(dst.0, Value::F32(v));
+                if *ty == ScalarType::U32 {
+                    let v = ctx.texel_packed_u32(*texture, xi, yi);
+                    ctx.regs.insert(dst.0, Value::U32(v));
+                } else {
+                    let v = ctx.texel_x(*texture, xi, yi);
+                    ctx.regs.insert(dst.0, Value::F32(v));
+                }
             }
             // 3D sampling is not implemented on the CPU executor (no compute
             // kernel exercises it); keep the zero contract.
@@ -768,12 +831,19 @@ pub(super) fn execute_ops(
                 x,
                 y,
                 value,
-                ..
+                ty,
             } => {
                 let xi = reg(ctx, x)?.as_u32() as i64;
                 let yi = reg(ctx, y)?.as_u32() as i64;
-                let v = reg(ctx, value)?.as_f32();
-                ctx.write_texel_x(*texture, xi, yi, v);
+                // R32Float writes the scalar into the x channel; a packed-RGBA8
+                // write (ty=U32) splits the `0xAABBGGRR` u32 into four bytes.
+                if *ty == ScalarType::U32 {
+                    let v = reg(ctx, value)?.as_u32();
+                    ctx.write_texel_rgba8(*texture, xi, yi, v);
+                } else {
+                    let v = reg(ctx, value)?.as_f32();
+                    ctx.write_texel_x(*texture, xi, yi, v);
+                }
             }
             KernelOp::TextureSize {
                 dst_w,

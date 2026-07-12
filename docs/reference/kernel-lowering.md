@@ -109,10 +109,12 @@ Compute-texture and workgroup-shared-memory access go through
 intrinsics rather than raw indexing. The signatures:
 
 ```rust,ignore
-// Compute textures (params &Texture2D<f32> / &mut Texture2D<f32>):
-texture_load_2d(tex, x, y) -> f32        // texel fetch (sampled slot) or storage read (&mut slot)
+// Compute textures (params &Texture2D<f32> / &mut Texture2D<f32> / &mut Texture2D<u32>):
+texture_load_2d(tex, x, y) -> f32        // texel fetch (sampled slot) or storage read (&mut slot), .x channel
+texture_load_2d(tex, x, y) -> u32        // &mut Texture2D<u32>: whole RGBA8 texel as a packed 0xAABBGGRR u32
 texture_sample_2d(tex, x, y) -> f32      // nearest sample of a &Texture2D; rejected on a storage slot
-texture_write_2d(tex, x, y, v)           // write v into a &mut Texture2D<f32> storage image (R32Float)
+texture_write_2d(tex, x, y, v: f32)      // write v into a &mut Texture2D<f32> storage image (R32Float)
+texture_write_2d(tex, x, y, v: u32)      // write a packed 0xAABBGGRR RGBA8 texel into a &mut Texture2D<u32>
 texture_size(tex) -> (u32, u32)          // (width, height), CPU device
 
 // Workgroup-shared memory (fixed-size array, kernel body only):
@@ -121,11 +123,25 @@ scratch[lid] = data[i];                      // shared store
 let v = scratch[lid];                        // shared load
 ```
 
-Storage-image writes are format-checked at dispatch: a
-`&mut Texture2D<f32>` must be bound to an `R32Float` texture created with
-`SHADER_WRITE` usage, or the bind fails with `InvalidParam`. Sampling a
-storage slot is a compile error. Query `gpu.supports_compute_textures()`
-before using texture params; see the
+The intrinsic is dispatched by the texture param's scalar type: a
+`&mut Texture2D<u32>` slot lowers `texture_load_2d` / `texture_write_2d` to the
+same `TextureLoad2D` / `TextureWrite2D` KernelOps as the `f32` slot, only with
+`ty = U32`. On U32 the emitters pack/unpack the four unorm channels at the op
+boundary -- SPIR-V `PackUnorm4x8` / `UnpackUnorm4x8` (the storage image's own
+component type stays `f32`, format word `Rgba8`), MSL
+`pack_float_to_unorm4x8` / `unpack_unorm4x8_to_float`. The packed layout is
+`0xAABBGGRR` (little-endian byte order R,G,B,A); build/split it with bit math.
+
+Storage-image writes are format-checked per slot kind at dispatch: a
+`&mut Texture2D<f32>` must be bound to an `R32Float` texture and a
+`&mut Texture2D<u32>` to an `RGBA8` texture (both created with `SHADER_WRITE`
+usage), or the bind fails with `InvalidParam`. A sampled `&Texture2D<u32>` is a
+compile error (storage-position `u32` is the packed-RGBA8 image; a sampled
+integer texture is unwired). Sampling a storage slot is likewise a compile
+error. RGBA8 storage needs `MTLReadWriteTextureTier2` on Metal (below tier 2 the
+dispatch is `NotSupported`); it is a mandatory format on Vulkan. BGRA8 storage
+is unsupported -- use RGBA8. Query `gpu.supports_compute_textures()` before
+using texture params; see the
 [kernel macro built-in table](macros.md#built-in-functions-available-in-kernel-body)
 for the full intrinsic list.
 

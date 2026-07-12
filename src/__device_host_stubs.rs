@@ -511,7 +511,11 @@ pub fn texture_sample_2d_f32(_slot: u32, _x: u32, _y: u32) -> f32 {
 pub fn texture_load_2d_f32(_slot: u32, _x: u32, _y: u32) -> f32 {
     0.0
 }
+pub fn texture_load_2d_u32(_slot: u32, _x: u32, _y: u32) -> u32 {
+    0
+}
 pub fn texture_load_3d_f32(_slot: u32, _x: u32, _y: u32, _z: u32) -> f32 {
     0.0
 }
 pub fn texture_write_2d_f32(_slot: u32, _x: u32, _y: u32, _val: f32) {}
+pub fn texture_write_2d_u32(_slot: u32, _x: u32, _y: u32, _val: u32) {}

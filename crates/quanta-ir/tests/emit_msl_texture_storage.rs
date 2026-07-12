@@ -117,3 +117,80 @@ fn sample_on_write_slot_is_rejected() {
         "error should explain the storage/sample mismatch; got: {err}"
     );
 }
+
+/// A packed-RGBA8 (`&mut Texture2D<u32>`) slot: the declaration stays a `float`
+/// read_write texture (pixel format is host-side), but the read/write ops go
+/// through MSL's pack_float_to_unorm4x8 / unpack_unorm4x8_to_float.
+#[test]
+fn rgba8_slot_packs_and_unpacks_at_the_op() {
+    let mut def = write_kernel();
+    def.params = vec![
+        KernelParam::Texture2DWrite {
+            name: "tex".into(),
+            slot: 1,
+            scalar_type: ScalarType::U32,
+        },
+        KernelParam::FieldRead {
+            name: "values".into(),
+            slot: 0,
+            scalar_type: ScalarType::U32,
+        },
+    ];
+    def.body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        KernelOp::Load {
+            dst: Reg(1),
+            field: 0,
+            index: Reg(0),
+            ty: ScalarType::U32,
+        },
+        // read-modify-write so both the pack (load) and unpack (write) appear.
+        KernelOp::TextureLoad2D {
+            dst: Reg(2),
+            texture: 1,
+            x: Reg(0),
+            y: Reg(0),
+            ty: ScalarType::U32,
+        },
+        KernelOp::TextureWrite2D {
+            texture: 1,
+            x: Reg(0),
+            y: Reg(0),
+            value: Reg(1),
+            ty: ScalarType::U32,
+        },
+    ];
+    def.next_reg = 3;
+    let msl = emit_msl::emit(&def).expect("emit rgba8 kernel");
+    // Declaration is still a float read_write texture — the format is host-side.
+    assert!(
+        msl.contains("texture2d<float, access::read_write> tex_1 [[texture(1)]]"),
+        "packed-RGBA8 slot must still be a float read_write texture; MSL:\n{msl}"
+    );
+    assert!(
+        msl.contains("unpack_unorm4x8_to_float(r1)"),
+        "packed-RGBA8 write must unpack the u32 into the float4 texel; MSL:\n{msl}"
+    );
+    assert!(
+        msl.contains("pack_float_to_unorm4x8(tex_1.read("),
+        "packed-RGBA8 load must pack the float4 texel into a u32; MSL:\n{msl}"
+    );
+}
+
+/// A sampled `&Texture2D<u32>` is rejected before emission.
+#[test]
+fn sampled_u32_texture_is_rejected() {
+    let mut def = write_kernel();
+    def.params = vec![KernelParam::Texture2DRead {
+        name: "tex".into(),
+        slot: 0,
+        scalar_type: ScalarType::U32,
+    }];
+    def.body = vec![KernelOp::QuarkId { dst: Reg(0) }];
+    def.next_reg = 1;
+    let err = emit_msl::emit(&def).expect_err("sampled &Texture2D<u32> must be rejected");
+    assert!(
+        err.contains("u32") && err.contains("sampled"),
+        "error should explain the sampled-u32 restriction; got: {err}"
+    );
+}

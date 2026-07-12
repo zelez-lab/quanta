@@ -151,6 +151,67 @@ fn texture_write_spirv_module_validates() {
     assert_spirv_val_clean("write_texture", spirv);
 }
 
+/// True if the module contains an `OpExtInst` (opcode 12) whose extended-
+/// instruction number is `glsl_instr` — operand index 4, after result-type /
+/// result-id / ext-set-id. Used to confirm the AOT SPIR-V for a packed-RGBA8
+/// kernel really carries the Pack/UnpackUnorm4x8 boundary.
+fn spirv_has_ext_inst(spirv: &[u8], glsl_instr: u32) -> bool {
+    let words: Vec<u32> = spirv
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let mut i = 5;
+    while i < words.len() {
+        let word = words[i];
+        let opcode = (word & 0xFFFF) as u16;
+        let wc = (word >> 16) as usize;
+        if wc == 0 {
+            break;
+        }
+        if opcode == 12 && wc >= 5 && words[i + 4] == glsl_instr {
+            return true;
+        }
+        i += wc;
+    }
+    false
+}
+
+/// The AOT (quanta-compiler) SPIR-V for the packed-RGBA8 write kernel must
+/// validate and carry `UnpackUnorm4x8` (GLSL.std.450 #64) — the AOT-path twin
+/// of the JIT `rgba8_write_unpacks_to_vec4_and_is_rgba8_format` unit test.
+/// Skips only if no SPIR-V is embedded (some backends embed only a metallib).
+#[test]
+fn rgba8_write_aot_spirv_validates_and_unpacks() {
+    let Some(spirv) = WRITE_PATTERN_RGBA8_BINARY.spirv else {
+        eprintln!("SKIP: write_pattern_rgba8 has no embedded SPIR-V on this build");
+        return;
+    };
+    assert_spirv_val_clean("write_pattern_rgba8", spirv);
+    assert!(
+        spirv_has_ext_inst(spirv, 64),
+        "packed-RGBA8 write AOT SPIR-V must contain OpExtInst UnpackUnorm4x8 (#64)"
+    );
+}
+
+/// The AOT SPIR-V for the packed-RGBA8 RMW kernel must validate and carry both
+/// `PackUnorm4x8` (#55, the load) and `UnpackUnorm4x8` (#64, the write).
+#[test]
+fn rgba8_rmw_aot_spirv_validates_and_packs() {
+    let Some(spirv) = RMW_RGBA8_RED_BINARY.spirv else {
+        eprintln!("SKIP: rmw_rgba8_red has no embedded SPIR-V on this build");
+        return;
+    };
+    assert_spirv_val_clean("rmw_rgba8_red", spirv);
+    assert!(
+        spirv_has_ext_inst(spirv, 55),
+        "packed-RGBA8 load AOT SPIR-V must contain OpExtInst PackUnorm4x8 (#55)"
+    );
+    assert!(
+        spirv_has_ext_inst(spirv, 64),
+        "packed-RGBA8 write AOT SPIR-V must contain OpExtInst UnpackUnorm4x8 (#64)"
+    );
+}
+
 // ── Live storage-image dispatch (write / read-modify-write / format guard) ──
 //
 // These run on whichever device `init()` selects (Metal here, CPU under
@@ -193,6 +254,68 @@ fn r32f_read(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+// ── Packed-RGBA8 (`&mut Texture2D<u32>`) storage ────────────────────────────
+//
+// The packed-u32 contract: a texel crosses the kernel boundary as one
+// `0xAABBGGRR` u32 (little-endian byte order R,G,B,A). The kernel builds it
+// with bit math; the RGBA8 texture stores the four unorm bytes as [R,G,B,A] in
+// memory. `rgba8_pack`/`rgba8_unpack` are the host mirror of that byte order,
+// so `write_pattern_rgba8` + a raw byte read prove the channel order end to end.
+
+/// Write a per-texel packed pattern into an RGBA8 storage texture. Each texel's
+/// four channels are distinct AND differ from every other texel's, so a wrong
+/// channel order (or a swizzle) shows up as a byte mismatch. Built entirely
+/// with bit math (the deferred pack intrinsic pattern from the docs).
+#[quanta::kernel]
+fn write_pattern_rgba8(tex: &mut Texture2D<u32>, width: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    // Distinct per-channel bytes: R and G encode the coordinate, B and A are
+    // fixed sentinels — all four differ so channel order is observable.
+    let r = x * 16 + 1; // 1,17,33,...  (x < 16 keeps it a byte)
+    let g = y * 16 + 2; // 2,18,34,...
+    let b = 100u32;
+    let a = 200u32;
+    let v = r | (g << 8) | (b << 16) | (a << 24);
+    texture_write_2d(tex, x, y, v);
+}
+
+/// Read-modify-write an RGBA8 storage texture with in-kernel bit math on ONE
+/// channel: double the R channel (saturating at 255), leave G/B/A untouched.
+/// Exercises the packed read (pack_float_to_unorm4x8 / PackUnorm4x8) feeding
+/// bit-extraction, then the packed write back.
+#[quanta::kernel]
+fn rmw_rgba8_red(tex: &mut Texture2D<u32>, width: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    let v = texture_load_2d(tex, x, y);
+    let r = v & 0xFF;
+    let g = (v >> 8) & 0xFF;
+    let b = (v >> 16) & 0xFF;
+    let a = (v >> 24) & 0xFF;
+    let mut r2 = r * 2;
+    if r2 > 255 {
+        r2 = 255;
+    }
+    let out = r2 | (g << 8) | (b << 16) | (a << 24);
+    texture_write_2d(tex, x, y, out);
+}
+
+/// Host mirror of the kernel's channel packing: `0xAABBGGRR`, bytes [R,G,B,A].
+fn rgba8_pack(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    u32::from_le_bytes([r, g, b, a])
+}
+
+/// Read an RGBA8 texture's raw bytes back as [R,G,B,A] tuples per texel.
+fn rgba8_unpack(bytes: &[u8]) -> Vec<(u8, u8, u8, u8)> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| (c[0], c[1], c[2], c[3]))
         .collect()
 }
 
@@ -255,6 +378,116 @@ fn run_rmw(gpu: &quanta::Gpu) {
     }
 }
 
+/// Create an RGBA8 storage texture. Returns `None` if the backend can't do
+/// RGBA8 read_write storage (Metal below MTLReadWriteTextureTier2), which the
+/// dispatch surfaces as `NotSupported` — the caller then skips like the
+/// sampled-read skip. `Some(())` on success (the texture was written and
+/// verified).
+fn dispatch_rgba8_or_skip(
+    gpu: &quanta::Gpu,
+    wave: &mut quanta::Wave,
+    n: u32,
+) -> Option<quanta::Pulse> {
+    match gpu.dispatch(wave, n) {
+        Ok(p) => Some(p),
+        Err(e) if matches!(e.kind, quanta::QuantaErrorKind::NotSupported(_)) => {
+            eprintln!("SKIP: RGBA8 storage textures not supported here: {e}");
+            None
+        }
+        Err(e) => panic!("rgba8 dispatch failed: {e}"),
+    }
+}
+
+/// Pure packed-RGBA8 write + the channel-order proof: dispatch
+/// `write_pattern_rgba8`, read the texture's raw bytes back, and assert every
+/// texel's [R,G,B,A] bytes match the host-side pack of the same pattern. A
+/// wrong channel order (e.g. BGRA, or a swizzle in pack/unpack) fails here.
+fn run_write_pattern_rgba8(gpu: &quanta::Gpu) {
+    let (w, h) = (4u32, 4u32);
+    let n = (w * h) as usize;
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
+                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+            ),
+        )
+        .unwrap();
+
+    let mut wave = write_pattern_rgba8(gpu).unwrap();
+    wave.bind_texture(0, &tex);
+    wave.set_value(1, w);
+    let Some(mut p) = dispatch_rgba8_or_skip(gpu, &mut wave, n as u32) else {
+        return;
+    };
+    p.wait().unwrap();
+
+    let got = rgba8_unpack(&tex.read().unwrap());
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) as usize;
+            let expected = (
+                (x * 16 + 1) as u8, // R
+                (y * 16 + 2) as u8, // G
+                100u8,              // B
+                200u8,              // A
+            );
+            assert_eq!(
+                got[idx],
+                expected,
+                "rgba8 texel ({x},{y}) channel order: got {:?}, expected {:?} \
+                 (packed 0x{:08X})",
+                got[idx],
+                expected,
+                rgba8_pack(expected.0, expected.1, expected.2, expected.3),
+            );
+        }
+    }
+}
+
+/// In-kernel bit math on one channel: seed a known RGBA8 pattern, RMW-double
+/// the R channel on the GPU, verify R doubled (saturating) and G/B/A held.
+fn run_rmw_rgba8(gpu: &quanta::Gpu) {
+    let (w, h) = (4u32, 4u32);
+    let n = (w * h) as usize;
+    // Seed: R spans 0..240 (compute in u32 to avoid u8 overflow); the upper
+    // half (R >= 128) saturates on the in-kernel ×2. G/B/A distinct sentinels.
+    let seed: Vec<(u8, u8, u8, u8)> = (0..n)
+        .map(|i| ((i as u32 * 16) as u8, 7, 100, 200))
+        .collect();
+    let mut seed_bytes = Vec::with_capacity(n * 4);
+    for &(r, g, b, a) in &seed {
+        seed_bytes.extend_from_slice(&[r, g, b, a]);
+    }
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
+                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+            ),
+        )
+        .unwrap();
+    tex.write(&seed_bytes).unwrap();
+
+    let mut wave = rmw_rgba8_red(gpu).unwrap();
+    wave.bind_texture(0, &tex);
+    wave.set_value(1, w);
+    let Some(mut p) = dispatch_rgba8_or_skip(gpu, &mut wave, n as u32) else {
+        return;
+    };
+    p.wait().unwrap();
+
+    let got = rgba8_unpack(&tex.read().unwrap());
+    for i in 0..n {
+        let (r, g, b, a) = seed[i];
+        let expected_r = ((r as u32 * 2).min(255)) as u8;
+        assert_eq!(
+            got[i],
+            (expected_r, g, b, a),
+            "rmw_rgba8 texel {i}: got {:?}, expected R={expected_r} G={g} B={b} A={a}",
+            got[i],
+        );
+    }
+}
+
 #[test]
 fn compute_writes_storage_texture() {
     let Some(gpu) = try_gpu() else { return };
@@ -292,6 +525,45 @@ fn cpu_writes_and_rmw_storage_texture() {
     run_rmw(&gpu);
 }
 
+// ── Packed-RGBA8 storage: live write / RMW / channel-order proof ────────────
+
+#[test]
+fn compute_writes_rgba8_storage_texture() {
+    let Some(gpu) = try_gpu() else { return };
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return; // V3DV image-in-compute path faults; SPIR-V is valid.
+    }
+    run_write_pattern_rgba8(&gpu);
+}
+
+#[test]
+fn compute_read_modify_writes_rgba8_storage_texture() {
+    let Some(gpu) = try_gpu() else { return };
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return;
+    }
+    run_rmw_rgba8(&gpu);
+}
+
+/// The CPU software executor must pack/unpack RGBA8 identically (the byte-order
+/// contract is fixed by this test independently of any GPU backend).
+#[cfg(feature = "software")]
+#[test]
+fn cpu_writes_and_rmw_rgba8_storage_texture() {
+    let gpu = quanta::init_cpu();
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    run_write_pattern_rgba8(&gpu);
+    run_rmw_rgba8(&gpu);
+}
+
 /// The scalar-driven format contract: binding an RGBA8 texture to an
 /// `&mut Texture2D<f32>` (R32Float) storage slot is InvalidParam, on every
 /// backend that can see both the registry and the reflected/param kinds.
@@ -320,6 +592,48 @@ fn format_mismatch_is_invalid_param() {
             .dispatch(&wave, n as u32)
             .err()
             .expect("binding RGBA8 to an f32 storage slot must fail");
+        assert!(
+            matches!(e.kind, quanta::QuantaErrorKind::InvalidParam(_)),
+            "expected InvalidParam, got {:?}",
+            e.kind
+        );
+    }
+    if let Some(gpu) = try_gpu() {
+        check(&gpu);
+    }
+    #[cfg(feature = "software")]
+    check(&quanta::init_cpu());
+}
+
+/// The reverse of the scalar-driven contract: binding an R32Float texture to a
+/// `&mut Texture2D<u32>` (RGBA8-expecting) storage slot is InvalidParam. The
+/// per-slot kind array distinguishes the two storage formats, so a kind-2 slot
+/// rejects R32Float just as a kind-1 slot rejects RGBA8.
+#[test]
+fn r32float_to_u32_slot_is_invalid_param() {
+    fn check(gpu: &quanta::Gpu) {
+        if !gpu.supports_compute_textures() {
+            return;
+        }
+        if gpu.caps().vendor == quanta::Vendor::Broadcom {
+            return;
+        }
+        let (w, h) = (4u32, 4u32);
+        let n = (w * h) as usize;
+        let tex = gpu
+            .create_texture(
+                &quanta::TextureDesc::new(w, h, quanta::Format::R32Float).with_usage(
+                    quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+                ),
+            )
+            .unwrap();
+        let mut wave = write_pattern_rgba8(gpu).unwrap();
+        wave.bind_texture(0, &tex);
+        wave.set_value(1, w);
+        let e = gpu
+            .dispatch(&wave, n as u32)
+            .err()
+            .expect("binding R32Float to a u32 (RGBA8) storage slot must fail");
         assert!(
             matches!(e.kind, quanta::QuantaErrorKind::InvalidParam(_)),
             "expected InvalidParam, got {:?}",

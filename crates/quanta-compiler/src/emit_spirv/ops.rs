@@ -445,9 +445,9 @@ impl SpvEmitter {
                 x,
                 y,
                 value,
-                ..
+                ty,
             } => {
-                self.emit_op_texture_write_2d(*texture, *x, *y, *value)?;
+                self.emit_op_texture_write_2d(*texture, *x, *y, *value, *ty)?;
             }
 
             KernelOp::TextureSize { dst_w, dst_h, .. } => {

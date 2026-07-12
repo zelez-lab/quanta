@@ -210,6 +210,13 @@ pub struct MetalDevice {
     /// (`supportsFamily:MTLGPUFamilyApple6` = 1006). Cached at
     /// discovery — symmetric to slice 10's per-call check.
     pub(crate) ray_tracing_supported: bool,
+    /// Whether the device advertises `MTLReadWriteTextureTier2`
+    /// (`[device readWriteTextureSupport] >= 2`). RGBA8 `read_write` storage
+    /// images (a `&mut Texture2D<u32>` packed-RGBA8 slot) need Tier 2; R32Float
+    /// storage only needs Tier 1 (available everywhere). Cached at discovery so
+    /// the compute-texture format validation gates without re-querying.
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
+    pub(crate) read_write_texture_tier2_supported: bool,
 }
 
 // Safety: Metal objects (MTLDevice, MTLCommandQueue, etc.) are thread-safe.
@@ -318,6 +325,10 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
     let tessellation_supported = supports_family(1004); // MTLGPUFamilyApple4
     let mesh_shader_supported = supports_family(5001); // MTLGPUFamilyMetal3
     let ray_tracing_supported = supports_family(1006); // MTLGPUFamilyApple6
+    // MTLReadWriteTextureTier enum: None=0, Tier1=1, Tier2=2. Tier 2 is what
+    // RGBA8 read_write storage images require; query once at discovery.
+    let read_write_texture_tier2_supported =
+        unsafe { ffi::msg_u64(device, b"readWriteTextureSupport\0") } >= 2;
 
     vec![Box::new(MetalDevice {
         device,
@@ -344,5 +355,6 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         tessellation_supported,
         mesh_shader_supported,
         ray_tracing_supported,
+        read_write_texture_tier2_supported,
     })]
 }

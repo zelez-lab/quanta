@@ -15,10 +15,15 @@
 use quanta_ir::{KernelDef, KernelOp, KernelParam, Reg, ScalarType, emit_spirv};
 
 const OP_TYPE_IMAGE: u16 = 25;
+const OP_EXT_INST: u16 = 12;
 const OP_IMAGE_READ: u16 = 98;
 const OP_IMAGE_WRITE: u16 = 99;
 const OP_IMAGE_FETCH: u16 = 95;
 const IMAGE_FORMAT_R32F: u32 = 3;
+const IMAGE_FORMAT_RGBA8: u32 = 4;
+// GLSL.std.450 extended instruction numbers for the packed-RGBA8 boundary.
+const GLSL_PACK_UNORM_4X8: u32 = 55;
+const GLSL_UNPACK_UNORM_4X8: u32 = 64;
 
 /// `texture_write_2d(tex, x, y, values[i])` — a pure write-only storage kernel.
 fn write_kernel() -> KernelDef {
@@ -108,6 +113,125 @@ fn load_from_storage_kernel() -> KernelDef {
     }
 }
 
+/// Packed-RGBA8 twin of `write_kernel`: `texture_write_2d_u32(tex, x, y, v)`
+/// where `tex` is `&mut Texture2D<u32>`. The u32 value must UnpackUnorm4x8 into
+/// the vec4<f32> texel and the storage image must carry ImageFormat Rgba8 (4).
+fn write_rgba8_kernel() -> KernelDef {
+    KernelDef {
+        name: "write_tex_rgba8".into(),
+        params: vec![
+            KernelParam::Texture2DWrite {
+                name: "tex".into(),
+                slot: 0,
+                scalar_type: ScalarType::U32,
+            },
+            KernelParam::FieldRead {
+                name: "values".into(),
+                slot: 1,
+                scalar_type: ScalarType::U32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 1,
+                index: Reg(0),
+                ty: ScalarType::U32,
+            },
+            KernelOp::TextureWrite2D {
+                texture: 0,
+                x: Reg(0),
+                y: Reg(0),
+                value: Reg(1),
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 2,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+/// Packed-RGBA8 twin of `load_from_storage_kernel`: read a `&mut
+/// Texture2D<u32>` slot. The vec4<f32> from OpImageRead must PackUnorm4x8 into
+/// the u32 result.
+fn load_rgba8_kernel() -> KernelDef {
+    KernelDef {
+        name: "load_storage_rgba8".into(),
+        params: vec![
+            KernelParam::Texture2DWrite {
+                name: "tex".into(),
+                slot: 0,
+                scalar_type: ScalarType::U32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 1,
+                scalar_type: ScalarType::U32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::TextureLoad2D {
+                dst: Reg(1),
+                texture: 0,
+                x: Reg(0),
+                y: Reg(0),
+                ty: ScalarType::U32,
+            },
+            KernelOp::Store {
+                field: 1,
+                index: Reg(0),
+                src: Reg(1),
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 2,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+/// A sampled `&Texture2D<u32>` must be rejected at emit — sampled u32 is a
+/// distinct, unwired meaning (storage-position u32 is the packed-RGBA8 image).
+fn sampled_u32_kernel() -> KernelDef {
+    KernelDef {
+        name: "sampled_u32".into(),
+        params: vec![
+            KernelParam::Texture2DRead {
+                name: "tex".into(),
+                slot: 0,
+                scalar_type: ScalarType::U32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 1,
+                scalar_type: ScalarType::U32,
+            },
+        ],
+        body: vec![KernelOp::QuarkId { dst: Reg(0) }],
+        body_source: None,
+        next_reg: 1,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
 fn words(spirv: &[u8]) -> Vec<u32> {
     spirv
         .chunks_exact(4)
@@ -142,6 +266,24 @@ fn type_image_operands(words: &[u32]) -> Vec<u32> {
         i += wc;
     }
     panic!("no OpTypeImage in module");
+}
+
+/// True if the module contains an `OpExtInst` whose extended-instruction
+/// number is `glsl_instr` (operand index 4 of the instruction, after
+/// result-type / result-id / ext-set-id).
+fn has_ext_inst(words: &[u32], glsl_instr: u32) -> bool {
+    let mut i = 5;
+    while i < words.len() {
+        let word = words[i];
+        let opcode = (word & 0xFFFF) as u16;
+        let wc = (word >> 16) as usize;
+        assert!(wc >= 1);
+        if opcode == OP_EXT_INST && wc >= 5 && words[i + 4] == glsl_instr {
+            return true;
+        }
+        i += wc;
+    }
+    false
 }
 
 #[test]
@@ -211,6 +353,68 @@ fn storage_module_validates() {
     assert_spirv_val_clean("write_tex", &spirv);
     let spirv = emit_spirv::emit(&load_from_storage_kernel()).expect("emit load kernel");
     assert_spirv_val_clean("load_storage", &spirv);
+}
+
+// ── Packed-RGBA8 (`&mut Texture2D<u32>`) storage images ─────────────────────
+
+#[test]
+fn rgba8_write_unpacks_to_vec4_and_is_rgba8_format() {
+    let spirv = emit_spirv::emit(&write_rgba8_kernel()).expect("emit rgba8 write kernel");
+    let w = words(&spirv);
+    // The u32 value is UnpackUnorm4x8'd into the vec4<f32> texel.
+    assert!(
+        has_ext_inst(&w, GLSL_UNPACK_UNORM_4X8),
+        "packed-RGBA8 write must OpExtInst UnpackUnorm4x8; opcodes: {:?}",
+        opcodes(&w)
+    );
+    assert!(
+        opcodes(&w).contains(&OP_IMAGE_WRITE),
+        "packed-RGBA8 write must still emit OpImageWrite"
+    );
+    // The storage image's SPIR-V sampled type stays f32 (component of the vec4);
+    // only the format word is Rgba8 (4), not R32Uint or R32f.
+    let ops = type_image_operands(&w);
+    assert_eq!(ops[7], 2, "storage image must be sampled=2; got {ops:?}");
+    assert_eq!(
+        ops[8], IMAGE_FORMAT_RGBA8,
+        "Texture2D<u32> storage image must be Rgba8 (4); got {ops:?}"
+    );
+}
+
+#[test]
+fn rgba8_load_packs_from_vec4() {
+    let spirv = emit_spirv::emit(&load_rgba8_kernel()).expect("emit rgba8 load kernel");
+    let w = words(&spirv);
+    assert!(
+        opcodes(&w).contains(&OP_IMAGE_READ),
+        "packed-RGBA8 load must emit OpImageRead"
+    );
+    assert!(
+        has_ext_inst(&w, GLSL_PACK_UNORM_4X8),
+        "packed-RGBA8 load must OpExtInst PackUnorm4x8 the vec4 into a u32; opcodes: {:?}",
+        opcodes(&w)
+    );
+}
+
+/// A sampled `&Texture2D<u32>` is rejected at emit (both emitters agree via
+/// `reject_sampled_u32_texture`).
+#[test]
+fn sampled_u32_texture_is_rejected() {
+    let err = emit_spirv::emit(&sampled_u32_kernel())
+        .expect_err("sampled &Texture2D<u32> must be rejected at emit");
+    assert!(
+        err.contains("u32") && err.contains("sampled"),
+        "error should explain the sampled-u32 restriction; got: {err}"
+    );
+}
+
+/// The emitted packed-RGBA8 modules must validate under `spirv-val`.
+#[test]
+fn rgba8_storage_module_validates() {
+    let spirv = emit_spirv::emit(&write_rgba8_kernel()).expect("emit rgba8 write kernel");
+    assert_spirv_val_clean("write_tex_rgba8", &spirv);
+    let spirv = emit_spirv::emit(&load_rgba8_kernel()).expect("emit rgba8 load kernel");
+    assert_spirv_val_clean("load_storage_rgba8", &spirv);
 }
 
 fn assert_spirv_val_clean(name: &str, spirv: &[u8]) {

@@ -265,7 +265,7 @@ impl VulkanDevice {
             binding_count: 0,
             texture_bindings: [0u64; 16],
             texture_count: 0,
-            f32_storage_texture_mask: 0,
+            storage_texture_kinds: [0; 16],
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -347,12 +347,17 @@ impl VulkanDevice {
     /// barrier is needed between them.
     /// Validate and prepare each bound texture slot for a compute dispatch.
     ///
-    /// Format contract (decision 2): a slot the kernel declares
-    /// `&mut Texture2D<f32>` (reflected as a storage image) must be bound to an
-    /// `R32Float` texture — a mismatch (e.g. an RGBA8 texture) returns
-    /// `InvalidParam` naming the slot, expected, and got. Each valid storage
-    /// texture is then transitioned into `VK_IMAGE_LAYOUT_GENERAL` so its
-    /// STORAGE_IMAGE descriptor is legal at dispatch time.
+    /// Format contract, per storage-slot kind: a slot the kernel declares
+    /// `&mut Texture2D<f32>` (`wave.storage_texture_kinds[slot] == 1`) must be
+    /// bound to an `R32Float` texture, and a `&mut Texture2D<u32>` slot (kind 2)
+    /// to an `RGBA8_UNORM` texture — a mismatch returns `InvalidParam` naming
+    /// the slot, expected, and got. `descriptor_kinds` (from SPIR-V reflection)
+    /// only says a slot *is* a storage image, not which pixel format it wants;
+    /// the wave's kinds array is the expected-format channel it lacks. RGBA8 is
+    /// a mandatory Vulkan storage format, so — unlike Metal — there is no
+    /// feature gate. Each valid storage texture is then transitioned into
+    /// `VK_IMAGE_LAYOUT_GENERAL` so its STORAGE_IMAGE descriptor is legal at
+    /// dispatch time.
     #[cfg(feature = "compute")]
     fn prepare_compute_textures(
         &self,
@@ -387,13 +392,20 @@ impl VulkanDevice {
                 })?;
                 tex.format
             };
-            // The scalar-driven format contract: Texture2D<f32> ⇔ R32Float.
-            if format != ffi::VK_FORMAT_R32_SFLOAT {
+            // The scalar-driven format contract, keyed by the wave's per-slot
+            // kind: 1 ⇔ R32Float, 2 ⇔ RGBA8_UNORM. Kind 0 on a reflected
+            // storage-image slot is unexpected but non-fatal — fall back to the
+            // R32Float expectation so a stale/unstamped wave still validates.
+            let (expected_fmt, expected_name) = match wave.storage_texture_kinds[slot] {
+                2 => (ffi::VK_FORMAT_R8G8B8A8_UNORM, "RGBA8_UNORM"),
+                _ => (ffi::VK_FORMAT_R32_SFLOAT, "R32Float"),
+            };
+            if format != expected_fmt {
                 return Err(
                     QuantaError::invalid_param("compute storage texture format mismatch")
                         .with_context(&format!(
-                            "slot {slot}: expected R32Float (VkFormat {}), got VkFormat {format}",
-                            ffi::VK_FORMAT_R32_SFLOAT
+                            "slot {slot}: expected {expected_name} (VkFormat {expected_fmt}), \
+                             got VkFormat {format}"
                         )),
                 );
             }

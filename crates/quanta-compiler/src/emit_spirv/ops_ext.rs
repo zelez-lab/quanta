@@ -381,6 +381,7 @@ impl SpvEmitter {
         x: Reg,
         y: Reg,
         value: Reg,
+        ty: ScalarType,
     ) -> Result<(), String> {
         if let Some(&(var_id, type_id)) = self.texture_samplers.get(&texture) {
             let loaded = self.alloc_id();
@@ -413,19 +414,38 @@ impl SpvEmitter {
             );
             let f32_ty = self.ensure_type_f32();
             let vec4_ty = self.ensure_type_vector(f32_ty, 4);
-            // The texel must be a vec4<f32>; coerce the scalar value to f32 so
-            // its constituent type matches the vector's components.
-            let val = self.reg_value_id(value)?;
-            let val_ty = self.reg_type_id(value)?;
-            let val = self.coerce_to(val, val_ty, f32_ty);
-            let zero = self.emit_constant_f32(0.0);
-            let one = self.emit_constant_f32(1.0);
-            let texel = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_COMPOSITE_CONSTRUCT,
-                &[vec4_ty, texel, val, zero, zero, one],
-            );
+            // OpImageWrite always takes a vec4<f32> texel; how the incoming
+            // scalar becomes that vec4 is scalar-driven:
+            let texel = if ty == ScalarType::U32 {
+                // RGBA8-unorm packed-u32: the value is a `0xAABBGGRR` u32.
+                // UnpackUnorm4x8 splits it into the four unorm channels as a
+                // vec4<f32> — the exact texel the Rgba8 storage image stores.
+                let ext = self.ensure_glsl_ext();
+                let val = self.reg_value_id(value)?;
+                let vec4 = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_EXT_INST,
+                    &[vec4_ty, vec4, ext, GLSL_UNPACK_UNORM_4X8, val],
+                );
+                vec4
+            } else {
+                // R32Float: broadcast the scalar to (x, 0, 0, 1). Coerce to f32
+                // so the constituent type matches the vector's components; the
+                // R32Float image keeps only the x channel.
+                let val = self.reg_value_id(value)?;
+                let val_ty = self.reg_type_id(value)?;
+                let val = self.coerce_to(val, val_ty, f32_ty);
+                let zero = self.emit_constant_f32(0.0);
+                let one = self.emit_constant_f32(1.0);
+                let texel = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_CONSTRUCT,
+                    &[vec4_ty, texel, val, zero, zero, one],
+                );
+                texel
+            };
             Self::emit_op(
                 &mut self.sec_function,
                 OP_IMAGE_WRITE,
@@ -490,15 +510,30 @@ impl SpvEmitter {
             );
             let result_ty = self.scalar_type_id(ty);
             let result = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_COMPOSITE_EXTRACT,
-                &[result_ty, result, fetch_result, 0],
-            );
+            if ty == ScalarType::U32 {
+                // RGBA8-unorm packed-u32: PackUnorm4x8 folds the vec4<f32> the
+                // Rgba8 image returned back into one `0xAABBGGRR` u32 — the
+                // inverse of the write path's UnpackUnorm4x8.
+                let ext = self.ensure_glsl_ext();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_EXT_INST,
+                    &[result_ty, result, ext, GLSL_PACK_UNORM_4X8, fetch_result],
+                );
+            } else {
+                // R32Float: the scalar is the x channel of the vec4.
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_COMPOSITE_EXTRACT,
+                    &[result_ty, result, fetch_result, 0],
+                );
+            }
             self.set_reg(dst, result, result_ty);
         } else {
+            // Unbound / undeclared texture slot: contract is a zero read. Use a
+            // correctly-typed zero so the u32 path doesn't set an f32 constant.
             let result_ty = self.scalar_type_id(ty);
-            let zero = self.emit_constant_f32(0.0);
+            let zero = self.emit_constant_typed_zero(ty);
             self.set_reg(dst, zero, result_ty);
         }
         Ok(())

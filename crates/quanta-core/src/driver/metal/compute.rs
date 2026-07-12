@@ -9,15 +9,22 @@ use super::device::make_async_pulse;
 use super::ffi;
 
 impl MetalDevice {
-    /// Enforce the scalar-driven format contract: every texture bound to a
-    /// slot the kernel declares `&mut Texture2D<f32>` (bit set in
-    /// `wave.f32_storage_texture_mask`) must be R32Float. Metal's AOT dispatch
-    /// can't reflect the per-slot kind from the metallib, so the mask stamped
-    /// by the proc macro is the source of truth. Read (sampled) slots are not
-    /// in the mask and keep working for any format (e.g. RGBA8 reads).
+    /// Enforce the scalar-driven format contract per storage-slot kind: every
+    /// texture bound to a slot the kernel declares `&mut Texture2D<f32>`
+    /// (`wave.storage_texture_kinds[slot] == 1`) must be R32Float, and every
+    /// `&mut Texture2D<u32>` slot (kind 2) must be RGBA8. Metal's AOT dispatch
+    /// can't reflect the per-slot format from the metallib, so the kinds stamped
+    /// by the proc macro are the source of truth. Read (sampled) slots have kind
+    /// 0 and keep working for any format (e.g. RGBA8 reads).
+    ///
+    /// RGBA8 `read_write` storage additionally needs `MTLReadWriteTextureTier2`;
+    /// below tier 2 this is NotSupported rather than a wrong-format error (the
+    /// texture is fine, the device just can't bind it read_write). R32Float
+    /// storage only needs Tier 1, which every device this path runs on has.
     #[cfg(feature = "compute")]
     fn validate_compute_texture_formats(&self, wave: &Wave) -> Result<(), QuantaError> {
-        if wave.f32_storage_texture_mask == 0 {
+        use crate::api::types::Format;
+        if wave.storage_texture_kinds.iter().all(|&k| k == 0) {
             return Ok(());
         }
         let fmts = self
@@ -25,20 +32,31 @@ impl MetalDevice {
             .read()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         for slot in 0..wave.texture_count as usize {
-            if wave.f32_storage_texture_mask & (1 << slot) == 0 {
-                continue;
-            }
+            let (expected_fmt, needs_tier2) = match wave.storage_texture_kinds[slot] {
+                1 => (Format::R32Float, false),
+                2 => (Format::RGBA8, true),
+                _ => continue, // not a storage slot
+            };
             let handle = wave.texture_bindings[slot];
             if handle == 0 {
                 continue;
             }
             if let Some(&fmt) = fmts.get(&handle)
-                && fmt != crate::api::types::Format::R32Float
+                && fmt != expected_fmt
             {
                 return Err(
                     QuantaError::invalid_param("compute storage texture format mismatch")
-                        .with_context(&format!("slot {slot}: expected R32Float, got {fmt:?}")),
+                        .with_context(&format!(
+                            "slot {slot}: expected {expected_fmt:?}, got {fmt:?}"
+                        )),
                 );
+            }
+            if needs_tier2 && !self.read_write_texture_tier2_supported {
+                return Err(QuantaError::not_supported(
+                    "RGBA8 storage textures need MTLReadWriteTextureTier2, which this \
+                     Metal device does not advertise",
+                )
+                .with_context(&format!("compute storage texture: slot {slot}")));
             }
         }
         Ok(())
@@ -144,7 +162,7 @@ impl MetalDevice {
             binding_count: 0,
             texture_bindings: [0u64; 16],
             texture_count: 0,
-            f32_storage_texture_mask: 0,
+            storage_texture_kinds: [0; 16],
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -233,7 +251,7 @@ impl MetalDevice {
             binding_count: 0,
             texture_bindings: [0u64; 16],
             texture_count: 0,
-            f32_storage_texture_mask: 0,
+            storage_texture_kinds: [0; 16],
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,

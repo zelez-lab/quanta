@@ -19,11 +19,14 @@ pub struct Wave {
     /// Texture handles by slot index. 0 = unbound.
     pub(crate) texture_bindings: [u64; MAX_TEXTURES],
     pub(crate) texture_count: u8,
-    /// Bit `i` set = slot `i` is a `&mut Texture2D<f32>` storage image
-    /// expecting the R32Float format. The proc macro stamps this from the
-    /// kernel signature; drivers that can't otherwise see the per-slot kind
-    /// (Metal's AOT path) use it to enforce the format contract at dispatch.
-    pub(crate) f32_storage_texture_mask: u16,
+    /// Per-slot storage-image kind, indexed by texture slot: `0` = not a
+    /// storage image, `1` = `&mut Texture2D<f32>` (R32Float), `2` =
+    /// `&mut Texture2D<u32>` (RGBA8-unorm packed-u32). The proc macro stamps
+    /// this from the kernel signature; drivers that can't otherwise see the
+    /// per-slot kind (Metal's AOT path, Vulkan's descriptor_kinds which only
+    /// says "storage image" not which format) use it to enforce the
+    /// scalar-driven format contract at dispatch.
+    pub(crate) storage_texture_kinds: [u8; 16],
     /// Inline push constant data — 16-byte aligned slots.
     pub(crate) push_data: [u8; PUSH_DATA_CAP],
     pub(crate) push_len: u16,
@@ -110,11 +113,12 @@ impl Wave {
         self.handle
     }
 
-    /// Stamp which texture slots are `&mut Texture2D<f32>` storage images
-    /// (R32Float expected). Called by the generated kernel wrapper; drivers
-    /// use it to enforce the scalar-driven format contract at dispatch.
-    pub fn set_f32_storage_texture_mask(&mut self, mask: u16) {
-        self.f32_storage_texture_mask = mask;
+    /// Stamp the per-slot storage-image kinds (`0` = none, `1` = R32Float,
+    /// `2` = Rgba8Unorm packed-u32), indexed by texture slot. Called by the
+    /// generated kernel wrapper; drivers use it to enforce the scalar-driven
+    /// format contract at dispatch.
+    pub fn set_storage_texture_kinds(&mut self, kinds: [u8; 16]) {
+        self.storage_texture_kinds = kinds;
     }
 }
 

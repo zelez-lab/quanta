@@ -292,6 +292,12 @@ pub const GLSL_FMIX: u32 = 46;
 pub const GLSL_STEP: u32 = 48;
 pub const GLSL_SMOOTH_STEP: u32 = 49;
 pub const GLSL_FMA: u32 = 50;
+/// Pack a `vec4<f32>` of unorm channels into one `0xAABBGGRR` u32 (RGBA8-unorm
+/// storage-image read boundary — clamps each component to [0,1] × 255).
+pub const GLSL_PACK_UNORM_4X8: u32 = 55;
+/// Unpack a `0xAABBGGRR` u32 into a `vec4<f32>` of unorm channels (RGBA8-unorm
+/// storage-image write boundary — the inverse of `GLSL_PACK_UNORM_4X8`).
+pub const GLSL_UNPACK_UNORM_4X8: u32 = 64;
 pub const GLSL_LENGTH: u32 = 66;
 pub const GLSL_DISTANCE: u32 = 67;
 pub const GLSL_CROSS: u32 = 68;

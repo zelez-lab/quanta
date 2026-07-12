@@ -37,6 +37,9 @@ impl SpvEmitter {
         // A storage image (write-declared slot) cannot be sampled — reject
         // before emitting anything so the error is the same on every backend.
         quanta_ir::types::reject_sample_on_write(kernel)?;
+        // A sampled `&Texture2D<u32>` is not wired (storage-position u32 is the
+        // packed-RGBA8 image); reject it rather than emit a float sampled image.
+        quanta_ir::types::reject_sampled_u32_texture(kernel)?;
 
         // Record wg_x for the folded-dispatch linearization constant
         // in QuarkId (see load_linear builtin helper).

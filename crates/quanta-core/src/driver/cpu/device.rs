@@ -519,7 +519,7 @@ impl GpuDevice for CpuDevice {
             binding_count: 0,
             texture_bindings: [0u64; 16],
             texture_count: 0,
-            f32_storage_texture_mask: 0,
+            storage_texture_kinds: [0; 16],
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -564,12 +564,13 @@ impl GpuDevice for CpuDevice {
 
         // Snapshot bound textures the same way: pixel bytes into a per-slot
         // Mutex, plus the geometry/format the executor needs to index a texel.
-        // The scalar-driven format contract (Texture2D<f32> ⇔ R32Float) is
-        // validated up front — an RGBA8 texture bound to an f32 storage slot
-        // is InvalidParam, matching Metal/Vulkan.
+        // The scalar-driven format contract is validated up front per slot kind
+        // (1 = R32Float, 2 = RGBA8-unorm packed-u32); a texture whose format
+        // doesn't match its storage-slot kind is InvalidParam, matching
+        // Metal/Vulkan.
+        use crate::api::types::Format;
         let mut tex_data: [Option<super::exec::CpuTexSlot>; 16] = Default::default();
         {
-            let write_slots = quanta_ir::types::write_texture_slots(&kernel.def);
             let bufs = self.buffers.lock().unwrap();
             let metas = self.texture_meta.lock().unwrap();
             for (i, slot) in tex_data
@@ -584,14 +585,17 @@ impl GpuDevice for CpuDevice {
                 let (Some(buf), Some(meta)) = (bufs.get(&handle), metas.get(&handle)) else {
                     continue;
                 };
-                if write_slots.contains(&(i as u32))
-                    && meta.format != crate::api::types::Format::R32Float
-                {
+                let (expected, ok) = match wave.storage_texture_kinds[i] {
+                    1 => ("R32Float", meta.format == Format::R32Float),
+                    2 => ("RGBA8", meta.format == Format::RGBA8),
+                    _ => ("", true), // not a storage slot — no format contract
+                };
+                if !ok {
                     return Err(QuantaError::invalid_param(
                         "compute storage texture format mismatch",
                     )
                     .with_context(&format!(
-                        "slot {i}: expected R32Float, got {:?}",
+                        "slot {i}: expected {expected}, got {:?}",
                         meta.format
                     )));
                 }
@@ -1391,7 +1395,7 @@ impl GpuDevice for CpuDevice {
                         texture_count: *texture_count,
                         // ICB replay does not carry the storage-texture mask;
                         // format validation runs on the direct dispatch path.
-                        f32_storage_texture_mask: 0,
+                        storage_texture_kinds: [0; 16],
                         push_data: *push_data,
                         push_len: *push_len,
                         push_mask: *push_mask,
