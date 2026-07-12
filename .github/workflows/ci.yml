@@ -139,8 +139,25 @@ jobs:
       - name: GPU advanced tests
         run: cargo test --test gpu_advanced --test gpu_queue --test gpu_timeline --test gpu_texture_views --test gpu_occlusion --test gpu_indirect_dispatch --test gpu_debug --test gpu_reload -- --test-threads=1
 
-      - name: DSL shader parity draw tests
-        run: cargo test --test shader_parity_draw --features metal,render -- --test-threads=1
+      # DSL draw tests need the compiler on PATH: the shader macros shell out
+      # to it to embed the metallib, so without it every DSL draw ships
+      # binary-less and self-skips. Build it here (same llvm@22 the
+      # compiler-validation lane uses) and point QUANTA_COMPILER at it.
+      - name: Install LLVM 22 (for quanta-compiler)
+        run: brew install llvm@22
+
+      - name: Build quanta-compiler
+        env:
+          LLVM_SYS_221_PREFIX: /opt/homebrew/opt/llvm@22
+        run: cargo build -p quanta-compiler
+
+      - name: DSL draw tests (metal)
+        env:
+          QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
+        run: |
+          cargo test --test render_triangle_test --features metal,render -- --test-threads=1
+          cargo test --test texture_write_region --features metal,render -- --test-threads=1
+          cargo test --test shader_parity_draw --features metal,render -- --test-threads=1
 
   # ─── Metal validation layer ──────────────────────────────────────────
   # Same gate as gpu-tests-metal — needs real Metal hardware.

@@ -87,9 +87,7 @@ impl SpvEmitter {
                 {
                     *pos += 1; // '('
                     let (arg, ty) = self.parse_conditional(tokens, pos, params, locals)?;
-                    if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
-                        *pos += 1;
-                    }
+                    consume_call_close(tokens, pos);
                     let opcode = match name.as_str() {
                         "fwidth" => OP_FWIDTH,
                         "dpdx" => OP_DPDX,
@@ -154,9 +152,7 @@ impl SpvEmitter {
             let (c, _) = self.parse_conditional(tokens, pos, params, locals)?;
             components.push(c);
         }
-        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
-            *pos += 1;
-        }
+        consume_call_close(tokens, pos);
         let f32_ty = self.ensure_type_f32();
         let vec_ty = self.ensure_type_vector(f32_ty, count);
         let result = self.alloc_id();
@@ -191,9 +187,7 @@ impl SpvEmitter {
             *pos += 1;
         }
         let (uv_id, _) = self.parse_conditional(tokens, pos, params, locals)?;
-        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
-            *pos += 1;
-        }
+        consume_call_close(tokens, pos);
 
         let Some(&(sampler_var, sampled_image_ty)) = self.texture_samplers.get(&slot) else {
             return Err(format!("texture slot {} not declared", slot));
@@ -228,11 +222,16 @@ impl SpvEmitter {
         let mut args = Vec::new();
         let mut first_ty = quanta_ir::ShaderType::F32;
         loop {
-            if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
+            if tokens.get(*pos) == Some(&ShaderToken::Close) {
                 break;
             }
-            if !args.is_empty() && *pos < tokens.len() && tokens[*pos] == ShaderToken::Comma {
+            if !args.is_empty() && tokens.get(*pos) == Some(&ShaderToken::Comma) {
                 *pos += 1;
+                // A trailing comma leaves `)` next — stop before parsing a
+                // phantom argument (rustfmt wraps calls with a trailing comma).
+                if tokens.get(*pos) == Some(&ShaderToken::Close) {
+                    break;
+                }
             }
             let (a, t) = self.parse_conditional(tokens, pos, params, locals)?;
             if args.is_empty() {
@@ -240,9 +239,7 @@ impl SpvEmitter {
             }
             args.push(a);
         }
-        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
-            *pos += 1;
-        }
+        consume_call_close(tokens, pos);
 
         let result_ty = if name == "dot" || name == "length" || name == "distance" {
             quanta_ir::ShaderType::F32
@@ -272,9 +269,7 @@ impl SpvEmitter {
             *pos += 1;
         }
         let (b, _) = self.parse_conditional(tokens, pos, params, locals)?;
-        if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
-            *pos += 1;
-        }
+        consume_call_close(tokens, pos);
         let f32_ty = self.ensure_type_f32();
         let result = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_DOT, &[f32_ty, result, a, b]);
@@ -406,6 +401,21 @@ impl SpvEmitter {
             return Ok((loaded, *sty));
         }
         Err(format!("unknown identifier: {name}"))
+    }
+}
+
+/// Close a call's argument list: skip an optional trailing comma, then the
+/// `)`. rustfmt appends a trailing comma to every wrapped multi-line call and
+/// the macro's token printer preserves it, so `f(a, b,)` is an ordinary shape
+/// on the wire — every call-shaped form (constructors, intrinsics, `sample`,
+/// derivatives, `dot`) routes its closing paren through here so the comma is
+/// tolerated uniformly rather than left to defeat the caller's parse.
+fn consume_call_close(tokens: &[ShaderToken], pos: &mut usize) {
+    if tokens.get(*pos) == Some(&ShaderToken::Comma) {
+        *pos += 1;
+    }
+    if tokens.get(*pos) == Some(&ShaderToken::Close) {
+        *pos += 1;
     }
 }
 

@@ -9,10 +9,19 @@ use super::emitter::SpvEmitter;
 
 impl SpvEmitter {
     /// Emit a fragment shader SPIR-V module.
+    ///
+    /// With `passthrough == false` the body is translated; a body the
+    /// translator can't handle logs a warning and returns
+    /// [`ShaderEmit::NeedsPassthrough`] so the caller can rebuild on a fresh
+    /// emitter. With `passthrough == true` the body is skipped and the
+    /// interface-only passthrough (load input[0] → colour) is emitted directly
+    /// — the two calls run identical interface setup, so the fresh passthrough
+    /// module is id-consistent by construction.
     pub(crate) fn emit_fragment_shader(
         &mut self,
         shader: &quanta_ir::ShaderDef,
-    ) -> Result<(), String> {
+        passthrough: bool,
+    ) -> Result<super::ShaderEmit, String> {
         // 1. Capability + memory model
         Self::emit_op(
             &mut self.sec_capability,
@@ -169,9 +178,19 @@ impl SpvEmitter {
             param_info.push((name.clone(), access, *member_ty, *sty));
         }
 
-        let saved_func = self.sec_function.clone();
-        let saved_next = self.next_id;
+        // Passthrough rebuild: skip the body, emit the interface-only result.
+        if passthrough {
+            let result_id =
+                self.passthrough_first_input(&stage_in_params, &input_vars, f32_ty, vec4_ty);
+            Self::emit_op(&mut self.sec_function, OP_STORE, &[color_var, result_id]);
+            Self::emit_op(&mut self.sec_function, OP_RETURN, &[]);
+            Self::emit_op(&mut self.sec_function, OP_FUNCTION_END, &[]);
+            return Ok(super::ShaderEmit::Real);
+        }
 
+        // Real attempt: translate the body. A failure interns ids into other
+        // sections, so we abandon this emitter and let the caller rebuild the
+        // passthrough on a fresh one rather than patching the id state here.
         let result_id = match self.eval_shader_body(&shader.body_source, &param_info) {
             Ok((id, ty)) => match self.promote_to_vec4(id, ty, f32_ty, vec4_ty) {
                 Some(id) => id,
@@ -182,9 +201,7 @@ impl SpvEmitter {
                      on Vulkan (Metal/metallib is unaffected)",
                         shader.name
                     );
-                    self.sec_function = saved_func.clone();
-                    self.next_id = saved_next;
-                    self.passthrough_first_input(&stage_in_params, &input_vars, f32_ty, vec4_ty)
+                    return Ok(super::ShaderEmit::NeedsPassthrough);
                 }
             },
             Err(e) => {
@@ -194,9 +211,7 @@ impl SpvEmitter {
                      on Vulkan (Metal/metallib is unaffected)",
                     shader.name
                 );
-                self.sec_function = saved_func;
-                self.next_id = saved_next;
-                self.passthrough_first_input(&stage_in_params, &input_vars, f32_ty, vec4_ty)
+                return Ok(super::ShaderEmit::NeedsPassthrough);
             }
         };
 
@@ -204,6 +219,6 @@ impl SpvEmitter {
         Self::emit_op(&mut self.sec_function, OP_RETURN, &[]);
         Self::emit_op(&mut self.sec_function, OP_FUNCTION_END, &[]);
 
-        Ok(())
+        Ok(super::ShaderEmit::Real)
     }
 }

@@ -249,6 +249,31 @@ impl SpvEmitter {
         self.parse_conditional(&tokens, &mut pos, params, locals)
     }
 
+    /// A branch of an if-EXPRESSION walks the statement grammar over a
+    /// CLONE of the caller's locals, so an assignment that rebinds one of
+    /// those outer locals would mutate only the clone and silently vanish
+    /// at the merge — while the MSL emitter honors the write. Until the
+    /// expression-if merge phis mutated outer locals the way the
+    /// statement-level `if` already does, reject the shape instead of
+    /// miscompiling it. New bindings (`let`, shadowing) only APPEND to the
+    /// clone, so a changed id inside the original prefix is exactly an
+    /// outer mutation — direct, or via a nested statement-`if`'s phi.
+    fn reject_outer_mutation(
+        original: &[(String, u32, quanta_ir::ShaderType)],
+        walked: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(), String> {
+        for (orig, after) in original.iter().zip(walked.iter()) {
+            if orig.1 != after.1 {
+                return Err(format!(
+                    "assignment to outer local `{}` inside an if-expression branch \
+                     is not supported; use a statement-level `if`",
+                    orig.0
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn parse_conditional(
         &mut self,
         tokens: &[ShaderToken],
@@ -326,23 +351,33 @@ impl SpvEmitter {
                 &[cond, then_label, else_label],
             );
 
-            // Then block
+            // Then block. A branch body is a statement block: zero or more
+            // branch-local `let`/assignments followed by a mandatory tail
+            // expression (`{ let nx = …; expr }`), so it runs through the
+            // statement walker over CLONED locals — the branch-local bindings
+            // stay scoped to the branch and never leak outward.
             Self::emit_op(&mut self.sec_function, OP_LABEL, &[then_label]);
             self.current_block = then_label;
+            let mut then_locals = locals.to_vec();
             let mut then_pos = 0;
-            let (then_id, then_ty) =
-                self.parse_conditional(&then_tokens, &mut then_pos, params, locals)?;
+            let (then_id, then_ty) = self
+                .parse_statements(&then_tokens, &mut then_pos, params, &mut then_locals)?
+                .ok_or_else(|| "if-expression then-branch has no result value".to_string())?;
+            Self::reject_outer_mutation(locals, &then_locals)?;
             // A nested if inside the branch moves us to its merge
             // block — the phi below must name the ACTUAL predecessor.
             let then_end = self.current_block;
             Self::emit_op(&mut self.sec_function, OP_BRANCH, &[merge_label]);
 
-            // Else block
+            // Else block (same block grammar as the then-branch).
             Self::emit_op(&mut self.sec_function, OP_LABEL, &[else_label]);
             self.current_block = else_label;
+            let mut else_locals = locals.to_vec();
             let mut else_pos = 0;
-            let (else_id, _) =
-                self.parse_conditional(&else_tokens, &mut else_pos, params, locals)?;
+            let (else_id, _) = self
+                .parse_statements(&else_tokens, &mut else_pos, params, &mut else_locals)?
+                .ok_or_else(|| "if-expression else-branch has no result value".to_string())?;
+            Self::reject_outer_mutation(locals, &else_locals)?;
             let else_end = self.current_block;
             Self::emit_op(&mut self.sec_function, OP_BRANCH, &[merge_label]);
 

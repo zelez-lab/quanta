@@ -238,27 +238,20 @@ fn spirv_translated(f: &Fixture, d: &ShaderDef) -> bool {
 
 // ─── Divergence allowlist (surfaced bugs only — see module docs) ─────────────
 
-const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
-    // The real dija rounded-rect fragment: MSL accepts it (syn handles the
-    // `let`-bindings nested inside its `if`-expression branches), but the
-    // SPIR-V expression-`if` parser rejects a branch-local `let` and falls to
-    // a passthrough — so this shader misrenders on Vulkan while it is correct
-    // on Metal. Documented so the parity suite stays green; removing the
-    // SPIR-V limitation makes this heal and the entry must then be deleted.
-    (
-        "dija_rect_frag",
-        "SPIR-V expr-if parser rejects branch-local `let`; MSL (syn) accepts",
-    ),
-    // rustfmt puts a trailing comma on every wrapped multi-line call, the
-    // token printer preserves it, and the SPIR-V argument parser leaves it
-    // unconsumed ("unexpected token: Comma") → passthrough. MSL re-parses
-    // with syn and re-emits without the comma. Any rustfmt-wrapped call in a
-    // user shader silently misrenders on Vulkan until this is fixed.
-    (
-        "ctor_trailing_comma",
-        "trailing comma in a call defeats the SPIR-V arg parser; MSL (syn) accepts",
-    ),
-];
+// Empty: the SPIR-V shader grammar now accepts every construct the corpus
+// exercises that MSL does. The two historical entries — a trailing comma in a
+// call (`ctor_trailing_comma`) and a branch-local `let` inside an
+// expression-`if` (`dija_rect_frag`) — were real SPIR-V-side gaps that fell to
+// a passthrough while MSL translated; both are fixed (trailing-comma tolerance
+// in the argument parser, branch blocks routed through the statement walker),
+// so their fixtures now assert full SPIR-V/MSL agreement. The list is kept so a
+// future divergence has a home and the heal-detection stays wired.
+const KNOWN_DIVERGENCES: &[(&str, &str)] = &[(
+    "expr_if_assigns_outer_local",
+    "MSL honors an assignment to an outer local inside an if-expression \
+     branch; SPIR-V rejects it (passthrough) until the expression-if merge \
+     phis mutated outer locals like the statement-level `if` does",
+)];
 
 // ─── The fixture table ───────────────────────────────────────────────────────
 
@@ -645,11 +638,11 @@ fn fixtures() -> Vec<Fixture> {
             // token printer preserves the trailing comma (`1.0,)`).
             body: "{ Vec4 :: new(uv . x * 0.5 , 0.25 , 0.0 , 1.0 ,) }",
             alt: None,
-            // DIVERGENCE (allowlisted): after the fourth argument the SPIR-V
-            // constructor parser expects `)` and leaves the trailing `,`
-            // unconsumed, failing the body ("unexpected token: Comma") →
-            // passthrough. See KNOWN_DIVERGENCES.
-            spirv: SpirvExpect::Passthrough,
+            // The argument parser tolerates the trailing comma before `)`, so
+            // the body translates: `uv.x * 0.5` is the OpFMul witness.
+            spirv: SpirvExpect::Real {
+                witness: &[OP_FMUL],
+            },
             msl: MslExpect::Accept {
                 contains: &["float4(uv.x * 0.5, 0.25, 0.0, 1.0)"],
             },
@@ -843,12 +836,15 @@ fn fixtures() -> Vec<Fixture> {
             ],
             body: DIJA_RECT_FRAG_BODY,
             alt: None,
-            // DIVERGENCE (allowlisted): the SPIR-V expression-`if` parser does
-            // not accept `let` bindings inside a branch block, so this body's
-            // `let dist = if … { let nx = …; … } else { … }` fails translation
-            // and the real rect fragment falls to a passthrough on Vulkan.
-            // MSL's syn walker handles branch-local lets. See KNOWN_DIVERGENCES.
-            spirv: SpirvExpect::Passthrough,
+            // The real rounded-rect fragment. Its `let dist = if shape_type >
+            // 0.5 { let nx = …; … } else { … }` drives the branch-local-`let`
+            // path: the expression-`if` branches run through the statement
+            // walker, so the body now translates on SPIR-V. OpPhi witnesses the
+            // if-merge; the ExtInst witnesses the smoothstep/length/min/mix
+            // intrinsics — neither can appear in a passthrough.
+            spirv: SpirvExpect::Real {
+                witness: &[OP_PHI, OP_EXT_INST],
+            },
             msl: MslExpect::Accept {
                 contains: &["smoothstep(", "length(float2("],
             },
@@ -925,6 +921,24 @@ fn fixtures() -> Vec<Fixture> {
             },
         },
         // ── REJECTIONS ────────────────────────────────────────────────────
+        // Assignment to an OUTER local inside an if-expression branch: the
+        // SPIR-V branch walker runs over cloned locals, so honoring the
+        // write is impossible today — it rejects (passthrough) rather than
+        // silently dropping the store. MSL honors the write, hence the
+        // allowlisted divergence until the expression-if merge phis mutated
+        // outer locals like the statement-level `if` already does.
+        Fixture {
+            name: "expr_if_assigns_outer_local",
+            stage: Fragment,
+            params: &[("uv", Vec2, false)],
+            body: "{ let mut acc = 0.0 ; let v = if uv . x > 0.5 { acc = 1.0 ; uv . x } else { uv . y } ; Vec4 :: new ( v , acc , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Passthrough,
+            msl: MslExpect::Accept { contains: &[] },
+            wgsl: WgslExpect::KnownBroken {
+                residue: &["if uv . x"],
+            },
+        },
         Fixture {
             name: "rej_method_call",
             stage: Fragment,
@@ -1227,12 +1241,11 @@ fn acceptance_parity_msl_vs_spirv() {
     );
 }
 
-/// Every fixture's REAL SPIR-V translation must pass spirv-val. Passthrough
-/// modules are validated too, but leniently: the passthrough fallback emitter
-/// currently produces spirv-val-invalid modules (a duplicate-id / ID-bound
-/// defect independent of the parity contract), so a passthrough rejection is
-/// reported as a notice rather than failing the suite. A real translation
-/// that fails to validate IS a hard failure. Skips if spirv-val is absent.
+/// Every fixture's emitted SPIR-V — real translation OR passthrough — must
+/// pass spirv-val. The passthrough fallback now rebuilds on a fresh emitter, so
+/// a failed body no longer leaks ids across sections and every passthrough is
+/// id-consistent by construction; a rejection from EITHER kind of module is a
+/// hard failure. Skips if spirv-val is absent.
 #[test]
 fn spirv_validates() {
     let Some(tool) = spirv_val_path() else {
@@ -1250,19 +1263,17 @@ fn spirv_validates() {
                 continue;
             }
         };
-        let real = has_real_work(&spirv) || matches!(f.spirv, SpirvExpect::Real { witness: &[] });
-        match (spirv_val(tool, &spirv), real) {
-            (Ok(()), _) => {}
-            (Err(e), true) => failures.push(format!(
-                "[{}] spirv-val rejected a REAL module:\n{e}",
+        let kind = if has_real_work(&spirv) || matches!(f.spirv, SpirvExpect::Real { witness: &[] })
+        {
+            "real"
+        } else {
+            "passthrough"
+        };
+        if let Err(e) = spirv_val(tool, &spirv) {
+            failures.push(format!(
+                "[{}] spirv-val rejected a {kind} module:\n{e}",
                 f.name
-            )),
-            (Err(e), false) => eprintln!(
-                "NOTE [{}] passthrough module fails spirv-val (known passthrough-emitter \
-                 defect, not a parity break): {}",
-                f.name,
-                e.lines().next().unwrap_or("").trim()
-            ),
+            ));
         }
     }
     assert!(

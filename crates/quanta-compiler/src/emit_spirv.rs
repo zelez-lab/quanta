@@ -25,6 +25,24 @@ mod types;
 
 use emitter::SpvEmitter;
 
+/// Outcome of a shader-emission attempt run in real (non-passthrough) mode.
+///
+/// A body the translator cannot handle interns ids into the type / constant /
+/// name sections before it fails; those ids survive a rollback of the function
+/// section and the id counter, so rebuilding the passthrough over the same
+/// emitter re-issues them and the module fails spirv-val ("Id defined more than
+/// once"). The fix is structural: on `NeedsPassthrough` the caller discards the
+/// poisoned emitter and rebuilds the module from a FRESH one in passthrough
+/// mode, where the interface setup is identical and consistency is by
+/// construction.
+pub(crate) enum ShaderEmit {
+    /// The body translated; the emitter holds a complete real module.
+    Real,
+    /// The body defeated the translator (the warning has already been logged);
+    /// rebuild the module in passthrough mode on a fresh emitter.
+    NeedsPassthrough,
+}
+
 /// Emit Vulkan SPIR-V binary from a KernelDef.
 ///
 /// Returns the SPIR-V module as bytes, ready for `vkCreateShaderModule`.
@@ -37,15 +55,29 @@ pub fn emit(kernel: &quanta_ir::KernelDef) -> Result<Vec<u8>, String> {
 /// Emit SPIR-V for a vertex shader from a [`ShaderDef`].
 pub fn emit_vertex(shader: &quanta_ir::ShaderDef) -> Result<Vec<u8>, String> {
     let mut e = SpvEmitter::new();
-    e.emit_vertex_shader(shader)?;
-    Ok(e.finalize())
+    match e.emit_vertex_shader(shader, false)? {
+        ShaderEmit::Real => Ok(e.finalize()),
+        // Discard the poisoned emitter; rebuild the passthrough on a clean one.
+        ShaderEmit::NeedsPassthrough => {
+            let mut e = SpvEmitter::new();
+            e.emit_vertex_shader(shader, true)?;
+            Ok(e.finalize())
+        }
+    }
 }
 
 /// Emit SPIR-V for a fragment shader from a [`ShaderDef`].
 pub fn emit_fragment(shader: &quanta_ir::ShaderDef) -> Result<Vec<u8>, String> {
     let mut e = SpvEmitter::new();
-    e.emit_fragment_shader(shader)?;
-    Ok(e.finalize())
+    match e.emit_fragment_shader(shader, false)? {
+        ShaderEmit::Real => Ok(e.finalize()),
+        // Discard the poisoned emitter; rebuild the passthrough on a clean one.
+        ShaderEmit::NeedsPassthrough => {
+            let mut e = SpvEmitter::new();
+            e.emit_fragment_shader(shader, true)?;
+            Ok(e.finalize())
+        }
+    }
 }
 
 #[cfg(test)]

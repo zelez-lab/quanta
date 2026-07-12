@@ -259,6 +259,35 @@ fn mvp_vertex(pos: Vec3, uv: Vec2, mvp: &Mat4) -> Vec4 {
     mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
 }
 
+// mirrors the ELLIPSE arm of fixture `dija_rect_frag` (`shape_type > 0.5`):
+// the branch-local-`let` expression-if the SPIR-V parser skipped pre-fix. The
+// `let dist = if shape_type > 0.5 { let nx = …; let ny = …; let d = …; expr }
+// else { … }` runs branch-local bindings inside the if-expression branch — the
+// exact construct the statement-walker routing fixed on SPIR-V. A centred
+// ellipse is symmetric, so every probe is orientation-free.
+#[quanta::fragment]
+fn ellipse_branch_frag(corner: Vec2, size: &Vec2, shape_type: &Vec2) -> Vec4 {
+    let sx = (*size).x;
+    let sy = (*size).y;
+    let px = corner.x * sx;
+    let py = corner.y * sy;
+    let half_x = sx * 0.5;
+    let half_y = sy * 0.5;
+    let cpx = px - half_x;
+    let cpy = py - half_y;
+    let dist = if (*shape_type).x > 0.5 {
+        let nx = cpx / half_x;
+        let ny = cpy / half_y;
+        let d = length(Vec2::new(nx, ny)) - 1.0;
+        d * min(half_x, half_y)
+    } else {
+        // Rectangle arm, unused here (shape_type = 1.0 selects the ellipse).
+        max(abs(cpx) - half_x, abs(cpy) - half_y)
+    };
+    let a = 1.0 - smoothstep(-0.75, 0.75, dist);
+    Vec4::new(a, a, a, 1.0)
+}
+
 // ─── Pipeline helper ─────────────────────────────────────────────────────────
 
 fn pipeline(
@@ -858,4 +887,77 @@ fn draw_mat4_translate() {
         let (rr, _, _, _) = pixel_at(&px, w, 6, y);
         assert!(rr > 200, "right half must be covered (R={rr})");
     }
+}
+
+// ─── D12: the dija ellipse branch (branch-local lets in an expression-if) ─────
+
+#[test]
+fn draw_dija_ellipse_branch() {
+    let Some(gpu) = try_gpu() else { return };
+    if !shaders_ready(&gpu, &[&QUAD_VERTEX_SHADER, &ELLIPSE_BRANCH_FRAG_SHADER]) {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+    let pipe = pipeline(&gpu, &QUAD_VERTEX_SHADER, &ELLIPSE_BRANCH_FRAG_SHADER);
+    let vb = fullscreen_vb(&gpu);
+
+    // 32×32 square shape → the ellipse is a centred disc of radius 16 px in the
+    // normalized (nx, ny) SDF. shape_type = 1.0 (> 0.5) selects the ellipse arm
+    // whose body opens with branch-local `let nx/ny/d` bindings — the path this
+    // draw exists to exercise on a live GPU. The coverage is written into RGB
+    // over a black clear, so R reads the alpha directly.
+    let size = field_of(&gpu, &[32.0, 32.0]);
+    let shape_type = field_of(&gpu, &[1.0, 0.0]);
+
+    let w = 32u32;
+    let h = 32u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipe)
+        .vertices(0, &vb)
+        .uniform(0, &size)
+        .uniform(1, &shape_type)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+    let px = target.read().unwrap();
+
+    // Ellipse is centred and symmetric → every probe is orientation-free.
+    // Centre is deep inside the disc (dist ≈ -16) → fully covered.
+    let (rc, _, _, _) = pixel_at(&px, w, w / 2, h / 2);
+    assert!(rc > 230, "ellipse centre must be filled (R={rc})");
+    // The four corners lie outside the unit-circle SDF (nx²+ny² = 2 > 1) →
+    // clear on every corner regardless of the vertical flip.
+    for &(x, y) in &[(0u32, 0u32), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
+        let (rk, _, _, _) = pixel_at(&px, w, x, y);
+        assert!(
+            rk < 30,
+            "corner ({x},{y}) must be outside the ellipse (R={rk})"
+        );
+    }
+    // The smoothstep boundary must actually be drawn: somewhere on the ellipse
+    // rim a pixel is strictly between clear and filled. Scanning (rather than
+    // probing a fixed texel) keeps the assertion orientation- and radius-exact.
+    let mut rim = None;
+    for y in 0..h {
+        for x in 0..w {
+            let (r, _, _, _) = pixel_at(&px, w, x, y);
+            if (25..=230).contains(&r) {
+                rim = Some((x, y, r));
+            }
+        }
+    }
+    assert!(
+        rim.is_some(),
+        "expected at least one antialiased ellipse-boundary pixel (0.1 < a < 0.9)"
+    );
 }
