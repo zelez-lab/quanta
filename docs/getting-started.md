@@ -90,9 +90,11 @@ point `LLVM_PREFIX` at it if it isn't in a default location.)
 
 Two things to know:
 
-- **Keep it in sync.** The binary carries no rev check: a stale
-  `quanta-compiler` on `PATH` silently emits stale codegen. Re-run the
-  install whenever you bump the quanta git rev.
+- **Keep it in sync.** Re-run the install whenever you bump the quanta
+  git rev. The build now checks for you: the macros probe the binary's
+  embedded build rev (`quanta-compiler --rev`) and print a loud
+  `[quanta] WARNING` when it doesn't match the quanta crate you're
+  compiling against — stale codegen is no longer silent.
 - **Without it**, the build still succeeds: compute kernels JIT at
   runtime, but render shaders ship with **no binaries** and fail at
   pipeline creation. Watch for the `[quanta] note: … compiler not

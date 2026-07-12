@@ -468,23 +468,52 @@ fn compiler_is_loadable(binary: &str) -> bool {
     {
         return *verdict;
     }
-    // Null stdin: a healthy compiler reads EOF and exits with its own
-    // error (it executed — loadable); a loader-killed one exits 127 /
-    // dyld-abort / DLL-not-found before main.
+    // One probe, two jobs. `--rev` with null stdin:
+    // - a CURRENT binary prints its build rev and exits 0;
+    // - an OLD binary (no --rev flag) falls through to its stdin loop,
+    //   sees EOF, and exits non-zero fast — it executed, so it's
+    //   loadable, but its rev is unknown (predates rev stamping);
+    // - a loader-killed binary dies before main (classified below).
     let verdict = match std::process::Command::new(binary)
+        .arg("--rev")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
     {
         Ok(output) => {
             if is_loader_failure(&output) {
                 eprintln!(
-                    "[quanta] note: compiler at {binary} cannot run here ({});                      kernels will JIT at runtime and shaders will have no                      precompiled binaries",
-                    String::from_utf8_lossy(&output.stderr).trim()
+                    "[quanta] note: compiler at {binary} cannot run here ({}); \
+                     kernels will JIT at runtime and shaders will have no \
+                     precompiled binaries",
+                    String::from_utf8_lossy(&output.stderr)
+                        .trim()
+                        .replace('\n', " ")
                 );
                 false
             } else {
+                let own_rev = env!("QUANTA_BUILD_REV");
+                let bin_rev = if output.status.success() {
+                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+                } else {
+                    None
+                };
+                match bin_rev.as_deref() {
+                    Some(r) if r == own_rev => {}
+                    Some(r) => eprintln!(
+                        "[quanta] WARNING: quanta-compiler at {binary} was built from \
+                         rev {r} but this quanta build is rev {own_rev} — kernels and \
+                         shaders may get STALE codegen. Reinstall it from the matching \
+                         checkout: cargo install --path crates/quanta-compiler --locked --force"
+                    ),
+                    None => eprintln!(
+                        "[quanta] WARNING: quanta-compiler at {binary} predates rev \
+                         stamping (older than this quanta build, rev {own_rev}) — \
+                         kernels and shaders may get STALE codegen. Reinstall it from \
+                         the matching checkout."
+                    ),
+                }
                 true
             }
         }
@@ -519,5 +548,47 @@ fn shader_type_to_ir(ty: &ShaderType) -> quanta_ir::ShaderType {
         ShaderType::Vec4 => quanta_ir::ShaderType::Vec4,
         ShaderType::Mat4 => quanta_ir::ShaderType::Mat4,
         ShaderType::Mat3 => quanta_ir::ShaderType::Mat3,
+    }
+}
+
+#[cfg(all(test, unix, any(feature = "compute", feature = "render")))]
+mod probe_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn fake_compiler(name: &str, script: &str) -> String {
+        let path = std::env::temp_dir().join(format!("quanta-probe-{name}-{}", std::process::id()));
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn probe_accepts_matching_rev() {
+        let own = env!("QUANTA_BUILD_REV");
+        let path = fake_compiler(
+            "match",
+            &format!("#!/bin/sh\nif [ \"$1\" = \"--rev\" ]; then echo {own}; exit 0; fi\nexit 1\n"),
+        );
+        assert!(compiler_is_loadable(&path));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn probe_accepts_prestamp_binary_as_loadable() {
+        // No --rev support: exits non-zero fast — loadable, rev unknown.
+        let path = fake_compiler("old", "#!/bin/sh\nexit 1\n");
+        assert!(compiler_is_loadable(&path));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn probe_rejects_loader_killed_binary() {
+        let path = fake_compiler(
+            "loader",
+            "#!/bin/sh\necho 'error while loading shared libraries: libLLVM.so.22' >&2\nexit 127\n",
+        );
+        assert!(!compiler_is_loadable(&path));
+        std::fs::remove_file(&path).ok();
     }
 }
