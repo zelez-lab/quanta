@@ -205,11 +205,13 @@ jobs:
           LLVM_SYS_221_PREFIX: /opt/homebrew/opt/llvm@22
         run: cargo build -p quanta-compiler
 
+      # NOTE: neither file has #[ignore] tests — `-- --ignored` ran
+      # ZERO tests here for months. Run them for real.
       - name: Compiler output validation (PTX, SPIR-V, AMD, IR)
-        run: cargo test --test validate_compiler_output -- --ignored
+        run: cargo test --test validate_compiler_output
 
       - name: SPIR-V validation via spirv-val
-        run: cargo test --test validate_spirv -- --ignored
+        run: cargo test --test validate_spirv
 
   # ─── PTX validation via ptxas (Linux + CUDA) ─────────────────────────
   ptx-validation:
@@ -444,3 +446,25 @@ jobs:
       # lacks the WSI extensions.
       - name: Surface tests (vulkan lane via lavapipe headless swapchain)
         run: cargo test --test gpu_surface --no-default-features --features vulkan,render
+
+      # DSL draw tests on a real Vulkan device: build quanta-compiler so
+      # the shader macros embed SPIR-V, then run the render suites on
+      # lavapipe — the only lane that executes DSL shaders (uniforms,
+      # statement-ifs, texture sampling) on Vulkan at runtime.
+      - name: Install LLVM 22 (for quanta-compiler)
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> $GITHUB_ENV
+
+      - name: Build quanta-compiler
+        run: cargo build -p quanta-compiler
+
+      - name: DSL render tests (vulkan lane via lavapipe)
+        env:
+          QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
+          LD_LIBRARY_PATH: /usr/lib/llvm-22/lib
+        run: |
+          cargo test --test render_triangle_test --no-default-features --features vulkan,render
+          cargo test --test texture_write_region --no-default-features --features vulkan,render
