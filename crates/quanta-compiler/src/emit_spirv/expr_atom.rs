@@ -15,7 +15,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         let mut cur = self.parse_atom_inner(tokens, pos, params, locals)?;
         // Postfix loop: chained accesses (`v.zw.x`) reduce left to right.
@@ -37,7 +37,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         if *pos >= tokens.len() {
             return Err("unexpected end of expression".to_string());
@@ -111,6 +111,11 @@ impl SpvEmitter {
                     }
                 }
 
+                // Slice indexing: `name[index]` on a `&[T]` slice param.
+                if *pos < tokens.len() && tokens[*pos] == ShaderToken::BracketOpen {
+                    return self.parse_slice_index(&name, tokens, pos, params, locals);
+                }
+
                 // param.field (e.g. pos.x)
                 if *pos + 1 < tokens.len()
                     && tokens[*pos] == ShaderToken::Dot
@@ -126,13 +131,64 @@ impl SpvEmitter {
         }
     }
 
+    /// Index a `&[T]` slice param: `name [ index ]`. The index is any scalar
+    /// (f32-typed) expression the grammar accepts; it is truncated to u32 with
+    /// `OpConvertFToU`, then an `OpAccessChain` into member 0 (the runtime
+    /// array) at that index yields a pointer that is `OpLoad`ed as the element
+    /// type. Bounds are UNCHECKED — the GPU storage-buffer contract. Indexing a
+    /// non-slice param or an unknown name is an error (which sends the whole
+    /// body to the SPIR-V passthrough fallback).
+    fn parse_slice_index(
+        &mut self,
+        name: &str,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let Some(&(var_id, elem_ty, elem_shader_ty)) = self.slice_params.get(name) else {
+            return Err(format!(
+                "`{name}[..]` indexes a non-slice value; only `&[T]` slice params support indexing"
+            ));
+        };
+        *pos += 1; // '['
+        let (index_f, _) = self.parse_conditional(tokens, pos, params, locals)?;
+        if tokens.get(*pos) == Some(&ShaderToken::BracketClose) {
+            *pos += 1;
+        } else {
+            return Err(format!("expected `]` after index into `{name}`"));
+        }
+
+        // f32 index → u32 (truncating).
+        let uint_ty = self.ensure_type_u32();
+        let index_u = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_CONVERT_F_TO_U,
+            &[uint_ty, index_u, index_f],
+        );
+
+        // OpAccessChain [member 0, index] into the runtime array, then load.
+        let zero = self.emit_constant_u32(0);
+        let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, elem_ty);
+        let access = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_ACCESS_CHAIN,
+            &[ptr_elem, access, var_id, zero, index_u],
+        );
+        let loaded = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, OP_LOAD, &[elem_ty, loaded, access]);
+        Ok((loaded, elem_shader_ty))
+    }
+
     fn parse_vec_constructor(
         &mut self,
         name: &str,
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         *pos += 2; // skip :: new
         let count = match name {
@@ -173,7 +229,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         *pos += 1; // skip '('
         let slot = if let ShaderToken::Float(f) = &tokens[*pos] {
@@ -216,7 +272,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         *pos += 1; // skip '('
         let mut args = Vec::new();
@@ -261,7 +317,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         *pos += 1; // skip '('
         let (a, _) = self.parse_conditional(tokens, pos, params, locals)?;

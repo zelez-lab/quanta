@@ -15,14 +15,96 @@
 use super::shader_ast;
 use super::shader_ast::MslType;
 
+/// The maximum number of combined uniform + slice storage-buffer params. Metal
+/// textures/samplers occupy their own index space, but the shared decl-index
+/// mirrors the Vulkan binding contract, where textures start at binding 8.
+const MAX_SSBO_PARAMS: usize = 8;
+
 /// Seed the body emitter's type environment with each param's MSL type, so a
-/// `let x = if ...` whose value flows from a param can name its declared type.
+/// `let x = if ...` whose value flows from a param can name its declared type,
+/// and so a `name[index]` on a slice param can be validated.
 fn shader_param_types(shader: &quanta_ir::ShaderDef) -> Vec<(String, MslType)> {
     shader
         .params
         .iter()
-        .map(|p| (p.name.clone(), MslType::from_shader_type(p.ty)))
+        .map(|p| {
+            let ty = if p.is_slice {
+                MslType::slice_of(p.ty)
+            } else {
+                MslType::from_shader_type(p.ty)
+            };
+            (p.name.clone(), ty)
+        })
         .collect()
+}
+
+/// The `[[buffer(N)]]` index for each uniform and slice param, drawn from ONE
+/// shared decl-index space (walking `params` in order, each uniform OR slice
+/// consumes the next index) — identical to the SPIR-V binding and the runtime's
+/// `.uniform(slot, …)`. Returns the buffer index per param, or `None` for value
+/// attributes; also enforces the combined SSBO cap.
+fn shared_buffer_indices(shader: &quanta_ir::ShaderDef) -> Result<Vec<Option<u32>>, String> {
+    let combined = shader
+        .params
+        .iter()
+        .filter(|p| p.is_uniform || p.is_slice)
+        .count();
+    if combined > MAX_SSBO_PARAMS {
+        return Err(format!(
+            "shader `{}` declares {combined} combined uniform+slice params, over the \
+             cap of {MAX_SSBO_PARAMS} (texture bindings start at 8)",
+            shader.name
+        ));
+    }
+    let mut out = Vec::with_capacity(shader.params.len());
+    let mut next = 0u32;
+    for p in &shader.params {
+        if p.is_uniform || p.is_slice {
+            out.push(Some(next));
+            next += 1;
+        } else {
+            out.push(None);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `body_source` samples texture slot `slot`, tolerating whitespace
+/// between `sample`, `(`, and the slot digit (`sample ( 0`, `sample( 0`, …).
+/// Any non-macro `ShaderDef` producer — or a future printer change — could
+/// space these apart, so the scan must not depend on a contiguous `sample(N`.
+fn body_samples_slot(body: &str, slot: u32) -> bool {
+    let digit = char::from_digit(slot, 10).unwrap();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = body[i..].find("sample") {
+        let mut j = i + rel + "sample".len();
+        // optional whitespace, then '('
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'(' {
+            j += 1;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == digit as u8 {
+                return true;
+            }
+        }
+        i += rel + "sample".len();
+    }
+    false
+}
+
+/// The `const device T*` pointer spelling for a `&[T]` slice param.
+fn shader_slice_ptr_msl(ty: quanta_ir::ShaderType) -> &'static str {
+    match ty {
+        quanta_ir::ShaderType::F32 => "float",
+        quanta_ir::ShaderType::Vec2 => "float2",
+        // Slice element types are validated to f32/Vec2/Vec4 at parse time.
+        _ => "float4",
+    }
 }
 
 fn shader_type_msl(ty: quanta_ir::ShaderType) -> &'static str {
@@ -44,10 +126,20 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
     let mut out = String::new();
     out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
 
-    let attr_params: Vec<&quanta_ir::ShaderParam> =
-        shader.params.iter().filter(|p| !p.is_uniform).collect();
-    let uniform_params: Vec<&quanta_ir::ShaderParam> =
-        shader.params.iter().filter(|p| p.is_uniform).collect();
+    let buffer_indices = shared_buffer_indices(shader)?;
+    // Attributes are the plain value params (neither uniform nor slice).
+    let attr_params: Vec<&quanta_ir::ShaderParam> = shader
+        .params
+        .iter()
+        .filter(|p| !p.is_uniform && !p.is_slice)
+        .collect();
+    // Uniform + slice params, each paired with its shared buffer index.
+    let ssbo_params: Vec<(&quanta_ir::ShaderParam, u32)> = shader
+        .params
+        .iter()
+        .zip(buffer_indices.iter())
+        .filter_map(|(p, b)| b.map(|b| (p, b)))
+        .collect();
 
     // Varying params = all attr params except the first (position)
     let varying_params: Vec<&quanta_ir::ShaderParam> =
@@ -88,13 +180,22 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
     if !attr_params.is_empty() {
         param_lines.push(format!("    {}_VertexIn in [[stage_in]]", shader.name));
     }
-    for (i, p) in uniform_params.iter().enumerate() {
-        param_lines.push(format!(
-            "    constant {}& {} [[buffer({})]]",
-            shader_type_msl(p.ty),
-            p.name,
-            i,
-        ));
+    for (p, buffer) in &ssbo_params {
+        if p.is_slice {
+            param_lines.push(format!(
+                "    const device {}* {} [[buffer({})]]",
+                shader_slice_ptr_msl(p.ty),
+                p.name,
+                buffer,
+            ));
+        } else {
+            param_lines.push(format!(
+                "    constant {}& {} [[buffer({})]]",
+                shader_type_msl(p.ty),
+                p.name,
+                buffer,
+            ));
+        }
     }
 
     out.push_str(&format!(
@@ -141,10 +242,19 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
     let mut out = String::new();
     out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
 
-    let stage_in_params: Vec<&quanta_ir::ShaderParam> =
-        shader.params.iter().filter(|p| !p.is_uniform).collect();
-    let uniform_params: Vec<&quanta_ir::ShaderParam> =
-        shader.params.iter().filter(|p| p.is_uniform).collect();
+    let buffer_indices = shared_buffer_indices(shader)?;
+    // Interpolated inputs are the plain value params (neither uniform nor slice).
+    let stage_in_params: Vec<&quanta_ir::ShaderParam> = shader
+        .params
+        .iter()
+        .filter(|p| !p.is_uniform && !p.is_slice)
+        .collect();
+    let ssbo_params: Vec<(&quanta_ir::ShaderParam, u32)> = shader
+        .params
+        .iter()
+        .zip(buffer_indices.iter())
+        .filter_map(|(p, b)| b.map(|b| (p, b)))
+        .collect();
 
     // Stage-in struct for interpolated inputs
     if !stage_in_params.is_empty() {
@@ -160,9 +270,9 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         out.push_str("};\n\n");
     }
 
-    // Detect texture slots used in body
+    // Detect texture slots used in body (whitespace-tolerant `sample(N` scan).
     let max_tex_slot = (0..8u32)
-        .filter(|slot| shader.body_source.contains(&format!("sample({}", slot)))
+        .filter(|slot| body_samples_slot(&shader.body_source, *slot))
         .max()
         .map(|m| m + 1)
         .unwrap_or(0);
@@ -171,13 +281,22 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
     if !stage_in_params.is_empty() {
         param_lines.push(format!("    {}_Input in [[stage_in]]", shader.name));
     }
-    for (i, p) in uniform_params.iter().enumerate() {
-        param_lines.push(format!(
-            "    constant {}& {} [[buffer({})]]",
-            shader_type_msl(p.ty),
-            p.name,
-            i,
-        ));
+    for (p, buffer) in &ssbo_params {
+        if p.is_slice {
+            param_lines.push(format!(
+                "    const device {}* {} [[buffer({})]]",
+                shader_slice_ptr_msl(p.ty),
+                p.name,
+                buffer,
+            ));
+        } else {
+            param_lines.push(format!(
+                "    constant {}& {} [[buffer({})]]",
+                shader_type_msl(p.ty),
+                p.name,
+                buffer,
+            ));
+        }
     }
     // Add texture + sampler params for each used slot
     for slot in 0..max_tex_slot {
@@ -208,19 +327,66 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
     // Lower the body: the fragment tail is the output color, so route it
     // through `return`. `sample(slot, uv)` is emitted verbatim by the AST
     // walker, then rewritten to `tex_N.sample(smp_N, uv)` here — a targeted
-    // rewrite on the already-structured MSL (the slot is a literal, the
-    // spacing is fixed), not a translation of the raw Rust source.
+    // rewrite on the already-structured MSL. The AST walker normalizes the slot
+    // to a float literal (`sample(0.0, uv)`), but the rewrite tolerates
+    // whitespace between `sample`, `(`, and the digit so it never depends on a
+    // contiguous form.
     let param_types = shader_param_types(shader);
     let mut body = shader_ast::emit_body(&shader.body_source, None, &param_types)?;
     for slot in 0..max_tex_slot {
-        body = body.replace(
-            &format!("sample({}.0,", slot),
-            &format!("tex_{}.sample(smp_{},", slot, slot),
-        );
+        body = rewrite_sample_slot(&body, slot);
     }
     out.push_str(&body);
     out.push_str("}\n");
     Ok(out)
+}
+
+/// Rewrite `sample ( N[.0] ,` → `tex_N.sample(smp_N,` in an emitted MSL body,
+/// tolerating whitespace between `sample`, `(`, and the slot digit. The AST
+/// walker emits the contiguous `sample(N.0,` form today, but any other producer
+/// (or a printer change) must not break the texture binding silently.
+fn rewrite_sample_slot(body: &str, slot: u32) -> String {
+    let digit = char::from_digit(slot, 10).unwrap();
+    let replacement = format!("tex_{slot}.sample(smp_{slot},");
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if body[i..].starts_with("sample") {
+            let skip_ws = |mut k: usize| {
+                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                k
+            };
+            let after_sample = skip_ws(i + "sample".len());
+            if after_sample < bytes.len() && bytes[after_sample] == b'(' {
+                let after_paren = skip_ws(after_sample + 1);
+                if after_paren < bytes.len() && bytes[after_paren] == digit as u8 {
+                    // Consume the digit and an optional `.0` float suffix.
+                    let mut k = after_paren + 1;
+                    if body[k..].starts_with(".0") {
+                        k += 2;
+                    }
+                    let after_num = skip_ws(k);
+                    if after_num < bytes.len() && bytes[after_num] == b',' {
+                        out.push_str(&replacement);
+                        i = after_num + 1;
+                        continue;
+                    }
+                }
+            }
+            // Not a `sample(N,` at this position — copy `sample` and advance.
+            out.push_str("sample");
+            i += "sample".len();
+            continue;
+        }
+        // Copy one UTF-8 char.
+        let ch = body[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 #[cfg(test)]

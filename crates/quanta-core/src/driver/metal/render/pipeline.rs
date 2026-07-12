@@ -39,6 +39,44 @@ impl MetalDevice {
                 "Metal render pipelines: conservative rasterization is not exposed by Metal",
             ));
         }
+
+        // Pre-validate the vertex attribute budget BEFORE touching the driver.
+        // Metal's vertex attribute count is fixed at 31 (locations 0..30); a
+        // descriptor that declares more attributes — or a higher LOCATION —
+        // hard-aborts in-driver (observed as a process abort with no clean
+        // error), the Metal analog of the Vulkan `maxVertexInputAttributes`
+        // pre-check. Both the total count and the max location matter, since
+        // locations index the attribute array. Reject the over-limit descriptor
+        // here so the abort becomes a named, recoverable CompilationFailed.
+        const METAL_MAX_VERTEX_ATTRIBUTES: u32 = 31;
+        let attr_count: u32 = desc
+            .vertex_layouts
+            .iter()
+            .map(|l| l.attributes.len() as u32)
+            .sum();
+        if attr_count > METAL_MAX_VERTEX_ATTRIBUTES {
+            return Err(QuantaError::compilation_failed(format!(
+                "vertex pipeline declares {attr_count} vertex attributes but Metal supports \
+                 at most {METAL_MAX_VERTEX_ATTRIBUTES} (fixed limit) — reduce the vertex \
+                 layout (e.g. pack values into a uniform array or fetch them from a texture \
+                 instead of one attribute per value)"
+            )));
+        }
+        if let Some(loc) = desc
+            .vertex_layouts
+            .iter()
+            .flat_map(|l| l.attributes.iter())
+            .map(|a| a.location)
+            .max()
+            && loc >= METAL_MAX_VERTEX_ATTRIBUTES
+        {
+            return Err(QuantaError::compilation_failed(format!(
+                "vertex pipeline uses attribute location {loc} but Metal's vertex attribute \
+                 limit is {METAL_MAX_VERTEX_ATTRIBUTES} (fixed; valid locations are \
+                 0..{METAL_MAX_VERTEX_ATTRIBUTES}) — lower the highest attribute location"
+            )));
+        }
+
         // Build MTLFunctionConstantValues if specialization constants are present.
         let fcv = if !desc.specialization.is_empty() {
             unsafe {

@@ -82,6 +82,11 @@ pub(crate) struct SpvEmitter {
     // Field slot → (variable_id, element_type_id, is_writable)
     pub(crate) field_vars: HashMap<u32, (u32, u32, bool)>,
 
+    // `&[T]` slice shader params: name → (SSBO variable_id, element type_id,
+    // element ShaderType). The body's `name[index]` postfix lowers to an
+    // OpAccessChain into member 0 of this block plus a typed OpLoad.
+    pub(crate) slice_params: HashMap<String, (u32, u32, quanta_ir::ShaderType)>,
+
     // Push constant tracking
     pub(crate) push_constant_size: u32,
     pub(crate) push_constant_slots: std::collections::HashSet<u32>,
@@ -157,6 +162,7 @@ impl SpvEmitter {
             reg_types: HashMap::new(),
             demoted_regs: HashMap::new(),
             field_vars: HashMap::new(),
+            slice_params: HashMap::new(),
             push_constant_size: 0,
             push_constant_slots: std::collections::HashSet::new(),
             push_constant_member: HashMap::new(),

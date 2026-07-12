@@ -279,10 +279,12 @@ pub(crate) fn read_shader_def(r: &mut Reader) -> Result<crate::ShaderDef, &'stat
         let pname = r.str()?;
         let ty = read_shader_type(r.u8()?)?;
         let is_uniform = r.bool_val()?;
+        let is_slice = r.bool_val()?;
         params.push(crate::ShaderParam {
             name: pname,
             ty,
             is_uniform,
+            is_slice,
         });
     }
     let return_type = read_shader_type(r.u8()?)?;

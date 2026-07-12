@@ -192,6 +192,51 @@ fn animated(pos: Vec3, normal: Vec3, mvp: &Mat4, time: &f32) -> Vec4 {
 }
 ```
 
+## Array params
+
+When a shader needs a *table* of values -- gradient stops, a palette LUT,
+more colour stops than you want to spend varyings on -- take a `&[T]` slice
+parameter instead. The element type is `&[f32]`, `&[Vec2]`, or `&[Vec4]`,
+and the body reads it with `name[index]`:
+
+```rust
+#[quanta::fragment]
+fn gradient(uv: Vec2, stops: &[Vec4]) -> Vec4 {
+    // Pick one of four colour stops by the horizontal coordinate.
+    let idx = if uv.x < 0.25 { 0.0 }
+              else { if uv.x < 0.5 { 1.0 }
+              else { if uv.x < 0.75 { 2.0 } else { 3.0 } } };
+    stops[idx]
+}
+```
+
+A slice is backed by a storage buffer and binds with the same `.uniform`
+call as a `&T` uniform -- slices and uniforms share one slot space, counted
+in declaration order:
+
+```rust
+let stops = gpu.field_with_usage::<f32>(16, FieldUsage::default_render())?;
+stops.write(&[
+    1.0, 0.0, 0.0, 1.0,   // stop 0 -- red
+    0.0, 1.0, 0.0, 1.0,   // stop 1 -- green
+    0.0, 0.0, 1.0, 1.0,   // stop 2 -- blue
+    1.0, 1.0, 1.0, 1.0,   // stop 3 -- white
+])?;
+
+gpu.render(&target)?
+    .pipeline(&pipeline)
+    .vertices(0, &vb)
+    .uniform(0, &stops)   // the &[Vec4] param at slot 0
+    .draw(vertex_count)
+    .pulse()?
+    .wait()?;
+```
+
+The index is truncated to an integer, so `stops[uv.x * 4.0]` selects stop
+`floor(uv.x * 4.0)`. Bounds are unchecked (the GPU storage-buffer contract),
+and at most 8 combined uniform + slice params are allowed -- texture bindings
+occupy the slots above that.
+
 ## Supported shader types
 
 | Type   | Components | Description                    |

@@ -393,6 +393,7 @@ pub(crate) fn compile_shader(
                 name: p.name.clone(),
                 ty: shader_type_to_ir(&p.ty),
                 is_uniform: p.is_uniform,
+                is_slice: p.is_slice,
             })
             .collect(),
         return_type: shader_type_to_ir(return_type),

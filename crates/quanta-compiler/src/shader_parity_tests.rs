@@ -59,9 +59,19 @@
 
 use quanta_ir::{ShaderDef, ShaderParam, ShaderStage, ShaderType};
 
+/// How a fixture param binds. Mirrors the DSL param classes: a plain value
+/// attribute, a `&T` uniform, or a `&[T]` slice (storage-buffer array).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParamKind {
+    Attr,
+    Uniform,
+    Slice,
+}
+
 // ─── SPIR-V opcode numbers (verified against emit_spirv/constants.rs) ────────
 
 const OP_EXT_INST: u16 = 12;
+const OP_CONVERT_F_TO_U: u16 = 109;
 const OP_VECTOR_SHUFFLE: u16 = 79;
 const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
 const OP_FADD: u16 = 129;
@@ -86,6 +96,11 @@ enum SpirvExpect {
     /// The body defeats the SPIR-V translator; the top level emits a
     /// passthrough module. No witness opcode may be present.
     Passthrough,
+    /// Emission itself fails with an error containing the substring — a
+    /// STRUCTURAL rejection (e.g. the combined-SSBO cap) that happens during
+    /// interface setup, before body translation, so there is no module to
+    /// passthrough. The build fails on it, mirroring the MSL `Reject`.
+    Reject { err_contains: &'static str },
 }
 
 enum MslExpect {
@@ -108,7 +123,7 @@ enum WgslExpect {
 struct Fixture {
     name: &'static str,
     stage: ShaderStage,
-    params: &'static [(&'static str, ShaderType, bool)],
+    params: &'static [(&'static str, ShaderType, ParamKind)],
     /// Token-spaced wire form — the bytes the emitters receive at runtime.
     body: &'static str,
     /// Clean-source twin (`Vec4::new(uv.x)`) for the string-replace-fiasco
@@ -127,10 +142,11 @@ fn def(f: &Fixture) -> ShaderDef {
         params: f
             .params
             .iter()
-            .map(|(name, ty, is_uniform)| ShaderParam {
+            .map(|(name, ty, kind)| ShaderParam {
                 name: name.to_string(),
                 ty: *ty,
-                is_uniform: *is_uniform,
+                is_uniform: *kind == ParamKind::Uniform,
+                is_slice: *kind == ParamKind::Slice,
             })
             .collect(),
         return_type: ShaderType::Vec4,
@@ -197,6 +213,7 @@ fn opcodes(spirv: &[u8]) -> Vec<u16> {
 /// a body-specific witness (arithmetic / intrinsic) instead.
 const REAL_WORK_OPCODES: &[u16] = &[
     OP_EXT_INST,
+    OP_CONVERT_F_TO_U,
     OP_VECTOR_SHUFFLE,
     OP_IMAGE_SAMPLE_IMPLICIT_LOD,
     OP_F_NEGATE,
@@ -233,25 +250,22 @@ fn spirv_translated(f: &Fixture, d: &ShaderDef) -> bool {
             }
         }
         (SpirvExpect::Passthrough, Ok(spirv)) => has_real_work(&spirv),
+        // A `Reject` fixture that unexpectedly emitted Ok did NOT reject; it
+        // counts as translated iff the module carries real work.
+        (SpirvExpect::Reject { .. }, Ok(spirv)) => has_real_work(&spirv),
     }
 }
 
 // ─── Divergence allowlist (surfaced bugs only — see module docs) ─────────────
 
 // Empty: the SPIR-V shader grammar now accepts every construct the corpus
-// exercises that MSL does. The two historical entries — a trailing comma in a
-// call (`ctor_trailing_comma`) and a branch-local `let` inside an
-// expression-`if` (`dija_rect_frag`) — were real SPIR-V-side gaps that fell to
-// a passthrough while MSL translated; both are fixed (trailing-comma tolerance
-// in the argument parser, branch blocks routed through the statement walker),
-// so their fixtures now assert full SPIR-V/MSL agreement. The list is kept so a
-// future divergence has a home and the heal-detection stays wired.
-const KNOWN_DIVERGENCES: &[(&str, &str)] = &[(
-    "expr_if_assigns_outer_local",
-    "MSL honors an assignment to an outer local inside an if-expression \
-     branch; SPIR-V rejects it (passthrough) until the expression-if merge \
-     phis mutated outer locals like the statement-level `if` does",
-)];
+// exercises that MSL does. The last entry — an assignment to an outer local
+// inside an expression-`if` branch (`expr_if_assigns_outer_local`) — is closed:
+// the expression-`if` merge now phis mutated outer locals exactly like the
+// statement-level `if`, so SPIR-V honors the write (OP_PHI) and its fixture
+// asserts full SPIR-V/MSL agreement. The list is kept so a future divergence
+// has a home and the heal-detection stays wired.
+const KNOWN_DIVERGENCES: &[(&str, &str)] = &[];
 
 // ─── The fixture table ───────────────────────────────────────────────────────
 
@@ -282,7 +296,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "arith_mix",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ Vec4 :: new ( uv . x * 0.5 + 0.25 , uv . y / 2.0 - 0.1 , 1.0 - uv . x , 1.0 ) }",
             alt: Some("{ Vec4::new(uv.x * 0.5 + 0.25, uv.y / 2.0 - 0.1, 1.0 - uv.x, 1.0) }"),
             spirv: SpirvExpect::Real {
@@ -298,7 +312,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "parens_precedence",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ Vec4 :: new ( ( uv . x + uv . y ) * 0.5 , uv . x + uv . y * 0.5 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Real {
@@ -314,7 +328,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "unary_minus",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ Vec4 :: new ( - uv . x + 1.0 , abs ( - 0.5 ) , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Real {
@@ -330,7 +344,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "expr_if",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let c = if uv . x > 0.5 { 1.0 } else { 0.0 } ; Vec4 :: new ( c , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Real { witness: &[OP_PHI] },
@@ -346,7 +360,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "expr_if_nested",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: BAND_EXPR_BODY,
             alt: None,
             spirv: SpirvExpect::Real { witness: &[OP_PHI] },
@@ -360,7 +374,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "cmp_all",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let a = if uv . x > 0.5 { 1.0 } else { 0.0 } ; \
                    let b = if uv . y < 0.5 { 1.0 } else { 0.0 } ; \
                    let c = if uv . x >= uv . y { 1.0 } else { 0.0 } ; \
@@ -381,7 +395,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "let_chain",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let a = uv . x ; let b = a * 2.0 ; let c = b - a ; Vec4 :: new ( c , a , b , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Real {
@@ -397,7 +411,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "let_mut_reassign",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let mut v = uv . x ; v = v * 2.0 ; v = v + 0.1 ; Vec4 :: new ( v , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Real {
@@ -415,7 +429,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "stmt_if_assign",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let mut c = 0.0 ; if uv . x > 0.5 { c = 1.0 ; } else { c = 0.25 ; } \
                    Vec4 :: new ( c , 0.0 , 0.0 , 1.0 ) }",
             alt: Some(
@@ -435,7 +449,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "stmt_if_nested",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: BAND_STMT_BODY,
             alt: None,
             spirv: SpirvExpect::Real { witness: &[OP_PHI] },
@@ -449,7 +463,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "stmt_if_then_expr",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             // The image-fragment shape: a statement-if reassigns, then a
             // final tail expression is the return value (TailMode::Route).
             body: "{ let mut g = 0.25 ; if uv . x > 0.5 { g = 0.75 ; } else { g = 0.1 ; } \
@@ -468,9 +482,9 @@ fn fixtures() -> Vec<Fixture> {
             name: "uniform_deref_star",
             stage: Vertex,
             params: &[
-                ("pos", Vec3, false),
-                ("uv", Vec2, false),
-                ("shift", Vec2, true),
+                ("pos", Vec3, ParamKind::Attr),
+                ("uv", Vec2, ParamKind::Attr),
+                ("shift", Vec2, ParamKind::Uniform),
             ],
             body: "{ Vec4 :: new ( pos . x + ( * shift ) . x , pos . y + shift . y , 0.0 , 1.0 ) }",
             alt: Some("{ Vec4::new(pos.x + (*shift).x, pos.y + shift.y, 0.0, 1.0) }"),
@@ -492,7 +506,10 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "uniform_frag_tint",
             stage: Fragment,
-            params: &[("uv", Vec2, false), ("tint", Vec4, true)],
+            params: &[
+                ("uv", Vec2, ParamKind::Attr),
+                ("tint", Vec4, ParamKind::Uniform),
+            ],
             body: "{ Vec4 :: new ( tint . x , tint . y , tint . z , 1.0 ) }",
             alt: None,
             // Reading `tint.x` is OpLoad + OpCompositeExtract — the passthrough
@@ -512,9 +529,9 @@ fn fixtures() -> Vec<Fixture> {
             name: "uniform_mat4_mul",
             stage: Vertex,
             params: &[
-                ("pos", Vec3, false),
-                ("uv", Vec2, false),
-                ("mvp", Mat4, true),
+                ("pos", Vec3, ParamKind::Attr),
+                ("uv", Vec2, ParamKind::Attr),
+                ("mvp", Mat4, ParamKind::Uniform),
             ],
             body: "{ mvp * Vec4 :: new ( pos . x , pos . y , pos . z , 1.0 ) }",
             alt: None,
@@ -532,9 +549,9 @@ fn fixtures() -> Vec<Fixture> {
             name: "uniform_two_frag",
             stage: Fragment,
             params: &[
-                ("uv", Vec2, false),
-                ("base", Vec4, true),
-                ("gain", Vec4, true),
+                ("uv", Vec2, ParamKind::Attr),
+                ("base", Vec4, ParamKind::Uniform),
+                ("gain", Vec4, ParamKind::Uniform),
             ],
             // A non-commutative combiner (0.75*base + 0.25*gain) so binding
             // order is observable downstream.
@@ -558,10 +575,10 @@ fn fixtures() -> Vec<Fixture> {
             // uniform binding is the index among UNIFORMS, not among all
             // params, on both emitters.
             params: &[
-                ("a", Vec2, false),
-                ("u1", Vec2, true),
-                ("b", Vec2, false),
-                ("u2", Vec4, true),
+                ("a", Vec2, ParamKind::Attr),
+                ("u1", Vec2, ParamKind::Uniform),
+                ("b", Vec2, ParamKind::Attr),
+                ("u2", Vec4, ParamKind::Uniform),
             ],
             body: "{ Vec4 :: new ( a . x + u1 . x , b . y + u2 . y , u2 . z , 1.0 ) }",
             alt: None,
@@ -579,7 +596,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "swizzle_multi",
             stage: Fragment,
-            params: &[("v", Vec4, false)],
+            params: &[("v", Vec4, ParamKind::Attr)],
             body: "{ let s = v . zw ; Vec4 :: new ( s . x , s . y , v . xy . x , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Real {
@@ -595,7 +612,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "swizzle_on_ctor",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ Vec4 :: new ( Vec2 :: new ( uv . y , uv . x ) . x , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             // `.x` on a Vec2 constructor is a single OpCompositeExtract — the
@@ -616,7 +633,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "ctor_nested",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ Vec4 :: new ( mix ( uv . x , uv . y , 0.5 ) , min ( uv . x , uv . y ) , \
                    max ( uv . x , uv . y ) , 1.0 ) }",
             alt: Some("{ Vec4::new(mix(uv.x, uv.y, 0.5), min(uv.x, uv.y), max(uv.x, uv.y), 1.0) }"),
@@ -633,7 +650,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "ctor_trailing_comma",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             // The exact artifact a rustfmt-wrapped multi-line call ships: the
             // token printer preserves the trailing comma (`1.0,)`).
             body: "{ Vec4 :: new(uv . x * 0.5 , 0.25 , 0.0 , 1.0 ,) }",
@@ -655,7 +672,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "ctor_wrapped_split",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             // The token printer wraps long lines and can break between
             // `Vec4 ::` and `new(...)`. Both native emitters must treat the
             // newline as ordinary whitespace.
@@ -678,7 +695,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "intrinsics_core",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let a = sqrt ( uv . x + 0.1 ) ; let b = pow ( uv . y , 2.0 ) ; \
                    let c = floor ( uv . x * 4.0 ) + fract ( uv . y ) ; \
                    let d = clamp ( uv . x , 0.0 , 1.0 ) * abs ( uv . y - 0.5 ) ; \
@@ -697,7 +714,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "intrinsics_geo",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let d = dot ( uv , uv ) ; let l = length ( uv ) ; \
                    let n = normalize ( Vec2 :: new ( uv . x + 0.001 , uv . y ) ) . x ; \
                    Vec4 :: new ( d , l , n , 1.0 ) }",
@@ -715,7 +732,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "intrinsics_map",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let r = inverse_sqrt ( uv . x + 1.0 ) ; Vec4 :: new ( r , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Real {
@@ -732,7 +749,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "deriv_frag",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let w = fwidth ( uv . x ) ; \
                    Vec4 :: new ( w * 100.0 , dpdx ( uv . y ) * 100.0 + 0.5 , dpdy ( uv . x ) * 100.0 + 0.5 , 1.0 ) }",
             alt: None,
@@ -750,7 +767,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "smoothstep_band",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: CIRCLE_SDF_BODY,
             alt: None,
             spirv: SpirvExpect::Real {
@@ -770,7 +787,7 @@ fn fixtures() -> Vec<Fixture> {
             // `sample(0` stays contiguous: both native emitters detect the
             // texture slot by the literal substring `sample(N` (naive scan,
             // not tokenized), which is the wire form the macro ships.
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ sample(0 , uv ) }",
             alt: None,
             spirv: SpirvExpect::Real {
@@ -788,7 +805,10 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "sample_swizzle",
             stage: Fragment,
-            params: &[("uv", Vec2, false), ("tint", Vec4, true)],
+            params: &[
+                ("uv", Vec2, ParamKind::Attr),
+                ("tint", Vec4, ParamKind::Uniform),
+            ],
             body: "{ let c = sample(0 , uv ) . x ; \
                    Vec4 :: new ( c * tint . x , c * tint . y , c * tint . z , 1.0 ) }",
             alt: Some(
@@ -808,7 +828,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "sample_in_ctor",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ Vec4 :: new ( sample(0 , uv ) . x , sample(0 , uv ) . y , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Real {
@@ -821,18 +841,164 @@ fn fixtures() -> Vec<Fixture> {
                 residue: &["sample(0 , uv ) . x"],
             },
         },
+        // ── SLICE PARAMS (`&[T]` storage-buffer arrays) ───────────────────
+        // A literal index into a `&[Vec4]` slice. SPIR-V lowers `stops[0]` to
+        // OpConvertFToU (index → uint) + OpAccessChain[member0, idx] + OpLoad —
+        // the ConvertFToU witnesses genuine slice access (a passthrough never
+        // converts f→u). MSL declares `const device float4* stops [[buffer(0)]]`
+        // and indexes `stops[(uint)(0.0)]`. WGSL's stub can't index → residue.
+        Fixture {
+            name: "slice_index_literal",
+            stage: Fragment,
+            params: &[("stops", Vec4, ParamKind::Slice)],
+            body: "{ Vec4 :: new ( stops [ 0 ] . x , stops [ 0 ] . y , stops [ 0 ] . z , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_CONVERT_F_TO_U],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "const device float4* stops [[buffer(0)]]",
+                    "stops[(uint)(0.0)]",
+                ],
+            },
+            wgsl: WgslExpect::KnownBroken {
+                residue: &["stops [ 0 ]"],
+            },
+        },
+        // A computed index (from uv arithmetic). The `uv.x * 4.0` is OpFMul; the
+        // index still truncates through OpConvertFToU. MSL: `stops[(uint)(i)]`.
+        Fixture {
+            name: "slice_index_computed",
+            stage: Fragment,
+            params: &[
+                ("uv", Vec2, ParamKind::Attr),
+                ("stops", Vec4, ParamKind::Slice),
+            ],
+            body: "{ let i = uv . x * 4.0 ; Vec4 :: new ( stops [ i ] . x , stops [ i ] . y , stops [ i ] . z , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_FMUL, OP_CONVERT_F_TO_U],
+            },
+            msl: MslExpect::Accept {
+                contains: &["stops[(uint)(i)]"],
+            },
+            wgsl: WgslExpect::KnownBroken {
+                residue: &["stops [ i ]"],
+            },
+        },
+        // A slice DECLARED between two uniforms proves uniform and slice params
+        // share ONE decl-index binding space: u_a→buffer(0), stops→buffer(1),
+        // u_b→buffer(2). The MSL `[[buffer(N)]]` substrings pin the bindings;
+        // the SPIR-V OpFAdd (u_a.x + stops[0].x) + OpConvertFToU witness the
+        // translation (opcodes can't encode a binding number, exactly as
+        // `uniform_mixed_order` proves uniform order via substrings + OpFAdd).
+        Fixture {
+            name: "slice_mixed_decl_order",
+            stage: Fragment,
+            params: &[
+                ("u_a", Vec4, ParamKind::Uniform),
+                ("stops", Vec4, ParamKind::Slice),
+                ("u_b", Vec4, ParamKind::Uniform),
+            ],
+            body: "{ Vec4 :: new ( u_a . x + stops [ 0 ] . x , u_b . y , stops [ 1 ] . z , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_FADD, OP_CONVERT_F_TO_U],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "constant float4& u_a [[buffer(0)]]",
+                    "const device float4* stops [[buffer(1)]]",
+                    "constant float4& u_b [[buffer(2)]]",
+                ],
+            },
+            wgsl: WgslExpect::KnownBroken {
+                residue: &["stops [ 0 ]"],
+            },
+        },
+        // ── REJECTIONS: SLICE + CAP ───────────────────────────────────────
+        // Indexing a NON-slice param (`uv` is a Vec2 attribute). SPIR-V rejects
+        // it (→ passthrough); MSL rejects with a "non-slice" error. The two
+        // agree on rejection.
+        Fixture {
+            name: "rej_index_non_slice",
+            stage: Fragment,
+            params: &[("uv", Vec2, ParamKind::Attr)],
+            body: "{ Vec4 :: new ( uv [ 0 ] . x , 0.0 , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Passthrough,
+            msl: MslExpect::Reject {
+                err_contains: "non-slice",
+            },
+            wgsl: WgslExpect::KnownBroken {
+                residue: &["uv [ 0 ]"],
+            },
+        },
+        // 9 combined uniform + slice params overrun the cap of 8 (texture
+        // bindings start at 8). BOTH emitters fail with a structural error that
+        // names the count and the cap — SPIR-V errors during interface setup
+        // (no module to passthrough), MSL likewise before body lowering.
+        Fixture {
+            name: "rej_ssbo_cap",
+            stage: Fragment,
+            params: &[
+                ("u0", Vec4, ParamKind::Uniform),
+                ("u1", Vec4, ParamKind::Uniform),
+                ("u2", Vec4, ParamKind::Uniform),
+                ("u3", Vec4, ParamKind::Uniform),
+                ("s4", Vec4, ParamKind::Slice),
+                ("u5", Vec4, ParamKind::Uniform),
+                ("u6", Vec4, ParamKind::Uniform),
+                ("u7", Vec4, ParamKind::Uniform),
+                ("s8", Vec4, ParamKind::Slice),
+            ],
+            body: "{ Vec4 :: new ( u0 . x , u1 . y , s4 [ 0 ] . z , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Reject {
+                err_contains: "cap of 8",
+            },
+            msl: MslExpect::Reject {
+                err_contains: "cap of 8",
+            },
+            wgsl: WgslExpect::KnownBroken {
+                residue: &["s4 [ 0 ]"],
+            },
+        },
+        // ── SPACING-ROBUST TEXTURE SCAN (A4) ──────────────────────────────
+        // The spaced twin of `sample_basic`: `sample ( 0 , uv )`. Both native
+        // emitters must find the slot despite whitespace between `sample`, `(`,
+        // and the digit — a non-macro producer or a printer change could space
+        // them apart. (syn is spacing-blind on the MSL side; the SPIR-V scan and
+        // the MSL scan/rewrite are the sites made whitespace-tolerant.)
+        Fixture {
+            name: "sample_spaced_scan",
+            stage: Fragment,
+            params: &[("uv", Vec2, ParamKind::Attr)],
+            body: "{ sample ( 0 , uv ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_IMAGE_SAMPLE_IMPLICIT_LOD],
+            },
+            msl: MslExpect::Accept {
+                contains: &["tex_0.sample("],
+            },
+            wgsl: WgslExpect::KnownBroken {
+                residue: &["sample ( 0 , uv )"],
+            },
+        },
         // ── REAL DIJA BODIES (verbatim shape from emit_msl/shader_tests.rs) ─
         Fixture {
             name: "dija_rect_frag",
             stage: Fragment,
             params: &[
-                ("corner", Vec2, false),
-                ("size", Vec2, false),
-                ("color", Vec4, false),
-                ("border_color", Vec4, false),
-                ("corner_radii", Vec4, false),
-                ("border_width", F32, false),
-                ("shape_type", F32, false),
+                ("corner", Vec2, ParamKind::Attr),
+                ("size", Vec2, ParamKind::Attr),
+                ("color", Vec4, ParamKind::Attr),
+                ("border_color", Vec4, ParamKind::Attr),
+                ("corner_radii", Vec4, ParamKind::Attr),
+                ("border_width", F32, ParamKind::Attr),
+                ("shape_type", F32, ParamKind::Attr),
             ],
             body: DIJA_RECT_FRAG_BODY,
             alt: None,
@@ -856,9 +1022,9 @@ fn fixtures() -> Vec<Fixture> {
             name: "dija_glyph_frag",
             stage: Fragment,
             params: &[
-                ("corner", Vec2, false),
-                ("uv_rect", Vec4, false),
-                ("color", Vec4, false),
+                ("corner", Vec2, ParamKind::Attr),
+                ("uv_rect", Vec4, ParamKind::Attr),
+                ("color", Vec4, ParamKind::Attr),
             ],
             body: DIJA_GLYPH_FRAG_BODY,
             alt: None,
@@ -876,11 +1042,11 @@ fn fixtures() -> Vec<Fixture> {
             name: "dija_image_frag",
             stage: Fragment,
             params: &[
-                ("corner", Vec2, false),
-                ("size", Vec2, false),
-                ("uv_rect", Vec4, false),
-                ("opacity", F32, false),
-                ("border_radius", F32, false),
+                ("corner", Vec2, ParamKind::Attr),
+                ("size", Vec2, ParamKind::Attr),
+                ("uv_rect", Vec4, ParamKind::Attr),
+                ("opacity", F32, ParamKind::Attr),
+                ("border_radius", F32, ParamKind::Attr),
             ],
             body: DIJA_IMAGE_FRAG_BODY,
             alt: None,
@@ -898,15 +1064,15 @@ fn fixtures() -> Vec<Fixture> {
             name: "dija_rect_vert",
             stage: Vertex,
             params: &[
-                ("pos", Vec2, false),
-                ("corner", Vec2, false),
-                ("size", Vec2, false),
-                ("color", Vec4, false),
-                ("border_color", Vec4, false),
-                ("corner_radii", Vec4, false),
-                ("border_width", F32, false),
-                ("shape_type", F32, false),
-                ("viewport", Vec2, true),
+                ("pos", Vec2, ParamKind::Attr),
+                ("corner", Vec2, ParamKind::Attr),
+                ("size", Vec2, ParamKind::Attr),
+                ("color", Vec4, ParamKind::Attr),
+                ("border_color", Vec4, ParamKind::Attr),
+                ("corner_radii", Vec4, ParamKind::Attr),
+                ("border_width", F32, ParamKind::Attr),
+                ("shape_type", F32, ParamKind::Attr),
+                ("viewport", Vec2, ParamKind::Uniform),
             ],
             body: DIJA_RECT_VERT_BODY,
             alt: None,
@@ -920,21 +1086,22 @@ fn fixtures() -> Vec<Fixture> {
                 residue: &["let pos_result = let px ="],
             },
         },
-        // ── REJECTIONS ────────────────────────────────────────────────────
-        // Assignment to an OUTER local inside an if-expression branch: the
-        // SPIR-V branch walker runs over cloned locals, so honoring the
-        // write is impossible today — it rejects (passthrough) rather than
-        // silently dropping the store. MSL honors the write, hence the
-        // allowlisted divergence until the expression-if merge phis mutated
-        // outer locals like the statement-level `if` already does.
+        // ── EXPRESSION-IF OUTER ASSIGNMENT (A3 phi-merge) ─────────────────
+        // Assignment to an OUTER local inside an if-expression branch. The
+        // expression-`if` merge now phis mutated outer locals exactly like the
+        // statement-level `if`, so SPIR-V honors the write — `acc` reads 1.0 on
+        // the then-branch and 0.0 on the else — witnessed by OP_PHI. MSL always
+        // honored it (the branch lowers to an assignment), so the two agree.
         Fixture {
             name: "expr_if_assigns_outer_local",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let mut acc = 0.0 ; let v = if uv . x > 0.5 { acc = 1.0 ; uv . x } else { uv . y } ; Vec4 :: new ( v , acc , 0.0 , 1.0 ) }",
             alt: None,
-            spirv: SpirvExpect::Passthrough,
-            msl: MslExpect::Accept { contains: &[] },
+            spirv: SpirvExpect::Real { witness: &[OP_PHI] },
+            msl: MslExpect::Accept {
+                contains: &["acc = 1.0;"],
+            },
             wgsl: WgslExpect::KnownBroken {
                 residue: &["if uv . x"],
             },
@@ -942,7 +1109,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "rej_method_call",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ Vec4 :: new ( uv . length ( ) , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Passthrough,
@@ -956,7 +1123,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "rej_for_loop",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let mut a = 0.0 ; for i in 0 .. 4 { a = a + 1.0 ; } Vec4 :: new ( a , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Passthrough,
@@ -970,7 +1137,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "rej_unknown_intrinsic",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ Vec4 :: new ( bogus_fn ( uv . x ) , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Passthrough,
@@ -984,7 +1151,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "rej_if_no_else",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             // An EXPRESSION-if without else. (A statement-if without else is
             // handled asymmetrically — SPIR-V translates it, MSL rejects it —
             // so it is deliberately NOT a fixture here; that asymmetry is a
@@ -1002,7 +1169,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "rej_out_of_range_component",
             stage: Fragment,
-            params: &[("v", Vec4, false)],
+            params: &[("v", Vec4, ParamKind::Attr)],
             body: "{ Vec4 :: new ( v . q , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Passthrough,
@@ -1014,7 +1181,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "rej_while_loop",
             stage: Fragment,
-            params: &[("uv", Vec2, false)],
+            params: &[("uv", Vec2, ParamKind::Attr)],
             body: "{ let mut a = 0.0 ; while a < 4.0 { a = a + 1.0 ; } Vec4 :: new ( a , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Passthrough,
@@ -1199,6 +1366,20 @@ fn acceptance_parity_msl_vs_spirv() {
                     ));
                 }
             }
+            SpirvExpect::Reject { err_contains } => match emit_spirv(&d) {
+                Ok(_) => failures.push(format!(
+                    "[{}] expected SPIR-V Reject ({err_contains:?}), got Ok",
+                    f.name
+                )),
+                Err(e) => {
+                    if !e.contains(err_contains) {
+                        failures.push(format!(
+                            "[{}] SPIR-V error {e:?} does not contain {err_contains:?}",
+                            f.name
+                        ));
+                    }
+                }
+            },
         }
 
         // MSL matches its declared expectation.
@@ -1255,6 +1436,11 @@ fn spirv_validates() {
 
     let mut failures = Vec::new();
     for f in fixtures() {
+        // A `Reject` fixture fails emission by contract (structural error, no
+        // module) — its error text is asserted in the parity test instead.
+        if matches!(f.spirv, SpirvExpect::Reject { .. }) {
+            continue;
+        }
         let d = def(&f);
         let spirv = match emit_spirv(&d) {
             Ok(s) => s,

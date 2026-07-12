@@ -25,7 +25,9 @@ use std::fmt::Write as _;
 use syn::{BinOp, Expr, Lit, Stmt, UnOp};
 
 /// The MSL value types a shader expression can have. Shaders are float-only, so
-/// this is scalars + float vectors, plus `Bool` for comparison results.
+/// this is scalars + float vectors, plus `Bool` for comparison results and
+/// `Slice` for a `&[T]` storage-buffer array param (whose element type is the
+/// boxed inner scalar/vector).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MslType {
     Float,
@@ -33,10 +35,32 @@ pub(crate) enum MslType {
     Vec3,
     Vec4,
     Bool,
+    /// A `&[T]` slice param. The element is one of Float/Vec2/Vec4 (validated at
+    /// parse time). Only indexing (`name[i]`) produces a value from it.
+    Slice(SliceElem),
     /// Type couldn't be inferred (an unknown identifier, an intrinsic whose
     /// result type we don't model). Only fatal where a concrete declaration is
     /// required (a `let x = if ...` whose value type must be named).
     Unknown,
+}
+
+/// The element type of a `&[T]` slice param.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SliceElem {
+    Float,
+    Vec2,
+    Vec4,
+}
+
+impl SliceElem {
+    /// The MSL type indexing this slice yields.
+    fn element(self) -> MslType {
+        match self {
+            SliceElem::Float => MslType::Float,
+            SliceElem::Vec2 => MslType::Vec2,
+            SliceElem::Vec4 => MslType::Vec4,
+        }
+    }
 }
 
 impl MslType {
@@ -47,6 +71,9 @@ impl MslType {
             MslType::Vec3 => "float3",
             MslType::Vec4 => "float4",
             MslType::Bool => "bool",
+            // A slice is never the declared type of a `let` binding, so this
+            // spelling is only a fallback; index it to get a concrete element.
+            MslType::Slice(_) => "auto",
             MslType::Unknown => "auto",
         }
     }
@@ -60,6 +87,17 @@ impl MslType {
             // Matrices aren't values a shader body constructs; treat as unknown.
             quanta_ir::ShaderType::Mat4 | quanta_ir::ShaderType::Mat3 => MslType::Unknown,
         }
+    }
+
+    /// The slice type for a `&[T]` param whose element `ShaderType` is `ty`.
+    pub(crate) fn slice_of(ty: quanta_ir::ShaderType) -> MslType {
+        let elem = match ty {
+            quanta_ir::ShaderType::F32 => SliceElem::Float,
+            quanta_ir::ShaderType::Vec2 => SliceElem::Vec2,
+            // Slice element types are validated to f32/Vec2/Vec4 at parse time.
+            _ => SliceElem::Vec4,
+        };
+        MslType::Slice(elem)
     }
 }
 
@@ -163,7 +201,6 @@ fn emit_stmts(
     env: &mut TypeEnv,
     out: &mut String,
 ) -> Result<(), String> {
-    let pad = "    ".repeat(indent);
     for (i, stmt) in stmts.iter().enumerate() {
         let is_last = i == stmts.len() - 1;
         match stmt {
@@ -228,7 +265,7 @@ fn emit_assign(
         return Err(format!("assignment to unknown local `{name}`"));
     }
     let ty = infer_type(&assign.right, env);
-    let code = emit_expr(&assign.right)?;
+    let code = emit_expr(&assign.right, env)?;
     env.insert(name.clone(), ty);
     writeln!(out, "{pad}{name} = {code};").unwrap();
     Ok(())
@@ -257,7 +294,7 @@ fn emit_tail(
         // yields no value — treat as a statement.
         return emit_assign(assign, indent, env, out);
     }
-    let code = emit_expr(expr)?;
+    let code = emit_expr(expr, env)?;
     match mode {
         TailMode::Assign(var) | TailMode::Route(Some(var)) => {
             writeln!(out, "{pad}{var} = {code};").unwrap()
@@ -311,7 +348,7 @@ fn emit_local(
         emit_if(if_expr, TailMode::Assign(&name), indent, env, out)?;
     } else {
         let ty = infer_type(&init.expr, env);
-        let code = emit_expr(&init.expr)?;
+        let code = emit_expr(&init.expr, env)?;
         env.insert(name.clone(), ty);
         // `auto` is fine for an initialized binding; only if-lowered locals need
         // an explicit type. Keep `auto` to stay agnostic where inference is
@@ -348,7 +385,7 @@ fn emit_if(
     out: &mut String,
 ) -> Result<(), String> {
     let pad = "    ".repeat(indent);
-    let cond = emit_expr(&if_expr.cond)?;
+    let cond = emit_expr(&if_expr.cond, env)?;
     writeln!(out, "{pad}if ({cond}) {{").unwrap();
     emit_branch_block(&if_expr.then_branch.stmts, mode, indent + 1, env, out)?;
 
@@ -445,6 +482,19 @@ fn infer_type(expr: &Expr, env: &TypeEnv) -> MslType {
         Expr::Field(f) => infer_field_type(f),
         Expr::If(if_expr) => infer_if_type(if_expr, env),
         Expr::Call(c) => infer_call_type(c, env),
+        // `slice[i]` — the element type of a `&[T]` slice param.
+        Expr::Index(idx) => match idx.expr.as_ref() {
+            Expr::Path(path) => path
+                .path
+                .get_ident()
+                .and_then(|id| env.get(&id.to_string()).copied())
+                .map(|t| match t {
+                    MslType::Slice(elem) => elem.element(),
+                    _ => MslType::Unknown,
+                })
+                .unwrap_or(MslType::Unknown),
+            _ => MslType::Unknown,
+        },
         _ => MslType::Unknown,
     }
 }
@@ -523,19 +573,23 @@ fn infer_call_type(c: &syn::ExprCall, env: &TypeEnv) -> MslType {
 }
 
 /// Emit an expression to an MSL source fragment (no trailing `;`).
-fn emit_expr(expr: &Expr) -> Result<String, String> {
+///
+/// `env` is threaded so that a `name[index]` on a slice param can be validated
+/// (only `&[T]` params index) — every other expression is spacing-/type-blind.
+fn emit_expr(expr: &Expr, env: &TypeEnv) -> Result<String, String> {
     match expr {
         Expr::Lit(lit) => emit_lit(&lit.lit),
         Expr::Path(path) => emit_path_ident(&path.path),
-        Expr::Paren(p) => Ok(format!("({})", emit_expr(&p.expr)?)),
-        Expr::Group(g) => emit_expr(&g.expr),
-        Expr::Unary(u) => emit_unary(u),
-        Expr::Binary(b) => emit_binary(b),
+        Expr::Paren(p) => Ok(format!("({})", emit_expr(&p.expr, env)?)),
+        Expr::Group(g) => emit_expr(&g.expr, env),
+        Expr::Unary(u) => emit_unary(u, env),
+        Expr::Binary(b) => emit_binary(b, env),
         // `x as f32` / `as u32` etc. — shaders are float-only, strip the cast.
-        Expr::Cast(c) => emit_expr(&c.expr),
-        Expr::Field(f) => emit_field(f),
+        Expr::Cast(c) => emit_expr(&c.expr, env),
+        Expr::Field(f) => emit_field(f, env),
+        Expr::Index(idx) => emit_index(idx, env),
         Expr::MethodCall(m) => emit_method_call(m),
-        Expr::Call(c) => emit_call(c),
+        Expr::Call(c) => emit_call(c, env),
         Expr::If(_) => Err(
             "an `if` used as a value must be bound with `let x = if ...` or be the block tail"
                 .to_string(),
@@ -545,6 +599,33 @@ fn emit_expr(expr: &Expr) -> Result<String, String> {
             expr_kind(other)
         )),
     }
+}
+
+/// Index a `&[T]` slice param: `name[index]` → `name[(uint)(index)]`. The index
+/// truncates to `uint` (matching the SPIR-V `OpConvertFToU`); bounds are
+/// UNCHECKED (the GPU storage-buffer contract). Indexing a non-slice value or
+/// an unknown name is a named error.
+fn emit_index(idx: &syn::ExprIndex, env: &TypeEnv) -> Result<String, String> {
+    let base = match idx.expr.as_ref() {
+        Expr::Path(path) => path
+            .path
+            .get_ident()
+            .map(|i| i.to_string())
+            .ok_or_else(|| "slice index base must be a plain identifier".to_string())?,
+        other => {
+            return Err(format!(
+                "cannot index {} in shader body; only `&[T]` slice params support indexing",
+                expr_kind(other)
+            ));
+        }
+    };
+    if !matches!(env.get(&base), Some(MslType::Slice(_))) {
+        return Err(format!(
+            "`{base}[..]` indexes a non-slice value; only `&[T]` slice params support indexing"
+        ));
+    }
+    let index = emit_expr(&idx.index, env)?;
+    Ok(format!("{base}[(uint)({index})]"))
 }
 
 fn emit_lit(lit: &Lit) -> Result<String, String> {
@@ -586,8 +667,8 @@ fn emit_path_ident(path: &syn::Path) -> Result<String, String> {
     ))
 }
 
-fn emit_unary(u: &syn::ExprUnary) -> Result<String, String> {
-    let inner = emit_expr(&u.expr)?;
+fn emit_unary(u: &syn::ExprUnary, env: &TypeEnv) -> Result<String, String> {
+    let inner = emit_expr(&u.expr, env)?;
     match u.op {
         UnOp::Neg(_) => Ok(format!("-{inner}")),
         UnOp::Not(_) => Ok(format!("!{inner}")),
@@ -600,9 +681,9 @@ fn emit_unary(u: &syn::ExprUnary) -> Result<String, String> {
     }
 }
 
-fn emit_binary(b: &syn::ExprBinary) -> Result<String, String> {
-    let l = emit_expr(&b.left)?;
-    let r = emit_expr(&b.right)?;
+fn emit_binary(b: &syn::ExprBinary, env: &TypeEnv) -> Result<String, String> {
+    let l = emit_expr(&b.left, env)?;
+    let r = emit_expr(&b.right, env)?;
     let op = match b.op {
         BinOp::Add(_) => "+",
         BinOp::Sub(_) => "-",
@@ -629,8 +710,8 @@ fn emit_binary(b: &syn::ExprBinary) -> Result<String, String> {
 /// Field / swizzle access. `.x/.y/.z/.w` and `.r/.g/.b/.a` map straight through
 /// (MSL uses the same swizzle spellings); multi-char swizzles (`.xy`, `.zw`)
 /// are supported too since the runtime shaders use `uv_rect.zw`.
-fn emit_field(f: &syn::ExprField) -> Result<String, String> {
-    let base = emit_expr(&f.base)?;
+fn emit_field(f: &syn::ExprField, env: &TypeEnv) -> Result<String, String> {
+    let base = emit_expr(&f.base, env)?;
     let member = match &f.member {
         syn::Member::Named(id) => id.to_string(),
         syn::Member::Unnamed(idx) => {
@@ -670,7 +751,7 @@ fn emit_method_call(m: &syn::ExprMethodCall) -> Result<String, String> {
 
 /// A call expression: a `VecN::new` constructor, a `sample(slot, uv)` texture
 /// fetch, or a free intrinsic (`min`, `mix`, `smoothstep`, `length`, …).
-fn emit_call(c: &syn::ExprCall) -> Result<String, String> {
+fn emit_call(c: &syn::ExprCall, env: &TypeEnv) -> Result<String, String> {
     let Expr::Path(callee) = c.func.as_ref() else {
         return Err("unsupported call target in shader body".to_string());
     };
@@ -681,7 +762,7 @@ fn emit_call(c: &syn::ExprCall) -> Result<String, String> {
     if path.segments.len() == 2 && path.segments[1].ident == "new" {
         let ctor = path.segments[0].ident.to_string();
         if let Some(msl_ty) = vec_ctor_msl(&ctor) {
-            let args = emit_args(&c.args)?;
+            let args = emit_args(&c.args, env)?;
             return Ok(format!("{msl_ty}({args})"));
         }
         return Err(format!(
@@ -701,12 +782,12 @@ fn emit_call(c: &syn::ExprCall) -> Result<String, String> {
     // shader emitter rewrites it to `tex_N.sample(smp_N, uv)` after this pass,
     // so emit it verbatim here.
     if name == "sample" {
-        let args = emit_args(&c.args)?;
+        let args = emit_args(&c.args, env)?;
         return Ok(format!("sample({args})"));
     }
 
     if let Some(msl_name) = intrinsic_msl_name(&name) {
-        let args = emit_args(&c.args)?;
+        let args = emit_args(&c.args, env)?;
         return Ok(format!("{msl_name}({args})"));
     }
 
@@ -717,10 +798,11 @@ fn emit_call(c: &syn::ExprCall) -> Result<String, String> {
 
 fn emit_args(
     args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+    env: &TypeEnv,
 ) -> Result<String, String> {
     let mut parts = Vec::with_capacity(args.len());
     for a in args {
-        parts.push(emit_expr(a)?);
+        parts.push(emit_expr(a, env)?);
     }
     Ok(parts.join(", "))
 }

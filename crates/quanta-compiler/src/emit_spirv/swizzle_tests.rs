@@ -21,6 +21,7 @@ fn frag(params: &[(&str, ShaderType)], body: &str) -> ShaderDef {
                 name: name.to_string(),
                 ty: *ty,
                 is_uniform: false,
+                is_slice: false,
             })
             .collect(),
         return_type: ShaderType::Vec4,
@@ -107,8 +108,9 @@ fn out_of_range_component_errors() {
     let params = vec![("corner".to_string(), 1u32, vec2_ty, ShaderType::Vec2)];
     let tokens = tokenize_shader_expr("corner . z");
     let mut pos = 0;
+    let mut locals = Vec::new();
     let err = e
-        .parse_atom(&tokens, &mut pos, &params, &[])
+        .parse_atom(&tokens, &mut pos, &params, &mut locals)
         .expect_err(".z on Vec2 must be rejected");
     assert!(err.contains("out of range"), "unexpected error: {err}");
 }

@@ -192,6 +192,7 @@ pub(crate) fn write_shader_def(w: &mut Writer, s: &crate::ShaderDef) {
         w.str(&p.name);
         w.u8(p.ty as u8);
         w.bool_val(p.is_uniform);
+        w.bool_val(p.is_slice);
     }
     w.u8(s.return_type as u8);
     w.str(&s.body_source);

@@ -460,6 +460,9 @@ fn name(attributes..., uniforms: &T) -> OutputType { body }
 
 - Value params: vertex attributes (per-vertex data from vertex buffers)
 - `&T` reference params: uniform buffer bindings
+- `&[T]` slice params (`&[f32]`, `&[Vec2]`, `&[Vec4]` only): storage-buffer
+  arrays, indexed in the body with `name[index]`. They share the uniform
+  binding index space and bind the same way -- see the fragment table below.
 
 #### Produces
 
@@ -500,6 +503,18 @@ fn name(varyings..., textures: &Texture2D, uniforms: &T) -> Vec4 { body }
   uniform params -- the first uniform binds with `.uniform(0, &field)`.
   On Vulkan they are declared as storage-buffer descriptors at the same
   binding the runtime uses, so fragment uniforms work on both backends.
+- `&[T]` slice params (`&[f32]`, `&[Vec2]`, `&[Vec4]` only -- any other
+  element type is a compile error): a fragment-readable table backed by a
+  storage buffer, e.g. gradient stops or a palette LUT instead of a fixed
+  set of varyings. **Binding.** Slices and `&T` uniforms draw slots from
+  **one** declaration-index space: walking the params in order, each uniform
+  or slice consumes the next index, so a slice declared between two uniforms
+  takes the middle slot. Bind it at draw time with the same
+  `.uniform(slot, &field)` (it binds a storage buffer at `binding=slot` on
+  both stages) -- so at most **8 combined** uniform + slice params fit
+  (bindings 0-7; texture bindings start at 8), and exceeding that is a
+  named compile error. **Reading.** Index with `name[index]` in the body
+  (see below).
 
 #### Body language
 
@@ -510,27 +525,43 @@ required), arithmetic and comparisons, `VecN::new`, swizzle field access
 (`.x`/`.rgba`, incl. on parenthesized expressions), uniform deref
 (`*viewport`, `(*viewport).x`), `sample(texture_param, uv)`, the GLSL-style
 math intrinsics (`sin`, `mix`, `smoothstep`, `clamp`, `inverse_sqrt`, ...),
-and the fragment-stage derivatives `fwidth` / `dpdx` / `dpdy`. Both
-emitters accept the artifacts rustfmt and the token printer produce in
-real builds: a trailing comma before `)` in a call, a call wrapped and
-split across lines (`Vec4 ::\nnew(`), and a `let` declared inside an
-`if`/`else` branch. Anything outside this surface is a compile error
-naming the construct -- nothing silently miscompiles.
+the fragment-stage derivatives `fwidth` / `dpdx` / `dpdy`, and `&[T]` slice
+indexing `name[index]` (see below). Both emitters accept the artifacts
+rustfmt and the token printer produce in real builds: a trailing comma
+before `)` in a call, a call wrapped and split across lines
+(`Vec4 ::\nnew(`), and a `let` declared inside an `if`/`else` branch.
+Anything outside this surface is a compile error naming the construct --
+nothing silently miscompiles.
 
-**One portability limitation.** Assigning to a local declared *outside*
-an `if` from *inside an expression-`if` branch* is honoured by MSL but
-rejected by the SPIR-V emitter (its expression-`if` merge does not phi a
-mutated outer local the way a statement-`if` does). Use a statement-`if`
-when a branch must reassign an outer local:
+**Slice indexing.** `name[index]` reads element `index` of a `&[T]` slice
+param. `index` is any scalar expression the grammar accepts; it is f32 in
+this grammar and **truncates** toward zero to an integer (`stops[uv.x * 4.0]`
+selects stop `floor(uv.x * 4.0)`). Bounds are **unchecked** -- indexing out
+of range is undefined, the GPU storage-buffer contract. Indexing anything
+that is not a slice param (a value, a uniform, an unknown name) is a compile
+error.
 
 ```rust,ignore
-// Portable: statement-if reassigns the outer local
+#[quanta::fragment]
+fn gradient(uv: Vec2, stops: &[Vec4]) -> Vec4 {
+    let i = uv.x * 4.0;      // 0.0 .. 4.0 across the quad
+    stops[i]                 // truncates to stop 0/1/2/3
+}
+```
+
+Assigning to a local declared *outside* an `if` from *inside an
+expression-`if` branch* now works identically on both emitters -- the
+SPIR-V expression-`if` merge phis a mutated outer local exactly like a
+statement-`if` -- so both forms below are portable:
+
+```rust,ignore
+// statement-if reassigns the outer local
 let mut c = 0.0;
 if uv.x > 0.5 { c = 1.0; } else { c = 0.5; }
 
-// Not portable: expression-if branch assigns an outer local
+// expression-if branch reassigns the outer local (also portable)
 let mut c = 0.0;
-let _ = if uv.x > 0.5 { c = 1.0; } else { c = 0.5; };
+let v = if uv.x > 0.5 { c = 1.0; uv.x } else { uv.y };
 ```
 
 #### Produces

@@ -18,12 +18,20 @@ pub enum ShaderType {
     Mat3 = 5,
 }
 
-/// A parsed shader parameter (vertex attribute or uniform binding).
+/// A parsed shader parameter (vertex attribute, uniform, or slice binding).
+///
+/// `is_uniform` marks a `&T` uniform; `is_slice` marks a `&[T]` storage-buffer
+/// array (`ty` is then the element type). The two are mutually exclusive, and a
+/// param with neither set is a plain value attribute. Uniform and slice params
+/// share one binding space (see the compiler's shared decl-index): the runtime
+/// binds both with `.uniform(slot, …)` as a storage-buffer descriptor at
+/// binding=slot on both stages.
 #[derive(Debug, Clone)]
 pub struct ShaderParam {
     pub name: String,
     pub ty: ShaderType,
     pub is_uniform: bool,
+    pub is_slice: bool,
 }
 
 /// Complete shader definition — input to the compiler for vertex/fragment shaders.

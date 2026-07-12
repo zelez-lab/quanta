@@ -37,6 +37,7 @@ fn p(name: &str, ty: ShaderType) -> ShaderParam {
         name: name.to_string(),
         ty,
         is_uniform: false,
+        is_slice: false,
     }
 }
 
@@ -45,6 +46,7 @@ fn uniform(name: &str, ty: ShaderType) -> ShaderParam {
         name: name.to_string(),
         ty,
         is_uniform: true,
+        is_slice: false,
     }
 }
 

@@ -65,7 +65,7 @@ impl SpvEmitter {
         let vec4_ty = self.ensure_type_vector(f32_ty, 4);
 
         let max_tex_slot = (0..8u32)
-            .filter(|slot| shader.body_source.contains(&format!("sample({}", slot)))
+            .filter(|slot| body_samples_slot(&shader.body_source, *slot))
             .max()
             .map(|m| m + 1)
             .unwrap_or(0);
@@ -103,17 +103,34 @@ impl SpvEmitter {
             }
         }
 
-        // 2c. Fragment uniforms — shared storage-block emission (see
-        // emit_uniform_storage_blocks for the binding contract).
+        // 2c. Fragment uniforms + slices — shared storage-block emission over
+        // one decl-index binding space (see emit_uniform_storage_blocks /
+        // emit_slice_storage_blocks); the combined-cap error surfaces here.
+        let bindings = super::shared_binding_indices(shader)?;
         let uniform_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
             .params
             .iter()
             .enumerate()
             .filter(|(_, p)| p.is_uniform)
             .collect();
+        let slice_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_slice)
+            .collect();
+
+        self.slice_params.clear();
         let mut uniform_vars: Vec<(String, u32, u32, quanta_ir::ShaderType)> = Vec::new();
         if !uniform_params.is_empty() {
-            self.emit_uniform_storage_blocks(&uniform_params, &mut uniform_vars);
+            self.emit_uniform_storage_blocks(
+                &uniform_params,
+                &bindings.uniform_bindings,
+                &mut uniform_vars,
+            );
+        }
+        if !slice_params.is_empty() {
+            self.emit_slice_storage_blocks(&slice_params, &bindings.slice_bindings);
         }
 
         // 3. Declare Output variable: fragment color at Location(0)
@@ -221,4 +238,32 @@ impl SpvEmitter {
 
         Ok(super::ShaderEmit::Real)
     }
+}
+
+/// Whether `body` samples texture slot `slot`, tolerating whitespace between
+/// `sample`, `(`, and the slot digit (`sample ( 0`, `sample( 0`, …). Real macro
+/// output keeps `sample(N` contiguous, but any other ShaderDef producer (or a
+/// future printer change) could space them apart, so the slot scan must not
+/// depend on a contiguous form.
+fn body_samples_slot(body: &str, slot: u32) -> bool {
+    let digit = char::from_digit(slot, 10).unwrap() as u8;
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = body[i..].find("sample") {
+        let mut j = i + rel + "sample".len();
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'(' {
+            j += 1;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == digit {
+                return true;
+            }
+        }
+        i += rel + "sample".len();
+    }
+    false
 }

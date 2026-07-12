@@ -28,6 +28,8 @@ pub(crate) enum ShaderToken {
     Close,            // )
     BraceOpen,        // {
     BraceClose,       // }
+    BracketOpen,      // [
+    BracketClose,     // ]
     Semi,             // ;
     Eq,               // = (assignment / let binding)
 }
@@ -49,6 +51,8 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
         ")" => tokens.push(ShaderToken::Close),
         "{" => tokens.push(ShaderToken::BraceOpen),
         "}" => tokens.push(ShaderToken::BraceClose),
+        "[" => tokens.push(ShaderToken::BracketOpen),
+        "]" => tokens.push(ShaderToken::BracketClose),
         "+" => tokens.push(ShaderToken::Op('+')),
         "-" => tokens.push(ShaderToken::Op('-')),
         "*" => tokens.push(ShaderToken::Op('*')),
@@ -62,7 +66,7 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
         ";" => tokens.push(ShaderToken::Semi),
         "=" => tokens.push(ShaderToken::Eq),
         _ => {
-            if let Some(split_pos) = w.find(['(', ')', ',', '{', '}', ';']) {
+            if let Some(split_pos) = w.find(['(', ')', ',', '{', '}', '[', ']', ';']) {
                 let (before, rest) = w.split_at(split_pos);
                 if !before.is_empty() {
                     tokenize_word(before, tokens);

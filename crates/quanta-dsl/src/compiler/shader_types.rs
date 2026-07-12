@@ -1,11 +1,23 @@
 //! Shader parameter types, parsing, and body extraction.
 #![allow(dead_code)]
 
-/// A parsed shader parameter — either a vertex/fragment attribute or a uniform.
+/// A parsed shader parameter — a vertex/fragment attribute, a `&T` uniform, or
+/// a `&[T]` slice (storage-buffer array). `is_uniform` and `is_slice` are
+/// mutually exclusive; `ty` on a slice is the element type.
 pub(crate) struct ShaderParam {
     pub(crate) name: String,
     pub(crate) ty: ShaderType,
     pub(crate) is_uniform: bool,
+    pub(crate) is_slice: bool,
+}
+
+/// How a parsed parameter binds: a plain value attribute, a `&T` uniform, or a
+/// `&[T]` slice. Uniform and slice share one binding index space (see the
+/// combined-cap check in `parse_shader_params`).
+enum ParamClass {
+    Value,
+    Uniform,
+    Slice,
 }
 
 /// Shader types understood by the vertex/fragment emitters.
@@ -102,18 +114,28 @@ pub(crate) fn parse_shader_params(
                 continue;
             }
 
-            let (ty, is_uniform) = parse_shader_type(&pat_type.ty)?;
-            if is_uniform && params.iter().filter(|p| p.is_uniform).count() >= 8 {
+            let (ty, class) = parse_shader_type(&pat_type.ty)?;
+            let (is_uniform, is_slice) = match class {
+                ParamClass::Value => (false, false),
+                ParamClass::Uniform => (true, false),
+                ParamClass::Slice => (false, true),
+            };
+            // Uniforms and slices share ONE binding index space (bindings 0-7);
+            // texture bindings start at 8, so more than 8 combined would collide.
+            if (is_uniform || is_slice)
+                && params.iter().filter(|p| p.is_uniform || p.is_slice).count() >= 8
+            {
                 return Err(syn::Error::new_spanned(
                     &pat_type.pat,
-                    "at most 8 uniform parameters are supported (bindings 0-7; \
-                     higher bindings are reserved for textures)",
+                    "at most 8 combined uniform and slice parameters are supported \
+                     (bindings 0-7; texture bindings start at 8)",
                 ));
             }
             params.push(ShaderParam {
                 name,
                 ty,
                 is_uniform,
+                is_slice,
             });
         }
     }
@@ -155,18 +177,41 @@ pub(crate) fn rewrite_texture_names(body: &str, textures: &[String]) -> String {
     s
 }
 
-/// Parse a type into (ShaderType, is_uniform).
-/// `&T` → uniform, `T` → attribute/input.
-fn parse_shader_type(ty: &syn::Type) -> Result<(ShaderType, bool), syn::Error> {
+/// Parse a type into (element `ShaderType`, `ParamClass`).
+/// `&[T]` → slice, `&T` → uniform, `T` → attribute/input.
+fn parse_shader_type(ty: &syn::Type) -> Result<(ShaderType, ParamClass), syn::Error> {
     match ty {
-        syn::Type::Reference(ref_ty) => {
-            let inner = parse_shader_type_inner(&ref_ty.elem)?;
-            Ok((inner, true))
-        }
+        syn::Type::Reference(ref_ty) => match ref_ty.elem.as_ref() {
+            // `&[T]` — a storage-buffer array. The element type is restricted to
+            // f32/Vec2/Vec4 (the runtime binds these as tightly-packed SSBOs);
+            // anything else (Vec3/Mat4/nested/`u32`) is a compile error.
+            syn::Type::Slice(slice_ty) => {
+                let elem = parse_slice_element(&slice_ty.elem)?;
+                Ok((elem, ParamClass::Slice))
+            }
+            other => {
+                let inner = parse_shader_type_inner(other)?;
+                Ok((inner, ParamClass::Uniform))
+            }
+        },
         _ => {
             let inner = parse_shader_type_inner(ty)?;
-            Ok((inner, false))
+            Ok((inner, ParamClass::Value))
         }
+    }
+}
+
+/// Parse a slice element type. Only `f32`, `Vec2`, and `Vec4` are allowed as
+/// `&[T]` shader-parameter element types.
+fn parse_slice_element(ty: &syn::Type) -> Result<ShaderType, syn::Error> {
+    let inner = parse_shader_type_inner(ty)?;
+    match inner {
+        ShaderType::F32 | ShaderType::Vec2 | ShaderType::Vec4 => Ok(inner),
+        _ => Err(syn::Error::new_spanned(
+            ty,
+            "slice parameters support only `&[f32]`, `&[Vec2]`, and `&[Vec4]` \
+             element types",
+        )),
     }
 }
 

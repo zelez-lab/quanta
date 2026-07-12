@@ -259,6 +259,41 @@ fn mvp_vertex(pos: Vec3, uv: Vec2, mvp: &Mat4) -> Vec4 {
     mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
 }
 
+// mirrors fixture `slice_index_computed` / the D13 gradient-stops shape:
+// `stops: &[Vec4]` is a real fragment-readable table (a `&[T]` storage buffer),
+// bound with `.uniform(0, …)`. uv.x picks one of four stops → four vertical
+// colour bands. The bands are on uv.x only → orientation-free.
+#[quanta::fragment]
+fn gradient_stops_frag(uv: Vec2, stops: &[Vec4]) -> Vec4 {
+    let idx = if uv.x < 0.25 {
+        0.0
+    } else {
+        if uv.x < 0.5 {
+            1.0
+        } else {
+            if uv.x < 0.75 { 2.0 } else { 3.0 }
+        }
+    };
+    stops[idx]
+}
+
+// mirrors fixture `expr_if_assigns_outer_local` (the A3 phi-merge): a branch of
+// an if-EXPRESSION assigns the outer local `acc`, and `acc` then feeds the
+// output colour. SPIR-V now phis the mutated outer local at the merge exactly
+// like the statement-level `if`, so `acc` reads 1.0 on the right half (uv.x >
+// 0.5) and stays 0.25 on the left. x-only banding → orientation-free.
+#[quanta::fragment]
+fn expr_if_outer_assign_frag(uv: Vec2) -> Vec4 {
+    let mut acc = 0.25;
+    let v = if uv.x > 0.5 {
+        acc = 1.0;
+        uv.x
+    } else {
+        uv.y
+    };
+    Vec4::new(acc, v, 0.0, 1.0)
+}
+
 // mirrors the ELLIPSE arm of fixture `dija_rect_frag` (`shape_type > 0.5`):
 // the branch-local-`let` expression-if the SPIR-V parser skipped pre-fix. The
 // `let dist = if shape_type > 0.5 { let nx = …; let ny = …; let d = …; expr }
@@ -960,4 +995,112 @@ fn draw_dija_ellipse_branch() {
         rim.is_some(),
         "expected at least one antialiased ellipse-boundary pixel (0.1 < a < 0.9)"
     );
+}
+
+// ─── D13: gradient-stops table (`stops: &[Vec4]`) — four colour bands ─────────
+
+#[test]
+fn draw_gradient_stops() {
+    let Some(gpu) = try_gpu() else { return };
+    if !shaders_ready(&gpu, &[&QUAD_VERTEX_SHADER, &GRADIENT_STOPS_FRAG_SHADER]) {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+    let pipe = pipeline(&gpu, &QUAD_VERTEX_SHADER, &GRADIENT_STOPS_FRAG_SHADER);
+    let vb = fullscreen_vb(&gpu);
+
+    // Four Vec4 stops packed tightly (16 f32 = 4 vec4, std430 stride 16): the
+    // slice SSBO the shader indexes by uv.x quarter. Distinct colours per band.
+    #[rustfmt::skip]
+    let stops = field_of(&gpu, &[
+        1.0, 0.0, 0.0, 1.0, // stop 0 — red
+        0.0, 1.0, 0.0, 1.0, // stop 1 — green
+        0.0, 0.0, 1.0, 1.0, // stop 2 — blue
+        1.0, 1.0, 1.0, 1.0, // stop 3 — white
+    ]);
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipe)
+        .vertices(0, &vb)
+        .uniform(0, &stops)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+    let px = target.read().unwrap();
+
+    // One column per band, at BOTH y extremes — bands are on uv.x only, so the
+    // expected colour is flip-independent. Proves `stops[i]` reads the right
+    // table entry per band.
+    for &y in &[0u32, h - 1] {
+        expect_rgb(&px, w, 1, y, (255, 0, 0), "band0 red (stops[0])");
+        expect_rgb(&px, w, 3, y, (0, 255, 0), "band1 green (stops[1])");
+        expect_rgb(&px, w, 5, y, (0, 0, 255), "band2 blue (stops[2])");
+        expect_rgb(&px, w, 7, y, (255, 255, 255), "band3 white (stops[3])");
+    }
+}
+
+// ─── D14: expression-if outer assignment (A3 phi-merge) ──────────────────────
+
+#[test]
+fn draw_expr_if_outer_assign() {
+    let Some(gpu) = try_gpu() else { return };
+    if !shaders_ready(
+        &gpu,
+        &[&QUAD_VERTEX_SHADER, &EXPR_IF_OUTER_ASSIGN_FRAG_SHADER],
+    ) {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+    let pipe = pipeline(&gpu, &QUAD_VERTEX_SHADER, &EXPR_IF_OUTER_ASSIGN_FRAG_SHADER);
+    let vb = fullscreen_vb(&gpu);
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipe)
+        .vertices(0, &vb)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+    let px = target.read().unwrap();
+
+    // acc = 0.25 on the left half (uv.x <= 0.5), reassigned to 1.0 on the right
+    // half inside the if-EXPRESSION branch — the write the SPIR-V phi-merge must
+    // honor. R reads acc directly: 0.25 → ~64 on the left, 1.0 → ~255 on the
+    // right. Banding is on uv.x only → orientation-free; assert exact R at both
+    // y extremes for the leftmost and rightmost columns.
+    for &y in &[0u32, h - 1] {
+        let (rl, _, _, _) = pixel_at(&px, w, 0, y);
+        assert!(
+            (rl as i32 - 64).abs() <= 12,
+            "left half acc must be 0.25 (R~64), got {rl} at y={y}"
+        );
+        let (rr, _, _, _) = pixel_at(&px, w, 7, y);
+        assert!(
+            rr > 243,
+            "right half acc must be 1.0 (R~255) — the branch write must be honored, got {rr} at y={y}"
+        );
+    }
 }

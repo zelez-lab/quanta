@@ -3,7 +3,13 @@
 //! Parses tokenized Rust shader body into SPIR-V instructions.
 //! Supports: Vec constructors, field access, arithmetic, float literals,
 //! let bindings, math functions (GLSL.std.450), matrix-vector multiply,
-//! if/else, comparisons, and uniform parameter access via push constants.
+//! if/else, comparisons, uniform parameter access via storage buffers, and
+//! `&[T]` slice indexing (`name[index]`).
+//!
+//! `locals` threads as `&mut Vec` through the whole descent so that BOTH the
+//! statement-level `if` and the expression-`if` can rebind outer locals at
+//! their merge with `OpPhi` (SSA construction) — the two forms are now
+//! symmetric, and neither silently drops a branch assignment.
 
 use super::constants::*;
 use super::emitter::SpvEmitter;
@@ -136,6 +142,48 @@ impl SpvEmitter {
         Ok(inner)
     }
 
+    /// Phi-merge the locals of two branches back into the caller's `locals`.
+    ///
+    /// For each original-prefix slot (`0..base_len`) whose id changed in EITHER
+    /// branch, emit an `OpPhi` over (then-value @ `then_end`, else-value @
+    /// `else_end`) — a slot changed in only one branch phis the changed value
+    /// against the still-original id from the other. A slot whose type diverged
+    /// across the branches is an error. Assumes the merge block is current.
+    /// Shared by the statement-level `if` and the expression-`if`.
+    fn phi_merge_locals(
+        &mut self,
+        locals: &mut [(String, u32, quanta_ir::ShaderType)],
+        then_locals: &[(String, u32, quanta_ir::ShaderType)],
+        else_locals: &[(String, u32, quanta_ir::ShaderType)],
+        base_len: usize,
+        then_end: u32,
+        else_end: u32,
+    ) -> Result<(), String> {
+        for i in 0..base_len {
+            let (ref name, t_id, t_ty) = then_locals[i];
+            let (_, e_id, e_ty) = else_locals[i];
+            if t_id == e_id {
+                locals[i].1 = t_id;
+                continue;
+            }
+            if t_ty != e_ty {
+                return Err(format!(
+                    "local `{name}` assigned different types in if/else branches"
+                ));
+            }
+            let result = self.alloc_id();
+            let ty_id = self.shader_type_id(t_ty);
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_PHI,
+                &[ty_id, result, t_id, then_end, e_id, else_end],
+            );
+            locals[i].1 = result;
+            locals[i].2 = t_ty;
+        }
+        Ok(())
+    }
+
     /// `if cond { … } [else { … }]` at statement level. Branches run
     /// the statement walker over CLONED locals; at the merge block
     /// every local the branches diverged on gets an OpPhi. When both
@@ -199,28 +247,14 @@ impl SpvEmitter {
         // Merge block: phi every diverged local
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[merge_label]);
         self.current_block = merge_label;
-        for i in 0..base_len {
-            let (ref name, t_id, t_ty) = then_locals[i];
-            let (_, e_id, e_ty) = else_locals[i];
-            if t_id == e_id {
-                locals[i].1 = t_id;
-                continue;
-            }
-            if t_ty != e_ty {
-                return Err(format!(
-                    "local `{name}` assigned different types in if/else branches"
-                ));
-            }
-            let result = self.alloc_id();
-            let ty_id = self.shader_type_id(t_ty);
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_PHI,
-                &[ty_id, result, t_id, then_end, e_id, else_end],
-            );
-            locals[i].1 = result;
-            locals[i].2 = t_ty;
-        }
+        self.phi_merge_locals(
+            locals,
+            &then_locals,
+            &else_locals,
+            base_len,
+            then_end,
+            else_end,
+        )?;
 
         // Value form: both branches produced a trailing expression
         match (then_val, else_val) {
@@ -238,48 +272,18 @@ impl SpvEmitter {
         }
     }
 
-    pub(crate) fn eval_expr(
-        &mut self,
-        src: &str,
-        params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
-    ) -> Result<(u32, quanta_ir::ShaderType), String> {
-        let tokens = tokenize_shader_expr(src);
-        let mut pos = 0;
-        self.parse_conditional(&tokens, &mut pos, params, locals)
-    }
-
-    /// A branch of an if-EXPRESSION walks the statement grammar over a
-    /// CLONE of the caller's locals, so an assignment that rebinds one of
-    /// those outer locals would mutate only the clone and silently vanish
-    /// at the merge — while the MSL emitter honors the write. Until the
-    /// expression-if merge phis mutated outer locals the way the
-    /// statement-level `if` already does, reject the shape instead of
-    /// miscompiling it. New bindings (`let`, shadowing) only APPEND to the
-    /// clone, so a changed id inside the original prefix is exactly an
-    /// outer mutation — direct, or via a nested statement-`if`'s phi.
-    fn reject_outer_mutation(
-        original: &[(String, u32, quanta_ir::ShaderType)],
-        walked: &[(String, u32, quanta_ir::ShaderType)],
-    ) -> Result<(), String> {
-        for (orig, after) in original.iter().zip(walked.iter()) {
-            if orig.1 != after.1 {
-                return Err(format!(
-                    "assignment to outer local `{}` inside an if-expression branch \
-                     is not supported; use a statement-level `if`",
-                    orig.0
-                ));
-            }
-        }
-        Ok(())
-    }
-
+    /// An if-EXPRESSION. Its branches run the statement grammar over CLONED
+    /// locals; at the merge, every outer local a branch rebound is phi-merged
+    /// back into the caller's `locals` — exactly like the statement-level `if`
+    /// — and the branch VALUES are phi-merged into the expression's result.
+    /// Branch-local `let`s only APPEND to the clone and stay scoped to the
+    /// branch.
     pub(crate) fn parse_conditional(
         &mut self,
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         if *pos < tokens.len() && tokens[*pos] == ShaderToken::Ident("if".to_string()) {
             *pos += 1;
@@ -351,19 +355,21 @@ impl SpvEmitter {
                 &[cond, then_label, else_label],
             );
 
+            let base_len = locals.len();
+
             // Then block. A branch body is a statement block: zero or more
             // branch-local `let`/assignments followed by a mandatory tail
             // expression (`{ let nx = …; expr }`), so it runs through the
             // statement walker over CLONED locals — the branch-local bindings
-            // stay scoped to the branch and never leak outward.
+            // stay scoped to the branch, and an assignment to an OUTER local is
+            // phi-merged back below (parity with the statement-level `if`).
             Self::emit_op(&mut self.sec_function, OP_LABEL, &[then_label]);
             self.current_block = then_label;
-            let mut then_locals = locals.to_vec();
+            let mut then_locals = locals.clone();
             let mut then_pos = 0;
             let (then_id, then_ty) = self
                 .parse_statements(&then_tokens, &mut then_pos, params, &mut then_locals)?
                 .ok_or_else(|| "if-expression then-branch has no result value".to_string())?;
-            Self::reject_outer_mutation(locals, &then_locals)?;
             // A nested if inside the branch moves us to its merge
             // block — the phi below must name the ACTUAL predecessor.
             let then_end = self.current_block;
@@ -372,18 +378,26 @@ impl SpvEmitter {
             // Else block (same block grammar as the then-branch).
             Self::emit_op(&mut self.sec_function, OP_LABEL, &[else_label]);
             self.current_block = else_label;
-            let mut else_locals = locals.to_vec();
+            let mut else_locals = locals.clone();
             let mut else_pos = 0;
             let (else_id, _) = self
                 .parse_statements(&else_tokens, &mut else_pos, params, &mut else_locals)?
                 .ok_or_else(|| "if-expression else-branch has no result value".to_string())?;
-            Self::reject_outer_mutation(locals, &else_locals)?;
             let else_end = self.current_block;
             Self::emit_op(&mut self.sec_function, OP_BRANCH, &[merge_label]);
 
-            // Merge block with OpPhi
+            // Merge block: phi mutated outer locals (like the statement-`if`),
+            // then phi the branch VALUES into the expression's result.
             Self::emit_op(&mut self.sec_function, OP_LABEL, &[merge_label]);
             self.current_block = merge_label;
+            self.phi_merge_locals(
+                locals,
+                &then_locals,
+                &else_locals,
+                base_len,
+                then_end,
+                else_end,
+            )?;
             let result = self.alloc_id();
             let ty_id = self.shader_type_id(then_ty);
             Self::emit_op(
@@ -402,7 +416,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         let (left, ty) = self.parse_additive(tokens, pos, params, locals)?;
         if *pos < tokens.len() {
@@ -439,7 +453,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         let (mut left, ty) = self.parse_multiplicative(tokens, pos, params, locals)?;
         while *pos < tokens.len() {
@@ -480,7 +494,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         let (mut left, mut left_ty) = self.parse_unary(tokens, pos, params, locals)?;
         while *pos < tokens.len() {
@@ -541,7 +555,7 @@ impl SpvEmitter {
         tokens: &[ShaderToken],
         pos: &mut usize,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
-        locals: &[(String, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         if *pos < tokens.len() && tokens[*pos] == ShaderToken::Op('-') {
             *pos += 1;

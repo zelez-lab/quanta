@@ -43,6 +43,58 @@ pub(crate) enum ShaderEmit {
     NeedsPassthrough,
 }
 
+/// The maximum number of combined uniform + slice storage-buffer params.
+/// Texture bindings begin at 8, so at most 8 uniform/slice params fit in
+/// bindings 0-7 before they collide with textures.
+pub(crate) const MAX_SSBO_PARAMS: usize = 8;
+
+/// Binding indices for a shader's uniform and slice params, drawn from ONE
+/// shared decl-index space: walking `params` in declaration order, each uniform
+/// OR slice param consumes the next index (value attributes and textures are
+/// skipped). Returned parallel to `params.iter().filter(is_uniform)` and
+/// `params.iter().filter(is_slice)` respectively.
+pub(crate) struct SharedBindings {
+    pub(crate) uniform_bindings: Vec<u32>,
+    pub(crate) slice_bindings: Vec<u32>,
+}
+
+/// Assign shared decl-index bindings to a shader's uniform and slice params,
+/// enforcing the combined SSBO cap. More than [`MAX_SSBO_PARAMS`] combined is a
+/// hard error (the extra params would collide with texture bindings at 8+).
+pub(crate) fn shared_binding_indices(
+    shader: &quanta_ir::ShaderDef,
+) -> Result<SharedBindings, String> {
+    let combined = shader
+        .params
+        .iter()
+        .filter(|p| p.is_uniform || p.is_slice)
+        .count();
+    if combined > MAX_SSBO_PARAMS {
+        return Err(format!(
+            "shader `{}` declares {combined} combined uniform+slice params, over the \
+             cap of {MAX_SSBO_PARAMS} (texture bindings start at 8)",
+            shader.name
+        ));
+    }
+
+    let mut uniform_bindings = Vec::new();
+    let mut slice_bindings = Vec::new();
+    let mut next = 0u32;
+    for p in &shader.params {
+        if p.is_uniform {
+            uniform_bindings.push(next);
+            next += 1;
+        } else if p.is_slice {
+            slice_bindings.push(next);
+            next += 1;
+        }
+    }
+    Ok(SharedBindings {
+        uniform_bindings,
+        slice_bindings,
+    })
+}
+
 /// Emit Vulkan SPIR-V binary from a KernelDef.
 ///
 /// Returns the SPIR-V module as bytes, ready for `vkCreateShaderModule`.

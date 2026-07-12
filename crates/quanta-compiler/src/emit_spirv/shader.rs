@@ -227,17 +227,34 @@ impl SpvEmitter {
             input_vars.push((var_id, ty_id));
         }
 
-        // 2b. Declare uniform params as push constant struct
+        // 2b. Declare uniform + slice params as storage-buffer blocks, both
+        // drawing from one shared decl-index binding space (see
+        // super::shared_binding_indices); the combined-cap error surfaces here.
+        let bindings = super::shared_binding_indices(shader)?;
         let uniform_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
             .params
             .iter()
             .enumerate()
             .filter(|(_, p)| p.is_uniform)
             .collect();
+        let slice_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_slice)
+            .collect();
 
+        self.slice_params.clear();
         let mut uniform_vars: Vec<(String, u32, u32, quanta_ir::ShaderType)> = Vec::new();
         if !uniform_params.is_empty() {
-            self.emit_uniform_storage_blocks(&uniform_params, &mut uniform_vars);
+            self.emit_uniform_storage_blocks(
+                &uniform_params,
+                &bindings.uniform_bindings,
+                &mut uniform_vars,
+            );
+        }
+        if !slice_params.is_empty() {
+            self.emit_slice_storage_blocks(&slice_params, &bindings.slice_bindings);
         }
 
         // 2c. Declare Output variables for varyings
@@ -371,20 +388,23 @@ impl SpvEmitter {
         Ok(super::ShaderEmit::Real)
     }
 
-    /// One storage-buffer block per shader uniform at
-    /// binding = declaration index among uniform params — matching the
-    /// runtime: `.uniform(slot, …)` binds a STORAGE_BUFFER descriptor
-    /// at binding=slot, visible to BOTH stages. The slot space is
-    /// therefore shared across stages (identical to Metal, where the
-    /// runtime binds each slot's buffer to both stages' `[[buffer(i)]]`
-    /// index): vertex uniform i and fragment uniform i read the SAME
-    /// bound Field. Shared by the vertex and fragment emitters.
+    /// One storage-buffer block per shader uniform, each at its shared
+    /// decl-index binding (`bindings` is parallel to `uniform_params`) —
+    /// matching the runtime: `.uniform(slot, …)` binds a STORAGE_BUFFER
+    /// descriptor at binding=slot, visible to BOTH stages. Uniform and slice
+    /// params draw from ONE binding space (see `shared_binding_indices`), so
+    /// the binding is passed in rather than derived from the position among
+    /// uniforms alone. The slot space is shared across stages (identical to
+    /// Metal, where the runtime binds each slot's buffer to both stages'
+    /// `[[buffer(i)]]` index): vertex uniform i and fragment uniform i read the
+    /// SAME bound Field. Shared by the vertex and fragment emitters.
     pub(crate) fn emit_uniform_storage_blocks(
         &mut self,
         uniform_params: &[(usize, &quanta_ir::ShaderParam)],
+        bindings: &[u32],
         uniform_vars: &mut Vec<(String, u32, u32, quanta_ir::ShaderType)>,
     ) {
-        for (i, (_, p)) in uniform_params.iter().enumerate() {
+        for ((_, p), &binding) in uniform_params.iter().zip(bindings.iter()) {
             let member_ty = self.shader_type_id(p.ty);
             let struct_ty = self.alloc_id();
             Self::emit_op(
@@ -410,8 +430,59 @@ impl SpvEmitter {
             );
             self.emit_name(var_id, &p.name);
             self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
-            self.decorate(var_id, DECORATION_BINDING, &[i as u32]);
+            self.decorate(var_id, DECORATION_BINDING, &[binding]);
             uniform_vars.push((p.name.clone(), var_id, member_ty, p.ty));
+        }
+    }
+
+    /// One read-only runtime-array storage buffer per `&[T]` slice param, at
+    /// its shared decl-index binding (`bindings` is parallel to
+    /// `slice_params`). Mirrors the compute-kernel `FieldRead` block
+    /// (`OpTypeStruct { OpTypeRuntimeArray elem }`, `Block`, `ArrayStride`
+    /// 4/8/16, `NonWritable`, DescriptorSet 0), which is the same descriptor
+    /// the runtime's `.uniform(slot, &field)` binds. Records each slice in
+    /// `self.slice_params` so the body's `name[index]` postfix can access it.
+    pub(crate) fn emit_slice_storage_blocks(
+        &mut self,
+        slice_params: &[(usize, &quanta_ir::ShaderParam)],
+        bindings: &[u32],
+    ) {
+        for ((_, p), &binding) in slice_params.iter().zip(bindings.iter()) {
+            let elem_ty = self.shader_type_id(p.ty);
+            let stride = match p.ty {
+                quanta_ir::ShaderType::F32 => 4,
+                quanta_ir::ShaderType::Vec2 => 8,
+                quanta_ir::ShaderType::Vec4 => 16,
+                // Slice element types are validated at parse time to f32/Vec2/
+                // Vec4; treat anything else as tightly-packed vec4 defensively.
+                _ => 16,
+            };
+
+            let rt_arr = self.ensure_type_runtime_array(elem_ty);
+            if self.decorated_stride.insert(rt_arr) {
+                self.decorate(rt_arr, DECORATION_ARRAY_STRIDE, &[stride]);
+            }
+
+            let struct_ty = self.ensure_type_struct(&[rt_arr]);
+            if self.decorated_block.insert(struct_ty) {
+                self.decorate(struct_ty, DECORATION_BLOCK, &[]);
+                self.member_decorate(struct_ty, 0, DECORATION_OFFSET, &[0]);
+            }
+
+            let ptr_struct = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, struct_ty);
+            let var_id = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_struct, var_id, STORAGE_CLASS_STORAGE_BUFFER],
+            );
+            self.emit_name(var_id, &p.name);
+            self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+            self.decorate(var_id, DECORATION_BINDING, &[binding]);
+            self.decorate(var_id, DECORATION_NON_WRITABLE, &[]);
+
+            self.slice_params
+                .insert(p.name.clone(), (var_id, elem_ty, p.ty));
         }
     }
 }

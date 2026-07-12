@@ -502,11 +502,13 @@ fn roundtrip_shader_def_vertex() {
                 name: "pos".to_string(),
                 ty: ShaderType::Vec3,
                 is_uniform: false,
+                is_slice: false,
             },
             ShaderParam {
                 name: "mvp".to_string(),
                 ty: ShaderType::Mat4,
                 is_uniform: true,
+                is_slice: false,
             },
         ],
         return_type: ShaderType::Vec4,
@@ -537,6 +539,7 @@ fn roundtrip_shader_def_fragment() {
             name: "uv".to_string(),
             ty: ShaderType::Vec2,
             is_uniform: false,
+            is_slice: false,
         }],
         return_type: ShaderType::Vec4,
         body_source: "Vec4::new(uv.x, uv.y, 0.0, 1.0)".to_string(),
@@ -592,31 +595,37 @@ fn roundtrip_shader_def_all_types() {
                 name: "a".into(),
                 ty: ShaderType::F32,
                 is_uniform: false,
+                is_slice: false,
             },
             ShaderParam {
                 name: "b".into(),
                 ty: ShaderType::Vec2,
                 is_uniform: false,
+                is_slice: false,
             },
             ShaderParam {
                 name: "c".into(),
                 ty: ShaderType::Vec3,
                 is_uniform: false,
+                is_slice: false,
             },
             ShaderParam {
                 name: "d".into(),
                 ty: ShaderType::Vec4,
                 is_uniform: false,
+                is_slice: false,
             },
             ShaderParam {
                 name: "e".into(),
                 ty: ShaderType::Mat3,
                 is_uniform: true,
+                is_slice: false,
             },
             ShaderParam {
                 name: "f".into(),
                 ty: ShaderType::Mat4,
                 is_uniform: true,
+                is_slice: false,
             },
         ],
         return_type: ShaderType::Vec4,
@@ -843,4 +852,35 @@ fn roundtrip_fence_all_orderings() {
             _ => panic!("expected Fence, got {:?}", k2.body[0]),
         }
     }
+}
+
+#[test]
+fn roundtrip_shader_def_slice() {
+    use crate::*;
+    let s = ShaderDef {
+        name: "gradient".to_string(),
+        stage: ShaderStage::Fragment,
+        params: vec![
+            ShaderParam {
+                name: "tint".to_string(),
+                ty: ShaderType::Vec4,
+                is_uniform: true,
+                is_slice: false,
+            },
+            ShaderParam {
+                name: "stops".to_string(),
+                ty: ShaderType::Vec4,
+                is_uniform: false,
+                is_slice: true,
+            },
+        ],
+        return_type: ShaderType::Vec4,
+        body_source: "tint * stops[0]".to_string(),
+    };
+    let bytes = serialize_shader(&s);
+    let s2 = deserialize_shader(&bytes).unwrap();
+    assert!(!s2.params[0].is_slice);
+    assert!(s2.params[1].is_slice);
+    assert!(s2.params[0].is_uniform);
+    assert!(!s2.params[1].is_uniform);
 }
