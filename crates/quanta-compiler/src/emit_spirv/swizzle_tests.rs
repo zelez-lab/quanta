@@ -72,7 +72,10 @@ fn sample_swizzle_glyph_body_translates() {
         ops.contains(&OP_IMAGE_SAMPLE_IMPLICIT_LOD),
         "sample() must be emitted (a passthrough module means the body failed translation)"
     );
-    assert!(ops.contains(&OP_COMPOSITE_EXTRACT), "the .x swizzle must extract");
+    assert!(
+        ops.contains(&OP_COMPOSITE_EXTRACT),
+        "the .x swizzle must extract"
+    );
 }
 
 /// Multi-component swizzle lowers to OpVectorShuffle.

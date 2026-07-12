@@ -316,7 +316,9 @@ impl SpvEmitter {
         field: &str,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
         let Some(arity) = vector_arity(ty) else {
-            return Err(format!("cannot swizzle `.{field}` on a non-vector value ({ty:?})"));
+            return Err(format!(
+                "cannot swizzle `.{field}` on a non-vector value ({ty:?})"
+            ));
         };
         let indices: Vec<u32> = field
             .chars()
@@ -327,7 +329,9 @@ impl SpvEmitter {
         }
         if let Some(bad) = indices.iter().find(|&&i| i >= arity) {
             let name = ['x', 'y', 'z', 'w'][*bad as usize];
-            return Err(format!("swizzle component `{name}` out of range for {ty:?}"));
+            return Err(format!(
+                "swizzle component `{name}` out of range for {ty:?}"
+            ));
         }
         if indices.len() == 1 {
             return self.extract_component(value, &field[..1]);
