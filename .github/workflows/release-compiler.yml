@@ -147,8 +147,21 @@ jobs:
             exit 1
           }
 
-      - name: Build quanta-compiler (Linux/macOS — MSVC-style host)
-        if: ${{ !startsWith(matrix.os, 'windows') }}
+      # A release binary that dynamically links libLLVM is killed by the
+      # loader on any machine that lacks that exact libLLVM (dyld
+      # "Library not loaded" / ld.so exit 127 / STATUS_DLL_NOT_FOUND).
+      # We ship the library inside the archive next to the binary, so the
+      # binary must look for it beside itself: bake a relative run path
+      # ($ORIGIN/lib) into the ELF. Single-quote so $ORIGIN reaches the
+      # linker literally instead of being expanded by this shell.
+      - name: Build quanta-compiler (Linux — bundled-libLLVM rpath)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: cargo build -p quanta-compiler --release
+        env:
+          RUSTFLAGS: '-C link-arg=-Wl,-rpath,$ORIGIN/lib'
+
+      - name: Build quanta-compiler (macOS)
+        if: startsWith(matrix.os, 'macos')
         run: cargo build -p quanta-compiler --release
 
       # Windows: build through the GNU triple because MSYS2's LLVM is
@@ -160,12 +173,161 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         run: cargo build -p quanta-compiler --release --target x86_64-pc-windows-gnu
 
+      # --- Bundle libLLVM into the archive -----------------------------
+      #
+      # The archive must be self-contained: the binary at the root, the
+      # LLVM shared library it needs beside it (in lib/ on Unix, flat on
+      # Windows). Extracting and running it must never touch a
+      # system-installed LLVM. Asset NAMES are unchanged — only the
+      # internal layout grows — so published download URLs stay stable.
+
+      # Linux: rpath is already baked in ($ORIGIN/lib). Resolve the
+      # libLLVM the binary actually loaded via ldd and copy it into
+      # stage/lib/. We also log libLLVM's own shared-library deps: the
+      # runner images (and any glibc desktop/Pi) ship the C/C++ runtime
+      # baseline (glibc, libgcc, libstdc++, zlib, zstd, tinfo, xml2), so
+      # we don't bundle those yet — the verify job on a clean runner is
+      # the check on whether the baseline assumption holds.
+      - name: Stage archive with bundled libLLVM (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=target/release/quanta-compiler
+          # Fail loudly if the rpath didn't take — a silently missing
+          # RUNPATH would ship a binary that only runs where LLVM is
+          # already installed, exactly the trap we are closing.
+          if command -v readelf >/dev/null; then
+            readelf -d "$BIN" | grep -E 'RUNPATH|RPATH' || {
+              echo "ERROR: no RUNPATH/RPATH in $BIN — \$ORIGIN/lib rpath was not applied"; exit 1; }
+          fi
+          mkdir -p stage/lib
+          cp "$BIN" stage/quanta-compiler
+          # ldd prints "libLLVM-22.so.1 => /usr/lib/llvm-22/lib/libLLVM.so.22.1 (0x...)".
+          # Take the resolved path (field 3) of the LLVM entry and copy
+          # it under the SONAME the binary asks for (field 1), so the
+          # loader finds it by name inside lib/.
+          ldd "$BIN" | grep -i 'llvm' || { echo "ERROR: binary does not link libLLVM"; exit 1; }
+          # Feed the loop from a here-string, not a pipe, so the copies
+          # happen in THIS shell (a `... | while` runs in a subshell and
+          # its failures/results wouldn't be visible to the assertion).
+          LLVM_LINES=$(ldd "$BIN" | grep -i 'llvm')
+          while read -r soname _arrow resolved _rest; do
+            [ -n "$soname" ] || continue
+            if [ -f "$resolved" ]; then
+              # Follow symlinks so we copy the real object, then place it
+              # under the exact SONAME the binary records.
+              cp -L "$resolved" "stage/lib/$soname"
+              echo "bundled $soname  <=  $resolved"
+            fi
+          done <<< "$LLVM_LINES"
+          # Refuse to ship if nothing landed in lib/ — a broken glob or an
+          # unresolved ldd line would otherwise produce a lib-less archive
+          # that only runs where LLVM is already installed.
+          ls stage/lib/*[Ll][Ll][Vv][Mm]* >/dev/null 2>&1 || {
+            echo "ERROR: no libLLVM copied into stage/lib/"; exit 1; }
+          echo "--- libLLVM's own dependencies (baseline expected on target; not bundled) ---"
+          LIBLLVM=$(ls stage/lib/*[Ll][Ll][Vv][Mm]* | head -1)
+          ldd "$LIBLLVM" || true
+          echo "--- staged layout ---"
+          find stage -maxdepth 2 -type f | sort
+
+      # macOS: rpath alone does nothing here — the binary records the
+      # ABSOLUTE path of every non-system dylib it links (otool -L), and
+      # those live under Homebrew. libLLVM is the obvious one, but the
+      # LLVM keg's transitive deps drag in others (e.g. a Homebrew
+      # libunwind), and ANY absolute /opt/homebrew reference is a
+      # loader-kill on a machine without that keg. So bundle them all:
+      # for each dylib not under /usr/lib or /System, rewrite its load
+      # command to @rpath/<basename>, copy the real file into stage/lib/,
+      # and add a single @loader_path/lib run path. Then RE-SIGN:
+      # install_name_tool invalidates the code signature, and arm64 macOS
+      # refuses to run a binary with a broken signature ("Killed: 9").
+      # Ad-hoc (-) signing is enough for an unnotarized CLI.
+      - name: Stage archive with bundled libLLVM (macOS)
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/lib
+          cp target/release/quanta-compiler stage/quanta-compiler
+          BIN=stage/quanta-compiler
+          # System dylibs (/usr/lib/*, /System/*) are always present on
+          # macOS and resolved from the dyld shared cache — leave them.
+          # Everything else (Homebrew et al.) is bundled beside the binary.
+          REFS=$(otool -L "$BIN" | tail -n +2 | awk '{print $1}' \
+                   | grep -Ev '^(/usr/lib/|/System/)' || true)
+          if ! echo "$REFS" | grep -qi 'llvm'; then
+            echo "ERROR: binary does not reference an LLVM dylib"; otool -L "$BIN"; exit 1
+          fi
+          # Read line by line — the paths never contain spaces, but a
+          # bare `for X in $REFS` would depend on IFS splitting on
+          # newlines, which is not guaranteed across shells/runners.
+          while IFS= read -r REF; do
+            [ -n "$REF" ] || continue
+            BASENAME=$(basename "$REF")
+            echo "bundling $REF  ->  @rpath/$BASENAME"
+            # Point the load command at the copy beside the binary.
+            install_name_tool -change "$REF" "@rpath/$BASENAME" "$BIN"
+            # Copy the real object (resolve Homebrew's version symlink)
+            # under the exact basename the load command now names.
+            cp -L "$REF" "stage/lib/$BASENAME"
+          done <<< "$REFS"
+          # @loader_path is the directory of THIS binary at load time, so
+          # @rpath/... resolves to stage/lib/ wherever the archive lands.
+          install_name_tool -add_rpath "@loader_path/lib" "$BIN"
+          # install_name_tool broke the signature — ad-hoc re-sign or the
+          # loader kills the process before main on Apple Silicon.
+          codesign --force --sign - "$BIN"
+          echo "--- otool -L after rewrite (non-system refs must be @rpath/...) ---"
+          otool -L "$BIN"
+          echo "--- staged layout ---"
+          find stage -maxdepth 2 -type f | sort
+
+      # Windows: the GNU build dynamically links libLLVM plus the MinGW
+      # runtime DLLs, none of which exist on a stock Windows box. Windows
+      # resolves DLLs from the directory of the .exe first, so we copy
+      # every non-system DLL the exe depends on next to it (flat, no lib/
+      # subdir). ldd inside MSYS2 reports the full closure; anything under
+      # C:/Windows is an OS DLL and stays out of the archive.
+      - name: Stage archive with bundled DLLs (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          EXE=target/x86_64-pc-windows-gnu/release/quanta-compiler.exe
+          mkdir -p stage
+          cp "$EXE" stage/quanta-compiler.exe
+          # ldd prints "name.dll => /path (0x...)"; keep entries whose
+          # resolved path is NOT under a Windows system directory. This
+          # captures libLLVM, libgcc_s_seh, libstdc++, libwinpthread, and
+          # whatever zlib/zstd/ffi/xml2 the LLVM build pulled in. Filter
+          # both /c/windows and /c/Windows since ldd's casing varies.
+          DLL_LINES=$(ldd "$EXE" | grep '=>' | grep -ivE '=> /c/windows/')
+          while read -r name _arrow resolved _rest; do
+            [ -n "$name" ] || continue
+            if [ -f "$resolved" ]; then
+              cp "$resolved" "stage/$name"
+              echo "bundled $name  <=  $resolved"
+            fi
+          done <<< "$DLL_LINES"
+          # Refuse to ship a DLL-less exe: without libLLVM beside it the
+          # binary is STATUS_DLL_NOT_FOUND on any machine but this runner.
+          ls stage/ | grep -qi 'llvm.*\.dll' || {
+            echo "ERROR: no libLLVM DLL copied next to the exe"; ls -la stage/; exit 1; }
+          echo "--- staged layout (exe + adjacent DLLs) ---"
+          ls -la stage/
+
+      # Package from INSIDE stage/ so the archive root is the binary with
+      # lib/ (or the adjacent DLLs) beside it — exactly the layout the
+      # loader/rpath contract needs after extraction.
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          cd target/release
-          tar czf quanta-compiler-${{ matrix.target }}.tar.gz quanta-compiler
+          cd stage
+          tar czf ../quanta-compiler-${{ matrix.target }}.tar.gz quanta-compiler lib
+          cd ..
           # macOS doesn't ship `sha256sum`; `shasum -a 256` exists on
           # both macOS and Linux.
           if command -v sha256sum >/dev/null; then
@@ -180,9 +342,10 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          # GNU build lands under target/x86_64-pc-windows-gnu/release/.
-          cd target\x86_64-pc-windows-gnu\release
-          Compress-Archive -Path quanta-compiler.exe -DestinationPath quanta-compiler-${{ matrix.target }}.zip
+          # Zip the whole staging dir contents flat: the .exe and every
+          # bundled DLL sit side by side, which is where Windows looks
+          # for them first.
+          Compress-Archive -Path stage\* -DestinationPath quanta-compiler-${{ matrix.target }}.zip
           $hash = (Get-FileHash quanta-compiler-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower()
           "$hash  quanta-compiler-${{ matrix.target }}.zip" | Out-File -Encoding ASCII quanta-compiler-${{ matrix.target }}.zip.sha256
 
@@ -191,13 +354,91 @@ jobs:
         with:
           name: quanta-compiler-${{ matrix.target }}
           path: |
-            target/release/quanta-compiler-${{ matrix.target }}.tar.gz
-            target/release/quanta-compiler-${{ matrix.target }}.tar.gz.sha256
-            target/x86_64-pc-windows-gnu/release/quanta-compiler-${{ matrix.target }}.zip
-            target/x86_64-pc-windows-gnu/release/quanta-compiler-${{ matrix.target }}.zip.sha256
+            quanta-compiler-${{ matrix.target }}.tar.gz
+            quanta-compiler-${{ matrix.target }}.tar.gz.sha256
+            quanta-compiler-${{ matrix.target }}.zip
+            quanta-compiler-${{ matrix.target }}.zip.sha256
+          if-no-files-found: ignore
+
+  # Prove every published archive is self-contained BEFORE it can be
+  # released: download each build's artifact onto a CLEAN runner of the
+  # same OS — no LLVM, no Rust toolchain — extract it the way a user
+  # would, and run the binary. If libLLVM bundling regressed, the loader
+  # kills `--rev` here and the release is blocked. Runs on
+  # workflow_dispatch too (it only needs the uploaded artifacts, not a tag).
+  verify:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Download artifact under test
+        uses: actions/download-artifact@v4
+        with:
+          name: quanta-compiler-${{ matrix.target }}
+          path: dl
+
+      # Extract exactly like a user: whole archive, preserving lib/.
+      - name: Extract and run --rev (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dl
+          mkdir -p extracted
+          tar xzf quanta-compiler-${{ matrix.target }}.tar.gz -C extracted
+          echo "--- extracted layout ---"
+          find extracted -maxdepth 2 | sort
+          # sha256: the runner may ship sha256sum (Linux) or only shasum (macOS).
+          if command -v sha256sum >/dev/null; then
+            sha256sum -c quanta-compiler-${{ matrix.target }}.tar.gz.sha256
+          else
+            shasum -a 256 -c quanta-compiler-${{ matrix.target }}.tar.gz.sha256
+          fi
+          # The acceptance test: the binary must LOAD (its bundled libLLVM
+          # resolves via the baked rpath) and print a non-empty build rev.
+          OUT=$(./extracted/quanta-compiler --rev)
+          echo "quanta-compiler --rev => $OUT"
+          if [ -z "$OUT" ]; then echo "ERROR: --rev produced empty output"; exit 1; fi
+
+      - name: Extract and run --rev (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cd dl
+          Expand-Archive -Path "quanta-compiler-${{ matrix.target }}.zip" -DestinationPath extracted -Force
+          Write-Host "--- extracted layout ---"
+          Get-ChildItem extracted
+          # sha256 check against the published sidecar.
+          $expected = (Get-Content "quanta-compiler-${{ matrix.target }}.zip.sha256").Split(' ')[0].Trim()
+          $actual = (Get-FileHash "quanta-compiler-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) {
+            Write-Error "sha256 mismatch: expected $expected, got $actual"; exit 1
+          }
+          # The exe must load its adjacent DLLs and print a build rev.
+          $out = & ".\extracted\quanta-compiler.exe" --rev
+          Write-Host "quanta-compiler --rev => $out"
+          if ([string]::IsNullOrWhiteSpace($out)) { Write-Error "--rev produced empty output"; exit 1 }
 
   release:
-    needs: build
+    needs: [build, verify]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
@@ -211,8 +452,7 @@ jobs:
       - name: Flatten artifacts
         run: |
           # actions/upload-artifact@v4 keeps the path-relative-to-LCA
-          # structure, so each archive arrives nested under
-          # release/, x86_64-pc-windows-gnu/release/, etc. Flatten so
+          # structure, so archives may arrive nested. Flatten so
           # softprops/action-gh-release sees the files directly.
           mkdir -p dist
           find artifacts -type f \( -name 'quanta-compiler-*.tar.gz' \
