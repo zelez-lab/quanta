@@ -11,5 +11,5 @@ build-dir = "../target/book"
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "ayu"
-git-repository-url = "https://github.com/quanta-gpu/quanta"
-edit-url-template = "https://github.com/quanta-gpu/quanta/edit/main/docs/{path}"
+git-repository-url = "https://github.com/zelez-lab/quanta"
+edit-url-template = "https://github.com/zelez-lab/quanta/edit/main/docs/{path}"

@@ -69,6 +69,8 @@
 - [Kernel Ops](reference/kernel-ops.md)
 - [Formats](reference/formats.md)
 - [Errors](reference/errors.md)
+- [Environment Variables](reference/environment.md)
+- [Kernel Lowering](reference/kernel-lowering.md)
 
 ## Explanation
 
@@ -84,6 +86,7 @@
 - [Drivers](internals/drivers.md)
 - [Testing](internals/testing.md)
 - [Theorem Dashboard](verification/index.md)
+- [Verification Scope](verification/scope.md)
 
 ---
 

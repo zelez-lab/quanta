@@ -102,6 +102,14 @@ phase 2: burst — 120 frames, no sleep
 phase 3: animated — 3 s (pass --stay to keep it open)
 ```
 
+`examples/native_window_x11.rs` is the Linux twin — the same three-phase
+loop on the Vulkan swapchain (`SurfaceTarget::VulkanXlib`) over a bare
+Xlib window, clear-only so it needs no compiler or LLVM toolchain:
+
+```text
+cargo run --example native_window_x11 --no-default-features --features vulkan,render
+```
+
 ### Present modes
 
 | Mode                     | Behavior                                              |

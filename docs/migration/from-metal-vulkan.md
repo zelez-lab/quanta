@@ -18,6 +18,7 @@ while maintaining the same performance (it generates the same API calls under th
 | Buffer/image layout transitions (Vulkan) | `gpu.barrier_texture()` / `gpu.barrier_field()` |
 | `replaceRegion:` / staging + `vkCmdCopyBufferToImage` | `texture.write(&data)` / `texture.write_region(origin, size, &data)` |
 | `waitUntilCompleted` / `vkDeviceWaitIdle` | `pulse.wait()` / `gpu.wait_idle()` |
+| `[cmdBuf addCompletedHandler:]` / fence-poll thread | `pulse.on_complete(\|\| { .. })` — runs on a waiter thread, no caller park |
 
 ## Example: buffer creation + compute dispatch
 
@@ -105,7 +106,7 @@ creation is faster than Metal's `newLibraryWithSource:` or Vulkan's
 
 - Full GPU performance (no abstraction overhead).
 - Explicit resource management (Fields are RAII, but you control lifetime).
-- Multi-queue support (`gpu.async_compute_dispatch()`).
+- Multi-queue support (`gpu.queue_families()` to enumerate, `gpu.queue(QueueType::Compute)` for a dedicated queue).
 - Resource state transitions (`gpu.barrier_texture()`, `gpu.barrier_field()`).
 - Timestamp queries for profiling (`gpu.timestamp_query()`).
 - Debug labels for GPU capture tools (`gpu.debug_push()` / `gpu.debug_pop()`).
@@ -116,10 +117,10 @@ creation is faster than Metal's `newLibraryWithSource:` or Vulkan's
 - Custom memory allocators (Quanta picks optimal memory types automatically).
 - Window creation (Quanta never creates windows — you hand it a
   presentation target). Presentation itself is covered: a `Surface`
-  over a `CAMetalLayer` you provide (`gpu.create_surface`, Metal in
-  v0.1 — the Vulkan swapchain path is not wired yet), or exporting the
-  rendered texture to your own compositor via `texture.native_handle()`
-  (Metal + Vulkan).
+  over a `CAMetalLayer` (Metal) or a `VkSwapchainKHR` (Vulkan — X11 via
+  `SurfaceTarget::VulkanXlib`, or a windowless `Headless` target),
+  created through `gpu.create_surface`; or exporting the rendered texture
+  to your own compositor via `texture.native_handle()` (Metal + Vulkan).
 
 ## Migrating incrementally
 
@@ -176,7 +177,7 @@ don't implement it. The render-side methods (`gpu.mesh_pipeline`,
 | Secondary command buffers / `MTLIndirectCommandBuffer`    | `gpu.render_bundle(cap)`, `gpu.indirect_command_buffer(cap)`     |
 | `vkCmdDrawIndirect` / `drawPrimitives:indirectBuffer:`    | `render_pass.draw_indirect(&buffer, offset)`                     |
 | `VK_EXT_debug_printf`                                     | `gpu.printf_buffer(cap)?.drain()?`                               |
-| `CAMetalLayer` + `nextDrawable` / `VkSwapchainKHR` + `vkAcquireNextImageKHR` | `gpu.create_surface(&SurfaceTarget::MetalLayer { layer }, &config)` + `surface.acquire()` → `frame.present()` (Metal in v0.1; Vulkan swapchain not wired yet) |
+| `CAMetalLayer` + `nextDrawable` / `VkSwapchainKHR` + `vkAcquireNextImageKHR` | `gpu.create_surface(&SurfaceTarget::MetalLayer { layer } /* or VulkanXlib / Headless */, &config)` + `surface.acquire()` → `frame.present()` (native on Metal + Vulkan; a *suboptimal* Vulkan swapchain self-heals on the next acquire, hard `OUT_OF_DATE` → `SurfaceOutdated`) |
 | `MTLTexture` / `VkImage` handed to external code           | `texture.native_handle()` → `NativeTextureHandle::{Metal, Vulkan}` |
 
 The argument layout for indirect draws follows the Vulkan / Metal convention

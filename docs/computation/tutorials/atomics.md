@@ -15,7 +15,7 @@ races. Multiple quarks can atomically update the same address concurrently.
 | `atomic_or(&mut field[i], val)`  | `field[i] |= val`           | u32, i32            |
 | `atomic_xor(&mut field[i], val)` | `field[i] ^= val`           | u32, i32            |
 | `atomic_exchange(&mut field[i], val)` | swap, return old       | u32, i32            |
-| `atomic_cas(&mut field[i], expected, desired)` | CAS, return old | u32, i32        |
+| `atomic_compare_exchange(&mut field[i], expected, desired)` | CAS, return old | u32, i32 |
 
 All atomics return the **previous** value at the memory location.
 
@@ -73,8 +73,8 @@ final value of `count[0]` is the total number of passing elements.
 
 ## Compare-and-swap (CAS)
 
-`atomic_cas` is the most general atomic. It reads the current value, compares
-it to `expected`, and writes `desired` only if they match:
+`atomic_compare_exchange` is the most general atomic. It reads the current
+value, compares it to `expected`, and writes `desired` only if they match:
 
 ```rust
 #[quanta::kernel]
@@ -82,7 +82,7 @@ fn cas_increment(counter: &mut [u32]) {
     let mut old = counter[0];
     loop {
         let new_val = old + 1;
-        let prev = atomic_cas(&mut counter[0], old, new_val);
+        let prev = atomic_compare_exchange(&mut counter[0], old, new_val);
         if prev == old {
             break;
         }
@@ -123,7 +123,7 @@ fn producer_consumer(slot: &mut [u32], data: &mut [f32]) {
 
 ### Compare-and-swap takes two orders
 
-`atomic_cas` accepts a `success_order` (applied when the swap succeeds) and a
+`atomic_compare_exchange` accepts a `success_order` (applied when the swap succeeds) and a
 `failure_order` (applied when the comparison fails and no store happens). The
 constraint is `failure_order <= success_order`, and `failure_order` may not be
 `Release` or `AcqRel` (LLVM's `cmpxchg` rules). When backends only expose a

@@ -51,15 +51,42 @@ path without throwing.
 | `supports_mesh_shaders()` | `bool` | Mesh + task shader stages available |
 | `supports_tessellation()` | `bool` | Tessellation control / evaluation stages |
 | `supports_sparse_residency()` | `bool` | Sparse textures (`vkQueueBindSparse` / `MTLHeap` placement) |
+| `supports_cooperative_matrix()` | `bool` | Cooperative-matrix / `simdgroup_matrix` support. True on Metal Apple GPU family 7+; **false on Vulkan** (`VK_KHR_cooperative_matrix` is not yet wired) and the software lane |
 | `supports_f64()` | `bool` | Kernels may use 64-bit floats. True on the software lane and llvmpipe; false on Metal (MSL has no `double`) and Broadcom V3D |
 | `supports_i64()` | `bool` | Kernels may use 64-bit integers (`shaderInt64` on Vulkan). True on the software lane and llvmpipe; false on Metal and Broadcom V3D |
 | `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
-| `supports_cooperative_matrix()` | `bool` | Cooperative-matrix / `simdgroup_matrix` support |
+| `supports_async_compute()` | `bool` | Whether a dedicated async-compute queue is available. **Returns `false` on every backend today** — no driver overrides it yet. For overlapping submission use `gpu.queue(QueueType::Compute)` |
+| `supports_compute_textures()` | `bool` | Compute kernels may bind textures (`&Texture2D` sampled reads / `&mut Texture2D<f32>` storage writes). True on Metal, the software driver, and native Vulkan (storage load/write; sampling in compute is not yet wired on Vulkan); false on WebGPU |
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` returns a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
 | `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal, and on Vulkan when the loader offers VK_KHR_surface + VK_KHR_swapchain |
 | `supports_texture_write_region()` | `bool` | Sub-region texture uploads (`Texture::write_region`). True on Metal, Vulkan, and the software driver; false on WebGPU |
 | `narrow_storage_u32_slot()` | `bool` | Whether bf16/fp8 buffers use the portable u32-slot layout (one element per 32-bit word) instead of native 2-/1-byte stride. True only on WebGPU — WGSL storage buffers cannot hold 16-/8-bit array elements; the host must repack tight data one-element-per-word before binding |
 | `supported_shading_rates()` | `Vec<(u32, u32)>` | Concrete (x,y) shading rates the device exposes (e.g. `[(1,1), (2,2), (4,4)]`). Empty when VRS is not supported. |
+
+#### Per-backend summary
+
+`Metal` = Apple Silicon; `Vulkan` = a real GPU (llvmpipe matches except
+where noted); `CPU` = the software lane; `WebGPU` = WGSL. Feature-gated
+rows (VRS, ray tracing, mesh, tessellation, sparse) are also
+device-family- and extension-dependent within a backend.
+
+| Query | Metal | Vulkan | CPU | WebGPU |
+|-------|:-----:|:------:|:---:|:------:|
+| `supports_vrs` | family 7+ | ext | ✗ | ✗ |
+| `supports_ray_tracing` | family 6+ | ext | ✗ | ✗ |
+| `supports_mesh_shaders` | Metal 3 | ext | ✗ | ✗ |
+| `supports_tessellation` | family 4+ | feature | ✗ | ✗ |
+| `supports_sparse_residency` | family 7+ | feature | ✗ | ✗ |
+| `supports_cooperative_matrix` | family 7+ | ✗ (not wired) | ✗ | ✗ |
+| `supports_f64` | ✗ | driver | ✓ | ✗ |
+| `supports_i64` | ✗ | driver | ✓ | ✗ |
+| `supports_subgroups` | ✓ | driver | ✓ | ✗ |
+| `supports_async_compute` | ✗ | ✗ | ✗ | ✗ |
+| `supports_compute_textures` | ✓ | ✓ | ✓ | ✗ |
+| `supports_native_handle_export` | ✓ | ✓ | ✗ | ✗ |
+| `supports_surface_present` | ✓ | WSI | ✗ | ✗ |
+| `supports_texture_write_region` | ✓ | ✓ | ✓ | ✗ |
+| `narrow_storage_u32_slot` | ✗ | ✗ | ✗ | ✓ |
 
 ### Fields (typed GPU memory)
 
@@ -394,13 +421,22 @@ and uniform params take buffer slots in declaration order among uniforms
 | `.clear_depth(depth)` | Clear depth attachment |
 | `.clear_stencil(value)` | Clear stencil |
 | `.stencil_ref(value)` | Set stencil reference |
-| `.scissor(x, y, w, h)` | Set scissor rect (pixels) |
+| `.scissor(x, y, w, h)` | Set scissor rect, pixels (clamped — see below) |
 | `.viewport(x, y, w, h)` | Set viewport |
 | `.viewport_depth(x, y, w, h, min, max)` | Viewport with depth range |
 | `.shading_rate(rate)` | Variable rate shading |
 | `.shading_rate_image(&tex)` | Per-pixel shading rate |
 | `.color_targets(targets)` | MRT color targets |
 | `.depth_target(target)` | Depth/stencil target |
+
+Scissor offsets are **clamped to the render area on every backend**. An
+offset that falls outside the target — including a negative offset passed
+as a wrapped-in `u32`, the common "clip a child scrolled past its parent"
+case — is pulled to the render-area edge and the extent shrinks to match;
+a rectangle that clamps entirely away disables drawing for the pass
+without raising an error. This gives identical results across Metal
+(which tolerates such rectangles natively) and Vulkan (which would
+otherwise reject a negative offset).
 
 ### Queries and debug
 
@@ -476,8 +512,14 @@ A swapchain over a platform presentation target — the "Quanta owns
 present" model. Created via `RenderGpu::create_surface(&SurfaceTarget,
 &SurfaceConfig)`. Dropping the `Surface` releases the swapchain.
 
-Supported on **Metal**; other backends return `NotSupported`. Query
-`gpu.supports_surface_present()` to branch ahead of time.
+Supported on **Metal** (via a `CAMetalLayer`) and on **Vulkan** when the
+loader offers the WSI extensions (`VK_KHR_surface` + `VK_KHR_swapchain`)
+— on X11 through `SurfaceTarget::VulkanXlib`, plus the windowless
+`SurfaceTarget::Headless` on both. Backends without a present path return
+`NotSupported`; query `gpu.supports_surface_present()` to branch ahead of
+time. A swapchain that becomes suboptimal (e.g. after a resize the app
+hasn't reconfigured yet) is self-healed on the next `acquire()` rather
+than failing.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
@@ -504,9 +546,13 @@ Dropping an unpresented frame discards it.
   `PresentMode::Fifo`, `RENDER_TARGET` usage. `#[non_exhaustive]`;
   adjust fields by assignment.
 - `SurfaceTarget::MetalLayer { layer }` — an existing `CAMetalLayer*`
-  provided by the windowing environment. `SurfaceTarget::Headless` —
-  no window attached; full acquire/present machinery for tests and
-  compositor-fed consumers.
+  provided by the windowing environment.
+  `SurfaceTarget::VulkanXlib { display, window }` — an Xlib `Display*`
+  and `Window` id (`VK_KHR_xlib_surface`); both must outlive the
+  surface. `SurfaceTarget::Headless` — no window attached; full
+  acquire/present machinery (Metal off-screen layer /
+  `VK_EXT_headless_surface`) for tests and compositor-fed consumers.
+  The enum is `#[non_exhaustive]` — match with a wildcard arm.
 - `PresentMode::{Fifo, Immediate, Mailbox}` — vsync (default; always
   supported where presenting works at all), lowest-latency tearing,
   triple-buffered. Unsupported modes are rejected at create/configure

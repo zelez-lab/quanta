@@ -333,6 +333,14 @@ With `jit`:
 | `texture_write_2d(tex, x, y, v)` | `()` | Write `v` into texel `(x, y)` of a `&mut Texture2D<f32>` storage image |
 | `texture_size(tex)` | `(u32, u32)` | Texture `(width, height)` (CPU device) |
 
+The kernel (compute) intrinsic surface above is a **different set** from
+the shader (vertex/fragment) intrinsics documented under
+[`#[quanta::fragment]`](#quantafragment) — e.g. kernels have
+`atomic_*` and `barrier`; shaders have `sample`, `mix`, and the
+derivatives. Which Rust forms are guaranteed to lower to a kernel (and
+which fail loudly) is the
+[kernel-lowering contract](kernel-lowering.md).
+
 #### Example
 
 ```rust
@@ -501,10 +509,29 @@ mutable locals, statement and expression `if`/`else` (both branches
 required), arithmetic and comparisons, `VecN::new`, swizzle field access
 (`.x`/`.rgba`, incl. on parenthesized expressions), uniform deref
 (`*viewport`, `(*viewport).x`), `sample(texture_param, uv)`, the GLSL-style
-math intrinsics (`sin`, `mix`, `smoothstep`, `clamp`, ...), and the
-fragment-stage derivatives `fwidth` / `dpdx` / `dpdy`. Anything outside
-this surface is a compile error naming the construct -- nothing silently
-miscompiles.
+math intrinsics (`sin`, `mix`, `smoothstep`, `clamp`, `inverse_sqrt`, ...),
+and the fragment-stage derivatives `fwidth` / `dpdx` / `dpdy`. Both
+emitters accept the artifacts rustfmt and the token printer produce in
+real builds: a trailing comma before `)` in a call, a call wrapped and
+split across lines (`Vec4 ::\nnew(`), and a `let` declared inside an
+`if`/`else` branch. Anything outside this surface is a compile error
+naming the construct -- nothing silently miscompiles.
+
+**One portability limitation.** Assigning to a local declared *outside*
+an `if` from *inside an expression-`if` branch* is honoured by MSL but
+rejected by the SPIR-V emitter (its expression-`if` merge does not phi a
+mutated outer local the way a statement-`if` does). Use a statement-`if`
+when a branch must reassign an outer local:
+
+```rust,ignore
+// Portable: statement-if reassigns the outer local
+let mut c = 0.0;
+if uv.x > 0.5 { c = 1.0; } else { c = 0.5; }
+
+// Not portable: expression-if branch assigns an outer local
+let mut c = 0.0;
+let _ = if uv.x > 0.5 { c = 1.0; } else { c = 0.5; };
+```
 
 #### Produces
 

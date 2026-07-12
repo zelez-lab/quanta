@@ -156,6 +156,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `queue.submit(...)` | automatic (dispatch submits) |
 | `buffer.slice(..).map_async(...)` | `field.read()` |
 | `device.poll(Maintain::Wait)` | `pulse.wait()` / `gpu.wait_idle()` |
+| `queue.on_submitted_work_done(callback)` | `pulse.on_complete(\|\| { .. })` (runs on a waiter thread; consumes the pulse) |
 | `queue.write_texture(origin, data, layout, size)` | `texture.write(&data)` / `texture.write_region(origin, size, &data)` |
 
 ## Key differences
@@ -248,19 +249,27 @@ pulse.wait()?;
 
 ### Presentation: wgpu vs Quanta
 
-wgpu's surface loop maps directly onto Quanta's `Surface` (Metal in
-v0.1; other backends return `NotSupported` — query
-`gpu.supports_surface_present()`):
+wgpu's surface loop maps directly onto Quanta's `Surface`. Native
+present is real on Metal (`CAMetalLayer`) and Vulkan (`VkSwapchainKHR` —
+X11 via `SurfaceTarget::VulkanXlib`, plus a windowless `Headless`
+target); query `gpu.supports_surface_present()` first (on Vulkan it is
+gated on loader WSI support):
 
 | wgpu | Quanta |
 |------|--------|
-| `instance.create_surface(window)` | `gpu.create_surface(&SurfaceTarget::MetalLayer { layer }, &config)` |
+| `instance.create_surface(window)` | `gpu.create_surface(&SurfaceTarget::VulkanXlib { .. } /* or MetalLayer */, &config)` |
 | `surface.configure(&device, &config)` | `surface.configure(SurfaceConfig::new(w, h))` |
 | `surface.get_current_texture()` | `surface.acquire()` |
 | `SurfaceError::Outdated` | `QuantaErrorKind::SurfaceOutdated(_)` — reconfigure, retry |
+| `SurfaceError::Lost` / suboptimal reconfigure | self-heals on Vulkan: a swapchain reported *suboptimal* finishes the frame and rebuilds on the next `acquire`, no error |
 | `frame.texture` + `create_view()` | `frame.texture()` (render into it directly) |
 | `frame.present()` | `frame.present()` |
 | `PresentMode::{Fifo, Immediate, Mailbox}` | `PresentMode::{Fifo, Immediate, Mailbox}` |
+
+A hard `VK_ERROR_OUT_OF_DATE_KHR` (like wgpu's `Outdated`) still surfaces
+as `SurfaceOutdated` — reconfigure with the new extent and retry. See
+[Presenting to the screen](../rendering/tutorials/presentation.md) for the
+full frame loop.
 
 Alternatively, export the rendered texture to an external compositor
 with `texture.native_handle()` (zero-copy; Metal + Vulkan) and let it
@@ -294,8 +303,10 @@ web target.
 
 ## When to stay with wgpu
 
-- You need browser surface/swapchain management (Quanta's `Surface` is
-  Metal-only in v0.1; there is no canvas presentation path yet).
+- You need browser surface/swapchain management. Quanta's `Surface`
+  presents natively on Metal and Vulkan, but the WebGPU backend's surface
+  is a reserved `NotSupported` variant — there is no canvas presentation
+  path yet.
 - You are building a rendering engine that needs fine-grained control over every descriptor.
 - You need the wgpu ecosystem (winit integration, egui backends, etc.).
 

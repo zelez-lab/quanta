@@ -190,8 +190,10 @@ or array slices to different shader slots.
 
 ## Sampling in fragment shaders
 
-Fragment shaders sample textures using the `sample(slot, uv)` function. The
-slot number corresponds to `pass.set_texture(slot, ...)`:
+Fragment shaders sample textures through a `&Texture2D` parameter and the
+`sample(param, uv)` function. The macro rewrites the parameter to the
+texture slot it occupies (declaration order among texture params), so the
+body never names a raw slot:
 
 ```rust
 #[quanta::vertex]
@@ -200,17 +202,23 @@ fn uv_vertex(pos: Vec3, uv: Vec2) -> Vec4 {
 }
 
 #[quanta::fragment]
-fn textured(uv: Vec2) -> Vec4 {
-    sample(0, uv)  // returns Vec4 (RGBA)
+fn textured(uv: Vec2, albedo: &Texture2D) -> Vec4 {
+    sample(albedo, uv)  // returns Vec4 (RGBA)
 }
 ```
 
-Bind the texture and sampler in the render pass:
+Bind the texture and its sampler at the matching slot through the render
+builder chain:
 
 ```rust
-pass.set_texture(0, &albedo);
-pass.set_sampler(0, SamplerDesc::default()); // linear filtering
-pass.draw(6);
+gpu.render(&target)?
+    .pipeline(&pipeline)
+    .vertices(0, &vb)
+    .texture(0, &albedo)
+    .sampler(0, SamplerDesc::default()) // linear filtering
+    .draw(6)
+    .pulse()?
+    .wait()?;
 ```
 
 `sample()` returns `Vec4` regardless of texture format. For single-channel

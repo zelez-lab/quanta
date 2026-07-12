@@ -88,17 +88,38 @@ cargo install --git https://github.com/zelez-lab/quanta quanta-compiler --locked
 (Building it needs LLVM installed — on macOS `brew install llvm`;
 point `LLVM_PREFIX` at it if it isn't in a default location.)
 
+You often don't have to install it at all: for every supported host
+triple, Quanta publishes a pre-built `quanta-compiler` as a GitHub
+Release asset (`quanta-compiler-<target>.tar.gz`, or `.zip` on Windows,
+each with a `.sha256` sidecar) and downloads the matching one to
+`~/.quanta/bin/` on first build. The archive is **self-contained**: the
+binary sits at the root with its entire libLLVM dependency closure
+bundled beside it (in `lib/` on Unix via an `$ORIGIN/lib` /
+`@loader_path/lib` run path, flat next to the `.exe` on Windows), so it
+runs on a machine with no system LLVM. A CI job extracts and runs every
+archive on a clean runner with no toolchain before it can be released.
+Set `QUANTA_NO_DOWNLOAD=1` to disable the download.
+
 Two things to know:
 
-- **Keep it in sync.** Re-run the install whenever you bump the quanta
-  git rev. The build now checks for you: the macros probe the binary's
-  embedded build rev (`quanta-compiler --rev`) and print a loud
-  `[quanta] WARNING` when it doesn't match the quanta crate you're
-  compiling against — stale codegen is no longer silent.
-- **Without it**, the build still succeeds: compute kernels JIT at
-  runtime, but render shaders ship with **no binaries** and fail at
-  pipeline creation. Watch for the `[quanta] note: … compiler not
-  present` line in the build log.
+- **Keep it in sync — a mismatch is a hard error.** Re-run the install
+  whenever you bump the quanta git rev. The macros probe the binary's
+  embedded build rev (`quanta-compiler --rev`) and compare it to the
+  quanta crate you're compiling against. A **proven** mismatch **fails
+  the build** — a stale compiler can emit invalid SPIR-V that crashes
+  some drivers, so it stops rather than silently ships bad codegen. The
+  error names both revs and the reinstall command. To proceed anyway on
+  a rig that deliberately pins a known-compatible compiler, set
+  `QUANTA_ACCEPT_STALE_COMPILER=1`, which downgrades the mismatch to a
+  note. (An *older* compiler that predates rev stamping can't be proven
+  mismatched, so it only prints a loud `[quanta] WARNING` — the fatal
+  path fires only on a proven difference.)
+- **Without a compiler at all**, the build still succeeds: compute
+  kernels JIT at runtime, but render shaders ship with **no binaries**
+  and fail at pipeline creation. Watch for the `[quanta] note: …
+  compiler not present` line in the build log. A compiler that can't
+  *load* here (a downloaded release build whose bundled libLLVM is
+  missing) is treated the same way — soft, JIT covers it.
 
 ### Offline rigs (no network, no git-remote SSH key)
 

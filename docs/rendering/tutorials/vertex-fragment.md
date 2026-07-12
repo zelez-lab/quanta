@@ -317,17 +317,19 @@ gpu.render(&target)?
 
 ## Texture sampling
 
-Fragment shaders sample textures using `sample(slot, uv)`. The slot number
-matches the `.texture(slot, ...)` call in the render builder:
+Fragment shaders sample textures through a `&Texture2D` parameter and
+`sample(param, uv)`. The macro rewrites the parameter to the texture slot
+it occupies (declaration order among texture params), so the shader body
+never names a raw slot number:
 
 ```rust
 #[quanta::fragment]
-fn textured(uv: Vec2) -> Vec4 {
-    sample(0, uv)
+fn textured(uv: Vec2, albedo: &Texture2D) -> Vec4 {
+    sample(albedo, uv)
 }
 ```
 
-Bind the texture through the builder:
+Bind the texture and its sampler at the matching slot through the builder:
 
 ```rust
 gpu.render(&target)?
@@ -355,13 +357,44 @@ The shader body supports these operations on both Metal and Vulkan:
 | Let bindings | `let t = a * 0.5;` |
 | Math functions | `sin(x)`, `cos(x)`, `sqrt(x)`, `clamp(x, 0.0, 1.0)` |
 | Matrix multiply | `mvp * vec4` |
-| Texture sample | `sample(0, uv)` |
+| Texture sample | `sample(albedo, uv)` |
 | Conditionals | `if x > 0.5 { a } else { b }` |
 
 Math functions (30 total): `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
 `sqrt`, `abs`, `floor`, `ceil`, `round`, `fract`, `min`, `max`, `clamp`,
 `mix`, `step`, `smoothstep`, `pow`, `exp`, `log`, `exp2`, `log2`,
-`normalize`, `length`, `distance`, `cross`, `fma`, `atan2`, `inverseSqrt`.
+`normalize`, `length`, `distance`, `cross`, `fma`, `atan2`, `inverse_sqrt`.
+
+### Grammar the parser accepts
+
+The shader body is a small Rust subset. A few conveniences are allowed
+beyond the bare minimum, on both backends:
+
+- **Trailing commas** in constructor calls: `Vec4::new(x, y, z, w,)`.
+- **Calls split across lines**: a `Vec4::new(...)` (or any call) may wrap
+  onto the next line — whitespace, including newlines, is not significant.
+- **Branch-local `let`s**: a `let` declared inside an `if` branch is scoped
+  to that branch and never escapes it.
+
+### One limitation: outer-local assignment in an `if`-expression
+
+Assigning to an *outer* local from inside an `if`-**expression** branch does
+not compile — the branch runs on a copy of the surrounding locals, so the
+write would silently vanish at the merge. Use a statement-level `if` (which
+does write the outer local back through its merge) instead:
+
+```rust
+// Rejected: `acc` is assigned inside an if-EXPRESSION branch.
+let mut acc = 0.0;
+let v = if uv.x > 0.5 { acc = 1.0; uv.x } else { uv.y };
+
+// Works: statement-level `if` mutates the outer local.
+let mut acc = 0.0;
+if uv.x > 0.5 { acc = 1.0; }
+```
+
+`if`-expressions used for a value must have an `else` branch (both backends
+require it, so code stays portable).
 
 ## Other shader stages
 

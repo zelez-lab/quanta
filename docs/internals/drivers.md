@@ -399,6 +399,16 @@ the up-front check fail explicitly rather than silently.
 | Ray tracing | ⚠️ AS proc-addr foundation; build dispatch returns `NotSupported` (lavapipe segfault, awaiting AMDGPU runner) | ⚠️ family-gated; intersector dispatch pending | `NotSupported` | software lifecycle |
 | Indirect command buffer | software MVP, native pending | software MVP, native pending | `NotSupported` (render bundles are a separate path) | ✅ full software |
 | Occlusion queries | ✅ native | ✅ native | ✅ native (async read via `mapAsync`; sync `occlusion_query_read` returns `NotSupported`) | ✅ software |
+| Compute textures (storage image) | ✅ native storage load + write (emitter bakes an R32f image; **sampling in compute is rejected at pipeline build** — not yet wired) | ✅ native (storage load + write + sample) | `NotSupported` (`wave_dispatch` rejects texture bindings loudly) | ✅ software |
+
+`supports_compute_textures()` reports this row: `true` on Metal, Vulkan, and
+CPU; `false` on WebGPU.
+
+The Vulkan driver keeps a per-device render-path **sampler cache** — a
+`HashMap<SamplerDesc, VkSampler>` keyed on the *whole* `SamplerDesc` — so a
+given descriptor maps to exactly one `VkSampler` for the device's lifetime;
+repeated `.sampler(slot, desc)` binds with equal descs reuse the same object,
+and every cached sampler is destroyed when the device drops.
 
 ### Occlusion queries on WebGPU
 

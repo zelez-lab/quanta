@@ -64,7 +64,7 @@ The docs are split into two areas — **Computation** (the crates above) and **R
 
 2. **5 GPU backends.** Metal (Apple), SPIR-V (Vulkan), WGSL (WebGPU), PTX (NVIDIA), GCN (AMD). All compiled at build time and embedded in your binary. The right ISA loads at runtime.
 
-3. **Formally verified IR + emitters.** 232+ theorems proven with Lean 4, Kani, Verus, Miri, and proptest, axiom-grounded from GPU hardware semantics up to user-facing API invariants. 35 narrow TCB axioms, zero proof-level sorrys. The Rust-source → IR translator inside the proc-macro is the trust boundary today; closing that gap is on the roadmap (steps 058/059).
+3. **Formally verified IR + emitters.** 232 core-chain theorems (~300 including the companion crates) proven with Lean 4, Kani, Verus, Miri, and proptest, axiom-grounded from GPU hardware semantics up to user-facing API invariants. Zero proof-level sorrys; the narrow TCB axiom set is tracked live on the [verification dashboard](docs/verification/index.md). The Rust-source → IR translator inside the proc-macro is the trust boundary today; closing that gap is on the roadmap (steps 058/059).
 
 4. **Zero dependencies on GPU crate ecosystem.** Raw Metal FFI (`objc_msgSend`), raw Vulkan FFI. No ash, no wgpu, no objc crate.
 
@@ -192,6 +192,7 @@ Nightly with `dom.webgpu.enabled`).
 |---|---|---|---|
 | macOS Apple Silicon | ✅ Metal | ✅ Metal | ✅ aarch64 |
 | macOS Intel x86_64 | ❌ unsupported (Apple discontinued 2023) | ❌ | ❌ |
+| iOS | ✅ Metal | ✅ Metal | n/a (builds + device discovery on iOS; simulator validation in progress downstream) |
 | Linux x86_64 + NVIDIA | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
 | Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
 | Linux aarch64 (Pi 5, Graviton) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 |
@@ -254,7 +255,7 @@ Every behavioral property of the **IR and what's below it** is tracked and prove
 | **Miri** | Memory safety | Raw pointer paths, field lifecycle, Arc provenance |
 | **Proptest** | Property-based fuzzing | IR roundtrip, wire encoding, CPU executor equivalence |
 
-232+ theorems total. 35 narrow TCB axioms. Zero proof-level sorrys. Full registry in [`specs/THEOREMS.md`](specs/THEOREMS.md).
+232 core-chain theorems (~300 including the companion crates). Zero proof-level sorrys. The narrow TCB axiom set and per-crate counts are the [verification dashboard](docs/verification/index.md)'s to report; full registry in [`specs/THEOREMS.md`](specs/THEOREMS.md).
 
 ### Verification chain
 
@@ -379,7 +380,7 @@ The full book (both areas, reference, and the verification dashboard) builds wit
 
 ## Status
 
-Quanta is at v0.1. Compute and rendering are fully functional on Metal and Vulkan, producing identical pixel output across both platforms. Zero validation errors on either.
+Quanta is at v0.1. Compute and rendering are fully functional on Metal and Vulkan, producing identical pixel output across both platforms. The Metal and lavapipe CI lanes run clean under validation; Raspberry Pi (V3D) re-validation is pending downstream (a sampler-leak-era regression falsified the earlier "zero errors on V3D" claim).
 
 **Verified on hardware:**
 - Apple Silicon (M-series) via Metal

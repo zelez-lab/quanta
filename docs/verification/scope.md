@@ -150,18 +150,27 @@ conflicting accesses exist outside those edges.
 
 ---
 
-### Level 1: Source Preservation -- NOT PROVEN
+### Level 1: Source Preservation -- PROVEN (for the modeled subset)
 
-**What exists:** Parser type mappings proven correct (T800-series: Rust type to
-KernelParam variant). Wire format roundtrip proven (T200-T217: serialize then
-deserialize is identity). CPU-GPU equivalence for individual operations (T610).
+**What is proven:** Semantic preservation from the modeled Kernel-Rust subset
+to KernelOps IR, via route a / step E (**T590-T5B0**). The body-level
+induction that this once rested on as an axiom is now a closed theorem
+(`kernel_body_compose_nil` / `_cons` / `kernel_body_compose`,
+`t5b0_kernel_preservation`). See the [dashboard](index.md) for the live
+theorem list and the sustainment audit.
 
-**Gap:** No formal Rust-subset operational semantics. No CompCert-style
-per-rule semantic preservation proof from Kernel Rust subset through
-`#[quanta::kernel]` macro to KernelOps IR. The macro is trusted code.
+**What still supports it:** Parser type mappings (T800-series: Rust type to
+KernelParam variant), wire-format roundtrip (T200-T217: serialize then
+deserialize is identity), and per-operation CPU-GPU equivalence (T610).
 
-**Status:** Individual operation equivalences proven. Full end-to-end semantic
-preservation pending.
+**Boundary (still trusted):** The proof is *relative to the modeled subset* and
+does not cover macro *expansion* itself — `rustc` parsing the proc-macro output
+and evaluating `const`s stays trusted (axiom A5). The residual TCB narrowed to
+the `stmt_heap_step_helper` axiom (single-statement translation shape + one-step
+heap projection); everything above it in the chain is a theorem.
+
+**Status:** End-to-end source preservation proven for the modeled subset;
+macro expansion remains the trusted boundary.
 
 ---
 
@@ -253,12 +262,15 @@ plus 8 in `crates/quanta-ir/src/wire/kani_proofs.rs`
 | 4 | Emitter Correctness | T100-T119, T200-T217, T300-T307, T400-T403, T500-T504, T600-T610, T700-T705, T1000-T1003, T1100-T1102 | 72 | all proven |
 | 3 | Memory Ordering | T900-T904, T1200-T1204, T1300-T1301, T1400-T1413, T1500-T1504 | 31 | all proven (scope limited -- see gap) |
 | 2 | Race Freedom | -- | 0 | analyzer not implemented |
-| 1 | Source Preservation | -- | 0 | formal semantics not defined |
-| -- | Cross-level total | T100-T2060 | **147** | **all 147 proven** |
+| 1 | Source Preservation | T590-T5B0 | see [dashboard](index.md) | proven for the modeled subset (route a / step E) |
+| -- | Cross-level total (Levels 3-5) | T100-T2060 | **147** | **all 147 proven** |
 
-Note: T606-T607, T609 are counted once at Level 4 (where they are proven) but
-are also relevant to Levels 2-3. The 7 theorems listed at Levels 2-3 in the
-level descriptions above are cross-references, not additional theorems.
+Note: the 147 count is the level-gated total (Levels 3-5). The Level-1
+source-preservation theorems (T590-T5B0, route a / step E) are a separate chain
+tracked on the [dashboard](index.md), not folded into this 147. T606-T607, T609
+are counted once at Level 4 (where they are proven) but are also relevant to
+Levels 2-3. The 7 theorems listed at Levels 2-3 in the level descriptions above
+are cross-references, not additional theorems.
 
 ---
 
@@ -284,10 +296,12 @@ level descriptions above are cross-references, not additional theorems.
    trust. Everything above the axiom line is proven; everything below is
    assumed.
 
-3. **Levels 1-2 are honestly marked partial/not-proven.** We do not claim
-   end-to-end semantic preservation or race freedom. We claim emitter
-   correctness (Level 4) and API invariants (Level 5), which is what users
-   interact with.
+3. **Level 1 is proven for the modeled subset; Level 2 is honestly marked
+   not-proven.** Source preservation holds for the modeled Kernel-Rust subset
+   (route a / step E, T590-T5B0) — but macro *expansion* itself stays trusted
+   (axiom A5), so we do not claim it end to end from raw source. We do not claim
+   race freedom (Level 2). We also claim emitter correctness (Level 4) and API
+   invariants (Level 5), which is what users interact with.
 
 4. **Memory safety is empirically validated, not formally proven.** Miri
    catches UB at runtime for the paths we test. It is not a proof of absence

@@ -97,7 +97,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `gridDim.x * blockDim.x` | `quark_count()` |
 | `__syncthreads()` | `barrier()` |
 | `atomicAdd(&x, val)` | `atomic_add(&mut x, val)` |
-| `atomicCAS(&x, expected, desired)` | `atomic_cas(&mut x, expected, desired)` |
+| `atomicCAS(&x, expected, desired)` | `atomic_compare_exchange(&mut x, expected, desired)` |
 | `__shfl_xor_sync(mask, val, delta)` | `shuffle_f32(val, delta)` (and `_u32` / `_i32`) |
 | `__ballot_sync(mask, pred)` | `ballot_u32(pred)` |
 | `__any_sync(mask, pred)` | `any_u32(pred)` |
@@ -105,10 +105,12 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `surf2Dwrite(v, surf, x, y)` | `texture_write_2d(tex, x, y, v)` (param `&mut Texture2D<f32>`, R32Float) |
 | `surf2Dread(&v, surf, x, y)` | `texture_load_2d(tex, x, y)` (storage read on a `&mut Texture2D` slot) |
 | `tex2D(tex, u, v)` | `texture_sample_2d(tex, x, y)` / `texture_load_2d` (param `&Texture2D<f32>`) |
+| `cudaMemcpy2D` (to a texture sub-region) | `texture.write_region(origin, size, &data)` (texel offset + extent, tightly packed rows; gated on `supports_texture_write_region`) |
 | `cudaMalloc` + `cudaMemcpy` | `gpu.field::<T>(n)` + `field.write(&data)` |
 | `cudaMallocManaged` | `gpu.field_mapped::<T>(n)` |
 | `kernel<<<blocks, threads>>>(...)` | `gpu.dispatch(&wave, n)` |
 | `cudaDeviceSynchronize()` | `pulse.wait()` / `gpu.wait_idle()` |
+| `cudaLaunchHostFunc` / `cudaStreamAddCallback` | `pulse.on_complete(f)` (run `f` on a background waiter at completion — the event-driven alternative to `wait()`) |
 | `cudaGetDeviceProperties` | `gpu.caps()` |
 | `cudaFree` | automatic (Field drops when it goes out of scope) |
 

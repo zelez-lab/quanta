@@ -281,6 +281,58 @@ no function call overhead.
 **Metal**: since metallib is compiled from SPIR-V, the same OpFunction structure
 applies before Metal's optimizer runs.
 
+## Toolchain: discovery, rev handshake, and release packaging
+
+The proc macros locate the `quanta-compiler` binary through a fixed
+search chain (`quanta-dsl/src/compiler/binary.rs`): `QUANTA_COMPILER`,
+then the workspace `target/{release,debug}` dirs, then `PATH`, then the
+`~/.quanta/bin/` cache, then a download from GitHub Releases (unless
+`QUANTA_NO_DOWNLOAD=1`).
+
+Once resolved, the binary is probed **once** with `--rev` (null stdin)
+before any kernel or shader is piped to it. That single probe classifies
+it three ways:
+
+- **Usable** — its embedded `QUANTA_BUILD_REV` matches this build, *or*
+  it predates rev stamping (older binary, no `--rev`: a loud
+  `[quanta] WARNING`, still used), *or* a proven mismatch was accepted
+  via `QUANTA_ACCEPT_STALE_COMPILER`.
+- **RevMismatch** — it printed a *different* rev. Fatal by default: a
+  stale compiler has shipped `spirv-val`-invalid modules that segfault
+  some drivers (v3dv), so the macro returns a build error rather than
+  JIT-fall-back silently.
+- **NotLoadable** — the loader killed it (a downloaded release build
+  whose bundled libLLVM isn't present: dyld "Library not loaded" /
+  ld.so exit 127 / `STATUS_DLL_NOT_FOUND`). Soft: kernels JIT, shaders
+  ship no binaries.
+
+Probing with null stdin first is deliberate — spawning a loader-killed
+binary with piped stdin races its death and a broken-pipe write can
+`SIGPIPE` the host `rustc` process on macOS.
+
+### Release archive layout
+
+`.github/workflows/release-compiler.yml` builds `quanta-compiler` for
+`aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`,
+`aarch64-unknown-linux-gnu`, and `x86_64-pc-windows-msvc` (the Windows
+asset is built through the GNU triple but named for MSVC so the
+downloader's target lookup matches). Each archive
+(`quanta-compiler-<target>.tar.gz`, or `.zip` on Windows, plus a
+`.sha256`) is **self-contained**: the binary at the root, its full
+libLLVM dependency closure beside it. libLLVM alone is not enough — it
+transitively links z3, zstd, tinfo, xml2, ffi and more, so the workflow
+bundles everything `ldd` / `otool -L` reports except a glibc / loader /
+compiler-runtime baseline. Unix bakes an `$ORIGIN/lib` (Linux) or
+`@loader_path/lib` (macOS) run path so the binary finds the bundled
+libraries beside itself; Windows places the DLLs flat next to the `.exe`
+(the first place the loader looks). macOS re-signs ad-hoc after
+`install_name_tool` rewrites, or arm64 refuses to launch it.
+
+A separate `verify` job downloads each archive onto a **clean runner**
+with no LLVM and no Rust toolchain, extracts it as a user would, checks
+the sha256, and runs `--rev`. If bundling regressed, the loader kills it
+there and the release is blocked.
+
 ## Adding a new KernelOp
 
 1. Add the variant to `KernelOp` enum in `quanta-ir/src/lib.rs`.

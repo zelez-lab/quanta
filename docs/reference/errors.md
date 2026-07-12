@@ -256,6 +256,73 @@ unreachable." File a bug.
 
 ---
 
+## Specific error stories
+
+A few errors have precise, diagnosable texts worth recognising. The
+first two are **build-time** errors (they abort `cargo build` through the
+proc macro); the last two are returned at pipeline-build / dispatch time.
+
+### Stale compiler (fatal, build time)
+
+When the resolved `quanta-compiler` binary reports a build revision that
+provably differs from the quanta crate being compiled, the build stops —
+a stale compiler can emit invalid SPIR-V that crashes some drivers:
+
+> quanta-compiler at `<path>` was built from rev `<bin_rev>` but this
+> quanta build is rev `<own_rev>`. A mismatched compiler can emit invalid
+> SPIR-V that crashes some drivers, so this is a hard error. Reinstall the
+> matching compiler: `cargo install --path crates/quanta-compiler --locked
+> --force`. To proceed anyway (e.g. a rig pinning a known-compatible
+> compiler), set `QUANTA_ACCEPT_STALE_COMPILER=1`.
+
+A *pre-stamp* compiler (no `--rev`) can't be proven mismatched and only
+warns. See [Getting Started](../getting-started.md#the-ahead-of-time-compiler-git-dependency-consumers)
+and [`QUANTA_ACCEPT_STALE_COMPILER`](environment.md).
+
+### Missing SPIR-V, unmasked (pipeline build, Vulkan)
+
+A DSL shader whose build-time compile produced a binary for *some*
+backend but no SPIR-V — the signature of a compiler that was missing,
+failed, or stale — is diagnosed by name when the Vulkan pipeline is built,
+instead of silently binding an empty module:
+
+> Vulkan render pipeline: shader `<vs>`/`<fs>` has no SPIR-V for its
+> `<stage>` stage (a binary is present for another backend, so its
+> build-time compile produced no SPIR-V — quanta-compiler was missing,
+> failed, or stale when this crate was built). Reinstall the matching
+> compiler and rebuild: `cargo install --path crates/quanta-compiler
+> --locked --force`
+
+### Storage-texture format mismatch → `InvalidParam`
+
+Binding a `&mut Texture2D<f32>` storage-image kernel parameter to a
+texture that isn't `R32Float` fails at dispatch on Metal and the CPU
+device with `InvalidParam`:
+
+> invalid parameter: compute storage texture format mismatch [slot N:
+> expected R32Float, got `<Format>`]
+
+Create the texture with `Format::R32Float` and `SHADER_WRITE` usage.
+
+### Too many vertex attributes → `CompilationFailed`
+
+A vertex pipeline declaring more attributes (or a higher attribute
+*location*) than the device's `maxVertexInputAttributes` is rejected with
+`CompilationFailed` rather than making the undefined-behaviour driver call
+(on some drivers, e.g. Broadcom V3D at limit 16, that call has corrupted
+the process heap):
+
+> compilation failed: vertex pipeline declares `N` vertex attributes but
+> this device supports at most `M` (maxVertexInputAttributes) — reduce the
+> vertex layout (e.g. pack stops into a uniform array or fetch them from a
+> texture instead of one attribute per stop)
+
+A single attribute at an over-limit location is rejected the same way
+("uses attribute location `L` but this device's maxVertexInputAttributes
+is `M`").
+
+---
+
 ## Attaching context
 
 Use `.with_context()` to annotate errors with the operation that produced them:

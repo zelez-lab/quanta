@@ -1,73 +1,77 @@
 # Expert: Multi-Queue
 
-Modern GPUs have multiple hardware queues. Use them to overlap compute and
-render work for higher throughput.
+Modern GPUs have multiple hardware queues. Use them to place compute and
+render work on separate queues for higher throughput.
 
-## Async compute
+## Query the queue families
 
-Run compute work on a dedicated queue while the main queue renders:
+Start by asking the device what queue families it exposes. `queue_families()`
+never fails — it returns whatever the backend reports (a single `Graphics`
+family on the software fallbacks and WebGPU):
 
 ```rust
 use quanta::*;
 
-fn async_compute_example(gpu: &Gpu) -> Result<(), QuantaError> {
-    if gpu.supports_async_compute() {
-        // Dispatch compute on the async queue
-        let mut compute_pulse = gpu.async_compute_dispatch(&wave, [64, 1, 1])?;
-
-        // Render on the main queue simultaneously
-        gpu.render(&target)?
-            .pipeline(&pipeline)
-            .vertices(0, &vb)
-            .draw(vertex_count)
-            .pulse()?
-            .wait()?;
-
-        // Wait for async compute to finish
-        compute_pulse.wait()?;
-    }
-
-    Ok(())
-}
-```
-
-## Explicit queue management
-
-For full control, query available queue families and create dedicated queues:
-
-```rust
 let families = gpu.queue_families();
 for fam in &families {
     println!("{:?}: {} queues", fam.queue_type, fam.count);
 }
-
-// Create a dedicated compute queue
-let compute_queue = gpu.queue(QueueType::Compute)?;
-
-// Dispatch work on the dedicated queue
-compute_queue.submit(&wave, [256, 1, 1])?;
 ```
 
-## Compute-render overlap pattern
+## Create a dedicated queue
 
-A typical frame that overlaps next frame's compute with current frame's
-rendering:
+`gpu.queue(QueueType)` allocates a typed [`Queue`](../reference/api.md) for a
+capability tier. Backends that don't expose multi-queue (the single-queue
+software fallbacks, WebGPU's global queue) return `NotSupported` here, so
+branch on the result rather than assuming a second queue exists:
 
 ```rust
-// Frame N: kick off compute for NEXT frame's data
-let compute_pulse = gpu.async_compute_dispatch(&particle_wave, [n / 256, 1, 1])?;
-
-// Frame N: render CURRENT frame using previously computed data
-gpu.render(&target)?
-    .pipeline(&render_pipeline)
-    .vertices(0, &current_particles)
-    .draw(particle_count)
-    .pulse()?
-    .wait()?;
-
-// Ensure compute is done before we use its output next frame
-compute_pulse.wait()?;
+match gpu.queue(QueueType::Compute) {
+    Ok(compute_queue) => {
+        // Dispatch work on the dedicated compute queue.
+        compute_queue.submit(&wave, [256, 1, 1])?;
+    }
+    Err(e) if matches!(e.kind, QuantaErrorKind::NotSupported(_)) => {
+        // Single-queue backend — run the work on the main queue instead.
+        gpu.dispatch(&wave, n)?.wait()?;
+    }
+    Err(e) => return Err(e),
+}
 ```
+
+## Async compute (capability not yet provided)
+
+Quanta reserves a dedicated *async-compute* surface —
+`gpu.supports_async_compute()` and `gpu.async_compute_dispatch(&wave, groups)`
+— for overlapping compute on a background queue while the main queue renders.
+**No backend provides it today**: `supports_async_compute()` returns `false`
+everywhere and `async_compute_dispatch` returns `NotSupported`. Gate on the
+query so code stays correct when a backend gains the capability:
+
+```rust
+if gpu.supports_async_compute() {
+    let mut compute_pulse = gpu.async_compute_dispatch(&wave, [64, 1, 1])?;
+    gpu.render(&target)?
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(vertex_count)
+        .pulse()?
+        .wait()?;
+    compute_pulse.wait()?;
+} else {
+    // Fall back to the main queue (the path taken on every backend today).
+    gpu.dispatch(&wave, n)?.wait()?;
+    gpu.render(&target)?
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(vertex_count)
+        .pulse()?
+        .wait()?;
+}
+```
+
+Until then, use `gpu.queue(QueueType::Compute)` for an explicit second queue
+where the backend supports one.
 
 ## Resource synchronization across queues
 
