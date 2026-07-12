@@ -212,16 +212,14 @@ enum LocalEventKind {
 struct BrIfRecord {
     /// Index into the target frame's `ops` where the br/br_if fired.
     /// Ops at this position or later are on the br_if's
-    /// fall-through path (cond=false for br_if; never reached for
-    /// unconditional Br) until the next record's position.
+    /// fall-through path (cond=false) until the next record's
+    /// position.
     sink_position: usize,
-    /// The condition register for br_if. For unconditional Br
-    /// (`is_unconditional = true`), this is unused; we still allocate
-    /// a register so the field can stay non-optional.
+    /// The condition register. For unconditional `Br` this is a
+    /// materialized "reached-here" flag (declared false at the
+    /// target, set true at the br's source position), which reduces
+    /// Br to the BrIf scheme.
     cond: Reg,
-    /// Distinguishes `Br N` (unconditional) from `BrIf N`. Reserved
-    /// for the next session — session 1 only handles BrIf.
-    is_unconditional: bool,
 }
 
 /// One loop-backedge `br_if` (a `br_if` whose target is the
@@ -666,21 +664,19 @@ impl<'a> LowerCtx<'a> {
     ///
     /// Targets: Block frames (Br / BrIf arms) and the Function frame
     /// (top-level Return records an always-true BrIf).
-    fn record_br_at(&mut self, depth: u32, cond: Reg, is_unconditional: bool) {
+    fn record_br_at(&mut self, depth: u32, cond: Reg) {
         let target = self
             .frame_at_depth_mut(depth)
             .expect("caller must verify target depth before record_br_at");
         // Position = current end of target's natural ops.
         // Ops emitted AFTER this record live at positions >=
-        // sink_position; they execute on the br_if's fall-through path
-        // (or, for unconditional Br, are dead code under the source
-        // semantics, which the wrap captures by giving them an
-        // unreachable enclosing Branch).
+        // sink_position; they execute on the br_if's fall-through
+        // path (for an unconditional Br's reached-here flag, that is
+        // every path except the br's own).
         let sink_position = target.ops.len();
         target.brifs.push(BrIfRecord {
             sink_position,
             cond,
-            is_unconditional,
         });
     }
 
@@ -714,37 +710,19 @@ impl<'a> LowerCtx<'a> {
         mut ops: Vec<KernelOp>,
         brifs: &[BrIfRecord],
     ) -> Vec<KernelOp> {
-        // BrIf wraps as `Branch{cond, then=[], else=tail}` — tail
-        // runs only when cond=false (fall-through path).
-        //
-        // Br (unconditional) wraps as `Branch{cond=prior_brif_cond,
-        // then=[tail], else=[]}` — tail runs only when the most
-        // recent inner br_if fired (= we reached target's
-        // continuation via that path). See Br's record_br_at site
-        // for how the record's cond is the inner br_if's cond
-        // (recorded as a pointer; we swap arms here to invert the
-        // sense, avoiding the need to emit a separate !cond op).
-        //
-        // When no prior br_if existed at record time, the record
-        // cond was set to a const_true: with swapped arms,
-        // `then=[tail]` runs unconditionally, which matches strict
-        // WASM semantics for an unconditional br that has no
-        // earlier br_if to "rescue" the tail.
+        // Every record wraps as `Branch{cond, then=[], else=tail}` —
+        // tail runs only when cond=false (fall-through path). An
+        // unconditional Br participates through its reached-here
+        // flag, so its wrap skips the tail exactly on the br's own
+        // path and leaves it live for natural fall-through and for
+        // br_ifs landing at inner frames' ends.
         for record in brifs.iter().rev() {
             let tail = ops.split_off(record.sink_position);
-            if record.is_unconditional {
-                ops.push(KernelOp::Branch {
-                    cond: record.cond,
-                    then_ops: tail,
-                    else_ops: Vec::new(),
-                });
-            } else {
-                ops.push(KernelOp::Branch {
-                    cond: record.cond,
-                    then_ops: Vec::new(),
-                    else_ops: tail,
-                });
-            }
+            ops.push(KernelOp::Branch {
+                cond: record.cond,
+                then_ops: Vec::new(),
+                else_ops: tail,
+            });
         }
         ops
     }
@@ -989,7 +967,7 @@ impl<'a> LowerCtx<'a> {
             })
             .expect("caller guarantees a Loop frame between top and depth");
         for d in (loop_depth + 1)..=depth {
-            self.record_br_at(d, flag, /*is_unconditional=*/ false);
+            self.record_br_at(d, flag);
         }
     }
 
@@ -1052,12 +1030,51 @@ impl<'a> LowerCtx<'a> {
 
         let instrs = self.body.instructions.clone();
         self.precompute_loop_body_accesses(&instrs);
+        // `QUANTA_LOWER_DUMP_INSTRS=<kernel_name>` (or `*`): print the raw
+        // decoded instruction stream — the wasm-side companion to
+        // `QUANTA_LOWER_DUMP_OPS` for diagnosing control-flow
+        // reconstruction against the source block/br structure.
+        if std::env::var("QUANTA_LOWER_DUMP_INSTRS")
+            .map(|v| v == "*" || v == self.side_table.kernel_name)
+            .unwrap_or(false)
+        {
+            eprintln!("[lower-instrs] kernel `{}`:", self.side_table.kernel_name);
+            let mut depth = 0usize;
+            for (i, instr) in instrs.iter().enumerate() {
+                if matches!(instr, RawInstr::End | RawInstr::Else) {
+                    depth = depth.saturating_sub(1);
+                }
+                eprintln!("  {i:4}: {}{instr:?}", "  ".repeat(depth));
+                if matches!(
+                    instr,
+                    RawInstr::Block { .. }
+                        | RawInstr::Loop { .. }
+                        | RawInstr::If { .. }
+                        | RawInstr::Else
+                ) {
+                    depth += 1;
+                }
+            }
+        }
         for instr in &instrs {
             self.lower_instr(instr)?;
         }
 
         self.dump_local_debug();
-        Ok(self.into_kernel_def())
+        let def = self.into_kernel_def();
+        // `QUANTA_LOWER_DUMP_OPS=<kernel_name>` (or `*`): print the final
+        // lowered op tree — the op-level companion to `dump_local_debug`
+        // for diagnosing loop/branch register-commit bugs.
+        if std::env::var("QUANTA_LOWER_DUMP_OPS")
+            .map(|v| v == "*" || v == def.name)
+            .unwrap_or(false)
+        {
+            eprintln!("[lower-ops] kernel `{}`:", def.name);
+            for (i, op) in def.body.iter().enumerate() {
+                eprintln!("  {i:3}: {op:?}");
+            }
+        }
+        Ok(def)
     }
 
     /// Lazily allocate a stable register for a local that didn't get
@@ -1212,6 +1229,37 @@ impl<'a> LowerCtx<'a> {
             }
         }
 
+        // Loop-WRITTEN address locals (`BufferAccess`/`ScaledIdx` in
+        // `body_writes`) are induction pointers — rustc strength-reduces
+        // `buf[base + k]` gathers into `p = &buf[base]; loop { *p; p += N }`.
+        // The body lowers ONCE but runs many times: a load through the
+        // entry-time symbolic address freezes the index at iteration 0
+        // (the loop-accumulation miscompile: every unrolled iteration
+        // re-read elements 0..unroll, so a sum of [0.5,1.5,3.0,0.2] came
+        // back 4.0). Rebase the address's BASE onto the local's stable
+        // register — preserving the symval SHAPE for the load/store
+        // recognizer — and the in-loop `local.set` keeps that register
+        // advancing (see the LocalSet/LocalTee address arms), so loads
+        // read a register that genuinely carries across iterations.
+        let to_rebase: Vec<usize> = self
+            .locals
+            .iter()
+            .enumerate()
+            .filter_map(|(i, info)| match info.val {
+                Some(SymVal::BufferAccess { .. })
+                | Some(SymVal::ScaledIdx { .. })
+                | Some(SymVal::BufferPtr(_))
+                    if body_writes.contains(&(i as u32)) =>
+                {
+                    Some(i)
+                }
+                _ => None,
+            })
+            .collect();
+        for i in to_rebase {
+            self.rebase_address_local_on_stable(i);
+        }
+
         for info in self.locals.iter_mut() {
             if let Some(stable_reg) = info.stable_reg {
                 // Rebind value-typed locals (incl. just-committed ScaledIdx →
@@ -1222,6 +1270,99 @@ impl<'a> LowerCtx<'a> {
                 }
             }
         }
+    }
+
+    /// Route an address-typed local (`BufferAccess`/`ScaledIdx`/
+    /// `BufferPtr`) through its stable register: canonicalize the
+    /// address to BYTES (scale 1), copy the byte base into the stable
+    /// reg, and rebind the symval with `base = stable, scale = 1`.
+    /// No-op for other symval shapes.
+    ///
+    /// Canonicalizing the UNIT matters as much as the register: the
+    /// loop body lowers once, so every read of the local must agree
+    /// on what the stable register holds. Pointer-advance adds
+    /// (`p += N`) produce byte-scaled values mid-body; if the
+    /// loop-entry rebase kept the entry shape (say scale 4,
+    /// element-indexed), iteration 1's store would read the stable
+    /// as elements while the advance wrote bytes back into it —
+    /// 4x misaddressing from iteration 2 on (caught in the
+    /// tile-raster binning kernel's nested loops). The load/store
+    /// recognizers reconcile scale-1 addresses back to element
+    /// indices via `element_index_for_access`.
+    fn rebase_address_local_on_stable(&mut self, idx: usize) {
+        let (byte_base, slot) = match self.locals[idx].val {
+            Some(SymVal::BufferAccess { slot, base, scale }) => {
+                (self.scale_reg_to_bytes(base, scale), Some(slot))
+            }
+            Some(SymVal::ScaledIdx { base, scale }) => (self.scale_reg_to_bytes(base, scale), None),
+            // A raw buffer pointer the loop advances (`p = buf; loop
+            // { *p; p += N }`): materialize byte offset 0 so it becomes
+            // a byte-addressed BufferAccess whose base can loop-carry.
+            // Without this, loads fold through the bare-BufferPtr memarg
+            // arms at the ENTRY offset — frozen at element 0 every
+            // iteration.
+            Some(SymVal::BufferPtr(slot)) => {
+                let zero = self.alloc_reg();
+                self.emit(KernelOp::Const {
+                    dst: zero,
+                    value: ConstValue::U32(0),
+                });
+                (zero, Some(slot))
+            }
+            _ => return,
+        };
+        self.ensure_stable_reg_for(idx, &SymVal::Reg(byte_base, ScalarType::U32));
+        let Some(stable) = self.locals[idx].stable_reg else {
+            return;
+        };
+        self.emit(KernelOp::Copy {
+            dst: stable,
+            src: byte_base,
+            ty: ScalarType::U32,
+        });
+        self.locals[idx].val = Some(match slot {
+            Some(slot) => SymVal::BufferAccess {
+                slot,
+                base: stable,
+                scale: 1,
+            },
+            None => SymVal::ScaledIdx {
+                base: stable,
+                scale: 1,
+            },
+        });
+    }
+
+    /// Emit `base << log2(scale)` converting a scale-unit count to a
+    /// byte count. Returns `base` unchanged when scale is already 1.
+    /// Non-power-of-two scales don't occur (scales come from wasm
+    /// shl-folds and memarg widths, both powers of two).
+    fn scale_reg_to_bytes(&mut self, base: Reg, scale: u32) -> Reg {
+        self.rescale_index_to(base, scale, 1)
+    }
+
+    /// Emit `idx << log2(from/to)` converting an index counting
+    /// `from`-byte units to one counting `to`-byte units (`to`
+    /// divides `from`, both powers of two — the caller guards).
+    /// Returns `idx` unchanged when the scales already match.
+    fn rescale_index_to(&mut self, idx: Reg, from: u32, to: u32) -> Reg {
+        if from == to {
+            return idx;
+        }
+        let shift = self.alloc_reg();
+        self.emit(KernelOp::Const {
+            dst: shift,
+            value: ConstValue::U32((from / to).trailing_zeros()),
+        });
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst,
+            a: idx,
+            b: shift,
+            op: BinOp::Shl,
+            ty: ScalarType::U32,
+        });
+        dst
     }
 
     /// After a scope-introducing frame (If, Else, Loop) closes,
@@ -1406,7 +1547,18 @@ impl<'a> LowerCtx<'a> {
                 } else {
                     v
                 };
-                if is_value_symval(&v) {
+                // Loop-carried induction-pointer update (`p += 8`): a
+                // symbolic-only rebind freezes the loop body's loads at
+                // the entry-time base (the body lowers once). Advance the
+                // address through the stable register instead, keeping
+                // the BufferAccess shape for the recognizers. Pairs with
+                // the loop-entry rebase in `force_locals_to_stable`.
+                if matches!(v, SymVal::BufferAccess { .. })
+                    && self.local_is_loop_carried(*idx as usize)
+                {
+                    self.locals[*idx as usize].val = Some(v);
+                    self.rebase_address_local_on_stable(*idx as usize);
+                } else if is_value_symval(&v) {
                     self.ensure_stable_reg_for(*idx as usize, &v);
                     self.write_local_via_copy(*idx as usize, v)?;
                 } else {
@@ -1431,7 +1583,19 @@ impl<'a> LowerCtx<'a> {
                 } else {
                     v
                 };
-                if is_value_symval(&v) {
+                // Loop-carried induction-pointer tee: same rebase-through-
+                // stable as the LocalSet arm; the on-stack value becomes the
+                // rebased address so downstream consumers fold against the
+                // loop-carried base register.
+                if matches!(v, SymVal::BufferAccess { .. })
+                    && self.local_is_loop_carried(*idx as usize)
+                {
+                    let _ = self.pop()?;
+                    self.locals[*idx as usize].val = Some(v);
+                    self.rebase_address_local_on_stable(*idx as usize);
+                    let rebased = self.locals[*idx as usize].val.unwrap_or(v);
+                    self.stack.push(rebased);
+                } else if is_value_symval(&v) {
                     let _ = self.pop()?;
                     self.ensure_stable_reg_for(*idx as usize, &v);
                     let (reg, ty) = self.write_local_via_copy(*idx as usize, v)?;
@@ -1510,11 +1674,14 @@ impl<'a> LowerCtx<'a> {
                     // precomputed part of the byte-offset and the
                     // rest is runtime. Compose the indices.
                     //
-                    // Same scale → indices add directly.
-                    // Larger BufferAccess scale → rescale its
-                    // index to match the smaller ScaledIdx
-                    // scale: new_base = ba_base * (ba_scale /
-                    // si_scale) + si_base, scale = si_scale.
+                    // Same scale → indices add directly. Mismatched
+                    // power-of-two scales → rescale the coarser side
+                    // down to the finer scale (shift its index left
+                    // by log2(coarse/fine)), then add at the finer
+                    // scale. The finer side is often scale 1: a
+                    // loop-carried pointer canonicalized to bytes by
+                    // `rebase_address_local_on_stable` plus an
+                    // element-scaled runtime index.
                     (
                         SymVal::BufferAccess { slot, base, scale },
                         SymVal::ScaledIdx {
@@ -1529,51 +1696,24 @@ impl<'a> LowerCtx<'a> {
                         },
                         SymVal::BufferAccess { slot, base, scale },
                     ) if scale == s2
-                        || (scale > s2 && scale % s2 == 0 && (scale / s2).is_power_of_two()) =>
+                        || (scale.max(s2) % scale.min(s2) == 0
+                            && (scale.max(s2) / scale.min(s2)).is_power_of_two()) =>
                     {
-                        let (final_scale, final_base) = if scale == s2 {
-                            // Same-scale add: combine indices.
-                            let dst = self.alloc_reg();
-                            self.emit(KernelOp::BinOp {
-                                dst,
-                                a: base,
-                                b: b2,
-                                op: BinOp::Add,
-                                ty: ScalarType::U32,
-                            });
-                            (scale, dst)
-                        } else {
-                            // Rescale BufferAccess's base to match
-                            // the smaller scale: shift base left
-                            // by log2(scale / s2), then add.
-                            let shift_amt = (scale / s2).trailing_zeros();
-                            let shift_reg = self.alloc_reg();
-                            self.emit(KernelOp::Const {
-                                dst: shift_reg,
-                                value: ConstValue::U32(shift_amt),
-                            });
-                            let scaled_base = self.alloc_reg();
-                            self.emit(KernelOp::BinOp {
-                                dst: scaled_base,
-                                a: base,
-                                b: shift_reg,
-                                op: BinOp::Shl,
-                                ty: ScalarType::U32,
-                            });
-                            let dst = self.alloc_reg();
-                            self.emit(KernelOp::BinOp {
-                                dst,
-                                a: scaled_base,
-                                b: b2,
-                                op: BinOp::Add,
-                                ty: ScalarType::U32,
-                            });
-                            (s2, dst)
-                        };
+                        let fine = scale.min(s2);
+                        let a_idx = self.rescale_index_to(base, scale, fine);
+                        let b_idx = self.rescale_index_to(b2, s2, fine);
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::BinOp {
+                            dst,
+                            a: a_idx,
+                            b: b_idx,
+                            op: BinOp::Add,
+                            ty: ScalarType::U32,
+                        });
                         self.stack.push(SymVal::BufferAccess {
                             slot,
-                            base: final_base,
-                            scale: final_scale,
+                            base: dst,
+                            scale: fine,
                         });
                     }
                     // BufferAccess + Const offset (negative for
@@ -1603,6 +1743,78 @@ impl<'a> LowerCtx<'a> {
                             scale,
                         });
                     }
+                    // `BufferPtr + const` / `BufferPtr + reg` — the raw
+                    // byte-advanced induction pointer rustc strength-reduces
+                    // `buf[k]` loops into (`p = buf; loop { *p; p += 4 }`).
+                    // Track it as a BYTE-addressed BufferAccess (scale 1);
+                    // the typed load/store reconciles bytes → element index
+                    // via `element_index_for_access`, and the loop-carried
+                    // rebasing keeps the byte register advancing across
+                    // iterations.
+                    (SymVal::BufferPtr(slot), SymVal::I32Const(c))
+                    | (SymVal::I32Const(c), SymVal::BufferPtr(slot)) => {
+                        let byte_reg = self.alloc_reg();
+                        self.emit(KernelOp::Const {
+                            dst: byte_reg,
+                            value: ConstValue::U32(c as u32),
+                        });
+                        self.stack.push(SymVal::BufferAccess {
+                            slot,
+                            base: byte_reg,
+                            scale: 1,
+                        });
+                    }
+                    (SymVal::BufferPtr(slot), SymVal::Reg(r, _) | SymVal::Opaque(r, _))
+                    | (SymVal::Reg(r, _) | SymVal::Opaque(r, _), SymVal::BufferPtr(slot)) => {
+                        self.stack.push(SymVal::BufferAccess {
+                            slot,
+                            base: r,
+                            scale: 1,
+                        });
+                    }
+                    // `BufferAccess + reg` — a runtime byte delta added to an
+                    // existing address (loop-carried pointer advance by a
+                    // variable amount). Normalize the address to bytes first.
+                    (
+                        SymVal::BufferAccess { slot, base, scale },
+                        SymVal::Reg(r, _) | SymVal::Opaque(r, _),
+                    )
+                    | (
+                        SymVal::Reg(r, _) | SymVal::Opaque(r, _),
+                        SymVal::BufferAccess { slot, base, scale },
+                    ) if scale.is_power_of_two() => {
+                        let byte_base = if scale == 1 {
+                            base
+                        } else {
+                            let amt = self.alloc_reg();
+                            self.emit(KernelOp::Const {
+                                dst: amt,
+                                value: ConstValue::U32(scale.trailing_zeros()),
+                            });
+                            let dst = self.alloc_reg();
+                            self.emit(KernelOp::BinOp {
+                                dst,
+                                a: base,
+                                b: amt,
+                                op: BinOp::Shl,
+                                ty: ScalarType::U32,
+                            });
+                            dst
+                        };
+                        let dst = self.alloc_reg();
+                        self.emit(KernelOp::BinOp {
+                            dst,
+                            a: byte_base,
+                            b: r,
+                            op: BinOp::Add,
+                            ty: ScalarType::U32,
+                        });
+                        self.stack.push(SymVal::BufferAccess {
+                            slot,
+                            base: dst,
+                            scale: 1,
+                        });
+                    }
                     (a, b) => {
                         let (ar, ty_a) = self.commit(a)?;
                         let (br, ty_b) = self.commit(b)?;
@@ -1623,16 +1835,21 @@ impl<'a> LowerCtx<'a> {
             RawInstr::F32Load { offset, .. } => {
                 let addr = self.pop()?;
                 match addr {
-                    SymVal::BufferAccess {
-                        slot,
-                        base,
-                        scale: 4,
-                    } if *offset == 0 => {
+                    SymVal::BufferAccess { slot, base, scale } => {
+                        let Some(index) = self.element_index_for_access(base, scale, 4, *offset)
+                        else {
+                            return Err(LoweringError::UnsupportedOp {
+                                op: format!(
+                                    "f32.load on irreconcilable address (scale={scale}, offset={offset})"
+                                ),
+                                at: self.body.body_offset,
+                            });
+                        };
                         let dst = self.alloc_reg();
                         self.emit(KernelOp::Load {
                             dst,
                             field: slot,
-                            index: base,
+                            index,
                             ty: ScalarType::F32,
                         });
                         self.stack.push(SymVal::Reg(dst, ScalarType::F32));
@@ -1667,58 +1884,21 @@ impl<'a> LowerCtx<'a> {
                 let addr = self.pop()?;
                 let (val_reg, _) = self.commit(val)?;
                 match addr {
-                    SymVal::BufferAccess {
-                        slot,
-                        base,
-                        scale: 4,
-                    } if *offset == 0 => {
-                        self.emit(KernelOp::Store {
-                            field: slot,
-                            index: base,
-                            src: val_reg,
-                            ty: ScalarType::F32,
-                        });
-                    }
-                    // Scaled-pair pattern: rustc folds writes of
-                    // `out[id*2]` / `out[id*2+1]` into one address
-                    // base `out + id*8` plus immediate offsets 0 and
-                    // 4. Reconstruct the element index as
-                    // `base * 2 + offset / sizeof(f32)`.
-                    SymVal::BufferAccess {
-                        slot,
-                        base,
-                        scale: 8,
-                    } if (*offset % 4) == 0 => {
-                        let two = self.alloc_reg();
-                        self.emit(KernelOp::Const {
-                            dst: two,
-                            value: ConstValue::U32(2),
-                        });
-                        let scaled = self.alloc_reg();
-                        self.emit(KernelOp::BinOp {
-                            dst: scaled,
-                            a: base,
-                            b: two,
-                            op: BinOp::Mul,
-                            ty: ScalarType::U32,
-                        });
-                        let index = if *offset == 0 {
-                            scaled
-                        } else {
-                            let off_reg = self.alloc_reg();
-                            self.emit(KernelOp::Const {
-                                dst: off_reg,
-                                value: ConstValue::U32((*offset / 4) as u32),
+                    // General buffer store: the reconciler subsumes the
+                    // canonical element index (scale == width), the
+                    // byte-addressed induction pointer (scale 1), and the
+                    // scaled-pair / interleaved-stride forms (scale > width,
+                    // e.g. `out[id*2]`/`out[id*2+1]` folded to base `id*8`
+                    // plus immediate offsets).
+                    SymVal::BufferAccess { slot, base, scale } => {
+                        let Some(index) = self.element_index_for_access(base, scale, 4, *offset)
+                        else {
+                            return Err(LoweringError::UnsupportedOp {
+                                op: format!(
+                                    "f32.store on irreconcilable address (scale={scale}, offset={offset})"
+                                ),
+                                at: self.body.body_offset,
                             });
-                            let idx = self.alloc_reg();
-                            self.emit(KernelOp::BinOp {
-                                dst: idx,
-                                a: scaled,
-                                b: off_reg,
-                                op: BinOp::Add,
-                                ty: ScalarType::U32,
-                            });
-                            idx
                         };
                         self.emit(KernelOp::Store {
                             field: slot,
@@ -1753,16 +1933,21 @@ impl<'a> LowerCtx<'a> {
             RawInstr::F64Load { offset, .. } => {
                 let addr = self.pop()?;
                 match addr {
-                    SymVal::BufferAccess {
-                        slot,
-                        base,
-                        scale: 8,
-                    } => {
+                    SymVal::BufferAccess { slot, base, scale } => {
+                        let Some(index) = self.element_index_for_access(base, scale, 8, *offset)
+                        else {
+                            return Err(LoweringError::UnsupportedOp {
+                                op: format!(
+                                    "f64.load on irreconcilable address (scale={scale}, offset={offset})"
+                                ),
+                                at: self.body.body_offset,
+                            });
+                        };
                         let dst = self.alloc_reg();
                         self.emit(KernelOp::Load {
                             dst,
                             field: slot,
-                            index: base,
+                            index,
                             ty: ScalarType::F64,
                         });
                         self.stack.push(SymVal::Reg(dst, ScalarType::F64));
@@ -1880,17 +2065,22 @@ impl<'a> LowerCtx<'a> {
             RawInstr::I32Load { offset, .. } => {
                 let addr = self.pop()?;
                 match addr {
-                    SymVal::BufferAccess {
-                        slot,
-                        base,
-                        scale: 4,
-                    } if *offset == 0 => {
+                    SymVal::BufferAccess { slot, base, scale } => {
+                        let Some(index) = self.element_index_for_access(base, scale, 4, *offset)
+                        else {
+                            return Err(LoweringError::UnsupportedOp {
+                                op: format!(
+                                    "i32.load on irreconcilable address (scale={scale}, offset={offset})"
+                                ),
+                                at: self.body.body_offset,
+                            });
+                        };
                         let ty = self.scalar_type_for_slot(slot);
                         let dst = self.alloc_reg();
                         self.emit(KernelOp::Load {
                             dst,
                             field: slot,
-                            index: base,
+                            index,
                             ty,
                         });
                         self.stack.push(SymVal::Reg(dst, ty));
@@ -1926,16 +2116,21 @@ impl<'a> LowerCtx<'a> {
                 let val = self.pop()?;
                 let addr = self.pop()?;
                 match addr {
-                    SymVal::BufferAccess {
-                        slot,
-                        base,
-                        scale: 4,
-                    } if *offset == 0 => {
+                    SymVal::BufferAccess { slot, base, scale } => {
+                        let Some(index) = self.element_index_for_access(base, scale, 4, *offset)
+                        else {
+                            return Err(LoweringError::UnsupportedOp {
+                                op: format!(
+                                    "i32.store on irreconcilable address (scale={scale}, offset={offset})"
+                                ),
+                                at: self.body.body_offset,
+                            });
+                        };
                         let ty = self.scalar_type_for_slot(slot);
                         let val_reg = self.materialize_for_typed_store(val, ty)?;
                         self.emit(KernelOp::Store {
                             field: slot,
-                            index: base,
+                            index,
                             src: val_reg,
                             ty,
                         });
@@ -2679,33 +2874,65 @@ impl<'a> LowerCtx<'a> {
                         at: self.body.body_offset,
                     });
                 }
-                // Find the most recent br_if record on any frame
-                // strictly inner than target's depth. If found,
-                // use ITS cond as the unconditional br's record
-                // cond; reconstruct will then swap then/else so
-                // tail runs when prior_cond=true (= the inner
-                // br_if fired and we reached target's continuation
-                // via that path).
-                //
-                // If no prior br_if: emit a const_true at target
-                // and use it as cond. The wrap will be dead per
-                // strict WASM semantics.
-                let mut prior_cond: Option<Reg> = None;
+                // Every frame between here and the target must be a
+                // Block — each gets a record below, and only Block
+                // (and Function) closes reconstruct records. Mirrors
+                // the BrIf check.
                 for d in 0..*depth {
-                    if let Some(f) = self.frame_at_depth(d)
-                        && let Some(record) = f.brifs.last()
-                    {
-                        prior_cond = Some(record.cond);
+                    let k = self
+                        .frame_at_depth(d)
+                        .expect("depth verified above")
+                        .kind_discriminant();
+                    if !matches!(k, FrameKindTag::Block) {
+                        return Err(LoweringError::UnsupportedOp {
+                            op: format!(
+                                "br to Block at depth {depth} crosses a \
+                                 {k:?}-labelled frame at depth {d}"
+                            ),
+                            at: self.body.body_offset,
+                        });
                     }
                 }
-                let cond_reg = if let Some(prior) = prior_cond {
-                    prior
-                } else {
-                    let dst = self.alloc_reg();
-                    self.emit_const_bool_to_target(*depth, dst, true);
-                    dst
-                };
-                self.record_br_at(*depth, cond_reg, /*is_unconditional=*/ true);
+                // Model the unconditional br as a br_if whose cond is
+                // a materialized "reached-here" flag: declared false
+                // at the target frame, set true at the source
+                // position, recorded on EVERY frame from here to the
+                // target — the same scheme as BrIf and
+                // emit_loop_crossing_exit. Each level's wrap
+                // (`else=tail`) then skips that level's tail exactly
+                // when this br's path executed, and leaves it live on
+                // every other path.
+                //
+                // This replaced the "rescue cond" heuristic (reuse
+                // the most recent inner br_if's cond and swap the
+                // wrap arms so tail runs when it fired). That
+                // encoding assumed a target-frame tail is reachable
+                // ONLY via one inner br_if — false in the relooper
+                // join shapes rustc emits for else-if chains with a
+                // shared tail: the tail is also reached by natural
+                // fall-through from the br's own frame, and
+                // intermediate frames' tails (live via br_ifs into
+                // inner frames) got no record at all. Caught by the
+                // tile-raster fine-coverage kernel: the plain-middle
+                // path both executed the first branch's accumulation
+                // (intermediate tail not skipped) and lost its own
+                // shared-tail contribution (then=[tail] killed the
+                // fall-through path).
+                let flag = self.alloc_reg();
+                self.insert_decl_at_target(
+                    *depth,
+                    KernelOp::Const {
+                        dst: flag,
+                        value: ConstValue::Bool(false),
+                    },
+                );
+                self.emit(KernelOp::Const {
+                    dst: flag,
+                    value: ConstValue::Bool(true),
+                });
+                for d in 0..=*depth {
+                    self.record_br_at(d, flag);
+                }
             }
 
             RawInstr::BrIf(depth) => {
@@ -2874,7 +3101,7 @@ impl<'a> LowerCtx<'a> {
                 // the transitive backward-slice hoist.
                 let mat = self.materialize_cond_for_v2(*depth, cond, cond_ty);
                 for d in 0..=*depth {
-                    self.record_br_at(d, mat, /*is_unconditional=*/ false);
+                    self.record_br_at(d, mat);
                 }
             }
 
@@ -3179,7 +3406,7 @@ impl<'a> LowerCtx<'a> {
                 } else if !inside_block {
                     let dst = self.alloc_reg();
                     self.emit_const_bool_to_target(depth, dst, true);
-                    self.record_br_at(depth, dst, /*is_unconditional=*/ false);
+                    self.record_br_at(depth, dst);
                 }
                 // else: inside a block but not crossing a loop —
                 // emit nothing. The block's End will close cleanly
@@ -3312,6 +3539,66 @@ impl<'a> LowerCtx<'a> {
             value: ConstValue::U32(idx),
         });
         reg
+    }
+
+    /// Reconcile a `BufferAccess { base, scale }` address with a typed
+    /// access of `width` bytes (+ memarg `byte_offset`), producing the
+    /// ELEMENT index register — or `None` when the shapes can't be
+    /// reconciled (caller keeps its existing unsupported-op error).
+    ///
+    /// `base` counts units of `scale` bytes: `scale == width` is the
+    /// canonical element index; `scale == 1` is a byte-addressed
+    /// induction pointer (`p += 4` strength reduction — the element
+    /// index is `base >> log2(width)`); `scale > width` is an
+    /// interleaved stride (`buf[i * K]` — the element index is
+    /// `base << log2(scale / width)`). Alignment note: the `scale == 1`
+    /// shift truncates — sound because rustc only emits width-aligned
+    /// typed accesses.
+    fn element_index_for_access(
+        &mut self,
+        base: Reg,
+        scale: u32,
+        width: u32,
+        byte_offset: u64,
+    ) -> Option<Reg> {
+        if !scale.is_power_of_two() || !width.is_power_of_two() {
+            return None;
+        }
+        if byte_offset % (width as u64) != 0 {
+            return None;
+        }
+        let shift = (scale.trailing_zeros() as i32) - (width.trailing_zeros() as i32);
+        let idx = if shift == 0 {
+            base
+        } else {
+            let amt_reg = self.alloc_reg();
+            self.emit(KernelOp::Const {
+                dst: amt_reg,
+                value: ConstValue::U32(shift.unsigned_abs()),
+            });
+            let dst = self.alloc_reg();
+            self.emit(KernelOp::BinOp {
+                dst,
+                a: base,
+                b: amt_reg,
+                op: if shift > 0 { BinOp::Shl } else { BinOp::Shr },
+                ty: ScalarType::U32,
+            });
+            dst
+        };
+        if byte_offset == 0 {
+            return Some(idx);
+        }
+        let off_reg = self.const_index_for_offset(byte_offset, width);
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst,
+            a: idx,
+            b: off_reg,
+            op: BinOp::Add,
+            ty: ScalarType::U32,
+        });
+        Some(dst)
     }
 
     /// Coerce a register holding `src_ty` to `dst_ty`. If the types
@@ -3869,11 +4156,22 @@ impl<'a> LowerCtx<'a> {
         let order = order_const_to_enum(order_sv)?;
         let (val_reg, _) = self.commit(val_sv)?;
         let (field, index) = match addr_sv {
-            SymVal::BufferAccess {
-                slot,
-                base,
-                scale: _,
-            } => (slot, base),
+            SymVal::BufferAccess { slot, base, scale } => {
+                // Reconcile the address's unit to a 32-bit element
+                // index — byte-canonical (scale 1) loop-carried
+                // pointers reach here too, not just element-scaled
+                // accesses. (Caught in the tile-raster binning
+                // kernel: the tile counter's atomic bumped
+                // `counts[4*t]` once the pointer went byte-canonical,
+                // silently under-binning three of four tiles.)
+                let Some(index) = self.element_index_for_access(base, scale, 4, 0) else {
+                    return Err(LoweringError::UnsupportedOp {
+                        op: format!("atomic on irreconcilable address (scale={scale})"),
+                        at: self.body.body_offset,
+                    });
+                };
+                (slot, index)
+            }
             // rustc's optimizer drops the offset arithmetic when the
             // index is a compile-time zero (`&mut buf[0]`), leaving
             // just the BufferPtr on the stack. Synthesize a Const 0
