@@ -580,8 +580,16 @@ impl VulkanDevice {
                 &mut index,
             )
         };
+        let mut heal_suboptimal = false;
         match r {
-            ffi::VK_SUCCESS | ffi::VK_SUBOPTIMAL_KHR => {}
+            ffi::VK_SUCCESS => {}
+            ffi::VK_SUBOPTIMAL_KHR => {
+                // The image is validly acquired — finish this frame,
+                // but rebuild on the NEXT acquire so the swapchain
+                // re-matches the surface (a resize the driver reports
+                // as merely suboptimal heals without any error).
+                heal_suboptimal = true;
+            }
             ffi::VK_TIMEOUT => {
                 return Err(QuantaError::timeout()
                     .with_context("surface_acquire: no image available within 1 s"));
@@ -636,6 +644,33 @@ impl VulkanDevice {
                     texture_handle,
                 },
             );
+
+        if heal_suboptimal {
+            drop(surfaces);
+            if let Ok(mut all) = self.vk_surfaces.write()
+                && let Some(entry) = all.get_mut(&surface)
+            {
+                entry.needs_rebuild = true;
+            }
+            let surfaces = self
+                .vk_surfaces
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let entry = surfaces
+                .get(&surface)
+                .ok_or_else(|| QuantaError::not_found("surface handle not found"))?;
+            return Ok((
+                frame,
+                Texture {
+                    handle: texture_handle,
+                    width: entry.width,
+                    height: entry.height,
+                    format: entry.format,
+                    device: None,
+                    live: false,
+                },
+            ));
+        }
 
         Ok((
             frame,
@@ -763,8 +798,20 @@ impl VulkanDevice {
                 p_image_indices: &frame_entry.image_index,
                 p_results: core::ptr::null_mut(),
             };
-            match (procs.queue_present)(self.queue, &present) {
-                ffi::VK_SUCCESS | ffi::VK_SUBOPTIMAL_KHR => Ok(()),
+            let result = (procs.queue_present)(self.queue, &present);
+            drop(surfaces);
+            match result {
+                ffi::VK_SUCCESS => Ok(()),
+                ffi::VK_SUBOPTIMAL_KHR => {
+                    // Presented fine, but the swapchain no longer
+                    // matches the surface — heal on the next acquire.
+                    if let Ok(mut all) = self.vk_surfaces.write()
+                        && let Some(entry) = all.get_mut(&surface)
+                    {
+                        entry.needs_rebuild = true;
+                    }
+                    Ok(())
+                }
                 ffi::VK_ERROR_OUT_OF_DATE_KHR => Err(QuantaError::surface_outdated(
                     "swapchain out of date at present — reconfigure the surface",
                 )),

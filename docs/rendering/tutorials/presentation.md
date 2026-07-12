@@ -113,6 +113,12 @@ phase 3: animated — 3 s (pass --stay to keep it open)
 Backends without `Immediate`/`Mailbox` reject at create/configure time with
 `NotSupported`.
 
+On Vulkan, a swapchain the driver reports as *suboptimal* (a resize the
+window system tolerated) self-heals: the frame completes normally and the
+swapchain is rebuilt on the next `acquire`, adopting the surface's real
+extent — no error surfaces and no platform resize event is required. A
+hard `VK_ERROR_OUT_OF_DATE_KHR` still reports `SurfaceOutdated`.
+
 ## Compositor owns present: `native_handle`
 
 When another process or runtime composites the final image, render to an
