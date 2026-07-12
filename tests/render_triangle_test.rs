@@ -1438,3 +1438,275 @@ fn statement_if_and_fragment_uniform_render_exactly() {
         "right half must take the then branch (red), got ({r},{g},{b})"
     );
 }
+
+// ─── Test: vertex uniform, drawn exactly ────────────────────────────────────
+//
+// A &Vec2 uniform read in the VERTEX stage shifts the quad right by
+// half the screen. Exercises the storage-block uniform path end to end
+// (the old push-constant emission read memory the runtime never bound).
+
+#[quanta::vertex]
+fn shifted_vertex(pos: Vec3, uv: Vec2, shift: &Vec2) -> Vec4 {
+    Vec4::new(pos.x + (*shift).x, pos.y + (*shift).y, 0.0, 1.0)
+}
+
+#[test]
+fn vertex_uniform_shifts_geometry_exactly() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if SHIFTED_VERTEX_SHADER
+        .for_vendor(gpu.caps().vendor)
+        .is_none()
+        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_uv_layout();
+    let pipeline = gpu
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &SHIFTED_VERTEX_SHADER,
+                fragment: &SOLID_RED_SHADER,
+            })
+            .with_entries(
+                SHIFTED_VERTEX_SHADER.entry_point,
+                SOLID_RED_SHADER.entry_point,
+            )
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
+        .expect("pipeline creation");
+
+    // Fullscreen quad; the uniform shifts it +1.0 in x, so only the
+    // right half of the screen is covered after the shift.
+    #[rustfmt::skip]
+    let verts: [f32; 30] = [
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0, -1.0, 0.0,  1.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0,  1.0, 0.0,  0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+
+    let shift: quanta::Field<f32> = gpu
+        .field_with_usage(2, FieldUsage::default_render())
+        .unwrap();
+    shift.write(&[1.0f32, 0.0]).unwrap();
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .uniform(0, &shift)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = target.read().unwrap();
+    let (r, g, b, _) = pixel_at(&pixels, w, 1, 4);
+    assert!(
+        r < 50 && g < 50 && b < 50,
+        "left half must be empty after the +1.0 shift, got ({r},{g},{b})"
+    );
+    let (r, g, b, _) = pixel_at(&pixels, w, 6, 4);
+    assert!(
+        r > 200 && g < 50 && b < 50,
+        "right half must be covered by the shifted quad, got ({r},{g},{b})"
+    );
+}
+
+// ─── Test: Mat4 uniform, drawn exactly ──────────────────────────────────────
+
+#[quanta::vertex]
+fn mvp_vertex(pos: Vec3, uv: Vec2, mvp: &Mat4) -> Vec4 {
+    mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
+}
+
+#[test]
+fn mat4_uniform_scales_geometry_exactly() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if MVP_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_uv_layout();
+    let pipeline = gpu
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &MVP_VERTEX_SHADER,
+                fragment: &SOLID_RED_SHADER,
+            })
+            .with_entries(MVP_VERTEX_SHADER.entry_point, SOLID_RED_SHADER.entry_point)
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
+        .expect("pipeline creation");
+
+    #[rustfmt::skip]
+    let verts: [f32; 30] = [
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0, -1.0, 0.0,  1.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0,  1.0, 0.0,  0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+
+    // Column-major uniform scale by 0.5: the fullscreen quad shrinks
+    // to the center half of the target.
+    #[rustfmt::skip]
+    let mvp: [f32; 16] = [
+        0.5, 0.0, 0.0, 0.0,
+        0.0, 0.5, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ];
+    let mvp_field: quanta::Field<f32> = gpu
+        .field_with_usage(16, FieldUsage::default_render())
+        .unwrap();
+    mvp_field.write(&mvp).unwrap();
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .uniform(0, &mvp_field)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = target.read().unwrap();
+    let (r, g, b, _) = pixel_at(&pixels, w, 4, 4);
+    assert!(
+        r > 200 && g < 50 && b < 50,
+        "center must be covered by the scaled quad, got ({r},{g},{b})"
+    );
+    let (r, g, b, _) = pixel_at(&pixels, w, 0, 4);
+    assert!(
+        r < 50 && g < 50 && b < 50,
+        "left edge must be outside the half-scale quad, got ({r},{g},{b})"
+    );
+}
+
+// ─── Test: .value() feeding a DSL uniform (Metal semantics) ─────────────────
+//
+// On Metal, .value(slot, …) binds the bytes at buffer index `slot` on
+// both stages, which is the same index a DSL uniform reads — so push
+// values can feed DSL shaders. On Vulkan they cannot (real push
+// constants; DSL uniforms read descriptors), so this is vendor-gated.
+
+#[test]
+fn value_feeds_dsl_uniform_on_metal() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if gpu.caps().vendor != quanta::Vendor::Apple {
+        eprintln!("SKIP: .value-as-uniform is Metal-only semantics");
+        return;
+    }
+    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || TINTED_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_uv_layout();
+    let pipeline = gpu
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &UV_VERTEX_SHADER,
+                fragment: &TINTED_FRAG_SHADER,
+            })
+            .with_entries(UV_VERTEX_SHADER.entry_point, TINTED_FRAG_SHADER.entry_point)
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
+        .expect("pipeline creation");
+
+    #[rustfmt::skip]
+    let verts: [f32; 30] = [
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0, -1.0, 0.0,  1.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0, -1.0, 0.0,  0.0, 0.0,
+         1.0,  1.0, 0.0,  1.0, 1.0,
+        -1.0,  1.0, 0.0,  0.0, 1.0,
+    ];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .value(0, &[0.25f32, 0.5, 0.75, 1.0])
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = target.read().unwrap();
+    let (r, g, b, _) = pixel_at(&pixels, w, 4, 4);
+    assert!(
+        r.abs_diff(64) <= 2 && g.abs_diff(128) <= 2 && b.abs_diff(191) <= 2,
+        "value bytes must reach the DSL uniform on Metal: expected ~(64,128,191), got ({r},{g},{b})"
+    );
+}

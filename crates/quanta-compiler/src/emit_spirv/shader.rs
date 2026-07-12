@@ -228,7 +228,7 @@ impl SpvEmitter {
 
         let mut uniform_vars: Vec<(String, u32, u32, quanta_ir::ShaderType)> = Vec::new();
         if !uniform_params.is_empty() {
-            self.emit_uniform_push_constants(&uniform_params, &mut uniform_vars);
+            self.emit_uniform_storage_blocks(&uniform_params, &mut uniform_vars);
         }
 
         // 2c. Declare Output variables for varyings
@@ -293,15 +293,16 @@ impl SpvEmitter {
             .map(|((_, p), (var_id, type_id))| (p.name.clone(), *var_id, *type_id, p.ty))
             .collect();
 
-        // Emit AccessChain for uniforms
-        for (member_idx, (name, pc_var, member_ty, sty)) in uniform_vars.iter().enumerate() {
-            let ptr_member = self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, *member_ty);
-            let idx_const = self.emit_constant_u32(member_idx as u32);
+        // Uniforms: pointer to member 0 of each block; the expression
+        // parser loads through it at use, exactly like an Input var.
+        for (name, var_id, member_ty, sty) in &uniform_vars {
+            let ptr_member = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, *member_ty);
+            let zero = self.emit_constant_u32(0);
             let access = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
                 OP_ACCESS_CHAIN,
-                &[ptr_member, access, *pc_var, idx_const],
+                &[ptr_member, access, *var_id, zero],
             );
             param_info.push((name.clone(), access, *member_ty, *sty));
         }
@@ -356,63 +357,47 @@ impl SpvEmitter {
         Ok(())
     }
 
-    /// Emit uniform push constant struct for shader uniforms.
-    pub(crate) fn emit_uniform_push_constants(
+    /// One storage-buffer block per shader uniform at
+    /// binding = declaration index among uniform params — matching the
+    /// runtime: `.uniform(slot, …)` binds a STORAGE_BUFFER descriptor
+    /// at binding=slot, visible to BOTH stages. The slot space is
+    /// therefore shared across stages (identical to Metal, where the
+    /// runtime binds each slot's buffer to both stages' `[[buffer(i)]]`
+    /// index): vertex uniform i and fragment uniform i read the SAME
+    /// bound Field. Shared by the vertex and fragment emitters.
+    pub(crate) fn emit_uniform_storage_blocks(
         &mut self,
         uniform_params: &[(usize, &quanta_ir::ShaderParam)],
         uniform_vars: &mut Vec<(String, u32, u32, quanta_ir::ShaderType)>,
     ) {
-        let mut member_types = Vec::new();
-        let mut member_offsets = Vec::new();
-        let mut offset = 0u32;
-        for (_, p) in uniform_params {
-            let ty_id = self.shader_type_id(p.ty);
-            member_types.push(ty_id);
-            member_offsets.push(offset);
-            let size = match p.ty {
-                quanta_ir::ShaderType::Mat4 => 64u32,
-                quanta_ir::ShaderType::Mat3 => 48,
-                quanta_ir::ShaderType::Vec4 => 16,
-                quanta_ir::ShaderType::Vec3 => 16,
-                quanta_ir::ShaderType::Vec2 => 8,
-                quanta_ir::ShaderType::F32 => 4,
-            };
-            offset += size;
-        }
-
-        let struct_ty = self.alloc_id();
-        let mut struct_ops = vec![struct_ty];
-        struct_ops.extend_from_slice(&member_types);
-        Self::emit_op(&mut self.sec_type_const, OP_TYPE_STRUCT, &struct_ops);
-        self.decorate(struct_ty, DECORATION_BLOCK, &[]);
-        for (i, off) in member_offsets.iter().enumerate() {
-            self.member_decorate(struct_ty, i as u32, DECORATION_OFFSET, &[*off]);
+        for (i, (_, p)) in uniform_params.iter().enumerate() {
+            let member_ty = self.shader_type_id(p.ty);
+            let struct_ty = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_type_const,
+                OP_TYPE_STRUCT,
+                &[struct_ty, member_ty],
+            );
+            self.decorate(struct_ty, DECORATION_BLOCK, &[]);
+            self.member_decorate(struct_ty, 0, DECORATION_OFFSET, &[0]);
             if matches!(
-                uniform_params[i].1.ty,
+                p.ty,
                 quanta_ir::ShaderType::Mat4 | quanta_ir::ShaderType::Mat3
             ) {
-                self.member_decorate(struct_ty, i as u32, 5 /* ColMajor */, &[]);
-                let stride = match uniform_params[i].1.ty {
-                    quanta_ir::ShaderType::Mat4 => 16u32,
-                    quanta_ir::ShaderType::Mat3 => 16,
-                    _ => 16,
-                };
-                self.member_decorate(struct_ty, i as u32, 7 /* MatrixStride */, &[stride]);
+                self.member_decorate(struct_ty, 0, 5 /* ColMajor */, &[]);
+                self.member_decorate(struct_ty, 0, 7 /* MatrixStride */, &[16]);
             }
-        }
-
-        let ptr_pc = self.ensure_type_pointer(STORAGE_CLASS_PUSH_CONSTANT, struct_ty);
-        let pc_var = self.alloc_id();
-        Self::emit_op(
-            &mut self.sec_global_var,
-            OP_VARIABLE,
-            &[ptr_pc, pc_var, STORAGE_CLASS_PUSH_CONSTANT],
-        );
-        self.emit_name(pc_var, "push_constants");
-
-        for (_, p) in uniform_params {
-            let mty = self.shader_type_id(p.ty);
-            uniform_vars.push((p.name.clone(), pc_var, mty, p.ty));
+            let ptr_ssbo = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, struct_ty);
+            let var_id = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_ssbo, var_id, STORAGE_CLASS_STORAGE_BUFFER],
+            );
+            self.emit_name(var_id, &p.name);
+            self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+            self.decorate(var_id, DECORATION_BINDING, &[i as u32]);
+            uniform_vars.push((p.name.clone(), var_id, member_ty, p.ty));
         }
     }
 }

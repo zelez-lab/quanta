@@ -364,7 +364,7 @@ pulse.wait()?;
 | `.uniform(slot, &field)` | Bind uniform buffer at slot |
 | `.texture(slot, &tex)` | Bind texture at slot |
 | `.sampler(slot, desc)` | Set sampler state |
-| `.value(slot, &val)` | Set push constant |
+| `.value(slot, &val)` | Set push constant. Metal: binds the bytes at buffer index `slot` on both stages (DSL uniforms can read them). Vulkan: real push constants (slots 0-7, 4-byte-aligned, ≤128 bytes total) — reachable only by hand-authored SPIR-V with a push-constant block; DSL shaders read uniforms from `.uniform()` descriptors instead |
 
 Buffers and values are visible to **both stages**: a fragment shader reading a
 uniform sees the same slot the vertex stage does (Metal binds both stages;

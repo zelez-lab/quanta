@@ -67,7 +67,7 @@ pub(crate) fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
 pub(crate) fn parse_shader_params(
     func: &syn::ItemFn,
 ) -> Result<(Vec<ShaderParam>, Vec<String>), syn::Error> {
-    let mut params = Vec::new();
+    let mut params: Vec<ShaderParam> = Vec::new();
     let mut textures = Vec::new();
 
     for arg in &func.sig.inputs {
@@ -103,6 +103,13 @@ pub(crate) fn parse_shader_params(
             }
 
             let (ty, is_uniform) = parse_shader_type(&pat_type.ty)?;
+            if is_uniform && params.iter().filter(|p| p.is_uniform).count() >= 8 {
+                return Err(syn::Error::new_spanned(
+                    &pat_type.pat,
+                    "at most 8 uniform parameters are supported (bindings 0-7; \
+                     higher bindings are reserved for textures)",
+                ));
+            }
             params.push(ShaderParam {
                 name,
                 ty,

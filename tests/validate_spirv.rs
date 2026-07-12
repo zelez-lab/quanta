@@ -550,3 +550,44 @@ fn spirv_val_fragment_derivatives() {
         .expect("derivative fragment shader must produce SPIR-V binary");
     validate_shader_spirv(spirv, "fragment_derivatives");
 }
+
+#[quanta::vertex]
+fn val_uniform_vert(pos: Vec3, shift: &Vec2) -> Vec4 {
+    Vec4::new(pos.x + (*shift).x, pos.y + (*shift).y, pos.z, 1.0)
+}
+
+/// Vertex uniforms as storage-buffer blocks (they were push constants,
+/// which the render runtime never binds — .uniform() binds STORAGE
+/// descriptors at binding=slot).
+#[test]
+fn spirv_val_vertex_uniform_storage_block() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_uniform_vert();
+    let spirv = shader
+        .spirv
+        .expect("uniform vertex shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "vertex_uniform_storage_block");
+}
+
+#[quanta::vertex]
+fn val_mvp_vert(pos: Vec3, mvp: &Mat4) -> Vec4 {
+    mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
+}
+
+/// A Mat4 uniform member needs ColMajor + MatrixStride decorations
+/// inside the storage block — spirv-val rejects the block without them.
+#[test]
+fn spirv_val_vertex_mat4_uniform() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    let shader = val_mvp_vert();
+    let spirv = shader
+        .spirv
+        .expect("mat4 vertex shader must produce SPIR-V binary");
+    validate_shader_spirv(spirv, "vertex_mat4_uniform");
+}

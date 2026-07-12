@@ -698,6 +698,22 @@ impl VulkanDevice {
                     }
 
                     RenderOp::SetValue { slot, data } => {
+                        // The pipeline layout declares exactly one
+                        // [0,128) VERTEX|FRAGMENT push range (8 slots
+                        // x 16 bytes); pushing outside it or with a
+                        // non-multiple-of-4 size is invalid API usage
+                        // (VUID-vkCmdPushConstants-offset-01795 /
+                        // size-00369) — fail the pass loudly instead.
+                        let offset = *slot as usize * 16;
+                        if *slot >= 8 || data.len() % 4 != 0 || offset + data.len() > 128 {
+                            return Err(QuantaError::invalid_param(format!(
+                                "SetValue slot {} with {} bytes exceeds the Vulkan \
+                                 push-constant contract (slots 0-7, 4-byte-aligned, \
+                                 slot*16 + size <= 128)",
+                                slot,
+                                data.len()
+                            )));
+                        }
                         if let Some(rp) = pipeline_ref {
                             ffi::vkCmdPushConstants(
                                 cmd,

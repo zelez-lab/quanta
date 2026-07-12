@@ -312,14 +312,25 @@ impl VulkanDevice {
         }
         guard.descriptor_set_layout = descriptor_set_layout;
 
+        // 128 bytes is the spec-guaranteed push-constant minimum and
+        // exactly covers SetValue's 8 slots × 16 bytes. Without the
+        // range, vkCmdPushConstants (the `.value()` lowering) pushed
+        // against a zero-range layout — invalid per spec. DSL shaders
+        // read uniforms from storage-buffer descriptors, not push
+        // constants; this range serves hand-authored SPIR-V.
+        let push_range = ffi::VkPushConstantRange {
+            stage_flags: ffi::VK_SHADER_STAGE_VERTEX_BIT | ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
+            offset: 0,
+            size: 128,
+        };
         let pipeline_layout_info = ffi::VkPipelineLayoutCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
             set_layout_count: 1,
             p_set_layouts: &descriptor_set_layout,
-            push_constant_range_count: 0,
-            p_push_constant_ranges: core::ptr::null(),
+            push_constant_range_count: 1,
+            p_push_constant_ranges: &push_range,
         };
         let mut pipeline_layout = ffi::null_handle();
         let result = unsafe {
