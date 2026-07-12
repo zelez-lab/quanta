@@ -109,21 +109,21 @@ pub use kernel::{GpuType, KernelBinary, ScalarType};
 // Compute-face proc macros — only when the `compute` feature is on
 // (symmetric to the render-stage macros below).
 #[cfg(feature = "compute")]
-pub use quanta_dsl::__kernel_inner;
+pub use quanta_compute_dsl::__kernel_inner;
 #[cfg(feature = "compute")]
-pub use quanta_dsl::device;
+pub use quanta_compute_dsl::device;
 #[cfg(feature = "compute")]
-pub use quanta_dsl::gpu_type;
+pub use quanta_compute_dsl::gpu_type;
 #[cfg(feature = "compute")]
-pub use quanta_dsl::import_devices;
+pub use quanta_compute_dsl::import_devices;
 #[cfg(feature = "compute")]
-pub use quanta_dsl::kernel;
+pub use quanta_compute_dsl::kernel;
 
 // Derive macros (compute face)
 #[cfg(feature = "compute")]
-pub use quanta_dsl::Fields;
+pub use quanta_compute_dsl::Fields;
 #[cfg(feature = "compute")]
-pub use quanta_dsl::Uniforms;
+pub use quanta_compute_dsl::Uniforms;
 
 // Render face — the `quanta-render` crate, re-exported wholesale so
 // `use quanta::*` covers render consumers that come through the

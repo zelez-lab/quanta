@@ -1,0 +1,17 @@
+[package]
+name = "quanta-dsl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared compiler-binary discovery and shader/kernel emitters behind the Quanta DSL face crates."
+keywords = ["gpu", "compute", "shader", "compiler", "codegen"]
+categories = ["graphics", "development-tools"]
+
+[dependencies]
+quanta-ir.workspace = true
+# The moved shader-parameter helpers (shader_types.rs) parse `syn` ASTs and
+# stringify bodies with `quote::ToTokens`. Not a proc-macro crate itself —
+# these are ordinary AST types usable from a plain lib.
+syn = { version = "2", features = ["full"] }
+quote = "1"

@@ -1,0 +1,23 @@
+[package]
+name = "quanta-compute-dsl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Compute-face proc macros for Quanta GPU kernels — #[quanta::kernel] / #[quanta::device]."
+keywords = ["gpu", "compute", "kernel", "macro"]
+categories = ["graphics", "development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit", "visit-mut"] }
+quote = "1"
+proc-macro2 = "1"
+quanta-ir.workspace = true
+quanta-dsl-core = { path = "../quanta-dsl-core", version = "0.1.0-alpha.2" }
+# Used by `compile_via_wasm` to call into the WASM lowerer directly.
+# Load-bearing for every kernel build — this is the compute face, so it
+# is an unconditional dependency (no feature gate).
+quanta-wasm-lowering.workspace = true

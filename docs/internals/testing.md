@@ -16,7 +16,9 @@ Run with `cargo test` (no GPU required):
 ```
 quanta-ir/tests/roundtrip.rs     Serialize/deserialize every KernelOp variant
 quanta-ir/src/wire/tests.rs      Wire format edge cases
-quanta-dsl/                    Parse + validate (syn-based, no GPU)
+quanta-compute-dsl/            Kernel-macro parse + validate (syn-based, no GPU)
+quanta-render-dsl/             Shader-macro expansion (syn-based, no GPU)
+quanta-dsl-core/               Compiler discovery + emitters (probe tests)
 quanta-compiler/                  IR -> LLVM IR text (no code emission)
 ```
 
@@ -24,7 +26,7 @@ These run in CI on any platform. Target: <5 seconds total.
 
 ```bash
 cargo test -p quanta-ir
-cargo test -p quanta-dsl
+cargo test -p quanta-compute-dsl -p quanta-render-dsl -p quanta-dsl-core
 cargo test -p quanta-compiler
 ```
 

@@ -38,7 +38,7 @@
 //!   [`MeshPipeline`], [`TessellationPipeline`], [`VrsState`],
 //!   [`AccelerationStructure`], [`RayTracingPipeline`], [`Surface`].
 //! - the chainable [`RenderBuilder`].
-//! - the render-stage shader macros, re-exported from `quanta-dsl`.
+//! - the render-stage shader macros, re-exported from `quanta-render-dsl`.
 //!
 //! The whole `quanta-core` surface is re-exported so this crate is
 //! self-sufficient for a render-only consumer (`init`, fields for
@@ -50,7 +50,7 @@ extern crate alloc;
 
 // Re-export the render-stage shader macros so a render consumer pulls
 // them from `quanta_render` rather than reaching into the facade.
-pub use quanta_dsl::{
+pub use quanta_render_dsl::{
     Vertex, closest_hit, fragment, mesh, miss, ray_gen, task, tess_control, tess_eval, vertex,
 };
 

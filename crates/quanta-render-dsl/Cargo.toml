@@ -1,0 +1,22 @@
+[package]
+name = "quanta-render-dsl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Render-face proc macros for Quanta shaders — #[quanta::vertex] / #[quanta::fragment] and the graphics stages."
+keywords = ["gpu", "render", "shader", "macro"]
+categories = ["graphics", "development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit", "visit-mut"] }
+quote = "1"
+proc-macro2 = "1"
+quanta-ir.workspace = true
+quanta-dsl-core = { path = "../quanta-dsl-core", version = "0.1.0-alpha.2" }
+# Render-purity invariant (ci.yml render dependency-graph guard): this
+# crate MUST NOT depend on quanta-wasm-lowering, directly or transitively,
+# so quanta-render's dependency tree stays free of the compute stack.

@@ -1,14 +1,16 @@
 //! Shader parameter types, parsing, and body extraction.
+//!
+//! `pub` here is shared by the two DSL face crates; not a public API.
 #![allow(dead_code)]
 
 /// A parsed shader parameter — a vertex/fragment attribute, a `&T` uniform, or
 /// a `&[T]` slice (storage-buffer array). `is_uniform` and `is_slice` are
 /// mutually exclusive; `ty` on a slice is the element type.
-pub(crate) struct ShaderParam {
-    pub(crate) name: String,
-    pub(crate) ty: ShaderType,
-    pub(crate) is_uniform: bool,
-    pub(crate) is_slice: bool,
+pub struct ShaderParam {
+    pub name: String,
+    pub ty: ShaderType,
+    pub is_uniform: bool,
+    pub is_slice: bool,
 }
 
 /// How a parsed parameter binds: a plain value attribute, a `&T` uniform, or a
@@ -22,7 +24,7 @@ enum ParamClass {
 
 /// Shader types understood by the vertex/fragment emitters.
 #[derive(Clone, Copy)]
-pub(crate) enum ShaderType {
+pub enum ShaderType {
     F32,
     Vec2,
     Vec3,
@@ -32,7 +34,7 @@ pub(crate) enum ShaderType {
 }
 
 impl ShaderType {
-    pub(crate) fn msl_name(self) -> &'static str {
+    pub fn msl_name(self) -> &'static str {
         match self {
             Self::F32 => "float",
             Self::Vec2 => "float2",
@@ -43,7 +45,7 @@ impl ShaderType {
         }
     }
 
-    pub(crate) fn wgsl_name(self) -> &'static str {
+    pub fn wgsl_name(self) -> &'static str {
         match self {
             Self::F32 => "f32",
             Self::Vec2 => "vec2<f32>",
@@ -55,7 +57,7 @@ impl ShaderType {
     }
 }
 
-pub(crate) fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
+pub fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
     match name {
         "f32" => Ok(ShaderType::F32),
         "Vec2" => Ok(ShaderType::Vec2),
@@ -76,7 +78,7 @@ pub(crate) fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
 /// `sample(name, uv)` in the body to the slot form the emitters bind
 /// (`[[texture(slot)]]`/`[[sampler(slot)]]` on Metal, descriptor
 /// binding `slot + 8` on Vulkan).
-pub(crate) fn parse_shader_params(
+pub fn parse_shader_params(
     func: &syn::ItemFn,
 ) -> Result<(Vec<ShaderParam>, Vec<String>), syn::Error> {
     let mut params: Vec<ShaderParam> = Vec::new();
@@ -161,7 +163,7 @@ fn is_texture_type(ty: &syn::Type) -> bool {
 /// `sample(N, ...)` the emitters recognize. The body arrives as a
 /// proc-macro token string, so spacing around `(` and `,` varies —
 /// all four combinations are normalized to the compact form.
-pub(crate) fn rewrite_texture_names(body: &str, textures: &[String]) -> String {
+pub fn rewrite_texture_names(body: &str, textures: &[String]) -> String {
     let mut s = body.to_string();
     for (slot, name) in textures.iter().enumerate() {
         let canonical = format!("sample({slot},");
@@ -231,7 +233,7 @@ fn parse_shader_type_inner(ty: &syn::Type) -> Result<ShaderType, syn::Error> {
 }
 
 /// Parse the return type of a shader function.
-pub(crate) fn parse_return_type(func: &syn::ItemFn) -> Result<ShaderType, syn::Error> {
+pub fn parse_return_type(func: &syn::ItemFn) -> Result<ShaderType, syn::Error> {
     match &func.sig.output {
         syn::ReturnType::Type(_, ty) => parse_shader_type_inner(ty),
         syn::ReturnType::Default => Err(syn::Error::new_spanned(
@@ -242,7 +244,7 @@ pub(crate) fn parse_return_type(func: &syn::ItemFn) -> Result<ShaderType, syn::E
 }
 
 /// Extract the function body as a source string for text-based translation.
-pub(crate) fn extract_body_source(func: &syn::ItemFn) -> String {
+pub fn extract_body_source(func: &syn::ItemFn) -> String {
     use quote::ToTokens;
     let mut body = String::new();
     for stmt in &func.block.stmts {

@@ -9,7 +9,6 @@ use super::shader_types::{ShaderParam, ShaderType};
 /// Strategy:
 /// 1. Try quanta-compiler binary (local dev, PATH, cached download, or auto-download)
 /// 2. If not found, return empty output with warning
-#[cfg(feature = "compute")]
 pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
     // A resolvable compiler whose rev provably differs from this build is
     // a HARD error (unless QUANTA_ACCEPT_STALE_COMPILER=1): a stale
@@ -42,7 +41,6 @@ pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
 }
 
 /// Try to find and call the quanta-compiler binary.
-#[cfg(feature = "compute")]
 fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
     let binary = find_compiler_binary()?;
     if !compiler_is_loadable(&binary) {
@@ -337,11 +335,10 @@ fn download_compiler_binary() -> Option<String> {
 // ============================================================================
 
 /// Output from shader compilation — SPIR-V and metallib binaries.
-#[cfg(feature = "render")]
-pub(crate) struct ShaderCompileOutput {
-    pub(crate) spirv: Option<Vec<u8>>,
-    pub(crate) metallib: Option<Vec<u8>>,
-    pub(crate) wgsl: Option<String>,
+pub struct ShaderCompileOutput {
+    pub spirv: Option<Vec<u8>>,
+    pub metallib: Option<Vec<u8>>,
+    pub wgsl: Option<String>,
 }
 
 /// Compile a vertex or fragment shader via the quanta-compiler binary.
@@ -351,8 +348,7 @@ pub(crate) struct ShaderCompileOutput {
 /// (find_compiler_binary already printed its notice), and `Err` if the
 /// compiler was found but failed — the macro turns that into a compile
 /// error so a broken shader can never ship silently.
-#[cfg(feature = "render")]
-pub(crate) fn compile_shader(
+pub fn compile_shader(
     name: &str,
     stage: &str,
     params: &[ShaderParam],
@@ -473,7 +469,6 @@ pub(crate) fn compile_shader(
 }
 
 /// Outcome of probing a resolved compiler binary once with `--rev`.
-#[cfg(any(feature = "compute", feature = "render"))]
 #[derive(Clone, Debug, PartialEq)]
 enum CompilerVerdict {
     /// Loadable and safe to use: rev matches this build, OR the binary
@@ -506,7 +501,6 @@ enum CompilerVerdict {
 ///   EOF, and exits non-zero fast — it executed, so it's loadable, but its
 ///   rev is unknown (predates rev stamping);
 /// - a loader-killed binary dies before main.
-#[cfg(any(feature = "compute", feature = "render"))]
 fn probe_compiler(binary: &str) -> CompilerVerdict {
     use std::sync::Mutex;
     static CACHE: Mutex<Option<(String, CompilerVerdict)>> = Mutex::new(None);
@@ -587,7 +581,6 @@ fn probe_compiler(binary: &str) -> CompilerVerdict {
 /// the operator's opt-out that downgrades a provable rev mismatch from
 /// fatal to a note. Documented for rigs that intentionally pin a
 /// compatible compiler.
-#[cfg(any(feature = "compute", feature = "render"))]
 fn accept_stale_compiler() -> bool {
     std::env::var("QUANTA_ACCEPT_STALE_COMPILER")
         .map(|v| !v.is_empty())
@@ -596,7 +589,6 @@ fn accept_stale_compiler() -> bool {
 
 /// The fatal error text for a rev mismatch, naming both revs, the escape
 /// hatch, and the pre-stamp asymmetry.
-#[cfg(any(feature = "compute", feature = "render"))]
 fn rev_mismatch_error(binary: &str, bin_rev: &str) -> String {
     let own_rev = env!("QUANTA_BUILD_REV");
     format!(
@@ -616,12 +608,9 @@ fn rev_mismatch_error(binary: &str, bin_rev: &str) -> String {
 /// MISMATCH both mean the binary LOADS (mismatch is handled by the
 /// caller); only `NotLoadable` means it can't run here.
 ///
-/// Used by the compute compile path (`try_compiler_binary`) and the probe
-/// tests; the render (`compile_shader`) path matches on `probe_compiler`
-/// directly so it can surface a mismatch as a hard error. Gated to
-/// `compute`-or-`test` so a render-only non-test build (which never calls
-/// it) doesn't flag it unused.
-#[cfg(any(feature = "compute", test))]
+/// Used by the kernel compile path (`try_compiler_binary`) and the probe
+/// tests; the shader (`compile_shader`) path matches on `probe_compiler`
+/// directly so it can surface a mismatch as a hard error.
 fn compiler_is_loadable(binary: &str) -> bool {
     !matches!(probe_compiler(binary), CompilerVerdict::NotLoadable)
 }
@@ -631,7 +620,6 @@ fn compiler_is_loadable(binary: &str) -> bool {
 /// Linux ld.so exits 127 with "error while loading shared libraries";
 /// macOS dyld aborts with "Library not loaded"; Windows exits with
 /// STATUS_DLL_NOT_FOUND (0xC0000135).
-#[cfg(any(feature = "compute", feature = "render"))]
 fn is_loader_failure(output: &std::process::Output) -> bool {
     let stderr = String::from_utf8_lossy(&output.stderr);
     output.status.code() == Some(127)
@@ -640,7 +628,6 @@ fn is_loader_failure(output: &std::process::Output) -> bool {
         || stderr.contains("Library not loaded")
 }
 
-#[cfg(feature = "render")]
 fn shader_type_to_ir(ty: &ShaderType) -> quanta_ir::ShaderType {
     match ty {
         ShaderType::F32 => quanta_ir::ShaderType::F32,
@@ -652,7 +639,7 @@ fn shader_type_to_ir(ty: &ShaderType) -> quanta_ir::ShaderType {
     }
 }
 
-#[cfg(all(test, unix, any(feature = "compute", feature = "render")))]
+#[cfg(all(test, unix))]
 mod probe_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

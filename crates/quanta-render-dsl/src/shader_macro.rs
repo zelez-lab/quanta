@@ -5,7 +5,7 @@ use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use syn::ItemFn;
 
-use crate::compiler;
+use quanta_dsl_core as compiler;
 
 /// Core implementation of `#[quanta::vertex]`.
 pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {

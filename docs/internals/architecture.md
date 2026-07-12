@@ -60,16 +60,26 @@ crates/quanta-ir/               Shared IR definition (zero external deps)
 |   +-- lib.rs                  KernelOp, KernelDef, CompilerOutput
 |   +-- wire/                   Binary serialization (custom format, no serde)
 
-crates/quanta-dsl/              Proc macros (depends on syn + quote)
+crates/quanta-compute-dsl/      Compute-face proc macros (depends on syn + quote)
 +-- src/
 |   +-- lib.rs                  #[kernel], #[device], #[gpu_type],
-|   |                           #[vertex], #[fragment], #[tess_control],
-|   |                           #[tess_eval], #[task], #[mesh],
-|   |                           #[ray_gen], #[closest_hit], #[miss]
+|   |                           derive(Fields), derive(Uniforms), import_devices!
 |   +-- kernel_macro.rs         #[kernel] expansion + auto-dispatch wrapper
 |   +-- compile_via_wasm.rs     Kernel body → rustc → wasm32 → KernelDef
 |   +-- kernel_type_inference.rs  Per-field scalar-type inference
-|   +-- shader_macro.rs         Render-stage macros (feature = "render")
+
+crates/quanta-render-dsl/       Render-face proc macros (depends on syn + quote)
++-- src/
+|   +-- lib.rs                  #[vertex], #[fragment], #[tess_control],
+|   |                           #[tess_eval], #[task], #[mesh],
+|   |                           #[ray_gen], #[closest_hit], #[miss], derive(Vertex)
+|   +-- shader_macro.rs         Render-stage macro bodies
+
+crates/quanta-dsl-core/         Shared behind both DSL faces (quanta-ir + syn/quote)
++-- src/
+|   +-- binary.rs               Compiler-binary discovery, rev handshake, invocation
+|   +-- shader_types.rs         Shader-parameter parsing + body extraction
+|   +-- emit_msl.rs, emit_wgsl.rs, shader_emit.rs   JIT-path text emitters
 
 crates/quanta-wasm-lowering/    WASM → KernelOps translator (kernel route)
 
@@ -138,7 +148,7 @@ Source:
         output[i] = input[i] * 2.0;
     }
 
-Step 1: Kernel body -> IR (quanta-dsl/compile_via_wasm.rs)
+Step 1: Kernel body -> IR (quanta-compute-dsl/compile_via_wasm.rs)
     The macro renders the body as a wasm32 `extern "C"` function,
     compiles it with `rustc --target wasm32-unknown-unknown`, and
     lowers the WASM to KernelOps via `quanta-wasm-lowering`:
@@ -148,7 +158,7 @@ Step 1: Kernel body -> IR (quanta-dsl/compile_via_wasm.rs)
         body: [QuarkId{r0}, Load{r1,field=0,r0}, Const{r2,2.0}, BinOp{r3,r1*r2}, Store{field=1,r0,r3}],
     }
 
-Step 2: Serialize + invoke compiler (quanta-dsl/compiler.rs)
+Step 2: Serialize + invoke compiler (quanta-dsl-core/binary.rs)
     KernelDef -> quanta_ir::serialize_kernel() -> [u8]
     Pipe bytes to `quanta-compiler` binary via stdin
 
@@ -160,7 +170,7 @@ Step 3: Compile to all targets (quanta-compiler) — binary-only
     No text output (MSL/WGSL) in the build path.
     Text emitters (emit_msl.rs, emit_wgsl.rs) are reserved for the JIT path.
 
-Step 4: Embed (quanta-dsl)
+Step 4: Embed (quanta-compute-dsl)
     CompilerOutput -> proc_macro TokenStream:
 
     pub static MY_KERNEL_BINARY: KernelBinary = KernelBinary {
@@ -246,8 +256,8 @@ default = ["metal", "render", "compute"]
 std = ["quanta-core/std", "quanta-render?/std"]
 metal = ["std", "quanta-core/metal", "quanta-render?/metal"]
 vulkan = ["std", "quanta-core/vulkan", "quanta-render?/vulkan"]
-render = ["quanta-core/render", "quanta-dsl/render", "dep:quanta-render"]
-compute = ["quanta-core/compute", "quanta-dsl/compute"]
+render = ["quanta-core/render", "dep:quanta-render"]
+compute = ["quanta-core/compute", "dep:quanta-compute-dsl"]
 software = ["std", "jit", "compute", "quanta-core/software", "quanta-render?/software"]
 jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases", "quanta-core/jit"]
 webgpu = ["std", "jit", "compute", "quanta-core/webgpu", "quanta-render?/webgpu"]
@@ -279,8 +289,8 @@ serialized KernelDef IR.
 ## Dependency philosophy
 
 The runtime crates (`quanta-core`, `quanta`, `quanta-render`) have
-**zero external dependencies** (aside from the workspace crates
-`quanta-dsl` and `quanta-ir`). GPU drivers use raw FFI:
+**zero external dependencies** (aside from the workspace DSL crates and
+`quanta-ir`). GPU drivers use raw FFI:
 
 - **Metal**: `objc_msgSend` / `sel_registerName` / `objc_getClass` via `extern "C"`
 - **Vulkan**: `vkCreateInstance` / `vkCreateBuffer` / etc. via `#[link(name = "vulkan")]`
@@ -288,8 +298,10 @@ The runtime crates (`quanta-core`, `quanta`, `quanta-render`) have
 No `metal-rs`, no `ash`, no `objc` crate. Raw FFI gives minimal binary size,
 fast builds, and total ABI control.
 
-Only `quanta-dsl` depends on `syn` + `quote` (proc-macro requirements), and
-`quanta-compiler` depends on `inkwell` / LLVM 22 (build-time only).
+Only the DSL crates (`quanta-compute-dsl`, `quanta-render-dsl`, and the
+shared `quanta-dsl-core`) depend on `syn` + `quote` (proc-macro
+requirements), and `quanta-compiler` depends on `inkwell` / LLVM 22
+(build-time only).
 
 ## Math-first internals
 

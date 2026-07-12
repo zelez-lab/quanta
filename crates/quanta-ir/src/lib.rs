@@ -1,6 +1,7 @@
 //! Quanta kernel intermediate representation.
 //!
-//! Shared between the proc macro (`quanta-dsl`) and the compiler binary
+//! Shared between the DSL proc macros (`quanta-compute-dsl` /
+//! `quanta-render-dsl`, through `quanta-dsl-core`) and the compiler binary
 //! (`quanta-compiler`). Defines the platform-agnostic IR that represents
 //! GPU kernels between parsing and code generation.
 

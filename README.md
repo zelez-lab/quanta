@@ -276,7 +276,7 @@ Hardware axioms (A1-A13)    assumed correct: GPU executes submitted shader
 The proofs cover the **kernel IR (`KernelDef`) and everything downstream** —
 the five emitters, the drivers, the API wrappers, the dispatch lifecycle.
 The translator from your `#[quanta::kernel]` Rust source *into* the IR
-runs in `quanta-dsl` at compile time and is **not formally proven
+runs in `quanta-compute-dsl` at compile time and is **not formally proven
 today**. Closing that gap is roadmap step 058/059 (replace the Rust-AST
 parser with a `rustc → wasm32 → KernelOps` pipeline plus a CompCert-shape
 preservation proof). A class of inference bugs — most visibly

@@ -75,7 +75,7 @@ the AS handle + storage buffer + storage memory.
   IR work.
 - Emitter wiring for the RT stages: the `#[quanta::ray_gen]`,
   `#[quanta::closest_hit]`, `#[quanta::miss]` proc-macros exist (in
-  `quanta-dsl`, re-exported by `quanta-render`) and the `ShaderStage`
+  `quanta-render-dsl`, re-exported by `quanta-render`) and the `ShaderStage`
   enum carries the variants, but no backend emitter consumes them yet.
 
 ## How to validate against real hardware

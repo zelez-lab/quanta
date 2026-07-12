@@ -34,7 +34,7 @@ while a kernel is actually being compiled.
 ## `QUANTA_BUILD_REV`
 
 `QUANTA_BUILD_REV` is **not a user knob**. It is a build stamp: the
-`quanta-dsl` and `quanta-compiler` build scripts bake the source revision
+`quanta-dsl-core` and `quanta-compiler` build scripts bake the source revision
 into each artifact, and `quanta-compiler --rev` prints it. The macros
 compare the two to detect a stale compiler (the mismatch handshake behind
 `QUANTA_ACCEPT_STALE_COMPILER` above). Do not set it by hand.

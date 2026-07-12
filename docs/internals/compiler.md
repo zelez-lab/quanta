@@ -179,7 +179,7 @@ Key passes that run:
 
 Translates `KernelOp` directly to Metal Shading Language text. Used by both
 the JIT path **and** the standard build pipeline — the build-time path
-goes through `crates/quanta-dsl/src/compiler/metallib.rs::compile_msl_to_metallib`,
+goes through `crates/quanta-compiler/src/metallib.rs::compile_msl_to_metallib`,
 which writes the emitted MSL to a temp `.metal` file and shells out to
 `xcrun metal` + `xcrun metallib` to produce the metallib that ships in
 the binary. (SPIR-V is also emitted, but the Metal backend prefers the
@@ -225,7 +225,7 @@ shipped Quanta kernel.
 ## WGSL emitter (`emit_wgsl.rs`)
 
 Direct text generation from `KernelOp`, same shape as the MSL emitter.
-Used by the WebGPU backend on every platform — `quanta-dsl` embeds
+Used by the WebGPU backend on every platform — `quanta-compute-dsl` embeds
 the WGSL string in the binary via `embed_wgsl`, and the runtime hands
 it to `device.createShaderModule({ code })` at pipeline-build time.
 
@@ -284,7 +284,7 @@ applies before Metal's optimizer runs.
 ## Toolchain: discovery, rev handshake, and release packaging
 
 The proc macros locate the `quanta-compiler` binary through a fixed
-search chain (`quanta-dsl/src/compiler/binary.rs`): `QUANTA_COMPILER`,
+search chain (`quanta-dsl-core/src/binary.rs`): `QUANTA_COMPILER`,
 then the workspace `target/{release,debug}` dirs, then `PATH`, then the
 `~/.quanta/bin/` cache, then a download from GitHub Releases (unless
 `QUANTA_NO_DOWNLOAD=1`).
@@ -340,5 +340,7 @@ there and the release is blocked.
 3. Add LLVM emission in `quanta-compiler/src/to_llvm/emit.rs`.
 4. Add MSL emission in `emit_msl.rs`.
 5. Add WGSL emission in `emit_wgsl.rs`.
-6. Add parsing in `quanta-dsl/src/parse/expr.rs` or `parse/stmt.rs`.
+6. Extend the WASM lowering in `quanta-wasm-lowering` so the op is
+   recognised on the `rustc → wasm32 → KernelOps` route (the hand-written
+   AST parser it replaced is gone).
 7. Add roundtrip test in `quanta-ir/tests/roundtrip.rs`.

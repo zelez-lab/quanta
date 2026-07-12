@@ -11,13 +11,13 @@ use crate::compile_via_wasm::{
     FlatParamKernelInputs, StructRefKernelInputs, compile_flat_param_kernel_via_wasm,
     compile_struct_ref_kernel_via_wasm, emit_host_oracle_flat, emit_host_oracle_struct_ref,
 };
-use crate::compiler;
 use crate::device_macro::QualifiedDeviceCallRewriter;
 use crate::kernel_signature::{
     StructRefParam, detect_struct_ref_param, scan_struct_field_accesses,
 };
 use crate::kernel_type_inference::infer_kernel;
 use crate::validate;
+use quanta_dsl_core as compiler;
 
 /// Outer `#[quanta::kernel]` entry. Walks the kernel body for
 /// qualified device-fn calls (`quanta_rand::foo(...)`), rewrites

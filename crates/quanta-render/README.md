@@ -62,7 +62,7 @@ This crate adds everything a render consumer touches on top of it:
   → `acquire()` → render into `frame.texture()` → `frame.present()`. The
   sibling model, `Texture::native_handle()`, exports the backend-native
   texture so an external compositor owns present instead.
-- The **render-stage shader macros**, re-exported from `quanta-dsl`: `vertex`,
+- The **render-stage shader macros**, re-exported from `quanta-render-dsl`: `vertex`,
   `fragment`, `Vertex` (attribute derive), `tess_control`, `tess_eval`,
   `mesh`, `task`, `ray_gen`, `closest_hit`, `miss`.
 

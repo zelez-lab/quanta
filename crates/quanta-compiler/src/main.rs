@@ -23,8 +23,9 @@ use targets::GpuTarget;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Build-rev handshake: the quanta-dsl macros probe this to detect
-    // a stale binary (the classic silent-stale-codegen trap).
+    // Build-rev handshake: the DSL macros probe this (via
+    // quanta-dsl-core) to detect a stale binary (the classic
+    // silent-stale-codegen trap).
     if args.iter().any(|a| a == "--rev") {
         println!("{}", env!("QUANTA_BUILD_REV"));
         return;
