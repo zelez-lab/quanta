@@ -43,6 +43,7 @@ pub const OP_STORE: u16 = 62;
 pub const OP_ACCESS_CHAIN: u16 = 65;
 pub const OP_DECORATE: u16 = 71;
 pub const OP_MEMBER_DECORATE: u16 = 72;
+pub const OP_VECTOR_SHUFFLE: u16 = 79;
 pub const OP_COMPOSITE_CONSTRUCT: u16 = 80;
 pub const OP_COMPOSITE_EXTRACT: u16 = 81;
 pub const OP_COPY_OBJECT: u16 = 83;

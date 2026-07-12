@@ -6,7 +6,33 @@ use super::emitter::SpvEmitter;
 use super::tokenizer::{ShaderToken, glsl_func_id};
 
 impl SpvEmitter {
+    /// Parse one atom, then apply postfix component/swizzle access
+    /// (`.x`, `.zw`, …) uniformly — the value-producing atom forms
+    /// (`sample(...)`, `Vec4::new(...)`, math calls, parenthesized
+    /// expressions) all accept it, matching the MSL emitter's surface.
     pub(crate) fn parse_atom(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let mut cur = self.parse_atom_inner(tokens, pos, params, locals)?;
+        // Postfix loop: chained accesses (`v.zw.x`) reduce left to right.
+        while tokens.get(*pos) == Some(&ShaderToken::Dot)
+            && let Some(ShaderToken::Ident(field)) = tokens.get(*pos + 1)
+        {
+            if !is_swizzle(field) {
+                break;
+            }
+            let field = field.clone();
+            *pos += 2;
+            cur = self.apply_swizzle(cur.0, cur.1, &field)?;
+        }
+        Ok(cur)
+    }
+
+    fn parse_atom_inner(
         &mut self,
         tokens: &[ShaderToken],
         pos: &mut usize,
@@ -29,15 +55,8 @@ impl SpvEmitter {
                 if *pos < tokens.len() && tokens[*pos] == ShaderToken::Close {
                     *pos += 1;
                 }
-                // `(expr).x` — component access on a parenthesized
-                // value (the `(*uniform).x` shape).
-                if tokens.get(*pos) == Some(&ShaderToken::Dot)
-                    && let Some(ShaderToken::Ident(field)) = tokens.get(*pos + 1)
-                {
-                    let field = field.clone();
-                    *pos += 2;
-                    return self.extract_component(result.0, &field);
-                }
+                // `(expr).x` (the `(*uniform).x` shape) is handled by the
+                // postfix loop in `parse_atom`.
                 Ok(result)
             }
             ShaderToken::Ident(name) => {
@@ -269,13 +288,13 @@ impl SpvEmitter {
         value: u32,
         field: &str,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
-        let index = match field {
-            "x" | "r" => 0u32,
-            "y" | "g" => 1,
-            "z" | "b" => 2,
-            "w" | "a" => 3,
-            _ => return Err(format!("unknown field: {field}")),
-        };
+        let index = component_index(
+            field
+                .chars()
+                .next()
+                .ok_or_else(|| "empty field".to_string())?,
+        )
+        .ok_or_else(|| format!("unknown field: {field}"))?;
         let f32_ty = self.ensure_type_f32();
         let result = self.alloc_id();
         Self::emit_op(
@@ -284,6 +303,48 @@ impl SpvEmitter {
             &[f32_ty, result, value, index],
         );
         Ok((result, quanta_ir::ShaderType::F32))
+    }
+
+    /// Apply a component or multi-component swizzle (`.x`, `.zw`, `.rgb`,
+    /// …) to a vector VALUE, validating each component against the source
+    /// arity. Single components lower to `OpCompositeExtract`; runs of
+    /// 2–4 lower to `OpVectorShuffle` (source vector on both operands).
+    fn apply_swizzle(
+        &mut self,
+        value: u32,
+        ty: quanta_ir::ShaderType,
+        field: &str,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let Some(arity) = vector_arity(ty) else {
+            return Err(format!("cannot swizzle `.{field}` on a non-vector value ({ty:?})"));
+        };
+        let indices: Vec<u32> = field
+            .chars()
+            .map(|c| component_index(c).ok_or_else(|| format!("unknown field: {field}")))
+            .collect::<Result<_, _>>()?;
+        if indices.is_empty() || indices.len() > 4 {
+            return Err(format!("unsupported swizzle length: .{field}"));
+        }
+        if let Some(bad) = indices.iter().find(|&&i| i >= arity) {
+            let name = ['x', 'y', 'z', 'w'][*bad as usize];
+            return Err(format!("swizzle component `{name}` out of range for {ty:?}"));
+        }
+        if indices.len() == 1 {
+            return self.extract_component(value, &field[..1]);
+        }
+        let f32_ty = self.ensure_type_f32();
+        let out_len = indices.len() as u32;
+        let vec_ty = self.ensure_type_vector(f32_ty, out_len);
+        let result = self.alloc_id();
+        let mut ops = vec![vec_ty, result, value, value];
+        ops.extend_from_slice(&indices);
+        Self::emit_op(&mut self.sec_function, OP_VECTOR_SHUFFLE, &ops);
+        let out_ty = match out_len {
+            2 => quanta_ir::ShaderType::Vec2,
+            3 => quanta_ir::ShaderType::Vec3,
+            _ => quanta_ir::ShaderType::Vec4,
+        };
+        Ok((result, out_ty))
     }
 
     fn parse_field_access(
@@ -297,18 +358,19 @@ impl SpvEmitter {
         let field = field.to_string();
         *pos += 2;
 
-        if let Some((_, var_id, type_id, _)) = params.iter().find(|(n, _, _, _)| *n == name) {
+        if let Some((_, var_id, type_id, sty)) = params.iter().find(|(n, _, _, _)| *n == name) {
+            let sty = *sty;
             let loaded = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
                 OP_LOAD,
                 &[*type_id, loaded, *var_id],
             );
-            return self.extract_component(loaded, &field);
+            return self.apply_swizzle(loaded, sty, &field);
         }
-        if let Some((_, val_id, _)) = locals.iter().find(|(n, _, _)| *n == name) {
-            let val_id = *val_id;
-            return self.extract_component(val_id, &field);
+        if let Some((_, val_id, val_ty)) = locals.iter().find(|(n, _, _)| *n == name) {
+            let (val_id, val_ty) = (*val_id, *val_ty);
+            return self.apply_swizzle(val_id, val_ty, &field);
         }
         Err(format!("unknown variable: {name}"))
     }
@@ -342,3 +404,34 @@ impl SpvEmitter {
         Err(format!("unknown identifier: {name}"))
     }
 }
+
+/// True when `field` is a pure component/swizzle run (`x`, `zw`, `rgba`, …)
+/// — the only postfix accesses the shader grammar accepts on values.
+fn is_swizzle(field: &str) -> bool {
+    !field.is_empty() && field.len() <= 4 && field.chars().all(|c| component_index(c).is_some())
+}
+
+/// Component letter → vector index (`x`/`r` → 0 … `w`/`a` → 3).
+fn component_index(c: char) -> Option<u32> {
+    match c {
+        'x' | 'r' => Some(0),
+        'y' | 'g' => Some(1),
+        'z' | 'b' => Some(2),
+        'w' | 'a' => Some(3),
+        _ => None,
+    }
+}
+
+/// Component count of a vector shader type; `None` for scalars/matrices.
+fn vector_arity(ty: quanta_ir::ShaderType) -> Option<u32> {
+    match ty {
+        quanta_ir::ShaderType::Vec2 => Some(2),
+        quanta_ir::ShaderType::Vec3 => Some(3),
+        quanta_ir::ShaderType::Vec4 => Some(4),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "swizzle_tests.rs"]
+mod tests;

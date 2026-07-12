@@ -113,6 +113,19 @@ fn sample_call_kept_for_downstream_rewrite() {
 }
 
 #[test]
+fn swizzle_on_sample_result() {
+    // `.x` directly on a sample() call — the glyph fragment shape. The
+    // field access must survive the walk so the downstream texture
+    // rewrite sees `sample(...)`.x intact.
+    let body = "{ let coverage = sample (0, Vec2 :: new (0.0, 0.0)) . x ; coverage }";
+    let msl = emit_body(body, None, &[]).unwrap();
+    assert!(
+        msl.contains("sample(0.0, float2(0.0, 0.0)).x"),
+        "got: {msl}"
+    );
+}
+
+#[test]
 fn assign_result_to_var_for_vertex() {
     let msl = emit_body(
         "{ Vec4 :: new (1.0, 2.0, 3.0, 4.0) }",
