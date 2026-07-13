@@ -279,6 +279,14 @@ jobs:
       # install_name_tool invalidates the code signature, and arm64 macOS
       # refuses to run a binary with a broken signature ("Killed: 9").
       # Ad-hoc (-) signing is enough for an unnotarized CLI.
+      # macOS: recurse the dylib closure (otool -L reports only ONE level,
+      # so a single-level sweep bundles libLLVM but misses the libz3/libzstd
+      # IT links, and the archive loader-kills on a clean runner). Worklist:
+      # rewrite every non-system load command of each Mach-O to @rpath, copy
+      # + enqueue the dep, then re-sign all of them. Written for bash 3.2
+      # (macOS's system bash) — no associative arrays, no scalar +=. This is
+      # the same recipe as release-compiler.yml's macOS staging; keep them in
+      # sync (tracked follow-up: extract to one composite action).
       - name: Stage archive with bundled libLLVM (macOS)
         if: startsWith(matrix.os, 'macos')
         shell: bash
@@ -287,33 +295,39 @@ jobs:
           mkdir -p stage/lib
           cp target/release/quanta-compiler stage/quanta-compiler
           BIN=stage/quanta-compiler
-          # System dylibs (/usr/lib/*, /System/*) are always present on
-          # macOS and resolved from the dyld shared cache — leave them.
-          # Everything else (Homebrew et al.) is bundled beside the binary.
-          REFS=$(otool -L "$BIN" | tail -n +2 | awk '{print $1}' \
-                   | grep -Ev '^(/usr/lib/|/System/)' || true)
-          if ! echo "$REFS" | grep -qi 'llvm'; then
-            echo "ERROR: binary does not reference an LLVM dylib"; otool -L "$BIN"; exit 1
+          non_system_refs() {
+            otool -L "$1" | tail -n +2 | awk '{print $1}' \
+              | grep -Ev '^(/usr/lib/|/System/|@)' || true
+          }
+          seen=""
+          WORK="$BIN"
+          saw_llvm=0
+          while [ -n "$WORK" ]; do
+            CUR=$(printf '%s\n' "$WORK" | head -n1)
+            WORK=$(printf '%s\n' "$WORK" | tail -n +2)
+            while IFS= read -r REF; do
+              [ -n "$REF" ] || continue
+              BASENAME=$(basename "$REF")
+              case "$BASENAME" in *[Ll][Ll][Vv][Mm]*) saw_llvm=1 ;; esac
+              install_name_tool -change "$REF" "@rpath/$BASENAME" "$CUR"
+              if ! printf '%s\n' "$seen" | grep -qxF "$BASENAME"; then
+                seen=$(printf '%s\n%s' "$seen" "$BASENAME")
+                cp -L "$REF" "stage/lib/$BASENAME"
+                echo "bundled $BASENAME  <=  $REF  (via $(basename "$CUR"))"
+                WORK=$(printf '%s\n%s' "$WORK" "stage/lib/$BASENAME")
+              fi
+            done <<< "$(non_system_refs "$CUR")"
+          done
+          if [ "$saw_llvm" -ne 1 ]; then
+            echo "ERROR: binary/closure references no LLVM dylib"; otool -L "$BIN"; exit 1
           fi
-          # Read line by line — the paths never contain spaces, but a
-          # bare `for X in $REFS` would depend on IFS splitting on
-          # newlines, which is not guaranteed across shells/runners.
-          while IFS= read -r REF; do
-            [ -n "$REF" ] || continue
-            BASENAME=$(basename "$REF")
-            echo "bundling $REF  ->  @rpath/$BASENAME"
-            # Point the load command at the copy beside the binary.
-            install_name_tool -change "$REF" "@rpath/$BASENAME" "$BIN"
-            # Copy the real object (resolve Homebrew's version symlink)
-            # under the exact basename the load command now names.
-            cp -L "$REF" "stage/lib/$BASENAME"
-          done <<< "$REFS"
-          # @loader_path is the directory of THIS binary at load time, so
-          # @rpath/... resolves to stage/lib/ wherever the archive lands.
+          ls stage/lib/*[Ll][Ll][Vv][Mm]* >/dev/null 2>&1 || {
+            echo "ERROR: no libLLVM copied into stage/lib/"; exit 1; }
           install_name_tool -add_rpath "@loader_path/lib" "$BIN"
-          # install_name_tool broke the signature — ad-hoc re-sign or the
-          # loader kills the process before main on Apple Silicon.
           codesign --force --sign - "$BIN"
+          for DYLIB in stage/lib/*.dylib; do
+            codesign --force --sign - "$DYLIB"
+          done
           echo "--- otool -L after rewrite (non-system refs must be @rpath/...) ---"
           otool -L "$BIN"
           echo "--- staged layout ---"
