@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 use crate::{Pulse, QuantaError, Wave};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::process::Stdio;
 
@@ -142,20 +143,10 @@ impl VulkanDevice {
         for &(binding, kind) in &reflected {
             descriptor_kinds[binding as usize] = kind;
         }
-        // Sampled images in compute need a plumbed sampler object (the render
-        // path binds COMBINED_IMAGE_SAMPLER). That is not wired for compute
-        // yet — reject a sample-in-compute kernel with a clear error rather
-        // than build a layout the dispatch path can't populate. Storage
-        // (load/write) texture kernels are fully supported.
-        if descriptor_kinds.contains(&DescriptorKind::SampledImage) {
-            unsafe {
-                ffi::vkDestroyShaderModule(self.device, shader_module, core::ptr::null());
-            }
-            return Err(QuantaError::not_supported(
-                "sampled textures (texture_sample_2d) in compute are not supported on Vulkan \
-                 yet; use texture_load_2d against a storage texture (&mut Texture2D)",
-            ));
-        }
+        // Sampled-image slots (`&Texture2D` reads) bind as COMBINED_IMAGE_SAMPLER
+        // with the device compute sampler (F3), exactly like the render path;
+        // the dispatch descriptor-write and `prepare_compute_textures` handle
+        // that kind. Storage (load/write) slots stay STORAGE_IMAGE in GENERAL.
         let descriptor_set_layout = self.acquire_descriptor_set_layout(&descriptor_kinds)?;
 
         // Declare a push constant range. Clamp to device limit (128 on mobile, 256 on desktop).
@@ -358,6 +349,10 @@ impl VulkanDevice {
     /// feature gate. Each valid storage texture is then transitioned into
     /// `VK_IMAGE_LAYOUT_GENERAL` so its STORAGE_IMAGE descriptor is legal at
     /// dispatch time.
+    ///
+    /// Sampled (`&Texture2D` read) slots have no format constraint (RGBA8 and
+    /// R32Float both read); they are moved into `SHADER_READ_ONLY_OPTIMAL` for
+    /// their COMBINED_IMAGE_SAMPLER descriptor instead.
     #[cfg(feature = "compute")]
     fn prepare_compute_textures(
         &self,
@@ -370,13 +365,31 @@ impl VulkanDevice {
             if handle == 0 {
                 continue;
             }
-            // Only storage-image slots are populated by the dispatch loop; a
-            // texture bound to a non-image slot is a caller error.
+            // Sampled (`&Texture2D`) read slots: the format is not constrained
+            // (RGBA8 reads are the existing sampled contract, R32Float works
+            // too), so only validate the texture exists, then move it into
+            // SHADER_READ_ONLY_OPTIMAL — the layout a COMBINED_IMAGE_SAMPLER
+            // descriptor requires. Storage slots fall through to the format
+            // check + GENERAL transition below.
             match descriptor_kinds.get(slot) {
+                Some(DescriptorKind::SampledImage) => {
+                    {
+                        let textures = self
+                            .textures
+                            .read()
+                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                        if !textures.contains_key(&handle) {
+                            return Err(QuantaError::not_found("bound compute texture not found")
+                                .with_context(&format!("compute texture: slot {slot}")));
+                        }
+                    }
+                    self.transition_texture_handle_shader_read(handle)?;
+                    continue;
+                }
                 Some(DescriptorKind::StorageImage) => {}
                 _ => {
                     return Err(QuantaError::invalid_param(
-                        "texture bound to a slot the kernel does not use as a storage image",
+                        "texture bound to a slot the kernel does not use as an image",
                     )
                     .with_context(&format!("compute texture: slot {slot}")));
                 }
@@ -410,6 +423,125 @@ impl VulkanDevice {
                 );
             }
             self.transition_texture_handle_general(handle)?;
+        }
+        Ok(())
+    }
+
+    /// The device's single compute sampler for sampled `&Texture2D` reads
+    /// (`texture_sample_2d`), lazily created and cached. Contract: NEAREST
+    /// min/mag/mip, CLAMP_TO_EDGE, no anisotropy/compare, UNNORMALIZED
+    /// coordinates — chosen so `sample()` matches the CPU executor's
+    /// nearest+clamp texel fetch and to satisfy Vulkan's unnormalized-sampler
+    /// rules (equal filters, nearest mip, lod 0..0, non-repeat addressing).
+    /// Deliberately not routed through `SamplerDesc`/the render sampler cache:
+    /// that path has no unnormalized field and stays render-only.
+    #[cfg(feature = "compute")]
+    fn get_or_create_compute_sampler(&self) -> Result<ffi::VkSampler, QuantaError> {
+        let mut slot = self
+            .compute_sampler
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        if !slot.is_null() {
+            return Ok(*slot);
+        }
+        let info = ffi::VkSamplerCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            mag_filter: ffi::VK_FILTER_NEAREST,
+            min_filter: ffi::VK_FILTER_NEAREST,
+            mipmap_mode: ffi::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            address_mode_u: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            address_mode_v: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            address_mode_w: ffi::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            mip_lod_bias: 0.0,
+            anisotropy_enable: 0,
+            max_anisotropy: 1.0,
+            compare_enable: 0,
+            compare_op: 0,
+            // Unnormalized coordinates require lod clamped to 0 (§ valid usage).
+            min_lod: 0.0,
+            max_lod: 0.0,
+            border_color: 0,
+            unnormalized_coordinates: 1,
+        };
+        let mut sampler = ffi::null_handle();
+        let r =
+            unsafe { ffi::vkCreateSampler(self.device, &info, core::ptr::null(), &mut sampler) };
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::compilation_failed(format!(
+                "compute sampler: VkResult {r}"
+            )));
+        }
+        *slot = sampler;
+        Ok(sampler)
+    }
+
+    /// Append one image descriptor write per bound texture slot, dispatching on
+    /// the reflected kind: a sampled (`&Texture2D` read) slot writes a
+    /// COMBINED_IMAGE_SAMPLER with the device compute sampler and the view in
+    /// SHADER_READ_ONLY_OPTIMAL; a storage slot writes a STORAGE_IMAGE with a
+    /// null sampler and the view in GENERAL. Both `wave_dispatch_records_impl`
+    /// and `wave_dispatch_indirect_impl` share this, so the two paths can never
+    /// disagree on how a sampled binding is written. `image_infos` must outlive
+    /// the following `vkUpdateDescriptorSets` (its pointers live in `writes`).
+    #[cfg(feature = "compute")]
+    #[allow(clippy::too_many_arguments)]
+    fn write_texture_descriptors(
+        &self,
+        wave: &Wave,
+        descriptor_kinds: &[crate::driver::spirv_meta::DescriptorKind],
+        textures_guard: &HashMap<u64, super::VkTexture>,
+        ds: ffi::VkDescriptorSet,
+        image_infos: &mut [ffi::VkDescriptorImageInfo; 16],
+        writes: &mut [ffi::VkWriteDescriptorSet; 16],
+        write_count: &mut usize,
+    ) -> Result<(), QuantaError> {
+        use crate::driver::spirv_meta::DescriptorKind;
+        for slot in 0..wave.texture_count as usize {
+            let handle = wave.texture_bindings[slot];
+            if handle == 0 {
+                continue;
+            }
+            let Some(tex) = textures_guard.get(&handle) else {
+                continue;
+            };
+            let sampled = matches!(
+                descriptor_kinds.get(slot),
+                Some(DescriptorKind::SampledImage)
+            );
+            let (sampler, image_layout, descriptor_type) = if sampled {
+                (
+                    self.get_or_create_compute_sampler()?,
+                    ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                )
+            } else {
+                (
+                    ffi::null_handle(),
+                    ffi::VK_IMAGE_LAYOUT_GENERAL,
+                    ffi::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                )
+            };
+            let i = *write_count;
+            image_infos[i] = ffi::VkDescriptorImageInfo {
+                sampler,
+                image_view: tex.view,
+                image_layout,
+            };
+            writes[i] = ffi::VkWriteDescriptorSet {
+                s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                p_next: core::ptr::null(),
+                dst_set: ds,
+                dst_binding: slot as u32,
+                dst_array_element: 0,
+                descriptor_count: 1,
+                descriptor_type,
+                p_image_info: &image_infos[i],
+                p_buffer_info: core::ptr::null(),
+                p_texel_buffer_view: core::ptr::null(),
+            };
+            *write_count += 1;
         }
         Ok(())
     }
@@ -493,36 +625,20 @@ impl VulkanDevice {
             }
         }
 
-        // Storage-image (texture) bindings: one STORAGE_IMAGE descriptor per
-        // bound texture slot, pointing at the texture's identity view in the
-        // GENERAL layout established above.
-        for slot in 0..wave.texture_count as usize {
-            let handle = wave.texture_bindings[slot];
-            if handle == 0 {
-                continue;
-            }
-            let Some(tex) = textures_guard.get(&handle) else {
-                continue;
-            };
-            image_infos[write_count] = ffi::VkDescriptorImageInfo {
-                sampler: ffi::null_handle(),
-                image_view: tex.view,
-                image_layout: ffi::VK_IMAGE_LAYOUT_GENERAL,
-            };
-            writes[write_count] = ffi::VkWriteDescriptorSet {
-                s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                p_next: core::ptr::null(),
-                dst_set: ds,
-                dst_binding: slot as u32,
-                dst_array_element: 0,
-                descriptor_count: 1,
-                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                p_image_info: &image_infos[write_count],
-                p_buffer_info: core::ptr::null(),
-                p_texel_buffer_view: core::ptr::null(),
-            };
-            write_count += 1;
-        }
+        // Image (texture) bindings, one descriptor per bound slot. A sampled
+        // (`&Texture2D` read) slot binds COMBINED_IMAGE_SAMPLER with the device
+        // compute sampler and the view in SHADER_READ_ONLY_OPTIMAL; a storage
+        // slot binds STORAGE_IMAGE with a null sampler and the view in GENERAL.
+        // `prepare_compute_textures` already settled each layout to match.
+        self.write_texture_descriptors(
+            wave,
+            &cp.descriptor_kinds,
+            &textures_guard,
+            ds,
+            &mut image_infos,
+            &mut writes,
+            &mut write_count,
+        )?;
 
         if write_count > 0 {
             unsafe {
@@ -678,33 +794,15 @@ impl VulkanDevice {
                 write_count += 1;
             }
         }
-        for slot in 0..wave.texture_count as usize {
-            let handle = wave.texture_bindings[slot];
-            if handle == 0 {
-                continue;
-            }
-            let Some(tex) = textures_guard.get(&handle) else {
-                continue;
-            };
-            image_infos[write_count] = ffi::VkDescriptorImageInfo {
-                sampler: ffi::null_handle(),
-                image_view: tex.view,
-                image_layout: ffi::VK_IMAGE_LAYOUT_GENERAL,
-            };
-            writes[write_count] = ffi::VkWriteDescriptorSet {
-                s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                p_next: core::ptr::null(),
-                dst_set: ds,
-                dst_binding: slot as u32,
-                dst_array_element: 0,
-                descriptor_count: 1,
-                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                p_image_info: &image_infos[write_count],
-                p_buffer_info: core::ptr::null(),
-                p_texel_buffer_view: core::ptr::null(),
-            };
-            write_count += 1;
-        }
+        self.write_texture_descriptors(
+            wave,
+            &cp.descriptor_kinds,
+            &textures_guard,
+            ds,
+            &mut image_infos,
+            &mut writes,
+            &mut write_count,
+        )?;
         if write_count > 0 {
             unsafe {
                 ffi::vkUpdateDescriptorSets(

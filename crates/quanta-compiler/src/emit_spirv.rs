@@ -201,6 +201,8 @@ mod tests {
     const OP_IMAGE_READ: u16 = 98;
     const OP_IMAGE_WRITE: u16 = 99;
     const OP_IMAGE_FETCH: u16 = 95;
+    const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
+    const OP_IMAGE_SAMPLE_EXPLICIT_LOD: u16 = 88;
     const OP_SHIFT_RIGHT_LOGICAL: u16 = 194;
     const OP_SHIFT_LEFT_LOGICAL: u16 = 196;
     const OP_BITWISE_OR: u16 = 197;
@@ -475,5 +477,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `out[i] = texture_sample_2d(tex, x, y)` on a `&Texture2D<f32>` read slot —
+    /// the sampled-read path. Under GLCompute the sample must be
+    /// `OpImageSampleExplicitLod` with an explicit Lod, and the coords must be
+    /// converted to float, or spirv-val rejects the module.
+    fn sample_f32_kernel() -> KernelDef {
+        KernelDef {
+            name: "sample_f32".into(),
+            params: vec![
+                KernelParam::Texture2DRead {
+                    name: "tex".into(),
+                    slot: 0,
+                    scalar_type: ScalarType::F32,
+                },
+                KernelParam::FieldWrite {
+                    name: "out".into(),
+                    slot: 1,
+                    scalar_type: ScalarType::F32,
+                },
+            ],
+            body: vec![
+                KernelOp::QuarkId { dst: Reg(0) },
+                KernelOp::TextureSample2D {
+                    dst: Reg(1),
+                    texture: 0,
+                    x: Reg(0),
+                    y: Reg(0),
+                    ty: ScalarType::F32,
+                },
+                KernelOp::Store {
+                    field: 1,
+                    index: Reg(0),
+                    src: Reg(1),
+                    ty: ScalarType::F32,
+                },
+            ],
+            body_source: None,
+            next_reg: 2,
+            opt_level: 0,
+            device_sources: vec![],
+            device_functions: vec![],
+            workgroup_size: [1, 1, 1],
+            subgroup_size: None,
+            dynamic_shared_bytes: 0,
+        }
+    }
+
+    /// A compute sample must lower to `OpImageSampleExplicitLod` and validate —
+    /// `OpImageSampleImplicitLod` is illegal under GLCompute (no derivatives),
+    /// and nothing else spirv-vals a sample module.
+    #[test]
+    fn sample_emits_explicit_lod_and_validates() {
+        let spirv = super::emit(&sample_f32_kernel()).expect("emit sample kernel");
+        assert_spirv_val(&spirv);
+        let instrs = decode(&spirv);
+        assert!(
+            instrs
+                .iter()
+                .any(|(op, _)| *op == OP_IMAGE_SAMPLE_EXPLICIT_LOD),
+            "compute texture_sample_2d must emit OpImageSampleExplicitLod (88)"
+        );
+        assert!(
+            !instrs
+                .iter()
+                .any(|(op, _)| *op == OP_IMAGE_SAMPLE_IMPLICIT_LOD),
+            "compute sample must NOT emit OpImageSampleImplicitLod (87)"
+        );
     }
 }

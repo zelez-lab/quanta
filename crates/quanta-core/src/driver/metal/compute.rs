@@ -62,6 +62,86 @@ impl MetalDevice {
         Ok(())
     }
 
+    /// The device's single compute sampler for sampled `&Texture2D` reads
+    /// (`texture_sample_2d`), lazily created and cached. Contract: NEAREST
+    /// min/mag/mip, CLAMP_TO_EDGE, normalizedCoordinates = false — chosen so
+    /// `sample()` matches the CPU executor's nearest+clamp texel fetch. Returns
+    /// the retained `MTLSamplerState`; it lives for the device's lifetime.
+    #[cfg(feature = "compute")]
+    fn get_or_create_compute_sampler(&self) -> Result<ffi::Id, QuantaError> {
+        {
+            let cached = self
+                .compute_sampler
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            if let Some(s) = *cached {
+                return Ok(s);
+            }
+        }
+        let mut slot = self
+            .compute_sampler
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        // Re-check: another thread may have created it between the read unlock
+        // and the write lock.
+        if let Some(s) = *slot {
+            return Ok(s);
+        }
+        let sampler = unsafe {
+            let sd = ffi::msg_id(ffi::cls(b"MTLSamplerDescriptor\0") as ffi::Id, b"new\0");
+            ffi::msg_void_u64(
+                sd,
+                b"setMinFilter:\0",
+                ffi::MTL_SAMPLER_MIN_MAG_FILTER_NEAREST,
+            );
+            ffi::msg_void_u64(
+                sd,
+                b"setMagFilter:\0",
+                ffi::MTL_SAMPLER_MIN_MAG_FILTER_NEAREST,
+            );
+            ffi::msg_void_u64(sd, b"setMipFilter:\0", ffi::MTL_SAMPLER_MIP_FILTER_NEAREST);
+            ffi::msg_void_u64(
+                sd,
+                b"setSAddressMode:\0",
+                ffi::MTL_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            );
+            ffi::msg_void_u64(
+                sd,
+                b"setTAddressMode:\0",
+                ffi::MTL_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            );
+            ffi::msg_void_bool(sd, b"setNormalizedCoordinates:\0", false);
+            // newSamplerStateWithDescriptor: returns +1 retained; kept for the
+            // device's lifetime (never released, like the render-path samplers).
+            ffi::msg_id_id(self.device, b"newSamplerStateWithDescriptor:\0", sd)
+        };
+        if sampler.is_null() {
+            return Err(QuantaError::internal("failed to create compute sampler"));
+        }
+        *slot = Some(sampler);
+        Ok(sampler)
+    }
+
+    /// Bind the device compute sampler at indices `0..texture_count` on a
+    /// compute encoder. Metal shaders reference `sampler(N)` by the texture's
+    /// own index, so one bind per bound texture slot covers every sampled read;
+    /// write-only slots ignore sampler state, making the unconditional bind
+    /// correct and cheap (Metal has no per-slot reflection to be cleverer). No
+    /// sampler is created when the kernel binds no textures.
+    #[cfg(feature = "compute")]
+    fn bind_compute_sampler(&self, encoder: ffi::Id, wave: &Wave) -> Result<(), QuantaError> {
+        if wave.texture_count == 0 {
+            return Ok(());
+        }
+        let sampler = self.get_or_create_compute_sampler()?;
+        for slot in 0..wave.texture_count as usize {
+            unsafe {
+                ffi::msg_set_sampler(encoder, b"setSamplerState:atIndex:\0", sampler, slot as u64);
+            }
+        }
+        Ok(())
+    }
+
     /// JIT-compile a kernel from serialized KernelDef IR.
     ///
     /// Deserializes the IR, emits MSL text, compiles via Metal runtime,
@@ -343,6 +423,8 @@ impl MetalDevice {
             }
         }
         drop(textures);
+        // Sampled reads need the compute sampler bound at each texture index.
+        self.bind_compute_sampler(encoder, wave)?;
 
         let grid = ffi::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
         let group_size = ffi::MTLSize::new(
@@ -439,6 +521,8 @@ impl MetalDevice {
             }
         }
         drop(textures);
+        // Sampled reads need the compute sampler bound at each texture index.
+        self.bind_compute_sampler(encoder, wave)?;
 
         let grid = ffi::MTLSize::new(quarks as u64, 1, 1);
         let group_size = ffi::MTLSize::new(
@@ -514,6 +598,11 @@ impl MetalDevice {
                 mask &= mask - 1;
             }
         }
+
+        // Sampled reads need the compute sampler bound at each texture index.
+        // (Indirect dispatch binds no textures today, so this is a no-op unless
+        // a future indirect texture path sets texture_count.)
+        self.bind_compute_sampler(encoder, wave)?;
 
         let indirect_buf = buffers.get(&buffer).ok_or_else(|| {
             QuantaError::invalid_param("bad indirect buffer")

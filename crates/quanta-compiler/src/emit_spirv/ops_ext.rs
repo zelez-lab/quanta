@@ -331,6 +331,35 @@ impl SpvEmitter {
         Ok(())
     }
 
+    /// Convert an integer texel-coordinate register to an f32 value id for a
+    /// float sample coordinate. Signed coords go through OpConvertSToF, unsigned
+    /// through OpConvertUToF; a coord already f32 passes through. Texel
+    /// coordinates are non-negative, so the signed/unsigned split only affects
+    /// the (correct) opcode, never the result for in-range values.
+    fn coord_reg_to_f32(&mut self, reg: Reg) -> Result<u32, String> {
+        let f32_ty = self.ensure_type_f32();
+        let val = self.reg_value_id(reg)?;
+        let src_ty = self.reg_type_id(reg)?;
+        if src_ty == f32_ty {
+            return Ok(val);
+        }
+        let signed = self.type_i32 == Some(src_ty) || self.type_i64 == Some(src_ty);
+        let opcode = if signed {
+            OP_CONVERT_S_TO_F
+        } else {
+            OP_CONVERT_U_TO_F
+        };
+        let out = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, opcode, &[f32_ty, out, val]);
+        Ok(out)
+    }
+
+    /// Compute `texture_sample_2d`: sample a texel from a sampled 2D image slot
+    /// with `OpImageSampleExplicitLod`. GLCompute has no implicit derivatives,
+    /// so the sample carries an explicit `Lod` operand pinned to 0.0 (ImplicitLod
+    /// is illegal Vulkan SPIR-V here). Paired with the device's compute sampler
+    /// (NEAREST, CLAMP_TO_EDGE, unnormalized), the fetch matches the CPU
+    /// executor exactly. The shader-stage `sample()` path keeps ImplicitLod.
     pub(crate) fn emit_op_texture_sample_2d(
         &mut self,
         dst: Reg,
@@ -344,20 +373,32 @@ impl SpvEmitter {
             Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
             let f32_ty = self.ensure_type_f32();
             let vec2_ty = self.ensure_type_vector(f32_ty, 2);
-            let x_val = self.reg_value_id(x)?;
-            let y_val = self.reg_value_id(y)?;
+            // Sample coordinates are floats; the `(x, y)` registers hold integer
+            // texel indices, so convert each to f32 (a raw int-vector constituent
+            // fails spirv-val, and OpImageSample* takes a float coordinate). With
+            // the unnormalized compute sampler these are texel coords, not UVs.
+            let x_f = self.coord_reg_to_f32(x)?;
+            let y_f = self.coord_reg_to_f32(y)?;
             let coord = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
                 OP_COMPOSITE_CONSTRUCT,
-                &[vec2_ty, coord, x_val, y_val],
+                &[vec2_ty, coord, x_f, y_f],
             );
             let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+            let lod_zero = self.emit_constant_f32(0.0);
             let sample_result = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
-                OP_IMAGE_SAMPLE_IMPLICIT_LOD,
-                &[vec4_ty, sample_result, loaded, coord],
+                OP_IMAGE_SAMPLE_EXPLICIT_LOD,
+                &[
+                    vec4_ty,
+                    sample_result,
+                    loaded,
+                    coord,
+                    IMAGE_OPERANDS_LOD,
+                    lod_zero,
+                ],
             );
             let result_ty = self.scalar_type_id(ty);
             let result = self.alloc_id();

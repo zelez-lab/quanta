@@ -104,6 +104,17 @@ pub struct VulkanDevice {
     /// signature (2 bits per binding) — a buffer-only layout and a mixed
     /// buffer+image layout of the same length must not collide.
     pub(super) layout_cache: Mutex<HashMap<u64, ffi::VkDescriptorSetLayout>>,
+    /// The one compute sampler this device binds for every `&Texture2D` sampled
+    /// read (`texture_sample_2d`). Contract: NEAREST min/mag/mip,
+    /// CLAMP_TO_EDGE, no anisotropy/compare, UNNORMALIZED coordinates — chosen
+    /// so a GPU `sample()` matches the CPU executor's nearest+clamp texel fetch
+    /// exactly, and to satisfy Vulkan's unnormalized-sampler rules. Lazily
+    /// created on first sampled-read dispatch and destroyed at teardown. This is
+    /// deliberately NOT the render sampler cache (which is keyed by a full
+    /// `SamplerDesc` and has no unnormalized field); the compute contract is
+    /// fixed, not descriptor-driven. `null_handle()` until first use.
+    #[cfg(feature = "compute")]
+    pub(super) compute_sampler: Mutex<ffi::VkSampler>,
     /// Indirect command buffers (steps 032 + 033). Stores recorded
     /// dispatches that `indirect_buffer_execute` replays sequentially
     /// on the same compute path used by `wave_dispatch`. The Lean
@@ -1446,6 +1457,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             descriptor_pool_cache: Mutex::new(Vec::new()),
             staging_pool: Mutex::new(Vec::new()),
             layout_cache: Mutex::new(HashMap::new()),
+            #[cfg(feature = "compute")]
+            compute_sampler: Mutex::new(ffi::null_handle()),
             icbs: RwLock::new(HashMap::new()),
             render_bundles: RwLock::new(HashMap::new()),
             bindless_textures: RwLock::new(HashMap::new()),
@@ -1648,6 +1661,16 @@ impl Drop for VulkanDevice {
                 for (_, sampler) in cache.drain() {
                     ffi::vkDestroySampler(self.device, sampler, core::ptr::null());
                 }
+            }
+            // The compute sampler (the one sampled-read sampler, F3). Lazily
+            // created, so null until the first sampled-read dispatch — destroy
+            // only if one was ever built.
+            #[cfg(feature = "compute")]
+            if let Ok(mut sampler) = self.compute_sampler.lock()
+                && !sampler.is_null()
+            {
+                ffi::vkDestroySampler(self.device, *sampler, core::ptr::null());
+                *sampler = ffi::null_handle();
             }
             if let Ok(mut views) = self.image_views.write() {
                 for (_, view) in views.drain() {

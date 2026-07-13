@@ -217,6 +217,16 @@ pub struct MetalDevice {
     /// the compute-texture format validation gates without re-querying.
     #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(crate) read_write_texture_tier2_supported: bool,
+    /// The one compute sampler bound for `&Texture2D` sampled reads
+    /// (`texture_sample_2d`). Contract: NEAREST min/mag/mip, CLAMP_TO_EDGE,
+    /// normalizedCoordinates = false — chosen so a GPU `sample()` matches the
+    /// CPU executor's nearest+clamp texel fetch exactly. Lazily created (once)
+    /// and bound at every compute dispatch for slots `0..texture_count`;
+    /// write-only slots ignore sampler state, so an unconditional bind is
+    /// correct and cheap. Retained for the device's lifetime (like the render
+    /// samplers); `None` until the first sampled-read dispatch.
+    #[cfg(feature = "compute")]
+    pub(crate) compute_sampler: RwLock<Option<ffi::Id>>,
 }
 
 // Safety: Metal objects (MTLDevice, MTLCommandQueue, etc.) are thread-safe.
@@ -356,5 +366,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         mesh_shader_supported,
         ray_tracing_supported,
         read_write_texture_tier2_supported,
+        #[cfg(feature = "compute")]
+        compute_sampler: RwLock::new(None),
     })]
 }

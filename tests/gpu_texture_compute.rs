@@ -1,7 +1,9 @@
-//! Compute texture read/write tests (step 055).
+//! Compute texture read/write tests.
 //!
-//! Verifies that compute kernels can read textures via texture_sample_2d
-//! and texture_load_2d.
+//! Verifies that compute kernels can read textures via both `texture_sample_2d`
+//! (sampled reads, nearest + clamp at texel coords) and `texture_load_2d`
+//! (storage reads), plus storage writes — live on the default device, the CPU
+//! executor, and lavapipe in CI.
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -91,6 +93,114 @@ fn compute_reads_texture() {
             "texture read at ({x},0): expected {expected_r:.3}, got {actual:.3}"
         );
     }
+}
+
+/// Sample a texture via `texture_sample_2d` (the sampled-read path) with an
+/// x-offset applied per dispatch. With the device compute sampler (NEAREST,
+/// CLAMP_TO_EDGE, unnormalized) the fetch is the texel at `(x + dx, y)` clamped
+/// to the edge — so `dx = 0` reads the exact texel and a large `dx` reads the
+/// right-edge column. `texture_sample_2d` on an RGBA8 read slot returns the R
+/// channel as unorm, identical to `texture_load_2d`.
+#[quanta::kernel]
+fn sample_texture(tex: &Texture2D<f32>, output: &mut [f32], width: u32, dx: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    output[i] = texture_sample_2d(tex, x + dx, y);
+}
+
+/// Sampled-read parity: `texture_sample_2d` must return the same R-channel
+/// unorm as `texture_load_2d` at integer texel coordinates (dx = 0), AND an
+/// out-of-bounds x (dx pushes past the right edge) must clamp to the edge texel
+/// — the CLAMP_TO_EDGE / unnormalized compute-sampler contract. Runs live on
+/// whatever `init()` picks (Metal here — this is the F3 Metal sampler-bind
+/// proof), an explicit CPU pass, and lavapipe in CI. Skips only where the
+/// backend reports the sampled-read unsupported (WebGPU).
+fn run_sample_texture(gpu: &quanta::Gpu) {
+    let w = 4u32;
+    let h = 4u32;
+    let n = (w * h) as usize;
+
+    // Same known RGBA8 pattern as compute_reads_texture: R = x*64, G = y*64.
+    let mut tex_data = vec![0u8; n * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = ((y * w + x) * 4) as usize;
+            tex_data[idx] = (x * 64) as u8;
+            tex_data[idx + 1] = (y * 64) as u8;
+            tex_data[idx + 2] = 0;
+            tex_data[idx + 3] = 255;
+        }
+    }
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ),
+        )
+        .unwrap();
+    tex.write(&tex_data).unwrap();
+
+    // Exact texel values at integer coords (dx = 0): first row R = 0,64,128,192.
+    let output = gpu.field::<f32>(n).unwrap();
+    let mut wave = match sample_texture(gpu) {
+        Ok(wave) => wave,
+        Err(e) if matches!(e.kind, quanta::QuantaErrorKind::NotSupported(_)) => {
+            eprintln!("SKIP: sampled-image compute read not supported here: {e}");
+            return;
+        }
+        Err(e) => panic!("sample_texture wave build failed: {e}"),
+    };
+    wave.bind_texture(0, &tex);
+    wave.bind(1, &output);
+    wave.set_value(2, w);
+    wave.set_value(3, 0u32);
+    gpu.dispatch(&wave, n as u32).unwrap().wait().unwrap();
+    let result = output.read().unwrap();
+    for (x, &actual) in result.iter().enumerate().take(w as usize) {
+        let expected_r = (x as f32 * 64.0) / 255.0;
+        assert!(
+            (actual - expected_r).abs() < 0.01,
+            "sample at ({x},0): expected {expected_r:.3}, got {actual:.3}"
+        );
+    }
+
+    // Clamp-to-edge: dx = w + 3 pushes every x past the right edge, so every
+    // texel reads the last column (x = w-1, R = (w-1)*64 = 192/255).
+    let clamp_out = gpu.field::<f32>(n).unwrap();
+    let mut wave = sample_texture(gpu).unwrap();
+    wave.bind_texture(0, &tex);
+    wave.bind(1, &clamp_out);
+    wave.set_value(2, w);
+    wave.set_value(3, w + 3);
+    gpu.dispatch(&wave, n as u32).unwrap().wait().unwrap();
+    let clamped = clamp_out.read().unwrap();
+    let edge_r = ((w - 1) as f32 * 64.0) / 255.0;
+    for y in 0..h as usize {
+        let actual = clamped[y * w as usize];
+        assert!(
+            (actual - edge_r).abs() < 0.01,
+            "clamp-to-edge sample (row {y}, x=w+3): expected edge R {edge_r:.3}, got {actual:.3}"
+        );
+    }
+}
+
+#[test]
+fn compute_samples_texture() {
+    let Some(gpu) = try_gpu() else { return };
+    // V3DV's image-in-compute path faults (the SPIR-V is valid — see the
+    // spirv-val units); skip the live dispatch there like compute_reads_texture.
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return;
+    }
+    run_sample_texture(&gpu);
+}
+
+/// The CPU software executor must sample identically (nearest + clamp at texel
+/// coords), fixing the contract independently of the default device.
+#[cfg(feature = "software")]
+#[test]
+fn cpu_samples_texture() {
+    run_sample_texture(&quanta::init_cpu());
 }
 
 // ── Emitted-SPIR-V validity gate ────────────────────────────────────────

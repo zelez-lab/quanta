@@ -178,12 +178,14 @@ blur is two of these passes — horizontal then vertical — which is why a sing
 buffer will not do: the second pass needs the first pass's full output as clean
 input.
 
-> Sampled-image reads in compute are wired on Metal and the CPU executor; the
-> native Vulkan path supports storage images only. If a backend rejects the
-> sampled read it returns `QuantaErrorKind::NotSupported` when the wave is
-> built — handle it the same way as the tier-2 skip. A fully portable variant
-> reads the source as a `&mut Texture2D<f32>` storage slot instead (a storage
-> read via `texture_load_2d`) and simply never writes it during the pass.
+> Sampled-image reads in compute are portable across Metal, native Vulkan, and
+> the CPU executor: `texture_sample_2d` on a `&Texture2D` read slot fetches with
+> a fixed nearest, clamp-to-edge, unnormalized-coordinate sampler, so the texel
+> a GPU sample returns matches the CPU executor exactly. WebGPU still reports
+> `QuantaErrorKind::NotSupported` when the wave is built — handle it the same
+> way as the tier-2 skip. (Filtered or normalized-UV sampling is a future
+> sampler-API addition; today's compute sampler is fixed to the texel-fetch
+> contract.)
 
 ## Ping-pong: two slots, swap between passes
 

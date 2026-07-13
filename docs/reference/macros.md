@@ -374,7 +374,7 @@ With `jit`:
 | `floor(x)`, `ceil(x)`, `round(x)` | `f32` | Rounding |
 | `fma(a, b, c)` | `f32` | Fused multiply-add |
 | `texture_load_2d(tex, x, y)` | `f32` / `u32` | Read texel `(x, y)`. On `&mut/&Texture2D<f32>`: the `.x` channel as `f32` (storage read on `&mut`, texel fetch on `&`). On `&mut Texture2D<u32>`: the whole RGBA8 texel as a packed `0xAABBGGRR` u32 |
-| `texture_sample_2d(tex, x, y)` | `f32` | Sample a `&Texture2D` at integer coords (nearest); rejected on a storage slot |
+| `texture_sample_2d(tex, x, y)` | `f32` | Sample a `&Texture2D` read slot through the fixed compute sampler: **nearest**, **clamp-to-edge**, **unnormalized** coords — `(x, y)` are texel coordinates and an out-of-bounds coord reads the edge texel. Returns the `.x` channel. Portable across Metal / Vulkan / CPU; rejected on a storage slot. Contrast `texture_load_2d`, which requires in-bounds coords (out-of-bounds is undefined on the GPU) |
 | `texture_write_2d(tex, x, y, v)` | `()` | Write `v` into texel `(x, y)`. On `&mut Texture2D<f32>`: `v: f32` into the R channel. On `&mut Texture2D<u32>`: `v: u32` as a packed `0xAABBGGRR` RGBA8 texel |
 | `texture_size(tex)` | `(u32, u32)` | Texture `(width, height)` (CPU device) |
 | `pack_unorm4x8(r, g, b, a)` | `u32` | Pack four `f32` unorm channels into a `0xAABBGGRR` RGBA8 u32: each is clamped to `[0, 1]`, scaled by 255, rounded, and stored (R = byte 0). Byte-identical to the `Texture2D<u32>` texel `texture_write_2d` stores |

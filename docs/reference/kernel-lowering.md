@@ -143,6 +143,14 @@ component type stays `f32`, format word `Rgba8`), MSL
 `pack_float_to_unorm4x8` / `unpack_unorm4x8_to_float`. The packed layout is
 `0xAABBGGRR` (little-endian byte order R,G,B,A); build/split it with bit math.
 
+A compute `texture_sample_2d` lowers to SPIR-V `OpImageSampleExplicitLod` with
+an explicit `Lod` of 0.0 -- `OpImageSampleImplicitLod` is illegal under
+`GLCompute` (it needs a fragment stage's implicit derivatives). Integer texel
+coordinates are converted to float for the sample. The runtime binds a fixed
+compute sampler (nearest, clamp-to-edge, unnormalized) so the fetch matches the
+CPU executor's texel read. (The fragment-shader `sample()` path keeps
+`OpImageSampleImplicitLod`, which is valid there.)
+
 Storage-image writes are format-checked per slot kind at dispatch: a
 `&mut Texture2D<f32>` must be bound to an `R32Float` texture and a
 `&mut Texture2D<u32>` to an `RGBA8` texture (both created with `SHADER_WRITE`

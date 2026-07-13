@@ -19,6 +19,8 @@ const OP_EXT_INST: u16 = 12;
 const OP_IMAGE_READ: u16 = 98;
 const OP_IMAGE_WRITE: u16 = 99;
 const OP_IMAGE_FETCH: u16 = 95;
+const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
+const OP_IMAGE_SAMPLE_EXPLICIT_LOD: u16 = 88;
 const IMAGE_FORMAT_R32F: u32 = 3;
 const IMAGE_FORMAT_RGBA8: u32 = 4;
 // GLSL.std.450 extended instruction numbers for the packed-RGBA8 boundary.
@@ -232,6 +234,52 @@ fn sampled_u32_kernel() -> KernelDef {
     }
 }
 
+/// `out[i] = texture_sample_2d(tex, x, y)` where `tex` is `&Texture2D<f32>` — a
+/// sampled read. Under GLCompute the sample must be `OpImageSampleExplicitLod`
+/// with an explicit Lod (ImplicitLod needs a fragment stage's derivatives and
+/// spirv-val rejects it in a compute module).
+fn sample_f32_kernel() -> KernelDef {
+    KernelDef {
+        name: "sample_f32".into(),
+        params: vec![
+            KernelParam::Texture2DRead {
+                name: "tex".into(),
+                slot: 0,
+                scalar_type: ScalarType::F32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 1,
+                scalar_type: ScalarType::F32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::TextureSample2D {
+                dst: Reg(1),
+                texture: 0,
+                x: Reg(0),
+                y: Reg(0),
+                ty: ScalarType::F32,
+            },
+            KernelOp::Store {
+                field: 1,
+                index: Reg(0),
+                src: Reg(1),
+                ty: ScalarType::F32,
+            },
+        ],
+        body_source: None,
+        next_reg: 2,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
 fn words(spirv: &[u8]) -> Vec<u32> {
     spirv
         .chunks_exact(4)
@@ -353,6 +401,34 @@ fn storage_module_validates() {
     assert_spirv_val_clean("write_tex", &spirv);
     let spirv = emit_spirv::emit(&load_from_storage_kernel()).expect("emit load kernel");
     assert_spirv_val_clean("load_storage", &spirv);
+}
+
+// ── Sampled reads (`&Texture2D<f32>` + texture_sample_2d) ────────────────────
+
+/// A compute sample must lower to `OpImageSampleExplicitLod`, never the
+/// `OpImageSampleImplicitLod` that is illegal under GLCompute.
+#[test]
+fn sample_emits_explicit_lod_not_implicit() {
+    let spirv = emit_spirv::emit(&sample_f32_kernel()).expect("emit sample kernel");
+    let ops = opcodes(&words(&spirv));
+    assert!(
+        ops.contains(&OP_IMAGE_SAMPLE_EXPLICIT_LOD),
+        "compute texture_sample_2d must emit OpImageSampleExplicitLod (88); opcodes: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&OP_IMAGE_SAMPLE_IMPLICIT_LOD),
+        "compute sample must NOT emit OpImageSampleImplicitLod (87), illegal under \
+         GLCompute; opcodes: {ops:?}"
+    );
+}
+
+/// The emitted sampled-read module must validate under `spirv-val` — the guard
+/// that would have caught an ImplicitLod-in-compute regression (nothing else
+/// spirv-vals a sample module).
+#[test]
+fn sample_module_validates() {
+    let spirv = emit_spirv::emit(&sample_f32_kernel()).expect("emit sample kernel");
+    assert_spirv_val_clean("sample_f32", &spirv);
 }
 
 // ── Packed-RGBA8 (`&mut Texture2D<u32>`) storage images ─────────────────────

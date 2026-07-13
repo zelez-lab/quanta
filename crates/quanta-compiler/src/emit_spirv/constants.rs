@@ -49,6 +49,14 @@ pub const OP_COMPOSITE_EXTRACT: u16 = 81;
 pub const OP_COPY_OBJECT: u16 = 83;
 pub const OP_TRANSPOSE: u16 = 84;
 pub const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
+/// `OpImageSampleExplicitLod` — the only sample form legal under GLCompute
+/// (ImplicitLod needs a fragment stage's implicit derivatives). The compute
+/// `texture_sample_2d` path emits this with an explicit `Lod` operand; the
+/// shader (fragment) `sample()` path keeps ImplicitLod, which is legal there.
+pub const OP_IMAGE_SAMPLE_EXPLICIT_LOD: u16 = 88;
+/// SPIR-V image-operands `Lod` bit (§3.14) — an explicit level-of-detail
+/// operand follows the mask in `OpImageSampleExplicitLod`.
+pub const IMAGE_OPERANDS_LOD: u32 = 0x2;
 pub const OP_IMAGE_FETCH: u16 = 95;
 pub const OP_IMAGE_READ: u16 = 98;
 pub const OP_IMAGE_WRITE: u16 = 99;

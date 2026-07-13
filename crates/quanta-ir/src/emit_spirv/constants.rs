@@ -138,7 +138,13 @@ pub(crate) const OP_GROUP_NON_UNIFORM_FMAX: u16 = 358;
 
 pub(crate) const OP_TYPE_IMAGE: u16 = 25;
 pub(crate) const OP_TYPE_SAMPLED_IMAGE: u16 = 27;
-pub(crate) const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
+/// `OpImageSampleExplicitLod` — the only sample form legal under GLCompute
+/// (ImplicitLod needs the implicit derivatives a fragment stage provides).
+/// Requires an image-operands word; we always pass `Lod` with a 0.0 constant.
+pub(crate) const OP_IMAGE_SAMPLE_EXPLICIT_LOD: u16 = 88;
+/// SPIR-V image-operands `Lod` bit — selects an explicit level-of-detail
+/// operand for `OpImageSampleExplicitLod` (§3.14 Image Operands).
+pub(crate) const IMAGE_OPERANDS_LOD: u32 = 0x2;
 pub(crate) const OP_IMAGE_FETCH: u16 = 95;
 pub(crate) const OP_IMAGE_READ: u16 = 98;
 pub(crate) const OP_IMAGE_WRITE: u16 = 99;
