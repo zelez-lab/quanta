@@ -80,24 +80,36 @@ Quanta is not on crates.io yet — add it from the git repository:
 cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
 
+**One line, every OS.** The defaults
+(`default = ["metal", "vulkan", "render", "compute"]`) compile the right
+GPU face per target with no backend knowledge on your part — Metal on
+Apple, Vulkan on Linux / Android / Windows. Each backend's code is
+`cfg(target_os)`-gated, so shipping both features is safe: the one that
+can't run is pruned, and a plain macOS build needs no Vulkan loader.
+
 **Compute, rendering, or both?** Quanta is split into three crates —
 `quanta-core` (the shared device substrate), `quanta-render` (the render
 face), and the `quanta` facade — and the two faces are Cargo features,
-both on by default (`default = ["metal", "render", "compute"]`). A
-consumer pulls in only what it uses:
+both on by default. Backend selection stays automatic; the opt-outs
+below trim *faces*, not drivers (there are no negative features):
 
 - **Compute only** (database, ML runtime): `quanta = { ...,
-  default-features = false, features = ["metal", "compute", "jit"] }` —
-  compiles **zero rendering code**, no render type on the surface.
+  default-features = false, features = ["metal", "vulkan", "compute", "jit"] }`
+  — compiles **zero rendering code**, no render type on the surface.
 - **Render only** (UI toolkit, compositor): `quanta = { ...,
-  default-features = false, features = ["metal", "render"] }` — compiles
-  **zero kernel machinery**; the kernel-lowering/JIT crates never enter
-  the dependency graph. (Equivalently, depend on `quanta-render`
-  directly.)
+  default-features = false, features = ["metal", "vulkan", "render"] }` —
+  compiles **zero kernel machinery**; the kernel-lowering/JIT crates
+  never enter the dependency graph. (Equivalently, depend on
+  `quanta-render` directly.)
 - **Both**: keep the defaults. The `render` feature pulls in
   `quanta-render` and re-exports it — render passes, pipelines, the
   `#[quanta::vertex]` / `#[quanta::fragment]` shader macros, and the
   `RenderGpu` extension trait that carries the render methods on `Gpu`.
+
+**MoltenVK on macOS:** Vulkan is compiled out on Apple targets by
+default. To run Vulkan on macOS via MoltenVK, add the
+`vulkan-portability` feature — it extends the Vulkan face to macOS and
+links MoltenVK's `libvulkan` at build time.
 
 See [Getting Started](docs/getting-started.md#compute-rendering-or-both).
 
@@ -110,11 +122,12 @@ in-process, so on Apple Silicon (Metal) or in the browser (WebGPU)
 **nothing else is required** — the `cargo add` line above is the
 whole story.
 
-For Vulkan platforms (Linux, Windows) you need a Vulkan driver
-installed (instructions below). The optional `quanta-compiler` LLVM
-backend (PTX / GCN / SPIR-V emission) downloads itself on first use;
-when it can't run on your platform, the JIT fallback transparently
-takes over.
+For Vulkan platforms (Linux, Windows, Android) you need a Vulkan driver
+installed (instructions below) — but the same `cargo add` line works
+there too; Vulkan is the default face on those targets. The optional
+`quanta-compiler` LLVM backend (PTX / GCN / SPIR-V emission) downloads
+itself on first use; when it can't run on your platform, the JIT
+fallback transparently takes over.
 
 ### Per-platform install
 
@@ -142,9 +155,8 @@ sudo apt install nvidia-driver-550                                  # NVIDIA pro
 # Sanity check:
 vulkaninfo --summary
 
-# Then:
-cargo add quanta --git https://github.com/zelez-lab/quanta \
-  --no-default-features --features vulkan,render,compute,jit
+# Then — the plain one-liner; Vulkan is the default face on Linux:
+cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
 
 `mesa-vulkan-drivers` includes lavapipe, a software Vulkan ICD that
@@ -166,8 +178,8 @@ sudo apt update && sudo apt install -y llvm-22-dev libpolly-22-dev
 # Vulkan driver: install your GPU vendor's Windows driver (NVIDIA,
 # AMD, or Intel). The Vulkan loader (`vulkan-1.dll`) ships with the
 # driver. No separate Vulkan SDK needed for runtime.
-cargo add quanta --git https://github.com/zelez-lab/quanta `
-  --no-default-features --features vulkan,render,compute,jit
+# The plain one-liner works; Vulkan is the default face on Windows:
+cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
 
 Live GPU execution on Windows is untested in v0.1-alpha — the build
@@ -305,9 +317,11 @@ All five targets are emitted at build time by `quanta-compiler` (backed by LLVM 
 | Backend | Cargo feature | Compute | Render |
 |---|---|---|---|
 | Apple Metal | `metal` (default) | Yes | Yes |
-| Vulkan | `vulkan` | Yes | Yes |
+| Vulkan | `vulkan` (default) | Yes | Yes |
 | WebGPU | `webgpu` | Yes | Yes |
 | Software (CPU) | `software` | Yes | — |
+
+Both `metal` and `vulkan` are on by default, but each backend's code is `cfg(target_os)`-gated: Metal compiles on Apple targets, Vulkan on Linux / Android / Windows. So the default feature set builds the correct face on every OS from one dependency line, and a plain macOS build links no Vulkan loader. To run Vulkan on macOS through MoltenVK, add the opt-in `vulkan-portability` feature.
 
 NVIDIA and AMD targets do not need a separate backend feature — they consume the PTX/GCN ISA emitted by the compiler, dispatched through the platform's CUDA or ROCm runtime.
 

@@ -528,7 +528,12 @@ macro_rules! vk_extern_fns {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 vk_extern_fns! { #[link(name = "vulkan")] }
 
-#[cfg(target_os = "macos")]
+// macOS links against MoltenVK's `libvulkan`, but only under
+// `vulkan-portability`. This whole file compiles only when the Vulkan
+// module does — and on macOS that requires the feature — so this stanza
+// never reaches a plain Apple build (the MoltenVK link trap): the
+// explicit feature gate keeps that contract legible at the link site.
+#[cfg(all(feature = "vulkan-portability", target_os = "macos"))]
 vk_extern_fns! { #[link(name = "vulkan")] }
 
 #[cfg(target_os = "windows")]

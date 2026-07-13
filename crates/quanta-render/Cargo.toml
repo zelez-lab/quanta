@@ -15,6 +15,9 @@ default = ["metal"]
 std = ["quanta-core/std"]
 metal = ["std", "quanta-core/metal"]
 vulkan = ["std", "quanta-core/vulkan"]
+# MoltenVK opt-in, forwarded to the substrate. Widens the Vulkan face's
+# target_os gate to macOS; see quanta-core's feature docs.
+vulkan-portability = ["vulkan", "quanta-core/vulkan-portability"]
 # The CPU software lane exists for tests and headless validation; note
 # it turns on quanta-core's compute+jit halves (its whole job is
 # executing kernels). Render-only consumers simply don't enable it.

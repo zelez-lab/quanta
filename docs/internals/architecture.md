@@ -252,16 +252,40 @@ device `Arc` and release their driver resource on `Drop`, exactly once
 
 ```toml
 [features]
-default = ["metal", "render", "compute"]
+default = ["metal", "vulkan", "render", "compute"]
 std = ["quanta-core/std", "quanta-render?/std"]
 metal = ["std", "quanta-core/metal", "quanta-render?/metal"]
 vulkan = ["std", "quanta-core/vulkan", "quanta-render?/vulkan"]
+vulkan-portability = ["vulkan", "quanta-core/vulkan-portability", "quanta-render?/vulkan-portability"]
 render = ["quanta-core/render", "dep:quanta-render"]
 compute = ["quanta-core/compute", "dep:quanta-compute-dsl"]
 software = ["std", "jit", "compute", "quanta-core/software", "quanta-render?/software"]
 jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases", "quanta-core/jit"]
 webgpu = ["std", "jit", "compute", "quanta-core/webgpu", "quanta-render?/webgpu"]
 ```
+
+Cargo features are **target-independent**, but the two backend faces
+that are always on by default (`metal`, `vulkan`) are made portable by
+`cfg(target_os)`-gating their **code**, not by juggling features per
+target:
+
+- The **Metal** face (`driver::metal`, its discovery arm, the
+  `objc_msgSend` link) is gated to `any(target_os = "macos", "ios")`.
+- The **Vulkan** face (`driver::vulkan`, its discovery arm, the
+  `#[link(name = "vulkan")]` stanza) is gated to
+  `any(target_os = "linux", "android", "windows")`. On Apple targets it
+  is compiled out entirely, so a plain macOS build with `vulkan` on
+  needs **no** Vulkan loader — this is what makes both backends safe to
+  default-enable (the "MoltenVK link trap": default-enabling the
+  *feature* alone, without the code gate, would break every Mac build at
+  link time).
+- `vulkan-portability` extends the Vulkan code gate to include macOS
+  (against MoltenVK's `libvulkan`). It is additive over `vulkan` and is
+  **not** in the defaults — it forces a link dependency a plain Mac
+  build must not carry.
+
+The result: one dependency line with default features compiles the
+right face on every OS. Other notes on the faces:
 
 - `render` — the render face. Pulls in `quanta-render` and re-exports
   it (the `RenderGpu` trait, builders, typed wrappers, render-stage
@@ -272,12 +296,12 @@ webgpu = ["std", "jit", "compute", "quanta-core/webgpu", "quanta-render?/webgpu"
 - `software` and `webgpu` imply `compute` (those drivers' whole job is
   executing kernels).
 - A **headless compute** consumer builds with
-  `default-features = false, features = ["metal", "compute", "jit"]`
-  (or `vulkan`): zero render code compiled, no render type on the
-  surface.
+  `default-features = false, features = ["metal", "vulkan", "compute", "jit"]`:
+  zero render code compiled, no render type on the surface. (List the
+  backends you target; both stay portable across OSes.)
 - A **render-only** consumer builds with
-  `default-features = false, features = ["metal", "render"]` — or
-  depends on `quanta-render` directly — and compiles zero kernel
+  `default-features = false, features = ["metal", "vulkan", "render"]` —
+  or depends on `quanta-render` directly — and compiles zero kernel
   machinery.
 
 Without `std`, only types and the kernel language are available (for
@@ -293,7 +317,7 @@ The runtime crates (`quanta-core`, `quanta`, `quanta-render`) have
 `quanta-ir`). GPU drivers use raw FFI:
 
 - **Metal**: `objc_msgSend` / `sel_registerName` / `objc_getClass` via `extern "C"`
-- **Vulkan**: `vkCreateInstance` / `vkCreateBuffer` / etc. via `#[link(name = "vulkan")]`
+- **Vulkan**: `vkCreateInstance` / `vkCreateBuffer` / etc. via `#[link(name = "vulkan")]` (the link stanza is `cfg(target_os)`-gated to Linux/Android/Windows, plus macOS only under `vulkan-portability`)
 
 No `metal-rs`, no `ash`, no `objc` crate. Raw FFI gives minimal binary size,
 fast builds, and total ABI control.

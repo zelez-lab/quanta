@@ -16,7 +16,19 @@ categories = ["graphics", "hardware-support"]
 default = ["metal", "render", "compute"]
 std = []
 metal = ["std"]
+## Vulkan face. The FEATURE is target-independent (it may be on by
+## default), but the CODE is `cfg(target_os)`-gated to Linux / Android /
+## Windows — the Vulkan module, its discovery arm, and the
+## `#[link(name = "vulkan")]` stanza only compile there. On Apple targets
+## the face is pruned so a plain build needs no libvulkan (the MoltenVK
+## link trap). `vulkan-portability` extends the code to macOS for
+## MoltenVK users; see below.
 vulkan = ["std"]
+## Opt-in: compile the Vulkan face on macOS too (against MoltenVK's
+## `libvulkan`). Requires `vulkan`. Purely additive — it only widens the
+## `cfg(target_os)` set the Vulkan code is gated on to include macOS;
+## link-time then needs a MoltenVK `libvulkan` on the loader path.
+vulkan-portability = ["vulkan"]
 ## Render half of the device trait + drivers, plus the render data
 ## model they speak (PipelineDesc / RenderPass / RenderOp / shader
 ## binaries / surface configuration). `quanta-render` builds on this.

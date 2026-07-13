@@ -496,6 +496,10 @@ impl VulkanDevice {
                         if let Some(tex) = textures.get(handle) {
                             let idx = *slot as usize;
                             let sampler = if idx < 8 {
+                                // The wrapping closure is required: `default_sampler`
+                                // is also called in the `else` arm below, so it can't
+                                // be moved into `unwrap_or_else` by value.
+                                #[allow(clippy::redundant_closure)]
                                 sampler_for_slot[idx].unwrap_or_else(|| default_sampler())
                             } else {
                                 default_sampler()

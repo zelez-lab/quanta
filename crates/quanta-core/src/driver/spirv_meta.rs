@@ -21,7 +21,24 @@
 /// callers should fall back to a conservative default.
 // Consumed only by the Vulkan compute wave path; the render-only build
 // compiles this module for `fragment_output_count` alone.
-#[cfg_attr(not(all(feature = "vulkan", feature = "compute")), allow(dead_code))]
+// Dead unless the Vulkan compute path actually compiles — which needs the
+// `vulkan` + `compute` features AND one of Vulkan's target_os set (macOS
+// only under `vulkan-portability`). The render arm keeps this module alive
+// on Apple for `fragment_output_count`, so the OS set must match the
+// module gate or these read as dead on a default macOS build.
+#[cfg_attr(
+    not(all(
+        feature = "vulkan",
+        feature = "compute",
+        any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "windows",
+            all(feature = "vulkan-portability", target_os = "macos"),
+        )
+    )),
+    allow(dead_code)
+)]
 pub(crate) fn local_size(words: &[u32]) -> Option<[u32; 3]> {
     const SPIRV_MAGIC: u32 = 0x0723_0203;
     const OP_EXECUTION_MODE: u32 = 16;
@@ -51,7 +68,21 @@ pub(crate) fn local_size(words: &[u32]) -> Option<[u32; 3]> {
 /// combined image+sampler on the render path); `&mut Texture2D` storage slots
 /// are `StorageImage`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(all(feature = "vulkan", feature = "compute")), allow(dead_code))]
+// Same gate as `local_size` above: dead unless the Vulkan compute path
+// compiles (features + Vulkan's target_os set).
+#[cfg_attr(
+    not(all(
+        feature = "vulkan",
+        feature = "compute",
+        any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "windows",
+            all(feature = "vulkan-portability", target_os = "macos"),
+        )
+    )),
+    allow(dead_code)
+)]
 pub(crate) enum DescriptorKind {
     StorageBuffer,
     StorageImage,
@@ -68,7 +99,21 @@ pub(crate) enum DescriptorKind {
 /// (or in a set other than 0, which our emitters never produce) are omitted.
 /// Works identically for AOT and JIT SPIR-V — both share the emitter's
 /// OpVariable/OpTypePointer/OpTypeImage encoding.
-#[cfg_attr(not(all(feature = "vulkan", feature = "compute")), allow(dead_code))]
+// Same gate as `local_size` above: dead unless the Vulkan compute path
+// compiles (features + Vulkan's target_os set).
+#[cfg_attr(
+    not(all(
+        feature = "vulkan",
+        feature = "compute",
+        any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "windows",
+            all(feature = "vulkan-portability", target_os = "macos"),
+        )
+    )),
+    allow(dead_code)
+)]
 pub(crate) fn binding_kinds(words: &[u32]) -> alloc::vec::Vec<(u32, DescriptorKind)> {
     use alloc::collections::BTreeMap;
     const SPIRV_MAGIC: u32 = 0x0723_0203;

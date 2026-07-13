@@ -6,8 +6,15 @@ license.workspace = true
 publish = false
 
 # A headless GPGPU consumer (the Thiaba / ai_project shape): depends on
-# `quanta` ALONE, render OFF. Step 085 acceptance fixture — `cargo tree`
-# for this crate must contain no `quanta-render`, and it builds + runs a
-# compute dispatch with zero render code compiled.
+# `quanta` ALONE, render OFF. `cargo tree` for this crate must contain no
+# `quanta-render`, and it builds + runs a compute dispatch with zero
+# render code compiled.
+#
+# This is also Quanta's LEAN-BUILD EXEMPLAR: it deliberately opts out of
+# the default features (which are `metal, vulkan, render, compute`) with
+# `default-features = false` and names back only what it needs. Most
+# consumers should instead take the plain default one-liner
+# (`quanta = { git = "…" }`), which selects the right GPU face per OS;
+# this explicit shape exists to prove the render-free / CPU-only surface.
 [dependencies]
 quanta = { path = "../..", default-features = false, features = ["software"] }

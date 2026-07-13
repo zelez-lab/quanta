@@ -129,7 +129,15 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
         devs.extend(driver::metal::discover());
     }
 
-    #[cfg(feature = "vulkan")]
+    #[cfg(all(
+        feature = "vulkan",
+        any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "windows",
+            all(feature = "vulkan-portability", target_os = "macos"),
+        )
+    ))]
     if allows(ForcedBackend::Vulkan) {
         devs.extend(driver::vulkan::discover());
     }

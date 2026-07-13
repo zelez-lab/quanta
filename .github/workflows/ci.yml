@@ -42,6 +42,20 @@ jobs:
       - name: Build
         run: cargo build
 
+      # MoltenVK-trap regression. The default features are
+      # `metal, vulkan, render, compute`, and default-enabling `vulkan`
+      # is only safe because the Vulkan code (module, discovery, the
+      # `#[link(name = "vulkan")]` stanza) is cfg(target_os)-gated out of
+      # Apple targets. If that gate ever regresses, a plain macOS build
+      # starts demanding a Vulkan loader and fails at link. This step
+      # proves the default one-liner builds per-OS: Vulkan-pruned on
+      # macOS (no libvulkan needed), Vulkan-active on Linux/Windows.
+      - name: Default-features build (MoltenVK-trap regression)
+        shell: bash
+        run: |
+          cargo build -p quanta
+          echo "ok: default-features (metal, vulkan, render, compute) build the right face on ${{ runner.os }}"
+
       # Compute/render boundary: all four feature quadrants must build
       # in isolation (core-only / render / compute / both). Guards the
       # crate-split boundary — a render file reaching for a compute

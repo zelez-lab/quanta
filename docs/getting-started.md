@@ -17,6 +17,16 @@ That produces the following line in your `Cargo.toml`:
 quanta = { git = "https://github.com/zelez-lab/quanta" }
 ```
 
+**That one line is all you need on every OS.** The defaults
+(`["metal", "vulkan", "render", "compute"]`) compile the right GPU face
+for the target with zero backend knowledge on your part: **Metal** on
+macOS / iOS, **Vulkan** on Linux / Android / Windows. There is no
+per-target feature table to maintain — each backend's code is
+`cfg(target_os)`-gated, so enabling both `metal` and `vulkan` is safe:
+the one that can't run on the target is pruned at compile time. In
+particular a plain macOS build needs **no** Vulkan loader — the Vulkan
+face is compiled out on Apple targets.
+
 Pin to a specific revision with `--rev <sha>` (or `--tag <tag>` once
 tagged releases exist) for reproducible builds.
 
@@ -26,26 +36,30 @@ Quanta has two faces: **GPU compute** (the CUDA-like side — kernels,
 fields, dispatch) and **rendering** (render passes, graphics pipelines,
 mesh/tessellation/ray-tracing, presentation). Each face is a Cargo
 feature — `compute` and `render`, both on by default
-(`default = ["metal", "render", "compute"]`) — so a consumer pulls in
-only what it uses.
+(`default = ["metal", "vulkan", "render", "compute"]`) — so a lean
+consumer can compile only the face it uses. **Backend selection is
+automatic** (see above); the opt-out below is about trimming *faces*,
+not about picking a GPU driver. There are no negative features — you
+turn defaults off and name what you want back.
 
 - **Compute only** (a database, an ML runtime, any GPGPU app) — turn the
-  defaults off and pick the compute face:
+  defaults off and keep the compute face:
 
   ```toml
   [dependencies]
-  quanta = { git = "...", default-features = false, features = ["metal", "compute", "jit"] }
-  # or "vulkan" / "software" instead of "metal"
+  quanta = { git = "...", default-features = false, features = ["metal", "vulkan", "compute", "jit"] }
   ```
 
   Your build has **no rendering types on its surface** and skips
-  compiling the render stack entirely.
+  compiling the render stack entirely. Listing both `metal` and
+  `vulkan` keeps the build portable across OSes; drop one if you only
+  ever target the other, or use `software` for a CPU-only build.
 
-- **Render only** (a UI toolkit, a compositor) — pick the render face:
+- **Render only** (a UI toolkit, a compositor) — keep the render face:
 
   ```toml
   [dependencies]
-  quanta = { git = "...", default-features = false, features = ["metal", "render"] }
+  quanta = { git = "...", default-features = false, features = ["metal", "vulkan", "render"] }
   ```
 
   This compiles **zero kernel machinery**: no compute face, and the
@@ -57,8 +71,18 @@ only what it uses.
 
   ```toml
   [dependencies]
-  quanta = { git = "..." }    # render + compute + metal on by default
+  quanta = { git = "..." }    # metal + vulkan + render + compute, right face per OS
   ```
+
+> **MoltenVK on macOS?** Vulkan is compiled out on Apple targets by
+> default (so a plain Mac build needs no Vulkan loader). To run Vulkan
+> on macOS through MoltenVK, add the `vulkan-portability` feature — it
+> extends the Vulkan face to macOS and links MoltenVK's `libvulkan` at
+> build time (which must then be on the loader path):
+>
+> ```toml
+> quanta = { git = "...", features = ["vulkan-portability"] }
+> ```
 
 The `render` feature pulls in the `quanta-render` crate and re-exports
 it: render types (`RenderBuilder`, `Pipeline`, `Surface`, …), the

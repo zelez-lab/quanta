@@ -52,10 +52,40 @@ categories = ["graphics", "hardware-support"]
 readme = "README.md"
 
 [features]
-default = ["metal", "render", "compute"]
+## Default features compile the right GPU face for the target with zero
+## backend knowledge from the consumer: `quanta = { git = "…" }` builds
+## Metal on Apple and Vulkan on Linux / Android / Windows off ONE
+## dependency line. This works because every backend's CODE is
+## `cfg(target_os)`-gated — enabling both `metal` and `vulkan` here is
+## safe: the Vulkan face (module, discovery, `#[link(name = "vulkan")]`)
+## is pruned on Apple targets, so a plain Mac build needs no libvulkan
+## (the MoltenVK link trap), and the Metal face is pruned off non-Apple.
+##
+## Lean / headless builds opt out the cargo-idiomatic way — there are no
+## negative features:
+##   default-features = false, features = ["metal", "compute", "jit"]
+##
+## `jit`, `software`, and `webgpu` stay opt-in. `webgpu` is deliberately
+## NOT in defaults: it is browser-only (its code is `wasm32`-gated) and
+## on native it would still force `jit` + `compute` into the graph and
+## break render-purity, so it is not zero-cost off-target.
+default = ["metal", "vulkan", "render", "compute"]
 std = ["quanta-core/std", "quanta-render?/std"]
 metal = ["std", "quanta-core/metal", "quanta-render?/metal"]
+## Vulkan face. Target-independent FEATURE, `cfg(target_os)`-gated CODE:
+## it compiles on Linux / Android / Windows and is pruned on Apple, so
+## default-enabling it costs a plain Mac build nothing. MoltenVK users on
+## macOS add `vulkan-portability` (below) to extend the code to macOS.
 vulkan = ["std", "quanta-core/vulkan", "quanta-render?/vulkan"]
+## MoltenVK opt-in: also compile the Vulkan face on macOS (linking
+## MoltenVK's `libvulkan`). Additive over `vulkan`; only widens the
+## target_os gate to include macOS. Not in defaults — a plain Mac build
+## must not require a Vulkan loader.
+vulkan-portability = [
+    "vulkan",
+    "quanta-core/vulkan-portability",
+    "quanta-render?/vulkan-portability",
+]
 ## Rendering face: render passes, graphics pipelines, mesh/tessellation/
 ## ray-tracing, VRS, render-bundle ICB, and texture-as-render-target
 ## helpers. On by default. A headless compute consumer builds with
