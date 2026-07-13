@@ -19,6 +19,9 @@
 /// Returns `None` for malformed modules or modules that don't declare a
 /// literal LocalSize (e.g. `LocalSizeId`, which our emitters never produce) —
 /// callers should fall back to a conservative default.
+// Consumed only by the Vulkan compute wave path; the render-only build
+// compiles this module for `fragment_output_count` alone.
+#[cfg_attr(not(all(feature = "vulkan", feature = "compute")), allow(dead_code))]
 pub(crate) fn local_size(words: &[u32]) -> Option<[u32; 3]> {
     const SPIRV_MAGIC: u32 = 0x0723_0203;
     const OP_EXECUTION_MODE: u32 = 16;
@@ -48,6 +51,7 @@ pub(crate) fn local_size(words: &[u32]) -> Option<[u32; 3]> {
 /// combined image+sampler on the render path); `&mut Texture2D` storage slots
 /// are `StorageImage`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(all(feature = "vulkan", feature = "compute")), allow(dead_code))]
 pub(crate) enum DescriptorKind {
     StorageBuffer,
     StorageImage,
@@ -64,6 +68,7 @@ pub(crate) enum DescriptorKind {
 /// (or in a set other than 0, which our emitters never produce) are omitted.
 /// Works identically for AOT and JIT SPIR-V — both share the emitter's
 /// OpVariable/OpTypePointer/OpTypeImage encoding.
+#[cfg_attr(not(all(feature = "vulkan", feature = "compute")), allow(dead_code))]
 pub(crate) fn binding_kinds(words: &[u32]) -> alloc::vec::Vec<(u32, DescriptorKind)> {
     use alloc::collections::BTreeMap;
     const SPIRV_MAGIC: u32 = 0x0723_0203;
@@ -170,9 +175,101 @@ pub(crate) fn binding_kinds(words: &[u32]) -> alloc::vec::Vec<(u32, DescriptorKi
     out.into_iter().collect()
 }
 
+/// Count a fragment module's color outputs: `OpVariable`s in the
+/// `Output` storage class that carry a `Location` decoration and appear
+/// in the fragment entry point's interface. That is exactly the set of
+/// `location = N` fragment outputs (`out_color` at `Location(0)`, plus
+/// any further MRT outputs) — built-in outputs like `FragDepth` are
+/// `BuiltIn`-decorated, never `Location`-decorated, so they are excluded.
+///
+/// Returns `None` for a malformed module or one with no `Fragment`
+/// entry point (e.g. a vertex module) — callers should then skip the
+/// check rather than assume zero. Works for AOT and JIT SPIR-V alike;
+/// the emitter uses the same OpEntryPoint / Output / Location encoding.
+// Consumed only by the render-path pipeline-creation check; a
+// compute-only build compiles this module for the wave-size / binding
+// reflectors instead.
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
+pub(crate) fn fragment_output_count(words: &[u32]) -> Option<usize> {
+    use alloc::collections::BTreeSet;
+    const SPIRV_MAGIC: u32 = 0x0723_0203;
+    const OP_ENTRY_POINT: u32 = 15;
+    const OP_DECORATE: u32 = 71;
+    const OP_VARIABLE: u32 = 59;
+    const EXECUTION_MODEL_FRAGMENT: u32 = 4;
+    const STORAGE_CLASS_OUTPUT: u32 = 3;
+    const DECORATION_LOCATION: u32 = 30;
+
+    if words.len() < 5 || words[0] != SPIRV_MAGIC {
+        return None;
+    }
+
+    // Interface ids of the fragment entry point (empty until we find it).
+    let mut fragment_interface: Option<BTreeSet<u32>> = None;
+    // variable id → storage class (only Output ones matter).
+    let mut output_vars: BTreeSet<u32> = BTreeSet::new();
+    // ids carrying a Location decoration.
+    let mut located: BTreeSet<u32> = BTreeSet::new();
+
+    let mut i = 5usize;
+    while i < words.len() {
+        let word_count = (words[i] >> 16) as usize;
+        let opcode = words[i] & 0xFFFF;
+        if word_count == 0 || i + word_count > words.len() {
+            return None; // malformed — don't guess
+        }
+        match opcode {
+            OP_ENTRY_POINT if word_count >= 3 && words[i + 1] == EXECUTION_MODEL_FRAGMENT => {
+                // OpEntryPoint <model> <entry-id> <name-literal…> <iface…>.
+                // The name is a null-terminated UTF-8 literal packed into
+                // words; skip it to reach the interface id list.
+                let mut j = i + 3;
+                let end = i + word_count;
+                // Advance past the name: each word holds 4 bytes; the
+                // string ends at the word containing a 0 byte.
+                while j < end {
+                    let w = words[j];
+                    j += 1;
+                    if w.to_le_bytes().contains(&0) {
+                        break;
+                    }
+                }
+                let mut iface = BTreeSet::new();
+                while j < end {
+                    iface.insert(words[j]);
+                    j += 1;
+                }
+                fragment_interface = Some(iface);
+            }
+            // OpVariable <result-type> <result-id> <storage-class>
+            OP_VARIABLE if word_count >= 4 && words[i + 3] == STORAGE_CLASS_OUTPUT => {
+                output_vars.insert(words[i + 2]);
+            }
+            OP_DECORATE if word_count >= 4 && words[i + 2] == DECORATION_LOCATION => {
+                located.insert(words[i + 1]);
+            }
+            _ => {}
+        }
+        i += word_count;
+    }
+
+    let interface = fragment_interface?;
+    // Count Output variables that are Location-decorated and belong to
+    // the fragment entry's interface.
+    let count = output_vars
+        .iter()
+        .filter(|v| located.contains(v) && interface.contains(v))
+        .count();
+    Some(count)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DescriptorKind, binding_kinds, local_size};
+    use super::{fragment_output_count, local_size};
+    // `binding_kinds` / `DescriptorKind` are exercised only by the
+    // jit-gated round-trip tests below.
+    #[cfg(feature = "jit")]
+    use super::{DescriptorKind, binding_kinds};
 
     /// Hand-assemble a minimal module: header + OpExecutionMode LocalSize.
     fn module_with_local_size(x: u32, y: u32, z: u32) -> alloc::vec::Vec<u32> {
@@ -386,5 +483,114 @@ mod tests {
                 (1, DescriptorKind::StorageBuffer),
             ],
         );
+    }
+
+    /// Hand-assemble a minimal Fragment module with `outputs`
+    /// Location-decorated `Output` variables in the entry interface,
+    /// plus optionally one extra `Output` variable that is *not*
+    /// Location-decorated (a built-in like FragDepth) to prove it is
+    /// excluded. `wrong_model` emits a Vertex entry point instead, to
+    /// prove non-fragment modules return `None`.
+    fn fragment_module(
+        outputs: u32,
+        with_builtin: bool,
+        wrong_model: bool,
+    ) -> alloc::vec::Vec<u32> {
+        const OP_ENTRY_POINT: u32 = 15;
+        const OP_DECORATE: u32 = 71;
+        const OP_VARIABLE: u32 = 59;
+        const EXECUTION_MODEL_VERTEX: u32 = 0;
+        const EXECUTION_MODEL_FRAGMENT: u32 = 4;
+        const STORAGE_CLASS_OUTPUT: u32 = 3;
+        const DECORATION_LOCATION: u32 = 30;
+        const DECORATION_BUILT_IN: u32 = 11;
+
+        // Header: magic, version 1.3, generator, bound, schema.
+        let mut w = alloc::vec![0x0723_0203, 0x0001_0300, 0, 100, 0];
+        // OpCapability Shader.
+        w.extend_from_slice(&[(2 << 16) | 17, 1]);
+
+        // Ids: %1 = entry function, output vars start at %10, builtin %20,
+        // ptr type %2 (unused value, just an operand for OpVariable).
+        let entry = 1u32;
+        let ptr_ty = 2u32;
+        let mut output_ids: alloc::vec::Vec<u32> = (0..outputs).map(|k| 10 + k).collect();
+        let builtin_id = 20u32;
+        if with_builtin {
+            output_ids.push(builtin_id);
+        }
+
+        // OpEntryPoint <model> %entry "main" <iface…>.
+        // "main" packs into two words: 'm','a','i','n', then 0 terminator.
+        let name_w0 = u32::from_le_bytes([b'm', b'a', b'i', b'n']);
+        let name_w1 = 0u32;
+        let model = if wrong_model {
+            EXECUTION_MODEL_VERTEX
+        } else {
+            EXECUTION_MODEL_FRAGMENT
+        };
+        let mut ep = alloc::vec![model, entry, name_w0, name_w1];
+        ep.extend_from_slice(&output_ids);
+        let ep_wc = (ep.len() + 1) as u32;
+        w.push((ep_wc << 16) | OP_ENTRY_POINT);
+        w.extend_from_slice(&ep);
+
+        // Decorations: each real output gets Location k; the builtin gets
+        // BuiltIn (not Location), so it must be excluded from the count.
+        for (k, id) in output_ids.iter().enumerate() {
+            if with_builtin && *id == builtin_id {
+                w.extend_from_slice(&[(4 << 16) | OP_DECORATE, *id, DECORATION_BUILT_IN, 22]);
+            } else {
+                w.extend_from_slice(&[(4 << 16) | OP_DECORATE, *id, DECORATION_LOCATION, k as u32]);
+            }
+        }
+
+        // OpVariable <ptr-ty> <id> Output for every output id.
+        for id in &output_ids {
+            w.extend_from_slice(&[(4 << 16) | OP_VARIABLE, ptr_ty, *id, STORAGE_CLASS_OUTPUT]);
+        }
+        w
+    }
+
+    #[test]
+    fn counts_single_fragment_output() {
+        // The DSL always emits exactly one Location(0) output.
+        assert_eq!(
+            fragment_output_count(&fragment_module(1, false, false)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn counts_multiple_fragment_outputs() {
+        assert_eq!(
+            fragment_output_count(&fragment_module(3, false, false)),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn excludes_builtin_outputs() {
+        // One located output + one BuiltIn output → count is 1.
+        assert_eq!(
+            fragment_output_count(&fragment_module(1, true, false)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn non_fragment_module_returns_none() {
+        // A vertex entry point must not be counted as a fragment.
+        assert_eq!(
+            fragment_output_count(&fragment_module(1, false, true)),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_bad_magic_fragment() {
+        assert_eq!(fragment_output_count(&[0xdead_beef, 0, 0, 0, 0]), None);
+        // Zero word count must not loop forever.
+        assert_eq!(fragment_output_count(&[0x0723_0203, 0, 0, 0, 0, 0]), None);
     }
 }

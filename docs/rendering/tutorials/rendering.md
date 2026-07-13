@@ -141,6 +141,11 @@ per-stage payloads already in the backend's native format,
 `ShaderBinary` statics that `#[quanta::vertex]` / `#[quanta::fragment]`
 generate (the driver picks the right format per vendor).
 
+`with_color_formats` is per-attachment: `color_formats[i]` types color
+attachment `i` of the pass, so its length must equal the number of color
+targets the pass binds (a mismatch fails `pulse()`) — it is not a list of
+formats the pipeline "may be used against".
+
 ### Blend modes
 
 | Constant                         | Behavior                              |

@@ -321,6 +321,47 @@ A single attribute at an over-limit location is rejected the same way
 ("uses attribute location `L` but this device's maxVertexInputAttributes
 is `M`").
 
+### Pipeline declares more color attachments than the fragment writes → `CompilationFailed`
+
+`PipelineDesc::color_formats` is **per-attachment** — entry `i` types
+color attachment `i` — so declaring more color attachments than the
+fragment actually writes leaves a phantom attachment no shader output
+feeds. When a SPIR-V fragment payload is available (the
+`ShaderSource::Binaries` case), `gpu.pipeline()` reflects the fragment's
+color-output count and rejects the descriptor at creation:
+
+> compilation failed: pipeline declares `N` color attachments; fragment
+> writes `M`
+
+The usual cause is reading `color_formats` as a list of formats the
+pipeline "may be used against" (e.g. `[BGRA8, RGBA8]` for a single
+target) instead of one entry per attachment. Declaring **fewer** than the
+fragment writes is allowed (the driver-legal partial-write case).
+metallib-only shaders cannot be pre-reflected, so this check is skipped
+for them — the encode-time checks below still apply.
+
+### Render pass shape disagrees with the pipeline → `InvalidParam`
+
+At submission (`pulse()`), the bound color/depth targets are checked
+against the pipeline's declared formats. A mismatch here is never
+legitimate, so the check is always-on (not gated behind
+`QUANTA_VALIDATE`) and backend-agnostic. Three cases, each a named
+`InvalidParam`:
+
+> invalid parameter: pipeline declares `N` color attachments but the pass
+> binds `M` color targets
+
+> invalid parameter: color target `i` format mismatch: pipeline
+> color_formats[`i`] is `<Format>` but the bound target is `<Format>`
+
+> invalid parameter: pass binds a depth target but the pipeline declares
+> no depth format
+
+(and the symmetric "pipeline declares depth format `<Format>` but the
+pass binds no depth target"). These catch the phantom / mis-typed
+attachment that a driver would otherwise accept silently before dropping
+draws.
+
 ---
 
 ## Attaching context

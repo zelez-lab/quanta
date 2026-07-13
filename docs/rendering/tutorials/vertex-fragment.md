@@ -323,6 +323,12 @@ fn render_frame(gpu: &Gpu, angle: f32) -> Result<(), QuantaError> {
 }
 ```
 
+`with_color_formats` is per-attachment: `color_formats[i]` types color
+attachment `i` of the pass, so its length must match the number of color
+targets the pass binds — here one `BGRA8` format for the one `BGRA8`
+target. It is not a list of formats the pipeline may be used against; a
+mismatch is caught when the pass is submitted.
+
 ## Instanced rendering
 
 Use `StepMode::Instance` for per-instance data. With the Vertex derive,

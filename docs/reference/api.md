@@ -498,6 +498,15 @@ let desc = PipelineDesc::new(ShaderSource::Binaries {
 let pipeline = gpu.pipeline(&desc)?;
 ```
 
+`with_color_formats` is **per-attachment**: entry `i` types color
+attachment `i` of every pass the pipeline is used in — it is not a
+candidate list of formats the pipeline may be used against. The count
+must equal the pass's color-target count and format `i` must match bound
+target `i`; both are enforced when the pass is submitted (a mismatch
+fails `pulse()`), and a descriptor declaring more attachments than the
+fragment writes is rejected at creation when a SPIR-V fragment is present
+(a metallib-only shader can't be pre-reflected, so it skips that one).
+
 `ShaderSource` supplies the shader payloads:
 `Stages { vertex, fragment }` (raw per-stage bytes in the backend's
 native format), `Combined(&[u8])` (one payload, both entry points), or

@@ -220,6 +220,8 @@ impl GpuDevice for MetalDevice {
             ops: Vec::new(),
             color_targets: Vec::new(),
             depth_target: None,
+            primary_format: Some(target.format()),
+            pipeline_shape: None,
         })
     }
 

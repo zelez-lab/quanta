@@ -407,11 +407,7 @@ impl MetalDevice {
                 .write()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
                 .insert(handle, ds_state);
-            Ok(Pipeline {
-                handle,
-                device: None,
-                live: true,
-            })
+            Ok(Pipeline::from_handle(handle))
         }
     }
 }

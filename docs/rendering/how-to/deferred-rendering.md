@@ -167,6 +167,13 @@ fn main() {
         .draw(vertex_count)
         .pulse().unwrap();
     pulse.wait().unwrap();
+    // `color_formats` is per-attachment: the pipeline's three formats
+    // (RGBA8, RGBA16Float, RGBA32Float) type the three color targets in
+    // order, and its `depth_format` pairs with the depth target. The
+    // counts and formats must line up with the targets the pass binds —
+    // a mismatch (wrong count, a swapped format, a stray or missing
+    // depth target) fails `pulse()` with a named error rather than
+    // misrendering silently.
 
     // --- Lighting pipeline: fullscreen, reads G-buffer textures ---
     let light_pipeline = gpu.pipeline(

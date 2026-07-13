@@ -121,6 +121,8 @@ impl VulkanDevice {
             ops: Vec::new(),
             color_targets: Vec::new(),
             depth_target: None,
+            primary_format: Some(target.format()),
+            pipeline_shape: None,
         })
     }
 
@@ -165,6 +167,10 @@ impl VulkanDevice {
                     .map(|p| p.contains_key(&h))
                     .unwrap_or(false),
             })?;
+            // Also fail loudly on a pipeline/target shape mismatch — a
+            // phantom or mis-typed attachment that would otherwise
+            // silently misrender.
+            pass.validate_pass_shape()?;
         }
 
         let target_tex = textures.get(&pass.handle).ok_or_else(|| {

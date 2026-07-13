@@ -902,11 +902,7 @@ impl GpuDevice for CpuDevice {
         }
         // No CPU-side pipeline state — the handle is a pure token, so
         // there is nothing to destroy (pipeline_destroy default no-op).
-        Ok(Pipeline {
-            handle: self.alloc_handle(),
-            device: None,
-            live: true,
-        })
+        Ok(Pipeline::from_handle(self.alloc_handle()))
     }
 
     #[cfg(feature = "render")]

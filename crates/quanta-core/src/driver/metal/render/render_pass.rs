@@ -244,6 +244,10 @@ impl MetalDevice {
                     HandleKind::Texture => textures.contains_key(&h),
                     HandleKind::Pipeline => pipelines.contains_key(&h),
                 })?;
+                // Also fail loudly on a pipeline/target shape mismatch —
+                // a phantom or mis-typed attachment that Metal would
+                // accept silently and then drop draws for.
+                pass.validate_pass_shape()?;
             }
 
             for op in &pass.ops {

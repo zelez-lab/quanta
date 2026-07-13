@@ -725,10 +725,6 @@ impl VulkanDevice {
         // destroys them — they are transient on success as well.
         drop(guard);
 
-        Ok(Pipeline {
-            handle,
-            device: None,
-            live: true,
-        })
+        Ok(Pipeline::from_handle(handle))
     }
 }

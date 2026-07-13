@@ -179,9 +179,23 @@ pub trait RenderGpu: sealed::Sealed {
 
 impl RenderGpu for quanta_core::Gpu {
     fn pipeline(&self, desc: &PipelineDesc) -> Result<Pipeline, QuantaError> {
+        // Creation-time fragment-output check (all backends share it,
+        // before the driver call): if a SPIR-V fragment payload is
+        // available, reject a descriptor that declares more color
+        // attachments than the fragment writes. metallib-only shaders
+        // skip it — they cannot be pre-reflected.
+        if let quanta_core::ShaderSource::Binaries { fragment, .. } = desc.shader {
+            quanta_core::__check_fragment_outputs(fragment.spirv, desc.color_formats.len())?;
+        }
         let device = self.device_handle();
         let mut pipeline = device.pipeline_create(desc)?;
         pipeline.__attach_device(device.clone());
+        // Record the descriptor's declared color/depth formats on the
+        // pipeline so the render pass can validate the bound targets
+        // against them at encode time (see
+        // `RenderPass::validate_pass_shape`). Done here, at the single
+        // shared post-`pipeline_create` seam, so every backend gets it.
+        pipeline.__set_formats(desc.color_formats.clone(), desc.depth_format);
         Ok(pipeline)
     }
 

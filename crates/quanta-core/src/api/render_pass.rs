@@ -15,6 +15,11 @@ pub struct ColorTarget {
     /// Driver handle of the attachment texture (derived from the
     /// `Texture` passed to [`ColorTarget::new`]).
     pub(crate) texture: u64,
+    /// Pixel format of the attachment texture (captured from the
+    /// `Texture` at construction). Retained so the render pass can
+    /// check it against the pipeline's `color_formats[i]` at encode
+    /// time.
+    pub(crate) format: crate::Format,
     /// What to do with existing contents at pass start.
     pub load_op: LoadOp,
     /// What to do with results at pass end.
@@ -27,6 +32,7 @@ impl ColorTarget {
     pub fn new(texture: &Texture) -> Self {
         Self {
             texture: texture.handle(),
+            format: texture.format(),
             load_op: LoadOp::Clear(Color::BLACK),
             store_op: StoreOp::Store,
         }
@@ -121,6 +127,26 @@ pub struct RenderPass {
     pub(crate) color_targets: Vec<ColorTarget>,
     /// Depth/stencil attachment target.
     pub(crate) depth_target: Option<DepthTarget>,
+    /// Pixel format of the primary render target (the `Texture` passed
+    /// to `render`). Used for pass-shape validation in the single-target
+    /// path, where `color_targets` is empty but the pass still binds one
+    /// implicit color attachment. Stamped by the `Gpu` wrapper after
+    /// `render_begin`; `None` if it could not be captured.
+    pub(crate) primary_format: Option<crate::Format>,
+    /// The color/depth formats of the pipeline bound in this pass, if
+    /// one was bound. Captured from the [`Pipeline`] at `set_pipeline`
+    /// so [`RenderPass::validate_pass_shape`] can compare the pipeline's
+    /// declared attachments against the bound targets without a driver
+    /// registry lookup. `None` means no pipeline was bound (nothing to
+    /// validate).
+    pub(crate) pipeline_shape: Option<PipelineShape>,
+}
+
+/// The declared attachment shape of the pipeline bound in a render pass,
+/// snapshotted at bind time for encode-time validation.
+pub(crate) struct PipelineShape {
+    pub(crate) color_formats: Vec<crate::Format>,
+    pub(crate) depth_format: Option<crate::Format>,
 }
 
 #[allow(dead_code)]
@@ -336,11 +362,119 @@ impl RenderPass {
         Ok(())
     }
 
+    /// Pre-encode pass-shape validation: check that the pipeline bound
+    /// in this pass agrees with the color/depth targets the pass binds.
+    ///
+    /// `PipelineDesc::color_formats` is **per-attachment** — entry `i`
+    /// types color attachment `i` of the pass — so the pipeline's
+    /// attachment count and per-index formats must match the pass. A
+    /// consumer that read `color_formats` as a candidate list (declaring
+    /// `[BGRA8, RGBA8]` for a single `RGBA8` target) produced a phantom
+    /// second attachment and a mis-typed first one, which some drivers
+    /// accept silently and then drop draws for — undebuggable without
+    /// this check. It is always-on (never `QUANTA_VALIDATE`-gated,
+    /// backend-agnostic) because a mismatch here is never legitimate.
+    ///
+    /// Runs only when a pipeline was bound (otherwise there is nothing
+    /// to validate — a clear-only pass binds targets but no pipeline).
+    /// Drivers call this beside [`RenderPass::validate_handles`], before
+    /// encoding, so a mismatch fails `pulse()` loudly.
+    pub(crate) fn validate_pass_shape(&self) -> Result<(), crate::QuantaError> {
+        let Some(shape) = self.pipeline_shape.as_ref() else {
+            return Ok(());
+        };
+        let declared = shape.color_formats.len();
+
+        // How many color attachments the pass actually binds. With
+        // explicit `color_targets`, that count is exact. Otherwise the
+        // pass uses the legacy single-target path, which binds the
+        // primary render target as the sole color attachment (count 1) —
+        // *unless* the pipeline is depth-only (declares no color
+        // formats), where the primary target is the depth target and
+        // there are zero color attachments (count 0).
+        let bound_count = if !self.color_targets.is_empty() {
+            self.color_targets.len()
+        } else if declared == 0 {
+            0
+        } else {
+            1
+        };
+        if declared != bound_count {
+            return Err(crate::QuantaError::invalid_param(alloc::format!(
+                "pipeline declares {declared} color attachments but the pass binds \
+                 {bound_count} color targets"
+            ))
+            .with_context(
+                "color_formats[i] types color attachment i, so the pipeline's \
+                 attachment count must equal the pass's color-target count — a \
+                 consumer that read color_formats as a candidate list of usable \
+                 formats is the usual cause",
+            ));
+        }
+
+        // Per-attachment format: the bound target `i` must carry the
+        // format the pipeline declared for attachment `i`. In the
+        // single-target path the one target's format is `primary_format`.
+        // The loop only visits declared attachments, so a depth-only
+        // pipeline (empty `color_formats`) checks nothing here.
+        let format_of = |i: usize| -> Option<crate::Format> {
+            if self.color_targets.is_empty() {
+                self.primary_format
+            } else {
+                Some(self.color_targets[i].format)
+            }
+        };
+        for (i, &expected) in shape.color_formats.iter().enumerate() {
+            if let Some(got) = format_of(i)
+                && got != expected
+            {
+                return Err(crate::QuantaError::invalid_param(alloc::format!(
+                    "color target {i} format mismatch: pipeline color_formats[{i}] is \
+                     {expected:?} but the bound target is {got:?}"
+                )));
+            }
+        }
+
+        // Depth presence: enforced only for passes with explicit color
+        // targets, where the attachment roles are unambiguous. The pure
+        // legacy single-target path routes the primary handle to color
+        // *or* depth implicitly (a depth-only shadow pass binds its depth
+        // map as the primary target with no explicit `depth_target`), so
+        // its depth shape is not something we can flag without false
+        // positives.
+        if !self.color_targets.is_empty() {
+            match (self.depth_target.is_some(), shape.depth_format) {
+                (true, None) => {
+                    return Err(crate::QuantaError::invalid_param(
+                        "pass binds a depth target but the pipeline declares no depth format",
+                    ));
+                }
+                (false, Some(fmt)) => {
+                    return Err(crate::QuantaError::invalid_param(alloc::format!(
+                        "pipeline declares depth format {fmt:?} but the pass binds no \
+                         depth target"
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
     // === Pipeline ===
 
     /// Bind a render pipeline.
     pub fn set_pipeline(&mut self, pipeline: &Pipeline) {
         self.ops.push(RenderOp::SetPipeline(pipeline.handle()));
+        // Snapshot the pipeline's declared attachment shape so the
+        // pre-encode `validate_pass_shape` scan can check it against the
+        // bound targets. The last pipeline bound wins — drivers encode
+        // draws against the most recently set pipeline.
+        self.pipeline_shape = Some(PipelineShape {
+            color_formats: pipeline.color_formats.clone(),
+            depth_format: pipeline.depth_format,
+        });
     }
 
     // === Vertex/Index data ===

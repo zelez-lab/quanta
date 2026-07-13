@@ -1043,11 +1043,7 @@ impl QGpuDevice for WebgpuDevice {
             .borrow_mut()
             .insert(handle, state::PipelineEntry { pipeline, layout });
 
-        Ok(Pipeline {
-            handle,
-            device: None,
-            live: true,
-        })
+        Ok(Pipeline::from_handle(handle))
     }
 
     #[cfg(feature = "render")]
@@ -1070,10 +1066,13 @@ impl QGpuDevice for WebgpuDevice {
             ops: Vec::new(),
             color_targets: alloc::vec![crate::render_pass::ColorTarget {
                 texture: target.handle,
+                format: target.format,
                 load_op: crate::LoadOp::Clear(crate::Color::CLEAR),
                 store_op: crate::StoreOp::Store,
             }],
             depth_target: None,
+            primary_format: Some(target.format),
+            pipeline_shape: None,
         })
     }
 

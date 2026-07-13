@@ -14,9 +14,35 @@ pub struct Pipeline {
     /// wrapper attaches the device Arc so Drop can release the handle.
     pub(crate) device: Option<Arc<dyn GpuDevice>>,
     pub(crate) live: bool,
+    /// Per-attachment color formats this pipeline was built with —
+    /// a copy of `PipelineDesc::color_formats`, retained so the render
+    /// pass can validate that the bound targets match at encode time.
+    /// Drivers construct pipelines with this empty; the `Gpu` wrapper
+    /// stamps it from the descriptor.
+    pub(crate) color_formats: Vec<Format>,
+    /// Depth format this pipeline was built with (a copy of
+    /// `PipelineDesc::depth_format`), retained for the same encode-time
+    /// pass-shape validation.
+    pub(crate) depth_format: Option<Format>,
 }
 
 impl Pipeline {
+    /// Construct a live pipeline wrapper around a fresh driver handle,
+    /// with no device attached and no formats recorded yet. Drivers use
+    /// this from `pipeline_create`; the `Gpu` wrapper then attaches the
+    /// device and stamps the formats. Centralising the field list here
+    /// keeps future `Pipeline` fields off every backend's construction
+    /// site.
+    pub(crate) fn from_handle(handle: u64) -> Self {
+        Self {
+            handle,
+            device: None,
+            live: true,
+            color_formats: Vec::new(),
+            depth_format: None,
+        }
+    }
+
     pub fn handle(&self) -> u64 {
         self.handle
     }
@@ -28,6 +54,17 @@ impl Pipeline {
     #[doc(hidden)]
     pub fn __attach_device(&mut self, device: Arc<dyn GpuDevice>) {
         self.device = Some(device);
+    }
+
+    /// Record the color/depth formats the pipeline was built with so
+    /// the render pass can validate bound targets against them at
+    /// encode time. Internal hook for the `quanta-render` sibling crate
+    /// (drivers construct pipelines format-less); not part of the
+    /// stable public surface.
+    #[doc(hidden)]
+    pub fn __set_formats(&mut self, color_formats: Vec<Format>, depth_format: Option<Format>) {
+        self.color_formats = color_formats;
+        self.depth_format = depth_format;
     }
 }
 
@@ -142,8 +179,20 @@ pub struct PipelineDesc<'a> {
     pub fragment_entry: &'a str,
     /// Vertex buffer layouts.
     pub vertex_layouts: &'a [VertexLayout],
-    /// Color attachment formats (MRT — multiple render targets).
-    /// First entry is the primary color format.
+    /// Color attachment formats, **per attachment** (MRT — multiple
+    /// render targets): entry `i` types color attachment `i` of *every*
+    /// render pass this pipeline is used in. It is **not** a candidate
+    /// list of formats the pipeline may be used against — declaring
+    /// `[BGRA8, RGBA8]` gives a pipeline with two color attachments (a
+    /// BGRA8 one and an RGBA8 one), not one attachment usable as either.
+    ///
+    /// The count is a contract: it must equal the pass's color-target
+    /// count, and format `i` must match bound target `i`. Both are
+    /// enforced at encode time (a mismatch fails `pulse()`), and a
+    /// descriptor declaring more attachments than the fragment writes is
+    /// rejected at creation when a SPIR-V fragment is available (a
+    /// metallib-only shader cannot be pre-reflected, so that creation
+    /// check is skipped for it). First entry is the primary color format.
     pub color_formats: Vec<Format>,
     /// Depth attachment format (None = no depth buffer).
     pub depth_format: Option<Format>,
@@ -223,7 +272,12 @@ impl<'a> PipelineDesc<'a> {
         self
     }
 
-    /// Set the color attachment formats (MRT).
+    /// Set the color attachment formats — **one per attachment** (MRT).
+    /// Entry `i` types color attachment `i` of every pass this pipeline
+    /// is used in; this is not a candidate list. The length must equal
+    /// the pass's color-target count (enforced at encode time), and
+    /// declaring more attachments than the fragment writes is rejected
+    /// at pipeline creation. See [`PipelineDesc::color_formats`].
     pub fn with_color_formats(mut self, formats: Vec<Format>) -> Self {
         self.color_formats = formats;
         self
@@ -294,6 +348,58 @@ impl<'a> PipelineDesc<'a> {
         self.conservative_rasterization = enabled;
         self
     }
+}
+
+/// Reflect a fragment shader's declared color-output count from its
+/// SPIR-V and reject a descriptor that declares **more** color
+/// attachments than the fragment writes.
+///
+/// `color_formats[i]` types color attachment `i`, so a descriptor
+/// declaring `N` attachments over a fragment that writes only `M < N`
+/// has a phantom attachment `N-1 … M` that no shader output feeds — the
+/// exact mistake a consumer makes by reading `color_formats` as a list
+/// of formats the pipeline "may be used against". Rejected at creation
+/// with a `CompilationFailed` naming both counts.
+///
+/// Only fires when a SPIR-V fragment payload is present (the
+/// `ShaderSource::Binaries` case with a `spirv` binary). metallib-only
+/// shaders cannot be pre-reflected, so they skip the check — see the
+/// note on [`PipelineDesc::color_formats`].
+///
+/// `N < M` (writing **fewer** attachments than the fragment declares)
+/// is allowed: it is the driver-legal partial-write case.
+///
+/// Internal hook for the `quanta-render` sibling crate, called at the
+/// API layer before the driver `pipeline_create`; not part of the
+/// stable public surface.
+#[cfg(feature = "render")]
+#[doc(hidden)]
+pub fn __check_fragment_outputs(
+    fragment_spirv: Option<&[u8]>,
+    declared_color_count: usize,
+) -> Result<(), crate::QuantaError> {
+    let Some(bytes) = fragment_spirv else {
+        return Ok(()); // metallib-only or no SPIR-V — cannot pre-reflect.
+    };
+    // SPIR-V is a little-endian u32 stream; a non-multiple-of-4 length
+    // is not a module we can read, so skip rather than guess.
+    if bytes.len() % 4 != 0 {
+        return Ok(());
+    }
+    let words: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let Some(writes) = crate::driver::spirv_meta::fragment_output_count(&words) else {
+        return Ok(()); // not a readable fragment module — skip.
+    };
+    if declared_color_count > writes {
+        return Err(crate::QuantaError::compilation_failed(alloc::format!(
+            "pipeline declares {declared_color_count} color attachments; fragment \
+             writes {writes}"
+        )));
+    }
+    Ok(())
 }
 
 /// Depth and stencil testing configuration.

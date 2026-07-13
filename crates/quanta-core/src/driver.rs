@@ -4,9 +4,11 @@ pub mod metal;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 
-// Only the Vulkan compute path (wave creation reads the SPIR-V
-// workgroup size) uses this at runtime; unit tests always compile it.
-#[cfg(any(all(feature = "vulkan", feature = "compute"), test))]
+// The Vulkan compute path (wave creation reads the SPIR-V workgroup
+// size) and the render path (pipeline creation reflects a fragment's
+// color-output count) both use this at runtime; unit tests always
+// compile it.
+#[cfg(any(all(feature = "vulkan", feature = "compute"), feature = "render", test))]
 pub(crate) mod spirv_meta;
 
 #[cfg(feature = "software")]
