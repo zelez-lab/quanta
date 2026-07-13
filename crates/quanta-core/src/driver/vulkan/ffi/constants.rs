@@ -570,6 +570,11 @@ pub const VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR: u32 = 1000001000;
 pub const VK_STRUCTURE_TYPE_PRESENT_INFO_KHR: u32 = 1000001001;
 pub const VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR: u32 = 1000004000;
 pub const VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR: u32 = 1000008000;
+// Match the exact registry value: a WSI sType is 1000000000 + (ext# - 1)
+// * 1000. VK_KHR_win32_surface is extension #10, so 1000000000 + 9 * 1000 =
+// 1000009000 — consistent with xlib (#5 → 1000004000) and android
+// (#9 → 1000008000) above.
+pub const VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR: u32 = 1000009000;
 pub const VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT: u32 = 1000256000;
 
 pub const VK_PRESENT_MODE_IMMEDIATE_KHR: u32 = 0;
@@ -596,6 +601,12 @@ pub type PfnVkCreateXlibSurfaceKHR = unsafe extern "C" fn(
 pub type PfnVkCreateAndroidSurfaceKHR = unsafe extern "C" fn(
     VkInstance,
     *const super::structs::VkAndroidSurfaceCreateInfoKHR,
+    *const c_void,
+    *mut VkSurfaceKHR,
+) -> VkResult;
+pub type PfnVkCreateWin32SurfaceKHR = unsafe extern "C" fn(
+    VkInstance,
+    *const super::structs::VkWin32SurfaceCreateInfoKHR,
     *const c_void,
     *mut VkSurfaceKHR,
 ) -> VkResult;

@@ -138,6 +138,17 @@ pub enum SurfaceTarget {
         /// `ANativeWindow*` as a raw pointer.
         a_native_window: *mut core::ffi::c_void,
     },
+    /// A Win32 window, named by its `HWND` and the `HINSTANCE` of the
+    /// module that owns it. The consumer hands over the OS window
+    /// handle; which driver presents to it is Quanta's business (Vulkan
+    /// `VK_KHR_win32_surface` here). The `HWND` and its `HINSTANCE` come
+    /// from the embedder's window; both must outlive the surface.
+    Win32 {
+        /// `HINSTANCE` of the owning module, as a raw pointer.
+        hinstance: *mut core::ffi::c_void,
+        /// `HWND` of the target window, as a raw pointer.
+        hwnd: *mut core::ffi::c_void,
+    },
     /// A presentation target with no window attached: the backend
     /// creates and owns its native target (Metal: an off-screen
     /// `CAMetalLayer`; Vulkan: `VK_EXT_headless_surface`). The full

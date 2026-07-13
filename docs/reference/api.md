@@ -530,8 +530,9 @@ present" model. Created via `RenderGpu::create_surface(&SurfaceTarget,
 
 Supported on **Metal** (via a `CAMetalLayer`) and on **Vulkan** when the
 loader offers the WSI extensions (`VK_KHR_surface` + `VK_KHR_swapchain`)
-— on X11 through `SurfaceTarget::Xlib` and on Android through
-`SurfaceTarget::AndroidWindow`, plus the windowless
+— on X11 through `SurfaceTarget::Xlib`, on Android through
+`SurfaceTarget::AndroidWindow`, and on Windows through
+`SurfaceTarget::Win32`, plus the windowless
 `SurfaceTarget::Headless` on both. Backends without a present path return
 `NotSupported`; query `gpu.supports_surface_present()` to branch ahead of
 time. A swapchain that becomes suboptimal (e.g. after a resize the app
@@ -583,7 +584,10 @@ Dropping an unpresented frame discards it.
   and `Window` id (`VK_KHR_xlib_surface`); both must outlive the
   surface. `SurfaceTarget::AndroidWindow { a_native_window }` — an
   `ANativeWindow*` from the embedder (`VK_KHR_android_surface`); must
-  outlive the surface. `SurfaceTarget::Headless` — no window attached; full
+  outlive the surface. `SurfaceTarget::Win32 { hinstance, hwnd }` — an
+  `HWND` and its owning module's `HINSTANCE` from the embedder's window
+  (`VK_KHR_win32_surface`); both must outlive the surface.
+  `SurfaceTarget::Headless` — no window attached; full
   acquire/present machinery (Metal off-screen layer /
   `VK_EXT_headless_surface`) for tests and compositor-fed consumers.
   The enum is `#[non_exhaustive]` — match with a wildcard arm.

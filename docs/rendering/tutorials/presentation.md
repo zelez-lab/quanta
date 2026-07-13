@@ -193,7 +193,7 @@ the importer's reads by native means — before the importer samples it.
 | Backend | Surface present (`Surface`)        | Native-handle export               |
 |---------|------------------------------------|------------------------------------|
 | Metal   | ✅ `CAMetalLayer` drawables         | ✅ `id<MTLTexture>`                 |
-| Vulkan  | ✅ `VkSwapchainKHR` (Headless via `VK_EXT_headless_surface`, X11 via `SurfaceTarget::Xlib`, Android via `SurfaceTarget::AndroidWindow` over an `ANativeWindow` that must outlive the surface; needs loader WSI support — query `supports_surface_present`) | ✅ `VkImage` + memory/format/layout |
+| Vulkan  | ✅ `VkSwapchainKHR` (Headless via `VK_EXT_headless_surface`, X11 via `SurfaceTarget::Xlib`, Android via `SurfaceTarget::AndroidWindow` over an `ANativeWindow` that must outlive the surface, Windows via `SurfaceTarget::Win32` over an `HWND` and its `HINSTANCE` that must both outlive the surface; needs loader WSI support — query `supports_surface_present`) | ✅ `VkImage` + memory/format/layout |
 | WebGPU  | `NotSupported` (reserved variant)  | `NotSupported` (reserved variant)  |
 | CPU     | `NotSupported`                     | `NotSupported` (no native object)  |
 

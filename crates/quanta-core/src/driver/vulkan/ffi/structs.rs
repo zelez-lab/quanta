@@ -859,6 +859,17 @@ pub struct VkAndroidSurfaceCreateInfoKHR {
 }
 
 #[repr(C)]
+pub struct VkWin32SurfaceCreateInfoKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    /// `HINSTANCE` of the module that owns the window.
+    pub hinstance: *mut c_void,
+    /// `HWND` of the target window.
+    pub hwnd: *mut c_void,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VkSurfaceFormatKHR {
     pub format: u32,

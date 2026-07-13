@@ -33,6 +33,8 @@ pub(super) struct SurfaceProcs {
     pub create_xlib: Option<ffi::PfnVkCreateXlibSurfaceKHR>,
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub create_android: Option<ffi::PfnVkCreateAndroidSurfaceKHR>,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub create_win32: Option<ffi::PfnVkCreateWin32SurfaceKHR>,
     pub surface_support: ffi::PfnVkGetPhysicalDeviceSurfaceSupportKHR,
     pub surface_caps: ffi::PfnVkGetPhysicalDeviceSurfaceCapabilitiesKHR,
     pub surface_formats: ffi::PfnVkGetPhysicalDeviceSurfaceFormatsKHR,
@@ -53,6 +55,7 @@ impl SurfaceProcs {
         has_headless_ext: bool,
         has_xlib_ext: bool,
         has_android_ext: bool,
+        has_win32_ext: bool,
     ) -> Option<Self> {
         unsafe fn ipfn(instance: ffi::VkInstance, name: &[u8]) -> *const core::ffi::c_void {
             unsafe { ffi::vkGetInstanceProcAddr(instance, name.as_ptr() as *const _) }
@@ -102,6 +105,11 @@ impl SurfaceProcs {
             },
             create_android: if has_android_ext {
                 resolve!(inst opt b"vkCreateAndroidSurfaceKHR\0" as ffi::PfnVkCreateAndroidSurfaceKHR)
+            } else {
+                None
+            },
+            create_win32: if has_win32_ext {
+                resolve!(inst opt b"vkCreateWin32SurfaceKHR\0" as ffi::PfnVkCreateWin32SurfaceKHR)
             } else {
                 None
             },
@@ -241,6 +249,34 @@ impl VulkanDevice {
                 let r = unsafe { create(self.instance, &info, core::ptr::null(), &mut surface) };
                 if r != ffi::VK_SUCCESS {
                     return Err(QuantaError::internal("vkCreateAndroidSurfaceKHR failed"));
+                }
+            }
+            SurfaceTarget::Win32 { hinstance, hwnd } => {
+                let create = procs.create_win32.ok_or_else(|| {
+                    QuantaError::not_supported(
+                        "Win32 surfaces need VK_KHR_win32_surface (not offered here)",
+                    )
+                })?;
+                if hinstance.is_null() {
+                    return Err(QuantaError::invalid_param(
+                        "SurfaceTarget::Win32 hinstance pointer is null",
+                    ));
+                }
+                if hwnd.is_null() {
+                    return Err(QuantaError::invalid_param(
+                        "SurfaceTarget::Win32 hwnd pointer is null",
+                    ));
+                }
+                let info = ffi::VkWin32SurfaceCreateInfoKHR {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+                    p_next: core::ptr::null(),
+                    flags: 0,
+                    hinstance: *hinstance,
+                    hwnd: *hwnd,
+                };
+                let r = unsafe { create(self.instance, &info, core::ptr::null(), &mut surface) };
+                if r != ffi::VK_SUCCESS {
+                    return Err(QuantaError::internal("vkCreateWin32SurfaceKHR failed"));
                 }
             }
             _ => {

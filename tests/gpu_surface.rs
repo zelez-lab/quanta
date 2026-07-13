@@ -258,6 +258,43 @@ fn surface_android_target_rejected_off_android() {
 }
 
 #[test]
+fn surface_win32_target_rejected_off_windows() {
+    // The Win32 surface leg: a `Win32` target only creates a surface on a
+    // Windows Vulkan that offers `VK_KHR_win32_surface`. Everywhere the
+    // suite actually runs — the Metal backend here, the lavapipe Vulkan
+    // lane in CI — that extension is absent, so creation must fail
+    // `NotSupported`. On Vulkan the failure names the missing extension;
+    // on Metal the target is simply unavailable.
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+    // Non-null dummies so the Vulkan path reaches the extension check
+    // rather than a null-pointer guard; Metal rejects the target before
+    // inspecting the pointers.
+    let hinstance = core::ptr::NonNull::<core::ffi::c_void>::dangling().as_ptr();
+    let hwnd = core::ptr::NonNull::<core::ffi::c_void>::dangling().as_ptr();
+    let err = gpu
+        .create_surface(
+            &SurfaceTarget::Win32 { hinstance, hwnd },
+            &SurfaceConfig::new(32, 32),
+        )
+        .unwrap_err();
+    match err.kind {
+        QuantaErrorKind::NotSupported(ref msg) => assert!(
+            msg.contains("VK_KHR_win32_surface")
+                || msg.contains("not available on the Metal backend"),
+            "unexpected NotSupported reason: {msg}"
+        ),
+        other => panic!("expected NotSupported, got {other:?}"),
+    }
+}
+
+#[test]
 fn surface_format_is_defined_after_create() {
     // The negotiated format is queryable right after create and is one
     // of the formats a presentation surface can actually carry.
