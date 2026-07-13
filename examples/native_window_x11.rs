@@ -1,5 +1,5 @@
 //! A real X11 window running Quanta's demand-driven present loop on the
-//! Vulkan swapchain (`SurfaceTarget::VulkanXlib`).
+//! Vulkan swapchain (`SurfaceTarget::Xlib`).
 //!
 //! Run: `cargo run --example native_window_x11 --no-default-features \
 //!       --features vulkan,render`
@@ -124,7 +124,7 @@ fn main() {
     let config = quanta::SurfaceConfig::new(640, 480);
     let mut surface = gpu
         .create_surface(
-            &quanta::SurfaceTarget::VulkanXlib {
+            &quanta::SurfaceTarget::Xlib {
                 display: display as *mut core::ffi::c_void,
                 window,
             },

@@ -106,30 +106,35 @@ impl SurfaceConfig {
 /// wildcard arm.
 #[non_exhaustive]
 pub enum SurfaceTarget {
-    /// Metal: an existing `CAMetalLayer`, provided by the windowing
+    /// An existing `CAMetalLayer`, provided by the windowing
     /// environment (or by a compositor handing the app a layer to
-    /// draw into). The pointer must be a valid `CAMetalLayer` and
-    /// must outlive the surface. Quanta configures the layer
-    /// (device, pixel format, drawable size) and presents drawables
-    /// to it; the caller keeps ownership of the layer itself.
+    /// draw into). This is the OS window handle on Apple — the
+    /// consumer hands it over; which driver presents to it is
+    /// Quanta's business (Metal here). The pointer must be a valid
+    /// `CAMetalLayer` and must outlive the surface. Quanta configures
+    /// the layer (device, pixel format, drawable size) and presents
+    /// drawables to it; the caller keeps ownership of the layer itself.
     MetalLayer {
         /// `CAMetalLayer*` as a raw pointer.
         layer: *mut core::ffi::c_void,
     },
-    /// Vulkan on X11: create the surface from an Xlib display +
-    /// window (`VK_KHR_xlib_surface`). The display connection and
-    /// window must outlive the surface.
-    VulkanXlib {
+    /// An X11 window, named by its Xlib display connection and window
+    /// id. The consumer hands over the OS window handle; which driver
+    /// presents to it is Quanta's business (Vulkan `VK_KHR_xlib_surface`
+    /// here). The display connection and window must outlive the
+    /// surface.
+    Xlib {
         /// `Display*` as a raw pointer.
         display: *mut core::ffi::c_void,
         /// The X11 `Window` id.
         window: u64,
     },
-    /// Vulkan on Android: create the surface from an `ANativeWindow`
-    /// (`VK_KHR_android_surface`). The window is obtained from the
-    /// embedder (e.g. `ANativeWindow_fromSurface` on a Java `Surface`)
-    /// and must outlive the surface.
-    VulkanAndroid {
+    /// An Android window (`ANativeWindow`), obtained from the embedder
+    /// (e.g. `ANativeWindow_fromSurface` on a Java `Surface`). The
+    /// consumer hands over the OS window handle; which driver presents
+    /// to it is Quanta's business (Vulkan `VK_KHR_android_surface`
+    /// here). The window must outlive the surface.
+    AndroidWindow {
         /// `ANativeWindow*` as a raw pointer.
         a_native_window: *mut core::ffi::c_void,
     },

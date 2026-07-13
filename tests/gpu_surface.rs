@@ -223,7 +223,7 @@ fn surface_rejects_null_layer() {
 
 #[test]
 fn surface_android_target_rejected_off_android() {
-    // The Android surface leg: a `VulkanAndroid` target only creates a
+    // The Android surface leg: an `AndroidWindow` target only creates a
     // surface on an Android Vulkan that offers `VK_KHR_android_surface`.
     // Everywhere the suite actually runs — the Metal backend here, the
     // lavapipe Vulkan lane in CI — that extension is absent, so creation
@@ -243,7 +243,7 @@ fn surface_android_target_rejected_off_android() {
     let a_native_window = core::ptr::NonNull::<core::ffi::c_void>::dangling().as_ptr();
     let err = gpu
         .create_surface(
-            &SurfaceTarget::VulkanAndroid { a_native_window },
+            &SurfaceTarget::AndroidWindow { a_native_window },
             &SurfaceConfig::new(32, 32),
         )
         .unwrap_err();

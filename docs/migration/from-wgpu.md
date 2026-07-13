@@ -253,13 +253,13 @@ pulse.wait()?;
 
 wgpu's surface loop maps directly onto Quanta's `Surface`. Native
 present is real on Metal (`CAMetalLayer`) and Vulkan (`VkSwapchainKHR` —
-X11 via `SurfaceTarget::VulkanXlib`, plus a windowless `Headless`
+X11 via `SurfaceTarget::Xlib`, plus a windowless `Headless`
 target); query `gpu.supports_surface_present()` first (on Vulkan it is
 gated on loader WSI support):
 
 | wgpu | Quanta |
 |------|--------|
-| `instance.create_surface(window)` | `gpu.create_surface(&SurfaceTarget::VulkanXlib { .. } /* or MetalLayer */, &config)` |
+| `instance.create_surface(window)` | `gpu.create_surface(&SurfaceTarget::Xlib { .. } /* or MetalLayer */, &config)` |
 | `surface.configure(&device, &config)` | `surface.configure(SurfaceConfig::new(w, h))` |
 | `surface.get_current_texture()` | `surface.acquire()` |
 | `SurfaceError::Outdated` | `QuantaErrorKind::SurfaceOutdated(_)` — reconfigure, retry |

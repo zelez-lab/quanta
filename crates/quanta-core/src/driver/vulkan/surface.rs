@@ -198,7 +198,7 @@ impl VulkanDevice {
                     return Err(QuantaError::internal("vkCreateHeadlessSurfaceEXT failed"));
                 }
             }
-            SurfaceTarget::VulkanXlib { display, window } => {
+            SurfaceTarget::Xlib { display, window } => {
                 let create = procs.create_xlib.ok_or_else(|| {
                     QuantaError::not_supported(
                         "Xlib surfaces need VK_KHR_xlib_surface (not offered here)",
@@ -206,7 +206,7 @@ impl VulkanDevice {
                 })?;
                 if display.is_null() {
                     return Err(QuantaError::invalid_param(
-                        "SurfaceTarget::VulkanXlib display pointer is null",
+                        "SurfaceTarget::Xlib display pointer is null",
                     ));
                 }
                 let info = ffi::VkXlibSurfaceCreateInfoKHR {
@@ -221,7 +221,7 @@ impl VulkanDevice {
                     return Err(QuantaError::internal("vkCreateXlibSurfaceKHR failed"));
                 }
             }
-            SurfaceTarget::VulkanAndroid { a_native_window } => {
+            SurfaceTarget::AndroidWindow { a_native_window } => {
                 let create = procs.create_android.ok_or_else(|| {
                     QuantaError::not_supported(
                         "Android surfaces need VK_KHR_android_surface (not offered here)",
@@ -229,7 +229,7 @@ impl VulkanDevice {
                 })?;
                 if a_native_window.is_null() {
                     return Err(QuantaError::invalid_param(
-                        "SurfaceTarget::VulkanAndroid a_native_window pointer is null",
+                        "SurfaceTarget::AndroidWindow a_native_window pointer is null",
                     ));
                 }
                 let info = ffi::VkAndroidSurfaceCreateInfoKHR {

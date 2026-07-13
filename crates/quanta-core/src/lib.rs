@@ -50,9 +50,74 @@ fn maybe_validate(dev: alloc::boxed::Box<dyn GpuDevice>) -> alloc::sync::Arc<dyn
     }
 }
 
-/// Discover available GPU devices.
+/// A backend selected by the `QUANTA_BACKEND` forcing lever.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForcedBackend {
+    Metal,
+    Vulkan,
+    Cpu,
+}
+
+/// The accepted `QUANTA_BACKEND` values, in the order the error message
+/// lists them. Kept as one source of truth for the parser and the
+/// unknown-value diagnostic.
+#[cfg(feature = "std")]
+const QUANTA_BACKEND_VALUES: &str = "metal, vulkan, cpu";
+
+/// Parse the `QUANTA_BACKEND` forcing lever.
+///
+/// `Ok(None)` — unset (normal per-OS discovery). `Ok(Some(_))` — a valid,
+/// case-insensitive backend name. `Err(_)` — set to an unrecognized value;
+/// the error names the accepted set. This never *checks availability*: a
+/// backend that parses but is not present yields an empty device list, and
+/// `init` turns that into the named "forced but unavailable" error.
+#[cfg(feature = "std")]
+fn forced_backend() -> Result<Option<ForcedBackend>, QuantaError> {
+    match std::env::var("QUANTA_BACKEND") {
+        Err(_) => Ok(None),
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "metal" => Ok(Some(ForcedBackend::Metal)),
+            "vulkan" => Ok(Some(ForcedBackend::Vulkan)),
+            "cpu" => Ok(Some(ForcedBackend::Cpu)),
+            other => Err(QuantaError::invalid_param(alloc::format!(
+                "QUANTA_BACKEND={other:?} is not a recognized backend \
+                 (accepted values: {QUANTA_BACKEND_VALUES})"
+            ))),
+        },
+    }
+}
+
+/// Discover available GPU devices, in the platform's fixed preference
+/// order (see [`init`] for the contract).
+///
+/// **This is the programmatic device-selection path.** There is no
+/// separate "pick a device" API: enumerate here and choose from the
+/// returned list (by index, name, or capability query) — [`init`] is
+/// merely the "take the first" convenience over this.
+///
+/// # The `QUANTA_BACKEND` forcing lever
+///
+/// When `QUANTA_BACKEND` is set to `metal`, `vulkan`, or `cpu`
+/// (case-insensitive), this returns **only** that backend's devices —
+/// the others are not even probed. A backend that is forced but not
+/// present (e.g. `QUANTA_BACKEND=vulkan` where no Vulkan loader exists)
+/// yields an **empty** list rather than silently falling through to
+/// another backend; CI determinism is the point. `QUANTA_BACKEND=cpu`
+/// includes the CPU software device regardless of `QUANTA_CPU`. An
+/// unrecognized value yields an empty list here (and a named error from
+/// [`init`]).
 #[cfg(feature = "std")]
 pub fn devices() -> alloc::vec::Vec<Gpu> {
+    // An unrecognized value parses to Err; treat it as "select nothing"
+    // here so no backend leaks through. `init` reports the named error.
+    let forced = forced_backend().ok().flatten();
+    // Unused when no discovery-bearing feature is enabled (e.g. a bare
+    // `std` or wasm32+webgpu build compiles none of the cfg-gated probes
+    // below); the closure captures `forced`, keeping it "used" too.
+    #[allow(unused_variables)]
+    let allows = |b: ForcedBackend| forced.is_none() || forced == Some(b);
+
     // `mut` is conditional: only the metal/vulkan/software cfgs below mutate
     // the vector, and feature combinations may disable all of them (e.g.
     // wasm32 + webgpu).
@@ -60,18 +125,23 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
     let mut devs: alloc::vec::Vec<alloc::boxed::Box<dyn GpuDevice>> = alloc::vec::Vec::new();
 
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-    devs.extend(driver::metal::discover());
+    if allows(ForcedBackend::Metal) {
+        devs.extend(driver::metal::discover());
+    }
 
     #[cfg(feature = "vulkan")]
-    devs.extend(driver::vulkan::discover());
+    if allows(ForcedBackend::Vulkan) {
+        devs.extend(driver::vulkan::discover());
+    }
 
-    // Include CPU device if QUANTA_CPU=1 env var is set
+    // The CPU device joins normal discovery only under QUANTA_CPU=1, but
+    // forcing QUANTA_BACKEND=cpu selects it unconditionally.
     #[cfg(feature = "software")]
     {
-        if std::env::var("QUANTA_CPU")
+        let cpu_opt_in = std::env::var("QUANTA_CPU")
             .map(|v| v == "1")
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        if forced == Some(ForcedBackend::Cpu) || (forced.is_none() && cpu_opt_in) {
             devs.extend(driver::cpu::discover());
         }
     }
@@ -79,14 +149,64 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
     devs.into_iter().map(maybe_validate).map(Gpu::new).collect()
 }
 
-/// Initialize the first available GPU device.
+/// Initialize the first available GPU device, following Quanta's fixed
+/// per-OS discovery contract.
+///
+/// # Discovery order (the contract)
+///
+/// Probing order is deliberate and stable — not an accident of
+/// enumeration — so a given machine always initializes the same backend:
+///
+/// - **Apple (macOS / iOS):** Metal, then the CPU software device when
+///   `QUANTA_CPU=1`.
+/// - **Linux / Android / Windows:** Vulkan, then the CPU software device
+///   when `QUANTA_CPU=1`.
+/// - **wasm:** WebGPU — through the async [`init_webgpu_async`]; sync
+///   `init` never returns a WebGPU device (the platform requires an async
+///   adapter handshake).
+///
+/// `init` returns the first device [`devices`] enumerates in that order.
+/// To choose a different one, call [`devices`] and pick from the list —
+/// that is the programmatic override; there is no separate selection API.
+///
+/// # The `QUANTA_BACKEND` forcing lever
+///
+/// Set `QUANTA_BACKEND` to `metal`, `vulkan`, or `cpu` (case-insensitive)
+/// to restrict discovery to exactly that backend. A backend that is forced
+/// but unavailable does **not** fall through to another: `init` fails with
+/// an error naming the env var, so CI never silently runs on the wrong
+/// backend. An unrecognized value fails with an error listing the accepted
+/// values.
 #[cfg(feature = "std")]
 pub fn init() -> Result<Gpu, QuantaError> {
+    // Surface an unrecognized QUANTA_BACKEND as its own named error before
+    // anything else — the value is a mistake regardless of what hardware
+    // is present.
+    let forced = forced_backend()?;
+
     let mut devs = devices();
-    if devs.is_empty() {
-        Err(QuantaError::no_device())
+    if let Some(dev) = devs.drain(..).next() {
+        Ok(dev)
+    } else if let Some(backend) = forced {
+        Err(QuantaError::not_supported(alloc::format!(
+            "QUANTA_BACKEND forces the {} backend, but no {} device is \
+             available on this machine (discovery will not fall through to \
+             another backend)",
+            forced_backend_name(backend),
+            forced_backend_name(backend),
+        )))
     } else {
-        Ok(devs.remove(0))
+        Err(QuantaError::no_device())
+    }
+}
+
+/// The lowercase name of a forced backend, for diagnostics.
+#[cfg(feature = "std")]
+fn forced_backend_name(backend: ForcedBackend) -> &'static str {
+    match backend {
+        ForcedBackend::Metal => "metal",
+        ForcedBackend::Vulkan => "vulkan",
+        ForcedBackend::Cpu => "cpu",
     }
 }
 

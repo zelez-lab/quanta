@@ -951,3 +951,132 @@ fn cpu_subgroup_reduce_add_is_cooperative() {
         assert!((v - 528.0).abs() <= 1e-3, "lane {i}: {v} (want 528)");
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QUANTA_BACKEND forcing lever — the discovery contract
+//
+// `quanta::devices()` probes backends in a fixed per-OS order; `QUANTA_BACKEND`
+// restricts that set to exactly one backend and never falls through to another.
+// These exercise the software-observable legs: forcing `cpu` selects the CPU
+// device on any host (with the `software` feature), and a bogus value is a
+// named error rather than a silent fallthrough. `QUANTA_BACKEND` / `QUANTA_CPU`
+// are process-global, so every test that reads or writes them holds `env_lock`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serializes every test that reads or writes the `QUANTA_BACKEND` /
+/// `QUANTA_CPU` env vars — env is process-global and cargo runs tests in
+/// parallel. Poison is ignored: a panicking test still asserted correctly; the
+/// lock only orders access. (Same idiom as the metallib env tests.)
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::Mutex;
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Save the two discovery env vars, run `body` with them set as given, and
+/// restore both afterwards — even if `body` panics is handled by the caller
+/// restoring before asserting. Returns whatever `body` produced.
+///
+/// SAFETY: `set_var`/`remove_var` are unsafe on the 2024 edition (they mutate
+/// process-global env). `env_lock` (held by the caller) serializes every
+/// env-touching test, so no concurrent test observes the mutation.
+fn with_discovery_env<T>(backend: Option<&str>, cpu: Option<&str>, body: impl FnOnce() -> T) -> T {
+    let prev_backend = std::env::var("QUANTA_BACKEND").ok();
+    let prev_cpu = std::env::var("QUANTA_CPU").ok();
+    unsafe {
+        match backend {
+            Some(v) => std::env::set_var("QUANTA_BACKEND", v),
+            None => std::env::remove_var("QUANTA_BACKEND"),
+        }
+        match cpu {
+            Some(v) => std::env::set_var("QUANTA_CPU", v),
+            None => std::env::remove_var("QUANTA_CPU"),
+        }
+    }
+    let out = body();
+    unsafe {
+        match prev_backend {
+            Some(v) => std::env::set_var("QUANTA_BACKEND", v),
+            None => std::env::remove_var("QUANTA_BACKEND"),
+        }
+        match prev_cpu {
+            Some(v) => std::env::set_var("QUANTA_CPU", v),
+            None => std::env::remove_var("QUANTA_CPU"),
+        }
+    }
+    out
+}
+
+/// `QUANTA_BACKEND=cpu` selects exactly the CPU software device — even with
+/// `QUANTA_CPU` unset, and regardless of any GPU present on the host.
+#[test]
+fn quanta_backend_cpu_yields_only_the_cpu_device() {
+    let _guard = env_lock();
+    let names = with_discovery_env(Some("cpu"), None, || {
+        quanta::devices()
+            .iter()
+            .map(|g| g.name().to_string())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        names,
+        vec!["Quanta CPU (software)".to_string()],
+        "QUANTA_BACKEND=cpu must yield exactly the CPU device"
+    );
+    // init() takes the first (only) device.
+    let gpu = with_discovery_env(Some("cpu"), None, || quanta::init())
+        .expect("QUANTA_BACKEND=cpu must initialize the CPU device");
+    assert_eq!(gpu.name(), "Quanta CPU (software)");
+}
+
+/// The lever is case-insensitive: `CPU` behaves like `cpu`.
+#[test]
+fn quanta_backend_is_case_insensitive() {
+    let _guard = env_lock();
+    let names = with_discovery_env(Some("CPU"), None, || {
+        quanta::devices()
+            .iter()
+            .map(|g| g.name().to_string())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(names, vec!["Quanta CPU (software)".to_string()]);
+}
+
+/// An unrecognized `QUANTA_BACKEND` is a named error listing the accepted
+/// values — never a silent fallthrough to some other backend.
+#[test]
+fn quanta_backend_bogus_is_a_named_error() {
+    let _guard = env_lock();
+    let err = match with_discovery_env(Some("bogus"), None, || quanta::init()) {
+        Ok(_) => panic!("an unrecognized QUANTA_BACKEND must fail init()"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err.kind, quanta::QuantaErrorKind::InvalidParam(_)),
+        "expected InvalidParam, got {:?}",
+        err.kind
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("QUANTA_BACKEND") && msg.contains("metal, vulkan, cpu"),
+        "error must name the env var and the accepted values, got: {msg}"
+    );
+}
+
+/// Unset behavior is unchanged: with neither `QUANTA_BACKEND` nor `QUANTA_CPU`
+/// set, the CPU software device is not part of normal discovery (it joins only
+/// under `QUANTA_CPU=1` or when explicitly forced). Holds on every host.
+#[test]
+fn unset_quanta_backend_leaves_discovery_unchanged() {
+    let _guard = env_lock();
+    let has_cpu = with_discovery_env(None, None, || {
+        quanta::devices()
+            .iter()
+            .any(|g| g.name() == "Quanta CPU (software)")
+    });
+    assert!(
+        !has_cpu,
+        "with QUANTA_BACKEND and QUANTA_CPU unset, the CPU device must not \
+         appear in discovery"
+    );
+}

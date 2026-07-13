@@ -135,7 +135,7 @@ phase 3: animated — 3 s (pass --stay to keep it open)
 ```
 
 `examples/native_window_x11.rs` is the Linux twin — the same three-phase
-loop on the Vulkan swapchain (`SurfaceTarget::VulkanXlib`) over a bare
+loop on the Vulkan swapchain (`SurfaceTarget::Xlib`) over a bare
 Xlib window, clear-only so it needs no compiler or LLVM toolchain:
 
 ```text
@@ -193,7 +193,7 @@ the importer's reads by native means — before the importer samples it.
 | Backend | Surface present (`Surface`)        | Native-handle export               |
 |---------|------------------------------------|------------------------------------|
 | Metal   | ✅ `CAMetalLayer` drawables         | ✅ `id<MTLTexture>`                 |
-| Vulkan  | ✅ `VkSwapchainKHR` (Headless via `VK_EXT_headless_surface`, X11 via `SurfaceTarget::VulkanXlib`, Android via `SurfaceTarget::VulkanAndroid` over an `ANativeWindow` that must outlive the surface; needs loader WSI support — query `supports_surface_present`) | ✅ `VkImage` + memory/format/layout |
+| Vulkan  | ✅ `VkSwapchainKHR` (Headless via `VK_EXT_headless_surface`, X11 via `SurfaceTarget::Xlib`, Android via `SurfaceTarget::AndroidWindow` over an `ANativeWindow` that must outlive the surface; needs loader WSI support — query `supports_surface_present`) | ✅ `VkImage` + memory/format/layout |
 | WebGPU  | `NotSupported` (reserved variant)  | `NotSupported` (reserved variant)  |
 | CPU     | `NotSupported`                     | `NotSupported` (no native object)  |
 
