@@ -565,6 +565,7 @@ pub const VK_ERROR_OUT_OF_DATE_KHR: VkResult = -1000001004;
 pub const VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR: u32 = 1000001000;
 pub const VK_STRUCTURE_TYPE_PRESENT_INFO_KHR: u32 = 1000001001;
 pub const VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR: u32 = 1000004000;
+pub const VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR: u32 = 1000008000;
 pub const VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT: u32 = 1000256000;
 
 pub const VK_PRESENT_MODE_IMMEDIATE_KHR: u32 = 0;
@@ -585,6 +586,12 @@ pub type PfnVkCreateHeadlessSurfaceEXT = unsafe extern "C" fn(
 pub type PfnVkCreateXlibSurfaceKHR = unsafe extern "C" fn(
     VkInstance,
     *const super::structs::VkXlibSurfaceCreateInfoKHR,
+    *const c_void,
+    *mut VkSurfaceKHR,
+) -> VkResult;
+pub type PfnVkCreateAndroidSurfaceKHR = unsafe extern "C" fn(
+    VkInstance,
+    *const super::structs::VkAndroidSurfaceCreateInfoKHR,
     *const c_void,
     *mut VkSurfaceKHR,
 ) -> VkResult;

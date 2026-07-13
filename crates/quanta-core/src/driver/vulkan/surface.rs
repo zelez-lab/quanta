@@ -31,6 +31,8 @@ pub(super) struct SurfaceProcs {
     pub create_headless: Option<ffi::PfnVkCreateHeadlessSurfaceEXT>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub create_xlib: Option<ffi::PfnVkCreateXlibSurfaceKHR>,
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub create_android: Option<ffi::PfnVkCreateAndroidSurfaceKHR>,
     pub surface_support: ffi::PfnVkGetPhysicalDeviceSurfaceSupportKHR,
     pub surface_caps: ffi::PfnVkGetPhysicalDeviceSurfaceCapabilitiesKHR,
     pub surface_formats: ffi::PfnVkGetPhysicalDeviceSurfaceFormatsKHR,
@@ -50,6 +52,7 @@ impl SurfaceProcs {
         device: ffi::VkDevice,
         has_headless_ext: bool,
         has_xlib_ext: bool,
+        has_android_ext: bool,
     ) -> Option<Self> {
         unsafe fn ipfn(instance: ffi::VkInstance, name: &[u8]) -> *const core::ffi::c_void {
             unsafe { ffi::vkGetInstanceProcAddr(instance, name.as_ptr() as *const _) }
@@ -94,6 +97,11 @@ impl SurfaceProcs {
             },
             create_xlib: if has_xlib_ext {
                 resolve!(inst opt b"vkCreateXlibSurfaceKHR\0" as ffi::PfnVkCreateXlibSurfaceKHR)
+            } else {
+                None
+            },
+            create_android: if has_android_ext {
+                resolve!(inst opt b"vkCreateAndroidSurfaceKHR\0" as ffi::PfnVkCreateAndroidSurfaceKHR)
             } else {
                 None
             },
@@ -211,6 +219,28 @@ impl VulkanDevice {
                 let r = unsafe { create(self.instance, &info, core::ptr::null(), &mut surface) };
                 if r != ffi::VK_SUCCESS {
                     return Err(QuantaError::internal("vkCreateXlibSurfaceKHR failed"));
+                }
+            }
+            SurfaceTarget::VulkanAndroid { a_native_window } => {
+                let create = procs.create_android.ok_or_else(|| {
+                    QuantaError::not_supported(
+                        "Android surfaces need VK_KHR_android_surface (not offered here)",
+                    )
+                })?;
+                if a_native_window.is_null() {
+                    return Err(QuantaError::invalid_param(
+                        "SurfaceTarget::VulkanAndroid a_native_window pointer is null",
+                    ));
+                }
+                let info = ffi::VkAndroidSurfaceCreateInfoKHR {
+                    s_type: ffi::VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+                    p_next: core::ptr::null(),
+                    flags: 0,
+                    window: *a_native_window,
+                };
+                let r = unsafe { create(self.instance, &info, core::ptr::null(), &mut surface) };
+                if r != ffi::VK_SUCCESS {
+                    return Err(QuantaError::internal("vkCreateAndroidSurfaceKHR failed"));
                 }
             }
             _ => {

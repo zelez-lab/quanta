@@ -850,6 +850,15 @@ pub struct VkXlibSurfaceCreateInfoKHR {
 }
 
 #[repr(C)]
+pub struct VkAndroidSurfaceCreateInfoKHR {
+    pub s_type: u32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    /// `ANativeWindow*` obtained from the embedder.
+    pub window: *mut c_void,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VkSurfaceFormatKHR {
     pub format: u32,

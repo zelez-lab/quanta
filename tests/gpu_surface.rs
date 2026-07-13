@@ -221,6 +221,42 @@ fn surface_rejects_null_layer() {
     ));
 }
 
+#[test]
+fn surface_android_target_rejected_off_android() {
+    // The Android surface leg: a `VulkanAndroid` target only creates a
+    // surface on an Android Vulkan that offers `VK_KHR_android_surface`.
+    // Everywhere the suite actually runs — the Metal backend here, the
+    // lavapipe Vulkan lane in CI — that extension is absent, so creation
+    // must fail `NotSupported`. On Vulkan the failure names the missing
+    // extension; on Metal the target is simply unavailable.
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+    // A non-null dummy so the Vulkan path reaches the extension check
+    // rather than the null-pointer guard; Metal rejects the target
+    // before inspecting the pointer.
+    let a_native_window = core::ptr::NonNull::<core::ffi::c_void>::dangling().as_ptr();
+    let err = gpu
+        .create_surface(
+            &SurfaceTarget::VulkanAndroid { a_native_window },
+            &SurfaceConfig::new(32, 32),
+        )
+        .unwrap_err();
+    match err.kind {
+        QuantaErrorKind::NotSupported(ref msg) => assert!(
+            msg.contains("VK_KHR_android_surface")
+                || msg.contains("not available on the Metal backend"),
+            "unexpected NotSupported reason: {msg}"
+        ),
+        other => panic!("expected NotSupported, got {other:?}"),
+    }
+}
+
 // --- Reserved-but-NotSupported backends (CPU software driver) ---
 
 #[cfg(feature = "software")]

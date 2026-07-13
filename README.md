@@ -196,6 +196,7 @@ Nightly with `dom.webgpu.enabled`).
 | Linux x86_64 + NVIDIA | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
 | Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
 | Linux aarch64 (Pi 5, Graviton) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 |
+| Android aarch64 | ✅ Vulkan | ✅ Vulkan | n/a (surface target + Vulkan lane build; emulator validation in progress downstream) |
 | Windows x86_64 | ⚠️ untested | ⚠️ untested | ✅ x86_64 |
 | Web | ✅ WebGPU | ✅ WebGPU | n/a |
 

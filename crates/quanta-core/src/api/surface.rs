@@ -110,6 +110,14 @@ pub enum SurfaceTarget {
         /// The X11 `Window` id.
         window: u64,
     },
+    /// Vulkan on Android: create the surface from an `ANativeWindow`
+    /// (`VK_KHR_android_surface`). The window is obtained from the
+    /// embedder (e.g. `ANativeWindow_fromSurface` on a Java `Surface`)
+    /// and must outlive the surface.
+    VulkanAndroid {
+        /// `ANativeWindow*` as a raw pointer.
+        a_native_window: *mut core::ffi::c_void,
+    },
     /// A presentation target with no window attached: the backend
     /// creates and owns its native target (Metal: an off-screen
     /// `CAMetalLayer`; Vulkan: `VK_EXT_headless_surface`). The full

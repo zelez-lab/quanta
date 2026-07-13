@@ -802,6 +802,9 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
     let has_xlib_ext = cfg!(target_os = "linux")
         && has_surface_ext
         && instance_has_extension(b"VK_KHR_xlib_surface\0");
+    let has_android_ext = cfg!(target_os = "android")
+        && has_surface_ext
+        && instance_has_extension(b"VK_KHR_android_surface\0");
     let mut instance_exts: Vec<*const core::ffi::c_char> = Vec::new();
     if has_surface_ext {
         instance_exts.push(c"VK_KHR_surface".as_ptr());
@@ -811,6 +814,9 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
     }
     if has_xlib_ext {
         instance_exts.push(c"VK_KHR_xlib_surface".as_ptr());
+    }
+    if has_android_ext {
+        instance_exts.push(c"VK_KHR_android_surface".as_ptr());
     }
     let (instance_ext_count, instance_ext_ptr) = if instance_exts.is_empty() {
         (0u32, core::ptr::null())
@@ -1203,10 +1209,16 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         // WSI proc resolution — None (→ NotSupported) when the loader
         // or driver lacks the surface/swapchain extensions.
         #[cfg(not(feature = "render"))]
-        let _ = (has_headless_ext, has_xlib_ext);
+        let _ = (has_headless_ext, has_xlib_ext, has_android_ext);
         #[cfg(feature = "render")]
         let surface_procs = if has_swapchain_ext {
-            super::surface::SurfaceProcs::resolve(instance, device, has_headless_ext, has_xlib_ext)
+            super::surface::SurfaceProcs::resolve(
+                instance,
+                device,
+                has_headless_ext,
+                has_xlib_ext,
+                has_android_ext,
+            )
         } else {
             None
         };
