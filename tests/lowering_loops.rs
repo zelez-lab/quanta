@@ -23,6 +23,10 @@
 //!   6. a sentinel loop whose counter is ALSO read after the loop
 //!      (induction-fusion bait: sentinel counter must not entangle the
 //!       post-loop read)
+//!   7. the tile-rasterizer fine-coverage shape: a per-pixel segment-range
+//!      loop whose winding-accumulation guard ladder lowers to inverted-
+//!      guard continuation-flag cascades, plus a count-down loop-crossing
+//!      break — the shape the golden suite lacked coverage for
 //!
 //! Run: cargo test --test lowering_loops --features software --no-default-features
 
@@ -509,6 +513,316 @@ fn sentinel_count_readback_matches_host() {
             assert_eq!(
                 *v, want,
                 "sentinel_count_readback thread {i}: got {v} want {want}"
+            );
+        }
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 7. The tile-rasterizer fine-coverage shape (probe shape K3): a
+//    per-pixel segment-range loop with the winding-accumulation guard
+//    ladder — reversed-segment swap (`dir=-1`), the `touches` AND-chain
+//    (slope-sign / span-overlap / 1e-9 epsilon), the left/mid/right span
+//    partition (`xr<=cell_l` full-left accum, `xl>=cell_r` no-op,
+//    partial-coverage interpolation), and a count-down break sentinel.
+//    Ported verbatim from the downstream spike's k3_fine_coverage
+//    (coverage-only variant): the loop body's early-exit control flow
+//    compiles to inverted-guard continuation-flag cascades that the
+//    reconstruction has to rebuild, and a mis-scoped guard wrongly gates
+//    accumulation for specific geometric branch combinations.
+// ─────────────────────────────────────────────────────────────────────
+#[quanta::kernel(workgroup = [64, 1, 1])]
+fn k3_fine_coverage(
+    seg_x0: &[f32],
+    seg_y0: &[f32],
+    seg_x1: &[f32],
+    seg_y1: &[f32],
+    tile_counts: &[u32],
+    tile_lists: &[u32],
+    coverage: &mut [f32],
+    img_w: u32,
+    img_h: u32,
+    tile: u32,
+    tiles_x: u32,
+    max_segs: u32,
+) {
+    let gid = quark_id();
+    if gid >= img_w * img_h {
+        return;
+    }
+    let px = gid % img_w;
+    let py = gid / img_w;
+    let t = (py / tile) * tiles_x + (px / tile);
+
+    let yf0 = py as f32;
+    let yf1 = yf0 + 1.0;
+    let cell_l = px as f32;
+    let cell_r = cell_l + 1.0;
+
+    let mut accum = 0.0f32;
+    let mut cell_area = 0.0f32;
+
+    let count_raw = tile_counts[t as usize];
+    let count = if count_raw > max_segs {
+        max_segs
+    } else {
+        count_raw
+    };
+
+    let mut k = 0u32;
+    while k < count {
+        let sidx = tile_lists[(t * max_segs + k) as usize];
+        let mut x0 = seg_x0[sidx as usize];
+        let mut y0 = seg_y0[sidx as usize];
+        let mut x1 = seg_x1[sidx as usize];
+        let mut y1 = seg_y1[sidx as usize];
+        let mut dir = 1.0f32;
+        if y0 > y1 {
+            let sx = x0;
+            let sy = y0;
+            x0 = x1;
+            y0 = y1;
+            x1 = sx;
+            y1 = sy;
+            dir = -1.0;
+        }
+        let touches = (y0 < yf1) as u32 & (y1 > yf0) as u32 & (fabs(y1 - y0) > 1e-9) as u32;
+        if touches == 1u32 {
+            let dxdy = (x1 - x0) / (y1 - y0);
+            let cy0 = fmax(y0, yf0);
+            let cy1 = fmin(y1, yf1);
+            let dy = cy1 - cy0;
+            if dy > 0.0 {
+                let sdy = dy * dir;
+                let xa = x0 + (cy0 - y0) * dxdy;
+                let xb = x0 + (cy1 - y0) * dxdy;
+                let xl = fmin(xa, xb);
+                let xr = fmax(xa, xb);
+                if xr <= cell_l {
+                    accum = accum + sdy;
+                } else if xl >= cell_r {
+                    // no contribution
+                } else {
+                    let span = xr - xl;
+                    if xl < cell_l {
+                        let f_left = (cell_l - xl) / span;
+                        accum = accum + sdy * f_left;
+                    }
+                    let ixl = fmax(xl, cell_l);
+                    let ixr = fmin(xr, cell_r);
+                    let in_frac = if span > 1e-9 { (ixr - ixl) / span } else { 1.0 };
+                    let in_sdy = sdy * in_frac;
+                    let xmid = 0.5 * (ixl + ixr);
+                    let right = cell_r - xmid;
+                    cell_area = cell_area + in_sdy * right;
+                }
+            }
+        }
+        k = k + 1u32;
+    }
+
+    let total = accum + cell_area;
+    let a = fabs(total);
+    let cov = if a > 1.0 { 1.0 } else { a };
+    coverage[gid as usize] = cov;
+}
+
+/// Host reference: the identical coverage math in plain Rust. Bit-exact
+/// with the kernel (same op order, same f32 rounding, same 1e-9 epsilons).
+#[allow(clippy::too_many_arguments)]
+fn k3_fine_coverage_ref(
+    seg_x0: &[f32],
+    seg_y0: &[f32],
+    seg_x1: &[f32],
+    seg_y1: &[f32],
+    tile_counts: &[u32],
+    tile_lists: &[u32],
+    coverage: &mut [f32],
+    img_w: u32,
+    img_h: u32,
+    tile: u32,
+    tiles_x: u32,
+    max_segs: u32,
+) {
+    for gid in 0..img_w * img_h {
+        let px = gid % img_w;
+        let py = gid / img_w;
+        let t = (py / tile) * tiles_x + (px / tile);
+
+        let yf0 = py as f32;
+        let yf1 = yf0 + 1.0;
+        let cell_l = px as f32;
+        let cell_r = cell_l + 1.0;
+
+        let mut accum = 0.0f32;
+        let mut cell_area = 0.0f32;
+
+        let count_raw = tile_counts[t as usize];
+        let count = if count_raw > max_segs {
+            max_segs
+        } else {
+            count_raw
+        };
+
+        let mut k = 0u32;
+        while k < count {
+            let sidx = tile_lists[(t * max_segs + k) as usize];
+            let mut x0 = seg_x0[sidx as usize];
+            let mut y0 = seg_y0[sidx as usize];
+            let mut x1 = seg_x1[sidx as usize];
+            let mut y1 = seg_y1[sidx as usize];
+            let mut dir = 1.0f32;
+            if y0 > y1 {
+                let sx = x0;
+                let sy = y0;
+                x0 = x1;
+                y0 = y1;
+                x1 = sx;
+                y1 = sy;
+                dir = -1.0;
+            }
+            let touches = (y0 < yf1) as u32 & (y1 > yf0) as u32 & ((y1 - y0).abs() > 1e-9) as u32;
+            if touches == 1u32 {
+                let dxdy = (x1 - x0) / (y1 - y0);
+                let cy0 = y0.max(yf0);
+                let cy1 = y1.min(yf1);
+                let dy = cy1 - cy0;
+                if dy > 0.0 {
+                    let sdy = dy * dir;
+                    let xa = x0 + (cy0 - y0) * dxdy;
+                    let xb = x0 + (cy1 - y0) * dxdy;
+                    let xl = xa.min(xb);
+                    let xr = xa.max(xb);
+                    if xr <= cell_l {
+                        accum += sdy;
+                    } else if xl >= cell_r {
+                        // no contribution
+                    } else {
+                        let span = xr - xl;
+                        if xl < cell_l {
+                            let f_left = (cell_l - xl) / span;
+                            accum += sdy * f_left;
+                        }
+                        let ixl = xl.max(cell_l);
+                        let ixr = xr.min(cell_r);
+                        let in_frac = if span > 1e-9 { (ixr - ixl) / span } else { 1.0 };
+                        let in_sdy = sdy * in_frac;
+                        let xmid = 0.5 * (ixl + ixr);
+                        let right = cell_r - xmid;
+                        cell_area += in_sdy * right;
+                    }
+                }
+            }
+            k += 1;
+        }
+
+        let total = accum + cell_area;
+        let a = total.abs();
+        let cov = if a > 1.0 { 1.0 } else { a };
+        coverage[gid as usize] = cov;
+    }
+}
+
+#[test]
+fn k3_fine_coverage_matches_host() {
+    with_watchdog("k3_fine_coverage", || {
+        let gpu = quanta::init_cpu();
+        // An 8x4 image split into two 4x4 tiles (tiles_x=2): tile 0 (px<4)
+        // holds a segment set driving every guard arm; tile 1 (px>=4) is
+        // EMPTY (count==0). Two paths pinned at once:
+        //  - the winding-accumulation guard ladder over tile 0's list, and
+        //  - the count==0 loop-skip for every tile-1 pixel (in the real
+        //    rasterizer most tiles are empty, so a broken empty-tile guard
+        //    is the "many but not all pixels" fingerprint).
+        // Tile-0 segment set (each drives one arm of the guard cascade):
+        //   s0: vertical span crossing the tile, LEFT of all cells
+        //       (xr <= cell_l → the `accum += sdy` full-left winding arm).
+        //   s1: reversed (y0>y1) diagonal through the interior
+        //       (the swap + dir=-1 arm, then the partial-coverage
+        //        left/mid/right partition with xl<cell_l for some cells).
+        //   s2: vertical span to the RIGHT of all cells
+        //       (xl >= cell_r → the no-contribution arm).
+        //   s3: near-horizontal (|dy|<1e-9) → `touches` false, skipped.
+        //   s4: diagonal entirely inside a single column (partial cover,
+        //       xl>=cell_l so only the mid/right interpolation arm).
+        const IMG_W: u32 = 8;
+        const IMG_H: u32 = 4;
+        const TILE: u32 = 4;
+        const TILES_X: u32 = 2;
+        const MAX_SEGS: u32 = 8;
+        const NTILES: usize = 2;
+
+        // Struct-of-arrays segments (as the spike stores them).
+        let seg_x0: Vec<f32> = vec![0.5, 3.5, 3.8, 0.0, 1.2];
+        let seg_y0: Vec<f32> = vec![0.0, 4.0, 0.0, 2.0, 1.1];
+        let seg_x1: Vec<f32> = vec![0.5, 0.5, 3.8, 4.0, 1.7];
+        let seg_y1: Vec<f32> = vec![4.0, 0.0, 4.0, 2.0, 3.4];
+        let nsegs = seg_x0.len() as u32;
+
+        // Tile 0 lists all segments in order; tile 1 is empty (count 0).
+        let tile_counts: Vec<u32> = vec![nsegs, 0u32];
+        let mut tile_lists: Vec<u32> = vec![0u32; NTILES * MAX_SEGS as usize];
+        for k in 0..nsegs {
+            tile_lists[k as usize] = k;
+        }
+
+        let total = (IMG_W * IMG_H) as usize;
+
+        let x0f = gpu.field::<f32>(seg_x0.len()).unwrap();
+        let y0f = gpu.field::<f32>(seg_y0.len()).unwrap();
+        let x1f = gpu.field::<f32>(seg_x1.len()).unwrap();
+        let y1f = gpu.field::<f32>(seg_y1.len()).unwrap();
+        let counts_f = gpu.field::<u32>(tile_counts.len()).unwrap();
+        let lists_f = gpu.field::<u32>(tile_lists.len()).unwrap();
+        let cov_f = gpu.field::<f32>(total).unwrap();
+        x0f.write(&seg_x0).unwrap();
+        y0f.write(&seg_y0).unwrap();
+        x1f.write(&seg_x1).unwrap();
+        y1f.write(&seg_y1).unwrap();
+        counts_f.write(&tile_counts).unwrap();
+        lists_f.write(&tile_lists).unwrap();
+        cov_f.write(&vec![-1.0f32; total]).unwrap();
+
+        let mut wave = k3_fine_coverage(&gpu).unwrap();
+        wave.bind(0, &x0f);
+        wave.bind(1, &y0f);
+        wave.bind(2, &x1f);
+        wave.bind(3, &y1f);
+        wave.bind(4, &counts_f);
+        wave.bind(5, &lists_f);
+        wave.bind(6, &cov_f);
+        wave.set_value(7, IMG_W);
+        wave.set_value(8, IMG_H);
+        wave.set_value(9, TILE);
+        wave.set_value(10, TILES_X);
+        wave.set_value(11, MAX_SEGS);
+        let quarks = ((total as u32 + 63) / 64) * 64;
+        gpu.dispatch(&wave, quarks).unwrap().wait().unwrap();
+        let got = cov_f.read().unwrap();
+
+        let mut want = vec![0.0f32; total];
+        k3_fine_coverage_ref(
+            &seg_x0,
+            &seg_y0,
+            &seg_x1,
+            &seg_y1,
+            &tile_counts,
+            &tile_lists,
+            &mut want,
+            IMG_W,
+            IMG_H,
+            TILE,
+            TILES_X,
+            MAX_SEGS,
+        );
+
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                w.to_bits(),
+                "k3_fine_coverage pixel {i} (px={}, py={}): got {g} want {w}",
+                i as u32 % IMG_W,
+                i as u32 / IMG_W
             );
         }
     });
