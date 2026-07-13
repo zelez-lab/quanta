@@ -57,9 +57,24 @@ pub struct SurfaceConfig {
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
-    /// Pixel format of the frames. Presentation targets accept a
-    /// restricted set — `BGRA8` is the portable default; backends
-    /// reject unsupported formats at create/configure time.
+    /// Preferred pixel format of the frames. `BGRA8` is the portable
+    /// default.
+    ///
+    /// This is a single-format **preference**, not a guarantee. On
+    /// Vulkan the swapchain negotiates against what the surface actually
+    /// offers — it tries this format first, then `BGRA8`, then `RGBA8`,
+    /// then any other offered format Quanta can express (so a surface
+    /// that only offers `RGBA8`, as Android's conventionally do, still
+    /// works with the default `BGRA8` request). Only a surface offering
+    /// nothing expressible is rejected. On Metal the format is exact —
+    /// Quanta sets the layer format, so the frames use exactly this.
+    ///
+    /// Read what was actually chosen with `Surface::format()` (the typed
+    /// wrapper in `quanta-render`); the acquired frames' textures report
+    /// the negotiated format. There
+    /// is deliberately no preference-*list* here — if you need the
+    /// fallback ordered differently than `[requested, BGRA8, RGBA8]`,
+    /// type your pipeline per frame from the acquired texture's format.
     pub format: Format,
     /// When a presented frame becomes visible. Default [`PresentMode::Fifo`].
     pub present_mode: PresentMode,

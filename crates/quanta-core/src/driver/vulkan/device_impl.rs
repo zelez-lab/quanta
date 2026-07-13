@@ -1859,6 +1859,11 @@ impl GpuDevice for VulkanDevice {
     }
 
     #[cfg(feature = "render")]
+    fn surface_format(&self, surface: u64) -> Result<crate::Format, QuantaError> {
+        self.surface_format_impl(surface)
+    }
+
+    #[cfg(feature = "render")]
     fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
         self.surface_acquire_impl(surface)
     }

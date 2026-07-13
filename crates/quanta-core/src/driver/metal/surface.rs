@@ -287,6 +287,20 @@ impl MetalDevice {
         Ok(())
     }
 
+    pub(crate) fn surface_format_impl(&self, surface: u64) -> Result<Format, QuantaError> {
+        // Quanta sets the CAMetalLayer's pixel format itself
+        // (`apply_config` → `setPixelFormat:`), so the actual frame
+        // format always equals the configured one — no negotiation.
+        let surfaces = self
+            .surfaces
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        surfaces
+            .get(&surface)
+            .map(|s| s.format)
+            .ok_or_else(|| QuantaError::not_found("surface handle not found"))
+    }
+
     pub(crate) fn surface_present_impl(
         &self,
         _surface: u64,

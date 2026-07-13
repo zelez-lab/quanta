@@ -257,6 +257,85 @@ fn surface_android_target_rejected_off_android() {
     }
 }
 
+#[test]
+fn surface_format_is_defined_after_create() {
+    // The negotiated format is queryable right after create and is one
+    // of the formats a presentation surface can actually carry.
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let surface = gpu
+        .create_surface(&SurfaceTarget::Headless, &SurfaceConfig::new(48, 48))
+        .unwrap();
+    let format = surface.format().unwrap();
+    // Whatever the backend negotiated, it is a real presentable format;
+    // the default request is BGRA8, and every backend the suite runs on
+    // (Metal, lavapipe Vulkan) offers it, so the negotiation keeps it.
+    assert_eq!(
+        format,
+        Format::BGRA8,
+        "a BGRA8-requesting surface should negotiate BGRA8 where it is offered"
+    );
+    // And an acquired frame's texture reports the negotiated format.
+    let mut surface = surface;
+    let frame = surface.acquire().unwrap();
+    assert_eq!(frame.texture().format(), format);
+    frame.present().unwrap();
+}
+
+#[test]
+fn surface_negotiates_requested_rgba8_or_falls_back() {
+    // A surface requesting RGBA8. The negotiated format must be a member
+    // of the preference chain [RGBA8, BGRA8, RGBA8], and an acquired
+    // frame's texture must agree with `surface.format()` — the property
+    // the encode-time color-format check depends on. Conditional on what
+    // the surface offers so it can't fail falsely on any backend: Metal
+    // rejects an RGBA8 surface outright (only BGRA8/RGBA16Float layers),
+    // which is a legitimate outcome we skip on.
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let mut config = SurfaceConfig::new(40, 40);
+    config.format = Format::RGBA8;
+    let mut surface = match gpu.create_surface(&SurfaceTarget::Headless, &config) {
+        Ok(s) => s,
+        Err(e) if matches!(e.kind, QuantaErrorKind::NotSupported(_)) => {
+            // Backend can't present an RGBA8 surface at all (Metal). The
+            // negotiation still applies wherever RGBA8 or the fallbacks
+            // are offered — nothing to assert here.
+            eprintln!("skipping: RGBA8 surface not supported on this backend: {e}");
+            return;
+        }
+        Err(e) => panic!("create_surface(RGBA8) failed unexpectedly: {e}"),
+    };
+
+    let negotiated = surface.format().unwrap();
+    assert!(
+        matches!(negotiated, Format::RGBA8 | Format::BGRA8),
+        "negotiated format must be a chain member [requested=RGBA8, BGRA8, RGBA8], got {negotiated:?}"
+    );
+
+    let frame = surface.acquire().unwrap();
+    assert_eq!(
+        frame.texture().format(),
+        negotiated,
+        "an acquired frame's texture must report the negotiated format"
+    );
+    frame.present().unwrap();
+}
+
 // --- Reserved-but-NotSupported backends (CPU software driver) ---
 
 #[cfg(feature = "software")]

@@ -21,7 +21,7 @@ use crate::{PresentMode, QuantaError, SurfaceConfig, SurfaceTarget, Texture};
 use super::VulkanDevice;
 use super::device::VkTexture;
 use super::ffi;
-use super::helpers::format_to_vulkan;
+use super::helpers::{format_to_vulkan, vulkan_to_format};
 
 /// WSI extension entry points, resolved once at device discovery.
 /// Present only when the instance offers `VK_KHR_surface` and the
@@ -267,8 +267,10 @@ impl VulkanDevice {
             ));
         }
 
-        // 3. Build the swapchain + per-surface objects.
-        let (swapchain, images, views, vk_format, extent) =
+        // 3. Build the swapchain + per-surface objects. The negotiated
+        // format may differ from `config.format` (a preference on
+        // Vulkan) — it is what acquired frames must report.
+        let (swapchain, images, views, vk_format, format, extent) =
             self.build_swapchain(procs, surface, config, ffi::null_handle())?;
 
         let fence_info = ffi::VkFenceCreateInfo {
@@ -329,7 +331,7 @@ impl VulkanDevice {
                     views,
                     width: extent.0,
                     height: extent.1,
-                    format: config.format,
+                    format,
                     vk_format,
                     present_mode: config.present_mode,
                     needs_rebuild: false,
@@ -343,6 +345,12 @@ impl VulkanDevice {
     }
 
     /// Create the swapchain and per-image views for `surface`.
+    ///
+    /// Returns the swapchain, its images and views, the negotiated
+    /// `VkFormat`, the quanta [`Format`](crate::Format) that format maps
+    /// to (the value acquired frames report), and the extent. The
+    /// negotiated format is chosen by [`Self::negotiate_surface_format`]
+    /// and is not necessarily `config.format` — see that method.
     #[allow(clippy::type_complexity)]
     fn build_swapchain(
         &self,
@@ -356,6 +364,7 @@ impl VulkanDevice {
             Vec<ffi::VkImage>,
             Vec<ffi::VkImageView>,
             u32,
+            crate::Format,
             (u32, u32),
         ),
         QuantaError,
@@ -384,37 +393,12 @@ impl VulkanDevice {
             (caps.current_extent.width, caps.current_extent.height)
         };
 
-        // Pixel format: the configured format with SRGB-nonlinear
-        // colorspace must be offered.
-        let vk_format = format_to_vulkan(config.format);
-        let mut count = 0u32;
-        unsafe {
-            (procs.surface_formats)(
-                self.physical_device,
-                surface,
-                &mut count,
-                core::ptr::null_mut(),
-            )
-        };
-        let mut formats =
-            alloc::vec![ffi::VkSurfaceFormatKHR { format: 0, color_space: 0 }; count as usize];
-        unsafe {
-            (procs.surface_formats)(
-                self.physical_device,
-                surface,
-                &mut count,
-                formats.as_mut_ptr(),
-            )
-        };
-        let format_ok = formats.iter().take(count as usize).any(|f| {
-            f.format == vk_format && f.color_space == ffi::VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
-        });
-        if !format_ok {
-            return Err(QuantaError::not_supported(format!(
-                "surface does not offer {:?} with SRGB-nonlinear colorspace",
-                config.format
-            )));
-        }
+        // Pixel format: negotiate against what the surface offers,
+        // preferring the configured format but falling back so a surface
+        // that offers a different color-renderable format (e.g. Android's
+        // RGBA8 where the config asks for BGRA8) still works. All choices
+        // use the SRGB-nonlinear colorspace.
+        let (vk_format, format) = self.negotiate_surface_format(procs, surface, config)?;
 
         // Present mode: FIFO is always available per spec; others must
         // be advertised.
@@ -523,7 +507,101 @@ impl VulkanDevice {
             views.push(view);
         }
 
-        Ok((swapchain, images, views, vk_format, extent))
+        Ok((swapchain, images, views, vk_format, format, extent))
+    }
+
+    /// Choose the swapchain's pixel format from what the surface offers,
+    /// all with `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`. First hit wins:
+    ///
+    /// 1. the configured format (`config.format`),
+    /// 2. `BGRA8`,
+    /// 3. `RGBA8` (skipped if it duplicates step 1),
+    /// 4. otherwise the first offered pair whose `VkFormat` maps to a
+    ///    quanta [`Format`](crate::Format).
+    ///
+    /// Returns the chosen `(VkFormat, Format)`. `NotSupported` — listing
+    /// the offered formats — is returned only when a surface offers no
+    /// SRGB-nonlinear format quanta can express, which is the sole
+    /// unsatisfiable case left. The legacy single-entry
+    /// `VK_FORMAT_UNDEFINED` case (the surface accepts any format) is
+    /// treated as "step 1 is available".
+    fn negotiate_surface_format(
+        &self,
+        procs: &SurfaceProcs,
+        surface: ffi::VkSurfaceKHR,
+        config: &SurfaceConfig,
+    ) -> Result<(u32, crate::Format), QuantaError> {
+        let mut count = 0u32;
+        unsafe {
+            (procs.surface_formats)(
+                self.physical_device,
+                surface,
+                &mut count,
+                core::ptr::null_mut(),
+            )
+        };
+        let mut formats =
+            alloc::vec![ffi::VkSurfaceFormatKHR { format: 0, color_space: 0 }; count as usize];
+        unsafe {
+            (procs.surface_formats)(
+                self.physical_device,
+                surface,
+                &mut count,
+                formats.as_mut_ptr(),
+            )
+        };
+        formats.truncate(count as usize);
+
+        // Legacy behavior: a single VK_FORMAT_UNDEFINED entry means the
+        // surface imposes no format — step 1 (the configured format) is
+        // free to use.
+        if let [only] = formats.as_slice()
+            && only.format == ffi::VK_FORMAT_UNDEFINED
+        {
+            return Ok((format_to_vulkan(config.format), config.format));
+        }
+
+        let srgb = ffi::VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+        let offered = |vk: u32| -> bool {
+            formats
+                .iter()
+                .any(|f| f.format == vk && f.color_space == srgb)
+        };
+
+        // Steps 1–3: the preference chain, deduped against the config.
+        let requested_vk = format_to_vulkan(config.format);
+        let mut preferred = alloc::vec![(requested_vk, config.format)];
+        for cand in [crate::Format::BGRA8, crate::Format::RGBA8] {
+            let vk = format_to_vulkan(cand);
+            if vk != requested_vk {
+                preferred.push((vk, cand));
+            }
+        }
+        for (vk, fmt) in preferred {
+            if offered(vk) {
+                return Ok((vk, fmt));
+            }
+        }
+
+        // Step 4: the first offered SRGB-nonlinear pair quanta can name.
+        for f in &formats {
+            if f.color_space == srgb
+                && let Some(fmt) = vulkan_to_format(f.format)
+            {
+                return Ok((f.format, fmt));
+            }
+        }
+
+        // Nothing expressible: report every offered (VkFormat,
+        // VkColorSpace) pair so a caller on a surface with only exotic
+        // formats can see exactly what it reported.
+        let offered_list: Vec<(u32, u32)> =
+            formats.iter().map(|f| (f.format, f.color_space)).collect();
+        Err(QuantaError::not_supported(format!(
+            "surface offers no SRGB-nonlinear format Quanta can express \
+             (requested {:?}); offered (VkFormat, VkColorSpace) pairs: {:?}",
+            config.format, offered_list
+        )))
     }
 
     pub(crate) fn surface_configure_impl(
@@ -545,7 +623,7 @@ impl VulkanDevice {
         for &view in &entry.views {
             unsafe { ffi::vkDestroyImageView(self.device, view, core::ptr::null()) };
         }
-        let (swapchain, images, views, vk_format, extent) =
+        let (swapchain, images, views, vk_format, format, extent) =
             self.build_swapchain(procs, entry.surface, config, entry.swapchain)?;
         unsafe { (procs.destroy_swapchain)(self.device, entry.swapchain, core::ptr::null()) };
 
@@ -555,7 +633,7 @@ impl VulkanDevice {
         entry.vk_format = vk_format;
         entry.width = extent.0;
         entry.height = extent.1;
-        entry.format = config.format;
+        entry.format = format;
         entry.present_mode = config.present_mode;
         entry.needs_rebuild = false;
         Ok(())
@@ -713,6 +791,17 @@ impl VulkanDevice {
                 live: false,
             },
         ))
+    }
+
+    pub(crate) fn surface_format_impl(&self, surface: u64) -> Result<crate::Format, QuantaError> {
+        let surfaces = self
+            .vk_surfaces
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        surfaces
+            .get(&surface)
+            .map(|entry| entry.format)
+            .ok_or_else(|| QuantaError::not_found("surface handle not found"))
     }
 
     pub(crate) fn surface_present_impl(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {

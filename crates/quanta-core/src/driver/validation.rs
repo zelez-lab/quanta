@@ -607,6 +607,11 @@ impl GpuDevice for ValidationDevice {
     }
 
     #[cfg(feature = "render")]
+    fn surface_format(&self, surface: u64) -> Result<crate::Format, QuantaError> {
+        self.inner.surface_format(surface)
+    }
+
+    #[cfg(feature = "render")]
     fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
         self.inner.surface_acquire(surface)
     }

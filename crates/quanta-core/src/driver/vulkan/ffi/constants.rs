@@ -82,6 +82,9 @@ pub const VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO: u32 = 9;
 
 // ─── Format constants ───────────────────────────────────────────────────────
 
+/// Sentinel "no format" — as a lone `vkGetPhysicalDeviceSurfaceFormatsKHR`
+/// entry it means the surface imposes no format constraint.
+pub const VK_FORMAT_UNDEFINED: u32 = 0;
 pub const VK_FORMAT_R8_UNORM: u32 = 9;
 pub const VK_FORMAT_R16_SFLOAT: u32 = 76;
 pub const VK_FORMAT_R32_SFLOAT: u32 = 100;

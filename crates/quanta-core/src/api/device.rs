@@ -986,6 +986,22 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         ))
     }
 
+    /// The pixel [`Format`] the surface's frames actually use.
+    ///
+    /// On Vulkan this is the format the swapchain **negotiated** — the
+    /// configured format is a preference and the surface may only offer a
+    /// different one (e.g. Android surfaces that offer `RGBA8` where the
+    /// config asked for `BGRA8`), so this can differ from
+    /// `SurfaceConfig::format`. On Metal the layer's format is set by
+    /// Quanta, so it always equals the configured format. Acquired frames'
+    /// textures report exactly this format.
+    #[cfg(feature = "render")]
+    fn surface_format(&self, _surface: u64) -> Result<Format, QuantaError> {
+        Err(QuantaError::not_supported(
+            "surface presentation not yet implemented on this backend",
+        ))
+    }
+
     /// Acquire the next presentable frame from a surface. Returns the
     /// frame id and a `Texture` aliasing the frame's target image
     /// (registered in the device's texture registry until the frame

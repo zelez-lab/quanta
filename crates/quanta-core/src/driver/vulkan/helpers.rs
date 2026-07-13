@@ -28,6 +28,45 @@ pub(super) fn format_to_vulkan(format: Format) -> u32 {
     }
 }
 
+/// Reverse of [`format_to_vulkan`]: map a `VkFormat` back to the quanta
+/// [`Format`] it stands for, or `None` when quanta has no equivalent.
+///
+/// Used by swapchain format negotiation to accept a surface-offered
+/// format that isn't one of the preferred chain members — a surface that
+/// offers only formats this returns `None` for is genuinely
+/// inexpressible and the negotiation rejects it. Kept in lockstep with
+/// `format_to_vulkan` (every arm there has its inverse here); the
+/// `_UNORM`/`_SFLOAT` families round-trip, so the two are exact inverses
+/// on the formats quanta names.
+///
+/// Only the render face negotiates swapchain formats, so this is
+/// `render`-gated — without it the function would be dead code (the
+/// surface module that calls it is itself `render`-gated).
+#[cfg(feature = "render")]
+pub(super) fn vulkan_to_format(vk_format: u32) -> Option<Format> {
+    Some(match vk_format {
+        ffi::VK_FORMAT_R8G8B8A8_UNORM => Format::RGBA8,
+        ffi::VK_FORMAT_B8G8R8A8_UNORM => Format::BGRA8,
+        ffi::VK_FORMAT_R8_UNORM => Format::R8,
+        ffi::VK_FORMAT_R16_SFLOAT => Format::R16Float,
+        ffi::VK_FORMAT_R32_SFLOAT => Format::R32Float,
+        ffi::VK_FORMAT_R32G32_SFLOAT => Format::RG32Float,
+        ffi::VK_FORMAT_R16G16B16A16_SFLOAT => Format::RGBA16Float,
+        ffi::VK_FORMAT_R32G32B32A32_SFLOAT => Format::RGBA32Float,
+        ffi::VK_FORMAT_D32_SFLOAT => Format::Depth32Float,
+        ffi::VK_FORMAT_BC1_RGBA_UNORM_BLOCK => Format::Bc1Rgba,
+        ffi::VK_FORMAT_BC3_UNORM_BLOCK => Format::Bc3Rgba,
+        ffi::VK_FORMAT_BC5_SNORM_BLOCK => Format::Bc5Rg,
+        ffi::VK_FORMAT_BC7_UNORM_BLOCK => Format::Bc7Rgba,
+        ffi::VK_FORMAT_ASTC_4X4_UNORM_BLOCK => Format::Astc4x4,
+        ffi::VK_FORMAT_ASTC_6X6_UNORM_BLOCK => Format::Astc6x6,
+        ffi::VK_FORMAT_ASTC_8X8_UNORM_BLOCK => Format::Astc8x8,
+        ffi::VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK => Format::Etc2Rgb8,
+        ffi::VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK => Format::Etc2Rgba8,
+        _ => return None,
+    })
+}
+
 pub(super) fn sample_count_to_vk(count: u32) -> u32 {
     match count {
         1 => ffi::VK_SAMPLE_COUNT_1_BIT,

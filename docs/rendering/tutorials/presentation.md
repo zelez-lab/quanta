@@ -80,6 +80,38 @@ Rules of the loop:
 - Dropping the `Surface` releases the swapchain (and, for
   `SurfaceTarget::Headless`, the backend-created target).
 
+### Format negotiation
+
+`SurfaceConfig::format` is a **preference**, not a guarantee. A
+presentation surface only offers a restricted set of formats, and on
+Vulkan the set is platform-dependent — Android surfaces conventionally
+offer `RGBA8`, not the `BGRA8` desktop habit assumes. So the swapchain
+negotiates: it picks the first format the surface offers, all with an
+SRGB-nonlinear colorspace, from the chain
+
+1. the format you requested (`config.format`),
+2. `BGRA8`,
+3. `RGBA8`,
+4. otherwise the first offered format Quanta can express.
+
+Only a surface offering nothing Quanta can name fails, and the error
+lists what it offered. On Metal there is no negotiation — Quanta sets the
+layer's format, so the frames always use exactly what you configured.
+
+Read the negotiated result with `surface.format()` and build your
+pipelines against it — the frame texture carries the negotiated format,
+and a pipeline typed for a different one is rejected when you draw:
+
+```rust
+let surface = gpu.create_surface(&target, &SurfaceConfig::new(w, h))?;
+let color = surface.format()?; // may not be the BGRA8 you asked for
+let pipeline = gpu.pipeline(&PipelineDesc::new(&shader).with_color_formats(vec![color]))?;
+```
+
+The chain order is fixed. If you need the fallback to prefer a different
+format, build the pipeline per frame from `frame.texture().format()`
+instead.
+
 ### Pacing: fully demand-driven
 
 Quanta never renders or presents on its own — a frame happens only when you

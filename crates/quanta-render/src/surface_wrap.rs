@@ -69,6 +69,30 @@ impl Surface {
         &self.config
     }
 
+    /// The pixel [`Format`](quanta_core::Format) the surface's frames
+    /// actually use.
+    ///
+    /// This is the **negotiated** format, which on Vulkan may differ from
+    /// the [`SurfaceConfig::format`] you requested:
+    /// [`SurfaceConfig::format`] is a *preference*, and the surface may
+    /// only offer a different one (an Android surface offering `RGBA8`
+    /// where you asked for `BGRA8`, say). On Metal it always equals the
+    /// configured format. Every [`SurfaceFrame::texture`]'s
+    /// [`format()`](quanta_core::Texture::format) reports exactly this.
+    ///
+    /// Call it after `create_surface` and **before building pipelines**,
+    /// and pass the result to
+    /// [`PipelineDesc::with_color_formats`](quanta_core::PipelineDesc) —
+    /// otherwise a pipeline typed for the requested format is rejected at
+    /// encode time against a frame carrying the negotiated one. The
+    /// preference chain is fixed at `[requested, BGRA8, RGBA8]`; a
+    /// consumer needing to order the fallback differently should build the
+    /// pipeline per acquired frame from `frame.texture().format()`
+    /// instead.
+    pub fn format(&self) -> Result<quanta_core::Format, QuantaError> {
+        self.device.surface_format(self.handle)
+    }
+
     /// Current frame width in pixels.
     pub fn width(&self) -> u32 {
         self.config.width

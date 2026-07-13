@@ -536,7 +536,20 @@ than failing.
 | `acquire()` | `Result<SurfaceFrame>` | Next presentable frame. `Timeout` if none free; `SurfaceOutdated` if the target was resized |
 | `configure(config)` | `Result<()>` | Reconfigure — resize, format, or present-mode change |
 | `config()` | `&SurfaceConfig` | Active configuration |
+| `format()` | `Result<Format>` | The **negotiated** frame format (see below). Call after create, before building pipelines; pass to `with_color_formats` |
 | `width()` / `height()` | `u32` | Current frame extent |
+
+**Format negotiation.** `SurfaceConfig::format` is a *preference* on
+Vulkan: the swapchain picks the first offered SRGB-nonlinear format from
+`[requested, BGRA8, RGBA8]`, then any other format Quanta can express, so
+a surface that only offers `RGBA8` (Android) still works with a `BGRA8`
+request. Only a surface offering nothing expressible fails, with an error
+listing what it offered. On Metal the configured format is exact (Quanta
+sets the layer format). `surface.format()` returns what was actually
+negotiated; a frame's `texture().format()` reports the same, and building
+a pipeline for a different format is rejected at draw time. The chain
+order is fixed — for a different fallback preference, type the pipeline
+per frame from `frame.texture().format()`.
 
 ### `SurfaceFrame`
 
@@ -554,7 +567,9 @@ Dropping an unpresented frame discards it.
 
 - `SurfaceConfig::new(width, height)` — portable defaults: `BGRA8`,
   `PresentMode::Fifo`, `RENDER_TARGET` usage. `#[non_exhaustive]`;
-  adjust fields by assignment.
+  adjust fields by assignment. `format` is a *preference* on Vulkan (the
+  swapchain may negotiate another offered format — read the result with
+  `Surface::format()`) and *exact* on Metal.
 - `SurfaceTarget::MetalLayer { layer }` — an existing `CAMetalLayer*`
   provided by the windowing environment.
   `SurfaceTarget::VulkanXlib { display, window }` — an Xlib `Display*`
