@@ -115,6 +115,153 @@ impl VulkanDevice {
         }
     }
 
+    /// Write the CURRENT running slot state into `ds`, then update it.
+    ///
+    /// The render-side twin of compute's `write_texture_descriptors`: it
+    /// serialises one draw's snapshot of the slot arrays into the shared
+    /// 16-binding layout — buffers → `STORAGE_BUFFER` at `binding = slot`
+    /// (0-7), textures → `COMBINED_IMAGE_SAMPLER` at `binding = 8 + slot`
+    /// (8-15) with the slot's sampler and `SHADER_READ_ONLY_OPTIMAL`. A
+    /// texture slot with no explicit `SetSampler` falls back to the LINEAR
+    /// clamp `default_desc`, resolved through the sampler cache only when
+    /// actually needed (so a slot that always carries a sampler never
+    /// grows the cache). The info structs live on the stack here and
+    /// outlive the single `vkUpdateDescriptorSets` — every pointer in
+    /// `writes` refers into `buffer_infos` / `image_infos` below.
+    ///
+    /// This is exactly the descriptor SHAPE the old whole-pass write
+    /// built; only WHEN (per draw) and HOW MANY (one set each) changed.
+    #[cfg(feature = "render")]
+    fn write_render_descriptors(
+        &self,
+        set: ffi::VkDescriptorSet,
+        texture_for_slot: &[Option<ffi::VkImageView>; 8],
+        sampler_for_slot: &[Option<ffi::VkSampler>; 8],
+        buffer_for_slot: &[Option<ffi::VkBuffer>; 8],
+        default_desc: &crate::texture::SamplerDesc,
+    ) {
+        let mut buffer_infos: [ffi::VkDescriptorBufferInfo; 8] = unsafe { core::mem::zeroed() };
+        let mut image_infos: [ffi::VkDescriptorImageInfo; 8] = unsafe { core::mem::zeroed() };
+        let mut writes: [ffi::VkWriteDescriptorSet; 16] = unsafe { core::mem::zeroed() };
+        let mut n = 0usize;
+
+        for (slot, buf) in buffer_for_slot.iter().enumerate() {
+            if let Some(buffer) = buf {
+                buffer_infos[slot] = ffi::VkDescriptorBufferInfo {
+                    buffer: *buffer,
+                    offset: 0,
+                    range: ffi::VK_WHOLE_SIZE,
+                };
+                writes[n] = ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: set,
+                    dst_binding: slot as u32,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    p_image_info: core::ptr::null(),
+                    p_buffer_info: &buffer_infos[slot],
+                    p_texel_buffer_view: core::ptr::null(),
+                };
+                n += 1;
+            }
+        }
+
+        for (slot, view) in texture_for_slot.iter().enumerate() {
+            if let Some(image_view) = view {
+                // The wrapping closure is required: the fallback resolves
+                // the default sampler through the cache lazily, only for a
+                // textured slot that lacks an explicit one.
+                #[allow(clippy::redundant_closure)]
+                let sampler = sampler_for_slot[slot]
+                    .unwrap_or_else(|| self.get_or_create_render_sampler(default_desc));
+                image_infos[slot] = ffi::VkDescriptorImageInfo {
+                    sampler,
+                    image_view: *image_view,
+                    image_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                };
+                writes[n] = ffi::VkWriteDescriptorSet {
+                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    p_next: core::ptr::null(),
+                    dst_set: set,
+                    dst_binding: 8 + slot as u32,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    p_image_info: &image_infos[slot],
+                    p_buffer_info: core::ptr::null(),
+                    p_texel_buffer_view: core::ptr::null(),
+                };
+                n += 1;
+            }
+        }
+
+        if n > 0 {
+            unsafe {
+                ffi::vkUpdateDescriptorSets(
+                    self.device,
+                    n as u32,
+                    writes.as_ptr(),
+                    0,
+                    core::ptr::null(),
+                );
+            }
+        }
+    }
+
+    /// Allocate one descriptor set from the per-pass `pool`, write the
+    /// current running slot state into it, and bind it for the graphics
+    /// pipeline — the allocate→write→bind unit that runs immediately
+    /// before each `vkCmdDraw*`, so every draw samples exactly the
+    /// resources bound before it. `cmd` must be recording.
+    #[cfg(feature = "render")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn bind_draw_descriptor_set(
+        &self,
+        cmd: ffi::VkCommandBuffer,
+        pool: ffi::VkDescriptorPool,
+        ds_layout: ffi::VkDescriptorSetLayout,
+        pipeline_layout: ffi::VkPipelineLayout,
+        texture_for_slot: &[Option<ffi::VkImageView>; 8],
+        sampler_for_slot: &[Option<ffi::VkSampler>; 8],
+        buffer_for_slot: &[Option<ffi::VkBuffer>; 8],
+        default_desc: &crate::texture::SamplerDesc,
+    ) -> Result<(), QuantaError> {
+        let alloc_info = ffi::VkDescriptorSetAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            p_next: core::ptr::null(),
+            descriptor_pool: pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &ds_layout,
+        };
+        let mut ds = ffi::null_handle();
+        let result = unsafe { ffi::vkAllocateDescriptorSets(self.device, &alloc_info, &mut ds) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
+        self.write_render_descriptors(
+            ds,
+            texture_for_slot,
+            sampler_for_slot,
+            buffer_for_slot,
+            default_desc,
+        );
+        unsafe {
+            ffi::vkCmdBindDescriptorSets(
+                cmd,
+                ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipeline_layout,
+                0,
+                1,
+                &ds,
+                0,
+                core::ptr::null(),
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn render_begin_impl(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
         Ok(RenderPass {
             handle: target.handle(),
@@ -380,11 +527,51 @@ impl VulkanDevice {
             return Err(QuantaError::submit_failed());
         }
 
-        // --- Descriptor set allocation and update ---
+        // --- Descriptor pool: one set PER DRAW ---
+        //
+        // Textures/buffers/samplers are re-bound BETWEEN draws in one pass
+        // ([SetTexture(A), Draw, SetTexture(B), Draw]); the op vector
+        // preserves that call order. So — mirroring the compute
+        // per-dispatch pattern (write_texture_descriptors +
+        // acquire_descriptor_pool) — each draw snapshots the running slot
+        // state into its OWN freshly-allocated descriptor set, written and
+        // bound immediately before the draw. A single whole-pass set (the
+        // old shape) collapsed every binding into one flat set, so every
+        // draw sampled the LAST texture bound.
         let descriptor_pool;
-        let descriptor_set;
+        let rp_layout;
+        let rp_ds_layout;
+
+        // Running slot state, mutated in op order inside the replay loop.
+        // A texture slot holds the VkImageView to sample; a buffer slot
+        // holds the VkBuffer to bind; a sampler slot holds the resolved
+        // VkSampler. `None` = slot unbound. Each draw reads these to build
+        // its set, so a re-bind before the next draw is reflected exactly.
+        let mut texture_for_slot: [Option<ffi::VkImageView>; 8] = [None; 8];
+        let mut sampler_for_slot: [Option<ffi::VkSampler>; 8] = [None; 8];
+        let mut buffer_for_slot: [Option<ffi::VkBuffer>; 8] = [None; 8];
 
         if let Some(rp) = pipeline_ref {
+            // Count the draws so the pool holds one set each. Every draw
+            // family that consumes a descriptor set counts.
+            let n_draws = pass
+                .ops
+                .iter()
+                .filter(|op| {
+                    matches!(
+                        op,
+                        RenderOp::Draw { .. }
+                            | RenderOp::DrawIndexed { .. }
+                            | RenderOp::DrawIndirect { .. }
+                            | RenderOp::DrawIndexedIndirect { .. }
+                    )
+                })
+                .count();
+            // A pipeline-only pass with zero draws still creates a pool
+            // (max_sets clamped to 1) but allocates no set — it must not
+            // crash.
+            let max_sets = core::cmp::max(1, n_draws) as u32;
+
             // NOTE(descriptor-pool churn): this creates a fresh
             // VkDescriptorPool per pass. The device's
             // `descriptor_pool_cache` cannot be reused here as-is: its
@@ -398,18 +585,18 @@ impl VulkanDevice {
             let pool_sizes = [
                 ffi::VkDescriptorPoolSize {
                     ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    descriptor_count: 8,
+                    descriptor_count: 8 * max_sets,
                 },
                 ffi::VkDescriptorPoolSize {
                     ty: ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 8,
+                    descriptor_count: 8 * max_sets,
                 },
             ];
             let pool_info = ffi::VkDescriptorPoolCreateInfo {
                 s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                 p_next: core::ptr::null(),
                 flags: 0,
-                max_sets: 1,
+                max_sets,
                 pool_size_count: 2,
                 p_pool_sizes: pool_sizes.as_ptr(),
             };
@@ -421,149 +608,31 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
             descriptor_pool = Some(pool);
-
-            let alloc_info = ffi::VkDescriptorSetAllocateInfo {
-                s_type: ffi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                p_next: core::ptr::null(),
-                descriptor_pool: pool,
-                descriptor_set_count: 1,
-                p_set_layouts: &rp.descriptor_set_layout,
-            };
-            let mut ds = ffi::null_handle();
-            let result =
-                unsafe { ffi::vkAllocateDescriptorSets(self.device, &alloc_info, &mut ds) };
-            if result != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
-            }
-            descriptor_set = Some(ds);
-
-            // Collect buffer/image info for descriptor writes.
-            let mut buffer_infos: Vec<(u32, ffi::VkDescriptorBufferInfo)> = Vec::new();
-            let mut image_infos: Vec<(u32, ffi::VkDescriptorImageInfo)> = Vec::new();
-            let mut sampler_for_slot: [Option<ffi::VkSampler>; 8] = [None; 8];
-
-            // Default sampler — LINEAR min/mag/mip, CLAMP_TO_EDGE, no
-            // anisotropy. Resolved through the per-device cache like every
-            // other sampler, and only when a texture slot actually lacks an
-            // explicit SetSampler — a pass that samples nothing (or sets a
-            // sampler on every textured slot) must not grow the cache with
-            // an entry it never binds. `mip_filter: Linear` here reproduces
-            // the historical hardcoded default (which used
-            // MIPMAP_MODE_LINEAR), NOT `SamplerDesc::default()` — the
-            // latter maps mip to NEAREST.
-            let default_desc = crate::texture::SamplerDesc {
-                min_filter: crate::texture::Filter::Linear,
-                mag_filter: crate::texture::Filter::Linear,
-                mip_filter: crate::texture::Filter::Linear,
-                address_u: crate::texture::AddressMode::ClampToEdge,
-                address_v: crate::texture::AddressMode::ClampToEdge,
-                max_anisotropy: 1,
-                compare: None,
-            };
-            let default_sampler = || self.get_or_create_render_sampler(&default_desc);
-
-            // First pass: resolve each SetSampler slot through the cache.
-            // Identical descriptors across draws/frames reuse one sampler,
-            // so the sampler pool is bounded by distinct descriptors.
-            for op in &pass.ops {
-                if let RenderOp::SetSampler { slot, sampler } = op {
-                    let idx = *slot as usize;
-                    if idx < 8 {
-                        let s = self.get_or_create_render_sampler(sampler);
-                        if !s.is_null() {
-                            sampler_for_slot[idx] = Some(s);
-                        }
-                    }
-                }
-            }
-
-            // Second pass: buffer and image bindings
-            for op in &pass.ops {
-                match op {
-                    RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
-                        if let Some(buf) = buffers.get(handle) {
-                            buffer_infos.push((
-                                *slot,
-                                ffi::VkDescriptorBufferInfo {
-                                    buffer: buf.buffer,
-                                    offset: 0,
-                                    range: ffi::VK_WHOLE_SIZE,
-                                },
-                            ));
-                        }
-                    }
-                    RenderOp::SetTexture { slot, handle } => {
-                        if let Some(tex) = textures.get(handle) {
-                            let idx = *slot as usize;
-                            let sampler = if idx < 8 {
-                                // The wrapping closure is required: `default_sampler`
-                                // is also called in the `else` arm below, so it can't
-                                // be moved into `unwrap_or_else` by value.
-                                #[allow(clippy::redundant_closure)]
-                                sampler_for_slot[idx].unwrap_or_else(|| default_sampler())
-                            } else {
-                                default_sampler()
-                            };
-                            image_infos.push((
-                                *slot,
-                                ffi::VkDescriptorImageInfo {
-                                    sampler,
-                                    image_view: tex.view,
-                                    image_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                },
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // Build descriptor writes
-            let mut writes: Vec<ffi::VkWriteDescriptorSet> = Vec::new();
-            for (slot, info) in &buffer_infos {
-                writes.push(ffi::VkWriteDescriptorSet {
-                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    p_next: core::ptr::null(),
-                    dst_set: ds,
-                    dst_binding: *slot,
-                    dst_array_element: 0,
-                    descriptor_count: 1,
-                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    p_image_info: core::ptr::null(),
-                    p_buffer_info: info,
-                    p_texel_buffer_view: core::ptr::null(),
-                });
-            }
-            for (slot, info) in &image_infos {
-                writes.push(ffi::VkWriteDescriptorSet {
-                    s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    p_next: core::ptr::null(),
-                    dst_set: ds,
-                    dst_binding: 8 + *slot,
-                    dst_array_element: 0,
-                    descriptor_count: 1,
-                    descriptor_type: ffi::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    p_image_info: info,
-                    p_buffer_info: core::ptr::null(),
-                    p_texel_buffer_view: core::ptr::null(),
-                });
-            }
-
-            if !writes.is_empty() {
-                unsafe {
-                    ffi::vkUpdateDescriptorSets(
-                        self.device,
-                        writes.len() as u32,
-                        writes.as_ptr(),
-                        0,
-                        core::ptr::null(),
-                    );
-                }
-            }
+            rp_layout = Some(rp.layout);
+            rp_ds_layout = Some(rp.descriptor_set_layout);
         } else {
             descriptor_pool = None;
-            descriptor_set = None;
+            rp_layout = None;
+            rp_ds_layout = None;
         }
+
+        // Default sampler — LINEAR min/mag/mip, CLAMP_TO_EDGE, no
+        // anisotropy. Resolved through the per-device cache like every
+        // other sampler, and only when a texture slot actually lacks an
+        // explicit SetSampler — a pass that samples nothing (or sets a
+        // sampler on every textured slot) must not grow the cache with an
+        // entry it never binds. `mip_filter: Linear` here reproduces the
+        // historical hardcoded default (which used MIPMAP_MODE_LINEAR),
+        // NOT `SamplerDesc::default()` — the latter maps mip to NEAREST.
+        let default_desc = crate::texture::SamplerDesc {
+            min_filter: crate::texture::Filter::Linear,
+            mag_filter: crate::texture::Filter::Linear,
+            mip_filter: crate::texture::Filter::Linear,
+            address_u: crate::texture::AddressMode::ClampToEdge,
+            address_v: crate::texture::AddressMode::ClampToEdge,
+            max_anisotropy: 1,
+            compare: None,
+        };
 
         // Clear values — one per attachment (MRT: per color target + resolve slots).
         let clear_values: Vec<ffi::VkClearValue> = if has_mrt {
@@ -712,6 +781,29 @@ impl VulkanDevice {
 
             let mut current_index_buffer: Option<ffi::VkBuffer> = None;
 
+            // One descriptor set per draw: allocate from the per-pass
+            // pool, write the running slot snapshot, bind — then draw.
+            // Guarded on the pipeline being present (a pipeline-less pass
+            // has no set to bind and issues no draws that consume one).
+            macro_rules! bind_draw_set {
+                () => {
+                    if let (Some(pool), Some(dsl), Some(pl)) =
+                        (descriptor_pool, rp_ds_layout, rp_layout)
+                    {
+                        self.bind_draw_descriptor_set(
+                            cmd,
+                            pool,
+                            dsl,
+                            pl,
+                            &texture_for_slot,
+                            &sampler_for_slot,
+                            &buffer_for_slot,
+                            &default_desc,
+                        )?;
+                    }
+                };
+            }
+
             // Encode each RenderOp.
             for op in &pass.ops {
                 match op {
@@ -722,18 +814,9 @@ impl VulkanDevice {
                                 ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 rp.pipeline,
                             );
-                            if let Some(ds) = descriptor_set {
-                                ffi::vkCmdBindDescriptorSets(
-                                    cmd,
-                                    ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    rp.layout,
-                                    0,
-                                    1,
-                                    &ds,
-                                    0,
-                                    core::ptr::null(),
-                                );
-                            }
+                            // The descriptor set is bound PER DRAW (below),
+                            // not here — a re-bind between draws in this
+                            // pass must reach the following draw's set.
                         }
                     }
 
@@ -766,11 +849,37 @@ impl VulkanDevice {
                         }
                     }
 
-                    RenderOp::SetField { .. }
-                    | RenderOp::SetUniform { .. }
-                    | RenderOp::SetTexture { .. }
-                    | RenderOp::SetSampler { .. } => {
-                        // Already handled via descriptor set update above.
+                    // Resource binds mutate the running slot state; the
+                    // NEXT draw snapshots it into its own descriptor set.
+                    // Resolve each handle exactly as the old whole-pass
+                    // pre-scan did (same map lookups, same sampler cache).
+                    RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
+                        let idx = *slot as usize;
+                        if idx < 8
+                            && let Some(buf) = buffers.get(handle)
+                        {
+                            buffer_for_slot[idx] = Some(buf.buffer);
+                        }
+                    }
+                    RenderOp::SetTexture { slot, handle } => {
+                        let idx = *slot as usize;
+                        if idx < 8
+                            && let Some(tex) = textures.get(handle)
+                        {
+                            texture_for_slot[idx] = Some(tex.view);
+                        }
+                    }
+                    RenderOp::SetSampler { slot, sampler } => {
+                        let idx = *slot as usize;
+                        if idx < 8 {
+                            // Identical descriptors across draws/frames
+                            // reuse one cached sampler, so the sampler pool
+                            // stays bounded by distinct descriptors.
+                            let s = self.get_or_create_render_sampler(sampler);
+                            if !s.is_null() {
+                                sampler_for_slot[idx] = Some(s);
+                            }
+                        }
                     }
 
                     RenderOp::SetValue { slot, data } => {
@@ -806,6 +915,7 @@ impl VulkanDevice {
                         vertex_count,
                         instance_count,
                     } => {
+                        bind_draw_set!();
                         ffi::vkCmdDraw(cmd, *vertex_count, *instance_count, 0, 0);
                     }
 
@@ -813,6 +923,7 @@ impl VulkanDevice {
                         index_count,
                         instance_count,
                     } => {
+                        bind_draw_set!();
                         ffi::vkCmdDrawIndexed(cmd, *index_count, *instance_count, 0, 0, 0);
                     }
 
@@ -898,6 +1009,7 @@ impl VulkanDevice {
                         offset,
                     } => {
                         if let Some(buf) = buffers.get(buffer_handle) {
+                            bind_draw_set!();
                             ffi::vkCmdDrawIndirect(cmd, buf.buffer, *offset, 1, 0);
                         }
                     }
@@ -922,6 +1034,7 @@ impl VulkanDevice {
                             }
                         }
                         if let Some(buf) = buffers.get(buffer_handle) {
+                            bind_draw_set!();
                             ffi::vkCmdDrawIndexedIndirect(cmd, buf.buffer, *offset, 1, 0);
                         }
                     }

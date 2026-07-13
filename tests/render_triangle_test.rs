@@ -1266,6 +1266,141 @@ fn texture_param_by_name_samples_exactly() {
     }
 }
 
+// ─── Test: two textured draws in one pass rebind their own texture ──────────
+//
+// Regression: the Vulkan replay wrote ONE descriptor set per pass, from a
+// whole-pass pre-scan that collapsed every SetTexture into a single flat
+// set — so [SetTexture(A), Draw, SetTexture(B), Draw] made BOTH draws
+// sample B (the last texture bound). One pass, one pipeline, two draws
+// over disjoint left/right quads, each binding its OWN texture between the
+// draws: the left region must sample A (red), the right must sample B
+// (green). Under the old per-pass set both regions came out green. The
+// split is x-only, so the assertion is flip-safe on every backend
+// (Metal was always per-draw-correct; this pins the Vulkan fix).
+
+#[test]
+fn two_textured_draws_rebind_their_own_texture() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || ATLAS_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_uv_layout();
+    let pipeline = gpu
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &UV_VERTEX_SHADER,
+                fragment: &ATLAS_FRAG_SHADER,
+            })
+            .with_entries(UV_VERTEX_SHADER.entry_point, ATLAS_FRAG_SHADER.entry_point)
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
+        .expect("pipeline creation");
+
+    // Texture A: solid red. Texture B: solid green. Solid 1×1, so the
+    // constant uv below samples the one texel regardless of orientation.
+    let tex_a = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(1, 1, Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ),
+        )
+        .expect("texture A");
+    tex_a.write(&[255u8, 0, 0, 255]).expect("A write");
+    let tex_b = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(1, 1, Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ),
+        )
+        .expect("texture B");
+    tex_b.write(&[0u8, 255, 0, 255]).expect("B write");
+
+    // Two disjoint quads, each two triangles (pos.xyz + uv). The left
+    // quad covers NDC x ∈ [-1, 0], the right x ∈ [0, 1]; both span the
+    // full height. uv is a constant (0.5, 0.5) — the textures are solid,
+    // so which texel is sampled doesn't matter, only WHICH texture.
+    #[rustfmt::skip]
+    let left_verts: [f32; 30] = [
+        -1.0, -1.0, 0.0,  0.5, 0.5,
+         0.0, -1.0, 0.0,  0.5, 0.5,
+         0.0,  1.0, 0.0,  0.5, 0.5,
+        -1.0, -1.0, 0.0,  0.5, 0.5,
+         0.0,  1.0, 0.0,  0.5, 0.5,
+        -1.0,  1.0, 0.0,  0.5, 0.5,
+    ];
+    #[rustfmt::skip]
+    let right_verts: [f32; 30] = [
+         0.0, -1.0, 0.0,  0.5, 0.5,
+         1.0, -1.0, 0.0,  0.5, 0.5,
+         1.0,  1.0, 0.0,  0.5, 0.5,
+         0.0, -1.0, 0.0,  0.5, 0.5,
+         1.0,  1.0, 0.0,  0.5, 0.5,
+         0.0,  1.0, 0.0,  0.5, 0.5,
+    ];
+    let vb_left: quanta::Field<f32> = gpu
+        .field_with_usage(left_verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb_left.write(&left_verts).unwrap();
+    let vb_right: quanta::Field<f32> = gpu
+        .field_with_usage(right_verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb_right.write(&right_verts).unwrap();
+
+    let w = 16u32;
+    let h = 16u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let nearest = quanta::SamplerDesc::default()
+        .with_filters(quanta::Filter::Nearest, quanta::Filter::Nearest);
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        // Left quad → texture A (red).
+        .texture(0, &tex_a)
+        .sampler(0, nearest)
+        .vertices(0, &vb_left)
+        .draw(6)
+        // Right quad → texture B (green). Re-binding the texture between
+        // draws is the whole point: the second draw must NOT reuse A.
+        .texture(0, &tex_b)
+        .vertices(0, &vb_right)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = target.read().unwrap();
+
+    // Left region (x ≈ 1/4 width): must sample A (red). Right region
+    // (x ≈ 3/4 width): must sample B (green). x-only, so flip-safe.
+    let y = h / 2;
+    let (lr, lg, lb, _) = pixel_at(&pixels, w, w / 4, y);
+    assert!(
+        lr > 200 && lg < 50 && lb < 50,
+        "left half must sample texture A (red); both draws sampled the last \
+         texture bound if this is green. got ({lr},{lg},{lb})"
+    );
+    let (rr, rg, rb, _) = pixel_at(&pixels, w, 3 * w / 4, y);
+    assert!(
+        rg > 200 && rr < 50 && rb < 50,
+        "right half must sample texture B (green), got ({rr},{rg},{rb})"
+    );
+}
+
 // ─── Test: fragment uniform param (Metal fragment-stage buffer bind) ────────
 
 #[quanta::fragment]
