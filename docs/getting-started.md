@@ -155,13 +155,14 @@ Two things to know:
   *load* here (a downloaded release build whose bundled libLLVM is
   missing) is treated the same way — soft, JIT covers it.
 
-### Offline rigs (no network, no git-remote SSH key)
+### Offline rigs (no network)
 
-For a machine that can't reach the git remote at all (a test rig with
-no network, or no SSH key provisioned for a private remote), point the
-`quanta` dependency at a local checkout instead. Edit the consuming
-crate's `Cargo.toml` directly and replace the `git` dep with a `path`
-dep:
+`quanta` is a public repository, so the `git` dependency is fetched over
+HTTPS and needs no SSH key or credentials on any machine. The one case
+that still needs attention is a rig with **no network at all** — a test
+box that can't reach `github.com`. There, point the `quanta` dependency
+at a local checkout instead: edit the consuming crate's `Cargo.toml`
+directly and replace the `git` dep with a `path` dep:
 
 ```toml
 # Cargo.toml on the rig, BEFORE
@@ -195,9 +196,8 @@ hand-editing every consumer's `Cargo.toml`.
 > before cargo ever touches the network, but under cargo 1.97 it
 > doesn't: cargo still resolves (and therefore fetches) the original
 > `git` dependency during dependency resolution, `[patch]` or not. On a
-> keyless rig that fetch fails outright —
-> `ssh://git@github.com/zelez-lab/quanta.git?branch=main: no
-> authentication methods succeeded` — before the build even starts.
+> rig with no network that fetch fails outright — cargo cannot reach
+> `github.com` to resolve `quanta.git` — before the build even starts.
 > This was verified on a Raspberry Pi in two separate workspaces. The
 > direct path-dependency edit above is what actually gets an offline
 > rig building.
