@@ -54,6 +54,7 @@
 - [Parallel Reduce](computation/how-to/parallel-reduce.md)
 - [Histogram](computation/how-to/histogram.md)
 - [Image Blur](computation/how-to/image-blur.md)
+- [Effects Pipeline](computation/how-to/effects-pipeline.md)
 - [N-Body Simulation](computation/how-to/nbody-simulation.md)
 - [Particle System](computation/how-to/particle-system.md)
 - [Mandelbrot](computation/how-to/mandelbrot.md)

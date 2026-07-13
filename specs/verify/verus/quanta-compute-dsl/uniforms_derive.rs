@@ -1,4 +1,4 @@
-//! Verus mirror of `crates/quanta-dsl/src/uniforms_derive.rs` — #[derive(Uniforms)].
+//! Verus mirror of `crates/quanta-compute-dsl/src/uniforms_derive.rs` — #[derive(Uniforms)].
 //!
 //! The derive macro computes GPU_SIZE (sum of field sizes with alignment),
 //! GPU_FIELDS (name, type_str, byte_offset per field in declaration order),

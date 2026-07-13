@@ -1,9 +1,9 @@
 //! Verus mirror of shader type parsing and GPU type derivation.
 //!
 //! Mirrors:
-//!   crates/quanta-dsl/src/compiler/shader_types.rs — ShaderType, shader_type_from_ident
-//!   crates/quanta-dsl/src/compiler/binary.rs       — shader_type_to_ir
-//!   crates/quanta-dsl/src/gpu_type.rs              — type_to_scalar_str (MSL/WGSL mapping)
+//!   crates/quanta-dsl-core/src/shader_types.rs   — ShaderType, shader_type_from_ident
+//!   crates/quanta-dsl-core/src/binary.rs         — shader_type_to_ir
+//!   crates/quanta-compute-dsl/src/gpu_type.rs    — type_to_scalar_str (MSL/WGSL mapping)
 //!
 //! Proves:
 //!   T810: shader_type_from_ident injective — each type name maps to one ShaderType

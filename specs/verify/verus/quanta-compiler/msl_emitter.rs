@@ -398,7 +398,7 @@ proof fn type_group_separation()
 //
 // Models translate_device_fn_to_msl() from:
 //   - quanta-compiler/src/emit_msl/kernel.rs
-//   - quanta-dsl/src/compiler/emit_msl.rs (fallback)
+//   - quanta-dsl-core/src/emit_msl.rs (fallback)
 //
 // The translation uses a 7-entry type map (Rust → MSL):
 //   f32→float, f64→double, u32→uint, u64→ulong,
