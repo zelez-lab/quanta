@@ -356,6 +356,72 @@ with no LLVM and no Rust toolchain, extracts it as a user would, checks
 the sha256, and runs `--rev`. If bundling regressed, the loader kills it
 there and the release is blocked.
 
+### Per-rev dev binaries (the `compiler-dev` prerelease)
+
+Tagged releases only ship binaries for release *versions*. But the rev
+handshake demands a binary whose `QUANTA_BUILD_REV` matches **exactly** —
+and a consumer pinned to a main-tip rev (`quanta = { git = "…", rev =
+"…" }`) is building against a rev that has no tag. Without a rev-exact
+binary that machine's only recourse is installing LLVM 22 and building the
+compiler locally. `.github/workflows/compiler-dev.yml` closes that gap:
+maintainers publish rev-exact binaries **on demand**, and the downloader
+fetches them.
+
+- **What it is.** A single rolling GitHub *prerelease* tagged
+  `compiler-dev` — not a version tag, a moving bucket of per-rev binaries.
+  Its assets are `quanta-compiler-<rev>-<target>.tar.gz` (plus a `.sha256`
+  sidecar) for the three dev-rig targets (`aarch64-apple-darwin`,
+  `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`). Windows is
+  deliberately excluded — tagged releases cover it.
+- **How a maintainer publishes a rev.** GitHub → **Actions** → **Compiler
+  Dev Binary (per-rev, on demand)** → **Run workflow**, optionally setting
+  the **ref** input (a branch, tag, or SHA; defaults to the default
+  branch). The workflow is `workflow_dispatch`-only — it never runs
+  per-push. It builds, verifies, and publishes in one click.
+- **The naming contract (the whole point).** `<rev>` in the asset name is
+  the string `quanta-compiler --rev` prints for that checkout, i.e. the
+  `QUANTA_BUILD_REV` stamp. A build step derives it with the *identical*
+  command `quanta-compiler/build.rs` uses — `git describe --always --dirty
+  --exclude '*'`, run in the crate dir behind the same `git ls-files`
+  tracked guard — so the asset name and the binary's own `--rev` agree by
+  construction. `quanta-dsl-core/build.rs` (the downloader side) derives
+  the consumer's own rev with the same command, so the download URL the
+  consumer builds matches the published asset. This identity is the single
+  correctness point of the whole feature; the checkout uses `fetch-depth:
+  0` so git's abbreviation length matches a consumer's full checkout.
+- **The exact-rev verify gate.** Before any asset is published, a `verify`
+  job on clean runners (no LLVM, no Rust) downloads each archive, checks
+  its sha256, runs `--rev`, and **asserts the output equals the `<rev>` in
+  the asset name**. This is stronger than the tagged-release verify's
+  non-empty check — here the rev *is* the contract, so a drift blocks the
+  publish rather than shipping a binary whose handshake still fails.
+- **10-rev pruning.** After upload, the `publish` job keeps the assets of
+  the **10 most-recent revs** (grouped by the `<rev>` segment, newest-first
+  by upload time) and deletes older groups via `gh release delete-asset`.
+  The window is a convenience cache, not an archive — for a stable binary,
+  cut a tagged release.
+
+The downloader's resolution order, rev-first (`quanta-dsl-core/src/
+binary.rs`, `download_compiler_binary`): when this build's own rev is
+publishable — committed and tracked, so **not** `-dirty` and not `unknown`
+— it first requests
+`releases/download/compiler-dev/quanta-compiler-<ownrev>-<target>.tar.gz`
+and caches a hit under the rev-keyed name `quanta-compiler-<rev>` beside
+the version-keyed binaries. An exact-rev match is strictly stronger under
+the handshake (it can never be a proven mismatch). If no maintainer has
+published that rev the request 404s and the downloader falls back to the
+**version-keyed** tagged-release URL (byte-identical to the prior
+behavior), and finally to the JIT path at dispatch time if nothing
+resolves. A `-dirty` or `unknown` rev **skips the rev attempt silently** —
+it can never match a published asset, so there is no point issuing a
+guaranteed-404 request. `QUANTA_NO_DOWNLOAD=1` still gates every download.
+
+Resolution order, in short: **rev URL → version URL → JIT fallback**.
+
+The workflow can only run on GitHub's runners (it needs the three OS
+images and each platform's LLVM); the first real dispatch is its live
+proof.
+
 ## Adding a new KernelOp
 
 1. Add the variant to `KernelOp` enum in `quanta-ir/src/lib.rs`.

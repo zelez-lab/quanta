@@ -1,0 +1,582 @@
+name: Compiler Dev Binary (per-rev, on demand)
+
+# On-demand per-rev compiler binaries for the rev handshake.
+#
+# The stale-compiler handshake requires an EXACTLY-matching quanta-compiler
+# binary (same QUANTA_BUILD_REV), but the release downloader only serves
+# release-TAGGED versions. A fresh machine building a consumer pinned to a
+# main-tip rev therefore has no self-serve path short of installing LLVM 22
+# locally. This workflow lets a maintainer publish bundled binaries for a
+# SPECIFIC rev on demand (one click); the downloader
+# (crates/quanta-dsl-core/src/binary.rs) fetches them rev-first.
+#
+# workflow_dispatch ONLY — this is deliberately NOT a per-push build. A
+# maintainer runs it when a consumer needs a rev-exact binary.
+#
+# Steps are lifted VERBATIM from release-compiler.yml (the proven LLVM
+# installs, bundling/staging scripts, and verify pattern are the source of
+# truth) and restricted to the three dev-rig targets. Windows is
+# deliberately excluded: tagged releases (release-compiler.yml) cover it,
+# and the dev-rig set is macOS-arm + the two Linux triples.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or SHA) to build the compiler from. Defaults to the repository default branch.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          # Windows deliberately excluded: tagged releases
+          # (release-compiler.yml) ship the Windows asset; the dev-rig
+          # set is macOS-arm + the two Linux triples above.
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # fetch-depth: 0 is load-bearing for the rev-derivation identity
+      # below. `git describe --always --exclude '*'` falls back to git's
+      # auto-scaled abbreviated commit hash; that abbreviation length keys
+      # off the object database size. A consumer's build.rs runs against a
+      # FULL checkout, so we fetch full history here too — a shallow clone
+      # could abbreviate to a different length and the derived <rev> would
+      # not match QUANTA_BUILD_REV, breaking the download URL.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
+      # ─────────────────────────────────────────────────────────────────
+      # THE CORRECTNESS POINT OF THIS WORKFLOW.
+      #
+      # The asset name must embed the SAME string quanta-compiler stamps as
+      # QUANTA_BUILD_REV for this checkout, or the downloader's rev-first
+      # URL (crates/quanta-dsl-core/src/binary.rs) will never match and the
+      # whole arc is inert.
+      #
+      # crates/quanta-compiler/build.rs derives that stamp as, verbatim:
+      #     git ls-files --error-unmatch Cargo.toml   (the "tracked" guard)
+      #     git describe --always --dirty --exclude '*'   (else "unknown")
+      # run with current_dir = the crate's manifest dir. quanta-dsl-core's
+      # build.rs (the downloader side of the handshake) uses the IDENTICAL
+      # command, so the two agree by construction. quanta-compiler's
+      # `--rev` then prints QUANTA_BUILD_REV verbatim (main.rs).
+      #
+      # We reproduce it EXACTLY: same command, same crate directory. On a
+      # clean tag/branch/SHA checkout `--dirty` never fires and `--exclude
+      # '*'` suppresses tag-based describe, so this yields the abbreviated
+      # commit hash (e.g. 77e51d9) — the form the downloader builds its URL
+      # from. If a maintainer somehow dispatched against a dirty tree the
+      # rev would end in `-dirty` and the downloader's dirty-skip rule means
+      # nothing would ever fetch it; the verify job's exact-match assertion
+      # is the backstop either way.
+      - name: Derive <rev> identically to build.rs (QUANTA_BUILD_REV)
+        id: rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd crates/quanta-compiler
+          # The tracked guard: if Cargo.toml isn't tracked here we are not
+          # in a real checkout of this repo and build.rs would stamp
+          # "unknown"; refuse rather than publish an asset that can never
+          # be matched.
+          if ! git ls-files --error-unmatch Cargo.toml >/dev/null 2>&1; then
+            echo "ERROR: crates/quanta-compiler/Cargo.toml is not git-tracked here;" \
+                 "build.rs would stamp QUANTA_BUILD_REV=unknown, which the downloader" \
+                 "never fetches. Aborting." >&2
+            exit 1
+          fi
+          REV=$(git describe --always --dirty --exclude '*')
+          if [ -z "$REV" ]; then
+            echo "ERROR: git describe produced an empty rev" >&2
+            exit 1
+          fi
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+          echo "Derived <rev> = $REV (must equal quanta-compiler --rev)"
+
+      - name: Install Rust stable
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install LLVM 22 (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install llvm@22
+          echo "LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)" >> $GITHUB_ENV
+
+      - name: Install LLVM 22 (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          # Use the apt.llvm.org repo matching the runner's Ubuntu
+          # codename (lsb_release -cs). Works for jammy (22.04) and
+          # noble (24.04) on both x86_64 and arm64.
+          CODENAME=$(lsb_release -cs)
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-22-dev libpolly-22-dev
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> $GITHUB_ENV
+
+      # A release binary that dynamically links libLLVM is killed by the
+      # loader on any machine that lacks that exact libLLVM (dyld
+      # "Library not loaded" / ld.so exit 127). We ship the library inside
+      # the archive next to the binary, so the binary must look for it
+      # beside itself: bake a relative run path ($ORIGIN/lib) into the ELF.
+      # Single-quote so $ORIGIN reaches the linker literally instead of
+      # being expanded by this shell.
+      - name: Build quanta-compiler (Linux — bundled-libLLVM rpath)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: cargo build -p quanta-compiler --release
+        env:
+          RUSTFLAGS: '-C link-arg=-Wl,-rpath,$ORIGIN/lib'
+
+      - name: Build quanta-compiler (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: cargo build -p quanta-compiler --release
+
+      # --- Bundle libLLVM into the archive -----------------------------
+      #
+      # The archive must be self-contained: the binary at the root, the
+      # LLVM shared library it needs beside it (in lib/ on Unix).
+      # Extracting and running it must never touch a system-installed LLVM.
+
+      # Linux: rpath is already baked in ($ORIGIN/lib). A Raspberry Pi
+      # validation run proved that bundling libLLVM alone is NOT enough:
+      # llvm-sys links libLLVM against libz3, and a minimal Pi image
+      # doesn't have it, so the loader kills the binary looking for
+      # libz3.so.4 even though libLLVM itself resolved fine. libLLVM's
+      # transitive closure (z3, zstd, tinfo/ncurses, xml2, ffi, and
+      # whatever else the distro's LLVM package pulled in) is exactly as
+      # load-bearing as libLLVM itself, so we bundle the ENTIRE
+      # dependency closure of the binary — everything ldd reports —
+      # except a small baseline we can assume every glibc target already
+      # has: glibc itself (libc/libm/libpthread/libdl/librt/libresolv),
+      # the dynamic loader/vDSO (ld-linux*, linux-vdso), and the
+      # compiler runtime (libgcc_s, libstdc++). Disk is cheap; a
+      # loader-kill on a user's machine is not.
+      - name: Stage archive with bundled libLLVM (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=target/release/quanta-compiler
+          # Fail loudly if the rpath didn't take — a silently missing
+          # RUNPATH would ship a binary that only runs where LLVM is
+          # already installed, exactly the trap we are closing.
+          if command -v readelf >/dev/null; then
+            readelf -d "$BIN" | grep -E 'RUNPATH|RPATH' || {
+              echo "ERROR: no RUNPATH/RPATH in $BIN — \$ORIGIN/lib rpath was not applied"; exit 1; }
+          fi
+          mkdir -p stage/lib
+          cp "$BIN" stage/quanta-compiler
+          # Baseline: soname PREFIXES assumed present on every glibc
+          # target, so we do NOT bundle them (bundling glibc itself would
+          # be actively wrong — it must match the kernel/loader on the
+          # target machine, not ours). Matched against the basename
+          # prefix so both dev-symlink-style and versioned sonames hit
+          # (e.g. "libc.so.6" starts with "libc.").
+          BASELINE_PREFIXES=(
+            'libc.' 'libc-'
+            'libm.' 'libm-'
+            'libpthread.' 'libpthread-'
+            'libdl.' 'libdl-'
+            'librt.' 'librt-'
+            'libresolv.' 'libresolv-'
+            'libgcc_s.'
+            'libstdc++.'
+            'ld-linux'
+            'linux-vdso'
+          )
+          is_baseline() {
+            local name="$1"
+            for prefix in "${BASELINE_PREFIXES[@]}"; do
+              case "$name" in
+                "$prefix"*) return 0 ;;
+              esac
+            done
+            return 1
+          }
+          # ldd on Linux already prints the FULL transitive closure (not
+          # just direct deps), so walking its output surfaces libz3 and
+          # friends without needing to recurse ourselves — simpler than
+          # the macOS otool case, which only reports one level.
+          ldd "$BIN" | grep -i 'llvm' || { echo "ERROR: binary does not link libLLVM"; exit 1; }
+          ALL_LINES=$(ldd "$BIN")
+          # Feed the loop from a here-string, not a pipe, so the copies
+          # happen in THIS shell (a `... | while` runs in a subshell and
+          # its failures/results wouldn't be visible to the assertion).
+          while read -r soname _arrow resolved _rest; do
+            [ -n "$soname" ] || continue
+            # Entries with no resolved path (linux-vdso.so.1, or a bare
+            # "not found") have nothing to copy — skip safely. vdso is
+            # also caught by the baseline check above, so this mainly
+            # guards against a genuinely missing library, which is a
+            # build-environment problem, not something to paper over here.
+            [ -n "$resolved" ] && [ -f "$resolved" ] || continue
+            if is_baseline "$soname"; then
+              echo "skipping $soname (baseline glibc/loader/compiler-runtime)"
+              continue
+            fi
+            # Follow symlinks so we copy the real object, then place it
+            # under the exact SONAME the binary records.
+            cp -L "$resolved" "stage/lib/$soname"
+            echo "bundled $soname  <=  $resolved"
+          done <<< "$ALL_LINES"
+          # Refuse to ship if libLLVM specifically didn't land in lib/ —
+          # a broken glob or an unresolved ldd line would otherwise
+          # produce a lib-less archive that only runs where LLVM is
+          # already installed.
+          ls stage/lib/*[Ll][Ll][Vv][Mm]* >/dev/null 2>&1 || {
+            echo "ERROR: no libLLVM copied into stage/lib/"; exit 1; }
+          echo "--- libLLVM's own dependencies (now bundled above unless baseline) ---"
+          LIBLLVM=$(ls stage/lib/*[Ll][Ll][Vv][Mm]* | head -1)
+          ldd "$LIBLLVM" || true
+          echo "--- staged layout ---"
+          find stage -maxdepth 2 -type f | sort
+          # Smoke test only: the build runner still HAS system LLVM
+          # installed (and every other package on the runner image), so
+          # this does not prove the archive is self-contained — it only
+          # catches a staging bug (wrong SONAME, truncated copy) before
+          # the archive is even uploaded. The real gate is the `verify`
+          # job below, which runs the extracted archive on a CLEAN
+          # runner with no LLVM and no build toolchain at all. Here we go
+          # one further than the release smoke test and assert the rev is
+          # EXACTLY the derived <rev> — the asset name is about to embed
+          # it, so a drift must fail now.
+          echo "--- smoke test: staged binary runs on the build runner ---"
+          STAGE_OUT=$(./stage/quanta-compiler --rev)
+          echo "stage/quanta-compiler --rev => $STAGE_OUT (expected ${{ steps.rev.outputs.rev }})"
+          if [ "$STAGE_OUT" != "${{ steps.rev.outputs.rev }}" ]; then
+            echo "ERROR: staged binary --rev ($STAGE_OUT) != derived <rev> (${{ steps.rev.outputs.rev }});" \
+                 "the asset name would not match the downloader URL"; exit 1
+          fi
+
+      # macOS: rpath alone does nothing here — the binary records the
+      # ABSOLUTE path of every non-system dylib it links (otool -L), and
+      # those live under Homebrew. libLLVM is the obvious one, but the
+      # LLVM keg's transitive deps drag in others (e.g. a Homebrew
+      # libunwind), and ANY absolute /opt/homebrew reference is a
+      # loader-kill on a machine without that keg. So bundle them all:
+      # for each dylib not under /usr/lib or /System, rewrite its load
+      # command to @rpath/<basename>, copy the real file into stage/lib/,
+      # and add a single @loader_path/lib run path. Then RE-SIGN:
+      # install_name_tool invalidates the code signature, and arm64 macOS
+      # refuses to run a binary with a broken signature ("Killed: 9").
+      # Ad-hoc (-) signing is enough for an unnotarized CLI.
+      - name: Stage archive with bundled libLLVM (macOS)
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/lib
+          cp target/release/quanta-compiler stage/quanta-compiler
+          BIN=stage/quanta-compiler
+          # System dylibs (/usr/lib/*, /System/*) are always present on
+          # macOS and resolved from the dyld shared cache — leave them.
+          # Everything else (Homebrew et al.) is bundled beside the binary.
+          REFS=$(otool -L "$BIN" | tail -n +2 | awk '{print $1}' \
+                   | grep -Ev '^(/usr/lib/|/System/)' || true)
+          if ! echo "$REFS" | grep -qi 'llvm'; then
+            echo "ERROR: binary does not reference an LLVM dylib"; otool -L "$BIN"; exit 1
+          fi
+          # Read line by line — the paths never contain spaces, but a
+          # bare `for X in $REFS` would depend on IFS splitting on
+          # newlines, which is not guaranteed across shells/runners.
+          while IFS= read -r REF; do
+            [ -n "$REF" ] || continue
+            BASENAME=$(basename "$REF")
+            echo "bundling $REF  ->  @rpath/$BASENAME"
+            # Point the load command at the copy beside the binary.
+            install_name_tool -change "$REF" "@rpath/$BASENAME" "$BIN"
+            # Copy the real object (resolve Homebrew's version symlink)
+            # under the exact basename the load command now names.
+            cp -L "$REF" "stage/lib/$BASENAME"
+          done <<< "$REFS"
+          # @loader_path is the directory of THIS binary at load time, so
+          # @rpath/... resolves to stage/lib/ wherever the archive lands.
+          install_name_tool -add_rpath "@loader_path/lib" "$BIN"
+          # install_name_tool broke the signature — ad-hoc re-sign or the
+          # loader kills the process before main on Apple Silicon.
+          codesign --force --sign - "$BIN"
+          echo "--- otool -L after rewrite (non-system refs must be @rpath/...) ---"
+          otool -L "$BIN"
+          echo "--- staged layout ---"
+          find stage -maxdepth 2 -type f | sort
+          # Assert the rev matches the derived <rev> before the asset name
+          # embeds it (the arm64 binary loads its bundled libLLVM here).
+          echo "--- smoke test: staged binary runs on the build runner ---"
+          STAGE_OUT=$(./stage/quanta-compiler --rev)
+          echo "stage/quanta-compiler --rev => $STAGE_OUT (expected ${{ steps.rev.outputs.rev }})"
+          if [ "$STAGE_OUT" != "${{ steps.rev.outputs.rev }}" ]; then
+            echo "ERROR: staged binary --rev ($STAGE_OUT) != derived <rev> (${{ steps.rev.outputs.rev }});" \
+                 "the asset name would not match the downloader URL"; exit 1
+          fi
+
+      # Package from INSIDE stage/ so the archive root is the binary with
+      # lib/ beside it — exactly the layout the loader/rpath contract needs
+      # after extraction. The asset NAME embeds <rev> (the identity above),
+      # which is the only difference from release-compiler.yml's naming.
+      - name: Package (tar.gz)
+        shell: bash
+        run: |
+          set -euo pipefail
+          REV="${{ steps.rev.outputs.rev }}"
+          NAME="quanta-compiler-${REV}-${{ matrix.target }}.tar.gz"
+          cd stage
+          tar czf "../$NAME" quanta-compiler lib
+          cd ..
+          # macOS doesn't ship `sha256sum`; `shasum -a 256` exists on
+          # both macOS and Linux.
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$NAME" > "$NAME.sha256"
+          else
+            shasum -a 256 "$NAME" > "$NAME.sha256"
+          fi
+          echo "packaged $NAME"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quanta-compiler-${{ steps.rev.outputs.rev }}-${{ matrix.target }}
+          path: |
+            quanta-compiler-${{ steps.rev.outputs.rev }}-${{ matrix.target }}.tar.gz
+            quanta-compiler-${{ steps.rev.outputs.rev }}-${{ matrix.target }}.tar.gz.sha256
+
+  # Prove every archive is self-contained AND that its embedded rev is
+  # EXACTLY the <rev> in its name BEFORE it can be published: download each
+  # build's artifact onto a CLEAN runner of the same OS — no LLVM, no Rust
+  # toolchain — extract it the way a user would, and run the binary. This
+  # is stronger than release-compiler.yml's verify (which only asserts
+  # non-empty output): here the rev IS the contract, so we assert equality.
+  verify:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # We re-derive <rev> the same way so the download name and the
+      # expected --rev assertion share one source. fetch-depth: 0 for the
+      # same abbreviation-stability reason as the build job; a
+      # sparse-blobless checkout is enough (we only need git metadata).
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
+      - name: Derive <rev> identically to build.rs (QUANTA_BUILD_REV)
+        id: rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd crates/quanta-compiler
+          REV=$(git describe --always --dirty --exclude '*')
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifact under test
+        uses: actions/download-artifact@v4
+        with:
+          name: quanta-compiler-${{ steps.rev.outputs.rev }}-${{ matrix.target }}
+          path: dl
+
+      # Extract exactly like a user: whole archive, preserving lib/.
+      - name: Extract and assert --rev equals <rev>
+        shell: bash
+        run: |
+          set -euo pipefail
+          REV="${{ steps.rev.outputs.rev }}"
+          NAME="quanta-compiler-${REV}-${{ matrix.target }}.tar.gz"
+          cd dl
+          mkdir -p extracted
+          tar xzf "$NAME" -C extracted
+          echo "--- extracted layout ---"
+          find extracted -maxdepth 2 | sort
+          # sha256: the runner may ship sha256sum (Linux) or only shasum (macOS).
+          if command -v sha256sum >/dev/null; then
+            sha256sum -c "$NAME.sha256"
+          else
+            shasum -a 256 -c "$NAME.sha256"
+          fi
+          # The acceptance test: the binary must LOAD (its bundled libLLVM
+          # resolves via the baked rpath) and print EXACTLY the rev in its
+          # asset name. A mismatch means the downloader would fetch a
+          # binary whose handshake still fails — block the publish.
+          OUT=$(./extracted/quanta-compiler --rev)
+          echo "quanta-compiler --rev => $OUT (expected $REV)"
+          if [ "$OUT" != "$REV" ]; then
+            echo "ERROR: --rev ($OUT) != asset <rev> ($REV) — the rev handshake would" \
+                 "still fail against this asset; refusing to publish"; exit 1
+          fi
+
+  # Publish all six files as assets of a ROLLING prerelease tagged
+  # `compiler-dev`, then prune to the 10 most-recent revs. Uses `gh`
+  # (preinstalled on GitHub runners) with the workflow's GITHUB_TOKEN.
+  publish:
+    needs: [build, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # A checkout so `gh release` has a repo context to talk to. Shallow
+      # is fine here — publish/prune never derive <rev> from git, they read
+      # it off the asset filenames the build job produced.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Flatten artifacts
+        run: |
+          # actions/upload-artifact@v4 keeps the path-relative-to-LCA
+          # structure, so archives may arrive nested. Flatten so the
+          # upload sees the files directly.
+          mkdir -p dist
+          find artifacts -type f \( -name 'quanta-compiler-*.tar.gz' \
+                                  -o -name 'quanta-compiler-*.tar.gz.sha256' \) \
+            -exec cp {} dist/ \;
+          echo "--- files to publish ---"
+          ls -la dist/
+
+      # Create the rolling prerelease once; reuse it forever after. It is
+      # NOT tied to a version tag — it is a moving bucket of per-rev dev
+      # binaries whose assets are pruned. `gh release view` exits non-zero
+      # when the release is absent, which is our "create it" signal.
+      - name: Ensure the compiler-dev prerelease exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view compiler-dev >/dev/null 2>&1; then
+            echo "compiler-dev prerelease already exists"
+          else
+            echo "creating the compiler-dev rolling prerelease"
+            gh release create compiler-dev \
+              --prerelease \
+              --title "Compiler dev binaries (rolling, per-rev)" \
+              --notes "$(cat <<'EOF'
+          On-demand, per-rev **quanta-compiler** binaries for the stale-compiler
+          rev handshake. A maintainer publishes these from a specific checkout via
+          **Actions -> Compiler Dev Binary (per-rev, on demand) -> Run workflow ->
+          ref**; the Quanta build macros (crates/quanta-dsl-core) download the
+          rev-exact archive automatically when your consumer pins a main-tip rev.
+
+          Assets are named `quanta-compiler-<rev>-<target>.tar.gz` (+ `.sha256`),
+          where `<rev>` is the `git describe --always --dirty --exclude '*'` stamp
+          the compiler reports via `--rev`. Only the **10 most-recent revs** are
+          kept here — this is a moving window, not an archive. For a stable,
+          version-tagged binary use a tagged GitHub Release instead.
+          EOF
+          )"
+          fi
+
+      # Upload this run's six files. --clobber so re-running the workflow
+      # for the same rev replaces rather than errors on existing assets.
+      - name: Upload this rev's assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload compiler-dev dist/* --clobber
+          echo "uploaded $(ls dist/ | wc -l) files to compiler-dev"
+
+      # Prune: keep the assets of the 10 most-recent revs, delete older
+      # groups. "Recent" = most-recently uploaded: we sort the release's
+      # assets by createdAt (newest first), collect distinct <rev> segments
+      # in that order, keep the first 10, and delete every asset whose rev
+      # is not in the keep set. Grouping by <rev> means an entire rev's
+      # 6-file set (3 targets x {archive, sha256}) is kept or dropped
+      # together.
+      - name: Prune to the 10 most-recent revs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Pull the asset list newest-first. gh exposes createdAt and name
+          # per asset; jq sorts and emits "name" lines.
+          ASSETS=$(gh release view compiler-dev \
+            --json assets \
+            --jq '.assets | sort_by(.createdAt) | reverse | .[].name')
+          if [ -z "$ASSETS" ]; then
+            echo "no assets on compiler-dev; nothing to prune"
+            exit 0
+          fi
+          echo "--- assets newest-first ---"
+          echo "$ASSETS"
+          # Derive the <rev> of each asset by stripping the fixed
+          # "quanta-compiler-" prefix and everything from the target triple
+          # onward. The triple always starts with one of the three known
+          # arch-os stems, so cut at "-<arch>-" boundaries. Simplest robust
+          # form: remove the known suffixes.
+          rev_of() {
+            local n="$1"
+            # strip leading prefix
+            n="${n#quanta-compiler-}"
+            # strip from the first known target triple onward
+            n="${n%%-aarch64-apple-darwin*}"
+            n="${n%%-x86_64-unknown-linux-gnu*}"
+            n="${n%%-aarch64-unknown-linux-gnu*}"
+            printf '%s' "$n"
+          }
+          # Ordered, de-duplicated rev list (newest-first). Kept as
+          # newline-delimited strings + `grep -Fxq` membership rather than
+          # bash associative arrays, so the logic is portable to any bash
+          # (no `declare -A` dependency) and testable outside the runner.
+          DISTINCT_REVS=""
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            rev="$(rev_of "$asset")"
+            [ -n "$rev" ] || continue
+            # Append rev the first time we see it — DISTINCT_REVS ends up
+            # in newest-first order because ASSETS already is.
+            if ! printf '%s\n' "$DISTINCT_REVS" | grep -Fxq -- "$rev"; then
+              DISTINCT_REVS="${DISTINCT_REVS:+$DISTINCT_REVS
+          }$rev"
+            fi
+          done <<< "$ASSETS"
+          # Keep the first 10 distinct revs; those are the ones to retain.
+          KEEP_REVS=$(printf '%s\n' "$DISTINCT_REVS" | grep -v '^$' | head -n 10)
+          KEEP_COUNT=$(printf '%s\n' "$KEEP_REVS" | grep -c . || true)
+          echo "--- keeping the ${KEEP_COUNT} most-recent revs: ---"
+          echo "$KEEP_REVS"
+          # Delete every asset whose rev is not in the keep set.
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            rev="$(rev_of "$asset")"
+            [ -n "$rev" ] || continue
+            if ! printf '%s\n' "$KEEP_REVS" | grep -Fxq -- "$rev"; then
+              echo "pruning $asset (rev $rev)"
+              gh release delete-asset compiler-dev "$asset" --yes
+            fi
+          done <<< "$ASSETS"
+          echo "prune complete"

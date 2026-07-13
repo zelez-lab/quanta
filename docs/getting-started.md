@@ -100,6 +100,16 @@ runs on a machine with no system LLVM. A CI job extracts and runs every
 archive on a clean runner with no toolchain before it can be released.
 Set `QUANTA_NO_DOWNLOAD=1` to disable the download.
 
+**Pinning a branch-tip rev** (`quanta = { git = "…", rev = "…" }`) instead
+of a release tag? The exact rev you pin usually has no tagged release, so
+there is no version-keyed binary for it — but a maintainer can publish a
+**rev-exact** compiler binary on demand, and the downloader fetches it
+automatically (it asks for the rev-exact asset first, then falls back to
+the version-keyed one). If your build reports the compiler isn't present
+for your rev, ask a maintainer to publish it (Actions → *Compiler Dev
+Binary* → Run workflow → your ref), or build the compiler locally with the
+`cargo install` command above.
+
 Two things to know:
 
 - **Keep it in sync — a mismatch is a hard error.** Re-run the install

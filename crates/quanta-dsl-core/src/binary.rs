@@ -220,11 +220,65 @@ fn cached_compiler_path() -> Option<std::path::PathBuf> {
     Some(compiler_cache_dir()?.join(binary_name))
 }
 
+/// This build's source revision — the SAME stamp `quanta-compiler --rev`
+/// prints. `quanta-dsl-core/build.rs` and `quanta-compiler/build.rs` derive
+/// it with the identical `git describe --always --dirty --exclude '*'`
+/// command, so an exact-rev asset published by `.github/workflows/
+/// compiler-dev.yml` (whose name embeds the compiler's `--rev`) matches
+/// this string by construction.
+fn own_rev() -> &'static str {
+    env!("QUANTA_BUILD_REV")
+}
+
+/// Whether a rev is one a `compiler-dev` asset could ever exist for.
+///
+/// A `-dirty` rev came from an uncommitted tree and `unknown` came from an
+/// untracked checkout (crates.io / vendored) — neither is ever published,
+/// so attempting a rev-exact download for them is guaranteed 404 noise.
+/// Skip straight to the version-keyed URL in those cases.
+fn rev_is_publishable(rev: &str) -> bool {
+    rev != "unknown" && !rev.ends_with("-dirty")
+}
+
+/// Return the rev-keyed cached binary path, beside the version-keyed one.
+/// A rev-exact download lands here so a second build against the same rev
+/// reuses it without re-fetching (`lib/` is shared at the cache root — the
+/// whole-archive extraction rewrites it, and every archive carries the
+/// same closure).
+fn rev_cached_compiler_path(rev: &str) -> Option<std::path::PathBuf> {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let binary_name = format!("quanta-compiler-{}{}", rev, suffix);
+    Some(compiler_cache_dir()?.join(binary_name))
+}
+
 /// Archive extension for the host triple. Windows ships .zip; everything
 /// else ships .tar.gz. Must match the `archive` matrix entry in
 /// `.github/workflows/release-compiler.yml`.
 fn archive_ext() -> &'static str {
     if cfg!(windows) { "zip" } else { "tar.gz" }
+}
+
+/// The rev-exact download URL: an asset of the rolling `compiler-dev`
+/// prerelease, named for the build's own rev. Strictly stronger than the
+/// version URL under the handshake — an exact-rev match can never be a
+/// stale-compiler mismatch. Kept a pure function of its inputs so the
+/// offline tests can assert the constructed URL without a network.
+fn rev_download_url(rev: &str, target: &str, ext: &str) -> String {
+    format!(
+        "https://github.com/zelez-lab/quanta/releases/download/compiler-dev/quanta-compiler-{}-{}.{}",
+        rev, target, ext
+    )
+}
+
+/// The version-keyed download URL: the tagged-release asset for this
+/// crate's `CARGO_PKG_VERSION`. The fallback when no rev-exact dev asset
+/// exists. Pure function of its inputs, matching the tagged-release naming
+/// in `.github/workflows/release-compiler.yml`.
+fn version_download_url(version: &str, target: &str, ext: &str) -> String {
+    format!(
+        "https://github.com/zelez-lab/quanta/releases/download/v{}/quanta-compiler-{}.{}",
+        version, target, ext
+    )
 }
 
 /// Check if a previously downloaded compiler binary exists in the cache.
@@ -238,9 +292,16 @@ fn find_cached_compiler() -> Option<String> {
 
 /// Download the quanta-compiler binary from GitHub Releases.
 ///
-/// Downloads a tar.gz archive matching the current version and target triple,
-/// extracts it to ~/.quanta/bin/, and returns the path to the binary.
-/// Returns None if download is disabled, fails, or the platform is unsupported.
+/// Resolution is REV-FIRST: when this build's own rev is publishable
+/// (committed, tracked — not `-dirty`/`unknown`), first try the rev-exact
+/// `compiler-dev` asset whose name embeds that rev. An exact-rev match is
+/// strictly stronger under the stale-compiler handshake — it can never be a
+/// proven mismatch. If that asset is absent (no maintainer has published
+/// this rev), fall back to the version-keyed tagged-release URL, which is
+/// byte-identical to the prior behavior. `QUANTA_NO_DOWNLOAD=1` gates both.
+///
+/// Returns None if download is disabled, both attempts fail, or the
+/// platform is unsupported.
 fn download_compiler_binary() -> Option<String> {
     // Respect QUANTA_NO_DOWNLOAD=1 for CI or offline environments
     if std::env::var("QUANTA_NO_DOWNLOAD").unwrap_or_default() == "1" {
@@ -257,25 +318,62 @@ fn download_compiler_binary() -> Option<String> {
     let cache_dir = compiler_cache_dir()?;
     std::fs::create_dir_all(&cache_dir).ok()?;
 
-    let cached_path = cached_compiler_path()?;
     let ext = archive_ext();
-    let download_path = cache_dir.join(format!("download.{ext}"));
 
-    let url = format!(
-        "https://github.com/zelez-lab/quanta/releases/download/v{}/quanta-compiler-{}.{}",
-        version, target, ext
-    );
+    // Attempt 1 — rev-exact `compiler-dev` asset. Only when this build's
+    // rev could actually have been published: a `-dirty` or `unknown` rev
+    // can never match an asset name, so skip it silently (no 404 noise).
+    let rev = own_rev();
+    if rev_is_publishable(rev)
+        && let Some(rev_path) = rev_cached_compiler_path(rev)
+    {
+        // A prior build already fetched this exact rev — reuse it.
+        if rev_path.exists() {
+            return Some(rev_path.to_string_lossy().to_string());
+        }
+        let url = rev_download_url(rev, target, ext);
+        eprintln!(
+            "[quanta] fetching rev-exact ahead-of-time compiler {} for {}...",
+            rev, target
+        );
+        if let Some(path) = fetch_and_stage(&url, &cache_dir, &rev_path) {
+            return Some(path);
+        }
+        // Rev-exact asset not published for this rev — fall through to the
+        // version-keyed URL below (the JIT-aware notice stays with the
+        // caller; a 404 here is expected, not an error).
+    }
 
+    // Attempt 2 — version-keyed tagged-release asset (unchanged fallback).
+    let cached_path = cached_compiler_path()?;
+    let url = version_download_url(version, target, ext);
     eprintln!(
         "[quanta] fetching ahead-of-time compiler v{} for {}...",
         version, target
     );
+    fetch_and_stage(&url, &cache_dir, &cached_path)
+}
+
+/// Download `url` into `cache_dir`, extract it, and rename the extracted
+/// `quanta-compiler[.exe]` to `dest`. Returns the destination path on
+/// success, None on any failure (a 404, a bad archive, a missing binary).
+///
+/// Shared by both the rev-exact and version-keyed download attempts so the
+/// curl/tar/rename mechanics stay in one place and identical — only the URL
+/// and the final cached name differ between callers.
+fn fetch_and_stage(
+    url: &str,
+    cache_dir: &std::path::Path,
+    dest: &std::path::Path,
+) -> Option<String> {
+    let ext = archive_ext();
+    let download_path = cache_dir.join(format!("download.{ext}"));
 
     // Download using curl (ships with macOS, Linux, and Windows 10 1803+).
     // Use --silent so a 404 doesn't spew progress noise; we already
     // print our own diagnostic if the download fails.
     let output = std::process::Command::new("curl")
-        .args(["-fsSL", "--silent", &url, "-o"])
+        .args(["-fsSL", "--silent", url, "-o"])
         .arg(&download_path)
         .output()
         .ok()?;
@@ -294,7 +392,7 @@ fn download_compiler_binary() -> Option<String> {
     let extract = std::process::Command::new("tar")
         .args(["xf"])
         .arg(&download_path)
-        .current_dir(&cache_dir)
+        .current_dir(cache_dir)
         .output()
         .ok()?;
 
@@ -308,11 +406,12 @@ fn download_compiler_binary() -> Option<String> {
     }
 
     // The archive is expected to contain a `quanta-compiler[.exe]` binary
-    // at its root. Rename to the version-pinned name to avoid mismatches.
+    // at its root. Rename to the pinned (version- or rev-keyed) name to
+    // avoid mismatches.
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     let extracted = cache_dir.join(format!("quanta-compiler{suffix}"));
     if extracted.exists() {
-        if std::fs::rename(&extracted, &cached_path).is_err() {
+        if std::fs::rename(&extracted, dest).is_err() {
             eprintln!("[quanta] Failed to rename downloaded binary.");
             return None;
         }
@@ -325,11 +424,11 @@ fn download_compiler_binary() -> Option<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&cached_path, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755));
     }
 
-    eprintln!("[quanta] Compiler installed to {}", cached_path.display());
-    Some(cached_path.to_string_lossy().to_string())
+    eprintln!("[quanta] Compiler installed to {}", dest.display());
+    Some(dest.to_string_lossy().to_string())
 }
 
 // ============================================================================
@@ -720,5 +819,113 @@ mod probe_tests {
             CompilerVerdict::RevMismatch("deadbeefdeadbeef".to_string())
         );
         std::fs::remove_file(&path).ok();
+    }
+}
+
+/// Offline coverage for the rev-first download resolution: the two URL
+/// shapes and the -dirty/unknown skip rule. Pure functions only — no
+/// network, no filesystem — so this runs on every host (including the
+/// Windows CI lane), unlike the unix-only `probe_tests` above.
+#[cfg(test)]
+mod download_url_tests {
+    use super::*;
+
+    #[test]
+    fn rev_url_targets_the_compiler_dev_prerelease() {
+        // The rev-exact URL must point at the rolling `compiler-dev`
+        // prerelease and embed <rev>-<target> exactly as
+        // compiler-dev.yml names the asset. If this drifts, no published
+        // asset will ever match and the whole arc is inert.
+        let url = rev_download_url("77e51d9", "aarch64-apple-darwin", "tar.gz");
+        assert_eq!(
+            url,
+            "https://github.com/zelez-lab/quanta/releases/download/compiler-dev/\
+             quanta-compiler-77e51d9-aarch64-apple-darwin.tar.gz"
+        );
+    }
+
+    #[test]
+    fn version_url_is_unchanged_tagged_release_shape() {
+        // The fallback URL must stay byte-identical to the pre-arc form:
+        // /download/v<version>/quanta-compiler-<target>.<ext>.
+        let url = version_download_url("0.1.0", "x86_64-unknown-linux-gnu", "tar.gz");
+        assert_eq!(
+            url,
+            "https://github.com/zelez-lab/quanta/releases/download/v0.1.0/\
+             quanta-compiler-x86_64-unknown-linux-gnu.tar.gz"
+        );
+    }
+
+    #[test]
+    fn version_url_matches_the_prior_inline_format() {
+        // Guard against a refactor drifting the fallback URL: reproduce
+        // the exact string the old inline `format!` produced and assert
+        // the extracted helper still yields it, for every real target.
+        let version = "1.2.3";
+        for target in [
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+        ] {
+            for ext in ["tar.gz", "zip"] {
+                let expected = format!(
+                    "https://github.com/zelez-lab/quanta/releases/download/v{}/quanta-compiler-{}.{}",
+                    version, target, ext
+                );
+                assert_eq!(version_download_url(version, target, ext), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn dirty_and_unknown_revs_are_never_publishable() {
+        // These can never name a published asset, so the download path
+        // must skip the rev attempt for them and go straight to the
+        // version URL. A regression here would fire a guaranteed-404
+        // request on every dirty/crates.io build.
+        assert!(!rev_is_publishable("unknown"));
+        assert!(!rev_is_publishable("77e51d9-dirty"));
+        assert!(!rev_is_publishable("v0.1.0-3-g77e51d9-dirty"));
+    }
+
+    #[test]
+    fn clean_committed_revs_are_publishable() {
+        // The forms `git describe --always --exclude '*'` yields on a
+        // clean checkout: a bare abbreviated hash, or (defensively) a
+        // tag-relative describe without the -dirty suffix.
+        assert!(rev_is_publishable("77e51d9"));
+        assert!(rev_is_publishable("deadbeef"));
+        assert!(rev_is_publishable("v0.1.0-3-g77e51d9"));
+    }
+
+    #[test]
+    fn own_rev_matches_the_build_stamp() {
+        // The downloader's notion of "our rev" is exactly the build stamp
+        // the compiler prints via --rev, so the two sides of the handshake
+        // — and thus the asset name and the download URL — agree.
+        assert_eq!(own_rev(), env!("QUANTA_BUILD_REV"));
+    }
+
+    #[test]
+    fn rev_cache_name_is_rev_keyed_beside_version_keyed() {
+        // The rev-exact download caches under quanta-compiler-<rev>[.exe],
+        // distinct from the version-keyed quanta-compiler-<version>[.exe]
+        // but in the same ~/.quanta/bin/ dir. Compare basenames so the
+        // test is HOME-independent; only meaningful when a home dir
+        // resolves (skip otherwise rather than fail on a homeless runner).
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        if let (Some(rev_path), Some(ver_path)) =
+            (rev_cached_compiler_path("77e51d9"), cached_compiler_path())
+        {
+            assert_eq!(
+                rev_path.file_name().unwrap().to_string_lossy(),
+                format!("quanta-compiler-77e51d9{suffix}")
+            );
+            // Same cache directory as the version-keyed binary.
+            assert_eq!(rev_path.parent(), ver_path.parent());
+            // Distinct names (version is never a bare "77e51d9").
+            assert_ne!(rev_path.file_name(), ver_path.file_name());
+        }
     }
 }
