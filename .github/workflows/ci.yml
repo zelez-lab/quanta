@@ -80,14 +80,22 @@ jobs:
           fi
           echo "ok: quanta-render tree is free of the compute stack"
 
+      # These are pure host-side tests (wire, type inference, emitter text —
+      # no device is ever created). Run them WITHOUT a GPU backend: since
+      # `vulkan` joined the default features, a test binary built with
+      # defaults links the Vulkan loader on Linux/Windows, which host
+      # runners don't have. `render compute` gives the macro + emitter
+      # surface these tests need and links no driver, so the step is
+      # identical on every OS — and it enables the feature-gated cases the
+      # old default run silently skipped.
       - name: Host tests (wire, types, shader, emitter, gpu_type, wave)
         run: |
-          cargo test --test host_wire
-          cargo test --test host_types
-          cargo test --test host_shader
-          cargo test --test host_emitter
-          cargo test --test host_gpu_type
-          cargo test --test host_wave
+          cargo test --test host_wire --no-default-features --features "render compute"
+          cargo test --test host_types --no-default-features --features "render compute"
+          cargo test --test host_shader --no-default-features --features "render compute"
+          cargo test --test host_emitter --no-default-features --features "render compute"
+          cargo test --test host_gpu_type --no-default-features --features "render compute"
+          cargo test --test host_wave --no-default-features --features "render compute"
 
       - name: IR roundtrip tests
         run: cargo test -p quanta-ir
