@@ -628,6 +628,32 @@ fn shade(uv: Vec2, albedo: &Texture2D) -> Vec4 {
 Textured fragments emit metallib and SPIR-V; the WGSL payload does not
 support texture sampling yet.
 
+#### Platform-targeted metallibs (Apple)
+
+iOS rejects a macOS-platform metallib, so a shader or kernel that ships to
+iOS needs the platform-correct Metal library. The compiler emits up to
+three variants per shader/kernel — macOS, iOS device, and iOS simulator —
+and the macros embed **every** variant that was produced into the
+`ShaderBinary` / `KernelBinary` static (the fields `metallib`,
+`metallib_ios`, `metallib_ios_sim`). A proc macro cannot see the
+consumer's compile target (that information only reaches build scripts), so
+the choice is deferred to the runtime: `for_vendor(Apple)` resolves the
+metallib by the build target, most-specific first —
+
+- an **iOS-simulator** build picks `metallib_ios_sim`, then `metallib_ios`,
+  then `metallib`;
+- an **iOS-device** build picks `metallib_ios`, then `metallib`;
+- a **macOS / desktop** build picks `metallib` (shaders then fall back to
+  SPIR-V; kernels fall back to the JIT path).
+
+Each build compiles only its own chain, so this adds nothing to a desktop
+binary. Producing the iOS variants requires the iOS SDKs (full Xcode). On a
+mac with only the Command-Line Tools the iOS SDKs are absent, so those
+variants soft-skip and the build ships **macOS-only** — no error, exactly
+as before this feature existed. `QUANTA_METAL_PLATFORMS` (see the
+[environment reference](environment.md)) narrows which variants are
+attempted.
+
 ---
 
 ### `#[quanta::tess_control]`

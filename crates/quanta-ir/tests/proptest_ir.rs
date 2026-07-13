@@ -245,6 +245,8 @@ proptest! {
     fn compiler_output_roundtrip(
         has_spirv in any::<bool>(),
         has_metallib in any::<bool>(),
+        has_metallib_ios in any::<bool>(),
+        has_metallib_ios_sim in any::<bool>(),
         has_wgsl in any::<bool>(),
     ) {
         let output = CompilerOutput {
@@ -252,12 +254,16 @@ proptest! {
             nvidia: None,
             spirv: if has_spirv { Some(vec![0x03, 0x02, 0x23, 0x07]) } else { None },
             metallib: if has_metallib { Some(vec![0x4D, 0x54]) } else { None },
+            metallib_ios: if has_metallib_ios { Some(vec![0x4D, 0x54, 0x01]) } else { None },
+            metallib_ios_sim: if has_metallib_ios_sim { Some(vec![0x4D, 0x54, 0x02]) } else { None },
             wgsl: if has_wgsl { Some(String::from("@compute fn main() {}")) } else { None },
         };
         let bytes = serialize_output(&output);
         let o2 = deserialize_output(&bytes).unwrap();
         assert_eq!(o2.spirv.is_some(), has_spirv);
         assert_eq!(o2.metallib.is_some(), has_metallib);
+        assert_eq!(o2.metallib_ios.is_some(), has_metallib_ios);
+        assert_eq!(o2.metallib_ios_sim.is_some(), has_metallib_ios_sim);
         assert_eq!(o2.wgsl.is_some(), has_wgsl);
     }
 }

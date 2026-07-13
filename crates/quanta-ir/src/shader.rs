@@ -45,9 +45,18 @@ pub struct ShaderDef {
 }
 
 /// Compiler output for shader stages — SPIR-V and metallib binaries.
+///
+/// `metallib` is the macOS-platform Metal library. `metallib_ios` and
+/// `metallib_ios_sim` are the platform-correct variants for an iOS device
+/// and the iOS simulator; each is `None` when its SDK was absent at
+/// compile time (a Command-Line-Tools-only mac ships macOS-only) or the
+/// platform was excluded via `QUANTA_METAL_PLATFORMS`. The runtime picks
+/// among them by compile target (see `ShaderBinary::for_vendor`).
 #[derive(Debug, Clone)]
 pub struct ShaderOutput {
     pub spirv: Option<Vec<u8>>,
     pub metallib: Option<Vec<u8>>,
+    pub metallib_ios: Option<Vec<u8>>,
+    pub metallib_ios_sim: Option<Vec<u8>>,
     pub wgsl: Option<String>,
 }

@@ -159,6 +159,8 @@ fn roundtrip_compiler_output_empty() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
     let bytes = serialize_output(&o);
@@ -167,6 +169,8 @@ fn roundtrip_compiler_output_empty() {
     assert!(o2.nvidia.is_none());
     assert!(o2.spirv.is_none());
     assert!(o2.metallib.is_none());
+    assert!(o2.metallib_ios.is_none());
+    assert!(o2.metallib_ios_sim.is_none());
     assert!(o2.wgsl.is_none());
 }
 
@@ -177,6 +181,8 @@ fn roundtrip_compiler_output_full() {
         nvidia: Some(vec![0xBE, 0xEF]),
         spirv: Some(vec![0x03, 0x02, 0x23, 0x07]),
         metallib: Some(vec![0x4D, 0x54]),
+        metallib_ios: Some(vec![b'M', b'T', b'L', b'B', 0x10]),
+        metallib_ios_sim: Some(vec![b'M', b'T', b'L', b'B', 0x20]),
         wgsl: Some(String::from("@compute fn main() {}")),
     };
     let bytes = serialize_output(&o);
@@ -185,6 +191,11 @@ fn roundtrip_compiler_output_full() {
     assert_eq!(o2.nvidia, Some(vec![0xBE, 0xEF]));
     assert_eq!(o2.spirv, Some(vec![0x03, 0x02, 0x23, 0x07]));
     assert_eq!(o2.metallib, Some(vec![0x4D, 0x54]));
+    assert_eq!(o2.metallib_ios, Some(vec![b'M', b'T', b'L', b'B', 0x10]));
+    assert_eq!(
+        o2.metallib_ios_sim,
+        Some(vec![b'M', b'T', b'L', b'B', 0x20])
+    );
 }
 
 #[test]
@@ -558,6 +569,8 @@ fn roundtrip_shader_output_both() {
     let o = ShaderOutput {
         spirv: Some(vec![0x03, 0x02, 0x23, 0x07, 0x00, 0x01, 0x03, 0x00]),
         metallib: Some(vec![b'M', b'T', b'L', b'B', 0x01, 0x02]),
+        metallib_ios: Some(vec![b'M', b'T', b'L', b'B', 0x11, 0x22, 0x33]),
+        metallib_ios_sim: Some(vec![b'M', b'T', b'L', b'B', 0x44]),
         wgsl: Some(String::from(
             "fn vertex_main() -> @builtin(position) vec4f {}",
         )),
@@ -566,6 +579,8 @@ fn roundtrip_shader_output_both() {
     let o2 = deserialize_shader_output(&bytes).unwrap();
     assert_eq!(o2.spirv.as_ref().unwrap().len(), 8);
     assert_eq!(o2.metallib.as_ref().unwrap().len(), 6);
+    assert_eq!(o2.metallib_ios.as_ref().unwrap().len(), 7);
+    assert_eq!(o2.metallib_ios_sim.as_ref().unwrap().len(), 5);
     assert!(o2.wgsl.is_some());
 }
 
@@ -575,12 +590,16 @@ fn roundtrip_shader_output_none() {
     let o = ShaderOutput {
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
     let bytes = serialize_shader_output(&o);
     let o2 = deserialize_shader_output(&bytes).unwrap();
     assert!(o2.spirv.is_none());
     assert!(o2.metallib.is_none());
+    assert!(o2.metallib_ios.is_none());
+    assert!(o2.metallib_ios_sim.is_none());
     assert!(o2.wgsl.is_none());
 }
 

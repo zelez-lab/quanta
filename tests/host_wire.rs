@@ -334,6 +334,8 @@ fn roundtrip_compiler_output_all_fields() {
         nvidia: Some(vec![0x7F, 0x45, 0x4C, 0x46]),
         spirv: Some(vec![0x03, 0x02, 0x23, 0x07, 0x00, 0x01, 0x00, 0x00]),
         metallib: Some(vec![0x4D, 0x54, 0x4C, 0x42, 0x01, 0x00]),
+        metallib_ios: Some(vec![0x4D, 0x54, 0x4C, 0x42, 0x02, 0x00]),
+        metallib_ios_sim: Some(vec![0x4D, 0x54, 0x4C, 0x42, 0x03, 0x00]),
         wgsl: None,
     };
 
@@ -344,6 +346,8 @@ fn roundtrip_compiler_output_all_fields() {
     assert_eq!(o2.nvidia, o.nvidia);
     assert_eq!(o2.spirv, o.spirv);
     assert_eq!(o2.metallib, o.metallib);
+    assert_eq!(o2.metallib_ios, o.metallib_ios);
+    assert_eq!(o2.metallib_ios_sim, o.metallib_ios_sim);
 }
 
 // ===========================================================================
@@ -486,6 +490,8 @@ fn invalid_trailing_bytes_output() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
     let mut bytes = serialize_output(&o);

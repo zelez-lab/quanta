@@ -36,6 +36,8 @@ pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
         nvidia: None,
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     })
 }
@@ -335,9 +337,17 @@ fn download_compiler_binary() -> Option<String> {
 // ============================================================================
 
 /// Output from shader compilation — SPIR-V and metallib binaries.
+///
+/// `metallib` is the macOS library; `metallib_ios` / `metallib_ios_sim`
+/// are the iOS-device / iOS-simulator variants (each `None` when its SDK
+/// was absent at compile time). The render macro embeds all present
+/// variants into the `ShaderBinary` static and the runtime selects by
+/// compile target.
 pub struct ShaderCompileOutput {
     pub spirv: Option<Vec<u8>>,
     pub metallib: Option<Vec<u8>>,
+    pub metallib_ios: Option<Vec<u8>>,
+    pub metallib_ios_sim: Option<Vec<u8>>,
     pub wgsl: Option<String>,
 }
 
@@ -464,6 +474,8 @@ pub fn compile_shader(
     Ok(Some(ShaderCompileOutput {
         spirv: shader_output.spirv,
         metallib: shader_output.metallib,
+        metallib_ios: shader_output.metallib_ios,
+        metallib_ios_sim: shader_output.metallib_ios_sim,
         wgsl: shader_output.wgsl,
     }))
 }

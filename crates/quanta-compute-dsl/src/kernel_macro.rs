@@ -186,6 +186,24 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         }
         None => quote! { None },
     };
+    // Platform-targeted metallib variants (iOS device / simulator). Embedded
+    // alongside the macOS one; the runtime's cfg-gated for_vendor picks the
+    // one matching the consumer's compile target. Absent when the compiler
+    // ran on a host without the iOS SDK.
+    let metallib_ios_expr = match &outputs.metallib_ios {
+        Some(bytes) => {
+            let lit = proc_macro2::Literal::byte_string(bytes);
+            quote! { Some(#lit as &[u8]) }
+        }
+        None => quote! { None },
+    };
+    let metallib_ios_sim_expr = match &outputs.metallib_ios_sim {
+        Some(bytes) => {
+            let lit = proc_macro2::Literal::byte_string(bytes);
+            quote! { Some(#lit as &[u8]) }
+        }
+        None => quote! { None },
+    };
     let wgsl_expr = match &outputs.wgsl {
         Some(s) => quote! { Some(#s) },
         None => quote! { None },
@@ -236,6 +254,8 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
             nvidia: #nvidia_expr,
             spirv: #spirv_expr,
             metallib: #metallib_expr,
+            metallib_ios: #metallib_ios_expr,
+            metallib_ios_sim: #metallib_ios_sim_expr,
             wgsl: #wgsl_expr,
         };
 

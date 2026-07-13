@@ -118,6 +118,8 @@ pub fn compile_kernel(args: &[String]) {
         nvidia: None,
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -137,8 +139,12 @@ pub fn compile_kernel(args: &[String]) {
     let metal_report = quanta_ir::validate::validate_for(&quanta_ir::caps::METAL, &kernel);
     if metal_report.is_ok() {
         if let Ok(msl) = emit_msl::emit(&kernel) {
-            match metallib::compile_msl_to_metallib(&msl) {
-                Ok(bytes) => output.metallib = bytes,
+            match metallib::compile_msl_to_metallib_variants(&msl) {
+                Ok(variants) => {
+                    output.metallib = variants.macos;
+                    output.metallib_ios = variants.ios;
+                    output.metallib_ios_sim = variants.ios_sim;
+                }
                 Err(e) => eprintln!("[quanta] metallib error: {}", e),
             }
         }

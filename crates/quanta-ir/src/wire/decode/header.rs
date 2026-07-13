@@ -236,12 +236,19 @@ pub(crate) fn read_compiler_output(r: &mut Reader) -> Result<crate::CompilerOutp
     let nvidia = r.option_bytes()?;
     let spirv = r.option_bytes()?;
     let metallib = r.option_bytes()?;
+    // iOS metallib variants — positionally after the macOS one, mirroring
+    // write_compiler_output. Producer/consumer move together under the
+    // build-rev handshake, so an unguarded read is correct.
+    let metallib_ios = r.option_bytes()?;
+    let metallib_ios_sim = r.option_bytes()?;
     let wgsl = r.option_str()?;
     Ok(crate::CompilerOutput {
         amd,
         nvidia,
         spirv,
         metallib,
+        metallib_ios,
+        metallib_ios_sim,
         wgsl,
     })
 }
@@ -301,10 +308,16 @@ pub(crate) fn read_shader_def(r: &mut Reader) -> Result<crate::ShaderDef, &'stat
 pub(crate) fn read_shader_output(r: &mut Reader) -> Result<crate::ShaderOutput, &'static str> {
     let spirv = r.option_bytes()?;
     let metallib = r.option_bytes()?;
+    // iOS metallib variants — positionally after the macOS one, mirroring
+    // write_shader_output.
+    let metallib_ios = r.option_bytes()?;
+    let metallib_ios_sim = r.option_bytes()?;
     let wgsl = r.option_str()?;
     Ok(crate::ShaderOutput {
         spirv,
         metallib,
+        metallib_ios,
+        metallib_ios_sim,
         wgsl,
     })
 }

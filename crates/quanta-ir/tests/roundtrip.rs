@@ -78,6 +78,8 @@ fn roundtrip_compiler_output() {
         nvidia: Some(b".visible .entry test()".to_vec()),
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -91,6 +93,8 @@ fn roundtrip_compiler_output() {
     assert!(restored.nvidia.is_some());
     assert!(restored.spirv.is_none());
     assert!(restored.metallib.is_none());
+    assert!(restored.metallib_ios.is_none());
+    assert!(restored.metallib_ios_sim.is_none());
 }
 
 #[test]

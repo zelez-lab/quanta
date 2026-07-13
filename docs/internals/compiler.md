@@ -179,11 +179,34 @@ Key passes that run:
 
 Translates `KernelOp` directly to Metal Shading Language text. Used by both
 the JIT path **and** the standard build pipeline — the build-time path
-goes through `crates/quanta-compiler/src/metallib.rs::compile_msl_to_metallib`,
+goes through
+`crates/quanta-compiler/src/metallib.rs::compile_msl_to_metallib_variants`,
 which writes the emitted MSL to a temp `.metal` file and shells out to
 `xcrun metal` + `xcrun metallib` to produce the metallib that ships in
 the binary. (SPIR-V is also emitted, but the Metal backend prefers the
 direct-MSL artifact when present.)
+
+**Three platform variants.** iOS rejects a macOS-platform metallib, so the
+same MSL is compiled for up to three targets, one `MetallibVariants` field
+each:
+
+| Variant | `xcrun` invocation | Rides in |
+|---------|--------------------|----------|
+| macOS | `metal -std=metal3.1 -O3 -ffast-math` (the original) | `metallib` |
+| iOS device | `-sdk iphoneos metal … -target air64-apple-ios17.0` | `metallib_ios` |
+| iOS simulator | `-sdk iphonesimulator metal … -target air64-apple-ios17.0-simulator` | `metallib_ios_sim` |
+
+The `metal3.1` std pairs with the iOS 17.0 deployment floor (both named
+consts in `metallib.rs`). SDK availability is probed once per process
+(`xcrun -sdk <name> --show-sdk-path`, cached); an absent iOS SDK — a
+Command-Line-Tools-only mac — soft-skips that variant with a single note,
+leaving today's macOS-only behavior intact. `QUANTA_METAL_PLATFORMS`
+overrides which variants are attempted. All three ride the wire in
+`ShaderOutput` / `CompilerOutput` and the macros embed them into the
+`ShaderBinary` / `KernelBinary` statics; the runtime's `for_vendor` selects
+by compile target (`cfg`). The macOS invocation is byte-for-byte unchanged,
+so desktop output is identical. (watchOS / tvOS / visionOS are out of scope
+but the `MetalPlatform` enum and probe leave room.)
 
 ```
 KernelDef { name: "foo", params: [FieldRead("a", 0, F32), ...], body: [...] }

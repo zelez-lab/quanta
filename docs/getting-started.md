@@ -212,6 +212,13 @@ time: metallib (Apple), SPIR-V (Vulkan), PTX (NVIDIA), GCN (AMD), and
 WGSL (WebGPU). All are embedded in your binary. At runtime, the right
 one runs on whatever GPU is present.
 
+> **Targeting iOS?** iOS rejects a macOS-platform metallib, so the Apple
+> binary is emitted as up to three variants — macOS, iOS device, iOS
+> simulator — and the runtime selects the one matching your build target.
+> The iOS variants need the iOS SDKs (full Xcode); a Command-Line-Tools
+> -only mac builds macOS-only. See
+> [Macro Reference — platform-targeted metallibs](reference/macros.md#platform-targeted-metallibs-apple).
+
 ## Run it
 
 ```rust

@@ -46,33 +46,29 @@ pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
     // Extract body source text for the compiler.
     let body_source = func.block.to_token_stream().to_string();
 
-    let (spirv_expr, metallib_expr, wgsl_expr) =
+    let (spirv_expr, metallib_expr, metallib_ios_expr, metallib_ios_sim_expr, wgsl_expr) =
         match compiler::compile_shader(&func_name_str, "vertex", &params, &return_ty, &body_source)
         {
             Ok(Some(output)) => {
-                let spirv = match &output.spirv {
-                    Some(bytes) => {
-                        let lit = proc_macro2::Literal::byte_string(bytes);
-                        quote! { Some(#lit as &[u8]) }
-                    }
-                    None => quote! { None },
-                };
-                let metallib = match &output.metallib {
-                    Some(bytes) => {
-                        let lit = proc_macro2::Literal::byte_string(bytes);
-                        quote! { Some(#lit as &[u8]) }
-                    }
-                    None => quote! { None },
-                };
+                let spirv = embed_bytes(&output.spirv);
+                let metallib = embed_bytes(&output.metallib);
+                let metallib_ios = embed_bytes(&output.metallib_ios);
+                let metallib_ios_sim = embed_bytes(&output.metallib_ios_sim);
                 let wgsl = match &output.wgsl {
                     Some(s) => quote! { Some(#s) },
                     None => quote! { None },
                 };
-                (spirv, metallib, wgsl)
+                (spirv, metallib, metallib_ios, metallib_ios_sim, wgsl)
             }
             // No compiler binary found — ship empty binaries so `cargo
             // check` works in fresh clones; the runtime reports the gap.
-            Ok(None) => (quote! { None }, quote! { None }, quote! { None }),
+            Ok(None) => (
+                quote! { None },
+                quote! { None },
+                quote! { None },
+                quote! { None },
+                quote! { None },
+            ),
             // Compiler found but failed — a shader with missing binaries
             // panics at pipeline creation, so fail the build here instead.
             Err(msg) => {
@@ -89,6 +85,8 @@ pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: #spirv_expr,
             metallib: #metallib_expr,
+            metallib_ios: #metallib_ios_expr,
+            metallib_ios_sim: #metallib_ios_sim_expr,
             wgsl: #wgsl_expr,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Vertex,
@@ -99,6 +97,19 @@ pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
         }
     };
     expanded.into()
+}
+
+/// Embed compiled binary bytes as a `Some(&'static [u8])` byte-string
+/// literal, or `None` when the variant wasn't produced. Shared by the
+/// vertex/fragment paths for spirv + all three metallib variants.
+fn embed_bytes(bytes: &Option<Vec<u8>>) -> proc_macro2::TokenStream {
+    match bytes {
+        Some(bytes) => {
+            let lit = proc_macro2::Literal::byte_string(bytes);
+            quote! { Some(#lit as &[u8]) }
+        }
+        None => quote! { None },
+    }
 }
 
 /// Core implementation of `#[quanta::fragment]`.
@@ -134,53 +145,52 @@ pub(crate) fn expand_fragment(func: ItemFn) -> TokenStream {
     let body_source =
         compiler::rewrite_texture_names(&func.block.to_token_stream().to_string(), &textures);
 
-    let (spirv_expr, metallib_expr, wgsl_expr) = match compiler::compile_shader(
-        &func_name_str,
-        "fragment",
-        &params,
-        &return_ty,
-        &body_source,
-    ) {
-        Ok(Some(output)) => {
-            let spirv = match &output.spirv {
-                Some(bytes) => {
-                    let lit = proc_macro2::Literal::byte_string(bytes);
-                    quote! { Some(#lit as &[u8]) }
-                }
-                None => quote! { None },
-            };
-            let metallib = match &output.metallib {
-                Some(bytes) => {
-                    let lit = proc_macro2::Literal::byte_string(bytes);
-                    quote! { Some(#lit as &[u8]) }
-                }
-                None => quote! { None },
-            };
-            let wgsl = match &output.wgsl {
-                Some(s) => quote! { Some(#s) },
-                None => quote! { None },
-            };
-            (spirv, metallib, wgsl)
-        }
-        // No compiler binary found — ship empty binaries so `cargo
-        // check` works in fresh clones; the runtime reports the gap.
-        Ok(None) => (quote! { None }, quote! { None }, quote! { None }),
-        // Compiler found but failed — a shader with missing binaries
-        // panics at pipeline creation, so fail the build here instead.
-        Err(msg) => {
-            return syn::Error::new_spanned(
-                &func.sig.ident,
-                format!("fragment shader `{func_name_str}` failed to compile: {msg}"),
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
+    let (spirv_expr, metallib_expr, metallib_ios_expr, metallib_ios_sim_expr, wgsl_expr) =
+        match compiler::compile_shader(
+            &func_name_str,
+            "fragment",
+            &params,
+            &return_ty,
+            &body_source,
+        ) {
+            Ok(Some(output)) => {
+                let spirv = embed_bytes(&output.spirv);
+                let metallib = embed_bytes(&output.metallib);
+                let metallib_ios = embed_bytes(&output.metallib_ios);
+                let metallib_ios_sim = embed_bytes(&output.metallib_ios_sim);
+                let wgsl = match &output.wgsl {
+                    Some(s) => quote! { Some(#s) },
+                    None => quote! { None },
+                };
+                (spirv, metallib, metallib_ios, metallib_ios_sim, wgsl)
+            }
+            // No compiler binary found — ship empty binaries so `cargo
+            // check` works in fresh clones; the runtime reports the gap.
+            Ok(None) => (
+                quote! { None },
+                quote! { None },
+                quote! { None },
+                quote! { None },
+                quote! { None },
+            ),
+            // Compiler found but failed — a shader with missing binaries
+            // panics at pipeline creation, so fail the build here instead.
+            Err(msg) => {
+                return syn::Error::new_spanned(
+                    &func.sig.ident,
+                    format!("fragment shader `{func_name_str}` failed to compile: {msg}"),
+                )
+                .to_compile_error()
+                .into();
+            }
+        };
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: #spirv_expr,
             metallib: #metallib_expr,
+            metallib_ios: #metallib_ios_expr,
+            metallib_ios_sim: #metallib_ios_sim_expr,
             wgsl: #wgsl_expr,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Fragment,
@@ -206,6 +216,8 @@ pub(crate) fn expand_tess_control(func: ItemFn) -> TokenStream {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: None,
             metallib: None,
+            metallib_ios: None,
+            metallib_ios_sim: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::TessControl,
         };
@@ -230,6 +242,8 @@ pub(crate) fn expand_tess_eval(func: ItemFn) -> TokenStream {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: None,
             metallib: None,
+            metallib_ios: None,
+            metallib_ios_sim: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::TessEval,
         };
@@ -254,6 +268,8 @@ pub(crate) fn expand_task(func: ItemFn) -> TokenStream {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: None,
             metallib: None,
+            metallib_ios: None,
+            metallib_ios_sim: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Task,
         };
@@ -278,6 +294,8 @@ pub(crate) fn expand_mesh(func: ItemFn) -> TokenStream {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: None,
             metallib: None,
+            metallib_ios: None,
+            metallib_ios_sim: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Mesh,
         };
@@ -302,6 +320,8 @@ pub(crate) fn expand_ray_gen(func: ItemFn) -> TokenStream {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: None,
             metallib: None,
+            metallib_ios: None,
+            metallib_ios_sim: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::RayGen,
         };
@@ -326,6 +346,8 @@ pub(crate) fn expand_closest_hit(func: ItemFn) -> TokenStream {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: None,
             metallib: None,
+            metallib_ios: None,
+            metallib_ios_sim: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::ClosestHit,
         };
@@ -350,6 +372,8 @@ pub(crate) fn expand_miss(func: ItemFn) -> TokenStream {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
             spirv: None,
             metallib: None,
+            metallib_ios: None,
+            metallib_ios_sim: None,
             entry_point: #func_name_str,
             stage: ::quanta::ShaderStage::Miss,
         };

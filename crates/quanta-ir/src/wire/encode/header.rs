@@ -177,6 +177,12 @@ pub(crate) fn write_compiler_output(w: &mut Writer, o: &crate::CompilerOutput) {
     w.option_bytes(&o.nvidia);
     w.option_bytes(&o.spirv);
     w.option_bytes(&o.metallib);
+    // iOS metallib variants ride after the macOS one. Safe positional
+    // growth: the git-derived build-rev handshake forces the compiler and
+    // the DSL-macro reader to move together, so producer and consumer
+    // always agree on the field count.
+    w.option_bytes(&o.metallib_ios);
+    w.option_bytes(&o.metallib_ios_sim);
     w.option_str(&o.wgsl);
 }
 
@@ -201,5 +207,9 @@ pub(crate) fn write_shader_def(w: &mut Writer, s: &crate::ShaderDef) {
 pub(crate) fn write_shader_output(w: &mut Writer, o: &crate::ShaderOutput) {
     w.option_bytes(&o.spirv);
     w.option_bytes(&o.metallib);
+    // iOS metallib variants ride after the macOS one — same handshake
+    // guarantee as CompilerOutput above.
+    w.option_bytes(&o.metallib_ios);
+    w.option_bytes(&o.metallib_ios_sim);
     w.option_str(&o.wgsl);
 }

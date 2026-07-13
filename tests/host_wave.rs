@@ -63,6 +63,8 @@ fn kernel_binary_for_vendor_amd_prefers_amd_then_spirv() {
         nvidia: Some(b"nvidia_binary"),
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -77,6 +79,8 @@ fn kernel_binary_for_vendor_amd_falls_back_to_spirv() {
         nvidia: None,
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -91,6 +95,8 @@ fn kernel_binary_for_vendor_nvidia_prefers_nvidia_then_spirv() {
         nvidia: Some(b"ptx_binary"),
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -105,6 +111,8 @@ fn kernel_binary_for_vendor_nvidia_falls_back_to_spirv() {
         nvidia: None,
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -119,6 +127,8 @@ fn kernel_binary_for_vendor_apple_returns_metallib_only() {
         nvidia: None,
         spirv: None,
         metallib: Some(b"metallib_binary"),
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -133,6 +143,8 @@ fn kernel_binary_for_vendor_apple_returns_none_without_metallib() {
         nvidia: None,
         spirv: Some(b"spirv_binary"),
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -150,6 +162,8 @@ fn kernel_binary_for_vendor_intel_prefers_spirv() {
         nvidia: None,
         spirv: Some(b"spirv"),
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -164,6 +178,8 @@ fn kernel_binary_for_vendor_intel_falls_back_to_amd() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -180,6 +196,8 @@ fn kernel_binary_for_vendor_unknown_returns_spirv_only() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -205,6 +223,8 @@ fn kernel_binary_for_vendor_none_returns_none() {
         nvidia: None,
         spirv: None,
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
     };
 
@@ -223,6 +243,8 @@ fn shader_binary_for_vendor_apple_returns_metallib() {
     let shader = ShaderBinary {
         spirv: Some(b"spirv_bytes"),
         metallib: Some(b"MTLBmetallib_bytes"),
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
         entry_point: "main",
         stage: ShaderStage::Vertex,
@@ -237,6 +259,8 @@ fn shader_binary_for_vendor_nvidia_returns_spirv() {
     let shader = ShaderBinary {
         spirv: Some(b"spirv_bytes"),
         metallib: Some(b"metallib_bytes"),
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
         entry_point: "main",
         stage: ShaderStage::Vertex,
@@ -251,6 +275,8 @@ fn shader_binary_for_vendor_apple_falls_back_to_spirv() {
     let shader = ShaderBinary {
         spirv: Some(b"spirv_bytes"),
         metallib: None,
+        metallib_ios: None,
+        metallib_ios_sim: None,
         wgsl: None,
         entry_point: "main",
         stage: ShaderStage::Fragment,
@@ -258,6 +284,146 @@ fn shader_binary_for_vendor_apple_falls_back_to_spirv() {
 
     let result = shader.for_vendor(Vendor::Apple);
     assert_eq!(result, Some(b"spirv_bytes" as &[u8]));
+}
+
+// ===========================================================================
+// Platform-targeted metallib selection (cfg-gated)
+//
+// `for_vendor` picks the metallib variant matching the *compile target*.
+// The chain is iOS-sim → iOS-device → macOS, falling to SPIR-V for shaders.
+// Each target compiles exactly one arm, so the assertions are split by cfg:
+// the host suite (macOS/desktop) sees the macOS-only behavior; the iOS and
+// iOS-simulator arms are proven to compile by the cross-target `cargo check`
+// and run when the suite is executed on those targets.
+// ===========================================================================
+
+#[cfg(not(target_os = "ios"))]
+#[test]
+fn kernel_apple_selection_is_macos_on_desktop() {
+    // On a non-iOS build, the iOS fields are ignored — Apple resolves to the
+    // macOS metallib only, exactly as before the iOS variants existed.
+    let binary = KernelBinary {
+        amd: None,
+        nvidia: None,
+        spirv: None,
+        metallib: Some(b"macos_metallib"),
+        metallib_ios: Some(b"ios_metallib"),
+        metallib_ios_sim: Some(b"ios_sim_metallib"),
+        wgsl: None,
+    };
+    assert_eq!(
+        binary.for_vendor(Vendor::Apple),
+        Some(b"macos_metallib" as &[u8]),
+        "desktop build must select the macOS metallib"
+    );
+
+    // With only iOS variants present, a desktop build finds no macOS
+    // metallib and returns None (kernels then JIT) — the iOS bytes are
+    // never picked off-target.
+    let ios_only = KernelBinary {
+        amd: None,
+        nvidia: None,
+        spirv: None,
+        metallib: None,
+        metallib_ios: Some(b"ios_metallib"),
+        metallib_ios_sim: Some(b"ios_sim_metallib"),
+        wgsl: None,
+    };
+    assert!(
+        ios_only.for_vendor(Vendor::Apple).is_none(),
+        "desktop build must not select an iOS metallib"
+    );
+}
+
+#[cfg(not(target_os = "ios"))]
+#[test]
+fn shader_apple_selection_is_macos_then_spirv_on_desktop() {
+    // Shader Apple chain on desktop: macOS metallib, else SPIR-V. iOS
+    // variants are inert off-target.
+    let shader = ShaderBinary {
+        spirv: Some(b"spirv_bytes"),
+        metallib: Some(b"macos_metallib"),
+        metallib_ios: Some(b"ios_metallib"),
+        metallib_ios_sim: Some(b"ios_sim_metallib"),
+        wgsl: None,
+        entry_point: "main",
+        stage: ShaderStage::Fragment,
+    };
+    assert_eq!(
+        shader.for_vendor(Vendor::Apple),
+        Some(b"macos_metallib" as &[u8])
+    );
+
+    // No macOS metallib on desktop → SPIR-V fallback, never the iOS bytes.
+    let ios_only = ShaderBinary {
+        spirv: Some(b"spirv_bytes"),
+        metallib: None,
+        metallib_ios: Some(b"ios_metallib"),
+        metallib_ios_sim: Some(b"ios_sim_metallib"),
+        wgsl: None,
+        entry_point: "main",
+        stage: ShaderStage::Fragment,
+    };
+    assert_eq!(
+        ios_only.for_vendor(Vendor::Apple),
+        Some(b"spirv_bytes" as &[u8]),
+        "desktop build falls back to SPIR-V, not an iOS metallib"
+    );
+}
+
+#[cfg(all(target_os = "ios", not(target_abi = "sim")))]
+#[test]
+fn kernel_apple_selection_prefers_ios_device() {
+    // iOS device build: iOS metallib preferred, macOS as fallback.
+    let binary = KernelBinary {
+        amd: None,
+        nvidia: None,
+        spirv: None,
+        metallib: Some(b"macos_metallib"),
+        metallib_ios: Some(b"ios_metallib"),
+        metallib_ios_sim: Some(b"ios_sim_metallib"),
+        wgsl: None,
+    };
+    assert_eq!(
+        binary.for_vendor(Vendor::Apple),
+        Some(b"ios_metallib" as &[u8])
+    );
+    // Falls back to macOS when the device variant wasn't produced.
+    let no_ios = KernelBinary {
+        metallib_ios: None,
+        ..binary
+    };
+    assert_eq!(
+        no_ios.for_vendor(Vendor::Apple),
+        Some(b"macos_metallib" as &[u8])
+    );
+}
+
+#[cfg(all(target_os = "ios", target_abi = "sim"))]
+#[test]
+fn kernel_apple_selection_prefers_ios_sim() {
+    // iOS simulator build: sim metallib preferred, then device, then macOS.
+    let binary = KernelBinary {
+        amd: None,
+        nvidia: None,
+        spirv: None,
+        metallib: Some(b"macos_metallib"),
+        metallib_ios: Some(b"ios_metallib"),
+        metallib_ios_sim: Some(b"ios_sim_metallib"),
+        wgsl: None,
+    };
+    assert_eq!(
+        binary.for_vendor(Vendor::Apple),
+        Some(b"ios_sim_metallib" as &[u8])
+    );
+    let no_sim = KernelBinary {
+        metallib_ios_sim: None,
+        ..binary
+    };
+    assert_eq!(
+        no_sim.for_vendor(Vendor::Apple),
+        Some(b"ios_metallib" as &[u8])
+    );
 }
 
 // ===========================================================================
