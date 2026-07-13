@@ -183,6 +183,22 @@ struct LowerCtx<'a> {
     /// Cursor into `loop_body_writes` / `loop_body_reads`, advanced at
     /// each Loop open.
     loop_body_writes_cursor: usize,
+    /// Precomputed per-`Block` (in source open-order) flag: true when this
+    /// block is the LAST construct of an enclosing `Loop` body — its `End`
+    /// is immediately followed by that Loop's `End`, with nothing between.
+    /// For such a block, "branch to the block's end" (a `br`/`br_if`
+    /// targeting it) falls straight off the wasm loop end = LOOP EXIT, so
+    /// the reconstructed exit arm must be an explicit `Break` rather than
+    /// the empty fall-through arm (which a structured `Loop` auto-continues
+    /// on). This is the sibling of the `reconstruct_loop_backedges` exit-
+    /// Break rule for backedge br_ifs: that covers `br_if $loop`; this
+    /// covers `br`/`br_if` to a loop-tail block (the double-sentinel-break
+    /// shape, where the `if geom { break }` compiles to a br out of the
+    /// loop's tail block, not a br to the loop). Consumed at each Block open
+    /// via `block_open_cursor`.
+    block_exit_is_loop_exit: Vec<bool>,
+    /// Cursor into `block_exit_is_loop_exit`, advanced at each Block open.
+    block_open_cursor: usize,
 }
 
 /// One get/set of a wasm local during lowering, with the loop-nesting
@@ -288,6 +304,15 @@ struct Frame {
     /// conditional on the brif's cond — wrong semantics for ops
     /// that already ran in this frame before the brif fired.
     parent_brifs_at_open: usize,
+    /// Block frames only: true when this block is the last construct of an
+    /// enclosing `Loop` body (its `End` is immediately followed by the
+    /// Loop's `End`). A `br`/`br_if` targeting such a block's end falls
+    /// off the wasm loop end = LOOP EXIT, so `reconstruct_block_brifs`
+    /// wraps the exit as `Branch{cond, then=[Break], else=tail}` instead of
+    /// the default `then=[]` (which a structured Loop would auto-continue).
+    /// Set from `block_exit_is_loop_exit` at Block open; false for every
+    /// non-Block frame. See the field doc on `LowerCtx`.
+    exit_is_loop_exit: bool,
 }
 
 /// Reduction operator for the `subgroup_reduce` helper. Mirrors
@@ -405,6 +430,7 @@ impl<'a> LowerCtx<'a> {
                 backedges: Vec::new(),
                 continue_pos: None,
                 parent_brifs_at_open: 0,
+                exit_is_loop_exit: false,
             }],
             next_reg: 0,
             intrinsic_names,
@@ -415,6 +441,8 @@ impl<'a> LowerCtx<'a> {
             loop_body_writes: Vec::new(),
             loop_body_reads: Vec::new(),
             loop_body_writes_cursor: 0,
+            block_exit_is_loop_exit: Vec::new(),
+            block_open_cursor: 0,
         }
     }
 
@@ -460,6 +488,69 @@ impl<'a> LowerCtx<'a> {
         }
         self.loop_body_writes = writes_result;
         self.loop_body_reads = reads_result;
+    }
+
+    /// Pre-pass: for each `Block` (in source open-order) decide whether it
+    /// is the last construct of an enclosing `Loop` body — i.e. its `End`
+    /// is immediately followed by the enclosing Loop's `End`, with the
+    /// block's parent frame being that Loop. Result parallels the
+    /// Block-open order the lowering walk observes, so `block_open_cursor`
+    /// reads the matching entry at each Block open.
+    ///
+    /// Why this is exactly the loop-exit condition: a wasm `Loop` never
+    /// repeats on fall-through — reaching its `End` exits it. So if a block
+    /// is the loop body's tail, then falling off that block's end (which is
+    /// what a `br`/`br_if` to the block's end does) reaches the Loop `End`
+    /// and exits the loop. If instead ANY instruction sits between the
+    /// block's `End` and the Loop `End` (a backedge `br`, a trailing
+    /// deposit, another sibling block), the block-exit is NOT a loop-exit
+    /// and the default empty-then fall-through (auto-continue) is correct.
+    ///
+    /// `Else` swaps an open `If` for an `Else` on the tag stack (the
+    /// matching `End` still pops one frame); neither is a Loop, so a block
+    /// whose parent is an If/Else is never a loop-tail (flag stays false).
+    fn precompute_block_loop_tails(&mut self, instrs: &[RawInstr]) {
+        let mut flags: Vec<bool> = Vec::new();
+        // Tag stack of currently-open frames; for Block frames we also carry
+        // the flag slot so the closing `End` can fill it.
+        let mut stack: Vec<(FrameKindTag, Option<usize>)> = Vec::new();
+        for (i, instr) in instrs.iter().enumerate() {
+            match instr {
+                RawInstr::Block { .. } => {
+                    let slot = flags.len();
+                    flags.push(false);
+                    stack.push((FrameKindTag::Block, Some(slot)));
+                }
+                RawInstr::Loop { .. } => stack.push((FrameKindTag::Loop, None)),
+                RawInstr::If { .. } => stack.push((FrameKindTag::If, None)),
+                RawInstr::Else => {
+                    // Close the If, open the Else in its place.
+                    stack.pop();
+                    stack.push((FrameKindTag::Else, None));
+                }
+                RawInstr::End => {
+                    if let Some((FrameKindTag::Block, Some(slot))) = stack.pop() {
+                        let parent_is_loop = matches!(stack.last(), Some((FrameKindTag::Loop, _)));
+                        let next_is_end = matches!(instrs.get(i + 1), Some(RawInstr::End));
+                        flags[slot] = parent_is_loop && next_is_end;
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.block_exit_is_loop_exit = flags;
+    }
+
+    /// The loop-tail flag for the `Block` currently being opened (false if
+    /// the pre-pass produced no entry, e.g. a malformed stream).
+    fn next_block_is_loop_tail(&mut self) -> bool {
+        let flag = self
+            .block_exit_is_loop_exit
+            .get(self.block_open_cursor)
+            .copied()
+            .unwrap_or(false);
+        self.block_open_cursor += 1;
+        flag
     }
 
     /// The "locals written in body" / "locals read in body" sets for the
@@ -705,22 +796,45 @@ impl<'a> LowerCtx<'a> {
     /// `Branch{cond2, then=[], else=…}`, replacing target.ops[p2..]
     /// with that single new op. Then wrap ops[p1..] (which now
     /// includes the new inner Branch op as its last element).
+    ///
+    /// `exit_is_loop_exit` (Block frames that are an enclosing Loop's
+    /// tail construct): a br to this block's end falls off the wasm loop
+    /// end = LOOP EXIT. A structured `Loop` auto-continues on empty-then
+    /// fall-through, so the taken (branch-fired) arm must carry an explicit
+    /// `Break` instead: `then=[Break]`. Every record on such a block is a
+    /// br to the same loop-exiting block end, so each gets the Break. This
+    /// is the block-tail sibling of `reconstruct_loop_backedges`'s exit
+    /// Break (which handles `br_if $loop` backedges). Without it the
+    /// double-sentinel-break shape's `if geom { break }` — compiled to a br
+    /// out of the loop's tail block — silently auto-continued, degrading
+    /// each loop to its full sentinel bound (the counts-inflation / CPU
+    /// spin seen on the k1_bin double-sentinel probe).
     fn reconstruct_block_brifs(
         &self,
         mut ops: Vec<KernelOp>,
         brifs: &[BrIfRecord],
+        exit_is_loop_exit: bool,
     ) -> Vec<KernelOp> {
-        // Every record wraps as `Branch{cond, then=[], else=tail}` —
-        // tail runs only when cond=false (fall-through path). An
-        // unconditional Br participates through its reached-here
-        // flag, so its wrap skips the tail exactly on the br's own
-        // path and leaves it live for natural fall-through and for
-        // br_ifs landing at inner frames' ends.
+        // Every record wraps as `Branch{cond, then=<exit>, else=tail}` —
+        // tail runs only when cond=false (fall-through path); the branch
+        // fires on cond=true. For a plain block that exit is empty (fall
+        // through the block end); for a loop-tail block it is `Break`
+        // (fall off the loop end). An unconditional Br participates through
+        // its reached-here flag, so its wrap takes the exit arm exactly on
+        // the br's own path and leaves the tail live for natural
+        // fall-through and for br_ifs landing at inner frames' ends.
+        let then_ops = || {
+            if exit_is_loop_exit {
+                vec![KernelOp::Break]
+            } else {
+                Vec::new()
+            }
+        };
         for record in brifs.iter().rev() {
             let tail = ops.split_off(record.sink_position);
             ops.push(KernelOp::Branch {
                 cond: record.cond,
-                then_ops: Vec::new(),
+                then_ops: then_ops(),
                 else_ops: tail,
             });
         }
@@ -1030,6 +1144,7 @@ impl<'a> LowerCtx<'a> {
 
         let instrs = self.body.instructions.clone();
         self.precompute_loop_body_accesses(&instrs);
+        self.precompute_block_loop_tails(&instrs);
         // `QUANTA_LOWER_DUMP_INSTRS=<kernel_name>` (or `*`): print the raw
         // decoded instruction stream — the wasm-side companion to
         // `QUANTA_LOWER_DUMP_OPS` for diagnosing control-flow
@@ -2510,6 +2625,18 @@ impl<'a> LowerCtx<'a> {
                     Some("texture_load_2d_u32") => self.texture_load_2d(ScalarType::U32)?,
                     Some("texture_write_2d_u32") => self.texture_write_2d(ScalarType::U32)?,
 
+                    // Packed-u32 RGBA8 pack/unpack intrinsics. These are
+                    // user-facing conveniences for the same packed texel
+                    // contract as texture_*_2d_u32; they lower to a small
+                    // sequence of existing KernelOps (clamp/mul/round/cast/
+                    // shift/or for pack; shift/and/cast/div for unpack) —
+                    // no new KernelOp, MathFn, or wire change.
+                    Some("pack_unorm4x8") => self.pack_unorm4x8()?,
+                    Some("unpack_unorm4x8_r") => self.unpack_unorm4x8(0)?,
+                    Some("unpack_unorm4x8_g") => self.unpack_unorm4x8(8)?,
+                    Some("unpack_unorm4x8_b") => self.unpack_unorm4x8(16)?,
+                    Some("unpack_unorm4x8_a") => self.unpack_unorm4x8(24)?,
+
                     Some(other) => {
                         return Err(LoweringError::UnsupportedOp {
                             op: format!("intrinsic call `{other}` not yet lowered"),
@@ -2574,6 +2701,9 @@ impl<'a> LowerCtx<'a> {
                 // pattern.)
                 let snapshot = self.snapshot_locals();
                 let parent_brifs = self.frames.last().map(|f| f.brifs.len()).unwrap_or(0);
+                // Advance the block-open cursor in lockstep with the
+                // pre-pass so the flag lines up with THIS block.
+                let exit_is_loop_exit = self.next_block_is_loop_tail();
                 self.frames.push(Frame {
                     kind: FrameKind::Block,
                     ops: Vec::new(),
@@ -2582,6 +2712,7 @@ impl<'a> LowerCtx<'a> {
                     backedges: Vec::new(),
                     continue_pos: None,
                     parent_brifs_at_open: parent_brifs,
+                    exit_is_loop_exit,
                 });
             }
 
@@ -2631,6 +2762,7 @@ impl<'a> LowerCtx<'a> {
                     backedges: Vec::new(),
                     continue_pos: None,
                     parent_brifs_at_open: parent_brifs,
+                    exit_is_loop_exit: false,
                 });
             }
 
@@ -2647,6 +2779,7 @@ impl<'a> LowerCtx<'a> {
                     backedges: Vec::new(),
                     continue_pos: None,
                     parent_brifs_at_open: parent_brifs,
+                    exit_is_loop_exit: false,
                 });
             }
 
@@ -2683,6 +2816,7 @@ impl<'a> LowerCtx<'a> {
                     continue_pos: None,
                     // Else inherits the If's parent snapshot.
                     parent_brifs_at_open: frame.parent_brifs_at_open,
+                    exit_is_loop_exit: false,
                 });
             }
 
@@ -2698,7 +2832,9 @@ impl<'a> LowerCtx<'a> {
                         // push back onto the stack so into_kernel_def
                         // can read it.
                         let ops = if !frame.brifs.is_empty() {
-                            self.reconstruct_block_brifs(frame.ops, &frame.brifs)
+                            // A function-level record is a top-level `return`,
+                            // never a loop exit — pass false.
+                            self.reconstruct_block_brifs(frame.ops, &frame.brifs, false)
                         } else {
                             frame.ops
                         };
@@ -2710,6 +2846,7 @@ impl<'a> LowerCtx<'a> {
                             backedges: Vec::new(),
                             continue_pos: None,
                             parent_brifs_at_open: 0,
+                            exit_is_loop_exit: false,
                         });
                     }
                     FrameKind::Block => {
@@ -2718,7 +2855,11 @@ impl<'a> LowerCtx<'a> {
                         // Branches around the post-record op ranges
                         // before splicing into the parent.
                         let ops = if !frame.brifs.is_empty() {
-                            self.reconstruct_block_brifs(frame.ops, &frame.brifs)
+                            self.reconstruct_block_brifs(
+                                frame.ops,
+                                &frame.brifs,
+                                frame.exit_is_loop_exit,
+                            )
                         } else {
                             frame.ops
                         };
@@ -4138,15 +4279,34 @@ impl<'a> LowerCtx<'a> {
             backedges: Vec::new(),
             continue_pos: None,
             parent_brifs_at_open: parent_brifs,
+            // Synthetic device-inline wrapper — not a loop-tail block.
+            exit_is_loop_exit: false,
         });
 
         // Walk the callee body, rewriting local indices by base_offset.
         // The terminating End is not skipped — it closes the wrap.
+        //
+        // The block loop-tail flags are computed per instruction stream;
+        // the callee body is a DIFFERENT stream from the top-level pre-pass,
+        // so its blocks would otherwise consume top-level cursor entries and
+        // desync every flag past the call. Compute the callee's own flags
+        // over its own stream and save/restore the caller's cursor state
+        // around the inline walk (local-index remapping doesn't affect
+        // block/loop/end nesting, so the un-remapped stream is fine here).
+        let saved_flags = std::mem::take(&mut self.block_exit_is_loop_exit);
+        let saved_cursor = std::mem::replace(&mut self.block_open_cursor, 0);
+        self.precompute_block_loop_tails(&callee_body.instructions);
         let base = base_offset as u32;
-        for instr in &callee_body.instructions {
-            let rewritten = remap_locals(instr, base);
-            self.lower_instr(&rewritten)?;
-        }
+        let walk = (|| -> Result<(), LoweringError> {
+            for instr in &callee_body.instructions {
+                let rewritten = remap_locals(instr, base);
+                self.lower_instr(&rewritten)?;
+            }
+            Ok(())
+        })();
+        self.block_exit_is_loop_exit = saved_flags;
+        self.block_open_cursor = saved_cursor;
+        walk?;
 
         // Callee's return value (if any) is on top of self.stack now.
         Ok(true)
@@ -4337,6 +4497,168 @@ impl<'a> LowerCtx<'a> {
             ty,
         });
         Ok(())
+    }
+
+    /// Lower `pack_unorm4x8(r, g, b, a) -> u32` as a COMPOSITION of
+    /// existing KernelOps — no new op, no wire change. Each channel is
+    /// clamped to [0,1], scaled by 255, rounded to nearest, converted to
+    /// an integer byte, then packed little-endian R,G,B,A (byte 0 = R):
+    /// `packed = cr | cg<<8 | cb<<16 | ca<<24`. This is byte-identical to
+    /// the `Texture2D<u32>` texel contract (`texture_load/write_2d_u32`),
+    /// so `pack_unorm4x8` produces exactly what `texture_write_2d_u32`
+    /// stores and `unpack_unorm4x8_*` inverts what `texture_load_2d_u32`
+    /// yields.
+    ///
+    /// Rounding: `MathFn::Round` (round-half-away-from-zero on the CPU
+    /// interpreter; round-to-nearest on MSL/SPIR-V/WGSL — the modes differ
+    /// only on exact halves). The choice is immaterial for the round-trip:
+    /// `(b as f32 / 255.0) * 255.0` is EXACT for every byte b in 0..=255
+    /// (no fractional part ever reaches the rounding step), so
+    /// `pack(unpack(v)) == v` for all byte-valued channels under either
+    /// mode — proven in `tests/gpu_texture_compute.rs`
+    /// (`pack_unpack_roundtrip_byte_sweep`). Half-away is used for
+    /// consistency with the existing `round()` intrinsic across backends.
+    ///
+    /// WASM call ABI: args are pushed r,g,b,a so the stack top is `a`.
+    fn pack_unorm4x8(&mut self) -> Result<(), LoweringError> {
+        let a_sv = self.pop()?;
+        let b_sv = self.pop()?;
+        let g_sv = self.pop()?;
+        let r_sv = self.pop()?;
+        // Emit the per-channel unorm-encode sequence, MSB→LSB shift.
+        let cr = self.encode_unorm_channel(r_sv, 0)?;
+        let cg = self.encode_unorm_channel(g_sv, 8)?;
+        let cb = self.encode_unorm_channel(b_sv, 16)?;
+        let ca = self.encode_unorm_channel(a_sv, 24)?;
+        // OR the four shifted bytes together.
+        let rg = self.emit_binop_u32(BinOp::BitOr, cr, cg);
+        let rgb = self.emit_binop_u32(BinOp::BitOr, rg, cb);
+        let rgba = self.emit_binop_u32(BinOp::BitOr, rgb, ca);
+        self.stack.push(SymVal::Reg(rgba, ScalarType::U32));
+        Ok(())
+    }
+
+    /// Encode one f32 channel to its `<<shift` packed-byte contribution:
+    /// `(convert_u32(round(clamp(ch,0,1) * 255)) & 0xFF) << shift`. Returns
+    /// the register holding the shifted byte. Shared by `pack_unorm4x8`.
+    fn encode_unorm_channel(&mut self, ch: SymVal, shift: u32) -> Result<Reg, LoweringError> {
+        let (chr, _) = self.commit(ch)?;
+        let zero = self.emit_const_f32(0.0);
+        let one = self.emit_const_f32(1.0);
+        let s255 = self.emit_const_f32(255.0);
+        // clamp(ch, 0, 1)
+        let clamped = self.alloc_reg();
+        self.emit(KernelOp::MathCall {
+            dst: clamped,
+            func: MathFn::Clamp,
+            args: vec![chr, zero, one],
+            ty: ScalarType::F32,
+        });
+        // * 255.0
+        let scaled = self.emit_binop_f32(BinOp::Mul, clamped, s255);
+        // round to nearest (integral result)
+        let rounded = self.alloc_reg();
+        self.emit(KernelOp::MathCall {
+            dst: rounded,
+            func: MathFn::Round,
+            args: vec![scaled],
+            ty: ScalarType::F32,
+        });
+        // f32 -> u32 (truncation; value already integral so exact)
+        let byte = self.alloc_reg();
+        self.emit(KernelOp::Cast {
+            dst: byte,
+            src: rounded,
+            from: ScalarType::F32,
+            to: ScalarType::U32,
+        });
+        // & 0xFF, then << shift (skip the mask+shift when shift==0).
+        let mask = self.emit_const_u32(0xFF);
+        let masked = self.emit_binop_u32(BinOp::BitAnd, byte, mask);
+        if shift == 0 {
+            Ok(masked)
+        } else {
+            let sh = self.emit_const_u32(shift);
+            Ok(self.emit_binop_u32(BinOp::Shl, masked, sh))
+        }
+    }
+
+    /// Lower `unpack_unorm4x8_{r,g,b,a}(v) -> f32` as a composition:
+    /// `((v >> shift) & 0xFF) as f32 / 255.0`. Inverts `pack_unorm4x8` /
+    /// the `Texture2D<u32>` texel byte order (byte 0 = R). Division by
+    /// 255.0 (not multiply by 1/255) matches the exact round-trip in the
+    /// `pack_unorm4x8` doc.
+    fn unpack_unorm4x8(&mut self, shift: u32) -> Result<(), LoweringError> {
+        let v_sv = self.pop()?;
+        let (v, _) = self.commit(v_sv)?;
+        // (v >> shift) & 0xFF   (skip the shift when shift==0)
+        let shifted = if shift == 0 {
+            v
+        } else {
+            let sh = self.emit_const_u32(shift);
+            self.emit_binop_u32(BinOp::Shr, v, sh)
+        };
+        let mask = self.emit_const_u32(0xFF);
+        let byte = self.emit_binop_u32(BinOp::BitAnd, shifted, mask);
+        // u32 -> f32
+        let bf = self.alloc_reg();
+        self.emit(KernelOp::Cast {
+            dst: bf,
+            src: byte,
+            from: ScalarType::U32,
+            to: ScalarType::F32,
+        });
+        // / 255.0
+        let s255 = self.emit_const_f32(255.0);
+        let out = self.emit_binop_f32(BinOp::Div, bf, s255);
+        self.stack.push(SymVal::Reg(out, ScalarType::F32));
+        Ok(())
+    }
+
+    /// Emit a `Const` U32 and return its register.
+    fn emit_const_u32(&mut self, value: u32) -> Reg {
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::Const {
+            dst,
+            value: ConstValue::U32(value),
+        });
+        dst
+    }
+
+    /// Emit a `Const` F32 and return its register.
+    fn emit_const_f32(&mut self, value: f32) -> Reg {
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::Const {
+            dst,
+            value: ConstValue::F32(value),
+        });
+        dst
+    }
+
+    /// Emit a U32 `BinOp` and return its register.
+    fn emit_binop_u32(&mut self, op: BinOp, a: Reg, b: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst,
+            a,
+            b,
+            op,
+            ty: ScalarType::U32,
+        });
+        dst
+    }
+
+    /// Emit an F32 `BinOp` and return its register.
+    fn emit_binop_f32(&mut self, op: BinOp, a: Reg, b: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.emit(KernelOp::BinOp {
+            dst,
+            a,
+            b,
+            op,
+            ty: ScalarType::F32,
+        });
+        dst
     }
 
     /// Lower a `memory_fence(order)` extern call into `KernelOp::Fence`.

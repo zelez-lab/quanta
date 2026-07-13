@@ -260,9 +260,51 @@ unsafe extern "C" {
     /// Packed-u32 storage-image write — the RGBA8-unorm twin of
     /// `texture_write_2d_f32`. The `val` is a `0xAABBGGRR` packed u32 (the same
     /// little-endian R,G,B,A channel order as `texture_load_2d_u32`); build it
-    /// in the kernel with bit math — `let v = r | (g << 8) | (b << 16) | (a <<
-    /// 24)`.
+    /// with `pack_unorm4x8` (preferred) or bit math — `let v = r | (g << 8) |
+    /// (b << 16) | (a << 24)`.
     pub fn texture_write_2d_u32(slot: u32, x: u32, y: u32, val: u32);
+}
+
+// ── Packed RGBA8 pack / unpack ─────────────────────────────────────────
+//
+// Convenience intrinsics for the packed-u32 RGBA8 texel contract shared with
+// `texture_load_2d_u32` / `texture_write_2d_u32` (byte 0 = R, little-endian
+// `0xAABBGGRR`). They are the preferred, self-documenting form of the channel
+// bit math; the lowering expands each to a short KernelOp sequence (no new IR
+// op), so they run on every backend the composed ops already support.
+//
+// `pack_unorm4x8` clamps each channel to [0,1], rounds `x * 255`, and packs
+// the four bytes R,G,B,A. The four `unpack_unorm4x8_*` invert it, returning
+// `channel_byte as f32 / 255.0`. The round-trip is exact for byte-valued
+// channels: `pack_unorm4x8(unpack_r(v), unpack_g(v), unpack_b(v),
+// unpack_a(v)) == v` for every `v`.
+//
+// Example — scale the green channel of a packed texel in place:
+//
+// ```ignore
+// let v = texture_load_2d_u32(0, x, y);
+// let g = unpack_unorm4x8_g(v) * 0.5;
+// let out = pack_unorm4x8(
+//     unpack_unorm4x8_r(v), g, unpack_unorm4x8_b(v), unpack_unorm4x8_a(v),
+// );
+// texture_write_2d_u32(0, x, y, out);
+// ```
+#[link(wasm_import_module = "quanta")]
+unsafe extern "C" {
+    /// Pack four unorm channels into a `0xAABBGGRR` u32. Each channel is
+    /// clamped to `[0, 1]`, scaled by 255, rounded to nearest, and stored
+    /// in its byte (R = byte 0). Byte-identical to the `Texture2D<u32>`
+    /// texel `texture_write_2d_u32` stores.
+    pub fn pack_unorm4x8(r: f32, g: f32, b: f32, a: f32) -> u32;
+
+    /// Unpack the R channel (byte 0) of a packed RGBA8 u32 as `byte / 255`.
+    pub fn unpack_unorm4x8_r(v: u32) -> f32;
+    /// Unpack the G channel (byte 1) of a packed RGBA8 u32 as `byte / 255`.
+    pub fn unpack_unorm4x8_g(v: u32) -> f32;
+    /// Unpack the B channel (byte 2) of a packed RGBA8 u32 as `byte / 255`.
+    pub fn unpack_unorm4x8_b(v: u32) -> f32;
+    /// Unpack the A channel (byte 3) of a packed RGBA8 u32 as `byte / 255`.
+    pub fn unpack_unorm4x8_a(v: u32) -> f32;
 }
 
 // ── Memory-order discriminants ─────────────────────────────────────────

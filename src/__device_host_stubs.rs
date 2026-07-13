@@ -519,3 +519,29 @@ pub fn texture_load_3d_f32(_slot: u32, _x: u32, _y: u32, _z: u32) -> f32 {
 }
 pub fn texture_write_2d_f32(_slot: u32, _x: u32, _y: u32, _val: f32) {}
 pub fn texture_write_2d_u32(_slot: u32, _x: u32, _y: u32, _val: u32) {}
+
+// ── Packed RGBA8 pack / unpack ─────────────────────────────────────────
+//
+// Unlike the no-op stubs above, these are FAITHFUL host implementations:
+// they match the KernelOp composition the lowering emits byte-for-byte, so
+// the host differential oracle for a pack/unpack kernel is a real reference
+// the CPU dispatch must reproduce. `pack` clamps each channel to [0,1],
+// rounds `x * 255` (round-half-away, mirroring `MathFn::Round` on the CPU
+// interpreter), and packs little-endian R,G,B,A. `unpack` returns
+// `channel_byte as f32 / 255.0`.
+pub fn pack_unorm4x8(r: f32, g: f32, b: f32, a: f32) -> u32 {
+    let enc = |c: f32| -> u32 { (c.clamp(0.0, 1.0) * 255.0).round() as u32 & 0xFF };
+    enc(r) | (enc(g) << 8) | (enc(b) << 16) | (enc(a) << 24)
+}
+pub fn unpack_unorm4x8_r(v: u32) -> f32 {
+    (v & 0xFF) as f32 / 255.0
+}
+pub fn unpack_unorm4x8_g(v: u32) -> f32 {
+    ((v >> 8) & 0xFF) as f32 / 255.0
+}
+pub fn unpack_unorm4x8_b(v: u32) -> f32 {
+    ((v >> 16) & 0xFF) as f32 / 255.0
+}
+pub fn unpack_unorm4x8_a(v: u32) -> f32 {
+    ((v >> 24) & 0xFF) as f32 / 255.0
+}

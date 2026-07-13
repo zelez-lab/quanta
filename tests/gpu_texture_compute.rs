@@ -306,9 +306,40 @@ fn rmw_rgba8_red(tex: &mut Texture2D<u32>, width: u32) {
     texture_write_2d(tex, x, y, out);
 }
 
+/// Intrinsic twin of `rmw_rgba8_red`: same "scale one channel in place" RMW,
+/// but expressed with the `pack_unorm4x8` / `unpack_unorm4x8_*` intrinsics
+/// instead of hand-rolled bit math. Unpacks the texel to unorm floats, halves
+/// the green channel, repacks, and writes. The intrinsics lower to a KernelOp
+/// composition (clamp/mul/round/cast/shift/or, and shift/and/cast/div), so the
+/// emitted bytes must match a host reference exactly on every backend.
+#[quanta::kernel]
+fn rmw_rgba8_intrinsic_half_green(tex: &mut Texture2D<u32>, width: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    let v = texture_load_2d(tex, x, y);
+    let r = unpack_unorm4x8_r(v);
+    let g = unpack_unorm4x8_g(v);
+    let b = unpack_unorm4x8_b(v);
+    let a = unpack_unorm4x8_a(v);
+    let out = pack_unorm4x8(r, g * 0.5f32, b, a);
+    texture_write_2d(tex, x, y, out);
+}
+
 /// Host mirror of the kernel's channel packing: `0xAABBGGRR`, bytes [R,G,B,A].
 fn rgba8_pack(r: u8, g: u8, b: u8, a: u8) -> u32 {
     u32::from_le_bytes([r, g, b, a])
+}
+
+/// Host reference for the pack/unpack intrinsics: byte-exact twin of the
+/// lowering's KernelOp composition. `unpack` = `byte as f32 / 255.0`; `pack`
+/// = round(clamp(ch,0,1) * 255) per channel, little-endian R,G,B,A.
+fn host_unpack(v: u32, shift: u32) -> f32 {
+    ((v >> shift) & 0xFF) as f32 / 255.0
+}
+fn host_pack(r: f32, g: f32, b: f32, a: f32) -> u32 {
+    let enc = |c: f32| -> u32 { (c.clamp(0.0, 1.0) * 255.0).round() as u32 & 0xFF };
+    enc(r) | (enc(g) << 8) | (enc(b) << 16) | (enc(a) << 24)
 }
 
 /// Read an RGBA8 texture's raw bytes back as [R,G,B,A] tuples per texel.
@@ -488,6 +519,64 @@ fn run_rmw_rgba8(gpu: &quanta::Gpu) {
     }
 }
 
+/// Live intrinsic-path RMW: seed a known RGBA8 pattern, halve the G channel via
+/// `unpack_unorm4x8_*` + `pack_unorm4x8` on the GPU, and assert every texel's
+/// bytes match the host reference (which runs the same unpack/half/pack in
+/// f32). Proves the intrinsic composition is byte-identical to the texel
+/// contract on whatever backend `init()` picks (and on the CPU pass).
+fn run_rmw_rgba8_intrinsic(gpu: &quanta::Gpu) {
+    let (w, h) = (4u32, 4u32);
+    let n = (w * h) as usize;
+    // G spans 0..240 so the half hits both even and odd bytes; R/B/A sentinels.
+    let seed: Vec<(u8, u8, u8, u8)> = (0..n)
+        .map(|i| (50, (i as u32 * 16) as u8, 100, 200))
+        .collect();
+    let mut seed_bytes = Vec::with_capacity(n * 4);
+    for &(r, g, b, a) in &seed {
+        seed_bytes.extend_from_slice(&[r, g, b, a]);
+    }
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
+                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+            ),
+        )
+        .unwrap();
+    tex.write(&seed_bytes).unwrap();
+
+    let mut wave = rmw_rgba8_intrinsic_half_green(gpu).unwrap();
+    wave.bind_texture(0, &tex);
+    wave.set_value(1, w);
+    let Some(mut p) = dispatch_rgba8_or_skip(gpu, &mut wave, n as u32) else {
+        return;
+    };
+    p.wait().unwrap();
+
+    let got = rgba8_unpack(&tex.read().unwrap());
+    for i in 0..n {
+        let (r, g, b, a) = seed[i];
+        // Host mirror: unpack → halve G → pack, reading back the packed bytes.
+        let v = rgba8_pack(r, g, b, a);
+        let want_packed = host_pack(
+            host_unpack(v, 0),
+            host_unpack(v, 8) * 0.5,
+            host_unpack(v, 16),
+            host_unpack(v, 24),
+        );
+        let want = (
+            (want_packed & 0xFF) as u8,
+            ((want_packed >> 8) & 0xFF) as u8,
+            ((want_packed >> 16) & 0xFF) as u8,
+            ((want_packed >> 24) & 0xFF) as u8,
+        );
+        assert_eq!(
+            got[i], want,
+            "rmw_rgba8_intrinsic texel {i}: got {:?}, want {want:?} (seed G={g})",
+            got[i],
+        );
+    }
+}
+
 #[test]
 fn compute_writes_storage_texture() {
     let Some(gpu) = try_gpu() else { return };
@@ -562,6 +651,98 @@ fn cpu_writes_and_rmw_rgba8_storage_texture() {
     }
     run_write_pattern_rgba8(&gpu);
     run_rmw_rgba8(&gpu);
+}
+
+// ── pack_unorm4x8 / unpack_unorm4x8_* intrinsics ────────────────────────────
+
+/// Live intrinsic RMW on the default device: unpack a texel, halve G, repack.
+#[test]
+fn compute_rmw_rgba8_via_intrinsics() {
+    let Some(gpu) = try_gpu() else { return };
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return;
+    }
+    run_rmw_rgba8_intrinsic(&gpu);
+}
+
+/// CPU software executor twin of the intrinsic RMW.
+#[cfg(feature = "software")]
+#[test]
+fn cpu_rmw_rgba8_via_intrinsics() {
+    let gpu = quanta::init_cpu();
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    run_rmw_rgba8_intrinsic(&gpu);
+}
+
+/// Pure bit-exactness of the pack/unpack composition, independent of any
+/// texture: for each input `v`, unpack all four channels and repack, then
+/// assert `pack_unorm4x8(unpack_r,g,b,a) == v`. This is the round-trip the
+/// rounding choice in the lowering must satisfy for every byte-valued channel
+/// — and it holds under either rounding mode because `(byte/255)*255` is exact
+/// for all bytes 0..=255. Runs on the software executor (no GPU needed).
+#[quanta::kernel]
+fn rgba8_pack_unpack_roundtrip(input: &[u32], output: &mut [u32]) {
+    let i = quark_id();
+    let v = input[i as usize];
+    let r = unpack_unorm4x8_r(v);
+    let g = unpack_unorm4x8_g(v);
+    let b = unpack_unorm4x8_b(v);
+    let a = unpack_unorm4x8_a(v);
+    output[i as usize] = pack_unorm4x8(r, g, b, a);
+}
+
+#[cfg(feature = "software")]
+#[test]
+fn pack_unpack_roundtrip_byte_sweep() {
+    let gpu = quanta::init_cpu();
+    // Sweep every channel byte 0..=255 in each of the four positions, plus a
+    // few fully-mixed values. Each input's four channels are byte-valued by
+    // construction, so pack(unpack(v)) must equal v exactly.
+    let mut inputs: Vec<u32> = Vec::new();
+    for byte in 0u32..=255 {
+        inputs.push(byte); // R only
+        inputs.push(byte << 8); // G only
+        inputs.push(byte << 16); // B only
+        inputs.push(byte << 24); // A only
+        inputs.push(byte | (byte << 8) | (byte << 16) | (byte << 24)); // all equal
+    }
+    // A handful of fully-distinct-channel values.
+    for &(r, g, b, a) in &[
+        (1u32, 2, 3, 4),
+        (255, 0, 128, 64),
+        (10, 200, 30, 250),
+        (127, 128, 129, 126),
+    ] {
+        inputs.push(r | (g << 8) | (b << 16) | (a << 24));
+    }
+    // Pad up to a multiple of 64 with zeros so the dispatch is clean.
+    while inputs.len() % 64 != 0 {
+        inputs.push(0);
+    }
+    let n = inputs.len();
+
+    let input_f = gpu.field::<u32>(n).unwrap();
+    let output_f = gpu.field::<u32>(n).unwrap();
+    input_f.write(&inputs).unwrap();
+    output_f.write(&vec![0xDEAD_BEEFu32; n]).unwrap();
+
+    let mut wave = rgba8_pack_unpack_roundtrip(&gpu).unwrap();
+    wave.bind(0, &input_f);
+    wave.bind(1, &output_f);
+    gpu.dispatch(&wave, n as u32).unwrap().wait().unwrap();
+
+    let got = output_f.read().unwrap();
+    for (i, (&want, &g)) in inputs.iter().zip(got.iter()).enumerate() {
+        assert_eq!(
+            g, want,
+            "pack(unpack(v)) round-trip failed at index {i}: input 0x{want:08X}, got 0x{g:08X}"
+        );
+    }
 }
 
 /// The scalar-driven format contract: binding an RGBA8 texture to an

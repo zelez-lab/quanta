@@ -67,6 +67,12 @@ Two rules constrain loops:
   and the lowering refuses to resurrect trailing ops as live exit-path
   code rather than guess. Any statements after an unconditional
   `continue` in a loop body raise `UnsupportedOp`.
+- **`break` lowers from every loop shape, including nested and
+  sentinel-bounded ones.** A `while g < N { if geom { break } … }` where
+  rustc emits the early exit as a branch out of the loop's tail block
+  (and fuses the sentinel counter with the geometry induction variable)
+  lowers to an explicit loop `Break`, not an auto-continue — so the loop
+  exits when your condition says, not when the sentinel bound is reached.
 
 ### `match` / jump tables are rejected — use arithmetic selects
 
@@ -116,6 +122,11 @@ texture_sample_2d(tex, x, y) -> f32      // nearest sample of a &Texture2D; reje
 texture_write_2d(tex, x, y, v: f32)      // write v into a &mut Texture2D<f32> storage image (R32Float)
 texture_write_2d(tex, x, y, v: u32)      // write a packed 0xAABBGGRR RGBA8 texel into a &mut Texture2D<u32>
 texture_size(tex) -> (u32, u32)          // (width, height), CPU device
+
+// Packed-RGBA8 channel pack/unpack — lower to a composition of existing ops
+// (clamp/mul/round/convert/shift/or, shift/and/convert/div), no new IR node:
+pack_unorm4x8(r, g, b, a: f32) -> u32    // clamp[0,1], *255, round, pack R,G,B,A (byte 0 = R)
+unpack_unorm4x8_r/_g/_b/_a(v: u32) -> f32 // channel_byte / 255.0; pack(unpack(v)) == v exactly
 
 // Workgroup-shared memory (fixed-size array, kernel body only):
 #[quanta::shared] let scratch: [f32; 512];   // declare

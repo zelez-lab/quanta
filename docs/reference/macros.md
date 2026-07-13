@@ -280,7 +280,7 @@ fn name(params...) { body }
 - `&mut [T]` -- read-write GPU buffer
 - `&Texture2D<f32>` -- sampled texture (read via `texture_sample_2d` / `texture_load_2d`; bound with `wave.bind_texture`)
 - `&mut Texture2D<f32>` -- **read-write storage image**, R32Float format. Write with `texture_write_2d`; read the same slot with `texture_load_2d` (a storage read, not a sampled fetch). Sampling a storage image is rejected at compile time. Slot = positional across the buffer/texture/constant namespace; bound with `wave.bind_texture`.
-- `&mut Texture2D<u32>` -- **read-write storage image**, RGBA8-unorm format, with the texel packed into one `u32`. Each texel crosses the kernel boundary as a `0xAABBGGRR` u32 (little-endian byte order R,G,B,A); build/split it with bit math (see the example below). A read-only, sampled `&Texture2D<u32>` is a different, unwired meaning and is **rejected at compile time** -- use `&Texture2D<f32>` to sample. **BGRA8 is not supported**: effect layers must be RGBA8 (there is no SPIR-V storage format for BGRA8; an in-kernel byte-shuffle is the escape hatch). User-facing channel pack/unpack intrinsics are deferred -- kernels use bit math today.
+- `&mut Texture2D<u32>` -- **read-write storage image**, RGBA8-unorm format, with the texel packed into one `u32`. Each texel crosses the kernel boundary as a `0xAABBGGRR` u32 (little-endian byte order R,G,B,A); build/split it with bit math (see the example below). A read-only, sampled `&Texture2D<u32>` is a different, unwired meaning and is **rejected at compile time** -- use `&Texture2D<f32>` to sample. **BGRA8 is not supported**: effect layers must be RGBA8 (there is no SPIR-V storage format for BGRA8; an in-kernel byte-shuffle is the escape hatch). Split and rebuild the texel with the `pack_unorm4x8` / `unpack_unorm4x8_*` intrinsics (preferred) or the equivalent bit math (see the example below).
 - Scalar values (`u32`, `f32`, etc.) -- push constants (set via `wave.set_value`)
 
 The texture format contract is scalar-driven and enforced per storage-slot kind
@@ -297,23 +297,42 @@ RGBA8 (`&mut Texture2D<u32>`) storage additionally needs
 on Vulkan, so there is no equivalent gate there). This tier nuance surfaces as
 the `NotSupported` error, not as a separate capability query.
 
-Packing a texel with bit math (the deferred pack-intrinsic pattern):
+Working on a packed texel — the preferred form uses the `pack_unorm4x8` /
+`unpack_unorm4x8_*` intrinsics, which read/write the four RGBA8 channels as
+normalized `f32` in `[0, 1]`:
 
 ```rust
 #[quanta::kernel]
 fn tint(image: &mut Texture2D<u32>, width: u32) {
     let i = quark_id();
     let (x, y) = (i % width, i / width);
-    // Read the packed texel and split it into channels.
     let v = texture_load_2d(image, x, y);
-    let r = v & 0xFF;
-    let g = (v >> 8) & 0xFF;
-    let b = (v >> 16) & 0xFF;
-    let a = (v >> 24) & 0xFF;
-    // ... operate on channels (here: swap R and B) ...
-    let out = b | (g << 8) | (r << 16) | (a << 24);
+    // Unpack to unorm floats, operate, repack. (Here: halve the red channel.)
+    let r = unpack_unorm4x8_r(v);
+    let g = unpack_unorm4x8_g(v);
+    let b = unpack_unorm4x8_b(v);
+    let a = unpack_unorm4x8_a(v);
+    let out = pack_unorm4x8(r * 0.5, g, b, a);
     texture_write_2d(image, x, y, out);
 }
+```
+
+The intrinsics are conveniences: they lower to the same integer bit math you
+would otherwise write by hand. `unpack_unorm4x8_g(v)` compiles to
+`(((v >> 8) & 0xFF) as f32) / 255.0`, and `pack_unorm4x8(r, g, b, a)` to the
+per-channel `(round(clamp(c, 0, 1) * 255) as u32 & 0xFF)` shifted into place and
+OR-ed together. When you want to manipulate the raw bytes directly (e.g. a pure
+channel swizzle with no unorm arithmetic), the bit math is equally valid:
+
+```rust
+// Swap R and B directly on the packed bytes — no intrinsic needed.
+let v = texture_load_2d(image, x, y);
+let r = v & 0xFF;
+let g = (v >> 8) & 0xFF;
+let b = (v >> 16) & 0xFF;
+let a = (v >> 24) & 0xFF;
+let out = b | (g << 8) | (r << 16) | (a << 24);
+texture_write_2d(image, x, y, out);
 ```
 
 #### Produces
@@ -358,6 +377,8 @@ With `jit`:
 | `texture_sample_2d(tex, x, y)` | `f32` | Sample a `&Texture2D` at integer coords (nearest); rejected on a storage slot |
 | `texture_write_2d(tex, x, y, v)` | `()` | Write `v` into texel `(x, y)`. On `&mut Texture2D<f32>`: `v: f32` into the R channel. On `&mut Texture2D<u32>`: `v: u32` as a packed `0xAABBGGRR` RGBA8 texel |
 | `texture_size(tex)` | `(u32, u32)` | Texture `(width, height)` (CPU device) |
+| `pack_unorm4x8(r, g, b, a)` | `u32` | Pack four `f32` unorm channels into a `0xAABBGGRR` RGBA8 u32: each is clamped to `[0, 1]`, scaled by 255, rounded, and stored (R = byte 0). Byte-identical to the `Texture2D<u32>` texel `texture_write_2d` stores |
+| `unpack_unorm4x8_r/_g/_b/_a(v)` | `f32` | Unpack one channel of a packed RGBA8 u32 as `channel_byte / 255.0` (byte 0 = R). Inverts `pack_unorm4x8`; the round-trip `pack_unorm4x8(unpack_r(v), unpack_g(v), unpack_b(v), unpack_a(v)) == v` is exact for every `v` |
 
 The kernel (compute) intrinsic surface above is a **different set** from
 the shader (vertex/fragment) intrinsics documented under

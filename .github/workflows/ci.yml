@@ -92,6 +92,13 @@ jobs:
       - name: Op-matrix tests (software lane)
         run: cargo test --test op_matrix --features software --no-default-features
 
+      # Loop/branch/break control-flow reconstruction regression net. Each
+      # case runs under a 30s watchdog so a dropped loop-exit Break (which
+      # spins the structured Loop to its sentinel bound) fails instead of
+      # wedging the runner. Covers the k1_bin double-sentinel miscompile.
+      - name: Lowering loop-shape tests (software lane)
+        run: cargo test --test lowering_loops --features software --no-default-features
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   # Gated on the `run-metal` PR label until a self-hosted Metal runner
   # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
