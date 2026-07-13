@@ -1,0 +1,415 @@
+name: Bundle quanta-compiler
+description: >-
+  Build quanta-compiler and package it into a self-contained archive with its
+  libLLVM dependency closure bundled beside the binary. macOS + Linux only —
+  Windows staging stays inline in release-compiler.yml because it runs under
+  `shell: msys2 {0}`, which a composite step cannot host. The asset NAME is the
+  handshake contract with crates/quanta-dsl-core/src/binary.rs: with embed-rev
+  it is quanta-compiler-<rev>-<target>, otherwise quanta-compiler-<target>.
+
+inputs:
+  target:
+    description: 'The Rust target triple to build and name the asset for.'
+    required: true
+  embed-rev:
+    description: >-
+      "true" to embed the build <rev> in the asset name (compiler-dev's
+      per-rev scheme) and derive it via git describe; "false" for the plain
+      quanta-compiler-<target> release scheme with no rev derivation.
+    required: true
+  assert-exact-rev:
+    description: >-
+      "true" to make the staging smoke test assert the built binary's --rev
+      equals the derived <rev> (the compiler-dev contract, where the rev IS
+      the name); "false" for release's weaker non-empty gate.
+    required: true
+  ref:
+    description: 'Git ref (branch, tag, or SHA) to check out. Empty = default.'
+    required: false
+    default: ''
+  fetch-depth:
+    description: >-
+      Checkout depth. 0 fetches full history so `git describe` abbreviates the
+      commit hash to the same length a consumer's full checkout does (the rev
+      must match QUANTA_BUILD_REV), and makes a bare-SHA ref resolvable.
+    required: false
+    default: '0'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.ref }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+
+    - name: Install Rust stable
+      shell: bash
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Install LLVM 22 (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install llvm@22
+        echo "LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)" >> $GITHUB_ENV
+
+    - name: Install LLVM 22 (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        # Use the apt.llvm.org repo matching the runner's Ubuntu
+        # codename (lsb_release -cs). Works for jammy (22.04) and
+        # noble (24.04) on both x86_64 and arm64.
+        CODENAME=$(lsb_release -cs)
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+        echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+        sudo apt-get update
+        sudo apt-get install -y llvm-22-dev libpolly-22-dev
+        echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> $GITHUB_ENV
+
+    # ─────────────────────────────────────────────────────────────────
+    # THE CORRECTNESS POINT of the per-rev (embed-rev) path.
+    #
+    # The asset name must embed the SAME string quanta-compiler stamps as
+    # QUANTA_BUILD_REV for this checkout, or the downloader's rev-first
+    # URL (crates/quanta-dsl-core/src/binary.rs) will never match and the
+    # whole arc is inert.
+    #
+    # crates/quanta-compiler/build.rs derives that stamp as, verbatim:
+    #     git ls-files --error-unmatch Cargo.toml   (the "tracked" guard)
+    #     git describe --always --dirty --exclude '*'   (else "unknown")
+    # run with current_dir = the crate's manifest dir. quanta-dsl-core's
+    # build.rs (the downloader side of the handshake) uses the IDENTICAL
+    # command, so the two agree by construction. quanta-compiler's
+    # `--rev` then prints QUANTA_BUILD_REV verbatim (main.rs).
+    #
+    # We reproduce it EXACTLY: same command, same crate directory. On a
+    # clean tag/branch/SHA checkout `--dirty` never fires and `--exclude
+    # '*'` suppresses tag-based describe, so this yields the abbreviated
+    # commit hash (e.g. 77e51d9) — the form the downloader builds its URL
+    # from. When embed-rev is false the rev is unused (the release scheme
+    # names the asset quanta-compiler-<target>), so this step is skipped.
+    - name: Derive <rev> identically to build.rs (QUANTA_BUILD_REV)
+      id: rev
+      if: inputs.embed-rev == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd crates/quanta-compiler
+        # The tracked guard: if Cargo.toml isn't tracked here we are not
+        # in a real checkout of this repo and build.rs would stamp
+        # "unknown"; refuse rather than publish an asset that can never
+        # be matched.
+        if ! git ls-files --error-unmatch Cargo.toml >/dev/null 2>&1; then
+          echo "ERROR: crates/quanta-compiler/Cargo.toml is not git-tracked here;" \
+               "build.rs would stamp QUANTA_BUILD_REV=unknown, which the downloader" \
+               "never fetches. Aborting." >&2
+          exit 1
+        fi
+        REV=$(git describe --always --dirty --exclude '*')
+        if [ -z "$REV" ]; then
+          echo "ERROR: git describe produced an empty rev" >&2
+          exit 1
+        fi
+        echo "rev=$REV" >> "$GITHUB_OUTPUT"
+        echo "Derived <rev> = $REV (must equal quanta-compiler --rev)"
+
+    # A release binary that dynamically links libLLVM is killed by the
+    # loader on any machine that lacks that exact libLLVM (dyld
+    # "Library not loaded" / ld.so exit 127). We ship the library inside
+    # the archive next to the binary, so the binary must look for it
+    # beside itself: bake a relative run path ($ORIGIN/lib) into the ELF.
+    # Single-quote so $ORIGIN reaches the linker literally instead of
+    # being expanded by this shell.
+    - name: Build quanta-compiler (Linux — bundled-libLLVM rpath)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: cargo build -p quanta-compiler --release
+      env:
+        RUSTFLAGS: '-C link-arg=-Wl,-rpath,$ORIGIN/lib'
+
+    - name: Build quanta-compiler (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: cargo build -p quanta-compiler --release
+
+    # --- Bundle libLLVM into the archive -----------------------------
+    #
+    # The archive must be self-contained: the binary at the root, the
+    # LLVM shared library it needs beside it (in lib/ on Unix).
+    # Extracting and running it must never touch a system-installed LLVM.
+    # Asset NAMES are set by the package step below — only the internal
+    # layout grows — so published download URLs stay stable.
+
+    # Linux: rpath is already baked in ($ORIGIN/lib). A Raspberry Pi
+    # validation run proved that bundling libLLVM alone is NOT enough:
+    # llvm-sys links libLLVM against libz3, and a minimal Pi image
+    # doesn't have it, so the loader kills the binary looking for
+    # libz3.so.4 even though libLLVM itself resolved fine. libLLVM's
+    # transitive closure (z3, zstd, tinfo/ncurses, xml2, ffi, and
+    # whatever else the distro's LLVM package pulled in) is exactly as
+    # load-bearing as libLLVM itself, so we bundle the ENTIRE
+    # dependency closure of the binary — everything ldd reports —
+    # except a small baseline we can assume every glibc target already
+    # has: glibc itself (libc/libm/libpthread/libdl/librt/libresolv),
+    # the dynamic loader/vDSO (ld-linux*, linux-vdso), and the
+    # compiler runtime (libgcc_s, libstdc++). Disk is cheap; a
+    # loader-kill on a user's machine is not.
+    - name: Stage archive with bundled libLLVM (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        BIN=target/release/quanta-compiler
+        # Fail loudly if the rpath didn't take — a silently missing
+        # RUNPATH would ship a binary that only runs where LLVM is
+        # already installed, exactly the trap we are closing.
+        if command -v readelf >/dev/null; then
+          readelf -d "$BIN" | grep -E 'RUNPATH|RPATH' || {
+            echo "ERROR: no RUNPATH/RPATH in $BIN — \$ORIGIN/lib rpath was not applied"; exit 1; }
+        fi
+        mkdir -p stage/lib
+        cp "$BIN" stage/quanta-compiler
+        # Baseline: soname PREFIXES assumed present on every glibc
+        # target, so we do NOT bundle them (bundling glibc itself would
+        # be actively wrong — it must match the kernel/loader on the
+        # target machine, not ours). Matched against the basename
+        # prefix so both dev-symlink-style and versioned sonames hit
+        # (e.g. "libc.so.6" starts with "libc.").
+        BASELINE_PREFIXES=(
+          'libc.' 'libc-'
+          'libm.' 'libm-'
+          'libpthread.' 'libpthread-'
+          'libdl.' 'libdl-'
+          'librt.' 'librt-'
+          'libresolv.' 'libresolv-'
+          'libgcc_s.'
+          'libstdc++.'
+          'ld-linux'
+          'linux-vdso'
+        )
+        is_baseline() {
+          local name="$1"
+          for prefix in "${BASELINE_PREFIXES[@]}"; do
+            case "$name" in
+              "$prefix"*) return 0 ;;
+            esac
+          done
+          return 1
+        }
+        # ldd on Linux already prints the FULL transitive closure (not
+        # just direct deps), so walking its output surfaces libz3 and
+        # friends without needing to recurse ourselves — simpler than
+        # the macOS otool case, which only reports one level.
+        ldd "$BIN" | grep -i 'llvm' || { echo "ERROR: binary does not link libLLVM"; exit 1; }
+        ALL_LINES=$(ldd "$BIN")
+        # Feed the loop from a here-string, not a pipe, so the copies
+        # happen in THIS shell (a `... | while` runs in a subshell and
+        # its failures/results wouldn't be visible to the assertion).
+        while read -r soname _arrow resolved _rest; do
+          [ -n "$soname" ] || continue
+          # Entries with no resolved path (linux-vdso.so.1, or a bare
+          # "not found") have nothing to copy — skip safely. vdso is
+          # also caught by the baseline check above, so this mainly
+          # guards against a genuinely missing library, which is a
+          # build-environment problem, not something to paper over here.
+          [ -n "$resolved" ] && [ -f "$resolved" ] || continue
+          if is_baseline "$soname"; then
+            echo "skipping $soname (baseline glibc/loader/compiler-runtime)"
+            continue
+          fi
+          # Follow symlinks so we copy the real object, then place it
+          # under the exact SONAME the binary records.
+          cp -L "$resolved" "stage/lib/$soname"
+          echo "bundled $soname  <=  $resolved"
+        done <<< "$ALL_LINES"
+        # Refuse to ship if libLLVM specifically didn't land in lib/ —
+        # a broken glob or an unresolved ldd line would otherwise
+        # produce a lib-less archive that only runs where LLVM is
+        # already installed.
+        ls stage/lib/*[Ll][Ll][Vv][Mm]* >/dev/null 2>&1 || {
+          echo "ERROR: no libLLVM copied into stage/lib/"; exit 1; }
+        echo "--- libLLVM's own dependencies (now bundled above unless baseline) ---"
+        LIBLLVM=$(ls stage/lib/*[Ll][Ll][Vv][Mm]* | head -1)
+        ldd "$LIBLLVM" || true
+        echo "--- staged layout ---"
+        find stage -maxdepth 2 -type f | sort
+        # Smoke test only: the build runner still HAS system LLVM
+        # installed (and every other package on the runner image), so
+        # this does not prove the archive is self-contained — it only
+        # catches a staging bug (wrong SONAME, truncated copy) before
+        # the archive is even uploaded. The real gate is the `verify`
+        # job, which runs the extracted archive on a CLEAN runner with
+        # no LLVM and no build toolchain at all.
+        echo "--- smoke test: staged binary runs on the build runner ---"
+        STAGE_OUT=$(./stage/quanta-compiler --rev)
+        if [ "${{ inputs.assert-exact-rev }}" = "true" ]; then
+          # The rev IS the asset name (compiler-dev): a drift here means
+          # the name would not match the downloader URL, so fail now.
+          echo "stage/quanta-compiler --rev => $STAGE_OUT (expected ${{ steps.rev.outputs.rev }})"
+          if [ "$STAGE_OUT" != "${{ steps.rev.outputs.rev }}" ]; then
+            echo "ERROR: staged binary --rev ($STAGE_OUT) != derived <rev> (${{ steps.rev.outputs.rev }});" \
+                 "the asset name would not match the downloader URL"; exit 1
+          fi
+        else
+          # Release scheme: the name has no rev, so a non-empty --rev is
+          # the only staging gate here (verify does the real load test).
+          echo "stage/quanta-compiler --rev => $STAGE_OUT"
+          if [ -z "$STAGE_OUT" ]; then
+            echo "ERROR: staged binary produced empty --rev output"; exit 1
+          fi
+        fi
+
+    # macOS: rpath alone does nothing here — a Mach-O binary records the
+    # ABSOLUTE path of every non-system dylib it links (otool -L), and
+    # those live under Homebrew. libLLVM is the obvious one, but the LLVM
+    # keg's deps drag in others AT MULTIPLE LEVELS: the binary references
+    # libLLVM, and libLLVM itself references e.g. libz3 and libunwind.
+    # `otool -L` reports only ONE level (unlike Linux `ldd`, which prints
+    # the full closure), so we must recurse it ourselves — a single-level
+    # sweep bundles libLLVM but misses the libz3 it needs, and the archive
+    # loader-kills on a machine without that keg. Walk a worklist: for
+    # each Mach-O we process, rewrite every non-system load command to
+    # @rpath/<basename>, copy the real file into stage/lib/, and queue the
+    # copy so ITS non-system deps get the same treatment. Then add one
+    # @loader_path/lib run path to the binary and RE-SIGN everything:
+    # install_name_tool invalidates the code signature, and arm64 macOS
+    # refuses to run a binary (or load a dylib) with a broken signature
+    # ("Killed: 9"). Ad-hoc (-) signing is enough for an unnotarized CLI.
+    - name: Stage archive with bundled libLLVM (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p stage/lib
+        cp target/release/quanta-compiler stage/quanta-compiler
+        BIN=stage/quanta-compiler
+
+        # Rewrite one Mach-O's non-system references to @rpath and return
+        # the resolved source paths of the deps that need bundling.
+        # System dylibs (/usr/lib/*, /System/*) resolve from the dyld
+        # shared cache on every mac — leave them. `@rpath/@loader_path/
+        # @executable_path` entries are already-rewritten (ours) — skip.
+        non_system_refs() {
+          otool -L "$1" | tail -n +2 | awk '{print $1}' \
+            | grep -Ev '^(/usr/lib/|/System/|@)' || true
+        }
+
+        # Seed the worklist with the binary; discover the closure by
+        # walking each new dylib. `seen` dedupes by basename (the SONAME
+        # we bundle under), so a diamond dependency is copied once.
+        # NOTE: macOS ships bash 3.2 (no `declare -A`, no `+=` on plain
+        # scalars pre-4), and the GitHub macos runners use it for
+        # `shell: bash`. So `seen` is a newline-delimited string checked
+        # with `grep -qxF`, and the worklist is a newline-delimited queue
+        # consumed head-first — both bash-3.2 safe.
+        seen=""
+        WORK="$BIN"
+        saw_llvm=0
+        while [ -n "$WORK" ]; do
+          CUR=$(printf '%s\n' "$WORK" | head -n1)
+          WORK=$(printf '%s\n' "$WORK" | tail -n +2)
+          while IFS= read -r REF; do
+            [ -n "$REF" ] || continue
+            BASENAME=$(basename "$REF")
+            case "$BASENAME" in *[Ll][Ll][Vv][Mm]*) saw_llvm=1 ;; esac
+            # Point CUR's load command at the copy beside the binary
+            # (every Mach-O in stage/lib/ shares the binary's rpath).
+            install_name_tool -change "$REF" "@rpath/$BASENAME" "$CUR"
+            # Bundle + enqueue the dep once.
+            if ! printf '%s\n' "$seen" | grep -qxF "$BASENAME"; then
+              seen=$(printf '%s\n%s' "$seen" "$BASENAME")
+              # Copy the real object (resolve Homebrew's version symlink).
+              cp -L "$REF" "stage/lib/$BASENAME"
+              echo "bundled $BASENAME  <=  $REF  (via $(basename "$CUR"))"
+              WORK=$(printf '%s\n%s' "$WORK" "stage/lib/$BASENAME")
+            fi
+          done <<< "$(non_system_refs "$CUR")"
+        done
+
+        if [ "$saw_llvm" -ne 1 ]; then
+          echo "ERROR: binary/closure references no LLVM dylib"; otool -L "$BIN"; exit 1
+        fi
+        ls stage/lib/*[Ll][Ll][Vv][Mm]* >/dev/null 2>&1 || {
+          echo "ERROR: no libLLVM copied into stage/lib/"; exit 1; }
+
+        # @loader_path is the directory of the binary at load time, so
+        # @rpath/... resolves to stage/lib/ wherever the archive lands.
+        # (The bundled dylibs live in that same dir, so their @rpath refs
+        # to each other resolve relative to the binary that loads them.)
+        install_name_tool -add_rpath "@loader_path/lib" "$BIN"
+        # install_name_tool broke every signature it touched — ad-hoc
+        # re-sign the binary AND every bundled dylib, or the loader kills
+        # the process on Apple Silicon before it prints its rev.
+        codesign --force --sign - "$BIN"
+        for DYLIB in stage/lib/*.dylib; do
+          codesign --force --sign - "$DYLIB"
+        done
+        echo "--- otool -L after rewrite (non-system refs must be @rpath/...) ---"
+        otool -L "$BIN"
+        echo "--- staged layout ---"
+        find stage -maxdepth 2 -type f | sort
+        # Smoke test: the arm64 binary loads its bundled libLLVM here, so
+        # this catches a staging bug before the asset is uploaded. The
+        # real self-containment gate is the `verify` job on a CLEAN runner.
+        echo "--- smoke test: staged binary runs on the build runner ---"
+        STAGE_OUT=$(./stage/quanta-compiler --rev)
+        if [ "${{ inputs.assert-exact-rev }}" = "true" ]; then
+          # The rev IS the asset name (compiler-dev): a drift here means
+          # the name would not match the downloader URL, so fail now.
+          echo "stage/quanta-compiler --rev => $STAGE_OUT (expected ${{ steps.rev.outputs.rev }})"
+          if [ "$STAGE_OUT" != "${{ steps.rev.outputs.rev }}" ]; then
+            echo "ERROR: staged binary --rev ($STAGE_OUT) != derived <rev> (${{ steps.rev.outputs.rev }});" \
+                 "the asset name would not match the downloader URL"; exit 1
+          fi
+        else
+          # Release scheme: the name has no rev, so a non-empty --rev is
+          # the only staging gate here (verify does the real load test).
+          echo "stage/quanta-compiler --rev => $STAGE_OUT"
+          if [ -z "$STAGE_OUT" ]; then
+            echo "ERROR: staged binary produced empty --rev output"; exit 1
+          fi
+        fi
+
+    # Package from INSIDE stage/ so the archive root is the binary with
+    # lib/ beside it — exactly the layout the loader/rpath contract needs
+    # after extraction. With embed-rev the asset NAME embeds <rev> (the
+    # identity above); without it, the plain quanta-compiler-<target>
+    # release name. Both schemes are the download-URL contract with
+    # crates/quanta-dsl-core/src/binary.rs.
+    - name: Package (tar.gz)
+      id: package
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.embed-rev }}" = "true" ]; then
+          NAME="quanta-compiler-${{ steps.rev.outputs.rev }}-${{ inputs.target }}"
+        else
+          NAME="quanta-compiler-${{ inputs.target }}"
+        fi
+        cd stage
+        tar czf "../$NAME.tar.gz" quanta-compiler lib
+        cd ..
+        # macOS doesn't ship `sha256sum`; `shasum -a 256` exists on
+        # both macOS and Linux.
+        if command -v sha256sum >/dev/null; then
+          sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+        else
+          shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+        fi
+        echo "packaged $NAME.tar.gz"
+        # Expose the asset name so the upload step names the artifact and
+        # its paths off one source (the verify/publish jobs download by it).
+        echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.package.outputs.name }}
+        path: |
+          ${{ steps.package.outputs.name }}.tar.gz
+          ${{ steps.package.outputs.name }}.tar.gz.sha256
+        if-no-files-found: ignore

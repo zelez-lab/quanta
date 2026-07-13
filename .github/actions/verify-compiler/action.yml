@@ -1,0 +1,114 @@
+name: Verify bundled quanta-compiler
+description: >-
+  Download a bundled quanta-compiler archive onto a CLEAN runner (no LLVM, no
+  Rust toolchain), extract it the way a user would, verify its sha256, and run
+  `--rev` to prove libLLVM bundling resolves. macOS + Linux only — the Windows
+  verify stays inline in release-compiler.yml (it uses pwsh Expand-Archive).
+  With assert-exact-rev the printed rev must equal the derived <rev> (the
+  compiler-dev contract); otherwise a non-empty rev is enough (release).
+
+inputs:
+  target:
+    description: 'The Rust target triple whose artifact to download and test.'
+    required: true
+  embed-rev:
+    description: >-
+      "true" when the artifact is named quanta-compiler-<rev>-<target> and the
+      rev must be re-derived from git to reconstruct the name; "false" for the
+      plain quanta-compiler-<target> release scheme (no checkout, no rev).
+    required: true
+  assert-exact-rev:
+    description: >-
+      "true" to assert the extracted binary's --rev equals the derived <rev>
+      (the rev IS the contract); "false" for release's non-empty gate.
+    required: true
+  ref:
+    description: 'Git ref to check out for the rev re-derivation. Empty = default.'
+    required: false
+    default: ''
+  fetch-depth:
+    description: >-
+      Checkout depth for the rev re-derivation. 0 matches the build side so the
+      abbreviated hash lengths agree (only used when embed-rev is true).
+    required: false
+    default: '0'
+
+runs:
+  using: composite
+  steps:
+    # Only the per-rev path needs a checkout: it re-derives <rev> so the
+    # download name and the expected --rev assertion share one source. The
+    # release path names the artifact quanta-compiler-<target> with no rev,
+    # so it stays checkout-less (matching release-compiler.yml's verify).
+    - uses: actions/checkout@v7
+      if: inputs.embed-rev == 'true'
+      with:
+        ref: ${{ inputs.ref }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+
+    # Re-derive <rev> the same way the build side did. Trimmed vs the build
+    # rev step (no tracked-guard) — matches compiler-dev.yml's verify job:
+    # fetch-depth: 0 above gives the same abbreviation stability, and the
+    # exact-match assertion below is the real backstop.
+    - name: Derive <rev> identically to build.rs (QUANTA_BUILD_REV)
+      id: rev
+      if: inputs.embed-rev == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd crates/quanta-compiler
+        REV=$(git describe --always --dirty --exclude '*')
+        echo "rev=$REV" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve artifact name
+      id: name
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.embed-rev }}" = "true" ]; then
+          NAME="quanta-compiler-${{ steps.rev.outputs.rev }}-${{ inputs.target }}"
+        else
+          NAME="quanta-compiler-${{ inputs.target }}"
+        fi
+        echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+    - name: Download artifact under test
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ steps.name.outputs.name }}
+        path: dl
+
+    # Extract exactly like a user: whole archive, preserving lib/.
+    - name: Extract and run --rev
+      shell: bash
+      run: |
+        set -euo pipefail
+        NAME="${{ steps.name.outputs.name }}.tar.gz"
+        cd dl
+        mkdir -p extracted
+        tar xzf "$NAME" -C extracted
+        echo "--- extracted layout ---"
+        find extracted -maxdepth 2 | sort
+        # sha256: the runner may ship sha256sum (Linux) or only shasum (macOS).
+        if command -v sha256sum >/dev/null; then
+          sha256sum -c "$NAME.sha256"
+        else
+          shasum -a 256 -c "$NAME.sha256"
+        fi
+        # The acceptance test: the binary must LOAD (its bundled libLLVM
+        # resolves via the baked rpath) and print a build rev.
+        OUT=$(./extracted/quanta-compiler --rev)
+        if [ "${{ inputs.assert-exact-rev }}" = "true" ]; then
+          # The rev IS the contract: a mismatch means the downloader would
+          # fetch a binary whose handshake still fails — block the publish.
+          echo "quanta-compiler --rev => $OUT (expected ${{ steps.rev.outputs.rev }})"
+          if [ "$OUT" != "${{ steps.rev.outputs.rev }}" ]; then
+            echo "ERROR: --rev ($OUT) != asset <rev> (${{ steps.rev.outputs.rev }}) — the rev" \
+                 "handshake would still fail against this asset; refusing to publish"; exit 1
+          fi
+        else
+          # Release scheme: proving the binary loads and prints a rev is
+          # enough; the name carries no rev to match against.
+          echo "quanta-compiler --rev => $OUT"
+          if [ -z "$OUT" ]; then echo "ERROR: --rev produced empty output"; exit 1; fi
+        fi
