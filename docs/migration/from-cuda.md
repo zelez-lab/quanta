@@ -104,6 +104,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `__all_sync(mask, pred)` | `all_u32(pred)` |
 | `surf2Dwrite(v, surf, x, y)` | `texture_write_2d(tex, x, y, v)` (param `&mut Texture2D<f32>`, R32Float) |
 | `surf2Dread(&v, surf, x, y)` | `texture_load_2d(tex, x, y)` (storage read on a `&mut Texture2D` slot) |
+| `surf2Dwrite(uchar4_v, surf, x, y)` | `texture_write_2d(tex, x, y, packed)` (param `&mut Texture2D<u32>`, RGBA8 texel as one packed `0xAABBGGRR` u32) |
 | `tex2D(tex, u, v)` | `texture_sample_2d(tex, x, y)` / `texture_load_2d` (param `&Texture2D<f32>`) |
 | `cudaMemcpy2D` (to a texture sub-region) | `texture.write_region(origin, size, &data)` (texel offset + extent, tightly packed rows; gated on `supports_texture_write_region`) |
 | `cudaMalloc` + `cudaMemcpy` | `gpu.field::<T>(n)` + `field.write(&data)` |

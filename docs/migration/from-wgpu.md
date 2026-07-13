@@ -158,6 +158,8 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `device.poll(Maintain::Wait)` | `pulse.wait()` / `gpu.wait_idle()` |
 | `queue.on_submitted_work_done(callback)` | `pulse.on_complete(\|\| { .. })` (runs on a waiter thread; consumes the pulse) |
 | `queue.write_texture(origin, data, layout, size)` | `texture.write(&data)` / `texture.write_region(origin, size, &data)` |
+| `var<storage, read> t: array<vec4<f32>>` read in a shader | `table: &[Vec4]` shader param, indexed `table[i]`; bound with `.uniform(slot, &field)` at the declaration index shared with `&T` uniforms |
+| `texture_storage_2d<rgba8unorm, read_write>` in compute | `&mut Texture2D<u32>` kernel param (texels as packed `0xAABBGGRR` u32) |
 
 ## Key differences
 

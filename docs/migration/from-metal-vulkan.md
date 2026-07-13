@@ -179,6 +179,8 @@ don't implement it. The render-side methods (`gpu.mesh_pipeline`,
 | `VK_EXT_debug_printf`                                     | `gpu.printf_buffer(cap)?.drain()?`                               |
 | `CAMetalLayer` + `nextDrawable` / `VkSwapchainKHR` + `vkAcquireNextImageKHR` | `gpu.create_surface(&SurfaceTarget::MetalLayer { layer } /* or VulkanXlib / Headless */, &config)` + `surface.acquire()` → `frame.present()` (native on Metal + Vulkan; a *suboptimal* Vulkan swapchain self-heals on the next acquire, hard `OUT_OF_DATE` → `SurfaceOutdated`) |
 | `MTLTexture` / `VkImage` handed to external code           | `texture.native_handle()` → `NativeTextureHandle::{Metal, Vulkan}` |
+| Fragment buffer table (`const device float4* [[buffer(n)]]` / fragment SSBO descriptor) | `table: &[Vec4]` shader param, indexed `table[i]`; bound with `.uniform(slot, &field)` at the declaration index shared with `&T` uniforms |
+| RGBA8 read-write storage texture in compute (`access::read_write` / storage image) | `&mut Texture2D<u32>` kernel param (texels as packed `0xAABBGGRR` u32; Metal needs `MTLReadWriteTextureTier2`) |
 
 The argument layout for indirect draws follows the Vulkan / Metal convention
 exactly — see [Guide: Indirect commands](../rendering/tutorials/indirect-commands.md).
