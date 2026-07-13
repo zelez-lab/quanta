@@ -116,11 +116,24 @@ Convention:
 
 ## Coordinate conventions
 
-Clip-space y points UP on Metal and DOWN on Vulkan, so vertically
-asymmetric output (a textured quad, a gradient) renders flipped between
-the two backends. Quanta does not currently normalize this — the
-convention is the app's (flip `uv.y` or your projection on one backend
-if you need identical output). Horizontally the backends agree.
+Quanta normalizes render orientation across every backend: **the same
+shader source produces the same pixels everywhere.** The convention is
+
+- clip-space (NDC) **+Y points up**,
+- the framebuffer **origin is top-left**,
+- texture coordinates run **+Y down** (v = 0 is the top row),
+- readback **row 0 is the top row** of the image.
+
+Metal and WebGPU/WGSL already behave this way natively. Vulkan — whose
+default NDC is y-down — conforms internally via a negative-viewport
+y-flip, so a vertically asymmetric draw (a textured quad, a gradient)
+lands identically on Metal, Vulkan, and WebGPU. Horizontally the backends
+have always agreed.
+
+If you are migrating code that flipped `uv.y` or negated a projection row
+to compensate for the old per-backend divergence, **delete that
+compensation** — it now double-flips. Author your geometry once against the
+convention above and every backend matches.
 
 ## Texture parameters
 

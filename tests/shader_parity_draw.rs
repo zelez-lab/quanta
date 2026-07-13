@@ -8,11 +8,18 @@
 //! the right pixels on a real GPU. Pixels are asserted with a per-channel
 //! tolerance of 2.
 //!
-//! Orientation contract: Metal's NDC is y-up, Vulkan's is y-down, so the same
-//! quad renders vertically flipped between backends. Every assertion here is
-//! therefore either (a) vertically symmetric, (b) varying along x only, or
-//! (c) uses the corner-probe branch that detects the flip from one pixel and
-//! then asserts the full layout. No test assumes a y direction.
+//! Orientation contract: the same DSL source produces the same pixels on
+//! every backend — NDC +Y up, framebuffer origin top-left, readback row 0 =
+//! the top row. Metal and WebGPU/WGSL reach this natively; Vulkan conforms
+//! via a negative-viewport y-flip. `draw_orientation_pinning` (D15) asserts
+//! that convention EXACTLY (red at row 0) and is the test that pins it.
+//!
+//! The other draws here predate the convention and were written to pass
+//! under EITHER vertical orientation, so they still hold unchanged: each is
+//! (a) vertically symmetric, (b) varying along x only, or (c) guarded by a
+//! corner-probe branch that reads the orientation from one pixel before
+//! asserting the layout. They are intentionally left orientation-agnostic —
+//! D15 alone carries the single-orientation assertion.
 
 use quanta::RenderGpu;
 
@@ -200,6 +207,22 @@ fn shared_off_frag(uv: Vec2, off: &Vec2) -> Vec4 {
 #[quanta::fragment]
 fn horizontal_ramp_frag(uv: Vec2) -> Vec4 {
     Vec4::new(uv.x, 1.0 - uv.x, 0.0, 1.0)
+}
+
+// Orientation-pinning fragment: a vertically ASYMMETRIC split driven by the
+// interpolated `uv.y` varying. On the fullscreen quad, uv.v tracks pos.y
+// (v=0 at pos.y=-1, v=1 at pos.y=+1), so the half with uv.y > 0.5 is the
+// +Y-up half of clip space. Under the ratified convention (NDC +Y up,
+// framebuffer origin top-left) that half is the TOP of the framebuffer —
+// so this shader paints the top red and the bottom green on EVERY backend.
+// This is the whole convention in one draw; see `draw_orientation_pinning`.
+#[quanta::fragment]
+fn vertical_split_frag(uv: Vec2) -> Vec4 {
+    if uv.y > 0.5 {
+        Vec4::new(1.0, 0.0, 0.0, 1.0)
+    } else {
+        Vec4::new(0.0, 1.0, 0.0, 1.0)
+    }
 }
 
 // mirrors fixture `dija_rect_frag`: the real rounded-rect signed-distance body
@@ -1101,6 +1124,74 @@ fn draw_expr_if_outer_assign() {
         assert!(
             rr > 243,
             "right half acc must be 1.0 (R~255) — the branch write must be honored, got {rr} at y={y}"
+        );
+    }
+}
+
+// ─── D15: orientation pinning — the convention, as ONE exact draw ─────────────
+//
+// Unlike every draw above (each written to pass under either vertical
+// orientation), this one asserts a SINGLE orientation with no corner-probe
+// branch: row 0 (the top of the framebuffer) MUST read red, the bottom row
+// MUST read green. `vertical_split_frag` paints the uv.y > 0.5 half red;
+// that half is the +Y-up side of clip space, which the ratified convention
+// (NDC +Y up, framebuffer origin top-left, readback row 0 = top) places at
+// the top of the image. Metal reaches this natively; Vulkan reaches it via
+// the negative-viewport y-flip. Passing on BOTH Metal (here) and lavapipe
+// (CI) is what makes this test the convention rather than a description of
+// it — if a backend regressed to the other orientation, row 0 would read
+// green and this would fail.
+#[test]
+fn draw_orientation_pinning() {
+    let Some(gpu) = try_gpu() else { return };
+    if !shaders_ready(&gpu, &[&QUAD_VERTEX_SHADER, &VERTICAL_SPLIT_FRAG_SHADER]) {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+    let pipe = pipeline(&gpu, &QUAD_VERTEX_SHADER, &VERTICAL_SPLIT_FRAG_SHADER);
+    let vb = fullscreen_vb(&gpu);
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipe)
+        .vertices(0, &vb)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+    let px = target.read().unwrap();
+
+    // EXACT single orientation: the TOP half (rows 0..h/2) is red, the BOTTOM
+    // half (rows h/2..h) is green — on every backend. Probe both x extremes so
+    // the assertion also proves the split is horizontal-invariant (uv.y only).
+    for &x in &[0u32, w - 1] {
+        expect_rgb(&px, w, x, 0, (255, 0, 0), "row 0 (top) must be red");
+        expect_rgb(&px, w, x, 1, (255, 0, 0), "row 1 (top half) must be red");
+        expect_rgb(
+            &px,
+            w,
+            x,
+            h - 2,
+            (0, 255, 0),
+            "second-to-last row must be green",
+        );
+        expect_rgb(
+            &px,
+            w,
+            x,
+            h - 1,
+            (0, 255, 0),
+            "last row (bottom) must be green",
         );
     }
 }

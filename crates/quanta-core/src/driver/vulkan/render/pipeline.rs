@@ -608,7 +608,17 @@ impl VulkanDevice {
             rasterizer_discard_enable: 0,
             polygon_mode: ffi::VK_POLYGON_MODE_FILL,
             cull_mode,
-            front_face: ffi::VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            // Winding compensation for the negative-viewport y-flip
+            // (see the SetViewport arm in render_pass.rs). Mirroring the
+            // y axis reverses the on-screen winding of every triangle, so
+            // a face that was counter-clockwise in clip space rasterizes
+            // clockwise. Declaring CLOCKWISE as front-facing cancels that
+            // reversal, so the SAME vertex data culls the SAME faces on
+            // Vulkan as on Metal (whose y-up NDC needs no flip). The
+            // default cull_mode is None, so nothing is culled today; the
+            // flip is set regardless so a caller that later enables
+            // front/back culling gets identical results across backends.
+            front_face: ffi::VK_FRONT_FACE_CLOCKWISE,
             depth_bias_enable: 0,
             depth_bias_constant_factor: 0.0,
             depth_bias_clamp: 0.0,

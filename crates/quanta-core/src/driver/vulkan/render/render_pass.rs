@@ -820,22 +820,35 @@ impl VulkanDevice {
                         min_depth,
                         max_depth,
                     } => {
+                        // Negative-viewport y-flip (Vulkan 1.1
+                        // maintenance1, core — no extension probe; lavapipe
+                        // and v3dv are both >= 1.1). Vulkan's default NDC is
+                        // y-down; Metal's and WGSL's are y-up. Emitting the
+                        // viewport with its origin moved to the bottom edge
+                        // (y + height) and a NEGATIVE height mirrors the y
+                        // axis, so a +Y-up clip position lands on the same
+                        // framebuffer row Metal and WebGPU put it on. This is
+                        // what makes the same DSL source produce the same
+                        // pixels on every backend (readback row 0 = the top
+                        // row). Depth range (min/max_depth) is unchanged.
                         let viewport = ffi::VkViewport {
                             x: *x,
-                            y: *y,
+                            y: *y + *height,
                             width: *width,
-                            height: *height,
+                            height: -*height,
                             min_depth: *min_depth,
                             max_depth: *max_depth,
                         };
                         ffi::vkCmdSetViewport(cmd, 0, 1, &viewport);
                         // Set default scissor to match viewport (required for
-                        // dynamic state). Route it through the same clamp so a
-                        // viewport placed with a negative origin can't emit a
-                        // negative scissor offset. `f32 as i32 as u32`
-                        // preserves a negative origin as the wrapped-in u32 the
-                        // clamp decodes (a bare `f32 as u32` would saturate the
-                        // sign away).
+                        // dynamic state). Scissor is FRAMEBUFFER-space and is
+                        // NOT mirrored by the negative viewport, so it keeps
+                        // the original (un-flipped) x/y/width/height. Route it
+                        // through the same clamp so a viewport placed with a
+                        // negative origin can't emit a negative scissor
+                        // offset. `f32 as i32 as u32` preserves a negative
+                        // origin as the wrapped-in u32 the clamp decodes (a
+                        // bare `f32 as u32` would saturate the sign away).
                         let scissor = clamp_scissor(
                             *x as i32 as u32,
                             *y as i32 as u32,

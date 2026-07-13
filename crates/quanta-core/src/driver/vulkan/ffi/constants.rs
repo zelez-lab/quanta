@@ -282,6 +282,7 @@ pub const VK_CULL_MODE_NONE: u32 = 0;
 pub const VK_CULL_MODE_FRONT_BIT: u32 = 1;
 pub const VK_CULL_MODE_BACK_BIT: u32 = 2;
 pub const VK_FRONT_FACE_COUNTER_CLOCKWISE: u32 = 0;
+pub const VK_FRONT_FACE_CLOCKWISE: u32 = 1;
 
 // ─── Sample count ───────────────────────────────────────────────────────────
 
