@@ -23,26 +23,16 @@ inputs:
       equals the derived <rev> (the compiler-dev contract, where the rev IS
       the name); "false" for release's weaker non-empty gate.
     required: true
-  ref:
-    description: 'Git ref (branch, tag, or SHA) to check out. Empty = default.'
-    required: false
-    default: ''
-  fetch-depth:
-    description: >-
-      Checkout depth. 0 fetches full history so `git describe` abbreviates the
-      commit hash to the same length a consumer's full checkout does (the rev
-      must match QUANTA_BUILD_REV), and makes a bare-SHA ref resolvable.
-    required: false
-    default: '0'
 
+# PRECONDITION: the caller MUST run actions/checkout BEFORE this action — a
+# local `uses: ./.github/actions/...` needs the repo already on disk to even
+# find this action.yml. When embed-rev is true, that checkout must use
+# fetch-depth: 0 so `git describe` abbreviates the commit hash to the same
+# length a consumer's full checkout does (the derived <rev> must match
+# QUANTA_BUILD_REV) and so a bare-SHA ref resolves.
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v7
-      with:
-        ref: ${{ inputs.ref }}
-        fetch-depth: ${{ inputs.fetch-depth }}
-
     - name: Install Rust stable
       shell: bash
       run: |

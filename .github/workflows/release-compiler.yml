@@ -33,21 +33,18 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      # Checkout ownership for this mixed (tar.gz + zip) matrix:
-      # the tar.gz targets (macOS + Linux) run through the
-      # bundle-compiler composite, which owns its OWN checkout — so a
-      # job-top checkout for them would be a redundant second clone.
-      # The Windows/zip target has no composite, so it needs a checkout
-      # here. Gating this one to `zip` gives exactly ONE checkout per
-      # target and a clean split: composite owns tar.gz, this owns zip.
+      # A checkout is required on EVERY target: the tar.gz targets need the
+      # repo on disk for GitHub to even resolve the local `uses:
+      # ./.github/actions/bundle-compiler` step, and the Windows/zip target
+      # needs it for its inline build. Release names assets
+      # quanta-compiler-<target> with no rev derivation, so a shallow clone
+      # is fine here (the per-rev workflow uses fetch-depth: 0 instead).
       - uses: actions/checkout@v7
-        if: matrix.archive == 'zip'
 
       # macOS + Linux: Rust install, LLVM install, build, libLLVM-closure
       # staging, tar.gz packaging, and artifact upload all live in the
       # shared composite. Release uses the plain quanta-compiler-<target>
-      # naming (embed-rev false) and needs no rev derivation, so a shallow
-      # checkout is fine.
+      # naming (embed-rev false) and the weaker non-empty --rev gate.
       - name: Bundle quanta-compiler (macOS + Linux)
         if: matrix.archive == 'tar.gz'
         uses: ./.github/actions/bundle-compiler
@@ -55,7 +52,6 @@ jobs:
           target: ${{ matrix.target }}
           embed-rev: 'false'
           assert-exact-rev: 'false'
-          fetch-depth: '1'
 
       # ── Windows (zip) stays INLINE below ────────────────────────────
       # The Windows path builds through the MSYS2 GNU toolchain under
@@ -260,11 +256,17 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      # Checkout so GitHub can resolve the local `uses:
+      # ./.github/actions/verify-compiler` step on the tar.gz targets (a
+      # local action must be on disk before it runs). No rev is derived on
+      # the release path, so shallow is fine. The Windows/zip verify below
+      # only needs the downloaded artifact, but a checkout here is harmless.
+      - uses: actions/checkout@v7
+
       # macOS + Linux: download, sha256-verify, extract, and run --rev on a
       # clean runner all live in the shared composite. Release uses the
       # plain quanta-compiler-<target> name (embed-rev false) and the
-      # weaker non-empty --rev gate (assert-exact-rev false); no checkout
-      # or rev derivation is needed, matching the prior inline verify.
+      # weaker non-empty --rev gate (assert-exact-rev false).
       - name: Verify quanta-compiler archive (macOS + Linux)
         if: matrix.archive == 'tar.gz'
         uses: ./.github/actions/verify-compiler

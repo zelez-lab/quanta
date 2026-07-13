@@ -22,30 +22,16 @@ inputs:
       "true" to assert the extracted binary's --rev equals the derived <rev>
       (the rev IS the contract); "false" for release's non-empty gate.
     required: true
-  ref:
-    description: 'Git ref to check out for the rev re-derivation. Empty = default.'
-    required: false
-    default: ''
-  fetch-depth:
-    description: >-
-      Checkout depth for the rev re-derivation. 0 matches the build side so the
-      abbreviated hash lengths agree (only used when embed-rev is true).
-    required: false
-    default: '0'
 
+# PRECONDITION: when embed-rev is true, the caller MUST run actions/checkout
+# with fetch-depth: 0 BEFORE this action — the rev re-derivation below needs
+# the repo on disk, and a local `uses:` can't find this action.yml without a
+# prior checkout anyway. The release path (embed-rev false) needs no repo:
+# it downloads and tests an artifact named quanta-compiler-<target>, so its
+# caller can stay checkout-less (matching release-compiler.yml's verify).
 runs:
   using: composite
   steps:
-    # Only the per-rev path needs a checkout: it re-derives <rev> so the
-    # download name and the expected --rev assertion share one source. The
-    # release path names the artifact quanta-compiler-<target> with no rev,
-    # so it stays checkout-less (matching release-compiler.yml's verify).
-    - uses: actions/checkout@v7
-      if: inputs.embed-rev == 'true'
-      with:
-        ref: ${{ inputs.ref }}
-        fetch-depth: ${{ inputs.fetch-depth }}
-
     # Re-derive <rev> the same way the build side did. Trimmed vs the build
     # rev step (no tracked-guard) — matches compiler-dev.yml's verify job:
     # fetch-depth: 0 above gives the same abbreviation stability, and the

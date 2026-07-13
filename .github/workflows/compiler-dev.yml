@@ -69,20 +69,25 @@ jobs:
       # binary's --rev equals that <rev> before upload — the download-URL
       # contract with crates/quanta-dsl-core/src/binary.rs.
       #
-      # fetch-depth 0 (the composite's default) is load-bearing here: it fetches
-      # full history so `git describe` abbreviates the commit hash to the same
+      # fetch-depth: 0 is load-bearing here: it fetches full history so `git
+      # describe` (in the composite) abbreviates the commit hash to the same
       # length a consumer's full checkout does (a shallow clone could abbreviate
       # differently and the derived <rev> would not match QUANTA_BUILD_REV). It
       # also makes a bare-SHA `ref` resolvable — so dispatching this workflow
-      # against a full commit SHA works, not just branches and tags.
+      # against a full commit SHA works, not just branches and tags. The
+      # checkout must happen HERE, not inside the composite: a local `uses:`
+      # can't be found until the repo is on disk.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
       - name: Bundle quanta-compiler for this rev
         uses: ./.github/actions/bundle-compiler
         with:
           target: ${{ matrix.target }}
           embed-rev: 'true'
           assert-exact-rev: 'true'
-          ref: ${{ github.event.inputs.ref }}
-          fetch-depth: '0'
 
   # Prove every archive is self-contained AND that its embedded rev is
   # EXACTLY the <rev> in its name BEFORE it can be published: download each
@@ -106,13 +111,18 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      # Re-derive <rev>, download the quanta-compiler-<rev>-<target> artifact,
-      # sha256-verify it, extract on a CLEAN runner, and assert the extracted
-      # binary's --rev equals that <rev> — all in the shared verify-compiler
-      # composite. embed-rev + assert-exact-rev are both true because the rev
-      # IS the contract here (stronger than release's non-empty gate). The
-      # composite checks out with fetch-depth 0 for the same abbreviation-
-      # stability reason as the build job, so the re-derived <rev> matches.
+      # Check out at fetch-depth 0 with the same ref as the build job: the
+      # composite re-derives <rev> off this history (abbreviation stability),
+      # and a local `uses:` needs the repo on disk. Then the composite
+      # downloads the quanta-compiler-<rev>-<target> artifact, sha256-verifies
+      # it, extracts on a CLEAN runner, and asserts the extracted binary's
+      # --rev equals that <rev> (the rev IS the contract here — stronger than
+      # release's non-empty gate).
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
       - name: Verify quanta-compiler archive for this rev
         uses: ./.github/actions/verify-compiler
         with:
