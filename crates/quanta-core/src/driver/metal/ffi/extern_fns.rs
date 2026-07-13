@@ -7,8 +7,8 @@ use alloc::boxed::Box;
 
 use super::constants::{BOOL, Class, Id, NIL, NO, NSUInteger, Sel, YES};
 use super::structs::{
-    COMPLETION_BLOCK_DESCRIPTOR, CompletionBlock, MTLClearColor, MTLRegion, MTLScissorRect,
-    MTLSize, MTLViewport, NSRange, completion_block_invoke,
+    COMPLETION_BLOCK_DESCRIPTOR, CompletionBlock, MTLClearColor, MTLOrigin, MTLRegion,
+    MTLScissorRect, MTLSize, MTLViewport, NSRange, completion_block_invoke,
 };
 
 // ─── Extern bindings ─────────────────────────────────────────────────────────
@@ -583,6 +583,39 @@ pub unsafe fn msg_get_bytes(
         bytes_per_row,
         region,
         level,
+    )
+}
+
+/// copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:
+/// toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:
+/// on a blit command encoder. Copies one 2D texture region (slice 0,
+/// level 0) into a linear buffer — the readback path for GPU-resident
+/// (private) render targets, which `getBytes` cannot touch.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn msg_copy_texture_to_buffer(
+    blit: Id,
+    texture: Id,
+    origin: MTLOrigin,
+    size: MTLSize,
+    buffer: Id,
+    dst_offset: u64,
+    dst_bytes_per_row: u64,
+    dst_bytes_per_image: u64,
+) {
+    let f: unsafe extern "C" fn(Id, Sel, Id, u64, u64, MTLOrigin, MTLSize, Id, u64, u64, u64) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        blit,
+        sel(b"copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:\0"),
+        texture,
+        0, // sourceSlice
+        0, // sourceLevel
+        origin,
+        size,
+        buffer,
+        dst_offset,
+        dst_bytes_per_row,
+        dst_bytes_per_image,
     )
 }
 

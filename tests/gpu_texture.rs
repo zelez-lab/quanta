@@ -148,15 +148,16 @@ fn texture_mipmap_generation() {
         return;
     };
 
+    // Seed the base level from the CPU, then build the chain. The texture
+    // does NOT carry RENDER_TARGET usage: render targets are private
+    // (GPU-resident) storage on Metal and reject CPU writes, and this test
+    // only needs a CPU-seeded, sampleable, mipmapped texture — SHADER_READ |
+    // SHADER_WRITE keeps it shared so `write` lands.
     let tex = gpu
         .create_texture(
             &TextureDesc::new(64, 64, Format::RGBA8)
                 .with_mip_levels(0) // auto-calculate
-                .with_usage(
-                    TextureUsage::SHADER_READ
-                        .union(TextureUsage::SHADER_WRITE)
-                        .union(TextureUsage::RENDER_TARGET),
-                ),
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
         )
         .unwrap();
 
@@ -197,4 +198,80 @@ fn texture_multiple_formats_create() {
             fmt
         );
     }
+}
+
+/// Render targets are private (GPU-resident) storage on Metal, so a CPU
+/// write to one must be rejected — not silently dropped. The error is
+/// `NotSupported` on Metal (other backends may accept the write, so this
+/// assertion only fires there). Covers both a render-target-only texture
+/// and the sampled render-target class (RENDER_TARGET | SHADER_READ), since
+/// both are private.
+#[test]
+fn cpu_write_to_render_target_is_rejected_on_metal() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    // The private-storage render-target contract is Metal-specific. This
+    // suite is built with the `metal` feature, so `init()` selects Metal on
+    // real hardware; skip only the CPU software fallback (QUANTA_CPU=1),
+    // which accepts the write.
+    if gpu.caps().vendor == quanta::Vendor::Software {
+        eprintln!("skipping: render-target private-storage contract is Metal-only");
+        return;
+    }
+
+    for usage in [
+        TextureUsage::RENDER_TARGET,
+        TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ),
+    ] {
+        let tex = gpu
+            .create_texture(&TextureDesc::new(16, 16, Format::RGBA8).with_usage(usage))
+            .unwrap();
+        let pixels = vec![0u8; 16 * 16 * 4];
+        let err = tex
+            .write(&pixels)
+            .expect_err("CPU write to a render target must be rejected on Metal");
+        assert!(
+            matches!(err.kind, quanta::QuantaErrorKind::NotSupported(_)),
+            "expected NotSupported for a CPU write to a render target, got {:?}",
+            err.kind
+        );
+        // write_region must reject it identically (same contract, same path).
+        let patch = vec![0u8; 4 * 4 * 4];
+        let err = tex
+            .write_region((0, 0), (4, 4), &patch)
+            .expect_err("CPU write_region to a render target must be rejected on Metal");
+        assert!(
+            matches!(err.kind, quanta::QuantaErrorKind::NotSupported(_)),
+            "expected NotSupported for write_region to a render target, got {:?}",
+            err.kind
+        );
+    }
+}
+
+/// A sampled render target (RENDER_TARGET | SHADER_READ) is private storage
+/// on Metal; reading it back must go through the staging-blit path and
+/// return a correctly sized buffer (not a `getBytes` failure on private
+/// storage). The render suites assert the pixel *values* after a draw; this
+/// unit pins that the readback mechanism itself covers the sampled-RT class.
+#[test]
+fn render_target_readback_returns_full_buffer() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    let (w, h) = (24u32, 24u32);
+    let tex = gpu
+        .create_texture(
+            &TextureDesc::new(w, h, Format::RGBA8)
+                .with_usage(TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ)),
+        )
+        .unwrap();
+    let pixels = tex.read().unwrap();
+    assert_eq!(
+        pixels.len(),
+        (w * h * 4) as usize,
+        "sampled render-target readback must return the full pixel buffer"
+    );
 }

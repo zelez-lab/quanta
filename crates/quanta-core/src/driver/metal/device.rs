@@ -164,6 +164,11 @@ pub struct MetalDevice {
     /// R32Float storage-image format contract. Only read on the compute path.
     #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(crate) texture_formats: RwLock<HashMap<u64, crate::api::types::Format>>,
+    /// Usage flags per texture handle. Render targets are GPU-resident
+    /// (`StorageModePrivate`) on Metal, so the CPU read/write paths must
+    /// branch on usage: a `RENDER_TARGET` texture is read back through a
+    /// staging blit (never `getBytes`) and rejects direct CPU writes.
+    pub(crate) texture_usages: RwLock<HashMap<u64, crate::api::texture::TextureUsage>>,
     // Only populated/read by the compute-gated dispatch path.
     #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(crate) compute_pipelines: RwLock<HashMap<u64, ffi::Id>>,
@@ -347,6 +352,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         buffers: RwLock::new(HashMap::new()),
         textures: RwLock::new(HashMap::new()),
         texture_formats: RwLock::new(HashMap::new()),
+        texture_usages: RwLock::new(HashMap::new()),
         compute_pipelines: RwLock::new(HashMap::new()),
         render_pipelines: RwLock::new(HashMap::new()),
         depth_stencil_states: RwLock::new(HashMap::new()),

@@ -421,6 +421,9 @@ impl GpuDevice for MetalDevice {
         if let Ok(mut fmts) = self.texture_formats.write() {
             fmts.remove(&handle);
         }
+        if let Ok(mut usages) = self.texture_usages.write() {
+            usages.remove(&handle);
+        }
         if let Some(t) = tex {
             // newTextureWithDescriptor: returns +1 retained.
             unsafe { ffi::msg_void(t, b"release\0") };
