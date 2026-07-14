@@ -4,7 +4,7 @@
 > common distributions on the GPU. Builds on [FFT](fft.md).
 
 Randomness shows up everywhere in numerical work — initializing weights, dropout,
-Monte-Carlo integration, sampling. `quanta-rand` gives you **counter-based**
+Monte-Carlo integration, sampling. `quanta::sci::random` gives you **counter-based**
 generators whose `u32`/`f32` output is *bit-exact across every backend* for a
 given seed, so a run is reproducible whether it lands on Metal, Vulkan (real
 hardware or lavapipe, including the Raspberry Pi's V3D), or the CPU. The
@@ -12,7 +12,7 @@ hardware or lavapipe, including the Raspberry Pi's V3D), or the CPU. The
 the note below.
 
 ```toml
-quanta-rand = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan / gpu
+quanta = { version = "0.1", features = ["sci", "metal"] } # or vulkan / software
 ```
 
 ## Filling a buffer
@@ -22,7 +22,7 @@ as a `Vec`. Uniform values in `[0, 1)`:
 
 ```rust,ignore
 let n = 1024;
-let vals = quanta_rand::fill_uniform_f32_gpu(&gpu, n, /* seed */ 42)?; // Vec<f32>
+let vals = quanta::sci::random::fill_uniform_f32_gpu(&gpu, n, /* seed */ 42)?; // Vec<f32>
 ```
 
 Same seed → same bytes, every time, on every backend. That determinism is the
@@ -33,11 +33,11 @@ whole point: a bug reproduces, a paper's result reproduces.
 Beyond uniform, there are six distributions ready to fill:
 
 ```rust,ignore
-quanta_rand::fill_normal_f32_gpu(&gpu, n, seed)?;              // N(0, 1)
-quanta_rand::fill_exponential_f32_gpu(&gpu, n, seed, 1.0)?;    // Exp(λ=1)
-quanta_rand::fill_lognormal_f32_gpu(&gpu, n, seed, 0.0, 1.0)?; // exp(N(μ,σ))
-quanta_rand::fill_bernoulli_u32_gpu(&gpu, n, seed, 0.3)?;      // 1 w.p. 0.3
-quanta_rand::fill_poisson_u32_gpu(&gpu, n, seed, 4.0)?;        // Poisson(λ=4)
+quanta::sci::random::fill_normal_f32_gpu(&gpu, n, seed)?;              // N(0, 1)
+quanta::sci::random::fill_exponential_f32_gpu(&gpu, n, seed, 1.0)?;    // Exp(λ=1)
+quanta::sci::random::fill_lognormal_f32_gpu(&gpu, n, seed, 0.0, 1.0)?; // exp(N(μ,σ))
+quanta::sci::random::fill_bernoulli_u32_gpu(&gpu, n, seed, 0.3)?;      // 1 w.p. 0.3
+quanta::sci::random::fill_poisson_u32_gpu(&gpu, n, seed, 4.0)?;        // Poisson(λ=4)
 ```
 
 Normal weights for a layer, a Bernoulli dropout mask, Poisson event counts — the
@@ -61,7 +61,7 @@ When you need random numbers on the CPU (a quick reference value, a seed) there'
 a streaming generator too:
 
 ```rust,ignore
-let mut rng = quanta_rand::Rng::from_seed(7);
+let mut rng = quanta::sci::random::Rng::from_seed(7);
 let u = rng.next_f32();          // uniform
 let z = rng.next_normal_f32();   // standard normal
 rng.jump();                      // skip 2⁶⁴ ahead — independent stream

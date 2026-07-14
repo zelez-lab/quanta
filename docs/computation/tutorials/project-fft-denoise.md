@@ -23,8 +23,7 @@ cd fft-denoise
 
 ```toml
 [dependencies]
-quanta     = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-fft = { git = "https://github.com/zelez-lab/quanta", features = ["gpu-metal"] }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "metal"] }
 ```
 
 ## 3. A noisy signal
@@ -34,7 +33,7 @@ noise). Quanta's FFT takes **split complex** input — a real part and an
 imaginary part as separate slices, both length a power of two. `src/main.rs`:
 
 ```rust,ignore
-use quanta_fft::{fft, ifft};
+use quanta::sci::fft::{fft, ifft};
 
 fn main() {
     let gpu = quanta::init().expect("a GPU");
@@ -105,7 +104,7 @@ high-pass (keep the *high* bins), band-pass (a windowed mask), and compression
 (keep the top-k bins by magnitude).
 
 - Coming from NumPy? This is `np.fft.fft` → mask on `np.abs(spectrum)` →
-  `np.fft.ifft`. `quanta_fft::fft` is the split-complex equivalent of
+  `np.fft.ifft`. `quanta::sci::fft::fft` is the split-complex equivalent of
   `np.fft.fft` on a real input.
 - Sharpen it: taper the mask instead of a hard cutoff (a Butterworth response),
   or keep a fixed number of the largest bins for a compression ratio.

@@ -12,7 +12,7 @@ ask for it), so they're cheap to chain after other array work.
 The simplest reductions collapse the entire array to one scalar:
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 let gpu = quanta::init_cpu();
 
 let a = Array::from_slice(&gpu, &[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3])?;

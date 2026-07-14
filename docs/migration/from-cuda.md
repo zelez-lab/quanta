@@ -117,10 +117,10 @@ fn main() -> Result<(), quanta::QuantaError> {
 
 ## CUB block primitives
 
-The `quanta-prims` companion crate covers the `cub::Block*` surface —
+The `quanta::prims` module covers the `cub::Block*` surface —
 see [Block Primitives](../computation/tutorials/block-primitives.md):
 
-| CUB | quanta-prims |
+| CUB | quanta::prims |
 |-----|--------------|
 | `cub::BlockReduce<T, 256>::Sum(v)` | `block_reduce_add_u32_kernel(v)` (and `min`/`max` × `u32`/`i32`/`f32`) |
 | `cub::BlockScan<T, 256>::InclusiveSum(v)` | `block_scan_add_u32_kernel(v)` |

@@ -25,9 +25,7 @@ cd autoencoder
 
 ```toml
 [dependencies]
-quanta          = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-array    = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-autograd = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "autograd", "metal"] }
 ```
 
 ## 3. Some images
@@ -36,8 +34,8 @@ For a self-contained demo, generate a few small structured images — real code
 would load a dataset. Each is `1×8×8`. `src/main.rs`:
 
 ```rust,ignore
-use quanta_array::Array;
-use quanta_autograd::{optim::Adam, Tape};
+use quanta::sci::Array;
+use quanta::autograd::{optim::Adam, Tape};
 
 fn main() {
     let gpu = quanta::init().expect("a GPU");

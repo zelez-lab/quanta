@@ -127,8 +127,8 @@ any algorithm that needs workgroup-wide cooperation.
 
 ## Don't hand-roll it in production
 
-This recipe teaches the pattern. For real workloads, the `quanta-prims`
-companion crate ships tuned, differentially-tested block reduce / scan /
+This recipe teaches the pattern. For real workloads, the `quanta::prims`
+module ships tuned, differentially-tested block reduce / scan /
 sort primitives plus device-wide one-liners like
 `device_reduce_add_u32(&gpu, &data)` — see
 [Block Primitives](../../computation/tutorials/block-primitives.md).

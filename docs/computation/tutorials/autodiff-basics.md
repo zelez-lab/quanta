@@ -4,14 +4,13 @@
 > foundation of training. Builds on everything in the array track so far.
 
 To train a model you need gradients: how the loss changes as you nudge each
-parameter. `quanta-autograd` computes them automatically. You run a forward
+parameter. `quanta::autograd` computes them automatically. You run a forward
 computation on a *tape*, ask for the gradient of a scalar, and it walks the
 computation backward for you. Every gradient rule is **proven equal to the
 analytic derivative** in Lean.
 
 ```toml
-quanta-autograd = { version = "0.1", features = ["metal"] } # or vulkan / software
-quanta-array    = { version = "0.1", features = ["metal"] }
+quanta = { version = "0.1", features = ["sci", "autograd", "metal"] } # or vulkan / software
 ```
 
 ## A first gradient
@@ -20,8 +19,8 @@ Wrap the values you want gradients for as `Var`s on a `Tape`, compute a scalar,
 then call `grad`:
 
 ```rust,ignore
-use quanta_autograd::Tape;
-use quanta_array::Array;
+use quanta::autograd::Tape;
+use quanta::sci::Array;
 
 let gpu = quanta::init_cpu();
 let tape = Tape::<f32>::new();

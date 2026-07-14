@@ -21,8 +21,8 @@ and a row-wise softmax.
 ## The block
 
 ```rust,ignore
-use quanta_array::Array;
-use quanta_autograd::{Tape, Var};
+use quanta::sci::Array;
+use quanta::autograd::{Tape, Var};
 
 /// Single-head self-attention: X [S, D] → [S, d].
 fn attention(

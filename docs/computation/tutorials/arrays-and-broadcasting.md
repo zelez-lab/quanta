@@ -4,14 +4,13 @@
 > with broadcasting, and read the result back — all without writing a kernel.
 > This is the foundation every later lesson builds on.
 
-If you've used NumPy, you already know the shape of this. `quanta-array`'s
+If you've used NumPy, you already know the shape of this. `quanta::sci`'s
 `Array<T>` is an N-dimensional array that lives in GPU memory. You build it,
 compute with it, and the work runs on whatever backend you compiled for.
 
 ```toml
 [dependencies]
-quanta       = { version = "0.1", features = ["metal"] } # or vulkan / software
-quanta-array = { version = "0.1", features = ["metal"] }
+quanta = { version = "0.1", features = ["sci", "metal"] } # or vulkan / software
 ```
 
 ## Open a device
@@ -21,7 +20,7 @@ for the software backend — handy on a machine without a GPU, and identical in
 behaviour.
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 
 let gpu = quanta::init_cpu(); // or quanta::init() for real hardware
 ```

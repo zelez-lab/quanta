@@ -1,6 +1,6 @@
-# Block primitives (quanta-prims)
+# Block primitives (quanta::prims)
 
-`quanta-prims` is the companion crate of block-cooperative primitives:
+`quanta::prims` is the block-cooperative primitives module:
 reduce, scan, sort, compact, histogram, and top-k that run *across the
 threads of a workgroup*, the way `cub::BlockReduce` or
 `rocprim::block_scan` do — except the same Rust source targets Metal,
@@ -8,14 +8,14 @@ Vulkan, WebGPU, and the software CPU backend.
 
 ```toml
 [dependencies]
-quanta-prims = { version = "0.1", features = ["gpu-metal"] }  # or gpu-vulkan
+quanta = { version = "0.1", features = ["prims", "metal"] }  # or vulkan
 ```
 
 The crate ships three layers per primitive:
 
 1. a `#[quanta::device]` function you call from inside your own kernel,
 2. a top-level `*_buffer` convenience kernel for the standalone case,
-3. a CPU reference implementation in `quanta_prims::reference` — the
+3. a CPU reference implementation in `quanta::prims::reference` — the
    correctness oracle its differential tests (and yours) compare against.
 
 ## Calling a primitive inside your kernel
@@ -26,7 +26,7 @@ for its cross-warp stage:
 
 ```rust,ignore
 use quanta::*;
-use quanta_prims::block_reduce_add_u32_kernel;
+use quanta::prims::block_reduce_add_u32_kernel;
 
 #[quanta::kernel(workgroup_size = [256, 1, 1])]
 fn my_reduce(data: &[u32], out: &mut [u32]) {
@@ -53,7 +53,7 @@ When you just need the operation standalone, every primitive has a
 ready-made kernel. Dispatch with `quark_count = 256 * num_blocks`:
 
 ```rust,ignore
-use quanta_prims::block_reduce_add_u32_buffer;
+use quanta::prims::block_reduce_add_u32_buffer;
 
 let mut wave = block_reduce_add_u32_buffer(&gpu)?;
 wave.bind(0, &input);   // [u32; 256 * num_blocks]
@@ -77,7 +77,7 @@ For "I have a slice and want the whole-buffer answer", the Tier-3
 wrappers handle upload, padding, multi-pass orchestration, and readback:
 
 ```rust,ignore
-use quanta_prims::{device_reduce_add_u32, device_sort_u32};
+use quanta::prims::{device_reduce_add_u32, device_sort_u32};
 
 let total: u32 = device_reduce_add_u32(&gpu, &data)?;   // any length ≥ 1
 let sorted: Vec<u32> = device_sort_u32(&gpu, &data)?;   // any length

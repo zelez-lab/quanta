@@ -1,19 +1,19 @@
 # Array math (NumPy on the GPU)
 
-`quanta-array` covers the everyday NumPy surface — build an array, do
+`quanta::sci` covers the everyday NumPy surface — build an array, do
 elementwise math with broadcasting, reduce it — on whatever backend you
 compiled for, no kernels involved. This page is a task-by-task recipe; the
 [Arrays guide chapter](../../computation/tutorials/arrays.md) is the narrative version.
 
 ```toml
 [dependencies]
-quanta-array = { version = "0.1", features = ["metal"] } # vulkan / software
+quanta = { version = "0.1", features = ["sci", "metal"] } # vulkan / software
 ```
 
 ## Setup
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 
 let gpu = quanta::init();        // real GPU; init_cpu() for the CPU backend
 ```

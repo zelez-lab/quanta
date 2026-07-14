@@ -24,9 +24,7 @@ cd mc-option
 
 ```toml
 [dependencies]
-quanta       = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-array = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-rand  = { git = "https://github.com/zelez-lab/quanta", features = ["gpu-metal"] }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "metal"] }
 ```
 
 ## 3. Draw the randomness
@@ -35,7 +33,7 @@ Parameters for an at-the-money one-year option, and a million standard-normal
 draws straight onto the GPU. `src/main.rs`:
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 
 fn splat(g: &quanta::Gpu, c: f32, n: usize) -> Array<f32> {
     Array::full(g, c, &[1]).unwrap().broadcast_to(&[n]).unwrap()
@@ -47,7 +45,7 @@ fn main() {
     let n = 1_000_000usize;
 
     // Z ~ N(0, 1)
-    let z = quanta_rand::fill_normal_f32_gpu(&gpu, n, 0xBEEF).unwrap();
+    let z = quanta::sci::random::fill_normal_f32_gpu(&gpu, n, 0xBEEF).unwrap();
     let zarr = Array::from_slice(&gpu, &z, &[n]).unwrap();
 ```
 

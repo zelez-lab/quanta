@@ -1,23 +1,23 @@
 # Training with autodiff
 
-`quanta-autograd` adds reverse-mode gradients to the GPU array ops — record a
+`quanta::autograd` adds reverse-mode gradients to the GPU array ops — record a
 forward computation on a `Tape`, then ask for the gradient of a scalar w.r.t.
 any input. Every gradient rule is the proven analytic derivative (see the
 [verification page](../../verification/index.md)). This is a task-by-task recipe;
 the runnable end-to-end example is
 [`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/ml/quanta-autograd/examples/mlp_training.rs).
+(The example lives inside the crate, so it imports `quanta_autograd::` directly; in your own app use `quanta::autograd`.)
 
 ```toml
 [dependencies]
-quanta-autograd = { version = "0.1", features = ["metal"] } # vulkan / software
-quanta-array    = { version = "0.1", features = ["metal"] }
+quanta = { version = "0.1", features = ["sci", "autograd", "metal"] } # vulkan / software
 ```
 
 ## A first gradient
 
 ```rust,ignore
-use quanta_autograd::Tape;
-use quanta_array::Array;
+use quanta::autograd::Tape;
+use quanta::sci::Array;
 
 let gpu = quanta::init_cpu();          // or quanta::init() for a real GPU
 let tape = Tape::<f32>::new();

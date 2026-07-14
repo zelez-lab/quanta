@@ -12,7 +12,7 @@ coordinates to buffer offsets. Changing the layout is free: it produces a new
 Reinterpret the same elements under a new shape (the element count must match):
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 let gpu = quanta::init_cpu();
 
 let flat = Array::<f32>::arange(&gpu, 0.0, 1.0, 6)?; // [0,1,2,3,4,5]

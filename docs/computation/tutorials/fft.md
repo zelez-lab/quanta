@@ -4,13 +4,13 @@
 > spectrum. Builds on [Linear algebra](linear-algebra.md).
 
 The Fast Fourier Transform turns a signal into its frequency components.
-`quanta-fft` transforms any length — power-of-2 sizes run the radix-2
+`quanta::sci::fft` transforms any length — power-of-2 sizes run the radix-2
 Cooley-Tukey kernels, which are **proven equal to the direct DFT** in Lean;
 other sizes run Bluestein's chirp-z algorithm on top of the same radix-2
 machinery, differential-tested against the direct-DFT oracle.
 
 ```toml
-quanta-fft = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan / gpu
+quanta = { version = "0.1", features = ["sci", "metal"] } # or vulkan / software
 ```
 
 ## Complex data as split arrays
@@ -23,7 +23,7 @@ imaginary part:
 // np.fft.fft([1,2,3,4])
 let re = vec![1.0f32, 2.0, 3.0, 4.0];
 let im = vec![0.0f32; 4];                        // real input → zero imaginary
-let (fr, fi) = quanta_fft::fft(&gpu, &re, &im)?; // fr, fi: real/imag spectrum
+let (fr, fi) = quanta::sci::fft::fft(&gpu, &re, &im)?; // fr, fi: real/imag spectrum
 ```
 
 Any length works. A power of 2 is the fastest shape (straight radix-2);
@@ -36,7 +36,7 @@ convolution, which costs about three power-of-2 transforms.
 input up to floating-point rounding:
 
 ```rust,ignore
-let (rr, ri) = quanta_fft::ifft(&gpu, &fr, &fi)?;
+let (rr, ri) = quanta::sci::fft::ifft(&gpu, &fr, &fi)?;
 // rr ≈ re, ri ≈ im
 ```
 
@@ -52,7 +52,7 @@ let re: Vec<f32> = (0..n)
     .map(|j| (2.0 * std::f32::consts::PI * j as f32 / n as f32).cos())
     .collect();
 let im = vec![0.0f32; n];
-let (fr, _) = quanta_fft::fft(&gpu, &re, &im)?;
+let (fr, _) = quanta::sci::fft::fft(&gpu, &re, &im)?;
 // |fr[1]| and |fr[n-1]| carry the tone; the rest are ≈ 0.
 ```
 
@@ -68,8 +68,8 @@ half the device memory). `irfft` goes back to the real signal:
 ```rust,ignore
 // np.fft.rfft / np.fft.irfft
 let x: Vec<f32> = samples();                       // real, N a power of 2
-let (hr, hi) = quanta_fft::rfft(&gpu, &x)?;        // N/2 + 1 bins
-let back = quanta_fft::irfft(&gpu, &hr, &hi, x.len())?;  // back ≈ x
+let (hr, hi) = quanta::sci::fft::rfft(&gpu, &x)?;        // N/2 + 1 bins
+let back = quanta::sci::fft::irfft(&gpu, &hr, &hi, x.len())?;  // back ≈ x
 ```
 
 Bin 0 (DC) and bin `N/2` (Nyquist) of a real signal are themselves real —
@@ -84,7 +84,7 @@ precomputes the twiddle factors into a device buffer (the VkFFT pattern);
 every `execute` after that just binds and dispatches:
 
 ```rust,ignore
-let mut plan = quanta_fft::FftPlan::new(&gpu, 1024, false)?; // forward, N=1024
+let mut plan = quanta::sci::fft::FftPlan::new(&gpu, 1024, false)?; // forward, N=1024
 for frame in frames {
     let (fr, fi) = plan.execute(&frame.re, &frame.im)?;      // no re-JIT
     // ...

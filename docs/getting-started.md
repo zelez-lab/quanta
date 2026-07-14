@@ -94,6 +94,58 @@ the **`RenderGpu` extension trait** that carries the render methods on
 
 The rest of this guide is pure compute and works either way.
 
+### The science and ML stack (`sci` / `autograd` / `prims`)
+
+Beyond raw kernels and rendering, Quanta ships a NumPy/SciPy-style
+numerics stack — **all behind the same one dependency and one
+namespace**. You never add a second crate; you flip on a feature and a
+module appears under `quanta::`:
+
+| You are here | Add to `Cargo.toml` | Import |
+|---|---|---|
+| **GPU compute / rendering** | `quanta = { git = "…" }` | `use quanta::*;` |
+| **NumPy / SciPy-style science** | `quanta = { …, features = ["sci"] }` | `quanta::sci::{Array, linalg, fft, random, layout}` |
+| **Machine learning** | `quanta = { …, features = ["sci", "autograd"] }` | `quanta::autograd` today; `quanta::nn` when the neural crate lands |
+| **Kernel / primitive authors** | `quanta = { …, features = ["prims"] }` | `quanta::prims` |
+
+Pair any of these with a backend feature for hardware execution — for
+example a science build on Apple:
+
+```toml
+[dependencies]
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "metal"] }
+```
+
+```rust
+use quanta::sci::Array;
+
+let gpu = quanta::init()?;
+let a = Array::from_slice(&gpu, &[1.0f32, 2.0, 3.0], &[3])?;
+let b = a.add(&a)?;                  // ufuncs, broadcasting, reductions
+```
+
+`sci` alone (no backend feature) compiles the host reference surfaces
+only; `["sci", "software"]` runs everything on the CPU JIT with no GPU.
+The submodules map onto the packages you already know:
+`quanta::sci::linalg` ≈ `numpy.linalg` (the verified BLAS),
+`quanta::sci::fft` ≈ `numpy.fft`, `quanta::sci::random` ≈ `numpy.random`,
+and `quanta::sci::layout` is the CuTe-style shape/stride algebra under
+`Array`. `quanta::autograd` adds reverse-mode gradients over `Array`
+(pair it with `sci`), and `quanta::prims` exposes the block- and
+device-wide primitives (scan / reduce / sort) that kernel authors call
+cooperatively.
+
+> **Advanced — depending on individual crates.** Each umbrella module is
+> a standalone crate underneath (`quanta-array`, `quanta-blas`,
+> `quanta-fft`, `quanta-rand`, `quanta-tensor`, `quanta-prims`,
+> `quanta-autograd`), grouped under `crates/{sci,ml}/` in the repo. They
+> exist so a **minimal-dependency consumer** — one that wants exactly one
+> brick and none of the facade — can depend on it directly (its own
+> feature spelling is `gpu-metal` / `gpu-vulkan` / `gpu` rather than the
+> facade's `metal` / `vulkan` / `software`). Applications should reach
+> for the `quanta::` namespace above; the per-crate READMEs document the
+> direct path.
+
 ## The ahead-of-time compiler (git-dependency consumers)
 
 The `#[quanta::kernel]` / `#[quanta::vertex]` / `#[quanta::fragment]`

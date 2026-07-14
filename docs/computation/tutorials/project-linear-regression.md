@@ -30,19 +30,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-quanta          = { git = "https://github.com/zelez-lab/quanta" }
-quanta-array    = { git = "https://github.com/zelez-lab/quanta" }
-quanta-autograd = { git = "https://github.com/zelez-lab/quanta" }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "autograd"] }
 ```
 
-By default these build the **software (CPU) backend** — no GPU required, and the
+By default this builds the **software (CPU) backend** — no GPU required, and the
 behaviour is identical to hardware. To run on a real GPU instead, add the backend
-feature to each crate:
+feature:
 
 ```toml
-quanta          = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] } # or vulkan
-quanta-array    = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-autograd = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "autograd", "metal"] } # or vulkan
 ```
 
 ## 3. The plan
@@ -78,8 +74,8 @@ The parameter update is plain array math, done *outside* the tape — the tape i
 only for the forward pass you differentiate. Put this above `main`:
 
 ```rust,ignore
-use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta::sci::Array;
+use quanta::autograd::Tape;
 
 /// One SGD step: p ← p − lr·g.
 fn sgd(p: &Array<f32>, g: &Array<f32>, lr: f32) -> Array<f32> {

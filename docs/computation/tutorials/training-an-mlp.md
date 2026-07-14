@@ -11,7 +11,8 @@ The complete, runnable version is
 [`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/ml/quanta-autograd/examples/mlp_training.rs)
 — run it on the GPU with `cargo run --example mlp_training -p quanta-autograd
 --release --features metal` (use `--features vulkan` off Apple, or drop the flag
-for the portable CPU lane).
+for the portable CPU lane). (The example lives inside the crate, so it imports
+`quanta_autograd::` directly; in your own app use `quanta::autograd`.)
 
 ## The optimizer step
 
@@ -19,7 +20,7 @@ The parameter update is plain array math, *outside* the tape — the tape is onl
 for the forward pass you differentiate:
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 
 // p ← p − lr·g
 fn sgd(p: &Array<f32>, g: &Array<f32>, lr: f32) -> Array<f32> {
@@ -35,7 +36,7 @@ Each step builds a **fresh tape** from the current parameters, runs the forward
 pass, and reads out one gradient per parameter:
 
 ```rust,ignore
-use quanta_autograd::{Tape, Var};
+use quanta::autograd::{Tape, Var};
 
 let mut w1 = /* [1, hidden] */;  let mut b1 = /* [1, hidden] */;
 let mut w2 = /* [hidden, 1] */;  let mut b2 = /* [1, 1] */;

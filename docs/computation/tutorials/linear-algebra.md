@@ -3,8 +3,8 @@
 > **You'll learn:** matrix multiply, dot products, and norms on the GPU, plus the
 > lower-level BLAS entry points. Builds on [Shape and views](shape-and-views.md).
 
-Linear algebra is the workhorse of numerical computing. `quanta-array` gives you
-the everyday operations directly on arrays; `quanta-blas` sits underneath with
+Linear algebra is the workhorse of numerical computing. `quanta::sci` gives you
+the everyday operations directly on arrays; `quanta::sci::linalg` sits underneath with
 the classic BLAS surface and machine-proven error bounds.
 
 ## Matrix multiply
@@ -12,7 +12,7 @@ the classic BLAS surface and machine-proven error bounds.
 `matmul` is the 2-D matrix product `A(m×k) · B(k×n) → (m×n)`:
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 let gpu = quanta::init_cpu();
 
 let a = Array::from_slice(&gpu, &[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3])?; // 2×3
@@ -41,19 +41,19 @@ device-resident pattern as [reductions](reductions.md).
 ## Dropping to BLAS
 
 When you want the named BLAS operations — in-place scaling, fused multiply-add,
-`C ← α·A·B + β·C` — reach for `quanta-blas` directly. It operates on raw
+`C ← α·A·B + β·C` — reach for `quanta::sci::linalg` directly. It operates on raw
 `Field`s (GPU buffers) rather than `Array`s, which is what you want inside a
 performance-critical inner loop:
 
 ```rust,ignore
 // y ← α·x + y   (the classic axpy)
-quanta_blas::axpy(&gpu, 2.0, &x_field, &y_field)?;
+quanta::sci::linalg::axpy(&gpu, 2.0, &x_field, &y_field)?;
 
 // C ← α·A·B + β·C   (general matrix multiply)
-quanta_blas::gemm(&gpu, m, n, k, 1.0, &a, &b, 0.0, &c)?;
+quanta::sci::linalg::gemm(&gpu, m, n, k, 1.0, &a, &b, 0.0, &c)?;
 ```
 
-Every `quanta-blas` op ships a **proven forward-error bound** (a Higham-style
+Every `quanta::sci::linalg` op ships a **proven forward-error bound** (a Higham-style
 `(1+δ)` bound formalised in Lean), and `gemm` has mixed-precision (bf16/f16/fp8)
 and quantized (int8/int4) variants for when you trade accuracy for throughput.
 See the [quanta-blas README](https://github.com/zelez-lab/quanta/blob/main/crates/sci/quanta-blas/README.md).

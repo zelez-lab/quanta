@@ -1,6 +1,6 @@
-# Arrays (quanta-array)
+# Arrays (quanta::sci)
 
-`quanta-array` is the NumPy-equivalent layer of the stack. `Array<T>` is a
+`quanta::sci` is the NumPy-equivalent layer of the stack. `Array<T>` is a
 host-side N-dimensional array backed by GPU memory: it owns a
 [`Field`](fields-and-types.md) and carries a shape + strides, and it
 gives you numpy-style construction, broadcasting elementwise math, whole-array
@@ -8,7 +8,7 @@ reductions, and zero-copy reshaping — **without writing a single kernel**.
 
 ```toml
 [dependencies]
-quanta-array = { version = "0.1", features = ["metal"] } # or vulkan / software
+quanta = { version = "0.1", features = ["sci", "metal"] } # or vulkan / software
 ```
 
 It is a **compute-only** consumer of `quanta` — the render half of the crate
@@ -18,7 +18,7 @@ rendering code.
 ## A first array
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 
 let gpu = quanta::init_cpu();              // or quanta::init() for a real GPU
 let a = Array::from_slice(&gpu, &[1.0f32, 2.0, 3.0, 4.0], &[2, 2])?;
@@ -84,12 +84,12 @@ let _ = i.sqrt();   // ❌ does not compile: i32 is not a FloatScalar
 ```
 
 That boundary is part of the API contract: every backend implements these
-functions for floats only, so quanta-array refuses to pretend otherwise.
+functions for floats only, so `quanta::sci` refuses to pretend otherwise.
 
 ## Reductions
 
 `sum`, `min`, `max`, and `mean` reduce the **whole** array to a scalar, routed
-to the matching `quanta-prims` device reduce:
+to the matching `quanta::prims` device reduce:
 
 ```rust,ignore
 let a = Array::from_slice(&gpu, &[3.0f32, -1.0, 7.0, 2.0], &[2, 2])?;
@@ -97,7 +97,7 @@ assert_eq!(a.max()?, 7.0);
 let m = a.mean()?;      // 2.75
 ```
 
-`sum` / `min` / `max` are available for the dtypes `quanta-prims` provides
+`sum` / `min` / `max` are available for the dtypes `quanta::prims` provides
 reduces for — `f32`, `i32`, `u32`. `mean` is float-only (it divides). `f64`
 arrays keep their math functions but have no device reduce, so `f64.sum()`
 does not compile — again, an honest boundary rather than a hidden fallback.
@@ -157,7 +157,7 @@ The hot-path operations keep their data on the device:
 
 - **ufuncs** dispatch a kernel; nothing is downloaded.
 - **strided-view compaction** (`contiguous`) is an on-device gather kernel.
-- **reductions** hand the array's `Field` straight to the `quanta-prims`
+- **reductions** hand the array's `Field` straight to the `quanta::prims`
   device reduce — the whole array is never downloaded; only the tiny
   per-block partials (256× smaller) touch host memory between passes.
 

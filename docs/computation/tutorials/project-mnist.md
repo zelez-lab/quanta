@@ -33,9 +33,7 @@ edition = "2024"
 
 [dependencies]
 # The GPU stack. Use metal on Apple silicon; vulkan on Linux/Windows.
-quanta          = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-array    = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-autograd = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "autograd", "metal"] }
 
 # Data plumbing.
 ureq   = "2"   # blocking HTTP download
@@ -47,7 +45,7 @@ flate2 = "1"   # gunzip the .gz files
 
 > **Backend note:** this model runs fully on Vulkan and Metal (the weights
 > below use an `f32` deterministic init, and every op is `f32`). If you later
-> swap in random weight init from `quanta-rand`, use the **`f32`**
+> swap in random weight init from `quanta::sci::random`, use the **`f32`**
 > distributions (`fill_normal_f32_gpu`, …) — they run bit-exact on every
 > backend, including devices without 64-bit support. The **`f64`** twins need
 > real 64-bit device support (`gpu.supports_i64()` + `gpu.supports_f64()`)
@@ -103,8 +101,8 @@ The four files:
 ```rust,ignore
 mod data;
 
-use quanta_array::Array;
-use quanta_autograd::{Tape, optim::Adam};
+use quanta::sci::Array;
+use quanta::autograd::{Tape, optim::Adam};
 
 fn main() {
     let gpu = quanta::init().expect("a GPU");

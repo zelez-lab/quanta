@@ -25,9 +25,7 @@ cd softmax-reg
 
 ```toml
 [dependencies]
-quanta          = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-array    = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-autograd = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "autograd", "metal"] }
 ```
 
 ## 3. Make some data
@@ -36,8 +34,8 @@ Three well-separated blobs of 2-D points, one per class, stacked into `[N, 2]`
 with an `[N]` label array. `src/main.rs`:
 
 ```rust,ignore
-use quanta_array::Array;
-use quanta_autograd::{optim::Adam, Tape};
+use quanta::sci::Array;
+use quanta::autograd::{optim::Adam, Tape};
 
 fn main() {
     let gpu = quanta::init().expect("a GPU");

@@ -1,9 +1,12 @@
 # Migration from NumPy
 
-`quanta-array` mirrors the NumPy array surface, so most NumPy code maps line
-for line. The big difference is that every array lives in GPU memory and every
-operation runs on the GPU (or the software CPU backend) — and that the math
-functions are typed: float-only ops simply don't compile on integer arrays.
+`quanta::sci` mirrors the NumPy array surface, so most NumPy code maps line
+for line. Add it with `quanta = { …, features = ["sci"] }` (plus a backend
+feature — `metal` / `vulkan` / `software`) and reach the array type at
+`quanta::sci::Array`. The big difference is that every array lives in GPU
+memory and every operation runs on the GPU (or the software CPU backend) — and
+that the math functions are typed: float-only ops simply don't compile on
+integer arrays.
 
 ## Terminology
 
@@ -19,7 +22,7 @@ functions are typed: float-only ops simply don't compile on integer arrays.
 
 ## Construction
 
-| NumPy | quanta-array |
+| NumPy | quanta::sci |
 |-------|--------------|
 | `np.array(xs).reshape(s)` | `Array::from_slice(&gpu, &xs, &s)` |
 | `np.zeros(s)` | `Array::<f32>::zeros(&gpu, &s)` |
@@ -34,7 +37,7 @@ unambiguous on the host.
 
 ## Elementwise + reductions
 
-| NumPy | quanta-array |
+| NumPy | quanta::sci |
 |-------|--------------|
 | `a + b`, `a - b`, `a * b`, `a / b` | `&a + &b`, … or `a.add(&b)?`, … |
 | `-a` | `a.neg()?` |
@@ -49,7 +52,7 @@ operand is ever physically expanded.
 
 ## Linear algebra (f32)
 
-| NumPy | quanta-array |
+| NumPy | quanta::sci |
 |-------|--------------|
 | `a @ b` (2-D) / `np.matmul(a, b)` | `a.matmul(&b)?` |
 | `a @ b` (1-D) / `np.dot(a, b)` | `a.dot(&b)?` |
@@ -61,7 +64,7 @@ gathered to contiguous on the device before the call.
 
 ## Views
 
-| NumPy | quanta-array |
+| NumPy | quanta::sci |
 |-------|--------------|
 | `a.reshape(s)` | `a.reshape(&s)?` |
 | `a.T` / `a.transpose(i, j)` | `a.transpose(i, j)?` |
@@ -82,10 +85,10 @@ x = np.array([2.0, 4.0, 6.0, 8.0], dtype=np.float32)
 out = (x - x.mean()) / (x.max() - x.min())
 ```
 
-### quanta-array
+### quanta::sci
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 let gpu = quanta::init();
 let x = Array::from_slice(&gpu, &[2.0f32, 4.0, 6.0, 8.0], &[4])?;
 let mean = x.mean()?;
@@ -97,7 +100,7 @@ let out = centered.div(&Array::full(&gpu, span, &[4])?)?.to_vec()?;
 ## What's different on purpose
 
 - **Typed math.** `int_array.sqrt()` is a compile error. NumPy returns a float
-  array; quanta-array makes you convert dtype first. This catches a whole class
+  array; `quanta::sci` makes you convert dtype first. This catches a whole class
   of silent-precision bugs at build time.
 - **Reduction dtypes.** `sum`/`min`/`max` exist for `f32`/`i32`/`u32` (the
   reduces `quanta-prims` ships); `mean` is float-only. `f64` has math functions
@@ -115,8 +118,8 @@ let out = centered.div(&Array::full(&gpu, span, &[4])?)?.to_vec()?;
 ## Beyond NumPy: autodiff and neural nets
 
 Where NumPy stops, Quanta keeps going — the same arrays flow into
-[`quanta-autograd`](https://github.com/zelez-lab/quanta/blob/main/crates/ml/quanta-autograd/README.md)
-for gradients (the PyTorch layer), so you can train models on the arrays you just
+`quanta::autograd` for gradients (the PyTorch layer; add the `autograd`
+feature alongside `sci`), so you can train models on the arrays you just
 built:
 
 | PyTorch | Quanta |

@@ -16,8 +16,8 @@ the training loop from the last lesson.
 `[Cout, Cin, kh, kw]`, producing `[N, Cout, OH, OW]`:
 
 ```rust,ignore
-use quanta_autograd::Tape;
-use quanta_array::Array;
+use quanta::autograd::Tape;
+use quanta::sci::Array;
 
 let tape = Tape::<f32>::new();
 // x: one batch of N single-channel 4×4 images

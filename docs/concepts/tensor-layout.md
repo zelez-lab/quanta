@@ -35,7 +35,7 @@ A `Shape` is an ordered list of axis extents. Each extent is at
 least 1. A rank-0 shape (empty extent list) represents a scalar.
 
 ```rust
-use quanta_tensor::Shape;
+use quanta::sci::layout::Shape;
 
 let s = Shape::new(&[2, 3, 4]).unwrap();
 assert_eq!(s.rank(), 3);
@@ -50,7 +50,7 @@ hides the strides behind that function — so downstream code never
 takes a hard dependency on the stride representation.
 
 ```rust
-use quanta_tensor::Layout;
+use quanta::sci::layout::Layout;
 
 let row_major = Layout::row_major(&[2, 3]).unwrap();
 //   at([0,0]) = 0,  at([0,1]) = 1,  at([0,2]) = 2
@@ -70,7 +70,7 @@ Each returns a new `Layout` without touching data.
 Swap two axes. Both the shape and the strides exchange positions.
 
 ```rust
-# use quanta_tensor::Layout;
+# use quanta::sci::layout::Layout;
 let l = Layout::row_major(&[2, 3]).unwrap();
 let t = l.transpose(0, 1).unwrap();
 assert_eq!(t.shape().dims(), &[3, 2]);
@@ -84,7 +84,7 @@ axis `j`. The permutation must use each index in `0..rank`
 exactly once.
 
 ```rust
-# use quanta_tensor::Layout;
+# use quanta::sci::layout::Layout;
 let l = Layout::row_major(&[2, 3, 4]).unwrap();
 // Reverse axes: (i, j, k) -> (k, j, i).
 let p = l.permute(&[2, 1, 0]).unwrap();
@@ -98,7 +98,7 @@ axis becomes `end - start`; base offset advances by
 `start * stride[axis]`. Other strides are unchanged.
 
 ```rust
-# use quanta_tensor::Layout;
+# use quanta::sci::layout::Layout;
 let l = Layout::row_major(&[4, 3]).unwrap();
 let s = l.slice(0, 1, 3).unwrap();      // rows 1, 2
 assert_eq!(s.shape().dims(), &[2, 3]);
@@ -113,7 +113,7 @@ target wants extent N. The result reuses the same source elements
 for every coordinate along the broadcast axis.
 
 ```rust
-# use quanta_tensor::Layout;
+# use quanta::sci::layout::Layout;
 let l = Layout::row_major(&[1, 3]).unwrap();
 let b = l.broadcast(&[4, 3]).unwrap();
 assert_eq!(b.shape().dims(), &[4, 3]);
@@ -126,7 +126,7 @@ The local ops compose freely. Each is a pure function of the input
 layout:
 
 ```rust
-# use quanta_tensor::Layout;
+# use quanta::sci::layout::Layout;
 let src = Layout::row_major(&[2, 3, 4, 5]).unwrap();
 let view = src
     .transpose(1, 2).unwrap()
@@ -163,7 +163,7 @@ reach for the algebra:
   call sites read clearly.
 
 ```rust
-# use quanta_tensor::Layout;
+# use quanta::sci::layout::Layout;
 // 72-element buffer divided by a 36-element block tile.
 let buffer = Layout::row_major(&[72]).unwrap();
 let block_tile = Layout::row_major(&[36]).unwrap();

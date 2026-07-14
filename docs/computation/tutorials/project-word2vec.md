@@ -25,9 +25,7 @@ cd word2vec
 
 ```toml
 [dependencies]
-quanta          = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-array    = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-autograd = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "autograd", "metal"] }
 ```
 
 ## 3. A tiny corpus
@@ -38,8 +36,8 @@ pairs. We'll fake it: tokens `0,1,2` are "topic A" and co-occur; `3,4,5` are
 cross topics. `src/main.rs`:
 
 ```rust,ignore
-use quanta_array::Array;
-use quanta_autograd::{optim::Adam, Tape};
+use quanta::sci::Array;
+use quanta::autograd::{optim::Adam, Tape};
 
 fn main() {
     let gpu = quanta::init().expect("a GPU");

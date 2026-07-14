@@ -30,8 +30,7 @@ software backend to run without a GPU. Edit `Cargo.toml`:
 
 ```toml
 [dependencies]
-quanta       = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
-quanta-array = { git = "https://github.com/zelez-lab/quanta", features = ["metal"] }
+quanta = { git = "https://github.com/zelez-lab/quanta", features = ["sci", "metal"] }
 ```
 
 ## 3. Make some data
@@ -41,7 +40,7 @@ real program these would be your dataset; here we hand-write them so the result
 is easy to eyeball. `src/main.rs`:
 
 ```rust,ignore
-use quanta_array::Array;
+use quanta::sci::Array;
 
 fn main() {
     let gpu = quanta::init().expect("a GPU");

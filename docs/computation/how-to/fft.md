@@ -1,6 +1,6 @@
 # FFT (Fourier transforms on the GPU)
 
-`quanta-fft` is a GPU FFT — forward and inverse, complex data as split
+`quanta::sci::fft` is a GPU FFT — forward and inverse, complex data as split
 real/imag `f32` arrays, **any length** — on whatever backend you compiled
 for. Power-of-2 sizes run the radix-2 Cooley-Tukey kernels (mechanically
 proven equal to the direct DFT — see the
@@ -11,7 +11,7 @@ task-by-task recipe.
 
 ```toml
 [dependencies]
-quanta-fft = { version = "0.1", features = ["gpu-metal"] } # gpu-vulkan / gpu
+quanta = { version = "0.1", features = ["sci", "metal"] } # vulkan / software
 ```
 
 ## Setup
@@ -29,7 +29,7 @@ length. A real signal just passes zeros for the imaginary part:
 // np.fft.fft([1,2,3,4])
 let re = vec![1.0f32, 2.0, 3.0, 4.0];
 let im = vec![0.0f32; 4];                 // real input
-let (fr, fi) = quanta_fft::fft(&gpu, &re, &im)?;   // fr/fi: real/imag spectrum
+let (fr, fi) = quanta::sci::fft::fft(&gpu, &re, &im)?;   // fr/fi: real/imag spectrum
 ```
 
 Any length works. Powers of 2 go straight to the radix-2 kernels;
@@ -43,7 +43,7 @@ transforms, so a power-of-2 N is the faster shape when you can choose.
 
 ```rust,ignore
 // np.fft.ifft(spectrum)
-let (rr, ri) = quanta_fft::ifft(&gpu, &fr, &fi)?;
+let (rr, ri) = quanta::sci::fft::ifft(&gpu, &fr, &fi)?;
 // rr ≈ re, ri ≈ im  (to f32 rounding)
 ```
 
@@ -60,7 +60,7 @@ let re: Vec<f32> = (0..n)
     .map(|j| (2.0 * std::f32::consts::PI * j as f32 / n as f32).cos())
     .collect();
 let im = vec![0.0f32; n];
-let (fr, _) = quanta_fft::fft(&gpu, &re, &im)?;
+let (fr, _) = quanta::sci::fft::fft(&gpu, &re, &im)?;
 // fr[0] ≈ 0 (no DC); fr[1] ≈ fr[n-1] ≈ N/2.
 ```
 
@@ -74,8 +74,8 @@ directly — no zero imaginary part to allocate — and returns just those bins;
 ```rust,ignore
 // np.fft.rfft(x) / np.fft.irfft(spectrum, n)
 let x = vec![1.0f32, 2.0, 3.0, 4.0, 2.0, 1.0, 0.0, -1.0]; // real, N = 8
-let (hr, hi) = quanta_fft::rfft(&gpu, &x)?;               // 5 bins (N/2 + 1)
-let back = quanta_fft::irfft(&gpu, &hr, &hi, 8)?;         // back ≈ x
+let (hr, hi) = quanta::sci::fft::rfft(&gpu, &x)?;               // 5 bins (N/2 + 1)
+let back = quanta::sci::fft::irfft(&gpu, &hr, &hi, 8)?;         // back ≈ x
 ```
 
 Under the hood this is the packed real-FFT: one half-size complex transform
@@ -95,9 +95,9 @@ reuses one `FftPlan`.
 ```rust,ignore
 // np.fft.fft2(img)
 let (h, w) = (256, 512);                      // powers of 2
-let (sr, si) = quanta_fft::fft2(&gpu, &re, &im, h, w)?;  // 2-D spectrum, same layout
+let (sr, si) = quanta::sci::fft::fft2(&gpu, &re, &im, h, w)?;  // 2-D spectrum, same layout
 // np.fft.ifft2(spectrum) — divides by H·W, so the round trip recovers the input
-let (rr, ri) = quanta_fft::ifft2(&gpu, &sr, &si, h, w)?; // rr ≈ re, ri ≈ im
+let (rr, ri) = quanta::sci::fft::ifft2(&gpu, &sr, &si, h, w)?; // rr ≈ re, ri ≈ im
 ```
 
 Bin `(ky, kx)` holds the component at `ky/H` cycles per row-step and `kx/W`
@@ -114,7 +114,7 @@ dispatches. (`FftPlan` is the radix-2 engine, so it takes power-of-2 sizes
 only — Bluestein builds on it internally.)
 
 ```rust,ignore
-let mut plan = quanta_fft::FftPlan::new(&gpu, 1024, false)?; // inverse: true
+let mut plan = quanta::sci::fft::FftPlan::new(&gpu, 1024, false)?; // inverse: true
 for (re, im) in frames {
     let (fr, fi) = plan.execute(&re, &im)?;
 }
@@ -126,7 +126,7 @@ The crate ships a pure-Rust direct DFT (the differential-test oracle) — handy
 to sanity-check any result without a GPU in the loop:
 
 ```rust,ignore
-use quanta_fft::reference;
+use quanta::sci::fft::reference;
 let (wr, wi) = reference::dft(&re, &im);   // direct O(N²) DFT, any N
 let (hr, hi) = reference::rdft(&x);        // direct real DFT, N/2+1 bins
 ```

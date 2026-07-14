@@ -253,14 +253,21 @@ device `Arc` and release their driver resource on `Drop`, exactly once
 [features]
 default = ["metal", "vulkan", "render", "compute"]
 std = ["quanta-core/std", "quanta-render?/std"]
-metal = ["std", "quanta-core/metal", "quanta-render?/metal"]
-vulkan = ["std", "quanta-core/vulkan", "quanta-render?/vulkan"]
+# Backend features also weak-forward (`?/`) to every companion crate, e.g.
+# metal = ["std", "quanta-core/metal", "quanta-render?/metal",
+#          "quanta-array?/metal", "quanta-blas?/gpu-metal", …]
+metal = ["std", "quanta-core/metal", "quanta-render?/metal", "quanta-array?/metal", …]
+vulkan = ["std", "quanta-core/vulkan", "quanta-render?/vulkan", "quanta-array?/vulkan", …]
 vulkan-portability = ["vulkan", "quanta-core/vulkan-portability", "quanta-render?/vulkan-portability"]
 render = ["quanta-core/render", "dep:quanta-render"]
 compute = ["quanta-core/compute", "dep:quanta-compute-dsl"]
-software = ["std", "jit", "compute", "quanta-core/software", "quanta-render?/software"]
+software = ["std", "jit", "compute", "quanta-core/software", "quanta-render?/software", "quanta-array?/software", "quanta-blas?/gpu", …]
 jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases", "quanta-core/jit"]
 webgpu = ["std", "jit", "compute", "quanta-core/webgpu", "quanta-render?/webgpu"]
+# Companion-crate umbrella (tokio model) — off by default:
+sci = ["std", "dep:quanta-array", "dep:quanta-blas", "dep:quanta-fft", "dep:quanta-rand", "dep:quanta-tensor"]
+prims = ["std", "dep:quanta-prims"]
+autograd = ["std", "dep:quanta-autograd"]
 ```
 
 Cargo features are **target-independent**, but the two backend faces
@@ -302,6 +309,36 @@ right face on every OS. Other notes on the faces:
   `default-features = false, features = ["metal", "vulkan", "render"]` —
   or depends on `quanta-render` directly — and compiles zero kernel
   machinery.
+
+### The companion-crate umbrella (`sci` / `prims` / `autograd`)
+
+The science/ML stack follows the **tokio model**: the companion crates
+stay independent packages (each with its own tests, proofs, and version
+line), but the facade is the single user-facing namespace. Enabling one
+of these features activates the underlying crate(s) *and* mounts them as
+a module under `quanta::`, feature-gated exactly like tokio's `net` /
+`fs` / `time`. Off by default — a default build pulls **zero** companion
+crates into the graph.
+
+- `sci` — activates `quanta-array` / `quanta-blas` / `quanta-fft` /
+  `quanta-rand` / `quanta-tensor` and mounts `quanta::sci`: `Array` and
+  `Shape` / `Layout` at the module root, plus the `linalg`
+  (= `quanta-blas`), `fft`, `random` (= `quanta-rand`), and `layout`
+  (= `quanta-tensor`) submodules.
+- `prims` — activates `quanta-prims`, mounted as `quanta::prims`
+  (block-cooperative + device-wide scan / reduce / sort).
+- `autograd` — activates `quanta-autograd`, mounted as `quanta::autograd`
+  (tape-based reverse-mode autodiff over `sci::Array`). Usually paired
+  with `sci`. A future `quanta::nn` is reserved for the neural crate.
+
+Backend selection stays on the backend features above: `metal` /
+`vulkan` / `software` carry **weak forwards** (`quanta-array?/metal`,
+`quanta-blas?/gpu-metal`, …) to every companion, so no companion-specific
+feature spelling leaks into user code — `features = ["sci", "metal"]`
+gives the whole science stack the Metal backend. A weak forward never
+*activates* a companion; only `sci` / `prims` / `autograd` do. The
+companions' own spelling differs (`gpu-metal` / `gpu-vulkan` / `gpu`)
+and matters only to a consumer depending on a brick crate directly.
 
 Without `std`, only types and the kernel language are available (for
 `no_std` environments). The `software` feature adds a full CPU executor

@@ -9,8 +9,8 @@
 > **You'll need:** [autodiff basics](autodiff-basics.md),
 > [self-attention](attention.md), and [layer normalization](layer-norm.md).
 >
-> **Dependencies:** `quanta` and `quanta-autograd`. That's the whole stack — no
-> Python, no external ML runtime.
+> **Dependencies:** just `quanta` (with the `sci` + `autograd` features). That's
+> the whole stack — no Python, no external ML runtime.
 
 A GPT block is the single unit a decoder-only language model stacks `L` times.
 This tutorial builds one, wires it into a training loop, and watches it learn a
@@ -37,8 +37,8 @@ call per parameter gives you the whole backward pass.
 ## 2. Setup
 
 ```rust,ignore
-use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta::sci::Array;
+use quanta::autograd::Tape;
 
 // A device: the CPU JIT by default; a real GPU under the metal/vulkan feature.
 let g = quanta::init_cpu();
@@ -195,8 +195,9 @@ A real decoder block, from Quanta primitives:
 - **A GELU feed-forward network** — `gelu(h·W1)·W2`, the transformer FFN.
 - **A cross-entropy language-model head** — trained by reverse-mode autodiff.
 
-Everything ran through **one dependency graph** (`quanta` + `quanta-autograd`),
-on the CPU JIT here and unchanged on Metal or Vulkan under the backend feature.
+Everything ran through **one dependency graph** (`quanta`, `sci` + `autograd`
+features), on the CPU JIT here and unchanged on Metal or Vulkan under the backend
+feature.
 
 ## 8. Where to take it
 

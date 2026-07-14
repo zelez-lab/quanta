@@ -33,8 +33,8 @@ helps. `eps` keeps the divide stable when a row is nearly constant.
 `Var::layer_norm` is one call — you supply the learnable `γ` and `β`:
 
 ```rust,ignore
-use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta::sci::Array;
+use quanta::autograd::Tape;
 
 let tape = Tape::<f32>::new();
 let xv = tape.var(activations);                       // [N, C]

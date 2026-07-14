@@ -128,7 +128,7 @@ reductions, combine with [shared memory](shared-memory.md):
 2. Write proton results to shared memory
 3. Final reduction in shared memory (one proton's worth of data)
 
-`quanta-prims` packages exactly this recipe as
+`quanta::prims` packages exactly this recipe as
 [block primitives](block-primitives.md).
 
 ## Backend support
@@ -147,7 +147,7 @@ Query `gpu.supports_subgroups()` before building a wave that uses the
 arithmetic or shuffle intrinsics — it reports whether the device advertises
 the subgroup ARITHMETIC class (always true on Metal and the CPU backend).
 Kernels with a subgroup-free fallback (shared memory + barriers) should select
-on it at dispatch-build time; `quanta-prims` does exactly that for its
+on it at dispatch-build time; `quanta::prims` does exactly that for its
 device-wide reductions.
 
 On WebGPU, all of these lower to the WGSL `subgroup*` builtins behind an
