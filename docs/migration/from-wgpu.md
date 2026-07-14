@@ -224,6 +224,13 @@ let pipeline = gpu.pipeline(&PipelineDesc::new(ShaderSource::Binaries {
 }))?;
 ```
 
+**Coordinate convention — nothing to change.** Quanta uses WebGPU's
+convention on every backend: NDC **+Y up**, framebuffer origin **top-left**,
+texture coords **+Y down** (`v = 0` is the top row), readback **row 0 is the
+top row**. Geometry, UVs, and projections you authored for wgpu carry over
+unchanged — Quanta normalizes the Vulkan y-down default internally, so the
+same shader source produces the same pixels on Metal, Vulkan, and WebGPU.
+
 ### Render pass: wgpu vs Quanta
 
 wgpu render passes require manual encoder management:

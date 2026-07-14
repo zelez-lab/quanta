@@ -152,6 +152,19 @@ layout }`. The handle is a borrow — valid while the `Texture` lives;
 - No more memory type enumeration — the driver picks `HOST_VISIBLE` or `DEVICE_LOCAL`.
 - Pipeline barriers are still explicit (`gpu.barrier_texture()`) because Metal cannot
   infer the source stage. On Metal these are no-ops (automatic hazard tracking).
+- **No y-flip in your code.** Quanta's canonical convention is NDC **+Y up**,
+  framebuffer origin **top-left**, texture coords **+Y down**, readback **row 0
+  at the top** — the WebGPU/Metal orientation. The driver applies the
+  `VK_KHR_maintenance1` negative-viewport y-flip (and a front-face winding flip)
+  for you, so the same DSL source draws identical pixels on Vulkan, Metal, and
+  WebGPU. If you were negating a projection row or flipping `uv.y` to cope with
+  Vulkan's y-down default, **remove it** — it now double-flips. Scissor stays
+  framebuffer-space and is untouched.
+
+### Metal developers (orientation)
+- Nothing changes: Quanta's convention already matches Metal's native
+  orientation (NDC +Y up, top-left origin). Author geometry once; it matches
+  every backend.
 
 ## v0.1 advanced features
 

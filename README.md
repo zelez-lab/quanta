@@ -204,12 +204,12 @@ Nightly with `dom.webgpu.enabled`).
 |---|---|---|---|
 | macOS Apple Silicon | ✅ Metal | ✅ Metal | ✅ aarch64 |
 | macOS Intel x86_64 | ❌ unsupported (Apple discontinued 2023) | ❌ | ❌ |
-| iOS | ✅ Metal | ✅ Metal | n/a (builds + device discovery on iOS; simulator validation in progress downstream) |
+| iOS | ✅ Metal | ✅ Metal | n/a (platform-targeted metallibs — `macos`/`ios`/`ios-sim` — the runtime picks the variant matching the build target; downstream-validated) |
 | Linux x86_64 + NVIDIA | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
 | Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
 | Linux aarch64 (Pi 5, Graviton) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 |
-| Android aarch64 | ✅ Vulkan | ✅ Vulkan | n/a (surface target + Vulkan lane build; emulator validation in progress downstream) |
-| Windows x86_64 | ⚠️ untested | ⚠️ Vulkan (surface target + Vulkan lane build; live validation rig-blocked) | ✅ x86_64 |
+| Android aarch64 | ✅ Vulkan | ✅ Vulkan | n/a (`SurfaceTarget::AndroidWindow` over `VK_KHR_android_surface`; the per-draw descriptor path is proven by `two_textured_draws_rebind_their_own_texture` on the lavapipe lane; validated end-to-end downstream) |
+| Windows x86_64 | ⚠️ code-complete, untested | ⚠️ Vulkan (`SurfaceTarget::Win32` over `VK_KHR_win32_surface`, code-complete; builds held green by an `x86_64-pc-windows-msvc` cross-check; live validation pending a Windows rig) | ✅ x86_64 |
 | Web | ✅ WebGPU | ✅ WebGPU | n/a |
 
 JIT fallback: when a kernel runs on a Vulkan driver Quanta doesn't

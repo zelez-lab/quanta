@@ -289,7 +289,9 @@ texture, and a `&mut Texture2D<u32>` slot to an `RGBA8` texture (both created
 with `SHADER_WRITE` usage). A format mismatch -- either direction -- returns
 `QuantaErrorKind::InvalidParam`. Storage compute textures are supported on
 Metal, the CPU reference device, and native Vulkan (load/write); sampling in
-compute is Metal/CPU-only for now, and WebGPU returns `NotSupported` for any
+compute (`texture_sample_2d` on a `&Texture2D` read slot) works on Metal, the
+CPU device, and native Vulkan through a fixed nearest / clamp-to-edge /
+unnormalized compute sampler, and WebGPU returns `NotSupported` for any
 compute texture binding. Query support with `gpu.supports_compute_textures()`.
 RGBA8 (`&mut Texture2D<u32>`) storage additionally needs
 `MTLReadWriteTextureTier2` on Metal; a device below tier 2 returns
@@ -625,8 +627,14 @@ fn shade(uv: Vec2, albedo: &Texture2D) -> Vec4 {
 }
 ```
 
-Textured fragments emit metallib and SPIR-V; the WGSL payload does not
-support texture sampling yet.
+WGSL shader support is **partial**: the payload emits for the core body
+language and now lowers `&[T]` slice params (`@group(0) @binding(slot)
+var<storage, read> name: array<ELEM>`, same shared uniform+slice index
+space and f32→u32 index truncation as MSL/SPIR-V), but it still **drops
+`&T` uniform params entirely** and does **not support texture sampling
+yet**. A shader that uses uniforms or textures ships a metallib + SPIR-V
+binary but no usable WGSL — use it on the desktop backends. Slice-only
+shaders round-trip on all three emitters.
 
 #### Platform-targeted metallibs (Apple)
 
@@ -655,6 +663,18 @@ as before this feature existed. `QUANTA_METAL_PLATFORMS` (see the
 attempted.
 
 ---
+
+> **The seven stage attributes below are placeholders, not compiled
+> pipelines.** `#[quanta::tess_control]`, `tess_eval`, `task`, `mesh`,
+> `ray_gen`, `closest_hit`, and `miss` compile — each expands to a valid
+> `ShaderBinary` carrying the correct `ShaderStage`, with `wgsl: None`
+> and **all binary payloads `None`** (no SPIR-V, no metallib). The
+> function body is **not** lowered to a shader; the examples below show
+> the intended stage signature, not code that runs today. The compiled
+> render stages are `#[quanta::vertex]` and `#[quanta::fragment]`; the
+> tessellation / mesh / ray-tracing *pipelines* are driven through the
+> typed render API (`gpu.tessellation_pipeline`, `gpu.mesh_pipeline`,
+> `gpu.ray_tracing_pipeline`), not these attribute stubs.
 
 ### `#[quanta::tess_control]`
 
