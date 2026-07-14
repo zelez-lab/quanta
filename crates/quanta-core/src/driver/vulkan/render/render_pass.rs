@@ -262,6 +262,57 @@ impl VulkanDevice {
         Ok(())
     }
 
+    /// Build a single-subpass transient `VkRenderPass` from a ready
+    /// attachment list and its color/resolve references, calling
+    /// `vkCreateRenderPass` and checking the result.
+    ///
+    /// The MRT branch and the clear-only branch of `render_end_impl` build
+    /// the SAME `VkSubpassDescription` + `VkRenderPassCreateInfo` +
+    /// `vkCreateRenderPass` + success-check unit; they differ only in the
+    /// attachment count/pointers and the color/resolve reference arrays.
+    /// Both pass their already-populated slices here. `p_resolve` is null
+    /// for the clear-only path (no resolve attachments) and either
+    /// null or the resolve-refs pointer for MRT, decided by the caller.
+    #[cfg(feature = "render")]
+    fn create_transient_render_pass(
+        &self,
+        attachments: &[ffi::VkAttachmentDescription],
+        color_refs: &[ffi::VkAttachmentReference],
+        p_resolve: *const ffi::VkAttachmentReference,
+    ) -> Result<ffi::VkRenderPass, QuantaError> {
+        let subpass = ffi::VkSubpassDescription {
+            flags: 0,
+            pipeline_bind_point: ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
+            input_attachment_count: 0,
+            p_input_attachments: core::ptr::null(),
+            color_attachment_count: color_refs.len() as u32,
+            p_color_attachments: color_refs.as_ptr(),
+            p_resolve_attachments: p_resolve,
+            p_depth_stencil_attachment: core::ptr::null(),
+            preserve_attachment_count: 0,
+            p_preserve_attachments: core::ptr::null(),
+        };
+        let rp_info = ffi::VkRenderPassCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            attachment_count: attachments.len() as u32,
+            p_attachments: attachments.as_ptr(),
+            subpass_count: 1,
+            p_subpasses: &subpass,
+            dependency_count: 0,
+            p_dependencies: core::ptr::null(),
+        };
+        let mut transient_rp = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateRenderPass(self.device, &rp_info, core::ptr::null(), &mut transient_rp)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
+        Ok(transient_rp)
+    }
+
     pub(crate) fn render_begin_impl(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
         Ok(RenderPass {
             handle: target.handle(),
@@ -409,36 +460,8 @@ impl VulkanDevice {
             } else {
                 core::ptr::null()
             };
-            let subpass = ffi::VkSubpassDescription {
-                flags: 0,
-                pipeline_bind_point: ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                input_attachment_count: 0,
-                p_input_attachments: core::ptr::null(),
-                color_attachment_count: color_refs.len() as u32,
-                p_color_attachments: color_refs.as_ptr(),
-                p_resolve_attachments: p_resolve,
-                p_depth_stencil_attachment: core::ptr::null(),
-                preserve_attachment_count: 0,
-                p_preserve_attachments: core::ptr::null(),
-            };
-            let rp_info = ffi::VkRenderPassCreateInfo {
-                s_type: ffi::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-                p_next: core::ptr::null(),
-                flags: 0,
-                attachment_count: attachments.len() as u32,
-                p_attachments: attachments.as_ptr(),
-                subpass_count: 1,
-                p_subpasses: &subpass,
-                dependency_count: 0,
-                p_dependencies: core::ptr::null(),
-            };
-            let mut transient_rp = ffi::null_handle();
-            let result = unsafe {
-                ffi::vkCreateRenderPass(self.device, &rp_info, core::ptr::null(), &mut transient_rp)
-            };
-            if result != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
-            }
+            let transient_rp =
+                self.create_transient_render_pass(&attachments, &color_refs, p_resolve)?;
             (transient_rp, None)
         } else {
             // Create a transient render pass for clear-only usage.
@@ -457,36 +480,11 @@ impl VulkanDevice {
                 attachment: 0,
                 layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             };
-            let subpass = ffi::VkSubpassDescription {
-                flags: 0,
-                pipeline_bind_point: ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                input_attachment_count: 0,
-                p_input_attachments: core::ptr::null(),
-                color_attachment_count: 1,
-                p_color_attachments: &color_ref,
-                p_resolve_attachments: core::ptr::null(),
-                p_depth_stencil_attachment: core::ptr::null(),
-                preserve_attachment_count: 0,
-                p_preserve_attachments: core::ptr::null(),
-            };
-            let rp_info = ffi::VkRenderPassCreateInfo {
-                s_type: ffi::VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-                p_next: core::ptr::null(),
-                flags: 0,
-                attachment_count: 1,
-                p_attachments: &color_attachment,
-                subpass_count: 1,
-                p_subpasses: &subpass,
-                dependency_count: 0,
-                p_dependencies: core::ptr::null(),
-            };
-            let mut transient_rp = ffi::null_handle();
-            let result = unsafe {
-                ffi::vkCreateRenderPass(self.device, &rp_info, core::ptr::null(), &mut transient_rp)
-            };
-            if result != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
-            }
+            let transient_rp = self.create_transient_render_pass(
+                core::slice::from_ref(&color_attachment),
+                core::slice::from_ref(&color_ref),
+                core::ptr::null(),
+            )?;
             (transient_rp, None)
         };
 
@@ -542,14 +540,15 @@ impl VulkanDevice {
         let rp_layout;
         let rp_ds_layout;
 
-        // Running slot state, mutated in op order inside the replay loop.
-        // A texture slot holds the VkImageView to sample; a buffer slot
-        // holds the VkBuffer to bind; a sampler slot holds the resolved
-        // VkSampler. `None` = slot unbound. Each draw reads these to build
-        // its set, so a re-bind before the next draw is reflected exactly.
-        let mut texture_for_slot: [Option<ffi::VkImageView>; 8] = [None; 8];
-        let mut sampler_for_slot: [Option<ffi::VkSampler>; 8] = [None; 8];
-        let mut buffer_for_slot: [Option<ffi::VkBuffer>; 8] = [None; 8];
+        // Initial running slot state, seeded into `EncoderState` below
+        // and then mutated in op order inside the replay loop. A texture
+        // slot holds the VkImageView to sample; a buffer slot holds the
+        // VkBuffer to bind; a sampler slot holds the resolved VkSampler.
+        // `None` = slot unbound. Each draw reads these to build its set,
+        // so a re-bind before the next draw is reflected exactly.
+        let texture_for_slot: [Option<ffi::VkImageView>; 8] = [None; 8];
+        let sampler_for_slot: [Option<ffi::VkSampler>; 8] = [None; 8];
+        let buffer_for_slot: [Option<ffi::VkBuffer>; 8] = [None; 8];
 
         if let Some(rp) = pipeline_ref {
             // Count the draws so the pool holds one set each. Every draw
@@ -779,359 +778,72 @@ impl VulkanDevice {
             };
             ffi::vkCmdBeginRenderPass(cmd, &rp_begin, subpass_contents);
 
-            let mut current_index_buffer: Option<ffi::VkBuffer> = None;
+            // Running encoder state, mutated in op order inside the
+            // op-walk. Seeded from the slot arrays built above so the
+            // running snapshot each draw reads reflects every prior bind.
+            let mut state = EncoderState {
+                texture_for_slot,
+                sampler_for_slot,
+                buffer_for_slot,
+                current_index_buffer: None,
+            };
+            // Read-only context every op-walk helper reads; borrows the
+            // already-locked resource maps and the per-pass layouts for
+            // the loop's duration.
+            let ctx = DrawContext {
+                cmd,
+                render_pipelines: &render_pipelines,
+                buffers: &buffers,
+                textures: &textures,
+                descriptor_pool,
+                rp_ds_layout,
+                rp_layout,
+                default_desc: &default_desc,
+                pipeline_ref,
+                target_w: target_tex.width,
+                target_h: target_tex.height,
+            };
 
-            // One descriptor set per draw: allocate from the per-pass
-            // pool, write the running slot snapshot, bind — then draw.
-            // Guarded on the pipeline being present (a pipeline-less pass
-            // has no set to bind and issues no draws that consume one).
-            macro_rules! bind_draw_set {
-                () => {
-                    if let (Some(pool), Some(dsl), Some(pl)) =
-                        (descriptor_pool, rp_ds_layout, rp_layout)
-                    {
-                        self.bind_draw_descriptor_set(
-                            cmd,
-                            pool,
-                            dsl,
-                            pl,
-                            &texture_for_slot,
-                            &sampler_for_slot,
-                            &buffer_for_slot,
-                            &default_desc,
-                        )?;
-                    }
-                };
-            }
-
-            // Encode each RenderOp.
+            // Encode each RenderOp — dispatch to the op-family helper.
             for op in &pass.ops {
                 match op {
-                    RenderOp::SetPipeline(handle) => {
-                        if let Some(rp) = render_pipelines.get(handle) {
-                            ffi::vkCmdBindPipeline(
-                                cmd,
-                                ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                rp.pipeline,
-                            );
-                            // The descriptor set is bound PER DRAW (below),
-                            // not here — a re-bind between draws in this
-                            // pass must reach the following draw's set.
-                        }
+                    RenderOp::SetPipeline(_)
+                    | RenderOp::BindVertices { .. }
+                    | RenderOp::BindIndices { .. }
+                    | RenderOp::SetField { .. }
+                    | RenderOp::SetUniform { .. }
+                    | RenderOp::SetTexture { .. }
+                    | RenderOp::SetSampler { .. }
+                    | RenderOp::SetValue { .. } => {
+                        self.encode_binding_op(&mut state, &ctx, op)?;
                     }
 
-                    RenderOp::BindVertices {
-                        slot,
-                        handle,
-                        offset,
-                    } => {
-                        if let Some(buf) = buffers.get(handle) {
-                            let offsets = [*offset];
-                            ffi::vkCmdBindVertexBuffers(
-                                cmd,
-                                *slot,
-                                1,
-                                &buf.buffer,
-                                offsets.as_ptr(),
-                            );
-                        }
+                    RenderOp::SetViewport { .. }
+                    | RenderOp::SetScissor { .. }
+                    | RenderOp::SetStencilRef(_) => {
+                        self.encode_dynamic_state_op(&ctx, op);
                     }
 
-                    RenderOp::BindIndices { handle, offset } => {
-                        if let Some(buf) = buffers.get(handle) {
-                            ffi::vkCmdBindIndexBuffer(
-                                cmd,
-                                buf.buffer,
-                                *offset,
-                                ffi::VK_INDEX_TYPE_UINT32,
-                            );
-                            current_index_buffer = Some(buf.buffer);
-                        }
+                    RenderOp::Draw { .. }
+                    | RenderOp::DrawIndexed { .. }
+                    | RenderOp::DrawIndirect { .. }
+                    | RenderOp::DrawIndexedIndirect { .. } => {
+                        self.encode_draw_op(&mut state, &ctx, op)?;
                     }
 
-                    // Resource binds mutate the running slot state; the
-                    // NEXT draw snapshots it into its own descriptor set.
-                    // Resolve each handle exactly as the old whole-pass
-                    // pre-scan did (same map lookups, same sampler cache).
-                    RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
-                        let idx = *slot as usize;
-                        if idx < 8
-                            && let Some(buf) = buffers.get(handle)
-                        {
-                            buffer_for_slot[idx] = Some(buf.buffer);
-                        }
-                    }
-                    RenderOp::SetTexture { slot, handle } => {
-                        let idx = *slot as usize;
-                        if idx < 8
-                            && let Some(tex) = textures.get(handle)
-                        {
-                            texture_for_slot[idx] = Some(tex.view);
-                        }
-                    }
-                    RenderOp::SetSampler { slot, sampler } => {
-                        let idx = *slot as usize;
-                        if idx < 8 {
-                            // Identical descriptors across draws/frames
-                            // reuse one cached sampler, so the sampler pool
-                            // stays bounded by distinct descriptors.
-                            let s = self.get_or_create_render_sampler(sampler);
-                            if !s.is_null() {
-                                sampler_for_slot[idx] = Some(s);
-                            }
-                        }
+                    RenderOp::Clear(_)
+                    | RenderOp::ClearDepth(_)
+                    | RenderOp::ClearStencil(_)
+                    | RenderOp::DebugPush(_)
+                    | RenderOp::DebugPop
+                    | RenderOp::BeginOcclusionQuery { .. }
+                    | RenderOp::EndOcclusionQuery { .. }
+                    | RenderOp::ExecuteRenderBundle { .. } => {
+                        self.encode_query_debug_op(&ctx, op)?;
                     }
 
-                    RenderOp::SetValue { slot, data } => {
-                        // The pipeline layout declares exactly one
-                        // [0,128) VERTEX|FRAGMENT push range (8 slots
-                        // x 16 bytes); pushing outside it or with a
-                        // non-multiple-of-4 size is invalid API usage
-                        // (VUID-vkCmdPushConstants-offset-01795 /
-                        // size-00369) — fail the pass loudly instead.
-                        let offset = *slot as usize * 16;
-                        if *slot >= 8 || data.len() % 4 != 0 || offset + data.len() > 128 {
-                            return Err(QuantaError::invalid_param(format!(
-                                "SetValue slot {} with {} bytes exceeds the Vulkan \
-                                 push-constant contract (slots 0-7, 4-byte-aligned, \
-                                 slot*16 + size <= 128)",
-                                slot,
-                                data.len()
-                            )));
-                        }
-                        if let Some(rp) = pipeline_ref {
-                            ffi::vkCmdPushConstants(
-                                cmd,
-                                rp.layout,
-                                ffi::VK_SHADER_STAGE_VERTEX_BIT | ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
-                                *slot * 16,
-                                data.len() as u32,
-                                data.as_ptr() as *const c_void,
-                            );
-                        }
-                    }
-
-                    RenderOp::Draw {
-                        vertex_count,
-                        instance_count,
-                    } => {
-                        bind_draw_set!();
-                        ffi::vkCmdDraw(cmd, *vertex_count, *instance_count, 0, 0);
-                    }
-
-                    RenderOp::DrawIndexed {
-                        index_count,
-                        instance_count,
-                    } => {
-                        bind_draw_set!();
-                        ffi::vkCmdDrawIndexed(cmd, *index_count, *instance_count, 0, 0, 0);
-                    }
-
-                    RenderOp::SetViewport {
-                        x,
-                        y,
-                        width,
-                        height,
-                        min_depth,
-                        max_depth,
-                    } => {
-                        // Negative-viewport y-flip (Vulkan 1.1
-                        // maintenance1, core — no extension probe; lavapipe
-                        // and v3dv are both >= 1.1). Vulkan's default NDC is
-                        // y-down; Metal's and WGSL's are y-up. Emitting the
-                        // viewport with its origin moved to the bottom edge
-                        // (y + height) and a NEGATIVE height mirrors the y
-                        // axis, so a +Y-up clip position lands on the same
-                        // framebuffer row Metal and WebGPU put it on. This is
-                        // what makes the same DSL source produce the same
-                        // pixels on every backend (readback row 0 = the top
-                        // row). Depth range (min/max_depth) is unchanged.
-                        let viewport = ffi::VkViewport {
-                            x: *x,
-                            y: *y + *height,
-                            width: *width,
-                            height: -*height,
-                            min_depth: *min_depth,
-                            max_depth: *max_depth,
-                        };
-                        ffi::vkCmdSetViewport(cmd, 0, 1, &viewport);
-                        // Set default scissor to match viewport (required for
-                        // dynamic state). Scissor is FRAMEBUFFER-space and is
-                        // NOT mirrored by the negative viewport, so it keeps
-                        // the original (un-flipped) x/y/width/height. Route it
-                        // through the same clamp so a viewport placed with a
-                        // negative origin can't emit a negative scissor
-                        // offset. `f32 as i32 as u32` preserves a negative
-                        // origin as the wrapped-in u32 the clamp decodes (a
-                        // bare `f32 as u32` would saturate the sign away).
-                        let scissor = clamp_scissor(
-                            *x as i32 as u32,
-                            *y as i32 as u32,
-                            *width as u32,
-                            *height as u32,
-                            target_tex.width,
-                            target_tex.height,
-                        );
-                        ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
-                    }
-
-                    RenderOp::SetScissor {
-                        x,
-                        y,
-                        width,
-                        height,
-                    } => {
-                        // Clamp to the render area: a negative (wrapped-in)
-                        // offset or an oversized rect becomes a valid clipped
-                        // rect, matching Metal's tolerated behavior instead of
-                        // tripping VUID-vkCmdSetScissor-x-00595.
-                        let scissor = clamp_scissor(
-                            *x,
-                            *y,
-                            *width,
-                            *height,
-                            target_tex.width,
-                            target_tex.height,
-                        );
-                        ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
-                    }
-
-                    RenderOp::SetStencilRef(value) => {
-                        ffi::vkCmdSetStencilReference(
-                            cmd,
-                            ffi::VK_STENCIL_FACE_FRONT_AND_BACK,
-                            *value,
-                        );
-                    }
-
-                    RenderOp::DrawIndirect {
-                        buffer_handle,
-                        offset,
-                    } => {
-                        if let Some(buf) = buffers.get(buffer_handle) {
-                            bind_draw_set!();
-                            ffi::vkCmdDrawIndirect(cmd, buf.buffer, *offset, 1, 0);
-                        }
-                    }
-
-                    RenderOp::DrawIndexedIndirect {
-                        buffer_handle,
-                        offset,
-                        index_handle,
-                    } => {
-                        if let Some(idx_buf) = buffers.get(index_handle) {
-                            let needs_rebind = current_index_buffer
-                                .map(|b| b != idx_buf.buffer)
-                                .unwrap_or(true);
-                            if needs_rebind {
-                                ffi::vkCmdBindIndexBuffer(
-                                    cmd,
-                                    idx_buf.buffer,
-                                    0,
-                                    ffi::VK_INDEX_TYPE_UINT32,
-                                );
-                                current_index_buffer = Some(idx_buf.buffer);
-                            }
-                        }
-                        if let Some(buf) = buffers.get(buffer_handle) {
-                            bind_draw_set!();
-                            ffi::vkCmdDrawIndexedIndirect(cmd, buf.buffer, *offset, 1, 0);
-                        }
-                    }
-
-                    RenderOp::Clear(_) | RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {}
-                    RenderOp::DebugPush(_) | RenderOp::DebugPop => {}
-
-                    // Occlusion queries (M3.3)
-                    RenderOp::BeginOcclusionQuery { handle, index } => {
-                        let pools = self
-                            .query_pools
-                            .read()
-                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-                        if let Some(qp) = pools.get(handle) {
-                            ffi::vkCmdResetQueryPool(cmd, qp.pool, *index, 1);
-                            ffi::vkCmdBeginQuery(cmd, qp.pool, *index, 0);
-                        }
-                    }
-                    RenderOp::EndOcclusionQuery { handle, index } => {
-                        let pools = self
-                            .query_pools
-                            .read()
-                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-                        if let Some(qp) = pools.get(handle) {
-                            ffi::vkCmdEndQuery(cmd, qp.pool, *index);
-                        }
-                    }
-
-                    // VRS native lowering (step 063). When
-                    // VK_KHR_fragment_shading_rate was enabled at
-                    // device creation and `vkGetDeviceProcAddr`
-                    // returned a non-null function pointer, lower
-                    // SetShadingRate to vkCmdSetFragmentShadingRateKHR.
-                    // SetShadingRateImage (texel-driven rates) is a
-                    // separate native track — keep it deferred.
-                    RenderOp::SetShadingRate(rate) => {
-                        if let Some(set_rate) = self.vrs_set_rate_fn {
-                            // Slice 14 — validate against the
-                            // hardware-supported rate list cached
-                            // at device discovery. Catches an
-                            // unsupported rate before the driver
-                            // surfaces it as a generic validation
-                            // error inside the command buffer.
-                            let want = (rate.x_axis(), rate.y_axis());
-                            if !self.supported_shading_rates.contains(&want) {
-                                ffi::vkCmdEndRenderPass(cmd);
-                                return Err(QuantaError::not_supported(
-                                    "Vulkan render encoder: requested shading rate is not in the device's supported-rate list",
-                                ));
-                            }
-                            let extent = ffi::VkExtent2D {
-                                width: rate.x_axis(),
-                                height: rate.y_axis(),
-                            };
-                            // Pipeline-rate KEEP / KEEP — combine
-                            // the per-draw rate with itself, which
-                            // yields the requested rate verbatim.
-                            // This matches the per-draw semantic of
-                            // `RenderOp::SetShadingRate(r)`.
-                            let combiner_ops: [u32; 2] = [
-                                ffi::VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
-                                ffi::VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
-                            ];
-                            set_rate(cmd, &extent, combiner_ops.as_ptr());
-                        } else {
-                            ffi::vkCmdEndRenderPass(cmd);
-                            return Err(QuantaError::not_supported(
-                                "Vulkan render encoder: VK_KHR_fragment_shading_rate is not available on this device",
-                            ));
-                        }
-                    }
-                    RenderOp::SetShadingRateImage { .. } => {
-                        ffi::vkCmdEndRenderPass(cmd);
-                        return Err(QuantaError::not_supported(
-                            "Vulkan render encoder: shading-rate-image (texel-driven VRS) deferred",
-                        ));
-                    }
-                    RenderOp::ExecuteRenderBundle {
-                        bundle_handle,
-                        count,
-                    } => {
-                        let bundles = self
-                            .render_bundles
-                            .read()
-                            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-                        let bundle = bundles.get(bundle_handle).ok_or_else(|| {
-                            QuantaError::not_found("render bundle handle not found")
-                        })?;
-                        if *count > bundle.recorded {
-                            ffi::vkCmdEndRenderPass(cmd);
-                            return Err(QuantaError::invalid_param(
-                                "execute_bundle count exceeds recorded length",
-                            ));
-                        }
-                        if *count > 0 {
-                            ffi::vkCmdExecuteCommands(cmd, *count, bundle.secondaries.as_ptr());
-                        }
+                    RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
+                        self.encode_vrs_op(&ctx, op)?;
                     }
                 }
             }
@@ -1183,15 +895,12 @@ impl VulkanDevice {
                 // The submission never reached the queue, so the GPU
                 // holds no reference to the per-pass objects — destroy
                 // them immediately.
-                unsafe {
-                    ffi::vkDestroyFramebuffer(self.device, framebuffer, core::ptr::null());
-                    if let Some(rp) = transient_rp {
-                        ffi::vkDestroyRenderPass(self.device, rp, core::ptr::null());
-                    }
-                    if let Some(pool) = descriptor_pool {
-                        ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
-                    }
-                }
+                destroy_render_pass_objects(
+                    self.device,
+                    framebuffer,
+                    transient_rp,
+                    descriptor_pool,
+                );
                 return Err(e);
             }
         };
@@ -1216,6 +925,503 @@ impl VulkanDevice {
             wait_fn: Some(Box::new(move || drop(cleanup))),
         })
     }
+
+    /// Encode a binding / pipeline-state op — the ops that mutate the
+    /// running slot state or bind a pipeline / vertex-index buffer /
+    /// push-constant range without themselves issuing a draw. The NEXT
+    /// draw snapshots the slot state into its own descriptor set, so a
+    /// re-bind here reaches exactly the following draw.
+    ///
+    /// Resolves each handle exactly as the old whole-pass pre-scan did
+    /// (same map lookups, same sampler cache).
+    #[cfg(feature = "render")]
+    fn encode_binding_op(
+        &self,
+        state: &mut EncoderState,
+        ctx: &DrawContext<'_>,
+        op: &RenderOp,
+    ) -> Result<(), QuantaError> {
+        let cmd = ctx.cmd;
+        match op {
+            RenderOp::SetPipeline(handle) => {
+                if let Some(rp) = ctx.render_pipelines.get(handle) {
+                    unsafe {
+                        ffi::vkCmdBindPipeline(
+                            cmd,
+                            ffi::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            rp.pipeline,
+                        );
+                    }
+                    // The descriptor set is bound PER DRAW (below),
+                    // not here — a re-bind between draws in this
+                    // pass must reach the following draw's set.
+                }
+            }
+
+            RenderOp::BindVertices {
+                slot,
+                handle,
+                offset,
+            } => {
+                if let Some(buf) = ctx.buffers.get(handle) {
+                    let offsets = [*offset];
+                    unsafe {
+                        ffi::vkCmdBindVertexBuffers(cmd, *slot, 1, &buf.buffer, offsets.as_ptr());
+                    }
+                }
+            }
+
+            RenderOp::BindIndices { handle, offset } => {
+                if let Some(buf) = ctx.buffers.get(handle) {
+                    unsafe {
+                        ffi::vkCmdBindIndexBuffer(
+                            cmd,
+                            buf.buffer,
+                            *offset,
+                            ffi::VK_INDEX_TYPE_UINT32,
+                        );
+                    }
+                    state.current_index_buffer = Some(buf.buffer);
+                }
+            }
+
+            // Resource binds mutate the running slot state; the
+            // NEXT draw snapshots it into its own descriptor set.
+            // Resolve each handle exactly as the old whole-pass
+            // pre-scan did (same map lookups, same sampler cache).
+            RenderOp::SetField { slot, handle } | RenderOp::SetUniform { slot, handle } => {
+                let idx = *slot as usize;
+                if idx < 8
+                    && let Some(buf) = ctx.buffers.get(handle)
+                {
+                    state.buffer_for_slot[idx] = Some(buf.buffer);
+                }
+            }
+            RenderOp::SetTexture { slot, handle } => {
+                let idx = *slot as usize;
+                if idx < 8
+                    && let Some(tex) = ctx.textures.get(handle)
+                {
+                    state.texture_for_slot[idx] = Some(tex.view);
+                }
+            }
+            RenderOp::SetSampler { slot, sampler } => {
+                let idx = *slot as usize;
+                if idx < 8 {
+                    // Identical descriptors across draws/frames
+                    // reuse one cached sampler, so the sampler pool
+                    // stays bounded by distinct descriptors.
+                    let s = self.get_or_create_render_sampler(sampler);
+                    if !s.is_null() {
+                        state.sampler_for_slot[idx] = Some(s);
+                    }
+                }
+            }
+
+            RenderOp::SetValue { slot, data } => {
+                // The pipeline layout declares exactly one
+                // [0,128) VERTEX|FRAGMENT push range (8 slots
+                // x 16 bytes); pushing outside it or with a
+                // non-multiple-of-4 size is invalid API usage
+                // (VUID-vkCmdPushConstants-offset-01795 /
+                // size-00369) — fail the pass loudly instead.
+                let offset = *slot as usize * 16;
+                if *slot >= 8 || data.len() % 4 != 0 || offset + data.len() > 128 {
+                    return Err(QuantaError::invalid_param(format!(
+                        "SetValue slot {} with {} bytes exceeds the Vulkan \
+                         push-constant contract (slots 0-7, 4-byte-aligned, \
+                         slot*16 + size <= 128)",
+                        slot,
+                        data.len()
+                    )));
+                }
+                if let Some(rp) = ctx.pipeline_ref {
+                    unsafe {
+                        ffi::vkCmdPushConstants(
+                            cmd,
+                            rp.layout,
+                            ffi::VK_SHADER_STAGE_VERTEX_BIT | ffi::VK_SHADER_STAGE_FRAGMENT_BIT,
+                            *slot * 16,
+                            data.len() as u32,
+                            data.as_ptr() as *const c_void,
+                        );
+                    }
+                }
+            }
+
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Encode a dynamic-state op — viewport, scissor, stencil reference.
+    /// These record command-buffer dynamic state and touch neither the
+    /// slot state nor a descriptor set.
+    #[cfg(feature = "render")]
+    fn encode_dynamic_state_op(&self, ctx: &DrawContext<'_>, op: &RenderOp) {
+        let cmd = ctx.cmd;
+        match op {
+            RenderOp::SetViewport {
+                x,
+                y,
+                width,
+                height,
+                min_depth,
+                max_depth,
+            } => {
+                // Negative-viewport y-flip (Vulkan 1.1
+                // maintenance1, core — no extension probe; lavapipe
+                // and v3dv are both >= 1.1). Vulkan's default NDC is
+                // y-down; Metal's and WGSL's are y-up. Emitting the
+                // viewport with its origin moved to the bottom edge
+                // (y + height) and a NEGATIVE height mirrors the y
+                // axis, so a +Y-up clip position lands on the same
+                // framebuffer row Metal and WebGPU put it on. This is
+                // what makes the same DSL source produce the same
+                // pixels on every backend (readback row 0 = the top
+                // row). Depth range (min/max_depth) is unchanged.
+                let viewport = ffi::VkViewport {
+                    x: *x,
+                    y: *y + *height,
+                    width: *width,
+                    height: -*height,
+                    min_depth: *min_depth,
+                    max_depth: *max_depth,
+                };
+                // Set default scissor to match viewport (required for
+                // dynamic state). Scissor is FRAMEBUFFER-space and is
+                // NOT mirrored by the negative viewport, so it keeps
+                // the original (un-flipped) x/y/width/height. Route it
+                // through the same clamp so a viewport placed with a
+                // negative origin can't emit a negative scissor
+                // offset. `f32 as i32 as u32` preserves a negative
+                // origin as the wrapped-in u32 the clamp decodes (a
+                // bare `f32 as u32` would saturate the sign away).
+                let scissor = clamp_scissor(
+                    *x as i32 as u32,
+                    *y as i32 as u32,
+                    *width as u32,
+                    *height as u32,
+                    ctx.target_w,
+                    ctx.target_h,
+                );
+                unsafe {
+                    ffi::vkCmdSetViewport(cmd, 0, 1, &viewport);
+                    ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
+                }
+            }
+
+            RenderOp::SetScissor {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                // Clamp to the render area: a negative (wrapped-in)
+                // offset or an oversized rect becomes a valid clipped
+                // rect, matching Metal's tolerated behavior instead of
+                // tripping VUID-vkCmdSetScissor-x-00595.
+                let scissor =
+                    clamp_scissor(*x, *y, *width, *height, ctx.target_w, ctx.target_h);
+                unsafe {
+                    ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
+                }
+            }
+
+            RenderOp::SetStencilRef(value) => {
+                unsafe {
+                    ffi::vkCmdSetStencilReference(cmd, ffi::VK_STENCIL_FACE_FRONT_AND_BACK, *value);
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    /// Encode a draw op — the four draw families. Each first binds a
+    /// fresh per-draw descriptor set (the running slot snapshot) via the
+    /// shared `bind_draw_set` unit, then issues the `vkCmdDraw*`. The
+    /// indexed-indirect arm rebinds the index buffer first when it
+    /// differs from the currently bound one.
+    #[cfg(feature = "render")]
+    fn encode_draw_op(
+        &self,
+        state: &mut EncoderState,
+        ctx: &DrawContext<'_>,
+        op: &RenderOp,
+    ) -> Result<(), QuantaError> {
+        let cmd = ctx.cmd;
+
+        // One descriptor set per draw: allocate from the per-pass
+        // pool, write the running slot snapshot, bind — then draw.
+        // Guarded on the pipeline being present (a pipeline-less pass
+        // has no set to bind and issues no draws that consume one).
+        macro_rules! bind_draw_set {
+            () => {
+                if let (Some(pool), Some(dsl), Some(pl)) =
+                    (ctx.descriptor_pool, ctx.rp_ds_layout, ctx.rp_layout)
+                {
+                    self.bind_draw_descriptor_set(
+                        cmd,
+                        pool,
+                        dsl,
+                        pl,
+                        &state.texture_for_slot,
+                        &state.sampler_for_slot,
+                        &state.buffer_for_slot,
+                        ctx.default_desc,
+                    )?;
+                }
+            };
+        }
+
+        unsafe {
+            match op {
+                RenderOp::Draw {
+                    vertex_count,
+                    instance_count,
+                } => {
+                    bind_draw_set!();
+                    ffi::vkCmdDraw(cmd, *vertex_count, *instance_count, 0, 0);
+                }
+
+                RenderOp::DrawIndexed {
+                    index_count,
+                    instance_count,
+                } => {
+                    bind_draw_set!();
+                    ffi::vkCmdDrawIndexed(cmd, *index_count, *instance_count, 0, 0, 0);
+                }
+
+                RenderOp::DrawIndirect {
+                    buffer_handle,
+                    offset,
+                } => {
+                    if let Some(buf) = ctx.buffers.get(buffer_handle) {
+                        bind_draw_set!();
+                        ffi::vkCmdDrawIndirect(cmd, buf.buffer, *offset, 1, 0);
+                    }
+                }
+
+                RenderOp::DrawIndexedIndirect {
+                    buffer_handle,
+                    offset,
+                    index_handle,
+                } => {
+                    if let Some(idx_buf) = ctx.buffers.get(index_handle) {
+                        let needs_rebind = state
+                            .current_index_buffer
+                            .map(|b| b != idx_buf.buffer)
+                            .unwrap_or(true);
+                        if needs_rebind {
+                            ffi::vkCmdBindIndexBuffer(
+                                cmd,
+                                idx_buf.buffer,
+                                0,
+                                ffi::VK_INDEX_TYPE_UINT32,
+                            );
+                            state.current_index_buffer = Some(idx_buf.buffer);
+                        }
+                    }
+                    if let Some(buf) = ctx.buffers.get(buffer_handle) {
+                        bind_draw_set!();
+                        ffi::vkCmdDrawIndexedIndirect(cmd, buf.buffer, *offset, 1, 0);
+                    }
+                }
+
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Encode a query / debug / clear / bundle op — the ops that touch
+    /// query pools, debug markers (currently no-ops), the clear ops
+    /// (folded into the render-pass load ops, so no-ops here), and
+    /// secondary-command-buffer execution for render bundles. An error
+    /// arm ends the render pass before returning, matching the original
+    /// inline sequence.
+    #[cfg(feature = "render")]
+    fn encode_query_debug_op(
+        &self,
+        ctx: &DrawContext<'_>,
+        op: &RenderOp,
+    ) -> Result<(), QuantaError> {
+        let cmd = ctx.cmd;
+        match op {
+            RenderOp::Clear(_) | RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {}
+            RenderOp::DebugPush(_) | RenderOp::DebugPop => {}
+
+            // Occlusion queries (M3.3)
+            RenderOp::BeginOcclusionQuery { handle, index } => {
+                let pools = self
+                    .query_pools
+                    .read()
+                    .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                if let Some(qp) = pools.get(handle) {
+                    unsafe {
+                        ffi::vkCmdResetQueryPool(cmd, qp.pool, *index, 1);
+                        ffi::vkCmdBeginQuery(cmd, qp.pool, *index, 0);
+                    }
+                }
+            }
+            RenderOp::EndOcclusionQuery { handle, index } => {
+                let pools = self
+                    .query_pools
+                    .read()
+                    .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                if let Some(qp) = pools.get(handle) {
+                    unsafe {
+                        ffi::vkCmdEndQuery(cmd, qp.pool, *index);
+                    }
+                }
+            }
+
+            RenderOp::ExecuteRenderBundle {
+                bundle_handle,
+                count,
+            } => {
+                let bundles = self
+                    .render_bundles
+                    .read()
+                    .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                let bundle = bundles.get(bundle_handle).ok_or_else(|| {
+                    QuantaError::not_found("render bundle handle not found")
+                })?;
+                if *count > bundle.recorded {
+                    unsafe {
+                        ffi::vkCmdEndRenderPass(cmd);
+                    }
+                    return Err(QuantaError::invalid_param(
+                        "execute_bundle count exceeds recorded length",
+                    ));
+                }
+                if *count > 0 {
+                    unsafe {
+                        ffi::vkCmdExecuteCommands(cmd, *count, bundle.secondaries.as_ptr());
+                    }
+                }
+            }
+
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Encode a variable-rate-shading op (step 063). `SetShadingRate`
+    /// lowers to `vkCmdSetFragmentShadingRateKHR` when the extension is
+    /// present and the requested rate is in the device's supported list;
+    /// `SetShadingRateImage` (texel-driven rates) is deferred. Every
+    /// error arm ends the render pass before returning, exactly as the
+    /// original inline sequence did.
+    #[cfg(feature = "render")]
+    fn encode_vrs_op(
+        &self,
+        ctx: &DrawContext<'_>,
+        op: &RenderOp,
+    ) -> Result<(), QuantaError> {
+        let cmd = ctx.cmd;
+        match op {
+            // VRS native lowering (step 063). When
+            // VK_KHR_fragment_shading_rate was enabled at
+            // device creation and `vkGetDeviceProcAddr`
+            // returned a non-null function pointer, lower
+            // SetShadingRate to vkCmdSetFragmentShadingRateKHR.
+            // SetShadingRateImage (texel-driven rates) is a
+            // separate native track — keep it deferred.
+            RenderOp::SetShadingRate(rate) => {
+                if let Some(set_rate) = self.vrs_set_rate_fn {
+                    // Slice 14 — validate against the
+                    // hardware-supported rate list cached
+                    // at device discovery. Catches an
+                    // unsupported rate before the driver
+                    // surfaces it as a generic validation
+                    // error inside the command buffer.
+                    let want = (rate.x_axis(), rate.y_axis());
+                    if !self.supported_shading_rates.contains(&want) {
+                        unsafe {
+                            ffi::vkCmdEndRenderPass(cmd);
+                        }
+                        return Err(QuantaError::not_supported(
+                            "Vulkan render encoder: requested shading rate is not in the device's supported-rate list",
+                        ));
+                    }
+                    let extent = ffi::VkExtent2D {
+                        width: rate.x_axis(),
+                        height: rate.y_axis(),
+                    };
+                    // Pipeline-rate KEEP / KEEP — combine
+                    // the per-draw rate with itself, which
+                    // yields the requested rate verbatim.
+                    // This matches the per-draw semantic of
+                    // `RenderOp::SetShadingRate(r)`.
+                    let combiner_ops: [u32; 2] = [
+                        ffi::VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+                        ffi::VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+                    ];
+                    unsafe {
+                        set_rate(cmd, &extent, combiner_ops.as_ptr());
+                    }
+                } else {
+                    unsafe {
+                        ffi::vkCmdEndRenderPass(cmd);
+                    }
+                    return Err(QuantaError::not_supported(
+                        "Vulkan render encoder: VK_KHR_fragment_shading_rate is not available on this device",
+                    ));
+                }
+            }
+            RenderOp::SetShadingRateImage { .. } => {
+                unsafe {
+                    ffi::vkCmdEndRenderPass(cmd);
+                }
+                return Err(QuantaError::not_supported(
+                    "Vulkan render encoder: shading-rate-image (texel-driven VRS) deferred",
+                ));
+            }
+
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// Running encoder state threaded through the op-walk in
+/// `render_end_impl`, mutated in op order.
+///
+/// A texture slot holds the `VkImageView` to sample; a buffer slot holds
+/// the `VkBuffer` to bind; a sampler slot holds the resolved `VkSampler`.
+/// `None` = slot unbound. Each draw reads these to build its own
+/// descriptor set, so a re-bind before the next draw is reflected
+/// exactly. `current_index_buffer` tracks the last bound index buffer so
+/// `DrawIndexedIndirect` only rebinds on a change.
+#[cfg(feature = "render")]
+struct EncoderState {
+    texture_for_slot: [Option<ffi::VkImageView>; 8],
+    sampler_for_slot: [Option<ffi::VkSampler>; 8],
+    buffer_for_slot: [Option<ffi::VkBuffer>; 8],
+    current_index_buffer: Option<ffi::VkBuffer>,
+}
+
+/// The read-only context an op-walk helper reads: the recording command
+/// buffer, the three resource maps (already locked in `render_end_impl`),
+/// the per-pass descriptor pool and its layouts, the default sampler
+/// descriptor, the active pipeline (for push constants), and the render
+/// area dimensions (for scissor/viewport clamping). Borrowed for the
+/// duration of the op-walk; none of these change across ops.
+#[cfg(feature = "render")]
+struct DrawContext<'a> {
+    cmd: ffi::VkCommandBuffer,
+    render_pipelines: &'a std::collections::HashMap<u64, super::super::VkRenderPipeline>,
+    buffers: &'a std::collections::HashMap<u64, super::super::VkBuffer>,
+    textures: &'a std::collections::HashMap<u64, super::super::VkTexture>,
+    descriptor_pool: Option<ffi::VkDescriptorPool>,
+    rp_ds_layout: Option<ffi::VkDescriptorSetLayout>,
+    rp_layout: Option<ffi::VkPipelineLayout>,
+    default_desc: &'a crate::texture::SamplerDesc,
+    pipeline_ref: Option<&'a super::super::VkRenderPipeline>,
+    target_w: u32,
+    target_h: u32,
 }
 
 /// Defers destruction of per-pass Vulkan objects until the GPU has
@@ -1252,14 +1458,38 @@ impl Drop for RenderPassCleanup {
         // wait_fn does both), so the command buffer cannot be recycled
         // while still executing.
         let _ = self.submit_pulse.wait();
-        unsafe {
-            ffi::vkDestroyFramebuffer(self.device, self.framebuffer, core::ptr::null());
-            if let Some(rp) = self.transient_rp {
-                ffi::vkDestroyRenderPass(self.device, rp, core::ptr::null());
-            }
-            if let Some(pool) = self.descriptor_pool {
-                ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
-            }
+        destroy_render_pass_objects(
+            self.device,
+            self.framebuffer,
+            self.transient_rp,
+            self.descriptor_pool,
+        );
+    }
+}
+
+/// Destroy the per-pass framebuffer plus the optional transient render
+/// pass and descriptor pool, in that fixed order.
+///
+/// The single owner of this destroy sequence: the submit-failure path in
+/// `render_end_impl` (the submission never reached the queue, so nothing
+/// on the GPU references these) and `RenderPassCleanup::drop` (after the
+/// submission fence has been waited) call it with the same handles. The
+/// caller is responsible for ensuring the GPU no longer references these
+/// objects before invoking it.
+#[cfg(feature = "render")]
+fn destroy_render_pass_objects(
+    device: ffi::VkDevice,
+    framebuffer: ffi::VkFramebuffer,
+    transient_rp: Option<ffi::VkRenderPass>,
+    descriptor_pool: Option<ffi::VkDescriptorPool>,
+) {
+    unsafe {
+        ffi::vkDestroyFramebuffer(device, framebuffer, core::ptr::null());
+        if let Some(rp) = transient_rp {
+            ffi::vkDestroyRenderPass(device, rp, core::ptr::null());
+        }
+        if let Some(pool) = descriptor_pool {
+            ffi::vkDestroyDescriptorPool(device, pool, core::ptr::null());
         }
     }
 }
