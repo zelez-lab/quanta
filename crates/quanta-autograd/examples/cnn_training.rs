@@ -15,12 +15,32 @@
 //! bias, a sigmoid, an MSE loss, the backward pass, and SGD updates — every
 //! gradient being the proven analytic one.
 //!
-//! Run it:
-//!   cargo run --example cnn_training -p quanta-autograd --release
-//! (release matters — the software lane JITs a kernel per op per step.)
+//! Runs on the real GPU when built with a hardware backend feature; on the CPU
+//! JIT it works too but is far slower (conv-heavy), so prefer the GPU:
+//!   cargo run --example cnn_training -p quanta-autograd --release --features metal
+//!   cargo run --example cnn_training -p quanta-autograd --release            # CPU JIT (slow)
+//! (release matters — every op JITs a kernel per step.)
+//!
+//! Bounded by design: 8 images, 4 conv channels, 400 epochs — under a minute on
+//! a real GPU. To scale up, raise `channels` (a wider conv), enlarge the images
+//! and add more stripe positions, or add epochs; lower `lr` if it destabilizes.
 
 use quanta_array::Array;
 use quanta_autograd::{Tape, Var};
+
+/// The device this example runs on. With a hardware backend feature
+/// (`metal` / `vulkan`) it trains on the real GPU; otherwise it falls back to
+/// the portable CPU JIT interpreter (slow on this conv-heavy model).
+fn gpu() -> quanta::Gpu {
+    #[cfg(any(feature = "metal", feature = "vulkan"))]
+    {
+        quanta::init().expect("a GPU device (metal/vulkan feature is on)")
+    }
+    #[cfg(not(any(feature = "metal", feature = "vulkan")))]
+    {
+        quanta::init_cpu()
+    }
+}
 
 /// `p ← p − lr·g` — the optimizer step, plain array ops outside the tape.
 fn sgd(p: &Array<f32>, g: &Array<f32>, lr: f32) -> Array<f32> {
@@ -43,7 +63,7 @@ fn stripe(horizontal: bool, idx: usize) -> Vec<f32> {
 }
 
 fn main() {
-    let gpu = quanta::init_cpu();
+    let gpu = gpu();
     let channels = 4usize; // conv output channels
 
     // Dataset: every horizontal stripe (4) and every vertical stripe (4),
@@ -77,6 +97,7 @@ fn main() {
     let mut bl = Array::zeros(&gpu, &[1, 1]).unwrap();
 
     let lr = 0.5f32;
+    let mut final_loss = f32::NAN;
     println!("epoch    loss");
     for epoch in 0..400 {
         let tape = Tape::<f32>::new();
@@ -113,8 +134,13 @@ fn main() {
             .sum()
             .unwrap();
 
+        final_loss = loss.value().to_vec().unwrap()[0];
+        if !final_loss.is_finite() {
+            eprintln!("diverged: loss = {final_loss} at epoch {epoch}");
+            std::process::exit(1);
+        }
         if epoch % 50 == 0 || epoch == 399 {
-            println!("{epoch:5}  {:.6}", loss.value().to_vec().unwrap()[0]);
+            println!("{epoch:5}  {final_loss:.6}");
         }
 
         let vars: [&Var<f32>; 3] = [&wcv, &wlv, &blv];
@@ -166,5 +192,11 @@ fn main() {
             if hit { "✓" } else { "✗" }
         );
     }
-    println!("\naccuracy: {correct}/{n}");
+    println!("\naccuracy: {correct}/{n}  (final loss {final_loss:.6})");
+    // A trained model classifies every image; a stalled loop would miss some,
+    // so fail CI if it does.
+    if correct < n {
+        eprintln!("did not converge: {correct}/{n} correct");
+        std::process::exit(1);
+    }
 }

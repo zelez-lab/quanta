@@ -4,16 +4,37 @@
 //! target `y = x²` on `[-1, 1]` by SGD on mean-squared error. The hidden layer
 //! (with a tanh nonlinearity) is what lets a linear output represent a curve.
 //!
-//! This is the cookbook's worked example — it exercises the whole stack
-//! composing into a network: matmul, broadcast bias, a tanh activation, an MSE
-//! loss (sub / mul / mean), the backward pass, and an SGD parameter update.
+//! This is the tutorial's worked example (docs: Training an MLP) — it exercises
+//! the whole stack composing into a network: matmul, broadcast bias, a tanh
+//! activation, an MSE loss (sub / mul / mean), the backward pass, and an SGD
+//! parameter update.
 //!
-//! Run it:
-//!   cargo run --example mlp_training -p quanta-autograd --release
-//! (release matters — the software lane JITs a kernel per op per step).
+//! Runs on the real GPU when built with a hardware backend feature; otherwise
+//! it falls back to the portable CPU JIT (slower, but no GPU required):
+//!   cargo run --example mlp_training -p quanta-autograd --release --features metal
+//!   cargo run --example mlp_training -p quanta-autograd --release            # CPU JIT
+//! (release matters — every op JITs a kernel per step.)
+//!
+//! Bounded by design: 16 samples, 300 epochs — well under a minute either way.
+//! To make it a bigger fit, raise `n` (more samples), `hidden` (wider net), or
+//! the epoch count; drop `lr` if a wider net starts to diverge.
 
 use quanta_array::Array;
 use quanta_autograd::{Tape, Var};
+
+/// The device this example runs on. With a hardware backend feature
+/// (`metal` / `vulkan`) it trains on the real GPU; otherwise it falls back to
+/// the portable CPU JIT interpreter.
+fn gpu() -> quanta::Gpu {
+    #[cfg(any(feature = "metal", feature = "vulkan"))]
+    {
+        quanta::init().expect("a GPU device (metal/vulkan feature is on)")
+    }
+    #[cfg(not(any(feature = "metal", feature = "vulkan")))]
+    {
+        quanta::init_cpu()
+    }
+}
 
 /// `p ← p − lr·g` — the optimizer step, plain array ops outside the tape.
 fn sgd(p: &Array<f32>, g: &Array<f32>, lr: f32) -> Array<f32> {
@@ -25,7 +46,7 @@ fn sgd(p: &Array<f32>, g: &Array<f32>, lr: f32) -> Array<f32> {
 }
 
 fn main() {
-    let gpu = quanta::init_cpu();
+    let gpu = gpu();
     let n = 16usize;
     let hidden = 6usize;
 
@@ -51,6 +72,7 @@ fn main() {
     let mut b2 = Array::zeros(&gpu, &[1, 1]).unwrap();
 
     let lr = 0.2f32;
+    let mut final_loss = f32::NAN;
     println!("epoch    loss");
     for epoch in 0..300 {
         // Each step builds a fresh tape from the current parameters.
@@ -75,8 +97,13 @@ fn main() {
             .sum()
             .unwrap();
 
+        final_loss = loss.value().to_vec().unwrap()[0];
+        if !final_loss.is_finite() {
+            eprintln!("diverged: loss = {final_loss} at epoch {epoch}");
+            std::process::exit(1);
+        }
         if epoch % 30 == 0 || epoch == 299 {
-            println!("{epoch:5}  {:.6}", loss.value().to_vec().unwrap()[0]);
+            println!("{epoch:5}  {final_loss:.6}");
         }
 
         // Backward + SGD update for every parameter.
@@ -110,5 +137,13 @@ fn main() {
         .unwrap();
     for (i, &xi) in probe.iter().enumerate() {
         println!("{xi:5.1}   {:6.3}   {:6.3}", xi * xi, pred[i]);
+    }
+
+    println!("\nfinal loss: {final_loss:.6}");
+    // A converged fit lands well under this; a loop bug that stalls training
+    // would leave the loss high, so fail CI on it.
+    if final_loss > 0.05 {
+        eprintln!("did not converge: final loss {final_loss:.6} > 0.05");
+        std::process::exit(1);
     }
 }

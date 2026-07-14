@@ -161,8 +161,9 @@ for _ in 0..epochs {
 
 [`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-autograd/examples/mlp_training.rs)
 puts it together: a 2-layer MLP `h = tanh(x·W1 + b1); ŷ = h·W2 + b2` learning
-`y = x²`. Running it (`cargo run --example mlp_training -p quanta-autograd
---release`) shows the loss falling and the fit forming:
+`y = x²`. Running it on the GPU (`cargo run --example mlp_training -p
+quanta-autograd --release --features metal` — `vulkan` off Apple, or drop the
+flag for the CPU lane) shows the loss falling and the fit forming:
 
 ```text
 epoch    loss
