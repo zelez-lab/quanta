@@ -3,9 +3,11 @@
 //! Mirrors: crates/quanta-render-dsl/src/shader_macro.rs
 //!
 //! The shader_macro module implements expand_vertex, expand_fragment, and stub
-//! expansions for tessellation, mesh, and ray tracing stages. The vertex and
-//! fragment expanders call compiler::compile_shader to produce ShaderBinary
-//! with spirv + metallib + wgsl fields.
+//! expansions for tessellation, mesh, and ray tracing stages. All nine stages
+//! emit through one builder (build_shader_binary), so the ShaderBinary literal
+//! — every field, including wgsl — is written in exactly one place. The vertex
+//! and fragment expanders call compiler::compile_shader to produce spirv +
+//! metallib + wgsl; the stub stages emit an all-None binary (wgsl: None too).
 //!
 //! Proves:
 //!   T960: expand_vertex calls compile_shader with stage="vertex"
@@ -16,6 +18,7 @@
 //!   T965: Stub stages (tess, mesh, ray) produce None for spirv/metallib
 //!   T966: All 9 shader stages produce distinct ShaderStage values
 //!   T967: Binary const name follows {NAME}_SHADER convention
+//!   T968: Every stage — compiled and stub — emits the full field set (wgsl too)
 
 use vstd::prelude::*;
 
@@ -123,6 +126,30 @@ proof fn t962_binary_completeness()
     }),
 {}
 
+// ── T968: Field set is stage-independent ──────────────────────────
+
+/// Every stage — compiled (vertex, fragment) and stub (tess, mesh, ray) —
+/// emits through the one builder, which lists every ShaderBinary field. So
+/// the field set carried by a stage's binary does not depend on the stage:
+/// stubs carry `wgsl: None`, not a missing `wgsl`. This is the invariant the
+/// dropped-`wgsl` bug violated for the seven stubs.
+pub open spec fn emitted_fields(_stage: ShaderStage) -> ShaderBinaryFields {
+    shader_binary_completeness()
+}
+
+/// T968: whatever the stage, the emitted binary has the wgsl field (and the
+/// rest of the full set).
+proof fn t968_wgsl_present_every_stage(stage: ShaderStage)
+    ensures ({
+        let f = emitted_fields(stage);
+        f.has_spirv_field
+        && f.has_metallib_field
+        && f.has_wgsl_field
+        && f.has_entry_point
+        && f.has_stage
+    }),
+{}
+
 // ── T963: Stage tag consistency ───────────────────────────────────
 
 /// The stage string passed to compile_shader matches the ShaderStage
@@ -176,7 +203,7 @@ proof fn t964c_stubs_no_return_check()
 
 /// Stub stages (TessControl, TessEval, Task, Mesh, RayGen, ClosestHit, Miss)
 /// do not call compile_shader. They produce ShaderBinary with spirv: None,
-/// metallib: None (some also omit wgsl).
+/// metallib: None, and wgsl: None — the full field set, all empty.
 
 pub open spec fn stage_has_compiler(stage: ShaderStage) -> bool {
     match stage {

@@ -1,5 +1,12 @@
 //! Implementation bodies for shader proc macros: vertex, fragment, tessellation,
 //! mesh, and ray tracing stages.
+//!
+//! All nine stages emit through one builder, [`build_shader_binary`], so the
+//! `ShaderBinary` literal — every field, including `wgsl` — is written in
+//! exactly one place. Two families feed it: the *compiled* stages (vertex,
+//! fragment) run the shader through the compiler binary; the *stub* stages
+//! (tessellation, mesh, ray tracing) capture the entry point and emit an
+//! all-`None` binary that the runtime fills in later.
 
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
@@ -7,89 +14,63 @@ use syn::ItemFn;
 
 use quanta_dsl_core as compiler;
 
-/// Core implementation of `#[quanta::vertex]`.
-pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
-    if matches!(func.sig.output, syn::ReturnType::Default) {
-        return syn::Error::new_spanned(
-            &func.sig.ident,
-            "vertex shader must have a return type (clip-space position)",
-        )
-        .to_compile_error()
-        .into();
-    }
+/// The five backend-binary token expressions embedded in a `ShaderBinary`:
+/// SPIR-V, the three metallib variants (macOS / iOS device / iOS simulator),
+/// and WGSL. Each is a `proc_macro2::TokenStream` naming a `Some(..)`/`None`.
+struct Backends {
+    spirv: proc_macro2::TokenStream,
+    metallib: proc_macro2::TokenStream,
+    metallib_ios: proc_macro2::TokenStream,
+    metallib_ios_sim: proc_macro2::TokenStream,
+    wgsl: proc_macro2::TokenStream,
+}
 
-    let func_name = &func.sig.ident;
+impl Backends {
+    /// The all-`None` backends of a stub stage — no binaries embedded.
+    fn none() -> Self {
+        Backends {
+            spirv: quote! { None },
+            metallib: quote! { None },
+            metallib_ios: quote! { None },
+            metallib_ios_sim: quote! { None },
+            wgsl: quote! { None },
+        }
+    }
+}
+
+/// The single place that writes the `ShaderBinary` literal — every field,
+/// including `wgsl` — plus its `{NAME}_SHADER` static and the accessor fn.
+///
+/// `func_name` names both the accessor and (upper-cased + `_SHADER`) the
+/// static; `stage` is the `::quanta::ShaderStage::<Variant>` path token; the
+/// `backends` carry the five embedded-binary expressions.
+fn build_shader_binary(
+    func_name: &syn::Ident,
+    stage: proc_macro2::TokenStream,
+    backends: Backends,
+) -> TokenStream {
     let func_name_str = func_name.to_string();
     let binary_name = syn::Ident::new(
         &format!("{}_SHADER", func_name_str.to_uppercase()),
         func_name.span(),
     );
-
-    // Parse shader params and body, then compile via the compiler binary.
-    let (params, textures) = match compiler::parse_shader_params(&func) {
-        Ok(p) => p,
-        Err(e) => return e.to_compile_error().into(),
-    };
-    if !textures.is_empty() {
-        return syn::Error::new_spanned(
-            &func.sig.ident,
-            "texture parameters are only supported in fragment shaders",
-        )
-        .to_compile_error()
-        .into();
-    }
-    let return_ty = match compiler::parse_return_type(&func) {
-        Ok(t) => t,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    // Extract body source text for the compiler.
-    let body_source = func.block.to_token_stream().to_string();
-
-    let (spirv_expr, metallib_expr, metallib_ios_expr, metallib_ios_sim_expr, wgsl_expr) =
-        match compiler::compile_shader(&func_name_str, "vertex", &params, &return_ty, &body_source)
-        {
-            Ok(Some(output)) => {
-                let spirv = embed_bytes(&output.spirv);
-                let metallib = embed_bytes(&output.metallib);
-                let metallib_ios = embed_bytes(&output.metallib_ios);
-                let metallib_ios_sim = embed_bytes(&output.metallib_ios_sim);
-                let wgsl = match &output.wgsl {
-                    Some(s) => quote! { Some(#s) },
-                    None => quote! { None },
-                };
-                (spirv, metallib, metallib_ios, metallib_ios_sim, wgsl)
-            }
-            // No compiler binary found — ship empty binaries so `cargo
-            // check` works in fresh clones; the runtime reports the gap.
-            Ok(None) => (
-                quote! { None },
-                quote! { None },
-                quote! { None },
-                quote! { None },
-                quote! { None },
-            ),
-            // Compiler found but failed — a shader with missing binaries
-            // panics at pipeline creation, so fail the build here instead.
-            Err(msg) => {
-                return syn::Error::new_spanned(
-                    &func.sig.ident,
-                    format!("vertex shader `{func_name_str}` failed to compile: {msg}"),
-                )
-                .to_compile_error()
-                .into();
-            }
-        };
+    let Backends {
+        spirv,
+        metallib,
+        metallib_ios,
+        metallib_ios_sim,
+        wgsl,
+    } = backends;
 
     let expanded = quote! {
         pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: #spirv_expr,
-            metallib: #metallib_expr,
-            metallib_ios: #metallib_ios_expr,
-            metallib_ios_sim: #metallib_ios_sim_expr,
-            wgsl: #wgsl_expr,
+            spirv: #spirv,
+            metallib: #metallib,
+            metallib_ios: #metallib_ios,
+            metallib_ios_sim: #metallib_ios_sim,
+            wgsl: #wgsl,
             entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Vertex,
+            stage: #stage,
         };
 
         pub fn #func_name() -> &'static ::quanta::ShaderBinary {
@@ -112,275 +93,157 @@ fn embed_bytes(bytes: &Option<Vec<u8>>) -> proc_macro2::TokenStream {
     }
 }
 
-/// Core implementation of `#[quanta::fragment]`.
-pub(crate) fn expand_fragment(func: ItemFn) -> TokenStream {
+/// Shared body of the *compiled* stages (vertex, fragment): parse params +
+/// return type, run the compiler binary, and emit through
+/// [`build_shader_binary`]. `stage_str` is the compiler's stage name and
+/// `stage` the matching `ShaderStage` path token; `allow_textures` gates the
+/// `&Texture2D` params that only fragment shaders accept.
+///
+/// The three compile outcomes match the original vertex/fragment code exactly:
+/// `Ok(Some)` embeds the produced binaries, `Ok(None)` (no compiler on PATH)
+/// ships empty binaries so `cargo check` works in fresh clones, and `Err`
+/// fails the build rather than deferring a panic to pipeline creation.
+fn expand_compiled(
+    func: ItemFn,
+    stage_str: &str,
+    stage: proc_macro2::TokenStream,
+    allow_textures: bool,
+) -> TokenStream {
     if matches!(func.sig.output, syn::ReturnType::Default) {
-        return syn::Error::new_spanned(
-            &func.sig.ident,
-            "fragment shader must have a return type (output color)",
-        )
-        .to_compile_error()
-        .into();
+        let msg = if allow_textures {
+            "fragment shader must have a return type (output color)"
+        } else {
+            "vertex shader must have a return type (clip-space position)"
+        };
+        return syn::Error::new_spanned(&func.sig.ident, msg)
+            .to_compile_error()
+            .into();
     }
 
-    let func_name = &func.sig.ident;
+    let func_name = func.sig.ident.clone();
     let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
 
     // Parse shader params and body, then compile via the compiler binary.
     let (params, textures) = match compiler::parse_shader_params(&func) {
         Ok(p) => p,
         Err(e) => return e.to_compile_error().into(),
     };
+    if !allow_textures && !textures.is_empty() {
+        return syn::Error::new_spanned(
+            &func.sig.ident,
+            "texture parameters are only supported in fragment shaders",
+        )
+        .to_compile_error()
+        .into();
+    }
     let return_ty = match compiler::parse_return_type(&func) {
         Ok(t) => t,
         Err(e) => return e.to_compile_error().into(),
     };
 
-    // `&Texture2D` params resolve to slots by declaration order; the
-    // emitters consume the slot form (`sample(N, uv)`).
-    let body_source =
-        compiler::rewrite_texture_names(&func.block.to_token_stream().to_string(), &textures);
+    // Vertex ships the body verbatim; fragment rewrites `&Texture2D` params
+    // to slots by declaration order, since the emitters consume the slot
+    // form (`sample(N, uv)`).
+    let body_source = if allow_textures {
+        compiler::rewrite_texture_names(&func.block.to_token_stream().to_string(), &textures)
+    } else {
+        func.block.to_token_stream().to_string()
+    };
 
-    let (spirv_expr, metallib_expr, metallib_ios_expr, metallib_ios_sim_expr, wgsl_expr) =
-        match compiler::compile_shader(
-            &func_name_str,
-            "fragment",
-            &params,
-            &return_ty,
-            &body_source,
-        ) {
-            Ok(Some(output)) => {
-                let spirv = embed_bytes(&output.spirv);
-                let metallib = embed_bytes(&output.metallib);
-                let metallib_ios = embed_bytes(&output.metallib_ios);
-                let metallib_ios_sim = embed_bytes(&output.metallib_ios_sim);
-                let wgsl = match &output.wgsl {
-                    Some(s) => quote! { Some(#s) },
-                    None => quote! { None },
-                };
-                (spirv, metallib, metallib_ios, metallib_ios_sim, wgsl)
-            }
-            // No compiler binary found — ship empty binaries so `cargo
-            // check` works in fresh clones; the runtime reports the gap.
-            Ok(None) => (
-                quote! { None },
-                quote! { None },
-                quote! { None },
-                quote! { None },
-                quote! { None },
-            ),
-            // Compiler found but failed — a shader with missing binaries
-            // panics at pipeline creation, so fail the build here instead.
-            Err(msg) => {
-                return syn::Error::new_spanned(
-                    &func.sig.ident,
-                    format!("fragment shader `{func_name_str}` failed to compile: {msg}"),
-                )
-                .to_compile_error()
-                .into();
-            }
-        };
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: #spirv_expr,
-            metallib: #metallib_expr,
-            metallib_ios: #metallib_ios_expr,
-            metallib_ios_sim: #metallib_ios_sim_expr,
-            wgsl: #wgsl_expr,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Fragment,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
+    let backends = match compiler::compile_shader(
+        &func_name_str,
+        stage_str,
+        &params,
+        &return_ty,
+        &body_source,
+    ) {
+        Ok(Some(output)) => Backends {
+            spirv: embed_bytes(&output.spirv),
+            metallib: embed_bytes(&output.metallib),
+            metallib_ios: embed_bytes(&output.metallib_ios),
+            metallib_ios_sim: embed_bytes(&output.metallib_ios_sim),
+            wgsl: match &output.wgsl {
+                Some(s) => quote! { Some(#s) },
+                None => quote! { None },
+            },
+        },
+        // No compiler binary found — ship empty binaries so `cargo
+        // check` works in fresh clones; the runtime reports the gap.
+        Ok(None) => Backends::none(),
+        // Compiler found but failed — a shader with missing binaries
+        // panics at pipeline creation, so fail the build here instead.
+        Err(msg) => {
+            return syn::Error::new_spanned(
+                &func.sig.ident,
+                format!("{stage_str} shader `{func_name_str}` failed to compile: {msg}"),
+            )
+            .to_compile_error()
+            .into();
         }
     };
-    expanded.into()
+
+    build_shader_binary(&func_name, stage, backends)
+}
+
+/// Shared body of the *stub* stages (tessellation, mesh, ray tracing): capture
+/// the entry point and emit an all-`None` [`ShaderBinary`] through
+/// [`build_shader_binary`]. These stages don't run the compiler binary; the
+/// runtime fills the binaries in later.
+fn expand_stub(func: ItemFn, stage: proc_macro2::TokenStream) -> TokenStream {
+    build_shader_binary(&func.sig.ident, stage, Backends::none())
+}
+
+/// Core implementation of `#[quanta::vertex]`.
+pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
+    expand_compiled(
+        func,
+        "vertex",
+        quote! { ::quanta::ShaderStage::Vertex },
+        false,
+    )
+}
+
+/// Core implementation of `#[quanta::fragment]`.
+pub(crate) fn expand_fragment(func: ItemFn) -> TokenStream {
+    expand_compiled(
+        func,
+        "fragment",
+        quote! { ::quanta::ShaderStage::Fragment },
+        true,
+    )
 }
 
 /// Core implementation of `#[quanta::tess_control]`.
 pub(crate) fn expand_tess_control(func: ItemFn) -> TokenStream {
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            metallib_ios: None,
-            metallib_ios_sim: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::TessControl,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    expand_stub(func, quote! { ::quanta::ShaderStage::TessControl })
 }
 
 /// Core implementation of `#[quanta::tess_eval]`.
 pub(crate) fn expand_tess_eval(func: ItemFn) -> TokenStream {
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            metallib_ios: None,
-            metallib_ios_sim: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::TessEval,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    expand_stub(func, quote! { ::quanta::ShaderStage::TessEval })
 }
 
 /// Core implementation of `#[quanta::task]`.
 pub(crate) fn expand_task(func: ItemFn) -> TokenStream {
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            metallib_ios: None,
-            metallib_ios_sim: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Task,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    expand_stub(func, quote! { ::quanta::ShaderStage::Task })
 }
 
 /// Core implementation of `#[quanta::mesh]`.
 pub(crate) fn expand_mesh(func: ItemFn) -> TokenStream {
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            metallib_ios: None,
-            metallib_ios_sim: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Mesh,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    expand_stub(func, quote! { ::quanta::ShaderStage::Mesh })
 }
 
 /// Core implementation of `#[quanta::ray_gen]`.
 pub(crate) fn expand_ray_gen(func: ItemFn) -> TokenStream {
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            metallib_ios: None,
-            metallib_ios_sim: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::RayGen,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    expand_stub(func, quote! { ::quanta::ShaderStage::RayGen })
 }
 
 /// Core implementation of `#[quanta::closest_hit]`.
 pub(crate) fn expand_closest_hit(func: ItemFn) -> TokenStream {
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            metallib_ios: None,
-            metallib_ios_sim: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::ClosestHit,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    expand_stub(func, quote! { ::quanta::ShaderStage::ClosestHit })
 }
 
 /// Core implementation of `#[quanta::miss]`.
 pub(crate) fn expand_miss(func: ItemFn) -> TokenStream {
-    let func_name = &func.sig.ident;
-    let func_name_str = func_name.to_string();
-    let binary_name = syn::Ident::new(
-        &format!("{}_SHADER", func_name_str.to_uppercase()),
-        func_name.span(),
-    );
-
-    let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
-            spirv: None,
-            metallib: None,
-            metallib_ios: None,
-            metallib_ios_sim: None,
-            entry_point: #func_name_str,
-            stage: ::quanta::ShaderStage::Miss,
-        };
-
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
-            &#binary_name
-        }
-    };
-    expanded.into()
+    expand_stub(func, quote! { ::quanta::ShaderStage::Miss })
 }
