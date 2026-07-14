@@ -48,13 +48,17 @@
 //!
 //! - WGSL is the honesty layer for the lagging twin. Its stub is a naive
 //!   string replace (`Vec4 :: new (` → `vec4<f32>(`, `let mut ` → `var `)
-//!   that ALWAYS returns Ok, drops uniforms entirely, and passes
-//!   statement-`if`, `let`, `sample(`, deref-`*`, and un-aliased `Vec2 :: new
-//!   (` through untranslated. `Translates` is claimed only for the bodies it
-//!   genuinely handles; every other fixture is `KnownBroken`, which asserts
-//!   the known wrongness is STILL observable (a Rust `if`/`let` verbatim
-//!   inside a `return`, an undeclared uniform name, a raw `sample(`). When
-//!   someone fixes `emit_wgsl`, those assertions fail and the fixture must
+//!   that returns Ok for every body (bar the combined-SSBO cap, which it now
+//!   `Reject`s identically to MSL/SPIR-V), still drops `&T` uniforms entirely,
+//!   and passes statement-`if`, `let`, `sample(`, deref-`*`, and un-aliased
+//!   `Vec2 :: new (` through untranslated. It DOES now lower `&[T]` slice
+//!   params — a `@group(0) @binding(slot) var<storage, read>` array plus a
+//!   `name[u32(index)]` index rewrite, at parity with the MSL/SPIR-V slice
+//!   contract. `Translates` is claimed only for the bodies it genuinely
+//!   handles; every other fixture is `KnownBroken`, which asserts the known
+//!   wrongness is STILL observable (a Rust `if`/`let` verbatim inside a
+//!   `return`, an undeclared uniform name, a raw `sample(`). When someone
+//!   fixes `emit_wgsl` further, those assertions fail and the fixture must
 //!   flip to `Translates` — the designed trip-wire.
 
 use quanta_ir::{ShaderDef, ShaderParam, ShaderStage, ShaderType};
@@ -118,6 +122,11 @@ enum WgslExpect {
     /// wrongness. When emit_wgsl is fixed these assertions break and the
     /// fixture must move to `Translates`.
     KnownBroken { residue: &'static [&'static str] },
+    /// `emit_*_shader` returns Err whose message contains the substring — a
+    /// STRUCTURAL rejection (the combined-SSBO cap) that happens during
+    /// interface setup, mirroring the MSL and SPIR-V `Reject`. The build fails
+    /// on it identically across all three emitters.
+    Reject { err_contains: &'static str },
 }
 
 struct Fixture {
@@ -846,7 +855,8 @@ fn fixtures() -> Vec<Fixture> {
         // OpConvertFToU (index → uint) + OpAccessChain[member0, idx] + OpLoad —
         // the ConvertFToU witnesses genuine slice access (a passthrough never
         // converts f→u). MSL declares `const device float4* stops [[buffer(0)]]`
-        // and indexes `stops[(uint)(0.0)]`. WGSL's stub can't index → residue.
+        // and indexes `stops[(uint)(0.0)]`. WGSL binds a read-only runtime array
+        // at the same slot and indexes `stops[u32(0)]` — full parity.
         Fixture {
             name: "slice_index_literal",
             stage: Fragment,
@@ -862,12 +872,16 @@ fn fixtures() -> Vec<Fixture> {
                     "stops[(uint)(0.0)]",
                 ],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["stops [ 0 ]"],
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<storage, read> stops: array<vec4<f32>>;",
+                    "stops[u32(0)]",
+                ],
             },
         },
         // A computed index (from uv arithmetic). The `uv.x * 4.0` is OpFMul; the
-        // index still truncates through OpConvertFToU. MSL: `stops[(uint)(i)]`.
+        // index still truncates through OpConvertFToU. MSL: `stops[(uint)(i)]`;
+        // WGSL: `stops[u32(i)]` (the same integral-index truncation).
         Fixture {
             name: "slice_index_computed",
             stage: Fragment,
@@ -883,8 +897,11 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["stops[(uint)(i)]"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["stops [ i ]"],
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<storage, read> stops: array<vec4<f32>>;",
+                    "stops[u32(i)]",
+                ],
             },
         },
         // A slice DECLARED between two uniforms proves uniform and slice params
@@ -893,6 +910,14 @@ fn fixtures() -> Vec<Fixture> {
         // the SPIR-V OpFAdd (u_a.x + stops[0].x) + OpConvertFToU witness the
         // translation (opcodes can't encode a binding number, exactly as
         // `uniform_mixed_order` proves uniform order via substrings + OpFAdd).
+        //
+        // WGSL now binds the slice at the SHARED index (binding 1, past the u_a
+        // uniform's index 0) and rewrites `stops[0/1]` to `u32`-indexed access —
+        // so the slice half is at parity. But `&T` uniforms are still dropped
+        // (out of scope for the slice work), so `u_a`/`u_b` remain undeclared:
+        // this stays `KnownBroken`, its residue now pinning the undeclared
+        // uniform `u_a . x` (mirroring `uniform_mixed_order`'s `u1 . x`), not the
+        // slice index — which proves the slice binding landed at index 1, not 0.
         Fixture {
             name: "slice_mixed_decl_order",
             stage: Fragment,
@@ -913,8 +938,14 @@ fn fixtures() -> Vec<Fixture> {
                     "constant float4& u_b [[buffer(2)]]",
                 ],
             },
+            // Slice at shared index 1 with a `u32`-rewritten access; uniforms
+            // still dropped (undeclared `u_a`), so still broken overall.
             wgsl: WgslExpect::KnownBroken {
-                residue: &["stops [ 0 ]"],
+                residue: &[
+                    "@group(0) @binding(1) var<storage, read> stops: array<vec4<f32>>;",
+                    "stops[u32(0)]",
+                    "u_a . x",
+                ],
             },
         },
         // ── REJECTIONS: SLICE + CAP ───────────────────────────────────────
@@ -936,9 +967,10 @@ fn fixtures() -> Vec<Fixture> {
             },
         },
         // 9 combined uniform + slice params overrun the cap of 8 (texture
-        // bindings start at 8). BOTH emitters fail with a structural error that
-        // names the count and the cap — SPIR-V errors during interface setup
-        // (no module to passthrough), MSL likewise before body lowering.
+        // bindings start at 8). ALL THREE emitters fail with a structural error
+        // that names the count and the cap — SPIR-V errors during interface
+        // setup (no module to passthrough), MSL and WGSL likewise before body
+        // lowering, with byte-identical "cap of 8" wording.
         Fixture {
             name: "rej_ssbo_cap",
             stage: Fragment,
@@ -961,8 +993,8 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Reject {
                 err_contains: "cap of 8",
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["s4 [ 0 ]"],
+            wgsl: WgslExpect::Reject {
+                err_contains: "cap of 8",
             },
         },
         // ── SPACING-ROBUST TEXTURE SCAN (A4) ──────────────────────────────
@@ -1477,10 +1509,31 @@ fn wgsl_verdicts_hold() {
     let mut failures = Vec::new();
     for f in fixtures() {
         let d = def(&f);
-        let wgsl = match emit_wgsl(&d) {
+        let wgsl_res = emit_wgsl(&d);
+        // A `Reject` fixture asserts the structural error (the SSBO cap), so it
+        // is handled before the always-Ok expectation of the other verdicts.
+        if let WgslExpect::Reject { err_contains } = &f.wgsl {
+            match &wgsl_res {
+                Ok(w) => failures.push(format!(
+                    "[{}] expected WGSL Reject ({err_contains:?}), got Ok:\n{w}",
+                    f.name
+                )),
+                Err(e) => {
+                    if !e.contains(err_contains) {
+                        failures.push(format!(
+                            "[{}] WGSL error {e:?} does not contain {err_contains:?}",
+                            f.name
+                        ));
+                    }
+                }
+            }
+            continue;
+        }
+        let wgsl = match wgsl_res {
             Ok(w) => w,
             Err(e) => {
-                // The stub is documented as always-Ok; an Err is a finding.
+                // The stub is documented as always-Ok (bar the SSBO-cap
+                // `Reject`); any other Err is a finding.
                 failures.push(format!("[{}] emit_wgsl unexpectedly errored: {e}", f.name));
                 continue;
             }
@@ -1507,6 +1560,8 @@ fn wgsl_verdicts_hold() {
                     }
                 }
             }
+            // Handled above; unreachable here.
+            WgslExpect::Reject { .. } => {}
         }
     }
     assert!(
