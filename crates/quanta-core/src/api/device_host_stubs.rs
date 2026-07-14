@@ -10,10 +10,10 @@
 //! function reduce_add_u32 in this scope`, etc.
 //!
 //! On wasm32 (the actual GPU compilation path) the matching
-//! `extern "C"` declarations in [`crate::intrinsics`] take over —
-//! they appear as `import "quanta" "<name>"` in the WASM module that
-//! the lowering pass walks. These host stubs are never called on the
-//! GPU side.
+//! `extern "C"` declarations in the facade's `intrinsics` module take
+//! over — they appear as `import "quanta" "<name>"` in the WASM module
+//! that the lowering pass walks. These host stubs are never called on
+//! the GPU side.
 //!
 //! On the host, these are degenerate single-thread fallbacks:
 //! reduce / scan return the input unchanged, shared-memory load
@@ -29,8 +29,8 @@
 
 // ── Memory-order discriminants ────────────────────────────────────────
 //
-// Match `crate::intrinsics::ORDER_*` so device-fn bodies that name
-// these constants compile on host as well. Placed first so the
+// Match the facade `intrinsics::ORDER_*` values so device-fn bodies
+// that name these constants compile on host as well. Placed first so the
 // public-API alias module below can reference them.
 
 pub const ORDER_RELAXED: u32 = 0;

@@ -23,7 +23,7 @@
 //!
 //! Both dimensions must be powers of 2; anything else returns `NotSupported`.
 
-use quanta::{Gpu, QuantaError};
+use quanta_core::{Gpu, QuantaError};
 
 use crate::plan::FftPlan;
 

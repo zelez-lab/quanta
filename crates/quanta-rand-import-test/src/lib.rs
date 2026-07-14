@@ -11,7 +11,7 @@
 //!    qualified call, rewrites it to bare-name, and emits the
 //!    matching `_src!()` invocation automatically.
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct ImportTestData {
     pub out: Vec<u32>,
     pub seed_lo: u32,
@@ -19,9 +19,9 @@ pub struct ImportTestData {
 }
 
 // Flavor 1: explicit `import_devices!` + bare call site.
-quanta::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
+quanta_compute_dsl::import_devices!(quanta_rand::philox4x32_10_first_u32_kernel);
 
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn import_test_kernel(d: &ImportTestData) {
     let id = quark_id();
     let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -29,7 +29,7 @@ pub fn import_test_kernel(d: &ImportTestData) {
 }
 
 // Flavor 2: auto-discovery — qualified path in body, no import line.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn auto_discover_test_kernel(d: &ImportTestData) {
     let id = quark_id();
     let r: u32 =
@@ -52,7 +52,7 @@ pub fn auto_discover_test_kernel(d: &ImportTestData) {
 // A single `import_devices!` at file scope is enough to exercise the
 // macro expansion; we don't need to dispatch the device fn to verify
 // host-side resolution.
-quanta::import_devices!(quanta_prims::block_reduce_add_u32_kernel);
+quanta_compute_dsl::import_devices!(quanta_prims::block_reduce_add_u32_kernel);
 
 #[cfg(test)]
 mod tests {

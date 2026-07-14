@@ -41,7 +41,7 @@ impl<T: FloatScalar> Array<T> {
     ) -> Result<Array<T>, ArrayError> {
         let dims = self.shape();
         if dims.len() != 4 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "im2col: input must be 4-D NCHW",
             )));
         }

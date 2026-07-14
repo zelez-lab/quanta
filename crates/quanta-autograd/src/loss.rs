@@ -22,7 +22,7 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         if x.shape().len() != 2 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("log_softmax: input must be 2-D [N, C]"),
+                quanta_core::QuantaError::invalid_param("log_softmax: input must be 2-D [N, C]"),
             )));
         }
         let (n, c) = (x.shape()[0], x.shape()[1]);
@@ -62,7 +62,7 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         if x.shape().len() != 2 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("layer_norm: input must be 2-D [N, C]"),
+                quanta_core::QuantaError::invalid_param("layer_norm: input must be 2-D [N, C]"),
             )));
         }
         let (n, c) = (x.shape()[0], x.shape()[1]);
@@ -99,7 +99,7 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         if x.shape().len() != 2 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("rms_norm: input must be 2-D [N, C]"),
+                quanta_core::QuantaError::invalid_param("rms_norm: input must be 2-D [N, C]"),
             )));
         }
         let (n, c) = (x.shape()[0], x.shape()[1]);

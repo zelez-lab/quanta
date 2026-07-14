@@ -58,10 +58,12 @@ pub(crate) fn emit_auto_dispatch(
     func: &ItemFn,
     info: &StructParamInfo,
     wave_fn_name: &syn::Ident,
+    crate_path: &crate::crate_path::CratePath,
 ) -> TokenStream {
     let func_name = &func.sig.ident;
     let param_ident = format_ident!("{}", info.param_name);
     let type_tokens = &info.type_tokens;
+    let krate = crate_path.types();
 
     // Separate buffer fields (Vec<T>) from scalar fields (push constants).
     // Buffer fields are those accessed with indexing: p.field[idx]
@@ -206,10 +208,10 @@ pub(crate) fn emit_auto_dispatch(
 
         #[cfg(not(target_arch = "wasm32"))]
         pub fn #func_name #generics (
-            device: &::quanta::Gpu,
+            device: &#krate::Gpu,
             #param_ident: &mut #type_tokens,
             quarks: u32,
-        ) -> Result<::quanta::Pulse, ::quanta::QuantaError> {
+        ) -> Result<#krate::Pulse, #krate::QuantaError> {
             // Allocate GPU fields for each Vec<T> in the struct
             #(#alloc_stmts)*
 

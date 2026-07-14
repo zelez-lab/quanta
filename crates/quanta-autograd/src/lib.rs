@@ -17,7 +17,7 @@
 //! use quanta_autograd::Tape;
 //! use quanta_array::Array;
 //!
-//! let gpu = quanta::init_cpu();
+//! let gpu = quanta_core::init_cpu();
 //! let tape = Tape::<f32>::new();
 //! let x = tape.var(Array::from_slice(&gpu, &[1.0, 2.0, 3.0], &[3]).unwrap());
 //! // loss = sum(x * x)  ⇒  d loss / d x = 2x

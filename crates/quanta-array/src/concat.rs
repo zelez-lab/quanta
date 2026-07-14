@@ -19,19 +19,19 @@ impl<T: ArrayScalar> Array<T> {
     /// the parts' axis-0 extents, in order.
     pub fn concat_axis0(parts: &[&Array<T>]) -> Result<Array<T>, ArrayError> {
         if parts.is_empty() {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "concat_axis0: need at least one array",
             )));
         }
         let rest = parts[0].shape()[1..].to_vec();
         for p in parts {
             if p.shape().is_empty() {
-                return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+                return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                     "concat_axis0: parts must have at least one axis",
                 )));
             }
             if p.shape()[1..] != rest[..] {
-                return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+                return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                     "concat_axis0: parts must share the trailing shape",
                 )));
             }
@@ -60,14 +60,14 @@ impl<T: ArrayScalar> Array<T> {
     /// shape.
     pub fn stack_axis0(parts: &[&Array<T>]) -> Result<Array<T>, ArrayError> {
         if parts.is_empty() {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "stack_axis0: need at least one array",
             )));
         }
         let shape = parts[0].shape().to_vec();
         for p in parts {
             if p.shape() != shape.as_slice() {
-                return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+                return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                     "stack_axis0: parts must all share the same shape",
                 )));
             }

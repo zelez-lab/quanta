@@ -16,19 +16,31 @@ default = []
 # `#[quanta::kernel]` entry points + a `fill_buffer_gpu` helper. Off
 # by default so the crate is usable as a pure-Rust RNG on hosts
 # (correctness oracle for downstream tests).
-gpu = ["dep:quanta"]
+gpu = ["dep:quanta-core", "dep:quanta-compute-dsl"]
 # Backend selectors, same shape as quanta-prims/quanta-blas: `gpu`
 # alone gives the software CPU JIT backend (the correctness oracle);
 # `gpu-metal` / `gpu-vulkan` add a hardware backend so
 # `tests/gpu_backend_bitexact.rs` can prove the fills bit-exact on
-# real devices (including ones without shaderInt64).
-gpu-metal = ["gpu", "quanta/metal"]
-gpu-vulkan = ["gpu", "quanta/vulkan"]
+# real devices (including ones without shaderInt64). Backend features
+# forward to `quanta-core` (the library dep) and the `quanta` facade
+# dev-dep (tests call `quanta::init()`).
+gpu-metal = ["gpu", "quanta-core/metal", "quanta/metal"]
+gpu-vulkan = ["gpu", "quanta-core/vulkan", "quanta/vulkan"]
 
 [dependencies]
-quanta = { path = "../..", default-features = false, features = ["software"], optional = true }
+# Library depends on the split crates, not the `quanta` facade —
+# `quanta-core` for runtime types, `quanta-compute-dsl` for the
+# `#[quanta::kernel]` / `#[quanta::device]` / `Fields` macros (invoked
+# with `crate = quanta_core`).
+quanta-core = { path = "../quanta-core", default-features = false, features = [
+    "software",
+], optional = true }
+quanta-compute-dsl = { path = "../quanta-compute-dsl", optional = true }
 
 [dev-dependencies]
+# The `quanta` facade is dev-only (tests call `quanta::init()`); the
+# dev-dep cycle is permitted where a normal dep would not be.
+quanta = { path = "../..", default-features = false, features = ["software"] }
 # `rand` is a dev-dep used only by the `bench_vs_rand` example for a
 # side-by-side throughput comparison. It is NOT on any user's compile
 # path — the workspace's "no transitive runtime deps" policy still

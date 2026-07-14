@@ -44,18 +44,18 @@
 //! reuses the shared `roundedOp` model. The whole-decomposition
 //! convergence-rate / backward-error bound is flagged there as follow-up.
 
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// Right rotation of a column pair: `M ← M·J` on columns `p, q` of an
     /// `r×cols` row-major matrix. One thread per row `i`. `(c, s)` is
     /// host-computed. `z` is the address-XOR guard (0), `s_step` the loop
     /// step (1). Used for both the working matrix (`r = m`) and `V`
     /// (`r = n`), each with its own `cols`.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn jacobi_col_rot_f32(
         mat: &mut [f32],
         rows: u32,

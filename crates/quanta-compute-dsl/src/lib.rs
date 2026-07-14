@@ -10,6 +10,7 @@ extern crate proc_macro;
 
 mod auto_dispatch;
 mod compile_via_wasm;
+mod crate_path;
 mod device_macro;
 mod fields_derive;
 mod gpu_type;
@@ -155,9 +156,10 @@ pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - `__QUANTA_GPU_TYPE_PARTICLE` — MSL struct declaration string
 /// - `__QUANTA_GPU_TYPE_PARTICLE_WGSL` — WGSL struct declaration string
 #[proc_macro_attribute]
-pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn gpu_type(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as syn::ItemStruct);
-    match gpu_type::expand_gpu_type(&input) {
+    let cp = crate_path::from_attr_args(attr);
+    match gpu_type::expand_gpu_type(&input, &cp) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
@@ -186,7 +188,12 @@ pub fn gpu_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // __QUANTA_UNIFORMS_CAMERA (MSL)
 /// // __QUANTA_UNIFORMS_CAMERA_WGSL (WGSL)
 /// ```
-#[proc_macro_derive(Uniforms)]
+/// The container attribute `#[quanta(crate = <path>)]` overrides the
+/// crate root the generated `GpuType` impl is written against (serde's
+/// `#[serde(crate = "...")]` pattern). Default is `::quanta`; companion
+/// crates that host kernels without depending on the facade pass
+/// `#[quanta(crate = quanta_core)]`.
+#[proc_macro_derive(Uniforms, attributes(quanta))]
 pub fn derive_uniforms(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
     match uniforms_derive::expand_uniforms_derive(&input) {
@@ -218,7 +225,12 @@ pub fn derive_uniforms(input: TokenStream) -> TokenStream {
 /// // Particles::push_constant_names() -> &["count", "dt"]
 /// // Particles::push_constant_types() -> &["u32", "f32"]
 /// ```
-#[proc_macro_derive(Fields)]
+// `attributes(quanta)` so a struct that derives both `Fields` and
+// `Uniforms` may carry one `#[quanta(crate = ...)]` container attribute
+// without `Fields` rejecting it as unknown. `Fields` emits no
+// `::quanta::` path itself (only plain metadata consts), so it ignores
+// the attribute's value.
+#[proc_macro_derive(Fields, attributes(quanta))]
 pub fn derive_fields(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
     match fields_derive::expand_fields_derive(&input) {

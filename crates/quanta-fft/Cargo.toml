@@ -16,12 +16,21 @@ path = "src/lib.rs"
 # `gpu` pulls in the Quanta runtime + JIT path. Off by default so the crate
 # doubles as a pure-Rust reference library (the direct-DFT differential oracle).
 default = []
-gpu = ["dep:quanta"]
-gpu-metal = ["gpu", "quanta/metal"]
-gpu-vulkan = ["gpu", "quanta/vulkan"]
+gpu = ["dep:quanta-core"]
+gpu-metal = ["gpu", "quanta-core/metal", "quanta/metal"]
+gpu-vulkan = ["gpu", "quanta-core/vulkan", "quanta/vulkan"]
 
 [dependencies]
-quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
+# quanta-fft is a pure runtime consumer — only `Gpu` / `Field` / `Wave`
+# / `QuantaError`, all in `quanta-core`. No DSL macros, so no
+# `quanta-compute-dsl` dep.
+quanta-core = { path = "../quanta-core", version = "0.1.0-alpha.2", default-features = false, features = [
     "software",
 ], optional = true }
 quanta-ir = { path = "../quanta-ir", version = "0.1.0-alpha.2" }
+
+[dev-dependencies]
+# Facade dev-dep for tests/examples that call `quanta::init()`.
+quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false, features = [
+    "software",
+] }

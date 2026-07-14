@@ -33,12 +33,12 @@ impl<T: ArrayScalar> Array<T> {
     pub fn select_rows(&self, ids: &Array<u32>) -> Result<Array<T>, ArrayError> {
         let d = self.shape();
         if d.len() != 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "select_rows: table must be 2-D [V, E]",
             )));
         }
         if ids.shape().len() != 1 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "select_rows: ids must be 1-D [B]",
             )));
         }
@@ -170,7 +170,7 @@ impl<T: ArrayScalar> Array<T> {
     ) -> Result<Array<T>, ArrayError> {
         let d = self.shape();
         if d.len() != 2 || ids.shape().len() != 1 || ids.shape()[0] != d[0] {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "scatter_rows_into: grad must be [B, E] and ids [B]",
             )));
         }

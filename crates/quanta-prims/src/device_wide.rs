@@ -43,7 +43,7 @@ use crate::gpu_kernel::{
     block_reduce_min_i32_tree_buffer, block_reduce_min_u32_buffer,
     block_reduce_min_u32_tree_buffer, global_bitonic_pass_u32,
 };
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 /// Workgroup size shared by every block primitive in this crate.
 const BLOCK: usize = 256;
@@ -109,7 +109,7 @@ fn reduce_pass_field<T: Copy>(
     src: &Field<T>,
     n: usize,
     identity: T,
-    builder: impl FnOnce(&Gpu) -> Result<quanta::Wave, QuantaError>,
+    builder: impl FnOnce(&Gpu) -> Result<quanta_core::Wave, QuantaError>,
 ) -> Result<Vec<T>, QuantaError> {
     let padded_len = n.div_ceil(BLOCK) * BLOCK;
     let num_blocks = padded_len / BLOCK;
@@ -138,7 +138,7 @@ fn reduce_pass<T: Copy>(
     gpu: &Gpu,
     current: &mut Vec<T>,
     identity: T,
-    builder: impl FnOnce(&Gpu) -> Result<quanta::Wave, QuantaError>,
+    builder: impl FnOnce(&Gpu) -> Result<quanta_core::Wave, QuantaError>,
 ) -> Result<Vec<T>, QuantaError> {
     let padded_len = current.len().div_ceil(BLOCK) * BLOCK;
     current.resize(padded_len, identity);

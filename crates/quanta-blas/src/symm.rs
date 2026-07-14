@@ -18,11 +18,11 @@
 //! redundant reads is a later blocked-kernel optimisation.
 
 use crate::params::{Side, Uplo};
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// One thread per C entry (`m×n`). `A` is the `d×d` symmetric operand
     /// (`d = m` for Left, `n` for Right); `bmat` is the general operand.
@@ -34,7 +34,7 @@ mod kernel {
     /// The A-index is XORed with `z` (host passes 0 — a no-op) to keep the
     /// access an inline `buf + (index << 2)`, defeating LLVM's base-pointer
     /// hoist the WASM-route lowering refuses (same trick as syrk).
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     #[allow(clippy::too_many_arguments)]
     pub fn symm_f32(
         a: &[f32],

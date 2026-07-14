@@ -17,7 +17,7 @@
 //! `mixed_quant`.
 
 use crate::mixed_kernel;
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 use quanta_ir::ScalarType;
 
 /// Input element dtype for a mixed-precision (narrow-float) GEMM. Output (C) is

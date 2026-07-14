@@ -14,7 +14,7 @@
 //! Views produced by this crate's layout ops have non-negative strides and a
 //! non-negative base offset, so `u32` index math is sufficient.
 
-use quanta::GpuType;
+use quanta_core::GpuType;
 use quanta_ir::{
     BinOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
 };

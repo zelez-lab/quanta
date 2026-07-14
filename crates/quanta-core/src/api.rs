@@ -21,6 +21,33 @@ pub mod multi_queue;
 #[cfg(feature = "compute")]
 pub mod wave;
 
+// Kernel-language types named by `#[quanta::kernel]`-generated code:
+// the `GpuType` marker trait, the `KernelBinary` a compiled kernel
+// expands to, and the `ScalarType` tag. They live here (behind
+// `compute`) so companion crates that host kernels reach them without
+// depending on the `quanta` facade; the facade re-exports all three.
+#[cfg(feature = "compute")]
+pub mod gpu_type;
+
+// Host-side stubs for every GPU intrinsic, injected by the `_src!()`
+// macro `#[quanta::device]` emits (via `use
+// <crate>::__device_host_stubs::*`) and by the differential host
+// oracle. Hidden from the public API. Lives here so downstream crates
+// name-resolve spliced device-fn bodies through `quanta-core` rather
+// than the facade.
+#[cfg(feature = "compute")]
+#[doc(hidden)]
+pub mod device_host_stubs;
+
+// Generated device-fn `_src!` macros and host oracles name the stub
+// module through `<crate>::__device_host_stubs` (the historical facade
+// path). Expose that `__`-prefixed alias here too so a `crate =
+// quanta_core` override resolves it directly, not only through the
+// facade's own re-export.
+#[cfg(feature = "compute")]
+#[doc(hidden)]
+pub use device_host_stubs as __device_host_stubs;
+
 // Indirect command buffers are a split surface: the compute ICB
 // (`IndirectCommandBuffer`, records wave dispatches) needs `compute`;
 // the render bundle (`IndirectRenderBundle`) needs `render`. The
@@ -62,6 +89,8 @@ pub use types::*;
 // Compute-face re-exports — gated with the `compute` feature.
 #[cfg(feature = "compute")]
 pub use batch::Batch;
+#[cfg(feature = "compute")]
+pub use gpu_type::{GpuType, KernelBinary, ScalarType};
 #[cfg(feature = "compute")]
 pub use icb::IndirectCommandBuffer;
 #[cfg(feature = "compute")]

@@ -1,8 +1,8 @@
-//! GPU `#[quanta::kernel]` entry points + device-callable
+//! GPU `#[quanta_compute_dsl::kernel(crate = quanta_core)]` entry points + device-callable
 //! cooperative primitives.
 //!
 //! Each device function in this module is meant to be called from
-//! inside a user `#[quanta::kernel]`. They consume per-thread
+//! inside a user `#[quanta_compute_dsl::kernel(crate = quanta_core)]`. They consume per-thread
 //! values and produce per-thread results that depend on every
 //! thread in the workgroup — the "block-cooperative" part.
 //!
@@ -29,10 +29,15 @@
 //! this crate. We provide host stubs that match the single-thread
 //! semantics the CPU driver uses.
 
-// `quanta::*` brings in `quark_id`, `nucleus_id`, `proton_id`,
-// and the `#[quanta::kernel]` / `#[quanta::device]` machinery.
+// `quanta_core::*` brings in the runtime types (`Gpu`, `Field`, …) and
+// `GpuType`. The kernel bodies name intrinsics (`quark_id`,
+// `proton_id`, …) via this crate's own host stubs (below) on the host
+// build and via the wasm shell's `quanta` import block on the GPU path;
+// the `#[quanta_compute_dsl::kernel(crate = quanta_core)]` /
+// `#[quanta_compute_dsl::device(crate = quanta_core)]` macros consume
+// the bodies either way.
 #[allow(unused_imports)]
-use quanta::*;
+use quanta_core::*;
 
 // ── Subgroup + shared-memory intrinsic shims ──────────────────────
 
@@ -174,7 +179,7 @@ pub const BLOCK_REDUCE_SCRATCH_SLOT: u32 = 0;
 /// Block-wide u32 sum reduction. Result in lane 0 of the
 /// workgroup. See module-level docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_add_u32_kernel(value: u32) -> u32 {
     let warp_sum = unsafe { reduce_add_u32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -192,7 +197,7 @@ pub fn block_reduce_add_u32_kernel(value: u32) -> u32 {
 /// Block-wide i32 sum reduction. Result in lane 0 of the
 /// workgroup. See module-level docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_add_i32_kernel(value: i32) -> i32 {
     let warp_sum = unsafe { reduce_add_i32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -210,7 +215,7 @@ pub fn block_reduce_add_i32_kernel(value: i32) -> i32 {
 /// Block-wide f32 sum reduction. Result in lane 0 of the
 /// workgroup. See module-level docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_add_f32_kernel(value: f32) -> f32 {
     let warp_sum = unsafe { reduce_add_f32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -229,7 +234,7 @@ pub fn block_reduce_add_f32_kernel(value: f32) -> f32 {
 /// workgroup. Identity element: u32::MAX. See module-level docs
 /// for caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_min_u32_kernel(value: u32) -> u32 {
     let warp_min = unsafe { reduce_min_u32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -248,7 +253,7 @@ pub fn block_reduce_min_u32_kernel(value: u32) -> u32 {
 /// workgroup. Identity element: i32::MAX. See module-level docs
 /// for caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_min_i32_kernel(value: i32) -> i32 {
     let warp_min = unsafe { reduce_min_i32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -267,7 +272,7 @@ pub fn block_reduce_min_i32_kernel(value: i32) -> i32 {
 /// workgroup. Identity element: f32::INFINITY. See module-level
 /// docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_min_f32_kernel(value: f32) -> f32 {
     let warp_min = unsafe { reduce_min_f32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -286,7 +291,7 @@ pub fn block_reduce_min_f32_kernel(value: f32) -> f32 {
 /// workgroup. Identity element: 0. See module-level docs for
 /// caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_max_u32_kernel(value: u32) -> u32 {
     let warp_max = unsafe { reduce_max_u32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -305,7 +310,7 @@ pub fn block_reduce_max_u32_kernel(value: u32) -> u32 {
 /// workgroup. Identity element: i32::MIN. See module-level docs
 /// for caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_max_i32_kernel(value: i32) -> i32 {
     let warp_max = unsafe { reduce_max_i32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -324,7 +329,7 @@ pub fn block_reduce_max_i32_kernel(value: i32) -> i32 {
 /// workgroup. Identity element: f32::NEG_INFINITY. See
 /// module-level docs for caller contract.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_reduce_max_f32_kernel(value: f32) -> f32 {
     let warp_max = unsafe { reduce_max_f32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -347,9 +352,9 @@ pub fn block_reduce_max_f32_kernel(value: f32) -> f32 {
 
 /// Convenience kernel: u32 sum reduce, one output per block.
 /// Workgroup size 256 → up to 8 warps (Apple/NVIDIA).
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_add_u32_buffer(data: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [u32; 32];
 
     let i = quark_id();
@@ -370,9 +375,9 @@ pub fn block_reduce_add_u32_buffer(data: &[u32], out: &mut [u32]) {
 }
 
 /// Convenience kernel: i32 sum reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_add_i32_buffer(data: &[i32], out: &mut [i32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [i32; 32];
 
     let i = quark_id();
@@ -393,9 +398,9 @@ pub fn block_reduce_add_i32_buffer(data: &[i32], out: &mut [i32]) {
 }
 
 /// Convenience kernel: f32 sum reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_add_f32_buffer(data: &[f32], out: &mut [f32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [f32; 32];
 
     let i = quark_id();
@@ -417,9 +422,9 @@ pub fn block_reduce_add_f32_buffer(data: &[f32], out: &mut [f32]) {
 
 /// Convenience kernel: u32 min reduce, one output per block.
 /// Scratch identity = u32::MAX.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_min_u32_buffer(data: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [u32; 32];
 
     let i = quark_id();
@@ -441,9 +446,9 @@ pub fn block_reduce_min_u32_buffer(data: &[u32], out: &mut [u32]) {
 
 /// Convenience kernel: i32 min reduce, one output per block.
 /// Scratch identity = i32::MAX.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_min_i32_buffer(data: &[i32], out: &mut [i32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [i32; 32];
 
     let i = quark_id();
@@ -465,9 +470,9 @@ pub fn block_reduce_min_i32_buffer(data: &[i32], out: &mut [i32]) {
 
 /// Convenience kernel: f32 min reduce, one output per block.
 /// Scratch identity = f32::INFINITY.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_min_f32_buffer(data: &[f32], out: &mut [f32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [f32; 32];
 
     let i = quark_id();
@@ -496,9 +501,9 @@ pub fn block_reduce_min_f32_buffer(data: &[f32], out: &mut [f32]) {
 
 /// Convenience kernel: u32 max reduce, one output per block.
 /// Scratch identity = 0.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_max_u32_buffer(data: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [u32; 32];
 
     let i = quark_id();
@@ -520,9 +525,9 @@ pub fn block_reduce_max_u32_buffer(data: &[u32], out: &mut [u32]) {
 
 /// Convenience kernel: i32 max reduce, one output per block.
 /// Scratch identity = i32::MIN.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_max_i32_buffer(data: &[i32], out: &mut [i32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [i32; 32];
 
     let i = quark_id();
@@ -544,9 +549,9 @@ pub fn block_reduce_max_i32_buffer(data: &[i32], out: &mut [i32]) {
 
 /// Convenience kernel: f32 max reduce, one output per block.
 /// Scratch identity = f32::NEG_INFINITY.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_max_f32_buffer(data: &[f32], out: &mut [f32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [f32; 32];
 
     let i = quark_id();
@@ -597,13 +602,13 @@ pub fn block_reduce_max_f32_buffer(data: &[f32], out: &mut [f32]) {
 
 // (The nine kernels are written out longhand rather than through a
 // macro_rules template: `$ty:ty` substitution wraps the type in an
-// invisible token group that the `#[quanta::kernel]` signature parser
+// invisible token group that the `#[quanta_compute_dsl::kernel(crate = quanta_core)]` signature parser
 // rejects with "expected a scalar type".)
 
 /// Subgroup-free u32 sum reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_add_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [u32; 256];
 
     let i = quark_id();
@@ -637,9 +642,9 @@ pub fn block_reduce_add_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
 }
 
 /// Subgroup-free i32 sum reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_add_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [i32; 256];
 
     let i = quark_id();
@@ -673,9 +678,9 @@ pub fn block_reduce_add_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
 }
 
 /// Subgroup-free f32 sum reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_add_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [f32; 256];
 
     let i = quark_id();
@@ -709,9 +714,9 @@ pub fn block_reduce_add_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
 }
 
 /// Subgroup-free u32 min reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_min_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [u32; 256];
 
     let i = quark_id();
@@ -749,9 +754,9 @@ pub fn block_reduce_min_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
 }
 
 /// Subgroup-free i32 min reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_min_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [i32; 256];
 
     let i = quark_id();
@@ -789,9 +794,9 @@ pub fn block_reduce_min_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
 }
 
 /// Subgroup-free f32 min reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_min_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [f32; 256];
 
     let i = quark_id();
@@ -829,9 +834,9 @@ pub fn block_reduce_min_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
 }
 
 /// Subgroup-free u32 max reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_max_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [u32; 256];
 
     let i = quark_id();
@@ -869,9 +874,9 @@ pub fn block_reduce_max_u32_tree_buffer(data: &[u32], out: &mut [u32]) {
 }
 
 /// Subgroup-free i32 max reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_max_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [i32; 256];
 
     let i = quark_id();
@@ -909,9 +914,9 @@ pub fn block_reduce_max_i32_tree_buffer(data: &[i32], out: &mut [i32]) {
 }
 
 /// Subgroup-free f32 max reduce, one output per block.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_reduce_max_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let tree: [f32; 256];
 
     let i = quark_id();
@@ -973,7 +978,7 @@ pub fn block_reduce_max_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
 /// Block-wide u32 inclusive prefix-sum scan. Returns this lane's
 /// running sum (lanes 0..=self inclusive).
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_scan_add_u32_kernel(value: u32) -> u32 {
     let warp_inc = unsafe { scan_add_u32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -1005,7 +1010,7 @@ pub fn block_scan_add_u32_kernel(value: u32) -> u32 {
 
 /// Block-wide i32 inclusive prefix-sum scan.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_scan_add_i32_kernel(value: i32) -> i32 {
     let warp_inc = unsafe { scan_add_i32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -1031,7 +1036,7 @@ pub fn block_scan_add_i32_kernel(value: i32) -> i32 {
 
 /// Block-wide f32 inclusive prefix-sum scan.
 #[allow(dead_code, unused_unsafe)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 pub fn block_scan_add_f32_kernel(value: f32) -> f32 {
     let warp_inc = unsafe { scan_add_f32(value) };
     let sub_size = unsafe { subgroup_size() };
@@ -1063,9 +1068,9 @@ pub fn block_scan_add_f32_kernel(value: f32) -> f32 {
 /// Convenience kernel: u32 inclusive prefix-sum scan.
 /// `out[i]` = sum of `data[block_start..=i]` where `block_start`
 /// is the first lane of the block containing lane `i`.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_scan_add_u32_buffer(data: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [u32; 32];
 
     let i = quark_id();
@@ -1082,9 +1087,9 @@ pub fn block_scan_add_u32_buffer(data: &[u32], out: &mut [u32]) {
 }
 
 /// Convenience kernel: i32 inclusive prefix-sum scan.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_scan_add_i32_buffer(data: &[i32], out: &mut [i32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [i32; 32];
 
     let i = quark_id();
@@ -1101,9 +1106,9 @@ pub fn block_scan_add_i32_buffer(data: &[i32], out: &mut [i32]) {
 }
 
 /// Convenience kernel: f32 inclusive prefix-sum scan.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [f32; 32];
 
     let i = quark_id();
@@ -1157,13 +1162,13 @@ pub fn block_scan_add_f32_buffer(data: &[f32], out: &mut [f32]) {
 /// independently of the others. For a globally-sorted output
 /// use [`crate::device_sort_u32`], which chains
 /// [`global_bitonic_pass_u32`] launches across blocks.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let kbuf: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let s01: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let s23: [u32; 256];
 
     let i = quark_id();
@@ -1262,14 +1267,14 @@ pub fn block_radix_sort_u32_buffer(data: &[u32], out: &mut [u32]) {
 /// least `data.len()`; `counts.len()` must equal `data.len() / 256`.
 /// Within each 256-element block, kept entries are written
 /// contiguously starting at `block * 256`.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_compact_u32_buffer(
     predicates: &[u32],
     data: &[u32],
     out: &mut [u32],
     counts: &mut [u32],
 ) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let scratch: [u32; 32];
 
     let i = quark_id();
@@ -1317,9 +1322,9 @@ pub fn block_compact_u32_buffer(
 /// must be in 0..256). Output: one count per (block, bucket),
 /// block-major. `counts_out.len()` must equal
 /// `(buckets_in.len() / 256) * 256` = `buckets_in.len()`.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_histogram_u32_buffer(buckets_in: &[u32], counts_out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let local_counts: [u32; 256];
 
     let i = quark_id();
@@ -1360,9 +1365,9 @@ pub fn block_histogram_u32_buffer(buckets_in: &[u32], counts_out: &mut [u32]) {
 /// num_blocks * k`. When `k = 256` this is just a per-block
 /// descending sort (same work as `block_radix_sort_u32_buffer`
 /// with the order inverted).
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_top_k_u32_buffer(data: &[u32], top_k_out: &mut [u32], k: u32) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let buf: [u32; 256];
 
     let i = quark_id();
@@ -1440,16 +1445,16 @@ pub fn block_top_k_u32_buffer(data: &[u32], top_k_out: &mut [u32], k: u32) {
 ///
 /// **Block-local and unstable**: each block sorts independently,
 /// and equal keys may exchange their values' relative order.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_sort_kv_u32_buffer(
     keys: &[u32],
     vals: &[u32],
     keys_out: &mut [u32],
     vals_out: &mut [u32],
 ) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let kbuf: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let vbuf: [u32; 256];
 
     let i = quark_id();
@@ -1513,20 +1518,20 @@ pub fn block_sort_kv_u32_buffer(
 ///
 /// **Block-local and stable**: each block sorts independently, and
 /// equal keys keep their input relative order (values included).
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_radix_sort_kv_u32_buffer(
     keys: &[u32],
     vals: &[u32],
     keys_out: &mut [u32],
     vals_out: &mut [u32],
 ) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let kbuf: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let vbuf: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let s01: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let s23: [u32; 256];
 
     let i = quark_id();
@@ -1622,11 +1627,11 @@ pub fn block_radix_sort_kv_u32_buffer(
 /// is its own value); every 256-element block boundary also starts
 /// one. Caller dispatches with `quark_count = data.len()` (a
 /// multiple of 256) and same-sized `flags` / `out` buffers.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_segmented_scan_add_u32_buffer(data: &[u32], flags: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let vals: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let segf: [u32; 256];
 
     let i = quark_id();
@@ -1668,18 +1673,18 @@ pub fn block_segmented_scan_add_u32_buffer(data: &[u32], flags: &[u32], out: &mu
 /// Runs the segmented scan above plus a parallel head count; the
 /// last lane of each segment scatters the segment total to slot
 /// `head_count - 1`.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_segmented_reduce_add_u32_buffer(
     data: &[u32],
     flags: &[u32],
     totals_out: &mut [u32],
     counts_out: &mut [u32],
 ) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let vals: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let segf: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let heads: [u32; 256];
 
     let i = quark_id();
@@ -1767,15 +1772,15 @@ pub fn block_segmented_reduce_add_u32_buffer(
 /// dispatches with `quark_count = data.len()` (a multiple of 256)
 /// and same-sized `flags` / `out` buffers (non-zero flag = segment
 /// head; block boundaries restart).
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn block_segmented_sort_u32_buffer(data: &[u32], flags: &[u32], out: &mut [u32]) {
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let kbuf: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let sbuf: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let s01: [u32; 256];
-    #[quanta::shared]
+    #[quanta_compute_dsl::shared]
     let s23: [u32; 256];
 
     let i = quark_id();
@@ -1890,7 +1895,7 @@ pub fn block_segmented_sort_u32_buffer(data: &[u32], flags: &[u32], out: &mut [u
 /// Building block for [`crate::device_sort_u32`] — callers
 /// dispatch with `quark_count = data.len()`, which must be a
 /// power of two and a multiple of the workgroup size.
-#[quanta::kernel(workgroup = [256])]
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
 pub fn global_bitonic_pass_u32(data: &mut [u32], k: u32, j: u32) {
     let i = quark_id();
     let partner = i ^ j;

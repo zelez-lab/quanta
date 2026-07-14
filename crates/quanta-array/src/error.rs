@@ -12,7 +12,7 @@ pub enum ArrayError {
     /// The data length didn't match the shape's element count.
     LengthMismatch { expected: usize, got: usize },
     /// A GPU operation (alloc / dispatch / read) failed.
-    Gpu(quanta::QuantaError),
+    Gpu(quanta_core::QuantaError),
     /// An operation requires a contiguous array; call `.contiguous()` first.
     NotContiguous,
 }
@@ -48,8 +48,8 @@ impl From<quanta_tensor::ShapeError> for ArrayError {
         ArrayError::Shape(e)
     }
 }
-impl From<quanta::QuantaError> for ArrayError {
-    fn from(e: quanta::QuantaError) -> Self {
+impl From<quanta_core::QuantaError> for ArrayError {
+    fn from(e: quanta_core::QuantaError) -> Self {
         ArrayError::Gpu(e)
     }
 }

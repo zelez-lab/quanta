@@ -43,17 +43,17 @@
 //! there as follow-up.
 
 use crate::params::Uplo;
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// Row side of the two-sided rotation: `A ← Jᵀ·A` on rows `p,q`, and
     /// `V ← V·J` on eigenvector columns `p,q`. One thread per index `k`.
     /// `z` is the address-XOR guard (0), `s_step` the loop step (1). The
     /// rotation `(c,s)` is host-computed from `A[p,p], A[q,q], A[p,q]`.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn jacobi_rot_f32(
         a: &mut [f32],
         v: &mut [f32],
@@ -86,7 +86,7 @@ mod kernel {
 
     /// Column side of the two-sided rotation: `A ← A·J` on columns `p,q`,
     /// run after the row pass so it reads the row-updated `A`.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn jacobi_rot_cols_f32(
         a: &mut [f32],
         n: u32,

@@ -14,6 +14,8 @@ use syn::ItemFn;
 
 use quanta_dsl_core as compiler;
 
+use crate::crate_path::CratePath;
+
 /// The five backend-binary token expressions embedded in a `ShaderBinary`:
 /// SPIR-V, the three metallib variants (macOS / iOS device / iOS simulator),
 /// and WGSL. Each is a `proc_macro2::TokenStream` naming a `Some(..)`/`None`.
@@ -48,6 +50,7 @@ fn build_shader_binary(
     func_name: &syn::Ident,
     stage: proc_macro2::TokenStream,
     backends: Backends,
+    krate: &proc_macro2::TokenStream,
 ) -> TokenStream {
     let func_name_str = func_name.to_string();
     let binary_name = syn::Ident::new(
@@ -63,7 +66,7 @@ fn build_shader_binary(
     } = backends;
 
     let expanded = quote! {
-        pub static #binary_name: ::quanta::ShaderBinary = ::quanta::ShaderBinary {
+        pub static #binary_name: #krate::ShaderBinary = #krate::ShaderBinary {
             spirv: #spirv,
             metallib: #metallib,
             metallib_ios: #metallib_ios,
@@ -73,7 +76,7 @@ fn build_shader_binary(
             stage: #stage,
         };
 
-        pub fn #func_name() -> &'static ::quanta::ShaderBinary {
+        pub fn #func_name() -> &'static #krate::ShaderBinary {
             &#binary_name
         }
     };
@@ -108,6 +111,7 @@ fn expand_compiled(
     stage_str: &str,
     stage: proc_macro2::TokenStream,
     allow_textures: bool,
+    krate: &proc_macro2::TokenStream,
 ) -> TokenStream {
     if matches!(func.sig.output, syn::ReturnType::Default) {
         let msg = if allow_textures {
@@ -182,68 +186,83 @@ fn expand_compiled(
         }
     };
 
-    build_shader_binary(&func_name, stage, backends)
+    build_shader_binary(&func_name, stage, backends, krate)
 }
 
 /// Shared body of the *stub* stages (tessellation, mesh, ray tracing): capture
 /// the entry point and emit an all-`None` [`ShaderBinary`] through
 /// [`build_shader_binary`]. These stages don't run the compiler binary; the
 /// runtime fills the binaries in later.
-fn expand_stub(func: ItemFn, stage: proc_macro2::TokenStream) -> TokenStream {
-    build_shader_binary(&func.sig.ident, stage, Backends::none())
+fn expand_stub(
+    func: ItemFn,
+    stage: proc_macro2::TokenStream,
+    krate: &proc_macro2::TokenStream,
+) -> TokenStream {
+    build_shader_binary(&func.sig.ident, stage, Backends::none(), krate)
 }
 
 /// Core implementation of `#[quanta::vertex]`.
-pub(crate) fn expand_vertex(func: ItemFn) -> TokenStream {
+pub(crate) fn expand_vertex(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
     expand_compiled(
         func,
         "vertex",
-        quote! { ::quanta::ShaderStage::Vertex },
+        quote! { #krate::ShaderStage::Vertex },
         false,
+        &krate,
     )
 }
 
 /// Core implementation of `#[quanta::fragment]`.
-pub(crate) fn expand_fragment(func: ItemFn) -> TokenStream {
+pub(crate) fn expand_fragment(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
     expand_compiled(
         func,
         "fragment",
-        quote! { ::quanta::ShaderStage::Fragment },
+        quote! { #krate::ShaderStage::Fragment },
         true,
+        &krate,
     )
 }
 
 /// Core implementation of `#[quanta::tess_control]`.
-pub(crate) fn expand_tess_control(func: ItemFn) -> TokenStream {
-    expand_stub(func, quote! { ::quanta::ShaderStage::TessControl })
+pub(crate) fn expand_tess_control(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
+    expand_stub(func, quote! { #krate::ShaderStage::TessControl }, &krate)
 }
 
 /// Core implementation of `#[quanta::tess_eval]`.
-pub(crate) fn expand_tess_eval(func: ItemFn) -> TokenStream {
-    expand_stub(func, quote! { ::quanta::ShaderStage::TessEval })
+pub(crate) fn expand_tess_eval(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
+    expand_stub(func, quote! { #krate::ShaderStage::TessEval }, &krate)
 }
 
 /// Core implementation of `#[quanta::task]`.
-pub(crate) fn expand_task(func: ItemFn) -> TokenStream {
-    expand_stub(func, quote! { ::quanta::ShaderStage::Task })
+pub(crate) fn expand_task(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
+    expand_stub(func, quote! { #krate::ShaderStage::Task }, &krate)
 }
 
 /// Core implementation of `#[quanta::mesh]`.
-pub(crate) fn expand_mesh(func: ItemFn) -> TokenStream {
-    expand_stub(func, quote! { ::quanta::ShaderStage::Mesh })
+pub(crate) fn expand_mesh(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
+    expand_stub(func, quote! { #krate::ShaderStage::Mesh }, &krate)
 }
 
 /// Core implementation of `#[quanta::ray_gen]`.
-pub(crate) fn expand_ray_gen(func: ItemFn) -> TokenStream {
-    expand_stub(func, quote! { ::quanta::ShaderStage::RayGen })
+pub(crate) fn expand_ray_gen(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
+    expand_stub(func, quote! { #krate::ShaderStage::RayGen }, &krate)
 }
 
 /// Core implementation of `#[quanta::closest_hit]`.
-pub(crate) fn expand_closest_hit(func: ItemFn) -> TokenStream {
-    expand_stub(func, quote! { ::quanta::ShaderStage::ClosestHit })
+pub(crate) fn expand_closest_hit(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
+    expand_stub(func, quote! { #krate::ShaderStage::ClosestHit }, &krate)
 }
 
 /// Core implementation of `#[quanta::miss]`.
-pub(crate) fn expand_miss(func: ItemFn) -> TokenStream {
-    expand_stub(func, quote! { ::quanta::ShaderStage::Miss })
+pub(crate) fn expand_miss(func: ItemFn, cp: &CratePath) -> TokenStream {
+    let krate = cp.types();
+    expand_stub(func, quote! { #krate::ShaderStage::Miss }, &krate)
 }

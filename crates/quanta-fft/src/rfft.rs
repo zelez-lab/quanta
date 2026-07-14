@@ -34,7 +34,7 @@
 
 use core::f64::consts::PI;
 
-use quanta::{Gpu, QuantaError};
+use quanta_core::{Gpu, QuantaError};
 
 use crate::plan::FftPlan;
 

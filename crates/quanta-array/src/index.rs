@@ -25,13 +25,13 @@ impl<T: ArrayScalar> Array<T> {
     pub fn gather_rows(&self, idx: &Array<u32>) -> Result<Array<T>, ArrayError> {
         let d = self.shape();
         if d.len() != 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "gather_rows: table must be 2-D [N, C]",
             )));
         }
         let (n, c) = (d[0], d[1]);
         if idx.shape() != [n] {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "gather_rows: idx must be shape [N] matching the table rows",
             )));
         }
@@ -141,13 +141,13 @@ impl<T: ArrayScalar> Array<T> {
     pub fn scatter_rows_add(&self, idx: &Array<u32>, c: usize) -> Result<Array<T>, ArrayError> {
         let d = self.shape();
         if d.len() != 1 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "scatter_rows_add: grad must be 1-D [N]",
             )));
         }
         let n = d[0];
         if idx.shape() != [n] {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "scatter_rows_add: idx must be shape [N]",
             )));
         }

@@ -29,7 +29,7 @@ impl<T: ArrayScalar> Array<T> {
         let dims: Vec<usize> = self.shape().to_vec();
         let r = dims.len();
         if axis >= r {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "sum_axis: axis out of range",
             )));
         }
@@ -281,7 +281,7 @@ impl<T: ArrayScalar> Array<T> {
     fn two_d(&self, who: &str) -> Result<(usize, usize), ArrayError> {
         let d = self.shape();
         if d.len() != 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 match who {
                     "max_axis_last" => "max_axis_last: input must be 2-D [N, C]",
                     "min_axis_last" => "min_axis_last: input must be 2-D [N, C]",

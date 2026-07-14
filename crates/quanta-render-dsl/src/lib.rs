@@ -9,6 +9,7 @@
 
 extern crate proc_macro;
 
+mod crate_path;
 mod shader_macro;
 mod vertex_derive;
 
@@ -32,9 +33,10 @@ use syn::{ItemFn, parse_macro_input};
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn vertex(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_vertex(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_vertex(func, &cp)
 }
 
 /// Mark a function as a fragment shader.
@@ -53,9 +55,10 @@ pub fn vertex(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn fragment(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_fragment(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_fragment(func, &cp)
 }
 
 // === Tessellation shader macros (M4.1) ===
@@ -72,9 +75,10 @@ pub fn fragment(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn tess_control(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn tess_control(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_tess_control(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_tess_control(func, &cp)
 }
 
 /// Mark a function as a tessellation evaluation (domain) shader.
@@ -91,9 +95,10 @@ pub fn tess_control(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn tess_eval(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn tess_eval(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_tess_eval(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_tess_eval(func, &cp)
 }
 
 // === Mesh shader macros (M4.2) ===
@@ -113,9 +118,10 @@ pub fn tess_eval(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_task(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_task(func, &cp)
 }
 
 /// Mark a function as a mesh shader.
@@ -134,9 +140,10 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn mesh(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn mesh(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_mesh(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_mesh(func, &cp)
 }
 
 // === Ray tracing shader macros (M4.3) ===
@@ -154,9 +161,10 @@ pub fn mesh(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn ray_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn ray_gen(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_ray_gen(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_ray_gen(func, &cp)
 }
 
 /// Mark a function as a closest-hit shader.
@@ -173,9 +181,10 @@ pub fn ray_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn closest_hit(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn closest_hit(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_closest_hit(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_closest_hit(func, &cp)
 }
 
 /// Mark a function as a miss shader.
@@ -191,9 +200,10 @@ pub fn closest_hit(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn miss(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    shader_macro::expand_miss(func)
+    let cp = crate_path::from_attr_args(attr);
+    shader_macro::expand_miss(func, &cp)
 }
 
 // === Derive macros ===
@@ -216,10 +226,14 @@ pub fn miss(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // MyVertex::ATTRIBUTES — const array of VertexAttribute
 /// // MyVertex::vertex_layout() -> VertexLayout
 /// ```
-#[proc_macro_derive(Vertex)]
+/// The container attribute `#[quanta(crate = <path>)]` overrides the
+/// crate root the generated `VertexAttribute` / `VertexLayout` paths
+/// are written against. Default `::quanta`.
+#[proc_macro_derive(Vertex, attributes(quanta))]
 pub fn derive_vertex(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
-    match vertex_derive::expand_vertex_derive(&input) {
+    let cp = crate_path::crate_from_container_attrs(&input.attrs);
+    match vertex_derive::expand_vertex_derive(&input, &cp) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

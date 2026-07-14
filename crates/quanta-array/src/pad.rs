@@ -27,14 +27,14 @@ impl<T: ArrayScalar> Array<T> {
     pub fn pad_axis0(&self, out_rows: usize, start: usize) -> Result<Array<T>, ArrayError> {
         let dims = self.shape().to_vec();
         if dims.is_empty() {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "pad_axis0: input must have at least one axis",
             )));
         }
         let len = dims[0];
         let rest: usize = dims[1..].iter().product();
         if start + len > out_rows {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "pad_axis0: start + len exceeds out_rows",
             )));
         }

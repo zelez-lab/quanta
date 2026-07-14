@@ -386,12 +386,15 @@ fn has_shared_attr(attrs: &[Attribute]) -> bool {
             .iter()
             .map(|s| s.ident.to_string())
             .collect();
-        // Match `#[quanta::shared]` or `#[shared]`. We deliberately
-        // don't try to handle `#[quanta::shared(dyn)]` here — dynamic
-        // shared memory has its own IR op (`SharedDeclDyn`) and isn't
-        // supported by the WASM route yet.
+        // Match `#[quanta::shared]`, `#[quanta_compute_dsl::shared]`,
+        // or bare `#[shared]`. The `quanta_compute_dsl::` form is what
+        // companion crates use once they drop the facade dependency and
+        // invoke the DSL macros through the split crate directly. We
+        // deliberately don't try to handle `#[quanta::shared(dyn)]` here
+        // — dynamic shared memory has its own IR op (`SharedDeclDyn`)
+        // and isn't supported by the WASM route yet.
         matches!(segs.as_slice(), [a] if a == "shared")
-            || matches!(segs.as_slice(), [a, b] if a == "quanta" && b == "shared")
+            || matches!(segs.as_slice(), [a, b] if (a == "quanta" || a == "quanta_compute_dsl") && b == "shared")
     })
 }
 
@@ -1298,12 +1301,15 @@ fn oracle_helper_items(kernel_block: &syn::Block) -> Option<Vec<syn::ItemFn>> {
 }
 
 /// Assemble the oracle fn item from the per-param pieces, the device
-/// helper items, and the rewritten body.
+/// helper items, and the rewritten body. `krate` is the runtime-type
+/// crate root (`::quanta` by default) the host-stub import is written
+/// against.
 fn assemble_oracle(
     kernel_name: &syn::Ident,
     params: Vec<OracleParam>,
     helpers: &[syn::ItemFn],
     body_block: &syn::Block,
+    krate: &TokenStream,
 ) -> TokenStream {
     let oracle_name = format_ident!("{}_host_oracle", kernel_name);
     let sigs: Vec<_> = params.iter().map(|p| &p.sig).collect();
@@ -1324,7 +1330,7 @@ fn assemble_oracle(
                 unused_variables, unused_parens, non_snake_case,
                 clippy::all)]
         pub unsafe fn #oracle_name(__quanta_n: u32, #(#sigs),*) {
-            use ::quanta::__device_host_stubs::*;
+            use #krate::__device_host_stubs::*;
             #(#helpers)*
             #(#bindings)*
             for __quanta_qid in 0u32..__quanta_n {
@@ -1339,6 +1345,7 @@ fn assemble_oracle(
 /// uses constructs the sequential host loop can't reproduce.
 pub(crate) fn emit_host_oracle_struct_ref(
     inputs: &StructRefKernelInputs<'_>,
+    crate_path: &crate::crate_path::CratePath,
 ) -> Result<Option<TokenStream>, String> {
     // Shared decls → cross-quark → no oracle. (Probe on a clone; the
     // harvest mutates.)
@@ -1411,6 +1418,7 @@ pub(crate) fn emit_host_oracle_struct_ref(
         params,
         &helpers,
         &body_block,
+        &crate_path.types(),
     )))
 }
 
@@ -1418,6 +1426,7 @@ pub(crate) fn emit_host_oracle_struct_ref(
 /// uses constructs the sequential host loop can't reproduce.
 pub(crate) fn emit_host_oracle_flat(
     inputs: &FlatParamKernelInputs<'_>,
+    crate_path: &crate::crate_path::CratePath,
 ) -> Result<Option<TokenStream>, String> {
     let mut probe = inputs.func.clone();
     if !harvest_and_rewrite_shared(&mut probe)?.is_empty() {
@@ -1514,5 +1523,6 @@ pub(crate) fn emit_host_oracle_flat(
         params,
         &helpers,
         &body_block,
+        &crate_path.types(),
     )))
 }

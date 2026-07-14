@@ -1,4 +1,4 @@
-//! GPU `#[quanta::kernel]` entry points for filling a buffer with
+//! GPU `#[quanta_compute_dsl::kernel(crate = quanta_core)]` entry points for filling a buffer with
 //! per-quark pseudo-random values, using Philox4×32-10 as the
 //! counter-based generator.
 //!
@@ -15,24 +15,24 @@
 //!
 //! ## Why a local copy of `philox4x32_10_first_u32`?
 //!
-//! `#[quanta::device]` registers a fn's source in a *per-crate*
+//! `#[quanta_compute_dsl::device(crate = quanta_core)]` registers a fn's source in a *per-crate*
 //! registry that the kernel macro reads from when expanding. The
 //! registry is process-wide but only sees fns that were attribute-
-//! expanded in the same crate compilation, so a `#[quanta::device]`
+//! expanded in the same crate compilation, so a `#[quanta_compute_dsl::device(crate = quanta_core)]`
 //! fn in `philox4x32.rs` IS visible from kernels in `gpu_kernel.rs`
 //! — same crate.
 
-use quanta::*;
+use quanta_core::*;
 
 /// High 32 bits of the 32×32 product, computed with pure 32-bit
 /// arithmetic (16-bit split) so it lowers on devices without
 /// `shaderInt64` (Metal, Broadcom V3D). Bit-identical to
 /// `((a as u64) * (b as u64)) >> 32` for all inputs — each 16×16
 /// partial product fits in a u32 and the carry chain (`cross`)
-/// tops out below 2^18, so nothing overflows. `#[quanta::device]`
+/// tops out below 2^18, so nothing overflows. `#[quanta_compute_dsl::device(crate = quanta_core)]`
 /// exposes the source to the wasm shell at macro expansion time.
 #[allow(dead_code)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 fn philox_mulhi32(a: u32, b: u32) -> u32 {
     let a_lo: u32 = a & 0xFFFFu32;
     let a_hi: u32 = a >> 16u32;
@@ -63,7 +63,7 @@ fn philox_mulhi32(a: u32, b: u32) -> u32 {
 /// the same reason the round constants are local. No u64 appears
 /// anywhere, so the kernel lowers on devices without `shaderInt64`.
 #[allow(dead_code)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 fn philox4x32_10_first_u32_kernel(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k1: u32) -> u32 {
     const M0_K: u32 = 0xD251_1F53;
     const M1_K: u32 = 0xCD9E_8D57;
@@ -133,7 +133,7 @@ fn philox4x32_10_first_u32_kernel(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k
 
 // ── u32 fill ─────────────────────────────────────────────────────────
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillUniformU32Data {
     pub out: Vec<u32>,
     pub seed_lo: u32,
@@ -141,7 +141,7 @@ pub struct FillUniformU32Data {
 }
 
 /// Per-quark fill: `out[id] = philox4x32_10(counter=id, key=seed).x0`.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_uniform_u32(d: &FillUniformU32Data) {
     let id = quark_id();
     let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -163,7 +163,7 @@ pub fn fill_uniform_u32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u32>
 
 // ── u64 fill ─────────────────────────────────────────────────────────
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillUniformU64Data {
     pub out: Vec<u64>,
     pub seed_lo: u32,
@@ -173,7 +173,7 @@ pub struct FillUniformU64Data {
 /// Per-quark u64 fill. Two Philox draws (different counter words)
 /// packed `(hi << 32) | lo` — same packing convention as
 /// `Rng::next_u64` in the CPU API.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_uniform_u64(d: &FillUniformU64Data) {
     let id = quark_id();
     // First draw: counter = (id, 0, 0, 0).
@@ -200,7 +200,7 @@ pub fn fill_uniform_u64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u64>
 
 // ── f32 fill (uniform [0, 1)) ────────────────────────────────────────
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillUniformF32Data {
     pub out: Vec<f32>,
     pub seed_lo: u32,
@@ -210,7 +210,7 @@ pub struct FillUniformF32Data {
 /// Per-quark f32 fill in `[0, 1)`. Same `u32_to_unit_f32`
 /// conversion as `Rng::next_f32` — bit-exact between host and
 /// GPU.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_uniform_f32(d: &FillUniformF32Data) {
     let id = quark_id();
     let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -233,7 +233,7 @@ pub fn fill_uniform_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>
 
 // ── f64 fill (uniform [0, 1)) ────────────────────────────────────────
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillUniformF64Data {
     pub out: Vec<f64>,
     pub seed_lo: u32,
@@ -243,7 +243,7 @@ pub struct FillUniformF64Data {
 /// Per-quark f64 fill in `[0, 1)`. Two Philox draws packed into a
 /// u64, then top 53 bits as mantissa scaled by 2^-53 — same path
 /// as `Rng::next_f64`.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_uniform_f64(d: &FillUniformF64Data) {
     let id = quark_id();
     let hi: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -318,7 +318,7 @@ pub fn fill_uniform_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>
 // independent Philox draws (counter words 0 and 1), then produces
 // the pair n1/n2 from u1/u2.
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillNormalF32Data {
     pub out: Vec<f32>,
     pub seed_lo: u32,
@@ -329,7 +329,7 @@ pub struct FillNormalF32Data {
 /// from two Philox4×32 draws and writes them at positions
 /// `id*2` and `id*2 + 1`. Host dispatches `len / 2` quarks
 /// (rounded up for odd lengths; the host trims).
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_normal_f32(d: &FillNormalF32Data) {
     let id = quark_id();
 
@@ -385,7 +385,7 @@ pub fn fill_normal_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>,
 
 // ── Normal f64 ───────────────────────────────────────────────────────
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillNormalF64Data {
     pub out: Vec<f64>,
     pub seed_lo: u32,
@@ -395,7 +395,7 @@ pub struct FillNormalF64Data {
 /// f64 Box-Muller. Same algorithm as the f32 form but draws four
 /// Philox words per quark to build TWO u64 → two f64 uniforms in
 /// `(0, 1]`, then `(r*cos, r*sin)` with f64 math.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_normal_f64(d: &FillNormalF64Data) {
     let id = quark_id();
 
@@ -454,7 +454,7 @@ pub fn fill_normal_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>,
 // `U > 0`, then sample `-ln(U) / lambda` — equivalent in
 // distribution because U and 1-U have the same uniform law.
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillExponentialF32Data {
     pub out: Vec<f32>,
     pub seed_lo: u32,
@@ -464,7 +464,7 @@ pub struct FillExponentialF32Data {
 }
 
 /// Per-quark Exponential(lambda) draw, inverse-CDF.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_exponential_f32(d: &FillExponentialF32Data) {
     let id = quark_id();
     let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -493,7 +493,7 @@ pub fn fill_exponential_f32_gpu(
 
 // ── Exponential f64 ─────────────────────────────────────────────────
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillExponentialF64Data {
     pub out: Vec<f64>,
     pub seed_lo: u32,
@@ -501,7 +501,7 @@ pub struct FillExponentialF64Data {
     pub lambda: f64,
 }
 
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_exponential_f64(d: &FillExponentialF64Data) {
     let id = quark_id();
     let ra: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -534,7 +534,7 @@ pub fn fill_exponential_f64_gpu(
 
 // ── LogNormal f64 ────────────────────────────────────────────────────
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillLogNormalF64Data {
     pub out: Vec<f64>,
     pub seed_lo: u32,
@@ -543,7 +543,7 @@ pub struct FillLogNormalF64Data {
     pub sigma: f64,
 }
 
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_lognormal_f64(d: &FillLogNormalF64Data) {
     let id = quark_id();
     let r0a: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -603,7 +603,7 @@ pub fn fill_lognormal_f64_gpu(
 // LogNormal(mu, sigma): `X = exp(mu + sigma * N)` where `N ~ N(0, 1)`.
 // Uses Box-Muller for the normal, same shape as `fill_normal_f32`.
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillLogNormalF32Data {
     pub out: Vec<f32>,
     pub seed_lo: u32,
@@ -615,7 +615,7 @@ pub struct FillLogNormalF32Data {
 /// Per-quark LogNormal(mu, sigma). Each quark produces two outputs
 /// (same Box-Muller pair structure as `fill_normal_f32`), exp'd
 /// through the (mu, sigma) shift+scale.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_lognormal_f32(d: &FillLogNormalF32Data) {
     let id = quark_id();
     let r0: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -668,7 +668,7 @@ pub fn fill_lognormal_f32_gpu(
 // as `u < p` where `u` is uniform in `[0, 1)`. Output stored as u32
 // (1 or 0) for compactness; users who want bool can cast on host.
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillBernoulliU32Data {
     pub out: Vec<u32>,
     pub seed_lo: u32,
@@ -679,7 +679,7 @@ pub struct FillBernoulliU32Data {
 }
 
 /// Per-quark Bernoulli(p) draw.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_bernoulli_u32(d: &FillBernoulliU32Data) {
     let id = quark_id();
     let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
@@ -724,7 +724,7 @@ pub fn fill_bernoulli_u32_gpu(
 
 const POISSON_MAX_K_U32: u32 = 64u32;
 
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillPoissonU32Data {
     pub out: Vec<u32>,
     pub seed_lo: u32,
@@ -737,7 +737,7 @@ pub struct FillPoissonU32Data {
 /// Per-quark Poisson(lambda) draw via Knuth's algorithm. Bounded at
 /// 64 iterations; for the small-lambda regime this is effectively
 /// the same as the unbounded algorithm.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_poisson_u32(d: &FillPoissonU32Data) {
     let id = quark_id();
     let lam: f32 = d.lambda;
@@ -810,7 +810,7 @@ const POISSON_MAX_K_HOST: u32 = POISSON_MAX_K_U32;
 /// and falls off rapidly. Inputs z < 1 are clamped to 1 (the PTRD
 /// acceptance test only queries z = k+1 with k ≥ 0).
 #[allow(dead_code)]
-#[quanta::device]
+#[quanta_compute_dsl::device(crate = quanta_core)]
 fn log_gamma_f32(z_in: f32) -> f32 {
     // Clamp to avoid log(z) blowing up. Callers should already
     // ensure z ≥ 1 via the `k >= 0` early reject in PTRD.
@@ -827,7 +827,7 @@ fn log_gamma_f32(z_in: f32) -> f32 {
 }
 
 /// Poisson distribution data for large-lambda kernel.
-#[derive(quanta::Fields)]
+#[derive(quanta_compute_dsl::Fields)]
 pub struct FillPoissonLargeU32Data {
     pub out: Vec<u32>,
     pub seed_lo: u32,
@@ -858,7 +858,7 @@ pub struct FillPoissonLargeU32Data {
 /// `crates/quanta-rand/tests/ptrd_host_oracle.rs` asserts bit-exact
 /// host parity, and `tests/v2_runtime_bisect.rs` guards the
 /// lowering shapes.
-#[quanta::kernel]
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
     let id = quark_id();
     let lam: f32 = d.lambda;

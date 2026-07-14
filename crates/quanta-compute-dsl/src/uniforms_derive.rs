@@ -16,6 +16,9 @@ use syn::{Fields, ItemStruct, Type};
 /// - `impl GpuType` — marks the struct as GPU-compatible
 /// - MSL/WGSL struct declaration constants
 pub(crate) fn expand_uniforms_derive(input: &ItemStruct) -> Result<TokenStream, syn::Error> {
+    let cp = crate::crate_path::crate_from_container_attrs(&input.attrs);
+    let krate = cp.types();
+
     let fields = match &input.fields {
         Fields::Named(named) => &named.named,
         _ => {
@@ -125,9 +128,9 @@ pub(crate) fn expand_uniforms_derive(input: &ItemStruct) -> Result<TokenStream, 
             ];
         }
 
-        impl ::quanta::GpuType for #struct_name {
+        impl #krate::GpuType for #struct_name {
             fn gpu_size() -> usize { core::mem::size_of::<Self>() }
-            fn scalar_type() -> ::quanta::ScalarType { ::quanta::ScalarType::U8 }
+            fn scalar_type() -> #krate::ScalarType { #krate::ScalarType::U8 }
         }
 
         #[doc(hidden)]

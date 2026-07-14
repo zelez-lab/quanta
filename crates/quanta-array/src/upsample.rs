@@ -32,12 +32,12 @@ impl<T: ArrayScalar> Array<T> {
     pub fn upsample2d(&self, k: usize) -> Result<Array<T>, ArrayError> {
         let d = self.shape();
         if d.len() != 4 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "upsample2d: input must be 4-D NCHW",
             )));
         }
         if k == 0 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "upsample2d: factor must be ≥ 1",
             )));
         }
@@ -161,7 +161,7 @@ impl<T: ArrayScalar> Array<T> {
     ) -> Result<Array<T>, ArrayError> {
         let d = self.shape();
         if d.len() != 4 || d[2] != h * k || d[3] != w * k {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "upsample2d_backward: grad must be [N, C, H·k, W·k]",
             )));
         }

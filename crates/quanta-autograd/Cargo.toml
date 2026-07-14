@@ -16,11 +16,22 @@ path = "src/lib.rs"
 # Backend forwarded to quanta-array (which forwards to quanta/-prims/-blas).
 # `software` is the CPU-JIT lane used for differential gradient-check tests.
 default = ["software"]
-software = ["quanta-array/software", "quanta/software"]
-metal = ["quanta-array/metal", "quanta/metal"]
-vulkan = ["quanta-array/vulkan", "quanta/vulkan"]
+software = ["quanta-array/software", "quanta-core/software", "quanta/software"]
+metal = ["quanta-array/metal", "quanta-core/metal", "quanta/metal"]
+vulkan = ["quanta-array/vulkan", "quanta-core/vulkan", "quanta/vulkan"]
 
 [dependencies]
-quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false }
+# quanta-autograd names only `quanta::Gpu` / `quanta::QuantaError`
+# (runtime), both in `quanta-core`. `compute` is on so the `Gpu`
+# compute surface the array ops go through is present. No DSL macros.
+quanta-core = { path = "../quanta-core", version = "0.1.0-alpha.2", default-features = false, features = [
+    "compute",
+] }
 quanta-array = { path = "../quanta-array", version = "0.1.0-alpha.2", default-features = false }
 quanta-blas = { path = "../quanta-blas", version = "0.1.0-alpha.2", default-features = false }
+
+[dev-dependencies]
+# Facade dev-dep: tests/doctests call `quanta::init()` / `init_cpu()`.
+# Backend features are forwarded from this crate's own features above so
+# `--features metal` gives the tests a real Metal device.
+quanta = { path = "../..", version = "0.1.0-alpha.2", default-features = false }

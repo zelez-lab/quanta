@@ -43,11 +43,11 @@
 //! (always 1) blocks the unroll whose epilogue the lowering mishandles.
 
 use crate::params::{Diag, Side, Trans, Uplo};
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// Column reflector: thread 0 reads sub-column `x = A[k:m, k]`, forms the
     /// Householder vector into `v` (a scratch `m×n` buffer, column `k`),
@@ -56,7 +56,7 @@ mod kernel {
     ///
     /// `α = −sign(x_k)·‖x‖`; `v_k = x_k − α`, `v_i = x_i` (`i > k`);
     /// `τ = 2/(vᵀv)` (0 when the column is already zero below the diagonal).
-    #[quanta::kernel(workgroup = [1])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [1])]
     pub fn qr_house_f32(
         a: &mut [f32],
         v: &mut [f32],
@@ -113,7 +113,7 @@ mod kernel {
     /// column-`k` reflector to column `j` of `A`:
     /// `A[i,j] −= τ_k · v_i · (Σ_{p≥k} v_p · A[p,j])` for `i` in `[k, m)`.
     /// The dot `Σ v_p·A[p,j]` and the axpy share one pass each.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn qr_apply_f32(
         a: &mut [f32],
         v: &[f32],
@@ -162,7 +162,7 @@ mod kernel {
     /// `B[i,j] −= τ_k · v_i · (Σ_{p≥k} v_p · B[p,j])`. Same shape as
     /// `qr_apply_f32` but over `B`'s columns. `Qᵀ = H_{n-1}···H_0`, so the
     /// host applies these in forward `k` order.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn qr_qt_apply_f32(
         b: &mut [f32],
         v: &[f32],

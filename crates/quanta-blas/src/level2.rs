@@ -14,7 +14,7 @@
 //! dedicated `gemv` surface against the reference oracle independently.
 
 use crate::gemm;
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 /// `gemv`: `y ← α·A·x + β·y`, A row-major `m×n`. `a` is `m·n`, `x` is `n`,
 /// `y` is `m` (read for the `β·y` term, overwritten with the result, in

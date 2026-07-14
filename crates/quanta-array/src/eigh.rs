@@ -171,7 +171,7 @@ impl Array<f32> {
     /// updates as GPU [`Array::matmul`]s (see the module docs for the split).
     pub fn eigh_symmetric(&self) -> Result<(Array<f32>, Array<f32>), ArrayError> {
         if self.rank() != 2 || self.shape()[0] != self.shape()[1] {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "eigh_symmetric: input must be a square 2-D matrix",
             )));
         }

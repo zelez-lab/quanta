@@ -70,13 +70,19 @@ pub(crate) fn expand_kernel(attr: TokenStream, mut func: ItemFn) -> TokenStream 
         .collect();
 
     // Re-emit the kernel with the inner attribute. Keep the original
-    // attr args verbatim so workgroup/opt/jit settings transfer.
+    // attr args verbatim so workgroup/opt/jit/crate settings transfer —
+    // `expand_kernel_core` re-parses them (including any `crate = ...`
+    // override). The `__kernel_inner` path itself routes through the
+    // macro root so an overridden crate names it via
+    // `::quanta_compute_dsl` rather than the facade.
+    let cp = crate::crate_path::from_attr_args(attr.clone());
+    let macro_root = cp.macros();
     let attr_ts: TokenStream2 = attr.into();
     let func_ts: TokenStream2 = quote! { #func };
     let expanded = quote! {
         #(#src_invocations)*
 
-        #[::quanta::__kernel_inner(#attr_ts)]
+        #[#macro_root::__kernel_inner(#attr_ts)]
         #func_ts
     };
     expanded.into()
@@ -119,7 +125,12 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     // WASM lowerer, and the body is derived from `rustc → wasm32 →
     // KernelOps`. Struct-ref and flat-param kernels dispatch to
     // their respective emitters inside `swap_body_via_wasm_route`.
-    let host_oracle = match swap_body_via_wasm_route(&mut kernel_def, &func, struct_ref.as_ref()) {
+    let host_oracle = match swap_body_via_wasm_route(
+        &mut kernel_def,
+        &func,
+        struct_ref.as_ref(),
+        &kernel_attrs.crate_path,
+    ) {
         Ok(oracle) => oracle.unwrap_or_default(),
         Err(err) => {
             let msg = format!("WASM route failed: {err}");
@@ -129,8 +140,14 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         }
     };
 
+    // Crate root every emitted runtime-type path (`KernelBinary`,
+    // `Gpu`, `Wave`, `QuantaError`, `Pulse`) routes through. Default
+    // `::quanta`; `crate = quanta_core` repoints the whole kernel
+    // surface at the split crates.
+    let krate = kernel_attrs.crate_path.types();
+
     if is_jit {
-        return emit_jit_kernel(&func, &kernel_def);
+        return emit_jit_kernel(&func, &kernel_def, &kernel_attrs.crate_path);
     }
 
     let outputs = match compiler::compile_kernel(&kernel_def) {
@@ -249,7 +266,7 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     let storage_texture_kinds = storage_texture_kinds(&kernel_def);
 
     let wave_fn = quote! {
-        pub static #binary_name: ::quanta::KernelBinary = ::quanta::KernelBinary {
+        pub static #binary_name: #krate::KernelBinary = #krate::KernelBinary {
             amd: #amd_expr,
             nvidia: #nvidia_expr,
             spirv: #spirv_expr,
@@ -264,7 +281,7 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         // (lavapipe, niche drivers, etc.).
         pub static #ir_static_name: &[u8] = #ir_lit;
 
-        pub fn #wave_fn_name #generics (device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
+        pub fn #wave_fn_name #generics (device: &#krate::Gpu) -> Result<#krate::Wave, #krate::QuantaError> {
             let mut wave = match #binary_name.for_vendor(device.caps().vendor) {
                 Some(binary) => device.wave(binary)?,
                 // No precompiled binary for this vendor — JIT-compile
@@ -289,7 +306,12 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     if let Some(sr) = struct_ref {
         let field_accesses = scan_struct_field_accesses(&func, &sr.param_name);
         let dispatch_info = build_dispatch_info(&sr, &field_accesses, &kernel_def);
-        let dispatch_fn = auto_dispatch::emit_auto_dispatch(&func, &dispatch_info, &wave_fn_name);
+        let dispatch_fn = auto_dispatch::emit_auto_dispatch(
+            &func,
+            &dispatch_info,
+            &wave_fn_name,
+            &kernel_attrs.crate_path,
+        );
 
         let expanded = quote! {
             #wave_fn
@@ -379,7 +401,11 @@ fn scalar_type_to_name(ty: quanta_ir::ScalarType) -> String {
 
 /// Emit JIT kernel: serialize KernelDef and embed it, generate runtime
 /// compilation function via `wave_jit`.
-fn emit_jit_kernel(func: &ItemFn, kernel_def: &quanta_ir::KernelDef) -> TokenStream {
+fn emit_jit_kernel(
+    func: &ItemFn,
+    kernel_def: &quanta_ir::KernelDef,
+    crate_path: &crate::crate_path::CratePath,
+) -> TokenStream {
     let func_name = &func.sig.ident;
     let def_name = syn::Ident::new(
         &format!("{}_DEF", func_name.to_string().to_uppercase()),
@@ -393,11 +419,12 @@ fn emit_jit_kernel(func: &ItemFn, kernel_def: &quanta_ir::KernelDef) -> TokenStr
     let wg_y = kernel_def.workgroup_size[1];
     let wg_z = kernel_def.workgroup_size[2];
     let kinds = storage_texture_kinds(kernel_def);
+    let krate = crate_path.types();
 
     let expanded = quote! {
         pub static #def_name: &[u8] = #def_lit;
 
-        pub fn #func_name(device: &::quanta::Gpu) -> Result<::quanta::Wave, ::quanta::QuantaError> {
+        pub fn #func_name(device: &#krate::Gpu) -> Result<#krate::Wave, #krate::QuantaError> {
             let mut wave = device.wave_jit(#def_name)?;
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
             wave.set_storage_texture_kinds(#kinds);
@@ -441,6 +468,10 @@ struct KernelAttrs {
     opt_level: u8,
     workgroup_size: [u32; 3],
     subgroup_size: Option<u32>,
+    /// Crate-root override (`crate = <path>`). Routes every emitted
+    /// `KernelBinary` / `Wave` / `Gpu` / `QuantaError` path and the
+    /// proc-macro self-references. Default `::quanta`.
+    crate_path: crate::crate_path::CratePath,
 }
 
 impl Default for KernelAttrs {
@@ -449,6 +480,7 @@ impl Default for KernelAttrs {
             opt_level: 3,
             workgroup_size: [64, 1, 1],
             subgroup_size: None,
+            crate_path: crate::crate_path::CratePath::default(),
         }
     }
 }
@@ -466,7 +498,7 @@ impl Default for KernelAttrs {
 // is a compile error. Typos like `workgroup_size` used to
 // silently fall back to the default and produce kernels with
 // the wrong thread count.
-const KNOWN_KERNEL_ATTRS: &[&str] = &["opt", "workgroup", "subgroup", "jit"];
+const KNOWN_KERNEL_ATTRS: &[&str] = &["opt", "workgroup", "subgroup", "jit", "crate"];
 
 fn parse_kernel_attrs(attr: TokenStream) -> Result<KernelAttrs, syn::Error> {
     let mut attrs = KernelAttrs::default();
@@ -530,12 +562,20 @@ fn parse_kernel_attrs(attr: TokenStream) -> Result<KernelAttrs, syn::Error> {
                     attrs.subgroup_size = Some(v);
                 }
             }
+            // `crate = <path>` crate-root override. Consumed via the
+            // shared `crate_path` helper below; the arm just keeps the
+            // KNOWN_KERNEL_ATTRS gate satisfied.
+            syn::Meta::NameValue(nv) if nv.path.is_ident("crate") => {}
             // `Meta::Path` for bare flags like `jit`. Already
             // accepted by the KNOWN_KERNEL_ATTRS gate above; the
             // value side is consumed by the `attr_str.contains`
             // check in `expand_kernel_core`.
             _ => {}
         }
+    }
+
+    if let Some(cp) = crate::crate_path::crate_from_metas(&parsed) {
+        attrs.crate_path = cp;
     }
 
     Ok(attrs)
@@ -585,6 +625,7 @@ fn swap_body_via_wasm_route(
     kernel_def: &mut quanta_ir::KernelDef,
     func: &ItemFn,
     sr: Option<&StructRefParam>,
+    crate_path: &crate::crate_path::CratePath,
 ) -> Result<Option<proc_macro2::TokenStream>, String> {
     let (wasm_def, host_oracle) = match sr {
         Some(sr) => {
@@ -611,7 +652,7 @@ fn swap_body_via_wasm_route(
                 workgroup_size: kernel_def.workgroup_size,
             };
             let def = compile_struct_ref_kernel_via_wasm(&inputs)?;
-            let oracle = emit_host_oracle_struct_ref(&inputs)?;
+            let oracle = emit_host_oracle_struct_ref(&inputs, crate_path)?;
             (def, oracle)
         }
         None => {
@@ -621,7 +662,7 @@ fn swap_body_via_wasm_route(
                 workgroup_size: kernel_def.workgroup_size,
             };
             let def = compile_flat_param_kernel_via_wasm(&inputs)?;
-            let oracle = emit_host_oracle_flat(&inputs)?;
+            let oracle = emit_host_oracle_flat(&inputs, crate_path)?;
             (def, oracle)
         }
     };

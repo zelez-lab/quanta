@@ -24,19 +24,19 @@ impl Array<f32> {
     /// Requires `N ≥ 2` and `1 ≤ k ≤ D`.
     pub fn pca(&self, k: usize) -> Result<(Array<f32>, Array<f32>), ArrayError> {
         if self.rank() != 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "pca: data must be 2-D [samples, features]",
             )));
         }
         let n = self.shape()[0];
         let d = self.shape()[1];
         if n < 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "pca: need at least 2 samples for a sample covariance (N−1)",
             )));
         }
         if k == 0 || k > d {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "pca: k must satisfy 1 ≤ k ≤ D (feature count)",
             )));
         }

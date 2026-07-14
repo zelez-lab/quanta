@@ -21,11 +21,11 @@
 //! (`specs/verify/lean/Quanta/Blas/Trmm.lean`).
 
 use crate::params::{Diag, Side, Trans, Uplo};
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// LOWER effective `M` (`B'[i] = α·Σ_{p≤i} M[i,p]·B[p]`). Each output
     /// `i` reads inputs `p ≤ i`; walking `i` from high to low keeps a
@@ -38,7 +38,7 @@ mod kernel {
     /// Addresses XORed with `z` (host passes 0) to stay inline
     /// `buf + (index << 2)`; `s` is the accumulation step (1). Lane guard
     /// folds into `rows` (no `if` around the loop) — the lowering-safe shape.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     #[allow(clippy::too_many_arguments)]
     pub fn trmm_lower_f32(
         a: &[f32],
@@ -83,7 +83,7 @@ mod kernel {
     /// `i` reads inputs `p ≥ i`; walking `i` low → high keeps the op in
     /// place. Accumulation walks `p` from `i` to `nt`. Otherwise identical
     /// to [`trmm_lower_f32`].
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     #[allow(clippy::too_many_arguments)]
     pub fn trmm_upper_f32(
         a: &[f32],

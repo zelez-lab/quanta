@@ -15,8 +15,13 @@ struct GpuField {
     align: usize,
 }
 
+use crate::crate_path::CratePath;
+
 /// Generate all output tokens for a `#[quanta::gpu_type]` struct.
-pub(crate) fn expand_gpu_type(input: &ItemStruct) -> Result<TokenStream, syn::Error> {
+pub(crate) fn expand_gpu_type(
+    input: &ItemStruct,
+    cp: &CratePath,
+) -> Result<TokenStream, syn::Error> {
     let fields = match &input.fields {
         Fields::Named(named) => &named.named,
         _ => {
@@ -150,6 +155,7 @@ pub(crate) fn expand_gpu_type(input: &ItemStruct) -> Result<TokenStream, syn::Er
     });
 
     let generics = &input.generics;
+    let krate = cp.types();
 
     Ok(quote! {
         #(#existing_attrs)*
@@ -166,9 +172,9 @@ pub(crate) fn expand_gpu_type(input: &ItemStruct) -> Result<TokenStream, syn::Er
             ];
         }
 
-        impl ::quanta::GpuType for #struct_name {
+        impl #krate::GpuType for #struct_name {
             fn gpu_size() -> usize { core::mem::size_of::<Self>() }
-            fn scalar_type() -> ::quanta::ScalarType { ::quanta::ScalarType::U8 }
+            fn scalar_type() -> #krate::ScalarType { #krate::ScalarType::U8 }
         }
 
         pub const #msl_const_name: &str = #msl_decl;

@@ -142,7 +142,7 @@ pub const fn philox4x32_10(ctr: Counter, key: Key) -> Counter {
 /// inlined — not a helper call — because the splice is verbatim
 /// and must stay self-contained, same reason the constants are
 /// local.
-#[cfg_attr(feature = "gpu", quanta::device)]
+#[cfg_attr(feature = "gpu", quanta_compute_dsl::device(crate = quanta_core))]
 pub fn philox4x32_10_first_u32(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k1: u32) -> u32 {
     // Constants must be local — `#[quanta::device]` splices the
     // function source verbatim into the wasm-shell crate where the

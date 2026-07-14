@@ -44,16 +44,16 @@
 //! (with growth factor) is flagged there as follow-up.
 
 use crate::params::{Diag, Side, Trans, Uplo};
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// Swap rows `k` and `r` across all `n` columns. Thread `j` (column) moves
     /// `A[k,j]` and `A[r,j]`. `z` is the address-XOR guard (0), `s` the loop
     /// step (1, unused here but kept for the shared idiom).
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn lu_swap_rows_f32(a: &mut [f32], n: u32, k: u32, r: u32, z: u32, s: u32) {
         let j = quark_id();
         let active = if j < n { 1u32 } else { 0u32 };
@@ -75,7 +75,7 @@ mod kernel {
     /// into `A[i,k]` (the `L` factor below the diagonal), then updates the
     /// trailing row `A[i,j] -= m·A[k,j]` for `j` in `(k, n)`. One loop over
     /// `j` — the safe single-loop shape.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn lu_elim_f32(a: &mut [f32], n: u32, k: u32, z: u32, s: u32) {
         let i = quark_id();
         let active = if i < n {

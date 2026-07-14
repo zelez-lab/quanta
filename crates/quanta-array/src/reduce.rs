@@ -33,7 +33,7 @@ impl<T: ReduceScalar> Array<T> {
         let src = self.contiguous_or_self()?;
         let n = src.len();
         if n == 0 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "min of an empty array",
             )));
         }
@@ -45,7 +45,7 @@ impl<T: ReduceScalar> Array<T> {
         let src = self.contiguous_or_self()?;
         let n = src.len();
         if n == 0 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "max of an empty array",
             )));
         }

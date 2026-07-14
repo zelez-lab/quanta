@@ -74,7 +74,7 @@ impl<T: FloatScalar> Array<T> {
     ) -> Result<Array<T>, ArrayError> {
         let d = self.shape();
         if d.len() != 4 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "avgpool2d_backward: grad must be 4-D NCHW",
             )));
         }
@@ -147,12 +147,12 @@ impl<T: FloatScalar> Array<T> {
     ) -> Result<Array<T>, ArrayError> {
         let d = self.shape();
         if d.len() != 4 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "maxpool2d_backward: grad must be 4-D NCHW",
             )));
         }
         if argmax.shape() != d {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "maxpool2d_backward: argmax shape must match grad",
             )));
         }
@@ -186,7 +186,7 @@ impl<T: FloatScalar> Array<T> {
     ) -> Result<(usize, usize, usize, usize, usize, usize), ArrayError> {
         let d = self.shape();
         if d.len() != 4 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "pool: input must be 4-D NCHW",
             )));
         }

@@ -62,14 +62,14 @@ impl<T: DiffScalar> Var<T> {
         let ws = wt.shape();
         if xs.len() != 4 || ws.len() != 4 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("conv2d: x and w must be 4-D NCHW"),
+                quanta_core::QuantaError::invalid_param("conv2d: x and w must be 4-D NCHW"),
             )));
         }
         let (n, cin, h, w_in) = (xs[0], xs[1], xs[2], xs[3]);
         let (cout, kh, kw) = (ws[0], ws[2], ws[3]);
         if ws[1] != cin {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("conv2d: weight Cin must match input Cin"),
+                quanta_core::QuantaError::invalid_param("conv2d: weight Cin must match input Cin"),
             )));
         }
         let oh = quanta_array::conv_out(h, kh, stride, pad);

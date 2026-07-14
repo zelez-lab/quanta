@@ -15,7 +15,7 @@
 //! input-quantisation error holds exactly as for the float dtypes.
 
 use crate::mixed_kernel;
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 use quanta_ir::ScalarType;
 
 /// Quantized input scheme for a quantized GEMM. Output (C) is always f32.

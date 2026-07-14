@@ -50,7 +50,7 @@ fn broadcast_batch(a: &[usize], b: &[usize]) -> Result<Vec<usize>, ArrayError> {
         if da == db || da == 1 || db == 1 {
             out[i] = da.max(db);
         } else {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "matmul: batch dimensions are not broadcast-compatible",
             )));
         }
@@ -101,7 +101,7 @@ fn dot_usize(coord: &[usize], stride: &[usize]) -> usize {
 /// Validate that `a` is a square 2-D matrix and return its dimension.
 fn square_dim(a: &Array<f32>, ctx: &str) -> Result<usize, ArrayError> {
     if a.rank() != 2 || a.shape()[0] != a.shape()[1] {
-        return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+        return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
             match ctx {
                 "solve" => "solve: A must be a square 2-D matrix",
                 "inv" => "inv: A must be a square 2-D matrix",
@@ -128,7 +128,7 @@ impl Array<f32> {
     /// Returns a fresh contiguous row-major `Array`.
     pub fn matmul(&self, rhs: &Array<f32>) -> Result<Array<f32>, ArrayError> {
         if self.rank() < 2 || rhs.rank() < 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "matmul: both operands must be at least 2-D",
             )));
         }
@@ -146,7 +146,7 @@ impl Array<f32> {
         let k2 = rhs.shape()[0];
         let n = rhs.shape()[1];
         if k != k2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "matmul: inner dimensions disagree (A is m×k, B must be k×n)",
             )));
         }
@@ -176,7 +176,7 @@ impl Array<f32> {
         let (m, ka) = (ash[ash.len() - 2], ash[ash.len() - 1]);
         let (kb, n) = (bsh[bsh.len() - 2], bsh[bsh.len() - 1]);
         if ka != kb {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "matmul: inner dimensions disagree (A is …m×k, B must be …k×n)",
             )));
         }
@@ -235,7 +235,7 @@ impl Array<f32> {
     /// `a @ b` for vectors). Device-resident reduction.
     pub fn dot(&self, rhs: &Array<f32>) -> Result<f32, ArrayError> {
         if self.rank() != 1 || rhs.rank() != 1 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "dot: both operands must be 1-D",
             )));
         }
@@ -274,13 +274,13 @@ impl Array<f32> {
             1 => (b.shape()[0], 1usize),
             2 => (b.shape()[0], b.shape()[1]),
             _ => {
-                return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+                return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                     "solve: B must be 1-D or 2-D",
                 )));
             }
         };
         if brows != n {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "solve: B row count must match A's dimension",
             )));
         }
@@ -347,13 +347,13 @@ impl Array<f32> {
     /// `n×nrhs` result.
     pub fn lstsq(&self, b: &Array<f32>) -> Result<Array<f32>, ArrayError> {
         if self.rank() != 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "lstsq: A must be a 2-D matrix",
             )));
         }
         let (m, n) = (self.shape()[0], self.shape()[1]);
         if m < n {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "lstsq: requires m >= n (overdetermined or square)",
             )));
         }
@@ -361,13 +361,13 @@ impl Array<f32> {
             1 => (b.shape()[0], 1usize),
             2 => (b.shape()[0], b.shape()[1]),
             _ => {
-                return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+                return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                     "lstsq: B must be 1-D or 2-D",
                 )));
             }
         };
         if brows != m {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "lstsq: B row count must match A's row count",
             )));
         }
@@ -407,13 +407,13 @@ impl Array<f32> {
     /// (reflectors + `tau`) is computed on-device by the verified `qr` kernel.
     pub fn qr(&self) -> Result<(Array<f32>, Array<f32>), ArrayError> {
         if self.rank() != 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "qr: A must be a 2-D matrix",
             )));
         }
         let (m, n) = (self.shape()[0], self.shape()[1]);
         if m < n {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "qr: requires m >= n",
             )));
         }
@@ -516,13 +516,13 @@ impl Array<f32> {
     /// `U · diag(s) · Vᵀ`.
     pub fn svd(&self) -> SvdResult {
         if self.rank() != 2 {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "svd: A must be a 2-D matrix",
             )));
         }
         let (m, n) = (self.shape()[0], self.shape()[1]);
         if m < n {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "svd: requires m >= n (economy SVD)",
             )));
         }

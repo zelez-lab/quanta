@@ -23,7 +23,7 @@
 //! the global fragment loads further) are later increments; the public `gemm`
 //! routes everything else to the tiled kernel.
 
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 use quanta_ir::{
     BinOp, ConstValue, KernelDef, KernelOp, KernelParam, MatrixFrag, Reg, ScalarType,
     serialize_kernel,

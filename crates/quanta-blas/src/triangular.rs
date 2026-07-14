@@ -34,11 +34,11 @@
 //! backward-error bound (Thm 8.5) is flagged follow-up work there.
 
 use crate::params::{Diag, Side, Trans, Uplo, trsm_plan};
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     // Kernel-shape notes (all four kernels):
     //
@@ -68,7 +68,7 @@ mod kernel {
     /// `x[l·lb + t·ts]`; the effective matrix is `a[i·rs + p·cs]`.
     /// Threads with `l ≥ nlanes` get `rows = 0` and never enter the loop
     /// (no `if` around a loop, no conditional store — lowering-safe).
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn trsm_fwd_f32(
         a: &[f32],
         x: &mut [f32],
@@ -103,7 +103,7 @@ mod kernel {
 
     /// Forward substitution, unit diagonal — as [`trsm_fwd_f32`] but the
     /// diagonal is implicitly 1: no diagonal load, no divide.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn trsm_fwd_unit_f32(
         a: &[f32],
         x: &mut [f32],
@@ -137,7 +137,7 @@ mod kernel {
 
     /// Backward substitution (non-unit diagonal) — as [`trsm_fwd_f32`]
     /// but sweeping row `nt−1` down to `0`, update sum over `p > i`.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn trsm_bwd_f32(
         a: &[f32],
         x: &mut [f32],
@@ -173,7 +173,7 @@ mod kernel {
 
     /// Backward substitution, unit diagonal — as [`trsm_bwd_f32`] but the
     /// diagonal is implicitly 1: no diagonal load, no divide.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn trsm_bwd_unit_f32(
         a: &[f32],
         x: &mut [f32],

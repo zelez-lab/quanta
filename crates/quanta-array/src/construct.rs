@@ -4,7 +4,7 @@
 //! [`GpuType`]. The numeric builders (`zeros`/`ones`/`arange`/`linspace`/
 //! `eye`) are generic over [`ArrayScalar`] (f32/f64/i32/u32/i64/u64).
 
-use quanta::{Gpu, GpuType};
+use quanta_core::{Gpu, GpuType};
 use quanta_tensor::Layout;
 
 use crate::array::Array;

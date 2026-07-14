@@ -19,7 +19,7 @@ impl<T: ArrayScalar> Array<T> {
         let a = self.shape();
         let b = centers.shape();
         if a.len() != 2 || b.len() != 2 || a[1] != b[1] {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "cdist_sq: both inputs must be 2-D [., D] with matching D",
             )));
         }

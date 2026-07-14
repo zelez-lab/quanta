@@ -40,7 +40,7 @@ impl<T: DiffScalar> Var<T> {
     pub fn dropout(&self, p: f64, seed: u64) -> Result<Var<T>, AutogradError> {
         if !(0.0..1.0).contains(&p) {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("dropout: p must be in [0, 1)"),
+                quanta_core::QuantaError::invalid_param("dropout: p must be in [0, 1)"),
             )));
         }
         let x = self.value();
@@ -242,7 +242,7 @@ impl<T: DiffScalar> Var<T> {
     pub fn concat_axis0(parts: &[&Var<T>]) -> Result<Var<T>, AutogradError> {
         let first = parts.first().ok_or_else(|| {
             AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("concat_axis0: need at least one var"),
+                quanta_core::QuantaError::invalid_param("concat_axis0: need at least one var"),
             ))
         })?;
         for p in parts {
@@ -265,7 +265,7 @@ impl<T: DiffScalar> Var<T> {
         let d = x.shape();
         if d.len() != 2 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("gather_rows: table must be 2-D [N, C]"),
+                quanta_core::QuantaError::invalid_param("gather_rows: table must be 2-D [N, C]"),
             )));
         }
         let c = d[1];
@@ -296,7 +296,7 @@ impl<T: DiffScalar> Var<T> {
         let d = x.shape();
         if d.len() != 2 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("embedding: table must be 2-D [V, E]"),
+                quanta_core::QuantaError::invalid_param("embedding: table must be 2-D [V, E]"),
             )));
         }
         let v = d[0];
@@ -315,7 +315,9 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         let d = *x.shape().last().ok_or_else(|| {
             AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("gather_last: input needs at least one axis"),
+                quanta_core::QuantaError::invalid_param(
+                    "gather_last: input needs at least one axis",
+                ),
             ))
         })?;
         let y = x.gather_last(idx)?;
@@ -330,7 +332,7 @@ impl<T: DiffScalar> Var<T> {
         let d = self.value().shape().to_vec();
         if d.is_empty() {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("flatten: need at least 1 dim"),
+                quanta_core::QuantaError::invalid_param("flatten: need at least 1 dim"),
             )));
         }
         let rest: usize = d[1..].iter().product();

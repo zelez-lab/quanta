@@ -19,7 +19,7 @@
 
 use core::f32::consts::PI;
 
-use quanta::{Field, Gpu, QuantaError, Wave};
+use quanta_core::{Field, Gpu, QuantaError, Wave};
 use quanta_ir::{
     BinOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
 };
@@ -35,8 +35,8 @@ const U32: ScalarType = ScalarType::U32;
 /// per-butterfly `sin`/`cos`.
 ///
 /// ```no_run
-/// # fn main() -> Result<(), quanta::QuantaError> {
-/// let gpu = quanta::init_cpu();
+/// # fn main() -> Result<(), quanta_core::QuantaError> {
+/// let gpu = quanta_core::init_cpu();
 /// let mut plan = quanta_fft::FftPlan::new(&gpu, 1024, false)?; // forward
 /// for frame in signal_frames() {
 ///     let (re, im) = plan.execute(&frame.re, &frame.im)?;

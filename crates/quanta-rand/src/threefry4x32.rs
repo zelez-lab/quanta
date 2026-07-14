@@ -136,7 +136,7 @@ pub const fn threefry4x32_20(ctr: Counter, key: Key) -> Counter {
 /// Returns only the first u32 of the 4-word output. For more output
 /// words from the same draw, increment a counter component.
 #[allow(clippy::too_many_arguments, clippy::manual_is_multiple_of)]
-#[cfg_attr(feature = "gpu", quanta::device)]
+#[cfg_attr(feature = "gpu", quanta_compute_dsl::device(crate = quanta_core))]
 pub fn threefry4x32_20_first_u32(
     c0: u32,
     c1: u32,

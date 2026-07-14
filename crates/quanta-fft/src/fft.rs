@@ -13,7 +13,7 @@
 //! radix-2 plans at `M = next_pow2(2N−1)`. It costs three length-M
 //! transforms, so a power-of-2 N is always the faster shape.
 
-use quanta::{Gpu, QuantaError};
+use quanta_core::{Gpu, QuantaError};
 
 use crate::bluestein;
 use crate::plan::FftPlan;

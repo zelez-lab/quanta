@@ -180,7 +180,7 @@ impl<T: DiffScalar> Var<T> {
     }
 
     /// An owned device handle (`Gpu` is a cheap `Arc` clone).
-    fn gpu_owned(&self) -> quanta::Gpu {
+    fn gpu_owned(&self) -> quanta_core::Gpu {
         self.tape.borrow().values[self.id].gpu().clone()
     }
 

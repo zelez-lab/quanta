@@ -13,7 +13,7 @@
 //! `alpha_eff = α·sa·sb` over the raw integer codes computes the dequantised
 //! result with no per-element scale op.
 
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 use quanta_ir::{
     BinOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
 };
@@ -211,7 +211,7 @@ pub(crate) fn build_def(
 /// layout (one element per 32-bit word, raw bits zero-extended into the
 /// low bits). Implemented for every `T` that rides `dispatch`; only the
 /// genuinely narrow dtypes (bf16 / fp8) ever get widened.
-pub(crate) trait NarrowStorageBits: quanta::GpuType + Copy {
+pub(crate) trait NarrowStorageBits: quanta_core::GpuType + Copy {
     fn widen_to_word(self) -> u32;
 }
 impl NarrowStorageBits for u16 {

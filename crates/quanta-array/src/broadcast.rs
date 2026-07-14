@@ -14,7 +14,7 @@
 //!   b_off    = Σ coord[k] * b_stride[k]
 //!   out[q]   = op(a[a_off], b[b_off])
 
-use quanta::GpuType;
+use quanta_core::GpuType;
 use quanta_ir::{KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel};
 use quanta_tensor::Layout;
 

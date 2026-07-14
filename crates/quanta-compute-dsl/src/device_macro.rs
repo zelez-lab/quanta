@@ -101,6 +101,16 @@ pub(crate) fn expand_device(attr: TokenStream, func: ItemFn) -> TokenStream {
         return fn_tokens.into();
     }
 
+    // Crate-root override (`crate = <path>`). Baked into the emitted
+    // `_src!` macro so a downstream crate that invokes `foo_src!()`
+    // resolves `__device_host_stubs` and the re-registering
+    // `device(register_only)` through the same crate the device fn was
+    // defined against — not the facade (the whole point of the
+    // override).
+    let cp = crate::crate_path::from_attr_args(attr);
+    let types_root = cp.types();
+    let macro_root = cp.macros();
+
     let src_macro_ident = syn::Ident::new(&format!("{name}_src"), func.sig.ident.span());
 
     // The _src macro expands at the downstream call site to a
@@ -141,9 +151,9 @@ pub(crate) fn expand_device(attr: TokenStream, func: ItemFn) -> TokenStream {
             () => {
                 const _: () = {
                     #[allow(unused_imports)]
-                    use ::quanta::__device_host_stubs::*;
+                    use #types_root::__device_host_stubs::*;
                     #[allow(dead_code, non_snake_case)]
-                    #[::quanta::device(register_only)]
+                    #[#macro_root::device(register_only)]
                     #fn_tokens
                 };
             };

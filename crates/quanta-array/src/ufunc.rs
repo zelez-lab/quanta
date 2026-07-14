@@ -10,7 +10,7 @@
 
 use core::ops::{Add, Div, Mul, Sub};
 
-use quanta::GpuType;
+use quanta_core::GpuType;
 use quanta_ir::{
     BinOp as IrBinOp, KernelDef, KernelOp, KernelParam, MathFn, Reg, ScalarType,
     UnaryOp as IrUnaryOp, serialize_kernel,

@@ -18,11 +18,11 @@
 //! kernel is the correctness-first differential-tested baseline.
 
 use crate::params::{Trans, Uplo};
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// One thread per C entry. `op(A)[r,p] = a[r·ars + p·acs]`; `lower`
     /// selects which triangle is stored. Bounds + triangle fold into a
@@ -35,7 +35,7 @@ mod kernel {
     /// LLVM otherwise commits a common base *pointer* to a local, which
     /// the WASM-route lowering (correctly) refuses. The XOR keeps every
     /// address an inline `buf + (index << 2)` — the supported shape.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn syrk_f32(
         a: &[f32],
         c: &mut [f32],

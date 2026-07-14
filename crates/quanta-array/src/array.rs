@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use quanta::{Field, Gpu, GpuType};
+use quanta_core::{Field, Gpu, GpuType};
 use quanta_tensor::Layout;
 
 use crate::error::ArrayError;

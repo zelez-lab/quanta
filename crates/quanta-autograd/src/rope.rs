@@ -40,9 +40,9 @@ impl<T: DiffScalar> RopeCache<T> {
     /// Build the caches for sequence length `t`, head dim `d` (must be even),
     /// and the standard `base = 10000`. Angles are computed in `f64` and cast
     /// to `T` for accuracy at large positions.
-    pub fn new(gpu: &quanta::Gpu, t: usize, d: usize, base: f64) -> Result<Self, ArrayError> {
+    pub fn new(gpu: &quanta_core::Gpu, t: usize, d: usize, base: f64) -> Result<Self, ArrayError> {
         if !d.is_multiple_of(2) {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "RopeCache: head dim d must be even",
             )));
         }
@@ -102,12 +102,14 @@ impl<T: DiffScalar> Var<T> {
         let seq = shp[shp.len() - 2];
         if d != cache.d {
             return Err(AutogradError::from(ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("rope: last dim must equal the cache head dim"),
+                quanta_core::QuantaError::invalid_param(
+                    "rope: last dim must equal the cache head dim",
+                ),
             )));
         }
         if seq > cache.t {
             return Err(AutogradError::from(ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("rope: sequence length exceeds the cache"),
+                quanta_core::QuantaError::invalid_param("rope: sequence length exceeds the cache"),
             )));
         }
 

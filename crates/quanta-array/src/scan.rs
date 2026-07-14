@@ -33,7 +33,7 @@ impl<T: ArrayScalar> Array<T> {
             1 => (1usize, dims[0]),
             2 => (dims[0], dims[1]),
             _ => {
-                return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+                return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                     "cumsum_last: input must be 1-D [L] or 2-D [R, L]",
                 )));
             }

@@ -18,7 +18,7 @@
 //! Dimensions and scalars (`m, n, k, α, β`) are passed as kernel scalar
 //! params (`set_value` at dispatch).
 
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 /// Output tile edge. Workgroup is `TILE*TILE = 256` threads; each computes
 /// one `C` entry within a `TILE×TILE` output block.
@@ -26,7 +26,7 @@ const TILE: u32 = 16;
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     // `barrier()` shim (name resolution for the kernel body; the macro
     // lowers it to KernelOp::Barrier). Indexed `#[quanta::shared]` array
@@ -44,7 +44,7 @@ mod kernel {
 
     /// Naive GEMM. Thread `i` computes one output entry
     /// `C[i/n, i%n] = α·Σₖ A[row,k]·B[k,col] + β·C[row,col]`, row-major.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn gemm_f32_naive(
         a: &[f32],
         b: &[f32],
@@ -88,7 +88,7 @@ mod kernel {
     /// edge), barrier, accumulate from shared, barrier. The K-tile loop is
     /// top-level and only the final store is guarded — the loop-carried `acc`
     /// must not sit inside a bounds `if` (structured-control lowering hazard).
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn gemm_f32_tiled(
         a: &[f32],
         b: &[f32],
@@ -99,9 +99,9 @@ mod kernel {
         alpha: f32,
         beta: f32,
     ) {
-        #[quanta::shared]
+        #[quanta_compute_dsl::shared]
         let a_tile: [f32; 256]; // 16×16, slot 0
-        #[quanta::shared]
+        #[quanta_compute_dsl::shared]
         let b_tile: [f32; 256]; // slot 1
 
         let gid = quark_id();

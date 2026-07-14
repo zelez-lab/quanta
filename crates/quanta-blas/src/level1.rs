@@ -14,7 +14,7 @@
 //!   temp field on the GPU, then reduce with the `quanta-prims`
 //!   `device_reduce_add_f32_field` path — the data never leaves the device.
 
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 use quanta_ir::{
     BinOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
 };

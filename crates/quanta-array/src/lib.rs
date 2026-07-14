@@ -1,7 +1,7 @@
 //! # quanta-array — the NumPy-equivalent GPU array
 //!
 //! `Array<T>` is a host-side N-dimensional array backed by GPU memory: it
-//! owns a [`quanta::Field`] and carries a [`quanta_tensor::Layout`]
+//! owns a [`quanta_core::Field`] and carries a [`quanta_tensor::Layout`]
 //! (shape and strides). It exposes numpy-style construction, broadcasting
 //! ufuncs, reductions, and zero-copy shape manipulation — without the user
 //! writing kernels.
@@ -21,7 +21,7 @@
 //!
 //! ```ignore
 //! use quanta_array::Array;
-//! let gpu = quanta::init_cpu();
+//! let gpu = quanta_core::init_cpu();
 //! let a = Array::from_slice(&gpu, &[1.0f32, 2.0, 3.0, 4.0], &[2, 2])?;
 //! let b = Array::ones(&gpu, &[2, 2])?;
 //! let c = a.add(&b)?;          // broadcasting elementwise add
@@ -37,7 +37,7 @@
 //! result:
 //!
 //! ```compile_fail
-//! let g = quanta::init_cpu();
+//! let g = quanta_core::init_cpu();
 //! let a = quanta_array::Array::from_slice(&g, &[4i32, 9, 16], &[3]).unwrap();
 //! let _ = a.sqrt(); // ERROR: `i32: FloatScalar` is not satisfied
 //! ```

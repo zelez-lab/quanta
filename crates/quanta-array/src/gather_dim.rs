@@ -38,12 +38,12 @@ impl<T: ArrayScalar> Array<T> {
         let in_dims = self.shape().to_vec();
         let ix_dims = idx.shape().to_vec();
         if in_dims.is_empty() || ix_dims.is_empty() {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "gather_last: input and idx need at least one axis",
             )));
         }
         if in_dims[..in_dims.len() - 1] != ix_dims[..ix_dims.len() - 1] {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "gather_last: input and idx must share the leading dims",
             )));
         }
@@ -172,7 +172,7 @@ impl<T: ArrayScalar> Array<T> {
     pub fn scatter_last_add(&self, idx: &Array<u32>, d: usize) -> Result<Array<T>, ArrayError> {
         let g_dims = self.shape().to_vec();
         if g_dims.is_empty() || g_dims != idx.shape() {
-            return Err(ArrayError::Gpu(quanta::QuantaError::invalid_param(
+            return Err(ArrayError::Gpu(quanta_core::QuantaError::invalid_param(
                 "scatter_last_add: grad and idx must have the same shape [L…, K]",
             )));
         }

@@ -66,7 +66,7 @@ impl<T: DiffScalar> Var<T> {
         let shape = self.value().shape().to_vec();
         if shape.len() != 3 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param(
+                quanta_core::QuantaError::invalid_param(
                     "multi_head_attention: input must be 3-D [B, T, D]",
                 ),
             )));
@@ -74,7 +74,7 @@ impl<T: DiffScalar> Var<T> {
         let (b, t, dmodel) = (shape[0], shape[1], shape[2]);
         if n_heads == 0 || dmodel % n_heads != 0 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param(
+                quanta_core::QuantaError::invalid_param(
                     "multi_head_attention: D must be divisible by n_heads",
                 ),
             )));

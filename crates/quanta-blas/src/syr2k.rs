@@ -16,11 +16,11 @@
 //! strides host-side, so one kernel covers both forms.
 
 use crate::params::{Trans, Uplo};
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// One thread per C entry (`n×n`). `op(X)[r,p] = x[r·rs + p·cs]`.
     /// `lower` selects the stored triangle. The two cross dot-products
@@ -28,7 +28,7 @@ mod kernel {
     /// fold into a single `u32` store flag (lowering-safe: no `&&`, no
     /// nested `if`s). Indices XORed with `z` (host passes 0) to keep the
     /// four loads inline `buf + (index << 2)` (the syrk trick).
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     #[allow(clippy::too_many_arguments)]
     pub fn syr2k_f32(
         a: &[f32],

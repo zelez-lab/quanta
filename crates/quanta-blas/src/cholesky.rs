@@ -40,16 +40,16 @@
 //! backward-error bound (Thm 10.3) is flagged there as follow-up.
 
 use crate::params::{Diag, Side, Trans, Uplo};
-use quanta::{Field, Gpu, QuantaError};
+use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
 mod kernel {
-    use quanta::*;
+    use quanta_core::*;
 
     /// Lower diagonal step: `L[j,j] = sqrt(A[j,j] − Σ_{p<j} L[j,p]²)`.
     /// One thread (thread 0). `z` is the address-XOR guard (0), `s` the loop
     /// step (1).
-    #[quanta::kernel(workgroup = [1])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [1])]
     pub fn chol_diag_lower_f32(a: &mut [f32], n: u32, j: u32, z: u32, s: u32) {
         let lane = quark_id();
         let active = if lane < 1u32 { 1u32 } else { 0u32 };
@@ -69,7 +69,7 @@ mod kernel {
     /// Lower sub-diagonal column step: thread `i` (with `i > j`, `i < n`)
     /// writes `L[i,j] = (A[i,j] − Σ_{p<j} L[i,p]·L[j,p]) / L[j,j]`. The
     /// diagonal `L[j,j]` was written by the preceding `chol_diag_lower_f32`.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn chol_col_lower_f32(a: &mut [f32], n: u32, j: u32, z: u32, s: u32) {
         let i = quark_id();
         // Rows i in (j, n) are active; others run zero iterations and skip the store.
@@ -94,7 +94,7 @@ mod kernel {
     }
 
     /// Upper diagonal step: `U[j,j] = sqrt(A[j,j] − Σ_{p<j} U[p,j]²)`.
-    #[quanta::kernel(workgroup = [1])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [1])]
     pub fn chol_diag_upper_f32(a: &mut [f32], n: u32, j: u32, z: u32, s: u32) {
         let lane = quark_id();
         let active = if lane < 1u32 { 1u32 } else { 0u32 };
@@ -113,7 +113,7 @@ mod kernel {
 
     /// Upper super-diagonal row step: thread `i` (with `i > j`, `i < n`)
     /// writes `U[j,i] = (A[j,i] − Σ_{p<j} U[p,j]·U[p,i]) / U[j,j]`.
-    #[quanta::kernel(workgroup = [256])]
+    #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn chol_col_upper_f32(a: &mut [f32], n: u32, j: u32, z: u32, s: u32) {
         let i = quark_id();
         let active = if i < n {

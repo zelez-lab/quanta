@@ -36,7 +36,7 @@ impl<T: DiffScalar> Var<T> {
         let d = x.shape();
         if d.len() != 4 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("avgpool2d: input must be 4-D NCHW"),
+                quanta_core::QuantaError::invalid_param("avgpool2d: input must be 4-D NCHW"),
             )));
         }
         let (h, w) = (d[2], d[3]);
@@ -61,7 +61,7 @@ impl<T: DiffScalar> Var<T> {
         let d = x.shape();
         if d.len() != 4 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("upsample2d: input must be 4-D NCHW"),
+                quanta_core::QuantaError::invalid_param("upsample2d: input must be 4-D NCHW"),
             )));
         }
         let (h, w) = (d[2], d[3]);
@@ -83,7 +83,7 @@ impl<T: DiffScalar> Var<T> {
         let d = x.shape();
         if d.len() != 4 {
             return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
-                quanta::QuantaError::invalid_param("maxpool2d: input must be 4-D NCHW"),
+                quanta_core::QuantaError::invalid_param("maxpool2d: input must be 4-D NCHW"),
             )));
         }
         let (h, w) = (d[2], d[3]);

@@ -21,18 +21,32 @@ default = []
 # which is single-threaded and not useful for cooperative
 # primitives. For real-GPU demos pick one of the backend-specific
 # convenience features below.
-gpu = ["dep:quanta"]
+gpu = ["dep:quanta-core", "dep:quanta-compute-dsl"]
 
 # Convenience: pull in a real GPU backend so the examples in
 # this crate can call `quanta::init()?` successfully. Pick the
-# one matching your host.
-gpu-metal = ["gpu", "quanta/metal"]
-gpu-vulkan = ["gpu", "quanta/vulkan"]
+# one matching your host. Backend features forward to `quanta-core`
+# (the library's runtime dep) and to the `quanta` facade dev-dep
+# (examples/tests call `quanta::init()`).
+gpu-metal = ["gpu", "quanta-core/metal", "quanta/metal"]
+gpu-vulkan = ["gpu", "quanta-core/vulkan", "quanta/vulkan"]
 
 [dependencies]
-quanta = { path = "../..", default-features = false, features = ["software"], optional = true }
+# Library code depends on the split crates, never the `quanta` facade —
+# `quanta-core` for the runtime types + `GpuType`, `quanta-compute-dsl`
+# for the `#[quanta::kernel]` / `#[quanta::device]` macros (invoked with
+# `crate = quanta_core`). This keeps the facade free to re-export this
+# crate later without a dependency cycle.
+quanta-core = { path = "../quanta-core", default-features = false, features = [
+    "software",
+], optional = true }
+quanta-compute-dsl = { path = "../quanta-compute-dsl", optional = true }
 
 [dev-dependencies]
+# The `quanta` facade is a DEV dependency only (tests/examples call
+# `quanta::init()`); cargo permits the dev-dep cycle that a normal dep
+# would forbid.
+quanta = { path = "../..", default-features = false, features = ["software"] }
 # Used by tests/block_reduce_tree.rs to deserialize the embedded
 # KernelDef IR and assert the tree-reduce kernels are subgroup-free.
 quanta-ir.workspace = true

@@ -11,7 +11,7 @@
 //!   float-only on every backend. Calling them on an integer array is a
 //!   compile error, not a silent garbage result.
 
-use quanta::GpuType;
+use quanta_core::GpuType;
 
 /// A numeric array element: has additive/multiplicative identities and a
 /// host-side conversion from `f64` (for `arange`/`linspace` step math).
@@ -29,48 +29,48 @@ pub trait FloatScalar: ArrayScalar {}
 /// dispatched to the matching `quanta-prims` reduce kernel. Implemented for
 /// the types prims provides reduces for: f32 / i32 / u32.
 ///
-/// The reductions take an on-device [`Field`](quanta::Field) so the data
+/// The reductions take an on-device [`Field`](quanta_core::Field) so the data
 /// never round-trips through host memory — the array stays GPU-resident.
 pub trait ReduceScalar: ArrayScalar {
     fn reduce_add(
-        gpu: &quanta::Gpu,
-        data: &quanta::Field<Self>,
+        gpu: &quanta_core::Gpu,
+        data: &quanta_core::Field<Self>,
         n: usize,
-    ) -> Result<Self, quanta::QuantaError>;
+    ) -> Result<Self, quanta_core::QuantaError>;
     fn reduce_min(
-        gpu: &quanta::Gpu,
-        data: &quanta::Field<Self>,
+        gpu: &quanta_core::Gpu,
+        data: &quanta_core::Field<Self>,
         n: usize,
-    ) -> Result<Self, quanta::QuantaError>;
+    ) -> Result<Self, quanta_core::QuantaError>;
     fn reduce_max(
-        gpu: &quanta::Gpu,
-        data: &quanta::Field<Self>,
+        gpu: &quanta_core::Gpu,
+        data: &quanta_core::Field<Self>,
         n: usize,
-    ) -> Result<Self, quanta::QuantaError>;
+    ) -> Result<Self, quanta_core::QuantaError>;
 }
 
 macro_rules! reduce_scalar {
     ($t:ty, $add:ident, $min:ident, $max:ident) => {
         impl ReduceScalar for $t {
             fn reduce_add(
-                gpu: &quanta::Gpu,
-                data: &quanta::Field<Self>,
+                gpu: &quanta_core::Gpu,
+                data: &quanta_core::Field<Self>,
                 n: usize,
-            ) -> Result<Self, quanta::QuantaError> {
+            ) -> Result<Self, quanta_core::QuantaError> {
                 quanta_prims::$add(gpu, data, n)
             }
             fn reduce_min(
-                gpu: &quanta::Gpu,
-                data: &quanta::Field<Self>,
+                gpu: &quanta_core::Gpu,
+                data: &quanta_core::Field<Self>,
                 n: usize,
-            ) -> Result<Self, quanta::QuantaError> {
+            ) -> Result<Self, quanta_core::QuantaError> {
                 quanta_prims::$min(gpu, data, n)
             }
             fn reduce_max(
-                gpu: &quanta::Gpu,
-                data: &quanta::Field<Self>,
+                gpu: &quanta_core::Gpu,
+                data: &quanta_core::Field<Self>,
                 n: usize,
-            ) -> Result<Self, quanta::QuantaError> {
+            ) -> Result<Self, quanta_core::QuantaError> {
                 quanta_prims::$max(gpu, data, n)
             }
         }

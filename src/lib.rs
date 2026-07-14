@@ -73,15 +73,13 @@ pub mod scan;
 #[cfg(feature = "compute")]
 pub mod intrinsics;
 
-/// Host-side stubs for every GPU intrinsic, used by `_src!()` macros
-/// emitted by `#[quanta::device]`. Hidden from the public API — the
-/// `_src!` macro injects `use ::quanta::__device_host_stubs::*` inside
-/// its `const _: () = { ... }` block so spliced device-fn bodies
-/// name-resolve in any downstream crate without the user importing
-/// anything.
-#[cfg(feature = "compute")]
-#[doc(hidden)]
-pub mod __device_host_stubs;
+// Host-side stubs for every GPU intrinsic, used by `_src!()` macros
+// emitted by `#[quanta::device]` (which inject `use
+// ::quanta::__device_host_stubs::*`). The stubs live in `quanta-core`
+// so companion crates reach them without depending on this facade;
+// core exposes both `device_host_stubs` and the `__device_host_stubs`
+// alias, and the wholesale `pub use quanta_core::*` above re-exports
+// the latter under the historical facade name.
 
 /// Spec enum tables for the WebGPU IDL (B′ track of FFI TCB shrink).
 /// Generated from `web/webgpu.idl` by `quanta codegen webgpu`; the
