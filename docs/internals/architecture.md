@@ -79,7 +79,6 @@ crates/quanta-dsl-core/         Shared behind both DSL faces (quanta-ir + syn/qu
 +-- src/
 |   +-- binary.rs               Compiler-binary discovery, rev handshake, invocation
 |   +-- shader_types.rs         Shader-parameter parsing + body extraction
-|   +-- emit_msl.rs, emit_wgsl.rs, shader_emit.rs   JIT-path text emitters
 
 crates/quanta-wasm-lowering/    WASM → KernelOps translator (kernel route)
 
@@ -339,4 +338,4 @@ The runtime follows a math-first discipline:
 
 ## Line count
 
-~45,000 lines of Rust across all workspace crates (runtime + IR + macros + compiler).
+~43,000 lines of Rust across all workspace crates (runtime + IR + macros + compiler).

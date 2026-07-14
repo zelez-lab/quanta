@@ -9,18 +9,13 @@
 //! - compiler-binary discovery, the rev handshake, and invocation
 //!   (`binary`): `compile_kernel` for the compute face, `compile_shader`
 //!   for the render face;
-//! - shader parameter parsing and body extraction (`shader_types`);
-//! - the built-in MSL/WGSL emitters, kept for Phase 4 (JIT migration to
-//!   quanta-ir): `emit_msl`, `emit_wgsl`, `shader_emit`.
+//! - shader parameter parsing and body extraction (`shader_types`).
 //!
 //! The crate compiles whole and featureless: both faces' entry points are
 //! plain functions, and each face crate calls only the ones it needs.
 
 #[allow(unused_imports)]
 mod binary;
-mod emit_msl;
-mod emit_wgsl;
-pub mod shader_emit;
 pub mod shader_types;
 
 pub use binary::{ShaderCompileOutput, compile_kernel, compile_shader};
