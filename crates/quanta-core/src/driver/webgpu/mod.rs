@@ -1064,6 +1064,7 @@ impl QGpuDevice for WebgpuDevice {
         Ok(RenderPass {
             handle: target.handle,
             ops: Vec::new(),
+            value_data: Vec::new(),
             color_targets: alloc::vec![crate::render_pass::ColorTarget {
                 texture: target.handle,
                 format: target.format,
@@ -1339,7 +1340,7 @@ impl QGpuDevice for WebgpuDevice {
                     bind_entries.insert(*slot, BindEntry::Sampler(s));
                     owned_samplers.push(s);
                 }
-                RenderOp::SetValue { slot, data } => {
+                RenderOp::SetValue { slot, offset, len } => {
                     // WebGPU has no push constants. Fallback: allocate
                     // a one-shot uniform buffer, write the bytes, bind
                     // it as if it were a `SetUniform`. The caller
@@ -1347,6 +1348,7 @@ impl QGpuDevice for WebgpuDevice {
                     // Metal's `setVertexBytes` and Vulkan's
                     // `vkCmdPushConstants`. The buffer is released
                     // after submit, below.
+                    let data = pass.value_bytes(*offset, *len);
                     let size = data.len() as f64;
                     let buf = unsafe {
                         ffi::quanta_create_buffer(
@@ -1373,7 +1375,7 @@ impl QGpuDevice for WebgpuDevice {
                 // Variants below are not in the 050 baseline. Per Kani
                 // theorem T417, the rule is **every RenderOp is either
                 // wired or explicitly rejected** — no silent drops.
-                RenderOp::DebugPush(_) | RenderOp::DebugPop => {
+                RenderOp::DebugPush { .. } | RenderOp::DebugPop => {
                     // Debug labels are advisory; safe to skip on WebGPU.
                 }
                 RenderOp::DrawIndirect {

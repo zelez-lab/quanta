@@ -36,7 +36,11 @@ unsafe fn set_store_action_non_resolve(attachment: ffi::Id, store_op: &StoreOp) 
     unsafe {
         match store_op {
             StoreOp::Store => {
-                ffi::msg_void_u64(attachment, b"setStoreAction:\0", ffi::MTL_STORE_ACTION_STORE);
+                ffi::msg_void_u64(
+                    attachment,
+                    b"setStoreAction:\0",
+                    ffi::MTL_STORE_ACTION_STORE,
+                );
             }
             StoreOp::DontCare => {
                 ffi::msg_void_u64(
@@ -318,6 +322,7 @@ impl MetalDevice {
     unsafe fn encode_bind_draw_op(
         &self,
         op: &RenderOp,
+        pass: &RenderPass,
         state: &mut EncoderState,
         buffers: &HashMap<u64, ffi::Id>,
         textures: &HashMap<u64, ffi::Id>,
@@ -389,8 +394,9 @@ impl MetalDevice {
                         );
                     }
                 }
-                RenderOp::SetValue { slot, data } => {
+                RenderOp::SetValue { slot, offset, len } => {
                     // Both stages — see SetField above.
+                    let data = pass.value_bytes(*offset, *len);
                     ffi::msg_set_bytes(
                         encoder,
                         b"setVertexBytes:length:atIndex:\0",
@@ -496,7 +502,7 @@ impl MetalDevice {
 
     /// Fixed-function / render-state op family: scissor, viewport, clears
     /// (handled by load actions), stencil ref, debug groups, samplers.
-    unsafe fn encode_state_op(&self, op: &RenderOp, state: &mut EncoderState) {
+    unsafe fn encode_state_op(&self, op: &RenderOp, pass: &RenderPass, state: &mut EncoderState) {
         let encoder = state.encoder;
         unsafe {
             match op {
@@ -557,8 +563,8 @@ impl MetalDevice {
                 RenderOp::ClearStencil(_) => {
                     // Handled by render pass descriptor load action
                 }
-                RenderOp::DebugPush(label) => {
-                    ffi::msg_push_debug_group(encoder, label);
+                RenderOp::DebugPush { offset, len } => {
+                    ffi::msg_push_debug_group(encoder, pass.debug_label(*offset, *len));
                 }
                 RenderOp::DebugPop => {
                     ffi::msg_pop_debug_group(encoder);
@@ -835,6 +841,7 @@ impl MetalDevice {
                     | RenderOp::DrawIndexedIndirect { .. } => {
                         self.encode_bind_draw_op(
                             op,
+                            &pass,
                             &mut state,
                             &buffers,
                             &textures,
@@ -847,10 +854,10 @@ impl MetalDevice {
                     | RenderOp::ClearDepth(_)
                     | RenderOp::SetStencilRef(_)
                     | RenderOp::ClearStencil(_)
-                    | RenderOp::DebugPush(_)
+                    | RenderOp::DebugPush { .. }
                     | RenderOp::DebugPop
                     | RenderOp::SetSampler { .. } => {
-                        self.encode_state_op(op, &mut state);
+                        self.encode_state_op(op, &pass, &mut state);
                     }
                     RenderOp::BeginOcclusionQuery { .. } | RenderOp::EndOcclusionQuery { .. } => {
                         self.encode_occlusion_op(op, &mut state, &buffers);

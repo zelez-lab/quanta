@@ -1,5 +1,3 @@
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
@@ -123,6 +121,11 @@ impl DepthTarget {
 pub struct RenderPass {
     pub(crate) handle: u64,
     pub(crate) ops: Vec<RenderOp>,
+    /// Byte arena for op payloads (`SetValue` data, debug labels). Ops
+    /// carry `(offset, len)` into this buffer, so recording touches the
+    /// allocator only on arena growth — never per call — and `RenderOp`
+    /// stays small.
+    pub(crate) value_data: Vec<u8>,
     /// Color attachment targets (MRT support).
     pub(crate) color_targets: Vec<ColorTarget>,
     /// Depth/stencil attachment target.
@@ -184,7 +187,8 @@ pub(crate) enum RenderOp {
     },
     SetValue {
         slot: u32,
-        data: Vec<u8>,
+        offset: usize,
+        len: usize,
     },
 
     // Draw
@@ -204,7 +208,10 @@ pub(crate) enum RenderOp {
     SetStencilRef(u32),
 
     // Debug
-    DebugPush(String),
+    DebugPush {
+        offset: usize,
+        len: usize,
+    },
     DebugPop,
 
     // Indirect
@@ -539,11 +546,33 @@ impl RenderPass {
     /// Set push constant / uniform data at a slot (any size).
     pub fn set_value<V: Copy>(&mut self, slot: u32, value: &V) {
         let size = size_of::<V>();
-        let mut data = vec![0u8; size];
+        let offset = self.value_data.len();
+        self.value_data.resize(offset + size, 0);
         unsafe {
-            core::ptr::copy_nonoverlapping(value as *const V as *const u8, data.as_mut_ptr(), size);
+            core::ptr::copy_nonoverlapping(
+                value as *const V as *const u8,
+                self.value_data.as_mut_ptr().add(offset),
+                size,
+            );
         }
-        self.ops.push(RenderOp::SetValue { slot, data });
+        self.ops.push(RenderOp::SetValue {
+            slot,
+            offset,
+            len: size,
+        });
+    }
+
+    /// Resolve an `(offset, len)` pair recorded by [`Self::set_value`] /
+    /// [`Self::debug_push`] back into its bytes in the pass arena.
+    pub(crate) fn value_bytes(&self, offset: usize, len: usize) -> &[u8] {
+        &self.value_data[offset..offset + len]
+    }
+
+    /// Resolve a recorded debug label. The bytes came from a `&str`, so
+    /// the empty-string fallback can only fire on a recording bug.
+    #[allow(dead_code)]
+    pub(crate) fn debug_label(&self, offset: usize, len: usize) -> &str {
+        core::str::from_utf8(self.value_bytes(offset, len)).unwrap_or("")
     }
 
     // === Draw commands ===
@@ -660,7 +689,12 @@ impl RenderPass {
 
     /// Push a debug label for this section of the render pass.
     pub fn debug_push(&mut self, label: &str) {
-        self.ops.push(RenderOp::DebugPush(label.to_string()));
+        let offset = self.value_data.len();
+        self.value_data.extend_from_slice(label.as_bytes());
+        self.ops.push(RenderOp::DebugPush {
+            offset,
+            len: label.len(),
+        });
     }
 
     /// Pop a debug label.

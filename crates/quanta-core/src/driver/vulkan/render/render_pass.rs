@@ -317,6 +317,7 @@ impl VulkanDevice {
         Ok(RenderPass {
             handle: target.handle(),
             ops: Vec::new(),
+            value_data: Vec::new(),
             color_targets: Vec::new(),
             depth_target: None,
             primary_format: Some(target.format()),
@@ -792,6 +793,7 @@ impl VulkanDevice {
             // the loop's duration.
             let ctx = DrawContext {
                 cmd,
+                value_data: &pass.value_data,
                 render_pipelines: &render_pipelines,
                 buffers: &buffers,
                 textures: &textures,
@@ -834,7 +836,7 @@ impl VulkanDevice {
                     RenderOp::Clear(_)
                     | RenderOp::ClearDepth(_)
                     | RenderOp::ClearStencil(_)
-                    | RenderOp::DebugPush(_)
+                    | RenderOp::DebugPush { .. }
                     | RenderOp::DebugPop
                     | RenderOp::BeginOcclusionQuery { .. }
                     | RenderOp::EndOcclusionQuery { .. }
@@ -1018,24 +1020,24 @@ impl VulkanDevice {
                 }
             }
 
-            RenderOp::SetValue { slot, data } => {
+            RenderOp::SetValue { slot, offset, len } => {
                 // The pipeline layout declares exactly one
                 // [0,128) VERTEX|FRAGMENT push range (8 slots
                 // x 16 bytes); pushing outside it or with a
                 // non-multiple-of-4 size is invalid API usage
                 // (VUID-vkCmdPushConstants-offset-01795 /
                 // size-00369) — fail the pass loudly instead.
-                let offset = *slot as usize * 16;
-                if *slot >= 8 || data.len() % 4 != 0 || offset + data.len() > 128 {
+                let pc_offset = *slot as usize * 16;
+                if *slot >= 8 || *len % 4 != 0 || pc_offset + *len > 128 {
                     return Err(QuantaError::invalid_param(format!(
                         "SetValue slot {} with {} bytes exceeds the Vulkan \
                          push-constant contract (slots 0-7, 4-byte-aligned, \
                          slot*16 + size <= 128)",
-                        slot,
-                        data.len()
+                        slot, len
                     )));
                 }
                 if let Some(rp) = ctx.pipeline_ref {
+                    let data = &ctx.value_data[*offset..*offset + *len];
                     unsafe {
                         ffi::vkCmdPushConstants(
                             cmd,
@@ -1121,18 +1123,15 @@ impl VulkanDevice {
                 // offset or an oversized rect becomes a valid clipped
                 // rect, matching Metal's tolerated behavior instead of
                 // tripping VUID-vkCmdSetScissor-x-00595.
-                let scissor =
-                    clamp_scissor(*x, *y, *width, *height, ctx.target_w, ctx.target_h);
+                let scissor = clamp_scissor(*x, *y, *width, *height, ctx.target_w, ctx.target_h);
                 unsafe {
                     ffi::vkCmdSetScissor(cmd, 0, 1, &scissor);
                 }
             }
 
-            RenderOp::SetStencilRef(value) => {
-                unsafe {
-                    ffi::vkCmdSetStencilReference(cmd, ffi::VK_STENCIL_FACE_FRONT_AND_BACK, *value);
-                }
-            }
+            RenderOp::SetStencilRef(value) => unsafe {
+                ffi::vkCmdSetStencilReference(cmd, ffi::VK_STENCIL_FACE_FRONT_AND_BACK, *value);
+            },
 
             _ => {}
         }
@@ -1250,7 +1249,7 @@ impl VulkanDevice {
         let cmd = ctx.cmd;
         match op {
             RenderOp::Clear(_) | RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {}
-            RenderOp::DebugPush(_) | RenderOp::DebugPop => {}
+            RenderOp::DebugPush { .. } | RenderOp::DebugPop => {}
 
             // Occlusion queries (M3.3)
             RenderOp::BeginOcclusionQuery { handle, index } => {
@@ -1285,9 +1284,9 @@ impl VulkanDevice {
                     .render_bundles
                     .read()
                     .map_err(|_| QuantaError::internal("lock poisoned"))?;
-                let bundle = bundles.get(bundle_handle).ok_or_else(|| {
-                    QuantaError::not_found("render bundle handle not found")
-                })?;
+                let bundle = bundles
+                    .get(bundle_handle)
+                    .ok_or_else(|| QuantaError::not_found("render bundle handle not found"))?;
                 if *count > bundle.recorded {
                     unsafe {
                         ffi::vkCmdEndRenderPass(cmd);
@@ -1315,11 +1314,7 @@ impl VulkanDevice {
     /// error arm ends the render pass before returning, exactly as the
     /// original inline sequence did.
     #[cfg(feature = "render")]
-    fn encode_vrs_op(
-        &self,
-        ctx: &DrawContext<'_>,
-        op: &RenderOp,
-    ) -> Result<(), QuantaError> {
+    fn encode_vrs_op(&self, ctx: &DrawContext<'_>, op: &RenderOp) -> Result<(), QuantaError> {
         let cmd = ctx.cmd;
         match op {
             // VRS native lowering (step 063). When
@@ -1412,6 +1407,8 @@ struct EncoderState {
 #[cfg(feature = "render")]
 struct DrawContext<'a> {
     cmd: ffi::VkCommandBuffer,
+    /// The pass's payload arena (`SetValue` bytes live here).
+    value_data: &'a [u8],
     render_pipelines: &'a std::collections::HashMap<u64, super::super::VkRenderPipeline>,
     buffers: &'a std::collections::HashMap<u64, super::super::VkBuffer>,
     textures: &'a std::collections::HashMap<u64, super::super::VkTexture>,

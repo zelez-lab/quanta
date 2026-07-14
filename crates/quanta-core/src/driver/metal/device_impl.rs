@@ -218,6 +218,7 @@ impl GpuDevice for MetalDevice {
         Ok(RenderPass {
             handle: target.handle(),
             ops: Vec::new(),
+            value_data: Vec::new(),
             color_targets: Vec::new(),
             depth_target: None,
             primary_format: Some(target.format()),
