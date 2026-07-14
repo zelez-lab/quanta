@@ -397,7 +397,7 @@ the up-front check fail explicitly rather than silently.
 | Variable rate shading | ✅ native (rate enumeration + `vkCmdSetFragmentShadingRateKHR`) | ✅ native (`MTLRasterizationRateMap`) | `NotSupported` | software lifecycle |
 | Sparse residency | ✅ native (`vkQueueBindSparse`, 2D / single-mip) | ✅ native (`MTLHeap` placement, 2D / single-mip) | `NotSupported` | software lifecycle |
 | Ray tracing | ⚠️ AS proc-addr foundation; build dispatch returns `NotSupported` (lavapipe segfault, awaiting AMDGPU runner) | ⚠️ family-gated; intersector dispatch pending | `NotSupported` | software lifecycle |
-| Indirect command buffer | software MVP, native pending | software MVP, native pending | `NotSupported` (render bundles are a separate path) | ✅ full software |
+| Indirect command buffer | ✅ native (`MTLIndirectCommandBuffer`, compute + render-bundle draw via `executeCommandsInBuffer`) | ✅ native (secondary command buffers + `vkCmdExecuteCommands`; render bundles record in `RENDER_PASS_CONTINUE` mode) | `NotSupported` (render bundles are a separate path) | ✅ full software |
 | Occlusion queries | ✅ native | ✅ native | ✅ native (async read via `mapAsync`; sync `occlusion_query_read` returns `NotSupported`) | ✅ software |
 | Compute textures (storage image) | ✅ native storage load + write + sample (emitter bakes an R32f image; sampled `&Texture2D` slots bind as `COMBINED_IMAGE_SAMPLER` with a cached per-device compute sampler — nearest, clamp-to-edge, unnormalized coords — matching the CPU executor) | ✅ native (storage load + write + sample) | `NotSupported` (`wave_dispatch` rejects texture bindings loudly) | ✅ software |
 

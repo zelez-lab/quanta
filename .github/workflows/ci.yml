@@ -168,6 +168,9 @@ jobs:
       - name: GPU advanced tests
         run: cargo test --test gpu_advanced --test gpu_queue --test gpu_timeline --test gpu_texture_views --test gpu_occlusion --test gpu_indirect_dispatch --test gpu_debug --test gpu_reload -- --test-threads=1
 
+      - name: GPU indirect-command-buffer tests (render bundle)
+        run: cargo test --test icb_render_metal -- --test-threads=1
+
       # DSL draw tests need the compiler on PATH: the shader macros shell out
       # to it to embed the metallib, so without it every DSL draw ships
       # binary-less and self-skips. Build it here (same llvm@22 the
@@ -187,6 +190,7 @@ jobs:
           cargo test --test render_triangle_test --features metal,render -- --test-threads=1
           cargo test --test texture_write_region --features metal,render -- --test-threads=1
           cargo test --test shader_parity_draw --features metal,render -- --test-threads=1
+          cargo test --test icb_metal --features metal,compute -- --test-threads=1
 
   # ─── Metal validation layer ──────────────────────────────────────────
   # Same gate as gpu-tests-metal — needs real Metal hardware.
@@ -526,3 +530,4 @@ jobs:
           cargo test --test vulkan_scissor_clamp --no-default-features --features vulkan,render
           cargo test --test vulkan_failed_pipeline --no-default-features --features vulkan,render
           cargo test --test vulkan_msaa_resolve_sample --no-default-features --features vulkan,render
+          cargo test --test icb_vulkan --no-default-features --features vulkan,jit,compute
