@@ -1401,6 +1401,132 @@ fn two_textured_draws_rebind_their_own_texture() {
     );
 }
 
+// ─── Test: per-draw texture rebinding across FORMATS (R8 + RGBA8) ───────────
+
+#[test]
+fn two_textured_draws_rebind_mixed_formats() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || ATLAS_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+
+    let layouts = pos_uv_layout();
+    let pipeline = gpu
+        .pipeline(
+            &quanta::PipelineDesc::new(quanta::ShaderSource::Binaries {
+                vertex: &UV_VERTEX_SHADER,
+                fragment: &ATLAS_FRAG_SHADER,
+            })
+            .with_entries(UV_VERTEX_SHADER.entry_point, ATLAS_FRAG_SHADER.entry_point)
+            .with_color_formats(vec![Format::RGBA8])
+            .with_vertex_layouts(&layouts)
+            .with_blend(quanta::BlendState::NONE),
+        )
+        .expect("pipeline creation");
+
+    // The rebind sibling above proves WHICH texture each draw samples;
+    // this one crosses FORMATS between the draws. Texture A is R8 —
+    // a single-channel texture samples as (r, 0, 0, 1), i.e. red.
+    // Texture B is RGBA8 solid green. A per-draw slip that carries the
+    // first draw's descriptor SHAPE forward (the view format, not just
+    // the handle) turns one half the wrong color even when plain
+    // same-format rebinding is correct.
+    let tex_r8 = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(1, 1, Format::R8)
+                .with_usage(quanta::TextureUsage::SHADER_READ),
+        )
+        .expect("R8 texture");
+    tex_r8.write(&[255u8]).expect("R8 write");
+    let tex_rgba = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(1, 1, Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ),
+        )
+        .expect("RGBA8 texture");
+    tex_rgba.write(&[0u8, 255, 0, 255]).expect("RGBA8 write");
+
+    #[rustfmt::skip]
+    let left_verts: [f32; 30] = [
+        -1.0, -1.0, 0.0,  0.5, 0.5,
+         0.0, -1.0, 0.0,  0.5, 0.5,
+         0.0,  1.0, 0.0,  0.5, 0.5,
+        -1.0, -1.0, 0.0,  0.5, 0.5,
+         0.0,  1.0, 0.0,  0.5, 0.5,
+        -1.0,  1.0, 0.0,  0.5, 0.5,
+    ];
+    #[rustfmt::skip]
+    let right_verts: [f32; 30] = [
+         0.0, -1.0, 0.0,  0.5, 0.5,
+         1.0, -1.0, 0.0,  0.5, 0.5,
+         1.0,  1.0, 0.0,  0.5, 0.5,
+         0.0, -1.0, 0.0,  0.5, 0.5,
+         1.0,  1.0, 0.0,  0.5, 0.5,
+         0.0,  1.0, 0.0,  0.5, 0.5,
+    ];
+    let vb_left: quanta::Field<f32> = gpu
+        .field_with_usage(left_verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb_left.write(&left_verts).unwrap();
+    let vb_right: quanta::Field<f32> = gpu
+        .field_with_usage(right_verts.len(), FieldUsage::default_render())
+        .unwrap();
+    vb_right.write(&right_verts).unwrap();
+
+    let w = 16u32;
+    let h = 16u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    let nearest = quanta::SamplerDesc::default()
+        .with_filters(quanta::Filter::Nearest, quanta::Filter::Nearest);
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipeline)
+        // Left quad → the R8 texture.
+        .texture(0, &tex_r8)
+        .sampler(0, nearest)
+        .vertices(0, &vb_left)
+        .draw(6)
+        // Right quad → the RGBA8 texture. The format changes between
+        // the draws — that is the whole point of this test.
+        .texture(0, &tex_rgba)
+        .vertices(0, &vb_right)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+
+    let pixels = target.read().unwrap();
+
+    // Left region: R8 with r=255 samples (1, 0, 0, 1) → red. Right
+    // region: RGBA8 green. x-only checks, so flip-safe.
+    let y = h / 2;
+    let (lr, lg, lb, _) = pixel_at(&pixels, w, w / 4, y);
+    assert!(
+        lr > 200 && lg < 50 && lb < 50,
+        "left half must sample the R8 texture as (r,0,0,1) red; a stale \
+         descriptor format from the other draw shows here. got ({lr},{lg},{lb})"
+    );
+    let (rr, rg, rb, _) = pixel_at(&pixels, w, 3 * w / 4, y);
+    assert!(
+        rg > 200 && rr < 50 && rb < 50,
+        "right half must sample the RGBA8 texture (green), got ({rr},{rg},{rb})"
+    );
+}
+
 // ─── Test: fragment uniform param (Metal fragment-stage buffer bind) ────────
 
 #[quanta::fragment]
