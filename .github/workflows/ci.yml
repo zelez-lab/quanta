@@ -240,6 +240,9 @@ jobs:
       - name: Install spirv-tools
         run: brew install spirv-tools
 
+      - name: Install naga (WGSL validation)
+        run: brew install naga-cli || cargo install naga-cli --locked
+
       - name: Cache cargo
         uses: actions/cache@v6
         with:
