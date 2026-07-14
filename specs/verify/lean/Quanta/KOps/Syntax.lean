@@ -2,7 +2,7 @@
 # KernelOps syntax — minimal Lean view
 
 Step **E.2a** of the source-preservation track. Lean inductive view
-of `quanta_ir::KernelOp` (`crates/quanta-ir/src/types.rs`). The
+of `quanta_ir::KernelOp` (`crates/gpu/quanta-ir/src/types.rs`). The
 shape mirrors the Rust enum 1:1; we only model variants the proc
 macro currently emits (the texture / cooperative-MMA / mesh-shader
 variants are wired in their respective drivers but not yet on the

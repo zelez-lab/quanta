@@ -1,6 +1,6 @@
 //! Verus mirror for the JIT WGSL emitter shipped in the WebGPU driver.
 //!
-//! Mirrors `crates/quanta-ir/src/emit_wgsl/{kernel,ops,helpers,shader}.rs`.
+//! Mirrors `crates/gpu/quanta-ir/src/emit_wgsl/{kernel,ops,helpers,shader}.rs`.
 //! After step 079, the same emitter serves both the build-time path (via
 //! `quanta-compiler/src/emit_wgsl.rs`'s `pub use` re-export) and the JIT
 //! path the WebGPU driver invokes from `wave_jit`. So **one mirror covers
@@ -29,7 +29,7 @@ verus! {
 
 // ── Ghost mirror of KernelOp's discriminant set ─────────────────────────────
 //
-// Kept aligned with the 51 variants in `crates/quanta-ir/src/types.rs` and
+// Kept aligned with the 51 variants in `crates/gpu/quanta-ir/src/types.rs` and
 // the Kani tag table in `specs/verify/kani/emitter_exhaustiveness.rs`.
 
 pub open spec fn kernel_op_variant_count() -> nat { 51 }

@@ -1,6 +1,6 @@
 //! Verus mirror of `quanta-compiler::shader_pipeline` — shader compilation dispatch.
 //!
-//! Mirrors: crates/quanta-compiler/src/shader_pipeline.rs
+//! Mirrors: crates/lang/quanta-compiler/src/shader_pipeline.rs
 //!
 //! The shader pipeline dispatches to emit_spirv, emit_msl, metallib, and emit_wgsl
 //! based on the shader stage (vertex or fragment).

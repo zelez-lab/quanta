@@ -4,7 +4,7 @@ description: >-
   libLLVM dependency closure bundled beside the binary. macOS + Linux only —
   Windows staging stays inline in release-compiler.yml because it runs under
   `shell: msys2 {0}`, which a composite step cannot host. The asset NAME is the
-  handshake contract with crates/quanta-dsl-core/src/binary.rs: with embed-rev
+  handshake contract with crates/lang/quanta-dsl-core/src/binary.rs: with embed-rev
   it is quanta-compiler-<rev>-<target>, otherwise quanta-compiler-<target>.
 
 inputs:
@@ -65,10 +65,10 @@ runs:
     #
     # The asset name must embed the SAME string quanta-compiler stamps as
     # QUANTA_BUILD_REV for this checkout, or the downloader's rev-first
-    # URL (crates/quanta-dsl-core/src/binary.rs) will never match and the
+    # URL (crates/lang/quanta-dsl-core/src/binary.rs) will never match and the
     # whole arc is inert.
     #
-    # crates/quanta-compiler/build.rs derives that stamp as, verbatim:
+    # crates/lang/quanta-compiler/build.rs derives that stamp as, verbatim:
     #     git ls-files --error-unmatch Cargo.toml   (the "tracked" guard)
     #     git describe --always --dirty --exclude '*'   (else "unknown")
     # run with current_dir = the crate's manifest dir. quanta-dsl-core's
@@ -88,13 +88,13 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        cd crates/quanta-compiler
+        cd crates/lang/quanta-compiler
         # The tracked guard: if Cargo.toml isn't tracked here we are not
         # in a real checkout of this repo and build.rs would stamp
         # "unknown"; refuse rather than publish an asset that can never
         # be matched.
         if ! git ls-files --error-unmatch Cargo.toml >/dev/null 2>&1; then
-          echo "ERROR: crates/quanta-compiler/Cargo.toml is not git-tracked here;" \
+          echo "ERROR: crates/lang/quanta-compiler/Cargo.toml is not git-tracked here;" \
                "build.rs would stamp QUANTA_BUILD_REV=unknown, which the downloader" \
                "never fetches. Aborting." >&2
           exit 1
@@ -369,7 +369,7 @@ runs:
     # after extraction. With embed-rev the asset NAME embeds <rev> (the
     # identity above); without it, the plain quanta-compiler-<target>
     # release name. Both schemes are the download-URL contract with
-    # crates/quanta-dsl-core/src/binary.rs.
+    # crates/lang/quanta-dsl-core/src/binary.rs.
     - name: Package (tar.gz)
       id: package
       shell: bash

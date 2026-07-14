@@ -45,7 +45,7 @@ opaque KernelDef : Type := Unit
 opaque kernel_entry_name : KernelDef → String
 
 /-- The WGSL source `emit_wgsl_jit` produces. Defined operationally in
-    `crates/quanta-ir/src/emit_wgsl/`; modeled here as a function. -/
+    `crates/gpu/quanta-ir/src/emit_wgsl/`; modeled here as a function. -/
 opaque emit_wgsl_jit : KernelDef → String
 
 /-- **T410 — emit_wgsl_jit_well_formed**: for every `KernelDef`,

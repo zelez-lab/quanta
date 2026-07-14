@@ -56,7 +56,7 @@ quanta_blas::gemm(&gpu, m, n, k, 1.0, &a, &b, 0.0, &c)?;
 Every `quanta-blas` op ships a **proven forward-error bound** (a Higham-style
 `(1+δ)` bound formalised in Lean), and `gemm` has mixed-precision (bf16/f16/fp8)
 and quantized (int8/int4) variants for when you trade accuracy for throughput.
-See the [quanta-blas README](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-blas/README.md).
+See the [quanta-blas README](https://github.com/zelez-lab/quanta/blob/main/crates/sci/quanta-blas/README.md).
 
 ## A note on dtypes
 

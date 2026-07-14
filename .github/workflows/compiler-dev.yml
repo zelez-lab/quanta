@@ -8,7 +8,7 @@ name: Compiler Dev Binary (per-rev, on demand)
 # main-tip rev therefore has no self-serve path short of installing LLVM 22
 # locally. This workflow lets a maintainer publish bundled binaries for a
 # SPECIFIC rev on demand (one click); the downloader
-# (crates/quanta-dsl-core/src/binary.rs) fetches them rev-first.
+# (crates/lang/quanta-dsl-core/src/binary.rs) fetches them rev-first.
 #
 # workflow_dispatch ONLY — this is deliberately NOT a per-push build. A
 # maintainer runs it when a consumer needs a rev-exact binary.
@@ -63,11 +63,11 @@ jobs:
       # staging, tar.gz packaging, and artifact upload all live in the shared
       # bundle-compiler composite. This workflow's whole reason to exist is the
       # per-rev asset name, so embed-rev + assert-exact-rev are both true: the
-      # composite derives <rev> exactly as crates/quanta-compiler/build.rs does
+      # composite derives <rev> exactly as crates/lang/quanta-compiler/build.rs does
       # (git describe --always --dirty --exclude '*' under a tracked-guard),
       # names the asset quanta-compiler-<rev>-<target>, and asserts the built
       # binary's --rev equals that <rev> before upload — the download-URL
-      # contract with crates/quanta-dsl-core/src/binary.rs.
+      # contract with crates/lang/quanta-dsl-core/src/binary.rs.
       #
       # fetch-depth: 0 is load-bearing here: it fetches full history so `git
       # describe` (in the composite) abbreviates the commit hash to the same
@@ -186,7 +186,7 @@ jobs:
           On-demand, per-rev **quanta-compiler** binaries for the stale-compiler
           rev handshake. A maintainer publishes these from a specific checkout via
           **Actions -> Compiler Dev Binary (per-rev, on demand) -> Run workflow ->
-          ref**; the Quanta build macros (crates/quanta-dsl-core) download the
+          ref**; the Quanta build macros (crates/lang/quanta-dsl-core) download the
           rev-exact archive automatically when your consumer pins a main-tip rev.
 
           Assets are named `quanta-compiler-<rev>-<target>.tar.gz` (+ `.sha256`),

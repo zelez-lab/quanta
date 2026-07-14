@@ -42,7 +42,7 @@ pub enum ScalarType {
 /// Tag encoding for WGSL binary operator strings.
 /// Post step 079: every BinOp variant produces a valid WGSL form. Bitwise
 /// and shift ops emit native operators; saturating ops lower to a `select`
-/// pattern in `crates/quanta-ir/src/emit_wgsl/helpers.rs::binop_wgsl`.
+/// pattern in `crates/gpu/quanta-ir/src/emit_wgsl/helpers.rs::binop_wgsl`.
 ///   1=+ 2=- 3=* 4=/ 5=% 6=& 7=| 8=^ 9=<< 10=>> 11=satadd 12=satsub
 pub open spec fn binop_wgsl_tag(op: BinOp) -> u8 {
     match op {

@@ -5,7 +5,7 @@ Step **B.3** of the FFI TCB shrink track. For every `KernelOp`
 variant the JIT emitter handles, this module pins down a
 *representative* WGSL `Source` fragment in the Lean grammar mirror
 and proves it is structurally well-formed. The shapes mirror
-`crates/quanta-ir/src/emit_wgsl/ops.rs` op-for-op; identifiers and
+`crates/gpu/quanta-ir/src/emit_wgsl/ops.rs` op-for-op; identifiers and
 scalar choices are fixed to canonical placeholders since structural
 well-formedness is invariant under register IDs and field names.
 
@@ -33,7 +33,7 @@ open Quanta.Wgsl
 -- KernelOpTag — the finite set of variants the emitter dispatches on
 -- ════════════════════════════════════════════════════════════════════
 --
--- Mirrors `pub enum KernelOp` in `crates/quanta-ir/src/types.rs`.
+-- Mirrors `pub enum KernelOp` in `crates/gpu/quanta-ir/src/types.rs`.
 -- The tag enumeration is what `native_decide` ranges over; the
 -- payload of each variant (register IDs, scalar types, field names)
 -- does not affect structural well-formedness, so a canonical

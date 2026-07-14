@@ -1,7 +1,7 @@
 /-
 Tensor layout algebra — Lean formalisation of `quanta-tensor`.
 
-Mirrors the Rust substrate at `crates/quanta-tensor/src/`:
+Mirrors the Rust substrate at `crates/sci/quanta-tensor/src/`:
 
 - `Shape` is a list of axis extents.
 - `Layout` is a `Shape` paired with a stride list of the same length
@@ -98,7 +98,7 @@ end Layout
 -- with the rank-0 helper.
 --
 -- These mirror the production ops in
--- `crates/quanta-tensor/src/layout/{ops,algebra}.rs`. The Rust
+-- `crates/sci/quanta-tensor/src/layout/{ops,algebra}.rs`. The Rust
 -- side handles every rank; the Lean port stays at the structural
 -- tier for now (transpose, slice, rank-0 complement, base-offset
 -- arithmetic). Deeper algebraic theorems on compose / permute /
@@ -450,7 +450,7 @@ theorem t8032_tile_offset_bound (dims coord : List Nat)
 
 /-- Apply a permutation to a list: `perm[i] = j` selects old
     element `j` into new position `i`. Mirrors the production
-    `permute` (in `crates/quanta-tensor/src/layout/ops.rs`). -/
+    `permute` (in `crates/sci/quanta-tensor/src/layout/ops.rs`). -/
 def permuteList {α : Type} [Inhabited α] (xs : List α) (perm : List Nat) : List α :=
   perm.map (fun j => xs.getD j default)
 
@@ -777,7 +777,7 @@ theorem t8052_compose1n_assoc_with_rank1_lhs
 
 -- ─────────────────────────────────────────────────────────────────
 -- Reshape + coalesce. Mirrors the production ops added in
--- `crates/quanta-tensor/src/layout/ops.rs`:
+-- `crates/sci/quanta-tensor/src/layout/ops.rs`:
 --
 -- - `reshape` models the SUCCESS path of `Layout::reshape` (the
 --   production op guards with `is_contiguous` + size-match and
@@ -1225,7 +1225,7 @@ theorem t8078_coalesce_offset_equiv (l : Layout) (k : Nat)
 
 -- ─────────────────────────────────────────────────────────────────
 -- The full multi-rank `compose`. Faithful success-path model of
--- `Layout::compose` in `crates/quanta-tensor/src/layout/algebra.rs`:
+-- `Layout::compose` in `crates/sci/quanta-tensor/src/layout/algebra.rs`:
 --
 -- - `composeFold` is `compose_lhs_with_int`'s LHS fold: walk the
 --   LHS modes left-to-right carrying the unconsumed RHS extent and

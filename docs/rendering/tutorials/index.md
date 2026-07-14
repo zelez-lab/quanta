@@ -6,7 +6,7 @@ full pipeline: shaders, textures, tessellation, mesh shaders, ray tracing, and
 the advanced command paths.
 
 Rendering shares one device handle with compute (`quanta::Gpu`); it lives in
-the [`quanta-render`](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-render/README.md)
+the [`quanta-render`](https://github.com/zelez-lab/quanta/blob/main/crates/gpu/quanta-render/README.md)
 crate, pulled in by the facade's default-on `render` feature. The render
 methods (`gpu.render(...)`, `gpu.pipeline(...)`, …) come from the sealed
 `RenderGpu` extension trait — `use quanta::*;` brings it into scope. A

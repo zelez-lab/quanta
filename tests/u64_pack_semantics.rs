@@ -8,7 +8,7 @@
 //! (spirv-val-valid). The CPU interpreter executes the same KernelOps at real
 //! 64-bit width; this test pins the IR-level semantics every backend must
 //! match. The SPIR-V module shape is pinned separately in
-//! `crates/quanta-ir/tests/emit_spirv_u64_width.rs` and the
+//! `crates/gpu/quanta-ir/tests/emit_spirv_u64_width.rs` and the
 //! `quanta-compiler` emit_spirv unit tests.
 //!
 //! Run: cargo test --test u64_pack_semantics --features software

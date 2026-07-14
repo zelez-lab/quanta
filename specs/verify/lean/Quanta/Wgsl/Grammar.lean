@@ -2,7 +2,7 @@
 # WGSL grammar mirror — minimal fragment
 
 Step **B** of the FFI TCB shrink track. Models the slice of WGSL
-that Quanta's JIT emitter (`crates/quanta-ir/src/emit_wgsl/*.rs`)
+that Quanta's JIT emitter (`crates/gpu/quanta-ir/src/emit_wgsl/*.rs`)
 produces. The W3C WGSL spec is far larger; we mirror only the
 fragment we emit — same approach as `Quanta.Idl` for WebIDL.
 
@@ -55,7 +55,7 @@ abbrev Ident : Type := String
 -- ════════════════════════════════════════════════════════════════════
 
 /-- The scalar types Quanta's emitter actually emits. Mirrors
-    `ScalarType::wgsl_name()` in `crates/quanta-ir/src/types.rs`. -/
+    `ScalarType::wgsl_name()` in `crates/gpu/quanta-ir/src/types.rs`. -/
 inductive Scalar where
   | bool
   | i32

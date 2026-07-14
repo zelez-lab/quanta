@@ -2,7 +2,7 @@
 //!
 //! Covers theorems T1400 (AtomicCAS opcode) and T1401 (atomic semantics).
 //!
-//! All values are mirrored from crates/quanta-compiler/src/emit_spirv/constants.rs.
+//! All values are mirrored from crates/lang/quanta-compiler/src/emit_spirv/constants.rs.
 //! No allocation: pure const assertions only.
 //!
 //! Run all:  cargo kani --harness-regex 'verify_'

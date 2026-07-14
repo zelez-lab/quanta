@@ -168,7 +168,7 @@ After step B⁰ (2026-04-28) the FFI boundary is hand-authored on both
 sides; A11 is the trust statement covering it. After step B′ (also
 2026-04-28) the WebGPU enum strings used at that boundary are
 generated from `web/webgpu.idl` (W3C spec) by
-`crates/quanta-codegen` rather than hand-aligned in two places. For
+`crates/lang/quanta-codegen` rather than hand-aligned in two places. For
 every `unsafe extern "C"` import declared in
 `src/driver/webgpu/ffi.rs`:
 - The corresponding implementation in `web/src/quanta.ts` and its
@@ -190,7 +190,7 @@ of opaque codegen). Post-B⁰ it covers only project-local code:
 `src/driver/webgpu/ffi.rs` (~300 lines) plus `web/src/*.ts` (~500
 lines). Post-B′ the enum strings shared by Rust and TS sides are
 generated from `web/webgpu.idl` (the published W3C IDL,
-sha256-pinned in the file's header) by `crates/quanta-codegen`, with
+sha256-pinned in the file's header) by `crates/lang/quanta-codegen`, with
 `cargo test`-time and module-init-time `assertSpecSubset()` checks
 on both sides. The lockstep hazard collapses to one parsed AST.
 All sides are version-controlled, auditable line by line, and

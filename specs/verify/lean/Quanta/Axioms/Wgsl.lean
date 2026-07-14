@@ -16,7 +16,7 @@ Why this axiom exists, and why it is small:
   the string our serializer emits is one the WGSL validator
   accepts.
 - This is a *typedef-stability* claim about the printer in
-  `crates/quanta-ir/src/emit_wgsl/*.rs` and the WGSL grammar — it
+  `crates/gpu/quanta-ir/src/emit_wgsl/*.rs` and the WGSL grammar — it
   holds because (a) every identifier the serializer prints is an
   identifier per WGSL §3 (enforced by `identOk`); (b) every
   expression nesting respects associativity/parenthesisation; (c)
@@ -64,7 +64,7 @@ axiom wgsl_serializer_preserves_grammar
     instantiates `α := KernelDef`.
 
     This is the operational claim Verus and Kani already discharge
-    over the actual Rust emitter (`crates/quanta-ir/src/emit_wgsl/`).
+    over the actual Rust emitter (`crates/gpu/quanta-ir/src/emit_wgsl/`).
     `specs/verify/verus/quanta-ir/emit_wgsl_jit.rs::
     t410_jit_wgsl_exhaustive` proves the per-tag exhaustiveness;
     `specs/verify/kani/emitter_exhaustiveness.rs::

@@ -271,7 +271,7 @@ a stale compiler can emit invalid SPIR-V that crashes some drivers:
 > quanta-compiler at `<path>` was built from rev `<bin_rev>` but this
 > quanta build is rev `<own_rev>`. A mismatched compiler can emit invalid
 > SPIR-V that crashes some drivers, so this is a hard error. Reinstall the
-> matching compiler: `cargo install --path crates/quanta-compiler --locked
+> matching compiler: `cargo install --path crates/lang/quanta-compiler --locked
 > --force`. To proceed anyway (e.g. a rig pinning a known-compatible
 > compiler), set `QUANTA_ACCEPT_STALE_COMPILER=1`.
 
@@ -290,7 +290,7 @@ instead of silently binding an empty module:
 > `<stage>` stage (a binary is present for another backend, so its
 > build-time compile produced no SPIR-V — quanta-compiler was missing,
 > failed, or stale when this crate was built). Reinstall the matching
-> compiler and rebuild: `cargo install --path crates/quanta-compiler
+> compiler and rebuild: `cargo install --path crates/lang/quanta-compiler
 > --locked --force`
 
 ### Storage-texture format mismatch → `InvalidParam`

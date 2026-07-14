@@ -5,7 +5,7 @@ forward computation on a `Tape`, then ask for the gradient of a scalar w.r.t.
 any input. Every gradient rule is the proven analytic derivative (see the
 [verification page](../../verification/index.md)). This is a task-by-task recipe;
 the runnable end-to-end example is
-[`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-autograd/examples/mlp_training.rs).
+[`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/ml/quanta-autograd/examples/mlp_training.rs).
 
 ```toml
 [dependencies]
@@ -159,7 +159,7 @@ for _ in 0..epochs {
 
 ## A whole network
 
-[`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-autograd/examples/mlp_training.rs)
+[`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/ml/quanta-autograd/examples/mlp_training.rs)
 puts it together: a 2-layer MLP `h = tanh(x·W1 + b1); ŷ = h·W2 + b2` learning
 `y = x²`. Running it on the GPU (`cargo run --example mlp_training -p
 quanta-autograd --release --features metal` — `vulkan` off Apple, or drop the

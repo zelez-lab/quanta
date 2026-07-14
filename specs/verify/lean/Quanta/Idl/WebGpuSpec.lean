@@ -1,7 +1,7 @@
 /- GENERATED — DO NOT EDIT. Run `quanta codegen webgpu` to regenerate.
 
 Source: web/webgpu.idl  (sha256: e85178050c10e68381efabbc664cf6c3368055242060abb0627d923ded5c69a7)
-Generator: crates/quanta-codegen (B″ track of the FFI TCB shrink).
+Generator: crates/lang/quanta-codegen (B″ track of the FFI TCB shrink).
 
 This file is the Lean mirror of the W3C WebGPU IDL — same data
 as `src/webgpu_generated_codes.rs` and `web/src/generated/codes.ts`,

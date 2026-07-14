@@ -4,7 +4,7 @@
 `Quanta.Wasm.Translate.lowerInstrs` refuses the production
 translator's **record-and-wrap** route: a `br`/`br_if` targeting a
 Block frame with no Loop in between. Production
-(`crates/quanta-wasm-lowering/src/lower.rs`, `record_br_at` +
+(`crates/gpu/quanta-wasm-lowering/src/lower.rs`, `record_br_at` +
 `reconstruct_block_brifs` + `materialize_cond_for_v2`) handles it by
 
   1. materializing the branch condition into a register at the

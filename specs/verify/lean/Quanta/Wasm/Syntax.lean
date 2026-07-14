@@ -2,7 +2,7 @@
 # WASM operator subset — Lean syntactic view (step 059)
 
 This module mirrors the `RawInstr` enum from
-`crates/quanta-wasm-lowering/src/lib.rs` — the owned form of
+`crates/gpu/quanta-wasm-lowering/src/lib.rs` — the owned form of
 `wasmparser::Operator` for the operator surface the Quanta lowering
 pass actually consumes. Adding a WASM op the lowering pass should
 handle means adding a constructor here, a case in

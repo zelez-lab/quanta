@@ -5,7 +5,7 @@ Step **B″** of the FFI TCB shrink track. Models the slice of WebIDL
 that Quanta's `extern "C"` boundary depends on: enum declarations,
 dictionary-member shapes, and method signatures. Generated from the
 same `weedle`-parsed AST that emits the Rust + TypeScript spec tables
-(see `crates/quanta-codegen`), so all three sides come from one parse.
+(see `crates/lang/quanta-codegen`), so all three sides come from one parse.
 
 Status (2026-04-28, first B″ commit):
 - `EnumDecl` is the load-bearing model; the conformance theorem
@@ -42,7 +42,7 @@ structure EnumDecl where
 
 /-- One WebIDL method parameter, in canonical form. `typeName` is
     the spec's type rendered as a plain string by
-    `crates/quanta-codegen` (typedefs preserved verbatim, e.g.
+    `crates/lang/quanta-codegen` (typedefs preserved verbatim, e.g.
     `"GPUSize64"` stays `"GPUSize64"` rather than resolving to
     `"unsigned long long"`). -/
 structure ParamSig where
@@ -73,7 +73,7 @@ structure MethodSig where
   deriving Repr, DecidableEq
 
 /-- The full WebGPU IDL surface Quanta consumes. Populated by
-    `crates/quanta-codegen`'s Lean emitter from `web/webgpu.idl`.
+    `crates/lang/quanta-codegen`'s Lean emitter from `web/webgpu.idl`.
     Order of `enums` matches IDL source order. -/
 structure WebGpuSpec where
   /-- SHA-256 of `web/webgpu.idl` at codegen time. Stamped here so a

@@ -27,7 +27,7 @@ version-controlled, auditable line by line.
 
 Step B′ (also 2026-04-28) further narrowed A11: every WebGPU enum
 string Quanta hands the JS side (texture format, blend factor, …) is
-now generated from `web/webgpu.idl` by `crates/quanta-codegen` into
+now generated from `web/webgpu.idl` by `crates/lang/quanta-codegen` into
 `src/webgpu_generated_codes.rs` (Rust spec tables) and
 `web/src/generated/codes.ts` (TS spec tables). The hand-aligned
 `format` / `blend_factor` / … modules in `ffi.rs` and the parallel

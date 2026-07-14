@@ -8,7 +8,7 @@ the `quanta` facade (which adds the compute face and re-exports the
 other two behind features).
 
 ```
-crates/quanta-core/             Shared GPU substrate (no_std, zero external deps)
+crates/gpu/quanta-core/             Shared GPU substrate (no_std, zero external deps)
 +-- src/
 |   +-- lib.rs                  Entry points: init(), devices(), init_cpu()
 |   +-- api/
@@ -42,7 +42,7 @@ quanta/                         The facade (root crate)
 |   +-- scan.rs                 Scan library (compute face)
 |   +-- intrinsics.rs           GPU intrinsics for the wasm32 kernel route
 
-crates/quanta-render/           The render face — a real crate. Depends on
+crates/gpu/quanta-render/           The render face — a real crate. Depends on
 +-- src/                        quanta-core (+ the render DSL macros) ONLY;
 |   +-- lib.rs                  never on the compute / IR-JIT / wasm-lowering
 |   |                           stack. Re-exports quanta-core wholesale.
@@ -55,12 +55,12 @@ crates/quanta-render/           The render face — a real crate. Depends on
 |   +-- ray_tracing_wrap.rs     AccelerationStructure, RayTracingPipeline
 |   +-- vrs_wrap.rs             VrsState
 
-crates/quanta-ir/               Shared IR definition (zero external deps)
+crates/gpu/quanta-ir/               Shared IR definition (zero external deps)
 +-- src/
 |   +-- lib.rs                  KernelOp, KernelDef, CompilerOutput
 |   +-- wire/                   Binary serialization (custom format, no serde)
 
-crates/quanta-compute-dsl/      Compute-face proc macros (depends on syn + quote)
+crates/lang/quanta-compute-dsl/      Compute-face proc macros (depends on syn + quote)
 +-- src/
 |   +-- lib.rs                  #[kernel], #[device], #[gpu_type],
 |   |                           derive(Fields), derive(Uniforms), import_devices!
@@ -68,21 +68,21 @@ crates/quanta-compute-dsl/      Compute-face proc macros (depends on syn + quote
 |   +-- compile_via_wasm.rs     Kernel body → rustc → wasm32 → KernelDef
 |   +-- kernel_type_inference.rs  Per-field scalar-type inference
 
-crates/quanta-render-dsl/       Render-face proc macros (depends on syn + quote)
+crates/lang/quanta-render-dsl/       Render-face proc macros (depends on syn + quote)
 +-- src/
 |   +-- lib.rs                  #[vertex], #[fragment], #[tess_control],
 |   |                           #[tess_eval], #[task], #[mesh],
 |   |                           #[ray_gen], #[closest_hit], #[miss], derive(Vertex)
 |   +-- shader_macro.rs         Render-stage macro bodies
 
-crates/quanta-dsl-core/         Shared behind both DSL faces (quanta-ir + syn/quote)
+crates/lang/quanta-dsl-core/         Shared behind both DSL faces (quanta-ir + syn/quote)
 +-- src/
 |   +-- binary.rs               Compiler-binary discovery, rev handshake, invocation
 |   +-- shader_types.rs         Shader-parameter parsing + body extraction
 
-crates/quanta-wasm-lowering/    WASM → KernelOps translator (kernel route)
+crates/gpu/quanta-wasm-lowering/    WASM → KernelOps translator (kernel route)
 
-crates/quanta-compiler/         LLVM compiler binary (inkwell / LLVM 22)
+crates/lang/quanta-compiler/         LLVM compiler binary (inkwell / LLVM 22)
 +-- src/
 |   +-- main.rs                 CLI entry: stdin KernelDef -> stdout CompilerOutput
 |   +-- to_llvm.rs              KernelOp -> LLVM IR module builder

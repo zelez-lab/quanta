@@ -115,7 +115,7 @@ let out = centered.div(&Array::full(&gpu, span, &[4])?)?.to_vec()?;
 ## Beyond NumPy: autodiff and neural nets
 
 Where NumPy stops, Quanta keeps going — the same arrays flow into
-[`quanta-autograd`](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-autograd/README.md)
+[`quanta-autograd`](https://github.com/zelez-lab/quanta/blob/main/crates/ml/quanta-autograd/README.md)
 for gradients (the PyTorch layer), so you can train models on the arrays you just
 built:
 

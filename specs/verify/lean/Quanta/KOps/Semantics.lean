@@ -21,7 +21,7 @@ State shape:
 
 Loops carry a fuel parameter; the function is total given fuel.
 
-Conventions match `crates/quanta-ir/src/driver/cpu/eval.rs` via the
+Conventions match `crates/gpu/quanta-ir/src/driver/cpu/eval.rs` via the
 shared primitives in `Quanta.Semantics.Cpu` — wrapping arithmetic,
 div-by-zero returns 0.
 -/

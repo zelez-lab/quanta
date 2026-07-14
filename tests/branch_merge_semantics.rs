@@ -12,7 +12,7 @@
 //! pins the IR-level semantics every backend (including the fixed SPIR-V
 //! variable-demotion model) must match. The same select shape is pinned
 //! structurally for SPIR-V in
-//! `crates/quanta-ir/tests/emit_spirv_int_signedness.rs`
+//! `crates/gpu/quanta-ir/tests/emit_spirv_int_signedness.rs`
 //! (`branch_arm_write_read_after_merge_is_valid_spirv`).
 //!
 //! Run: cargo test --test branch_merge_semantics --features software

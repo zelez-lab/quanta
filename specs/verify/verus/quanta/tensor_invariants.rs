@@ -1,7 +1,7 @@
 //! Verus mirror of `quanta-tensor` — layout algebra invariants.
 //!
 //! Mirrors the production types in
-//! `crates/quanta-tensor/src/{shape,layout}.rs`.
+//! `crates/sci/quanta-tensor/src/{shape,layout}.rs`.
 //!
 //! Verified properties:
 //!
@@ -436,7 +436,7 @@ proof fn t8121_transpose_preserves_well_formed(l: LayoutModel, i: int, j: int)
 //
 // Spec-level model of `Layout::complement` on a rank-1 input.
 // Mirrors the closed-form result from
-// `crates/quanta-tensor/src/layout/algebra.rs::complement_rank1`.
+// `crates/sci/quanta-tensor/src/layout/algebra.rs::complement_rank1`.
 //
 // Given a rank-1 layout `(s, d)` with `d > 0` and a cosize ≥ s*d,
 // the result is one of three shapes depending on whether the
@@ -599,7 +599,7 @@ proof fn t8127_complement_rank1_two_mode_rank(s: nat, d: nat, cosize: nat)
 // ── Rank-N complement: stride-sort fold model ───────────────────
 //
 // Mirrors `Layout::complement_general` in
-// `crates/quanta-tensor/src/layout/algebra.rs`. The production
+// `crates/sci/quanta-tensor/src/layout/algebra.rs`. The production
 // algorithm:
 //
 //   work = [(shape_0, stride_0), …, (shape_{R-1}, stride_{R-1})]

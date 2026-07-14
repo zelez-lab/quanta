@@ -1,0 +1,958 @@
+//! GPU `#[quanta_compute_dsl::kernel(crate = quanta_core)]` entry points for filling a buffer with
+//! per-quark pseudo-random values, using Philox4×32-10 as the
+//! counter-based generator.
+//!
+//! Each kernel takes the per-quark `quark_id` as its counter (with
+//! the other three counter words held at zero) and a shared
+//! `(seed_lo, seed_hi)` key, runs the full 10-round Philox
+//! bijection in-kernel, and writes the result through the host-
+//! side `u32`/`u64`/`f32`/`f64` conversion path.
+//!
+//! Determinism: running the same kernel with the same `seed` and
+//! `quark_count` produces bit-identical output across host and
+//! GPU. The integration tests in `tests/uniform_fill_correctness`
+//! validate this end-to-end.
+//!
+//! ## Why a local copy of `philox4x32_10_first_u32`?
+//!
+//! `#[quanta_compute_dsl::device(crate = quanta_core)]` registers a fn's source in a *per-crate*
+//! registry that the kernel macro reads from when expanding. The
+//! registry is process-wide but only sees fns that were attribute-
+//! expanded in the same crate compilation, so a `#[quanta_compute_dsl::device(crate = quanta_core)]`
+//! fn in `philox4x32.rs` IS visible from kernels in `gpu_kernel.rs`
+//! — same crate.
+
+use quanta_core::*;
+
+/// High 32 bits of the 32×32 product, computed with pure 32-bit
+/// arithmetic (16-bit split) so it lowers on devices without
+/// `shaderInt64` (Metal, Broadcom V3D). Bit-identical to
+/// `((a as u64) * (b as u64)) >> 32` for all inputs — each 16×16
+/// partial product fits in a u32 and the carry chain (`cross`)
+/// tops out below 2^18, so nothing overflows. `#[quanta_compute_dsl::device(crate = quanta_core)]`
+/// exposes the source to the wasm shell at macro expansion time.
+#[allow(dead_code)]
+#[quanta_compute_dsl::device(crate = quanta_core)]
+fn philox_mulhi32(a: u32, b: u32) -> u32 {
+    let a_lo: u32 = a & 0xFFFFu32;
+    let a_hi: u32 = a >> 16u32;
+    let b_lo: u32 = b & 0xFFFFu32;
+    let b_hi: u32 = b >> 16u32;
+    let lolo: u32 = a_lo.wrapping_mul(b_lo);
+    let lohi: u32 = a_lo.wrapping_mul(b_hi);
+    let hilo: u32 = a_hi.wrapping_mul(b_lo);
+    let hihi: u32 = a_hi.wrapping_mul(b_hi);
+    // Carry from the low 32 bits of the product into the high 32.
+    let cross: u32 = (lolo >> 16u32)
+        .wrapping_add(lohi & 0xFFFFu32)
+        .wrapping_add(hilo & 0xFFFFu32);
+    hihi.wrapping_add(lohi >> 16u32)
+        .wrapping_add(hilo >> 16u32)
+        .wrapping_add(cross >> 16u32)
+}
+
+/// In-kernel Philox4×32-10, returning the first output word. Same
+/// algorithm as `philox4x32::philox4x32_10_first_u32` in the host
+/// API; transcribed here so the kernel macro can splice it into
+/// the wasm shell.
+///
+/// The round multiplies use the pure-32-bit mulhi form (see
+/// `philox_mulhi32`) inlined into the loop body rather than a call:
+/// this fn is imported cross-crate via `quanta::import_devices!`
+/// and the splice is verbatim, so it must stay self-contained —
+/// the same reason the round constants are local. No u64 appears
+/// anywhere, so the kernel lowers on devices without `shaderInt64`.
+#[allow(dead_code)]
+#[quanta_compute_dsl::device(crate = quanta_core)]
+fn philox4x32_10_first_u32_kernel(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k1: u32) -> u32 {
+    const M0_K: u32 = 0xD251_1F53;
+    const M1_K: u32 = 0xCD9E_8D57;
+    const W0_K: u32 = 0x9E37_79B9;
+    const W1_K: u32 = 0xBB67_AE85;
+
+    let mut x0 = c0;
+    let mut x1 = c1;
+    let mut x2 = c2;
+    let mut x3 = c3;
+    let mut key0 = k0;
+    let mut key1 = k1;
+
+    let mut i: u32 = 0;
+    while i < 10u32 {
+        if i > 0 {
+            key0 = key0.wrapping_add(W0_K);
+            key1 = key1.wrapping_add(W1_K);
+        }
+        // mulhi(M0_K, x0) via 16-bit split — pure u32, bit-identical
+        // to the 64-bit form (each partial fits; carry < 2^18).
+        let m0_lo: u32 = M0_K & 0xFFFFu32;
+        let m0_hi: u32 = M0_K >> 16u32;
+        let x0_lo: u32 = x0 & 0xFFFFu32;
+        let x0_hi: u32 = x0 >> 16u32;
+        let p0_lolo: u32 = m0_lo.wrapping_mul(x0_lo);
+        let p0_lohi: u32 = m0_lo.wrapping_mul(x0_hi);
+        let p0_hilo: u32 = m0_hi.wrapping_mul(x0_lo);
+        let p0_hihi: u32 = m0_hi.wrapping_mul(x0_hi);
+        let p0_cross: u32 = (p0_lolo >> 16u32)
+            .wrapping_add(p0_lohi & 0xFFFFu32)
+            .wrapping_add(p0_hilo & 0xFFFFu32);
+        let hi0: u32 = p0_hihi
+            .wrapping_add(p0_lohi >> 16u32)
+            .wrapping_add(p0_hilo >> 16u32)
+            .wrapping_add(p0_cross >> 16u32);
+        let lo0: u32 = M0_K.wrapping_mul(x0);
+        // mulhi(M1_K, x2), same split.
+        let m1_lo: u32 = M1_K & 0xFFFFu32;
+        let m1_hi: u32 = M1_K >> 16u32;
+        let x2_lo: u32 = x2 & 0xFFFFu32;
+        let x2_hi: u32 = x2 >> 16u32;
+        let p1_lolo: u32 = m1_lo.wrapping_mul(x2_lo);
+        let p1_lohi: u32 = m1_lo.wrapping_mul(x2_hi);
+        let p1_hilo: u32 = m1_hi.wrapping_mul(x2_lo);
+        let p1_hihi: u32 = m1_hi.wrapping_mul(x2_hi);
+        let p1_cross: u32 = (p1_lolo >> 16u32)
+            .wrapping_add(p1_lohi & 0xFFFFu32)
+            .wrapping_add(p1_hilo & 0xFFFFu32);
+        let hi1: u32 = p1_hihi
+            .wrapping_add(p1_lohi >> 16u32)
+            .wrapping_add(p1_hilo >> 16u32)
+            .wrapping_add(p1_cross >> 16u32);
+        let lo1: u32 = M1_K.wrapping_mul(x2);
+        let new_x0 = hi1 ^ x1 ^ key0;
+        let new_x1 = lo1;
+        let new_x2 = hi0 ^ x3 ^ key1;
+        let new_x3 = lo0;
+        x0 = new_x0;
+        x1 = new_x1;
+        x2 = new_x2;
+        x3 = new_x3;
+        i += 1;
+    }
+    x0
+}
+
+// ── u32 fill ─────────────────────────────────────────────────────────
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillUniformU32Data {
+    pub out: Vec<u32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+}
+
+/// Per-quark fill: `out[id] = philox4x32_10(counter=id, key=seed).x0`.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_uniform_u32(d: &FillUniformU32Data) {
+    let id = quark_id();
+    let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    d.out[id as usize] = r;
+}
+
+/// Host-side dispatch for `fill_uniform_u32`. Returns a fresh
+/// `Vec<u32>` of length `len` filled with bit-exact Philox4×32-10
+/// output (counter = quark_id).
+pub fn fill_uniform_u32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u32>, QuantaError> {
+    let mut data = FillUniformU32Data {
+        out: vec![0u32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+    };
+    fill_uniform_u32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── u64 fill ─────────────────────────────────────────────────────────
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillUniformU64Data {
+    pub out: Vec<u64>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+}
+
+/// Per-quark u64 fill. Two Philox draws (different counter words)
+/// packed `(hi << 32) | lo` — same packing convention as
+/// `Rng::next_u64` in the CPU API.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_uniform_u64(d: &FillUniformU64Data) {
+    let id = quark_id();
+    // First draw: counter = (id, 0, 0, 0).
+    let hi: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    // Second draw: counter = (id, 1, 0, 0). Bumping a different
+    // counter slot is the standard counter-based-RNG idiom to get
+    // an independent output from the same key.
+    let lo: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let packed: u64 = ((hi as u64) << 32u32) | (lo as u64);
+    d.out[id as usize] = packed;
+}
+
+/// Host-side dispatch for `fill_uniform_u64`.
+pub fn fill_uniform_u64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u64>, QuantaError> {
+    require_i64(gpu)?;
+    let mut data = FillUniformU64Data {
+        out: vec![0u64; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+    };
+    fill_uniform_u64(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── f32 fill (uniform [0, 1)) ────────────────────────────────────────
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillUniformF32Data {
+    pub out: Vec<f32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+}
+
+/// Per-quark f32 fill in `[0, 1)`. Same `u32_to_unit_f32`
+/// conversion as `Rng::next_f32` — bit-exact between host and
+/// GPU.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_uniform_f32(d: &FillUniformF32Data) {
+    let id = quark_id();
+    let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    // Top 24 bits as mantissa, scaled by 2^-24 → uniform [0, 1).
+    let bits: u32 = r >> 8u32;
+    let v: f32 = (bits as f32) * (1.0f32 / 16_777_216.0f32);
+    d.out[id as usize] = v;
+}
+
+/// Host-side dispatch for `fill_uniform_f32`.
+pub fn fill_uniform_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>, QuantaError> {
+    let mut data = FillUniformF32Data {
+        out: vec![0.0f32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+    };
+    fill_uniform_f32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── f64 fill (uniform [0, 1)) ────────────────────────────────────────
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillUniformF64Data {
+    pub out: Vec<f64>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+}
+
+/// Per-quark f64 fill in `[0, 1)`. Two Philox draws packed into a
+/// u64, then top 53 bits as mantissa scaled by 2^-53 — same path
+/// as `Rng::next_f64`.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_uniform_f64(d: &FillUniformF64Data) {
+    let id = quark_id();
+    let hi: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let lo: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let packed: u64 = ((hi as u64) << 32u32) | (lo as u64);
+    let bits: u64 = packed >> 11u32;
+    let v: f64 = (bits as f64) * (1.0f64 / 9_007_199_254_740_992.0f64);
+    d.out[id as usize] = v;
+}
+
+/// Guard for kernels whose OUTPUT genuinely needs 64-bit integers
+/// (the `(hi << 32) | lo` u64 pack in `fill_uniform_u64` and the
+/// f64 variants). The Philox core itself no longer needs this: its
+/// mulhi is pure 32-bit (see `philox_mulhi32`), so the u32/f32
+/// paths run ungated on Metal and V3D.
+///
+/// A device without `shaderInt64` (e.g. the Raspberry Pi's V3D,
+/// whose Mesa NIR backend can't lower a `u2u64`/`u64` op and
+/// *aborts the process*) must get a clean `NotSupported` error,
+/// never a dispatch that crashes the driver — or, worse, silently
+/// truncates and returns wrong bits. The CPU backend and any
+/// `shaderInt64`-capable GPU pass through.
+fn require_i64(gpu: &Gpu) -> Result<(), QuantaError> {
+    if gpu.supports_i64() {
+        Ok(())
+    } else {
+        Err(QuantaError::not_supported(
+            "64-bit random output requires a device with 64-bit integer support (shaderInt64)",
+        ))
+    }
+}
+
+/// Guard for the `f64` distribution kernels: they need `f64`
+/// (`shaderFloat64`) for the double math AND 64-bit integers for
+/// the `(hi << 32) | lo` pack that feeds it, so this implies
+/// `require_i64`. Never enable f64 on a device without it.
+fn require_f64(gpu: &Gpu) -> Result<(), QuantaError> {
+    require_i64(gpu)?;
+    if gpu.supports_f64() {
+        Ok(())
+    } else {
+        Err(QuantaError::not_supported(
+            "f64 random distributions require a device with f64 support (shaderFloat64)",
+        ))
+    }
+}
+
+/// Host-side dispatch for `fill_uniform_f64`.
+pub fn fill_uniform_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>, QuantaError> {
+    require_f64(gpu)?;
+    let mut data = FillUniformF64Data {
+        out: vec![0.0f64; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+    };
+    fill_uniform_f64(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── Normal (Box-Muller) ──────────────────────────────────────────────
+//
+// Box-Muller transforms two independent uniforms in (0, 1] into two
+// independent normals with mean 0 and variance 1:
+//   r     = sqrt(-2 * ln(u1))
+//   theta = 2π * u2
+//   n1    = r * cos(theta)
+//   n2    = r * sin(theta)
+//
+// One Philox4×32 draw gives us four u32s, which is *almost* enough
+// for two normals (we need 2 uniforms ≈ 2 u32s) — but we want
+// independent counter slots for clarity, so each quark does two
+// independent Philox draws (counter words 0 and 1), then produces
+// the pair n1/n2 from u1/u2.
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillNormalF32Data {
+    pub out: Vec<f32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+}
+
+/// Per-quark Box-Muller. Each quark produces *two* f32 normals
+/// from two Philox4×32 draws and writes them at positions
+/// `id*2` and `id*2 + 1`. Host dispatches `len / 2` quarks
+/// (rounded up for odd lengths; the host trims).
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_normal_f32(d: &FillNormalF32Data) {
+    let id = quark_id();
+
+    // Two independent uniforms in (0, 1] — using the
+    // open-on-zero conversion so `ln(u1)` is finite. The
+    // formula `u * 2^-32 + 2^-33` from `uniform::u32_to_open_unit_f32`.
+    let r0: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+
+    let bits0: u32 = r0 >> 8u32;
+    let bits1: u32 = r1 >> 8u32;
+    let u1: f32 = (bits0 as f32) * (1.0f32 / 16_777_216.0f32) + (1.0f32 / 33_554_432.0f32);
+    let u2: f32 = (bits1 as f32) * (1.0f32 / 16_777_216.0f32) + (1.0f32 / 33_554_432.0f32);
+
+    // Box-Muller. `ln_u1` is the only place a non-finite could leak
+    // in, and the open-unit conversion above guarantees `u1 > 0`.
+    let ln_u1: f32 = ln(u1);
+    let r: f32 = sqrt(-2.0f32 * ln_u1);
+    let two_pi: f32 = 6.2831_8530_7179_586f32; // 2π
+    let theta: f32 = two_pi * u2;
+    let n1: f32 = r * cos(theta);
+    let n2: f32 = r * sin(theta);
+
+    // Write the pair at id*2 and id*2 + 1. Compute the two indices
+    // independently so rustc doesn't fold them into one byte-offset
+    // store-with-immediate-offset (which the WASM-route lowering
+    // doesn't yet handle for f32). The redundant `id*2` work folds
+    // out in LLVM by the time we reach the lowering.
+    let idx0: u32 = id.wrapping_mul(2u32);
+    let idx1: u32 = id.wrapping_mul(2u32).wrapping_add(1u32);
+    d.out[idx0 as usize] = n1;
+    d.out[idx1 as usize] = n2;
+}
+
+/// Host-side dispatch for `fill_normal_f32`. Produces `len` f32
+/// values drawn from N(0, 1). Internally dispatches `(len + 1) / 2`
+/// quarks (each produces a pair) and trims the result.
+pub fn fill_normal_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>, QuantaError> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let quarks = len.div_ceil(2);
+    let padded = quarks * 2;
+    let mut data = FillNormalF32Data {
+        out: vec![0.0f32; padded],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+    };
+    fill_normal_f32(gpu, &mut data, quarks as u32)?.wait()?;
+    data.out.truncate(len);
+    Ok(data.out)
+}
+
+// ── Normal f64 ───────────────────────────────────────────────────────
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillNormalF64Data {
+    pub out: Vec<f64>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+}
+
+/// f64 Box-Muller. Same algorithm as the f32 form but draws four
+/// Philox words per quark to build TWO u64 → two f64 uniforms in
+/// `(0, 1]`, then `(r*cos, r*sin)` with f64 math.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_normal_f64(d: &FillNormalF64Data) {
+    let id = quark_id();
+
+    // Two independent u64 uniforms. Each needs two Philox draws.
+    let r0a: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r0b: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1a: u32 = philox4x32_10_first_u32_kernel(id, 2u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1b: u32 = philox4x32_10_first_u32_kernel(id, 3u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+
+    let packed0: u64 = ((r0a as u64) << 32u32) | (r0b as u64);
+    let packed1: u64 = ((r1a as u64) << 32u32) | (r1b as u64);
+
+    // Open-on-zero f64 in (0, 1]: top 53 bits + half-ULP.
+    let bits0: u64 = packed0 >> 11u32;
+    let bits1: u64 = packed1 >> 11u32;
+    let u1: f64 = (bits0 as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+    let u2: f64 = (bits1 as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+
+    let ln_u1: f64 = log_f64(u1);
+    let r: f64 = sqrt_f64(-2.0f64 * ln_u1);
+    let two_pi: f64 = 6.283_185_307_179_586f64;
+    let theta: f64 = two_pi * u2;
+    let n1: f64 = r * cos_f64(theta);
+    let n2: f64 = r * sin_f64(theta);
+
+    let idx0: u32 = id.wrapping_mul(2u32);
+    let idx1: u32 = id.wrapping_mul(2u32).wrapping_add(1u32);
+    d.out[idx0 as usize] = n1;
+    d.out[idx1 as usize] = n2;
+}
+
+pub fn fill_normal_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>, QuantaError> {
+    require_f64(gpu)?;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let quarks = len.div_ceil(2);
+    let padded = quarks * 2;
+    let mut data = FillNormalF64Data {
+        out: vec![0.0f64; padded],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+    };
+    fill_normal_f64(gpu, &mut data, quarks as u32)?.wait()?;
+    data.out.truncate(len);
+    Ok(data.out)
+}
+
+// ── Exponential ──────────────────────────────────────────────────────
+//
+// Exponential distribution via inverse-CDF: `X = -ln(1 - U) / lambda`.
+// With `U` uniform in `(0, 1]`, `1 - U` is uniform in `[0, 1)` and
+// `ln(0)` would be `-inf`. We use the open-on-zero conversion so
+// `U > 0`, then sample `-ln(U) / lambda` — equivalent in
+// distribution because U and 1-U have the same uniform law.
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillExponentialF32Data {
+    pub out: Vec<f32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    /// Rate parameter `lambda` (mean of the distribution is `1/lambda`).
+    pub lambda: f32,
+}
+
+/// Per-quark Exponential(lambda) draw, inverse-CDF.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_exponential_f32(d: &FillExponentialF32Data) {
+    let id = quark_id();
+    let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let bits: u32 = r >> 8u32;
+    let u: f32 = (bits as f32) * (1.0f32 / 16_777_216.0f32) + (1.0f32 / 33_554_432.0f32);
+    let v: f32 = -ln(u) / d.lambda;
+    d.out[id as usize] = v;
+}
+
+/// Host-side dispatch for `fill_exponential_f32`.
+pub fn fill_exponential_f32_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f32,
+) -> Result<Vec<f32>, QuantaError> {
+    let mut data = FillExponentialF32Data {
+        out: vec![0.0f32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        lambda,
+    };
+    fill_exponential_f32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── Exponential f64 ─────────────────────────────────────────────────
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillExponentialF64Data {
+    pub out: Vec<f64>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    pub lambda: f64,
+}
+
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_exponential_f64(d: &FillExponentialF64Data) {
+    let id = quark_id();
+    let ra: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let rb: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let packed: u64 = ((ra as u64) << 32u32) | (rb as u64);
+    let bits: u64 = packed >> 11u32;
+    let u: f64 = (bits as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+    let lam: f64 = d.lambda;
+    let v: f64 = -log_f64(u) / lam;
+    d.out[id as usize] = v;
+}
+
+pub fn fill_exponential_f64_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f64,
+) -> Result<Vec<f64>, QuantaError> {
+    require_f64(gpu)?;
+    let mut data = FillExponentialF64Data {
+        out: vec![0.0f64; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        lambda,
+    };
+    fill_exponential_f64(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── LogNormal f64 ────────────────────────────────────────────────────
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillLogNormalF64Data {
+    pub out: Vec<f64>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    pub mu: f64,
+    pub sigma: f64,
+}
+
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_lognormal_f64(d: &FillLogNormalF64Data) {
+    let id = quark_id();
+    let r0a: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r0b: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1a: u32 = philox4x32_10_first_u32_kernel(id, 2u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1b: u32 = philox4x32_10_first_u32_kernel(id, 3u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let packed0: u64 = ((r0a as u64) << 32u32) | (r0b as u64);
+    let packed1: u64 = ((r1a as u64) << 32u32) | (r1b as u64);
+    let bits0: u64 = packed0 >> 11u32;
+    let bits1: u64 = packed1 >> 11u32;
+    let u1: f64 = (bits0 as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+    let u2: f64 = (bits1 as f64) * (1.0f64 / 9_007_199_254_740_992.0f64)
+        + (1.0f64 / 18_014_398_509_481_984.0f64);
+    let r: f64 = sqrt_f64(-2.0f64 * log_f64(u1));
+    let two_pi: f64 = 6.283_185_307_179_586f64;
+    let theta: f64 = two_pi * u2;
+    let n1: f64 = r * cos_f64(theta);
+    let n2: f64 = r * sin_f64(theta);
+    let mu: f64 = d.mu;
+    let sigma: f64 = d.sigma;
+    let v1: f64 = exp_f64(mu + sigma * n1);
+    let v2: f64 = exp_f64(mu + sigma * n2);
+    let idx0: u32 = id.wrapping_mul(2u32);
+    let idx1: u32 = id.wrapping_mul(2u32).wrapping_add(1u32);
+    d.out[idx0 as usize] = v1;
+    d.out[idx1 as usize] = v2;
+}
+
+pub fn fill_lognormal_f64_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    mu: f64,
+    sigma: f64,
+) -> Result<Vec<f64>, QuantaError> {
+    require_f64(gpu)?;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let quarks = len.div_ceil(2);
+    let padded = quarks * 2;
+    let mut data = FillLogNormalF64Data {
+        out: vec![0.0f64; padded],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        mu,
+        sigma,
+    };
+    fill_lognormal_f64(gpu, &mut data, quarks as u32)?.wait()?;
+    data.out.truncate(len);
+    Ok(data.out)
+}
+
+// ── LogNormal ────────────────────────────────────────────────────────
+//
+// LogNormal(mu, sigma): `X = exp(mu + sigma * N)` where `N ~ N(0, 1)`.
+// Uses Box-Muller for the normal, same shape as `fill_normal_f32`.
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillLogNormalF32Data {
+    pub out: Vec<f32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    pub mu: f32,
+    pub sigma: f32,
+}
+
+/// Per-quark LogNormal(mu, sigma). Each quark produces two outputs
+/// (same Box-Muller pair structure as `fill_normal_f32`), exp'd
+/// through the (mu, sigma) shift+scale.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_lognormal_f32(d: &FillLogNormalF32Data) {
+    let id = quark_id();
+    let r0: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let r1: u32 = philox4x32_10_first_u32_kernel(id, 1u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let bits0: u32 = r0 >> 8u32;
+    let bits1: u32 = r1 >> 8u32;
+    let u1: f32 = (bits0 as f32) * (1.0f32 / 16_777_216.0f32) + (1.0f32 / 33_554_432.0f32);
+    let u2: f32 = (bits1 as f32) * (1.0f32 / 16_777_216.0f32) + (1.0f32 / 33_554_432.0f32);
+    let r: f32 = sqrt(-2.0f32 * ln(u1));
+    let two_pi: f32 = 6.2831_8530_7179_586f32;
+    let theta: f32 = two_pi * u2;
+    let n1: f32 = r * cos(theta);
+    let n2: f32 = r * sin(theta);
+    let v1: f32 = exp(d.mu + d.sigma * n1);
+    let v2: f32 = exp(d.mu + d.sigma * n2);
+    let idx0: u32 = id.wrapping_mul(2u32);
+    let idx1: u32 = id.wrapping_mul(2u32).wrapping_add(1u32);
+    d.out[idx0 as usize] = v1;
+    d.out[idx1 as usize] = v2;
+}
+
+/// Host-side dispatch for `fill_lognormal_f32`.
+pub fn fill_lognormal_f32_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    mu: f32,
+    sigma: f32,
+) -> Result<Vec<f32>, QuantaError> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let quarks = len.div_ceil(2);
+    let padded = quarks * 2;
+    let mut data = FillLogNormalF32Data {
+        out: vec![0.0f32; padded],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        mu,
+        sigma,
+    };
+    fill_lognormal_f32(gpu, &mut data, quarks as u32)?.wait()?;
+    data.out.truncate(len);
+    Ok(data.out)
+}
+
+// ── Bernoulli ────────────────────────────────────────────────────────
+//
+// Bernoulli(p): output 1 with probability p, 0 otherwise. Implemented
+// as `u < p` where `u` is uniform in `[0, 1)`. Output stored as u32
+// (1 or 0) for compactness; users who want bool can cast on host.
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillBernoulliU32Data {
+    pub out: Vec<u32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    /// Success probability in `[0, 1]`. Out-of-range values still
+    /// produce defined behaviour: p ≤ 0 → all zeros, p ≥ 1 → all ones.
+    pub p: f32,
+}
+
+/// Per-quark Bernoulli(p) draw.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_bernoulli_u32(d: &FillBernoulliU32Data) {
+    let id = quark_id();
+    let r: u32 = philox4x32_10_first_u32_kernel(id, 0u32, 0u32, 0u32, d.seed_lo, d.seed_hi);
+    let bits: u32 = r >> 8u32;
+    let u: f32 = (bits as f32) * (1.0f32 / 16_777_216.0f32);
+    // Branchless cast: `(u < p) as u32`. Using arithmetic so the
+    // WASM lowering doesn't depend on a bool-store path.
+    let v: u32 = if u < d.p { 1u32 } else { 0u32 };
+    d.out[id as usize] = v;
+}
+
+/// Host-side dispatch for `fill_bernoulli_u32`. Returns a `Vec<u32>`
+/// of length `len` containing 1s and 0s (1 with probability `p`).
+pub fn fill_bernoulli_u32_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    p: f32,
+) -> Result<Vec<u32>, QuantaError> {
+    let mut data = FillBernoulliU32Data {
+        out: vec![0u32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        p,
+    };
+    fill_bernoulli_u32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// ── Poisson (Knuth, small lambda only) ───────────────────────────────
+//
+// Knuth's algorithm: draw uniforms until their product drops below
+// `exp(-lambda)`. The expected iteration count is `lambda + 1`, so
+// this is efficient for small lambda. v0.1 caps iterations at
+// `POISSON_MAX_K = 64` — adequate for `lambda <= ~30` with vanishing
+// truncation probability. Large-lambda (transformed-rejection /
+// PTRD) variants are queued for a future release.
+//
+// Each quark draws an independent stream of uniforms from
+// Philox4×32 by bumping the second counter slot — every iteration
+// uses `(quark_id, iter, 0, 0)` as its counter.
+
+const POISSON_MAX_K_U32: u32 = 64u32;
+
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillPoissonU32Data {
+    pub out: Vec<u32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    /// Mean of the Poisson distribution. v0.1 supports lambda up to
+    /// ~30 with the iteration cap at 64.
+    pub lambda: f32,
+}
+
+/// Per-quark Poisson(lambda) draw via Knuth's algorithm. Bounded at
+/// 64 iterations; for the small-lambda regime this is effectively
+/// the same as the unbounded algorithm.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_poisson_u32(d: &FillPoissonU32Data) {
+    let id = quark_id();
+    let lam: f32 = d.lambda;
+    let l_threshold: f32 = exp(0.0f32 - lam);
+    let mut p: f32 = 1.0f32;
+    let mut k: u32 = 0u32;
+    let mut iter: u32 = 0u32;
+    while iter < 64u32 {
+        let r: u32 = philox4x32_10_first_u32_kernel(id, iter, 0u32, 0u32, d.seed_lo, d.seed_hi);
+        let bits: u32 = r >> 8u32;
+        let u: f32 = (bits as f32) * (1.0f32 / 16_777_216.0f32);
+        p = p * u;
+        if p <= l_threshold {
+            // Found the stopping iteration — Knuth returns k.
+            break;
+        }
+        k = k + 1u32;
+        iter = iter + 1u32;
+    }
+    d.out[id as usize] = k;
+}
+
+/// Host-side dispatch for `fill_poisson_u32`.
+///
+/// Caveat: v0.1 caps the inner iteration at 64, so `lambda` above
+/// ~30 will under-sample the tail. For larger means, downstream
+/// users should use the host-side `Rng` API and a proper rejection
+/// sampler until a transformed-rejection kernel ships.
+pub fn fill_poisson_u32_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f32,
+) -> Result<Vec<u32>, QuantaError> {
+    let mut data = FillPoissonU32Data {
+        out: vec![0u32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        lambda,
+    };
+    fill_poisson_u32(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+// Unused but kept for doc consistency with the iteration cap.
+#[allow(dead_code)]
+const POISSON_MAX_K_HOST: u32 = POISSON_MAX_K_U32;
+
+// ── Poisson (PTRD — Hörmann transformed-rejection, large lambda) ─────
+//
+// Knuth's algorithm above has expected-iteration cost O(λ), which
+// degrades past λ ≈ 30 (with a 64-iter cap the tail under-samples).
+// PTRD (Hörmann 1993, "The transformed rejection method for
+// generating Poisson random variables", Insurance: Mathematics and
+// Economics 12 39-45) is an O(1) expected-cost rejection algorithm
+// using a quadratic envelope around the mode.
+//
+// The algorithm needs `log(k!)` (equivalently `lgamma(k+1)`) in its
+// acceptance test. We implement a Stirling-with-corrections form
+// accurate to ~1e-3 across k ∈ [0, ~1000] — adequate because PTRD's
+// acceptance bound is one-sided, so small lgamma error nudges the
+// rejection threshold without breaking the underlying distribution.
+//
+// Threshold for switching from Knuth: λ ≥ 10. Below that, Knuth's
+// expected iteration count is small and the iteration cap is safe.
+
+/// Stirling-series log gamma for f32. Computes log(Γ(z)) for z ≥ 1.
+/// Uses (z - 0.5)*log(z) - z + 0.5*log(2π) plus the first two Bernoulli
+/// corrections (1/12z and -1/360z³). Max relative error ~5e-4 at z=1
+/// and falls off rapidly. Inputs z < 1 are clamped to 1 (the PTRD
+/// acceptance test only queries z = k+1 with k ≥ 0).
+#[allow(dead_code)]
+#[quanta_compute_dsl::device(crate = quanta_core)]
+fn log_gamma_f32(z_in: f32) -> f32 {
+    // Clamp to avoid log(z) blowing up. Callers should already
+    // ensure z ≥ 1 via the `k >= 0` early reject in PTRD.
+    let z: f32 = if z_in < 1.0f32 { 1.0f32 } else { z_in };
+    let half_log_2pi: f32 = 0.918_938_5_f32;
+    // Use method-call form `.ln()` so device-fn name resolution
+    // works on the host build (intrinsics aren't `use`d at module
+    // scope in this file for device fns, only inside kernel bodies).
+    let log_z: f32 = z.ln();
+    let inv_z: f32 = 1.0f32 / z;
+    let inv_z3: f32 = inv_z * inv_z * inv_z;
+    (z - 0.5f32) * log_z - z + half_log_2pi + inv_z * (1.0f32 / 12.0f32)
+        - inv_z3 * (1.0f32 / 360.0f32)
+}
+
+/// Poisson distribution data for large-lambda kernel.
+#[derive(quanta_compute_dsl::Fields)]
+pub struct FillPoissonLargeU32Data {
+    pub out: Vec<u32>,
+    pub seed_lo: u32,
+    pub seed_hi: u32,
+    /// Mean of the Poisson distribution. PTRD is preferred for
+    /// lambda ≥ 10; smaller values should use `fill_poisson_u32`
+    /// (Knuth).
+    pub lambda: f32,
+}
+
+/// Per-quark Poisson(lambda) draw via Hörmann's PTRD algorithm.
+/// O(1) expected work regardless of lambda. The inner loop is
+/// capped at 32 iterations as a safety net — PTRD's expected
+/// acceptance rate is ~83% so this is generous (Pr(>32 rejections)
+/// is ~3e-26).
+///
+/// The body uses PTRD's natural nested rejection shape: fast accept
+/// first, then the squeeze reject, and only on the leftover path
+/// the expensive Stirling-series comparison (`log_gamma_f32`). The
+/// `done` flag in the loop condition exits as soon as a draw is
+/// accepted (~1.2 iterations expected), so neither the Stirling
+/// chain nor further philox calls are paid after acceptance.
+///
+/// This kernel is the historical witness for two lowering bug
+/// classes, both closed 2026-06-12: the nested-arm cond hoist
+/// (fixed by cond materialization) and the label-lossy loop exit
+/// (fixed by the exit-flag record in `emit_loop_crossing_exit`).
+/// `crates/sci/quanta-rand/tests/ptrd_host_oracle.rs` asserts bit-exact
+/// host parity, and `tests/v2_runtime_bisect.rs` guards the
+/// lowering shapes.
+#[quanta_compute_dsl::kernel(crate = quanta_core)]
+pub fn fill_poisson_u32_large(d: &FillPoissonLargeU32Data) {
+    let id = quark_id();
+    let lam: f32 = d.lambda;
+    let smu: f32 = sqrt(lam);
+    let b: f32 = 0.931f32 + 2.53f32 * smu;
+    let a: f32 = -0.059f32 + 0.02483f32 * b;
+    let inv_alpha: f32 = 1.1239f32 + 1.1328f32 / (b - 3.4f32);
+    let v_r: f32 = 0.9277f32 - 3.6224f32 / (b - 2.0f32);
+    let log_lam: f32 = ln(lam);
+    let log_inv_alpha: f32 = ln(inv_alpha);
+    let mut iter: u32 = 0u32;
+    let mut result: u32 = 0u32;
+    let mut done: u32 = 0u32;
+    while iter < 32u32 && done == 0u32 {
+        let r1: u32 = philox4x32_10_first_u32_kernel(id, iter, 0u32, 0u32, d.seed_lo, d.seed_hi);
+        let r2: u32 = philox4x32_10_first_u32_kernel(id, iter, 1u32, 0u32, d.seed_lo, d.seed_hi);
+        let u_bits: u32 = r1 >> 8u32;
+        let v_bits: u32 = r2 >> 8u32;
+        let scale: f32 = 1.0f32 / 16_777_216.0f32;
+        let u: f32 = (u_bits as f32) * scale - 0.5f32;
+        let v: f32 = (v_bits as f32) * scale;
+        let us: f32 = 0.5f32 - fabs(u);
+        let k_f: f32 = floor((2.0f32 * a / us + b) * u + lam + 0.43f32);
+        if k_f >= 0.0f32 && done == 0u32 {
+            if us >= 0.07f32 && v <= v_r {
+                result = k_f as u32;
+                done = 1u32;
+            } else if !(us < 0.013f32 && v > us) {
+                let lhs: f32 = ln(v) + log_inv_alpha - ln(a / (us * us) + b);
+                let rhs: f32 = (0.0f32 - lam) + (k_f * log_lam) - log_gamma_f32(k_f + 1.0f32);
+                if lhs <= rhs {
+                    result = k_f as u32;
+                    done = 1u32;
+                }
+            }
+        }
+        iter = iter + 1u32;
+    }
+    d.out[id as usize] = result;
+}
+
+/// Host-side dispatch for `fill_poisson_u32_large`. Use this for
+/// lambda ≥ 10; smaller means should call `fill_poisson_u32_gpu`
+/// (Knuth) which has lower per-quark overhead for tiny λ.
+///
+/// `fill_poisson_u32_auto_gpu` below picks automatically.
+pub fn fill_poisson_u32_large_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f32,
+) -> Result<Vec<u32>, QuantaError> {
+    let mut data = FillPoissonLargeU32Data {
+        out: vec![0u32; len],
+        seed_lo: seed as u32,
+        seed_hi: (seed >> 32) as u32,
+        lambda,
+    };
+    fill_poisson_u32_large(gpu, &mut data, len as u32)?.wait()?;
+    Ok(data.out)
+}
+
+/// Auto-dispatch Poisson sampler. Picks Knuth for λ < 10 (the
+/// regime where Knuth's expected ~λ+1 iterations is cheap) and
+/// PTRD for λ ≥ 10 (where Knuth's iteration cap would under-sample
+/// the tail). Mean / variance accuracy holds across the full range.
+pub fn fill_poisson_u32_auto_gpu(
+    gpu: &Gpu,
+    len: usize,
+    seed: u64,
+    lambda: f32,
+) -> Result<Vec<u32>, QuantaError> {
+    if lambda < 10.0f32 {
+        fill_poisson_u32_gpu(gpu, len, seed, lambda)
+    } else {
+        fill_poisson_u32_large_gpu(gpu, len, seed, lambda)
+    }
+}
+
+// ── Backwards-compat aliases ─────────────────────────────────────────
+//
+// The original v0 API was `fill_buffer` / `fill_buffer_gpu` (always
+// u32, splitmix-based). Keep the names alive as thin Philox-backed
+// aliases so existing callers don't break — they get the upgraded
+// algorithm for free.
+
+/// Auto-dispatch struct alias matching the original `FillBufferData`
+/// shape; identical to `FillUniformU32Data`.
+pub use FillUniformU32Data as FillBufferData;
+
+/// Legacy alias for `fill_uniform_u32_gpu`. Output now comes from
+/// Philox4×32-10 (a BigCrush-clean generator) instead of the v0
+/// splitmix-based xoshiro128++ shape — same `(seed, quark_id)`
+/// determinism contract, different bits.
+pub fn fill_buffer_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u32>, QuantaError> {
+    fill_uniform_u32_gpu(gpu, len, seed)
+}

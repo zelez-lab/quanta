@@ -7,7 +7,7 @@
 //!   E4: Special ops (Barrier, Break, Copy) produce valid instruction sequences
 //!
 //! All opcode constants reference `quanta-axioms/gpu.rs`.
-//! The production code is in `crates/quanta-compiler/src/emit_spirv/ops.rs`.
+//! The production code is in `crates/lang/quanta-compiler/src/emit_spirv/ops.rs`.
 
 use vstd::prelude::*;
 

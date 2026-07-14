@@ -3,7 +3,7 @@
 The Verus half of step 059's framework claim. The Lean arm
 (`specs/verify/lean/Quanta/Wasm/`) proves the *abstract*
 WASM→KernelOps translator preserves semantics; this crate proves the
-*production* translator in `crates/quanta-wasm-lowering/src/lower.rs`
+*production* translator in `crates/gpu/quanta-wasm-lowering/src/lower.rs`
 refines that abstract spec — closing the spec↔implementation gap.
 
 Each file is self-contained and verifies standalone:

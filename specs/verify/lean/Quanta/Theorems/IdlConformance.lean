@@ -176,7 +176,7 @@ def allInSpec (s : WebGpuSpec) (subset : List (String × String)) : Bool :=
 /-- **T1710 — quanta_strings_in_spec**: every WebGPU enum string
     Quanta hands the JS side is a member of the corresponding W3C
     `webgpu.idl` enum, as captured by `webGpuSpec` (auto-generated
-    from the vendored IDL by `crates/quanta-codegen`).
+    from the vendored IDL by `crates/lang/quanta-codegen`).
 
     This *replaces* the enum-string component of T1707 — the surface
     of A11 (`quanta_abi_faithful`) shrinks accordingly. Remaining

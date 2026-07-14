@@ -1,4 +1,4 @@
-//! Verus mirror of `crates/quanta-compute-dsl/src/fields_derive.rs` — #[derive(Fields)].
+//! Verus mirror of `crates/lang/quanta-compute-dsl/src/fields_derive.rs` — #[derive(Fields)].
 //!
 //! The derive macro classifies each struct field as either a GPU buffer
 //! (Vec<T>) or a push constant (scalar), then generates FIELD_COUNT,

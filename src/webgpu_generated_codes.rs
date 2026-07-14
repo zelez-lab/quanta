@@ -1,7 +1,7 @@
 //! GENERATED — DO NOT EDIT. Run `quanta codegen webgpu` to regenerate.
 //!
 //! Source: web/webgpu.idl  (sha256: e85178050c10e68381efabbc664cf6c3368055242060abb0627d923ded5c69a7)
-//! Generator: crates/quanta-codegen (B′ track of the FFI TCB shrink).
+//! Generator: crates/lang/quanta-codegen (B′ track of the FFI TCB shrink).
 //!
 //! Each `SPEC_*` table holds every value that the W3C `webgpu.idl`
 //! lists for the corresponding enum, in source order. Quanta's

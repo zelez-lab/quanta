@@ -1,7 +1,7 @@
 /-
 # WASM structured-control splitter helpers (step 059, slice 5)
 
-Production's `crates/quanta-wasm-lowering/src/lower.rs` walks WASM
+Production's `crates/gpu/quanta-wasm-lowering/src/lower.rs` walks WASM
 bytecode in a streaming fashion, maintaining a `Vec<Frame>` to track
 nested `block`/`loop`/`if` scopes. Each `wend` pops the topmost frame
 and folds its accumulated ops into the parent (a `KernelOp.branch`,

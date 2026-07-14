@@ -9,7 +9,7 @@ You now have every piece: [arrays](arrays-and-broadcasting.md),
 This lesson puts them together into a real CNN that classifies images.
 
 The complete, runnable version is
-[`examples/cnn_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-autograd/examples/cnn_training.rs)
+[`examples/cnn_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/ml/quanta-autograd/examples/cnn_training.rs)
 — run it on the GPU with `cargo run --example cnn_training -p quanta-autograd
 --release --features metal` (use `--features vulkan` off Apple; the CPU lane
 works too but is far slower on this conv-heavy model).

@@ -102,7 +102,7 @@ assert_eq!(got, want.out);
 Kernels outside the pure subset simply get no oracle — referencing
 the missing fn is a compile error, never a wrong comparison. Existing
 parity suites: `tests/host_oracle_parity.rs` (lowering-bug shapes)
-and `crates/quanta-rand/tests/ptrd_host_oracle.rs` (PTRD + uniform
+and `crates/sci/quanta-rand/tests/ptrd_host_oracle.rs` (PTRD + uniform
 fills, plus one hand-written replica kept as an independent
 cross-check of the twin generator itself).
 

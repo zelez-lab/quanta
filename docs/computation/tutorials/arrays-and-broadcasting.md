@@ -103,4 +103,4 @@ checked; the math is where your attention goes.
 
 - **[Reductions](reductions.md)** — collapse an array to a sum, a mean, or along one axis.
 - Already know this? The **[Array math how-to](../how-to/arrays-numpy.md)** is the copy-paste version.
-- Full surface: the **[quanta-array README](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-array/README.md)** and the [API reference](../../reference/api.md).
+- Full surface: the **[quanta-array README](https://github.com/zelez-lab/quanta/blob/main/crates/sci/quanta-array/README.md)** and the [API reference](../../reference/api.md).

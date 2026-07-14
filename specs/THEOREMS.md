@@ -491,7 +491,7 @@ pass:
   spec-conformance checks on top: a `cargo test --lib`-time check
   (`webgpu_generated_codes::tests::quanta_strings_are_spec_subsets`)
   and a TS module-init `assertSpecSubset()` call, both backed by
-  tables generated from `web/webgpu.idl` by `crates/quanta-codegen`.
+  tables generated from `web/webgpu.idl` by `crates/lang/quanta-codegen`.
 
 ### Residual TCB axioms (Lean)
 

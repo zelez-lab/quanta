@@ -1,6 +1,6 @@
 //! Verus mirror of `quanta_ir::serial` — serialization facade.
 //!
-//! Mirrors: crates/quanta-ir/src/serial.rs
+//! Mirrors: crates/gpu/quanta-ir/src/serial.rs
 //!
 //! The serial module is a pure delegation layer: each serialize function calls
 //! wire::serialize_*, each deserialize calls wire::deserialize_*. The wire module

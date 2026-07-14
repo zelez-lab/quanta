@@ -115,4 +115,4 @@ differs so f32 sums agree only within a few ULP). If you call the subgroup
 - [Shared Memory](shared-memory.md) — the `#[quanta::shared]` scratch the primitives rely on
 - [Device Functions](device-functions.md) — how `#[quanta::device]` calls are inlined
 - The crate's own `README.md`, `GETTING_STARTED.md`, `COOKBOOK.md`, and
-  `PERFORMANCE.md` (in `crates/quanta-prims/`) for recipes and perf numbers
+  `PERFORMANCE.md` (in `crates/sci/quanta-prims/`) for recipes and perf numbers

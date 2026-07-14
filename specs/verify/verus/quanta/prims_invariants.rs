@@ -2,7 +2,7 @@
 //! the reference implementations.
 //!
 //! Mirrors:
-//!   crates/quanta-prims/src/reference.rs
+//!   crates/sci/quanta-prims/src/reference.rs
 //!
 //! The Lean side (`Quanta.Prims.Reference`) proves the
 //! mathematical claims (reduce-equals-sum, permutation

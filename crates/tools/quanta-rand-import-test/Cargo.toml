@@ -1,0 +1,25 @@
+[package]
+name = "quanta-rand-import-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-crate test: import a #[quanta::device] fn from quanta-rand and use it inside a kernel."
+publish = false
+
+[dependencies]
+# Downstream consumer of override-built device fns: `quanta-rand` and
+# `quanta-prims` define their `#[quanta::device]` fns with `crate =
+# quanta_core`, so the `_src!()` macros they emit reference
+# `quanta_core` and `quanta_compute_dsl`. This crate invokes the DSL
+# through the split crates the same way — it mirrors how a real
+# companion consumes another companion's device fns.
+quanta-core = { path = "../../gpu/quanta-core", default-features = false, features = [
+    "software",
+] }
+quanta-compute-dsl = { path = "../../lang/quanta-compute-dsl" }
+quanta-rand = { path = "../../sci/quanta-rand", features = ["gpu"] }
+quanta-prims = { path = "../../sci/quanta-prims", features = ["gpu"] }
+
+[dev-dependencies]
+# Facade dev-dep: tests call `quanta::init_cpu()`.
+quanta = { path = "../../..", default-features = false, features = ["software"] }

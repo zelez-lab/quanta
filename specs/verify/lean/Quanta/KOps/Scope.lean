@@ -20,7 +20,7 @@ Concretely:
 This predicate is the IR-side mirror of the lexical scope guarantees
 that downstream emitters (MSL, SPIR-V, WGSL) implicitly assume. The
 WASM-route lowering currently has a known bug
-(`BrIf` cond-scope, see `crates/quanta-wasm-lowering/src/lower.rs`
+(`BrIf` cond-scope, see `crates/gpu/quanta-wasm-lowering/src/lower.rs`
 line ~1880) where a `branch` op is emitted with a `cond` whose
 defining op lives inside the branch's else_ops — violating this
 predicate. The predicate doesn't fix the bug, but provides a
@@ -472,7 +472,7 @@ example : KernelOp.scopeValidOps []
 
 /-- **The actual bug #1 fix** (commit `3bd1c55`).
     `hoist_cond_defining_ops` in
-    `crates/quanta-wasm-lowering/src/lower.rs` walks the current
+    `crates/gpu/quanta-wasm-lowering/src/lower.rs` walks the current
     frame's sink backward at the BrIf site, collects the contiguous
     slice of ops that transitively define `cond`, and moves them to
     the target frame's sink BEFORE `install_redirect_at` adds the
@@ -482,7 +482,7 @@ example : KernelOp.scopeValidOps []
     just before OuterBranch. r44 is in env when OuterBranch reads
     it as cond — scope-valid. Mirrors the Rust test
     `accepts_hoisted_cmp_pre_branch_pattern` in
-    `crates/quanta-ir/src/scope_check.rs`. -/
+    `crates/gpu/quanta-ir/src/scope_check.rs`. -/
 example : KernelOp.scopeValidOps []
     [.const 3 (.i32 8),
      -- Hoisted: Const r43 and Cmp r44 = r3 == r43 moved out from

@@ -112,7 +112,7 @@ fn device_fn_kernel_compiles() {
 // `while`-loop kernels previously hit bug #1 (r44 used before
 // definition at Branch.cond via the WASM-route's
 // `install_redirect_at` path). Fixed by the backward-slice hoist in
-// `crates/quanta-wasm-lowering/src/lower.rs::hoist_cond_defining_ops`
+// `crates/gpu/quanta-wasm-lowering/src/lower.rs::hoist_cond_defining_ops`
 // that moves the cond-defining ops from the current frame's sink to
 // the target frame's sink before installing the redirect Branch.
 

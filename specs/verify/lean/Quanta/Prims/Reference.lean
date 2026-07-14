@@ -2,7 +2,7 @@
 Block-cooperative primitives — Lean formalisation of
 `quanta-prims`'s reference implementations.
 
-The Rust crate at `crates/quanta-prims/` ships two layers per
+The Rust crate at `crates/sci/quanta-prims/` ships two layers per
 primitive:
 
 1. A GPU kernel (the one users dispatch at runtime).

@@ -138,7 +138,7 @@ assert_eq!(view.shape().dims(), &[3, 2, 4, 3]);
 For any coordinate, `view.at(coord)` produces the same flat
 offset as a hand-rolled stride dot product against the original
 `src`. The integration test
-[`composition_round_trip.rs`](../../crates/quanta-tensor/tests/composition_round_trip.rs)
+[`composition_round_trip.rs`](../../crates/sci/quanta-tensor/tests/composition_round_trip.rs)
 asserts this for the full 72-coordinate sweep.
 
 ## The algebra (tiling — the load-bearing case)

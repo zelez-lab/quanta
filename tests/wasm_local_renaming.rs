@@ -1,5 +1,5 @@
 //! Tests for the WASM-local register renaming fix in
-//! `crates/quanta-wasm-lowering`. See workspace-level design doc
+//! `crates/gpu/quanta-wasm-lowering`. See workspace-level design doc
 //! at `quanta_project/roadmap/_design/wasm_local_renaming.md`.
 //!
 //! Three patterns must hold on real Metal:

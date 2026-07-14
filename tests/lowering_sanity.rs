@@ -7,7 +7,7 @@
 //! |---|------------------------------------------------|------------|
 //! | 1 | while + early `break` over shared mutable      | yes        |
 //! | 2 | nested if/else over shared mutable, device fn  | yes        |
-//! | 3 | block_compact cross-warp scan                  | `crates/quanta-prims/tests/block_compact.rs` (Metal) |
+//! | 3 | block_compact cross-warp scan                  | `crates/sci/quanta-prims/tests/block_compact.rs` (Metal) |
 //!
 //! Sanity 3 lives in the prims crate because it needs a Metal device.
 

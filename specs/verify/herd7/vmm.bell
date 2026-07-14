@@ -7,7 +7,7 @@
  * an access carries is declared here, as an annotation drawn from the
  * `memorder` enum. These tag names mirror the C11 / Rust
  * `std::sync::atomic::Ordering` variants that Quanta's `MemoryOrder` IR
- * enum lowers to (`crates/quanta-ir/src/types.rs`):
+ * enum lowers to (`crates/gpu/quanta-ir/src/types.rs`):
  *
  *   rlx     = Relaxed  (also used for plain / non-atomic data accesses)
  *   acq     = Acquire

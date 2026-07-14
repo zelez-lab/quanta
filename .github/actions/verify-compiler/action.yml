@@ -42,7 +42,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        cd crates/quanta-compiler
+        cd crates/lang/quanta-compiler
         REV=$(git describe --always --dirty --exclude '*')
         echo "rev=$REV" >> "$GITHUB_OUTPUT"
 

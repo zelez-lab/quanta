@@ -3,7 +3,7 @@
 -- Two 8-bit float formats share one implementation, parameterised by the
 -- exponent/mantissa widths `(eb, mb)`: e5m2 = (5, 2), e4m3 = (4, 3). The
 -- Quanta CPU executor, every GPU emitter, and the host reference in
--- `crates/quanta-ir/src/dtype.rs` use the *branchless* conversions modelled
+-- `crates/gpu/quanta-ir/src/dtype.rs` use the *branchless* conversions modelled
 -- here over `Nat` bit-fields. Because the conversions are pure integer
 -- bit-twiddling (shifts, masks, comparisons, selects), the Nat model is
 -- faithful and the proofs need no float axioms — 0 new TCB.

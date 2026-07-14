@@ -1,6 +1,6 @@
 //! End-to-end differential for the br_if-backedge + multi-level-br
 //! exit-tail lowering shape (see
-//! `crates/quanta-wasm-lowering/tests/lower_backedge_exit_tail.rs`
+//! `crates/gpu/quanta-wasm-lowering/tests/lower_backedge_exit_tail.rs`
 //! for the WAT-level pin).
 //!
 //! A loop-invariant `if unit … else … k / d` inside a `while` loop is

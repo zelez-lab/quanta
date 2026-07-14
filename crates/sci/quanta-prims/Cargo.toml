@@ -1,0 +1,81 @@
+[package]
+name = "quanta-prims"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Block-cooperative GPU primitives for Quanta — reduce, scan, sort, and warp utilities"
+readme = "README.md"
+
+[lib]
+name = "quanta_prims"
+path = "src/lib.rs"
+
+[features]
+default = []
+# `gpu` feature pulls in the Quanta runtime and exposes the
+# `#[quanta::kernel]` entry points + device-callable primitives.
+# Off by default so the crate is usable as a pure-Rust reference
+# library (correctness oracle for downstream tests).
+#
+# The `gpu` feature alone gives you the software CPU JIT backend,
+# which is single-threaded and not useful for cooperative
+# primitives. For real-GPU demos pick one of the backend-specific
+# convenience features below.
+gpu = ["dep:quanta-core", "dep:quanta-compute-dsl"]
+
+# Convenience: pull in a real GPU backend so the examples in
+# this crate can call `quanta::init()?` successfully. Pick the
+# one matching your host. Backend features forward to `quanta-core`
+# (the library's runtime dep) and to the `quanta` facade dev-dep
+# (examples/tests call `quanta::init()`).
+gpu-metal = ["gpu", "quanta-core/metal", "quanta/metal"]
+gpu-vulkan = ["gpu", "quanta-core/vulkan", "quanta/vulkan"]
+
+[dependencies]
+# Library code depends on the split crates, never the `quanta` facade —
+# `quanta-core` for the runtime types + `GpuType`, `quanta-compute-dsl`
+# for the `#[quanta::kernel]` / `#[quanta::device]` macros (invoked with
+# `crate = quanta_core`). This keeps the facade free to re-export this
+# crate later without a dependency cycle.
+quanta-core = { path = "../../gpu/quanta-core", default-features = false, features = [
+    "software",
+], optional = true }
+quanta-compute-dsl = { path = "../../lang/quanta-compute-dsl", optional = true }
+
+[dev-dependencies]
+# The `quanta` facade is a DEV dependency only (tests/examples call
+# `quanta::init()`); cargo permits the dev-dep cycle that a normal dep
+# would forbid.
+quanta = { path = "../../..", default-features = false, features = ["software"] }
+# Used by tests/block_reduce_tree.rs to deserialize the embedded
+# KernelDef IR and assert the tree-reduce kernels are subgroup-free.
+quanta-ir.workspace = true
+
+# Three of the four examples need a real GPU backend (cooperative
+# primitives don't degrade gracefully to single-thread). They
+# skip with a "no GPU" message if `quanta::init()` fails, so
+# `cargo run --example block_sum --features gpu` always builds;
+# add `--features gpu-metal` (or `gpu-vulkan`) to actually
+# dispatch. `cpu_oracle` is pure-Rust and feature-free.
+[[example]]
+name = "block_sum"
+required-features = ["gpu"]
+
+[[example]]
+name = "prefix_scan"
+required-features = ["gpu"]
+
+[[example]]
+name = "bucket_sort"
+required-features = ["gpu"]
+
+[[example]]
+name = "cpu_oracle"
+
+[[example]]
+name = "bench_throughput"
+required-features = ["gpu"]
+
+[[example]]
+name = "bench_vs_cpu"
+required-features = ["gpu"]

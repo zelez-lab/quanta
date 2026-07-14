@@ -2,7 +2,7 @@
 Level-1 BLAS — Lean formalisation of `quanta-blas`'s reference layer
 and the Higham-style forward-error bounds.
 
-The Rust crate at `crates/quanta-blas/` ships, per the companion-crate
+The Rust crate at `crates/sci/quanta-blas/` ships, per the companion-crate
 recipe:
 
 1. GPU kernels (what users dispatch).

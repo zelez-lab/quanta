@@ -78,4 +78,4 @@ parallel with a reproducible result.
 ## Next
 
 - **[Autodiff basics](autodiff-basics.md)** — now you have data, math, and randomness; time to compute gradients.
-- Full surface: the **[quanta-rand README](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-rand/README.md)**.
+- Full surface: the **[quanta-rand README](https://github.com/zelez-lab/quanta/blob/main/crates/sci/quanta-rand/README.md)**.

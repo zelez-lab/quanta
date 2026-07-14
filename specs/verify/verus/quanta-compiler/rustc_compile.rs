@@ -1,6 +1,6 @@
 //! Verus mirror of `quanta-compiler::rustc_compile` — Rust kernel → LLVM IR pipeline.
 //!
-//! Mirrors: crates/quanta-compiler/src/rustc_compile.rs
+//! Mirrors: crates/lang/quanta-compiler/src/rustc_compile.rs
 //!
 //! The rustc_compile module wraps user kernel bodies in a temporary Rust crate
 //! with GpuSlice wrappers and __quanta_* intrinsic stubs, compiles via rustc

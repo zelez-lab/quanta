@@ -8,7 +8,7 @@ gradients, nudge the parameters against them, repeat. With autodiff in hand,
 that's a dozen lines. We'll fit a 2-layer MLP to the curve `y = x²`.
 
 The complete, runnable version is
-[`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/quanta-autograd/examples/mlp_training.rs)
+[`examples/mlp_training.rs`](https://github.com/zelez-lab/quanta/blob/main/crates/ml/quanta-autograd/examples/mlp_training.rs)
 — run it on the GPU with `cargo run --example mlp_training -p quanta-autograd
 --release --features metal` (use `--features vulkan` off Apple, or drop the flag
 for the portable CPU lane).

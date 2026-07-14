@@ -1,7 +1,7 @@
 //! Verus mirror of SPIR-V structural properties.
 //!
 //! This file is a **manually-maintained mirror** of the production code
-//! in `crates/quanta-compiler/src/emit_spirv/`. Verus verifies unbounded
+//! in `crates/lang/quanta-compiler/src/emit_spirv/`. Verus verifies unbounded
 //! correctness of these spec-level models; drift between the verified
 //! copies and the production versions must be caught by human review
 //! (any commit that modifies either file must also update the other).
@@ -1718,7 +1718,7 @@ proof fn t1102_entry_point_name_is_main(main_id: u32)
 // ════════════════════════════════════════════════════════════════════════
 // T1301 — Metallib validity
 //
-// Production: `crates/quanta-compiler/src/metallib.rs`
+// Production: `crates/lang/quanta-compiler/src/metallib.rs`
 //
 //   pub fn compile_msl_to_metallib(msl_source: &str) -> Option<Vec<u8>>
 //

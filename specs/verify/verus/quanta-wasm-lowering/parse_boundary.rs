@@ -4,7 +4,7 @@
 //! ADT the V3/V5/V7 refinements reason about). It starts from raw
 //! `wasmparser::Operator<'_>` values decoded from the kernel's
 //! `wasm32` bytes, and converts each to an owned `RawInstr` via
-//! `RawInstr::from_operator` (`crates/quanta-wasm-lowering/src/lib.rs`,
+//! `RawInstr::from_operator` (`crates/gpu/quanta-wasm-lowering/src/lib.rs`,
 //! the big `match` at ~line 463). The refinement chain V1–V7 begins one
 //! step *inside* that edge — it takes the already-decoded instruction
 //! ADT as its input.

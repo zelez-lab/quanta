@@ -2,7 +2,7 @@
 # WASM → KernelOps lowering — Lean specification (step 059)
 
 Mirrors the production translator at
-`crates/quanta-wasm-lowering/src/lower.rs`. The Rust pass simulates
+`crates/gpu/quanta-wasm-lowering/src/lower.rs`. The Rust pass simulates
 WASM's stack with a richer symbolic abstract domain (buffer pointers,
 scaled indices, etc.) so it can recognize buffer-access patterns.
 The Lean port now carries the full `SymVal` alphabet on the stack;
@@ -40,7 +40,7 @@ open Quanta.KOps (KernelOp Reg ConstValue Scalar BinOp CmpOp)
 -- ════════════════════════════════════════════════════════════════════
 
 /-- Symbolic stack value during lowering. Mirrors `SymVal` in
-    `crates/quanta-wasm-lowering/src/lower.rs`. The lowering pass
+    `crates/gpu/quanta-wasm-lowering/src/lower.rs`. The lowering pass
     simulates WASM's stack with these abstract values to recognize
     canonical buffer-access patterns.
 
@@ -100,7 +100,7 @@ structure LowerState where
   /-- `localIdx → bufferSlot`. Records which locals were seeded as
       `#[quanta::shared]` buffer-pointer parameters (production: the
       `ParamKind::BufferRead | BufferWrite` arms in
-      `crates/quanta-wasm-lowering/src/lower.rs` `LowerCtx::new`).
+      `crates/gpu/quanta-wasm-lowering/src/lower.rs` `LowerCtx::new`).
       Used by `localGet` to push `SymVal.bufferPtr slot` instead of
       reading a stable register, so the subsequent `<scaledIdx>
       i32.add | i32.load` chain can fold into a typed
@@ -122,7 +122,7 @@ structure LowerState where
 
       Mirrors production's `LocalInfo.val = Some(SymVal::Reg(fresh, ty))`
       after each set (`write_local_via_copy` in
-      `crates/quanta-wasm-lowering/src/lower.rs`, lines 625-685).
+      `crates/gpu/quanta-wasm-lowering/src/lower.rs`, lines 625-685).
       Production overloads `val` for this purpose; the Lean spec
       keeps a separate map so the existing `localReg`-as-stable
       proofs survive. -/
@@ -318,7 +318,7 @@ def lowerI32Cmp (s : LowerState) (op : CmpOp) : Option (LowerState × List Kerne
     (1 <<< k)` with no IR emitted (the canonical "element index → byte
     offset" pattern rustc emits). Otherwise fall through to the
     generic `lowerI32Bin .shl`. Mirrors `RawInstr::I32Shl` in
-    `crates/quanta-wasm-lowering/src/lower.rs`. -/
+    `crates/gpu/quanta-wasm-lowering/src/lower.rs`. -/
 def lowerI32Shl (s : LowerState) : Option (LowerState × List KernelOp) :=
   match s.stack with
   | .i32ConstSym k :: .reg base _ :: rest =>

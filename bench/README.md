@@ -11,7 +11,7 @@ bench/
     linux-x86_64.json     # (TODO: record on a Linux+Vulkan reference)
   README.md               # this file
 
-crates/quanta-bench/      # the harness binary
+crates/tools/quanta-bench/      # the harness binary
 ```
 
 ## Run locally

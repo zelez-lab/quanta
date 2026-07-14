@@ -180,7 +180,7 @@ Key passes that run:
 Translates `KernelOp` directly to Metal Shading Language text. Used by both
 the JIT path **and** the standard build pipeline — the build-time path
 goes through
-`crates/quanta-compiler/src/metallib.rs::compile_msl_to_metallib_variants`,
+`crates/lang/quanta-compiler/src/metallib.rs::compile_msl_to_metallib_variants`,
 which writes the emitted MSL to a temp `.metal` file and shells out to
 `xcrun metal` + `xcrun metallib` to produce the metallib that ships in
 the binary. (SPIR-V is also emitted, but the Metal backend prefers the

@@ -1,4 +1,4 @@
-//! Verus mirror of `crates/quanta-render-dsl/src/vertex_derive.rs` — #[derive(Vertex)].
+//! Verus mirror of `crates/lang/quanta-render-dsl/src/vertex_derive.rs` — #[derive(Vertex)].
 //!
 //! The derive macro maps Rust types to GPU attribute formats with known sizes,
 //! computes cumulative offsets, and assigns sequential locations. We model

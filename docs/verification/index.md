@@ -286,7 +286,7 @@ Metal/Vulkan drivers in the verification scheme:
   handle-table identity uniqueness.
 * **B′ refinement (2026-04-28)** — every WebGPU enum string Quanta
   hands the JS side (texture format, blend factor, …) is now derived
-  from the W3C `webgpu.idl` by `crates/quanta-codegen` into spec
+  from the W3C `webgpu.idl` by `crates/lang/quanta-codegen` into spec
   tables on both sides:
   - `src/webgpu_generated_codes.rs` (Rust spec tables + a `cargo
     test`-time `quanta_strings_are_spec_subsets` check).
@@ -363,7 +363,7 @@ Stated explicitly so reviewers know what is trusted vs proven:
 | A8    | Metal Shading Language §6.13               | Apple         |
 | A9    | AMD RDNA ISA Reference                     | AMD           |
 | **A10** | **W3C WebGPU spec, §6 Devices + §10 Queue** | **WebGPU**    |
-| **A11** | **Quanta wasm ↔ JS ABI** (`crates/quanta-core/src/driver/webgpu/ffi.rs` + `web/src/quanta.ts`, B⁰; enum strings codegen'd from `web/webgpu.idl`, B′; enum-string + method-presence + call-arity + param-type conformance proven against `Quanta.Idl.WebGpuSpec` as T1710 + T1711 + T1712 + T1713, B″ complete; residue = `extern "C"` linker faithfulness + typedef stability) | **wasm32**    |
+| **A11** | **Quanta wasm ↔ JS ABI** (`crates/gpu/quanta-core/src/driver/webgpu/ffi.rs` + `web/src/quanta.ts`, B⁰; enum strings codegen'd from `web/webgpu.idl`, B′; enum-string + method-presence + call-arity + param-type conformance proven against `Quanta.Idl.WebGpuSpec` as T1710 + T1711 + T1712 + T1713, B″ complete; residue = `extern "C"` linker faithfulness + typedef stability) | **wasm32**    |
 
 If a hardware/driver/browser violates these, the bug is upstream of
 Quanta. The proof boundary is named explicitly.

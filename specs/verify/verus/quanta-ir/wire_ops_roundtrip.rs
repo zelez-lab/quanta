@@ -1,8 +1,8 @@
 //! Verus mirror of KernelOp wire encode/decode — tag roundtrip for all 51 opcodes.
 //!
 //! Mirrors:
-//!   crates/quanta-ir/src/wire/encode/ops.rs — write_kernel_op (tags 0..50)
-//!   crates/quanta-ir/src/wire/decode/ops.rs — read_kernel_op (tags 0..50)
+//!   crates/gpu/quanta-ir/src/wire/encode/ops.rs — write_kernel_op (tags 0..50)
+//!   crates/gpu/quanta-ir/src/wire/decode/ops.rs — read_kernel_op (tags 0..50)
 //!
 //! Proves:
 //!   T220: Every KernelOp tag roundtrips: encode then decode yields the same variant

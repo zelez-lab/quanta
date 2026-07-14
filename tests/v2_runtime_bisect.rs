@@ -34,7 +34,7 @@
 //! at the target frame and `Copy`s the cond into it at the source
 //! position, so no computation ever moves across control flow. All
 //! levels pass; L2.2 stays as the regression witness, and
-//! `crates/quanta-rand/tests/ptrd_host_oracle.rs` pins the full
+//! `crates/sci/quanta-rand/tests/ptrd_host_oracle.rs` pins the full
 //! production kernel to a bit-exact host reference.
 //!
 //! The loop-condition sibling bug (`while iter < 32 && done == 0`
@@ -46,7 +46,7 @@
 //! (`emit_loop_crossing_exit` in lower.rs). L4 below is the
 //! lowering-level witness; the production PTRD kernel now uses the
 //! early-exit loop condition and is pinned bit-exact by
-//! `crates/quanta-rand/tests/ptrd_host_oracle.rs`.
+//! `crates/sci/quanta-rand/tests/ptrd_host_oracle.rs`.
 //!
 //! Run only:
 //!   cargo test -p quanta --features software --test v2_runtime_bisect

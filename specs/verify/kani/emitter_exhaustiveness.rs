@@ -6,12 +6,12 @@
 //! wasm binary.
 //!
 //! Production code:
-//!   - KernelOp enum:        crates/quanta-ir/src/types.rs
+//!   - KernelOp enum:        crates/gpu/quanta-ir/src/types.rs
 //!   - CPU emitter:          src/driver/cpu/exec.rs
-//!   - Build-time WGSL:      crates/quanta-compiler/src/emit_wgsl.rs
+//!   - Build-time WGSL:      crates/lang/quanta-compiler/src/emit_wgsl.rs
 //!                           (re-exports `quanta_ir::emit_wgsl::emit`)
-//!   - LLVM emitter:         crates/quanta-compiler/src/emit_llvm/emit/ops.rs
-//!   - JIT WGSL emitter:     crates/quanta-ir/src/emit_wgsl/ops.rs
+//!   - LLVM emitter:         crates/lang/quanta-compiler/src/emit_llvm/emit/ops.rs
+//!   - JIT WGSL emitter:     crates/gpu/quanta-ir/src/emit_wgsl/ops.rs
 //!
 //! Method: model each emitter's match as a tag -> bool function.
 //! If all tags in 0..VARIANT_COUNT map to true, the emitter is exhaustive.
@@ -24,7 +24,7 @@
 //! property is therefore stronger than before: a regression in one path
 //! is impossible without regressing the other.
 
-/// Total number of KernelOp variants in crates/quanta-ir/src/types.rs.
+/// Total number of KernelOp variants in crates/gpu/quanta-ir/src/types.rs.
 ///
 /// Variants (ordered as in source):
 ///   Memory:       Load, Store, SharedDecl, SharedLoad, SharedStore
@@ -203,7 +203,7 @@ fn t1000_cpu_emitter_exhaustive() {
 // ═══════════════════════════════════════════════════════════════════════
 // T1001 — WGSL emitter exhaustiveness (shared model: build-time + JIT)
 //
-// Production: crates/quanta-ir/src/emit_wgsl/ops.rs — emit_op()
+// Production: crates/gpu/quanta-ir/src/emit_wgsl/ops.rs — emit_op()
 //   - quanta-compiler's emit_wgsl.rs is a thin `pub use` re-export of the
 //     IR emitter, so this single model covers both the build-time path
 //     and the JIT path served to browsers via step 050's WebGPU driver.
@@ -287,7 +287,7 @@ fn t1001_wgsl_emitter_exhaustive() {
 // ═══════════════════════════════════════════════════════════════════════
 // T1001-JIT — WGSL JIT emitter exhaustiveness (step 079)
 //
-// Production: crates/quanta-ir/src/emit_wgsl/ops.rs — emit_op()
+// Production: crates/gpu/quanta-ir/src/emit_wgsl/ops.rs — emit_op()
 //
 // Same emitter as T1001 above; this harness asserts the property under the
 // JIT entry point name (`emit_wgsl_jit`) so a future split between the
@@ -310,7 +310,7 @@ fn t1001_jit_wgsl_emitter_exhaustive() {
 // ═══════════════════════════════════════════════════════════════════════
 // T1002 — LLVM emitter exhaustiveness
 //
-// Production: crates/quanta-compiler/src/emit_llvm/emit/ops.rs — emit_op()
+// Production: crates/lang/quanta-compiler/src/emit_llvm/emit/ops.rs — emit_op()
 // The LLVM emitter handles all 52 variants. Some newer ops return errors
 // (Err("not yet supported")) rather than generating IR — but they are
 // still matched, not missing from the match statement.

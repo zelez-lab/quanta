@@ -1,7 +1,7 @@
 //! V2 — Verus spec types mirroring the Lean translator vocabulary.
 //!
 //! Mechanizes the core types of `Quanta.Wasm.Translate` (the Lean
-//! refinement target) and `crates/quanta-wasm-lowering/src/lower.rs`
+//! refinement target) and `crates/gpu/quanta-wasm-lowering/src/lower.rs`
 //! (the production translator) as Verus `spec`-world types:
 //!
 //!   - `Reg`     — register index (Lean `abbrev Reg := Nat`)

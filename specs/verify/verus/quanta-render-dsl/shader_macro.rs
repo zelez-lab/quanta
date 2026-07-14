@@ -1,6 +1,6 @@
 //! Verus mirror of `quanta-render-dsl::shader_macro` — shader proc macro expansion.
 //!
-//! Mirrors: crates/quanta-render-dsl/src/shader_macro.rs
+//! Mirrors: crates/lang/quanta-render-dsl/src/shader_macro.rs
 //!
 //! The shader_macro module implements expand_vertex, expand_fragment, and stub
 //! expansions for tessellation, mesh, and ray tracing stages. All nine stages

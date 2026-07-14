@@ -10,7 +10,7 @@
 //!   M7: MathFn -> Metal stdlib function mapping
 //!   M8: Barrier -> threadgroup_barrier call
 //!
-//! The production code is in `crates/quanta-compiler/src/emit_msl/ops.rs`.
+//! The production code is in `crates/lang/quanta-compiler/src/emit_msl/ops.rs`.
 //! T300-T304 in `msl_emitter.rs` cover the helpers; this file covers the
 //! top-level dispatch and MSL-specific patterns.
 

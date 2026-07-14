@@ -1,0 +1,32 @@
+[package]
+name = "quanta-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rendering face of Quanta — render passes, pipelines, textures-as-targets, mesh/tessellation/ray-tracing. Depends on quanta-core only, never the compute stack."
+keywords = ["gpu", "render", "graphics", "metal", "vulkan"]
+categories = ["graphics", "rendering"]
+
+[features]
+# Backend selection is forwarded to quanta-core. quanta-render adds no
+# backend axis of its own; it mirrors the substrate's.
+default = ["metal"]
+std = ["quanta-core/std"]
+metal = ["std", "quanta-core/metal"]
+vulkan = ["std", "quanta-core/vulkan"]
+# MoltenVK opt-in, forwarded to the substrate. Widens the Vulkan face's
+# target_os gate to macOS; see quanta-core's feature docs.
+vulkan-portability = ["vulkan", "quanta-core/vulkan-portability"]
+# The CPU software lane exists for tests and headless validation; note
+# it turns on quanta-core's compute+jit halves (its whole job is
+# executing kernels). Render-only consumers simply don't enable it.
+software = ["std", "quanta-core/software"]
+webgpu = ["std", "quanta-core/webgpu"]
+
+[dependencies]
+# The shared substrate with the render face on. NO compute stack: this
+# crate's normal dependency graph never contains quanta-wasm-lowering,
+# wasmparser, or the quanta-ir JIT.
+quanta-core = { workspace = true, features = ["render"] }
+quanta-render-dsl = { path = "../../lang/quanta-render-dsl", version = "0.1.0-alpha.2" }

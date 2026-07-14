@@ -44,13 +44,13 @@ Quanta is a core plus a set of companion crates. The core gives you kernels and 
 | Crate | What it gives you | Python analogue* |
 |---|---|---|
 | [`quanta`](.) | GPU compute + rendering core: `#[quanta::kernel]`, dispatch, 5 backends | — |
-| [`quanta-array`](crates/quanta-array/README.md) | N-D GPU arrays: construct, broadcast, ufuncs, reductions, matmul, conv, pooling | NumPy |
-| [`quanta-autograd`](crates/quanta-autograd/README.md) | Reverse-mode autodiff — train MLPs and CNNs end to end | PyTorch autograd |
-| [`quanta-blas`](crates/quanta-blas/README.md) | Verified BLAS: gemm/gemv with proven error bounds, mixed-precision, quantized | BLAS / cuBLAS |
-| [`quanta-fft`](crates/quanta-fft/README.md) | Radix-2 FFT, forward + inverse, proven equal to the DFT | numpy.fft |
-| [`quanta-rand`](crates/quanta-rand/README.md) | Deterministic RNG + 6 distributions, bit-exact across backends | numpy.random |
-| [`quanta-prims`](crates/quanta-prims/README.md) | Block/device scan, reduce, sort — the parallel building blocks | CUB / thrust |
-| [`quanta-tensor`](crates/quanta-tensor/README.md) | Proven shape/layout algebra (the substrate the math crates share) | — |
+| [`quanta-array`](crates/sci/quanta-array/README.md) | N-D GPU arrays: construct, broadcast, ufuncs, reductions, matmul, conv, pooling | NumPy |
+| [`quanta-autograd`](crates/ml/quanta-autograd/README.md) | Reverse-mode autodiff — train MLPs and CNNs end to end | PyTorch autograd |
+| [`quanta-blas`](crates/sci/quanta-blas/README.md) | Verified BLAS: gemm/gemv with proven error bounds, mixed-precision, quantized | BLAS / cuBLAS |
+| [`quanta-fft`](crates/sci/quanta-fft/README.md) | Radix-2 FFT, forward + inverse, proven equal to the DFT | numpy.fft |
+| [`quanta-rand`](crates/sci/quanta-rand/README.md) | Deterministic RNG + 6 distributions, bit-exact across backends | numpy.random |
+| [`quanta-prims`](crates/sci/quanta-prims/README.md) | Block/device scan, reduce, sort — the parallel building blocks | CUB / thrust |
+| [`quanta-tensor`](crates/sci/quanta-tensor/README.md) | Proven shape/layout algebra (the substrate the math crates share) | — |
 
 \* *Analogues orient newcomers — they are not parity claims. Quanta provides verified building blocks; the ecosystem grows the rest on top.*
 

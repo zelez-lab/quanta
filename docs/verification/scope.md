@@ -221,8 +221,8 @@ macro expansion remains the trusted boundary.
 | Location | Tests | What |
 |----------|------:|------|
 | `tests/proptest_wire.rs` | 12 | Tag roundtrip for all enum types, full KernelDef/ShaderDef roundtrip, arbitrary bytes don't panic on any deserializer |
-| `crates/quanta-ir/tests/proptest_ir.rs` | 10 | IR-level roundtrip (ScalarType, BinOp, KernelDef, CompilerOutput, ShaderDef), arbitrary bytes don't panic |
-| `crates/quanta-core/src/driver/cpu/eval.rs` | 30 | BinOp no-panic for all types (u32, i32, u64, i64, f32, f64, bool), div-by-zero safety, CmpOp no-panic, UnaryOp no-panic, Cast no-panic for all type pairs, MathFn no-panic for all 22 functions, f16 normal roundtrip |
+| `crates/gpu/quanta-ir/tests/proptest_ir.rs` | 10 | IR-level roundtrip (ScalarType, BinOp, KernelDef, CompilerOutput, ShaderDef), arbitrary bytes don't panic |
+| `crates/gpu/quanta-core/src/driver/cpu/eval.rs` | 30 | BinOp no-panic for all types (u32, i32, u64, i64, f32, f64, bool), div-by-zero safety, CmpOp no-panic, UnaryOp no-panic, Cast no-panic for all type pairs, MathFn no-panic for all 22 functions, f16 normal roundtrip |
 
 **Property:** No proptest has ever found a panic in the CPU executor or wire
 format. All edge cases (NaN, infinity, signed zero, div-by-zero, max-value
@@ -233,7 +233,7 @@ overflow) are handled.
 **Tool:** Kani (CBMC-based)
 
 **Harnesses:** 129 proof harnesses across 10 files in `specs/verify/kani/`
-plus 8 in `crates/quanta-ir/src/wire/kani_proofs.rs`
+plus 8 in `crates/gpu/quanta-ir/src/wire/kani_proofs.rs`
 
 **What is checked:**
 - Opcode distinctness: all 96 SPIR-V opcodes pairwise distinct (T109)

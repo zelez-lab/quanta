@@ -9,4 +9,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 quanta = { path = "../..", default-features = false, features = ["webgpu"] }
-quanta-ir = { path = "../../crates/quanta-ir", features = ["jit"] }
+quanta-ir = { path = "../../crates/gpu/quanta-ir", features = ["jit"] }
