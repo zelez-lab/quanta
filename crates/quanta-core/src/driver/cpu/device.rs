@@ -937,7 +937,7 @@ impl GpuDevice for CpuDevice {
     // === M4.2: Mesh shaders ===
 
     fn dispatch_mesh(&self, _pipeline: u64, _groups: [u32; 3]) -> Result<(), QuantaError> {
-        Err(QuantaError::invalid_param(
+        Err(QuantaError::not_supported(
             "mesh shaders not supported on CPU device",
         ))
     }
