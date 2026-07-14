@@ -71,12 +71,38 @@ readme = "README.md"
 ## break render-purity, so it is not zero-cost off-target.
 default = ["metal", "vulkan", "render", "compute"]
 std = ["quanta-core/std", "quanta-render?/std"]
-metal = ["std", "quanta-core/metal", "quanta-render?/metal"]
+## Backend features carry weak (`?/`) forwards to every companion crate
+## so that e.g. `--features "sci,metal"` gives quanta-array the `metal`
+## backend and quanta-fft/-rand/-prims/-blas their `gpu-metal` spelling.
+## Weak forwards never ACTIVATE a companion — a default build still pulls
+## zero companion crates; only `sci` / `prims` / `autograd` do that.
+## (Companions have no `webgpu` backend yet, so `webgpu` forwards nothing.)
+metal = [
+    "std",
+    "quanta-core/metal",
+    "quanta-render?/metal",
+    "quanta-array?/metal",
+    "quanta-autograd?/metal",
+    "quanta-blas?/gpu-metal",
+    "quanta-fft?/gpu-metal",
+    "quanta-rand?/gpu-metal",
+    "quanta-prims?/gpu-metal",
+]
 ## Vulkan face. Target-independent FEATURE, `cfg(target_os)`-gated CODE:
 ## it compiles on Linux / Android / Windows and is pruned on Apple, so
 ## default-enabling it costs a plain Mac build nothing. MoltenVK users on
 ## macOS add `vulkan-portability` (below) to extend the code to macOS.
-vulkan = ["std", "quanta-core/vulkan", "quanta-render?/vulkan"]
+vulkan = [
+    "std",
+    "quanta-core/vulkan",
+    "quanta-render?/vulkan",
+    "quanta-array?/vulkan",
+    "quanta-autograd?/vulkan",
+    "quanta-blas?/gpu-vulkan",
+    "quanta-fft?/gpu-vulkan",
+    "quanta-rand?/gpu-vulkan",
+    "quanta-prims?/gpu-vulkan",
+]
 ## MoltenVK opt-in: also compile the Vulkan face on macOS (linking
 ## MoltenVK's `libvulkan`). Additive over `vulkan`; only widens the
 ## target_os gate to include macOS. Not in defaults — a plain Mac build
@@ -103,7 +129,24 @@ render = ["quanta-core/render", "dep:quanta-render"]
 compute = ["quanta-core/compute", "dep:quanta-compute-dsl"]
 ## CPU software driver: execute KernelDef IR without GPU hardware.
 ## Implies `compute` — the driver's whole job is executing kernels.
-software = ["std", "jit", "compute", "quanta-core/software", "quanta-render?/software"]
+## The companion spelling for "software" differs by crate: array/autograd
+## call it `software`; blas/fft/rand/prims call it plain `gpu` (their
+## `gpu` alone = the CPU JIT backend, `gpu-metal`/`gpu-vulkan` add
+## hardware). Weak forwards again — activation stays with `sci`/`prims`/
+## `autograd`.
+software = [
+    "std",
+    "jit",
+    "compute",
+    "quanta-core/software",
+    "quanta-render?/software",
+    "quanta-array?/software",
+    "quanta-autograd?/software",
+    "quanta-blas?/gpu",
+    "quanta-fft?/gpu",
+    "quanta-rand?/gpu",
+    "quanta-prims?/gpu",
+]
 ## Enable JIT compilation: runtime shader emission from embedded KernelDef IR.
 ## Also exposes the op-matrix case generator shared with the test harness.
 jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases", "quanta-core/jit"]
@@ -117,12 +160,47 @@ jit = ["quanta-ir/jit", "quanta-ir/op-matrix-cases", "quanta-core/jit"]
 ## the only JS the browser loads. Implies `compute` (the driver
 ## dispatches waves; compute-free WebGPU builds are a Phase-2b concern).
 webgpu = ["std", "jit", "compute", "quanta-core/webgpu", "quanta-render?/webgpu"]
+## The scientific-computing umbrella (tokio model): activates the
+## companion crates and mounts them as `quanta::sci` — `Array` at the
+## root plus the `linalg` / `fft` / `random` / `layout` submodules.
+## Backend selection stays on the backend features above; `sci` alone
+## compiles device-free (host reference surfaces only). Off by default —
+## a default build pulls zero companion crates.
+sci = [
+    "std",
+    "dep:quanta-array",
+    "dep:quanta-blas",
+    "dep:quanta-fft",
+    "dep:quanta-rand",
+    "dep:quanta-tensor",
+]
+## Block-cooperative + device-wide GPU primitives (CUB / rocPRIM shape),
+## mounted as `quanta::prims`. Pair with a backend feature for the
+## device entry points (`software` → CPU JIT, `metal` / `vulkan` →
+## hardware); alone it is the pure-Rust reference surface.
+prims = ["std", "dep:quanta-prims"]
+## Tape-based reverse-mode autodiff over `sci::Array`, mounted as
+## `quanta::autograd`. Usually paired with `sci` (its API speaks
+## `Array`), but activation is independent, tokio-style.
+autograd = ["std", "dep:quanta-autograd"]
 
 [dependencies]
 quanta-core.workspace = true
 quanta-compute-dsl = { path = "crates/quanta-compute-dsl", version = "0.1.0-alpha.2", optional = true }
 quanta-ir.workspace = true
 quanta-render = { path = "crates/quanta-render", version = "0.1.0-alpha.2", default-features = false, optional = true }
+
+# Companion crates (the `sci` / `prims` / `autograd` umbrella features).
+# All optional + default-features = false: the facade decides the backend
+# through the weak forwards on its own backend features above, and a
+# default build must not activate any of them.
+quanta-array = { path = "crates/quanta-array", version = "0.1.0-alpha.2", default-features = false, optional = true }
+quanta-autograd = { path = "crates/quanta-autograd", version = "0.1.0-alpha.2", default-features = false, optional = true }
+quanta-blas = { path = "crates/quanta-blas", version = "0.1.0-alpha.2", default-features = false, optional = true }
+quanta-fft = { path = "crates/quanta-fft", version = "0.1.0-alpha.2", default-features = false, optional = true }
+quanta-prims = { path = "crates/quanta-prims", version = "0.1.0-alpha.2", default-features = false, optional = true }
+quanta-rand = { path = "crates/quanta-rand", version = "0.1.0-alpha.2", default-features = false, optional = true }
+quanta-tensor = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "1"
