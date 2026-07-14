@@ -116,6 +116,56 @@ verus +ARGS:
     mkdir -p target/verus
     verus {{ARGS}} -- --out-dir target/verus
 
+# herd7 memory-model litmus tests (steps 055/056).
+#
+# Runs the LISA litmus tests in specs/verify/herd7/ under the vendored
+# release/acquire model (vmm.bell + vmm.cat) and asserts each herd7
+# verdict matches the expected outcome. These are empirical cross-checks
+# of the A6-A9 / T1600-T1622 memory-model axioms, NOT proofs.
+#
+# herd7 ships with herdtools7: `opam install herdtools7`. If herd7 is not
+# on PATH this recipe skips (exit 0) with an install hint, so it never
+# blocks a machine without the toolsuite.
+litmus:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v herd7 >/dev/null 2>&1; then
+        echo "SKIP: herd7 not found on PATH."
+        echo "      Install the diy/herd toolsuite:  opam install herdtools7"
+        echo "      (then re-run:  just litmus)"
+        exit 0
+    fi
+    H=specs/verify/herd7
+    BELL="$H/vmm.bell"
+    CAT="$H/vmm.cat"
+    fail=0
+    # test-file  expected-verdict  (Never | Sometimes)
+    check() {
+        local file="$1" expected="$2"
+        local out verdict
+        out=$(herd7 -bell "$BELL" -model "$CAT" "$H/$file" 2>&1) || {
+            echo "FAIL  $file: herd7 errored"; echo "$out" | sed 's/^/    /'; fail=1; return
+        }
+        verdict=$(printf '%s\n' "$out" | grep -oE 'Observation [^ ]+ (Never|Sometimes|Always)' | awk '{print $3}' | head -1)
+        if [ "$verdict" = "$expected" ]; then
+            echo "OK    $file: $verdict (expected $expected)"
+        else
+            echo "FAIL  $file: got '${verdict:-<none>}', expected '$expected'"
+            printf '%s\n' "$out" | sed 's/^/    /'
+            fail=1
+        fi
+    }
+    echo "herd7 litmus: $(herd7 -version | head -1)"
+    check message_passing.litmus      Never
+    check store_buffer.litmus         Sometimes
+    check store_buffer_sc.litmus      Never
+    check atomic_add_visibility.litmus Never
+    if [ "$fail" -ne 0 ]; then
+        echo "litmus: one or more tests did not match their expected verdict"
+        exit 1
+    fi
+    echo "litmus: all verdicts match"
+
 # Quality
 fmt:
     cargo fmt --all

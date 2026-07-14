@@ -488,15 +488,26 @@ pub(super) fn emit_op(
         // MSL: atomic_thread_fence with an explicit memory_order. Scope
         // is mem_device because Fence is meant for inter-quark visibility
         // of storage-buffer writes, not just the threadgroup.
+        //
+        // The Metal Shading Language only defines `memory_order_relaxed`
+        // and `memory_order_seq_cst` for `atomic_thread_fence`
+        // (`memory_order_acquire` / `_release` / `_acq_rel` are NOT
+        // declared — the metal compiler rejects them with "use of
+        // undeclared identifier"). We therefore promote every
+        // non-relaxed order to `memory_order_seq_cst`. Promoting a fence
+        // to a STRONGER order is always sound: an acquire/release/acqrel
+        // barrier is subsumed by a sequentially-consistent one. This is
+        // consistent with Metal storage-buffer atomics being effectively
+        // SC in practice (see `MemoryOrder` doc in `types.rs`).
         KernelOp::Fence { order } => out.push_str(&format!(
             "{}atomic_thread_fence(mem_flags::mem_device, {});\n",
             pad,
             match order {
                 crate::MemoryOrder::Relaxed => "memory_order_relaxed",
-                crate::MemoryOrder::Acquire => "memory_order_acquire",
-                crate::MemoryOrder::Release => "memory_order_release",
-                crate::MemoryOrder::AcqRel => "memory_order_acq_rel",
-                crate::MemoryOrder::SeqCst => "memory_order_seq_cst",
+                crate::MemoryOrder::Acquire
+                | crate::MemoryOrder::Release
+                | crate::MemoryOrder::AcqRel
+                | crate::MemoryOrder::SeqCst => "memory_order_seq_cst",
             }
         )),
         KernelOp::SharedDecl { id, ty, count } => {

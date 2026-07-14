@@ -31,7 +31,10 @@ without them, an emitted `OpAtomicStore(Release, Device)` is just bytes — with
 them, it carries the synchronization guarantee asserted by the Vulkan Memory
 Model spec. See `specs/THEOREMS.md` (T1600-T1622) for the full axiom list and
 `specs/verify/herd7/` for the herd7 litmus tests that empirically corroborate
-the message-passing and store-buffer patterns under release-acquire.
+the message-passing and store-buffer patterns under release-acquire (and
+SeqCst for the SB pair). `just litmus` runs all four and asserts their
+verdicts; `tests/litmus.rs` runs the same shapes as real GPU kernels
+(10^5+ instances/dispatch). Both are empirical falsifiers, not proofs.
 
 ### Undecidable properties (outside any proof boundary)
 
@@ -112,9 +115,10 @@ formalized as Lean axioms (A6-A9).
   MemoryModels). MemoryModels covers Vulkan / PTX / Metal / RDNA scoping,
   ordering, barrier semantics, and cross-model agreement.
 - Verus: AcqRel semantics, driver lifecycle, fast-math proofs
-- herd7: three Cat-language litmus tests (`message_passing`, `store_buffer`,
-  `atomic_add_visibility`) cross-check the message-passing and store-buffer
-  patterns under release-acquire.
+- herd7: four Cat-language litmus tests (`message_passing`, `store_buffer`,
+  `store_buffer_sc`, `atomic_add_visibility`) cross-check the message-passing
+  and store-buffer patterns under release-acquire and SeqCst, via a vendored
+  LISA model (`vmm.bell` + `vmm.cat`). `just litmus` asserts the verdicts.
 
 **Theorems (38 total):**
 
@@ -131,7 +135,8 @@ formalized as Lean axioms (A6-A9).
 **Status:** Axioms A1-A9 declared and formalized in Lean. AcqRel emitter
 proven. Scan algorithm fully proven in Lean. Per-backend memory models
 (Vulkan / PTX / Metal / RDNA) formalized as 23 axioms (T1600-T1622),
-empirically cross-checked with three herd7 litmus tests.
+empirically cross-checked with four herd7 litmus tests and a GPU litmus
+kernel suite (`tests/litmus.rs`, race-freedom L2 Phase 1).
 
 ---
 
@@ -139,14 +144,20 @@ empirically cross-checked with three herd7 litmus tests.
 
 **What exists:** Barrier visibility semantics (T606-T607) and register SSA
 (T609) are proven at Level 4. These are necessary conditions for race freedom
-but not sufficient.
+but not sufficient. Race-freedom L2 **Phase 1** adds empirical *falsifiers*
+(not proofs): four herd7 litmus tests with asserted verdicts (`just litmus`)
+and a GPU litmus kernel suite (`tests/litmus.rs`) that runs MP / SB shapes as
+real kernels, 10^5+ instances per dispatch, on software / Metal / Vulkan.
+These can catch a memory-model violation but a clean run is corroboration,
+not proof — the verdict below is unchanged by them.
 
 **Gap:** No static may-happen-in-parallel analyzer on KernelOps IR. Without it,
 we cannot prove that correctly-barriered code is race-free. The analyzer would
 need to compute happens-before edges from barrier placements and show no
 conflicting accesses exist outside those edges.
 
-**Status:** Barrier semantics proven. Race freedom analyzer not implemented.
+**Status:** Barrier semantics proven; Phase 1 empirical falsifiers in place.
+Race freedom analyzer + L2 theorem not implemented.
 
 ---
 

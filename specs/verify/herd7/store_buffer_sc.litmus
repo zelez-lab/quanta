@@ -1,0 +1,35 @@
+LISA SB+sc
+
+(*
+ * Store-Buffer test for Quanta GPU atomics (SeqCst variant).
+ *
+ * Same shape as `store_buffer.litmus`, but every access is
+ * sequentially consistent (`sc`). Under SeqCst the SB anomaly is
+ * FORBIDDEN: at least one reader must observe the other's write.
+ *
+ * Quanta emits SeqCst accesses (or a SeqCst fence between the store
+ * and the load) when two-sided cross-workgroup synchronization is
+ * required:
+ *   Vulkan: OpAtomicStore/Load(SequentiallyConsistent, Device)
+ *   PTX:    st./ld. with a fence.sc.gpu between
+ *   Metal:  atomic_*_explicit(memory_order_seq_cst)
+ *
+ * CLAIM: with SeqCst on all four accesses, the bad outcome (both
+ * read 0) is forbidden. Expected verdict under `vmm.cat`: Never.
+ *
+ * This is the companion to `store_buffer.litmus`: together they
+ * demonstrate that rel/acq allows SB while SeqCst forbids it, which
+ * is exactly the distinction the Quanta memory-order lowering relies
+ * on.
+ *)
+
+{
+  [x] = 0;
+  [y] = 0;
+}
+
+P0             |  P1             ;
+w[sc] x 1      |  w[sc] y 1      ;
+r[sc] r0 y     |  r[sc] r1 x     ;
+
+exists (0:r0=0 /\ 1:r1=0)

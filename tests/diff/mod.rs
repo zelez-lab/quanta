@@ -18,6 +18,7 @@
 #![allow(dead_code)]
 
 pub mod compare;
+pub mod histogram;
 pub mod kernels;
 pub mod lane;
 pub mod op_matrix;

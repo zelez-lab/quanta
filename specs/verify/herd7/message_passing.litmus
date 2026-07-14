@@ -24,8 +24,12 @@ LISA MP+rel+acq
  *   A8 (metal_atomic_acq_rel)
  *   A9 (rdna_agent_acq_rel)
  *
- * CLAIM: if the consumer observes flag=1, it must also observe
+ * CLAIM: if the consumer (P1) observes flag=1, it must also observe
  * data=42. The bad outcome (flag=1, data=0) must be forbidden.
+ *
+ * `rlx` on the plain data accesses models a non-SeqCst access; the
+ * release/acquire pair on the flag carries the ordering. Expected
+ * verdict under `vmm.cat`: Never.
  *)
 
 {
@@ -33,8 +37,8 @@ LISA MP+rel+acq
   [flag] = 0;
 }
 
-P0          |  P1          ;
-w[] data 42 |  r[acquire] r0 flag ;
-w[release] flag 1 | r[] r1 data ;
+P0             |  P1                ;
+w[rlx] data 42 |  r[acq] r0 flag    ;
+w[rel] flag 1  |  r[rlx] r1 data    ;
 
-exists (0:r0=1 /\ 0:r1=0)
+exists (1:r0=1 /\ 1:r1=0)

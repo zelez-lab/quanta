@@ -255,9 +255,20 @@ litmus tests in `specs/verify/herd7/`:
 * **A8** — Metal memory model
 * **A9** — AMD RDNA memory model
 
-Three litmus tests (`message_passing.litmus`, `store_buffer.litmus`,
-`atomic_add_visibility.litmus`) check the message-passing and
-store-buffer patterns under release-acquire on a Cat-language model.
+Four litmus tests (`message_passing.litmus`, `store_buffer.litmus`,
+`store_buffer_sc.litmus`, `atomic_add_visibility.litmus`) check the
+message-passing and store-buffer patterns under release-acquire (and
+SeqCst for the SB pair) on a Cat-language model. They run under a
+vendored LISA model (`vmm.bell` + `vmm.cat`, RC11 axioms re-expressed
+for LISA) via one command — `just litmus` — which asserts each herd7
+verdict matches the expected outcome (MP Never, SB rel/acq Sometimes,
+SB seqcst Never, AtomicAdd Never). `just litmus` runs in the nightly
+`diff-full.yml` workflow and skips cleanly if herd7 is absent.
+
+Empirical companion: `tests/litmus.rs` runs the same MP / SB shapes as
+real GPU kernels (packing 10^5+ instances per dispatch into an outcome
+histogram) on the software / Metal / Vulkan lanes. These are empirical
+falsifiers, not proofs — see that module's doc and the herd7 README.
 
 ### WebGPU host (step 050 + 079 + B⁰ + B′ + B″)
 
@@ -380,8 +391,14 @@ verus --crate-type=lib specs/verify/verus/quanta-api/pulse_lifetime.rs
 # Kani harnesses
 kani specs/verify/kani/emitter_exhaustiveness.rs --harness <name>
 
-# herd7 litmus
-herd7 specs/verify/herd7/<test>.litmus
+# herd7 litmus (all four, with verdict assertions)
+just litmus
+# or one by hand:
+herd7 -bell specs/verify/herd7/vmm.bell -model specs/verify/herd7/vmm.cat \
+      specs/verify/herd7/<test>.litmus
+
+# empirical GPU litmus kernels (MP / SB histograms)
+cargo test --test litmus --no-default-features --features software,metal,jit,compute
 ```
 
 ## Roadmap toward more verification
@@ -423,9 +440,16 @@ Still open, by priority:
 4. **Race-freedom Level 2** — may-happen-in-parallel analysis
    beyond the Level 1 single-source-binding gate. Genuinely novel
    research, multi-month estimate.
-5. **MP / SB / IRIW litmus kernels** — IR primitives are in place
-   (memory-order × {AtomicOp, AtomicCas, Fence}); awaits a
-   workload-driven use case.
+5. **MP / SB litmus kernels** — DONE (race-freedom L2, Phase 1).
+   `tests/litmus.rs` runs message-passing and store-buffer shapes as
+   real GPU kernels, 10^5+ instances/dispatch, on software / Metal /
+   Vulkan; `just litmus` runs the herd7 cross-checks. These are
+   empirical falsifiers, not the L2 proof. Findings surfaced: (a) an
+   MSL emitter bug — `atomic_thread_fence` only accepts relaxed /
+   seq_cst, so acquire/release/acqrel now promote to seq_cst; (b) on
+   Metal, a device fence between *plain* accesses does not forbid MP /
+   SB — the synchronizing accesses must be atomic. IRIW and the L2
+   analyzer + theorem remain open.
 
 Every shipped theorem above moves us further along the
 `hardware → IR → user source` chain. Every named axiom names something

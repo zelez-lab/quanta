@@ -1,0 +1,70 @@
+LISA VMM-relacq
+
+(*
+ * Quanta Vulkan-compatible release/acquire memory model, for herd7's
+ * LISA architecture.
+ *
+ * The axiom bodies are the RC11 ("Repaired C11") model of Lahav,
+ * Vafeiadis, Kang, Hur & Dreyer (PLDI 2017), as coded by Simon Colin
+ * and shipped with herdtools7 as `rc11.cat`. RC11 is expressed for the
+ * `C` architecture and cannot be loaded against LISA litmus tests
+ * directly ("architecture mismatch C vs LISA"); this file re-expresses
+ * the same relations and checks in LISA terms so the Quanta litmus
+ * tests -- which use LISA syntax -- can be checked against it.
+ *
+ * Why RC11 and not the Khronos Vulkan Memory Model: the Khronos
+ * Vulkan-MemoryModel repository publishes an *Alloy* formalization
+ * (`alloy/spirv.als`), not a herd7 `.cat`. There is no upstream
+ * `vmm.cat` to vendor. For the message-passing / store-buffer /
+ * atomic-add shapes these tests exercise, the acquire-release fragment
+ * of RC11 and of the Vulkan Memory Model agree: rel/acq forbids MP,
+ * allows SB; SeqCst forbids SB. The README documents this equivalence
+ * and its limits.
+ *
+ * Tag sets (Rlx/Acq/Rel/Acq_rel/Sc) come from `vmm.bell` as herd7's
+ * auto-generated capitalised annotation sets.
+ *
+ * Authored for Quanta. Reuses the RC11 relation algebra, itself part of
+ * herdtools7 (CeCILL-B). No third-party file is vendored.
+ *)
+
+include "cos.cat"
+
+let RLX = Rlx
+let ACQ = Acq
+let REL = Rel
+let ACQ_REL = Acq_rel
+let SC = Sc
+
+let mo = co
+let sb = po
+let myrmw = [RMW] | rmw
+
+let rb = (rf^-1; mo) \ id
+let eco = (rf | mo | rb)+
+
+(* release sequence: the release write, extended along same-location
+   RMW chains it feeds. *)
+let rs = [W]; (sb & loc)?; [W & (RLX | REL | ACQ_REL | ACQ | SC)]; (rf; myrmw)*
+
+(* synchronizes-with: a release (store, or fence before a store) read
+   by an acquire (load, or before an acquire fence). *)
+let sw = [(REL | ACQ_REL | SC)]; ([F]; sb)?; rs; rf;
+         [R & (RLX | REL | ACQ | ACQ_REL | SC)]; (sb; [F])?; [(ACQ | ACQ_REL | SC)]
+
+let hb = (sb | sw)+
+
+let sbl = sb \ loc
+let hbl = hb & loc
+let scb = sb | sbl; hb; sbl | hbl | mo | rb
+let pscb = ([SC] | [F & SC]; hb?); scb; ([SC] | hb? ; [F & SC])
+let pscf = [F & SC]; (hb | hb; eco; hb); [F & SC]
+let psc = pscb | pscf
+
+irreflexive (hb; eco?) as coherence1
+irreflexive (myrmw; eco) as coherencermw
+empty (myrmw & (rb; mo)) as atomicity
+acyclic psc as SC
+acyclic (sb | rf) as no-thin-air
+
+show hb, sw, eco

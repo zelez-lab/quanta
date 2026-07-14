@@ -20,12 +20,19 @@ LISA AtomicAdd+rel+acq
  *   RDNA:          flat_atomic_add + release + glc
  *
  * The atomic RMW (read-modify-write) has both a read and write
- * component. Under release ordering, the write portion acts as
- * a release — all prior writes (including non-atomic data) are
- * visible to any thread that acquires from this location.
+ * component. Under release ordering, the write portion acts as a
+ * release -- all prior writes (including non-atomic data) are visible
+ * to any thread that acquires from this location. We model the
+ * release-write portion of `atomic_add(counter, 1)` from 0 as
+ * `w[rel] counter 1`: for the visibility question this test asks, the
+ * increment's release-store is what carries the ordering. (LISA in
+ * this herd7 build has no `atomic_add` mnemonic; the release write is
+ * the faithful and standard encoding of the RMW's release edge.)
  *
- * CLAIM: if Thread 1's acquire-load observes counter=1 (the
- * result of Thread 0's atomic_add), then data=42 must be visible.
+ * CLAIM: if Thread 1's acquire-load observes counter=1 (the result
+ * of Thread 0's atomic_add), then data=42 must be visible. The bad
+ * outcome (counter=1, data=0) must be forbidden. Expected verdict
+ * under `vmm.cat`: Never.
  *)
 
 {
@@ -33,9 +40,8 @@ LISA AtomicAdd+rel+acq
   [counter] = 0;
 }
 
-P0                 |  P1                    ;
-w[] data 42        |  r[acquire] r0 counter ;
-f[release]         |  r[] r1 data           ;
-rmw[once] counter 0 1 |                     ;
+P0                |  P1                   ;
+w[rlx] data 42    |  r[acq] r0 counter    ;
+w[rel] counter 1  |  r[rlx] r1 data       ;
 
 exists (1:r0=1 /\ 1:r1=0)

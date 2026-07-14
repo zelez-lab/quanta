@@ -33,6 +33,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ─── herd7 memory-model litmus (steps 055 / 056) ────────────────────
+  #
+  # Runs the LISA litmus tests in specs/verify/herd7/ under the vendored
+  # release/acquire model and asserts each herd7 verdict matches its
+  # expected outcome (MP Never, SB rel/acq Sometimes, SB seqcst Never,
+  # AtomicAdd Never). Cheap and host-only — no GPU — so it runs on the
+  # nightly cron and on workflow_dispatch, but NOT on ordinary PRs
+  # (regular PR CI must not depend on the opam/herdtools7 toolchain).
+  #
+  # herdtools7 is installed via opam; the opam root is cached so the
+  # OCaml build (~several minutes cold) is paid once, not every night.
+  litmus-herd7:
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      # Cache the whole opam root (compiler switch + herdtools7 build)
+      # keyed on the requested herdtools7 version so a bump busts it.
+      - name: Cache opam root
+        id: cache-opam
+        uses: actions/cache@v6
+        with:
+          path: ~/.opam
+          key: ubuntu-opam-herdtools7-7.58
+
+      - name: Install OCaml + opam
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+
+      - name: Install herdtools7
+        run: |
+          opam install -y herdtools7.7.58 || opam install -y herdtools7
+          echo "$(opam var bin)" >> "$GITHUB_PATH"
+
+      - name: Sanity-check herd7
+        run: herd7 -version
+
+      - name: Run litmus tests (just litmus)
+        run: just litmus
+
   # Step 063 follow-up — promoted from label-gated to per-PR. The
   # 18 062/063 slices added foundation work (proc-addr loading,
   # capability caches, sparseBinding feature enable, no-silent-drops
@@ -84,6 +134,14 @@ jobs:
         # Step 082 Layer 1: same lane set, exhaustive per-op matrix.
         # F64 cases auto-skip on Metal (no `double` type in MSL).
         run: cargo test --test op_matrix --features software,metal,jit
+
+      - name: Litmus kernel suite (software + metal lanes)
+        # Race-freedom L2, Phase 1: MP / SB litmus shapes as real
+        # kernels, packing 10^5+ instances per dispatch. Empirical
+        # falsifiers for the memory-model claims: MP forbidden outcome
+        # never appears; SB rel/acq allowed; SB seqcst forbidden. Skips
+        # the GPU path if no Metal device is exposed.
+        run: cargo test --test litmus --no-default-features --features software,metal,jit,compute
 
   # Step 063 follow-up — promoted to per-PR alongside diff-metal.
   # lavapipe gives free Vulkan coverage for the foundation slices
@@ -149,6 +207,15 @@ jobs:
       - name: Op-matrix tests (vulkan lane via lavapipe)
         # Step 082 Layer 1 on the SPIR-V emitter path.
         run: cargo test --test op_matrix --no-default-features --features vulkan,jit,compute
+
+      - name: Litmus kernel suite (vulkan lane via lavapipe)
+        # Race-freedom L2, Phase 1 on the SPIR-V emitter path. lavapipe
+        # is an in-order software Vulkan implementation, so it will not
+        # exhibit the SB anomaly — the assertions are membership +
+        # "forbidden never appears", which hold on any faithful backend.
+        env:
+          VK_ICD_FILENAMES: ${{ env.VK_ICD_FILENAMES }}
+        run: cargo test --test litmus --no-default-features --features vulkan,jit,compute
 
   # ─── AMDGPU lane (real-hardware Vulkan via Mesa radv) ────────────────
   #

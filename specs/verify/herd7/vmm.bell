@@ -1,0 +1,35 @@
+"Quanta VMM (LISA release/acquire) bell annotations"
+
+(*
+ * Bell file for the Quanta memory-model litmus tests.
+ *
+ * herd7's LISA architecture is a generic assembly; the memory ordering
+ * an access carries is declared here, as an annotation drawn from the
+ * `memorder` enum. These tag names mirror the C11 / Rust
+ * `std::sync::atomic::Ordering` variants that Quanta's `MemoryOrder` IR
+ * enum lowers to (`crates/quanta-ir/src/types.rs`):
+ *
+ *   rlx     = Relaxed  (also used for plain / non-atomic data accesses)
+ *   acq     = Acquire
+ *   rel     = Release
+ *   acq_rel = AcqRel
+ *   sc      = SeqCst
+ *
+ * Each annotation is exposed to the paired `vmm.cat` model as an
+ * auto-generated, capitalised event set: `'rlx -> Rlx`, `'acq -> Acq`,
+ * `'rel -> Rel`, `'acq_rel -> Acq_rel`, `'sc -> Sc`. (Do NOT use
+ * `tag2set` in the cat for these -- under LISA it is unavailable during
+ * constraint evaluation; the capitalised auto-sets are the grounded,
+ * usable form.)
+ *
+ * This file is authored for Quanta. It is NOT the Khronos
+ * Vulkan-MemoryModel artifact (that repo ships an Alloy model, not a
+ * herd7 .cat, so there is nothing upstream to vendor -- see README.md).
+ *)
+
+enum memorder = 'rlx || 'acq || 'rel || 'acq_rel || 'sc
+
+instructions R[{'rlx,'acq,'sc}]
+instructions W[{'rlx,'rel,'sc}]
+instructions F[{'acq,'rel,'acq_rel,'sc}]
+instructions RMW[{'rlx,'acq,'rel,'acq_rel,'sc}]

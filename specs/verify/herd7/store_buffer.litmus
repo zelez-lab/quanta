@@ -1,7 +1,7 @@
 LISA SB+rel+acq
 
 (*
- * Store-Buffer test for Quanta GPU atomics.
+ * Store-Buffer test for Quanta GPU atomics (release/acquire variant).
  *
  * Two threads (quarks) each write to their own location, then read
  * the other's. Under sequential consistency, at least one thread
@@ -13,21 +13,21 @@ LISA SB+rel+acq
  * workgroup B writes its status, reads A's. If both can read stale
  * values, a deadlock or lost update results.
  *
- * Quanta emits release-stores and acquire-loads at device scope
- * to prevent the SB anomaly across workgroups:
+ * Quanta emits release-stores and acquire-loads at device scope:
  *   Vulkan: OpAtomicStore(Release, Device) + OpAtomicLoad(Acquire, Device)
  *   PTX:    st.release.gpu + ld.acquire.gpu
  *   Metal:  atomic_store_explicit(release) + atomic_load_explicit(acquire)
  *   RDNA:   flat_store + release + glc / flat_load + acquire + glc
  *
- * CLAIM: with release-store and acquire-load, the bad outcome
- * (both read 0) is forbidden. At least one reader must observe
- * the other's write.
+ * CLAIM (this variant): under pure release/acquire the bad outcome
+ * (both read 0) is ALLOWED. release-store + acquire-load is NOT
+ * strong enough to forbid the SB anomaly -- seq-cst is required (see
+ * `store_buffer_sc.litmus`). Expected verdict under `vmm.cat`:
+ * Sometimes.
  *
- * Note: under pure release-acquire (without seq-cst), SB *can*
- * still occur — seq-cst fences are needed to fully forbid it.
- * This test documents the boundary: rel/acq alone is not sufficient
- * to forbid SB on all architectures.
+ * This documents the boundary: Quanta promotes to SeqCst when
+ * two-sided cross-workgroup synchronization is required (rare; most
+ * patterns are MP-shaped).
  *)
 
 {
@@ -36,7 +36,7 @@ LISA SB+rel+acq
 }
 
 P0             |  P1             ;
-w[release] x 1 |  w[release] y 1 ;
-r[acquire] r0 y |  r[acquire] r1 x ;
+w[rel] x 1     |  w[rel] y 1     ;
+r[acq] r0 y    |  r[acq] r1 x    ;
 
 exists (0:r0=0 /\ 1:r1=0)
