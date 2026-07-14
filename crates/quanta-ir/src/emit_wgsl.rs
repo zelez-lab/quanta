@@ -12,6 +12,8 @@ mod helpers;
 mod kernel;
 mod ops;
 mod shader;
+mod shader_tokenizer;
+mod shader_walker;
 
 pub use kernel::emit;
 pub use shader::{emit_fragment_shader, emit_vertex_shader};

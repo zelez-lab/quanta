@@ -46,20 +46,21 @@
 //!   interface stores). `SpirvExpect::Real { witness }` means "emitted AND
 //!   at least one witness opcode present".
 //!
-//! - WGSL is the honesty layer for the lagging twin. Its stub is a naive
-//!   string replace (`Vec4 :: new (` → `vec4<f32>(`, `let mut ` → `var `)
-//!   that returns Ok for every body (bar the combined-SSBO cap, which it now
-//!   `Reject`s identically to MSL/SPIR-V), still drops `&T` uniforms entirely,
-//!   and passes statement-`if`, `let`, `sample(`, deref-`*`, and un-aliased
-//!   `Vec2 :: new (` through untranslated. It DOES now lower `&[T]` slice
-//!   params — a `@group(0) @binding(slot) var<storage, read>` array plus a
-//!   `name[u32(index)]` index rewrite, at parity with the MSL/SPIR-V slice
-//!   contract. `Translates` is claimed only for the bodies it genuinely
-//!   handles; every other fixture is `KnownBroken`, which asserts the known
-//!   wrongness is STILL observable (a Rust `if`/`let` verbatim inside a
-//!   `return`, an undeclared uniform name, a raw `sample(`). When someone
-//!   fixes `emit_wgsl` further, those assertions fail and the fixture must
-//!   flip to `Translates` — the designed trip-wire.
+//! - WGSL now walks the body with its OWN hand-rolled tokenizer + recursive-
+//!   descent walker (`quanta_ir::emit_wgsl::{shader_tokenizer, shader_walker}`),
+//!   at construct parity with the SPIR-V walker. `&T` uniforms bind as
+//!   `@group(0) @binding(N) var<uniform>` at their shared decl-index; `&[T]`
+//!   slices bind as `var<storage, read>` arrays with a `name[u32(index)]`
+//!   access; textures bind as a `texture_2d<f32>` + `sampler` pair at
+//!   `8+2*slot` with `sample(N, uv)` → `textureSample(tex_N, smp_N, uv)`.
+//!   Statement-`if`/`else` is native WGSL; a value-`if` (`let x = if a { b }
+//!   else { c }`) lowers to a fresh `var` assigned in each arm; `let mut` →
+//!   `var`. Every construct the SPIR-V walker rejects — a method call, a
+//!   `for`/`while` loop, an unknown intrinsic, an `if`-expression without
+//!   `else`, an out-of-range swizzle, indexing a non-slice — the WGSL walker
+//!   `Reject`s with the same error substring MSL uses. So each fixture is
+//!   `Translates` (with substrings the walker genuinely emits, all validated
+//!   by `naga` in `wgsl_validates`) or `Reject` — no `KnownBroken` remains.
 
 use quanta_ir::{ShaderDef, ShaderParam, ShaderStage, ShaderType};
 
@@ -115,17 +116,15 @@ enum MslExpect {
 }
 
 enum WgslExpect {
-    /// The string-replace stub genuinely produces this WGSL — every
-    /// substring must be present.
+    /// The walker genuinely produces this WGSL — every substring must be
+    /// present, and (when `naga` is on PATH) the whole module must validate.
     Translates { contains: &'static [&'static str] },
-    /// The stub mistranslates; each residue substring pins a still-observable
-    /// wrongness. When emit_wgsl is fixed these assertions break and the
-    /// fixture must move to `Translates`.
-    KnownBroken { residue: &'static [&'static str] },
     /// `emit_*_shader` returns Err whose message contains the substring — a
-    /// STRUCTURAL rejection (the combined-SSBO cap) that happens during
-    /// interface setup, mirroring the MSL and SPIR-V `Reject`. The build fails
-    /// on it identically across all three emitters.
+    /// rejection of a construct the shader grammar does not accept (a method
+    /// call, a loop, an unknown intrinsic, an else-less if-expression, an
+    /// out-of-range swizzle, a non-slice index) OR the structural combined-SSBO
+    /// cap. Mirrors the MSL and SPIR-V `Reject` — the same construct fails
+    /// across all three emitters with the same error substring.
     Reject { err_contains: &'static str },
 }
 
@@ -299,7 +298,7 @@ fn fixtures() -> Vec<Fixture> {
                 contains: &["float4(1.0"],
             },
             wgsl: WgslExpect::Translates {
-                contains: &["vec4<f32>( 1.0 , 0.0 , 0.0 , 1.0 )"],
+                contains: &["vec4<f32>(1.0f, 0.0f, 0.0f, 1.0f)"],
             },
         },
         Fixture {
@@ -315,7 +314,7 @@ fn fixtures() -> Vec<Fixture> {
                 contains: &["* 0.5"],
             },
             wgsl: WgslExpect::Translates {
-                contains: &["uv . x * 0.5 + 0.25"],
+                contains: &["uv.x * 0.5f + 0.25f"],
             },
         },
         Fixture {
@@ -331,7 +330,7 @@ fn fixtures() -> Vec<Fixture> {
                 contains: &["float4("],
             },
             wgsl: WgslExpect::Translates {
-                contains: &["( uv . x + uv . y ) * 0.5"],
+                contains: &["(uv.x + uv.y) * 0.5f"],
             },
         },
         Fixture {
@@ -347,7 +346,7 @@ fn fixtures() -> Vec<Fixture> {
                 contains: &["abs("],
             },
             wgsl: WgslExpect::Translates {
-                contains: &["- uv . x + 1.0", "abs ( - 0.5 )"],
+                contains: &["-uv.x + 1.0f", "abs(-0.5f)"],
             },
         },
         Fixture {
@@ -360,10 +359,10 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["if (uv.x > 0.5)", "} else {"],
             },
-            // `let c = if …` becomes `return let c = …;` — a Rust `let`
-            // binding verbatim inside a WGSL return.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let c ="],
+            // The value-`if` lowers to a fresh `var` assigned in each arm of a
+            // WGSL statement-`if`, with the var name bound to `c`.
+            wgsl: WgslExpect::Translates {
+                contains: &["if (uv.x > 0.5f) {", "let c = _wif0;"],
             },
         },
         Fixture {
@@ -376,8 +375,10 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["if (uv.x < 0.25)"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let c ="],
+            // Nested value-`if`s lower to nested statement-`if`s with distinct
+            // `_wifN` result vars (the shared counter keeps them unique).
+            wgsl: WgslExpect::Translates {
+                contains: &["if (uv.x < 0.25f) {", "let c = _wif0;"],
             },
         },
         Fixture {
@@ -396,8 +397,16 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["uv.x > 0.5", "uv.y < 0.5", "uv.x >= uv.y", "uv.y <= uv.x"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let a ="],
+            // Each comparison maps straight through to WGSL (same spelling);
+            // each value-`if` binds a distinct `_wifN` result var.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "uv.x > 0.5f",
+                    "uv.y < 0.5f",
+                    "uv.x >= uv.y",
+                    "uv.y <= uv.x",
+                    "let a = _wif0;",
+                ],
             },
         },
         // ── STATEMENTS ────────────────────────────────────────────────────
@@ -413,8 +422,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["auto a = uv.x;", "auto b = a * 2.0;"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let a ="],
+            // Each `let` stays a WGSL `let`; the chain emits as separate stmts.
+            wgsl: WgslExpect::Translates {
+                contains: &["let a = uv.x;", "let b = a * 2.0f;", "let c = b - a;"],
             },
         },
         Fixture {
@@ -429,10 +439,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["v = v * 2.0;", "v = v + 0.1;"],
             },
-            // `let mut ` → `var `, but the trailing statements and the final
-            // constructor still land inside one `return`.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return var v ="],
+            // `let mut` → `var`; reassignments are separate WGSL statements.
+            wgsl: WgslExpect::Translates {
+                contains: &["var v = uv.x;", "v = v * 2.0f;", "v = v + 0.1f;"],
             },
         },
         Fixture {
@@ -449,10 +458,15 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["if (uv.x > 0.5)", "c = 1.0;", "c = 0.25;"],
             },
-            // Statement-`if` passes through verbatim — a Rust `if` block
-            // inside a WGSL `return`.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["if uv . x > 0.5 {", "return var c ="],
+            // The statement-`if` reassigns the `var c` in each arm (WGSL native
+            // control flow); the final ctor is the return value.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "var c = 0.0f;",
+                    "if (uv.x > 0.5f) {",
+                    "c = 1.0f;",
+                    "c = 0.25f;",
+                ],
             },
         },
         Fixture {
@@ -465,8 +479,12 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["if (uv.x < 0.25)"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["if uv . x < 0.25 {"],
+            // Nested statement-`if`s reassign the outer `var c` in each arm.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "if (uv.x < 0.25f) {",
+                    "c = vec4<f32>(1.0f, 0.0f, 0.0f, 1.0f);",
+                ],
             },
         },
         Fixture {
@@ -482,8 +500,13 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["if (uv.x > 0.5)", "return float4(uv.x, g, 0.0, 1.0);"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["if uv . x > 0.5 {"],
+            // Statement-`if` reassigns `var g`; the tail ctor is the return.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "var g = 0.25f;",
+                    "if (uv.x > 0.5f) {",
+                    "return vec4<f32>(uv.x, g, 0.0f, 1.0f);",
+                ],
             },
         },
         // ── UNIFORMS + DEREF ──────────────────────────────────────────────
@@ -505,11 +528,13 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["shift"],
             },
-            // The uniform `shift` is dropped from the WGSL entirely, and the
-            // deref-`*` leaks: `( * shift ) . x` is not WGSL, and `shift` is
-            // undeclared.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["( * shift ) . x"],
+            // `shift` binds as a `var<uniform>` at its shared slot; the deref
+            // `(*shift).x` is a value no-op → `(shift).x`.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> shift: vec2<f32>;",
+                    "pos.x + (shift).x",
+                ],
             },
         },
         Fixture {
@@ -528,10 +553,12 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["float4(tint.x, tint.y, tint.z, 1.0)"],
             },
-            // `tint` is a uniform → dropped from the stage inputs, so the
-            // body references an undeclared `tint`.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["tint . x"],
+            // `tint` binds as a `var<uniform>` at binding 0; the body reads it.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> tint: vec4<f32>;",
+                    "vec4<f32>(tint.x, tint.y, tint.z, 1.0f)",
+                ],
             },
         },
         Fixture {
@@ -550,8 +577,12 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["mvp * float4(pos.x, pos.y, pos.z, 1.0)"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["mvp * vec4<f32>"],
+            // `mvp` binds as a `mat4x4<f32>` uniform; WGSL `mat * vec` is native.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> mvp: mat4x4<f32>;",
+                    "mvp * vec4<f32>(pos.x, pos.y, pos.z, 1.0f)",
+                ],
             },
         },
         Fixture {
@@ -573,8 +604,14 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["mix(base.x, gain.x, 0.25)"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["mix ( base . x , gain . x , 0.25 )"],
+            // Two uniforms bind at consecutive shared slots (0, 1) in decl
+            // order — the non-commutative combiner keeps that order observable.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> base: vec4<f32>;",
+                    "@group(0) @binding(1) var<uniform> gain: vec4<f32>;",
+                    "mix(base.x, gain.x, 0.25f)",
+                ],
             },
         },
         Fixture {
@@ -597,8 +634,14 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["u1", "u2"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["u1 . x"],
+            // Binding is the index among UNIFORMS+slices, not among all params:
+            // u1→binding 0, u2→binding 1, despite the interleaved attrs a/b.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> u1: vec2<f32>;",
+                    "@group(0) @binding(1) var<uniform> u2: vec4<f32>;",
+                    "a.x + u1.x",
+                ],
             },
         },
         // ── SWIZZLE + CTOR ────────────────────────────────────────────────
@@ -614,8 +657,10 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["auto s = v.zw;"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let s ="],
+            // WGSL swizzles use the same syntax; `.zw`/`.xy.x` map straight
+            // through, validated against the source arity.
+            wgsl: WgslExpect::Translates {
+                contains: &["let s = v.zw;", "vec4<f32>(s.x, s.y, v.xy.x, 1.0f)"],
             },
         },
         Fixture {
@@ -633,10 +678,10 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["float2(uv.y, uv.x).x"],
             },
-            // The stub aliases `Vec2 :: new(` but not the spaced-paren
-            // `Vec2 :: new (`, so the inner constructor leaks untranslated.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["Vec2 :: new ("],
+            // The inner ctor lowers to `vec2<f32>(...)` and the `.x` swizzle
+            // applies to the ctor result — the postfix-swizzle path.
+            wgsl: WgslExpect::Translates {
+                contains: &["vec2<f32>(uv.y, uv.x).x"],
             },
         },
         Fixture {
@@ -653,7 +698,11 @@ fn fixtures() -> Vec<Fixture> {
                 contains: &["mix(uv.x, uv.y, 0.5)", "min(uv.x, uv.y)", "max(uv.x, uv.y)"],
             },
             wgsl: WgslExpect::Translates {
-                contains: &["mix ( uv . x , uv . y , 0.5 )"],
+                contains: &[
+                    "mix(uv.x, uv.y, 0.5f)",
+                    "min(uv.x, uv.y)",
+                    "max(uv.x, uv.y)",
+                ],
             },
         },
         Fixture {
@@ -672,10 +721,10 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["float4(uv.x * 0.5, 0.25, 0.0, 1.0)"],
             },
-            // The stub replaces the constructor name and passes the trailing
-            // comma through — legal in WGSL argument lists.
+            // The walker's arg parser consumes the trailing comma (rustfmt's
+            // wrapped-call artifact), so the WGSL ctor is clean.
             wgsl: WgslExpect::Translates {
-                contains: &["1.0 ,)"],
+                contains: &["vec4<f32>(uv.x * 0.5f, 0.25f, 0.0f, 1.0f)"],
             },
         },
         Fixture {
@@ -693,11 +742,10 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["float4(uv.x * 0.5, 0.0, 0.0, 1.0)"],
             },
-            // The stub's replace patterns require a single space in
-            // `Vec4 :: new(`, so the newline-split constructor leaks
-            // verbatim into the WGSL.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["Vec4 ::"],
+            // The tokenizer flattens the wrap newline to whitespace, so the
+            // split `Vec4 ::` / `new(` reassembles into one `vec4<f32>(` ctor.
+            wgsl: WgslExpect::Translates {
+                contains: &["vec4<f32>(uv.x * 0.5f, 0.0f, 0.0f, 1.0f)"],
             },
         },
         // ── INTRINSICS ────────────────────────────────────────────────────
@@ -716,8 +764,16 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["sqrt(", "pow(", "floor(", "fract(", "clamp(", "abs("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let a ="],
+            // Core intrinsics keep their WGSL names.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "sqrt(uv.x + 0.1f)",
+                    "pow(uv.y, 2.0f)",
+                    "floor(",
+                    "fract(",
+                    "clamp(",
+                    "abs(",
+                ],
             },
         },
         Fixture {
@@ -734,8 +790,13 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["dot(", "length(", "normalize("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let d ="],
+            // dot/length/normalize keep their WGSL names (dot/length scalar).
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "dot(uv, uv)",
+                    "length(uv)",
+                    "normalize(vec2<f32>(uv.x + 0.001f, uv.y)).x",
+                ],
             },
         },
         Fixture {
@@ -751,8 +812,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["rsqrt("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let r ="],
+            // inverse_sqrt aliases to the WGSL builtin `inverseSqrt`.
+            wgsl: WgslExpect::Translates {
+                contains: &["inverseSqrt(uv.x + 1.0f)"],
             },
         },
         Fixture {
@@ -769,8 +831,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["fwidth(", "dfdx(", "dfdy("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let w ="],
+            // WGSL keeps fwidth/dpdx/dpdy (the derivatives' native names).
+            wgsl: WgslExpect::Translates {
+                contains: &["fwidth(uv.x)", "dpdx(uv.y)", "dpdy(uv.x)"],
             },
         },
         Fixture {
@@ -785,8 +848,14 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["smoothstep(", "fwidth(", "length("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let dx ="],
+            // smoothstep keeps its WGSL name; the negated `-w` bound and the
+            // fwidth-scaled band lower faithfully.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "smoothstep(-w, w, d)",
+                    "fwidth(d)",
+                    "length(vec2<f32>(dx, dy))",
+                ],
             },
         },
         // ── SAMPLING ──────────────────────────────────────────────────────
@@ -805,10 +874,14 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["tex_0.sample("],
             },
-            // `sample(` has no WGSL translation in the stub; it passes
-            // through raw.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["sample(0 , uv )"],
+            // `sample(0, uv)` → `textureSample(tex_0, smp_0, uv)`; the texture
+            // and sampler bind at 8/9 (past the uniform/slice space).
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(8) var tex_0: texture_2d<f32>;",
+                    "@group(0) @binding(9) var smp_0: sampler;",
+                    "textureSample(tex_0, smp_0, uv)",
+                ],
             },
         },
         Fixture {
@@ -830,8 +903,13 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["tex_0.sample(", ".x"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let c ="],
+            // The sampled `.x` applies to the `textureSample` result; the tint
+            // uniform binds at 0, the texture/sampler at 8/9.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> tint: vec4<f32>;",
+                    "let c = textureSample(tex_0, smp_0, uv).x;",
+                ],
             },
         },
         Fixture {
@@ -846,8 +924,12 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["tex_0.sample("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["sample(0 , uv ) . x"],
+            // Two samples of the same slot each lower and take a swizzle.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "textureSample(tex_0, smp_0, uv).x",
+                    "textureSample(tex_0, smp_0, uv).y",
+                ],
             },
         },
         // ── SLICE PARAMS (`&[T]` storage-buffer arrays) ───────────────────
@@ -875,7 +957,7 @@ fn fixtures() -> Vec<Fixture> {
             wgsl: WgslExpect::Translates {
                 contains: &[
                     "@group(0) @binding(0) var<storage, read> stops: array<vec4<f32>>;",
-                    "stops[u32(0)]",
+                    "stops[u32(0.0f)]",
                 ],
             },
         },
@@ -911,13 +993,11 @@ fn fixtures() -> Vec<Fixture> {
         // translation (opcodes can't encode a binding number, exactly as
         // `uniform_mixed_order` proves uniform order via substrings + OpFAdd).
         //
-        // WGSL now binds the slice at the SHARED index (binding 1, past the u_a
-        // uniform's index 0) and rewrites `stops[0/1]` to `u32`-indexed access —
-        // so the slice half is at parity. But `&T` uniforms are still dropped
-        // (out of scope for the slice work), so `u_a`/`u_b` remain undeclared:
-        // this stays `KnownBroken`, its residue now pinning the undeclared
-        // uniform `u_a . x` (mirroring `uniform_mixed_order`'s `u1 . x`), not the
-        // slice index — which proves the slice binding landed at index 1, not 0.
+        // WGSL binds the slice at the SHARED index (binding 1, past the u_a
+        // uniform's index 0) with a `u32`-indexed access, AND the two `&T`
+        // uniforms now bind as `var<uniform>` at bindings 0 and 2 — so the
+        // shared decl-index space is proven across all three: u_a→0, stops→1,
+        // u_b→2, byte-identical to the MSL `[[buffer(N)]]` slots.
         Fixture {
             name: "slice_mixed_decl_order",
             stage: Fragment,
@@ -938,13 +1018,14 @@ fn fixtures() -> Vec<Fixture> {
                     "constant float4& u_b [[buffer(2)]]",
                 ],
             },
-            // Slice at shared index 1 with a `u32`-rewritten access; uniforms
-            // still dropped (undeclared `u_a`), so still broken overall.
-            wgsl: WgslExpect::KnownBroken {
-                residue: &[
+            // Slice at shared index 1 (`u32`-rewritten access), uniforms at 0
+            // and 2 — the full shared decl-index space is now emitted.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> u_a: vec4<f32>;",
                     "@group(0) @binding(1) var<storage, read> stops: array<vec4<f32>>;",
-                    "stops[u32(0)]",
-                    "u_a . x",
+                    "@group(0) @binding(2) var<uniform> u_b: vec4<f32>;",
+                    "u_a.x + stops[u32(0.0f)].x",
                 ],
             },
         },
@@ -962,8 +1043,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Reject {
                 err_contains: "non-slice",
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["uv [ 0 ]"],
+            // The walker rejects indexing a non-slice param — same as MSL.
+            wgsl: WgslExpect::Reject {
+                err_contains: "non-slice",
             },
         },
         // 9 combined uniform + slice params overrun the cap of 8 (texture
@@ -1015,8 +1097,13 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["tex_0.sample("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["sample ( 0 , uv )"],
+            // The walker's `sample(N` scan and the `sample(...)` parse both
+            // tolerate whitespace, so the spaced twin binds and lowers too.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(8) var tex_0: texture_2d<f32>;",
+                    "textureSample(tex_0, smp_0, uv)",
+                ],
             },
         },
         // ── REAL DIJA BODIES (verbatim shape from emit_msl/shader_tests.rs) ─
@@ -1046,8 +1133,15 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["smoothstep(", "length(float2("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let px ="],
+            // The real rounded-rect fragment: nested value-`if`s (each a
+            // `_wifN` result var), branch-local `let`s, and smoothstep/length/
+            // min/mix intrinsics all lower to valid WGSL.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "smoothstep(",
+                    "length(vec2<f32>(nx, ny))",
+                    "let dist = _wif0;",
+                ],
             },
         },
         Fixture {
@@ -1066,8 +1160,13 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["tex_0.sample(", "mix("],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let u ="],
+            // The glyph fragment: mix over the uv-rect, a coverage sample, and
+            // a color multiply — all straight-through WGSL.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "mix(uv_rect.x, uv_rect.z, corner.x)",
+                    "let coverage = textureSample(tex_0, smp_0, vec2<f32>(u, v)).x;",
+                ],
             },
         },
         Fixture {
@@ -1088,8 +1187,11 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["tex_0.sample(", "if (border_radius > 0.0) {"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let u ="],
+            // The image fragment ends in a statement-`if`/`else` whose branches
+            // both yield a color (TailMode::Route) — lowered to a `_wifN` result
+            // var returned as the body value.
+            wgsl: WgslExpect::Translates {
+                contains: &["if (border_radius > 0.0f) {", "return _wif0;"],
             },
         },
         Fixture {
@@ -1114,8 +1216,14 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["viewport"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["let pos_result = let px ="],
+            // The real rect vertex: the `viewport` uniform binds at 0, the
+            // NDC math lowers to statements, and the ctor becomes the position.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> viewport: vec2<f32>;",
+                    "let ndc_x = px / viewport.x * 2.0f - 1.0f;",
+                    "output.position = vec4<f32>(ndc_x, ndc_y, 0.0f, 1.0f);",
+                ],
             },
         },
         // ── EXPRESSION-IF OUTER ASSIGNMENT (A3 phi-merge) ─────────────────
@@ -1134,8 +1242,11 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["acc = 1.0;"],
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["if uv . x"],
+            // The value-`if` lowers to a statement-`if`, so an assignment to
+            // the OUTER `acc` in the then-branch persists naturally (WGSL
+            // mutation), and the branch tail is the `_wifN` value bound to `v`.
+            wgsl: WgslExpect::Translates {
+                contains: &["var acc = 0.0f;", "acc = 1.0f;", "let v = _wif0;"],
             },
         },
         Fixture {
@@ -1148,8 +1259,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Reject {
                 err_contains: "method",
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["uv . length ( )"],
+            // `.length()` is a method call the shader grammar rejects.
+            wgsl: WgslExpect::Reject {
+                err_contains: "method",
             },
         },
         Fixture {
@@ -1162,8 +1274,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Reject {
                 err_contains: "for",
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["for i in 0 .. 4"],
+            // The grammar has no loops; `for` is not a recognized construct.
+            wgsl: WgslExpect::Reject {
+                err_contains: "for",
             },
         },
         Fixture {
@@ -1176,8 +1289,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Reject {
                 err_contains: "bogus_fn",
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["bogus_fn ( uv . x )"],
+            // An unknown function name is a rejection (names the offender).
+            wgsl: WgslExpect::Reject {
+                err_contains: "bogus_fn",
             },
         },
         Fixture {
@@ -1194,8 +1308,10 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Reject {
                 err_contains: "else",
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["return let c ="],
+            // A value-`if` without `else` has no second branch to yield — the
+            // walker rejects it, same as MSL.
+            wgsl: WgslExpect::Reject {
+                err_contains: "else",
             },
         },
         Fixture {
@@ -1206,9 +1322,8 @@ fn fixtures() -> Vec<Fixture> {
             alt: None,
             spirv: SpirvExpect::Passthrough,
             msl: MslExpect::Reject { err_contains: "q" },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["v . q"],
-            },
+            // `.q` is not a component letter — an unknown field, rejected.
+            wgsl: WgslExpect::Reject { err_contains: "q" },
         },
         Fixture {
             name: "rej_while_loop",
@@ -1220,8 +1335,9 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Reject {
                 err_contains: "while",
             },
-            wgsl: WgslExpect::KnownBroken {
-                residue: &["while a < 4.0"],
+            // The grammar has no loops; `while` is not a recognized construct.
+            wgsl: WgslExpect::Reject {
+                err_contains: "while",
             },
         },
     ]
@@ -1334,6 +1450,51 @@ fn xcrun_present() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+// ─── naga gate for the WGSL twin (skip-if-missing) ───────────────────────────
+
+/// Locate a `naga` CLI on PATH (the wgpu project's shader translator/validator).
+/// `naga --version` prints the version and exits 0 when present.
+fn naga_path() -> Option<&'static str> {
+    ["naga"].into_iter().find(|cand| {
+        std::process::Command::new(cand)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Validate a WGSL module with `naga`. The CLI validates when given a single
+/// `.wgsl` input file with no output file, exiting non-zero (and printing the
+/// parse/validation error to stderr) on rejection. Returns Err(stderr) on
+/// failure. Writes to a per-run temp file so parallel test binaries don't race.
+fn naga_validate(tool: &str, wgsl: &str) -> Result<(), String> {
+    use std::io::Write;
+    let path = std::env::temp_dir().join(format!(
+        "quanta_parity_{}_{}.wgsl",
+        std::process::id(),
+        // A cheap unique-per-call suffix so two modules in one process differ.
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let mut f = std::fs::File::create(&path).map_err(|e| format!("create temp wgsl: {e}"))?;
+    f.write_all(wgsl.as_bytes())
+        .map_err(|e| format!("write temp wgsl: {e}"))?;
+    drop(f);
+    let out = std::process::Command::new(tool)
+        .arg(&path)
+        .output()
+        .map_err(|e| format!("run naga: {e}"))?;
+    let _ = std::fs::remove_file(&path);
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -1502,16 +1663,17 @@ fn spirv_validates() {
     );
 }
 
-/// Per-fixture WGSL honesty assertions: `Translates` fixtures must contain
-/// their substrings; `KnownBroken` fixtures must still exhibit their residue.
+/// Per-fixture WGSL verdicts: `Translates` fixtures must contain their
+/// substrings; `Reject` fixtures must fail emission with the right error.
 #[test]
 fn wgsl_verdicts_hold() {
     let mut failures = Vec::new();
     for f in fixtures() {
         let d = def(&f);
         let wgsl_res = emit_wgsl(&d);
-        // A `Reject` fixture asserts the structural error (the SSBO cap), so it
-        // is handled before the always-Ok expectation of the other verdicts.
+        // A `Reject` fixture asserts the emission error (a grammar rejection or
+        // the SSBO cap), so it is handled before the Ok expectation of
+        // `Translates`.
         if let WgslExpect::Reject { err_contains } = &f.wgsl {
             match &wgsl_res {
                 Ok(w) => failures.push(format!(
@@ -1532,8 +1694,8 @@ fn wgsl_verdicts_hold() {
         let wgsl = match wgsl_res {
             Ok(w) => w,
             Err(e) => {
-                // The stub is documented as always-Ok (bar the SSBO-cap
-                // `Reject`); any other Err is a finding.
+                // A `Translates` fixture must emit Ok; an Err here means the
+                // walker rejected a body it should handle.
                 failures.push(format!("[{}] emit_wgsl unexpectedly errored: {e}", f.name));
                 continue;
             }
@@ -1549,17 +1711,6 @@ fn wgsl_verdicts_hold() {
                     }
                 }
             }
-            WgslExpect::KnownBroken { residue } => {
-                for needle in *residue {
-                    if !wgsl.contains(needle) {
-                        failures.push(format!(
-                            "[{}] WGSL KnownBroken residue {needle:?} is gone — emit_wgsl may \
-                             have been fixed; flip this fixture to Translates.\n--- WGSL ---\n{wgsl}",
-                            f.name
-                        ));
-                    }
-                }
-            }
             // Handled above; unreachable here.
             WgslExpect::Reject { .. } => {}
         }
@@ -1567,6 +1718,48 @@ fn wgsl_verdicts_hold() {
     assert!(
         failures.is_empty(),
         "{} WGSL verdict failure(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Every WGSL-`Translates` fixture must round-trip through the real `naga`
+/// validator — catching "structurally emitted but invalid WGSL", the twin of
+/// `spirv_validates`/`msl_compiles_to_metallib` for the WGSL emitter. A
+/// `Reject` fixture fails emission by contract (no module to validate) and is
+/// skipped. Gated on `naga` being on PATH — skips with an eprintln otherwise.
+#[test]
+fn wgsl_validates() {
+    let Some(tool) = naga_path() else {
+        eprintln!("SKIP wgsl_validates: naga not found");
+        return;
+    };
+
+    let mut failures = Vec::new();
+    for f in fixtures() {
+        // Only `Translates` fixtures produce a module; a `Reject` fixture errors
+        // at emission (its error text is asserted in `wgsl_verdicts_hold`).
+        if matches!(f.wgsl, WgslExpect::Reject { .. }) {
+            continue;
+        }
+        let d = def(&f);
+        let wgsl = match emit_wgsl(&d) {
+            Ok(w) => w,
+            Err(e) => {
+                failures.push(format!("[{}] WGSL emission errored: {e}", f.name));
+                continue;
+            }
+        };
+        if let Err(e) = naga_validate(tool, &wgsl) {
+            failures.push(format!(
+                "[{}] naga rejected the module:\n{e}\n--- WGSL ---\n{wgsl}",
+                f.name
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} naga validation failure(s):\n{}",
         failures.len(),
         failures.join("\n")
     );

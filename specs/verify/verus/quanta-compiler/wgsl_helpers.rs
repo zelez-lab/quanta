@@ -1,13 +1,16 @@
-//! Verus mirror of `emit_wgsl/helpers.rs` and `emit_wgsl/kernel.rs` —
-//! WGSL helpers and kernel setup correctness.
+//! Verus mirror of `emit_wgsl/helpers.rs`, `emit_wgsl/kernel.rs`, and the
+//! render-shader walker — WGSL helpers, kernel setup, and shader-binding
+//! correctness.
 //!
-//! Mirrors `quanta-compiler/src/emit_wgsl/helpers.rs`,
-//! `quanta-compiler/src/emit_wgsl/kernel.rs`.
+//! Mirrors `quanta-ir/src/emit_wgsl/helpers.rs`,
+//! `quanta-ir/src/emit_wgsl/kernel.rs`, and
+//! `quanta-ir/src/emit_wgsl/shader.rs` (the emit_wgsl module moved from
+//! quanta-compiler to quanta-ir).
 //!
 //! Theorems:
 //!   T410: const_wgsl produces correct WGSL literal syntax
 //!   T411: shader_type_wgsl maps to correct WGSL type names
-//!   T412: translate_shader_body_wgsl handles both spaced and compact Vec forms
+//!   T412: shader uniform params bind as var<uniform> at their shared slot
 //!   T413: WGSL vertex shader has @builtin(position) in output struct
 //!   T414: WGSL fragment shader output is @location(0) vec4<f32>
 //!   T415: translate_device_fn_to_wgsl replaces "let mut" with "var"
@@ -86,27 +89,45 @@ proof fn t411_wgsl_type_injective(a: ShaderType, b: ShaderType)
     }
 }
 
-// ── T412: translate_shader_body_wgsl Vec forms ─────────────────────
+// ── T412: shader uniform binding (var<uniform>) ────────────────────
+//
+// The old T412 ghost-modeled `translate_shader_body_wgsl`, a naive
+// string-replace pass that has been DELETED — the shader body is now lowered
+// by a hand-rolled tokenizer + recursive-descent walker
+// (`emit_wgsl/{shader_tokenizer, shader_walker}`), so a substitution count is
+// no longer the reality to model. T412 now models the interface fact the
+// walker's caller (`emit_wgsl/shader.rs`) preserves: a `&T` uniform param binds
+// as `@group(0) @binding(slot) var<uniform> name: T;` at its shared decl-index
+// slot, alongside `&[T]` slices (`var<storage, read>`) and textures.
 
-/// translate_shader_body_wgsl handles both compact and spaced forms:
-///   "Vec4::new("    -> "vec4<f32>("
-///   "Vec4 :: new("  -> "vec4<f32>("
-///   "Vec4 :: new (" -> "vec4<f32>("
-/// Total substitutions: 7 (3 compact + 3 spaced + 1 extra spaced + "let mut"->"var").
-pub open spec fn WGSL_SUBSTITUTION_COUNT() -> nat { 8 }
+/// The storage-class tag a shader param binds with:
+///   1 = var<storage, read>  (a `&[T]` slice — read-only runtime array)
+///   3 = var<uniform>        (a `&T` uniform — matches the compute Constant)
+/// The uniform tag is 3, identical to `binding_access_mode(Constant)` (T417),
+/// so the shader and kernel emitters agree on the uniform storage class.
+pub open spec fn shader_uniform_access_tag() -> u8 { 3u8 }
+pub open spec fn shader_slice_access_tag() -> u8 { 1u8 }
 
-proof fn t412_substitution_count()
-    ensures WGSL_SUBSTITUTION_COUNT() == 8,
+/// T412: a shader uniform binds as `var<uniform>`, matching the kernel
+/// `Constant` access mode — the WebGPU driver allocates both with
+/// `FieldUsage::UNIFORM`, so the storage class must be the same.
+proof fn t412_uniform_is_var_uniform()
+    ensures
+        shader_uniform_access_tag() == binding_access_mode(ParamKind::Constant),
+        shader_uniform_access_tag() != shader_slice_access_tag(),
 {}
 
-/// T412b: Brace stripping logic: if starts with '{' and ends with '}', strip both.
-pub open spec fn has_braces(len: nat) -> bool {
-    len >= 2
-}
+/// The `@group(0) @binding(N)` index for the k-th uniform/slice param in decl
+/// order is `k` — one shared, monotonic decl-index space (each uniform OR slice
+/// consumes the next index), identical to the MSL `[[buffer(N)]]` mapping and
+/// the SPIR-V binding. Textures begin past that space, at 8.
+pub open spec fn shared_binding_index(k: nat) -> nat { k }
 
-proof fn t412_brace_strip(len: nat)
-    requires has_braces(len),
-    ensures  len - 2 < len,
+/// T412b: shared binding indices are injective (distinct params → distinct
+/// bindings), so a uniform and a slice never collide.
+proof fn t412_bindings_distinct(i: nat, j: nat)
+    requires shared_binding_index(i) == shared_binding_index(j),
+    ensures  i == j,
 {}
 
 // ── T413: WGSL vertex output struct ────────────────────────────────

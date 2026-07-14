@@ -627,14 +627,19 @@ fn shade(uv: Vec2, albedo: &Texture2D) -> Vec4 {
 }
 ```
 
-WGSL shader support is **partial**: the payload emits for the core body
-language and now lowers `&[T]` slice params (`@group(0) @binding(slot)
-var<storage, read> name: array<ELEM>`, same shared uniform+slice index
-space and f32→u32 index truncation as MSL/SPIR-V), but it still **drops
-`&T` uniform params entirely** and does **not support texture sampling
-yet**. A shader that uses uniforms or textures ships a metallib + SPIR-V
-binary but no usable WGSL — use it on the desktop backends. Slice-only
-shaders round-trip on all three emitters.
+WGSL shader emission has **full grammar parity with MSL and SPIR-V**: a
+real statement walker handles `let` / `let mut` (→ `var`) / assignment,
+statement- and expression-`if`/`else`, swizzles, intrinsics, and
+constructors regardless of token spacing. `&[T]` slice params lower to
+`@group(0) @binding(slot) var<storage, read> name: array<ELEM>`, `&T`
+uniforms to `var<uniform> name: T` at their shared decl-index, and
+`sample(slot, uv)` to `textureSample(tex_N, smp_N, uv)` with textures
+and samplers at bindings `8 + slot` — the same shared uniform+slice
+index space (cap 8) and f32→u32 index truncation as the other two
+emitters. Constructs every emitter rejects (loops, method calls,
+else-less `if` expressions) are rejected by WGSL with the same error
+wording. The parity corpus asserts all three emitters agree, and every
+translated fixture validates under `naga` when the CLI is installed.
 
 #### Platform-targeted metallibs (Apple)
 
