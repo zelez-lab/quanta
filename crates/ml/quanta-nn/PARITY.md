@@ -12,8 +12,8 @@ recipe (Lean proof foundation, then implementation with differential tests).
 |---|---|---|
 | `Linear` | planned | blas gemm-backed; bias optional |
 | `Embedding` | planned | array `select_rows` backed |
-| `LayerNorm` ⚗ | planned | fused kernel, fwd + VJP |
-| `RMSNorm` ⚗ | planned | fused kernel, fwd + VJP |
+| `LayerNorm` ⚗ | **shipped (functional)** | `norm::layer_norm_var` — fused fwd (saves `(μ, rstd)` stats) + the proven T9210 three-term backward via `custom_vjp`; composed `Var::layer_norm` retained as oracle. Module form arrives with the Layer slice. |
+| `RMSNorm` ⚗ | **shipped (functional)** | `norm::rms_norm_var` — fused fwd/bwd (T9211, no centering term); composed `Var::rms_norm` as oracle. Module form with the Layer slice. |
 | `GroupNorm` | planned | via LayerNorm machinery |
 | `BatchNorm2d` | planned | running stats owned by the module |
 | `Dropout` | planned | quanta-rand backed, seeded/deterministic mode |

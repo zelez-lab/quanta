@@ -30,7 +30,7 @@ use quanta_core::{Gpu, QuantaError};
 /// `AutogradError` via `ArrayError::Gpu` — the `?` operator only performs one
 /// `From` hop, and `AutogradError` converts from `ArrayError`, not directly
 /// from `QuantaError`.
-fn lift(e: QuantaError) -> AutogradError {
+pub(crate) fn lift(e: QuantaError) -> AutogradError {
     AutogradError::from(quanta_array::ArrayError::Gpu(e))
 }
 
@@ -276,7 +276,7 @@ pub fn sdpa_var<T: DiffScalar + ToF64>(
 /// Materialise an `Array<T>` (contiguous) into a host `Vec<f32>` — the bridge
 /// into the f32-only fused kernels. `T` is `f32` in practice (`DiffScalar`),
 /// but going through `ToF64` keeps the call generic.
-fn to_f32_host<T: DiffScalar + ToF64>(a: &Array<T>) -> Result<Vec<f32>, AutogradError> {
+pub(crate) fn to_f32_host<T: DiffScalar + ToF64>(a: &Array<T>) -> Result<Vec<f32>, AutogradError> {
     let host = a
         .contiguous()
         .map_err(AutogradError::from)?
@@ -286,7 +286,7 @@ fn to_f32_host<T: DiffScalar + ToF64>(a: &Array<T>) -> Result<Vec<f32>, Autograd
 }
 
 /// Read an `f32` field back into an `Array<T>` of `shape` (via `T::from_f64`).
-fn f32_field_to_array<T: DiffScalar>(
+pub(crate) fn f32_field_to_array<T: DiffScalar>(
     gpu: &Gpu,
     f: &quanta_core::Field<f32>,
     shape: &[usize],
