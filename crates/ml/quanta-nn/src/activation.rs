@@ -21,7 +21,7 @@ use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
-mod dsl {
+pub(crate) mod dsl {
     use quanta_core::*;
 
     /// Rowwise softmax stats: one thread per row streams the C channels

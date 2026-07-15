@@ -38,12 +38,12 @@ recipe (Lean proof foundation, then implementation with differential tests).
 
 ## Losses
 
-| Item | Status |
-|---|---|
-| MSE, L1, Huber | planned |
-| CrossEntropy (from logits, stable) ⚗ | planned |
-| BCE / BCEWithLogits | planned |
-| KLDiv, CTC, Triplet, etc. | **deferred** — specialist losses on demand |
+| Item | Status | Notes |
+|---|---|---|
+| MSE, L1, Huber | **shipped** | `loss::{mse_loss, l1_loss, huber_loss}` — composed from per-op-proven VJPs, Mean/Sum reductions; Huber's knee constants and clamp-gradient continuity are T9230, checked empirically across the knee. |
+| CrossEntropy (from logits, stable) ⚗ | **shipped** | `loss::cross_entropy_var` — FUSED both directions off the shared max-stabilized stats kernel: forward `lse(x) − x_y` per row (nonnegative, T9228), backward one elementwise `scale·(softmax − onehot)`; the N×C log-softmax intermediate exists on neither pass. Composed `Var::cross_entropy` + f64 host as oracles; ±1e4-logit stability tested. |
+| BCE / BCEWithLogits | **shipped** | `loss::{bce_loss, bce_with_logits_loss}` — the logits form uses the overflow-free spelling proven equal to the textbook one (T9229); exact at ±100 logits where σ rounds to 0/1. |
+| KLDiv, CTC, Triplet, etc. | **deferred** | specialist losses on demand |
 
 ## Optimizers / training
 

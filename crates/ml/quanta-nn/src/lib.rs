@@ -32,6 +32,7 @@ pub mod activation;
 pub mod functional;
 pub mod kernel;
 pub mod layer;
+pub mod loss;
 pub mod norm;
 pub mod optim;
 pub mod rope;
