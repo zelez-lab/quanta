@@ -105,7 +105,7 @@ module appears under `quanta::`:
 |---|---|---|
 | **GPU compute / rendering** | `quanta = { git = "…" }` | `use quanta::*;` |
 | **NumPy / SciPy-style science** | `quanta = { …, features = ["sci"] }` | `quanta::sci::{Array, linalg, fft, random, layout}` |
-| **Machine learning** | `quanta = { …, features = ["sci", "autograd"] }` | `quanta::autograd` today; `quanta::nn` when the neural crate lands |
+| **Machine learning** | `quanta = { …, features = ["sci", "autograd", "nn"] }` | `quanta::nn` (attention-first; completeness contract in `PARITY.md`) over the `quanta::autograd` tape |
 | **Kernel / primitive authors** | `quanta = { …, features = ["prims"] }` | `quanta::prims` |
 
 Pair any of these with a backend feature for hardware execution — for

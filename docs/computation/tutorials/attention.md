@@ -109,4 +109,9 @@ The **[Project: train a GPT decoder block](project-transformer.md)** assembles
 all of these into a real decoder block and trains it end to end — the natural
 next step from here.
 
+For the production path, `quanta::nn` ships a **fused** scaled dot-product
+attention kernel that runs the whole `softmax(scale·QKᵀ + mask)·V` in one
+streaming pass and never materialises the `[S, S]` score matrix — see
+**[Fused attention](fused-attention.md)**.
+
 You now have the piece every transformer is built from.

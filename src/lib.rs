@@ -140,9 +140,8 @@ pub use quanta_render::*;
 // `fs` / `time`. Backend selection is inherited from the facade's
 // backend features (`software` / `metal` / `vulkan`), which forward
 // weakly to every companion — no companion-specific feature spelling
-// leaks into user code. A future `quanta::nn` (neural-network layers)
-// will join this family; the name is reserved, the module lands with
-// its crate.
+// leaks into user code. `quanta::nn` (the neural stack) is the newest
+// member; its completeness contract lives in its crate's PARITY.md.
 
 /// Scientific computing on the GPU — the NumPy/SciPy face of Quanta.
 ///
@@ -267,8 +266,8 @@ pub mod autograd {
 
 /// The neural network stack (feature `nn`) — layers, fused kernels
 /// (attention, norms, rotary), losses, optimizers, initialization, and
-/// the training loop, built over the [`autograd`](crate::autograd) tape
-/// and the `sci` array. Single-node pure compute by design: the
+/// the training loop, built over the `autograd` tape and the `sci`
+/// array. Single-node pure compute by design: the
 /// distributed, actor-aware mirrors live upstream in dija-nn and wrap
 /// this. The crate's completeness contract is `PARITY.md` at its root —
 /// every declared item ships or carries a documented deferral.

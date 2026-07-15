@@ -45,7 +45,7 @@ Everything lives behind **one dependency and one namespace** — `quanta`. The c
 |---|---|---|
 | **GPU compute / rendering** | `quanta = { git = "…" }` | `use quanta::*;` — `#[quanta::kernel]`, dispatch, 5 backends |
 | **NumPy / SciPy-style science** | `quanta = { …, features = ["sci"] }` | `quanta::sci::{Array, linalg, fft, random, layout}` |
-| **Machine learning** | `quanta = { …, features = ["sci", "autograd"] }` | `quanta::autograd` today; `quanta::nn` when the neural crate lands |
+| **Machine learning** | `quanta = { …, features = ["sci", "autograd", "nn"] }` | `quanta::nn` — attention-first neural stack over the `quanta::autograd` tape (completeness contract in `PARITY.md`) |
 | **Kernel / primitive authors** | `quanta = { …, features = ["prims"] }` | `quanta::prims` — block/device scan, reduce, sort |
 
 Add a backend feature (`metal` / `vulkan` / `software`) alongside for hardware execution — e.g. `features = ["sci", "metal"]`. The modules map onto tools you already know:
@@ -58,6 +58,7 @@ Add a backend feature (`metal` / `vulkan` / `software`) alongside for hardware e
 | `quanta::sci::random` | Deterministic RNG + 6 distributions, bit-exact across backends | numpy.random |
 | `quanta::sci::layout` | Proven shape/layout algebra (the substrate the math modules share) | — |
 | `quanta::autograd` | Reverse-mode autodiff — train MLPs and CNNs end to end | PyTorch autograd |
+| `quanta::nn` | Neural stack over the tape — fused attention shipped (`PARITY.md` is the completeness map) | torch.nn / burn |
 | `quanta::prims` | Block/device scan, reduce, sort — the parallel building blocks | CUB / thrust |
 
 \* *Analogues orient newcomers — they are not parity claims. Quanta provides verified building blocks; the ecosystem grows the rest on top.*

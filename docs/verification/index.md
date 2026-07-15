@@ -22,7 +22,7 @@ and the verifier output.
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
 | **Verified Tier-A tracks** | 9 (ICB, tessellation, mesh shaders, ray tracing, VRS, sparse textures, multi-queue, async copy, printf) |
-| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT |
+| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209, 11 theorems, 0 axioms) |
 
 **Sustainment state (2026-04-30).** The post-E finalization closed
 `kernel_body_compose` from a single monolithic axiom to a body-level
@@ -78,6 +78,21 @@ The math companion crates carry their own proof obligations, in the same
   Metal. 0 sorry, rests on Mathlib. The arbitrary-N Bluestein path is
   **differential-tested only** (primes and composites up to N = 1000) — the
   Lean proof models the radix-2 recursion, not the chirp-z reformulation.
+* **`quanta-nn`** — the fused (FlashAttention-style) attention kernel's
+  online-softmax recurrence is proven *equal to the textbook two-pass
+  softmax-weighted sum*, end to end (`specs/verify/lean/Quanta/Nn/OnlineSoftmax.lean`,
+  T9200–T9209). The load-bearing result is a single generalised fold invariant
+  (T9203) that simultaneously gives the prefix invariant, the block-merge /
+  append law (T9206 — so a kernel may process K/V in blocks of *any* schedule),
+  and the equivalence with the two-pass form (T9204/T9205); it closes to the
+  textbook `Σⱼ softmax(x)ⱼ·vⱼ` (T9205′). Numerical stability is proven too: every
+  `exp` argument the streaming step or the block-merge evaluates is `≤ 0`
+  (T9207/T9209), so every weight lies in `(0, 1]` (T9208) — no overflow. Exact
+  over `ℝ`, no rounding model; **0 sorry, 0 axioms**. The Rust crate
+  differential-tests the fused `f32` kernel against an f64 two-pass reference
+  (many shapes, causal + padding masks), cross-checks it against the composed
+  autograd forward, and asserts finiteness under ±80 logits. See
+  [Fused attention](../computation/tutorials/fused-attention.md) for the tutorial.
 
 ## Verification chain
 
@@ -346,6 +361,38 @@ Metal/Vulkan drivers in the verification scheme:
     well-formed (40-tag enumeration, `native_decide`).
   - **T410** is now a Lean theorem chained from A12 + A13 (replacing
     the axiom that previously imported the Verus claim into Lean).
+
+### Fused attention — online softmax (`quanta-nn`)
+
+The proof foundation for the `quanta-nn` fused attention kernel: the
+online (streaming, block-wise) softmax-weighted sum computes exactly the
+textbook two-pass result and never materialises the N² score matrix.
+Exact over `ℝ`, no rounding model; proven in
+`specs/verify/lean/Quanta/Nn/OnlineSoftmax.lean`. **11 theorems, 0 sorry,
+0 axioms.**
+
+* **T9200 / T9201** — softmax basics: coordinates sum to 1; each
+  coordinate is independent of the reference/shift `m` (why subtracting
+  the running max is safe).
+* **T9202** — the rescale law: lowering the reference `m→m'` scales the
+  running normaliser/accumulator by `exp(m−m')` — the algebraic heart of
+  the merge.
+* **T9203** — the generalised fold invariant: an online `step` on a
+  summarised prefix summarises `pre ++ [q]`. This one contract, iterated
+  (T9204), gives the whole equivalence.
+* **T9204 / T9205 / T9205′** — the online fold summarises the whole list;
+  its `acc/l` equals the direct two-pass output, which equals
+  `Σⱼ softmax(x)ⱼ·vⱼ` (the textbook definition).
+* **T9206** — merge = append: combining two block summaries equals
+  appending the raw blocks, so *any* block schedule is admissible.
+* **T9207 / T9208 / T9209** — stability: every `exp` argument in a step
+  or a merge is `≤ 0`, so every weight lies in `(0, 1]` — no overflow.
+
+The Rust crate makes these empirical: the fused `f32` kernel is
+differential-tested against an f64 two-pass reference across many shapes
+(causal + padding masks), cross-checked against the composed autograd
+forward, gradient-checked through `sdpa_var` by finite differences, and
+asserted finite under ±80 logits.
 
 ## Trusted Computing Base
 
