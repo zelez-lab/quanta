@@ -21,7 +21,7 @@ recipe (Lean proof foundation, then implementation with differential tests).
 | `MaxPool2d` / `AvgPool2d` | planned | exists in array/autograd; wrapped as modules |
 | `MultiheadAttention` ⚗ | forward+backward fused shipped (functional) | `functional::scaled_dot_product_attention` — fused online-softmax forward (no N² materialize; T9200–T9209), single head f32, scale + causal + padding masks, self- and cross-attention; saves per-row `(m, l)` stats. `functional::sdpa_var` is tape-differentiable with a **fully fused backward**: a custom VJP node (`Tape::custom_vjp`) dispatches the FlashAttention-style `kernel::sdpa_backward`, reconstructing the softmax weights from the saved `(m, l)` stats (T9204) so the N² score matrix is materialised on *neither* pass. The composed-VJP path is retained as `functional::sdpa_var_composed`, the differential-test oracle. **Next increments:** the batched/multi-head `MultiheadAttention` module, and dtype coverage. |
 | `RotaryEmbedding` ⚗ | **shipped (functional)** | `rope::rope_var` — one sign-flagged elementwise kernel serves forward AND backward (T9216-T9218: the VJP of a rotation is the rotation by −θ; isometry per pair). Composed `Var::rope` as oracle. 2-D core; batch/heads = host loop. |
-| `Sequential` / module containers | planned | with named-parameter traversal |
+| `Sequential` / containers | **shipped (tuple stacking)** | `layer::Layer` + tuple composition `(l1, l2, …)` per the architecture record (D3): Params = tuple of trees, width contracts checked at `init` (build time). Named traversal + derive = next increment. |
 | `TransformerEncoderLayer`-style block | planned | composed from the above; doubles as the SUMMIT A example |
 | Conv1d / Conv3d / grouped / depthwise | **deferred** | no consumer, no reference workload; take the next one on demand |
 | RNN / LSTM / GRU | **deferred** | legacy family; attention-era stack ships first; revisit on demand |
@@ -60,7 +60,7 @@ recipe (Lean proof foundation, then implementation with differential tests).
 
 | Item | Status |
 |---|---|
-| zeros/ones/constant/uniform/normal | planned |
+| zeros/ones/uniform (kaiming) | **shipped (in layer init)** — full standalone init family with the derive increment |
 | Xavier/Glorot (u+n), Kaiming/He (u+n) | planned |
 
 ## State

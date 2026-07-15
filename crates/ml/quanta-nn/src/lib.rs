@@ -30,6 +30,7 @@
 
 pub mod functional;
 pub mod kernel;
+pub mod layer;
 pub mod norm;
 pub mod rope;
 
