@@ -313,25 +313,32 @@ impl CoopGroup<'_> {
     /// cooperatively — its condition must be uniform across lanes (the
     /// inliner's structural guards and any guard around an in-loop barrier
     /// are; a divergent in-loop barrier is GPU UB).
+    ///
+    /// Returns whether any lane hit a `Break` in a straight-line stretch at
+    /// **this** level (a nested barrier-loop consumes its own down-counter
+    /// break internally and does not leak it upward). The enclosing
+    /// barrier-loop uses this to stop iterating.
     pub(super) fn run_segment(
         &self,
         segment: &[KernelOp],
         thread_regs: &mut [HashMap<u32, Value>],
         shared: &mut HashMap<u32, Vec<u8>>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         // Walk top-level ops, batching straight-line ops and handling each
         // op that contains a barrier-loop (a `Loop` directly, or a `Branch`
         // whose arm holds one) specially.
         let mut straight: Vec<KernelOp> = Vec::new();
+        let mut broke = false;
         let flush = |straight: &mut Vec<KernelOp>,
                      thread_regs: &mut [HashMap<u32, Value>],
                      shared: &mut HashMap<u32, Vec<u8>>|
-         -> Result<(), String> {
+         -> Result<bool, String> {
             if !straight.is_empty() {
-                self.run_subsegment_all_lanes(straight, thread_regs, shared)?;
+                let b = self.run_subsegment_all_lanes(straight, thread_regs, shared)?;
                 straight.clear();
+                return Ok(b);
             }
-            Ok(())
+            Ok(false)
         };
 
         for op in segment {
@@ -341,7 +348,7 @@ impl CoopGroup<'_> {
                     iter_reg,
                     body,
                 } if ops_contain_barrier(body) => {
-                    flush(&mut straight, thread_regs, shared)?;
+                    broke |= flush(&mut straight, thread_regs, shared)?;
                     self.run_barrier_loop(count, iter_reg, body, thread_regs, shared)?;
                 }
                 KernelOp::Branch {
@@ -349,20 +356,22 @@ impl CoopGroup<'_> {
                     then_ops,
                     else_ops,
                 } if ops_contain_barrier(then_ops) || ops_contain_barrier(else_ops) => {
-                    flush(&mut straight, thread_regs, shared)?;
-                    self.run_barrier_branch(cond, then_ops, else_ops, thread_regs, shared)?;
+                    broke |= flush(&mut straight, thread_regs, shared)?;
+                    broke |=
+                        self.run_barrier_branch(cond, then_ops, else_ops, thread_regs, shared)?;
                 }
                 other => straight.push(other.clone()),
             }
         }
-        flush(&mut straight, thread_regs, shared)?;
-        Ok(())
+        broke |= flush(&mut straight, thread_regs, shared)?;
+        Ok(broke)
     }
 
     /// Cooperatively execute a `Branch` whose taken arm contains a
     /// barrier-loop. The condition is uniform across lanes (required for a
     /// well-defined in-loop barrier), so evaluate it on lane 0 and run the
-    /// taken arm cooperatively for every lane via `run_segment`.
+    /// taken arm cooperatively for every lane via `run_segment`. Propagates
+    /// the taken arm's straight-line break flag.
     fn run_barrier_branch(
         &self,
         cond: &Reg,
@@ -370,7 +379,7 @@ impl CoopGroup<'_> {
         else_ops: &[KernelOp],
         thread_regs: &mut [HashMap<u32, Value>],
         shared: &mut HashMap<u32, Vec<u8>>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let take_then = thread_regs
             .first()
             .and_then(|r| r.get(&cond.0))
@@ -385,6 +394,16 @@ impl CoopGroup<'_> {
     /// the real exit is the body's down-counter `Break`. Each iteration: set
     /// `iter_reg` in every lane, split the body at its barriers, and run each
     /// sub-segment across all lanes. Stop when the body signals `Break`.
+    ///
+    /// A sub-segment that itself holds a *nested* barrier construct (a
+    /// barrier-bearing `Loop` or `Branch` — e.g. the inner `while j` of a
+    /// bitonic network under the outer `while k`) cannot be run lane-by-lane:
+    /// its barriers would collapse and lanes would read shared slots other
+    /// lanes have already overwritten this phase (a read-after-overwrite that
+    /// shows up as a prefix-fold of the input). Such a sub-segment is routed
+    /// back through `run_segment`, which descends into the nested barrier-loop
+    /// iteration-synchronized. Barrier-free sub-segments keep the direct
+    /// per-lane path.
     fn run_barrier_loop(
         &self,
         count: &Reg,
@@ -413,7 +432,14 @@ impl CoopGroup<'_> {
             let mut broke = false;
             for &(s, e) in &sub_ranges {
                 let sub = &body[s..e];
-                if self.run_subsegment_all_lanes(sub, thread_regs, shared)? {
+                // Recurse cooperatively when the sub-segment carries a nested
+                // barrier-loop/branch; otherwise run it directly per lane.
+                let sub_broke = if ops_contain_barrier(sub) {
+                    self.run_segment(sub, thread_regs, shared)?
+                } else {
+                    self.run_subsegment_all_lanes(sub, thread_regs, shared)?
+                };
+                if sub_broke {
                     broke = true;
                 }
             }
@@ -1120,5 +1146,146 @@ fn max_values(a: Value, b: Value) -> Value {
         Value::F32(_) => Value::F32(a.as_f32().max(b.as_f32())),
         Value::I32(_) => Value::I32(a.as_i32().max(b.as_i32())),
         _ => Value::U32(a.as_u32().max(b.as_u32())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quanta_ir::{ConstValue, ScalarType};
+
+    /// Litmus for the nested-barrier-loop hazard (the bitonic-KV bug).
+    ///
+    /// Builds, by hand, the IR shape the WASM lowerer produces for
+    /// `while k { while j { load partner; barrier; store self; barrier } }`
+    /// — a barrier that lives inside a *nested* loop, which the top-level
+    /// segmenter never sees. Each phase reads `shared[lane ^ stride]` (OLD)
+    /// then, after a barrier, writes `shared[lane]` (NEW). On real hardware
+    /// every lane reads before any lane writes, so a full XOR swap is a
+    /// bijection of the lanes.
+    ///
+    /// The pre-fix executor ran the nested loop lane-by-lane with its
+    /// barriers degraded to no-ops: lane 1 read `shared[0]` *after* lane 0
+    /// had overwritten it, folding distinct values together (the observed
+    /// prefix-OR). This test drives the interpreter directly and asserts the
+    /// swap stays a bijection, pinning the semantics off the sort kernels and
+    /// the loop-unroller.
+    fn run_nested_xor_swap(lanes: u32, stride: u32) -> Vec<u32> {
+        // Registers: r0 = lane id, r1 = stride const, r2 = partner index,
+        // r3 = loaded partner value, r10 = outer count, r11 = inner count,
+        // r12/r13 = iteration regs (unused by the body).
+        let body_inner = vec![
+            // partner = lane ^ stride
+            KernelOp::Const {
+                dst: Reg(1),
+                value: ConstValue::U32(stride),
+            },
+            KernelOp::BinOp {
+                dst: Reg(2),
+                a: Reg(0),
+                b: Reg(1),
+                op: BinOp::BitXor,
+                ty: ScalarType::U32,
+            },
+            // read OLD partner value
+            KernelOp::SharedLoad {
+                dst: Reg(3),
+                id: 0,
+                index: Reg(2),
+                ty: ScalarType::U32,
+            },
+            KernelOp::Barrier,
+            // write it to my own slot
+            KernelOp::SharedStore {
+                id: 0,
+                index: Reg(0),
+                src: Reg(3),
+                ty: ScalarType::U32,
+            },
+            KernelOp::Barrier,
+        ];
+        // Outer loop body is exactly `[inner Loop]` — no top-level barrier,
+        // so the fix must recurse into the nested barrier-loop.
+        let outer_body = vec![KernelOp::Loop {
+            count: Reg(11),
+            iter_reg: Reg(13),
+            body: body_inner,
+        }];
+        let segment = vec![
+            KernelOp::ProtonId { dst: Reg(0) },
+            KernelOp::Const {
+                dst: Reg(10),
+                value: ConstValue::U32(1),
+            },
+            KernelOp::Const {
+                dst: Reg(11),
+                value: ConstValue::U32(1),
+            },
+            KernelOp::Loop {
+                count: Reg(10),
+                iter_reg: Reg(12),
+                body: outer_body,
+            },
+        ];
+
+        let fields: [Option<Mutex<Vec<u8>>>; 16] = Default::default();
+        let textures: [Option<CpuTexSlot>; 16] = Default::default();
+        let push = [0u8; crate::api::types::PUSH_DATA_CAP];
+        let coop = CoopGroup {
+            gid: 0,
+            threads_per_group: lanes as u64,
+            group_size: lanes,
+            quark_count: lanes,
+            fields: &fields,
+            textures: &textures,
+            push_data: &push,
+        };
+
+        // Seed shared slot 0: lane i holds value i.
+        let mut shared: HashMap<u32, Vec<u8>> = HashMap::new();
+        let mut buf = vec![0u8; (lanes as usize) * 4];
+        for i in 0..lanes {
+            buf[(i as usize) * 4..(i as usize) * 4 + 4].copy_from_slice(&i.to_le_bytes());
+        }
+        shared.insert(0, buf);
+
+        let mut thread_regs: Vec<HashMap<u32, Value>> =
+            (0..lanes).map(|_| HashMap::new()).collect();
+        coop.run_segment(&segment, &mut thread_regs, &mut shared)
+            .expect("segment runs");
+
+        let out = &shared[&0];
+        (0..lanes)
+            .map(|i| {
+                let b = (i as usize) * 4;
+                u32::from_le_bytes([out[b], out[b + 1], out[b + 2], out[b + 3]])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn nested_barrier_loop_xor_swap_is_a_bijection() {
+        // XOR-1 swap over 4 lanes: [0,1,2,3] -> [1,0,3,2].
+        let got = run_nested_xor_swap(4, 1);
+        assert_eq!(
+            got,
+            vec![1, 0, 3, 2],
+            "XOR-1 swap under nested barrier loop"
+        );
+
+        // XOR-2 swap over 8 lanes: lane i <-> i^2.
+        let got = run_nested_xor_swap(8, 2);
+        assert_eq!(got, vec![2, 3, 0, 1, 6, 7, 4, 5], "XOR-2 swap");
+
+        // A collapsed in-loop barrier would fold distinct values (e.g. lane 1
+        // reading lane 0's freshly-written value), so the result would no
+        // longer be a permutation. Assert the multiset is preserved.
+        let mut sorted = run_nested_xor_swap(8, 4);
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            (0..8).collect::<Vec<u32>>(),
+            "swap must be a bijection"
+        );
     }
 }
