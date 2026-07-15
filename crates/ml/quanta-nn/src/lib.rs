@@ -28,6 +28,7 @@
 //!
 //! The tape and array types are part of this crate's public vocabulary:
 
+pub mod activation;
 pub mod functional;
 pub mod kernel;
 pub mod layer;

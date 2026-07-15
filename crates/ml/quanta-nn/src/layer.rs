@@ -114,6 +114,23 @@ pub trait ParamTree<T: DiffScalar>: Sized {
     }
 }
 
+/// The empty tree — the `Params` of zero-parameter layers (activations,
+/// reshapes). Contributes no leaves; occupies a tuple slot for free.
+impl<T: DiffScalar> ParamTree<T> for () {
+    type Vars = ();
+
+    fn bind(&self, _tape: &Tape<T>) {}
+    fn flatten(&self) -> Vec<Array<T>> {
+        Vec::new()
+    }
+    fn unflatten(&self, _leaves: &mut std::vec::IntoIter<Array<T>>) -> Result<Self, AutogradError> {
+        Ok(())
+    }
+    fn grads(_vars: &(), _loss: &Var<T>) -> Result<Self, AutogradError> {
+        Ok(())
+    }
+}
+
 /// The leaf: a single tensor.
 impl<T: DiffScalar> ParamTree<T> for Array<T> {
     type Vars = Var<T>;

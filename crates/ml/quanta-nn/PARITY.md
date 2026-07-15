@@ -29,12 +29,12 @@ recipe (Lean proof foundation, then implementation with differential tests).
 
 ## Activations (fns + module forms)
 
-| Item | Status |
-|---|---|
-| ReLU, GeLU ⚗, SiLU, Sigmoid, Tanh | planned (ufuncs exist in array; VJPs in autograd) |
-| Softmax / LogSoftmax ⚗ | planned (numerically stable, fused) |
-| SwiGLU ⚗ | planned (fused gate kernel) |
-| Leaky/PReLU/ELU family | **deferred** — thin wrappers, added on first ask; documented to keep the table honest |
+| Item | Status | Notes |
+|---|---|---|
+| ReLU, GeLU ⚗, SiLU, Sigmoid, Tanh | **shipped** | zero-param module forms (`activation::{Relu, Gelu, Silu, Sigmoid, Tanh}`, `Params = ()`) over the composed per-op-proven VJPs; GeLU is FUSED (tanh-approx GPT-2 form; backward reuses the forward's tanh via T9227 — no cosh) with the composed `Var::gelu` as oracle. |
+| Softmax / LogSoftmax ⚗ | **shipped** | `activation::{softmax_var, log_softmax_var}` + module forms — fused rowwise max-stabilized forward (T9223 exactness) and the proven-adjoint backwards (T9224/T9225); extreme-logit stability tested at ±1e4. Composed ops as oracles. |
+| SwiGLU ⚗ | **shipped** | `activation::swiglu_var` + `SwiGlu` layer (`[N, 2H] → [N, H]` — the width contract propagates the halving through stacks); backward derives σ′ from the forward's sigmoid (T9226). Composed split/silu/mul path as oracle. |
+| Leaky/PReLU/ELU family | **deferred** | thin wrappers, added on first ask; documented to keep the table honest |
 
 ## Losses
 
