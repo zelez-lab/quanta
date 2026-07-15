@@ -22,6 +22,16 @@ jobs:
       matrix:
         os: [macos-14, ubuntu-latest, windows-2022]
     runs-on: ${{ matrix.os }}
+    env:
+      # These lanes don't build quanta-compiler; the DSL macros download
+      # the release bundle by version. Since v0.1.0-alpha.3 that bundle is
+      # rev-STAMPED, so on any push whose HEAD differs the handshake can
+      # PROVE a mismatch and turns fatal — which would fail every push.
+      # Host tests exercise wire/type/host behavior, not compiler output
+      # (the compiler-validation and GPU lanes build the compiler fresh
+      # and keep the strict handshake), so this is the documented
+      # rig-pinning case for the opt-out.
+      QUANTA_ACCEPT_STALE_COMPILER: "1"
     steps:
       - uses: actions/checkout@v7
 
@@ -463,6 +473,12 @@ jobs:
   # render off, and its dependency tree contains no quanta-render.
   render-boundary:
     runs-on: ubuntu-latest
+    env:
+      # Same rig-pinning case as host-tests: this lane checks the crate
+      # graph / surface boundary, not compiler output, and doesn't build
+      # quanta-compiler — the version-resolved bundle is rev-stamped since
+      # v0.1.0-alpha.3 and would prove mismatched on every push.
+      QUANTA_ACCEPT_STALE_COMPILER: "1"
     steps:
       - uses: actions/checkout@v7
 
