@@ -19,6 +19,7 @@ members = [
     "crates/sci/quanta-array",
     "crates/sci/quanta-blas",
     "crates/ml/quanta-autograd",
+    "crates/ml/quanta-nn",
     "crates/sci/quanta-fft",
     "examples/headless_compute",
     "examples/web_add_one",
@@ -83,6 +84,7 @@ metal = [
     "quanta-render?/metal",
     "quanta-array?/metal",
     "quanta-autograd?/metal",
+    "quanta-nn?/metal",
     "quanta-blas?/gpu-metal",
     "quanta-fft?/gpu-metal",
     "quanta-rand?/gpu-metal",
@@ -98,6 +100,7 @@ vulkan = [
     "quanta-render?/vulkan",
     "quanta-array?/vulkan",
     "quanta-autograd?/vulkan",
+    "quanta-nn?/vulkan",
     "quanta-blas?/gpu-vulkan",
     "quanta-fft?/gpu-vulkan",
     "quanta-rand?/gpu-vulkan",
@@ -142,6 +145,7 @@ software = [
     "quanta-render?/software",
     "quanta-array?/software",
     "quanta-autograd?/software",
+    "quanta-nn?/software",
     "quanta-blas?/gpu",
     "quanta-fft?/gpu",
     "quanta-rand?/gpu",
@@ -184,6 +188,10 @@ prims = ["std", "dep:quanta-prims"]
 ## `Array`), but activation is independent, tokio-style.
 autograd = ["std", "dep:quanta-autograd"]
 
+## The full neural stack (`quanta::nn`): layers, fused kernels, optimizers,
+## training. Carries its own autograd/array deps, so it activates alone.
+nn = ["std", "dep:quanta-nn"]
+
 [dependencies]
 quanta-core.workspace = true
 quanta-compute-dsl = { path = "crates/lang/quanta-compute-dsl", version = "0.1.0-alpha.3", optional = true }
@@ -196,6 +204,7 @@ quanta-render = { path = "crates/gpu/quanta-render", version = "0.1.0-alpha.3", 
 # default build must not activate any of them.
 quanta-array = { path = "crates/sci/quanta-array", version = "0.1.0-alpha.3", default-features = false, optional = true }
 quanta-autograd = { path = "crates/ml/quanta-autograd", version = "0.1.0-alpha.3", default-features = false, optional = true }
+quanta-nn = { path = "crates/ml/quanta-nn", version = "0.1.0-alpha.3", default-features = false, optional = true }
 quanta-blas = { path = "crates/sci/quanta-blas", version = "0.1.0-alpha.3", default-features = false, optional = true }
 quanta-fft = { path = "crates/sci/quanta-fft", version = "0.1.0-alpha.3", default-features = false, optional = true }
 quanta-prims = { path = "crates/sci/quanta-prims", version = "0.1.0-alpha.3", default-features = false, optional = true }

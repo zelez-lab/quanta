@@ -264,3 +264,15 @@ pub mod prims {
 pub mod autograd {
     pub use quanta_autograd::*;
 }
+
+/// The neural network stack (feature `nn`) — layers, fused kernels
+/// (attention, norms, rotary), losses, optimizers, initialization, and
+/// the training loop, built over the [`autograd`](crate::autograd) tape
+/// and the `sci` array. Single-node pure compute by design: the
+/// distributed, actor-aware mirrors live upstream in dija-nn and wrap
+/// this. The crate's completeness contract is `PARITY.md` at its root —
+/// every declared item ships or carries a documented deferral.
+#[cfg(feature = "nn")]
+pub mod nn {
+    pub use quanta_nn::*;
+}
