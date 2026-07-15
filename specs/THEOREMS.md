@@ -418,6 +418,17 @@ cross-checked against the composed tape path (per-op VJPs proven in
 | T9214 | `t9214_rms_norm_lower_bound` — `√ε ≤ r` | Lean | proven |
 | T9215 | `t9215_mean_directional_derivative` — directional derivative of the row mean is the mean of the direction | Lean | proven |
 
+## Rotation VJP — Fused RoPE (T921x, continued)
+
+`specs/verify/lean/Quanta/Nn/RotationVjp.lean` — the orthogonal-rotation
+facts behind the single sign-flagged RoPE kernel.
+
+| ID | Statement | Arm | Status |
+|----|-----------|-----|--------|
+| T9216 | `t9216_rotation_vjp_adjoint` — the rotation VJP is the transpose rotation (per frequency pair) | Lean | proven |
+| T9217 | `t9217_rotation_preserves_norm` — RoPE is an isometry per pair (`c²+s²=1`) | Lean | proven |
+| T9218 | `t9218_inverse_rotation_{fst,snd}` — the sign-flipped rotation inverts the rotation (licenses the shared kernel's `sign` flag) | Lean | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -454,7 +465,8 @@ cross-checked against the composed tape path (per-op VJPs proven in
 | Source-Preservation Body Axiom | 1 | -- | -- |
 | Online Softmax (Fused Attention) | 11 | 11 | 0 |
 | Norm VJPs (Fused LayerNorm/RMSNorm) | 6 | 6 | 0 |
-| **Total proven theorems** | **211** | **210** | **1** |
+| Rotation VJP (Fused RoPE) | 3 | 3 | 0 |
+| **Total proven theorems** | **214** | **213** | **1** |
 | **TCB axioms (A6-A13 + kernel_body_compose)** | **36** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing

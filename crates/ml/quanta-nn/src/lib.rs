@@ -31,6 +31,7 @@
 pub mod functional;
 pub mod kernel;
 pub mod norm;
+pub mod rope;
 
 pub use quanta_array::Array;
 pub use quanta_autograd::{Tape, Var};
