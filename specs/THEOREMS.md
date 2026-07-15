@@ -457,6 +457,17 @@ gates.
 | T9226 | `t9226_sigmoid_derivative_algebra` — `s(1−s) = e/(1+e)²`: the SwiGLU backward derives σ′ from the forward's sigmoid without re-exponentiating | Lean | proven |
 | T9227 | `t9227_sech_sq_identity` — `(1 − tanh²u)·cosh²u = 1`: the GeLU backward reuses the forward's tanh; no cosh is ever evaluated | Lean | proven |
 
+## Loss Identities — CE / BCE-with-logits / Huber (T9228–T9230)
+
+`specs/verify/lean/Quanta/Nn/LossVjp.lean` — the stability facts the loss
+implementations lean on.
+
+| ID | Statement | Arm | Status |
+|----|-----------|-----|--------|
+| T9228 | `t9228_ce_nonneg` — `x_y ≤ lse(x)`: the fused stable cross-entropy `lse(x) − x_y` is nonnegative on every row | Lean | proven |
+| T9229 | `t9229_bce_with_logits_stable` — `max(x,0) − x·y + log(1+e^{−\|x\|})` equals the textbook `−(y·log σ + (1−y)·log(1−σ))` for ALL logits | Lean | proven |
+| T9230 | `t9230_huber_knee_{value,grad_clamp}` — the Huber branches meet at `\|r\| = δ` and the gradient is globally `clamp(r, −δ, δ)` | Lean | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -496,7 +507,8 @@ gates.
 | Rotation VJP (Fused RoPE) | 3 | 3 | 0 |
 | Optimizer Step Identities (Fused SGD/Adam/AdamW) | 4 | 4 | 0 |
 | Activation Identities (Fused Softmax/GeLU/SwiGLU) | 5 | 5 | 0 |
-| **Total proven theorems** | **223** | **222** | **1** |
+| Loss Identities (CE/BCE/Huber) | 3 | 3 | 0 |
+| **Total proven theorems** | **226** | **225** | **1** |
 | **TCB axioms (A6-A13 + kernel_body_compose)** | **36** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing
