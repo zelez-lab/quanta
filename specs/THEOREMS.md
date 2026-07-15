@@ -429,6 +429,20 @@ facts behind the single sign-flagged RoPE kernel.
 | T9217 | `t9217_rotation_preserves_norm` — RoPE is an isometry per pair (`c²+s²=1`) | Lean | proven |
 | T9218 | `t9218_inverse_rotation_{fst,snd}` — the sign-flipped rotation inverts the rotation (licenses the shared kernel's `sign` flag) | Lean | proven |
 
+## Optimizer Step Identities — Fused SGD-momentum/Adam/AdamW (T9219–T9222)
+
+`specs/verify/lean/Quanta/Nn/OptimStep.lean` — the algebra the fused
+one-dispatch-per-leaf optimizer kernels implement. T9219/T9220/T9222 are
+checked empirically by the differential tests under a constant gradient;
+T9221 is the exact identity connecting the two AdamW spellings.
+
+| ID | Statement | Arm | Status |
+|----|-----------|-----|--------|
+| T9219 | `t9219_momentum_geometric` — the momentum velocity is a geometrically-weighted gradient memory (`vₜ = g·∑_{k<t} μᵏ`) | Lean | proven |
+| T9220 | `t9220_ema_closed_form` + `t9220_bias_correction_exact` — `mₜ = (1−βᵗ)·g`, so the bias-corrected moment recovers `g` exactly at every step | Lean | proven |
+| T9221 | `t9221_adamw_decoupling` — shrink-then-step `(1−lr·wd)·p − lr·u` = add-a-decay-term `p − lr·(u + wd·p)` (one kernel, both spellings) | Lean | proven |
+| T9222 | `t9222_adam_step_scale_invariant` — with exact moments and `ε = 0` the Adam step magnitude is `lr` for any nonzero gradient (scale cancels, sign survives) | Lean | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -466,7 +480,8 @@ facts behind the single sign-flagged RoPE kernel.
 | Online Softmax (Fused Attention) | 11 | 11 | 0 |
 | Norm VJPs (Fused LayerNorm/RMSNorm) | 6 | 6 | 0 |
 | Rotation VJP (Fused RoPE) | 3 | 3 | 0 |
-| **Total proven theorems** | **214** | **213** | **1** |
+| Optimizer Step Identities (Fused SGD/Adam/AdamW) | 4 | 4 | 0 |
+| **Total proven theorems** | **218** | **217** | **1** |
 | **TCB axioms (A6-A13 + kernel_body_compose)** | **36** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing

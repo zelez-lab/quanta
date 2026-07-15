@@ -100,6 +100,7 @@ import Quanta.Prims.Reference
 import Quanta.Nn.OnlineSoftmax
 import Quanta.Nn.NormVjp
 import Quanta.Nn.RotationVjp
+import Quanta.Nn.OptimStep
 
 -- Level-1 BLAS forward-error bounds (companion crate quanta-blas)
 import Quanta.Blas.Reference
