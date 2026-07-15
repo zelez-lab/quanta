@@ -4,6 +4,11 @@
 # proc-macro's wasm-cache also lands here when CARGO_MANIFEST_DIR
 # points at the crate rather than the workspace root.
 crates/*/target/
+# The grouped layout (crates/{gpu,lang,sci,ml,tools}/…) puts crates one
+# level deeper; without this the per-crate target dirs are unignored.
+# Deliberately-tracked files (the wasm kernel caches) override this,
+# as before.
+crates/*/*/target/
 Cargo.lock
 .cargo/config.toml
 dist/
