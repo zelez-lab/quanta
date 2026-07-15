@@ -20,6 +20,7 @@ members = [
     "crates/sci/quanta-blas",
     "crates/ml/quanta-autograd",
     "crates/ml/quanta-nn",
+    "crates/ml/quanta-nn-derive",
     "crates/sci/quanta-fft",
     "examples/headless_compute",
     "examples/web_add_one",

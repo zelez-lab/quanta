@@ -39,6 +39,7 @@ vulkan = [
 ]
 
 [dependencies]
+quanta-nn-derive = { path = "../quanta-nn-derive", version = "0.1.0-alpha.3" }
 quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.3", default-features = false, features = [
     "compute",
 ] }

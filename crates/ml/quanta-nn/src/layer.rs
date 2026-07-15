@@ -114,6 +114,38 @@ pub trait ParamTree<T: DiffScalar>: Sized {
     }
 }
 
+/// Derive `ParamTree` for your own parameter structs —
+/// `#[derive(ParamTree)]` generates the `…Vars` twin plus
+/// `bind`/`flatten`/`unflatten`/`grads`, delegating to each field in
+/// declaration order. Same-named as the trait so one import serves both.
+pub use quanta_nn_derive::ParamTree;
+
+/// An optional subtree: `None` contributes no leaves. The shape witness
+/// (`&self`) decides whether `unflatten` rebuilds `Some` — the reason
+/// `unflatten` takes `&self` at all.
+impl<T: DiffScalar, P: ParamTree<T>> ParamTree<T> for Option<P> {
+    type Vars = Option<P::Vars>;
+
+    fn bind(&self, tape: &Tape<T>) -> Option<P::Vars> {
+        self.as_ref().map(|p| p.bind(tape))
+    }
+    fn flatten(&self) -> Vec<Array<T>> {
+        self.as_ref().map(|p| p.flatten()).unwrap_or_default()
+    }
+    fn unflatten(&self, leaves: &mut std::vec::IntoIter<Array<T>>) -> Result<Self, AutogradError> {
+        match self {
+            None => Ok(None),
+            Some(p) => Ok(Some(p.unflatten(leaves)?)),
+        }
+    }
+    fn grads(vars: &Option<P::Vars>, loss: &Var<T>) -> Result<Self, AutogradError> {
+        match vars {
+            None => Ok(None),
+            Some(v) => Ok(Some(P::grads(v, loss)?)),
+        }
+    }
+}
+
 /// The empty tree — the `Params` of zero-parameter layers (activations,
 /// reshapes). Contributes no leaves; occupies a tuple slot for free.
 impl<T: DiffScalar> ParamTree<T> for () {
