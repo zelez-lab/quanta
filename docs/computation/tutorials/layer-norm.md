@@ -78,3 +78,48 @@ x = x + feedforward(layer_norm(x))
 Combined with [self-attention](attention.md) and a feed-forward `matmul → relu →
 matmul`, that block — normalized, residual, attended — is the repeating unit of
 every transformer. You now have all three pieces.
+
+## The fused kernels in `quanta::nn`
+
+The composition above is the *idea* (and it remains the differential-test
+oracle). For training, `quanta::nn` ships the normalization pair as **fused
+kernels** behind one call each:
+
+```rust,ignore
+use quanta::nn::norm::{layer_norm_var, rms_norm_var};
+
+let y = layer_norm_var(&tape, &xv, &gamma, &beta, 1e-5)?;  // [N, C]
+let y = rms_norm_var(&tape, &xv, &gamma, 1e-5)?;           // RMSNorm: no centering
+```
+
+The fused forward computes each row's `(μ, 1/σ)` stats in one pass and
+saves them; the fused backward implements the closed-form three-term
+gradient directly —
+
+```text
+dx = (1/σ) · (h − mean(h) − x̂ · mean(h ∘ x̂))        h = g ∘ γ
+```
+
+— instead of backpropagating through the mean/var/sqrt/div chain node by
+node. That formula is not folklore: it is proven to be the adjoint of the
+normalization's linearization (theorems T9210 for LayerNorm, T9211 for
+RMSNorm, on the [verification dashboard](../../verification/index.md)),
+and the `√ε ≤ σ` lower bound (T9213/T9214) is why the kernels carry no
+guards against division blowup.
+
+**RMSNorm** drops the centering: it only divides by the root-mean-square
+(and its gradient loses the `mean(h)` term). It's the cheaper norm most
+modern LLMs use in place of full LayerNorm.
+
+In a model you rarely call these directly — the layer forms slot into
+stacks (see [Train a model](nn-training.md)):
+
+```rust,ignore
+use quanta::nn::layer::{LayerNorm, RmsNorm};
+
+let block = (
+    Linear { in_dim: 64, out_dim: 64, bias: true },
+    LayerNorm { dim: 64, eps: 1e-5 },   // γ, β learnable
+    // …or RmsNorm { dim: 64, eps: 1e-5 } — γ only
+);
+```

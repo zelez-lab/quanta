@@ -22,7 +22,7 @@ and the verifier output.
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
 | **Verified Tier-A tracks** | 9 (ICB, tessellation, mesh shaders, ray tracing, VRS, sparse textures, multi-queue, async copy, printf) |
-| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209, 11 theorems, 0 axioms) |
+| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209) plus norm/rotary/optimizer/activation/loss identities (T9210–T9230) — 34 theorems, 0 axioms |
 
 **Sustainment state (2026-04-30).** The post-E finalization closed
 `kernel_body_compose` from a single monolithic axiom to a body-level
@@ -93,6 +93,10 @@ The math companion crates carry their own proof obligations, in the same
   (many shapes, causal + padding masks), cross-checks it against the composed
   autograd forward, and asserts finiteness under ±80 logits. See
   [Fused attention](../computation/tutorials/fused-attention.md) for the tutorial.
+  The same recipe now covers the whole stack — norms, rotary, optimizers,
+  activations, losses (T9210–T9230; details in the
+  [fused attention section](#the-rest-of-the-quanta-nn-proof-foundation-t9210t9230)
+  below).
 
 ## Verification chain
 
@@ -393,6 +397,36 @@ differential-tested against an f64 two-pass reference across many shapes
 (causal + padding masks), cross-checked against the composed autograd
 forward, gradient-checked through `sdpa_var` by finite differences, and
 asserted finite under ±80 logits.
+
+### The rest of the `quanta-nn` proof foundation (T9210–T9230)
+
+Every later fused kernel family in `quanta-nn` follows the same recipe —
+Lean identities first, then the kernels, then differential tests that run
+the theorems empirically. All files under `specs/verify/lean/Quanta/Nn/`;
+**0 sorry, 0 axioms** throughout.
+
+* **Norm VJPs** (`NormVjp.lean`, T9210–T9215) — the closed-form
+  three-term LayerNorm/RMSNorm backwards ARE the adjoints of the
+  normalizations' linearizations; `√ε ≤ σ` lower bounds mean the kernels
+  need no division guards.
+* **Rotation VJP** (`RotationVjp.lean`, T9216–T9218) — the RoPE backward
+  is the rotation by `−θ`, so ONE sign-flagged kernel serves both
+  directions; every frequency pair is an isometry (the stability story).
+* **Optimizer steps** (`OptimStep.lean`, T9219–T9222) — momentum unrolls
+  to a geometric gradient memory; Adam's bias correction is EXACT at
+  every step under a constant gradient; the two AdamW decay spellings
+  are equal (one kernel serves both); the Adam step magnitude is `lr`
+  regardless of gradient scale.
+* **Activations** (`ActivationVjp.lean`, T9223–T9227) — max-subtraction
+  in softmax is exact, not approximate; the softmax/log-softmax fused
+  backwards are the proven adjoints of `diag(p) − ppᵀ` and `I − 1pᵀ`;
+  the sech² identity lets the GeLU backward reuse the forward's tanh
+  (no cosh is ever evaluated); σ′ algebra powers the SwiGLU backward.
+* **Losses** (`LossVjp.lean`, T9228–T9230) — stable cross-entropy
+  `lse(x) − x_y` is nonnegative on every row; the overflow-free
+  BCE-with-logits spelling equals the textbook form for all logits; the
+  Huber gradient is globally `clamp(r, −δ, δ)`, continuous across the
+  knee.
 
 ## Trusted Computing Base
 

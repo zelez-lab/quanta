@@ -28,6 +28,8 @@
 - [Self-attention](computation/tutorials/attention.md)
 - [Fused attention](computation/tutorials/fused-attention.md)
 - [Layer normalization](computation/tutorials/layer-norm.md)
+- [Rotary embeddings](computation/tutorials/rotary-embeddings.md)
+- [Train a model with quanta::nn](computation/tutorials/nn-training.md)
 - [Project: linear regression](computation/tutorials/project-linear-regression.md)
 - [Project: recognize digits (MNIST)](computation/tutorials/project-mnist.md)
 - [Project: softmax regression](computation/tutorials/project-softmax-regression.md)
@@ -134,3 +136,4 @@
 - [From CUDA](migration/from-cuda.md)
 - [From wgpu](migration/from-wgpu.md)
 - [From Metal/Vulkan](migration/from-metal-vulkan.md)
+- [From PyTorch](migration/from-torch.md)

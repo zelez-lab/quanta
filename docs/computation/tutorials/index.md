@@ -23,6 +23,18 @@ Work with data, not threads. No kernels, no dispatch — just arrays.
 9. [Convolution and pooling](convolution-and-pooling.md) — the CNN building blocks
 10. [Training a CNN](training-a-cnn.md) — a convolutional network end to end
 
+### The neural stack (`quanta::nn`)
+
+The MLP/CNN lessons above train through raw tape ops. `quanta::nn` is the
+layer above: typed parameter trees, stackable layers, fused theorem-backed
+kernels, losses, and fused optimizers.
+
+11. [Self-attention](attention.md) — attention built from array primitives (the idea)
+12. [Fused attention](fused-attention.md) — the shipped streaming kernel (the practice)
+13. [Layer normalization](layer-norm.md) — the composition, then the fused pair
+14. [Rotary embeddings](rotary-embeddings.md) — positions for attention, one kernel both directions
+15. [Train a model with quanta::nn](nn-training.md) — the whole training story, end to end
+
 ### Build a whole project
 
 Full walkthroughs that end with a complete, standalone Cargo project you run

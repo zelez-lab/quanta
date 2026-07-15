@@ -256,8 +256,8 @@ pub mod prims {
 /// elementwise ops, activations, reductions, `matmul`, `conv2d`, and
 /// pooling, then pull gradients back with `grad`. Each op's
 /// vector-Jacobian product is the analytic derivative, proven in Lean.
-/// It is a differentiation *primitive*, not an ML framework — layers
-/// and optimisers beyond the basics belong to the future `quanta::nn`.
+/// It is a differentiation *primitive*, not an ML framework — layers,
+/// losses, and fused optimizers live above it in `quanta::nn`.
 /// Enable `sci` alongside to name the `Array` type the API speaks.
 #[cfg(feature = "autograd")]
 pub mod autograd {

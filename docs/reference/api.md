@@ -874,6 +874,73 @@ Prefix sum utilities (requires `software` feature).
 
 ---
 
+## `quanta::nn` module
+
+The neural stack (feature `nn`), built over the `autograd` tape and the
+`sci` array. Completeness contract: `PARITY.md` at the crate root. Fused
+kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
+
+### `nn::layer` — the Layer model
+
+| Item | Description |
+|------|-------------|
+| `trait Layer<T>` | Configuration + shapes: `in_dim() -> Option<usize>`, `out_dim(in)`, `init(&gpu, key) -> Params`, `apply(&tape, &vars, &x) -> Var` |
+| `trait ParamTree<T>` | Typed parameter tree: `bind(&tape) -> Vars`, `flatten() -> Vec<Array<T>>`, `unflatten(iter)`, `grads(vars, loss)` / `grads_from`, `map(f)` |
+| `Key` | Splittable PRNG key; `split(self)` and `uniform(self, …)` **consume** it — linear by ownership |
+| `Linear { in_dim, out_dim, bias }` | Dense affine `[N, in] → [N, out]`; Kaiming-uniform init; params `LinearParams { w, b: Option }` |
+| `LayerNorm { dim, eps }` / `RmsNorm { dim, eps }` | Norm layers over the fused kernels; params `NormParams { gamma, beta: Option }` |
+| tuples `(L1, …, L6)` | Tuple stacking (arity ≤ 6): the tuple IS a layer; width contracts checked at `init`; `Params` = tuple of member trees |
+| `()` as `ParamTree` | The empty tree — zero-parameter layers occupy stack slots for free |
+
+### `nn::functional` — fused attention
+
+| Item | Description |
+|------|-------------|
+| `scaled_dot_product_attention(gpu, q, k, v, Sdpa)` | Fused online-softmax forward (T9200–T9209); never materialises the score matrix; returns context + `(m, l)` row stats |
+| `sdpa_var(tape, q, k, v, Sdpa)` | Tape-differentiable, fused BOTH directions (FlashAttention-style backward off the saved stats) |
+| `sdpa_var_composed(…)` | The composed reference path — the differential-test oracle |
+| `Sdpa` | Options: scale override, causal mask, padding masks |
+
+### `nn::norm` / `nn::rope` — fused normalization & rotary
+
+| Item | Description |
+|------|-------------|
+| `layer_norm_var(tape, x, gamma, beta, eps)` | Fused LayerNorm fwd/bwd; three-term adjoint backward (T9210) |
+| `rms_norm_var(tape, x, gamma, eps)` | Fused RMSNorm (T9211, no centering term) |
+| `rope_var(tape, x, cache)` | Fused rotary embedding; backward = same kernel with `sign = −1` (T9216–T9218) |
+
+### `nn::activation` — fused + zero-param module forms
+
+| Item | Description |
+|------|-------------|
+| `softmax_var` / `log_softmax_var` | Fused rowwise, max-stabilized (T9223); proven-adjoint backwards (T9224/T9225) |
+| `gelu_var` | Fused tanh-form GeLU; backward reuses the forward's tanh (T9227) |
+| `swiglu_var` | Fused gate `[N, 2H] → [N, H]`; σ′ from the forward's sigmoid (T9226) |
+| `Relu, Gelu, Silu, Sigmoid, Tanh, Softmax, LogSoftmax, SwiGlu` | Zero-parameter layers (`Params = ()`) for tuple stacks; `SwiGlu` halves the width through the contracts |
+
+### `nn::loss`
+
+| Item | Description |
+|------|-------------|
+| `cross_entropy_var(tape, logits, &[u32], Reduction)` | FUSED stable CE: `lse(x) − x_y` forward (nonnegative, T9228), `softmax − onehot` backward |
+| `mse_loss` / `l1_loss` / `huber_loss(δ)` | Composed; Huber gradient is globally `clamp(z, −δ, δ)` (T9230) |
+| `bce_with_logits_loss` | Overflow-free spelling, proven equal to the textbook form (T9229) |
+| `bce_loss` | Textbook BCE over probabilities in `(0, 1)` |
+| `Reduction::{Mean, Sum}` | Scalar collapse for every loss |
+
+### `nn::optim` — fused optimizers as tree operations
+
+| Item | Description |
+|------|-------------|
+| `Sgd { lr, momentum, weight_decay, nesterov }` | One fused kernel per leaf: decay + velocity (T9219) + step |
+| `Adam { lr, beta1, beta2, eps, weight_decay, decoupled }` | One fused kernel per leaf; exact bias correction (T9220); `decoupled: true` = AdamW (T9221) |
+| `SgdState` / `AdamState` | State trees mirroring the params (flatten order); `step(&params, &grads, state)` **consumes** the state and returns `(new_params, new_state)` |
+| `Schedule::{Constant, Step, LinearWarmup, Cosine}` | Pure `lr(t)`; feed back by rebuilding the `Copy` config |
+| `clip_grad_norm(&grads, max)` | Global L2 over ALL leaves; returns `(clipped_tree, pre_clip_norm)` |
+| `clip_grad_value(&grads, max_abs)` | Elementwise clamp over the tree |
+
+---
+
 ## Design decisions
 
 Features Quanta deliberately does not include:
