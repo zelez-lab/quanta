@@ -143,6 +143,14 @@ jobs:
         # the GPU path if no Metal device is exposed.
         run: cargo test --test litmus --no-default-features --features software,metal,jit,compute
 
+      - name: Full autograd suite incl. decoder training (CPU executor)
+        # The per-push companion lane skips the gpt_decoder integration
+        # tests (~8+ min on the interpreter); the nightly runs them in
+        # full so decoder-block training regressions still get caught.
+        env:
+          QUANTA_BACKEND: cpu
+        run: cargo test -p quanta-autograd --features software
+
   # Step 063 follow-up — promoted to per-PR alongside diff-metal.
   # lavapipe gives free Vulkan coverage for the foundation slices
   # (proc-addr loading, extension detection, sparse-binding enable,

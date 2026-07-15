@@ -191,6 +191,64 @@ jobs:
           cargo test --test texture_write_region --features metal,render -- --test-threads=1
           cargo test --test shader_parity_draw --features metal,render -- --test-threads=1
           cargo test --test icb_metal --features metal,compute -- --test-threads=1
+          cargo test -p quanta-nn --features metal -- --test-threads=1
+
+  # ─── Companion-crate suites (CPU software executor) ─────────────────
+  #
+  # The companion crates (tensor/prims/rand/blas/fft/array/autograd/nn,
+  # ~600 tests) ship their own suites but historically ran on NO CI lane
+  # — dev machines only, which is how a CPU-interpreter bug in nested
+  # barrier loops hid until the lane was first assembled. The software
+  # executor runs them on a GPU-less runner; the kernels are DSL bodies,
+  # so the lane builds quanta-compiler the way the vulkan lane does.
+  # QUANTA_BACKEND=cpu pins the interpreter even with backend features on.
+  #
+  # quanta-autograd's gpt_decoder integration tests train a decoder block
+  # on the interpreter (~8 min locally) — skipped per-push; the nightly
+  # full lanes run them.
+  companion-tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install LLVM 22
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> $GITHUB_ENV
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-22.04-cargo-companions-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build quanta-compiler
+        run: cargo build -p quanta-compiler
+
+      - name: Companion suites (CPU software executor)
+        env:
+          QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
+          QUANTA_BACKEND: cpu
+          LD_LIBRARY_PATH: /usr/lib/llvm-22/lib
+        run: |
+          cargo test -p quanta-tensor
+          cargo test -p quanta-prims --features gpu
+          cargo test -p quanta-rand --features gpu
+          cargo test -p quanta-blas --features gpu
+          cargo test -p quanta-fft --features gpu
+          cargo test -p quanta-array --features software
+          cargo test -p quanta-autograd --features software -- --skip gpt_decoder
+          cargo test -p quanta-nn --features software
 
   # ─── Metal validation layer ──────────────────────────────────────────
   # Same gate as gpu-tests-metal — needs real Metal hardware.
