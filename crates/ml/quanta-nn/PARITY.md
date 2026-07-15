@@ -47,14 +47,14 @@ recipe (Lean proof foundation, then implementation with differential tests).
 
 ## Optimizers / training
 
-| Item | Status |
-|---|---|
-| SGD (momentum, nesterov, weight decay) | planned |
-| Adam / AdamW | planned (Adam exists in autograd::optim; lifted + completed) |
-| Grad clipping (by norm, by value) | planned |
-| LR schedulers: constant, step, cosine, linear-warmup | planned |
-| Dynamic loss scaling (mixed precision, bf16) | planned (dtypes shipped in 084.1) |
-| RMSprop / Adagrad / LAMB / Lion | **deferred** — on demand |
+| Item | Status | Notes |
+|---|---|---|
+| SGD (momentum, nesterov, weight decay) ⚗ | **shipped** | `optim::Sgd` — tree-shaped state-passing `step` over `ParamTree` (consumes the state, D2); ONE fused kernel per leaf folds decay + the T9219 momentum recurrence + the classical/nesterov direction. f64-host differential oracle. |
+| Adam / AdamW ⚗ | **shipped** | `optim::Adam` (`decoupled` flag = AdamW) — one fused kernel per leaf: both moment recurrences, exact bias correction (T9220), both weight-decay spellings (T9221 licenses the shared kernel); step magnitude scale-invariance (T9222) checked empirically. Supersedes `autograd::optim`'s composed per-slot Adam (kept as-is where it's used). |
+| Grad clipping (by norm, by value) | **shipped** | `optim::{clip_grad_norm, clip_grad_value}` — global L2 norm over ALL leaves (torch semantics), returns the pre-clip norm. |
+| LR schedulers: constant, step, cosine, linear-warmup | **shipped** | `optim::Schedule` — a pure `lr(t)` enum; feed back by rebuilding the `Copy` config (`Adam { lr: sched.lr(t), ..opt }`). Warmup+cosine is the transformer default. |
+| Dynamic loss scaling (mixed precision, bf16) | planned | dtypes shipped in 084.1; arrives with the mixed-precision training increment |
+| RMSprop / Adagrad / LAMB / Lion | **deferred** | on demand — the fused-kernel + tree-state recipe above extends directly |
 
 ## Initialization (quanta-rand backed)
 

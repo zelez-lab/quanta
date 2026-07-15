@@ -32,6 +32,7 @@ pub mod functional;
 pub mod kernel;
 pub mod layer;
 pub mod norm;
+pub mod optim;
 pub mod rope;
 
 pub use quanta_array::Array;
