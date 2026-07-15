@@ -443,6 +443,20 @@ T9221 is the exact identity connecting the two AdamW spellings.
 | T9221 | `t9221_adamw_decoupling` — shrink-then-step `(1−lr·wd)·p − lr·u` = add-a-decay-term `p − lr·(u + wd·p)` (one kernel, both spellings) | Lean | proven |
 | T9222 | `t9222_adam_step_scale_invariant` — with exact moments and `ε = 0` the Adam step magnitude is `lr` for any nonzero gradient (scale cancels, sign survives) | Lean | proven |
 
+## Activation Identities — Fused Softmax/LogSoftmax/GeLU/SwiGLU (T9223–T9227)
+
+`specs/verify/lean/Quanta/Nn/ActivationVjp.lean` — the stability and
+adjoint facts behind the fused rowwise-softmax family and the elementwise
+gates.
+
+| ID | Statement | Arm | Status |
+|----|-----------|-----|--------|
+| T9223 | `t9223_lse_shift_invariant` + `t9223_softmax_sums_to_one` — max-subtraction is exact (lse shifts by the constant) and the stabilized weights sum to one | Lean | proven |
+| T9224 | `t9224_softmax_vjp_adjoint` — `dx = p⊙(g − ⟨g,p⟩)` is the adjoint of the softmax Jacobian `diag(p) − ppᵀ` | Lean | proven |
+| T9225 | `t9225_log_softmax_vjp_adjoint` — `dx = g − (∑g)·p` is the adjoint of `I − 1pᵀ` | Lean | proven |
+| T9226 | `t9226_sigmoid_derivative_algebra` — `s(1−s) = e/(1+e)²`: the SwiGLU backward derives σ′ from the forward's sigmoid without re-exponentiating | Lean | proven |
+| T9227 | `t9227_sech_sq_identity` — `(1 − tanh²u)·cosh²u = 1`: the GeLU backward reuses the forward's tanh; no cosh is ever evaluated | Lean | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -481,7 +495,8 @@ T9221 is the exact identity connecting the two AdamW spellings.
 | Norm VJPs (Fused LayerNorm/RMSNorm) | 6 | 6 | 0 |
 | Rotation VJP (Fused RoPE) | 3 | 3 | 0 |
 | Optimizer Step Identities (Fused SGD/Adam/AdamW) | 4 | 4 | 0 |
-| **Total proven theorems** | **218** | **217** | **1** |
+| Activation Identities (Fused Softmax/GeLU/SwiGLU) | 5 | 5 | 0 |
+| **Total proven theorems** | **223** | **222** | **1** |
 | **TCB axioms (A6-A13 + kernel_body_compose)** | **36** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing
