@@ -98,6 +98,7 @@ import Quanta.Prims.Reference
 
 -- Online (FlashAttention-style) softmax equivalence (companion crate quanta-nn)
 import Quanta.Nn.OnlineSoftmax
+import Quanta.Nn.NormVjp
 
 -- Level-1 BLAS forward-error bounds (companion crate quanta-blas)
 import Quanta.Blas.Reference

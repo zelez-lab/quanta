@@ -398,6 +398,26 @@ model. Proven in `specs/verify/lean/Quanta/Nn/OnlineSoftmax.lean`; ZERO axioms.
 | T9208 | `t9208_step_weights_unit` — every online weight lies in `(0, 1]` | Lean | proven |
 | T9209 | `t9209_merge_exp_args_nonpos` — every `exp` argument in `merge` is ≤ 0 (block-merge stability) | Lean | proven |
 
+## Norm VJPs — Fused LayerNorm/RMSNorm (T921x)
+
+`specs/verify/lean/Quanta/Nn/NormVjp.lean` — the closed-form three-term
+gradients the fused normalization kernels implement, proven to be the
+adjoints of the standard linearizations; plus the invariants the kernels
+lean on. Scope note: the composite Fréchet chain (linearization = THE
+derivative of the mean/var/sqrt pipeline) is a declared next increment;
+T9215 anchors its affine base case, and the fused path is differentially
+cross-checked against the composed tape path (per-op VJPs proven in
+`Quanta/Autograd`).
+
+| ID | Statement | Arm | Status |
+|----|-----------|-----|--------|
+| T9210 | `t9210_layer_norm_vjp_adjoint` — `⟨h, L v⟩ = ⟨(h − mean h − x̂·mean(h∘x̂))/s, v⟩` for all `v` (the LayerNorm three-term formula is the adjoint) | Lean | proven |
+| T9211 | `t9211_rms_norm_vjp_adjoint` — RMSNorm twin (centering term drops) | Lean | proven |
+| T9212 | `t9212_centered_row_sums_to_zero` — the normalized row sums to zero | Lean | proven |
+| T9213 | `t9213_layer_norm_std_lower_bound` — `√ε ≤ s` (no division blowup) | Lean | proven |
+| T9214 | `t9214_rms_norm_lower_bound` — `√ε ≤ r` | Lean | proven |
+| T9215 | `t9215_mean_directional_derivative` — directional derivative of the row mean is the mean of the direction | Lean | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -433,7 +453,8 @@ model. Proven in `specs/verify/lean/Quanta/Nn/OnlineSoftmax.lean`; ZERO axioms.
 | Source Preservation (E) | 17 | 17 | 0 |
 | Source-Preservation Body Axiom | 1 | -- | -- |
 | Online Softmax (Fused Attention) | 11 | 11 | 0 |
-| **Total proven theorems** | **205** | **204** | **1** |
+| Norm VJPs (Fused LayerNorm/RMSNorm) | 6 | 6 | 0 |
+| **Total proven theorems** | **211** | **210** | **1** |
 | **TCB axioms (A6-A13 + kernel_body_compose)** | **36** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing
