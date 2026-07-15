@@ -24,13 +24,13 @@ gpu-vulkan = ["gpu", "quanta-core/vulkan", "quanta/vulkan"]
 # quanta-fft is a pure runtime consumer — only `Gpu` / `Field` / `Wave`
 # / `QuantaError`, all in `quanta-core`. No DSL macros, so no
 # `quanta-compute-dsl` dep.
-quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.2", default-features = false, features = [
+quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.3", default-features = false, features = [
     "software",
 ], optional = true }
-quanta-ir = { path = "../../gpu/quanta-ir", version = "0.1.0-alpha.2" }
+quanta-ir = { path = "../../gpu/quanta-ir", version = "0.1.0-alpha.3" }
 
 [dev-dependencies]
 # Facade dev-dep for tests/examples that call `quanta::init()`.
-quanta = { path = "../../..", version = "0.1.0-alpha.2", default-features = false, features = [
+quanta = { path = "../../..", version = "0.1.0-alpha.3", default-features = false, features = [
     "software",
 ] }

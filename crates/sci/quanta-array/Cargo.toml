@@ -27,17 +27,17 @@ vulkan = ["quanta-core/vulkan", "quanta/vulkan", "quanta-prims/gpu-vulkan", "qua
 # (`Gpu` / `Field` / `QuantaError`), all in `quanta-core` behind
 # `compute`. No DSL macros, so no `quanta-compute-dsl` dep. `compute` is
 # on unconditionally because `GpuType` is named regardless of backend.
-quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.2", default-features = false, features = [
+quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.3", default-features = false, features = [
     "compute",
 ] }
 quanta-tensor.workspace = true
 quanta-ir.workspace = true
-quanta-prims = { path = "../../sci/quanta-prims", version = "0.1.0-alpha.2", default-features = false }
-quanta-blas = { path = "../../sci/quanta-blas", version = "0.1.0-alpha.2", default-features = false }
+quanta-prims = { path = "../../sci/quanta-prims", version = "0.1.0-alpha.3", default-features = false }
+quanta-blas = { path = "../../sci/quanta-blas", version = "0.1.0-alpha.3", default-features = false }
 
 [dev-dependencies]
-quanta = { path = "../../..", version = "0.1.0-alpha.2", default-features = false, features = [
+quanta = { path = "../../..", version = "0.1.0-alpha.3", default-features = false, features = [
     "software",
 ] }
 # Host-side RNG for the Monte-Carlo pricing test (no GPU features needed).
-quanta-rand = { path = "../../sci/quanta-rand", version = "0.1.0-alpha.2", default-features = false }
+quanta-rand = { path = "../../sci/quanta-rand", version = "0.1.0-alpha.3", default-features = false }

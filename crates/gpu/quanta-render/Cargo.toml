@@ -29,4 +29,4 @@ webgpu = ["std", "quanta-core/webgpu"]
 # crate's normal dependency graph never contains quanta-wasm-lowering,
 # wasmparser, or the quanta-ir JIT.
 quanta-core = { workspace = true, features = ["render"] }
-quanta-render-dsl = { path = "../../lang/quanta-render-dsl", version = "0.1.0-alpha.2" }
+quanta-render-dsl = { path = "../../lang/quanta-render-dsl", version = "0.1.0-alpha.3" }
