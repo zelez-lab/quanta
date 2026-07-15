@@ -14,9 +14,22 @@
 //! carries a documented deferral. "Complete" is a claim checkable against
 //! that table, not a promise.
 //!
+//! # Functional ops & fused kernels
+//!
+//! [`functional`] holds the stateless ops. First up: fused scaled
+//! dot-product attention — [`functional::scaled_dot_product_attention`]
+//! (forward, returns the context + softmax stats) and the tape-differentiable
+//! [`functional::sdpa_var`]. The online-softmax kernel behind them
+//! ([`kernel`]) is the FlashAttention-style streaming form proven correct in
+//! `specs/verify/lean/Quanta/Nn/OnlineSoftmax.lean` (T9200–T9209): it never
+//! materialises the `seq_q × seq_k` score matrix.
+//!
 //! # Substrate re-exports
 //!
 //! The tape and array types are part of this crate's public vocabulary:
+
+pub mod functional;
+pub mod kernel;
 
 pub use quanta_array::Array;
 pub use quanta_autograd::{Tape, Var};
