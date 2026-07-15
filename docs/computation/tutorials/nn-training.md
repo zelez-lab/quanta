@@ -191,7 +191,7 @@ you do the idiomatic thing:
 | `Softmax` / `LogSoftmax` | max-stabilized rowwise kernels with proven-adjoint backwards (T9223–T9225) |
 | `cross_entropy_var` | stable CE off shared row stats, `softmax − onehot` backward (T9228) |
 | `Adam::step` / `Sgd::step` | ONE elementwise kernel per leaf: moments, exact bias correction (T9220), decay, and the update in a single dispatch |
-| `functional::sdpa_var` | FlashAttention-style streaming attention, fused both directions (T9200–T9209) |
+| `functional::sdpa_var` / `MultiheadAttention` in a stack | FlashAttention-style streaming attention, fused both directions (T9200–T9209), one fused head at a time |
 
 Every fused path is differentially tested against a composed reference
 built from per-op-proven VJPs, and against an f64 host oracle. The theorem
@@ -199,8 +199,9 @@ IDs link into the [verification dashboard](../../verification/index.md).
 
 ## Where next
 
-- [Fused attention](fused-attention.md) — the attention kernel this stack
-  will wrap into a `MultiheadAttention` layer.
+- [Fused attention](fused-attention.md) — the streaming kernel underneath
+  `attention::MultiheadAttention` (which slots into stacks like any layer,
+  with causal and rotary options).
 - [Rotary embeddings](rotary-embeddings.md) — positions for attention, one
   sign-flagged kernel for both directions.
 - [From PyTorch](../../migration/from-torch.md) — the idiom-by-idiom map if

@@ -891,6 +891,8 @@ kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
 | `LayerNorm { dim, eps }` / `RmsNorm { dim, eps }` | Norm layers over the fused kernels; params `NormParams { gamma, beta: Option }` |
 | tuples `(L1, …, L6)` | Tuple stacking (arity ≤ 6): the tuple IS a layer; width contracts checked at `init`; `Params` = tuple of member trees |
 | `()` as `ParamTree` | The empty tree — zero-parameter layers occupy stack slots for free |
+| `Option<P>` as `ParamTree` | Optional subtree: `None` contributes no leaves; the `&self` witness rebuilds the right variant |
+| `#[derive(ParamTree)]` | Generates the `…Vars` twin + full impl for user structs (quanta-nn-derive; `#[param_tree(crate = …)]` for path override) |
 
 ### `nn::functional` — fused attention
 
@@ -900,6 +902,14 @@ kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
 | `sdpa_var(tape, q, k, v, Sdpa)` | Tape-differentiable, fused BOTH directions (FlashAttention-style backward off the saved stats) |
 | `sdpa_var_composed(…)` | The composed reference path — the differential-test oracle |
 | `Sdpa` | Options: scale override, causal mask, padding masks |
+
+### `nn::attention` — the MultiheadAttention module
+
+| Item | Description |
+|------|-------------|
+| `MultiheadAttention { embed_dim, num_heads, bias, causal, rope, rope_base }` | Four `Linear` projections around H fused streaming heads; head-divisibility contract fails at `init`; `new` (encoder default) / `decoder` (causal + rope) |
+| `MultiheadAttention::attend(tape, params, q_src, kv_src)` | Cross-attention; `Layer::apply` = `attend(x, x)` |
+| `MhaParams` | The four projection trees — a `#[derive(ParamTree)]` tree |
 
 ### `nn::norm` / `nn::rope` — fused normalization & rotary
 

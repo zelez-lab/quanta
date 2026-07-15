@@ -82,5 +82,8 @@ let k_rot = rope_var(&tape, &k, &cache)?;
 let ctx = quanta::nn::functional::sdpa_var(&tape, &q_rot, &k_rot, &v, opts)?;
 ```
 
-The upcoming `MultiheadAttention` layer wires this in as a constructor
-option; until then the functional composition above is the idiom.
+The `MultiheadAttention` layer wires exactly this in as a constructor
+option — `MultiheadAttention { rope: true, .. }` (or the
+`MultiheadAttention::decoder` preset) rotates every head's queries and
+keys before the scores, so in a model you rarely write the composition
+by hand.

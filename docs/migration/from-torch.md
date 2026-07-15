@@ -31,7 +31,7 @@ sharper equivalent rather than a lookalike. This page is the idiom map.
 | SwiGLU (hand-rolled in torch) | `activation::SwiGlu` — one fused kernel per direction, halves the width |
 | `F.scaled_dot_product_attention` | `functional::sdpa_var` — FlashAttention-style, fused both directions |
 | rotary embeddings (hand-rolled) | `rope::rope_var` + `RopeCache` — one sign-flagged kernel both directions |
-| `nn.MultiheadAttention` | next increment — the fused SDPA + projections as a layer |
+| `nn.MultiheadAttention` | `attention::MultiheadAttention` — fused heads + four projections; `causal` and per-head `rope` flags; `attend` for cross-attention |
 | `nn.Embedding` | `Var::embedding` today; module form arrives with the state/derive increment |
 | `nn.Dropout` | planned (`Key`-seeded, deterministic) — see `PARITY.md` |
 
