@@ -108,7 +108,21 @@ pub(crate) enum Op<T: DiffScalar> {
     /// table's row count `V`; the gradient scatter-adds each output row back to
     /// the table row it came from (repeats accumulate — the sparse update).
     Embedding(usize, Array<u32>, usize),
+    /// A **custom** node whose backward is supplied by a higher crate as a
+    /// closure — the escape hatch for a fused kernel whose VJP can't be
+    /// expressed from this crate's op set (e.g. `quanta-nn`'s fused-attention
+    /// backward, which dispatches its own GPU kernels). Stores the input node
+    /// ids and a boxed backward: given the upstream grad `g` (shaped like this
+    /// node's output value), it returns one gradient array per input id, in the
+    /// same order. Backward accumulates each returned array onto its input. The
+    /// closure owns whatever forward values it needs (captured at record time);
+    /// the tape stores no forward arrays for it beyond the output value.
+    Custom(Vec<usize>, VjpFn<T>),
 }
+
+/// A boxed custom-backward closure (see [`Op::Custom`]). Takes the upstream
+/// gradient and returns one input gradient per registered input id, in order.
+pub(crate) type VjpFn<T> = Box<dyn Fn(&Array<T>) -> Result<Vec<Array<T>>, AutogradError>>;
 
 pub(crate) struct Node<T: DiffScalar> {
     pub(crate) op: Op<T>,
@@ -152,6 +166,21 @@ impl<T: DiffScalar> Tape<T> {
     /// Record a leaf (an input or parameter we want gradients for).
     pub fn var(&self, value: Array<T>) -> Var<T> {
         self.push(Op::Leaf, value)
+    }
+
+    /// Register a **custom differentiable node**: a forward `output` value plus
+    /// a `backward` closure that, given the upstream gradient (shaped like
+    /// `output`), returns one gradient array per input `Var` in `inputs` (same
+    /// order). The escape hatch a higher crate uses to attach a fused kernel's
+    /// hand-written VJP — the closure captures whatever forward tensors it needs
+    /// and may dispatch its own GPU kernels. All `inputs` must be on this tape;
+    /// [`Var::grad`] will accumulate the returned gradients onto them.
+    pub fn custom_vjp<F>(&self, inputs: &[&Var<T>], output: Array<T>, backward: F) -> Var<T>
+    where
+        F: Fn(&Array<T>) -> Result<Vec<Array<T>>, AutogradError> + 'static,
+    {
+        let ids: Vec<usize> = inputs.iter().map(|v| v.id).collect();
+        self.push(Op::Custom(ids, Box::new(backward)), output)
     }
 
     /// Append a node + its forward value, returning the new `Var`.
@@ -353,6 +382,22 @@ impl<T: DiffScalar> Var<T> {
                     // ∂/∂table = scatter each row's grad back to its source row.
                     let gt = g.contiguous()?.scatter_rows_into(ids, *v)?;
                     accum(&mut grads[*a], gt)?;
+                }
+                Op::Custom(ids, backward) => {
+                    // Hand the upstream grad to the registered closure; it
+                    // returns one gradient per input id (same order). Accumulate
+                    // each onto its input. A length mismatch is a caller bug.
+                    let gins = backward(&g)?;
+                    debug_assert_eq!(
+                        gins.len(),
+                        ids.len(),
+                        "custom VJP returned {} grads for {} inputs",
+                        gins.len(),
+                        ids.len()
+                    );
+                    for (input_id, gin) in ids.iter().zip(gins) {
+                        accum(&mut grads[*input_id], gin)?;
+                    }
                 }
             }
         }

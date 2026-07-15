@@ -14,14 +14,15 @@
 //!   independent calls to [`scaled_dot_product_attention`] (each head is a 2-D
 //!   problem). Fusing the batch into one dispatch is a later increment; this
 //!   commit ships the correct single-head core.
-//! - **`sdpa_var` backward = naive recompute.** The forward *value* matches the
-//!   fused kernel (differential-tested), but the tape records the composed
-//!   attention ops (scale · QKᵀ → mask → softmax → ·V), so backward flows
-//!   through the existing `quanta-autograd` VJPs — the `seq_q × seq_k` matrix is
-//!   rematerialised on the backward path. The fused backward (consuming the
-//!   `(m, l)` stats the forward kernel already saves) is the next slice.
+//! - **`sdpa_var` backward = fully fused.** The forward runs the online-softmax
+//!   kernel (saving `(m, l)` stats); the backward is a **custom VJP node** on
+//!   the tape ([`quanta_autograd::Tape::custom_vjp`]) that dispatches the fused
+//!   [`crate::kernel::sdpa_backward`] — reconstructing the softmax weights from
+//!   the saved stats (T9204), so the `seq_q × seq_k` matrix is never
+//!   materialised on *either* pass. The old composed path
+//!   ([`sdpa_var_composed`]) is retained as the differential-test oracle.
 
-use quanta_array::Array;
+use quanta_array::{Array, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::{Gpu, QuantaError};
 
@@ -156,15 +157,154 @@ pub fn scaled_dot_product_attention(
 
 /// **Tape-differentiable scaled dot-product attention.** Single head.
 ///
-/// The returned `Var` carries the attention context `(seq_q, dv)`. Its forward
-/// *value* equals [`scaled_dot_product_attention`]'s (differential-tested), but
-/// the graph records the composed ops (`scale·QKᵀ → mask → softmax → ·V`), so
-/// backward flows through the existing `quanta-autograd` VJPs — the naive
-/// recompute path this increment ships. The fused backward is the next slice.
+/// The returned `Var` carries the attention context `(seq_q, dv)`. The forward
+/// runs the fused online-softmax kernel (via [`scaled_dot_product_attention`],
+/// saving the `(m, l)` stats); the backward is a **custom VJP node** on the
+/// tape ([`quanta_autograd::Tape::custom_vjp`]) that dispatches the fused
+/// [`crate::kernel::sdpa_backward`], reconstructing the softmax weights from
+/// the saved stats — so the `seq_q × seq_k` score matrix is materialised on
+/// *neither* pass. The composed path is kept as [`sdpa_var_composed`], the
+/// differential-test oracle.
 ///
-/// `tape` owns the graph the `q`/`k`/`v` vars belong to; constant scale/mask
-/// nodes are created on it.
-pub fn sdpa_var<T: DiffScalar>(
+/// `tape` owns the graph the `q`/`k`/`v` vars belong to; the custom node is
+/// pushed onto it with `[q, k, v]` as inputs.
+pub fn sdpa_var<T: DiffScalar + ToF64>(
+    tape: &Tape<T>,
+    q: &Var<T>,
+    k: &Var<T>,
+    v: &Var<T>,
+    opts: Sdpa,
+) -> Result<Var<T>, AutogradError> {
+    let bad = |msg: &str| {
+        AutogradError::from(quanta_array::ArrayError::Gpu(
+            quanta_core::QuantaError::invalid_param(msg),
+        ))
+    };
+
+    let qshape = q.value().shape().to_vec();
+    let kshape = k.value().shape().to_vec();
+    let vshape = v.value().shape().to_vec();
+    if qshape.len() != 2 || kshape.len() != 2 || vshape.len() != 2 {
+        return Err(bad("sdpa_var: Q, K, V must each be 2-D"));
+    }
+    let (seq_q, d) = (qshape[0], qshape[1]);
+    let (seq_k, dk) = (kshape[0], kshape[1]);
+    let dv = vshape[1];
+    if dk != d {
+        return Err(bad("sdpa_var: K head dim must equal Q head dim"));
+    }
+    if vshape[0] != seq_k {
+        return Err(bad("sdpa_var: V rows must equal K rows (seq_k)"));
+    }
+
+    let gpu = q.value().gpu().clone();
+    let scale = opts.resolve_scale(d);
+    let kv_len = opts.resolve_kv_len(seq_k);
+
+    // Forward: fused online-softmax kernel over f32, producing O and the per-row
+    // (m, l) stats. `DiffScalar` is f32 in practice, but stay generic by moving
+    // through host f32 vectors (the fused kernel is f32-only). Capture the
+    // forward tensors as f32 host vecs for the backward closure.
+    let q_f32 = to_f32_host(&q.value())?;
+    let k_f32 = to_f32_host(&k.value())?;
+    let v_f32 = to_f32_host(&v.value())?;
+
+    let qa = Array::from_slice(&gpu, &q_f32, &[seq_q, d]).map_err(AutogradError::from)?;
+    let ka = Array::from_slice(&gpu, &k_f32, &[seq_k, d]).map_err(AutogradError::from)?;
+    let va = Array::from_slice(&gpu, &v_f32, &[seq_k, dv]).map_err(AutogradError::from)?;
+    let fwd = scaled_dot_product_attention(&gpu, &qa, &ka, &va, opts)?;
+    let o_f32 = fwd.output.to_vec().map_err(AutogradError::from)?;
+    let stats_f32 = fwd.stats.to_vec().map_err(AutogradError::from)?;
+
+    // The forward value, back in `T` for the tape.
+    let out_t: Vec<T> = o_f32.iter().map(|&x| T::from_f64(x as f64)).collect();
+    let out_arr = Array::from_slice(&gpu, &out_t, &[seq_q, dv]).map_err(AutogradError::from)?;
+
+    // Backward closure: upstream grad g == dO (shaped [seq_q, dv]). Upload the
+    // captured forward tensors + g to fresh fields, dispatch the fused
+    // backward, read (dq, dk, dv) back, and return them (in T) for [q, k, v].
+    let gpu_b = gpu.clone();
+    let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
+        let do_f32 = to_f32_host(g)?;
+
+        let qf = gpu_b.field::<f32>(seq_q * d).map_err(lift)?;
+        let kf = gpu_b.field::<f32>(seq_k * d).map_err(lift)?;
+        let vf = gpu_b.field::<f32>(seq_k * dv).map_err(lift)?;
+        let of = gpu_b.field::<f32>(seq_q * dv).map_err(lift)?;
+        let sf = gpu_b.field::<f32>(seq_q * 2).map_err(lift)?;
+        let dof = gpu_b.field::<f32>(seq_q * dv).map_err(lift)?;
+        let dqf = gpu_b.field::<f32>(seq_q * d).map_err(lift)?;
+        let dkf = gpu_b.field::<f32>(seq_k * d).map_err(lift)?;
+        let dvf = gpu_b.field::<f32>(seq_k * dv).map_err(lift)?;
+        qf.write(&q_f32).map_err(lift)?;
+        kf.write(&k_f32).map_err(lift)?;
+        vf.write(&v_f32).map_err(lift)?;
+        of.write(&o_f32).map_err(lift)?;
+        sf.write(&stats_f32).map_err(lift)?;
+        dof.write(&do_f32).map_err(lift)?;
+
+        crate::kernel::sdpa_backward(
+            &gpu_b,
+            seq_q as u32,
+            seq_k as u32,
+            d as u32,
+            dv as u32,
+            scale,
+            opts.causal,
+            kv_len as u32,
+            &qf,
+            &kf,
+            &vf,
+            &of,
+            &sf,
+            &dof,
+            &dqf,
+            &dkf,
+            &dvf,
+        )
+        .map_err(lift)?;
+
+        let dq = f32_field_to_array::<T>(&gpu_b, &dqf, &[seq_q, d])?;
+        let dk = f32_field_to_array::<T>(&gpu_b, &dkf, &[seq_k, d])?;
+        let dv_g = f32_field_to_array::<T>(&gpu_b, &dvf, &[seq_k, dv])?;
+        Ok(vec![dq, dk, dv_g])
+    };
+
+    Ok(tape.custom_vjp(&[q, k, v], out_arr, backward))
+}
+
+/// Materialise an `Array<T>` (contiguous) into a host `Vec<f32>` — the bridge
+/// into the f32-only fused kernels. `T` is `f32` in practice (`DiffScalar`),
+/// but going through `ToF64` keeps the call generic.
+fn to_f32_host<T: DiffScalar + ToF64>(a: &Array<T>) -> Result<Vec<f32>, AutogradError> {
+    let host = a
+        .contiguous()
+        .map_err(AutogradError::from)?
+        .to_vec()
+        .map_err(AutogradError::from)?;
+    Ok(host.into_iter().map(|x| x.to_f64() as f32).collect())
+}
+
+/// Read an `f32` field back into an `Array<T>` of `shape` (via `T::from_f64`).
+fn f32_field_to_array<T: DiffScalar>(
+    gpu: &Gpu,
+    f: &quanta_core::Field<f32>,
+    shape: &[usize],
+) -> Result<Array<T>, AutogradError> {
+    let host = f.read().map_err(lift)?;
+    let t_host: Vec<T> = host.iter().map(|&x| T::from_f64(x as f64)).collect();
+    Array::from_slice(gpu, &t_host, shape).map_err(AutogradError::from)
+}
+
+/// The **composed-VJP** scaled dot-product attention — the reference oracle the
+/// fused [`sdpa_var`] is differential-tested against, and a fallback for callers
+/// that want the materialising backward. Records the explicit ops
+/// (`scale·QKᵀ → mask → softmax → ·V`) so backward flows through the existing
+/// `quanta-autograd` VJPs, rematerialising the `seq_q × seq_k` score matrix on
+/// the backward path. Same forward *value* as [`sdpa_var`]; prefer `sdpa_var`
+/// in production (it never materialises the score matrix on either pass).
+#[doc(hidden)]
+pub fn sdpa_var_composed<T: DiffScalar>(
     tape: &Tape<T>,
     q: &Var<T>,
     k: &Var<T>,

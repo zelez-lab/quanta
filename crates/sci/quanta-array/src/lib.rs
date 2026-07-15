@@ -69,6 +69,7 @@ mod upsample;
 pub use array::Array;
 pub use conv::conv_out;
 pub use error::ArrayError;
+pub use reduce::ToF64;
 pub use scalar::{ArrayScalar, FloatScalar, ReduceScalar};
 
 // Re-export the layout vocabulary so users name shapes through quanta-array.
