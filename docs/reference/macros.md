@@ -280,8 +280,16 @@ fn name(params...) { body }
 - `&mut [T]` -- read-write GPU buffer
 - `&Texture2D<f32>` -- sampled texture (read via `texture_sample_2d` / `texture_load_2d`; bound with `wave.bind_texture`)
 - `&mut Texture2D<f32>` -- **read-write storage image**, R32Float format. Write with `texture_write_2d`; read the same slot with `texture_load_2d` (a storage read, not a sampled fetch). Sampling a storage image is rejected at compile time. Slot = positional across the buffer/texture/constant namespace; bound with `wave.bind_texture`.
-- `&mut Texture2D<u32>` -- **read-write storage image**, RGBA8-unorm format, with the texel packed into one `u32`. Each texel crosses the kernel boundary as a `0xAABBGGRR` u32 (little-endian byte order R,G,B,A); build/split it with bit math (see the example below). A read-only, sampled `&Texture2D<u32>` is a different, unwired meaning and is **rejected at compile time** -- use `&Texture2D<f32>` to sample. **BGRA8 is not supported**: effect layers must be RGBA8 (there is no SPIR-V storage format for BGRA8; an in-kernel byte-shuffle is the escape hatch). Split and rebuild the texel with the `pack_unorm4x8` / `unpack_unorm4x8_*` intrinsics (preferred) or the equivalent bit math (see the example below).
+- `&mut Texture2D<u32>` -- **read-write storage image**, RGBA8-unorm format, with the texel packed into one `u32`. Each texel crosses the kernel boundary as a `0xAABBGGRR` u32 (little-endian byte order R,G,B,A); build/split it with bit math (see the example below). A read-only, sampled `&Texture2D<u32>` is a different, unwired meaning and is **rejected at compile time** -- use `&Texture2D<f32>` to sample. There is **no read-only RGBA8 spelling**: an RGBA8 source you only *read* (e.g. the `src` half of a src→dst ping-pong) must still be declared `&mut Texture2D<u32>` and read with `texture_load_2d` (a storage read). Because the slot is a read_write storage image either way, it is subject to the RGBA8 Tier-2 requirement below **even for a pure read**. **BGRA8 is not supported**: effect layers must be RGBA8 (there is no SPIR-V storage format for BGRA8; an in-kernel byte-shuffle is the escape hatch). Split and rebuild the texel with the `pack_unorm4x8` / `unpack_unorm4x8_*` intrinsics (preferred) or the equivalent bit math (see the example below).
 - Scalar values (`u32`, `f32`, etc.) -- push constants (set via `wave.set_value`)
+
+A GPU buffer param **must be a reference to a slice** (`&[T]` / `&mut [T]`). A
+bare fixed-size array `[f32; N]` as a kernel parameter is **rejected at compile
+time** (`unsupported parameter type`) -- it is not an inline uniform array; pass
+`&[f32]` (read) or `&mut [f32]` (write) instead. (`[f32; N]` *is* a valid field
+type inside a `#[derive(quanta::Fields)]` / `#[quanta::gpu_type]` struct, where
+it is a push-constant array -- that is a different position from a top-level
+kernel parameter.)
 
 The texture format contract is scalar-driven and enforced per storage-slot kind
 at dispatch: a `&mut Texture2D<f32>` slot must be bound to an `R32Float`
@@ -368,11 +376,11 @@ With `jit`:
 | `atomic_compare_exchange(dst, expected, desired)` | old value | CAS |
 | `sin(x)`, `cos(x)`, `tan(x)` | `f32` | Trigonometry |
 | `sqrt(x)`, `rsqrt(x)` | `f32` | Square root / reciprocal sqrt |
-| `exp(x)`, `exp2(x)`, `log(x)`, `log2(x)` | `f32` | Exponential / logarithm |
-| `pow(base, exp)` | `f32` | Power |
-| `abs(x)` | `f32` | Absolute value |
-| `min(a, b)`, `max(a, b)` | `f32` | Min / max |
-| `clamp(x, lo, hi)` | `f32` | Clamp to range |
+| `exp(x)`, `ln(x)` | `f32` | Exponential / natural logarithm |
+| `powf(base, exp)` | `f32` | Power (**not** `pow`) |
+| `fabs(x)` | `f32` | Absolute value (**not** `abs`) |
+| `fmin(a, b)`, `fmax(a, b)` | `f32` | Min / max (**not** `min` / `max`) |
+| `clamp_f(x, lo, hi)` | `f32` | Clamp to range (**not** `clamp`) |
 | `floor(x)`, `ceil(x)`, `round(x)` | `f32` | Rounding |
 | `fma(a, b, c)` | `f32` | Fused multiply-add |
 | `texture_load_2d(tex, x, y)` | `f32` / `u32` | Read texel `(x, y)`. On `&mut/&Texture2D<f32>`: the `.x` channel as `f32` (storage read on `&mut`, texel fetch on `&`). On `&mut Texture2D<u32>`: the whole RGBA8 texel as a packed `0xAABBGGRR` u32 |
@@ -389,6 +397,19 @@ the shader (vertex/fragment) intrinsics documented under
 derivatives. Which Rust forms are guaranteed to lower to a kernel (and
 which fail loudly) is the
 [kernel-lowering contract](kernel-lowering.md).
+
+**The two surfaces also spell their shared math differently, and the
+names do not cross over.** The kernel body uses the C-style free
+functions `fmin` / `fmax` / `clamp_f` / `fabs` / `powf` (plus `fma`),
+whereas the shader grammar uses the GLSL/WGSL names `min` / `max` /
+`clamp` / `abs` / `pow`. In a `#[quanta::kernel]`, `max(a, b)` or
+`clamp(x, lo, hi)` is **not** defined and fails to build (rustc reports
+the unresolved name at compile time, before lowering) — write `fmax` and
+`clamp_f`. The unprefixed spellings that *do* work in a kernel are the
+method forms on `f32` / `f64` (`x.abs()`, `x.floor()`, `b.powf(e)`,
+`x.sqrt()`, …); there are no `.min` / `.max` / `.clamp` methods, so use
+the free `fmin` / `fmax` / `clamp_f`. Conversely the shader `min` / `max`
+/ `clamp` spellings do not exist in a kernel.
 
 #### Example
 

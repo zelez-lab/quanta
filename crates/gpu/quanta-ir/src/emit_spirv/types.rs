@@ -268,6 +268,55 @@ impl SpvEmitter {
         id
     }
 
+    /// `OpTypeImage`, deduplicated. SPIR-V forbids duplicate non-aggregate
+    /// type declarations (spirv-val rejects them), so two same-shaped image
+    /// params — e.g. the src+dst `&mut Texture2D<u32>` ping-pong pair — must
+    /// share one `OpTypeImage`. Keyed on every operand word, since a differing
+    /// Dim/Sampled/Format is a genuinely different type.
+    // The seven operands mirror the `OpTypeImage` word tuple 1:1 (SampledType,
+    // Dim, Depth, Arrayed, MS, Sampled, Format), so keep them as-is.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ensure_type_image(
+        &mut self,
+        sampled_type: u32,
+        dim: u32,
+        depth: u32,
+        arrayed: u32,
+        ms: u32,
+        sampled: u32,
+        format: u32,
+    ) -> u32 {
+        let key = format!("img_{sampled_type}_{dim}_{depth}_{arrayed}_{ms}_{sampled}_{format}");
+        if let Some(&id) = self.type_cache.get(&key) {
+            return id;
+        }
+        let id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_type_const,
+            OP_TYPE_IMAGE,
+            &[id, sampled_type, dim, depth, arrayed, ms, sampled, format],
+        );
+        self.type_cache.insert(key, id);
+        id
+    }
+
+    /// `OpTypeSampledImage` over an already-deduped `OpTypeImage`, itself
+    /// deduplicated (keyed on the underlying image id).
+    pub(crate) fn ensure_type_sampled_image(&mut self, image_ty: u32) -> u32 {
+        let key = format!("simg_{image_ty}");
+        if let Some(&id) = self.type_cache.get(&key) {
+            return id;
+        }
+        let id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_type_const,
+            OP_TYPE_SAMPLED_IMAGE,
+            &[id, image_ty],
+        );
+        self.type_cache.insert(key, id);
+        id
+    }
+
     pub(crate) fn ensure_type_function(&mut self, return_type: u32, params: &[u32]) -> u32 {
         let key = format!(
             "fn_{}_{}",

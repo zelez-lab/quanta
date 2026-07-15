@@ -326,22 +326,14 @@ impl SpvEmitter {
     /// OpImageFetch (see `emit_op` TextureLoad2D).
     pub(crate) fn emit_texture_2d_read(&mut self, name: &str, slot: u32) {
         let f32_ty = self.ensure_type_f32();
-        let image_ty = self.alloc_id();
-        Self::emit_op(
-            &mut self.sec_type_const,
-            OP_TYPE_IMAGE,
-            &[
-                image_ty, f32_ty, 1, /*Dim2D*/
-                0, 0, 0, 1, /*sampled=1*/
-                0, /*ImageFormat Unknown*/
-            ],
+        // Deduped: two `&Texture2D<f32>` params must share one OpTypeImage /
+        // OpTypeSampledImage — SPIR-V forbids duplicate non-aggregate types.
+        let image_ty = self.ensure_type_image(
+            f32_ty, 1, /*Dim2D*/
+            0, 0, 0, 1, /*sampled=1*/
+            0, /*ImageFormat Unknown*/
         );
-        let sampled_image_ty = self.alloc_id();
-        Self::emit_op(
-            &mut self.sec_type_const,
-            OP_TYPE_SAMPLED_IMAGE,
-            &[sampled_image_ty, image_ty],
-        );
+        let sampled_image_ty = self.ensure_type_sampled_image(image_ty);
         let ptr_si = self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, sampled_image_ty);
         let var_id = self.alloc_id();
         Self::emit_op(
@@ -359,8 +351,9 @@ impl SpvEmitter {
 
     /// Storage 2D image (`&mut Texture2D`): plain OpTypeImage, sampled=2, with
     /// a scalar-driven ImageFormat. The format contract is `Texture2D<f32>` ⇔
-    /// R32Float; only f32 is wired today (other scalars error). Writes emit
-    /// OpImageWrite; loads emit OpImageRead (a storage image is not sampled).
+    /// R32Float and `Texture2D<u32>` ⇔ Rgba8 (packed-u32 RGBA8-unorm); other
+    /// scalars error. Writes emit OpImageWrite; loads emit OpImageRead (a
+    /// storage image is not sampled).
     pub(crate) fn emit_texture_2d_write(
         &mut self,
         name: &str,
@@ -374,20 +367,17 @@ impl SpvEmitter {
                  Texture2D<f32> (R32Float) storage images are supported"
             )
         })?;
-        let image_ty = self.alloc_id();
-        Self::emit_op(
-            &mut self.sec_type_const,
-            OP_TYPE_IMAGE,
-            &[
-                image_ty,
-                f32_ty,
-                1, /*Dim2D*/
-                0,
-                0,
-                0,
-                2, /*sampled=2: storage image, read_write*/
-                image_format,
-            ],
+        // Deduped: the src+dst `&mut Texture2D<u32>` ping-pong pair emits two
+        // same-shaped storage images; they must share one OpTypeImage or
+        // spirv-val rejects the duplicate non-aggregate type declaration.
+        let image_ty = self.ensure_type_image(
+            f32_ty,
+            1, /*Dim2D*/
+            0,
+            0,
+            0,
+            2, /*sampled=2: storage image, read_write*/
+            image_format,
         );
         let ptr_img = self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, image_ty);
         let var_id = self.alloc_id();
@@ -407,18 +397,9 @@ impl SpvEmitter {
     /// Sampled 3D image (`&Texture3D`): read-only/sampled, unchanged semantics.
     pub(crate) fn emit_texture_3d_read(&mut self, name: &str, slot: u32) {
         let f32_ty = self.ensure_type_f32();
-        let image_ty = self.alloc_id();
-        Self::emit_op(
-            &mut self.sec_type_const,
-            OP_TYPE_IMAGE,
-            &[image_ty, f32_ty, 2 /*Dim3D*/, 0, 0, 0, 1, 0],
-        );
-        let sampled_image_ty = self.alloc_id();
-        Self::emit_op(
-            &mut self.sec_type_const,
-            OP_TYPE_SAMPLED_IMAGE,
-            &[sampled_image_ty, image_ty],
-        );
+        // Deduped, same rationale as the 2D read path.
+        let image_ty = self.ensure_type_image(f32_ty, 2 /*Dim3D*/, 0, 0, 0, 1, 0);
+        let sampled_image_ty = self.ensure_type_sampled_image(image_ty);
         let ptr_si = self.ensure_type_pointer(STORAGE_CLASS_UNIFORM_CONSTANT, sampled_image_ty);
         let var_id = self.alloc_id();
         Self::emit_op(

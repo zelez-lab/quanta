@@ -205,6 +205,92 @@ fn load_rgba8_kernel() -> KernelDef {
     }
 }
 
+/// The src+dst ping-pong shape: TWO `&mut Texture2D<u32>` storage-image params.
+/// Both storage images share one identical `OpTypeImage` (`%float 2D 0 0 0 2
+/// Rgba8`). SPIR-V forbids duplicate non-aggregate type declarations, so the
+/// emitter must emit that image type once and reuse it for the second param —
+/// emitting it twice makes spirv-val reject the module (the downstream dija
+/// bug). The kernel reads slot 0 and writes the texel to slot 1.
+fn ping_pong_rgba8_kernel() -> KernelDef {
+    KernelDef {
+        name: "ping_pong_rgba8".into(),
+        params: vec![
+            KernelParam::Texture2DWrite {
+                name: "src".into(),
+                slot: 0,
+                scalar_type: ScalarType::U32,
+            },
+            KernelParam::Texture2DWrite {
+                name: "dst".into(),
+                slot: 1,
+                scalar_type: ScalarType::U32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::TextureLoad2D {
+                dst: Reg(1),
+                texture: 0,
+                x: Reg(0),
+                y: Reg(0),
+                ty: ScalarType::U32,
+            },
+            KernelOp::TextureWrite2D {
+                texture: 1,
+                x: Reg(0),
+                y: Reg(0),
+                value: Reg(1),
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 2,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+/// f32 twin of the ping-pong: two `&mut Texture2D<f32>` (R32Float) storage
+/// images. Same dedup requirement — one shared `%float 2D 0 0 0 2 R32f`.
+fn ping_pong_f32_kernel() -> KernelDef {
+    let mut def = ping_pong_rgba8_kernel();
+    def.name = "ping_pong_f32".into();
+    def.params = vec![
+        KernelParam::Texture2DWrite {
+            name: "src".into(),
+            slot: 0,
+            scalar_type: ScalarType::F32,
+        },
+        KernelParam::Texture2DWrite {
+            name: "dst".into(),
+            slot: 1,
+            scalar_type: ScalarType::F32,
+        },
+    ];
+    def.body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        KernelOp::TextureLoad2D {
+            dst: Reg(1),
+            texture: 0,
+            x: Reg(0),
+            y: Reg(0),
+            ty: ScalarType::F32,
+        },
+        KernelOp::TextureWrite2D {
+            texture: 1,
+            x: Reg(0),
+            y: Reg(0),
+            value: Reg(1),
+            ty: ScalarType::F32,
+        },
+    ];
+    def
+}
+
 /// A sampled `&Texture2D<u32>` must be rejected at emit — sampled u32 is a
 /// distinct, unwired meaning (storage-position u32 is the packed-RGBA8 image).
 fn sampled_u32_kernel() -> KernelDef {
@@ -298,6 +384,22 @@ fn opcodes(words: &[u32]) -> Vec<u16> {
         i += wc;
     }
     ops
+}
+
+/// Count how many times `opcode` appears in the module (past the 5-word header).
+fn count_opcode(words: &[u32], opcode: u16) -> usize {
+    let mut i = 5;
+    let mut n = 0;
+    while i < words.len() {
+        let word = words[i];
+        let wc = (word >> 16) as usize;
+        assert!(wc >= 1);
+        if (word & 0xFFFF) as u16 == opcode {
+            n += 1;
+        }
+        i += wc;
+    }
+    n
 }
 
 /// Find the operands of the first `OpTypeImage` in the module.
@@ -491,6 +593,42 @@ fn rgba8_storage_module_validates() {
     assert_spirv_val_clean("write_tex_rgba8", &spirv);
     let spirv = emit_spirv::emit(&load_rgba8_kernel()).expect("emit rgba8 load kernel");
     assert_spirv_val_clean("load_storage_rgba8", &spirv);
+}
+
+// ── Two storage images share one OpTypeImage (the ping-pong dedup) ──────────
+
+/// The regression tripwire for the dija-reported bug: two same-shaped
+/// `&mut Texture2D<u32>` storage-image params must emit exactly ONE
+/// `OpTypeImage`, reused for both. Emitting it per-param produced a duplicate
+/// non-aggregate type declaration that spirv-val rejects.
+#[test]
+fn two_storage_images_share_one_op_type_image() {
+    let spirv = emit_spirv::emit(&ping_pong_rgba8_kernel()).expect("emit ping-pong rgba8");
+    let n = count_opcode(&words(&spirv), OP_TYPE_IMAGE);
+    assert_eq!(
+        n, 1,
+        "two &mut Texture2D<u32> params must share ONE OpTypeImage (SPIR-V \
+         forbids duplicate non-aggregate types); got {n}"
+    );
+
+    // The f32 twin must dedupe just the same.
+    let spirv = emit_spirv::emit(&ping_pong_f32_kernel()).expect("emit ping-pong f32");
+    let n = count_opcode(&words(&spirv), OP_TYPE_IMAGE);
+    assert_eq!(
+        n, 1,
+        "two &mut Texture2D<f32> params must share ONE OpTypeImage; got {n}"
+    );
+}
+
+/// End-to-end validation of the fix: both ping-pong modules must pass
+/// `spirv-val` (before the fix the duplicate `OpTypeImage` failed with
+/// "Duplicate non-aggregate type declarations are not allowed").
+#[test]
+fn ping_pong_storage_module_validates() {
+    let spirv = emit_spirv::emit(&ping_pong_rgba8_kernel()).expect("emit ping-pong rgba8");
+    assert_spirv_val_clean("ping_pong_rgba8", &spirv);
+    let spirv = emit_spirv::emit(&ping_pong_f32_kernel()).expect("emit ping-pong f32");
+    assert_spirv_val_clean("ping_pong_f32", &spirv);
 }
 
 fn assert_spirv_val_clean(name: &str, spirv: &[u8]) {
