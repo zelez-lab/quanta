@@ -376,6 +376,28 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | T5B0 | `kernel_preservation` — kernel-level composition of T590–T5A7 | Source preservation (E) | Lean | proven |
 | `kernel_body_compose` | Body-level structural induction over per-rule preservation step rules — captures the bookkeeping of walking `List Stmt` with the matching step rule per `Stmt` constructor | Source preservation (E) | Lean | axiom |
 
+## Online Softmax — Fused Attention (T92xx)
+
+The proof foundation for `quanta-nn`'s FlashAttention-style fused attention
+kernel: the online (streaming, block-wise) softmax computes exactly the
+two-pass result, licensing the kernel to process K/V in blocks with a running
+max/sum and never materialise the N² score matrix. Exact over `ℝ`, no rounding
+model. Proven in `specs/verify/lean/Quanta/Nn/OnlineSoftmax.lean`; ZERO axioms.
+
+| ID | Property | Tool | Status |
+|----|----------|------|--------|
+| T9200 | `t9200_softmax_sum_one` — softmax coordinates sum to 1 on a nonempty score list | Lean | proven |
+| T9201 | `t9201_softmax_shift_invariant` — softmax coordinate is independent of the reference/shift `m` | Lean | proven |
+| T9202 | `t9202_spec_rescale` — lowering the reference `m→m'` scales `specL`/`specAcc` by `exp(m−m')` | Lean | proven |
+| T9203 | `t9203_step_summarises` — online `step` on a summarised prefix summarises `pre ++ [q]` (fold invariant) | Lean | proven |
+| T9204 | `t9204_online_summarises` — the full online fold summarises the whole list (`m=max`, `l=Σexp`, `acc=Σexp·v`) | Lean | proven |
+| T9205 | `t9205_online_eq_direct` — online `acc/l` equals the direct two-pass softmax-weighted sum | Lean | proven |
+| T9205′ | `t9205'_direct_eq_softmax_weighted` — two-pass output equals `Σⱼ softmax(x)ⱼ·vⱼ` | Lean | proven |
+| T9206 | `t9206_merge_summarises` — merging two block states equals appending the blocks (any block schedule) | Lean | proven |
+| T9207 | `t9207_step_exp_args_nonpos` — every `exp` argument in `step` is ≤ 0 (no-overflow) | Lean | proven |
+| T9208 | `t9208_step_weights_unit` — every online weight lies in `(0, 1]` | Lean | proven |
+| T9209 | `t9209_merge_exp_args_nonpos` — every `exp` argument in `merge` is ≤ 0 (block-merge stability) | Lean | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -410,7 +432,8 @@ know exactly what is trusted vs. proven on the WebGPU host side.
 | WGSL Grammar Bridge Axioms | 2 | -- | -- |
 | Source Preservation (E) | 17 | 17 | 0 |
 | Source-Preservation Body Axiom | 1 | -- | -- |
-| **Total proven theorems** | **194** | **193** | **1** |
+| Online Softmax (Fused Attention) | 11 | 11 | 0 |
+| **Total proven theorems** | **205** | **204** | **1** |
 | **TCB axioms (A6-A13 + kernel_body_compose)** | **36** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing

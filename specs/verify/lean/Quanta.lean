@@ -96,6 +96,9 @@ import Quanta.Tensor.Bridge
 -- Block-cooperative primitives (companion crate quanta-prims)
 import Quanta.Prims.Reference
 
+-- Online (FlashAttention-style) softmax equivalence (companion crate quanta-nn)
+import Quanta.Nn.OnlineSoftmax
+
 -- Level-1 BLAS forward-error bounds (companion crate quanta-blas)
 import Quanta.Blas.Reference
 -- Level-3 BLAS GEMM forward-error bound
