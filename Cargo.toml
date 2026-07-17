@@ -30,17 +30,17 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zelez-lab/quanta"
 
 [workspace.dependencies]
-quanta-core = { path = "crates/gpu/quanta-core", version = "0.1.0-alpha.3", default-features = false }
-quanta-ir = { path = "crates/gpu/quanta-ir", version = "0.1.0-alpha.3" }
-quanta-tensor = { path = "crates/sci/quanta-tensor", version = "0.1.0-alpha.3" }
-quanta-wasm-lowering = { path = "crates/gpu/quanta-wasm-lowering", version = "0.1.0-alpha.3" }
+quanta-core = { path = "crates/gpu/quanta-core", version = "0.1.0-alpha.4", default-features = false }
+quanta-ir = { path = "crates/gpu/quanta-ir", version = "0.1.0-alpha.4" }
+quanta-tensor = { path = "crates/sci/quanta-tensor", version = "0.1.0-alpha.4" }
+quanta-wasm-lowering = { path = "crates/gpu/quanta-wasm-lowering", version = "0.1.0-alpha.4" }
 
 [package]
 name = "quanta"
@@ -195,21 +195,21 @@ nn = ["std", "dep:quanta-nn"]
 
 [dependencies]
 quanta-core.workspace = true
-quanta-compute-dsl = { path = "crates/lang/quanta-compute-dsl", version = "0.1.0-alpha.3", optional = true }
+quanta-compute-dsl = { path = "crates/lang/quanta-compute-dsl", version = "0.1.0-alpha.4", optional = true }
 quanta-ir.workspace = true
-quanta-render = { path = "crates/gpu/quanta-render", version = "0.1.0-alpha.3", default-features = false, optional = true }
+quanta-render = { path = "crates/gpu/quanta-render", version = "0.1.0-alpha.4", default-features = false, optional = true }
 
 # Companion crates (the `sci` / `prims` / `autograd` umbrella features).
 # All optional + default-features = false: the facade decides the backend
 # through the weak forwards on its own backend features above, and a
 # default build must not activate any of them.
-quanta-array = { path = "crates/sci/quanta-array", version = "0.1.0-alpha.3", default-features = false, optional = true }
-quanta-autograd = { path = "crates/ml/quanta-autograd", version = "0.1.0-alpha.3", default-features = false, optional = true }
-quanta-nn = { path = "crates/ml/quanta-nn", version = "0.1.0-alpha.3", default-features = false, optional = true }
-quanta-blas = { path = "crates/sci/quanta-blas", version = "0.1.0-alpha.3", default-features = false, optional = true }
-quanta-fft = { path = "crates/sci/quanta-fft", version = "0.1.0-alpha.3", default-features = false, optional = true }
-quanta-prims = { path = "crates/sci/quanta-prims", version = "0.1.0-alpha.3", default-features = false, optional = true }
-quanta-rand = { path = "crates/sci/quanta-rand", version = "0.1.0-alpha.3", default-features = false, optional = true }
+quanta-array = { path = "crates/sci/quanta-array", version = "0.1.0-alpha.4", default-features = false, optional = true }
+quanta-autograd = { path = "crates/ml/quanta-autograd", version = "0.1.0-alpha.4", default-features = false, optional = true }
+quanta-nn = { path = "crates/ml/quanta-nn", version = "0.1.0-alpha.4", default-features = false, optional = true }
+quanta-blas = { path = "crates/sci/quanta-blas", version = "0.1.0-alpha.4", default-features = false, optional = true }
+quanta-fft = { path = "crates/sci/quanta-fft", version = "0.1.0-alpha.4", default-features = false, optional = true }
+quanta-prims = { path = "crates/sci/quanta-prims", version = "0.1.0-alpha.4", default-features = false, optional = true }
+quanta-rand = { path = "crates/sci/quanta-rand", version = "0.1.0-alpha.4", default-features = false, optional = true }
 quanta-tensor = { workspace = true, optional = true }
 
 [dev-dependencies]

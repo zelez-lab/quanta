@@ -24,14 +24,14 @@ vulkan = ["quanta-array/vulkan", "quanta-core/vulkan", "quanta/vulkan"]
 # quanta-autograd names only `quanta::Gpu` / `quanta::QuantaError`
 # (runtime), both in `quanta-core`. `compute` is on so the `Gpu`
 # compute surface the array ops go through is present. No DSL macros.
-quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.3", default-features = false, features = [
+quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.4", default-features = false, features = [
     "compute",
 ] }
-quanta-array = { path = "../../sci/quanta-array", version = "0.1.0-alpha.3", default-features = false }
-quanta-blas = { path = "../../sci/quanta-blas", version = "0.1.0-alpha.3", default-features = false }
+quanta-array = { path = "../../sci/quanta-array", version = "0.1.0-alpha.4", default-features = false }
+quanta-blas = { path = "../../sci/quanta-blas", version = "0.1.0-alpha.4", default-features = false }
 
 [dev-dependencies]
 # Facade dev-dep: tests/doctests call `quanta::init()` / `init_cpu()`.
 # Backend features are forwarded from this crate's own features above so
 # `--features metal` gives the tests a real Metal device.
-quanta = { path = "../../..", version = "0.1.0-alpha.3", default-features = false }
+quanta = { path = "../../..", version = "0.1.0-alpha.4", default-features = false }

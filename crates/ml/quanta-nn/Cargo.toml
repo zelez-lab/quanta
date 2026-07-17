@@ -39,8 +39,8 @@ vulkan = [
 ]
 
 [dependencies]
-quanta-nn-derive = { path = "../quanta-nn-derive", version = "0.1.0-alpha.3" }
-quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.3", default-features = false, features = [
+quanta-nn-derive = { path = "../quanta-nn-derive", version = "0.1.0-alpha.4" }
+quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.4", default-features = false, features = [
     "compute",
 ] }
 # Fused kernels (attention, norms) are `#[quanta::kernel]` bodies. Like
@@ -50,14 +50,14 @@ quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.3", defau
 # backend feature this crate exposes already implies GPU capability, so the
 # DSL is a plain (non-optional) dependency rather than gated behind a `gpu`
 # flag the way the pure-Rust-reference-capable prims/blas crates gate it.
-quanta-compute-dsl = { path = "../../lang/quanta-compute-dsl", version = "0.1.0-alpha.3" }
-quanta-array = { path = "../../sci/quanta-array", version = "0.1.0-alpha.3", default-features = false }
-quanta-autograd = { path = "../quanta-autograd", version = "0.1.0-alpha.3", default-features = false }
-quanta-blas = { path = "../../sci/quanta-blas", version = "0.1.0-alpha.3", default-features = false }
-quanta-rand = { path = "../../sci/quanta-rand", version = "0.1.0-alpha.3", default-features = false }
+quanta-compute-dsl = { path = "../../lang/quanta-compute-dsl", version = "0.1.0-alpha.4" }
+quanta-array = { path = "../../sci/quanta-array", version = "0.1.0-alpha.4", default-features = false }
+quanta-autograd = { path = "../quanta-autograd", version = "0.1.0-alpha.4", default-features = false }
+quanta-blas = { path = "../../sci/quanta-blas", version = "0.1.0-alpha.4", default-features = false }
+quanta-rand = { path = "../../sci/quanta-rand", version = "0.1.0-alpha.4", default-features = false }
 
 [dev-dependencies]
 # Facade dev-dep: tests call `quanta::init()` / `init_cpu()`. Backend
 # features forward from this crate's own features so `--features metal`
 # gives the differential tests a real Metal device.
-quanta = { path = "../../..", version = "0.1.0-alpha.3", default-features = false }
+quanta = { path = "../../..", version = "0.1.0-alpha.4", default-features = false }
