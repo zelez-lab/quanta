@@ -19,7 +19,7 @@
 #![cfg(feature = "vulkan")]
 #![cfg(not(feature = "metal"))]
 
-use quanta::{QuantaErrorKind, TextureDesc};
+use quanta::{Format, QuantaErrorKind, TextureDesc};
 
 fn try_vulkan() -> Option<quanta::Gpu> {
     quanta::init().ok()

@@ -227,15 +227,68 @@ pub fn init() -> Result<Gpu, QuantaError> {
     if let Some(dev) = devs.drain(..).next() {
         Ok(dev)
     } else if let Some(backend) = forced {
-        Err(QuantaError::not_supported(alloc::format!(
-            "QUANTA_BACKEND forces the {} backend, but no {} device is \
-             available on this machine (discovery will not fall through to \
-             another backend)",
-            forced_backend_name(backend),
-            forced_backend_name(backend),
-        )))
+        // Name the ACTUAL gap: a forced backend can be missing from
+        // this machine (no driver) or from this BUILD (feature not
+        // compiled in / platform never compiles it). Blaming the
+        // machine for a feature gap sends users hunting for drivers
+        // they don't need — e.g. QUANTA_BACKEND=cpu in a build without
+        // `software`.
+        let name = forced_backend_name(backend);
+        Err(QuantaError::not_supported(
+            match forced_backend_build_gap(backend) {
+                Some(gap) => alloc::format!(
+                    "QUANTA_BACKEND forces the {name} backend, but {gap} \
+                     (discovery will not fall through to another backend)"
+                ),
+                None => alloc::format!(
+                    "QUANTA_BACKEND forces the {name} backend, but no {name} \
+                     device is available on this machine (discovery will not \
+                     fall through to another backend)"
+                ),
+            },
+        ))
     } else {
         Err(QuantaError::no_device())
+    }
+}
+
+/// Why a forced backend cannot exist in THIS binary, if so — a missing
+/// cargo feature or a platform the backend is never compiled for.
+/// `None` means the backend is compiled in and its absence is a
+/// machine-level matter (no driver / no device).
+#[cfg(feature = "std")]
+fn forced_backend_build_gap(backend: ForcedBackend) -> Option<&'static str> {
+    match backend {
+        ForcedBackend::Cpu => (!cfg!(feature = "software")).then_some(
+            "this build does not enable the `software` feature, so the CPU \
+             software device is not compiled in",
+        ),
+        ForcedBackend::Metal => {
+            if !cfg!(feature = "metal") {
+                Some("this build does not enable the `metal` feature")
+            } else if !cfg!(any(target_os = "macos", target_os = "ios")) {
+                Some("the metal backend only exists on Apple platforms")
+            } else {
+                None
+            }
+        }
+        ForcedBackend::Vulkan => {
+            if !cfg!(feature = "vulkan") {
+                Some("this build does not enable the `vulkan` feature")
+            } else if !cfg!(any(
+                target_os = "linux",
+                target_os = "android",
+                target_os = "windows",
+                all(feature = "vulkan-portability", target_os = "macos"),
+            )) {
+                Some(
+                    "the vulkan backend is not compiled on this platform \
+                     (macOS needs the `vulkan-portability` feature)",
+                )
+            } else {
+                None
+            }
+        }
     }
 }
 
