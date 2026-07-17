@@ -380,13 +380,42 @@ impl VulkanDevice {
         // Determine if we have MRT color targets or just the single target.
         let has_mrt = !pass.color_targets.is_empty();
 
-        let (vk_render_pass, pipeline_ref) = if let Some(ph) = pipeline_handle {
-            let rp = render_pipelines.get(&ph).ok_or_else(|| {
+        // Whether this pass CLEARS the primary target or must PRESERVE
+        // it. Drives the load op, the attachment's initial layout, and
+        // the pre-pass barrier below.
+        let primary_clears = if has_mrt {
+            pass.color_targets
+                .iter()
+                .find(|ct| ct.texture == pass.handle)
+                .map(|ct| !matches!(ct.load_op, LoadOp::Load))
+                .unwrap_or(true)
+        } else {
+            pass.ops.iter().any(|op| matches!(op, RenderOp::Clear(_)))
+        };
+
+        // Pipeline lookup — bind state (layout, descriptor shape) and
+        // the attachment sample count. The pipeline's BAKED render pass
+        // is used only at pipeline creation; it must never begin a
+        // pass: its ops are hardcoded (load = CLEAR, initial layout =
+        // UNDEFINED), so beginning with it wiped the target on every
+        // pipeline-bound pass — a `LoadOp::Load` pass cleared to the
+        // fallback (0,0,0,1). The per-pass transient render pass built
+        // below carries the DECLARED ops; it stays compatible with the
+        // pipeline because render-pass compatibility ignores load/store
+        // ops and layouts (formats and sample counts must match — hence
+        // `rp.samples` feeding the attachments).
+        let pipeline_ref = match pipeline_handle {
+            Some(ph) => Some(render_pipelines.get(&ph).ok_or_else(|| {
                 QuantaError::not_found("pipeline not found")
                     .with_context(&format!("render_end: pipeline handle {}", ph))
-            })?;
-            (rp.render_pass, Some(rp))
-        } else if has_mrt {
+            })?),
+            None => None,
+        };
+        let attachment_samples = pipeline_ref
+            .map(|rp| rp.samples)
+            .unwrap_or(ffi::VK_SAMPLE_COUNT_1_BIT);
+
+        let vk_render_pass = if has_mrt {
             // MRT: create a transient render pass with per-target load/store ops.
             let mut attachments = Vec::new();
             let mut color_refs = Vec::new();
@@ -415,7 +444,10 @@ impl VulkanDevice {
                 attachments.push(ffi::VkAttachmentDescription {
                     flags: 0,
                     format: ct_tex.format,
-                    samples: ffi::VK_SAMPLE_COUNT_1_BIT,
+                    // Must match the pipeline's rasterization samples
+                    // for render-pass compatibility (an MSAA pipeline
+                    // draws into MSAA color attachments).
+                    samples: attachment_samples,
                     load_op,
                     store_op,
                     stencil_load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -461,32 +493,45 @@ impl VulkanDevice {
             } else {
                 core::ptr::null()
             };
-            let transient_rp =
-                self.create_transient_render_pass(&attachments, &color_refs, p_resolve)?;
-            (transient_rp, None)
+            self.create_transient_render_pass(&attachments, &color_refs, p_resolve)?
         } else {
-            // Create a transient render pass for clear-only usage.
+            // Single-target pass: the load op is derived from the ops —
+            // a `Clear` op means CLEAR, otherwise the pass must LOAD
+            // (preserve) the target's previous contents. A loading
+            // attachment declares its true initial layout; the pre-pass
+            // barrier below puts the image there from its tracked
+            // layout.
+            let (load_op, initial_layout) = if primary_clears {
+                (
+                    ffi::VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                )
+            } else {
+                (
+                    ffi::VK_ATTACHMENT_LOAD_OP_LOAD,
+                    ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                )
+            };
             let color_attachment = ffi::VkAttachmentDescription {
                 flags: 0,
                 format: target_tex.format,
-                samples: ffi::VK_SAMPLE_COUNT_1_BIT,
-                load_op: ffi::VK_ATTACHMENT_LOAD_OP_CLEAR,
+                samples: attachment_samples,
+                load_op,
                 store_op: ffi::VK_ATTACHMENT_STORE_OP_STORE,
                 stencil_load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                 stencil_store_op: ffi::VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                initial_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                initial_layout,
                 final_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             };
             let color_ref = ffi::VkAttachmentReference {
                 attachment: 0,
                 layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             };
-            let transient_rp = self.create_transient_render_pass(
+            self.create_transient_render_pass(
                 core::slice::from_ref(&color_attachment),
                 core::slice::from_ref(&color_ref),
                 core::ptr::null(),
-            )?;
-            (transient_rp, None)
+            )?
         };
 
         // Create framebuffer — MRT uses multiple image views.
@@ -699,13 +744,39 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
 
-            // Transition target image to COLOR_ATTACHMENT_OPTIMAL.
+            // Transition target image to COLOR_ATTACHMENT_OPTIMAL. A
+            // clearing pass may transition from UNDEFINED (contents die
+            // anyway — and it is the universal wildcard). A LOADING
+            // pass must transition from the image's TRACKED layout and
+            // make prior writes (previous pass, transfer upload)
+            // visible — transitioning a preserved target from UNDEFINED
+            // legally discards its contents (and Intel really does).
+            let (bar_old_layout, bar_src_access, bar_src_stage, bar_dst_access) = if primary_clears
+            {
+                (
+                    ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                    0,
+                    ffi::VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                )
+            } else {
+                (
+                    target_tex
+                        .current_layout
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                    ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                        | ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                        | ffi::VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+                )
+            };
             let barrier = ffi::VkImageMemoryBarrier {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 p_next: core::ptr::null(),
-                src_access_mask: 0,
-                dst_access_mask: ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                old_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                src_access_mask: bar_src_access,
+                dst_access_mask: bar_dst_access,
+                old_layout: bar_old_layout,
                 new_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
@@ -720,7 +791,7 @@ impl VulkanDevice {
             };
             ffi::vkCmdPipelineBarrier(
                 cmd,
-                ffi::VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                bar_src_stage,
                 ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 0,
                 0,
@@ -857,11 +928,10 @@ impl VulkanDevice {
             }
         }
 
-        let transient_rp = if pipeline_handle.is_none() {
-            Some(vk_render_pass)
-        } else {
-            None
-        };
+        // The begin pass is ALWAYS per-pass transient now (the
+        // pipeline's baked pass never begins a pass), so it is always
+        // cleaned up with the framebuffer.
+        let transient_rp = Some(vk_render_pass);
         drop(samplers);
         drop(buffers);
         // The render pass's attachments end in COLOR_ATTACHMENT_OPTIMAL

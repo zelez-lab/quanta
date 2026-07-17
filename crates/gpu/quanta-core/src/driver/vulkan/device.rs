@@ -414,6 +414,11 @@ pub(super) struct VkRenderPipeline {
     pub(super) layout: ffi::VkPipelineLayout,
     pub(super) render_pass: ffi::VkRenderPass,
     pub(super) descriptor_set_layout: ffi::VkDescriptorSetLayout,
+    /// The pipeline's rasterization sample count (VK bits). The
+    /// per-pass render pass built at `render_end` must declare its
+    /// color attachments with THIS count for render-pass
+    /// compatibility with the pipeline.
+    pub(super) samples: u32,
 }
 
 impl VulkanDevice {

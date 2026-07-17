@@ -728,6 +728,7 @@ impl VulkanDevice {
                 layout: PendingPipeline::take(&mut guard.pipeline_layout),
                 render_pass: PendingPipeline::take(&mut guard.render_pass),
                 descriptor_set_layout: PendingPipeline::take(&mut guard.descriptor_set_layout),
+                samples: sample_count_to_vk(desc.sample_count),
             },
         );
         drop(pipelines);
