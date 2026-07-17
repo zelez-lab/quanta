@@ -72,14 +72,72 @@ pub(crate) fn compile_kernel_to_wasm(
             .map_err(|e| format!("read cached wasm at {}: {e}", wasm_path.display()));
     }
 
+    // Compile in a UNIQUE scratch dir, never straight into the shared
+    // `<hash>/` cache dir. rustc writes its intermediate
+    // `*-cgu.N.rcgu.o` objects next to the `-o` target, so two threads
+    // (or processes) compiling the SAME kernel — same hash, same cache
+    // dir — would clobber each other's intermediates and rust-lld would
+    // fail to open an object the other run already removed
+    // ("cannot open …-cgu.0.rcgu.o: No such file or directory"). The
+    // scratch dir lives under the cache root so it shares a filesystem
+    // with the final path, making the publish `rename` atomic.
+    let cache_root = cache_dir
+        .parent()
+        .ok_or_else(|| format!("cache dir {} has no parent", cache_dir.display()))?;
+    let scratch = cache_root.join(scratch_name(&hash));
+    fs::create_dir_all(&scratch)
+        .map_err(|e| format!("create scratch dir {}: {e}", scratch.display()))?;
+    // Best-effort cleanup guard: remove the scratch dir on every exit
+    // path (error or success), so a failed compile leaves no litter.
+    let _scratch_guard = ScratchGuard(&scratch);
+
+    let src_path = scratch.join("lib.rs");
+    fs::write(&src_path, &wrapped).map_err(|e| format!("write {}: {e}", src_path.display()))?;
+    let scratch_wasm = scratch.join("kernel.wasm");
+    invoke_rustc(&src_path, &scratch_wasm)?;
+
+    // Publish atomically. A concurrent compile of the same kernel may
+    // have already published — a same-filesystem rename overwrites
+    // atomically, and an identical hash means byte-identical source, so
+    // whichever wins is correct.
     fs::create_dir_all(&cache_dir)
         .map_err(|e| format!("create cache dir {}: {e}", cache_dir.display()))?;
-    let src_path = cache_dir.join("lib.rs");
-    fs::write(&src_path, &wrapped).map_err(|e| format!("write {}: {e}", src_path.display()))?;
-
-    invoke_rustc(&src_path, &wasm_path)?;
+    match fs::rename(&scratch_wasm, &wasm_path) {
+        Ok(()) => {}
+        // Lost the publish race but the winner's artifact is present —
+        // identical source, so its bytes are ours too.
+        Err(_) if wasm_path.is_file() => {}
+        Err(e) => {
+            return Err(format!(
+                "publish wasm {} -> {}: {e}",
+                scratch_wasm.display(),
+                wasm_path.display()
+            ));
+        }
+    }
 
     fs::read(&wasm_path).map_err(|e| format!("read built wasm at {}: {e}", wasm_path.display()))
+}
+
+/// A per-invocation scratch directory name, unique across processes
+/// (pid) and threads/calls within a process (monotonic counter). Keeps
+/// concurrent compiles of the same kernel from sharing rustc's
+/// intermediate object files.
+fn scratch_name(hash: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(".build-{hash}-{}-{n}", std::process::id())
+}
+
+/// Removes its scratch directory when dropped, so no compile — success
+/// or failure — leaves intermediates behind.
+struct ScratchGuard<'a>(&'a Path);
+
+impl Drop for ScratchGuard<'_> {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(self.0);
+    }
 }
 
 /// Wrap a kernel decl in a self-contained no_std crate with the
@@ -386,6 +444,37 @@ mod tests {
             bytes_a, bytes_b,
             "second call must return identical bytes (cache hit)"
         );
+    }
+
+    #[test]
+    fn concurrent_identical_compiles_never_race() {
+        // The regression guard for the wasm-cache race: many threads
+        // compiling the SAME kernel at once all hash to one cache dir.
+        // Before the scratch-dir + atomic-publish fix, their rustc runs
+        // clobbered each other's intermediate `-cgu.*.rcgu.o` objects
+        // and rust-lld failed with "No such file or directory". Every
+        // thread must now succeed with byte-identical output.
+        if !wasm32_target_available() {
+            eprintln!("[wasm_compile] skipping: wasm32-unknown-unknown target not installed");
+            return;
+        }
+        // A source unique to this test run, so it starts uncached and
+        // every thread genuinely races the first compile.
+        let decl = "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn \
+                    quanta_race_probe() { let _ = quanta::intrinsics::proton_id(); }";
+        let handles: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(move || compile_kernel_to_wasm(decl, &[])))
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let first = results[0]
+            .as_ref()
+            .expect("at least the first compile must succeed");
+        for (i, r) in results.iter().enumerate() {
+            let bytes = r
+                .as_ref()
+                .unwrap_or_else(|e| panic!("thread {i} failed to compile: {e}"));
+            assert_eq!(bytes, first, "thread {i} produced different bytes");
+        }
     }
 
     #[test]
