@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{Caps, GpuDevice, Pulse, QuantaError, Vendor};
 use std::collections::HashMap;
+use std::eprintln;
 use std::sync::{Mutex, RwLock};
 
 use super::ffi;
@@ -784,6 +785,16 @@ impl VulkanDevice {
 
 /// Discover Vulkan devices on this system.
 pub fn discover() -> Vec<Box<dyn GpuDevice>> {
+    // Windows resolves the loader at runtime, so a machine without
+    // vulkan-1.dll (or with a pre-1.3 one) reaches this gate instead of
+    // dying at process load. Loud on purpose: a missing GPU lane must
+    // name itself or it ships dead invisibly. Link-time platforms
+    // always return Ok here.
+    if let Err(missing) = ffi::ensure_loaded() {
+        eprintln!("quanta vulkan: {missing} — Vulkan backend unavailable");
+        return Vec::new();
+    }
+
     let app_info = ffi::VkApplicationInfo {
         s_type: ffi::VK_STRUCTURE_TYPE_APPLICATION_INFO,
         p_next: core::ptr::null(),
@@ -844,6 +855,13 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
     let mut instance = ffi::null_handle();
     let result = unsafe { ffi::vkCreateInstance(&create_info, core::ptr::null(), &mut instance) };
     if result != ffi::VK_SUCCESS {
+        // A loader with no usable ICD lands here (headless box, no
+        // vendor driver — VK_ERROR_INCOMPATIBLE_DRIVER, -9). Same
+        // loudness contract as the missing-loader gate above.
+        eprintln!(
+            "quanta vulkan: vkCreateInstance failed ({result}) — no usable \
+             Vulkan ICD; Vulkan backend unavailable"
+        );
         return Vec::new();
     }
 

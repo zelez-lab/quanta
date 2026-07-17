@@ -107,6 +107,17 @@ fn forced_backend() -> Result<Option<ForcedBackend>, QuantaError> {
 /// includes the CPU software device regardless of `QUANTA_CPU`. An
 /// unrecognized value yields an empty list here (and a named error from
 /// [`init`]).
+///
+/// # The software last resort
+///
+/// When nothing is forced and no GPU backend yields a device, the CPU
+/// software device joins as a last resort (requires the `software`
+/// feature) — announced by a loud `quanta:` line on stderr, following
+/// the same discipline as the per-backend unavailability lines (e.g.
+/// the Vulkan driver naming a missing `vulkan-1.dll`). A machine
+/// without GPU drivers still gets a working device, but never
+/// silently. `QUANTA_CPU=1` is different: it opts the CPU device into
+/// normal discovery *alongside* GPUs.
 #[cfg(feature = "std")]
 pub fn devices() -> alloc::vec::Vec<Gpu> {
     // An unrecognized value parses to Err; treat it as "select nothing"
@@ -154,6 +165,21 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
         }
     }
 
+    // Last-resort software fallback: with nothing forced and no GPU
+    // backend found, the CPU device joins so a machine without GPU
+    // drivers still initializes — loudly, because a silently-engaged
+    // software lane looks exactly like a healthy GPU lane. Forcing is
+    // exempt on purpose: QUANTA_BACKEND pins one backend and must fail
+    // rather than fall through (CI determinism).
+    #[cfg(feature = "software")]
+    if devs.is_empty() && forced.is_none() {
+        std::eprintln!(
+            "quanta: no GPU backend available — falling back to SOFTWARE \
+             rendering (CPU device)"
+        );
+        devs.extend(driver::cpu::discover());
+    }
+
     devs.into_iter().map(maybe_validate).map(Gpu::new).collect()
 }
 
@@ -172,6 +198,11 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
 /// - **wasm:** WebGPU — through the async [`init_webgpu_async`]; sync
 ///   `init` never returns a WebGPU device (the platform requires an async
 ///   adapter handshake).
+/// - **Last resort (all native platforms):** when nothing is forced and
+///   no GPU backend is present, the CPU software device engages with a
+///   loud stderr line (see [`devices`]) — so `init` succeeds on a
+///   machine without GPU drivers instead of failing before the app can
+///   draw anything.
 ///
 /// `init` returns the first device [`devices`] enumerates in that order.
 /// To choose a different one, call [`devices`] and pick from the list —

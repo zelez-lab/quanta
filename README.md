@@ -195,13 +195,18 @@ sudo apt update && sudo apt install -y llvm-22-dev libpolly-22-dev
 ```powershell
 # Vulkan driver: install your GPU vendor's Windows driver (NVIDIA,
 # AMD, or Intel). The Vulkan loader (`vulkan-1.dll`) ships with the
-# driver. No separate Vulkan SDK needed for runtime.
+# driver. No Vulkan SDK needed — not at build time either: quanta
+# resolves the loader at runtime (no vulkan-1.lib link), and a machine
+# without Vulkan falls back to software rendering with a loud stderr
+# line naming the missing piece.
 # The plain one-liner works; Vulkan is the default face on Windows:
 cargo add quanta --git https://github.com/zelez-lab/quanta
 ```
 
-Live GPU execution on Windows is untested in v0.1-alpha — the build
-and headless paths work; vendor driver compatibility is your testing.
+Live GPU execution on Windows is validated on Intel Iris Xe
+(i5-13600H, Windows 11): the differential, op-matrix, and atomics
+litmus suites pass on hardware. NVIDIA / AMD drivers remain your
+testing.
 
 Optional LLVM 22 for the AOT compiler:
 

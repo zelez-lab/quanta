@@ -846,6 +846,12 @@ accident of enumeration:
 - **wasm:** WebGPU, via the async `init_webgpu_async()` — sync `init()`
   never returns a WebGPU device (the platform requires an async adapter
   handshake).
+- **Last resort (all native platforms):** when nothing is forced and no
+  GPU backend yields a device, the CPU software device engages (requires
+  the `software` feature) — announced by a loud `quanta:` line on
+  stderr, alongside the per-backend line naming what was missing (e.g.
+  `vulkan-1.dll not found`). A machine without GPU drivers still
+  initializes, but never silently.
 
 `init()` returns the first device `devices()` yields in that order; to
 choose another, enumerate with `devices()` and pick from the list.

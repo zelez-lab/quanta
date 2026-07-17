@@ -153,19 +153,33 @@ pub struct VkBufferCreateInfo {
 
 ### Platform gating
 
+The ~100 entry-point signatures live in one macro (`vk_fns!` in
+`ffi/extern_fns.rs`); a per-platform emitter chooses the binding form:
+
 ```rust
-#[cfg(target_os = "linux")]
+// Linux / Android / macOS (MoltenVK under `vulkan-portability`):
+// one link-time extern block.
 #[link(name = "vulkan")]
-extern "C" { ... }
+unsafe extern "C" { pub fn vkCreateInstance(...) -> VkResult; ... }
 
-#[cfg(target_os = "windows")]
-#[link(name = "vulkan-1")]
-extern "C" { ... }
-
-#[cfg(target_os = "android")]
-#[link(name = "vulkan")]
-extern "C" { ... }
+// Windows: a function-pointer table resolved at runtime
+// (LoadLibraryA("vulkan-1.dll") + GetProcAddress) behind
+// identically-named shims — call sites are the same on every platform.
+pub unsafe fn vkCreateInstance(...) -> VkResult {
+    (fns().vkCreateInstance)(...)
+}
 ```
+
+Windows deliberately does **not** link `vulkan-1.lib`: the import
+library ships only with the Vulkan SDK (which would make the SDK a
+build dependency), and a link-time-bound app fails at *process load*
+on a machine without `vulkan-1.dll` — before init can engage the
+software fallback. Instead, `discover()` gates on
+`ffi::ensure_loaded()`: when the DLL (or an export — a Vulkan 1.3
+loader is required) is missing, it prints a loud `quanta vulkan:` line
+naming the missing piece and returns no devices, letting the software
+last resort engage. `QUANTA_VULKAN_LOADER` overrides the DLL name (see
+[Environment](../reference/environment.md)).
 
 ### Memory management
 
