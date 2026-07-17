@@ -275,8 +275,15 @@ a stale compiler can emit invalid SPIR-V that crashes some drivers:
 > --force`. To proceed anyway (e.g. a rig pinning a known-compatible
 > compiler), set `QUANTA_ACCEPT_STALE_COMPILER=1`.
 
-A *pre-stamp* compiler (no `--rev`) can't be proven mismatched and only
-warns. See [Getting Started](../getting-started.md#the-ahead-of-time-compiler-git-dependency-consumers)
+The fatal path fires only on a **proven** difference — both sides
+stamped, different. Unprovable cases warn instead: a *pre-stamp*
+compiler (no `--rev`), and a rev of `unknown` on either side. `unknown`
+means the build script's git probe failed — benignly for a
+registry/tarball or vendored build, or because git *refused* the
+checkout (e.g. Windows "dubious ownership" on a clone created from an
+elevated session; git missing). An abnormal refusal is named in a
+`cargo:warning` at build time so the cause is visible. See
+[Getting Started](../getting-started.md#the-ahead-of-time-compiler-git-dependency-consumers)
 and [`QUANTA_ACCEPT_STALE_COMPILER`](environment.md).
 
 ### Missing SPIR-V, unmasked (pipeline build, Vulkan)

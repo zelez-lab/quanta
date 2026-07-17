@@ -581,12 +581,23 @@ pub fn compile_shader(
     }))
 }
 
+/// Whether a probed rev pair constitutes a PROVEN mismatch — the only
+/// case the handshake may treat as fatal. `unknown` on either side
+/// (the build script's git probe failed, or the binary was built
+/// outside a tracked checkout) proves nothing, exactly like a
+/// pre-stamp binary that lacks `--rev`: unprovable stays a warning.
+fn rev_mismatch_is_provable(own_rev: &str, bin_rev: &str) -> bool {
+    own_rev != bin_rev && own_rev != "unknown" && bin_rev != "unknown"
+}
+
 /// Outcome of probing a resolved compiler binary once with `--rev`.
 #[derive(Clone, Debug, PartialEq)]
 enum CompilerVerdict {
-    /// Loadable and safe to use: rev matches this build, OR the binary
-    /// predates rev stamping (a WARN was already emitted), OR a rev
-    /// mismatch was explicitly accepted via `QUANTA_ACCEPT_STALE_COMPILER`.
+    /// Loadable and safe to use: rev matches this build, OR the
+    /// mismatch is unprovable — the binary predates rev stamping, or
+    /// either side stamped `unknown` (a WARN was already emitted) —
+    /// OR a rev mismatch was explicitly accepted via
+    /// `QUANTA_ACCEPT_STALE_COMPILER`.
     Usable,
     /// Loadable but its rev DIFFERS from this build's rev. Fatal: an
     /// invalid-SPIR-V module from a stale compiler segfaults some drivers
@@ -650,6 +661,40 @@ fn probe_compiler(binary: &str) -> CompilerVerdict {
                 };
                 match bin_rev.as_deref() {
                     Some(r) if r == own_rev => CompilerVerdict::Usable,
+                    Some(r) if !rev_mismatch_is_provable(own_rev, r) => {
+                        // `unknown` on either side: the mirror image of
+                        // the pre-stamp arm below — a mismatch that
+                        // cannot be PROVEN stays a loud warning. The
+                        // rig trap this closes: a git ownership refusal
+                        // stamps the BUILD side `unknown`, and fataling
+                        // on that told the user to reinstall a compiler
+                        // that was never wrong.
+                        if own_rev == "unknown" {
+                            eprintln!(
+                                "[quanta] WARNING: this quanta build's rev is `unknown` \
+                                 (the build-time git probe failed — not a git checkout, \
+                                 git missing, or git refusing the repo, e.g. Windows \
+                                 'dubious ownership' on a checkout created elevated; an \
+                                 abnormal refusal is named by a cargo warning at build \
+                                 time). quanta-compiler at {binary} is rev {r}; the match \
+                                 cannot be verified, so kernels and shaders may get STALE \
+                                 codegen if it is older. If in doubt, reinstall: \
+                                 cargo install --path crates/lang/quanta-compiler \
+                                 --locked --force."
+                            );
+                        } else {
+                            eprintln!(
+                                "[quanta] WARNING: quanta-compiler at {binary} reports \
+                                 rev `unknown` (built outside a tracked git checkout), \
+                                 but this quanta build is rev {own_rev} — the match \
+                                 cannot be verified, so kernels and shaders may get \
+                                 STALE codegen if it is older. If in doubt, reinstall: \
+                                 cargo install --path crates/lang/quanta-compiler \
+                                 --locked --force."
+                            );
+                        }
+                        CompilerVerdict::Usable
+                    }
                     Some(r) => {
                         // Provable mismatch. FATAL by default — a stale
                         // compiler has shipped spirv-val-INVALID modules
@@ -710,9 +755,9 @@ fn rev_mismatch_error(binary: &str, bin_rev: &str) -> String {
          some drivers, so this is a hard error. Reinstall the matching compiler: \
          cargo install --path crates/lang/quanta-compiler --locked --force. To proceed anyway \
          (e.g. a rig pinning a known-compatible compiler), set \
-         QUANTA_ACCEPT_STALE_COMPILER=1. (A pre-stamp compiler that lacks --rev can't be \
-         proven mismatched and only WARNs — this fatal path fires only on a proven \
-         difference.)"
+         QUANTA_ACCEPT_STALE_COMPILER=1. (A pre-stamp compiler that lacks --rev — or a \
+         rev stamped `unknown` on either side — can't be proven mismatched and only \
+         WARNs; this fatal path fires only on a proven difference.)"
     )
 }
 
@@ -798,6 +843,22 @@ mod probe_tests {
     }
 
     #[test]
+    fn probe_warns_not_fatal_on_unknown_bin_rev() {
+        // A compiler stamped `unknown` (built outside a tracked
+        // checkout) can't be proven mismatched — WARN path, Usable,
+        // mirroring the pre-stamp case. Holds regardless of this
+        // build's own stamp: if own is also `unknown` the pair is
+        // equal, otherwise the unprovable arm fires.
+        let path = fake_compiler(
+            "unknown",
+            "#!/bin/sh\nif [ \"$1\" = \"--rev\" ]; then echo unknown; exit 0; fi\nexit 1\n",
+        );
+        assert!(compiler_is_loadable(&path));
+        assert_eq!(probe_compiler(&path), CompilerVerdict::Usable);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn probe_flags_rev_mismatch_as_fatal() {
         // A binary that prints a DIFFERENT rev than this build must
         // classify as a fatal RevMismatch — the signal that makes
@@ -821,6 +882,35 @@ mod probe_tests {
             CompilerVerdict::RevMismatch("deadbeefdeadbeef".to_string())
         );
         std::fs::remove_file(&path).ok();
+    }
+}
+
+/// The provability taxonomy the handshake fatal path rests on. Pure —
+/// runs on every host, unlike the unix-only `probe_tests` above.
+#[cfg(test)]
+mod rev_taxonomy_tests {
+    use super::*;
+
+    #[test]
+    fn only_stamped_differing_revs_prove_a_mismatch() {
+        // The one fatal case: both sides stamped, different.
+        assert!(rev_mismatch_is_provable("aa9ce6c", "288ad4e"));
+        // Equal never proves — including unknown==unknown, the silent
+        // crates.io/vendored case where neither side has a rev.
+        assert!(!rev_mismatch_is_provable("aa9ce6c", "aa9ce6c"));
+        assert!(!rev_mismatch_is_provable("unknown", "unknown"));
+        // `unknown` on either side is unprovable: a failed build-side
+        // git probe (the Windows dubious-ownership trap) or a compiler
+        // built outside a tracked checkout must WARN, not fatal.
+        assert!(!rev_mismatch_is_provable("unknown", "288ad4e"));
+        assert!(!rev_mismatch_is_provable("aa9ce6c", "unknown"));
+    }
+
+    #[test]
+    fn dirty_suffix_still_proves() {
+        // A -dirty stamp is still a real rev: differing from the clean
+        // form of the same hash remains a proven mismatch.
+        assert!(rev_mismatch_is_provable("72c1f96-dirty", "72c1f96"));
     }
 }
 

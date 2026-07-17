@@ -41,3 +41,10 @@ while a kernel is actually being compiled.
 into each artifact, and `quanta-compiler --rev` prints it. The macros
 compare the two to detect a stale compiler (the mismatch handshake behind
 `QUANTA_ACCEPT_STALE_COMPILER` above). Do not set it by hand.
+
+The fatal mismatch fires only when **both** sides carry a real stamp and
+they differ. A stamp of `unknown` (registry/tarball or vendored build,
+or a git probe that failed — the build emits a `cargo:warning` naming
+git's error when the failure is abnormal, e.g. an ownership refusal)
+cannot prove a mismatch and downgrades the handshake to a warning, the
+same treatment as a pre-stamp compiler without `--rev`.
