@@ -79,12 +79,18 @@ fn update_particles(
 
 ## Vertex shader (draw particles as points)
 
+Each particle's 8 floats bind as vertex attributes (locations 0–7); the shader
+reads the three it needs. The view-projection matrix is a `&Mat4` uniform, and
+the vertex forwards a fade `alpha` to the fragment through a `Varyings` struct.
+
 ```rust
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct CameraUniforms {
-    view_proj: [f32; 16],
-    screen_height: f32,
+use quanta::*;
+
+// The vertex→fragment interface.
+#[derive(quanta::Varyings)]
+struct ParticleVarying {
+    #[position] clip: Vec4, // gl_Position
+    alpha: f32,             // Location 0
 }
 
 #[quanta::vertex]
@@ -97,20 +103,20 @@ fn particle_vertex(
     _vz: f32,
     life: f32,
     _pad: f32,
-    camera: &CameraUniforms,
+    view_proj: &Mat4,
 ) -> ParticleVarying {
-    let clip = mat4_mul_vec4(camera.view_proj, vec4(pos_x, pos_y, pos_z, 1.0));
+    let clip = view_proj * Vec4::new(pos_x, pos_y, pos_z, 1.0);
     let alpha = clamp(life / 2.0, 0.0, 1.0);
-    ParticleVarying { clip_pos: clip, alpha }
+    ParticleVarying { clip, alpha }
 }
 
 #[quanta::fragment]
-fn particle_fragment(varying: ParticleVarying) -> Vec4 {
+fn particle_fragment(s: ParticleVarying) -> Vec4 {
     // Fade from yellow to red as life decreases
     let r = 1.0;
-    let g = varying.alpha;
-    let b = varying.alpha * 0.3;
-    vec4(r, g, b, varying.alpha)
+    let g = s.alpha;
+    let b = s.alpha * 0.3;
+    Vec4::new(r, g, b, s.alpha)
 }
 ```
 
@@ -160,6 +166,18 @@ fn main() {
     // Render methods live on the RenderGpu extension trait (imported above).
     let render_target = gpu.render_target(1920, 1080, Format::BGRA8).unwrap();
 
+    // View-projection matrix, bound to the vertex shader's `view_proj: &Mat4`.
+    let view_proj: [f32; 16] = /* your camera matrix */ [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ];
+    let mvp_buf = gpu
+        .field_with_usage::<[f32; 16]>(1, FieldUsage::default_uniform())
+        .unwrap();
+    mvp_buf.write(&[view_proj]).unwrap();
+
     let layouts = [VertexLayout {
         stride: 32, // 8 floats x 4 bytes
         step: StepMode::Vertex,
@@ -206,6 +224,7 @@ fn main() {
             .clear(Color::BLACK)
             .pipeline(&pipeline)
             .vertices(0, &particles)
+            .uniform(0, &mvp_buf)
             .draw(particle_count)
             .pulse().unwrap();
         pulse.wait().unwrap();
