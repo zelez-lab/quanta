@@ -13,15 +13,16 @@ name: Compiler Dev Binary (per-rev, on demand)
 # workflow_dispatch ONLY — this is deliberately NOT a per-push build. A
 # maintainer runs it when a consumer needs a rev-exact binary.
 #
-# The build and verify jobs share their whole bodies with
+# The macOS/Linux build and verify jobs share their whole bodies with
 # release-compiler.yml through two composite actions —
 # .github/actions/bundle-compiler and .github/actions/verify-compiler —
 # so the proven LLVM installs, libLLVM-closure staging, and verify pattern
-# live in exactly one place. This workflow just calls them with embed-rev +
-# assert-exact-rev true (the per-rev asset scheme) and restricts the matrix
-# to the three dev-rig targets. Windows is deliberately excluded: tagged
-# releases (release-compiler.yml) cover it, and the dev-rig set is macOS-arm
-# plus the two Linux triples.
+# live in exactly one place; this workflow calls them with embed-rev +
+# assert-exact-rev true (the per-rev asset scheme). Windows is INLINE in
+# both workflows (its MSYS2 shell cannot live in a composite): it joined
+# this dev set when the Windows GPU rig arrived (WINDOWS_RIG.md) — per-rev
+# render validation there needs a model-aware compiler for untagged revs,
+# and the rig cannot build one locally.
 #
 # A full commit SHA works as the `ref` input, not just branches and tags:
 # the composite checks out with fetch-depth 0, so a bare SHA is resolvable
@@ -52,9 +53,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          # Windows deliberately excluded: tagged releases
-          # (release-compiler.yml) ship the Windows asset; the dev-rig
-          # set is macOS-arm + the two Linux triples above.
+          # Windows joined the dev set when the Windows GPU rig arrived
+          # (WINDOWS_RIG.md): per-rev render validation on the rig needs a
+          # model-aware compiler for untagged revs, and the rig cannot
+          # build one (no LLVM 22 there). The Windows steps stay INLINE
+          # below — they run under `shell: msys2 {0}`, which the
+          # bundle-compiler composite cannot host — mirroring
+          # release-compiler.yml's proven pipeline, plus the per-rev
+          # naming + exact-rev assertion this workflow contracts.
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
 
@@ -83,11 +91,122 @@ jobs:
           fetch-depth: 0
 
       - name: Bundle quanta-compiler for this rev
+        if: runner.os != 'Windows'
         uses: ./.github/actions/bundle-compiler
         with:
           target: ${{ matrix.target }}
           embed-rev: 'true'
           assert-exact-rev: 'true'
+
+      # ── Windows (zip) stays INLINE below ────────────────────────────
+      # Copied from release-compiler.yml's proven MSYS2/UCRT64 pipeline
+      # (a composite step cannot host `shell: msys2 {0}`), with the two
+      # compiler-dev deltas: the asset embeds <rev> in its name, and the
+      # staging smoke test asserts the binary's --rev EQUALS that <rev>.
+      - name: Install Rust stable (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install MSYS2 + LLVM 22 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-polly
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: Wire LLVM_SYS_221_PREFIX (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -e
+          LLVM_PREFIX_UNIX=$(llvm-config --prefix)
+          echo "llvm-config --prefix → $LLVM_PREFIX_UNIX"
+          echo "llvm-config --version → $(llvm-config --version)"
+          LLVM_PREFIX_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX")
+          BIN_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin")
+          GCC_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin/gcc.exe")
+          GXX_WIN=$(cygpath -w "$LLVM_PREFIX_UNIX/bin/g++.exe")
+          echo "LLVM_SYS_221_PREFIX=$LLVM_PREFIX_WIN" >> $GITHUB_ENV
+          echo "MSYS2_GCC=$GCC_WIN" >> $GITHUB_ENV
+          echo "MSYS2_GXX=$GXX_WIN" >> $GITHUB_ENV
+          echo "$BIN_WIN" >> $GITHUB_PATH
+
+      - name: Switch Rust to GNU triple (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup target add x86_64-pc-windows-gnu --toolchain stable
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$env:MSYS2_GCC" >> $env:GITHUB_ENV
+          echo "CC_x86_64-pc-windows-gnu=$env:MSYS2_GCC" >> $env:GITHUB_ENV
+          echo "CXX_x86_64-pc-windows-gnu=$env:MSYS2_GXX" >> $env:GITHUB_ENV
+          if (-not (Test-Path $env:MSYS2_GCC)) { Write-Error "MSYS2 gcc not found at $env:MSYS2_GCC"; exit 1 }
+
+      - name: Build quanta-compiler (Windows — GNU build)
+        if: runner.os == 'Windows'
+        run: cargo build -p quanta-compiler --release --target x86_64-pc-windows-gnu
+
+      # Derive <rev> exactly as build.rs stamps it (checkout above is
+      # fetch-depth 0, so the abbreviation length matches a consumer's).
+      - name: Derive rev (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          REV=$(git describe --always --dirty --exclude '*')
+          echo "derived rev: $REV"
+          echo "REV=$REV" >> $GITHUB_ENV
+
+      # Stage exe + non-system DLL closure, then assert the staged
+      # binary's --rev EQUALS the derived <rev> — the rev IS the asset
+      # name here, so the release-style non-empty gate is not enough.
+      - name: Stage archive with bundled DLLs + assert exact rev (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          EXE=target/x86_64-pc-windows-gnu/release/quanta-compiler.exe
+          mkdir -p stage
+          cp "$EXE" stage/quanta-compiler.exe
+          DLL_LINES=$(ldd "$EXE" | grep '=>' | grep -ivE '=> /c/windows/')
+          while read -r name _arrow resolved _rest; do
+            [ -n "$name" ] || continue
+            if [ -f "$resolved" ]; then
+              cp "$resolved" "stage/$name"
+              echo "bundled $name  <=  $resolved"
+            fi
+          done <<< "$DLL_LINES"
+          ls stage/ | grep -qi 'llvm.*\.dll' || {
+            echo "ERROR: no libLLVM DLL copied next to the exe"; ls -la stage/; exit 1; }
+          OUT=$(./stage/quanta-compiler.exe --rev)
+          echo "staged --rev => $OUT (expected $REV)"
+          [ "$OUT" = "$REV" ] || { echo "ERROR: staged binary rev != derived rev"; exit 1; }
+
+      - name: Package per-rev zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "quanta-compiler-$env:REV-${{ matrix.target }}.zip"
+          Compress-Archive -Path stage\* -DestinationPath $name
+          $hash = (Get-FileHash $name -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -Encoding ASCII "$name.sha256"
+
+      - name: Upload artifact (Windows zip)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quanta-compiler-${{ matrix.target }}
+          path: |
+            quanta-compiler-*-${{ matrix.target }}.zip
+            quanta-compiler-*-${{ matrix.target }}.zip.sha256
+          if-no-files-found: error
 
   # Prove every archive is self-contained AND that its embedded rev is
   # EXACTLY the <rev> in its name BEFORE it can be published: download each
@@ -107,6 +226,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
 
@@ -117,19 +238,55 @@ jobs:
       # downloads the quanta-compiler-<rev>-<target> artifact, sha256-verifies
       # it, extracts on a CLEAN runner, and asserts the extracted binary's
       # --rev equals that <rev> (the rev IS the contract here — stronger than
-      # release's non-empty gate).
+      # release's non-empty gate). The Windows leg re-derives <rev> from the
+      # same checkout for its own equality assertion below.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.ref }}
           fetch-depth: 0
 
       - name: Verify quanta-compiler archive for this rev
+        if: runner.os != 'Windows'
         uses: ./.github/actions/verify-compiler
         with:
           target: ${{ matrix.target }}
           embed-rev: 'true'
           assert-exact-rev: 'true'
           ref: ${{ github.event.inputs.ref }}
+
+      # Windows (zip) verify stays INLINE (pwsh Expand-Archive; a composite
+      # bash step cannot host it) — and asserts rev EQUALITY, per this
+      # workflow's contract.
+      - name: Download artifact under test (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@v4
+        with:
+          name: quanta-compiler-${{ matrix.target }}
+          path: dl
+
+      - name: Extract and assert exact rev (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rev = (git describe --always --dirty --exclude '*').Trim()
+          Write-Host "expected rev: $rev"
+          cd dl
+          $zip = "quanta-compiler-$rev-${{ matrix.target }}.zip"
+          if (-not (Test-Path $zip)) {
+            Write-Error "expected asset $zip not found"; Get-ChildItem; exit 1
+          }
+          $expected = (Get-Content "$zip.sha256").Split(' ')[0].Trim()
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) {
+            Write-Error "sha256 mismatch: expected $expected, got $actual"; exit 1
+          }
+          Expand-Archive -Path $zip -DestinationPath extracted -Force
+          $out = (& ".\extracted\quanta-compiler.exe" --rev | Out-String).Trim()
+          Write-Host "quanta-compiler --rev => $out"
+          if ($out -ne $rev) {
+            Write-Error "rev mismatch: asset says $rev, binary says $out"; exit 1
+          }
 
   # Publish all six files as assets of a ROLLING prerelease tagged
   # `compiler-dev`, then prune to the 10 most-recent revs. Uses `gh`
@@ -161,7 +318,9 @@ jobs:
           # upload sees the files directly.
           mkdir -p dist
           find artifacts -type f \( -name 'quanta-compiler-*.tar.gz' \
-                                  -o -name 'quanta-compiler-*.tar.gz.sha256' \) \
+                                  -o -name 'quanta-compiler-*.tar.gz.sha256' \
+                                  -o -name 'quanta-compiler-*.zip' \
+                                  -o -name 'quanta-compiler-*.zip.sha256' \) \
             -exec cp {} dist/ \;
           echo "--- files to publish ---"
           ls -la dist/
@@ -198,7 +357,7 @@ jobs:
           )"
           fi
 
-      # Upload this run's six files. --clobber so re-running the workflow
+      # Upload this run's eight files. --clobber so re-running the workflow
       # for the same rev replaces rather than errors on existing assets.
       - name: Upload this rev's assets
         env:
@@ -213,7 +372,7 @@ jobs:
       # assets by createdAt (newest first), collect distinct <rev> segments
       # in that order, keep the first 10, and delete every asset whose rev
       # is not in the keep set. Grouping by <rev> means an entire rev's
-      # 6-file set (3 targets x {archive, sha256}) is kept or dropped
+      # 8-file set (4 targets x {archive, sha256}) is kept or dropped
       # together.
       - name: Prune to the 10 most-recent revs
         env:
@@ -244,6 +403,7 @@ jobs:
             n="${n%%-aarch64-apple-darwin*}"
             n="${n%%-x86_64-unknown-linux-gnu*}"
             n="${n%%-aarch64-unknown-linux-gnu*}"
+            n="${n%%-x86_64-pc-windows-msvc*}"
             printf '%s' "$n"
           }
           # Ordered, de-duplicated rev list (newest-first). Kept as
