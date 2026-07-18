@@ -257,6 +257,8 @@ impl MetalDevice {
                     width: s.width,
                     height: s.height,
                     format: s.format,
+                    // Swapchain drawables are always single-sample.
+                    sample_count: 1,
                     device: None,
                     // The swapchain owns the drawable; it is recycled on
                     // present, so this wrapper must not destroy it.

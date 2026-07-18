@@ -222,7 +222,8 @@ impl GpuDevice for MetalDevice {
             color_targets: Vec::new(),
             depth_target: None,
             primary_format: Some(target.format()),
-            pipeline_shape: None,
+            primary_samples: Some(target.sample_count()),
+            pipeline_shapes: Vec::new(),
         })
     }
 

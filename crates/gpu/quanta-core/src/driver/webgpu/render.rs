@@ -268,17 +268,26 @@ impl WebgpuDevice {
             color_targets: alloc::vec![crate::render_pass::ColorTarget {
                 texture: target.handle,
                 format: target.format,
+                samples: target.sample_count,
                 load_op: crate::LoadOp::Clear(crate::Color::CLEAR),
                 store_op: crate::StoreOp::Store,
             }],
             depth_target: None,
             primary_format: Some(target.format),
-            pipeline_shape: None,
+            primary_samples: Some(target.sample_count),
+            pipeline_shapes: Vec::new(),
         })
     }
 
     pub(super) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         let device = self.dev()?;
+
+        // Fail loudly on a pipeline/target shape mismatch BEFORE any
+        // encoding — same backend-agnostic check Metal and Vulkan run,
+        // so a mismatched draw errors identically on every backend
+        // instead of being dropped by the browser's own validation
+        // (which surfaces only in the JS console, invisible to Rust).
+        pass.validate_pass_shape()?;
 
         let textures = self.state.textures.0.borrow();
         let target = textures

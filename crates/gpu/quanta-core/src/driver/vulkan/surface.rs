@@ -810,6 +810,8 @@ impl VulkanDevice {
                     width: entry.width,
                     height: entry.height,
                     format: entry.format,
+                    // Swapchain images are always single-sample.
+                    sample_count: 1,
                     device: None,
                     live: false,
                 },
@@ -823,6 +825,8 @@ impl VulkanDevice {
                 width: entry.width,
                 height: entry.height,
                 format: entry.format,
+                // Swapchain images are always single-sample.
+                sample_count: 1,
                 device: None,
                 live: false,
             },

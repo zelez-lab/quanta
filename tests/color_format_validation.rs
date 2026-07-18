@@ -19,10 +19,12 @@
 //!    at build time; skips otherwise).
 //!
 //!  * **Encode-time (K2)**: at `pulse()`, the bound color/depth targets
-//!    are checked against the pipeline's declared formats — count first,
-//!    then per-attachment format, then depth presence — with a named
-//!    `InvalidParam`. Always-on and backend-agnostic. Needs a live GPU
-//!    (the CPU backend has no render encoder); skips without one.
+//!    are checked against the pipeline's declared shape — count first,
+//!    then per-attachment format, then per-attachment sample count,
+//!    then depth format/presence — with a named `InvalidParam`, for
+//!    EVERY pipeline bound in the pass. Always-on and backend-agnostic.
+//!    Needs a live GPU (the CPU backend has no render encoder); skips
+//!    without one.
 //!
 //! `N < M` (writing fewer attachments than the fragment declares) is the
 //! driver-legal partial case and is **allowed** — see the `spirv_meta`
@@ -36,8 +38,8 @@
 
 use quanta::RenderGpu;
 
-use quanta::render_pass::ColorTarget;
-use quanta::{Format, PipelineDesc, QuantaErrorKind, ShaderSource};
+use quanta::render_pass::{ColorTarget, DepthTarget};
+use quanta::{Format, PipelineDesc, QuantaErrorKind, ShaderSource, TextureDesc, TextureUsage};
 
 // A single-output fragment (every DSL fragment is single-output) and a
 // trivial vertex, shared by the tests below.
@@ -363,4 +365,294 @@ fn legacy_single_target_pass_still_draws() {
         .pulse()
         .expect("a matched single-target pass must not be rejected");
     pulse.wait().unwrap();
+}
+
+// ─── K2b: encode-time sample-count + depth-shape validation ──────────────────
+//
+// A pipeline whose rasterization sample count disagrees with the bound
+// target's is a draw Metal silently DROPS (the "invisible transform
+// layers" class of bug), and Vulkan treats as render-pass
+// incompatibility. Same host-side metadata check as the format tests
+// above: pipelines carry `sample_count`, textures carry theirs from
+// creation, and `pulse()` compares them before any driver encoding.
+
+fn triangle_vb(gpu: &quanta::Gpu) -> quanta::Field<f32> {
+    let verts: [f32; 9] = [0.0, 0.5, 0.0, -0.5, -0.5, 0.0, 0.5, -0.5, 0.0];
+    let vb: quanta::Field<f32> = gpu
+        .field_with_usage(verts.len(), quanta::FieldUsage::default_render())
+        .unwrap();
+    vb.write(&verts).unwrap();
+    vb
+}
+
+/// A 4x-MSAA pipeline bound against a single-sample color target fails
+/// at `pulse()` naming both sample counts (explicit color-target path).
+#[test]
+fn sample_count_mismatch_named_err_at_encode() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    let layouts = vertex_layout();
+    let pipeline = gpu
+        .pipeline(&desc_with_formats(&layouts, vec![Format::RGBA8]).with_sample_count(4))
+        .expect("4x MSAA pipeline should build");
+
+    // Single-sample target — mismatched with the 4x pipeline.
+    let target = gpu.render_target(32, 32, Format::RGBA8).unwrap();
+    let vb = triangle_vb(&gpu);
+
+    let result = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget::new(&target)])
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse();
+
+    match result {
+        Err(e) => {
+            assert!(
+                matches!(e.kind, QuantaErrorKind::InvalidParam(_)),
+                "expected InvalidParam, got {:?}",
+                e.kind
+            );
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("color target 0 sample-count mismatch")
+                    && msg.contains("sample_count is 4")
+                    && msg.contains("created with 1 samples"),
+                "error should name both sample counts, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("4x pipeline over a 1-sample target must fail at pulse()"),
+    }
+}
+
+/// The same mismatch through the legacy single-target path (no explicit
+/// `color_targets`) is caught too — the primary target's sample count is
+/// captured at `render_begin`.
+#[test]
+fn sample_count_mismatch_legacy_single_target_named_err() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    let layouts = vertex_layout();
+    let pipeline = gpu
+        .pipeline(&desc_with_formats(&layouts, vec![Format::RGBA8]).with_sample_count(4))
+        .expect("4x MSAA pipeline should build");
+
+    let target = gpu.render_target(32, 32, Format::RGBA8).unwrap();
+    let vb = triangle_vb(&gpu);
+
+    // No `.color_targets(...)` — the implicit single-target path.
+    let result = gpu
+        .render(&target)
+        .unwrap()
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse();
+
+    match result {
+        Err(e) => {
+            assert!(
+                matches!(e.kind, QuantaErrorKind::InvalidParam(_)),
+                "expected InvalidParam, got {:?}",
+                e.kind
+            );
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("render target sample-count mismatch")
+                    && msg.contains("sample_count is 4")
+                    && msg.contains("created with 1 samples"),
+                "error should name both sample counts, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("4x pipeline over a 1-sample primary target must fail at pulse()"),
+    }
+}
+
+/// The matched MSAA case (4x pipeline into a 4x target) still draws —
+/// the sample-count check does not misfire on legitimate MSAA passes.
+#[test]
+fn matched_msaa_pass_still_draws() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    let layouts = vertex_layout();
+    let pipeline = gpu
+        .pipeline(&desc_with_formats(&layouts, vec![Format::RGBA8]).with_sample_count(4))
+        .expect("4x MSAA pipeline should build");
+
+    let target = gpu.msaa_target(32, 32, Format::RGBA8, 4).unwrap();
+    let vb = triangle_vb(&gpu);
+
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget::new(&target)])
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse()
+        .expect("a matched 4x/4x MSAA pass must not be rejected");
+    pulse.wait().unwrap();
+}
+
+/// A depth target whose texture format disagrees with the pipeline's
+/// declared `depth_format` fails at `pulse()` naming both formats. The
+/// repro is binding a color texture as the depth target — creatable
+/// today, silently dropped by Metal without this check.
+#[test]
+fn depth_format_mismatch_named_err_at_encode() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    let layouts = vertex_layout();
+    let pipeline = gpu
+        .pipeline(
+            &desc_with_formats(&layouts, vec![Format::RGBA8])
+                .with_depth_format(Format::Depth32Float),
+        )
+        .expect("depth pipeline should build");
+
+    let color = gpu.render_target(32, 32, Format::RGBA8).unwrap();
+    // An RGBA8 texture bound as the DEPTH target — not Depth32Float.
+    let bogus_depth = gpu.render_target(32, 32, Format::RGBA8).unwrap();
+    let vb = triangle_vb(&gpu);
+
+    let result = gpu
+        .render(&color)
+        .unwrap()
+        .color_targets(vec![ColorTarget::new(&color)])
+        .depth_target(DepthTarget::new(&bogus_depth))
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse();
+
+    match result {
+        Err(e) => {
+            assert!(
+                matches!(e.kind, QuantaErrorKind::InvalidParam(_)),
+                "expected InvalidParam, got {:?}",
+                e.kind
+            );
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("depth target format mismatch")
+                    && msg.contains("Depth32Float")
+                    && msg.contains("RGBA8"),
+                "error should name expected and bound depth formats, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("RGBA8 texture bound as Depth32Float depth target must fail at pulse()"),
+    }
+}
+
+/// A depth target whose sample count disagrees with the pipeline's
+/// fails at `pulse()` naming both counts — every attachment of the
+/// pass, depth included, must carry the pipeline's sample count.
+#[test]
+fn depth_sample_count_mismatch_named_err_at_encode() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    let layouts = vertex_layout();
+    // Single-sample pipeline with a depth attachment declared.
+    let pipeline = gpu
+        .pipeline(
+            &desc_with_formats(&layouts, vec![Format::RGBA8])
+                .with_depth_format(Format::Depth32Float),
+        )
+        .expect("depth pipeline should build");
+
+    let color = gpu.render_target(32, 32, Format::RGBA8).unwrap();
+    // ...but the depth texture was created 4x-multisampled.
+    let msaa_depth = gpu
+        .create_texture(
+            &TextureDesc::new(32, 32, Format::Depth32Float)
+                .with_sample_count(4)
+                .with_usage(TextureUsage::RENDER_TARGET),
+        )
+        .expect("4x depth texture should build");
+    let vb = triangle_vb(&gpu);
+
+    let result = gpu
+        .render(&color)
+        .unwrap()
+        .color_targets(vec![ColorTarget::new(&color)])
+        .depth_target(DepthTarget::new(&msaa_depth))
+        .pipeline(&pipeline)
+        .vertices(0, &vb)
+        .draw(3)
+        .pulse();
+
+    match result {
+        Err(e) => {
+            assert!(
+                matches!(e.kind, QuantaErrorKind::InvalidParam(_)),
+                "expected InvalidParam, got {:?}",
+                e.kind
+            );
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("depth target sample-count mismatch")
+                    && msg.contains("sample_count is 1")
+                    && msg.contains("created with 4 samples"),
+                "error should name both sample counts, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("1x pipeline over a 4x depth target must fail at pulse()"),
+    }
+}
+
+/// EVERY pipeline bound in a pass is validated, not just the last one:
+/// a mismatched pipeline bound mid-pass (followed by a matched one)
+/// still fails at `pulse()`. Drivers replay `SetPipeline` ops in order,
+/// so the draws recorded under the mismatched bind would silently
+/// vanish if only the final bind were checked.
+#[test]
+fn mid_pass_pipeline_mismatch_named_err_at_encode() {
+    let Some(gpu) = try_gpu() else {
+        return;
+    };
+    let layouts = vertex_layout();
+    let mismatched = gpu
+        .pipeline(&desc_with_formats(&layouts, vec![Format::BGRA8]))
+        .expect("BGRA8 pipeline should build");
+    let matched = gpu
+        .pipeline(&desc_with_formats(&layouts, vec![Format::RGBA8]))
+        .expect("RGBA8 pipeline should build");
+
+    let target = gpu.render_target(32, 32, Format::RGBA8).unwrap();
+    let vb = triangle_vb(&gpu);
+
+    let result = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![ColorTarget::new(&target)])
+        .pipeline(&mismatched) // draws under this bind would be dropped
+        .vertices(0, &vb)
+        .draw(3)
+        .pipeline(&matched) // a matched FINAL bind must not mask it
+        .draw(3)
+        .pulse();
+
+    match result {
+        Err(e) => {
+            assert!(
+                matches!(e.kind, QuantaErrorKind::InvalidParam(_)),
+                "expected InvalidParam, got {:?}",
+                e.kind
+            );
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("color target 0 format mismatch") && msg.contains("BGRA8"),
+                "error should name the mismatched pipeline's format, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("a mismatched mid-pass pipeline bind must fail at pulse()"),
+    }
 }

@@ -17,6 +17,12 @@ pub struct Texture {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) format: Format,
+    /// MSAA sample count the texture was created with (1 = no MSAA).
+    /// Captured from `TextureDesc::sample_count` at creation (swapchain
+    /// acquires are always 1) so render passes can validate the bound
+    /// targets against the pipeline's rasterization sample count at
+    /// encode time — a mismatch is a silent-drop on Metal.
+    pub(crate) sample_count: u32,
     /// Drivers construct textures with `device: None`; the `Gpu`
     /// wrapper attaches the device Arc so Drop can release the handle.
     pub(crate) device: Option<Arc<dyn GpuDevice>>,
@@ -44,6 +50,11 @@ impl Texture {
     }
     pub fn format(&self) -> Format {
         self.format
+    }
+    /// The MSAA sample count this texture was created with (1 = no
+    /// MSAA).
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
     }
     pub fn handle(&self) -> u64 {
         self.handle

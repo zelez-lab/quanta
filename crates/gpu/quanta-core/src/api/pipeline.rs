@@ -24,6 +24,11 @@ pub struct Pipeline {
     /// `PipelineDesc::depth_format`), retained for the same encode-time
     /// pass-shape validation.
     pub(crate) depth_format: Option<Format>,
+    /// Rasterization sample count this pipeline was built with (a copy
+    /// of `PipelineDesc::sample_count`), retained for the same
+    /// encode-time pass-shape validation: every attachment a pass binds
+    /// under this pipeline must carry exactly this sample count.
+    pub(crate) sample_count: u32,
 }
 
 impl Pipeline {
@@ -40,6 +45,7 @@ impl Pipeline {
             live: true,
             color_formats: Vec::new(),
             depth_format: None,
+            sample_count: 1,
         }
     }
 
@@ -56,15 +62,21 @@ impl Pipeline {
         self.device = Some(device);
     }
 
-    /// Record the color/depth formats the pipeline was built with so
-    /// the render pass can validate bound targets against them at
-    /// encode time. Internal hook for the `quanta-render` sibling crate
-    /// (drivers construct pipelines format-less); not part of the
-    /// stable public surface.
+    /// Record the color/depth formats and rasterization sample count
+    /// the pipeline was built with so the render pass can validate
+    /// bound targets against them at encode time. Internal hook for the
+    /// `quanta-render` sibling crate (drivers construct pipelines
+    /// shape-less); not part of the stable public surface.
     #[doc(hidden)]
-    pub fn __set_formats(&mut self, color_formats: Vec<Format>, depth_format: Option<Format>) {
+    pub fn __set_shape(
+        &mut self,
+        color_formats: Vec<Format>,
+        depth_format: Option<Format>,
+        sample_count: u32,
+    ) {
         self.color_formats = color_formats;
         self.depth_format = depth_format;
+        self.sample_count = sample_count;
     }
 }
 

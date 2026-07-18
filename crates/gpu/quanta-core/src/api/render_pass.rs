@@ -18,6 +18,10 @@ pub struct ColorTarget {
     /// check it against the pipeline's `color_formats[i]` at encode
     /// time.
     pub(crate) format: crate::Format,
+    /// MSAA sample count of the attachment texture (captured from the
+    /// `Texture` at construction). Retained so the render pass can
+    /// check it against the pipeline's `sample_count` at encode time.
+    pub(crate) samples: u32,
     /// What to do with existing contents at pass start.
     pub load_op: LoadOp,
     /// What to do with results at pass end.
@@ -31,6 +35,7 @@ impl ColorTarget {
         Self {
             texture: texture.handle(),
             format: texture.format(),
+            samples: texture.sample_count(),
             load_op: LoadOp::Clear(Color::BLACK),
             store_op: StoreOp::Store,
         }
@@ -63,6 +68,14 @@ pub struct DepthTarget {
     /// Driver handle of the depth/stencil texture (derived from the
     /// `Texture` passed to [`DepthTarget::new`]).
     pub(crate) texture: u64,
+    /// Pixel format of the depth/stencil texture (captured from the
+    /// `Texture` at construction). Retained so the render pass can
+    /// check it against the pipeline's `depth_format` at encode time.
+    pub(crate) format: crate::Format,
+    /// MSAA sample count of the depth/stencil texture (captured from
+    /// the `Texture` at construction). Retained so the render pass can
+    /// check it against the pipeline's `sample_count` at encode time.
+    pub(crate) samples: u32,
     /// Depth load operation.
     pub load_op: LoadOp,
     /// Depth store operation.
@@ -79,6 +92,8 @@ impl DepthTarget {
     pub fn new(texture: &Texture) -> Self {
         Self {
             texture: texture.handle(),
+            format: texture.format(),
+            samples: texture.sample_count(),
             load_op: LoadOp::Clear(Color::WHITE),
             store_op: StoreOp::DontCare,
             stencil_load_op: LoadOp::DontCare,
@@ -136,20 +151,29 @@ pub struct RenderPass {
     /// implicit color attachment. Stamped by the `Gpu` wrapper after
     /// `render_begin`; `None` if it could not be captured.
     pub(crate) primary_format: Option<crate::Format>,
-    /// The color/depth formats of the pipeline bound in this pass, if
-    /// one was bound. Captured from the [`Pipeline`] at `set_pipeline`
-    /// so [`RenderPass::validate_pass_shape`] can compare the pipeline's
-    /// declared attachments against the bound targets without a driver
-    /// registry lookup. `None` means no pipeline was bound (nothing to
-    /// validate).
-    pub(crate) pipeline_shape: Option<PipelineShape>,
+    /// MSAA sample count of the primary render target (the `Texture`
+    /// passed to `render`). Same role as `primary_format`, for the
+    /// pipeline sample-count check in the single-target path. `None` if
+    /// it could not be captured.
+    pub(crate) primary_samples: Option<u32>,
+    /// The declared attachment shape of **every** pipeline bound in
+    /// this pass, in bind order. Captured from the [`Pipeline`] at
+    /// `set_pipeline` so [`RenderPass::validate_pass_shape`] can compare
+    /// each pipeline's declared attachments against the bound targets
+    /// without a driver registry lookup. Every entry is validated —
+    /// drivers replay `SetPipeline` ops in order, so a mismatched
+    /// pipeline bound mid-pass drops its draws just as silently as a
+    /// mismatched final one. Empty means no pipeline was bound (nothing
+    /// to validate).
+    pub(crate) pipeline_shapes: Vec<PipelineShape>,
 }
 
-/// The declared attachment shape of the pipeline bound in a render pass,
+/// The declared attachment shape of a pipeline bound in a render pass,
 /// snapshotted at bind time for encode-time validation.
 pub(crate) struct PipelineShape {
     pub(crate) color_formats: Vec<crate::Format>,
     pub(crate) depth_format: Option<crate::Format>,
+    pub(crate) sample_count: u32,
 }
 
 #[allow(dead_code)]
@@ -369,8 +393,10 @@ impl RenderPass {
         Ok(())
     }
 
-    /// Pre-encode pass-shape validation: check that the pipeline bound
-    /// in this pass agrees with the color/depth targets the pass binds.
+    /// Pre-encode pass-shape validation: check that every pipeline
+    /// bound in this pass agrees with the color/depth targets the pass
+    /// binds — attachment count, per-attachment format, sample count,
+    /// and depth format/presence.
     ///
     /// `PipelineDesc::color_formats` is **per-attachment** — entry `i`
     /// types color attachment `i` of the pass — so the pipeline's
@@ -379,17 +405,30 @@ impl RenderPass {
     /// `[BGRA8, RGBA8]` for a single `RGBA8` target) produced a phantom
     /// second attachment and a mis-typed first one, which some drivers
     /// accept silently and then drop draws for — undebuggable without
-    /// this check. It is always-on (never `QUANTA_VALIDATE`-gated,
+    /// this check. Sample counts get the same treatment: a pipeline
+    /// rasterizing at N samples over a target created with M is a draw
+    /// Metal silently drops and Vulkan treats as render-pass
+    /// incompatibility. It is always-on (never `QUANTA_VALIDATE`-gated,
     /// backend-agnostic) because a mismatch here is never legitimate.
     ///
     /// Runs only when a pipeline was bound (otherwise there is nothing
-    /// to validate — a clear-only pass binds targets but no pipeline).
-    /// Drivers call this beside [`RenderPass::validate_handles`], before
-    /// encoding, so a mismatch fails `pulse()` loudly.
+    /// to validate — a clear-only pass binds targets but no pipeline),
+    /// and validates **every** bound pipeline: drivers replay
+    /// `SetPipeline` ops in order, so a mismatched pipeline bound
+    /// mid-pass is just as fatal as a mismatched final one. Drivers call
+    /// this beside [`RenderPass::validate_handles`], before encoding, so
+    /// a mismatch fails `pulse()` loudly.
     pub(crate) fn validate_pass_shape(&self) -> Result<(), crate::QuantaError> {
-        let Some(shape) = self.pipeline_shape.as_ref() else {
-            return Ok(());
-        };
+        for shape in &self.pipeline_shapes {
+            self.validate_one_pipeline_shape(shape)?;
+        }
+        Ok(())
+    }
+
+    /// The per-pipeline half of [`RenderPass::validate_pass_shape`]:
+    /// check one bound pipeline's declared shape against the pass's
+    /// targets.
+    fn validate_one_pipeline_shape(&self, shape: &PipelineShape) -> Result<(), crate::QuantaError> {
         let declared = shape.color_formats.len();
 
         // How many color attachments the pass actually binds. With
@@ -442,6 +481,79 @@ impl RenderPass {
             }
         }
 
+        // Per-attachment sample count: every attachment the pass binds
+        // must carry exactly the pipeline's rasterization sample count.
+        // Metal silently drops draws whose pipeline/target sample counts
+        // disagree; Vulkan calls it render-pass incompatibility. In the
+        // single-target path the one attachment's count is
+        // `primary_samples` — checked whatever its role (color for a
+        // color pipeline, depth map for a depth-only one; the
+        // requirement is identical). `None`/unknown skips, same as the
+        // format check.
+        let expected = shape.sample_count;
+        if self.color_targets.is_empty() {
+            if let Some(got) = self.primary_samples
+                && got != expected
+            {
+                return Err(crate::QuantaError::invalid_param(alloc::format!(
+                    "render target sample-count mismatch: pipeline sample_count is \
+                     {expected} but the bound target was created with {got} samples"
+                ))
+                .with_context(
+                    "a sample-count mismatch is a draw Metal silently drops — the \
+                     pipeline and every attachment of the pass must agree (create \
+                     the target with msaa_target / TextureDesc::with_sample_count \
+                     to match PipelineDesc::sample_count)",
+                ));
+            }
+        } else {
+            for (i, ct) in self.color_targets.iter().enumerate() {
+                if ct.samples != expected {
+                    return Err(crate::QuantaError::invalid_param(alloc::format!(
+                        "color target {i} sample-count mismatch: pipeline sample_count \
+                         is {expected} but the bound target was created with {got} \
+                         samples",
+                        got = ct.samples
+                    ))
+                    .with_context(
+                        "a sample-count mismatch is a draw Metal silently drops — the \
+                         pipeline and every attachment of the pass must agree (create \
+                         the target with msaa_target / TextureDesc::with_sample_count \
+                         to match PipelineDesc::sample_count)",
+                    ));
+                }
+            }
+        }
+        if let Some(dt) = self.depth_target.as_ref()
+            && dt.samples != expected
+        {
+            return Err(crate::QuantaError::invalid_param(alloc::format!(
+                "depth target sample-count mismatch: pipeline sample_count is \
+                 {expected} but the bound depth target was created with {got} samples",
+                got = dt.samples
+            ))
+            .with_context(
+                "a sample-count mismatch is a draw Metal silently drops — the \
+                 pipeline and every attachment of the pass must agree (create the \
+                 depth texture with TextureDesc::with_sample_count to match \
+                 PipelineDesc::sample_count)",
+            ));
+        }
+
+        // Depth format: an explicitly bound depth target must carry the
+        // format the pipeline declared. Both sides are explicit, so
+        // unlike the presence check below this holds in the legacy
+        // single-target path too.
+        if let (Some(dt), Some(expected)) = (self.depth_target.as_ref(), shape.depth_format)
+            && dt.format != expected
+        {
+            return Err(crate::QuantaError::invalid_param(alloc::format!(
+                "depth target format mismatch: pipeline depth_format is {expected:?} \
+                 but the bound depth target is {got:?}",
+                got = dt.format
+            )));
+        }
+
         // Depth presence: enforced only for passes with explicit color
         // targets, where the attachment roles are unambiguous. The pure
         // legacy single-target path routes the primary handle to color
@@ -476,11 +588,13 @@ impl RenderPass {
         self.ops.push(RenderOp::SetPipeline(pipeline.handle()));
         // Snapshot the pipeline's declared attachment shape so the
         // pre-encode `validate_pass_shape` scan can check it against the
-        // bound targets. The last pipeline bound wins — drivers encode
-        // draws against the most recently set pipeline.
-        self.pipeline_shape = Some(PipelineShape {
+        // bound targets. Every bound pipeline is snapshotted — drivers
+        // replay `SetPipeline` ops in order, so draws recorded under an
+        // earlier pipeline are just as real as those under the last.
+        self.pipeline_shapes.push(PipelineShape {
             color_formats: pipeline.color_formats.clone(),
             depth_format: pipeline.depth_format,
+            sample_count: pipeline.sample_count,
         });
     }
 

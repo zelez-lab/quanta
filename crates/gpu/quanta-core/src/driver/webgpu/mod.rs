@@ -419,6 +419,7 @@ impl QGpuDevice for WebgpuDevice {
             width: desc.width,
             height: desc.height,
             format: desc.format,
+            sample_count: desc.sample_count,
             device: None,
             live: true,
         })
