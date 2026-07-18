@@ -431,6 +431,12 @@ impl SpvEmitter {
             self.emit_name(var_id, &p.name);
             self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
             self.decorate(var_id, DECORATION_BINDING, &[binding]);
+            // A shader uniform is read-only — it is never written by the
+            // shader body. Mark the storage-buffer variable NonWritable
+            // (same as the slice/FieldRead block below); otherwise a
+            // uniform read from a mutable-typed SSBO in either stage trips
+            // VUID-RuntimeSpirv-NonWritable-06340/06341 under validation.
+            self.decorate(var_id, DECORATION_NON_WRITABLE, &[]);
             uniform_vars.push((p.name.clone(), var_id, member_ty, p.ty));
         }
     }
