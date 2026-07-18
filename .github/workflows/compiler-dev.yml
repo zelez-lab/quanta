@@ -155,14 +155,17 @@ jobs:
 
       # Derive <rev> exactly as build.rs stamps it (checkout above is
       # fetch-depth 0, so the abbreviation length matches a consumer's).
+      # Under pwsh, NOT msys2: the MSYS2 shell does not inherit the
+      # runner's PATH, so the native git.exe is invisible there.
       - name: Derive rev (Windows)
         if: runner.os == 'Windows'
-        shell: msys2 {0}
+        shell: pwsh
         run: |
-          set -euo pipefail
-          REV=$(git describe --always --dirty --exclude '*')
-          echo "derived rev: $REV"
-          echo "REV=$REV" >> $GITHUB_ENV
+          $ErrorActionPreference = 'Stop'
+          $rev = (git describe --always --dirty --exclude '*' | Out-String).Trim()
+          if ([string]::IsNullOrWhiteSpace($rev)) { Write-Error "git describe produced no rev"; exit 1 }
+          Write-Host "derived rev: $rev"
+          echo "REV=$rev" >> $env:GITHUB_ENV
 
       # Stage exe + non-system DLL closure, then assert the staged
       # binary's --rev EQUALS the derived <rev> — the rev IS the asset
