@@ -408,6 +408,16 @@ impl VulkanDevice {
         } else {
             pass.ops.iter().any(|op| matches!(op, RenderOp::Clear(_)))
         };
+        // A VIRGIN primary (tracked layout still UNDEFINED — never
+        // written) has nothing to preserve even when the pass declares
+        // Load: its attachment downgrades to DONT_CARE and its barrier
+        // takes the UNDEFINED wildcard. LOADing never-initialized
+        // backing faults some drivers (Intel reads uninitialized CCS
+        // compression state — STATUS_ACCESS_VIOLATION on the Iris Xe).
+        let primary_virgin = target_tex
+            .current_layout
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == ffi::VK_IMAGE_LAYOUT_UNDEFINED;
 
         // Pipeline lookup — bind state (layout, descriptor shape) and
         // the attachment sample count. The pipeline's BAKED render pass
@@ -453,8 +463,22 @@ impl VulkanDevice {
                     StoreOp::DontCare => (ffi::VK_ATTACHMENT_STORE_OP_DONT_CARE, None),
                     StoreOp::Resolve(h) => (ffi::VK_ATTACHMENT_STORE_OP_STORE, Some(h)),
                 };
+                // A Load on a VIRGIN attachment (tracked layout still
+                // UNDEFINED — never written) downgrades to DONT_CARE:
+                // nothing to preserve, and LOADing never-initialized
+                // backing faults some drivers (Intel CCS). Same guard
+                // as the single-target path.
+                let ct_virgin = ct_tex
+                    .current_layout
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    == ffi::VK_IMAGE_LAYOUT_UNDEFINED;
+                let load_op = if load_op == ffi::VK_ATTACHMENT_LOAD_OP_LOAD && ct_virgin {
+                    ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE
+                } else {
+                    load_op
+                };
                 let initial_layout = match ct.load_op {
-                    LoadOp::Load => ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    LoadOp::Load if !ct_virgin => ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     _ => ffi::VK_IMAGE_LAYOUT_UNDEFINED,
                 };
                 attachments.push(ffi::VkAttachmentDescription {
@@ -516,10 +540,17 @@ impl VulkanDevice {
             // (preserve) the target's previous contents. A loading
             // attachment declares its true initial layout; the pre-pass
             // barrier below puts the image there from its tracked
-            // layout.
+            // layout. EXCEPT a VIRGIN target (see `primary_virgin`
+            // above): nothing to preserve → DONT_CARE, semantically
+            // identical and it never reads the backing.
             let (load_op, initial_layout) = if primary_clears {
                 (
                     ffi::VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                )
+            } else if primary_virgin {
+                (
+                    ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                     ffi::VK_IMAGE_LAYOUT_UNDEFINED,
                 )
             } else {
@@ -768,6 +799,7 @@ impl VulkanDevice {
             // visible — transitioning a preserved target from UNDEFINED
             // legally discards its contents (and Intel really does).
             let (bar_old_layout, bar_src_access, bar_src_stage, bar_dst_access) = if primary_clears
+                || primary_virgin
             {
                 (
                     ffi::VK_IMAGE_LAYOUT_UNDEFINED,
