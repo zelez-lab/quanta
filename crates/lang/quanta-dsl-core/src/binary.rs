@@ -215,11 +215,34 @@ fn compiler_cache_dir() -> Option<std::path::PathBuf> {
 }
 
 /// Return the expected cached binary path for the current version.
+/// The cached location for a given install key (`quanta-compiler-<rev>`
+/// or `quanta-compiler-<version>`).
+///
+/// Unix: a flat file `<cache>/quanta-compiler-<key>` with the libLLVM
+/// closure extracted beside it in the cache root (the archive's layout).
+///
+/// Windows: a per-key BUNDLE directory
+/// `<cache>/quanta-compiler-<key>/quanta-compiler.exe` with the DLL
+/// closure adjacent inside it. Windows resolves DLLs from the exe's own
+/// directory first, so the bundle is self-contained — and installs of
+/// different keys can never clobber each other's libLLVM (the flat
+/// layout let a version-keyed fallback overwrite a rev-keyed install's
+/// DLLs, shipping an exe that dies at load).
+fn keyed_compiler_path(key: &str) -> Option<std::path::PathBuf> {
+    let cache = compiler_cache_dir()?;
+    if cfg!(windows) {
+        Some(
+            cache
+                .join(format!("quanta-compiler-{key}"))
+                .join("quanta-compiler.exe"),
+        )
+    } else {
+        Some(cache.join(format!("quanta-compiler-{key}")))
+    }
+}
+
 fn cached_compiler_path() -> Option<std::path::PathBuf> {
-    let version = env!("CARGO_PKG_VERSION");
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let binary_name = format!("quanta-compiler-{}{}", version, suffix);
-    Some(compiler_cache_dir()?.join(binary_name))
+    keyed_compiler_path(env!("CARGO_PKG_VERSION"))
 }
 
 /// This build's source revision — the SAME stamp `quanta-compiler --rev`
@@ -248,9 +271,7 @@ fn rev_is_publishable(rev: &str) -> bool {
 /// whole-archive extraction rewrites it, and every archive carries the
 /// same closure).
 fn rev_cached_compiler_path(rev: &str) -> Option<std::path::PathBuf> {
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let binary_name = format!("quanta-compiler-{}{}", rev, suffix);
-    Some(compiler_cache_dir()?.join(binary_name))
+    keyed_compiler_path(rev)
 }
 
 /// Archive extension for the host triple. Windows ships .zip; everything
@@ -285,6 +306,18 @@ fn version_download_url(version: &str, target: &str, ext: &str) -> String {
 
 /// Check if a previously downloaded compiler binary exists in the cache.
 fn find_cached_compiler() -> Option<String> {
+    // Rev-exact FIRST: a cached version-keyed fallback must never shadow
+    // a rev-exact install (the rev is the handshake contract — returning
+    // the version-keyed binary here when a rev-keyed one exists, or could
+    // be downloaded, is how a stale fallback got wedged into builds that
+    // had a matching asset available).
+    let rev = own_rev();
+    if rev_is_publishable(rev)
+        && let Some(rev_path) = rev_cached_compiler_path(rev)
+        && rev_path.exists()
+    {
+        return Some(rev_path.to_string_lossy().to_string());
+    }
     let cached_path = cached_compiler_path()?;
     if cached_path.exists() {
         return Some(cached_path.to_string_lossy().to_string());
@@ -369,7 +402,20 @@ fn fetch_and_stage(
     dest: &std::path::Path,
 ) -> Option<String> {
     let ext = archive_ext();
-    let download_path = cache_dir.join(format!("download.{ext}"));
+
+    // Everything happens inside a PER-INVOCATION scratch directory.
+    // Parallel proc-macro processes all resolve the compiler at once; the
+    // old shared `download.<ext>` + extract-into-cache-root let them
+    // corrupt each other's archives mid-download and tear each other's
+    // extractions ("ZIP decompression failed", a DLL-less exe that dies
+    // at load) — the same race class the wasm kernel cache had. Same
+    // cure: private scratch, then an atomic rename publishes the result,
+    // and a lost race just means the winner's identical bytes are
+    // already in place.
+    let scratch = cache_dir.join(format!(".fetch-{}-{}", std::process::id(), fetch_seq()));
+    std::fs::create_dir_all(&scratch).ok()?;
+    let _guard = ScratchDirGuard(&scratch);
+    let download_path = scratch.join(format!("archive.{ext}"));
 
     // Download using curl (ships with macOS, Linux, and Windows 10 1803+).
     // Use --silent so a 404 doesn't spew progress noise; we already
@@ -381,56 +427,110 @@ fn fetch_and_stage(
         .ok()?;
 
     if !output.status.success() {
-        // Quietly clean up — the caller (find_compiler_binary) will
-        // print the single, JIT-aware notice. Spamming the build log
-        // here was the old behavior and made users think something
-        // was broken when JIT was about to handle it transparently.
-        let _ = std::fs::remove_file(&download_path);
+        // Quietly bail — the caller (find_compiler_binary) prints the
+        // single, JIT-aware notice; the guard removes the scratch dir.
         return None;
     }
 
-    // Extract the archive — `tar` ships with Win10 1803+ and unpacks both
-    // .tar.gz and .zip. On Unix it's the canonical tool for .tar.gz.
+    // Extract the archive INSIDE the scratch dir — `tar` ships with
+    // Win10 1803+ and unpacks both .tar.gz and .zip. On Unix it's the
+    // canonical tool for .tar.gz.
     let extract = std::process::Command::new("tar")
         .args(["xf"])
         .arg(&download_path)
-        .current_dir(cache_dir)
+        .current_dir(&scratch)
         .output()
         .ok()?;
-
-    // Clean up the archive regardless of extraction result
-    let _ = std::fs::remove_file(&download_path);
 
     if !extract.status.success() {
         let stderr = String::from_utf8_lossy(&extract.stderr);
         eprintln!("[quanta] Extraction failed: {}", stderr.trim());
         return None;
     }
+    let _ = std::fs::remove_file(&download_path);
 
-    // The archive is expected to contain a `quanta-compiler[.exe]` binary
-    // at its root. Rename to the pinned (version- or rev-keyed) name to
-    // avoid mismatches.
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let extracted = cache_dir.join(format!("quanta-compiler{suffix}"));
-    if extracted.exists() {
-        if std::fs::rename(&extracted, dest).is_err() {
-            eprintln!("[quanta] Failed to rename downloaded binary.");
-            return None;
-        }
-    } else {
+    let extracted = scratch.join(format!("quanta-compiler{suffix}"));
+    if !extracted.exists() {
         eprintln!("[quanta] Archive did not contain expected 'quanta-compiler{suffix}' binary.");
         return None;
     }
 
-    // Ensure the binary is executable (Unix)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755));
+    if cfg!(windows) {
+        // Windows install = ONE atomic directory rename: the scratch dir
+        // (exe + its whole DLL closure) becomes the per-key bundle dir.
+        // The closure moves together or not at all — no torn installs,
+        // and no cross-key DLL clobbering. `dest` is
+        // <bundle-dir>/quanta-compiler.exe, so the bundle dir is its
+        // parent.
+        let bundle_dir = dest.parent()?;
+        match std::fs::rename(&scratch, bundle_dir) {
+            Ok(()) => {
+                // The guard must not delete what we just published.
+                std::mem::forget(_guard);
+            }
+            // Lost the publish race (or a prior install exists): the
+            // winner's bundle for this SAME key is byte-identical — use
+            // it; the guard removes our scratch.
+            Err(_) if dest.exists() => {}
+            Err(e) => {
+                eprintln!("[quanta] Failed to install compiler bundle: {e}");
+                return None;
+            }
+        }
+    } else {
+        // Unix keeps the flat layout (binary renamed to the keyed name,
+        // libLLVM closure beside it in the cache root — the rpath
+        // contract). Move the binary LAST so a concurrent resolver never
+        // sees the keyed name before its libs are in place; per-file
+        // renames are atomic and same-rev racers write identical bytes.
+        let entries = std::fs::read_dir(&scratch).ok()?;
+        for entry in entries.flatten() {
+            let from = entry.path();
+            if from == extracted {
+                continue;
+            }
+            let Some(name) = from.file_name() else {
+                continue;
+            };
+            let to = cache_dir.join(name);
+            if std::fs::rename(&from, &to).is_err() && !to.exists() {
+                eprintln!("[quanta] Failed to stage {}", to.display());
+                return None;
+            }
+        }
+        if std::fs::rename(&extracted, dest).is_err() && !dest.exists() {
+            eprintln!("[quanta] Failed to rename downloaded binary.");
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755));
+        }
     }
 
     eprintln!("[quanta] Compiler installed to {}", dest.display());
     Some(dest.to_string_lossy().to_string())
+}
+
+/// Monotonic per-process sequence for scratch-dir names, so concurrent
+/// fetches within one process (and across processes, via the pid) never
+/// share a scratch directory.
+fn fetch_seq() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Removes its scratch directory on drop, so no fetch — success, failure,
+/// or lost race — leaves partial archives or torn extractions behind.
+struct ScratchDirGuard<'a>(&'a std::path::Path);
+
+impl Drop for ScratchDirGuard<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.0);
+    }
 }
 
 // ============================================================================
@@ -1018,23 +1118,42 @@ mod download_url_tests {
 
     #[test]
     fn rev_cache_name_is_rev_keyed_beside_version_keyed() {
-        // The rev-exact download caches under quanta-compiler-<rev>[.exe],
-        // distinct from the version-keyed quanta-compiler-<version>[.exe]
-        // but in the same ~/.quanta/bin/ dir. Compare basenames so the
+        // The rev-exact download caches under a rev-keyed name, distinct
+        // from the version-keyed one, both inside ~/.quanta/bin/. Unix
+        // keeps the flat quanta-compiler-<key> file (libLLVM closure
+        // beside it in the cache root); Windows keys a self-contained
+        // BUNDLE DIRECTORY quanta-compiler-<key>/quanta-compiler.exe (the
+        // DLL closure lives inside, so installs of different keys can
+        // never clobber each other's DLLs). Compare basenames so the
         // test is HOME-independent; only meaningful when a home dir
         // resolves (skip otherwise rather than fail on a homeless runner).
-        let suffix = if cfg!(windows) { ".exe" } else { "" };
         if let (Some(rev_path), Some(ver_path)) =
             (rev_cached_compiler_path("77e51d9"), cached_compiler_path())
         {
-            assert_eq!(
-                rev_path.file_name().unwrap().to_string_lossy(),
-                format!("quanta-compiler-77e51d9{suffix}")
-            );
-            // Same cache directory as the version-keyed binary.
-            assert_eq!(rev_path.parent(), ver_path.parent());
-            // Distinct names (version is never a bare "77e51d9").
-            assert_ne!(rev_path.file_name(), ver_path.file_name());
+            if cfg!(windows) {
+                assert_eq!(
+                    rev_path.file_name().unwrap().to_string_lossy(),
+                    "quanta-compiler.exe"
+                );
+                let rev_bundle = rev_path.parent().unwrap();
+                let ver_bundle = ver_path.parent().unwrap();
+                assert_eq!(
+                    rev_bundle.file_name().unwrap().to_string_lossy(),
+                    "quanta-compiler-77e51d9"
+                );
+                // Distinct bundle dirs, same cache root.
+                assert_ne!(rev_bundle.file_name(), ver_bundle.file_name());
+                assert_eq!(rev_bundle.parent(), ver_bundle.parent());
+            } else {
+                assert_eq!(
+                    rev_path.file_name().unwrap().to_string_lossy(),
+                    "quanta-compiler-77e51d9"
+                );
+                // Same cache directory as the version-keyed binary.
+                assert_eq!(rev_path.parent(), ver_path.parent());
+                // Distinct names (version is never a bare "77e51d9").
+                assert_ne!(rev_path.file_name(), ver_path.file_name());
+            }
         }
     }
 }
