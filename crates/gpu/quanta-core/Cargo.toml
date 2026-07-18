@@ -49,5 +49,14 @@ webgpu = ["std", "jit", "compute"]
 [dependencies]
 quanta-ir.workspace = true
 
+## `raw-window-handle` interop (the implicit `raw-window-handle` feature):
+## `SurfaceTarget::from_window` / `from_raw` map a winit-style window to a
+## surface target with zero per-OS matching. rwh 0.6 is no_std and carries
+## ZERO transitive dependencies (its only optional dep, wasm-bindgen, sits
+## behind the `wasm-bindgen-0-2` feature we never enable) — the B⁰
+## zero-transitive-deps policy holds. The crate is re-exported as
+## `quanta_core::rwh` so consumers need no dependency line of their own.
+raw-window-handle = { version = "0.6", optional = true }
+
 [dev-dependencies]
 proptest = "1"

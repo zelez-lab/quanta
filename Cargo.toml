@@ -193,6 +193,17 @@ autograd = ["std", "dep:quanta-autograd"]
 ## training. Carries its own autograd/array deps, so it activates alone.
 nn = ["std", "dep:quanta-nn"]
 
+## raw-window-handle interop — the one-value window handoff:
+## `SurfaceTarget::from_window(&window)` maps any winit-style window
+## (anything implementing rwh 0.6's `HasWindowHandle + HasDisplayHandle`)
+## to the right surface target with zero per-OS matching. The rwh crate
+## itself is re-exported as `quanta::rwh`, so consumers need no
+## dependency line of their own. Zero transitive dependencies.
+raw-window-handle = [
+    "quanta-core/raw-window-handle",
+    "quanta-render?/raw-window-handle",
+]
+
 [dependencies]
 quanta-core.workspace = true
 quanta-compute-dsl = { path = "crates/lang/quanta-compute-dsl", version = "0.1.0-alpha.4", optional = true }

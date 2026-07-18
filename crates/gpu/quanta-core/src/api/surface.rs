@@ -104,7 +104,13 @@ impl SurfaceConfig {
 /// backend implementations (Vulkan Wayland/X11/Win32 handles, a WebGPU
 /// canvas selector, an OS-provided buffer target) — match with a
 /// wildcard arm.
+///
+/// With the `raw-window-handle` feature on, [`SurfaceTarget::from_window`]
+/// maps a winit-style window (anything implementing rwh 0.6's
+/// `HasWindowHandle + HasDisplayHandle`) to the right variant with zero
+/// per-OS matching — the one-value window handoff.
 #[non_exhaustive]
+#[derive(Debug)]
 pub enum SurfaceTarget {
     /// An existing `CAMetalLayer`, provided by the windowing
     /// environment (or by a compositor handing the app a layer to
@@ -117,6 +123,21 @@ pub enum SurfaceTarget {
     MetalLayer {
         /// `CAMetalLayer*` as a raw pointer.
         layer: *mut core::ffi::c_void,
+    },
+    /// An AppKit `NSView`, the window handle a macOS windowing library
+    /// (winit, or `raw-window-handle` producers generally) actually
+    /// exposes. The Metal driver makes the view layer-backed
+    /// (`setWantsLayer:YES`) and attaches a `CAMetalLayer` — reusing
+    /// the view's existing layer when it already is one — then
+    /// proceeds exactly as [`SurfaceTarget::MetalLayer`]. Same safety
+    /// contract as `MetalLayer`: the pointer must be a valid `NSView`
+    /// that outlives the surface, and the caller keeps ownership of
+    /// the view. AppKit views belong to the main thread — create the
+    /// surface there. Non-Metal backends return `NotSupported`
+    /// (MoltenVK-on-macOS wiring is a documented deferral).
+    AppKitView {
+        /// `NSView*` as a raw pointer.
+        ns_view: *mut core::ffi::c_void,
     },
     /// An X11 window, named by its Xlib display connection and window
     /// id. The consumer hands over the OS window handle; which driver
@@ -156,4 +177,155 @@ pub enum SurfaceTarget {
     /// anywhere. For tests, warm-up, and consumers that composite
     /// through another channel.
     Headless,
+}
+
+// ─── raw-window-handle interop (feature `raw-window-handle`) ───────────
+//
+// The one-value window handoff: a winit-style consumer goes from window
+// to surface target with zero per-OS matching. Pure mapping — no OS
+// calls happen here; pointer validation and platform wiring stay in the
+// drivers, exactly as when the target is constructed by hand.
+
+#[cfg(feature = "raw-window-handle")]
+mod rwh_interop {
+    use alloc::format;
+
+    use raw_window_handle as rwh;
+
+    use super::SurfaceTarget;
+    use crate::QuantaError;
+
+    /// A `HandleError` from the windowing library, mapped into Quanta's
+    /// error model: `NotSupported` when the window system cannot expose
+    /// a representable handle, `InvalidParam` otherwise (e.g. the
+    /// handle is temporarily unavailable — retry when the window is
+    /// back).
+    fn map_handle_error(e: rwh::HandleError) -> QuantaError {
+        match e {
+            rwh::HandleError::NotSupported => QuantaError::not_supported(
+                "the windowing system does not expose a raw handle Quanta can use",
+            ),
+            other => QuantaError::invalid_param(format!(
+                "window-handle source could not produce a handle: {other}"
+            )),
+        }
+    }
+
+    impl SurfaceTarget {
+        /// The surface target for a window, with zero per-OS matching —
+        /// the one-value window handoff:
+        ///
+        /// ```ignore
+        /// // `window` is anything implementing raw-window-handle 0.6's
+        /// // HasWindowHandle + HasDisplayHandle (a winit Window, say).
+        /// let target = SurfaceTarget::from_window(&window)?;
+        /// let mut surface = gpu.create_surface(&target, &SurfaceConfig::new(w, h))?;
+        /// ```
+        ///
+        /// Fetches the window and display handles from `source` and
+        /// delegates to [`SurfaceTarget::from_raw`] — see there for the
+        /// exact mapping and the unsupported window systems. A refusal
+        /// from the windowing library (`HandleError`) maps to
+        /// `NotSupported` / `InvalidParam`.
+        ///
+        /// # Safety contract (inherited, not checked here)
+        ///
+        /// The mapping itself is pure, but the pointers inside the
+        /// resulting target are only as valid as `source`: the window
+        /// (and its display connection) must outlive the surface
+        /// created from the target, exactly as documented per variant.
+        pub fn from_window(
+            source: &(impl rwh::HasWindowHandle + rwh::HasDisplayHandle),
+        ) -> Result<SurfaceTarget, QuantaError> {
+            let window = source.window_handle().map_err(map_handle_error)?.as_raw();
+            let display = source.display_handle().map_err(map_handle_error)?.as_raw();
+            SurfaceTarget::from_raw(window, display)
+        }
+
+        /// Map raw `raw-window-handle` 0.6 handles to a surface target —
+        /// the escape hatch under [`SurfaceTarget::from_window`] for
+        /// callers that already hold the raw handles. A **pure**
+        /// mapping: no OS calls, no pointer dereferences.
+        ///
+        /// | Window handle | Target |
+        /// |---------------|--------|
+        /// | `AppKit` | [`SurfaceTarget::AppKitView`] (the Metal driver attaches the `CAMetalLayer`) |
+        /// | `Xlib` (+ `Xlib` display) | [`SurfaceTarget::Xlib`] |
+        /// | `Win32` | [`SurfaceTarget::Win32`] |
+        /// | `AndroidNdk` | [`SurfaceTarget::AndroidWindow`] |
+        /// | `Wayland` | `Err(NotSupported)` — run under XWayland for now |
+        /// | anything else | `Err(NotSupported)`, naming the variant |
+        ///
+        /// Mapping notes:
+        ///
+        /// - **Xlib**: the display handle must also be `Xlib` and carry
+        ///   a `Display*` — an EGL default-display handle (`display:
+        ///   None`) is rejected with `InvalidParam`, because
+        ///   `VK_KHR_xlib_surface` needs the connection. The handle's
+        ///   `visual_id` is not carried; the swapchain negotiates its
+        ///   own format.
+        /// - **Win32**: an absent `hinstance` (legal in rwh 0.6) maps to
+        ///   a **null** pointer, passed through as-is. The Vulkan
+        ///   backend requires a non-null `HINSTANCE` and rejects null
+        ///   with `InvalidParam` at create time — if your handle
+        ///   producer omits it (winit supplies it), fetch the module
+        ///   handle yourself (`GetModuleHandleW(NULL)`) and construct
+        ///   [`SurfaceTarget::Win32`] directly.
+        /// - **Wayland**: `VK_KHR_wayland_surface` wiring is a
+        ///   documented deferral. Until it lands, run the app under
+        ///   XWayland (force your windowing library's X11 backend) so
+        ///   the window arrives as `Xlib`.
+        pub fn from_raw(
+            window: rwh::RawWindowHandle,
+            display: rwh::RawDisplayHandle,
+        ) -> Result<SurfaceTarget, QuantaError> {
+            match (window, display) {
+                (rwh::RawWindowHandle::AppKit(w), _) => Ok(SurfaceTarget::AppKitView {
+                    ns_view: w.ns_view.as_ptr(),
+                }),
+                (rwh::RawWindowHandle::Xlib(w), rwh::RawDisplayHandle::Xlib(d)) => {
+                    let Some(display) = d.display else {
+                        return Err(QuantaError::invalid_param(
+                            "the Xlib display handle carries no Display* (an EGL \
+                             default-display handle) — VK_KHR_xlib_surface needs \
+                             the connection; open the Display and use \
+                             SurfaceTarget::Xlib directly",
+                        ));
+                    };
+                    Ok(SurfaceTarget::Xlib {
+                        display: display.as_ptr(),
+                        window: w.window,
+                    })
+                }
+                (rwh::RawWindowHandle::Xlib(_), other) => Err(QuantaError::invalid_param(format!(
+                    "an Xlib window handle needs an Xlib display handle, \
+                     got {other:?}"
+                ))),
+                (rwh::RawWindowHandle::Win32(w), _) => Ok(SurfaceTarget::Win32 {
+                    // None → null, passed through (see the mapping notes
+                    // above): the Vulkan backend rejects a null
+                    // HINSTANCE at create time.
+                    hinstance: w
+                        .hinstance
+                        .map(|h| h.get() as *mut core::ffi::c_void)
+                        .unwrap_or(core::ptr::null_mut()),
+                    hwnd: w.hwnd.get() as *mut core::ffi::c_void,
+                }),
+                (rwh::RawWindowHandle::AndroidNdk(w), _) => Ok(SurfaceTarget::AndroidWindow {
+                    a_native_window: w.a_native_window.as_ptr(),
+                }),
+                (rwh::RawWindowHandle::Wayland(_), _) => Err(QuantaError::not_supported(
+                    "Wayland window handles are not wired yet (VK_KHR_wayland_surface \
+                     is a documented deferral) — run under XWayland for now: force \
+                     your windowing library's X11 backend so the window arrives as \
+                     an Xlib handle",
+                )),
+                (other, _) => Err(QuantaError::not_supported(format!(
+                    "no Quanta surface target for this window-handle kind: {other:?} \
+                     (supported: AppKit, Xlib, Win32, AndroidNdk; Wayland via \
+                     XWayland for now)"
+                ))),
+            }
+        }
+    }
 }

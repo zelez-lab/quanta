@@ -457,6 +457,82 @@ fn surface_sparse_then_burst_cadence() {
     assert_demand_driven_cadence(&gpu, &mut surface);
 }
 
+// --- Part D: `render_frame` — the closure over acquire/present ---
+
+#[test]
+fn render_frame_runs_closure_and_presents() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let mut surface = gpu
+        .create_surface(&SurfaceTarget::Headless, &SurfaceConfig::new(64, 64))
+        .unwrap();
+    let baseline = gpu.debug_registry_counts();
+
+    // More frames than the swapchain depth (3): each Ok closure must
+    // end in a present, or the drawable pool runs dry.
+    for i in 0..5u32 {
+        let value = surface
+            .render_frame(|frame| {
+                assert_eq!(frame.texture().width(), 64);
+                let mut pulse = gpu.render(frame.texture())?.pulse()?;
+                pulse.wait()?;
+                Ok(i) // the closure's value comes back out
+            })
+            .unwrap();
+        assert_eq!(value, i);
+    }
+
+    assert_eq!(
+        gpu.debug_registry_counts(),
+        baseline,
+        "render_frame must not leak registry entries"
+    );
+}
+
+#[test]
+fn render_frame_closure_error_discards_and_recovers() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let mut surface = gpu
+        .create_surface(&SurfaceTarget::Headless, &SurfaceConfig::new(32, 32))
+        .unwrap();
+
+    // A failing closure: the error propagates untouched and the frame
+    // is discarded, not presented.
+    let err = surface
+        .render_frame(|_frame| -> Result<(), quanta::QuantaError> {
+            Err(quanta::QuantaError::invalid_param("scene not ready"))
+        })
+        .unwrap_err();
+    assert!(matches!(err.kind, QuantaErrorKind::InvalidParam(_)));
+
+    // The loop keeps working after the failure — deeper than the
+    // swapchain, so the discarded frame demonstrably recycled.
+    for _ in 0..4 {
+        surface
+            .render_frame(|frame| {
+                let mut pulse = gpu.render(frame.texture())?.pulse()?;
+                pulse.wait()?;
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
 /// Minimal ObjC FFI to create a standalone `CAMetalLayer` — no window
 /// needed; the driver configures the layer (device/format/size) itself.
 #[cfg(target_os = "macos")]
@@ -494,6 +570,140 @@ mod layer_ffi {
                 core::mem::transmute(objc_msgSend as unsafe extern "C" fn());
             send(layer, sel);
         }
+    }
+}
+
+#[test]
+fn surface_rejects_null_appkit_view() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+    let err = gpu
+        .create_surface(
+            &SurfaceTarget::AppKitView {
+                ns_view: core::ptr::null_mut(),
+            },
+            &SurfaceConfig::new(32, 32),
+        )
+        .unwrap_err();
+    // Metal rejects the null pointer (InvalidParam); backends without
+    // an AppKitView target reject the target itself (NotSupported).
+    assert!(matches!(
+        err.kind,
+        QuantaErrorKind::InvalidParam(_) | QuantaErrorKind::NotSupported(_)
+    ));
+}
+
+/// Minimal ObjC FFI to create a standalone `NSView` — the shape a
+/// raw-window-handle producer hands over as the macOS window handle.
+/// AppKit view classes instantiate fine without an NSApplication run
+/// loop; the view simply never appears on screen.
+#[cfg(target_os = "macos")]
+mod view_ffi {
+    use core::ffi::{c_char, c_void};
+
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+    // Linking AppKit registers the NSView class with the ObjC runtime.
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {}
+
+    /// `[NSView new]` — zero frame; the surface config sizes the layer.
+    pub fn new_ns_view() -> *mut c_void {
+        unsafe {
+            let cls = objc_getClass(c"NSView".as_ptr());
+            assert!(!cls.is_null(), "NSView class not found");
+            let sel = sel_registerName(c"new".as_ptr());
+            let send: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+                core::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            send(cls, sel)
+        }
+    }
+
+    /// `[obj release]` — balance the +1 from `new`.
+    pub fn release(obj: *mut c_void) {
+        unsafe {
+            let sel = sel_registerName(c"release".as_ptr());
+            let send: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+                core::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            send(obj, sel);
+        }
+    }
+}
+
+/// The raw-window-handle handoff, end to end on this Mac: a bare
+/// `NSView` (what rwh's AppKit handle carries) goes through
+/// `SurfaceTarget::AppKitView`; the Metal driver attaches the
+/// `CAMetalLayer` itself. A second surface over the same view must
+/// REUSE that layer (the driver's isKindOfClass arm) rather than
+/// replace it.
+#[cfg(target_os = "macos")]
+#[test]
+fn appkit_view_surface_end_to_end() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let ns_view = view_ffi::new_ns_view();
+    assert!(!ns_view.is_null());
+    let target = SurfaceTarget::AppKitView { ns_view };
+
+    match gpu.create_surface(&target, &SurfaceConfig::new(64, 64)) {
+        Ok(mut surface) => {
+            // Deeper than the drawable pool: presents must recycle.
+            for _ in 0..4 {
+                surface
+                    .render_frame(|frame| {
+                        assert_eq!(frame.texture().width(), 64);
+                        assert_eq!(frame.texture().format(), Format::BGRA8);
+                        let mut pulse = gpu.render(frame.texture())?.pulse()?;
+                        pulse.wait()?;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            drop(surface);
+
+            // Round 2 over the same view: the layer attached in round
+            // 1 is still on the view (the view retains it) and gets
+            // reused; the frame loop must work identically.
+            let mut surface = gpu
+                .create_surface(&target, &SurfaceConfig::new(32, 32))
+                .unwrap();
+            for _ in 0..4 {
+                surface
+                    .render_frame(|frame| {
+                        assert_eq!(frame.texture().width(), 32);
+                        let mut pulse = gpu.render(frame.texture())?.pulse()?;
+                        pulse.wait()?;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            drop(surface);
+            view_ffi::release(ns_view);
+        }
+        Err(e) if matches!(e.kind, QuantaErrorKind::NotSupported(_)) => {
+            // A non-Metal backend on macOS (forced Vulkan) has no
+            // AppKitView path yet (MoltenVK deferral).
+            eprintln!("skipping: AppKitView target not supported: {e}");
+            view_ffi::release(ns_view);
+        }
+        Err(e) => panic!("create_surface(AppKitView) failed: {e}"),
     }
 }
 

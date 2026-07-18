@@ -1002,6 +1002,19 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         ))
     }
 
+    /// The presentation target's **current** extent in pixels, if the
+    /// backend can read it — the size the surface should be
+    /// reconfigured to after a `SurfaceOutdated`. Best-effort hint:
+    /// `None` when the backend cannot tell (default), when the target
+    /// imposes no fixed extent (headless), or when the query fails —
+    /// the caller then falls back to reconfiguring manually. Metal
+    /// reads the layer's `drawableSize`; Vulkan reads
+    /// `VkSurfaceCapabilitiesKHR::currentExtent`.
+    #[cfg(feature = "render")]
+    fn surface_current_extent(&self, _surface: u64) -> Option<(u32, u32)> {
+        None
+    }
+
     /// Acquire the next presentable frame from a surface. Returns the
     /// frame id and a `Texture` aliasing the frame's target image
     /// (registered in the device's texture registry until the frame

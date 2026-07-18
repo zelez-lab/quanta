@@ -56,6 +56,16 @@ unsafe fn msg_cgsize(obj: ffi::Id, name: &[u8]) -> CGSize {
     }
 }
 
+/// Send a message taking one object argument, returning BOOL — used
+/// for `isKindOfClass:` on the AppKit-view target.
+unsafe fn msg_bool_id(obj: ffi::Id, name: &[u8], v: ffi::Id) -> bool {
+    unsafe {
+        let f: unsafe extern "C" fn(ffi::Id, ffi::Sel, ffi::Id) -> ffi::BOOL =
+            core::mem::transmute(ffi::objc_msgSend as *const core::ffi::c_void);
+        f(obj, ffi::sel(name), v) != ffi::NO
+    }
+}
+
 /// The CAMetalLayer-legal subset of Quanta formats.
 fn layer_format_supported(format: Format) -> bool {
     matches!(format, Format::BGRA8 | Format::RGBA16Float)
@@ -127,6 +137,48 @@ impl MetalDevice {
                     // Borrowed from the caller — retain for the
                     // surface's lifetime, released on destroy.
                     ffi::msg_id(*layer as ffi::Id, b"retain\0")
+                }
+                SurfaceTarget::AppKitView { ns_view } => {
+                    // The raw-window-handle path: the windowing library
+                    // hands over an NSView*, and attaching the
+                    // CAMetalLayer is the driver's business. Make the
+                    // view layer-backed and give it a CAMetalLayer —
+                    // reusing the view's layer when it already is one
+                    // (an MTKView, or a second surface over the same
+                    // view) — then proceed exactly as the MetalLayer
+                    // arm: retained here, released on destroy, the
+                    // caller keeps ownership of the view.
+                    if ns_view.is_null() {
+                        return Err(QuantaError::invalid_param(
+                            "SurfaceTarget::AppKitView pointer is null",
+                        ));
+                    }
+                    let view = *ns_view as ffi::Id;
+                    let cls = ffi::cls(b"CAMetalLayer\0");
+                    if cls.is_null() {
+                        return Err(QuantaError::internal(
+                            "CAMetalLayer class unavailable (QuartzCore not loaded)",
+                        ));
+                    }
+                    ffi::msg_void_bool(view, b"setWantsLayer:\0", true);
+                    let existing = ffi::msg_id(view, b"layer\0");
+                    if !existing.is_null()
+                        && msg_bool_id(existing, b"isKindOfClass:\0", cls as ffi::Id)
+                    {
+                        // Already a CAMetalLayer — reuse it (retained
+                        // for the surface's lifetime, like MetalLayer).
+                        ffi::msg_id(existing, b"retain\0")
+                    } else {
+                        // Owned (+1): `new` allocates the layer, and
+                        // `setLayer:` hands the view its own reference.
+                        // Our +1 is released on destroy.
+                        let layer = ffi::msg_id(cls as ffi::Id, b"new\0");
+                        if layer.is_null() {
+                            return Err(QuantaError::internal("failed to create CAMetalLayer"));
+                        }
+                        ffi::msg_void_id(view, b"setLayer:\0", layer);
+                        layer
+                    }
                 }
                 SurfaceTarget::Headless => {
                     let cls = ffi::cls(b"CAMetalLayer\0");
@@ -287,6 +339,19 @@ impl MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&f.texture_handle);
         Ok(())
+    }
+
+    /// Best-effort current extent of the presentation target: the
+    /// layer's `drawableSize`. This is exactly the value the acquire
+    /// out-of-date check compares against, so after a
+    /// `SurfaceOutdated` it is the extent to reconfigure to. `None`
+    /// when the handle is unknown or the size is degenerate.
+    pub(crate) fn surface_current_extent_impl(&self, surface: u64) -> Option<(u32, u32)> {
+        let surfaces = self.surfaces.read().ok()?;
+        let s = surfaces.get(&surface)?;
+        let ds = unsafe { msg_cgsize(s.layer, b"drawableSize\0") };
+        let (w, h) = (ds.width as u32, ds.height as u32);
+        (w > 0 && h > 0).then_some((w, h))
     }
 
     pub(crate) fn surface_format_impl(&self, surface: u64) -> Result<Format, QuantaError> {

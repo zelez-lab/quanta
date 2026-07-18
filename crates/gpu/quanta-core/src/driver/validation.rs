@@ -612,6 +612,11 @@ impl GpuDevice for ValidationDevice {
     }
 
     #[cfg(feature = "render")]
+    fn surface_current_extent(&self, surface: u64) -> Option<(u32, u32)> {
+        self.inner.surface_current_extent(surface)
+    }
+
+    #[cfg(feature = "render")]
     fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
         self.inner.surface_acquire(surface)
     }

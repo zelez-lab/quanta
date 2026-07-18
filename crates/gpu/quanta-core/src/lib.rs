@@ -32,6 +32,13 @@ mod driver;
 // Re-export API types at crate root
 pub use api::*;
 
+/// Re-export of `raw-window-handle` 0.6 (feature `raw-window-handle`),
+/// so consumers of `SurfaceTarget::from_window` / `from_raw` name the
+/// interop types (`rwh::HasWindowHandle`, `rwh::RawWindowHandle`, …)
+/// without a dependency line of their own.
+#[cfg(feature = "raw-window-handle")]
+pub use raw_window_handle as rwh;
+
 /// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
 #[cfg(feature = "std")]
 fn validation_enabled() -> bool {

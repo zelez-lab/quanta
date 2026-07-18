@@ -23,6 +23,10 @@ vulkan-portability = ["vulkan", "quanta-core/vulkan-portability"]
 # executing kernels). Render-only consumers simply don't enable it.
 software = ["std", "quanta-core/software"]
 webgpu = ["std", "quanta-core/webgpu"]
+# raw-window-handle interop, forwarded to the substrate: unlocks
+# `SurfaceTarget::from_window` / `from_raw` (and the `rwh` crate
+# re-export) for the one-value window handoff into `create_surface`.
+raw-window-handle = ["quanta-core/raw-window-handle"]
 
 [dependencies]
 # The shared substrate with the render face on. NO compute stack: this

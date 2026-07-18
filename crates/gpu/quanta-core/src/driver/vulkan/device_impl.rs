@@ -1864,6 +1864,11 @@ impl GpuDevice for VulkanDevice {
     }
 
     #[cfg(feature = "render")]
+    fn surface_current_extent(&self, surface: u64) -> Option<(u32, u32)> {
+        self.surface_current_extent_impl(surface)
+    }
+
+    #[cfg(feature = "render")]
     fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
         self.surface_acquire_impl(surface)
     }

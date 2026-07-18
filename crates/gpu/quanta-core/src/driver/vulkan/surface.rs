@@ -833,6 +833,24 @@ impl VulkanDevice {
         ))
     }
 
+    /// Best-effort current extent of the presentation target:
+    /// `VkSurfaceCapabilitiesKHR::currentExtent`. `None` when the
+    /// handle is unknown, the query fails, the surface imposes no
+    /// fixed extent (the `0xFFFFFFFF` special value — headless), or
+    /// the extent is degenerate (a minimized window).
+    pub(crate) fn surface_current_extent_impl(&self, surface: u64) -> Option<(u32, u32)> {
+        let procs = self.surface_procs.as_ref()?;
+        let surfaces = self.vk_surfaces.read().ok()?;
+        let entry = surfaces.get(&surface)?;
+        let mut caps = unsafe { core::mem::zeroed::<ffi::VkSurfaceCapabilitiesKHR>() };
+        let r = unsafe { (procs.surface_caps)(self.physical_device, entry.surface, &mut caps) };
+        if r != ffi::VK_SUCCESS {
+            return None;
+        }
+        let (w, h) = (caps.current_extent.width, caps.current_extent.height);
+        (w != u32::MAX && h != u32::MAX && w > 0 && h > 0).then_some((w, h))
+    }
+
     pub(crate) fn surface_format_impl(&self, surface: u64) -> Result<crate::Format, QuantaError> {
         let surfaces = self
             .vk_surfaces

@@ -1,7 +1,32 @@
 //! Presentation surfaces — Quanta-owned present.
 //!
 //! A [`Surface`] is a swapchain over a platform presentation target.
-//! The frame loop is:
+//! The frame loop is one closure per frame
+//! ([`render_frame`](Surface::render_frame) — acquire, render,
+//! present, with resize self-healing built in):
+//!
+//! ```ignore
+//! // `window` is anything winit-style (rwh 0.6 HasWindowHandle +
+//! // HasDisplayHandle); feature `raw-window-handle`.
+//! let target = SurfaceTarget::from_window(&window)?;
+//! let mut surface = gpu.create_surface(&target, &config)?;
+//! loop {
+//!     surface.render_frame(|frame| {
+//!         // Render into the frame through the ordinary render-pass
+//!         // API. Present after the pass is SUBMITTED (pulse() has
+//!         // run) — render_frame presents on Ok, right after the
+//!         // closure; no CPU wait is required in between, because the
+//!         // driver orders presentation after the submitted GPU work,
+//!         // asynchronously.
+//!         gpu.render(frame.texture())?.clear(color).pulse()?;
+//!         Ok(())
+//!     })?;
+//! }
+//! ```
+//!
+//! or, spelled out over the primitives ([`acquire`](Surface::acquire) /
+//! [`SurfaceFrame::present`]) when the loop needs custom
+//! resize/timeout policy:
 //!
 //! ```ignore
 //! let mut surface = gpu.create_surface(&target, &config)?;
@@ -14,11 +39,7 @@
 //!         }
 //!         Err(e) => return Err(e),
 //!     };
-//!     // Render into the frame through the ordinary render-pass API.
 //!     let mut pulse = gpu.render(frame.texture())?.clear(color).pulse()?;
-//!     // Present after the pass is SUBMITTED (pulse() has run). No
-//!     // CPU wait is required: presentation is ordered after the
-//!     // submitted GPU work by the driver, asynchronously.
 //!     frame.present()?;
 //! }
 //! ```
@@ -49,7 +70,7 @@
 
 use alloc::sync::Arc;
 
-use quanta_core::{GpuDevice, QuantaError, SurfaceConfig, Texture};
+use quanta_core::{GpuDevice, QuantaError, QuantaErrorKind, SurfaceConfig, Texture};
 
 /// A swapchain over a platform presentation target. Created with
 /// [`RenderGpu::create_surface`](crate::RenderGpu::create_surface);
@@ -115,6 +136,68 @@ impl Surface {
         Ok(())
     }
 
+    /// One frame, one closure: acquire → render (the closure) →
+    /// present, with resize self-healing built in.
+    ///
+    /// The closure receives the acquired [`SurfaceFrame`] and renders
+    /// into `frame.texture()` through the ordinary render-pass API,
+    /// submitting with `.pulse()`. When it returns `Ok`, the frame is
+    /// presented and the closure's value returned; on `Err` the frame
+    /// drops **unpresented** (the image returns to the swapchain
+    /// unshown) and the error propagates — the loop keeps working on
+    /// the next call.
+    ///
+    /// ```ignore
+    /// loop {
+    ///     surface.render_frame(|frame| {
+    ///         gpu.render(frame.texture())?.clear(color).pulse()?;
+    ///         Ok(())
+    ///     })?;
+    /// }
+    /// ```
+    ///
+    /// # Resize self-healing
+    ///
+    /// When [`acquire`](Surface::acquire) reports `SurfaceOutdated`
+    /// (the window was resized) and the driver can read the target's
+    /// **current** extent (Metal: the layer's `drawableSize`; Vulkan:
+    /// `VkSurfaceCapabilitiesKHR::currentExtent`), the surface
+    /// reconfigures itself to that extent — same format preference and
+    /// present mode — and retries the acquire **once**. The healed
+    /// extent is visible through [`config`](Surface::config) /
+    /// [`width`](Surface::width) / [`height`](Surface::height) after
+    /// the call. When the driver cannot tell the new extent, or the
+    /// retry fails, `SurfaceOutdated` propagates and the caller
+    /// reconfigures manually ([`configure`](Surface::configure)), as
+    /// in the primitive loop.
+    ///
+    /// `Timeout` propagates untouched — no frame was free within the
+    /// backend's deadline; call again next loop iteration.
+    pub fn render_frame<R>(
+        &mut self,
+        f: impl FnOnce(&SurfaceFrame) -> Result<R, QuantaError>,
+    ) -> Result<R, QuantaError> {
+        let frame = match self.acquire() {
+            Ok(frame) => frame,
+            Err(e) if matches!(e.kind, QuantaErrorKind::SurfaceOutdated(_)) => {
+                // Self-heal: adopt the target's current extent if the
+                // driver can read it; otherwise the caller reconfigures.
+                let Some((width, height)) = self.device.surface_current_extent(self.handle) else {
+                    return Err(e);
+                };
+                let mut config = self.config;
+                config.width = width;
+                config.height = height;
+                self.configure(config)?;
+                self.acquire()?
+            }
+            Err(e) => return Err(e),
+        };
+        let value = f(&frame)?; // Err → frame drops unpresented.
+        frame.present()?;
+        Ok(value)
+    }
+
     /// Acquire the next presentable frame.
     ///
     /// Blocks briefly if no frame is available yet (all in flight);
@@ -122,6 +205,9 @@ impl Surface {
     /// backend's deadline (retry next loop iteration), or
     /// `SurfaceOutdated` when the target no longer matches the
     /// configuration (reconfigure with the new extent, then retry).
+    /// For the standard loop shape, prefer
+    /// [`render_frame`](Surface::render_frame) — acquire/present plus
+    /// resize self-healing in one call.
     pub fn acquire(&mut self) -> Result<SurfaceFrame, QuantaError> {
         let (frame, mut texture) = self.device.surface_acquire(self.handle)?;
         texture.__attach_device(self.device.clone());
