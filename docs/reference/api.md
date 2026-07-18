@@ -567,7 +567,10 @@ picks the right per-vendor format).
 
 A swapchain over a platform presentation target — the "Quanta owns
 present" model. Created via `RenderGpu::create_surface(&SurfaceTarget,
-&SurfaceConfig)`. Dropping the `Surface` releases the swapchain.
+&SurfaceConfig)` — build the target from a winit-style window in one value
+with [`SurfaceTarget::from_window`](#surfacetargetfrom_window--the-one-value-window-handoff)
+(feature `raw-window-handle`), or name the platform variant by hand.
+Dropping the `Surface` releases the swapchain.
 
 Supported on **Metal** (via a `CAMetalLayer`) and on **Vulkan** when the
 loader offers the WSI extensions (`VK_KHR_surface` + `VK_KHR_swapchain`)
@@ -582,7 +585,8 @@ than failing.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `acquire()` | `Result<SurfaceFrame>` | Next presentable frame. `Timeout` if none free; `SurfaceOutdated` if the target was resized |
+| `render_frame(f)` | `Result<R>` | **Recommended loop shape.** One frame, one closure: acquire → render (`f`) → present, with resize self-healing (see below) |
+| `acquire()` | `Result<SurfaceFrame>` | Next presentable frame. `Timeout` if none free; `SurfaceOutdated` if the target was resized. The primitive under `render_frame` |
 | `configure(config)` | `Result<()>` | Reconfigure — resize, format, or present-mode change |
 | `config()` | `&SurfaceConfig` | Active configuration |
 | `format()` | `Result<Format>` | The **negotiated** frame format (see below). Call after create, before building pipelines; pass to `with_color_formats` |
@@ -599,6 +603,76 @@ negotiated; a frame's `texture().format()` reports the same, and building
 a pipeline for a different format is rejected at draw time. The chain
 order is fixed — for a different fallback preference, type the pipeline
 per frame from `frame.texture().format()`.
+
+### `render_frame`: one closure per frame
+
+`render_frame(f)` folds acquire → render → present into a single call —
+the recommended loop shape:
+
+```rust
+loop {
+    surface.render_frame(|frame| {
+        gpu.render(frame.texture())?.clear(Color::BLACK).pulse()?;
+        Ok(())
+    })?;
+}
+```
+
+The closure renders into `frame.texture()` and submits with `.pulse()`;
+`render_frame` presents on `Ok` and returns the closure's value. On a
+closure `Err` the frame drops **unpresented** (the image returns to the
+swapchain unshown) and the error propagates. **Resize self-heal:** when
+`acquire` reports `SurfaceOutdated` and the driver can read the target's
+current extent (Metal `drawableSize`, Vulkan `currentExtent`), the surface
+reconfigures to that extent — same format preference and present mode —
+and retries the acquire **once**; the healed extent shows through
+`config()` / `width()` / `height()`. When the driver cannot read the
+extent, `SurfaceOutdated` propagates for a manual `configure()` (the
+primitive loop below). `Timeout` propagates untouched — retry next
+iteration.
+
+### `SurfaceTarget::from_window` — the one-value window handoff
+
+With the `raw-window-handle` feature on, build the target from a
+winit-style window in one value — no per-OS matching:
+
+```rust,ignore
+// `window` is anything implementing raw-window-handle 0.6's
+// HasWindowHandle + HasDisplayHandle (a winit Window, say).
+let target = SurfaceTarget::from_window(&window)?;
+let mut surface = gpu.create_surface(&target, &SurfaceConfig::new(w, h))?;
+```
+
+`from_window` reads the window and display handles and delegates to
+`SurfaceTarget::from_raw(window, display)` — the escape hatch for callers
+already holding the raw handles. `from_raw` is a **pure** mapping (no OS
+calls, no pointer dereferences):
+
+| Window handle | Target |
+|---------------|--------|
+| `AppKit` | `SurfaceTarget::AppKitView` (the Metal driver attaches the `CAMetalLayer`) |
+| `Xlib` (+ `Xlib` display) | `SurfaceTarget::Xlib` |
+| `Win32` | `SurfaceTarget::Win32` |
+| `AndroidNdk` | `SurfaceTarget::AndroidWindow` |
+| `Wayland` | `NotSupported` — run under XWayland for now |
+| anything else | `NotSupported`, naming the variant |
+
+- **Win32**: an absent `hinstance` (legal in rwh 0.6) maps to a **null**
+  pointer; the Vulkan backend rejects null at create time. If your handle
+  producer omits it (winit supplies it), fetch the module handle yourself
+  (`GetModuleHandleW(NULL)`) and construct `SurfaceTarget::Win32` directly.
+- **Wayland** is a documented deferral (`VK_KHR_wayland_surface` is not
+  wired yet); force your windowing library's X11 backend so the window
+  arrives as an `Xlib` handle.
+- The window and its display connection must **outlive** the surface — the
+  same safety contract as constructing the target by hand.
+
+The `raw-window-handle` crate is re-exported as `quanta::rwh` (and
+`quanta_core::rwh`), so consumers name the interop types
+(`rwh::HasWindowHandle`, `rwh::RawWindowHandle`, …) without a dependency
+line of their own; the feature carries zero transitive deps. See
+[Presenting to the screen](../rendering/tutorials/presentation.md) for the
+full frame loop.
 
 ### `SurfaceFrame`
 
@@ -621,6 +695,11 @@ Dropping an unpresented frame discards it.
   `Surface::format()`) and *exact* on Metal.
 - `SurfaceTarget::MetalLayer { layer }` — an existing `CAMetalLayer*`
   provided by the windowing environment.
+  `SurfaceTarget::AppKitView { ns_view }` — an AppKit `NSView*` (what a
+  macOS windowing library actually exposes); the Metal driver makes it
+  layer-backed and attaches a `CAMetalLayer` (reusing the view's own when
+  it already is one). Same contract as `MetalLayer`; create it on the main
+  thread. Non-Metal backends return `NotSupported`.
   `SurfaceTarget::Xlib { display, window }` — an Xlib `Display*`
   and `Window` id (`VK_KHR_xlib_surface`); both must outlive the
   surface. `SurfaceTarget::AndroidWindow { a_native_window }` — an
@@ -631,13 +710,31 @@ Dropping an unpresented frame discards it.
   `SurfaceTarget::Headless` — no window attached; full
   acquire/present machinery (Metal off-screen layer /
   `VK_EXT_headless_surface`) for tests and compositor-fed consumers.
-  The enum is `#[non_exhaustive]` — match with a wildcard arm.
+  The enum is `#[non_exhaustive]` — match with a wildcard arm. With the
+  `raw-window-handle` feature, `SurfaceTarget::from_window(&window)` maps a
+  winit-style window to the right variant
+  ([above](#surfacetargetfrom_window--the-one-value-window-handoff)).
 - `PresentMode::{Fifo, Immediate, Mailbox}` — vsync (default; always
   supported where presenting works at all), lowest-latency tearing,
   triple-buffered. Unsupported modes are rejected at create/configure
   time.
 
-The frame loop:
+The frame loop — recommended shape (`render_frame` self-heals on resize):
+
+```rust
+use quanta::RenderGpu;
+
+let mut surface = gpu.create_surface(&target, &SurfaceConfig::new(1280, 720))?;
+loop {
+    surface.render_frame(|frame| {
+        gpu.render(frame.texture())?.clear(color).pulse()?;
+        Ok(())
+    })?;
+}
+```
+
+Or spelled out over the primitives, when the loop needs custom
+resize/timeout policy:
 
 ```rust
 use quanta::RenderGpu;

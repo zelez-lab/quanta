@@ -296,13 +296,22 @@ wgpu's surface loop maps directly onto Quanta's `Surface`. Native
 present is real on Metal (`CAMetalLayer`) and Vulkan (`VkSwapchainKHR` —
 X11 via `SurfaceTarget::Xlib`, plus a windowless `Headless`
 target); query `gpu.supports_surface_present()` first (on Vulkan it is
-gated on loader WSI support):
+gated on loader WSI support).
+
+Like wgpu, Quanta takes a `raw-window-handle` window straight to a
+surface: `SurfaceTarget::from_window(&window)` is the analog of
+`instance.create_surface(window)`, mapping the same rwh 0.6 handles (the
+crate is re-exported as `quanta::rwh`, so you add no dependency line). And
+`surface.render_frame(|frame| …)` folds `get_current_texture` + render +
+`present` into one call, self-healing the swapchain on resize — the
+one-closure equivalent of wgpu's acquire/present cycle.
 
 | wgpu | Quanta |
 |------|--------|
-| `instance.create_surface(window)` | `gpu.create_surface(&SurfaceTarget::Xlib { .. } /* or MetalLayer */, &config)` |
+| `instance.create_surface(window)` | `gpu.create_surface(&SurfaceTarget::from_window(&window)?, &config)` (feature `raw-window-handle`; or name the variant by hand — `SurfaceTarget::MetalLayer { .. }` / `Xlib { .. }`) |
 | `surface.configure(&device, &config)` | `surface.configure(SurfaceConfig::new(w, h))` |
-| `surface.get_current_texture()` | `surface.acquire()` |
+| `get_current_texture()` + render + `present()` | `surface.render_frame(f)` — acquire → render → present in one call, with resize self-heal |
+| `surface.get_current_texture()` | `surface.acquire()` (the primitive `render_frame` builds on) |
 | `SurfaceError::Outdated` | `QuantaErrorKind::SurfaceOutdated(_)` — reconfigure, retry |
 | `SurfaceError::Lost` / suboptimal reconfigure | self-heals on Vulkan: a swapchain reported *suboptimal* finishes the frame and rebuilds on the next `acquire`, no error |
 | `frame.texture` + `create_view()` | `frame.texture()` (render into it directly) |

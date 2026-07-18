@@ -26,7 +26,35 @@ if gpu.supports_native_handle_export() { /* model 2 available */ }
 
 Create a surface over a platform target with `gpu.create_surface` (a
 `RenderGpu` extension method). `SurfaceConfig::new(width, height)` defaults
-to `BGRA8`, `PresentMode::Fifo` (vsync), and `RENDER_TARGET` usage:
+to `BGRA8`, `PresentMode::Fifo` (vsync), and `RENDER_TARGET` usage.
+
+### From a window: the one-value handoff
+
+With the `raw-window-handle` feature on, `SurfaceTarget::from_window` takes
+any winit-style window — anything implementing raw-window-handle 0.6's
+`HasWindowHandle + HasDisplayHandle` — straight to a target, with no per-OS
+matching:
+
+```rust,ignore
+// `window` is a winit Window (or any rwh 0.6 handle source).
+let target = SurfaceTarget::from_window(&window)?;
+let mut surface = gpu.create_surface(&target, &SurfaceConfig::new(1280, 720))?;
+```
+
+`from_window` maps `AppKit → AppKitView` (the Metal driver attaches the
+`CAMetalLayer`), `Xlib → Xlib`, `Win32 → Win32`, and `AndroidNdk →
+AndroidWindow`; Wayland is a documented deferral (`NotSupported` — run
+under XWayland for now, forcing your windowing library's X11 backend so
+the window arrives as an `Xlib` handle). The mapping is **pure** — no OS
+calls happen — and the window and its display connection must outlive the
+surface. Callers already holding raw handles can use
+`SurfaceTarget::from_raw(window, display)` directly. The `raw-window-handle`
+crate is re-exported as `quanta::rwh`, so you need no dependency line of
+your own.
+
+### By hand
+
+When you hold a platform handle directly, name the variant:
 
 ```rust
 // A CAMetalLayer handed to you by the windowing environment:
@@ -38,6 +66,39 @@ let mut surface = gpu.create_surface(&target, &SurfaceConfig::new(1280, 720))?;
 ```
 
 ### The frame loop
+
+The frame loop is one closure per frame — `render_frame` folds acquire →
+render → present into a single call and self-heals on resize:
+
+```rust
+loop {
+    surface.render_frame(|frame| {
+        // Render into the frame through the ordinary render-pass API.
+        gpu.render(frame.texture())?
+            .clear(Color::BLACK)
+            .pipeline(&pipeline)
+            .vertices(0, &vb)
+            .draw(3)
+            .pulse()?;
+        Ok(())
+    })?;
+}
+```
+
+The closure renders into `frame.texture()` and submits with `.pulse()`;
+`render_frame` presents when it returns `Ok` (no CPU wait needed — the
+driver orders presentation after the submitted GPU work). On a closure
+`Err` the frame drops **unpresented** and the error propagates. When
+`acquire` reports `SurfaceOutdated` (the window resized) and the driver can
+read the target's current extent (Metal `drawableSize`, Vulkan
+`currentExtent`), `render_frame` reconfigures to it and retries the acquire
+**once** — the healed extent shows through `surface.config()` / `width()` /
+`height()`. `Timeout` propagates for you to retry next iteration.
+
+#### The manual loop
+
+When the loop needs custom resize or timeout policy, spell it out over the
+primitives (`acquire` / `SurfaceFrame::present`):
 
 ```rust
 loop {
