@@ -9,6 +9,22 @@ use crate::{LoadOp, Pulse, QuantaError, RenderPass, StoreOp, Texture};
 use super::super::VulkanDevice;
 use super::super::ffi;
 
+/// The distinct texture handles a pass binds as SAMPLED sources (every
+/// `SetTexture` slot), deduped in first-bind order. Used to transition
+/// each source to `SHADER_READ_ONLY_OPTIMAL` before the pass — see the
+/// sample-source barrier in `render_end_impl`.
+fn sampled_source_handles(pass: &RenderPass) -> Vec<u64> {
+    let mut out: Vec<u64> = Vec::new();
+    for op in &pass.ops {
+        if let RenderOp::SetTexture { handle, .. } = op
+            && !out.contains(handle)
+        {
+            out.push(*handle);
+        }
+    }
+    out
+}
+
 /// Clamp a scissor rectangle to the render area, yielding a valid
 /// `VkRect2D` for `vkCmdSetScissor`.
 ///
@@ -801,6 +817,73 @@ impl VulkanDevice {
                 1,
                 &barrier,
             );
+
+            // Transition every SAMPLED source texture to
+            // SHADER_READ_ONLY_OPTIMAL before the pass. `write_render_
+            // descriptors` writes SHADER_READ_ONLY_OPTIMAL into each
+            // combined-image-sampler descriptor but emits NO barrier —
+            // it assumes the image already arrived there. That holds for
+            // an uploaded texture or a `resolve_texture` output (both end
+            // SHADER_READ_ONLY), but a texture just RENDERED into sits in
+            // COLOR_ATTACHMENT_OPTIMAL, and sampling it then is a layout
+            // mismatch (VUID-vkCmdDraw-None-09600) that device-loses some
+            // drivers (Intel Iris Xe). Consult each source's tracked
+            // layout and barrier it from WHATEVER it is → SHADER_READ_ONLY,
+            // the same generality `resolve_texture_impl` applies to its
+            // source. A texture that is also the render target is skipped
+            // (a read-after-write feedback loop is invalid API usage, and
+            // it must stay COLOR_ATTACHMENT for the draw).
+            for handle in sampled_source_handles(&pass) {
+                if handle == pass.handle || pass.color_targets.iter().any(|ct| ct.texture == handle)
+                {
+                    continue;
+                }
+                let Some(src) = textures.get(&handle) else {
+                    continue;
+                };
+                let old_layout = src
+                    .current_layout
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if old_layout == ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL {
+                    continue;
+                }
+                let sample_barrier = ffi::VkImageMemoryBarrier {
+                    s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    p_next: core::ptr::null(),
+                    src_access_mask: ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                        | ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                    dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                    old_layout,
+                    new_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    image: src.image,
+                    subresource_range: ffi::VkImageSubresourceRange {
+                        aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                };
+                ffi::vkCmdPipelineBarrier(
+                    cmd,
+                    ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                        | ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    ffi::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    1,
+                    &sample_barrier,
+                );
+                src.current_layout.store(
+                    ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
 
             // Begin render pass.
             let rp_begin = ffi::VkRenderPassBeginInfo {
