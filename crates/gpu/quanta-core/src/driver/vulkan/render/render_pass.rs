@@ -965,6 +965,38 @@ impl VulkanDevice {
             };
             ffi::vkCmdBeginRenderPass(cmd, &rp_begin, subpass_contents);
 
+            // Default full-target viewport + scissor, in the same
+            // y-flipped convention the explicit SetViewport path uses.
+            // Every pipeline declares dynamic viewport/scissor, so a
+            // pass that never calls set_viewport would otherwise draw
+            // with the state UNSET — undefined behavior
+            // (VUID-vkCmdDraw-None-07831/07832) that faults some
+            // drivers (STATUS_ACCESS_VIOLATION on Intel Iris Xe).
+            // Metal defaults to the full target; this makes the
+            // backends agree. A SetViewport/SetScissor op in the pass
+            // simply overrides these. Bundle passes record their own
+            // dynamic state inside the secondary buffers — the inline
+            // defaults here are inert for them.
+            if !uses_bundles {
+                let default_viewport = ffi::VkViewport {
+                    x: 0.0,
+                    y: target_tex.height as f32,
+                    width: target_tex.width as f32,
+                    height: -(target_tex.height as f32),
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                };
+                let default_scissor = ffi::VkRect2D {
+                    offset: ffi::VkOffset2D { x: 0, y: 0 },
+                    extent: ffi::VkExtent2D {
+                        width: target_tex.width,
+                        height: target_tex.height,
+                    },
+                };
+                ffi::vkCmdSetViewport(cmd, 0, 1, &default_viewport);
+                ffi::vkCmdSetScissor(cmd, 0, 1, &default_scissor);
+            }
+
             // Running encoder state, mutated in op order inside the
             // op-walk. Seeded from the slot arrays built above so the
             // running snapshot each draw reads reflects every prior bind.
